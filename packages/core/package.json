@@ -4,7 +4,9 @@
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsup",
     "test": "vitest run"
@@ -14,7 +16,8 @@
     "zod": "^3.23.0"
   },
   "devDependencies": {
-    "@types/js-yaml": "^4.0.0"
+    "@types/js-yaml": "^4.0.0",
+    "@types/node": "^25.5.0"
   },
   "license": "MIT"
 }
