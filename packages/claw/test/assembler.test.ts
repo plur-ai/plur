@@ -2,13 +2,14 @@ import { describe, it, expect } from 'vitest'
 import { assembleContext, estimateTokens } from '../src/assembler.js'
 
 describe('assembler', () => {
-  it('returns messages unchanged when no injection', () => {
+  it('includes PLUR memory instructions even with no injection', () => {
     const result = assembleContext({
       messages: [{ role: 'user', content: 'hello' }],
       injection: null,
     })
     expect(result.messages).toHaveLength(1)
-    expect(result.systemPromptAddition).toBeUndefined()
+    expect(result.systemPromptAddition).toContain('PLUR Memory System')
+    expect(result.systemPromptAddition).toContain('🧠 I learned')
   })
 
   it('adds engrams to system prompt when injection provided', () => {
@@ -23,7 +24,8 @@ describe('assembler', () => {
     })
     expect(result.systemPromptAddition).toContain('blue-green')
     expect(result.systemPromptAddition).toContain('5433')
-    expect(result.systemPromptAddition).toContain('PLUR Memory')
+    expect(result.systemPromptAddition).toContain('PLUR Memory System')
+    expect(result.systemPromptAddition).toContain('Your Memories')
   })
 
   it('includes both directives and consider sections', () => {
@@ -36,8 +38,8 @@ describe('assembler', () => {
         tokens_used: 30,
       },
     })
-    expect(result.systemPromptAddition).toContain('Directives')
-    expect(result.systemPromptAddition).toContain('Also Consider')
+    expect(result.systemPromptAddition).toContain('things you have learned')
+    expect(result.systemPromptAddition).toContain('may also be relevant')
   })
 
   it('estimates tokens correctly', () => {
@@ -50,14 +52,16 @@ describe('assembler', () => {
         tokens_used: 10,
       },
     })
-    expect(result.estimatedTokens).toBeGreaterThan(100) // 400/4 = 100 for message alone
+    expect(result.estimatedTokens).toBeGreaterThan(100)
   })
 
-  it('handles empty directives gracefully', () => {
+  it('still includes instructions with empty engrams', () => {
     const result = assembleContext({
       messages: [],
       injection: { directives: '', consider: '', count: 0, tokens_used: 0 },
     })
-    expect(result.systemPromptAddition).toBeUndefined()
+    // Instructions always present, but no "Your Memories" section
+    expect(result.systemPromptAddition).toContain('PLUR Memory System')
+    expect(result.systemPromptAddition).not.toContain('Your Memories')
   })
 })

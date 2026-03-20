@@ -7,6 +7,37 @@ import type {
 import { extractLearnings, isCorrection } from './learner.js'
 import { assembleContext } from './assembler.js'
 
+/**
+ * Extract text from message content — handles string and array-of-blocks formats.
+ */
+function extractMessageText(message: AgentMessage): string {
+  const content = message.content
+  if (typeof content === 'string') return content
+  if (Array.isArray(content)) {
+    return (content as any[])
+      .filter((block: any) => block?.type === 'text' && typeof block?.text === 'string')
+      .map((block: any) => block.text)
+      .join('\n')
+  }
+  return ''
+}
+
+/**
+ * Extract self-reported learnings from assistant message.
+ * Looks for the 🧠 I learned: section and parses bullet points.
+ */
+function extractSelfReportedLearnings(message: AgentMessage): string[] {
+  const content = extractMessageText(message)
+  // Match the learning section: ---\n🧠 I learned:\n- item\n- item
+  const match = content.match(/---\s*\n🧠 I learned:\s*\n([\s\S]*?)(?:\n---|\n\n[^-]|$)/)
+  if (!match) return []
+
+  return match[1]
+    .split('\n')
+    .map(line => line.replace(/^[-•*]\s*/, '').trim())
+    .filter(line => line.length >= 10) // skip empty or trivial lines
+}
+
 export interface PlurContextEngineOptions {
   path?: string
   auto_learn?: boolean
@@ -144,7 +175,7 @@ export class PlurContextEngine implements ContextEngine {
     }
   }
 
-  /** AfterTurn: extract learnings and capture episodic summary */
+  /** AfterTurn: extract learnings from LLM self-report + regex fallback, capture episode */
   async afterTurn(params: {
     sessionId: string
     sessionKey?: string
@@ -157,17 +188,30 @@ export class PlurContextEngine implements ContextEngine {
   }): Promise<void> {
     if (params.isHeartbeat) return
 
-    // Get new messages from this turn (after prePromptMessageCount)
     const newMessages = params.messages.slice(params.prePromptMessageCount)
+    const scope = this.sessionScopes.get(params.sessionKey || '') || 'global'
 
-    // Extract learnings from new messages (lower confidence threshold since full turn)
     if (this.options.auto_learn && newMessages.length > 0) {
+      // Primary: LLM self-reported learnings from 🧠 section in assistant response
+      const lastAssistant = [...newMessages].reverse().find(m => m.role === 'assistant')
+      if (lastAssistant) {
+        const selfReported = extractSelfReportedLearnings(lastAssistant)
+        for (const statement of selfReported) {
+          this.plur.learn(statement, {
+            type: 'behavioral',
+            scope,
+            source: 'openclaw:self-report',
+          })
+        }
+      }
+
+      // Fallback: regex extraction from user messages (catches what LLM missed)
       const learnings = extractLearnings(newMessages)
       for (const candidate of learnings) {
         if (candidate.confidence >= 0.5) {
           this.plur.learn(candidate.statement, {
             type: candidate.type,
-            scope: this.sessionScopes.get(params.sessionKey || '') || 'global',
+            scope,
             source: 'openclaw:afterTurn',
           })
         }
@@ -178,9 +222,9 @@ export class PlurContextEngine implements ContextEngine {
     if (this.options.auto_capture && newMessages.length > 0) {
       const lastAssistant = [...newMessages].reverse().find(m => m.role === 'assistant')
       if (lastAssistant) {
-        const summary = typeof lastAssistant.content === 'string'
-          ? lastAssistant.content.slice(0, 200)
-          : 'Turn completed'
+        const content = extractMessageText(lastAssistant)
+        // Strip the learning section from the episodic summary
+        const summary = content.replace(/---\s*\n🧠 I learned:[\s\S]*$/, '').trim().slice(0, 200) || 'Turn completed'
         this.plur.capture(summary, {
           agent: 'openclaw',
           session_id: params.sessionId,

@@ -1,5 +1,25 @@
 import type { AgentMessage } from './types.js'
 
+/**
+ * Extract text from message content, handling both string and array-of-blocks formats.
+ * OpenClaw wraps messages as [{type: "text", text: "..."}] with metadata prepended.
+ */
+function extractText(content: unknown): string {
+  let text = ''
+  if (typeof content === 'string') {
+    text = content
+  } else if (Array.isArray(content)) {
+    text = content
+      .filter((block: any) => block?.type === 'text' && typeof block?.text === 'string')
+      .map((block: any) => block.text)
+      .join('\n')
+  }
+  // Strip OpenClaw metadata prefix (Conversation info + Sender blocks)
+  text = text.replace(/^Conversation info \(untrusted metadata\):[\s\S]*?```\n*/g, '')
+  text = text.replace(/^Sender \(untrusted metadata\):[\s\S]*?```\n*/g, '')
+  return text.trim()
+}
+
 export interface LearnCandidate {
   statement: string
   type: 'behavioral' | 'terminological' | 'procedural' | 'architectural'
@@ -60,7 +80,7 @@ export function extractLearnings(messages: AgentMessage[]): LearnCandidate[] {
 
   for (const msg of messages) {
     if (msg.role !== 'user') continue
-    const content = typeof msg.content === 'string' ? msg.content : ''
+    const content = extractText(msg.content)
     if (content.length < 10) continue // too short
 
     // Split into sentences for per-sentence matching
