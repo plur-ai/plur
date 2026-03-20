@@ -7,39 +7,52 @@ export interface LearnCandidate {
 }
 
 // Patterns that indicate corrections or preferences.
-// Listed from most-specific to least-specific — first match per message wins.
+// Applied per-sentence (not per-message) to handle long conversational messages.
 
 const DECISION_PATTERNS = [
-  // "We decided to X", "The decision is X", "Let's go with X"
-  { re: /(?:we decided|the decision is|let'?s go with|agreed to)\s+(.+)$/i, type: 'architectural' as const, confidence: 0.8 },
-  // "The convention/rule/pattern is X"
-  { re: /(?:the convention is|the rule is|the pattern is|the standard is)\s+(.+)$/i, type: 'procedural' as const, confidence: 0.7 },
+  { re: /(?:we decided|the decision is|let'?s go with|agreed to)\s+(.+)/i, type: 'architectural' as const, confidence: 0.8 },
+  { re: /(?:the convention is|the rule is|the pattern is|the standard is)\s+(.+)/i, type: 'procedural' as const, confidence: 0.7 },
 ]
 
 const PREFERENCE_PATTERNS = [
-  // "I prefer X", "I like X"
   { re: /(?:i prefer|i like)\s+(.+?)(?:\s+(?:for|over|instead|rather)\s+.+)?$/i, type: 'behavioral' as const, confidence: 0.6 },
-  // "always/never X"
-  { re: /^(?:always|never)\s+(.+)$/i, type: 'behavioral' as const, confidence: 0.7 },
-  // "should/must/don't X"
-  { re: /(?:you should|you must|don't|do not)\s+(.+)$/i, type: 'behavioral' as const, confidence: 0.6 },
+  { re: /(?:always|never)\s+(.+)/i, type: 'behavioral' as const, confidence: 0.7 },
+  { re: /(?:you should|you must|don't|do not)\s+(.+)/i, type: 'behavioral' as const, confidence: 0.6 },
+  { re: /(?:your purpose is|you are)\s+(.{15,})/i, type: 'behavioral' as const, confidence: 0.6 },
+  { re: /(?:i want you to)\s+(.+)/i, type: 'behavioral' as const, confidence: 0.6 },
+  { re: /(?:remember that)\s+(.+)/i, type: 'behavioral' as const, confidence: 0.7 },
 ]
 
 const CORRECTION_PATTERNS = [
-  // "No, ...", "Actually, ..." — require the correction prefix to be present
-  { re: /^(?:no[,.]|actually[,.])\s+(.+)$/i, type: 'behavioral' as const, confidence: 0.7 },
-  // "X, not Y" pattern — require explicit "not" contrast
-  { re: /^(.+?),?\s+not\s+(.+)$/i, type: 'behavioral' as const, confidence: 0.8 },
+  { re: /(?:no[,.]|actually[,.])\s+(.+)/i, type: 'behavioral' as const, confidence: 0.7 },
+  { re: /(.+?),?\s+not\s+(.+)/i, type: 'behavioral' as const, confidence: 0.8 },
+]
+
+const IDENTITY_PATTERNS = [
+  { re: /(?:you are|you were)\s+((?:Data|inspired|an android|a living|not just).{10,})/i, type: 'terminological' as const, confidence: 0.7 },
+  { re: /(?:your name is|call (?:you|yourself))\s+(.+)/i, type: 'terminological' as const, confidence: 0.8 },
+  { re: /(?:we are building|we built|I built)\s+(.{15,})/i, type: 'architectural' as const, confidence: 0.7 },
 ]
 
 // All pattern groups in priority order (most specific first)
-const ALL_PATTERN_GROUPS = [DECISION_PATTERNS, PREFERENCE_PATTERNS, CORRECTION_PATTERNS]
+const ALL_PATTERN_GROUPS = [IDENTITY_PATTERNS, DECISION_PATTERNS, CORRECTION_PATTERNS, PREFERENCE_PATTERNS]
+
+/**
+ * Split a message into sentences for per-sentence pattern matching.
+ * Handles periods, question marks, exclamation marks, and newlines as delimiters.
+ */
+function splitSentences(text: string): string[] {
+  return text
+    .split(/(?<=[.!?])\s+|\n+/)
+    .map(s => s.trim())
+    .filter(s => s.length >= 10)
+}
 
 /**
  * Extract learning candidates from messages.
  * Only processes user messages (role === 'user').
+ * Splits long messages into sentences for per-sentence pattern matching.
  * Returns candidates — the caller decides whether to persist them.
- * Each message produces at most one candidate (first matching pattern wins).
  */
 export function extractLearnings(messages: AgentMessage[]): LearnCandidate[] {
   const candidates: LearnCandidate[] = []
@@ -48,21 +61,26 @@ export function extractLearnings(messages: AgentMessage[]): LearnCandidate[] {
   for (const msg of messages) {
     if (msg.role !== 'user') continue
     const content = typeof msg.content === 'string' ? msg.content : ''
-    if (content.length < 10 || content.length > 500) continue // too short or too long
+    if (content.length < 10) continue // too short
 
-    // Try each pattern group in priority order; take the first match per message
-    let matched = false
-    for (const patterns of ALL_PATTERN_GROUPS) {
-      if (matched) break
-      for (const { re, type, confidence } of patterns) {
-        const match = content.match(re)
-        if (match && match[1]) {
-          const statement = match[1].trim()
-          if (statement.length >= 10 && !seenStatements.has(statement.toLowerCase())) {
-            seenStatements.add(statement.toLowerCase())
-            candidates.push({ statement, type, confidence })
-            matched = true
-            break
+    // Split into sentences for per-sentence matching
+    const sentences = splitSentences(content)
+
+    for (const sentence of sentences) {
+      // Try each pattern group; take the first match per sentence
+      let matched = false
+      for (const patterns of ALL_PATTERN_GROUPS) {
+        if (matched) break
+        for (const { re, type, confidence } of patterns) {
+          const match = sentence.match(re)
+          if (match && match[1]) {
+            const statement = match[1].trim().replace(/[.!?]+$/, '')
+            if (statement.length >= 10 && !seenStatements.has(statement.toLowerCase())) {
+              seenStatements.add(statement.toLowerCase())
+              candidates.push({ statement, type, confidence })
+              matched = true
+              break
+            }
           }
         }
       }
@@ -75,19 +93,29 @@ export function extractLearnings(messages: AgentMessage[]): LearnCandidate[] {
 /**
  * Check if a single message contains a correction.
  * Used during ingest() for real-time learning.
+ * Checks per-sentence for long messages.
  */
 export function isCorrection(message: AgentMessage): boolean {
   if (message.role !== 'user') return false
   const content = typeof message.content === 'string' ? message.content : ''
-  const lowerContent = content.toLowerCase().trim()
-  return (
-    lowerContent.startsWith('no,') ||
-    lowerContent.startsWith('no ') ||
-    lowerContent.startsWith('actually,') ||
-    lowerContent.startsWith('actually ') ||
-    lowerContent.includes(' not ') ||
-    lowerContent.startsWith('wrong') ||
-    lowerContent.startsWith("that's wrong") ||
-    lowerContent.startsWith("that's incorrect")
-  )
+
+  // Check per-sentence for multi-paragraph messages
+  const sentences = content.length > 200 ? splitSentences(content) : [content]
+
+  for (const sentence of sentences) {
+    const lower = sentence.toLowerCase().trim()
+    if (
+      lower.startsWith('no,') ||
+      lower.startsWith('no.') ||
+      lower.startsWith('actually,') ||
+      lower.startsWith('actually ') ||
+      lower.includes(' not ') ||
+      lower.startsWith('wrong') ||
+      lower.startsWith("that's wrong") ||
+      lower.startsWith("that's incorrect")
+    ) {
+      return true
+    }
+  }
+  return false
 }

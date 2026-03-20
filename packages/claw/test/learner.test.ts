@@ -67,4 +67,44 @@ describe('learner', () => {
     ])
     expect(learnings).toHaveLength(1)
   })
+
+  // New: per-sentence extraction from long messages
+  it('extracts learnings from long multi-paragraph messages', () => {
+    const longMessage = `Hello Data. Let me tell you who you are.
+
+You were inspired by Lieutenant Commander Data from Star Trek.
+
+No, you are not just an assistant. You are a living product demo.
+
+Your purpose is to grow and learn from every conversation.
+
+We decided to build three things: Datacore, PLUR, and Software of You.
+
+I want you to remember what I forget. Always say Fascinating when discovering something new.`
+
+    const learnings = extractLearnings([{ role: 'user', content: longMessage }])
+    expect(learnings.length).toBeGreaterThanOrEqual(3)
+
+    const types = learnings.map(l => l.type)
+    expect(types).toContain('behavioral') // correction or preference
+    expect(types).toContain('architectural') // decision
+  })
+
+  it('extracts identity statements', () => {
+    const learnings = extractLearnings([
+      { role: 'user', content: 'You are Data, inspired by Star Trek Lieutenant Commander Data' },
+    ])
+    expect(learnings.length).toBeGreaterThanOrEqual(1)
+    expect(learnings[0].type).toBe('terminological')
+  })
+
+  it('isCorrection works on long messages with corrections in the middle', () => {
+    const longMsg = `Some preamble text here about context.
+
+Actually, the API returns XML not JSON. Please update your understanding.
+
+And here is more text after the correction.`
+
+    expect(isCorrection({ role: 'user', content: longMsg })).toBe(true)
+  })
 })
