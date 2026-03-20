@@ -30,12 +30,23 @@ describe('engrams', () => {
     expect(loaded).toEqual([])
   })
 
-  it('generates sequential IDs', () => {
+  it('generates sequential IDs for same date', () => {
+    const now = new Date()
+    const date = now.toISOString().slice(0, 10).replace(/-/g, '')
+    const prefix = `ENG-${date.slice(0, 4)}-${date.slice(4)}`
     const existing = [
-      EngramSchema.parse({ id: 'ENG-2026-0319-001', statement: 'a', type: 'behavioral', scope: 'global', status: 'active' }),
-      EngramSchema.parse({ id: 'ENG-2026-0319-002', statement: 'b', type: 'behavioral', scope: 'global', status: 'active' }),
+      EngramSchema.parse({ id: `${prefix}-001`, statement: 'a', type: 'behavioral', scope: 'global', status: 'active' }),
+      EngramSchema.parse({ id: `${prefix}-002`, statement: 'b', type: 'behavioral', scope: 'global', status: 'active' }),
     ]
     const newId = generateEngramId(existing)
-    expect(newId).toMatch(/^ENG-\d{4}-\d{4}-003$/)
+    expect(newId).toBe(`${prefix}-003`)
+  })
+
+  it('starts at 001 when no existing IDs match today', () => {
+    const existing = [
+      EngramSchema.parse({ id: 'ENG-2020-0101-001', statement: 'a', type: 'behavioral', scope: 'global', status: 'active' }),
+    ]
+    const newId = generateEngramId(existing)
+    expect(newId).toMatch(/^ENG-\d{4}-\d{4}-001$/)
   })
 })
