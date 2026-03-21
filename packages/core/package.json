@@ -19,5 +19,22 @@
     "@types/js-yaml": "^4.0.0",
     "@types/node": "^25.5.0"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "description": "Shared memory engine for AI agents \u2014 learn, recall, forget, feedback",
+  "keywords": [
+    "ai",
+    "memory",
+    "engram",
+    "agent",
+    "mcp",
+    "llm",
+    "knowledge"
+  ],
+  "homepage": "https://plur.ai",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/plur-ai/plur",
+    "directory": "packages/core"
+  },
+  "author": "PLUR <info@plur.ai>"
 }

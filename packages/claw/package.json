@@ -4,7 +4,9 @@
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsup",
     "test": "vitest run"
@@ -16,10 +18,29 @@
     "openclaw": ">=2026.3.7"
   },
   "peerDependenciesMeta": {
-    "openclaw": { "optional": true }
+    "openclaw": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@types/node": "^22.0.0"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "description": "PLUR memory plugin for OpenClaw \u2014 persistent learning across sessions",
+  "keywords": [
+    "ai",
+    "memory",
+    "openclaw",
+    "context-engine",
+    "plugin",
+    "agent",
+    "learning"
+  ],
+  "homepage": "https://plur.ai",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/plur-ai/plur",
+    "directory": "packages/claw"
+  },
+  "author": "PLUR <info@plur.ai>"
 }
