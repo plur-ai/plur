@@ -14,6 +14,7 @@ const plugin: OpenClawPluginDefinition = {
 
 export default plugin
 export { PlurContextEngine, type PlurContextEngineOptions }
+export { ensureSystemPrompt, PLUR_SYSTEM_SECTION } from './system-prompt.js'
 export type {
   ContextEngine, AssembleResult, IngestResult, CompactResult, BootstrapResult,
   AgentMessage, OpenClawPluginApi, OpenClawPluginDefinition,
