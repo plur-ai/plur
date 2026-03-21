@@ -5,5 +5,5 @@ export default defineConfig({
   target: 'node22',
   dts: true,
   clean: true,
-  banner: { js: '#!/usr/bin/env node' },
+  // shebang is in src/index.ts, no banner needed
 })
