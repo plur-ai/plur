@@ -25,7 +25,7 @@
   "devDependencies": {
     "@types/node": "^22.0.0"
   },
-  "license": "MIT",
+  "license": "Apache-2.0",
   "description": "PLUR memory plugin for OpenClaw \u2014 persistent learning across sessions",
   "keywords": [
     "ai",

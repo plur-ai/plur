@@ -19,7 +19,7 @@
     "@types/js-yaml": "^4.0.0",
     "@types/node": "^25.5.0"
   },
-  "license": "MIT",
+  "license": "Apache-2.0",
   "description": "Shared memory engine for AI agents \u2014 learn, recall, forget, feedback",
   "keywords": [
     "ai",

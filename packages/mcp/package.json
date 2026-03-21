@@ -21,7 +21,7 @@
   "devDependencies": {
     "@types/node": "^25.5.0"
   },
-  "license": "MIT",
+  "license": "Apache-2.0",
   "description": "PLUR MCP server \u2014 persistent memory tools for any AI agent",
   "keywords": [
     "ai",
