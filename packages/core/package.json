@@ -12,6 +12,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@huggingface/transformers": "^3.8.1",
     "js-yaml": "^4.1.0",
     "zod": "^3.23.0"
   },
@@ -20,7 +21,7 @@
     "@types/node": "^25.5.0"
   },
   "license": "Apache-2.0",
-  "description": "Shared memory engine for AI agents \u2014 learn, recall, forget, feedback",
+  "description": "Shared memory engine for AI agents — learn, recall, forget, feedback",
   "keywords": [
     "ai",
     "memory",

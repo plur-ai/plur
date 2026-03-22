@@ -7,6 +7,7 @@ import { reactivate } from './decay.js'
 import { captureEpisode, queryTimeline } from './episodes.js'
 import { detectConflicts } from './conflict.js'
 import { agenticSearch } from './agentic-search.js'
+import { embeddingSearch } from './embeddings.js'
 import { installPack, listPacks, exportPack } from './packs.js'
 import type { Engram } from './schemas/engram.js'
 import type { Episode } from './schemas/episode.js'
@@ -134,6 +135,15 @@ export class Plur {
     const filtered = this._filterEngrams(options)
     const limit = options?.limit ?? 20
     const results = await agenticSearch(filtered, query, limit, options.llm)
+    this._reactivateResults(results)
+    return results
+  }
+
+  /** Search engrams using local embeddings (transformers.js). Async, no API calls. */
+  async recallSemantic(query: string, options?: Omit<RecallOptions, 'mode' | 'llm'>): Promise<Engram[]> {
+    const filtered = this._filterEngrams(options)
+    const limit = options?.limit ?? 20
+    const results = await embeddingSearch(filtered, query, limit, this.paths.root)
     this._reactivateResults(results)
     return results
   }
