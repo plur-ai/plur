@@ -69,4 +69,4 @@ Configure `@plur-ai/mcp` alongside the plugin:
 
 ## License
 
-MIT
+Apache-2.0

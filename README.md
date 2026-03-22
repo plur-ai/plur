@@ -64,4 +64,4 @@ By default, PLUR stores data in `~/Plur/`. Set `PLUR_PATH` to override.
 
 ## License
 
-MIT
+Apache-2.0

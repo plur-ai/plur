@@ -138,4 +138,4 @@ const { engram_count, episode_count, pack_count, storage_root } = plur.status()
 
 ## License
 
-MIT
+Apache-2.0

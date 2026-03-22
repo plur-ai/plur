@@ -19,6 +19,7 @@ import type {
   InjectionResult,
   CaptureContext,
   TimelineQuery,
+  LlmFunction,
 } from './types.js'
 
 export type { Engram } from './schemas/engram.js'
@@ -119,24 +120,20 @@ export class Plur {
    *   - 'fast' (default): BM25 keyword search, instant, no API calls
    *   - 'agentic': LLM-assisted semantic search, higher accuracy, requires llm function
    */
-  recall(query: string, options?: RecallOptions): Engram[] | Promise<Engram[]> {
+  /** Search engrams using fast BM25 keyword matching. Sync, no API calls. */
+  recall(query: string, options?: Omit<RecallOptions, 'mode' | 'llm'>): Engram[] {
     const filtered = this._filterEngrams(options)
     const limit = options?.limit ?? 20
-
-    if (options?.mode === 'agentic') {
-      if (!options?.llm) {
-        console.warn('[PLUR] recall() called with mode: "agentic" but no llm function provided. Falling back to fast (BM25) mode.')
-      } else {
-        // Agentic mode: async, returns Promise
-        return agenticSearch(filtered, query, limit, options.llm).then(results => {
-          this._reactivateResults(results)
-          return results
-        })
-      }
-    }
-
-    // Fast mode: sync BM25
     const results = searchEngrams(filtered, query, limit)
+    this._reactivateResults(results)
+    return results
+  }
+
+  /** Search engrams using LLM-assisted semantic filtering. Async, requires llm function. */
+  async recallAsync(query: string, options: RecallOptions & { llm: LlmFunction }): Promise<Engram[]> {
+    const filtered = this._filterEngrams(options)
+    const limit = options?.limit ?? 20
+    const results = await agenticSearch(filtered, query, limit, options.llm)
     this._reactivateResults(results)
     return results
   }

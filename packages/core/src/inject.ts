@@ -20,7 +20,7 @@ export type ScoredEngram = Engram & {
 export type AgentEngram = Omit<ScoredEngram, 'associations'>
 export type WireEngram = Omit<AgentEngram, 'keyword_match' | 'raw_score' | 'score'>
 
-export interface InjectionResult {
+export interface InternalInjectionResult {
   directives: WireEngram[]
   consider: WireEngram[]
   tokens_used: { directives: number; consider: number }
@@ -215,7 +215,7 @@ export function selectAndSpread(
   personalEngrams: Engram[],
   packs: LoadedPack[],
   config?: { spread_cap?: number; spread_budget?: number },
-): InjectionResult {
+): InternalInjectionResult {
   const spreadCap = config?.spread_cap ?? 3
   const spreadBudget = config?.spread_budget ?? 480
 

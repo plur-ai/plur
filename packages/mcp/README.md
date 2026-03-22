@@ -76,4 +76,4 @@ Rate injected engrams with `plur.feedback` to improve future injection quality.
 
 ## License
 
-MIT
+Apache-2.0

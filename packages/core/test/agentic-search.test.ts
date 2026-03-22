@@ -31,7 +31,7 @@ describe('agentic search', () => {
       return '1'
     }
 
-    const result = plur.recall('database', { mode: 'agentic', llm: mockLlm, limit: 5 })
+    const result = plur.recallAsync('database', { llm: mockLlm, limit: 5 })
     expect(result).toBeInstanceOf(Promise)
     const engrams = await result
     expect(engrams.length).toBeGreaterThanOrEqual(1)
@@ -42,7 +42,7 @@ describe('agentic search', () => {
       throw new Error('LLM unavailable')
     }
 
-    const result = await plur.recall('database', { mode: 'agentic', llm: failingLlm, limit: 5 })
+    const result = await plur.recallAsync('database', { llm: failingLlm, limit: 5 })
     // Should fall back to BM25 results, not crash
     expect(Array.isArray(result)).toBe(true)
   })
@@ -50,7 +50,7 @@ describe('agentic search', () => {
   it('handles "none" response from LLM', async () => {
     const noneLlm: LlmFunction = async () => 'none'
 
-    const result = await plur.recall('quantum physics', { mode: 'agentic', llm: noneLlm, limit: 5 })
+    const result = await plur.recallAsync('quantum physics', { llm: noneLlm, limit: 5 })
     expect(result).toHaveLength(0)
   })
 
@@ -65,7 +65,7 @@ describe('agentic search', () => {
     const mockLlm: LlmFunction = async () => '1'
 
     const before = plur.recall('France')[0]?.activation.frequency ?? 0
-    await plur.recall('France', { mode: 'agentic', llm: mockLlm, limit: 5 })
+    await plur.recallAsync('France', { llm: mockLlm, limit: 5 })
     const after = plur.recall('France')[0]?.activation.frequency ?? 0
     expect(after).toBeGreaterThan(before)
   })
