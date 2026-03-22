@@ -15,9 +15,7 @@ export interface PlurPaths {
 export function detectPlurStorage(explicitPath?: string): PlurPaths {
   const root = explicitPath
     || process.env.PLUR_PATH
-    || (existsSync(join(homedir(), 'Data', '.datacore', 'engrams.yaml'))
-        ? join(homedir(), 'Data', '.datacore')
-        : join(homedir(), 'Plur'))
+    || join(homedir(), '.plur')
 
   if (!existsSync(root)) mkdirSync(root, { recursive: true })
   const packsDir = join(root, 'packs')

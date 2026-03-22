@@ -117,7 +117,7 @@ export function extractLearnings(messages: AgentMessage[]): LearnCandidate[] {
  */
 export function isCorrection(message: AgentMessage): boolean {
   if (message.role !== 'user') return false
-  const content = typeof message.content === 'string' ? message.content : ''
+  const content = extractText(message.content)
 
   // Check per-sentence for multi-paragraph messages
   const sentences = content.length > 200 ? splitSentences(content) : [content]
