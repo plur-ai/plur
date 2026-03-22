@@ -10,11 +10,21 @@ export interface LearnContext {
   source?: string
 }
 
+/**
+ * Function that calls an LLM. Model-agnostic — consumer provides this.
+ * Takes a prompt, returns the LLM's text response.
+ */
+export type LlmFunction = (prompt: string) => Promise<string>
+
 export interface RecallOptions {
   scope?: string
   domain?: string
   limit?: number
   min_strength?: number
+  /** Search mode: 'fast' (BM25, default) or 'agentic' (LLM-assisted semantic search) */
+  mode?: 'fast' | 'agentic'
+  /** LLM function for agentic mode. Required when mode='agentic'. */
+  llm?: LlmFunction
 }
 
 export interface InjectOptions {

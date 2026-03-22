@@ -6,6 +6,7 @@ import { selectAndSpread, scoreEngramsPublic } from './inject.js'
 import { reactivate } from './decay.js'
 import { captureEpisode, queryTimeline } from './episodes.js'
 import { detectConflicts } from './conflict.js'
+import { agenticSearch } from './agentic-search.js'
 import { installPack, listPacks, exportPack } from './packs.js'
 import type { Engram } from './schemas/engram.js'
 import type { Episode } from './schemas/episode.js'
@@ -112,53 +113,64 @@ export class Plur {
     return engram
   }
 
-  /** Search engrams, filter by scope/domain/strength, reactivate accessed. */
-  recall(query: string, options?: RecallOptions): Engram[] {
+  /**
+   * Search engrams, filter by scope/domain/strength, reactivate accessed.
+   * Supports two modes:
+   *   - 'fast' (default): BM25 keyword search, instant, no API calls
+   *   - 'agentic': LLM-assisted semantic search, higher accuracy, requires llm function
+   */
+  recall(query: string, options?: RecallOptions): Engram[] | Promise<Engram[]> {
+    const filtered = this._filterEngrams(options)
+    const limit = options?.limit ?? 20
+
+    if (options?.mode === 'agentic' && options?.llm) {
+      // Agentic mode: async, returns Promise
+      return agenticSearch(filtered, query, limit, options.llm).then(results => {
+        this._reactivateResults(results)
+        return results
+      })
+    }
+
+    // Fast mode: sync BM25
+    const results = searchEngrams(filtered, query, limit)
+    this._reactivateResults(results)
+    return results
+  }
+
+  /** Filter engrams by scope/domain/strength (shared by both modes) */
+  private _filterEngrams(options?: RecallOptions): Engram[] {
     let engrams = loadEngrams(this.paths.engrams)
-
-    // Only active engrams
     engrams = engrams.filter(e => e.status === 'active')
-
-    // Filter by domain if specified
     if (options?.domain) {
       engrams = engrams.filter(e => e.domain?.startsWith(options.domain!))
     }
-
-    // Filter by min_strength if specified
     if (options?.min_strength !== undefined) {
       engrams = engrams.filter(e => e.activation.retrieval_strength >= options.min_strength!)
     }
-
-    // Scope filter: if scope specified, include global + matching scopes
     if (options?.scope) {
       const scope = options.scope
       engrams = engrams.filter(e =>
-        e.scope === 'global' ||
-        e.scope === scope ||
-        e.scope.startsWith(scope)
+        e.scope === 'global' || e.scope === scope || e.scope.startsWith(scope)
       )
     }
+    return engrams
+  }
 
-    const limit = options?.limit ?? 20
-    const results = searchEngrams(engrams, query, limit)
-
-    // Reactivate accessed engrams
-    if (results.length > 0) {
-      const allEngrams = loadEngrams(this.paths.engrams)
-      const resultIds = new Set(results.map(e => e.id))
-      let modified = false
-      for (const e of allEngrams) {
-        if (resultIds.has(e.id)) {
-          e.activation.retrieval_strength = reactivate(e.activation.retrieval_strength)
-          e.activation.last_accessed = new Date().toISOString().slice(0, 10)
-          e.activation.frequency += 1
-          modified = true
-        }
+  /** Reactivate accessed engrams (bump retrieval strength, frequency, last_accessed) */
+  private _reactivateResults(results: Engram[]): void {
+    if (results.length === 0) return
+    const allEngrams = loadEngrams(this.paths.engrams)
+    const resultIds = new Set(results.map(e => e.id))
+    let modified = false
+    for (const e of allEngrams) {
+      if (resultIds.has(e.id)) {
+        e.activation.retrieval_strength = reactivate(e.activation.retrieval_strength)
+        e.activation.last_accessed = new Date().toISOString().slice(0, 10)
+        e.activation.frequency += 1
+        modified = true
       }
-      if (modified) saveEngrams(this.paths.engrams, allEngrams)
     }
-
-    return results
+    if (modified) saveEngrams(this.paths.engrams, allEngrams)
   }
 
   /** Scored injection within token budget. Returns formatted strings. */
