@@ -36,5 +36,11 @@
     "url": "https://github.com/plur-ai/plur",
     "directory": "packages/core"
   },
-  "author": "PLUR <info@plur.ai>"
+  "author": "PLUR <info@plur.ai>",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  }
 }

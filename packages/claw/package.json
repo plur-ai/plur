@@ -5,8 +5,14 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "files": [
-    "dist"
+    "dist",
+    "openclaw.plugin.json"
   ],
+  "openclaw": {
+    "extensions": [
+      "dist/index.js"
+    ]
+  },
   "scripts": {
     "build": "tsup",
     "test": "vitest run"
@@ -42,5 +48,11 @@
     "url": "https://github.com/plur-ai/plur",
     "directory": "packages/claw"
   },
-  "author": "PLUR <info@plur.ai>"
+  "author": "PLUR <info@plur.ai>",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  }
 }

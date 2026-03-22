@@ -123,12 +123,16 @@ export class Plur {
     const filtered = this._filterEngrams(options)
     const limit = options?.limit ?? 20
 
-    if (options?.mode === 'agentic' && options?.llm) {
-      // Agentic mode: async, returns Promise
-      return agenticSearch(filtered, query, limit, options.llm).then(results => {
-        this._reactivateResults(results)
-        return results
-      })
+    if (options?.mode === 'agentic') {
+      if (!options?.llm) {
+        console.warn('[PLUR] recall() called with mode: "agentic" but no llm function provided. Falling back to fast (BM25) mode.')
+      } else {
+        // Agentic mode: async, returns Promise
+        return agenticSearch(filtered, query, limit, options.llm).then(results => {
+          this._reactivateResults(results)
+          return results
+        })
+      }
     }
 
     // Fast mode: sync BM25
