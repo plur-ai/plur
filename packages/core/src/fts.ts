@@ -15,12 +15,28 @@ export function ftsTokenize(text: string): string[] {
     .filter(w => !STOP_WORDS.has(w))
 }
 
+/** Build searchable text from all engram fields */
+export function engramSearchText(engram: Engram): string {
+  const parts = [engram.statement]
+  if (engram.domain) parts.push(engram.domain.replace(/\./g, ' '))
+  if (engram.tags.length > 0) parts.push(engram.tags.join(' '))
+  if (engram.entities) {
+    for (const e of engram.entities) {
+      parts.push(e.name)
+      if (e.type !== 'other') parts.push(e.type)
+    }
+  }
+  if (engram.temporal) {
+    if (engram.temporal.valid_from) parts.push(engram.temporal.valid_from)
+    if (engram.temporal.valid_until) parts.push(engram.temporal.valid_until)
+  }
+  if (engram.rationale) parts.push(engram.rationale)
+  return parts.join(' ')
+}
+
 /** Score an engram against query tokens */
 export function ftsScore(engram: Engram, queryTokens: string[]): number {
-  const statementTokens = ftsTokenize(engram.statement)
-  const domainTokens = engram.domain ? ftsTokenize(engram.domain.replace(/\./g, ' ')) : []
-  const tagTokens = engram.tags.map(t => t.toLowerCase())
-  const allTerms = [...statementTokens, ...domainTokens, ...tagTokens]
+  const allTerms = ftsTokenize(engramSearchText(engram))
   let matches = 0
   for (const qt of queryTokens) {
     if (allTerms.some(t => t.includes(qt) || qt.includes(t))) matches++

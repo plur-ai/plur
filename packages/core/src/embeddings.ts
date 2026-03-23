@@ -1,4 +1,5 @@
 import type { Engram } from './schemas/engram.js'
+import { engramSearchText } from './fts.js'
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs'
 import { join } from 'path'
 
@@ -6,7 +7,11 @@ import { join } from 'path'
  * Embedding-based semantic search for engrams.
  *
  * Uses @huggingface/transformers (ONNX runtime) for local embeddings.
- * Model: all-MiniLM-L6-v2 (~80MB, 384-dim, fast on CPU)
+ * Model: BAAI/bge-small-en-v1.5 (~130MB, 384-dim, strong MTEB, fast)
+ *
+ * BGE models significantly outperform MiniLM on MTEB retrieval benchmarks
+ * while keeping the same 384-dim footprint. bge-small-en-v1.5 scores ~62 on
+ * MTEB vs ~42 for all-MiniLM-L6-v2.
  *
  * Embeddings are cached per-engram using content hashing to avoid
  * re-computation on subsequent searches.
@@ -18,7 +23,7 @@ let embedPipeline: any = null
 async function getEmbedder() {
   if (!embedPipeline) {
     const { pipeline } = await import('@huggingface/transformers')
-    embedPipeline = await pipeline('feature-extraction', 'Xenova/all-MiniLM-L6-v2', {
+    embedPipeline = await pipeline('feature-extraction', 'Xenova/bge-small-en-v1.5', {
       dtype: 'fp32',
     })
   }
@@ -28,7 +33,7 @@ async function getEmbedder() {
 /** Generate embedding for a text string. Returns Float32Array of 384 dims. */
 async function embed(text: string): Promise<Float32Array> {
   const embedder = await getEmbedder()
-  const result = await embedder(text, { pooling: 'mean', normalize: true })
+  const result = await embedder(text, { pooling: 'cls', normalize: true })
   return new Float32Array(result.data)
 }
 
@@ -97,15 +102,16 @@ export async function embeddingSearch(
   const similarities: Array<{ engram: Engram; score: number }> = []
 
   for (const engram of engrams) {
-    const hash = hashStatement(engram.statement)
+    const searchText = engramSearchText(engram)
+    const hash = hashStatement(searchText)
     let engramEmbedding: Float32Array
 
     if (cache[engram.id]?.hash === hash) {
       // Cache hit
       engramEmbedding = new Float32Array(cache[engram.id].embedding)
     } else {
-      // Cache miss — compute embedding
-      engramEmbedding = await embed(engram.statement)
+      // Cache miss — compute embedding from enriched text
+      engramEmbedding = await embed(searchText)
       cache[engram.id] = {
         hash,
         embedding: Array.from(engramEmbedding),

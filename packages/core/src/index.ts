@@ -8,6 +8,8 @@ import { captureEpisode, queryTimeline } from './episodes.js'
 import { detectConflicts } from './conflict.js'
 import { agenticSearch } from './agentic-search.js'
 import { embeddingSearch } from './embeddings.js'
+import { hybridSearch } from './hybrid-search.js'
+import { expandedSearch } from './query-expansion.js'
 import { installPack, listPacks, exportPack } from './packs.js'
 import type { Engram } from './schemas/engram.js'
 import type { Episode } from './schemas/episode.js'
@@ -23,6 +25,7 @@ import type {
   LlmFunction,
 } from './types.js'
 
+export { engramSearchText } from './fts.js'
 export type { Engram } from './schemas/engram.js'
 export type { Episode } from './schemas/episode.js'
 export type { PackManifest } from './schemas/pack.js'
@@ -144,6 +147,24 @@ export class Plur {
     const filtered = this._filterEngrams(options)
     const limit = options?.limit ?? 20
     const results = await embeddingSearch(filtered, query, limit, this.paths.root)
+    this._reactivateResults(results)
+    return results
+  }
+
+  /** Hybrid search: BM25 + embeddings merged via Reciprocal Rank Fusion. Async, no API calls. */
+  async recallHybrid(query: string, options?: Omit<RecallOptions, 'mode' | 'llm'>): Promise<Engram[]> {
+    const filtered = this._filterEngrams(options)
+    const limit = options?.limit ?? 20
+    const results = await hybridSearch(filtered, query, limit, this.paths.root)
+    this._reactivateResults(results)
+    return results
+  }
+
+  /** Expanded search: LLM query expansion + hybrid search + RRF merge. Opt-in, requires LLM function. */
+  async recallExpanded(query: string, options: RecallOptions & { llm: LlmFunction }): Promise<Engram[]> {
+    const filtered = this._filterEngrams(options)
+    const limit = options?.limit ?? 20
+    const results = await expandedSearch(filtered, query, limit, options.llm, this.paths.root)
     this._reactivateResults(results)
     return results
   }
