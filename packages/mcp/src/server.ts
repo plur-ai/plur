@@ -9,7 +9,7 @@ export async function createServer(plur?: Plur): Promise<Server> {
   const tools = getToolDefinitions()
 
   const server = new Server(
-    { name: 'plur-mcp', version: '0.1.0' },
+    { name: 'plur-mcp', version: '0.2.0' },
     { capabilities: { tools: {} } },
   )
 

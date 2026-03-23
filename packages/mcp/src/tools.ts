@@ -74,6 +74,42 @@ export function getToolDefinitions(): ToolDefinition[] {
     },
 
     {
+      name: 'plur.recall.hybrid',
+      description: 'Hybrid search — BM25 + local embeddings merged via Reciprocal Rank Fusion. No API calls, fully local. Best default for most use cases.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: 'Search query to find relevant engrams' },
+          scope: { type: 'string', description: 'Filter by scope (also includes global)' },
+          domain: { type: 'string', description: 'Filter by domain prefix' },
+          limit: { type: 'number', description: 'Max results to return (default 20)' },
+          min_strength: { type: 'number', description: 'Minimum retrieval strength (0-1)' },
+        },
+        required: ['query'],
+      },
+      handler: async (args, plur) => {
+        const results = await plur.recallHybrid(args.query as string, {
+          scope: args.scope as string | undefined,
+          domain: args.domain as string | undefined,
+          limit: args.limit as number | undefined,
+          min_strength: args.min_strength as number | undefined,
+        })
+        return {
+          results: results.map(e => ({
+            id: e.id,
+            statement: e.statement,
+            type: e.type,
+            scope: e.scope,
+            domain: e.domain,
+            retrieval_strength: e.activation.retrieval_strength,
+          })),
+          count: results.length,
+          mode: 'hybrid',
+        }
+      },
+    },
+
+    {
       name: 'plur.inject',
       description: 'Get a scored context injection for a task — returns directives and considerations within token budget',
       inputSchema: {
