@@ -125,11 +125,11 @@ export class PlurContextEngine implements ContextEngine {
     const lastUserMsg = [...params.messages].reverse().find(m => m.role === 'user')
     const task = lastUserMsg ? (typeof lastUserMsg.content === 'string' ? lastUserMsg.content : '') : ''
 
-    // Inject relevant engrams
+    // Inject relevant engrams (hybrid: BM25 + embeddings when available)
     let injection = null
     if (task) {
       const scope = this.sessionScopes.get(params.sessionKey || '') || undefined
-      injection = this.plur.inject(task, {
+      injection = await this.plur.injectHybrid(task, {
         budget: this.options.injection_budget,
         scope,
       })

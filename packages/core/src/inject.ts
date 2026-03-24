@@ -215,6 +215,7 @@ export function selectAndSpread(
   personalEngrams: Engram[],
   packs: LoadedPack[],
   config?: { spread_cap?: number; spread_budget?: number },
+  embeddingBoosts?: Map<string, number>,
 ): InternalInjectionResult {
   const spreadCap = config?.spread_cap ?? 3
   const spreadBudget = config?.spread_budget ?? 480
@@ -233,7 +234,14 @@ export function selectAndSpread(
   for (const engram of personalEngrams) {
     if (engram.status !== 'active') continue
     engramMap.set(engram.id, engram)
-    const raw = scoreEngram(engram, promptLower, promptWords, [], ctx.scope, false)
+    let raw = scoreEngram(engram, promptLower, promptWords, [], ctx.scope, false)
+    // Embedding boost: semantically similar engrams with zero keyword hits still get scored
+    const embBoost = embeddingBoosts?.get(engram.id) ?? 0
+    if (raw === 0 && embBoost > 0.3) {
+      raw = embBoost * 2 // semantic-only signal, scaled to be comparable with keyword scores
+    } else if (raw > 0 && embBoost > 0) {
+      raw += embBoost // additive boost for keyword+semantic match
+    }
     if (raw > 0) {
       scored.push({ ...engram, keyword_match: raw, raw_score: raw, score: raw })
     }
@@ -246,7 +254,13 @@ export function selectAndSpread(
     for (const engram of pack.engrams) {
       if (engram.status !== 'active') continue
       engramMap.set(engram.id, engram)
-      const raw = scoreEngram(engram, promptLower, promptWords, matchTerms, ctx.scope, true)
+      let raw = scoreEngram(engram, promptLower, promptWords, matchTerms, ctx.scope, true)
+      const embBoost = embeddingBoosts?.get(engram.id) ?? 0
+      if (raw === 0 && embBoost > 0.3) {
+        raw = embBoost * 2
+      } else if (raw > 0 && embBoost > 0) {
+        raw += embBoost
+      }
       if (raw > 0) {
         scored.push({ ...engram, keyword_match: raw, raw_score: raw, score: raw })
       }

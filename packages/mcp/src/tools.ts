@@ -136,6 +136,33 @@ export function getToolDefinitions(): ToolDefinition[] {
     },
 
     {
+      name: 'plur.inject.hybrid',
+      description: 'Hybrid injection — BM25 + embeddings for better context selection. Falls back to BM25 if embeddings unavailable. Best default for injection.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          task: { type: 'string', description: 'The task description to inject context for' },
+          budget: { type: 'number', description: 'Token budget for injection (default 2000)' },
+          scope: { type: 'string', description: 'Scope filter for engram selection' },
+        },
+        required: ['task'],
+      },
+      handler: async (args, plur) => {
+        const result = await plur.injectHybrid(args.task as string, {
+          budget: args.budget as number | undefined,
+          scope: args.scope as string | undefined,
+        })
+        return {
+          directives: result.directives,
+          consider: result.consider,
+          count: result.count,
+          tokens_used: result.tokens_used,
+          mode: 'hybrid',
+        }
+      },
+    },
+
+    {
       name: 'plur.feedback',
       description: 'Rate an engram\'s usefulness — trains injection relevance over time',
       inputSchema: {

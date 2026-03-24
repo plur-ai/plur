@@ -209,8 +209,32 @@ export class Plur {
     if (modified) saveEngrams(this.paths.engrams, allEngrams)
   }
 
-  /** Scored injection within token budget. Returns formatted strings. */
+  /** Scored injection within token budget (BM25 only). Returns formatted strings. */
   inject(task: string, options?: InjectOptions): InjectionResult {
+    return this._formatInjection(task, options)
+  }
+
+  /** Scored injection with embedding boost when available. Falls back to BM25 if embeddings not installed. */
+  async injectHybrid(task: string, options?: InjectOptions): Promise<InjectionResult> {
+    // Try to get embedding similarities for all active engrams
+    let embeddingBoosts: Map<string, number> | undefined
+    try {
+      const engrams = loadEngrams(this.paths.engrams).filter(e => e.status === 'active')
+      const results = await embeddingSearch(engrams, task, engrams.length, this.paths.root)
+      if (results.length > 0) {
+        // Build boost map: rank-based scoring (top result gets 1.0, decays)
+        embeddingBoosts = new Map()
+        for (let i = 0; i < results.length; i++) {
+          embeddingBoosts.set(results[i].id, 1.0 / (1 + i * 0.1))
+        }
+      }
+    } catch {
+      // Embeddings unavailable — continue without boosts
+    }
+    return this._formatInjection(task, options, embeddingBoosts)
+  }
+
+  private _formatInjection(task: string, options?: InjectOptions, embeddingBoosts?: Map<string, number>): InjectionResult {
     const engrams = loadEngrams(this.paths.engrams)
     const packs = loadAllPacks(this.paths.packs)
     const budget = options?.budget ?? this.config.injection_budget ?? 2000
@@ -227,6 +251,7 @@ export class Plur {
         spread_cap: this.config.injection?.spread_cap,
         spread_budget: this.config.injection?.spread_budget,
       },
+      embeddingBoosts,
     )
 
     const formatEngrams = (wires: typeof result.directives): string => {

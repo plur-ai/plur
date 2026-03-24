@@ -33,9 +33,6 @@ importers:
 
   packages/core:
     dependencies:
-      '@huggingface/transformers':
-        specifier: ^3.8.1
-        version: 3.8.1
       js-yaml:
         specifier: ^4.1.0
         version: 4.1.1
@@ -52,6 +49,9 @@ importers:
 
   packages/mcp:
     dependencies:
+      '@huggingface/transformers':
+        specifier: ^3.8.1
+        version: 3.8.1
       '@modelcontextprotocol/sdk':
         specifier: ^1.12.0
         version: 1.27.1(zod@3.25.76)
