@@ -150,6 +150,11 @@ Everything is plain YAML. Open it, read it, edit it.
 
 `PLUR_PATH` overrides the default location.
 
+## Requirements
+
+- **Node.js 18+**
+- **2GB RAM minimum** — the embedding model (ONNX runtime) needs ~1GB for installation. On servers with less RAM, embeddings are skipped and search falls back to BM25 keyword matching.
+
 ## Development
 
 ```bash
