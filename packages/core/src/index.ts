@@ -27,6 +27,7 @@ import type {
 } from './types.js'
 
 export { engramSearchText } from './fts.js'
+export { detectPlurStorage, type PlurPaths } from './storage.js'
 export type { SyncResult, SyncStatus } from './sync.js'
 export { checkForUpdate, getCachedUpdateCheck, clearVersionCache, type VersionCheckResult } from './version-check.js'
 export type { Engram } from './schemas/engram.js'
