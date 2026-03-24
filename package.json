@@ -7,8 +7,14 @@
     "test:watch": "vitest"
   },
   "devDependencies": {
-    "typescript": "^5.7.0",
-    "vitest": "^3.0.0",
-    "tsup": "^8.0.0"
+    "tsup": "^8.5.1",
+    "typescript": "^6.0.2",
+    "vitest": "^4.1.1"
+  },
+  "pnpm": {
+    "overrides": {
+      "fast-xml-parser": ">=5.5.7",
+      "@hono/node-server": ">=1.19.10"
+    }
   }
 }
