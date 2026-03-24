@@ -25,54 +25,54 @@ describe('MCP tools', () => {
 
   it('defines all PLUR tools', () => {
     const names = tools.map(t => t.name)
-    expect(names).toContain('plur.learn')
-    expect(names).toContain('plur.recall')
-    expect(names).toContain('plur.inject')
-    expect(names).toContain('plur.feedback')
-    expect(names).toContain('plur.forget')
-    expect(names).toContain('plur.capture')
-    expect(names).toContain('plur.timeline')
-    expect(names).toContain('plur.ingest')
-    expect(names).toContain('plur.packs.install')
-    expect(names).toContain('plur.packs.list')
-    expect(names).toContain('plur.status')
+    expect(names).toContain('plur_learn')
+    expect(names).toContain('plur_recall')
+    expect(names).toContain('plur_inject')
+    expect(names).toContain('plur_feedback')
+    expect(names).toContain('plur_forget')
+    expect(names).toContain('plur_capture')
+    expect(names).toContain('plur_timeline')
+    expect(names).toContain('plur_ingest')
+    expect(names).toContain('plur_packs_install')
+    expect(names).toContain('plur_packs_list')
+    expect(names).toContain('plur_status')
   })
 
-  it('plur.learn creates an engram', async () => {
-    const result = await callTool('plur.learn', { statement: 'Test learning', scope: 'global' }) as any
+  it('plur_learn creates an engram', async () => {
+    const result = await callTool('plur_learn', { statement: 'Test learning', scope: 'global' }) as any
     expect(result.id).toMatch(/^ENG-/)
     expect(result.statement).toBe('Test learning')
   })
 
-  it('plur.recall finds learned engrams', async () => {
-    await callTool('plur.learn', { statement: 'API uses snake_case', scope: 'global' })
-    const result = await callTool('plur.recall', { query: 'API snake' }) as any
+  it('plur_recall finds learned engrams', async () => {
+    await callTool('plur_learn', { statement: 'API uses snake_case', scope: 'global' })
+    const result = await callTool('plur_recall', { query: 'API snake' }) as any
     expect(result.results.length).toBeGreaterThan(0)
   })
 
-  it('plur.inject returns formatted injection', async () => {
-    await callTool('plur.learn', { statement: 'Always deploy carefully', scope: 'global' })
-    const result = await callTool('plur.inject', { task: 'deploy the application' }) as any
+  it('plur_inject returns formatted injection', async () => {
+    await callTool('plur_learn', { statement: 'Always deploy carefully', scope: 'global' })
+    const result = await callTool('plur_inject', { task: 'deploy the application' }) as any
     expect(result.count).toBeGreaterThan(0)
   })
 
-  it('plur.feedback updates engram', async () => {
-    const learned = await callTool('plur.learn', { statement: 'Test feedback engram', scope: 'global' }) as any
-    const result = await callTool('plur.feedback', { id: learned.id, signal: 'positive' }) as any
+  it('plur_feedback updates engram', async () => {
+    const learned = await callTool('plur_learn', { statement: 'Test feedback engram', scope: 'global' }) as any
+    const result = await callTool('plur_feedback', { id: learned.id, signal: 'positive' }) as any
     expect(result.success).toBe(true)
   })
 
-  it('plur.capture and plur.timeline work', async () => {
-    await callTool('plur.capture', { summary: 'Test episode', agent: 'test' })
-    const result = await callTool('plur.timeline', {}) as any
+  it('plur_capture and plur.timeline work', async () => {
+    await callTool('plur_capture', { summary: 'Test episode', agent: 'test' })
+    const result = await callTool('plur_timeline', {}) as any
     expect(result.episodes.length).toBe(1)
   })
 
-  it('plur.status returns counts', async () => {
-    const result = await callTool('plur.status', {}) as any
+  it('plur_status returns counts', async () => {
+    const result = await callTool('plur_status', {}) as any
     expect(result.engram_count).toBe(0)
-    await callTool('plur.learn', { statement: 'Status test', scope: 'global' })
-    const result2 = await callTool('plur.status', {}) as any
+    await callTool('plur_learn', { statement: 'Status test', scope: 'global' })
+    const result2 = await callTool('plur_status', {}) as any
     expect(result2.engram_count).toBe(1)
   })
 })

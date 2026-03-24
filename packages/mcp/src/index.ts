@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 export {}
 
-const VERSION = '0.2.8'
+const VERSION = '0.2.9'
 
 const HELP = `plur-mcp v${VERSION} — persistent memory for AI agents
 

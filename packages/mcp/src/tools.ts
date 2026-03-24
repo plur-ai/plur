@@ -10,7 +10,7 @@ export interface ToolDefinition {
 export function getToolDefinitions(): ToolDefinition[] {
   return [
     {
-      name: 'plur.learn',
+      name: 'plur_learn',
       description: 'Create an engram — record a reusable learning, preference, or correction',
       inputSchema: {
         type: 'object',
@@ -39,7 +39,7 @@ export function getToolDefinitions(): ToolDefinition[] {
     },
 
     {
-      name: 'plur.recall',
+      name: 'plur_recall',
       description: 'Query engrams by semantic similarity — retrieve relevant learned knowledge',
       inputSchema: {
         type: 'object',
@@ -74,7 +74,7 @@ export function getToolDefinitions(): ToolDefinition[] {
     },
 
     {
-      name: 'plur.recall.hybrid',
+      name: 'plur_recall_hybrid',
       description: 'Hybrid search — BM25 + local embeddings merged via Reciprocal Rank Fusion. No API calls, fully local. Best default for most use cases.',
       inputSchema: {
         type: 'object',
@@ -110,7 +110,7 @@ export function getToolDefinitions(): ToolDefinition[] {
     },
 
     {
-      name: 'plur.inject',
+      name: 'plur_inject',
       description: 'Get a scored context injection for a task — returns directives and considerations within token budget',
       inputSchema: {
         type: 'object',
@@ -136,7 +136,7 @@ export function getToolDefinitions(): ToolDefinition[] {
     },
 
     {
-      name: 'plur.inject.hybrid',
+      name: 'plur_inject_hybrid',
       description: 'Hybrid injection — BM25 + embeddings for better context selection. Falls back to BM25 if embeddings unavailable. Best default for injection.',
       inputSchema: {
         type: 'object',
@@ -163,7 +163,7 @@ export function getToolDefinitions(): ToolDefinition[] {
     },
 
     {
-      name: 'plur.feedback',
+      name: 'plur_feedback',
       description: 'Rate an engram\'s usefulness — trains injection relevance over time',
       inputSchema: {
         type: 'object',
@@ -184,7 +184,7 @@ export function getToolDefinitions(): ToolDefinition[] {
     },
 
     {
-      name: 'plur.forget',
+      name: 'plur_forget',
       description: 'Retire an engram — marks it as no longer active without deleting history',
       inputSchema: {
         type: 'object',
@@ -201,7 +201,7 @@ export function getToolDefinitions(): ToolDefinition[] {
     },
 
     {
-      name: 'plur.capture',
+      name: 'plur_capture',
       description: 'Append an episode to the episodic timeline — records what happened in a session',
       inputSchema: {
         type: 'object',
@@ -230,7 +230,7 @@ export function getToolDefinitions(): ToolDefinition[] {
     },
 
     {
-      name: 'plur.timeline',
+      name: 'plur_timeline',
       description: 'Query the episodic timeline — retrieve past episodes filtered by time, agent, or search',
       inputSchema: {
         type: 'object',
@@ -266,7 +266,7 @@ export function getToolDefinitions(): ToolDefinition[] {
     },
 
     {
-      name: 'plur.ingest',
+      name: 'plur_ingest',
       description: 'Extract engram candidates from content using pattern matching — optionally auto-save them',
       inputSchema: {
         type: 'object',
@@ -302,7 +302,7 @@ export function getToolDefinitions(): ToolDefinition[] {
     },
 
     {
-      name: 'plur.packs.install',
+      name: 'plur_packs_install',
       description: 'Install an engram pack from a directory path — adds curated engrams to the store',
       inputSchema: {
         type: 'object',
@@ -318,7 +318,7 @@ export function getToolDefinitions(): ToolDefinition[] {
     },
 
     {
-      name: 'plur.packs.list',
+      name: 'plur_packs_list',
       description: 'List all installed engram packs',
       inputSchema: {
         type: 'object',
@@ -339,7 +339,7 @@ export function getToolDefinitions(): ToolDefinition[] {
     },
 
     {
-      name: 'plur.sync',
+      name: 'plur_sync',
       description: 'Sync engrams via git — initializes repo on first call, commits and pushes/pulls on subsequent calls. Provide a remote URL on first call to enable cross-device sync.',
       inputSchema: {
         type: 'object',
@@ -357,7 +357,7 @@ export function getToolDefinitions(): ToolDefinition[] {
     },
 
     {
-      name: 'plur.sync.status',
+      name: 'plur_sync_status',
       description: 'Check git sync status — whether repo is initialized, has remote, is dirty, ahead/behind counts',
       inputSchema: {
         type: 'object',
@@ -369,7 +369,7 @@ export function getToolDefinitions(): ToolDefinition[] {
     },
 
     {
-      name: 'plur.status',
+      name: 'plur_status',
       description: 'Return system health — engram count, episode count, pack count, storage root',
       inputSchema: {
         type: 'object',
