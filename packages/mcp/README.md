@@ -1,36 +1,39 @@
 # @plur-ai/mcp
 
-MCP server for PLUR — exposes persistent AI memory as Model Context Protocol tools.
+MCP server for PLUR — gives any AI agent persistent memory via the Model Context Protocol.
+
+```bash
+npx @plur-ai/mcp
+```
+
+Or install globally:
 
 ```bash
 npm install -g @plur-ai/mcp
 ```
 
-The `plur-mcp` binary is now in your PATH. Point any MCP client at it and your agent has memory.
+## Setup
 
-## Configuration
+### Claude Code
 
-### Claude Code (`.mcp.json`)
+Add to `.claude/mcp.json`:
 
 ```json
 {
   "mcpServers": {
-    "plur": {
-      "command": "plur-mcp"
-    }
+    "plur": { "command": "npx", "args": ["-y", "@plur-ai/mcp"] }
   }
 }
 ```
 
-### Cursor (`.cursor/mcp.json`)
+### Cursor
+
+Add to `.cursor/mcp.json`:
 
 ```json
 {
   "mcpServers": {
-    "plur": {
-      "command": "plur-mcp",
-      "args": []
-    }
+    "plur": { "command": "npx", "args": ["-y", "@plur-ai/mcp"] }
   }
 }
 ```
@@ -41,7 +44,8 @@ The `plur-mcp` binary is now in your PATH. Point any MCP client at it and your a
 {
   "mcpServers": {
     "plur": {
-      "command": "plur-mcp",
+      "command": "npx",
+      "args": ["-y", "@plur-ai/mcp"],
       "env": { "PLUR_PATH": "/path/to/storage" }
     }
   }
@@ -52,27 +56,36 @@ The `plur-mcp` binary is now in your PATH. Point any MCP client at it and your a
 
 | Tool | Description |
 |------|-------------|
-| `plur.learn` | Create an engram — record a reusable learning, preference, or correction |
-| `plur.recall` | Query engrams by keyword/phrase — retrieve relevant learned knowledge |
-| `plur.inject` | Get scored context for a task — directives and considerations within token budget |
-| `plur.feedback` | Rate an engram's usefulness — trains injection relevance over time |
-| `plur.forget` | Retire an engram — marks it inactive without deleting history |
-| `plur.capture` | Append an episode to the timeline — records what happened in a session |
-| `plur.timeline` | Query past episodes — filter by time, agent, channel, or search |
-| `plur.ingest` | Extract engram candidates from content using pattern matching |
-| `plur.packs.install` | Install an engram pack from a directory path |
-| `plur.packs.list` | List all installed engram packs |
-| `plur.status` | System health — engram count, episode count, pack count, storage root |
+| `plur.learn` | Store a memory — correction, preference, convention, or decision |
+| `plur.recall` | Keyword search (BM25, instant) |
+| `plur.recall.hybrid` | **Best default** — BM25 + embeddings merged via RRF. No API calls. |
+| `plur.inject` | Select engrams for current task within token budget |
+| `plur.feedback` | Rate an engram — trains injection relevance over time |
+| `plur.forget` | Retire a memory (history preserved) |
+| `plur.capture` | Record a session event to the episodic timeline |
+| `plur.timeline` | Query past episodes by time, agent, or search |
+| `plur.ingest` | Extract engram candidates from text |
+| `plur.sync` | Git-based sync across machines |
+| `plur.sync.status` | Check sync state (initialized, remote, dirty, ahead/behind) |
+| `plur.packs.install` | Install an engram pack |
+| `plur.packs.list` | List installed packs |
+| `plur.status` | System health — engram count, episodes, packs, storage root |
 
-## How to Use (as the AI agent)
+## How agents use it
 
-At session start: call `plur.inject` with your task description to load relevant memory into context.
+**Session start:** Call `plur.inject` with the task description to load relevant memory.
 
-When the user corrects you: call `plur.learn` to record it.
+**When corrected:** Call `plur.learn` to store the correction.
 
-At session end: call `plur.capture` to record what happened.
+**Session end:** Call `plur.capture` to record what happened.
 
-Rate injected engrams with `plur.feedback` to improve future injection quality.
+**Rate results:** Call `plur.feedback` on injected engrams to improve future quality.
+
+**Cross-device:** Call `plur.sync` with a git remote URL to sync memory across machines.
+
+## Update notifications
+
+The server checks npm on startup and logs a warning if a newer version is available. No overhead during operation — the check runs once, asynchronously.
 
 ## License
 

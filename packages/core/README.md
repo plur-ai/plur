@@ -1,6 +1,6 @@
 # @plur-ai/core
 
-The engram engine — store, recall, and inject AI memory.
+The engram engine — store, recall, and inject AI memory. Local-first, zero API calls for search, plain YAML storage.
 
 ```bash
 npm install @plur-ai/core
@@ -10,9 +10,28 @@ npm install @plur-ai/core
 import { Plur } from '@plur-ai/core'
 
 const plur = new Plur()
-plur.learn('API uses snake_case', { scope: 'project:myapp', type: 'architectural' })
-const injection = plur.inject('fix the endpoint handler', { budget: 2000 })
-console.log(injection.directives) // injected context, ready to prepend
+
+// Learn from a correction
+plur.learn('toEqual() in Vitest is strict — use toMatchObject() for partial matching', {
+  type: 'behavioral',
+  scope: 'project:my-app',
+  domain: 'dev/testing'
+})
+
+// Recall (hybrid: BM25 + embeddings via RRF, zero cost)
+const results = await plur.recallHybrid('vitest assertion matching')
+
+// Inject relevant engrams into agent context
+const { directives, consider, count, tokens_used } = plur.inject('Write tests for the user service', {
+  scope: 'project:my-app',
+  budget: 2000
+})
+
+// Feedback trains the system
+plur.feedback(results[0].id, 'positive')
+
+// Sync across machines
+plur.sync('git@github.com:you/plur-memory.git')
 ```
 
 ## API
@@ -23,11 +42,11 @@ console.log(injection.directives) // injected context, ready to prepend
 const plur = new Plur({ path: '/custom/storage/path' })
 ```
 
-Defaults to `~/Plur/`. Override with `PLUR_PATH` env var or `options.path`.
+Defaults to `~/.plur/`. Override with `PLUR_PATH` env var or `options.path`.
 
 ### `learn(statement, context?)`
 
-Create an engram. Returns the created `Engram`.
+Create an engram. Detects conflicts with existing engrams in the same scope.
 
 ```typescript
 plur.learn('Always run lint before committing', {
@@ -38,14 +57,24 @@ plur.learn('Always run lint before committing', {
 })
 ```
 
-### `recall(query, options?)`
+### Search methods
 
-Search engrams by keyword/phrase. Returns `Engram[]`, reactivates accessed engrams.
+Five search modes, from fastest to most accurate:
+
+| Method | Speed | API calls | Best for |
+|--------|-------|-----------|----------|
+| `recall(query)` | Instant | None | Quick keyword lookup |
+| `recallSemantic(query)` | ~200ms | None | Meaning-based search (local embeddings) |
+| `recallHybrid(query)` | ~200ms | None | **Best default** — BM25 + embeddings via RRF |
+| `recallAsync(query, { llm })` | ~1s | 1 LLM call | LLM-assisted semantic filtering |
+| `recallExpanded(query, { llm })` | ~3s | 3-5 LLM calls | Query expansion + hybrid + RRF merge |
+
+All accept the same options:
 
 ```typescript
-const results = plur.recall('deployment process', {
+const results = await plur.recallHybrid('deployment process', {
   scope: 'project:myapp',  // includes global + matching scopes
-  domain: 'software',
+  domain: 'software',       // prefix match
   limit: 10,
   min_strength: 0.5,
 })
@@ -53,7 +82,7 @@ const results = plur.recall('deployment process', {
 
 ### `inject(task, options?)`
 
-Select and score engrams within a token budget. Returns directives and considerations as formatted strings, ready to inject into a system prompt.
+Select and score engrams within a token budget. Returns formatted strings ready to prepend to a system prompt.
 
 ```typescript
 const { directives, consider, count, tokens_used } = plur.inject('refactor the auth module', {
@@ -64,50 +93,56 @@ const { directives, consider, count, tokens_used } = plur.inject('refactor the a
 
 ### `feedback(id, signal)`
 
-Rate an engram's usefulness. Adjusts retrieval strength over time.
+Rate an engram's usefulness. Trains injection relevance over time.
 
 ```typescript
 plur.feedback('ENG-001', 'positive')   // +0.05 retrieval strength
 plur.feedback('ENG-002', 'negative')   // -0.10 retrieval strength
-plur.feedback('ENG-003', 'neutral')    // signal recorded, no strength change
 ```
 
 ### `forget(id, reason?)`
 
-Retire an engram. Sets status to `retired` — history is preserved, engram is excluded from recall and injection.
+Retire an engram. History preserved, excluded from recall and injection.
 
 ```typescript
 plur.forget('ENG-001', 'API changed')
 ```
 
-### `capture(summary, context?)`
+### `sync(remote?)`
 
-Append an episode to the episodic timeline.
+Git-based sync across machines. Initializes on first call, commits + push/pull on subsequent calls.
+
+```typescript
+// First time — init repo and push
+plur.sync('git@github.com:you/plur-memory.git')
+
+// Later — commit, pull, push
+plur.sync()
+```
+
+```typescript
+// Check sync status (no changes made)
+const status = plur.syncStatus()
+// { initialized, remote, dirty, branch, ahead, behind }
+```
+
+### `capture(summary, context?)` / `timeline(query?)`
+
+Episodic memory — record what happened, query the timeline.
 
 ```typescript
 plur.capture('Deployed v2.0 to production', {
   agent: 'claude-code',
   session_id: 'abc123',
-  channel: 'cli',
-  tags: ['deploy', 'production'],
+  tags: ['deploy'],
 })
-```
 
-### `timeline(query?)`
-
-Query the episodic timeline. Returns `Episode[]`.
-
-```typescript
-const episodes = plur.timeline({
-  since: new Date('2025-01-01'),
-  agent: 'claude-code',
-  search: 'deploy',
-})
+const episodes = plur.timeline({ since: new Date('2025-01-01'), agent: 'claude-code' })
 ```
 
 ### `ingest(content, options?)`
 
-Extract engram candidates from text using pattern matching. Looks for phrases like "we decided", "always", "the convention is", etc.
+Extract engram candidates from text using pattern matching.
 
 ```typescript
 const candidates = plur.ingest(markdownContent, {
@@ -115,7 +150,6 @@ const candidates = plur.ingest(markdownContent, {
   scope: 'project:myapp',
   source: 'docs/architecture.md',
 })
-// set extract_only: false (default) to auto-save candidates as engrams
 ```
 
 ### `installPack(source)` / `exportPack(...)` / `listPacks()`
@@ -130,10 +164,21 @@ plur.exportPack(engrams, './output', { name: 'my-pack', version: '1.0.0' })
 
 ### `status()`
 
-Return system health.
-
 ```typescript
-const { engram_count, episode_count, pack_count, storage_root } = plur.status()
+const { engram_count, episode_count, pack_count, storage_root, config } = plur.status()
+```
+
+## Storage
+
+Everything is plain YAML. Open it, read it, edit it.
+
+```
+~/.plur/
+├── engrams.yaml     # learned knowledge
+├── episodes.yaml    # session timeline
+├── candidates.yaml  # pending engrams
+├── config.yaml      # settings
+└── packs/           # installed engram packs
 ```
 
 ## License
