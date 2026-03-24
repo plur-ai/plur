@@ -19,20 +19,28 @@ import { join } from 'path'
 
 // Lazy-loaded pipeline — only initialized when first needed
 let embedPipeline: any = null
+let transformersUnavailable = false
 
 async function getEmbedder() {
+  if (transformersUnavailable) return null
   if (!embedPipeline) {
-    const { pipeline } = await import('@huggingface/transformers')
-    embedPipeline = await pipeline('feature-extraction', 'Xenova/bge-small-en-v1.5', {
-      dtype: 'fp32',
-    })
+    try {
+      const { pipeline } = await import('@huggingface/transformers')
+      embedPipeline = await pipeline('feature-extraction', 'Xenova/bge-small-en-v1.5', {
+        dtype: 'fp32',
+      })
+    } catch {
+      transformersUnavailable = true
+      return null
+    }
   }
   return embedPipeline
 }
 
-/** Generate embedding for a text string. Returns Float32Array of 384 dims. */
-async function embed(text: string): Promise<Float32Array> {
+/** Generate embedding for a text string. Returns Float32Array of 384 dims, or null if unavailable. */
+async function embed(text: string): Promise<Float32Array | null> {
   const embedder = await getEmbedder()
+  if (!embedder) return null
   const result = await embedder(text, { pooling: 'cls', normalize: true })
   return new Float32Array(result.data)
 }
@@ -97,6 +105,10 @@ export async function embeddingSearch(
 
   // Embed the query
   const queryEmbedding = await embed(query)
+  if (!queryEmbedding) {
+    // Embeddings unavailable — return empty (caller should fall back to BM25)
+    return []
+  }
 
   // Embed engrams (with caching)
   const similarities: Array<{ engram: Engram; score: number }> = []
@@ -111,7 +123,9 @@ export async function embeddingSearch(
       engramEmbedding = new Float32Array(cache[engram.id].embedding)
     } else {
       // Cache miss — compute embedding from enriched text
-      engramEmbedding = await embed(searchText)
+      const emb = await embed(searchText)
+      if (!emb) return [] // model unloaded mid-search
+      engramEmbedding = emb
       cache[engram.id] = {
         hash,
         embedding: Array.from(engramEmbedding),
