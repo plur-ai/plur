@@ -1,15 +1,24 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js'
-import { Plur } from '@plur-ai/core'
+import { Plur, checkForUpdate } from '@plur-ai/core'
 import { getToolDefinitions } from './tools.js'
+
+const VERSION = '0.2.0'
 
 export async function createServer(plur?: Plur): Promise<Server> {
   const instance = plur ?? new Plur()
   const tools = getToolDefinitions()
 
+  // Non-blocking version check — fire and forget
+  checkForUpdate('@plur-ai/mcp', VERSION, (r) => {
+    if (r.updateAvailable) {
+      console.error(`[plur] Update available: ${r.current} → ${r.latest}. Run: npx @plur-ai/mcp@latest`)
+    }
+  })
+
   const server = new Server(
-    { name: 'plur-mcp', version: '0.2.0' },
+    { name: 'plur-mcp', version: VERSION },
     { capabilities: { tools: {} } },
   )
 

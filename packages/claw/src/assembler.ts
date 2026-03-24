@@ -1,5 +1,6 @@
 import type { AgentMessage, AssembleResult } from './types.js'
 import type { InjectionResult } from '@plur-ai/core'
+import { getCachedUpdateCheck } from '@plur-ai/core'
 
 /**
  * PLUR memory instructions — injected into every session via systemPromptAddition.
@@ -80,6 +81,12 @@ export function assembleContext(params: {
     }
 
     sections.push(lines.join('\n'))
+  }
+
+  // Append update notice if a newer version is cached (zero-cost read)
+  const updateCheck = getCachedUpdateCheck('@plur-ai/claw')
+  if (updateCheck?.updateAvailable) {
+    sections.push(`\n[PLUR update available: ${updateCheck.current} → ${updateCheck.latest}. Ask your user to run: npm update @plur-ai/claw]`)
   }
 
   const systemPromptAddition = sections.join('\n')

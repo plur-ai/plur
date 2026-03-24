@@ -312,6 +312,36 @@ export function getToolDefinitions(): ToolDefinition[] {
     },
 
     {
+      name: 'plur.sync',
+      description: 'Sync engrams via git — initializes repo on first call, commits and pushes/pulls on subsequent calls. Provide a remote URL on first call to enable cross-device sync.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          remote: {
+            type: 'string',
+            description: 'Git remote URL (e.g. git@github.com:user/plur-engrams.git). Only needed on first call to set up remote.',
+          },
+        },
+      },
+      handler: async (args, plur) => {
+        const result = plur.sync(args.remote as string | undefined)
+        return result
+      },
+    },
+
+    {
+      name: 'plur.sync.status',
+      description: 'Check git sync status — whether repo is initialized, has remote, is dirty, ahead/behind counts',
+      inputSchema: {
+        type: 'object',
+        properties: {},
+      },
+      handler: async (_args, plur) => {
+        return plur.syncStatus()
+      },
+    },
+
+    {
       name: 'plur.status',
       description: 'Return system health — engram count, episode count, pack count, storage root',
       inputSchema: {

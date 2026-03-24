@@ -11,6 +11,7 @@ import { embeddingSearch } from './embeddings.js'
 import { hybridSearch } from './hybrid-search.js'
 import { expandedSearch } from './query-expansion.js'
 import { installPack, listPacks, exportPack } from './packs.js'
+import { sync as gitSync, getSyncStatus, type SyncResult, type SyncStatus } from './sync.js'
 import type { Engram } from './schemas/engram.js'
 import type { Episode } from './schemas/episode.js'
 import type { PackManifest } from './schemas/pack.js'
@@ -26,6 +27,8 @@ import type {
 } from './types.js'
 
 export { engramSearchText } from './fts.js'
+export type { SyncResult, SyncStatus } from './sync.js'
+export { checkForUpdate, getCachedUpdateCheck, clearVersionCache, type VersionCheckResult } from './version-check.js'
 export type { Engram } from './schemas/engram.js'
 export type { Episode } from './schemas/episode.js'
 export type { PackManifest } from './schemas/pack.js'
@@ -342,6 +345,16 @@ export class Plur {
   /** List all installed packs. */
   listPacks(): ReturnType<typeof listPacks> {
     return listPacks(this.paths.packs)
+  }
+
+  /** Sync engrams to git. Initializes repo on first call, commits + push/pull on subsequent calls. */
+  sync(remote?: string): SyncResult {
+    return gitSync(this.paths.root, remote)
+  }
+
+  /** Get git sync status without making changes. */
+  syncStatus(): SyncStatus {
+    return getSyncStatus(this.paths.root)
   }
 
   /** Return system health info. */
