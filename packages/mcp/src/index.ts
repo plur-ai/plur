@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 export {}
 
-const VERSION = '0.2.7'
+const VERSION = '0.2.8'
 
 const HELP = `plur-mcp v${VERSION} — persistent memory for AI agents
 
@@ -43,15 +43,23 @@ if (arg === 'init') {
   // Dynamic import — only load core when actually needed
   const { detectPlurStorage } = await import('@plur-ai/core')
   const paths = detectPlurStorage()
+
+  // Check if embeddings are available (string import to avoid TS resolution)
+  let embeddingsAvailable = false
+  try {
+    const mod = '@huggingface/' + 'transformers'
+    await import(/* @vite-ignore */ mod)
+    embeddingsAvailable = true
+  } catch {}
+
+  const searchMode = embeddingsAvailable
+    ? 'hybrid (BM25 + embeddings)'
+    : 'BM25 keyword search (embeddings not installed — install @huggingface/transformers for hybrid search)'
+
   process.stdout.write(`PLUR initialized.
 
   Storage: ${paths.root}
-
-  Files created:
-    ${paths.engrams}
-    ${paths.episodes}
-    ${paths.config}
-    ${paths.packs}/
+  Search:  ${searchMode}
 
   Next step — add to your MCP config:
 
