@@ -1,6 +1,10 @@
-# PLUR
+<p align="center">
+  <img src="assets/banner.svg" alt="PLUR — Your agents share the same memory" width="600">
+</p>
 
-Persistent memory for AI agents. Local-first, zero-cost, works across every MCP tool.
+# PLUR — Your agents share the same memory
+
+Persistent memory for AI agents. Local-first, zero-cost, works across MCP tools.
 
 [plur.ai](https://plur.ai) · [Benchmark](https://plur.ai/benchmark.html) · [Engram Spec](https://plur.ai/spec.html) · [npm](https://www.npmjs.com/org/plur-ai)
 
@@ -8,7 +12,7 @@ Persistent memory for AI agents. Local-first, zero-cost, works across every MCP 
 
 You correct your agent's coding style on Monday. On Tuesday, it makes the same mistake. You explain your architecture in Cursor. That night, Claude Code has no idea.
 
-PLUR fixes this. Install it once, and every correction, preference, and convention persists — across sessions, tools, and machines. Your memory is stored as plain YAML on your disk. No cloud, no API calls, no black box.
+PLUR fixes this. Install it once, and corrections, preferences, and conventions persist — across sessions, tools, and machines. Your memory is stored as plain YAML on your disk. No cloud, no API calls, no black box.
 
 The interesting part: **Haiku with PLUR memory outperforms Opus without it** — 2.6x better on tool routing, at roughly 10x less cost. Turns out the bottleneck isn't model intelligence. It's context.
 

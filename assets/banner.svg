@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 200" fill="none">
+  <rect width="800" height="200" rx="12" fill="#0a0a0f"/>
+
+  <!-- 3x3 dot grid -->
+  <circle cx="340" cy="70" r="8" fill="#22d3ee"/>
+  <circle cx="370" cy="70" r="8" fill="#a78bfa" opacity="0.4"/>
+  <circle cx="400" cy="70" r="8" fill="#f0a050"/>
+  <circle cx="340" cy="100" r="8" fill="#a78bfa"/>
+  <circle cx="370" cy="100" r="8" fill="#34d399"/>
+  <circle cx="400" cy="100" r="8" fill="#22d3ee" opacity="0.4"/>
+  <circle cx="340" cy="130" r="8" fill="#f0a050" opacity="0.4"/>
+  <circle cx="370" cy="130" r="8" fill="#22d3ee"/>
+  <circle cx="400" cy="130" r="8" fill="#a78bfa"/>
+
+  <!-- Connecting bars -->
+  <line x1="348" y1="70" x2="362" y2="70" stroke="#22d3ee" stroke-width="3" opacity="0.5" stroke-linecap="round"/>
+  <line x1="370" y1="78" x2="370" y2="92" stroke="#a78bfa" stroke-width="3" opacity="0.5" stroke-linecap="round"/>
+  <line x1="378" y1="100" x2="392" y2="100" stroke="#34d399" stroke-width="3" opacity="0.5" stroke-linecap="round"/>
+
+  <!-- Letters -->
+  <text x="340" y="75" text-anchor="middle" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif" font-weight="700" font-size="14" fill="#0a0a0f">P</text>
+  <text x="370" y="105" text-anchor="middle" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif" font-weight="700" font-size="14" fill="#0a0a0f">L</text>
+  <text x="400" y="75" text-anchor="middle" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif" font-weight="700" font-size="14" fill="#0a0a0f">U</text>
+  <text x="400" y="135" text-anchor="middle" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif" font-weight="700" font-size="14" fill="#0a0a0f">R</text>
+
+  <!-- Tagline -->
+  <text x="400" y="170" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-weight="300" font-size="13" fill="#888" letter-spacing="3">YOUR AGENTS SHARE THE SAME MEMORY</text>
+</svg>
