@@ -1,7 +1,3 @@
-<p align="center">
-  <img src="assets/banner.svg" alt="PLUR — Your agents share the same memory" width="600">
-</p>
-
 # PLUR — Your agents share the same memory
 
 Persistent memory for AI agents. Local-first, zero-cost, works across MCP tools.
@@ -33,7 +29,7 @@ Add to `.claude/mcp.json`:
 }
 ```
 
-For OpenClaw:
+### OpenClaw
 
 ```bash
 openclaw plugins install @plur-ai/claw
