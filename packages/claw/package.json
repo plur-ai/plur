@@ -1,6 +1,6 @@
 {
   "name": "@plur-ai/claw",
-  "version": "0.2.6",
+  "version": "0.2.7",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -19,9 +19,6 @@
   },
   "dependencies": {
     "@plur-ai/core": "workspace:*"
-  },
-  "optionalDependencies": {
-    "@huggingface/transformers": "^3.8.1"
   },
   "peerDependencies": {
     "openclaw": ">=2026.3.7"

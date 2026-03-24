@@ -1,6 +1,6 @@
 {
   "name": "@plur-ai/core",
-  "version": "0.2.6",
+  "version": "0.2.7",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -14,6 +14,9 @@
   "dependencies": {
     "js-yaml": "^4.1.0",
     "zod": "^3.23.0"
+  },
+  "optionalDependencies": {
+    "@huggingface/transformers": "^3.8.1"
   },
   "devDependencies": {
     "@types/js-yaml": "^4.0.0",
