@@ -1,8 +1,7 @@
 #!/usr/bin/env node
-import { runStdio } from './server.js'
-import { detectPlurStorage } from '@plur-ai/core'
+export {}
 
-const VERSION = '0.2.3'
+const VERSION = '0.2.4'
 
 const HELP = `plur-mcp v${VERSION} — persistent memory for AI agents
 
@@ -29,6 +28,7 @@ Docs: https://plur.ai · https://github.com/plur-ai/plur
 
 const arg = process.argv[2]
 
+// Fast paths — no heavy imports needed
 if (arg === '--help' || arg === '-h') {
   process.stdout.write(HELP)
   process.exit(0)
@@ -40,6 +40,8 @@ if (arg === '--version' || arg === '-v') {
 }
 
 if (arg === 'init') {
+  // Dynamic import — only load core when actually needed
+  const { detectPlurStorage } = await import('@plur-ai/core')
   const paths = detectPlurStorage()
   process.stdout.write(`PLUR initialized.
 
@@ -74,6 +76,8 @@ if (arg === 'init') {
 }
 
 if (arg === 'serve' || arg === undefined) {
+  // Dynamic import — only load server (and its ONNX deps) when starting
+  const { runStdio } = await import('./server.js')
   runStdio().catch(err => {
     console.error('Failed to start PLUR MCP server:', err)
     process.exit(1)

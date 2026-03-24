@@ -4,7 +4,7 @@ import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprot
 import { Plur, checkForUpdate } from '@plur-ai/core'
 import { getToolDefinitions } from './tools.js'
 
-const VERSION = '0.2.3'
+const VERSION = '0.2.4'
 
 export async function createServer(plur?: Plur): Promise<Server> {
   const instance = plur ?? new Plur()
