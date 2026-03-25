@@ -7,9 +7,12 @@ import {
   ReadResourceRequestSchema,
   ListPromptsRequestSchema,
   GetPromptRequestSchema,
+  ErrorCode,
+  McpError,
 } from '@modelcontextprotocol/sdk/types.js'
 import { Plur, checkForUpdate } from '@plur-ai/core'
 import { getToolDefinitions } from './tools.js'
+import { z } from 'zod'
 
 const VERSION = '0.2.9'
 
@@ -89,8 +92,7 @@ Use \`scope\` to namespace engrams per project:
 ~/.plur/
 ├── engrams.yaml     # learned knowledge
 ├── episodes.yaml    # session timeline
-├── config.yaml      # settings
-└── search.db        # FTS + embedding index
+└── config.yaml      # settings
 \`\`\`
 
 Override with \`PLUR_PATH\` environment variable.
@@ -140,12 +142,35 @@ export async function createServer(plur?: Plur): Promise<Server> {
       }
     }
     try {
-      const result = await tool.handler(request.params.arguments ?? {}, instance)
+      // Validate arguments against input schema
+      const args = request.params.arguments ?? {}
+      const schema = tool.inputSchema as any
+      if (schema?.properties) {
+        const shape: Record<string, z.ZodTypeAny> = {}
+        for (const [key, prop] of Object.entries(schema.properties) as [string, any][]) {
+          let field: z.ZodTypeAny
+          if (prop.type === 'string') field = prop.enum ? z.enum(prop.enum) : z.string()
+          else if (prop.type === 'number') field = z.number()
+          else if (prop.type === 'boolean') field = z.boolean()
+          else if (prop.type === 'array') field = z.array(z.unknown())
+          else field = z.unknown()
+          shape[key] = schema.required?.includes(key) ? field : field.optional()
+        }
+        const parsed = z.object(shape).passthrough().safeParse(args)
+        if (!parsed.success) {
+          return {
+            content: [{ type: 'text', text: `Invalid arguments: ${parsed.error.issues.map(i => `${i.path.join('.')}: ${i.message}`).join(', ')}` }],
+            isError: true,
+          }
+        }
+      }
+      const result = await tool.handler(args, instance)
       return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] }
     } catch (err: any) {
-      server.sendLoggingMessage({ level: 'error', data: `Tool ${request.params.name} failed: ${err.message}` })
+      const message = err?.message ?? String(err)
+      server.sendLoggingMessage({ level: 'error', data: `Tool ${request.params.name} failed: ${message}` })
       return {
-        content: [{ type: 'text', text: `Error: ${err.message}` }],
+        content: [{ type: 'text', text: `Error: ${message}` }],
         isError: true,
       }
     }
@@ -200,7 +225,7 @@ export async function createServer(plur?: Plur): Promise<Server> {
       }
     }
 
-    throw new Error(`Unknown resource: ${uri}`)
+    throw new McpError(ErrorCode.InvalidRequest, `Unknown resource: ${uri}`)
   })
 
   // --- Prompts ---
@@ -272,7 +297,7 @@ Please:
       }
     }
 
-    throw new Error(`Unknown prompt: ${name}`)
+    throw new McpError(ErrorCode.InvalidRequest, `Unknown prompt: ${name}`)
   })
 
   return server

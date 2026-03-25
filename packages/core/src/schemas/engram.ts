@@ -123,6 +123,7 @@ export const EngramSchema = z.object({
   contraindications: z.array(z.string()).optional(),
 
   // Lineage
+  source: z.string().optional(),
   source_patterns: z.array(z.string()).optional(),
   derivation_count: z.number().int().min(0).default(1),
   pack: z.string().nullable().default(null),

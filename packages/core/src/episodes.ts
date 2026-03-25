@@ -1,7 +1,8 @@
-import { existsSync, readFileSync, writeFileSync } from 'fs'
+import { existsSync, readFileSync } from 'fs'
 import yaml from 'js-yaml'
 import type { Episode } from './schemas/episode.js'
 import type { CaptureContext, TimelineQuery } from './types.js'
+import { atomicWrite } from './sync.js'
 
 function generateEpisodeId(): string {
   const ts = Date.now()
@@ -21,7 +22,7 @@ export function captureEpisode(path: string, summary: string, context?: CaptureC
     timestamp: new Date().toISOString(),
   }
   episodes.push(episode)
-  writeFileSync(path, yaml.dump(episodes, { lineWidth: 120, noRefs: true }), 'utf8')
+  atomicWrite(path, yaml.dump(episodes, { lineWidth: 120, noRefs: true }))
   return episode
 }
 

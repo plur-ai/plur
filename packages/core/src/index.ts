@@ -94,6 +94,7 @@ export class Plur {
       scope,
       visibility: 'private',
       statement,
+      source: context?.source,
       domain: context?.domain,
       activation: {
         retrieval_strength: 0.7,

@@ -49,7 +49,7 @@ export class PlurContextEngine implements ContextEngine {
   readonly info: ContextEngineInfo = {
     id: 'plur-claw',
     name: 'PLUR Memory Engine',
-    version: '0.1.0',
+    version: '0.2.9',
     ownsCompaction: false,
   }
 
@@ -57,6 +57,7 @@ export class PlurContextEngine implements ContextEngine {
   private options: PlurContextEngineOptions
   private sessionScopes = new Map<string, string>() // sessionKey → scope
   private sessionMessages = new Map<string, AgentMessage[]>() // track messages per session for afterTurn
+  private sessionLearned = new Map<string, Set<string>>() // track learned statements per session to prevent duplicates
 
   constructor(options?: PlurContextEngineOptions) {
     this.options = {
@@ -74,11 +75,16 @@ export class PlurContextEngine implements ContextEngine {
     sessionKey?: string
     sessionFile: string
   }): Promise<BootstrapResult> {
-    // Store scope from sessionKey if available (e.g., "user:john:agent:helper")
-    if (params.sessionKey) {
-      this.sessionScopes.set(params.sessionKey, `session:${params.sessionKey}`)
+    try {
+      // Store scope from sessionKey if available (e.g., "user:john:agent:helper")
+      if (params.sessionKey) {
+        this.sessionScopes.set(params.sessionKey, `session:${params.sessionKey}`)
+      }
+      return { bootstrapped: true, reason: 'PLUR memory loaded' }
+    } catch (err) {
+      console.error('[plur-claw] bootstrap error:', err)
+      return { bootstrapped: false, reason: `PLUR bootstrap failed: ${err}` }
     }
-    return { bootstrapped: true, reason: 'PLUR memory loaded' }
   }
 
   /** Ingest: process each message for real-time corrections */
@@ -90,28 +96,33 @@ export class PlurContextEngine implements ContextEngine {
   }): Promise<IngestResult> {
     if (params.isHeartbeat) return { ingested: false }
 
-    // Track messages for afterTurn
-    const key = params.sessionKey || params.sessionId
-    if (!this.sessionMessages.has(key)) {
-      this.sessionMessages.set(key, [])
-    }
-    this.sessionMessages.get(key)!.push(params.message)
+    try {
+      // Track messages for afterTurn
+      const key = params.sessionKey || params.sessionId
+      if (!this.sessionMessages.has(key)) {
+        this.sessionMessages.set(key, [])
+      }
+      this.sessionMessages.get(key)!.push(params.message)
 
-    // Real-time correction detection
-    if (this.options.auto_learn && isCorrection(params.message)) {
-      const learnings = extractLearnings([params.message])
-      for (const candidate of learnings) {
-        if (candidate.confidence >= 0.7) {
-          this.plur.learn(candidate.statement, {
-            type: candidate.type,
-            scope: this.sessionScopes.get(params.sessionKey || '') || 'global',
-            source: 'openclaw:ingest',
-          })
+      // Real-time correction detection
+      if (this.options.auto_learn && isCorrection(params.message)) {
+        const learnings = extractLearnings([params.message])
+        for (const candidate of learnings) {
+          if (candidate.confidence >= 0.7) {
+            this._learnIfNew(key, candidate.statement, {
+              type: candidate.type,
+              scope: this.sessionScopes.get(params.sessionKey || '') || 'global',
+              source: 'openclaw:ingest',
+            })
+          }
         }
       }
-    }
 
-    return { ingested: true }
+      return { ingested: true }
+    } catch (err) {
+      console.error('[plur-claw] ingest error:', err)
+      return { ingested: false }
+    }
   }
 
   /** Assemble: build context with injected engrams */
@@ -121,25 +132,34 @@ export class PlurContextEngine implements ContextEngine {
     messages: AgentMessage[]
     tokenBudget?: number
   }): Promise<AssembleResult> {
-    // Get the task context from the most recent user message
-    const lastUserMsg = [...params.messages].reverse().find(m => m.role === 'user')
-    const task = lastUserMsg ? (typeof lastUserMsg.content === 'string' ? lastUserMsg.content : '') : ''
+    try {
+      // Get the task context from the most recent user message
+      const lastUserMsg = [...params.messages].reverse().find(m => m.role === 'user')
+      const task = lastUserMsg ? extractMessageText(lastUserMsg) : ''
 
-    // Inject relevant engrams (hybrid: BM25 + embeddings when available)
-    let injection = null
-    if (task) {
-      const scope = this.sessionScopes.get(params.sessionKey || '') || undefined
-      injection = await this.plur.injectHybrid(task, {
-        budget: this.options.injection_budget,
-        scope,
+      // Inject relevant engrams (hybrid: BM25 + embeddings when available)
+      let injection = null
+      if (task) {
+        const scope = this.sessionScopes.get(params.sessionKey || '') || undefined
+        injection = await this.plur.injectHybrid(task, {
+          budget: this.options.injection_budget,
+          scope,
+        })
+      }
+
+      return assembleContext({
+        messages: params.messages,
+        injection,
+        tokenBudget: params.tokenBudget,
       })
+    } catch (err) {
+      console.error('[plur-claw] assemble error:', err)
+      // Return messages unchanged on error
+      return {
+        messages: params.messages,
+        estimatedTokens: 0,
+      }
     }
-
-    return assembleContext({
-      messages: params.messages,
-      injection,
-      tokenBudget: params.tokenBudget,
-    })
   }
 
   /** Compact: extract learnings from context being compacted */
@@ -151,27 +171,32 @@ export class PlurContextEngine implements ContextEngine {
     force?: boolean
     currentTokenCount?: number
   }): Promise<CompactResult> {
-    // During compaction, extract any learnings from the accumulated messages
-    const key = params.sessionKey || params.sessionId
-    const messages = this.sessionMessages.get(key) || []
+    try {
+      // During compaction, extract any learnings from the accumulated messages
+      const key = params.sessionKey || params.sessionId
+      const messages = this.sessionMessages.get(key) || []
 
-    if (this.options.auto_learn && messages.length > 0) {
-      const learnings = extractLearnings(messages)
-      for (const candidate of learnings) {
-        if (candidate.confidence >= 0.6) {
-          this.plur.learn(candidate.statement, {
-            type: candidate.type,
-            scope: this.sessionScopes.get(params.sessionKey || '') || 'global',
-            source: 'openclaw:compact',
-          })
+      if (this.options.auto_learn && messages.length > 0) {
+        const learnings = extractLearnings(messages)
+        for (const candidate of learnings) {
+          if (candidate.confidence >= 0.7) {
+            this._learnIfNew(key, candidate.statement, {
+              type: candidate.type,
+              scope: this.sessionScopes.get(params.sessionKey || '') || 'global',
+              source: 'openclaw:compact',
+            })
+          }
         }
       }
-    }
 
-    return {
-      ok: true,
-      compacted: false, // we don't own compaction
-      reason: 'PLUR extracted learnings before compaction',
+      return {
+        ok: true,
+        compacted: false, // we don't own compaction
+        reason: 'PLUR extracted learnings before compaction',
+      }
+    } catch (err) {
+      console.error('[plur-claw] compact error:', err)
+      return { ok: true, compacted: false, reason: `PLUR compact error: ${err}` }
     }
   }
 
@@ -188,48 +213,56 @@ export class PlurContextEngine implements ContextEngine {
   }): Promise<void> {
     if (params.isHeartbeat) return
 
-    const newMessages = params.messages.slice(params.prePromptMessageCount)
-    const scope = this.sessionScopes.get(params.sessionKey || '') || 'global'
+    try {
+      const newMessages = params.messages.slice(params.prePromptMessageCount)
+      const key = params.sessionKey || params.sessionId
+      const scope = this.sessionScopes.get(params.sessionKey || '') || 'global'
 
-    if (this.options.auto_learn && newMessages.length > 0) {
-      // Primary: LLM self-reported learnings from 🧠 section in assistant response
-      const lastAssistant = [...newMessages].reverse().find(m => m.role === 'assistant')
-      if (lastAssistant) {
-        const selfReported = extractSelfReportedLearnings(lastAssistant)
-        for (const statement of selfReported) {
-          this.plur.learn(statement, {
-            type: 'behavioral',
-            scope,
-            source: 'openclaw:self-report',
+      if (this.options.auto_learn && newMessages.length > 0) {
+        // Primary: LLM self-reported learnings from 🧠 section in assistant response
+        const lastAssistant = [...newMessages].reverse().find(m => m.role === 'assistant')
+        if (lastAssistant) {
+          const selfReported = extractSelfReportedLearnings(lastAssistant)
+          for (const statement of selfReported) {
+            this._learnIfNew(key, statement, {
+              type: 'behavioral',
+              scope,
+              source: 'openclaw:self-report',
+            })
+          }
+        }
+
+        // Fallback: regex extraction from user messages (catches what LLM missed)
+        const learnings = extractLearnings(newMessages)
+        for (const candidate of learnings) {
+          if (candidate.confidence >= 0.7) {
+            this._learnIfNew(key, candidate.statement, {
+              type: candidate.type,
+              scope,
+              source: 'openclaw:afterTurn',
+            })
+          }
+        }
+      }
+
+      // Episodic capture — summarize what happened
+      if (this.options.auto_capture && newMessages.length > 0) {
+        const lastAssistant = [...newMessages].reverse().find(m => m.role === 'assistant')
+        if (lastAssistant) {
+          const content = extractMessageText(lastAssistant)
+          // Strip the learning section from the episodic summary
+          const summary = content.replace(/---\s*\n🧠 I learned:[\s\S]*$/, '').trim().slice(0, 200) || 'Turn completed'
+          this.plur.capture(summary, {
+            agent: 'openclaw',
+            session_id: params.sessionId,
           })
         }
       }
 
-      // Fallback: regex extraction from user messages (catches what LLM missed)
-      const learnings = extractLearnings(newMessages)
-      for (const candidate of learnings) {
-        if (candidate.confidence >= 0.5) {
-          this.plur.learn(candidate.statement, {
-            type: candidate.type,
-            scope,
-            source: 'openclaw:afterTurn',
-          })
-        }
-      }
-    }
-
-    // Episodic capture — summarize what happened
-    if (this.options.auto_capture && newMessages.length > 0) {
-      const lastAssistant = [...newMessages].reverse().find(m => m.role === 'assistant')
-      if (lastAssistant) {
-        const content = extractMessageText(lastAssistant)
-        // Strip the learning section from the episodic summary
-        const summary = content.replace(/---\s*\n🧠 I learned:[\s\S]*$/, '').trim().slice(0, 200) || 'Turn completed'
-        this.plur.capture(summary, {
-          agent: 'openclaw',
-          session_id: params.sessionId,
-        })
-      }
+      // Clean up session messages after processing to prevent memory leak
+      this.sessionMessages.delete(key)
+    } catch (err) {
+      console.error('[plur-claw] afterTurn error:', err)
     }
   }
 
@@ -259,16 +292,30 @@ export class PlurContextEngine implements ContextEngine {
     // Clean up child session state
     this.sessionScopes.delete(params.childSessionKey)
     this.sessionMessages.delete(params.childSessionKey)
+    this.sessionLearned.delete(params.childSessionKey)
   }
 
   /** Dispose: clean up */
   async dispose(): Promise<void> {
     this.sessionScopes.clear()
     this.sessionMessages.clear()
+    this.sessionLearned.clear()
   }
 
   // Helper for tests
   getSessionScope(sessionKey: string): string | undefined {
     return this.sessionScopes.get(sessionKey)
+  }
+
+  /** Learn a statement only if it hasn't been learned in this session already (prevents triple-learning). */
+  private _learnIfNew(sessionKey: string, statement: string, context: { type: string; scope: string; source: string }): void {
+    if (!this.sessionLearned.has(sessionKey)) {
+      this.sessionLearned.set(sessionKey, new Set())
+    }
+    const seen = this.sessionLearned.get(sessionKey)!
+    const key = statement.toLowerCase()
+    if (seen.has(key)) return
+    seen.add(key)
+    this.plur.learn(statement, context as any)
   }
 }

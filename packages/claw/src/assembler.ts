@@ -52,9 +52,19 @@ export function assembleContext(params: {
 }): AssembleResult {
   const { messages, injection } = params
 
-  // Estimate tokens for messages
+  // Estimate tokens for messages — handle both string and array-of-blocks content
   const messageTokens = messages.reduce(
-    (sum, m) => sum + Math.ceil((typeof m.content === 'string' ? m.content.length : 0) / 4),
+    (sum, m) => {
+      const content = m.content
+      if (typeof content === 'string') return sum + Math.ceil(content.length / 4)
+      if (Array.isArray(content)) {
+        const textLen = (content as any[])
+          .filter((b: any) => b?.type === 'text' && typeof b?.text === 'string')
+          .reduce((s: number, b: any) => s + b.text.length, 0)
+        return sum + Math.ceil(textLen / 4)
+      }
+      return sum
+    },
     0
   )
 
@@ -67,14 +77,20 @@ export function assembleContext(params: {
   // Injected engrams from past sessions
   if (injection && injection.count > 0) {
     const lines: string[] = ['## Your Memories', '']
+    const instructionTokens = Math.ceil(PLUR_MEMORY_INSTRUCTIONS.length / 4)
+    const remainingBudget = params.tokenBudget
+      ? params.tokenBudget - messageTokens - instructionTokens
+      : Infinity
 
-    if (injection.directives) {
+    if (injection.directives && remainingBudget > 0) {
       lines.push('These are things you have learned and should apply:', '')
       lines.push(injection.directives)
       lines.push('')
     }
 
-    if (injection.consider) {
+    // Only include "consider" section if we have budget for it
+    const directiveTokens = Math.ceil(lines.join('\n').length / 4)
+    if (injection.consider && (remainingBudget - directiveTokens) > 100) {
       lines.push('These may also be relevant:', '')
       lines.push(injection.consider)
       lines.push('')

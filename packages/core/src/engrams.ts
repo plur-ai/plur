@@ -3,6 +3,7 @@ import * as yaml from 'js-yaml'
 import { EngramSchema, type Engram } from './schemas/engram.js'
 import { PackManifestSchema, type PackManifest } from './schemas/pack.js'
 import { logger } from './logger.js'
+import { atomicWrite } from './sync.js'
 
 export function loadEngrams(filePath: string): Engram[] {
   if (!fs.existsSync(filePath)) return []
@@ -26,7 +27,7 @@ export function loadEngrams(filePath: string): Engram[] {
 
 export function saveEngrams(filePath: string, engrams: Engram[]): void {
   const content = yaml.dump({ engrams }, { lineWidth: 120, noRefs: true, quotingType: '"' })
-  fs.writeFileSync(filePath, content)
+  atomicWrite(filePath, content)
 }
 
 export interface LoadedPack {

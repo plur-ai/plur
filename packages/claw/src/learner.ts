@@ -119,8 +119,8 @@ export function isCorrection(message: AgentMessage): boolean {
   if (message.role !== 'user') return false
   const content = extractText(message.content)
 
-  // Check per-sentence for multi-paragraph messages
-  const sentences = content.length > 200 ? splitSentences(content) : [content]
+  // Check per-sentence for multi-line or long messages
+  const sentences = (content.includes('\n') || content.length > 200) ? splitSentences(content) : [content]
 
   for (const sentence of sentences) {
     const lower = sentence.toLowerCase().trim()
@@ -129,10 +129,11 @@ export function isCorrection(message: AgentMessage): boolean {
       lower.startsWith('no.') ||
       lower.startsWith('actually,') ||
       lower.startsWith('actually ') ||
-      lower.includes(' not ') ||
       lower.startsWith('wrong') ||
       lower.startsWith("that's wrong") ||
-      lower.startsWith("that's incorrect")
+      lower.startsWith("that's incorrect") ||
+      /\buse\s+\w+[,.]?\s+not\s+\w+/i.test(lower) ||
+      /\bit(?:'s| is)\s+\w+[,.]?\s+not\s+\w+/i.test(lower)
     ) {
       return true
     }

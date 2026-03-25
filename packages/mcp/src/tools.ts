@@ -50,7 +50,7 @@ export function getToolDefinitions(): ToolDefinition[] {
 
     {
       name: 'plur_recall',
-      description: 'Query engrams by semantic similarity — retrieve relevant learned knowledge',
+      description: 'Query engrams by BM25 keyword matching — use plur_recall_hybrid for semantic similarity',
       annotations: { title: 'Recall (BM25)', readOnlyHint: true, idempotentHint: true },
       inputSchema: {
         type: 'object',

@@ -164,8 +164,7 @@ Everything is plain YAML. Open it, read it, edit it.
 ~/.plur/
 ├── engrams.yaml     # learned knowledge
 ├── episodes.yaml    # session timeline
-├── config.yaml      # settings
-└── search.db        # FTS + embedding index (SQLite)
+└── config.yaml      # settings
 ```
 
 `PLUR_PATH` overrides the default location.

@@ -1,7 +1,9 @@
 import type { Engram } from './schemas/engram.js'
 import { engramSearchText } from './fts.js'
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs'
+import { existsSync, readFileSync, mkdirSync } from 'fs'
 import { join } from 'path'
+import { createHash } from 'crypto'
+import { atomicWrite } from './sync.js'
 
 /**
  * Embedding-based semantic search for engrams.
@@ -72,16 +74,11 @@ function loadCache(cachePath: string): EmbeddingCache {
 function saveCache(cachePath: string, cache: EmbeddingCache): void {
   const dir = cachePath.substring(0, cachePath.lastIndexOf('/'))
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
-  writeFileSync(cachePath, JSON.stringify(cache))
+  atomicWrite(cachePath, JSON.stringify(cache))
 }
 
 function hashStatement(statement: string): string {
-  // Simple hash — good enough for cache invalidation
-  let hash = 0
-  for (let i = 0; i < statement.length; i++) {
-    hash = ((hash << 5) - hash + statement.charCodeAt(i)) | 0
-  }
-  return hash.toString(36)
+  return createHash('sha256').update(statement).digest('hex').slice(0, 16)
 }
 
 /**
