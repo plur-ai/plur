@@ -1,9 +1,18 @@
 import { Plur } from '@plur-ai/core'
 
+export interface ToolAnnotations {
+  title?: string
+  readOnlyHint?: boolean
+  destructiveHint?: boolean
+  idempotentHint?: boolean
+  openWorldHint?: boolean
+}
+
 export interface ToolDefinition {
   name: string
   description: string
   inputSchema: Record<string, unknown>
+  annotations?: ToolAnnotations
   handler: (args: Record<string, unknown>, plur: Plur) => Promise<unknown>
 }
 
@@ -12,6 +21,7 @@ export function getToolDefinitions(): ToolDefinition[] {
     {
       name: 'plur_learn',
       description: 'Create an engram — record a reusable learning, preference, or correction',
+      annotations: { title: 'Learn', destructiveHint: false, idempotentHint: false },
       inputSchema: {
         type: 'object',
         properties: {
@@ -41,6 +51,7 @@ export function getToolDefinitions(): ToolDefinition[] {
     {
       name: 'plur_recall',
       description: 'Query engrams by semantic similarity — retrieve relevant learned knowledge',
+      annotations: { title: 'Recall (BM25)', readOnlyHint: true, idempotentHint: true },
       inputSchema: {
         type: 'object',
         properties: {
@@ -76,6 +87,7 @@ export function getToolDefinitions(): ToolDefinition[] {
     {
       name: 'plur_recall_hybrid',
       description: 'Hybrid search — BM25 + local embeddings merged via Reciprocal Rank Fusion. No API calls, fully local. Best default for most use cases.',
+      annotations: { title: 'Recall (hybrid)', readOnlyHint: true, idempotentHint: true },
       inputSchema: {
         type: 'object',
         properties: {
@@ -112,6 +124,7 @@ export function getToolDefinitions(): ToolDefinition[] {
     {
       name: 'plur_inject',
       description: 'Get a scored context injection for a task — returns directives and considerations within token budget',
+      annotations: { title: 'Inject (BM25)', readOnlyHint: true, idempotentHint: true },
       inputSchema: {
         type: 'object',
         properties: {
@@ -138,6 +151,7 @@ export function getToolDefinitions(): ToolDefinition[] {
     {
       name: 'plur_inject_hybrid',
       description: 'Hybrid injection — BM25 + embeddings for better context selection. Falls back to BM25 if embeddings unavailable. Best default for injection.',
+      annotations: { title: 'Inject (hybrid)', readOnlyHint: true, idempotentHint: true },
       inputSchema: {
         type: 'object',
         properties: {
@@ -165,6 +179,7 @@ export function getToolDefinitions(): ToolDefinition[] {
     {
       name: 'plur_feedback',
       description: 'Rate an engram\'s usefulness — trains injection relevance over time',
+      annotations: { title: 'Feedback', destructiveHint: false, idempotentHint: true },
       inputSchema: {
         type: 'object',
         properties: {
@@ -186,6 +201,7 @@ export function getToolDefinitions(): ToolDefinition[] {
     {
       name: 'plur_forget',
       description: 'Retire an engram — marks it as no longer active without deleting history',
+      annotations: { title: 'Forget', destructiveHint: true, idempotentHint: true },
       inputSchema: {
         type: 'object',
         properties: {
@@ -203,6 +219,7 @@ export function getToolDefinitions(): ToolDefinition[] {
     {
       name: 'plur_capture',
       description: 'Append an episode to the episodic timeline — records what happened in a session',
+      annotations: { title: 'Capture episode', destructiveHint: false, idempotentHint: false },
       inputSchema: {
         type: 'object',
         properties: {
@@ -232,6 +249,7 @@ export function getToolDefinitions(): ToolDefinition[] {
     {
       name: 'plur_timeline',
       description: 'Query the episodic timeline — retrieve past episodes filtered by time, agent, or search',
+      annotations: { title: 'Timeline', readOnlyHint: true, idempotentHint: true },
       inputSchema: {
         type: 'object',
         properties: {
@@ -268,6 +286,7 @@ export function getToolDefinitions(): ToolDefinition[] {
     {
       name: 'plur_ingest',
       description: 'Extract engram candidates from content using pattern matching — optionally auto-save them',
+      annotations: { title: 'Ingest', destructiveHint: false, idempotentHint: false },
       inputSchema: {
         type: 'object',
         properties: {
@@ -304,6 +323,7 @@ export function getToolDefinitions(): ToolDefinition[] {
     {
       name: 'plur_packs_install',
       description: 'Install an engram pack from a directory path — adds curated engrams to the store',
+      annotations: { title: 'Install pack', destructiveHint: false, idempotentHint: true },
       inputSchema: {
         type: 'object',
         properties: {
@@ -320,6 +340,7 @@ export function getToolDefinitions(): ToolDefinition[] {
     {
       name: 'plur_packs_list',
       description: 'List all installed engram packs',
+      annotations: { title: 'List packs', readOnlyHint: true, idempotentHint: true },
       inputSchema: {
         type: 'object',
         properties: {},
@@ -341,6 +362,7 @@ export function getToolDefinitions(): ToolDefinition[] {
     {
       name: 'plur_sync',
       description: 'Sync engrams via git — initializes repo on first call, commits and pushes/pulls on subsequent calls. Provide a remote URL on first call to enable cross-device sync.',
+      annotations: { title: 'Sync', openWorldHint: true, destructiveHint: false, idempotentHint: true },
       inputSchema: {
         type: 'object',
         properties: {
@@ -359,6 +381,7 @@ export function getToolDefinitions(): ToolDefinition[] {
     {
       name: 'plur_sync_status',
       description: 'Check git sync status — whether repo is initialized, has remote, is dirty, ahead/behind counts',
+      annotations: { title: 'Sync status', readOnlyHint: true, idempotentHint: true },
       inputSchema: {
         type: 'object',
         properties: {},
@@ -371,6 +394,7 @@ export function getToolDefinitions(): ToolDefinition[] {
     {
       name: 'plur_status',
       description: 'Return system health — engram count, episode count, pack count, storage root',
+      annotations: { title: 'Status', readOnlyHint: true, idempotentHint: true },
       inputSchema: {
         type: 'object',
         properties: {},
