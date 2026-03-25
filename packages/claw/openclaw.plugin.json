@@ -2,7 +2,7 @@
   "id": "plur-claw",
   "name": "PLUR Memory Engine",
   "description": "Persistent, learnable memory for OpenClaw agents. Local-first, no cloud required.",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "kind": "memory",
   "configSchema": {
     "type": "object",
