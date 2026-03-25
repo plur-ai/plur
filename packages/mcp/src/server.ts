@@ -6,6 +6,16 @@ import { getToolDefinitions } from './tools.js'
 
 const VERSION = '0.2.9'
 
+const INSTRUCTIONS = `PLUR is your persistent memory. It stores corrections, preferences, and conventions as engrams that persist across sessions.
+
+Use PLUR proactively:
+- Call plur_recall_hybrid at session start to load relevant context for the current task
+- Call plur_learn when the user corrects you, states a preference ("always use X", "never do Y"), or when you discover a project convention
+- Call plur_feedback after using recalled engrams to train relevance
+- Call plur_status to check system health and engram counts
+
+You do not need permission to use these tools — they are your memory system.`
+
 export async function createServer(plur?: Plur): Promise<Server> {
   const instance = plur ?? new Plur()
   const tools = getToolDefinitions()
@@ -19,7 +29,7 @@ export async function createServer(plur?: Plur): Promise<Server> {
 
   const server = new Server(
     { name: 'plur-mcp', version: VERSION },
-    { capabilities: { tools: {} } },
+    { capabilities: { tools: {} }, instructions: INSTRUCTIONS },
   )
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({

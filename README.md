@@ -14,12 +14,27 @@ The interesting part: **Haiku with PLUR memory outperforms Opus without it** —
 
 ## Install
 
-```bash
-npm install -g @plur-ai/mcp
-plur init
+### Quick start (zero setup)
+
+Add to `.claude/mcp.json` — no install step needed:
+
+```json
+{
+  "mcpServers": {
+    "plur": { "command": "npx", "args": ["-y", "@plur-ai/mcp@latest"] }
+  }
+}
 ```
 
-Add to `.claude/mcp.json`:
+Storage at `~/.plur/` is created automatically on first use. No `plur init` required.
+
+### Global install (faster startup)
+
+```bash
+npm install -g @plur-ai/mcp
+```
+
+Then in `.claude/mcp.json`:
 
 ```json
 {
@@ -29,6 +44,8 @@ Add to `.claude/mcp.json`:
 }
 ```
 
+Run `plur init` to verify your setup and check which search mode is active (hybrid or BM25).
+
 ### OpenClaw
 
 ```bash
@@ -37,6 +54,10 @@ openclaw config set plur.enabled true
 ```
 
 That's it. PLUR works in the background from here. No workflow changes needed — just use your tools as usual. Corrections accumulate automatically.
+
+### Verify it works
+
+Ask your agent: *"What's my PLUR status?"* — it should call `plur_status` and return your engram count and storage path.
 
 ## How it works
 
@@ -84,15 +105,14 @@ plur.sync('git@github.com:you/plur-memory.git')
 
 | Tool | What it does |
 |------|-------------|
-| `plur.learn` | Store a memory |
-| `plur.recall` | Retrieve relevant memories |
-| `plur.inject` | Select engrams for current task |
-| `plur.feedback` | Rate relevance (trains quality) |
-| `plur.forget` | Retire a memory |
-| `plur.ingest` | Extract engrams from text |
-| `plur.sync` | Sync across devices |
-| `plur.session.start` | Begin session, inject context |
-| `plur.session.end` | End session, capture learnings |
+| `plur_learn` | Store a correction, preference, or convention |
+| `plur_recall_hybrid` | Retrieve relevant memories (BM25 + embeddings) |
+| `plur_inject_hybrid` | Select engrams for current task within token budget |
+| `plur_feedback` | Rate relevance (trains quality over time) |
+| `plur_forget` | Retire a memory |
+| `plur_ingest` | Extract engrams from text |
+| `plur_sync` | Sync across devices via git |
+| `plur_status` | Check system health and engram counts |
 
 ## Benchmark
 
