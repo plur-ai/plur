@@ -43,15 +43,17 @@ pnpm --filter @plur-ai/core build
 
 ## Version bumps
 
-Seven places. Miss one and something breaks:
+Nine places. Miss one and something breaks:
 
 1. `packages/core/package.json`
 2. `packages/mcp/package.json`
 3. `packages/mcp/src/server.ts` — `const VERSION`
-4. `packages/claw/package.json`
-5. `packages/claw/src/index.ts` — `version:` in plugin object
-6. `packages/claw/openclaw.plugin.json` — `version` field
-7. `packages/claw/test/hello.test.ts` — version assertion
+4. `packages/mcp/src/index.ts` — `const VERSION` (CLI)
+5. `packages/claw/package.json`
+6. `packages/claw/src/index.ts` — `version:` in plugin object
+7. `packages/claw/src/context-engine.ts` — `version:` in info object
+8. `packages/claw/openclaw.plugin.json` — `version` field
+9. `packages/claw/test/hello.test.ts` + `packages/mcp/test/server.test.ts` — version assertions
 
 ## Publishing
 

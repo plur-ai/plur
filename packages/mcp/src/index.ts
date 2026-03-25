@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 export {}
 
-const VERSION = '0.2.9'
+const VERSION = '0.3.0'
 
 const HELP = `plur-mcp v${VERSION} — persistent memory for AI agents
 
@@ -19,7 +19,7 @@ Setup:
 
   {
     "mcpServers": {
-      "plur": { "command": "npx", "args": ["-y", "@plur-ai/mcp"] }
+      "plur": { "command": "npx", "args": ["-y", "@plur-ai/mcp@latest"] }
     }
   }
 
@@ -66,14 +66,14 @@ if (arg === 'init') {
   Claude Code (.claude/mcp.json):
   {
     "mcpServers": {
-      "plur": { "command": "npx", "args": ["-y", "@plur-ai/mcp"] }
+      "plur": { "command": "npx", "args": ["-y", "@plur-ai/mcp@latest"] }
     }
   }
 
   Cursor (.cursor/mcp.json):
   {
     "mcpServers": {
-      "plur": { "command": "npx", "args": ["-y", "@plur-ai/mcp"] }
+      "plur": { "command": "npx", "args": ["-y", "@plur-ai/mcp@latest"] }
     }
   }
 
