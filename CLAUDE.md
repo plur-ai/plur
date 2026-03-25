@@ -26,7 +26,7 @@ pnpm build
 pnpm test
 ```
 
-~140 tests across 20 files. All must pass before committing.
+~150 tests across 22 files. All must pass before committing.
 
 ## Package dependency
 
@@ -43,14 +43,15 @@ pnpm --filter @plur-ai/core build
 
 ## Version bumps
 
-Six places. Miss one and something breaks:
+Seven places. Miss one and something breaks:
 
 1. `packages/core/package.json`
 2. `packages/mcp/package.json`
 3. `packages/mcp/src/server.ts` — `const VERSION`
 4. `packages/claw/package.json`
 5. `packages/claw/src/index.ts` — `version:` in plugin object
-6. `packages/claw/test/hello.test.ts` — version assertion
+6. `packages/claw/openclaw.plugin.json` — `version` field
+7. `packages/claw/test/hello.test.ts` — version assertion
 
 ## Publishing
 
