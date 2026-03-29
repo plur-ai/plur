@@ -30,14 +30,15 @@ def _install_skill(plugin_dir: Path):
     if not bundled.exists():
         return
 
-    def _get_version(path: Path) -> str:
+    def _get_version(path: Path) -> tuple[int, ...]:
         try:
             for line in path.read_text().splitlines():
                 if line.strip().startswith("version:"):
-                    return line.split(":", 1)[1].strip()
+                    ver_str = line.split(":", 1)[1].strip()
+                    return tuple(int(x) for x in ver_str.split("."))
         except Exception:
             pass
-        return "0.0.0"
+        return (0, 0, 0)
 
     if installed.exists():
         if _get_version(installed) >= _get_version(bundled):
