@@ -174,6 +174,9 @@ export const EngramSchema = z.object({
 
   /** Extensible key-value data for domain-specific fields. */
   structured_data: z.record(z.string(), z.unknown()).optional(),
+
+  /** Polarity classification: 'do' for directives, 'dont' for prohibitions, null for unclassified. */
+  polarity: z.enum(['do', 'dont']).nullable().default(null),
 })
 
 export type Engram = z.infer<typeof EngramSchema>
