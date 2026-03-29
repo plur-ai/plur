@@ -28,7 +28,7 @@ import type {
 
 export * from './meta/index.js'
 export { classifyPolarity } from './polarity.js'
-export { computeConfidence, computeMetaConfidence } from './confidence.js'
+export { computeConfidence, computeMetaConfidence, confidenceBand } from './confidence.js'
 export { SessionBreadcrumbs } from './session-state.js'
 export { generateGuardrails } from './guardrails.js'
 export type { MetaField, StructuralTemplate, EvidenceEntry, MetaConfidence, DomainCoverage, HierarchyPosition, Falsification } from './schemas/meta-engram.js'

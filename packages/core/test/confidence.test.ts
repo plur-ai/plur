@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { computeConfidence, computeMetaConfidence } from '../src/confidence.js'
+import { computeConfidence, computeMetaConfidence, confidenceBand } from '../src/confidence.js'
 
 describe('computeConfidence', () => {
   it('returns 0.5 for engram with no feedback', () => {
@@ -75,5 +75,25 @@ describe('computeMetaConfidence', () => {
     const result = computeMetaConfidence(1, 1, 1, 0.1)
     expect(result).toBeGreaterThan(0)
     expect(result).toBeLessThan(0.5)
+  })
+})
+
+describe('confidenceBand', () => {
+  it('returns high for scores >= 0.7', () => {
+    expect(confidenceBand(0.7)).toBe('high')
+    expect(confidenceBand(0.95)).toBe('high')
+    expect(confidenceBand(1.0)).toBe('high')
+  })
+
+  it('returns medium for scores >= 0.4 and < 0.7', () => {
+    expect(confidenceBand(0.4)).toBe('medium')
+    expect(confidenceBand(0.5)).toBe('medium')
+    expect(confidenceBand(0.69)).toBe('medium')
+  })
+
+  it('returns low for scores < 0.4', () => {
+    expect(confidenceBand(0.0)).toBe('low')
+    expect(confidenceBand(0.25)).toBe('low')
+    expect(confidenceBand(0.39)).toBe('low')
   })
 })

@@ -64,3 +64,10 @@ export function computeMetaConfidence(
   const validationSignal = validationRatio * 0.20
   return evidenceSignal + domainSignal + depthSignal + validationSignal
 }
+
+/** Convert numeric confidence to human-readable band */
+export function confidenceBand(score: number): 'low' | 'medium' | 'high' {
+  if (score >= 0.7) return 'high'
+  if (score >= 0.4) return 'medium'
+  return 'low'
+}

@@ -1,4 +1,4 @@
-import { Plur, extractMetaEngrams, validateMetaEngram } from '@plur-ai/core'
+import { Plur, extractMetaEngrams, validateMetaEngram, confidenceBand } from '@plur-ai/core'
 import type { LlmFunction, MetaField } from '@plur-ai/core'
 
 /** Create an OpenAI-compatible LLM function from a base URL + API key */
@@ -471,6 +471,7 @@ export function getToolDefinitions(): ToolDefinition[] {
             statement: m.statement,
             domain: m.domain,
             confidence: (m.structured_data?.meta as MetaField | undefined)?.confidence?.composite ?? 0,
+            confidence_band: confidenceBand((m.structured_data?.meta as MetaField | undefined)?.confidence?.composite ?? 0),
             hierarchy_level: (m.structured_data?.meta as MetaField | undefined)?.hierarchy?.level ?? 'mop',
           })),
         }
@@ -519,6 +520,7 @@ export function getToolDefinitions(): ToolDefinition[] {
               template: mf?.structure?.template,
               hierarchy_level: mf?.hierarchy?.level,
               confidence: mf?.confidence?.composite,
+              confidence_band: confidenceBand(mf?.confidence?.composite ?? 0),
               evidence_count: mf?.confidence?.evidence_count,
               domain_count: mf?.confidence?.domain_count,
               validated_domains: mf?.domain_coverage?.validated,
@@ -574,6 +576,7 @@ export function getToolDefinitions(): ToolDefinition[] {
           alignment_score: result.alignment_score,
           rationale: result.rationale,
           updated_confidence: (meta.structured_data?.meta as MetaField | undefined)?.confidence?.composite,
+          updated_confidence_band: confidenceBand((meta.structured_data?.meta as MetaField | undefined)?.confidence?.composite ?? 0),
         }
       },
     },
