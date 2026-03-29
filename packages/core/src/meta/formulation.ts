@@ -5,6 +5,7 @@ import type { Engram } from '../schemas/engram.js'
 import type { MetaField, EvidenceEntry } from '../schemas/meta-engram.js'
 import { computeMetaConfidence } from '../confidence.js'
 import { isPlatitude } from './platitudes.js'
+import { tokenSimilarity } from './similarity.js'
 
 const PIPELINE_VERSION = '1.0.0'
 
@@ -18,15 +19,6 @@ function slugifyTemplate(template: string): string {
     .slice(0, 60)
 }
 
-/** Token-based similarity for deduplication (same as clustering) */
-function tokenSimilarity(a: string, b: string): number {
-  const wordsA = new Set(a.toLowerCase().split(/[\s-]+/).filter(w => w.length > 2))
-  const wordsB = new Set(b.toLowerCase().split(/[\s-]+/).filter(w => w.length > 2))
-  if (wordsA.size === 0 || wordsB.size === 0) return 0
-  let overlap = 0
-  for (const w of wordsA) { if (wordsB.has(w)) overlap++ }
-  return overlap / Math.sqrt(wordsA.size * wordsB.size)
-}
 
 function isDuplicate(template: string, existingMetas: Engram[]): Engram | null {
   for (const meta of existingMetas) {

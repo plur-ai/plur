@@ -1,18 +1,10 @@
 // packages/core/src/meta/hierarchy.ts
 import type { Engram } from '../schemas/engram.js'
 import type { MetaField } from '../schemas/meta-engram.js'
+import { tokenSimilarity } from './similarity.js'
 
 const SUBSUMPTION_THRESHOLD = 0.75
 
-/** Token-based similarity on template strings */
-function tokenSimilarity(a: string, b: string): number {
-  const wordsA = new Set(a.toLowerCase().split(/[\s\[\]→+\-]+/).filter(w => w.length > 2))
-  const wordsB = new Set(b.toLowerCase().split(/[\s\[\]→+\-]+/).filter(w => w.length > 2))
-  if (wordsA.size === 0 || wordsB.size === 0) return 0
-  let overlap = 0
-  for (const w of wordsA) { if (wordsB.has(w)) overlap++ }
-  return overlap / Math.sqrt(wordsA.size * wordsB.size)
-}
 
 function getMetaField(engram: Engram): MetaField | null {
   return (engram.structured_data?.meta as MetaField) ?? null

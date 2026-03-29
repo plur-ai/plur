@@ -1,5 +1,6 @@
 // packages/core/src/meta/clustering.ts
 import type { RelationalAnalysis, RelationalTriple } from './structural-analysis.js'
+import { tokenSimilarity } from './similarity.js'
 
 export interface EngramCluster {
   cluster_id: string
@@ -20,15 +21,6 @@ function analysisTemplate(analysis: RelationalAnalysis): string {
   return analysis.triples.map(tripleToTemplate).join('; ')
 }
 
-/** Token-overlap similarity — fallback when embeddings unavailable */
-function tokenSimilarity(a: string, b: string): number {
-  const wordsA = new Set(a.toLowerCase().split(/[\s-]+/).filter(w => w.length > 2))
-  const wordsB = new Set(b.toLowerCase().split(/[\s-]+/).filter(w => w.length > 2))
-  if (wordsA.size === 0 || wordsB.size === 0) return 0
-  let overlap = 0
-  for (const w of wordsA) { if (wordsB.has(w)) overlap++ }
-  return overlap / Math.sqrt(wordsA.size * wordsB.size)
-}
 
 /** Try to compute embedding-based pairwise similarities; fall back to token overlap */
 async function computeSimilarityMatrix(
