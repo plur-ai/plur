@@ -3,6 +3,7 @@ import type { EngramCluster } from './clustering.js'
 import type { StructuralTemplate } from '../schemas/meta-engram.js'
 import type { LlmFunction } from '../types.js'
 import { isPlatitude } from './platitudes.js'
+import { sanitizeForPrompt } from './sanitize.js'
 
 export interface MemberAlignment {
   engram_id: string
@@ -24,10 +25,10 @@ export async function alignCluster(
   llm: LlmFunction,
 ): Promise<AlignmentResult | null> {
   const tripleDescriptions = cluster.members.map(m => {
-    const domain = m.domain
+    const domain = sanitizeForPrompt(m.domain)
     const triples = m.triples.map(t => {
-      const parts = [`${t.subject.role} ${t.predicate} ${t.object.role}`]
-      if (t.outcome) parts.push(`→ ${t.outcome}`)
+      const parts = [`${sanitizeForPrompt(t.subject.role)} ${sanitizeForPrompt(t.predicate)} ${sanitizeForPrompt(t.object.role)}`]
+      if (t.outcome) parts.push(`→ ${sanitizeForPrompt(t.outcome)}`)
       return parts.join(' ')
     }).join('; ')
     return `Domain ${domain} (${m.engram_id}): ${triples}`

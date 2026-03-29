@@ -3,6 +3,7 @@ import type { Engram } from '../schemas/engram.js'
 import type { MetaField } from '../schemas/meta-engram.js'
 import type { LlmFunction } from '../types.js'
 import { computeMetaConfidence } from '../confidence.js'
+import { sanitizeForPrompt } from './sanitize.js'
 
 export interface ValidationResult {
   meta_engram_id: string
@@ -36,7 +37,7 @@ export async function validateMetaEngram(
   const testEngramSummary = testEngrams
     .filter(e => e.status === 'active')
     .slice(0, 10)
-    .map(e => `  - [${e.id}] ${e.statement}`)
+    .map(e => `  - [${e.id}] ${sanitizeForPrompt(e.statement)}`)
     .join('\n')
 
   if (!testEngramSummary) {
@@ -50,8 +51,8 @@ export async function validateMetaEngram(
     }
   }
 
-  const prompt = `Meta-engram structural principle: ${template}
-Meta-engram statement: ${meta.statement}
+  const prompt = `Meta-engram structural principle: ${sanitizeForPrompt(template)}
+Meta-engram statement: ${sanitizeForPrompt(meta.statement)}
 
 Test domain: ${testDomain}
 Test engrams from this domain:

@@ -6,6 +6,7 @@ import type { MetaField, EvidenceEntry } from '../schemas/meta-engram.js'
 import { computeMetaConfidence } from '../confidence.js'
 import { isPlatitude } from './platitudes.js'
 import { tokenSimilarity } from './similarity.js'
+import { sanitizeForPrompt } from './sanitize.js'
 
 const PIPELINE_VERSION = '1.0.0'
 
@@ -44,17 +45,17 @@ export async function formulateMetaEngram(
 
   // Build prompt for LLM to generate statement + falsification criteria
   const memberSummary = member_alignments
-    .map(m => `  - ${m.engram_id}: ${m.mapping_rationale} (alignment: ${m.alignment_score})`)
+    .map(m => `  - ${m.engram_id}: ${sanitizeForPrompt(m.mapping_rationale)} (alignment: ${m.alignment_score})`)
     .join('\n')
 
-  const prompt = `Structural principle: ${common_structure.template}
+  const prompt = `Structural principle: ${sanitizeForPrompt(common_structure.template)}
 Goal type: ${common_structure.goal_type}
 Constraint type: ${common_structure.constraint_type}
 Outcome type: ${common_structure.outcome_type}
 Structural depth: ${structural_depth}
 Evidence from members:
 ${memberSummary}
-Candidate inferences: ${candidate_inferences.join(', ')}
+Candidate inferences: ${candidate_inferences.map(sanitizeForPrompt).join(', ')}
 
 Generate:
 1. A natural-language statement of this principle (1-2 sentences, precise, not generic)

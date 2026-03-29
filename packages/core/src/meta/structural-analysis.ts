@@ -2,6 +2,7 @@
 import type { Engram } from '../schemas/engram.js'
 import type { LlmFunction } from '../types.js'
 import { classifyPolarity } from '../polarity.js'
+import { sanitizeForPrompt } from './sanitize.js'
 
 export interface TypedRole {
   role: string
@@ -47,8 +48,9 @@ function prioritize(engrams: Engram[]): Engram[] {
 
 function buildPrompt(engrams: Engram[]): string {
   const items = engrams.map((e, i) => {
-    const parts = [`  Statement: "${e.statement}"`]
-    if (e.rationale) parts.push(`  Rationale: "${e.rationale}"`)
+    const parts = [`  Statement: "${sanitizeForPrompt(e.statement)}"`]
+    if (e.rationale) parts.push(`  Rationale: "${sanitizeForPrompt(e.rationale)}"`)
+
     if (e.domain) parts.push(`  Domain: "${e.domain}"`)
     return `Engram ${i + 1} (${e.id}):\n${parts.join('\n')}`
   }).join('\n\n')
