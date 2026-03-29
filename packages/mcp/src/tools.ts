@@ -443,8 +443,11 @@ export function getToolDefinitions(): ToolDefinition[] {
           domain: args.domain as string | undefined,
           scope: args.scope as string | undefined,
         })
+        // Load existing meta-engrams for deduplication during pipeline
+        const existingMetas = plur.list().filter(e => e.id.startsWith('META-'))
         const result = await extractMetaEngrams(sourceEngrams, llm, {
           run_validation: args.run_validation as boolean | undefined,
+          existing_metas: existingMetas,
         })
 
         // Persist unless dry_run
