@@ -1,6 +1,7 @@
 """PLUR persistent memory plugin for Hermes Agent."""
 
 import json
+import logging
 import os
 import shutil
 import time
@@ -8,6 +9,8 @@ from pathlib import Path
 
 from .bridge import PlurBridge, PlurNotFoundError
 from .learner import extract_learning_patterns
+
+logger = logging.getLogger("plur_hermes")
 
 __version__ = "0.1.0"
 
@@ -53,9 +56,9 @@ def register(ctx):
     # Verify CLI
     try:
         status = bridge.status()
-        ctx.logger.info(f"PLUR: connected — {status.get('engram_count', '?')} engrams")
+        logger.info(f"PLUR: connected — {status.get('engram_count', '?')} engrams")
     except PlurNotFoundError:
-        ctx.logger.error("PLUR CLI not found. Install: npm install -g @plur-ai/cli")
+        logger.error("PLUR CLI not found. Install: npm install -g @plur-ai/cli")
         return
 
     # Install SKILL.md
@@ -67,7 +70,7 @@ def register(ctx):
         _session_state[session_id] = {"count": 0, "started": time.time()}
         try:
             s = bridge.status()
-            ctx.logger.info(f"PLUR session: {s.get('engram_count', '?')} engrams available")
+            logger.info(f"PLUR session: {s.get('engram_count', '?')} engrams available")
         except Exception:
             pass
 
@@ -90,7 +93,7 @@ def register(ctx):
             lines.append("</plur-memory>")
             return {"context": "\n".join(lines)}
         except Exception as e:
-            ctx.logger.debug(f"PLUR inject failed: {e}")
+            logger.debug(f"PLUR inject failed: {e}")
             return None
 
     def post_llm_call(session_id, assistant_response, **kwargs):
@@ -101,7 +104,7 @@ def register(ctx):
                 if session_id in _session_state:
                     _session_state[session_id]["count"] += 1
         except Exception as e:
-            ctx.logger.debug(f"PLUR learning extraction failed: {e}")
+            logger.debug(f"PLUR learning extraction failed: {e}")
 
     def on_session_end(session_id, completed=False, interrupted=False, **kwargs):
         try:
@@ -116,7 +119,7 @@ def register(ctx):
             parts.append(f"[{platform}]")
             bridge.capture(" ".join(parts), agent="hermes", session=session_id)
         except Exception as e:
-            ctx.logger.debug(f"PLUR session capture failed: {e}")
+            logger.debug(f"PLUR session capture failed: {e}")
         finally:
             _session_state.pop(session_id, None)
 
@@ -128,6 +131,7 @@ def register(ctx):
     # --- Tools ---
     TOOL_SCHEMAS = {
         "plur_learn": {
+            "name": "plur_learn",
             "description": "Create a new engram — store a correction, preference, pattern, or decision",
             "parameters": {
                 "type": "object",
@@ -141,6 +145,7 @@ def register(ctx):
             },
         },
         "plur_recall": {
+            "name": "plur_recall",
             "description": "Search engrams by topic",
             "parameters": {
                 "type": "object",
@@ -153,6 +158,7 @@ def register(ctx):
             },
         },
         "plur_inject": {
+            "name": "plur_inject",
             "description": "Get relevant engrams for a task (three-tier output)",
             "parameters": {
                 "type": "object",
@@ -165,6 +171,7 @@ def register(ctx):
             },
         },
         "plur_list": {
+            "name": "plur_list",
             "description": "List all engrams with optional filtering",
             "parameters": {
                 "type": "object",
@@ -178,34 +185,42 @@ def register(ctx):
             },
         },
         "plur_forget": {
+            "name": "plur_forget",
             "description": "Retire an engram by ID",
             "parameters": {"type": "object", "properties": {"id": {"type": "string"}, "reason": {"type": "string"}}, "required": ["id"]},
         },
         "plur_feedback": {
+            "name": "plur_feedback",
             "description": "Rate an engram (positive|negative|neutral)",
             "parameters": {"type": "object", "properties": {"id": {"type": "string"}, "signal": {"type": "string", "enum": ["positive", "negative", "neutral"]}}, "required": ["id", "signal"]},
         },
         "plur_capture": {
+            "name": "plur_capture",
             "description": "Record an episode to the timeline",
             "parameters": {"type": "object", "properties": {"summary": {"type": "string"}}, "required": ["summary"]},
         },
         "plur_timeline": {
+            "name": "plur_timeline",
             "description": "Query the episodic timeline",
             "parameters": {"type": "object", "properties": {"query": {"type": "string"}, "limit": {"type": "integer", "default": 20}}},
         },
         "plur_status": {
+            "name": "plur_status",
             "description": "Check PLUR system health",
             "parameters": {"type": "object", "properties": {}},
         },
         "plur_sync": {
+            "name": "plur_sync",
             "description": "Cross-device sync via git",
             "parameters": {"type": "object", "properties": {}},
         },
         "plur_packs_list": {
+            "name": "plur_packs_list",
             "description": "List installed engram packs",
             "parameters": {"type": "object", "properties": {}},
         },
         "plur_packs_install": {
+            "name": "plur_packs_install",
             "description": "Install an engram pack",
             "parameters": {"type": "object", "properties": {"source": {"type": "string"}}, "required": ["source"]},
         },
@@ -256,18 +271,22 @@ def register(ctx):
 
     META_TOOL_SCHEMAS = {
         "plur_extract_meta": {
+            "name": "plur_extract_meta",
             "description": "Start meta-engram extraction — distills cross-domain principles",
             "parameters": {"type": "object", "properties": {"dry_run": {"type": "boolean", "default": False}}},
         },
         "plur_meta_submit_analysis": {
+            "name": "plur_meta_submit_analysis",
             "description": "Submit analysis responses for active meta-extraction pipeline",
             "parameters": {"type": "object", "properties": {"responses": {"type": "array", "items": {"type": "string"}}}, "required": ["responses"]},
         },
         "plur_meta_engrams": {
+            "name": "plur_meta_engrams",
             "description": "List meta-engrams — cross-domain principles",
             "parameters": {"type": "object", "properties": {"domain": {"type": "string"}, "min_confidence": {"type": "number"}}},
         },
         "plur_validate_meta": {
+            "name": "plur_validate_meta",
             "description": "Test a meta-engram against a new domain",
             "parameters": {"type": "object", "properties": {"id": {"type": "string"}, "domain": {"type": "string"}}, "required": ["id", "domain"]},
         },
@@ -304,4 +323,4 @@ def register(ctx):
         ctx.register_tool(name=name, toolset="plur-meta", schema=schema, handler=_make_meta_handler(name))
 
     total_tools = len(TOOL_SCHEMAS) + len(META_TOOL_SCHEMAS)
-    ctx.logger.info(f"PLUR registered: 4 hooks + {total_tools} tools (incl. meta)")
+    logger.info(f"PLUR registered: 4 hooks + {total_tools} tools (incl. meta)")
