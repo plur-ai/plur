@@ -3,8 +3,7 @@
   "version": "0.3.1",
   "type": "module",
   "bin": {
-    "plur-mcp": "dist/index.js",
-    "plur": "dist/index.js"
+    "plur-mcp": "dist/index.js"
   },
   "main": "dist/index.js",
   "files": [
