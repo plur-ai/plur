@@ -249,4 +249,58 @@ def register(ctx):
     for name, schema in TOOL_SCHEMAS.items():
         ctx.register_tool(name=name, toolset="plur", schema=schema, handler=_make_handler(name))
 
-    ctx.logger.info(f"PLUR registered: 4 hooks + {len(TOOL_SCHEMAS)} tools")
+    # --- Meta-Engram Tools (4) ---
+    from .meta_pipeline import MetaPipeline
+    pipeline = MetaPipeline(bridge, plur_path=bridge._plur_path)
+
+    META_TOOL_SCHEMAS = {
+        "plur_extract_meta": {
+            "description": "Start meta-engram extraction — distills cross-domain principles",
+            "parameters": {"type": "object", "properties": {"dry_run": {"type": "boolean", "default": False}}},
+        },
+        "plur_meta_submit_analysis": {
+            "description": "Submit analysis responses for active meta-extraction pipeline",
+            "parameters": {"type": "object", "properties": {"responses": {"type": "array", "items": {"type": "string"}}}, "required": ["responses"]},
+        },
+        "plur_meta_engrams": {
+            "description": "List meta-engrams — cross-domain principles",
+            "parameters": {"type": "object", "properties": {"domain": {"type": "string"}, "min_confidence": {"type": "number"}}},
+        },
+        "plur_validate_meta": {
+            "description": "Test a meta-engram against a new domain",
+            "parameters": {"type": "object", "properties": {"id": {"type": "string"}, "domain": {"type": "string"}}, "required": ["id", "domain"]},
+        },
+    }
+
+    def _make_meta_handler(tool_name: str):
+        def handler(args: dict, **kwargs) -> str:
+            try:
+                session_id = kwargs.get("session_id", "default")
+                if tool_name == "plur_extract_meta":
+                    result = pipeline.start_extraction(session_id, dry_run=args.get("dry_run", False))
+                elif tool_name == "plur_meta_submit_analysis":
+                    result = pipeline.submit_analysis(session_id, args["responses"])
+                elif tool_name == "plur_meta_engrams":
+                    result = bridge.list_engrams(meta=True, domain=args.get("domain"))
+                elif tool_name == "plur_validate_meta":
+                    result = {
+                        "status": "prompts_ready",
+                        "prompts": [
+                            f"Test this meta-engram in the domain '{args['domain']}':\n"
+                            f"ID: {args['id']}\n\n"
+                            f"Does the principle hold? Return JSON: "
+                            f"{{\"holds\": true/false, \"evidence\": \"...\", \"confidence\": <0-1>}}"
+                        ],
+                    }
+                else:
+                    result = {"error": f"Unknown meta tool: {tool_name}"}
+                return json.dumps(result)
+            except Exception as e:
+                return json.dumps({"error": str(e)})
+        return handler
+
+    for name, schema in META_TOOL_SCHEMAS.items():
+        ctx.register_tool(name=name, toolset="plur-meta", schema=schema, handler=_make_meta_handler(name))
+
+    total_tools = len(TOOL_SCHEMAS) + len(META_TOOL_SCHEMAS)
+    ctx.logger.info(f"PLUR registered: 4 hooks + {total_tools} tools (incl. meta)")
