@@ -40,7 +40,7 @@ async function getEmbedder() {
 }
 
 /** Generate embedding for a text string. Returns Float32Array of 384 dims, or null if unavailable. */
-async function embed(text: string): Promise<Float32Array | null> {
+export async function embed(text: string): Promise<Float32Array | null> {
   const embedder = await getEmbedder()
   if (!embedder) return null
   const result = await embedder(text, { pooling: 'cls', normalize: true })
@@ -48,7 +48,7 @@ async function embed(text: string): Promise<Float32Array | null> {
 }
 
 /** Cosine similarity between two vectors. */
-function cosineSimilarity(a: Float32Array, b: Float32Array): number {
+export function cosineSimilarity(a: Float32Array, b: Float32Array): number {
   let dot = 0
   for (let i = 0; i < a.length; i++) dot += a[i] * b[i]
   return dot // vectors are already normalized, so dot product = cosine similarity

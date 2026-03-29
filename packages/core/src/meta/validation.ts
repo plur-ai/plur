@@ -59,16 +59,24 @@ ${testEngramSummary}
 
 Task: Does any of the test engrams instantiate or validate this structural principle?
 
-For each engram that matches:
-1. Rate alignment (0-1): how well does it fit the structural template?
-2. Explain: how does this engram's lesson map to the principle?
+If YES (a test engram matches):
+- prediction_held: true
+- matching_engram_id: the ID of the matching engram
+- alignment_score: 0.5-1.0 (how well the structural template maps)
+- rationale: one sentence explaining how the test engram maps to the template
+
+If NO (no test engram matches):
+- prediction_held: false
+- matching_engram_id: null
+- alignment_score: 0
+- rationale: one sentence explaining WHY none of the test engrams match (e.g., "Test engrams cover X domain but none exhibit the structural pattern of [assumed independence] → [understated risk]")
 
 Return JSON:
 {
   "prediction_held": true|false,
   "matching_engram_id": "ENG-..." | null,
   "alignment_score": 0.0-1.0,
-  "rationale": "one sentence explanation"
+  "rationale": "one sentence explanation — REQUIRED even when prediction_held is false"
 }
 
 Return ONLY valid JSON, no markdown fencing.`

@@ -9,7 +9,7 @@ export interface EngramCluster {
   cohesion: number
 }
 
-/** Convert relational triples to a template string for embedding */
+/** Convert relational triples to a template string for embedding/comparison */
 function tripleToTemplate(triple: RelationalTriple): string {
   const parts = [triple.subject.role, triple.predicate, triple.object.role]
   if (triple.outcome) parts.push('→', triple.outcome)
@@ -20,7 +20,7 @@ function analysisTemplate(analysis: RelationalAnalysis): string {
   return analysis.triples.map(tripleToTemplate).join('; ')
 }
 
-/** Simple cosine similarity for string-based clustering (token overlap) */
+/** Token-overlap similarity — fallback when embeddings unavailable */
 function tokenSimilarity(a: string, b: string): number {
   const wordsA = new Set(a.toLowerCase().split(/[\s-]+/).filter(w => w.length > 2))
   const wordsB = new Set(b.toLowerCase().split(/[\s-]+/).filter(w => w.length > 2))
@@ -30,21 +30,66 @@ function tokenSimilarity(a: string, b: string): number {
   return overlap / Math.sqrt(wordsA.size * wordsB.size)
 }
 
-const SIMILARITY_THRESHOLD = 0.35 // Token overlap threshold (lower than embedding threshold)
+/** Try to compute embedding-based pairwise similarities; fall back to token overlap */
+async function computeSimilarityMatrix(
+  templates: string[],
+): Promise<{ matrix: number[][]; method: 'embedding' | 'token' }> {
+  const n = templates.length
+  const matrix: number[][] = Array.from({ length: n }, () => Array(n).fill(0))
+
+  // Try embeddings first
+  try {
+    const { embed, cosineSimilarity } = await import('../embeddings.js')
+    const embeddings: (Float32Array | null)[] = []
+    for (const t of templates) {
+      embeddings.push(await embed(t))
+    }
+    // Check if embeddings are available (first one non-null)
+    if (embeddings[0] !== null) {
+      for (let i = 0; i < n; i++) {
+        for (let j = i + 1; j < n; j++) {
+          if (embeddings[i] && embeddings[j]) {
+            const sim = cosineSimilarity(embeddings[i]!, embeddings[j]!)
+            matrix[i][j] = sim
+            matrix[j][i] = sim
+          }
+        }
+      }
+      return { matrix, method: 'embedding' }
+    }
+  } catch {
+    // Embeddings unavailable — fall through to token similarity
+  }
+
+  // Fallback: token overlap
+  for (let i = 0; i < n; i++) {
+    for (let j = i + 1; j < n; j++) {
+      const sim = tokenSimilarity(templates[i], templates[j])
+      matrix[i][j] = sim
+      matrix[j][i] = sim
+    }
+  }
+  return { matrix, method: 'token' }
+}
+
+// Thresholds differ by method — embeddings are semantically richer so threshold is higher
+const EMBEDDING_THRESHOLD = 0.65
+const TOKEN_THRESHOLD = 0.35
 
 /**
  * Cluster relational analyses by structural similarity.
- * Uses token-based similarity on template strings as a fast MAC layer.
- * When @huggingface/transformers embeddings are available, can be upgraded to embedding cosine.
+ * Prefers embedding-based cosine similarity (384-dim BGE vectors) for semantic depth.
+ * Falls back to token overlap when @huggingface/transformers is unavailable.
  */
 export async function clusterByStructure(
   analyses: RelationalAnalysis[],
-  threshold: number = SIMILARITY_THRESHOLD,
+  threshold?: number,
 ): Promise<EngramCluster[]> {
   if (analyses.length < 2) return []
 
-  // Compute templates
   const templates = analyses.map(a => analysisTemplate(a))
+  const { matrix, method } = await computeSimilarityMatrix(templates)
+  const effectiveThreshold = threshold ?? (method === 'embedding' ? EMBEDDING_THRESHOLD : TOKEN_THRESHOLD)
 
   // Agglomerative clustering via pairwise similarity
   const assigned = new Set<number>()
@@ -55,13 +100,14 @@ export async function clusterByStructure(
     if (assigned.has(i)) continue
 
     const members = [analyses[i]]
+    const memberIndices = [i]
     assigned.add(i)
 
     for (let j = i + 1; j < analyses.length; j++) {
       if (assigned.has(j)) continue
-      const sim = tokenSimilarity(templates[i], templates[j])
-      if (sim >= threshold) {
+      if (matrix[i][j] >= effectiveThreshold) {
         members.push(analyses[j])
+        memberIndices.push(j)
         assigned.add(j)
       }
     }
@@ -73,12 +119,9 @@ export async function clusterByStructure(
     // Compute cohesion (mean pairwise similarity within cluster)
     let totalSim = 0
     let pairs = 0
-    for (let a = 0; a < members.length; a++) {
-      for (let b = a + 1; b < members.length; b++) {
-        totalSim += tokenSimilarity(
-          analysisTemplate(members[a]),
-          analysisTemplate(members[b]),
-        )
+    for (let a = 0; a < memberIndices.length; a++) {
+      for (let b = a + 1; b < memberIndices.length; b++) {
+        totalSim += matrix[memberIndices[a]][memberIndices[b]]
         pairs++
       }
     }
