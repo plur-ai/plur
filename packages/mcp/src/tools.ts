@@ -1,5 +1,5 @@
 import { Plur, extractMetaEngrams, validateMetaEngram } from '@plur-ai/core'
-import type { LlmFunction } from '@plur-ai/core'
+import type { LlmFunction, MetaField } from '@plur-ai/core'
 
 /** Create an OpenAI-compatible LLM function from a base URL + API key */
 function makeHttpLlm(baseUrl: string, apiKey: string, model: string = 'gpt-4o-mini'): LlmFunction {
@@ -470,8 +470,8 @@ export function getToolDefinitions(): ToolDefinition[] {
             id: m.id,
             statement: m.statement,
             domain: m.domain,
-            confidence: (m.structured_data?.meta as any)?.confidence?.composite ?? 0,
-            hierarchy_level: (m.structured_data?.meta as any)?.hierarchy?.level ?? 'mop',
+            confidence: (m.structured_data?.meta as MetaField | undefined)?.confidence?.composite ?? 0,
+            hierarchy_level: (m.structured_data?.meta as MetaField | undefined)?.hierarchy?.level ?? 'mop',
           })),
         }
       },
@@ -500,7 +500,7 @@ export function getToolDefinitions(): ToolDefinition[] {
 
         const filtered = metaEngrams
           .filter(m => {
-            const mf = m.structured_data?.meta as any
+            const mf = m.structured_data?.meta as MetaField | undefined
             if (!mf) return false
             if (mf.confidence?.composite < minConfidence) return false
             if (levelFilter && mf.hierarchy?.level !== levelFilter) return false
@@ -511,7 +511,7 @@ export function getToolDefinitions(): ToolDefinition[] {
 
         return {
           results: filtered.map(m => {
-            const mf = m.structured_data?.meta as any
+            const mf = m.structured_data?.meta as MetaField | undefined
             return {
               id: m.id,
               statement: m.statement,
@@ -569,7 +569,7 @@ export function getToolDefinitions(): ToolDefinition[] {
           matching_engram_id: result.matching_engram_id,
           alignment_score: result.alignment_score,
           rationale: result.rationale,
-          updated_confidence: (meta.structured_data?.meta as any)?.confidence?.composite,
+          updated_confidence: (meta.structured_data?.meta as MetaField | undefined)?.confidence?.composite,
         }
       },
     },
