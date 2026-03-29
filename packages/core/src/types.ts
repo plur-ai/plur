@@ -55,3 +55,4 @@ export interface TimelineQuery {
   channel?: string
   search?: string
 }
+

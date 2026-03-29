@@ -26,6 +26,7 @@ import type {
   LlmFunction,
 } from './types.js'
 
+export * from './meta/index.js'
 export { classifyPolarity } from './polarity.js'
 export { computeConfidence, computeMetaConfidence } from './confidence.js'
 export { SessionBreadcrumbs } from './session-state.js'
