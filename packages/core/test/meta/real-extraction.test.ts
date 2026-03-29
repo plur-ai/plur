@@ -120,11 +120,28 @@ describe.skipIf(!process.env.ANTHROPIC_API_KEY)('Real extraction pipeline', () =
 
     const llm = createAnthropicLlm()!
 
-    // Split: 60 for extraction, 20 held-out for validation
-    const extractionSet = sample.slice(0, 60)
-    const validationSet = sample.slice(60)
+    // Split: hold out 2-3 engrams from each named domain that has 4+ engrams
+    // This ensures validation tests against real named domains, not just "unknown"
+    const extractionSet: Engram[] = []
+    const validationSet: Engram[] = []
+    const sampleDomains = new Map<string, Engram[]>()
+    for (const e of sample) {
+      const d = (e.domain ?? 'unknown').split('.')[0]
+      if (!sampleDomains.has(d)) sampleDomains.set(d, [])
+      sampleDomains.get(d)!.push(e)
+    }
+    for (const [domain, domainEngrams] of sampleDomains) {
+      if (domainEngrams.length >= 4 && domain !== 'unknown') {
+        // Hold out last 2 for validation
+        extractionSet.push(...domainEngrams.slice(0, -2))
+        validationSet.push(...domainEngrams.slice(-2))
+      } else {
+        extractionSet.push(...domainEngrams)
+      }
+    }
 
     console.log(`Extraction set: ${extractionSet.length}, Validation set: ${validationSet.length}`)
+    console.log(`Validation domains: ${[...new Set(validationSet.map(e => (e.domain ?? 'unknown').split('.')[0]))].join(', ')}`)
 
     // Run the full pipeline WITH validation
     const result = await extractMetaEngrams(extractionSet, llm, {
