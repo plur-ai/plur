@@ -562,6 +562,10 @@ export function getToolDefinitions(): ToolDefinition[] {
         )
 
         const result = await validateMetaEngram(meta, testEngrams, testDomain, llm)
+
+        // validateMetaEngram mutates domain_coverage + confidence in-place — persist changes
+        plur.updateEngram(meta)
+
         return {
           meta_engram_id: result.meta_engram_id,
           test_domain: result.test_domain,

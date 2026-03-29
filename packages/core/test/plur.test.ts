@@ -191,6 +191,35 @@ describe('Plur', () => {
     expect(plur.list().filter(e => e.id.startsWith('META-')).length).toBe(1)
   })
 
+  it('updateEngram persists changes to an existing engram', () => {
+    const engram = plur.learn('Original statement', { scope: 'global' })
+    engram.statement = 'Updated statement'
+    engram.activation.retrieval_strength = 0.99
+    const updated = plur.updateEngram(engram)
+    expect(updated).toBe(true)
+
+    const recalled = plur.list()
+    const found = recalled.find(e => e.id === engram.id)
+    expect(found?.statement).toBe('Updated statement')
+    expect(found?.activation.retrieval_strength).toBe(0.99)
+  })
+
+  it('updateEngram returns false for non-existent ID', () => {
+    const fake = {
+      id: 'ENG-9999-01-001',
+      version: 2, status: 'active', consolidated: false,
+      type: 'behavioral', scope: 'global', visibility: 'private',
+      statement: 'Ghost engram',
+      tags: [], domain: undefined,
+      activation: { retrieval_strength: 0.5, storage_strength: 1, frequency: 0, last_accessed: '2026-03-29' },
+      feedback_signals: { positive: 0, negative: 0, neutral: 0 },
+      knowledge_anchors: [], associations: [],
+      derivation_count: 1,
+      pack: null, abstract: null, derived_from: null, polarity: null,
+    } as any
+    expect(plur.updateEngram(fake)).toBe(false)
+  })
+
   it('saveMetaEngrams coexists with regular engrams', () => {
     plur.learn('Regular engram', { scope: 'global' })
     const meta = {

@@ -327,6 +327,16 @@ export class Plur {
     return { saved, skipped }
   }
 
+  /** Update an existing engram in the store by ID. Returns true if found and updated. */
+  updateEngram(updated: Engram): boolean {
+    const engrams = loadEngrams(this.paths.engrams)
+    const idx = engrams.findIndex(e => e.id === updated.id)
+    if (idx === -1) return false
+    engrams[idx] = updated
+    saveEngrams(this.paths.engrams, engrams)
+    return true
+  }
+
   /** Set engram status to 'retired'. */
   forget(id: string, reason?: string): void {
     const engrams = loadEngrams(this.paths.engrams)
