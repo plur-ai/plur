@@ -5,6 +5,18 @@ export const StructuralTemplateSchema = z.object({
   constraint_type: z.string().min(1),
   outcome_type: z.string().min(1),
   template: z.string().min(1),
+  /** Structural frame — declares which relational pattern this meta-engram uses.
+   *  Allows flexible analogy beyond rigid [goal]+[constraint]->[outcome]. */
+  structure_type: z.enum([
+    'goal-constraint-outcome',
+    'feedback-loop',
+    'causal-chain',
+    'recursive',
+    'tradeoff',
+    'freeform',
+  ]).default('goal-constraint-outcome'),
+  /** For patterns that don't fit the standard template fields — the LLM's own structural description */
+  freeform_structure: z.string().optional(),
 })
 
 export const EvidenceEntrySchema = z.object({

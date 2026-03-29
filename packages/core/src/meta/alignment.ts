@@ -40,14 +40,28 @@ ${tripleDescriptions}
 
 Tasks:
 1. Is there a genuine common relational structure? (Not surface similarity, not a platitude)
-2. If yes, express it as JSON: { "goal_type": "...", "constraint_type": "...", "outcome_type": "...", "template": "[goal] + [constraint] → [outcome]" }
-3. Rate structural depth (1-5): 1=surface, 3=causal chain, 5=deep systematic
-4. For each member, rate alignment (0-1) and explain the mapping in one sentence
-5. What does this structure PREDICT in a domain not listed above?
+2. Choose the structural frame that BEST captures the pattern:
+   - "goal-constraint-outcome": [goal] + [constraint] → [outcome]
+   - "feedback-loop": [action] → [effect] → [feeds back to action]
+   - "causal-chain": [A] causes [B] causes [C]
+   - "tradeoff": [optimizing X] at the expense of [Y]
+   - "recursive": [pattern] contains smaller instances of [same pattern]
+   - "freeform": describe the structure in your own terms
+3. Express the common structure using your chosen frame
+4. Rate structural depth (1-5): 1=surface, 3=causal chain, 5=deep systematic
+5. For each member, rate alignment (0-1) and explain the mapping in one sentence
+6. What does this structure PREDICT in a domain not listed above?
 
 Return JSON:
 {
-  "common_structure": { "goal_type": "...", "constraint_type": "...", "outcome_type": "...", "template": "..." } | null,
+  "common_structure": {
+    "goal_type": "...",
+    "constraint_type": "...",
+    "outcome_type": "...",
+    "template": "...",
+    "structure_type": "goal-constraint-outcome" | "feedback-loop" | "causal-chain" | "tradeoff" | "recursive" | "freeform",
+    "freeform_structure": "..." (only if structure_type is "freeform")
+  } | null,
   "structural_depth": N,
   "member_alignments": [{ "engram_id": "...", "alignment_score": N, "mapping_rationale": "..." }],
   "candidate_inferences": ["..."]
