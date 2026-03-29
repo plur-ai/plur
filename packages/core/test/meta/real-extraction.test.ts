@@ -4,7 +4,7 @@
  * Runs the full meta-engram pipeline on actual user engrams with a real LLM.
  * This is NOT a unit test — it's an integration smoke test.
  *
- * Run: pnpm --filter @plur-ai/core exec vitest run packages/core/test/meta/real-extraction.test.ts
+ * Run: ANTHROPIC_API_KEY=... pnpm --filter @plur-ai/core exec vitest run test/meta/real-extraction.test.ts
  *
  * Requires: ANTHROPIC_API_KEY environment variable
  */
@@ -21,6 +21,9 @@ function loadRealEngrams(): Engram[] {
   const paths = [
     '/Users/gregor/Data/.datacore/learning/engrams.yaml',
     '/Users/gregor/Data/0-personal/.datacore/learning/engrams.yaml',
+    '/Users/gregor/Data/1-datafund/.datacore/learning/engrams.yaml',
+    '/Users/gregor/Data/2-datacore/.datacore/learning/engrams.yaml',
+    '/Users/gregor/Data/5-plur/2-projects/exchange/.datacore/learning/engrams.yaml',
   ]
 
   const all: Engram[] = []
@@ -30,25 +33,26 @@ function loadRealEngrams(): Engram[] {
       const raw = readFileSync(p, 'utf8')
       const parsed = yaml.load(raw) as any
       const engrams = parsed?.engrams ?? []
-      // Filter: user-created, active only
       const userEngrams = engrams.filter((e: any) =>
         e.provenance?.origin === 'user/personal' &&
         e.status === 'active'
       )
       all.push(...userEngrams)
-    } catch (err) {
-      console.warn(`Failed to load ${p}:`, err)
+    } catch {
+      // Skip unparseable files
     }
   }
   return all
 }
 
-// Create a real LLM function using Anthropic API
 function createAnthropicLlm(): LlmFunction | null {
   const apiKey = process.env.ANTHROPIC_API_KEY
   if (!apiKey) return null
 
+  let callCount = 0
   return async (prompt: string): Promise<string> => {
+    callCount++
+    if (callCount % 10 === 0) process.stdout.write(`  [LLM call ${callCount}]\n`)
     const response = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: {
@@ -73,41 +77,68 @@ function createAnthropicLlm(): LlmFunction | null {
 }
 
 describe.skipIf(!process.env.ANTHROPIC_API_KEY)('Real extraction pipeline', () => {
-  it('extracts meta-engrams from real user engrams', async () => {
-    const engrams = loadRealEngrams()
-    console.log(`Loaded ${engrams.length} real user-created engrams`)
-    expect(engrams.length).toBeGreaterThan(20)
+  it('extracts meta-engrams from 80 real engrams with validation', async () => {
+    const allEngrams = loadRealEngrams()
+    console.log(`Loaded ${allEngrams.length} real user-created engrams`)
+    expect(allEngrams.length).toBeGreaterThan(20)
 
-    // Take a diverse sample of 30 engrams from different domains
+    // Take 80 engrams: sample broadly across domains, prioritize correction-tagged
     const domains = new Map<string, Engram[]>()
-    for (const e of engrams) {
-      const d = e.domain?.split('.')[0] ?? 'unknown'
+    for (const e of allEngrams) {
+      const d = (e.domain ?? 'unknown').split('.')[0]
       if (!domains.has(d)) domains.set(d, [])
       domains.get(d)!.push(e)
     }
-    const sample: Engram[] = []
-    for (const [domain, domainEngrams] of domains) {
-      const take = Math.min(5, domainEngrams.length)
-      sample.push(...domainEngrams.slice(0, take))
-      if (sample.length >= 30) break
+
+    // Prioritize: correction/failure engrams first within each domain
+    for (const [, domainEngrams] of domains) {
+      domainEngrams.sort((a, b) => {
+        const aFail = a.tags?.some((t: string) => ['correction', 'fix', 'bug'].includes(t.toLowerCase())) ? 0 : 1
+        const bFail = b.tags?.some((t: string) => ['correction', 'fix', 'bug'].includes(t.toLowerCase())) ? 0 : 1
+        if (aFail !== bFail) return aFail - bFail
+        return (b.feedback_signals?.negative ?? 0) - (a.feedback_signals?.negative ?? 0)
+      })
     }
-    console.log(`Using sample of ${sample.length} engrams from ${domains.size} domains`)
+
+    const sample: Engram[] = []
+    // Round-robin across domains to get diversity
+    let round = 0
+    while (sample.length < 80) {
+      let added = false
+      for (const [, domainEngrams] of domains) {
+        if (round < domainEngrams.length && sample.length < 80) {
+          sample.push(domainEngrams[round])
+          added = true
+        }
+      }
+      if (!added) break
+      round++
+    }
+
+    console.log(`Using ${sample.length} engrams from ${domains.size} domains`)
     console.log(`Domains: ${[...domains.keys()].join(', ')}`)
 
     const llm = createAnthropicLlm()!
-    expect(llm).toBeTruthy()
 
-    // Run the full pipeline
-    const result = await extractMetaEngrams(sample, llm, {
-      run_validation: false, // Skip validation for speed
+    // Split: 60 for extraction, 20 held-out for validation
+    const extractionSet = sample.slice(0, 60)
+    const validationSet = sample.slice(60)
+
+    console.log(`Extraction set: ${extractionSet.length}, Validation set: ${validationSet.length}`)
+
+    // Run the full pipeline WITH validation
+    const result = await extractMetaEngrams(extractionSet, llm, {
+      run_validation: true,
+      validation_engrams: validationSet,
     })
 
     console.log('\n=== EXTRACTION RESULTS ===')
-    console.log(`Engrams analyzed: ${result.engrams_analyzed}`)
-    console.log(`Clusters found: ${result.clusters_found}`)
-    console.log(`Alignments passed: ${result.alignments_passed}`)
-    console.log(`Meta-engrams extracted: ${result.meta_engrams_extracted}`)
+    console.log(`Engrams analyzed (Stage 1): ${result.engrams_analyzed}`)
+    console.log(`Clusters found (Stage 2): ${result.clusters_found}`)
+    console.log(`Alignments passed (Stage 3): ${result.alignments_passed}`)
+    console.log(`Meta-engrams extracted (Stage 4): ${result.meta_engrams_extracted}`)
     console.log(`Rejected as platitudes: ${result.rejected_as_platitudes}`)
+    console.log(`Validation results (Stage 5): ${result.validation_results.length}`)
     console.log(`Duration: ${result.duration_ms}ms`)
 
     for (const meta of result.results) {
@@ -115,23 +146,27 @@ describe.skipIf(!process.env.ANTHROPIC_API_KEY)('Real extraction pipeline', () =
       console.log(`\n--- ${meta.id} ---`)
       console.log(`Statement: ${meta.statement}`)
       console.log(`Template: ${mf?.structure?.template}`)
-      console.log(`Confidence: ${mf?.confidence?.composite}`)
+      console.log(`Confidence: ${mf?.confidence?.composite?.toFixed(3)}`)
       console.log(`Hierarchy: ${mf?.hierarchy?.level}`)
-      console.log(`Evidence: ${mf?.evidence?.length} engrams`)
+      console.log(`Evidence: ${mf?.evidence?.length} engrams from domains: ${mf?.domain_coverage?.validated?.join(', ')}`)
       if (mf?.falsification) {
-        console.log(`Conditions: ${mf.falsification.expected_conditions}`)
-        console.log(`Exceptions: ${mf.falsification.expected_exceptions}`)
-        console.log(`Test prediction: ${mf.falsification.test_prediction}`)
+        console.log(`Falsification conditions: ${mf.falsification.expected_conditions?.slice(0, 100)}...`)
+        console.log(`Test prediction: ${mf.falsification.test_prediction?.slice(0, 100)}...`)
       }
     }
 
-    // Basic sanity checks
+    if (result.validation_results.length > 0) {
+      console.log('\n=== VALIDATION RESULTS (Stage 5) ===')
+      for (const vr of result.validation_results) {
+        console.log(`  ${vr.meta_engram_id} in ${vr.test_domain}: ${vr.prediction_held ? 'CONFIRMED' : 'REFUTED'} (score: ${vr.alignment_score})`)
+        console.log(`    ${vr.rationale}`)
+      }
+    }
+
+    // Assertions
     expect(result.engrams_analyzed).toBeGreaterThan(0)
-    // The pipeline should produce SOME output (even if modest)
-    // But it's also valid for it to produce 0 if quality gates are strict
     console.log(`\nPipeline ${result.meta_engrams_extracted > 0 ? 'PRODUCED' : 'DID NOT PRODUCE'} meta-engrams`)
 
-    // If any meta-engrams were produced, validate their structure
     for (const meta of result.results) {
       expect(meta.id).toMatch(/^META-/)
       expect(meta.statement.length).toBeGreaterThan(20)
@@ -143,6 +178,8 @@ describe.skipIf(!process.env.ANTHROPIC_API_KEY)('Real extraction pipeline', () =
       expect(mf.confidence.composite).toBeLessThanOrEqual(1)
       expect(['mop', 'top']).toContain(mf.hierarchy.level)
       expect(mf.falsification.expected_conditions.length).toBeGreaterThan(0)
+      // Domain count should now be accurate (not member count)
+      expect(mf.confidence.domain_count).toBeLessThanOrEqual(mf.evidence.length)
     }
-  }, 120_000) // 2 minute timeout for real LLM calls
+  }, 300_000) // 5 minute timeout for 80 engrams
 })

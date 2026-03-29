@@ -42,16 +42,13 @@ export async function formulateMetaEngram(
   alignment: AlignmentResult,
   llm: LlmFunction,
   existingMetas: Engram[] = [],
+  /** Distinct domains from the cluster (provided by pipeline orchestrator) */
+  domains: string[] = [],
 ): Promise<Engram | null> {
   const { common_structure, member_alignments, structural_depth, candidate_inferences } = alignment
 
   // Final quality gate: platitude check
   if (isPlatitude(common_structure.template)) return null
-
-  const domains = [...new Set(member_alignments.map(ma => {
-    // We don't have domain per member in AlignmentResult directly, so we use template words
-    return 'unknown'
-  }))]
 
   // Build prompt for LLM to generate statement + falsification criteria
   const memberSummary = member_alignments
@@ -111,7 +108,7 @@ Return ONLY valid JSON, no markdown fencing.`
 
   // Compute meta-confidence
   const evidenceCount = member_alignments.length
-  const domainCount = alignment.member_alignments.length // proxy: each member is potentially a domain
+  const domainCount = domains.length > 0 ? domains.length : 1 // Use actual domains when provided
   const validationRatio = 0 // No validation yet at formulation stage
   const composite = computeMetaConfidence(evidenceCount, domainCount, structural_depth, validationRatio)
 

@@ -65,26 +65,26 @@ export async function extractMetaEngrams(
   // Stage 4: Formulation
   const formulated: Engram[] = []
   for (const alignment of validAlignments) {
-    const meta = await formulateMetaEngram(alignment, llm, [...existing_metas, ...formulated])
+    // Get distinct domains from the cluster for accurate confidence scoring
+    const cluster = viableClusters.find(c => c.cluster_id === alignment.cluster_id)
+    const clusterDomains = cluster ? [...new Set(cluster.members.map(m => m.domain))] : []
+
+    const meta = await formulateMetaEngram(alignment, llm, [...existing_metas, ...formulated], clusterDomains)
     if (meta === null) {
       rejected_as_platitudes++
     } else {
       // Enrich evidence entries with domain info from cluster members
-      const cluster = viableClusters.find(c => c.cluster_id === alignment.cluster_id)
       if (cluster) {
         const metaField = meta.structured_data?.meta as MetaField | undefined
         if (metaField) {
-          // Map engram_id → domain from cluster members
           const domainMap = new Map(cluster.members.map(m => [m.engram_id, m.domain]))
           for (const ev of metaField.evidence) {
             if (domainMap.has(ev.engram_id)) {
               ev.domain = domainMap.get(ev.engram_id)!
             }
           }
-          // Update domain_count with actual distinct domains
-          const distinctDomains = new Set(cluster.members.map(m => m.domain))
-          metaField.confidence.domain_count = distinctDomains.size
-          meta.domain = distinctDomains.size >= 3 ? 'meta' : `meta.${[...distinctDomains][0] ?? 'unknown'}`
+          metaField.domain_coverage.validated = clusterDomains
+          meta.domain = clusterDomains.length >= 3 ? 'meta' : `meta.${clusterDomains[0] ?? 'unknown'}`
         }
       }
       formulated.push(meta)
