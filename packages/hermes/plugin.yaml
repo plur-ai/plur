@@ -1,5 +1,5 @@
 name: plur
-version: 0.1.0
+version: 0.1.1
 description: Persistent memory that improves over time — learn, recall, inject, forget, feedback, meta-engram extraction
 provides_tools:
   - plur_learn
