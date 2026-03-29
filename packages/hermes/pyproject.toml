@@ -1,0 +1,24 @@
+[project]
+name = "plur-hermes"
+version = "0.1.0"
+description = "PLUR persistent memory plugin for Hermes Agent"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.10"
+authors = [{name = "plur-ai"}]
+keywords = ["hermes", "agent", "memory", "plur", "engram"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+[project.entry-points."hermes_agent.plugins"]
+plur = "plur_hermes"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+testpaths = ["test"]

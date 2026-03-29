@@ -1,0 +1,26 @@
+name: plur
+version: 0.1.0
+description: Persistent memory that improves over time — learn, recall, inject, forget, feedback, meta-engram extraction
+provides_tools:
+  - plur_learn
+  - plur_recall
+  - plur_inject
+  - plur_list
+  - plur_forget
+  - plur_feedback
+  - plur_capture
+  - plur_timeline
+  - plur_status
+  - plur_sync
+  - plur_packs_list
+  - plur_packs_install
+  - plur_extract_meta
+  - plur_meta_submit_analysis
+  - plur_meta_engrams
+  - plur_validate_meta
+provides_hooks:
+  - pre_llm_call
+  - post_llm_call
+  - on_session_start
+  - on_session_end
+author: plur-ai
