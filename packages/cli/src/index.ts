@@ -4,7 +4,7 @@ import { parseGlobalFlags, createPlur } from './plur.js'
 export type { GlobalFlags } from './plur.js'
 export { parseGlobalFlags, createPlur } from './plur.js'
 
-const VERSION = '0.1.0'
+const VERSION = '0.1.1'
 
 // --- Main ---
 const argv = process.argv.slice(2)
