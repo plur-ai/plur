@@ -123,12 +123,38 @@ const plugin = {
           return { text: `Retired: ${ctx.args.trim()}` }
         },
       })
+
+      api.registerCommand({
+        name: 'sync',
+        description: 'Sync PLUR memories across devices via git',
+        acceptsArgs: true,
+        handler: (ctx: any) => {
+          const remote = ctx.args?.trim() || undefined
+          const result = getEngine(path).plur.sync(remote)
+          return { text: `Sync: ${result.action}${result.message ? ` — ${result.message}` : ''}` }
+        },
+      })
+
+      api.registerCommand({
+        name: 'sync-status',
+        description: 'Check PLUR sync status',
+        acceptsArgs: false,
+        handler: () => {
+          const status = getEngine(path).plur.syncStatus()
+          const parts = [`Sync status: ${status.initialized ? 'initialized' : 'not initialized'}`]
+          if (status.remote) parts.push(`Remote: ${status.remote}`)
+          if (status.dirty) parts.push('(uncommitted changes)')
+          if (status.ahead) parts.push(`${status.ahead} ahead`)
+          if (status.behind) parts.push(`${status.behind} behind`)
+          return { text: parts.join('\n') }
+        },
+      })
     }
 
     // 5. CLI commands
     if (typeof api.registerCli === 'function') {
       api.registerCli((cliCtx: any) => {
-        cliCtx.program
+        const cmd = cliCtx.program
           .command('plur')
           .description('PLUR memory management')
           .action(() => {
@@ -138,6 +164,13 @@ const plugin = {
             console.log(`  Episodes: ${s.episode_count}`)
             console.log(`  Packs: ${s.pack_count}`)
             console.log(`  Storage: ${s.storage_root}`)
+          })
+        cmd
+          .command('sync [remote]')
+          .description('Sync memories via git')
+          .action((remote?: string) => {
+            const result = getEngine(path).plur.sync(remote)
+            console.log(`Sync: ${result.action}${result.message ? ` — ${result.message}` : ''}`)
           })
       }, { commands: ['plur'] })
     }
