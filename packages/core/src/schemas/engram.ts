@@ -109,7 +109,7 @@ export const ExchangeMetadataSchema = z.object({
 
 export const EngramSchema = z.object({
   // Identity
-  id: z.string().regex(/^(ENG|ABS)-[A-Za-z0-9-]+$/),
+  id: z.string().regex(/^(ENG|ABS|META)-[A-Za-z0-9-]+$/),
   version: z.number().int().min(1).default(2),
   status: z.enum(['active', 'dormant', 'retired', 'candidate']),
   consolidated: z.boolean().default(false),
