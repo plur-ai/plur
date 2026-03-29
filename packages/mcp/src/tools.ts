@@ -428,6 +428,7 @@ export function getToolDefinitions(): ToolDefinition[] {
           domain: { type: 'string', description: 'Filter source engrams by domain prefix' },
           scope: { type: 'string', description: 'Filter source engrams by scope' },
           run_validation: { type: 'boolean', description: 'Whether to run cross-domain validation (default: false)' },
+          dry_run: { type: 'boolean', description: 'If true, extract but do not persist meta-engrams (default: false)' },
         },
         required: ['llm_base_url', 'llm_api_key'],
       },
@@ -445,6 +446,14 @@ export function getToolDefinitions(): ToolDefinition[] {
         const result = await extractMetaEngrams(sourceEngrams, llm, {
           run_validation: args.run_validation as boolean | undefined,
         })
+
+        // Persist unless dry_run
+        const isDryRun = args.dry_run === true
+        let saveStats: { saved: number; skipped: number } | null = null
+        if (!isDryRun && result.results.length > 0) {
+          saveStats = plur.saveMetaEngrams(result.results)
+        }
+
         return {
           engrams_analyzed: result.engrams_analyzed,
           clusters_found: result.clusters_found,
@@ -452,6 +461,8 @@ export function getToolDefinitions(): ToolDefinition[] {
           meta_engrams_extracted: result.meta_engrams_extracted,
           rejected_as_platitudes: result.rejected_as_platitudes,
           duration_ms: result.duration_ms,
+          dry_run: isDryRun,
+          ...(saveStats ? { saved: saveStats.saved, skipped: saveStats.skipped } : {}),
           results: result.results.map(m => ({
             id: m.id,
             statement: m.statement,

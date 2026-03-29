@@ -309,6 +309,24 @@ export class Plur {
     saveEngrams(this.paths.engrams, engrams)
   }
 
+  /** Save extracted meta-engrams to the engram store. Skips IDs that already exist. */
+  saveMetaEngrams(metas: Engram[]): { saved: number; skipped: number } {
+    const engrams = loadEngrams(this.paths.engrams)
+    const existingIds = new Set(engrams.map(e => e.id))
+    let saved = 0
+    let skipped = 0
+    for (const meta of metas) {
+      if (existingIds.has(meta.id)) {
+        skipped++
+      } else {
+        engrams.push(meta)
+        saved++
+      }
+    }
+    if (saved > 0) saveEngrams(this.paths.engrams, engrams)
+    return { saved, skipped }
+  }
+
   /** Set engram status to 'retired'. */
   forget(id: string, reason?: string): void {
     const engrams = loadEngrams(this.paths.engrams)

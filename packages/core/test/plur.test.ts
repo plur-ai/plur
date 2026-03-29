@@ -147,4 +147,78 @@ describe('Plur', () => {
       expect(result.directives).toMatch(/\[ENG-/)
     }
   })
+
+  it('saveMetaEngrams persists to store and skips duplicates', () => {
+    const meta = {
+      id: 'META-test-principle',
+      version: 2,
+      status: 'active',
+      consolidated: false,
+      type: 'behavioral',
+      scope: 'global',
+      visibility: 'private',
+      statement: 'Test meta-engram principle',
+      domain: 'meta',
+      tags: ['meta-engram'],
+      activation: { retrieval_strength: 0.7, storage_strength: 1, frequency: 0, last_accessed: '2026-03-29' },
+      feedback_signals: { positive: 0, negative: 0, neutral: 0 },
+      knowledge_anchors: [],
+      associations: [],
+      derivation_count: 2,
+      pack: null,
+      abstract: null,
+      derived_from: null,
+      polarity: null,
+    } as any
+
+    // Save first time
+    const { saved, skipped } = plur.saveMetaEngrams([meta])
+    expect(saved).toBe(1)
+    expect(skipped).toBe(0)
+
+    // Verify it's in the store
+    const all = plur.list()
+    const metas = all.filter(e => e.id.startsWith('META-'))
+    expect(metas).toHaveLength(1)
+    expect(metas[0].id).toBe('META-test-principle')
+
+    // Save again — should skip duplicate
+    const { saved: saved2, skipped: skipped2 } = plur.saveMetaEngrams([meta])
+    expect(saved2).toBe(0)
+    expect(skipped2).toBe(1)
+
+    // Total should still be 1
+    expect(plur.list().filter(e => e.id.startsWith('META-')).length).toBe(1)
+  })
+
+  it('saveMetaEngrams coexists with regular engrams', () => {
+    plur.learn('Regular engram', { scope: 'global' })
+    const meta = {
+      id: 'META-coexist',
+      version: 2,
+      status: 'active',
+      consolidated: false,
+      type: 'behavioral',
+      scope: 'global',
+      visibility: 'private',
+      statement: 'Meta coexistence test',
+      domain: 'meta',
+      tags: ['meta-engram'],
+      activation: { retrieval_strength: 0.7, storage_strength: 1, frequency: 0, last_accessed: '2026-03-29' },
+      feedback_signals: { positive: 0, negative: 0, neutral: 0 },
+      knowledge_anchors: [],
+      associations: [],
+      derivation_count: 1,
+      pack: null,
+      abstract: null,
+      derived_from: null,
+      polarity: null,
+    } as any
+    plur.saveMetaEngrams([meta])
+
+    const all = plur.list()
+    expect(all.length).toBe(2)
+    expect(all.some(e => e.id.startsWith('ENG-'))).toBe(true)
+    expect(all.some(e => e.id.startsWith('META-'))).toBe(true)
+  })
 })
