@@ -1,4 +1,28 @@
-import { Plur } from '@plur-ai/core'
+import { Plur, extractMetaEngrams, validateMetaEngram } from '@plur-ai/core'
+import type { LlmFunction } from '@plur-ai/core'
+
+/** Create an OpenAI-compatible LLM function from a base URL + API key */
+function makeHttpLlm(baseUrl: string, apiKey: string, model: string = 'gpt-4o-mini'): LlmFunction {
+  return async (prompt: string): Promise<string> => {
+    const response = await fetch(`${baseUrl.replace(/\/$/, '')}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model,
+        messages: [{ role: 'user', content: prompt }],
+        temperature: 0.1,
+      }),
+    })
+    if (!response.ok) {
+      throw new Error(`LLM API error: ${response.status} ${response.statusText}`)
+    }
+    const data = await response.json() as any
+    return data.choices?.[0]?.message?.content ?? ''
+  }
+}
 
 export interface ToolAnnotations {
   title?: string
@@ -388,6 +412,152 @@ export function getToolDefinitions(): ToolDefinition[] {
       },
       handler: async (_args, plur) => {
         return plur.syncStatus()
+      },
+    },
+
+    {
+      name: 'plur_extract_meta',
+      description: 'Extract meta-engrams from stored engrams using the 6-stage pipeline (structural analysis → clustering → alignment → formulation → hierarchy). Requires an LLM API endpoint.',
+      annotations: { title: 'Extract meta-engrams', destructiveHint: false, idempotentHint: false },
+      inputSchema: {
+        type: 'object',
+        properties: {
+          llm_base_url: { type: 'string', description: 'OpenAI-compatible API base URL (e.g. https://api.openai.com/v1)' },
+          llm_api_key: { type: 'string', description: 'API key for the LLM' },
+          llm_model: { type: 'string', description: 'Model name (default: gpt-4o-mini)' },
+          domain: { type: 'string', description: 'Filter source engrams by domain prefix' },
+          scope: { type: 'string', description: 'Filter source engrams by scope' },
+          run_validation: { type: 'boolean', description: 'Whether to run cross-domain validation (default: false)' },
+        },
+        required: ['llm_base_url', 'llm_api_key'],
+      },
+      handler: async (args, plur) => {
+        const llm = makeHttpLlm(
+          args.llm_base_url as string,
+          args.llm_api_key as string,
+          args.llm_model as string | undefined,
+        )
+        // Load engrams via plur instance's recall (no filter = all active)
+        const sourceEngrams = plur.recall('', {
+          domain: args.domain as string | undefined,
+          scope: args.scope as string | undefined,
+          limit: 500,
+        })
+        const result = await extractMetaEngrams(sourceEngrams, llm, {
+          run_validation: args.run_validation as boolean | undefined,
+        })
+        return {
+          engrams_analyzed: result.engrams_analyzed,
+          clusters_found: result.clusters_found,
+          alignments_passed: result.alignments_passed,
+          meta_engrams_extracted: result.meta_engrams_extracted,
+          rejected_as_platitudes: result.rejected_as_platitudes,
+          duration_ms: result.duration_ms,
+          results: result.results.map(m => ({
+            id: m.id,
+            statement: m.statement,
+            domain: m.domain,
+            confidence: (m.structured_data?.meta as any)?.confidence?.composite ?? 0,
+            hierarchy_level: (m.structured_data?.meta as any)?.hierarchy?.level ?? 'mop',
+          })),
+        }
+      },
+    },
+
+    {
+      name: 'plur_meta_engrams',
+      description: 'List existing meta-engrams (engrams with META- prefix) with their structural templates and confidence scores',
+      annotations: { title: 'List meta-engrams', readOnlyHint: true, idempotentHint: true },
+      inputSchema: {
+        type: 'object',
+        properties: {
+          domain: { type: 'string', description: 'Filter by domain prefix (e.g. meta, meta.trading)' },
+          min_confidence: { type: 'number', description: 'Minimum composite confidence score (0-1)' },
+          hierarchy_level: { type: 'string', enum: ['mop', 'top'], description: 'Filter by hierarchy level' },
+          limit: { type: 'number', description: 'Max results to return (default 20)' },
+        },
+      },
+      handler: async (args, plur) => {
+        const allEngrams = plur.recall('meta-engram', { limit: 200 })
+        const metaEngrams = allEngrams.filter(e => e.id.startsWith('META-'))
+        const minConfidence = (args.min_confidence as number | undefined) ?? 0
+        const levelFilter = args.hierarchy_level as string | undefined
+        const domainFilter = args.domain as string | undefined
+        const limit = (args.limit as number | undefined) ?? 20
+
+        const filtered = metaEngrams
+          .filter(m => {
+            const mf = m.structured_data?.meta as any
+            if (!mf) return false
+            if (mf.confidence?.composite < minConfidence) return false
+            if (levelFilter && mf.hierarchy?.level !== levelFilter) return false
+            if (domainFilter && !m.domain?.startsWith(domainFilter)) return false
+            return true
+          })
+          .slice(0, limit)
+
+        return {
+          results: filtered.map(m => {
+            const mf = m.structured_data?.meta as any
+            return {
+              id: m.id,
+              statement: m.statement,
+              domain: m.domain,
+              template: mf?.structure?.template,
+              hierarchy_level: mf?.hierarchy?.level,
+              confidence: mf?.confidence?.composite,
+              evidence_count: mf?.confidence?.evidence_count,
+              domain_count: mf?.confidence?.domain_count,
+              validated_domains: mf?.domain_coverage?.validated,
+            }
+          }),
+          count: filtered.length,
+          total_meta_engrams: metaEngrams.length,
+        }
+      },
+    },
+
+    {
+      name: 'plur_validate_meta',
+      description: 'Test a meta-engram template against engrams from a new domain — updates confidence and domain_coverage',
+      annotations: { title: 'Validate meta-engram', destructiveHint: false, idempotentHint: false },
+      inputSchema: {
+        type: 'object',
+        properties: {
+          meta_engram_id: { type: 'string', description: 'META- engram ID to validate' },
+          test_domain: { type: 'string', description: 'Domain to test against (e.g. medicine)' },
+          llm_base_url: { type: 'string', description: 'OpenAI-compatible API base URL' },
+          llm_api_key: { type: 'string', description: 'API key for the LLM' },
+          llm_model: { type: 'string', description: 'Model name (default: gpt-4o-mini)' },
+        },
+        required: ['meta_engram_id', 'test_domain', 'llm_base_url', 'llm_api_key'],
+      },
+      handler: async (args, plur) => {
+        const metaEngrams = plur.recall('meta-engram', { limit: 200 })
+        const meta = metaEngrams.find(e => e.id === (args.meta_engram_id as string))
+        if (!meta) {
+          throw new Error(`Meta-engram not found: ${args.meta_engram_id}`)
+        }
+
+        const testDomain = args.test_domain as string
+        const testEngrams = plur.recall('', { domain: testDomain, limit: 50 })
+
+        const llm = makeHttpLlm(
+          args.llm_base_url as string,
+          args.llm_api_key as string,
+          args.llm_model as string | undefined,
+        )
+
+        const result = await validateMetaEngram(meta, testEngrams, testDomain, llm)
+        return {
+          meta_engram_id: result.meta_engram_id,
+          test_domain: result.test_domain,
+          prediction_held: result.prediction_held,
+          matching_engram_id: result.matching_engram_id,
+          alignment_score: result.alignment_score,
+          rationale: result.rationale,
+          updated_confidence: (meta.structured_data?.meta as any)?.confidence?.composite,
+        }
       },
     },
 
