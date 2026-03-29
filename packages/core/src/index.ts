@@ -182,6 +182,11 @@ export class Plur {
     return results
   }
 
+  /** List all active engrams, optionally filtered by scope/domain. No search — returns all matches. */
+  list(options?: { scope?: string; domain?: string; min_strength?: number }): Engram[] {
+    return this._filterEngrams(options)
+  }
+
   /** Filter engrams by scope/domain/strength (shared by both modes) */
   private _filterEngrams(options?: RecallOptions): Engram[] {
     let engrams = loadEngrams(this.paths.engrams)

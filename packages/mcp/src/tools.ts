@@ -437,11 +437,10 @@ export function getToolDefinitions(): ToolDefinition[] {
           args.llm_api_key as string,
           args.llm_model as string | undefined,
         )
-        // Load engrams via plur instance's recall (no filter = all active)
-        const sourceEngrams = plur.recall('', {
+        // Load all active engrams (list() returns all, no BM25 filter)
+        const sourceEngrams = plur.list({
           domain: args.domain as string | undefined,
           scope: args.scope as string | undefined,
-          limit: 500,
         })
         const result = await extractMetaEngrams(sourceEngrams, llm, {
           run_validation: args.run_validation as boolean | undefined,
@@ -478,7 +477,7 @@ export function getToolDefinitions(): ToolDefinition[] {
         },
       },
       handler: async (args, plur) => {
-        const allEngrams = plur.recall('meta-engram', { limit: 200 })
+        const allEngrams = plur.list()
         const metaEngrams = allEngrams.filter(e => e.id.startsWith('META-'))
         const minConfidence = (args.min_confidence as number | undefined) ?? 0
         const levelFilter = args.hierarchy_level as string | undefined
@@ -533,14 +532,14 @@ export function getToolDefinitions(): ToolDefinition[] {
         required: ['meta_engram_id', 'test_domain', 'llm_base_url', 'llm_api_key'],
       },
       handler: async (args, plur) => {
-        const metaEngrams = plur.recall('meta-engram', { limit: 200 })
-        const meta = metaEngrams.find(e => e.id === (args.meta_engram_id as string))
+        const allEngrams = plur.list()
+        const meta = allEngrams.find(e => e.id === (args.meta_engram_id as string))
         if (!meta) {
           throw new Error(`Meta-engram not found: ${args.meta_engram_id}`)
         }
 
         const testDomain = args.test_domain as string
-        const testEngrams = plur.recall('', { domain: testDomain, limit: 50 })
+        const testEngrams = plur.list({ domain: testDomain })
 
         const llm = makeHttpLlm(
           args.llm_base_url as string,
