@@ -2,6 +2,8 @@ import type { Engram, Association } from './schemas/engram.js'
 import type { PackManifest } from './schemas/pack.js'
 import type { LoadedPack } from './engrams.js'
 import { decayedStrength, decayedCoAccessStrength, daysSince } from './decay.js'
+import { classifyPolarity } from './polarity.js'
+import { computeConfidence } from './confidence.js'
 
 export interface InjectionContext {
   prompt: string
@@ -18,10 +20,13 @@ export type ScoredEngram = Engram & {
 }
 
 export type AgentEngram = Omit<ScoredEngram, 'associations'>
-export type WireEngram = Omit<AgentEngram, 'keyword_match' | 'raw_score' | 'score'>
+export type WireEngram = Omit<AgentEngram, 'keyword_match' | 'raw_score' | 'score'> & {
+  confidence_score: number
+}
 
 export interface InternalInjectionResult {
   directives: WireEngram[]
+  constraints: WireEngram[]
   consider: WireEngram[]
   tokens_used: { directives: number; consider: number }
 }
@@ -109,7 +114,7 @@ function stripAssociations(engram: ScoredEngram): AgentEngram {
 
 function stripScoring(engram: AgentEngram): WireEngram {
   const { keyword_match: _, raw_score: _r, score: _s, ...rest } = engram
-  return rest
+  return { ...rest, confidence_score: computeConfidence(engram) }
 }
 
 // --- Scoring ---
@@ -316,6 +321,7 @@ export function selectAndSpread(
   if (directives.length === 0 && dip19Pool.length === 0) {
     return {
       directives: [],
+      constraints: [],
       consider: [],
       tokens_used: { directives: 0, consider: 0 },
     }
@@ -377,13 +383,26 @@ export function selectAndSpread(
   const agentDirectives = directives.map(stripAssociations)
   const agentConsider = allConsider.map(stripAssociations)
 
-  const wireDirectives = agentDirectives.map(stripScoring)
+  const wireAll = agentDirectives.map(stripScoring)
   const wireConsider = agentConsider.map(stripScoring)
+
+  // Auto-classify polarity for engrams where polarity is null, then split
+  const wireDirectives: WireEngram[] = []
+  const wireConstraints: WireEngram[] = []
+  for (const wire of wireAll) {
+    const polarity = wire.polarity ?? classifyPolarity(wire.statement)
+    if (polarity === 'dont') {
+      wireConstraints.push(wire)
+    } else {
+      wireDirectives.push(wire)
+    }
+  }
 
   const considerTokens = dip19PoolTokens + spreadTokens
 
   return {
     directives: wireDirectives,
+    constraints: wireConstraints,
     consider: wireConsider,
     tokens_used: { directives: directiveTokens, consider: considerTokens },
   }

@@ -83,6 +83,7 @@ describe('Plur', () => {
     const result = plur.inject('completely unrelated topic xyz123')
     expect(result.count).toBe(0)
     expect(result.directives).toBe('')
+    expect(result.constraints).toBe('')
     expect(result.consider).toBe('')
     expect(result.tokens_used).toBe(0)
   })

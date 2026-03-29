@@ -26,6 +26,12 @@ import type {
   LlmFunction,
 } from './types.js'
 
+export { classifyPolarity } from './polarity.js'
+export { computeConfidence, computeMetaConfidence } from './confidence.js'
+export { SessionBreadcrumbs } from './session-state.js'
+export { generateGuardrails } from './guardrails.js'
+export type { MetaField, StructuralTemplate, EvidenceEntry, MetaConfidence, DomainCoverage, HierarchyPosition, Falsification } from './schemas/meta-engram.js'
+export { MetaFieldSchema, StructuralTemplateSchema, EvidenceEntrySchema, MetaConfidenceSchema, DomainCoverageSchema, HierarchyPositionSchema, FalsificationSchema } from './schemas/meta-engram.js'
 export { engramSearchText } from './fts.js'
 export { detectPlurStorage, type PlurPaths } from './storage.js'
 export type { SyncResult, SyncStatus } from './sync.js'
@@ -110,6 +116,7 @@ export class Plur {
       pack: null,
       abstract: null,
       derived_from: null,
+      polarity: null,
       relations: conflictIds.length > 0 ? {
         broader: [],
         narrower: [],
@@ -261,12 +268,14 @@ export class Plur {
     }
 
     const directivesStr = formatEngrams(result.directives)
+    const constraintsStr = formatEngrams(result.constraints)
     const considerStr = formatEngrams(result.consider)
-    const count = result.directives.length + result.consider.length
+    const count = result.directives.length + result.constraints.length + result.consider.length
     const tokensUsed = result.tokens_used.directives + result.tokens_used.consider
 
     return {
       directives: directivesStr,
+      constraints: constraintsStr,
       consider: considerStr,
       count,
       tokens_used: tokensUsed,

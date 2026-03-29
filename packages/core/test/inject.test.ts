@@ -48,5 +48,46 @@ describe('injection engine', () => {
     )
     expect(result.tokens_used.directives).toBeLessThanOrEqual(500)
     expect(result.directives.length).toBeGreaterThan(0)
+    expect(result.constraints).toBeDefined()
+  })
+
+  it('splits dont-pattern engrams into constraints', () => {
+    const engrams = [
+      makeEngram({ id: 'ENG-2026-0319-001', statement: 'Always deploy using blue-green strategy' }),
+      makeEngram({ id: 'ENG-2026-0319-002', statement: 'Never deploy directly to production' }),
+      makeEngram({ id: 'ENG-2026-0319-003', statement: 'Avoid deploy on Fridays at all costs' }),
+    ]
+    const result = selectAndSpread(
+      { prompt: 'deploy the app', maxTokens: 5000 },
+      engrams, []
+    )
+    // dont-patterns go to constraints, rest to directives
+    expect(result.constraints.length).toBe(2)
+    expect(result.directives.length).toBe(1)
+    expect(result.constraints.every(c => c.confidence_score >= 0)).toBe(true)
+    expect(result.directives.every(d => d.confidence_score >= 0)).toBe(true)
+  })
+
+  it('adds confidence_score to all wire engrams', () => {
+    const engrams = [
+      makeEngram({
+        id: 'ENG-2026-0319-001',
+        statement: 'Always deploy using blue-green strategy',
+        feedback_signals: { positive: 5, negative: 0, neutral: 1 },
+      }),
+    ]
+    const result = selectAndSpread(
+      { prompt: 'deploy the app', maxTokens: 5000 },
+      engrams, []
+    )
+    const all = [...result.directives, ...result.constraints, ...result.consider]
+    expect(all.length).toBeGreaterThan(0)
+    for (const wire of all) {
+      expect(typeof wire.confidence_score).toBe('number')
+      expect(wire.confidence_score).toBeGreaterThanOrEqual(0)
+      expect(wire.confidence_score).toBeLessThanOrEqual(1)
+    }
+    // Engram with positive feedback should have confidence > 0.5
+    expect(result.directives[0].confidence_score).toBeGreaterThan(0.5)
   })
 })

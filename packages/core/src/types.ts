@@ -35,6 +35,7 @@ export interface InjectOptions {
 
 export interface InjectionResult {
   directives: string
+  constraints: string
   consider: string
   count: number
   tokens_used: number
