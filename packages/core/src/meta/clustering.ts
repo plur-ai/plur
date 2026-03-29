@@ -91,28 +91,29 @@ export async function clusterByStructure(
   const { matrix, method } = await computeSimilarityMatrix(templates)
   const effectiveThreshold = threshold ?? (method === 'embedding' ? EMBEDDING_THRESHOLD : TOKEN_THRESHOLD)
 
-  // Agglomerative clustering via pairwise similarity
-  const assigned = new Set<number>()
+  // Multi-membership clustering: each engram can appear in multiple clusters
+  const seenClusters = new Set<string>()
   const clusters: EngramCluster[] = []
   let clusterId = 0
 
   for (let i = 0; i < analyses.length; i++) {
-    if (assigned.has(i)) continue
-
     const members = [analyses[i]]
     const memberIndices = [i]
-    assigned.add(i)
 
-    for (let j = i + 1; j < analyses.length; j++) {
-      if (assigned.has(j)) continue
+    for (let j = 0; j < analyses.length; j++) {
+      if (j === i) continue
       if (matrix[i][j] >= effectiveThreshold) {
         members.push(analyses[j])
         memberIndices.push(j)
-        assigned.add(j)
       }
     }
 
     if (members.length < 2) continue // Discard singletons
+
+    // Deduplicate: skip if this exact member set (by sorted IDs) already exists
+    const memberKey = members.map(m => m.engram_id).sort().join(',')
+    if (seenClusters.has(memberKey)) continue
+    seenClusters.add(memberKey)
 
     const domains = [...new Set(members.map(m => m.domain))]
 

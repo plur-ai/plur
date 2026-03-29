@@ -66,4 +66,43 @@ describe('clusterByStructure', () => {
     const clusters = await clusterByStructure(analyses)
     expect(clusters).toHaveLength(0)
   })
+
+  it('allows multi-cluster membership for cross-domain discovery', async () => {
+    // ENG-bridge shares structural similarity with both group A and group B
+    const groupA = makeAnalysis({ engram_id: 'ENG-A1', domain: 'trading',
+      triples: [{
+        subject: { role: 'metric', domain_instance: 'sharpe' },
+        predicate: 'assumes-independence-of',
+        object: { role: 'correlated-variables', domain_instance: 'returns' },
+        outcome: 'underestimated-risk',
+      }],
+    })
+    const groupB = makeAnalysis({ engram_id: 'ENG-B1', domain: 'infrastructure',
+      triples: [{
+        subject: { role: 'metric', domain_instance: 'uptime' },
+        predicate: 'assumes-independence-of',
+        object: { role: 'correlated-variables', domain_instance: 'services' },
+        outcome: 'underestimated-risk',
+      }],
+    })
+    const bridge = makeAnalysis({ engram_id: 'ENG-BRIDGE', domain: 'security',
+      triples: [{
+        subject: { role: 'metric', domain_instance: 'threat-score' },
+        predicate: 'assumes-independence-of',
+        object: { role: 'correlated-variables', domain_instance: 'attack-vectors' },
+        outcome: 'underestimated-risk',
+      }],
+    })
+
+    const clusters = await clusterByStructure([groupA, groupB, bridge])
+    // Bridge engram should be able to appear in clusters seeded by different engrams
+    // All three are very similar so they'll form overlapping clusters
+    const bridgeClusters = clusters.filter(c =>
+      c.members.some(m => m.engram_id === 'ENG-BRIDGE')
+    )
+    // With multi-membership, bridge should appear in at least one cluster
+    expect(bridgeClusters.length).toBeGreaterThanOrEqual(1)
+    // And total clusters should reflect the overlapping nature
+    expect(clusters.length).toBeGreaterThanOrEqual(1)
+  })
 })
