@@ -14,7 +14,11 @@ The interesting part: **Haiku with PLUR memory outperforms Opus without it** —
 
 ## Install
 
-### Quick start (zero setup)
+### One-click install
+
+Go to [plur.ai](https://plur.ai) and click **Install memory** for your tool — Claude Code, Cursor, Windsurf, or OpenClaw. The site generates the right config for your setup.
+
+### Manual setup (Claude Code)
 
 Add to `.claude/mcp.json` — no install step needed:
 
