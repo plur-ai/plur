@@ -90,4 +90,62 @@ describe('injection engine', () => {
     // Engram with positive feedback should have confidence > 0.5
     expect(result.directives[0].confidence_score).toBeGreaterThan(0.5)
   })
+
+  it('selectAndSpread excludes expired engrams', () => {
+    const expired = makeEngram({
+      id: 'ENG-2026-0330-001',
+      statement: 'Deploy to staging server first',
+      temporal: { learned_at: '2026-01-01', valid_until: '2026-01-31' },
+    })
+    const valid = makeEngram({
+      id: 'ENG-2026-0330-002',
+      statement: 'Deploy using blue-green strategy',
+    })
+    const result = selectAndSpread(
+      { prompt: 'deploy the app', maxTokens: 5000 },
+      [expired, valid], []
+    )
+    const allIds = [
+      ...result.directives.map(d => d.id),
+      ...result.constraints.map(c => c.id),
+      ...result.consider.map(c => c.id),
+    ]
+    expect(allIds).not.toContain('ENG-2026-0330-001')
+  })
+
+  it('emotional weight boosts scoring for high-weight engrams', () => {
+    const neutral = makeEngram({
+      id: 'ENG-2026-0330-001',
+      statement: 'Always deploy using blue-green strategy',
+    })
+    const highEmotion = makeEngram({
+      id: 'ENG-2026-0330-002',
+      statement: 'Always deploy using blue-green strategy',
+      episodic: { emotional_weight: 10, confidence: 5 },
+    })
+    const promptLower = 'deploy the app'
+    const promptWords = new Set(promptLower.split(/\W+/).filter(w => w.length > 2))
+    const scoreNeutral = scoreEngram(neutral, promptLower, promptWords, [], undefined, false)
+    const scoreHigh = scoreEngram(highEmotion, promptLower, promptWords, [], undefined, false)
+    expect(scoreHigh).toBeGreaterThan(scoreNeutral)
+    expect(scoreHigh).toBeCloseTo(scoreNeutral * 1.2, 5)
+  })
+
+  it('low emotional weight reduces score', () => {
+    const neutral = makeEngram({
+      id: 'ENG-2026-0330-001',
+      statement: 'Always deploy using blue-green strategy',
+    })
+    const lowEmotion = makeEngram({
+      id: 'ENG-2026-0330-002',
+      statement: 'Always deploy using blue-green strategy',
+      episodic: { emotional_weight: 1, confidence: 5 },
+    })
+    const promptLower = 'deploy the app'
+    const promptWords = new Set(promptLower.split(/\W+/).filter(w => w.length > 2))
+    const scoreNeutral = scoreEngram(neutral, promptLower, promptWords, [], undefined, false)
+    const scoreLow = scoreEngram(lowEmotion, promptLower, promptWords, [], undefined, false)
+    expect(scoreLow).toBeLessThan(scoreNeutral)
+    expect(scoreLow).toBeCloseTo(scoreNeutral * 0.84, 5)
+  })
 })

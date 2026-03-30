@@ -178,6 +178,10 @@ export function scoreEngram(
   // Consolidated engrams get a slight boost (survived reconsolidation)
   if (engram.consolidated) score *= 1.1
 
+  // Emotional weight multiplier: maps [1,10] to [0.84, 1.20], neutral at 5
+  const emotionalWeight = engram.episodic?.emotional_weight ?? 5
+  score *= 1 + (emotionalWeight - 5) * 0.04
+
   return score
 }
 
@@ -229,6 +233,7 @@ export function selectAndSpread(
   const promptWords = new Set(promptLower.split(/\W+/).filter(w => w.length > 2))
   const maxTokens = ctx.maxTokens ?? DEFAULT_MAX_TOKENS
   const minRelevance = ctx.minRelevance ?? DEFAULT_MIN_RELEVANCE
+  const today = new Date().toISOString().slice(0, 10)
 
   // Step 0: Build engram map for spreading activation
   const engramMap = new Map<string, Engram>()
@@ -238,6 +243,8 @@ export function selectAndSpread(
 
   for (const engram of personalEngrams) {
     if (engram.status !== 'active') continue
+    if (engram.temporal?.valid_until && engram.temporal.valid_until < today) continue
+    if (engram.temporal?.valid_from && engram.temporal.valid_from > today) continue
     engramMap.set(engram.id, engram)
     let raw = scoreEngram(engram, promptLower, promptWords, [], ctx.scope, false)
     // Embedding boost: semantically similar engrams with zero keyword hits still get scored
@@ -258,6 +265,8 @@ export function selectAndSpread(
     const matchTerms = packMeta.match_terms
     for (const engram of pack.engrams) {
       if (engram.status !== 'active') continue
+      if (engram.temporal?.valid_until && engram.temporal.valid_until < today) continue
+      if (engram.temporal?.valid_from && engram.temporal.valid_from > today) continue
       engramMap.set(engram.id, engram)
       let raw = scoreEngram(engram, promptLower, promptWords, matchTerms, ctx.scope, true)
       const embBoost = embeddingBoosts?.get(engram.id) ?? 0

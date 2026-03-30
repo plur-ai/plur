@@ -12,6 +12,7 @@ import { hybridSearch } from './hybrid-search.js'
 import { expandedSearch } from './query-expansion.js'
 import { installPack, listPacks, exportPack } from './packs.js'
 import { sync as gitSync, getSyncStatus, type SyncResult, type SyncStatus } from './sync.js'
+import { detectSecrets } from './secrets.js'
 import type { Engram } from './schemas/engram.js'
 import type { Episode } from './schemas/episode.js'
 import type { PackManifest } from './schemas/pack.js'
@@ -34,6 +35,7 @@ export { generateGuardrails } from './guardrails.js'
 export type { MetaField, StructuralTemplate, EvidenceEntry, MetaConfidence, DomainCoverage, HierarchyPosition, Falsification } from './schemas/meta-engram.js'
 export { MetaFieldSchema, StructuralTemplateSchema, EvidenceEntrySchema, MetaConfidenceSchema, DomainCoverageSchema, HierarchyPositionSchema, FalsificationSchema } from './schemas/meta-engram.js'
 export { engramSearchText } from './fts.js'
+export { detectSecrets } from './secrets.js'
 export { detectPlurStorage, type PlurPaths } from './storage.js'
 export type { SyncResult, SyncStatus } from './sync.js'
 export { checkForUpdate, getCachedUpdateCheck, clearVersionCache, type VersionCheckResult } from './version-check.js'
@@ -83,6 +85,12 @@ export class Plur {
 
   /** Create engram, detect conflicts, save. Returns the created engram. */
   learn(statement: string, context?: LearnContext): Engram {
+    if (!this.config.allow_secrets) {
+      const secrets = detectSecrets(statement)
+      if (secrets.length > 0) {
+        throw new Error(`Secret detected in statement: ${secrets[0].pattern}. Use config.allow_secrets to override.`)
+      }
+    }
     const engrams = loadEngrams(this.paths.engrams)
     const id = generateEngramId(engrams)
     const scope = context?.scope ?? 'global'
@@ -191,6 +199,13 @@ export class Plur {
   private _filterEngrams(options?: RecallOptions): Engram[] {
     let engrams = loadEngrams(this.paths.engrams)
     engrams = engrams.filter(e => e.status === 'active')
+    // Temporal validity: exclude expired or not-yet-valid engrams
+    const today = new Date().toISOString().slice(0, 10)
+    engrams = engrams.filter(e => {
+      if (e.temporal?.valid_until && e.temporal.valid_until < today) return false
+      if (e.temporal?.valid_from && e.temporal.valid_from > today) return false
+      return true
+    })
     if (options?.domain) {
       engrams = engrams.filter(e => e.domain?.startsWith(options.domain!))
     }
@@ -206,20 +221,61 @@ export class Plur {
     return engrams
   }
 
-  /** Reactivate accessed engrams (bump retrieval strength, frequency, last_accessed) */
+  /** Reactivate accessed engrams and update co-access associations */
   private _reactivateResults(results: Engram[]): void {
     if (results.length === 0) return
     const allEngrams = loadEngrams(this.paths.engrams)
     const resultIds = new Set(results.map(e => e.id))
+    const today = new Date().toISOString().slice(0, 10)
     let modified = false
+
+    // Reactivate accessed engrams
     for (const e of allEngrams) {
       if (resultIds.has(e.id)) {
         e.activation.retrieval_strength = reactivate(e.activation.retrieval_strength)
-        e.activation.last_accessed = new Date().toISOString().slice(0, 10)
+        e.activation.last_accessed = today
         e.activation.frequency += 1
         modified = true
       }
     }
+
+    // Co-access edge updates: only for top half of results, min 2
+    if (results.length >= 2 && (this.config.injection?.co_access !== false)) {
+      const topHalf = results.slice(0, Math.max(2, Math.ceil(results.length / 2)))
+      const topIds = topHalf.map(e => e.id)
+
+      for (const sourceId of topIds) {
+        const source = allEngrams.find(e => e.id === sourceId)
+        if (!source) continue
+
+        for (const targetId of topIds) {
+          if (targetId === sourceId) continue
+
+          const existing = source.associations.find(
+            a => a.type === 'co_accessed' && a.target === targetId
+          )
+
+          if (existing) {
+            existing.strength = Math.min(0.95, existing.strength + 0.05)
+            existing.updated_at = today
+            modified = true
+          } else {
+            const coAccessCount = source.associations.filter(a => a.type === 'co_accessed').length
+            if (coAccessCount < 5) {
+              source.associations.push({
+                target_type: 'engram',
+                target: targetId,
+                type: 'co_accessed',
+                strength: 0.3,
+                updated_at: today,
+              })
+              modified = true
+            }
+          }
+        }
+      }
+    }
+
     if (modified) saveEngrams(this.paths.engrams, allEngrams)
   }
 
@@ -374,6 +430,7 @@ export class Plur {
         const captured = match.slice(1).filter(Boolean).join(' ').trim()
         if (!captured || captured.length < 5) continue
         if (seen.has(captured.toLowerCase())) continue
+        if (!this.config.allow_secrets && detectSecrets(captured).length > 0) continue
         seen.add(captured.toLowerCase())
         candidates.push({
           statement: captured,

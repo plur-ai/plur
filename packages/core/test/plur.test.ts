@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync } from 'fs'
+import { mkdtempSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { Plur } from '../src/index.js'
@@ -249,5 +249,149 @@ describe('Plur', () => {
     expect(all.length).toBe(2)
     expect(all.some(e => e.id.startsWith('ENG-'))).toBe(true)
     expect(all.some(e => e.id.startsWith('META-'))).toBe(true)
+  })
+
+  it('recall excludes expired engrams (valid_until in the past)', () => {
+    const engram = plur.learn('Temporary API endpoint is /v1/beta', { scope: 'global' })
+    engram.temporal = { learned_at: '2026-01-01', valid_until: '2026-01-31' }
+    plur.updateEngram(engram)
+    const results = plur.recall('API endpoint beta')
+    expect(results).toHaveLength(0)
+  })
+
+  it('recall excludes not-yet-valid engrams (valid_from in the future)', () => {
+    const engram = plur.learn('New API launches with GraphQL endpoint', { scope: 'global' })
+    engram.temporal = { learned_at: '2026-03-30', valid_from: '2099-01-01' }
+    plur.updateEngram(engram)
+    const results = plur.recall('GraphQL API endpoint')
+    expect(results).toHaveLength(0)
+  })
+
+  it('recall includes engrams without temporal fields', () => {
+    plur.learn('Always use HTTPS for API calls', { scope: 'global' })
+    const results = plur.recall('HTTPS API calls')
+    expect(results.length).toBeGreaterThan(0)
+  })
+
+  it('recall includes engrams within temporal window', () => {
+    const engram = plur.learn('Current sprint focus is performance', { scope: 'global' })
+    engram.temporal = { learned_at: '2026-01-01', valid_from: '2026-01-01', valid_until: '2099-12-31' }
+    plur.updateEngram(engram)
+    const results = plur.recall('sprint performance focus')
+    expect(results.length).toBeGreaterThan(0)
+  })
+
+  it('learn rejects statements containing secrets', () => {
+    expect(() => plur.learn('API key is sk-1234567890abcdefghijklmn')).toThrow('Secret detected')
+  })
+
+  it('learn allows clean statements', () => {
+    const engram = plur.learn('Store API keys in environment variables', { scope: 'global' })
+    expect(engram.id).toMatch(/^ENG-/)
+  })
+
+  it('learn allows secrets when allow_secrets config is true', () => {
+    writeFileSync(join(dir, 'config.yaml'), 'allow_secrets: true\n')
+    const permissivePlur = new Plur({ path: dir })
+    const engram = permissivePlur.learn('API key is sk-1234567890abcdefghijklmn')
+    expect(engram.id).toMatch(/^ENG-/)
+  })
+
+  it('ingest skips candidates containing secrets', () => {
+    const candidates = plur.ingest(
+      'We decided to use password = supersecretpass123 for the database. Always encrypt at rest.',
+      { source: 'conversation', extract_only: true }
+    )
+    for (const c of candidates) {
+      expect(c.statement).not.toMatch(/supersecretpass123/)
+    }
+  })
+
+  it('recall creates co-access associations between co-recalled engrams', () => {
+    const e1 = plur.learn('PostgreSQL is the primary database', { scope: 'global' })
+    const e2 = plur.learn('PostgreSQL requires connection pooling', { scope: 'global' })
+    plur.recall('PostgreSQL database')
+    const all = plur.list()
+    const updated1 = all.find(e => e.id === e1.id)!
+    const coAccess1 = updated1.associations.filter(a => a.type === 'co_accessed')
+    expect(coAccess1.length).toBeGreaterThan(0)
+    expect(coAccess1[0].target).toBe(e2.id)
+    expect(coAccess1[0].strength).toBe(0.3)
+  })
+
+  it('recall strengthens existing co-access associations on repeat', () => {
+    const e1 = plur.learn('Redis is used for caching layer', { scope: 'global' })
+    const e2 = plur.learn('Redis requires memory monitoring', { scope: 'global' })
+    plur.recall('Redis caching memory')
+    plur.recall('Redis caching memory')
+    const all = plur.list()
+    const updated1 = all.find(e => e.id === e1.id)!
+    const coAccess1 = updated1.associations.filter(a => a.type === 'co_accessed')
+    expect(coAccess1[0].strength).toBe(0.35) // 0.3 initial + 0.05 bump
+  })
+
+  it('co-access associations are bidirectional', () => {
+    const e1 = plur.learn('Docker containers for deployment', { scope: 'global' })
+    const e2 = plur.learn('Docker compose for local development', { scope: 'global' })
+    plur.recall('Docker containers compose')
+    const all = plur.list()
+    const u1 = all.find(e => e.id === e1.id)!
+    const u2 = all.find(e => e.id === e2.id)!
+    expect(u1.associations.some(a => a.type === 'co_accessed' && a.target === e2.id)).toBe(true)
+    expect(u2.associations.some(a => a.type === 'co_accessed' && a.target === e1.id)).toBe(true)
+  })
+
+  it('co-access associations cap at 5 per engram', () => {
+    const ids: string[] = []
+    for (let i = 0; i < 7; i++) {
+      const e = plur.learn(`Testing pattern ${i} for validation purposes`, { scope: 'global' })
+      ids.push(e.id)
+    }
+    plur.recall('testing pattern validation')
+    const all = plur.list()
+    for (const e of all) {
+      const coAccess = e.associations.filter(a => a.type === 'co_accessed')
+      expect(coAccess.length).toBeLessThanOrEqual(5)
+    }
+  })
+
+  it('co-access strength caps at 0.95', () => {
+    const e1 = plur.learn('Nginx reverse proxy configuration', { scope: 'global' })
+    const e2 = plur.learn('Nginx load balancing setup', { scope: 'global' })
+    // Recall many times to bump strength repeatedly
+    for (let i = 0; i < 20; i++) {
+      plur.recall('Nginx proxy load balancing')
+    }
+    const all = plur.list()
+    const updated1 = all.find(e => e.id === e1.id)!
+    const coAccess = updated1.associations.filter(a => a.type === 'co_accessed')
+    expect(coAccess.length).toBeGreaterThan(0)
+    expect(coAccess[0].strength).toBeLessThanOrEqual(0.95)
+  })
+
+  it('co-access disabled when config.injection.co_access is false', () => {
+    writeFileSync(join(dir, 'config.yaml'), 'injection:\n  co_access: false\n')
+    const noCoAccessPlur = new Plur({ path: dir })
+    noCoAccessPlur.learn('TypeScript strict mode enabled', { scope: 'global' })
+    noCoAccessPlur.learn('TypeScript compiler configuration', { scope: 'global' })
+    noCoAccessPlur.recall('TypeScript strict compiler')
+    const all = noCoAccessPlur.list()
+    for (const e of all) {
+      const coAccess = e.associations.filter(a => a.type === 'co_accessed')
+      expect(coAccess.length).toBe(0)
+    }
+  })
+
+  it('co-access only applies to top half of results', () => {
+    const strong1 = plur.learn('Kubernetes orchestration for containers', { scope: 'global' })
+    const strong2 = plur.learn('Kubernetes cluster scaling rules', { scope: 'global' })
+    const weak = plur.learn('Container image builds slowly', { scope: 'global' })
+    const results = plur.recall('kubernetes cluster orchestration')
+    expect(results.length).toBeGreaterThanOrEqual(2)
+    const all = plur.list()
+    const updatedStrong1 = all.find(e => e.id === strong1.id)!
+    const coAccess = updatedStrong1.associations.filter(a => a.type === 'co_accessed')
+    expect(coAccess.length).toBeGreaterThan(0)
+    expect(coAccess.some(a => a.target === strong2.id)).toBe(true)
   })
 })

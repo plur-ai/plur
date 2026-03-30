@@ -34,22 +34,61 @@ export function engramSearchText(engram: Engram): string {
   return parts.join(' ')
 }
 
-/** Score an engram against query tokens */
-export function ftsScore(engram: Engram, queryTokens: string[]): number {
-  const allTerms = ftsTokenize(engramSearchText(engram))
-  let matches = 0
+/** Compute IDF weights for query tokens against a corpus of engrams */
+export function computeIdf(engrams: Engram[], queryTokens: string[]): Map<string, number> {
+  const N = engrams.length
+  if (N === 0) return new Map()
+
+  // Pre-tokenize all engrams
+  const engramTermSets = engrams.map(e => new Set(ftsTokenize(engramSearchText(e))))
+
+  const idf = new Map<string, number>()
   for (const qt of queryTokens) {
-    if (allTerms.some(t => t.includes(qt) || qt.includes(t))) matches++
+    let df = 0
+    for (const termSet of engramTermSets) {
+      if (termSet.has(qt) || Array.from(termSet).some(t => t.includes(qt) || qt.includes(t))) {
+        df++
+      }
+    }
+    idf.set(qt, Math.max(0, Math.log(N / (1 + df))))
   }
-  return queryTokens.length > 0 ? matches / queryTokens.length : 0
+  return idf
 }
 
-/** Search engrams by text query */
+/** Score an engram against query tokens with IDF weighting */
+export function ftsScore(engram: Engram, queryTokens: string[], idfWeights?: Map<string, number>): number {
+  const allTerms = ftsTokenize(engramSearchText(engram))
+  if (queryTokens.length === 0) return 0
+
+  let weightedHits = 0
+  let totalWeight = 0
+
+  for (const qt of queryTokens) {
+    const weight = idfWeights?.get(qt) ?? 1
+    totalWeight += weight
+    if (allTerms.some(t => t.includes(qt) || qt.includes(t))) {
+      weightedHits += weight
+    }
+  }
+
+  // If all IDF weights are 0 (e.g., single-document corpus), fall back to match ratio
+  if (totalWeight === 0) {
+    let matches = 0
+    for (const qt of queryTokens) {
+      if (allTerms.some(t => t.includes(qt) || qt.includes(t))) matches++
+    }
+    return matches / queryTokens.length
+  }
+  return weightedHits / totalWeight
+}
+
+/** Search engrams by text query with IDF-weighted scoring */
 export function searchEngrams(engrams: Engram[], query: string, limit = 20): Engram[] {
   const queryTokens = ftsTokenize(query)
   if (queryTokens.length === 0) return []
+  const idfWeights = computeIdf(engrams, queryTokens)
   return engrams
-    .map(e => ({ engram: e, score: ftsScore(e, queryTokens) }))
+    .map(e => ({ engram: e, score: ftsScore(e, queryTokens, idfWeights) }))
     .filter(r => r.score > 0)
     .sort((a, b) => b.score - a.score)
     .slice(0, limit)

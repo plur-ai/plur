@@ -12,6 +12,7 @@ export const PlurConfigSchema = z.object({
     spread_budget: z.number().default(480),
     co_access: z.boolean().default(true),
   }).default({}),
+  allow_secrets: z.boolean().default(false),
 }).partial()
 
 export type PlurConfig = z.infer<typeof PlurConfigSchema>

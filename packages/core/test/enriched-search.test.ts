@@ -116,7 +116,7 @@ describe('enriched search — schema fields improve retrieval', () => {
     const engrams = loadEngrams(paths.engrams)
     engrams[0].temporal = {
       learned_at: '2026-03-22',
-      valid_from: '2026-07-01',
+      valid_from: '2025-01-01',  // in the past — currently valid
     }
     engrams[0].entities = [{ name: 'EthCC', type: 'event' }]
     saveEngrams(paths.engrams, engrams)
@@ -124,6 +124,22 @@ describe('enriched search — schema fields improve retrieval', () => {
     const plur2 = new Plur({ path: dir })
     const results = plur2.recall('EthCC')
     expect(results.length).toBe(1)
+  })
+
+  it('temporal valid_from in future excludes engram from recall', () => {
+    plur.learn('Future conference talk', { type: 'behavioral' })
+    const paths = detectPlurStorage(dir)
+    const engrams = loadEngrams(paths.engrams)
+    engrams[0].temporal = {
+      learned_at: '2026-03-22',
+      valid_from: '2099-07-01',  // far future — not yet valid
+    }
+    engrams[0].entities = [{ name: 'FutureConf', type: 'event' }]
+    saveEngrams(paths.engrams, engrams)
+
+    const plur2 = new Plur({ path: dir })
+    const results = plur2.recall('FutureConf')
+    expect(results.length).toBe(0)
   })
 
   it('enriched text does not break when optional fields are absent', () => {
