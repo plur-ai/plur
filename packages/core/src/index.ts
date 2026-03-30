@@ -11,7 +11,7 @@ import { embeddingSearch } from './embeddings.js'
 import { hybridSearch } from './hybrid-search.js'
 import { expandedSearch } from './query-expansion.js'
 import { installPack, listPacks, exportPack } from './packs.js'
-import { sync as gitSync, getSyncStatus, type SyncResult, type SyncStatus } from './sync.js'
+import { sync as gitSync, getSyncStatus, withLock, type SyncResult, type SyncStatus } from './sync.js'
 import { detectSecrets } from './secrets.js'
 import type { Engram } from './schemas/engram.js'
 import type { Episode } from './schemas/episode.js'
@@ -91,52 +91,54 @@ export class Plur {
         throw new Error(`Secret detected in statement: ${secrets[0].pattern}. Use config.allow_secrets to override.`)
       }
     }
-    const engrams = loadEngrams(this.paths.engrams)
-    const id = generateEngramId(engrams)
-    const scope = context?.scope ?? 'global'
-    const now = new Date().toISOString()
+    return withLock(this.paths.engrams, () => {
+      const engrams = loadEngrams(this.paths.engrams)
+      const id = generateEngramId(engrams)
+      const scope = context?.scope ?? 'global'
+      const now = new Date().toISOString()
 
-    // Detect conflicts among active engrams in the same scope
-    const conflictingEngrams = detectConflicts({ statement, scope }, engrams)
-    const conflictIds = conflictingEngrams.map(e => e.id)
+      // Detect conflicts among active engrams in the same scope
+      const conflictingEngrams = detectConflicts({ statement, scope }, engrams)
+      const conflictIds = conflictingEngrams.map(e => e.id)
 
-    const engram: Engram = {
-      id,
-      version: 2,
-      status: 'active',
-      consolidated: false,
-      type: context?.type ?? 'behavioral',
-      scope,
-      visibility: 'private',
-      statement,
-      source: context?.source,
-      domain: context?.domain,
-      activation: {
-        retrieval_strength: 0.7,
-        storage_strength: 1.0,
-        frequency: 0,
-        last_accessed: now.slice(0, 10),
-      },
-      feedback_signals: { positive: 0, negative: 0, neutral: 0 },
-      knowledge_anchors: [],
-      associations: [],
-      derivation_count: 1,
-      tags: [],
-      pack: null,
-      abstract: null,
-      derived_from: null,
-      polarity: null,
-      relations: conflictIds.length > 0 ? {
-        broader: [],
-        narrower: [],
-        related: [],
-        conflicts: conflictIds,
-      } : undefined,
-    }
+      const engram: Engram = {
+        id,
+        version: 2,
+        status: 'active',
+        consolidated: false,
+        type: context?.type ?? 'behavioral',
+        scope,
+        visibility: 'private',
+        statement,
+        source: context?.source,
+        domain: context?.domain,
+        activation: {
+          retrieval_strength: 0.7,
+          storage_strength: 1.0,
+          frequency: 0,
+          last_accessed: now.slice(0, 10),
+        },
+        feedback_signals: { positive: 0, negative: 0, neutral: 0 },
+        knowledge_anchors: [],
+        associations: [],
+        derivation_count: 1,
+        tags: [],
+        pack: null,
+        abstract: null,
+        derived_from: null,
+        polarity: null,
+        relations: conflictIds.length > 0 ? {
+          broader: [],
+          narrower: [],
+          related: [],
+          conflicts: conflictIds,
+        } : undefined,
+      }
 
-    engrams.push(engram)
-    saveEngrams(this.paths.engrams, engrams)
-    return engram
+      engrams.push(engram)
+      saveEngrams(this.paths.engrams, engrams)
+      return engram
+    })
   }
 
   /**
@@ -224,59 +226,61 @@ export class Plur {
   /** Reactivate accessed engrams and update co-access associations */
   private _reactivateResults(results: Engram[]): void {
     if (results.length === 0) return
-    const allEngrams = loadEngrams(this.paths.engrams)
-    const resultIds = new Set(results.map(e => e.id))
-    const today = new Date().toISOString().slice(0, 10)
-    let modified = false
+    withLock(this.paths.engrams, () => {
+      const allEngrams = loadEngrams(this.paths.engrams)
+      const resultIds = new Set(results.map(e => e.id))
+      const today = new Date().toISOString().slice(0, 10)
+      let modified = false
 
-    // Reactivate accessed engrams
-    for (const e of allEngrams) {
-      if (resultIds.has(e.id)) {
-        e.activation.retrieval_strength = reactivate(e.activation.retrieval_strength)
-        e.activation.last_accessed = today
-        e.activation.frequency += 1
-        modified = true
+      // Reactivate accessed engrams
+      for (const e of allEngrams) {
+        if (resultIds.has(e.id)) {
+          e.activation.retrieval_strength = reactivate(e.activation.retrieval_strength)
+          e.activation.last_accessed = today
+          e.activation.frequency += 1
+          modified = true
+        }
       }
-    }
 
-    // Co-access edge updates: only for top half of results, min 2
-    if (results.length >= 2 && (this.config.injection?.co_access !== false)) {
-      const topHalf = results.slice(0, Math.max(2, Math.ceil(results.length / 2)))
-      const topIds = topHalf.map(e => e.id)
+      // Co-access edge updates: only for top half of results, min 2
+      if (results.length >= 2 && (this.config.injection?.co_access !== false)) {
+        const topHalf = results.slice(0, Math.max(2, Math.ceil(results.length / 2)))
+        const topIds = topHalf.map(e => e.id)
 
-      for (const sourceId of topIds) {
-        const source = allEngrams.find(e => e.id === sourceId)
-        if (!source) continue
+        for (const sourceId of topIds) {
+          const source = allEngrams.find(e => e.id === sourceId)
+          if (!source) continue
 
-        for (const targetId of topIds) {
-          if (targetId === sourceId) continue
+          for (const targetId of topIds) {
+            if (targetId === sourceId) continue
 
-          const existing = source.associations.find(
-            a => a.type === 'co_accessed' && a.target === targetId
-          )
+            const existing = source.associations.find(
+              a => a.type === 'co_accessed' && a.target === targetId
+            )
 
-          if (existing) {
-            existing.strength = Math.min(0.95, existing.strength + 0.05)
-            existing.updated_at = today
-            modified = true
-          } else {
-            const coAccessCount = source.associations.filter(a => a.type === 'co_accessed').length
-            if (coAccessCount < 5) {
-              source.associations.push({
-                target_type: 'engram',
-                target: targetId,
-                type: 'co_accessed',
-                strength: 0.3,
-                updated_at: today,
-              })
+            if (existing) {
+              existing.strength = Math.min(0.95, existing.strength + 0.05)
+              existing.updated_at = today
               modified = true
+            } else {
+              const coAccessCount = source.associations.filter(a => a.type === 'co_accessed').length
+              if (coAccessCount < 5) {
+                source.associations.push({
+                  target_type: 'engram',
+                  target: targetId,
+                  type: 'co_accessed',
+                  strength: 0.3,
+                  updated_at: today,
+                })
+                modified = true
+              }
             }
           }
         }
       }
-    }
 
-    if (modified) saveEngrams(this.paths.engrams, allEngrams)
+      if (modified) saveEngrams(this.paths.engrams, allEngrams)
+    })
   }
 
   /** Scored injection within token budget (BM25 only). Returns formatted strings. */
@@ -346,76 +350,86 @@ export class Plur {
 
   /** Update feedback_signals and adjust retrieval_strength. */
   feedback(id: string, signal: 'positive' | 'negative' | 'neutral'): void {
-    const engrams = loadEngrams(this.paths.engrams)
-    const engram = engrams.find(e => e.id === id)
-    if (!engram) throw new Error(`Engram not found: ${id}`)
+    withLock(this.paths.engrams, () => {
+      const engrams = loadEngrams(this.paths.engrams)
+      const engram = engrams.find(e => e.id === id)
+      if (!engram) throw new Error(`Engram not found: ${id}`)
 
-    if (!engram.feedback_signals) {
-      engram.feedback_signals = { positive: 0, negative: 0, neutral: 0 }
-    }
-    engram.feedback_signals[signal] += 1
+      if (!engram.feedback_signals) {
+        engram.feedback_signals = { positive: 0, negative: 0, neutral: 0 }
+      }
+      engram.feedback_signals[signal] += 1
 
-    // Adjust retrieval strength based on feedback
-    if (signal === 'positive') {
-      engram.activation.retrieval_strength = Math.min(1.0, engram.activation.retrieval_strength + 0.05)
-    } else if (signal === 'negative') {
-      engram.activation.retrieval_strength = Math.max(0.0, engram.activation.retrieval_strength - 0.1)
-    }
+      // Adjust retrieval strength based on feedback
+      if (signal === 'positive') {
+        engram.activation.retrieval_strength = Math.min(1.0, engram.activation.retrieval_strength + 0.05)
+      } else if (signal === 'negative') {
+        engram.activation.retrieval_strength = Math.max(0.0, engram.activation.retrieval_strength - 0.1)
+      }
 
-    saveEngrams(this.paths.engrams, engrams)
+      saveEngrams(this.paths.engrams, engrams)
+    })
   }
 
   /** Save extracted meta-engrams to the engram store. Skips IDs that already exist. */
   saveMetaEngrams(metas: Engram[]): { saved: number; skipped: number } {
-    const engrams = loadEngrams(this.paths.engrams)
-    const existingIds = new Set(engrams.map(e => e.id))
-    let saved = 0
-    let skipped = 0
-    for (const meta of metas) {
-      if (existingIds.has(meta.id)) {
-        skipped++
-      } else {
-        engrams.push(meta)
-        saved++
+    return withLock(this.paths.engrams, () => {
+      const engrams = loadEngrams(this.paths.engrams)
+      const existingIds = new Set(engrams.map(e => e.id))
+      let saved = 0
+      let skipped = 0
+      for (const meta of metas) {
+        if (existingIds.has(meta.id)) {
+          skipped++
+        } else {
+          engrams.push(meta)
+          saved++
+        }
       }
-    }
-    if (saved > 0) saveEngrams(this.paths.engrams, engrams)
-    return { saved, skipped }
+      if (saved > 0) saveEngrams(this.paths.engrams, engrams)
+      return { saved, skipped }
+    })
   }
 
   /** Update an existing engram in the store by ID. Returns true if found and updated. */
   updateEngram(updated: Engram): boolean {
-    const engrams = loadEngrams(this.paths.engrams)
-    const idx = engrams.findIndex(e => e.id === updated.id)
-    if (idx === -1) return false
-    engrams[idx] = updated
-    saveEngrams(this.paths.engrams, engrams)
-    return true
+    return withLock(this.paths.engrams, () => {
+      const engrams = loadEngrams(this.paths.engrams)
+      const idx = engrams.findIndex(e => e.id === updated.id)
+      if (idx === -1) return false
+      engrams[idx] = updated
+      saveEngrams(this.paths.engrams, engrams)
+      return true
+    })
   }
 
   /** Set engram status to 'retired'. */
   forget(id: string, reason?: string): void {
-    const engrams = loadEngrams(this.paths.engrams)
-    const engram = engrams.find(e => e.id === id)
-    if (!engram) throw new Error(`Engram not found: ${id}`)
+    withLock(this.paths.engrams, () => {
+      const engrams = loadEngrams(this.paths.engrams)
+      const engram = engrams.find(e => e.id === id)
+      if (!engram) throw new Error(`Engram not found: ${id}`)
 
-    engram.status = 'retired'
-    if (reason && !engram.rationale) {
-      engram.rationale = `Retired: ${reason}`
-    }
+      engram.status = 'retired'
+      if (reason && !engram.rationale) {
+        engram.rationale = `Retired: ${reason}`
+      }
 
-    saveEngrams(this.paths.engrams, engrams)
+      saveEngrams(this.paths.engrams, engrams)
+    })
   }
 
   /** Remove retired engrams from storage. Returns count of removed and remaining. */
   compact(): { removed: number; remaining: number } {
-    const engrams = loadEngrams(this.paths.engrams)
-    const active = engrams.filter(e => e.status !== 'retired')
-    const removed = engrams.length - active.length
-    if (removed > 0) {
-      saveEngrams(this.paths.engrams, active)
-    }
-    return { removed, remaining: active.length }
+    return withLock(this.paths.engrams, () => {
+      const engrams = loadEngrams(this.paths.engrams)
+      const active = engrams.filter(e => e.status !== 'retired')
+      const removed = engrams.length - active.length
+      if (removed > 0) {
+        saveEngrams(this.paths.engrams, active)
+      }
+      return { removed, remaining: active.length }
+    })
   }
 
   /** Capture an episodic memory. */

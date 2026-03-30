@@ -1,5 +1,5 @@
 import { execFileSync } from 'child_process'
-import { existsSync, writeFileSync, renameSync, mkdirSync } from 'fs'
+import { existsSync, writeFileSync, renameSync, mkdirSync, unlinkSync, statSync } from 'fs'
 import { join, dirname } from 'path'
 
 export interface SyncStatus {
@@ -202,6 +202,54 @@ export function sync(root: string, remote?: string): SyncResult {
     message: `Synced. ${parts.join(', ')}.`,
     remote: existingRemote,
     files_changed: filesChanged,
+  }
+}
+
+export interface LockOptions {
+  maxRetries?: number
+  baseDelay?: number
+  staleThreshold?: number
+}
+
+/** File-based exclusive lock using O_EXCL. Retries with exponential backoff. */
+export function withLock<T>(
+  filePath: string,
+  fn: () => T,
+  options?: LockOptions,
+): T {
+  const lockPath = filePath + '.lock'
+  const maxRetries = options?.maxRetries ?? 5
+  const baseDelay = options?.baseDelay ?? 100
+  const staleThreshold = options?.staleThreshold ?? 10_000
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      writeFileSync(lockPath, `${process.pid}`, { flag: 'wx' })
+      break
+    } catch (err: any) {
+      if (err.code !== 'EEXIST') throw err
+      try {
+        const stat = statSync(lockPath)
+        if (Date.now() - stat.mtimeMs > staleThreshold) {
+          unlinkSync(lockPath)
+          continue
+        }
+      } catch {
+        continue
+      }
+      if (attempt === maxRetries) {
+        throw new Error(`Failed to acquire lock on ${filePath} after ${maxRetries} retries`)
+      }
+      const delay = baseDelay * Math.pow(2, attempt)
+      const end = Date.now() + delay
+      while (Date.now() < end) { /* busy wait — sync context */ }
+    }
+  }
+
+  try {
+    return fn()
+  } finally {
+    try { unlinkSync(lockPath) } catch { /* lock already gone */ }
   }
 }
 
