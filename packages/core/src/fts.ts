@@ -55,40 +55,64 @@ export function computeIdf(engrams: Engram[], queryTokens: string[]): Map<string
   return idf
 }
 
-/** Score an engram against query tokens with IDF weighting */
-export function ftsScore(engram: Engram, queryTokens: string[], idfWeights?: Map<string, number>): number {
+const BM25_K1 = 1.2
+const BM25_B = 0.75
+
+/** Score an engram against query tokens using BM25 with IDF, TF saturation, and length normalization */
+export function ftsScore(engram: Engram, queryTokens: string[], idfWeights?: Map<string, number>, avgDocLength?: number): number {
   const allTerms = ftsTokenize(engramSearchText(engram))
   if (queryTokens.length === 0) return 0
 
-  let weightedHits = 0
-  let totalWeight = 0
+  const docLen = allTerms.length
+  const avgdl = avgDocLength && avgDocLength > 0 ? avgDocLength : docLen
 
+  // Determine if any IDF weight is non-zero (i.e., not all terms are corpus-universal)
+  const hasNonZeroIdf = idfWeights && Array.from(idfWeights.values()).some(v => v > 0)
+
+  let score = 0
   for (const qt of queryTokens) {
-    const weight = idfWeights?.get(qt) ?? 1
-    totalWeight += weight
-    if (allTerms.some(t => t.includes(qt) || qt.includes(t))) {
-      weightedHits += weight
+    let effectiveIdf: number
+    if (!idfWeights) {
+      // No IDF provided — use uniform weight=1 (pure BM25 TF+length mode)
+      effectiveIdf = 1
+    } else if (hasNonZeroIdf) {
+      // Some terms are discriminative — skip zero-IDF (corpus-universal) terms
+      effectiveIdf = idfWeights.get(qt) ?? 0
+      if (effectiveIdf === 0) continue
+    } else {
+      // All IDF weights are zero (tiny/uniform corpus) — fall back to uniform weight=1
+      effectiveIdf = 1
     }
+
+    // Count term frequency (including substring matches)
+    let tf = 0
+    for (const t of allTerms) {
+      if (t.includes(qt) || qt.includes(t)) tf++
+    }
+    if (tf === 0) continue
+
+    // BM25 formula: IDF * (tf * (k1 + 1)) / (tf + k1 * (1 - b + b * docLen / avgdl))
+    const numerator = tf * (BM25_K1 + 1)
+    const denominator = tf + BM25_K1 * (1 - BM25_B + BM25_B * docLen / avgdl)
+    score += effectiveIdf * (numerator / denominator)
   }
 
-  // If all IDF weights are 0 (e.g., single-document corpus), fall back to match ratio
-  if (totalWeight === 0) {
-    let matches = 0
-    for (const qt of queryTokens) {
-      if (allTerms.some(t => t.includes(qt) || qt.includes(t))) matches++
-    }
-    return matches / queryTokens.length
-  }
-  return weightedHits / totalWeight
+  return score
 }
 
-/** Search engrams by text query with IDF-weighted scoring */
+/** Search engrams by text query with BM25 scoring */
 export function searchEngrams(engrams: Engram[], query: string, limit = 20): Engram[] {
   const queryTokens = ftsTokenize(query)
   if (queryTokens.length === 0) return []
   const idfWeights = computeIdf(engrams, queryTokens)
+
+  // Compute average document length for BM25 normalization
+  const avgDocLength = engrams.length > 0
+    ? engrams.reduce((sum, e) => sum + ftsTokenize(engramSearchText(e)).length, 0) / engrams.length
+    : 0
+
   return engrams
-    .map(e => ({ engram: e, score: ftsScore(e, queryTokens, idfWeights) }))
+    .map(e => ({ engram: e, score: ftsScore(e, queryTokens, idfWeights, avgDocLength) }))
     .filter(r => r.score > 0)
     .sort((a, b) => b.score - a.score)
     .slice(0, limit)

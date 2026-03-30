@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { ftsTokenize, ftsScore, searchEngrams, computeIdf } from '../src/fts.js'
+import { ftsTokenize, ftsScore, searchEngrams, computeIdf, engramSearchText } from '../src/fts.js'
 import { EngramSchema } from '../src/schemas/engram.js'
 
 const makeEngram = (overrides: Partial<any> = {}) => EngramSchema.parse({
@@ -95,6 +95,45 @@ describe('searchEngrams', () => {
     const results = searchEngrams(engrams, 'validate input')
     expect(results.length).toBeGreaterThan(0)
     // First result should be the one matching both 'validate' and 'input'
+    expect(results[0].id).toBe('ENG-2026-0330-001')
+  })
+})
+
+describe('BM25 term frequency saturation', () => {
+  it('repeated terms score higher than single mention', () => {
+    const engrams = [
+      makeEngram({ id: 'ENG-2026-0330-001', statement: 'deploy deploy deploy carefully' }),
+      makeEngram({ id: 'ENG-2026-0330-002', statement: 'deploy the application' }),
+    ]
+    const results = searchEngrams(engrams, 'deploy')
+    expect(results[0].id).toBe('ENG-2026-0330-001')
+  })
+
+  it('term frequency saturates (diminishing returns)', () => {
+    const engrams = [
+      makeEngram({ id: 'ENG-2026-0330-001', statement: 'deploy deploy deploy deploy deploy deploy deploy deploy' }),
+      makeEngram({ id: 'ENG-2026-0330-002', statement: 'deploy deploy deploy' }),
+    ]
+    const queryTokens = ftsTokenize('deploy')
+    const idf = computeIdf(engrams, queryTokens)
+    const avgdl = engrams.reduce((sum, e) => sum + ftsTokenize(engramSearchText(e)).length, 0) / engrams.length
+    const score1 = ftsScore(engrams[0], queryTokens, idf, avgdl)
+    const score2 = ftsScore(engrams[1], queryTokens, idf, avgdl)
+    // 8x mentions should NOT give 8x the score due to saturation
+    expect(score1 / score2).toBeLessThan(2)
+    expect(score1).toBeGreaterThan(score2)
+  })
+})
+
+describe('BM25 document length normalization', () => {
+  it('short doc with rare term beats long doc with same term', () => {
+    const engrams = [
+      makeEngram({ id: 'ENG-2026-0330-001', statement: 'kubernetes orchestration' }),
+      makeEngram({ id: 'ENG-2026-0330-002', statement: 'kubernetes is used for container orchestration management and deployment scaling configuration monitoring' }),
+      makeEngram({ id: 'ENG-2026-0330-003', statement: 'something completely unrelated to anything' }),
+    ]
+    const results = searchEngrams(engrams, 'kubernetes')
+    // Short doc should rank higher — same term match but normalized by length
     expect(results[0].id).toBe('ENG-2026-0330-001')
   })
 })
