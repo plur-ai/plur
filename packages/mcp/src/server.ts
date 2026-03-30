@@ -14,7 +14,7 @@ import { Plur, checkForUpdate } from '@plur-ai/core'
 import { getToolDefinitions } from './tools.js'
 import { z } from 'zod'
 
-const VERSION = '0.4.1'
+const VERSION = '0.4.2'
 
 const INSTRUCTIONS = `PLUR is your persistent memory. It stores corrections, preferences, and conventions as engrams that persist across sessions.
 
