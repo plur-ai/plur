@@ -127,7 +127,11 @@ export class Plur {
           last_accessed: now.slice(0, 10),
         },
         feedback_signals: { positive: 0, negative: 0, neutral: 0 },
-        knowledge_anchors: context?.knowledge_anchors ?? [],
+        knowledge_anchors: (context?.knowledge_anchors ?? []).map(a => ({
+          path: a.path,
+          relevance: (a.relevance as 'primary' | 'supporting' | 'example') ?? 'supporting',
+          snippet: a.snippet,
+        })),
         associations: [],
         derivation_count: 1,
         tags: context?.tags ?? [],
