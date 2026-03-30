@@ -55,21 +55,40 @@ openclaw config set plur.enabled true
 
 That's it. PLUR works in the background from here. No workflow changes needed — just use your tools as usual. Corrections accumulate automatically.
 
+### Hermes Agent
+
+```bash
+pip install plur-hermes
+```
+
+The plugin registers automatically via Hermes' plugin system. It injects relevant memories before each LLM call, extracts learnings from agent responses, and exposes all PLUR tools to the agent. Requires the PLUR CLI (`npm install -g @plur-ai/cli`).
+
 ### Verify it works
 
 Ask your agent: *"What's my PLUR status?"* — it should call `plur_status` and return your engram count and storage path.
 
 ## How it works
 
-Knowledge is stored as **engrams** — small units that strengthen with use and decay when irrelevant. This is modeled after how human memory actually works (ACT-R activation, Hebbian reinforcement). The result: the system gets better over time, not just bigger.
+Knowledge is stored as **[engrams](https://plur.ai/spec.html)** — small, typed assertions that carry their own activation metadata. Each engram has:
+
+- **Statement** — the actual knowledge: a correction, preference, convention, or architectural decision
+- **Activation** — retrieval strength that decays over time (ACT-R exponential decay with 5% floor) and strengthens on access
+- **Feedback signals** — positive/negative ratings from the agent or user that train injection quality
+- **Scope** — hierarchical namespace (`global`, `project:myapp`, `agent:claude-code`) controlling where the engram applies
+- **Associations** — links to other engrams, including co-access edges that form automatically when engrams are recalled together
+
+The lifecycle is simple:
 
 ```
 You correct your agent  →  engram created  →  YAML on your disk
 Next session starts     →  relevant engrams injected  →  agent remembers
 You rate the result     →  engram strengthens or decays  →  quality improves
+Unused engrams          →  activation decays  →  naturally fade from injection
 ```
 
-Search is fully local: BM25 over enriched text + BGE embeddings + Reciprocal Rank Fusion. Zero API calls. 86.7% on LongMemEval — on par with cloud-based solutions that charge per query.
+Search is fully local: BM25 (with IDF weighting, TF saturation, length normalization) + BGE embeddings + Reciprocal Rank Fusion. Zero API calls. 86.7% on LongMemEval — on par with cloud-based solutions that charge per query.
+
+See the [full engram spec](https://plur.ai/spec.html) for schema details, activation model, and injection algorithm.
 
 ## Usage
 
@@ -156,6 +175,7 @@ While search is a core part of PLUR (finding the right engram to inject), the se
 | [`@plur-ai/core`](packages/core) | Engram engine — learn, recall, inject, search, decay |
 | [`@plur-ai/mcp`](packages/mcp) | MCP server for Claude Code, Cursor, Windsurf |
 | [`@plur-ai/claw`](packages/claw) | OpenClaw ContextEngine plugin |
+| [`plur-hermes`](packages/hermes) | Hermes Agent plugin (Python, via CLI bridge) |
 
 ## Architecture
 
@@ -174,6 +194,7 @@ While search is a core part of PLUR (finding the right engram to inject), the se
 
 @plur-ai/mcp          Wraps core as MCP tools
 @plur-ai/claw          OpenClaw ContextEngine hooks (assemble/compact/afterTurn)
+plur-hermes            Python plugin for Hermes Agent (CLI subprocess bridge)
 ```
 
 ### Storage
