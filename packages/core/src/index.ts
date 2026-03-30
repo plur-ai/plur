@@ -407,6 +407,17 @@ export class Plur {
     saveEngrams(this.paths.engrams, engrams)
   }
 
+  /** Remove retired engrams from storage. Returns count of removed and remaining. */
+  compact(): { removed: number; remaining: number } {
+    const engrams = loadEngrams(this.paths.engrams)
+    const active = engrams.filter(e => e.status !== 'retired')
+    const removed = engrams.length - active.length
+    if (removed > 0) {
+      saveEngrams(this.paths.engrams, active)
+    }
+    return { removed, remaining: active.length }
+  }
+
   /** Capture an episodic memory. */
   capture(summary: string, context?: CaptureContext): Episode {
     return captureEpisode(this.paths.episodes, summary, context)

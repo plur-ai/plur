@@ -382,6 +382,31 @@ describe('Plur', () => {
     }
   })
 
+  it('compact removes retired engrams from storage', () => {
+    plur.learn('Keep this one', { scope: 'global' })
+    const toRetire = plur.learn('Remove this one', { scope: 'global' })
+    plur.forget(toRetire.id, 'test cleanup')
+    const result = plur.compact()
+    expect(result.removed).toBe(1)
+    expect(result.remaining).toBe(1)
+    const all = plur.list()
+    expect(all).toHaveLength(1)
+    expect(all[0].statement).toBe('Keep this one')
+  })
+
+  it('compact returns zero when nothing to remove', () => {
+    plur.learn('Active engram', { scope: 'global' })
+    const result = plur.compact()
+    expect(result.removed).toBe(0)
+    expect(result.remaining).toBe(1)
+  })
+
+  it('compact works on empty store', () => {
+    const result = plur.compact()
+    expect(result.removed).toBe(0)
+    expect(result.remaining).toBe(0)
+  })
+
   it('co-access only applies to top half of results', () => {
     const strong1 = plur.learn('Kubernetes orchestration for containers', { scope: 'global' })
     const strong2 = plur.learn('Kubernetes cluster scaling rules', { scope: 'global' })
