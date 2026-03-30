@@ -73,24 +73,29 @@ Ask your agent: *"What's my PLUR status?"* — it should call `plur_status` and 
 
 ## How it works
 
-Knowledge is stored as **[engrams](https://plur.ai/spec.html)** — small, typed assertions that carry their own activation metadata. Each engram has:
+PLUR has two storage primitives:
 
-- **Statement** — the actual knowledge: a correction, preference, convention, or architectural decision
-- **Activation** — retrieval strength that decays over time (ACT-R exponential decay with 5% floor) and strengthens on access
-- **Feedback signals** — positive/negative ratings from the agent or user that train injection quality
-- **Scope** — hierarchical namespace (`global`, `project:myapp`, `agent:claude-code`) controlling where the engram applies
+**[Engrams](https://plur.ai/spec.html)** — learned knowledge that persists across sessions. Each engram is a typed assertion ("always use blue-green deploys", "never force-push to main") with:
+
+- **Activation** — retrieval strength that decays over time (ACT-R model) and strengthens on access. Stale facts naturally fade from injection without manual cleanup.
+- **Feedback signals** — positive/negative ratings that train injection quality over time
+- **Scope** — hierarchical namespace (`global`, `project:myapp`, `cluster:prod`, `service:api`) controlling where the engram applies
+- **Polarity** — automatic classification of "do" vs "don't" rules, so constraints are injected separately from directives
 - **Associations** — links to other engrams, including co-access edges that form automatically when engrams are recalled together
 
-The lifecycle is simple:
+**Episodes** — timestamped event records for "what happened when." Each episode captures a summary, timestamp, agent attribution, and channel. Use episodes for incident timelines, session logs, and operational history. Query by time range, agent, or channel.
 
 ```
 You correct your agent  →  engram created  →  YAML on your disk
+Agent fixes an incident →  episode captured →  timeline searchable
 Next session starts     →  relevant engrams injected  →  agent remembers
 You rate the result     →  engram strengthens or decays  →  quality improves
 Unused engrams          →  activation decays  →  naturally fade from injection
 ```
 
 Search is fully local: BM25 (with IDF weighting, TF saturation, length normalization) + BGE embeddings + Reciprocal Rank Fusion. Zero API calls. 86.7% on LongMemEval — on par with cloud-based solutions that charge per query.
+
+Plugins (OpenClaw, Hermes) automatically capture learnings from agent conversations — no manual saving needed. The agent's corrections become engrams without you doing anything.
 
 See the [full engram spec](https://plur.ai/spec.html) for schema details, activation model, and injection algorithm.
 
@@ -120,6 +125,15 @@ const { engrams } = plur.inject('Write tests for the user service', {
 // Feedback trains the system
 plur.feedback(engram.id, 'positive')
 
+// Capture an event (episode)
+plur.capture('Fixed CrashLoopBackOff on bee-3-4 by increasing memory limits', {
+  agent: 'claude-code',
+  channel: 'terminal'
+})
+
+// Query timeline
+const incidents = plur.timeline({ agent: 'claude-code' })
+
 // Sync across machines
 plur.sync('git@github.com:you/plur-memory.git')
 ```
@@ -132,8 +146,10 @@ plur.sync('git@github.com:you/plur-memory.git')
 | `plur_recall_hybrid` | Retrieve relevant memories (BM25 + embeddings) |
 | `plur_inject_hybrid` | Select engrams for current task within token budget |
 | `plur_feedback` | Rate relevance (trains quality over time) |
-| `plur_forget` | Retire a memory |
-| `plur_ingest` | Extract engrams from text |
+| `plur_forget` | Retire a memory (activaton decays, eventually pruned) |
+| `plur_capture` | Record an event — incident, resolution, session milestone |
+| `plur_timeline` | Query episode history by time, agent, or channel |
+| `plur_ingest` | Extract engrams from text automatically |
 | `plur_sync` | Sync across devices via git |
 | `plur_status` | Check system health and engram counts |
 
@@ -164,11 +180,13 @@ The two are complementary:
 
 | | PLUR | Code intelligence tools |
 |---|------|------------------------|
-| **Stores** | Learned corrections, preferences, conventions | Code structure, symbols, definitions |
+| **Stores** | Learned knowledge (engrams) + event timeline (episodes) | Code structure, symbols, definitions |
 | **Search** | Engram recall (BM25 + embeddings over memory) | AST traversal, symbol lookup, semantic code search |
 | **Learns** | From agent corrections, feedback, usage patterns | From static analysis of source code |
+| **Captures** | Auto-extracts learnings from conversations (via plugins) | N/A |
 | **Decays** | Yes — unused memories fade (ACT-R model) | No — code index reflects current state |
-| **Cross-tool** | Any MCP client (Claude Code, Cursor, Windsurf, OpenClaw) | Typically tied to one tool |
+| **Timeline** | Episodes track what happened when (incidents, fixes, decisions) | Git log only |
+| **Cross-tool** | Any MCP client (Claude Code, Cursor, Windsurf, OpenClaw, Hermes) | Typically tied to one tool |
 
 While search is a core part of PLUR (finding the right engram to inject), the search targets are always engrams — not files, not code, not documents. PLUR's hybrid search (BM25 + embeddings + RRF) is optimized for short natural-language assertions, not source code.
 
@@ -185,7 +203,8 @@ While search is a core part of PLUR (finding the right engram to inject), the se
 
 ```
 @plur-ai/core
-├── engrams.ts           CRUD + YAML persistence
+├── engrams.ts           Engram CRUD + YAML persistence
+├── episodes.ts          Episode capture + timeline queries
 ├── fts.ts               BM25 with IDF, TF saturation (k1/b), length normalization
 ├── embeddings.ts        BGE-small-en-v1.5, 384-dim, local ONNX
 ├── hybrid-search.ts     Reciprocal Rank Fusion
