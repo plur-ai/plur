@@ -131,6 +131,24 @@ The cost insight was unexpected: Haiku + PLUR scored 0.80 on discoverability. Op
 
 [Full methodology →](https://plur.ai/benchmark.html)
 
+## What PLUR is — and isn't
+
+PLUR is **agent memory** — it stores corrections, preferences, conventions, and architectural decisions that an AI agent learns during work sessions, and injects them back when they're relevant.
+
+PLUR is **not** a general-purpose search engine, a codebase indexer, or a replacement for code intelligence tools. It doesn't parse ASTs, navigate class hierarchies, or search your source files. If you need code-aware search (tree-sitter, language server features, symbol lookup), tools like [claude-mem](https://github.com/skydeckai/claude-mem) or your IDE's built-in search are the right choice.
+
+The two are complementary:
+
+| | PLUR | Code intelligence tools |
+|---|------|------------------------|
+| **Stores** | Learned corrections, preferences, conventions | Code structure, symbols, definitions |
+| **Search** | Engram recall (BM25 + embeddings over memory) | AST traversal, symbol lookup, semantic code search |
+| **Learns** | From agent corrections, feedback, usage patterns | From static analysis of source code |
+| **Decays** | Yes — unused memories fade (ACT-R model) | No — code index reflects current state |
+| **Cross-tool** | Any MCP client (Claude Code, Cursor, Windsurf, OpenClaw) | Typically tied to one tool |
+
+While search is a core part of PLUR (finding the right engram to inject), the search targets are always engrams — not files, not code, not documents. PLUR's hybrid search (BM25 + embeddings + RRF) is optimized for short natural-language assertions, not source code.
+
 ## Packages
 
 | Package | Description |
@@ -143,14 +161,16 @@ The cost insight was unexpected: Haiku + PLUR scored 0.80 on discoverability. Op
 
 ```
 @plur-ai/core
-├── engrams.ts        CRUD + YAML persistence
-├── fts.ts            BM25 over enriched schema (entities + temporal + rationale)
-├── embeddings.ts     BGE-small-en-v1.5, 384-dim, local ONNX
-├── hybrid-search.ts  Reciprocal Rank Fusion
-├── inject.ts         Context-aware selection + spreading activation
-├── decay.ts          ACT-R activation decay
-├── sync.ts           Git-based sync across machines
-└── storage.ts        Path detection + YAML I/O
+├── engrams.ts           CRUD + YAML persistence
+├── fts.ts               BM25 with IDF, TF saturation (k1/b), length normalization
+├── embeddings.ts        BGE-small-en-v1.5, 384-dim, local ONNX
+├── hybrid-search.ts     Reciprocal Rank Fusion
+├── inject.ts            Context-aware selection + spreading activation
+├── decay.ts             ACT-R activation decay
+├── secrets.ts           Secret detection (API keys, passwords, tokens)
+├── sync.ts              Git-based sync + file locking (O_EXCL)
+├── storage.ts           Path detection + YAML I/O
+└── storage-indexed.ts   Optional SQLite read index
 
 @plur-ai/mcp          Wraps core as MCP tools
 @plur-ai/claw          OpenClaw ContextEngine hooks (assemble/compact/afterTurn)
@@ -162,12 +182,15 @@ Everything is plain YAML. Open it, read it, edit it.
 
 ```
 ~/.plur/
-├── engrams.yaml     # learned knowledge
+├── engrams.yaml     # learned knowledge (source of truth)
 ├── episodes.yaml    # session timeline
-└── config.yaml      # settings
+├── config.yaml      # settings
+└── engrams.db       # optional SQLite read index (auto-generated)
 ```
 
 `PLUR_PATH` overrides the default location.
+
+For large stores (>1k engrams), enable the SQLite read index for faster filtered queries. Add `index: true` to `config.yaml`. The YAML file stays the source of truth — the `.db` is a cache that rebuilds automatically. Delete it anytime.
 
 ## Requirements
 
@@ -182,7 +205,7 @@ cd plur
 pnpm install && pnpm build && pnpm test
 ```
 
-~120 tests across 15 files. `pnpm test:watch` for development.
+~340 tests across 27 files. `pnpm test:watch` for development.
 
 ## Contributing
 
