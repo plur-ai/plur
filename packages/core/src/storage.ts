@@ -10,6 +10,7 @@ export interface PlurPaths {
   packs: string
   exchange: string
   config: string
+  db: string
 }
 
 export function detectPlurStorage(explicitPath?: string): PlurPaths {
@@ -29,5 +30,6 @@ export function detectPlurStorage(explicitPath?: string): PlurPaths {
     packs: packsDir,
     exchange: join(root, 'exchange'),
     config: join(root, 'config.yaml'),
+    db: join(root, 'engrams.db'),
   }
 }

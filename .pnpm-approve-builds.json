@@ -1,1 +1,1 @@
-{"@esbuild/darwin-arm64": true, "esbuild": true}
+{"@esbuild/darwin-arm64": true, "esbuild": true, "better-sqlite3": true}

@@ -1,4 +1,5 @@
 import { detectPlurStorage, type PlurPaths } from './storage.js'
+import { IndexedStorage } from './storage-indexed.js'
 import { loadConfig } from './config.js'
 import { loadEngrams, saveEngrams, generateEngramId, loadAllPacks } from './engrams.js'
 import { searchEngrams } from './fts.js'
@@ -37,6 +38,7 @@ export { MetaFieldSchema, StructuralTemplateSchema, EvidenceEntrySchema, MetaCon
 export { engramSearchText } from './fts.js'
 export { detectSecrets } from './secrets.js'
 export { detectPlurStorage, type PlurPaths } from './storage.js'
+export { IndexedStorage } from './storage-indexed.js'
 export type { SyncResult, SyncStatus } from './sync.js'
 export { checkForUpdate, getCachedUpdateCheck, clearVersionCache, type VersionCheckResult } from './version-check.js'
 export type { Engram } from './schemas/engram.js'
@@ -77,10 +79,14 @@ const INGEST_PATTERNS = [
 export class Plur {
   private paths: PlurPaths
   private config: PlurConfig
+  private indexedStorage: IndexedStorage | null = null
 
   constructor(options?: { path?: string }) {
     this.paths = detectPlurStorage(options?.path)
     this.config = loadConfig(this.paths.config)
+    if (this.config.index) {
+      this.indexedStorage = new IndexedStorage(this.paths.engrams, this.paths.db)
+    }
   }
 
   /** Create engram, detect conflicts, save. Returns the created engram. */
@@ -137,6 +143,7 @@ export class Plur {
 
       engrams.push(engram)
       saveEngrams(this.paths.engrams, engrams)
+      this._syncIndex()
       return engram
     })
   }
@@ -199,8 +206,26 @@ export class Plur {
 
   /** Filter engrams by scope/domain/strength (shared by both modes) */
   private _filterEngrams(options?: RecallOptions): Engram[] {
-    let engrams = loadEngrams(this.paths.engrams)
-    engrams = engrams.filter(e => e.status === 'active')
+    let engrams: Engram[]
+    if (this.indexedStorage) {
+      engrams = this.indexedStorage.loadFiltered({
+        status: 'active',
+        scope: options?.scope,
+        domain: options?.domain,
+      })
+    } else {
+      engrams = loadEngrams(this.paths.engrams)
+      engrams = engrams.filter(e => e.status === 'active')
+      if (options?.domain) {
+        engrams = engrams.filter(e => e.domain?.startsWith(options.domain!))
+      }
+      if (options?.scope) {
+        const scope = options.scope
+        engrams = engrams.filter(e =>
+          e.scope === 'global' || e.scope === scope || e.scope.startsWith(scope)
+        )
+      }
+    }
     // Temporal validity: exclude expired or not-yet-valid engrams
     const today = new Date().toISOString().slice(0, 10)
     engrams = engrams.filter(e => {
@@ -208,17 +233,8 @@ export class Plur {
       if (e.temporal?.valid_from && e.temporal.valid_from > today) return false
       return true
     })
-    if (options?.domain) {
-      engrams = engrams.filter(e => e.domain?.startsWith(options.domain!))
-    }
     if (options?.min_strength !== undefined) {
       engrams = engrams.filter(e => e.activation.retrieval_strength >= options.min_strength!)
-    }
-    if (options?.scope) {
-      const scope = options.scope
-      engrams = engrams.filter(e =>
-        e.scope === 'global' || e.scope === scope || e.scope.startsWith(scope)
-      )
     }
     return engrams
   }
@@ -279,7 +295,10 @@ export class Plur {
         }
       }
 
-      if (modified) saveEngrams(this.paths.engrams, allEngrams)
+      if (modified) {
+        saveEngrams(this.paths.engrams, allEngrams)
+        this._syncIndex()
+      }
     })
   }
 
@@ -368,6 +387,7 @@ export class Plur {
       }
 
       saveEngrams(this.paths.engrams, engrams)
+      this._syncIndex()
     })
   }
 
@@ -386,7 +406,10 @@ export class Plur {
           saved++
         }
       }
-      if (saved > 0) saveEngrams(this.paths.engrams, engrams)
+      if (saved > 0) {
+        saveEngrams(this.paths.engrams, engrams)
+        this._syncIndex()
+      }
       return { saved, skipped }
     })
   }
@@ -399,6 +422,7 @@ export class Plur {
       if (idx === -1) return false
       engrams[idx] = updated
       saveEngrams(this.paths.engrams, engrams)
+      this._syncIndex()
       return true
     })
   }
@@ -416,6 +440,7 @@ export class Plur {
       }
 
       saveEngrams(this.paths.engrams, engrams)
+      this._syncIndex()
     })
   }
 
@@ -427,9 +452,25 @@ export class Plur {
       const removed = engrams.length - active.length
       if (removed > 0) {
         saveEngrams(this.paths.engrams, active)
+        this._syncIndex()
       }
       return { removed, remaining: active.length }
     })
+  }
+
+  /** Rebuild SQLite index from YAML source of truth. Only works when index: true. */
+  reindex(): void {
+    if (!this.indexedStorage) {
+      this.indexedStorage = new IndexedStorage(this.paths.engrams, this.paths.db)
+    }
+    this.indexedStorage.reindex()
+  }
+
+  /** Sync SQLite index after YAML write (no-op if index disabled) */
+  private _syncIndex(): void {
+    if (this.indexedStorage) {
+      this.indexedStorage.syncFromYaml()
+    }
   }
 
   /** Capture an episodic memory. */

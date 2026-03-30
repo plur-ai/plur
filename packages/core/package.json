@@ -16,9 +16,11 @@
     "zod": "^3.23.0"
   },
   "optionalDependencies": {
-    "@huggingface/transformers": "^3.8.1"
+    "@huggingface/transformers": "^3.8.1",
+    "better-sqlite3": "^11.0.0"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^7.6.0",
     "@types/js-yaml": "^4.0.0",
     "@types/node": "^25.5.0"
   },
