@@ -1,6 +1,9 @@
 import { existsSync } from 'fs'
+import { createRequire } from 'module'
 import { loadEngrams } from './engrams.js'
 import type { Engram } from './schemas/engram.js'
+
+const require = createRequire(import.meta.url)
 
 let Database: any = null
 

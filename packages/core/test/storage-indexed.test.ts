@@ -5,6 +5,8 @@ import { tmpdir } from 'os'
 import { Plur } from '../src/index.js'
 
 // Skip if better-sqlite3 is not installed
+import { createRequire } from 'module'
+const require = createRequire(import.meta.url)
 let hasSqlite = false
 try {
   require('better-sqlite3')

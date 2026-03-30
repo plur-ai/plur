@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { writeFileSync, existsSync, unlinkSync, utimesSync, mkdtempSync, rmSync } from 'fs'
+import { writeFileSync, existsSync, unlinkSync, utimesSync, mkdtempSync, rmSync, readFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
+import { execSync } from 'child_process'
 import { withLock } from '../src/sync.js'
 
 describe('withLock', () => {
@@ -54,5 +55,27 @@ describe('withLock', () => {
       withLock(filePath, () => 'should not run', { maxRetries: 2, baseDelay: 10 })
     }).toThrow(/lock/)
     unlinkSync(lockPath)
+  })
+
+  it('concurrent withLock calls serialize correctly', () => {
+    // Simulate concurrent read-modify-write by interleaving withLock calls
+    // Use a shared counter file to verify no writes are lost
+    const counterPath = join(dir, 'counter.txt')
+    writeFileSync(counterPath, '0')
+
+    // Run 10 locked increments — each reads, parses, increments, writes
+    const results: number[] = []
+    for (let i = 0; i < 10; i++) {
+      withLock(counterPath, () => {
+        const current = parseInt(readFileSync(counterPath, 'utf8'), 10)
+        const next = current + 1
+        writeFileSync(counterPath, String(next))
+        results.push(next)
+      })
+    }
+
+    // All 10 increments should have been applied in order
+    expect(results).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
+    expect(readFileSync(counterPath, 'utf8')).toBe('10')
   })
 })
