@@ -1,3 +1,4 @@
+import * as fs from 'fs'
 import { detectPlurStorage, type PlurPaths } from './storage.js'
 import { IndexedStorage } from './storage-indexed.js'
 import { loadConfig } from './config.js'
@@ -114,8 +115,9 @@ export class Plur {
         consolidated: false,
         type: context?.type ?? 'behavioral',
         scope,
-        visibility: 'private',
+        visibility: context?.visibility ?? 'private',
         statement,
+        rationale: context?.rationale,
         source: context?.source,
         domain: context?.domain,
         activation: {
@@ -125,13 +127,14 @@ export class Plur {
           last_accessed: now.slice(0, 10),
         },
         feedback_signals: { positive: 0, negative: 0, neutral: 0 },
-        knowledge_anchors: [],
+        knowledge_anchors: context?.knowledge_anchors ?? [],
         associations: [],
         derivation_count: 1,
-        tags: [],
+        tags: context?.tags ?? [],
         pack: null,
-        abstract: null,
-        derived_from: null,
+        abstract: context?.abstract ?? null,
+        derived_from: context?.derived_from ?? null,
+        dual_coding: context?.dual_coding,
         polarity: null,
         relations: conflictIds.length > 0 ? {
           broader: [],
@@ -197,6 +200,12 @@ export class Plur {
     const results = await expandedSearch(filtered, query, limit, options.llm, this.paths.root)
     this._reactivateResults(results)
     return results
+  }
+
+  /** Get a single engram by ID, regardless of status. Returns null if not found. */
+  getById(id: string): Engram | null {
+    const engrams = loadEngrams(this.paths.engrams)
+    return engrams.find(e => e.id === id) ?? null
   }
 
   /** List all active engrams, optionally filtered by scope/domain. No search — returns all matches. */
@@ -358,28 +367,35 @@ export class Plur {
     const count = result.directives.length + result.constraints.length + result.consider.length
     const tokensUsed = result.tokens_used.directives + result.tokens_used.consider
 
+    const injected_ids = [
+      ...result.directives.map(e => e.id),
+      ...result.constraints.map(e => e.id),
+      ...result.consider.map(e => e.id),
+    ]
+
     return {
       directives: directivesStr,
       constraints: constraintsStr,
       consider: considerStr,
       count,
       tokens_used: tokensUsed,
+      injected_ids,
     }
   }
 
-  /** Update feedback_signals and adjust retrieval_strength. */
+  /** Update feedback_signals and adjust retrieval_strength. Searches packs if not found in personal engrams. */
   feedback(id: string, signal: 'positive' | 'negative' | 'neutral'): void {
-    withLock(this.paths.engrams, () => {
+    // Try personal engrams first
+    const found = withLock(this.paths.engrams, () => {
       const engrams = loadEngrams(this.paths.engrams)
       const engram = engrams.find(e => e.id === id)
-      if (!engram) throw new Error(`Engram not found: ${id}`)
+      if (!engram) return false
 
       if (!engram.feedback_signals) {
         engram.feedback_signals = { positive: 0, negative: 0, neutral: 0 }
       }
       engram.feedback_signals[signal] += 1
 
-      // Adjust retrieval strength based on feedback
       if (signal === 'positive') {
         engram.activation.retrieval_strength = Math.min(1.0, engram.activation.retrieval_strength + 0.05)
       } else if (signal === 'negative') {
@@ -388,7 +404,13 @@ export class Plur {
 
       saveEngrams(this.paths.engrams, engrams)
       this._syncIndex()
+      return true
     })
+
+    if (found) return
+
+    // Search pack engrams by scanning pack directories
+    this._feedbackPack(id, signal)
   }
 
   /** Save extracted meta-engrams to the engram store. Skips IDs that already exist. */
@@ -471,6 +493,38 @@ export class Plur {
     if (this.indexedStorage) {
       this.indexedStorage.syncFromYaml()
     }
+  }
+
+  /** Search packs for an engram by ID and apply feedback, writing back to the pack's engrams.yaml. */
+  private _feedbackPack(id: string, signal: 'positive' | 'negative' | 'neutral'): void {
+    if (!fs.existsSync(this.paths.packs)) throw new Error(`Engram not found: ${id}`)
+
+    for (const entry of fs.readdirSync(this.paths.packs)) {
+      const packDir = `${this.paths.packs}/${entry}`
+      if (!fs.statSync(packDir).isDirectory()) continue
+      const engramsPath = `${packDir}/engrams.yaml`
+      if (!fs.existsSync(engramsPath)) continue
+
+      const engrams = loadEngrams(engramsPath)
+      const engram = engrams.find(e => e.id === id)
+      if (!engram) continue
+
+      if (!engram.feedback_signals) {
+        engram.feedback_signals = { positive: 0, negative: 0, neutral: 0 }
+      }
+      engram.feedback_signals[signal] += 1
+
+      if (signal === 'positive') {
+        engram.activation.retrieval_strength = Math.min(1.0, engram.activation.retrieval_strength + 0.05)
+      } else if (signal === 'negative') {
+        engram.activation.retrieval_strength = Math.max(0.0, engram.activation.retrieval_strength - 0.1)
+      }
+
+      saveEngrams(engramsPath, engrams)
+      return
+    }
+
+    throw new Error(`Engram not found: ${id}`)
   }
 
   /** Capture an episodic memory. */

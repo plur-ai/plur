@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync } from 'fs'
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
+import yaml from 'js-yaml'
 import { Plur } from '../src/index.js'
 
 describe('Plur', () => {
@@ -418,5 +419,129 @@ describe('Plur', () => {
     const coAccess = updatedStrong1.associations.filter(a => a.type === 'co_accessed')
     expect(coAccess.length).toBeGreaterThan(0)
     expect(coAccess.some(a => a.target === strong2.id)).toBe(true)
+  })
+
+  // --- Step 6: New tests for Datacore migration prerequisites ---
+
+  it('learn passes tags, knowledge_anchors, dual_coding, rationale, visibility, abstract, derived_from', () => {
+    const engram = plur.learn('Always validate inputs before processing', {
+      type: 'behavioral',
+      scope: 'project:api',
+      domain: 'validation',
+      tags: ['security', 'input-validation'],
+      rationale: 'Prevents injection attacks',
+      visibility: 'public',
+      knowledge_anchors: [{ path: '/docs/security.md', relevance: 'primary', snippet: 'All inputs must be validated' }],
+      dual_coding: { example: 'zod.parse(input)', analogy: 'Like a bouncer checking IDs' },
+      abstract: 'ABS-validation-001',
+      derived_from: 'ENG-2026-0101-001',
+    })
+    expect(engram.tags).toEqual(['security', 'input-validation'])
+    expect(engram.rationale).toBe('Prevents injection attacks')
+    expect(engram.visibility).toBe('public')
+    expect(engram.knowledge_anchors).toHaveLength(1)
+    expect(engram.knowledge_anchors[0].path).toBe('/docs/security.md')
+    expect(engram.knowledge_anchors[0].relevance).toBe('primary')
+    expect(engram.dual_coding?.example).toBe('zod.parse(input)')
+    expect(engram.dual_coding?.analogy).toBe('Like a bouncer checking IDs')
+    expect(engram.abstract).toBe('ABS-validation-001')
+    expect(engram.derived_from).toBe('ENG-2026-0101-001')
+  })
+
+  it('learn defaults to empty tags/anchors and private visibility when not provided', () => {
+    const engram = plur.learn('Simple statement', { scope: 'global' })
+    expect(engram.tags).toEqual([])
+    expect(engram.knowledge_anchors).toEqual([])
+    expect(engram.visibility).toBe('private')
+    expect(engram.abstract).toBeNull()
+    expect(engram.derived_from).toBeNull()
+  })
+
+  it('inject returns injected_ids array', () => {
+    plur.learn('Always use blue-green deploy strategies', { scope: 'global' })
+    plur.learn('Database for myapp is PostgreSQL', { scope: 'project:myapp' })
+    const result = plur.inject('deploy myapp database', { budget: 500, scope: 'project:myapp' })
+    expect(Array.isArray(result.injected_ids)).toBe(true)
+    expect(result.injected_ids.length).toBe(result.count)
+    for (const id of result.injected_ids) {
+      expect(id).toMatch(/^ENG-/)
+    }
+  })
+
+  it('inject returns empty injected_ids when no engrams match', () => {
+    const result = plur.inject('completely unrelated topic xyz123')
+    expect(result.injected_ids).toEqual([])
+  })
+
+  it('getById finds active engrams', () => {
+    const engram = plur.learn('Test getById active', { scope: 'global' })
+    const found = plur.getById(engram.id)
+    expect(found).not.toBeNull()
+    expect(found!.id).toBe(engram.id)
+    expect(found!.statement).toBe('Test getById active')
+    expect(found!.status).toBe('active')
+  })
+
+  it('getById finds retired engrams', () => {
+    const engram = plur.learn('Will be retired', { scope: 'global' })
+    plur.forget(engram.id, 'test')
+    const found = plur.getById(engram.id)
+    expect(found).not.toBeNull()
+    expect(found!.status).toBe('retired')
+  })
+
+  it('getById returns null for missing id', () => {
+    const found = plur.getById('ENG-9999-0101-999')
+    expect(found).toBeNull()
+  })
+
+  it('feedback works on pack engrams', () => {
+    // Create a temp pack directory with engrams
+    const packsDir = join(dir, 'packs')
+    mkdirSync(packsDir, { recursive: true })
+    const packDir = join(packsDir, 'test-feedback-pack')
+    mkdirSync(packDir)
+    writeFileSync(join(packDir, 'SKILL.md'), '---\nname: test-feedback-pack\nversion: "1.0"\nx-datacore:\n  id: test-feedback-pack\n  injection_policy: on_match\n  engram_count: 1\n---\n')
+    writeFileSync(join(packDir, 'engrams.yaml'), `engrams:
+  - id: ENG-2026-0101-001
+    statement: "Pack engram for feedback test"
+    type: behavioral
+    scope: global
+    status: active
+    version: 2
+    consolidated: false
+    visibility: private
+    derivation_count: 1
+    pack: test-feedback-pack
+    abstract: null
+    derived_from: null
+    polarity: null
+    tags: []
+    knowledge_anchors: []
+    associations: []
+    activation:
+      retrieval_strength: 0.7
+      storage_strength: 1.0
+      frequency: 0
+      last_accessed: "2026-01-01"
+    feedback_signals:
+      positive: 0
+      negative: 0
+      neutral: 0
+`)
+
+    // Re-create Plur instance so it picks up the pack
+    const plurWithPacks = new Plur({ path: dir })
+    plurWithPacks.feedback('ENG-2026-0101-001', 'positive')
+
+    // Verify the feedback was written to the pack engrams.yaml
+    const raw = yaml.load(readFileSync(join(packDir, 'engrams.yaml'), 'utf8')) as any
+    const updated = raw.engrams.find((e: any) => e.id === 'ENG-2026-0101-001')
+    expect(updated.feedback_signals.positive).toBe(1)
+    expect(updated.activation.retrieval_strength).toBe(0.75)
+  })
+
+  it('feedback on pack engram throws for unknown id', () => {
+    expect(() => plur.feedback('ENG-9999-01-001', 'positive')).toThrow('Engram not found')
   })
 })

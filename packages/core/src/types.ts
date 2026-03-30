@@ -8,6 +8,13 @@ export interface LearnContext {
   scope?: string
   domain?: string
   source?: string
+  tags?: string[]
+  rationale?: string
+  visibility?: 'private' | 'public' | 'template'
+  knowledge_anchors?: Array<{ path: string; relevance?: string; snippet?: string }>
+  dual_coding?: { example?: string; analogy?: string }
+  abstract?: string | null
+  derived_from?: string | null
 }
 
 /**
@@ -39,6 +46,7 @@ export interface InjectionResult {
   consider: string
   count: number
   tokens_used: number
+  injected_ids: string[]
 }
 
 export interface CaptureContext {
