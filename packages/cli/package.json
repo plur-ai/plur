@@ -1,12 +1,14 @@
 {
   "name": "@plur-ai/cli",
-  "version": "0.5.0",
+  "version": "0.5.2",
   "type": "module",
   "bin": {
     "plur": "dist/index.js"
   },
   "main": "dist/index.js",
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsup",
     "test": "vitest run"
@@ -21,11 +23,20 @@
     "@plur-ai/core": ">=0.3.0"
   },
   "peerDependenciesMeta": {
-    "@plur-ai/core": { "optional": false }
+    "@plur-ai/core": {
+      "optional": false
+    }
   },
   "license": "Apache-2.0",
   "description": "PLUR CLI — persistent memory for AI agents from the command line",
-  "keywords": ["ai", "memory", "cli", "engram", "agent", "plur"],
+  "keywords": [
+    "ai",
+    "memory",
+    "cli",
+    "engram",
+    "agent",
+    "plur"
+  ],
   "homepage": "https://plur.ai",
   "repository": {
     "type": "git",
