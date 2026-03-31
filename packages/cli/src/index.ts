@@ -25,6 +25,7 @@ Commands:
   inject <task>           Get relevant engrams for a task
   list                    List all engrams
   forget <id>             Retire an engram
+  ingest <content>        Extract and save engrams from content
   feedback <id> <signal>  Rate an engram (positive|negative|neutral)
   capture <summary>       Record an episode
   timeline [query]        Query episode timeline
@@ -32,6 +33,10 @@ Commands:
   sync                    Cross-device sync
   packs list              List installed packs
   packs install <source>  Install engram pack
+  packs export <name>     Export engrams as a pack
+  promote <id>            Promote an engram to active
+  stores list             List configured stores
+  stores add <path>       Add a knowledge store
 
 Global flags:
   --json       Force JSON output (auto-detected when piped)
@@ -59,6 +64,9 @@ const COMMANDS: Record<string, string> = {
   status: './commands/status.js',
   sync: './commands/sync.js',
   packs: './commands/packs.js',
+  ingest: './commands/ingest.js',
+  promote: './commands/promote.js',
+  stores: './commands/stores.js',
 }
 
 if (!command || !COMMANDS[command]) {

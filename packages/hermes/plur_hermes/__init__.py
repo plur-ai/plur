@@ -83,6 +83,10 @@ def register(ctx):
             result = bridge.inject(user_message, fast=fast)
             if result.get("count", 0) == 0:
                 return
+            injected_ids = result.get("injected_ids", [])
+            if session_id in _session_state:
+                prev = _session_state[session_id].get("injected_ids", [])
+                _session_state[session_id]["injected_ids"] = prev + injected_ids
             lines = ["<plur-memory>"]
             if result.get("directives"):
                 lines.append(result["directives"])
@@ -91,7 +95,7 @@ def register(ctx):
             if result.get("consider"):
                 lines.append(result["consider"])
             lines.append("</plur-memory>")
-            return {"context": "\n".join(lines)}
+            return {"context": "\n".join(lines), "injected_ids": injected_ids}
         except Exception as e:
             logger.debug(f"PLUR inject failed: {e}")
             return None
@@ -232,6 +236,21 @@ def register(ctx):
             "description": "Install an engram pack",
             "parameters": {"type": "object", "properties": {"source": {"type": "string"}}, "required": ["source"]},
         },
+        "plur_ingest": {
+            "name": "plur_ingest",
+            "description": "Extract and save engrams from content (text, logs, conversations)",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "content": {"type": "string", "description": "Text content to extract engrams from"},
+                    "source": {"type": "string", "description": "Source identifier"},
+                    "extract_only": {"type": "boolean", "default": False, "description": "If true, extract but don't save"},
+                    "scope": {"type": "string"},
+                    "domain": {"type": "string"},
+                },
+                "required": ["content"],
+            },
+        },
         "plur_packs_export": {
             "name": "plur_packs_export",
             "description": "Export engrams as a shareable pack",
@@ -290,6 +309,10 @@ def register(ctx):
                     result = bridge.status()
                 elif tool_name == "plur_sync":
                     result = bridge.sync()
+                elif tool_name == "plur_ingest":
+                    result = bridge.ingest(args["content"], source=args.get("source"),
+                                           extract_only=args.get("extract_only", False),
+                                           scope=args.get("scope"), domain=args.get("domain"))
                 elif tool_name == "plur_packs_list":
                     result = bridge.packs_list()
                 elif tool_name == "plur_packs_install":

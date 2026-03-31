@@ -180,6 +180,19 @@ class PlurBridge:
     def stores_list(self) -> dict:
         return self.call("stores", ["list"])
 
+    def ingest(self, content: str, source: str | None = None, extract_only: bool = False,
+               scope: str | None = None, domain: str | None = None) -> dict:
+        args = [content]
+        if source:
+            args.extend(["--source", source])
+        if scope:
+            args.extend(["--scope", scope])
+        if domain:
+            args.extend(["--domain", domain])
+        if extract_only:
+            args.append("--extract-only")
+        return self.call("ingest", args)
+
     def capture(self, summary: str, agent: str = "hermes", session: str | None = None) -> dict:
         args = [summary, "--agent", agent]
         if session: args.extend(["--session", session])
