@@ -73,6 +73,32 @@ export function getToolDefinitions(): ToolDefinition[] {
           scope: { type: 'string', description: 'Namespace, e.g. global, project:myapp' },
           domain: { type: 'string', description: 'Domain tag, e.g. software.deployment' },
           source: { type: 'string', description: 'Origin of this knowledge' },
+          tags: { type: 'array', items: { type: 'string' }, description: 'Searchable keyword tags' },
+          rationale: { type: 'string', description: 'Why this knowledge matters' },
+          visibility: { type: 'string', enum: ['private', 'public', 'template'], description: 'Visibility level' },
+          knowledge_anchors: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                path: { type: 'string', description: 'Path to related document' },
+                relevance: { type: 'string', enum: ['primary', 'supporting', 'example'] },
+                snippet: { type: 'string', description: 'Short snippet (max 200 chars)' },
+              },
+              required: ['path'],
+            },
+            description: 'Links to related knowledge documents',
+          },
+          dual_coding: {
+            type: 'object',
+            properties: {
+              example: { type: 'string', description: 'Concrete example' },
+              analogy: { type: 'string', description: 'Analogy to aid understanding' },
+            },
+            description: 'Dual coding for richer encoding',
+          },
+          abstract: { type: 'string', description: 'Abstract engram ID this was derived from' },
+          derived_from: { type: 'string', description: 'Source engram ID this was derived from' },
         },
         required: ['statement'],
       },
@@ -82,6 +108,13 @@ export function getToolDefinitions(): ToolDefinition[] {
           scope: args.scope as string | undefined,
           domain: args.domain as string | undefined,
           source: args.source as string | undefined,
+          tags: args.tags as string[] | undefined,
+          rationale: args.rationale as string | undefined,
+          visibility: args.visibility as any,
+          knowledge_anchors: args.knowledge_anchors as any,
+          dual_coding: args.dual_coding as any,
+          abstract: args.abstract as string | undefined,
+          derived_from: args.derived_from as string | undefined,
         })
         return { id: engram.id, statement: engram.statement, scope: engram.scope, type: engram.type }
       },
@@ -183,6 +216,7 @@ export function getToolDefinitions(): ToolDefinition[] {
           consider: result.consider,
           count: result.count,
           tokens_used: result.tokens_used,
+          injected_ids: result.injected_ids,
         }
       },
     },
@@ -210,6 +244,7 @@ export function getToolDefinitions(): ToolDefinition[] {
           consider: result.consider,
           count: result.count,
           tokens_used: result.tokens_used,
+          injected_ids: result.injected_ids,
           mode: 'hybrid',
         }
       },
@@ -217,21 +252,48 @@ export function getToolDefinitions(): ToolDefinition[] {
 
     {
       name: 'plur_feedback',
-      description: 'Rate an engram\'s usefulness — trains injection relevance over time',
+      description: 'Rate an engram\'s usefulness — trains injection relevance over time. Supports single or batch mode.',
       annotations: { title: 'Feedback', destructiveHint: false, idempotentHint: true },
       inputSchema: {
         type: 'object',
         properties: {
-          id: { type: 'string', description: 'Engram ID (e.g. ENG-001)' },
+          id: { type: 'string', description: 'Engram ID (single mode)' },
           signal: {
             type: 'string',
             enum: ['positive', 'negative', 'neutral'],
-            description: 'Feedback signal to apply',
+            description: 'Feedback signal (single mode)',
+          },
+          signals: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                id: { type: 'string', description: 'Engram ID' },
+                signal: { type: 'string', enum: ['positive', 'negative', 'neutral'] },
+              },
+              required: ['id', 'signal'],
+            },
+            description: 'Batch feedback signals',
           },
         },
-        required: ['id', 'signal'],
       },
       handler: async (args, plur) => {
+        // Batch mode
+        if (args.signals && Array.isArray(args.signals)) {
+          const results: Array<{ id: string; signal: string; success: boolean; error?: string }> = []
+          const summary = { positive: 0, negative: 0, neutral: 0 }
+          for (const { id, signal } of args.signals as Array<{ id: string; signal: 'positive' | 'negative' | 'neutral' }>) {
+            try {
+              plur.feedback(id, signal)
+              results.push({ id, signal, success: true })
+              summary[signal]++
+            } catch (err: any) {
+              results.push({ id, signal, success: false, error: err.message })
+            }
+          }
+          return { mode: 'batch', results, summary }
+        }
+        // Single mode
         plur.feedback(args.id as string, args.signal as 'positive' | 'negative' | 'neutral')
         return { success: true, id: args.id, signal: args.signal }
       },
@@ -239,19 +301,38 @@ export function getToolDefinitions(): ToolDefinition[] {
 
     {
       name: 'plur_forget',
-      description: 'Retire an engram — marks it as no longer active without deleting history',
+      description: 'Retire an engram by ID or search term — marks it as no longer active without deleting history',
       annotations: { title: 'Forget', destructiveHint: true, idempotentHint: true },
       inputSchema: {
         type: 'object',
         properties: {
-          id: { type: 'string', description: 'Engram ID to retire' },
-          reason: { type: 'string', description: 'Optional reason for retiring this engram' },
+          id: { type: 'string', description: 'Exact engram ID to retire' },
+          search: { type: 'string', description: 'Search term to find engram to retire' },
         },
-        required: ['id'],
       },
       handler: async (args, plur) => {
-        plur.forget(args.id as string, args.reason as string | undefined)
-        return { success: true, id: args.id, status: 'retired' }
+        if (args.id) {
+          const engram = plur.getById(args.id as string)
+          if (!engram) throw new Error(`Engram not found: ${args.id}`)
+          if (engram.status === 'retired') return { success: false, error: `Already retired: ${args.id}` }
+          plur.forget(args.id as string)
+          return { success: true, retired: { id: engram.id, statement: engram.statement } }
+        }
+        if (args.search) {
+          const matches = plur.recall(args.search as string, { limit: 100 })
+          if (matches.length === 0) return { success: false, error: `No active engrams matching "${args.search}"` }
+          if (matches.length === 1) {
+            plur.forget(matches[0].id)
+            return { success: true, retired: { id: matches[0].id, statement: matches[0].statement } }
+          }
+          return {
+            success: false,
+            matches: matches.slice(0, 20).map(e => ({ id: e.id, statement: e.statement })),
+            total: matches.length,
+            error: `${matches.length} matches. Specify exact ID.`,
+          }
+        }
+        throw new Error('Provide either id or search parameter')
       },
     },
 
@@ -760,23 +841,32 @@ export function getToolDefinitions(): ToolDefinition[] {
       inputSchema: {
         type: 'object',
         properties: {
-          id: { type: 'string', description: 'Engram ID to promote' },
+          id: { type: 'string', description: 'Single engram ID to promote' },
+          ids: { type: 'array', items: { type: 'string' }, description: 'Multiple engram IDs to promote' },
         },
-        required: ['id'],
       },
       handler: async (args, plur) => {
-        const id = args.id as string
-        const engram = plur.getById(id)
-        if (!engram) throw new Error(`Engram not found: ${id}`)
-        if (engram.status === 'active') return { success: true, id, status: 'already_active' }
-        if (engram.status === 'retired') throw new Error(`Cannot promote retired engram: ${id}`)
+        const targetIds = (args.ids as string[] | undefined) ?? (args.id ? [args.id as string] : [])
+        if (targetIds.length === 0) throw new Error('Provide id or ids')
 
-        engram.status = 'active'
-        engram.activation.retrieval_strength = 0.7
-        engram.activation.storage_strength = 1.0
-        engram.activation.last_accessed = new Date().toISOString().split('T')[0]
-        plur.updateEngram(engram)
-        return { success: true, id, statement: engram.statement, status: 'promoted' }
+        const promoted: Array<{ id: string; statement: string }> = []
+        const errors: Array<{ id: string; error: string }> = []
+
+        for (const id of targetIds) {
+          const engram = plur.getById(id)
+          if (!engram) { errors.push({ id, error: 'Not found' }); continue }
+          if (engram.status === 'active') { errors.push({ id, error: 'Already active' }); continue }
+          if (engram.status === 'retired') { errors.push({ id, error: 'Cannot promote retired' }); continue }
+
+          engram.status = 'active'
+          engram.activation.retrieval_strength = 0.7
+          engram.activation.storage_strength = 1.0
+          engram.activation.last_accessed = new Date().toISOString().split('T')[0]
+          plur.updateEngram(engram)
+          promoted.push({ id, statement: engram.statement })
+        }
+
+        return { promoted, errors, success: errors.length === 0 }
       },
     },
 

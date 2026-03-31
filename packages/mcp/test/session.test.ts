@@ -117,7 +117,8 @@ describe('Session & store tools', () => {
 
     const result = await callTool('plur_promote', { id: engram.id }) as any
     expect(result.success).toBe(true)
-    expect(result.status).toBe('promoted')
+    expect(result.promoted).toHaveLength(1)
+    expect(result.promoted[0].id).toBe(engram.id)
 
     // Verify it's now active
     const updated = plur.getById(engram.id)
@@ -128,14 +129,17 @@ describe('Session & store tools', () => {
   it('plur_promote returns already_active for active engrams', async () => {
     const engram = plur.learn('Already active engram', { scope: 'global' })
     const result = await callTool('plur_promote', { id: engram.id }) as any
-    expect(result.success).toBe(true)
-    expect(result.status).toBe('already_active')
+    expect(result.success).toBe(false)
+    expect(result.errors).toHaveLength(1)
+    expect(result.errors[0].error).toBe('Already active')
   })
 
-  it('plur_promote throws for retired engrams', async () => {
+  it('plur_promote returns error for retired engrams', async () => {
     const engram = plur.learn('Soon retired', { scope: 'global' })
     plur.forget(engram.id)
-    await expect(callTool('plur_promote', { id: engram.id }))
-      .rejects.toThrow('Cannot promote retired engram')
+    const result = await callTool('plur_promote', { id: engram.id }) as any
+    expect(result.success).toBe(false)
+    expect(result.errors).toHaveLength(1)
+    expect(result.errors[0].error).toBe('Cannot promote retired')
   })
 })
