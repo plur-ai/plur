@@ -113,6 +113,7 @@ export function assembleContext(params: {
     messages,
     estimatedTokens: messageTokens + additionTokens,
     systemPromptAddition: systemPromptAddition || undefined,
+    injected_ids: injection?.injected_ids,
   }
 }
 

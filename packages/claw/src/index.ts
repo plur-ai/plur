@@ -96,7 +96,7 @@ const plugin = {
         acceptsArgs: true,
         handler: (ctx: any) => {
           if (!ctx.args?.trim()) return { text: 'Usage: /learn <statement to remember>' }
-          const engram = getEngine(path).plur.learn(ctx.args.trim(), { source: 'openclaw:slash' })
+          const engram = getEngine(path).plur.learn(ctx.args.trim(), { source: 'openclaw:slash', rationale: 'user explicitly saved via /learn command' })
           return { text: `Remembered: "${ctx.args.trim()}" (${engram.id})` }
         },
       })

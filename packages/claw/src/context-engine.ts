@@ -1,4 +1,5 @@
 import { Plur } from '@plur-ai/core'
+import type { LearnContext } from '@plur-ai/core'
 import type {
   ContextEngine, ContextEngineInfo, AssembleResult, IngestResult,
   CompactResult, BootstrapResult, SubagentSpawnPreparation, SubagentEndReason,
@@ -113,6 +114,8 @@ export class PlurContextEngine implements ContextEngine {
               type: candidate.type,
               scope: this.sessionScopes.get(params.sessionKey || '') || 'global',
               source: 'openclaw:ingest',
+              rationale: 'user correction detected in real-time',
+              tags: [candidate.type],
             })
           }
         }
@@ -184,6 +187,8 @@ export class PlurContextEngine implements ContextEngine {
               type: candidate.type,
               scope: this.sessionScopes.get(params.sessionKey || '') || 'global',
               source: 'openclaw:compact',
+              rationale: 'extracted during context compaction',
+              tags: [candidate.type],
             })
           }
         }
@@ -228,6 +233,8 @@ export class PlurContextEngine implements ContextEngine {
               type: 'behavioral',
               scope,
               source: 'openclaw:self-report',
+              rationale: 'self-reported by agent via learning section',
+              tags: ['self-report'],
             })
           }
         }
@@ -240,6 +247,8 @@ export class PlurContextEngine implements ContextEngine {
               type: candidate.type,
               scope,
               source: 'openclaw:afterTurn',
+              rationale: 'extracted from conversation via pattern matching',
+              tags: [candidate.type],
             })
           }
         }
@@ -308,7 +317,7 @@ export class PlurContextEngine implements ContextEngine {
   }
 
   /** Learn a statement only if it hasn't been learned in this session already (prevents triple-learning). */
-  private _learnIfNew(sessionKey: string, statement: string, context: { type: string; scope: string; source: string }): void {
+  private _learnIfNew(sessionKey: string, statement: string, context: LearnContext): void {
     if (!this.sessionLearned.has(sessionKey)) {
       this.sessionLearned.set(sessionKey, new Set())
     }
@@ -316,6 +325,6 @@ export class PlurContextEngine implements ContextEngine {
     const key = statement.toLowerCase()
     if (seen.has(key)) return
     seen.add(key)
-    this.plur.learn(statement, context as any)
+    this.plur.learn(statement, context)
   }
 }

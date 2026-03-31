@@ -28,6 +28,7 @@ export interface AssembleResult {
   messages: AgentMessage[]
   estimatedTokens: number
   systemPromptAddition?: string
+  injected_ids?: string[]
 }
 
 export interface CompactResult {
