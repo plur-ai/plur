@@ -40,6 +40,21 @@ export interface ToolDefinition {
   handler: (args: Record<string, unknown>, plur: Plur) => Promise<unknown>
 }
 
+const PLUR_GUIDE = `## PLUR Quick Start
+
+Persistent memory for AI agents. Corrections, preferences, and conventions stored as engrams.
+
+### Session Workflow
+1. **plur_session_start** (you just called this) — get context
+2. Work on your task
+3. **plur_feedback** — rate which injected engrams helped
+4. **plur_session_end** — capture summary + suggest new engrams
+
+### Core Tools
+- **plur_learn** — record patterns, preferences, insights
+- **plur_recall_hybrid** — search engrams
+- **plur_forget** — retire an outdated engram`
+
 export function getToolDefinitions(): ToolDefinition[] {
   return [
     {
@@ -597,6 +612,204 @@ export function getToolDefinitions(): ToolDefinition[] {
           pack_count: status.pack_count,
           storage_root: status.storage_root,
         }
+      },
+    },
+
+    {
+      name: 'plur_session_start',
+      description: 'Start a session — inject relevant engrams for your task. Call at the beginning of every session.',
+      annotations: { title: 'Session Start', readOnlyHint: true, idempotentHint: false },
+      inputSchema: {
+        type: 'object',
+        properties: {
+          task: { type: 'string', description: 'What you are working on (triggers engram injection)' },
+          tags: { type: 'array', items: { type: 'string' }, description: 'Tags to filter injected engrams' },
+        },
+        required: ['task'],
+      },
+      handler: async (args, plur) => {
+        const crypto = await import('crypto')
+        const session_id = crypto.randomUUID()
+        const task = args.task as string
+        const tags = args.tags as string[] | undefined
+
+        // Inject relevant engrams
+        let engrams: { text: string; count: number; injected_ids: string[] } | null = null
+        try {
+          const result = await plur.injectHybrid(task, {
+            scope: tags?.length ? `tags:${tags.join(',')}` : undefined,
+          })
+          if (result.count > 0) {
+            const lines: string[] = []
+            if (result.directives) lines.push('## DIRECTIVES\n', result.directives)
+            if (result.constraints) lines.push('\n## CONSTRAINTS\n', result.constraints)
+            if (result.consider) lines.push('\n## ALSO CONSIDER\n', result.consider)
+            engrams = { text: lines.join('\n'), count: result.count, injected_ids: result.injected_ids }
+          }
+        } catch {
+          // Fall back to BM25 if hybrid unavailable
+          const result = plur.inject(task, {
+            scope: tags?.length ? `tags:${tags.join(',')}` : undefined,
+          })
+          if (result.count > 0) {
+            const lines: string[] = []
+            if (result.directives) lines.push('## DIRECTIVES\n', result.directives)
+            if (result.constraints) lines.push('\n## CONSTRAINTS\n', result.constraints)
+            if (result.consider) lines.push('\n## ALSO CONSIDER\n', result.consider)
+            engrams = { text: lines.join('\n'), count: result.count, injected_ids: result.injected_ids }
+          }
+        }
+
+        return {
+          session_id,
+          engrams,
+          guide: engrams ? 'Session started. Workflow: work → plur_feedback → plur_session_end.' : PLUR_GUIDE,
+        }
+      },
+    },
+
+    {
+      name: 'plur_session_end',
+      description: 'End a session — captures an episode and creates engrams from suggestions. Call before the conversation ends.',
+      annotations: { title: 'Session End', destructiveHint: false, idempotentHint: false },
+      inputSchema: {
+        type: 'object',
+        properties: {
+          summary: { type: 'string', description: 'What happened in this session' },
+          session_id: { type: 'string', description: 'Session ID from plur_session_start' },
+          engram_suggestions: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                statement: { type: 'string', description: 'The knowledge assertion' },
+                type: { type: 'string', enum: ['behavioral', 'terminological', 'procedural', 'architectural'] },
+              },
+              required: ['statement'],
+            },
+            description: 'New learnings to capture as engrams',
+          },
+        },
+        required: ['summary'],
+      },
+      handler: async (args, plur) => {
+        const summary = args.summary as string
+        const session_id = args.session_id as string | undefined
+        const suggestions = args.engram_suggestions as Array<{ statement: string; type?: string }> | undefined
+
+        // Create engrams from suggestions
+        let engrams_created = 0
+        if (suggestions?.length) {
+          for (const s of suggestions) {
+            plur.learn(s.statement, { type: s.type as any })
+            engrams_created++
+          }
+        }
+
+        // Capture episode
+        const episode = plur.capture(summary, {
+          session_id,
+          channel: 'mcp',
+        })
+
+        return {
+          engrams_created,
+          episode_id: episode.id,
+        }
+      },
+    },
+
+    {
+      name: 'plur_stores_add',
+      description: 'Register an additional engram store at a filesystem path with a scope identifier',
+      annotations: { title: 'Add store', destructiveHint: false, idempotentHint: true },
+      inputSchema: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: 'Filesystem path to engrams.yaml' },
+          scope: { type: 'string', description: 'Scope identifier (e.g. space:1-datafund, module:trading)' },
+          shared: { type: 'boolean', description: 'Whether this store is git-committed / team-visible' },
+          readonly: { type: 'boolean', description: 'Whether this store is read-only (e.g. purchased packs)' },
+        },
+        required: ['path', 'scope'],
+      },
+      handler: async (args, plur) => {
+        plur.addStore(args.path as string, args.scope as string, {
+          shared: args.shared as boolean | undefined,
+          readonly: args.readonly as boolean | undefined,
+        })
+        return { success: true, path: args.path, scope: args.scope }
+      },
+    },
+
+    {
+      name: 'plur_stores_list',
+      description: 'List all configured engram stores with their scope, path, and engram count',
+      annotations: { title: 'List stores', readOnlyHint: true, idempotentHint: true },
+      inputSchema: { type: 'object', properties: {} },
+      handler: async (_args, plur) => {
+        const stores = plur.listStores()
+        return { stores, count: stores.length }
+      },
+    },
+
+    {
+      name: 'plur_promote',
+      description: 'Activate candidate engrams so they appear in injection results',
+      annotations: { title: 'Promote', destructiveHint: false, idempotentHint: true },
+      inputSchema: {
+        type: 'object',
+        properties: {
+          id: { type: 'string', description: 'Engram ID to promote' },
+        },
+        required: ['id'],
+      },
+      handler: async (args, plur) => {
+        const id = args.id as string
+        const engram = plur.getById(id)
+        if (!engram) throw new Error(`Engram not found: ${id}`)
+        if (engram.status === 'active') return { success: true, id, status: 'already_active' }
+        if (engram.status === 'retired') throw new Error(`Cannot promote retired engram: ${id}`)
+
+        engram.status = 'active'
+        engram.activation.retrieval_strength = 0.7
+        engram.activation.storage_strength = 1.0
+        engram.activation.last_accessed = new Date().toISOString().split('T')[0]
+        plur.updateEngram(engram)
+        return { success: true, id, statement: engram.statement, status: 'promoted' }
+      },
+    },
+
+    {
+      name: 'plur_packs_export',
+      description: 'Export personal engrams as a shareable pack',
+      annotations: { title: 'Export pack', destructiveHint: false, idempotentHint: false },
+      inputSchema: {
+        type: 'object',
+        properties: {
+          name: { type: 'string', description: 'Pack name' },
+          description: { type: 'string', description: 'Pack description' },
+          filter_domain: { type: 'string', description: 'Filter engrams by domain prefix' },
+          filter_scope: { type: 'string', description: 'Filter engrams by scope' },
+          output_dir: { type: 'string', description: 'Output directory for the pack (default: ~/.plur/exports/)' },
+        },
+        required: ['name'],
+      },
+      handler: async (args, plur) => {
+        const name = args.name as string
+        const engrams = plur.list({
+          domain: args.filter_domain as string | undefined,
+          scope: args.filter_scope as string | undefined,
+        }).filter(e => e.visibility !== 'private' || !args.filter_domain) // Don't export private unless explicitly filtered
+
+        const outputDir = (args.output_dir as string) || `${plur.status().storage_root}/exports`
+        const result = plur.exportPack(engrams, outputDir, {
+          name,
+          version: '1.0.0',
+          description: args.description as string | undefined,
+          creator: 'plur-mcp',
+        })
+        return { path: result.path, engram_count: result.engram_count, name }
       },
     },
   ]

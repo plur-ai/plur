@@ -1,4 +1,5 @@
 import * as fs from 'fs'
+import yaml from 'js-yaml'
 import { detectPlurStorage, type PlurPaths } from './storage.js'
 import { IndexedStorage } from './storage-indexed.js'
 import { loadConfig } from './config.js'
@@ -45,7 +46,7 @@ export { checkForUpdate, getCachedUpdateCheck, clearVersionCache, type VersionCh
 export type { Engram } from './schemas/engram.js'
 export type { Episode } from './schemas/episode.js'
 export type { PackManifest } from './schemas/pack.js'
-export type { PlurConfig } from './schemas/config.js'
+export type { PlurConfig, StoreEntry } from './schemas/config.js'
 export * from './types.js'
 
 export interface IngestOptions {
@@ -621,5 +622,47 @@ export class Plur {
       storage_root: this.paths.root,
       config: this.config,
     }
+  }
+
+  /** Register an additional engram store. */
+  addStore(storePath: string, scope: string, options?: { shared?: boolean; readonly?: boolean }): void {
+    const config = loadConfig(this.paths.config)
+    const existing = config.stores?.find(s => s.path === storePath)
+    if (existing) return // Already registered
+    const stores = [...(config.stores ?? []), {
+      path: storePath,
+      scope,
+      shared: options?.shared ?? false,
+      readonly: options?.readonly ?? false,
+    }]
+    // Write updated config
+    let configData: Record<string, unknown> = {}
+    try {
+      const raw = fs.readFileSync(this.paths.config, 'utf8')
+      if (raw) configData = (yaml.load(raw) as Record<string, unknown>) ?? {}
+    } catch {}
+    configData.stores = stores
+    fs.writeFileSync(this.paths.config, yaml.dump(configData, { lineWidth: 120, noRefs: true }))
+    // Reload config
+    this.config = loadConfig(this.paths.config)
+  }
+
+  /** List all configured stores. */
+  listStores(): Array<{ path: string; scope: string; shared: boolean; readonly: boolean; engram_count: number }> {
+    const stores = this.config.stores ?? []
+    // Always include the primary store
+    const primary = {
+      path: this.paths.engrams,
+      scope: 'global',
+      shared: false,
+      readonly: false,
+      engram_count: loadEngrams(this.paths.engrams).filter(e => e.status !== 'retired').length,
+    }
+    const additional = stores.map(s => {
+      let count = 0
+      try { count = loadEngrams(s.path).filter(e => e.status !== 'retired').length } catch {}
+      return { ...s, engram_count: count }
+    })
+    return [primary, ...additional]
   }
 }

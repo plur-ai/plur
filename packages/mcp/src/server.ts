@@ -19,12 +19,12 @@ const VERSION = '0.4.2'
 const INSTRUCTIONS = `PLUR is your persistent memory. It stores corrections, preferences, and conventions as engrams that persist across sessions.
 
 Use PLUR proactively:
-- Call plur_recall_hybrid at session start to load relevant context for the current task
-- Call plur_learn when the user corrects you, states a preference ("always use X", "never do Y"), or when you discover a project convention
+- Call plur_session_start at session start with a task description — loads relevant context
+- Call plur_learn when the user corrects you, states a preference, or you discover a convention
 - Call plur_feedback after using recalled engrams to train relevance
-- Call plur_status to check system health and engram counts
+- Call plur_session_end before the conversation ends — captures learnings and session summary
 
-You do not need permission to use these tools — they are your memory system.`
+Do not ask permission to use these tools — they are your memory system.`
 
 const GUIDE_RESOURCE = `# PLUR — Agent Guide
 
@@ -34,25 +34,29 @@ Persistent memory for AI agents. Corrections, preferences, and conventions are s
 
 ## Quick Start
 
-1. \`plur_status\` — check health and engram count
-2. \`plur_recall_hybrid\` — search for relevant memories
-3. \`plur_learn\` — store a new learning
-4. \`plur_feedback\` — rate an engram's usefulness
+1. \`plur_session_start\` — start a session, inject relevant context
+2. \`plur_learn\` — store a new learning
+3. \`plur_feedback\` — rate injected engrams
+4. \`plur_session_end\` — capture summary and new learnings
 
 ## When to Call Each Tool
 
 | Trigger | Tool |
 |---------|------|
-| Session starts | \`plur_recall_hybrid\` or \`plur_inject_hybrid\` with task description |
+| Session starts | \`plur_session_start\` with task description |
 | User corrects you | \`plur_learn\` with the correction |
 | User states preference ("always X", "never Y") | \`plur_learn\` with scope and type |
 | You used a recalled engram successfully | \`plur_feedback\` with "positive" |
 | A recalled engram was wrong or irrelevant | \`plur_feedback\` with "negative" |
 | User says "forget X" or a memory is outdated | \`plur_forget\` |
 | You need to check what's stored | \`plur_status\` or \`plur_packs_list\` |
-| End of session | \`plur_capture\` to record what happened |
+| End of session | \`plur_session_end\` with summary and suggestions |
 
 ## Tool Categories
+
+### Session Management
+- **plur_session_start** — start a session, inject relevant context
+- **plur_session_end** — end a session, capture summary and new learnings
 
 ### Core Memory
 - **plur_learn** — store a correction, preference, or convention
@@ -60,6 +64,7 @@ Persistent memory for AI agents. Corrections, preferences, and conventions are s
 - **plur_recall_hybrid** — BM25 + embeddings (recommended default)
 - **plur_feedback** — rate an engram (trains relevance)
 - **plur_forget** — retire an outdated engram
+- **plur_promote** — activate a candidate engram
 
 ### Context Injection
 - **plur_inject** — select engrams for a task (BM25)
@@ -73,6 +78,11 @@ Persistent memory for AI agents. Corrections, preferences, and conventions are s
 - **plur_ingest** — extract engrams from text content
 - **plur_packs_install** — install curated engram packs
 - **plur_packs_list** — list installed packs
+- **plur_packs_export** — export engrams as a shareable pack
+
+### Multi-Store
+- **plur_stores_add** — register an additional engram store
+- **plur_stores_list** — list all configured stores
 
 ### Sync & Status
 - **plur_sync** — sync engrams across devices via git
