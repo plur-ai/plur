@@ -26,26 +26,32 @@ describe('plur forget', () => {
     return JSON.parse(output).id as string
   }
 
-  it('retires an engram and returns JSON', () => {
+  it('retires an engram by ID and returns JSON', () => {
     const id = learn('something to forget')
     const output = JSON.parse(run(`forget ${id}`))
-    expect(output.id).toBe(id)
-    expect(output.status).toBe('retired')
+    expect(output.success).toBe(true)
+    expect(output.retired.id).toBe(id)
   })
 
   it('accepts --reason flag', () => {
     const id = learn('something with reason')
     const output = JSON.parse(run(`forget ${id} --reason "no longer relevant"`))
-    expect(output.id).toBe(id)
-    expect(output.status).toBe('retired')
-    expect(output.reason).toBe('no longer relevant')
+    expect(output.success).toBe(true)
+    expect(output.retired.id).toBe(id)
   })
 
-  it('exits 1 with no id', () => {
+  it('retires by search term when single match', () => {
+    learn('unique penguin convention')
+    const output = JSON.parse(run('forget "unique penguin"'))
+    expect(output.success).toBe(true)
+    expect(output.retired.statement).toContain('penguin')
+  })
+
+  it('exits 1 with no argument', () => {
     expect(() => run('forget')).toThrow()
   })
 
-  it('throws when engram not found', () => {
-    expect(() => run('forget ENG-9999')).toThrow()
+  it('throws when engram ID not found', () => {
+    expect(() => run('forget ENG-9999-0101-001')).toThrow()
   })
 })
