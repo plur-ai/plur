@@ -100,7 +100,8 @@ def register(ctx):
         try:
             learnings = extract_learning_patterns(assistant_response or "")
             for statement in learnings:
-                bridge.learn(statement, source="hermes:auto")
+                bridge.learn(statement, source="hermes:auto",
+                             rationale="Auto-extracted from assistant self-report")
                 if session_id in _session_state:
                     _session_state[session_id]["count"] += 1
         except Exception as e:
@@ -140,6 +141,13 @@ def register(ctx):
                     "scope": {"type": "string", "default": "global"},
                     "type": {"type": "string", "enum": ["behavioral", "terminological", "procedural", "architectural"], "default": "behavioral"},
                     "domain": {"type": "string"},
+                    "tags": {"type": "array", "items": {"type": "string"}, "description": "Classification tags"},
+                    "rationale": {"type": "string", "description": "Why this knowledge matters"},
+                    "visibility": {"type": "string", "enum": ["private", "public", "template"], "default": "private"},
+                    "knowledge_anchors": {"type": "array", "items": {"type": "object", "properties": {"path": {"type": "string"}, "relevance": {"type": "number"}, "snippet": {"type": "string"}}}, "description": "Related file references"},
+                    "dual_coding": {"type": "object", "properties": {"example": {"type": "string"}, "analogy": {"type": "string"}}, "description": "Concrete example and analogy"},
+                    "abstract": {"type": "string", "description": "One-line abstract"},
+                    "derived_from": {"type": "string", "description": "Source engram ID this was derived from"},
                 },
                 "required": ["statement"],
             },
@@ -186,13 +194,13 @@ def register(ctx):
         },
         "plur_forget": {
             "name": "plur_forget",
-            "description": "Retire an engram by ID",
-            "parameters": {"type": "object", "properties": {"id": {"type": "string"}, "reason": {"type": "string"}}, "required": ["id"]},
+            "description": "Retire an engram by ID or search query",
+            "parameters": {"type": "object", "properties": {"id": {"type": "string"}, "search": {"type": "string", "description": "Forget engrams matching this search query"}, "reason": {"type": "string"}}},
         },
         "plur_feedback": {
             "name": "plur_feedback",
-            "description": "Rate an engram (positive|negative|neutral)",
-            "parameters": {"type": "object", "properties": {"id": {"type": "string"}, "signal": {"type": "string", "enum": ["positive", "negative", "neutral"]}}, "required": ["id", "signal"]},
+            "description": "Rate an engram (positive|negative|neutral) — supports single or batch mode",
+            "parameters": {"type": "object", "properties": {"id": {"type": "string"}, "signal": {"type": "string", "enum": ["positive", "negative", "neutral"]}, "batch": {"type": "array", "items": {"type": "object", "properties": {"id": {"type": "string"}, "signal": {"type": "string"}}}, "description": "Batch feedback: list of {id, signal} pairs"}}},
         },
         "plur_capture": {
             "name": "plur_capture",
@@ -224,6 +232,26 @@ def register(ctx):
             "description": "Install an engram pack",
             "parameters": {"type": "object", "properties": {"source": {"type": "string"}}, "required": ["source"]},
         },
+        "plur_packs_export": {
+            "name": "plur_packs_export",
+            "description": "Export engrams as a shareable pack",
+            "parameters": {"type": "object", "properties": {"name": {"type": "string"}, "domain": {"type": "string"}, "scope": {"type": "string"}}, "required": ["name"]},
+        },
+        "plur_promote": {
+            "name": "plur_promote",
+            "description": "Promote an engram — increase its activation and priority",
+            "parameters": {"type": "object", "properties": {"id": {"type": "string"}}, "required": ["id"]},
+        },
+        "plur_stores_add": {
+            "name": "plur_stores_add",
+            "description": "Add a knowledge store path",
+            "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "scope": {"type": "string", "default": "global"}, "shared": {"type": "boolean", "default": False}, "readonly": {"type": "boolean", "default": False}}, "required": ["path"]},
+        },
+        "plur_stores_list": {
+            "name": "plur_stores_list",
+            "description": "List configured knowledge stores",
+            "parameters": {"type": "object", "properties": {}},
+        },
     }
 
     def _make_handler(tool_name: str):
@@ -231,7 +259,13 @@ def register(ctx):
             try:
                 if tool_name == "plur_learn":
                     result = bridge.learn(args["statement"], scope=args.get("scope", "global"),
-                                          type=args.get("type", "behavioral"), domain=args.get("domain"))
+                                          type=args.get("type", "behavioral"), domain=args.get("domain"),
+                                          tags=args.get("tags"), rationale=args.get("rationale"),
+                                          visibility=args.get("visibility"),
+                                          knowledge_anchors=args.get("knowledge_anchors"),
+                                          dual_coding=args.get("dual_coding"),
+                                          abstract=args.get("abstract"),
+                                          derived_from=args.get("derived_from"))
                 elif tool_name == "plur_recall":
                     result = bridge.recall(args["query"], limit=args.get("limit", 10), fast=args.get("fast", False))
                 elif tool_name == "plur_inject":
@@ -240,9 +274,14 @@ def register(ctx):
                     result = bridge.list_engrams(domain=args.get("domain"), type=args.get("type"),
                                                   scope=args.get("scope"), limit=args.get("limit"), meta=args.get("meta", False))
                 elif tool_name == "plur_forget":
-                    result = bridge.forget(args["id"], reason=args.get("reason"))
+                    result = bridge.forget(id=args.get("id"), reason=args.get("reason"),
+                                           search=args.get("search"))
                 elif tool_name == "plur_feedback":
-                    result = bridge.feedback(args["id"], args["signal"])
+                    batch = args.get("batch")
+                    if batch:
+                        result = bridge.feedback(batch=[(item["id"], item["signal"]) for item in batch])
+                    else:
+                        result = bridge.feedback(args["id"], args["signal"])
                 elif tool_name == "plur_capture":
                     result = bridge.capture(args["summary"])
                 elif tool_name == "plur_timeline":
@@ -255,6 +294,21 @@ def register(ctx):
                     result = bridge.packs_list()
                 elif tool_name == "plur_packs_install":
                     result = bridge.packs_install(args["source"])
+                elif tool_name == "plur_packs_export":
+                    export_args = [args["name"]]
+                    if args.get("domain"):
+                        export_args.extend(["--domain", args["domain"]])
+                    if args.get("scope"):
+                        export_args.extend(["--scope", args["scope"]])
+                    result = bridge.call("packs", ["export"] + export_args)
+                elif tool_name == "plur_promote":
+                    result = bridge.promote(args["id"])
+                elif tool_name == "plur_stores_add":
+                    result = bridge.stores_add(args["path"], scope=args.get("scope", "global"),
+                                               shared=args.get("shared", False),
+                                               readonly=args.get("readonly", False))
+                elif tool_name == "plur_stores_list":
+                    result = bridge.stores_list()
                 else:
                     result = {"error": f"Unknown tool: {tool_name}"}
                 return json.dumps(result)

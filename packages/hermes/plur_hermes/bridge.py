@@ -92,12 +92,32 @@ class PlurBridge:
             raise PlurBridgeError(f"Invalid JSON from CLI: {result.stdout[:200]}")
 
     def learn(self, statement: str, scope: str = "global", type: str = "behavioral",
-              domain: str | None = None, source: str | None = None) -> dict:
+              domain: str | None = None, source: str | None = None,
+              tags: list[str] | None = None, rationale: str | None = None,
+              visibility: str | None = None,
+              knowledge_anchors: list[dict] | None = None,
+              dual_coding: dict | None = None,
+              abstract: str | None = None,
+              derived_from: str | None = None) -> dict:
         args = [statement, "--scope", scope, "--type", type]
         if domain:
             args.extend(["--domain", domain])
         if source:
             args.extend(["--source", source])
+        if tags:
+            args.extend(["--tags", ",".join(tags)])
+        if rationale:
+            args.extend(["--rationale", rationale])
+        if visibility:
+            args.extend(["--visibility", visibility])
+        if knowledge_anchors:
+            args.extend(["--knowledge-anchors", json.dumps(knowledge_anchors)])
+        if dual_coding:
+            args.extend(["--dual-coding", json.dumps(dual_coding)])
+        if abstract:
+            args.extend(["--abstract", abstract])
+        if derived_from:
+            args.extend(["--derived-from", derived_from])
         return self.call("learn", args)
 
     def recall(self, query: str, limit: int = 10, fast: bool = False) -> dict:
@@ -123,13 +143,42 @@ class PlurBridge:
         if meta: args.append("--meta")
         return self.call("list", args)
 
-    def forget(self, id: str, reason: str | None = None) -> dict:
-        args = [id]
-        if reason: args.extend(["--reason", reason])
+    def forget(self, id: str | None = None, reason: str | None = None,
+               search: str | None = None) -> dict:
+        if not id and not search:
+            raise PlurBridgeError("forget() requires either id or search parameter")
+        args: list[str] = []
+        if id:
+            args.append(id)
+        if search:
+            args.extend(["--search", search])
+        if reason:
+            args.extend(["--reason", reason])
         return self.call("forget", args)
 
-    def feedback(self, id: str, signal: str) -> dict:
+    def feedback(self, id: str | None = None, signal: str | None = None,
+                 batch: list[tuple[str, str]] | None = None) -> dict:
+        if batch:
+            args = ["--batch", json.dumps([{"id": eid, "signal": sig} for eid, sig in batch])]
+            return self.call("feedback", args)
+        if not id or not signal:
+            raise PlurBridgeError("feedback() requires id and signal, or batch parameter")
         return self.call("feedback", [id, signal])
+
+    def promote(self, id: str) -> dict:
+        return self.call("promote", [id])
+
+    def stores_add(self, path: str, scope: str = "global",
+                   shared: bool = False, readonly: bool = False) -> dict:
+        args = [path, "--scope", scope]
+        if shared:
+            args.append("--shared")
+        if readonly:
+            args.append("--readonly")
+        return self.call("stores", ["add"] + args)
+
+    def stores_list(self) -> dict:
+        return self.call("stores", ["list"])
 
     def capture(self, summary: str, agent: str = "hermes", session: str | None = None) -> dict:
         args = [summary, "--agent", agent]
