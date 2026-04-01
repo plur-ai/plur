@@ -1,5 +1,43 @@
 # Changelog
 
+## 0.6.0 (2026-04-01)
+
+### Multi-Store: Share Knowledge Across Teams
+
+PLUR now reads engrams from multiple stores. Your team's learned knowledge lives in their git repo — PLUR reads it alongside your personal memory. No copying, no syncing. Just add a store path and your agent knows what the team knows.
+
+```yaml
+# ~/.plur/config.yaml
+stores:
+  - path: ~/projects/my-team/engrams.yaml
+    scope: my-team
+    readonly: true
+```
+
+Or register via CLI: `plur stores add ~/projects/my-team/engrams.yaml --scope my-team`
+
+- Store engrams get namespaced IDs (`ENG-DFD-2026-0401-001`) to prevent collisions
+- Scope validation: store engrams auto-narrow to their scope, mismatched scopes skipped
+- Feedback and forget route to the correct store (readonly stores reject writes gracefully)
+- mtime-based cache: no re-parsing YAML files that haven't changed
+
+### Performance: SQLite Index Default
+
+`index: true` is now the default. At 600+ engrams, every recall was parsing 80KB of YAML. SQLite index makes filtered queries instant. The index syncs across all stores automatically.
+
+### Packages
+- `@plur-ai/core` 0.6.0 — multi-store reads, mtime cache, store-aware writes, index default
+- `@plur-ai/mcp` 0.6.0 — graceful readonly feedback, one-command init, cold start fixes
+- `@plur-ai/cli` 0.6.0 — hook-inject, plur init, stores commands
+- `@plur-ai/claw` 0.6.0
+- `plur-hermes` 0.6.0
+
+### Update
+```
+npm update -g @plur-ai/mcp @plur-ai/cli
+pip install --upgrade plur-hermes
+```
+
 ## 0.5.2 (2026-04-01)
 
 ### Cold Start Fix (#7)
