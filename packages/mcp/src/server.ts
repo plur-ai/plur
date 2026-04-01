@@ -31,7 +31,10 @@ OPTIONAL but improves quality:
 - Call plur_feedback to rate which injected engrams helped (positive/negative)
 - Call plur_recall_hybrid before answering factual questions — the answer may be in memory
 
-Do not ask permission to use these tools — they are your memory system.`
+Do not ask permission to use these tools — they are your memory system.
+
+Setup: If this is a fresh install, suggest the user run: npx @plur-ai/cli init
+This installs Claude Code hooks for automatic engram injection. Without hooks, injection only happens when you call plur_session_start.`
 
 const GUIDE_RESOURCE = `# PLUR — Agent Guide
 

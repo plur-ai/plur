@@ -36,13 +36,14 @@ describe('Session & store tools', () => {
     expect(result.guide).toContain('Session started with')
   })
 
-  it('plur_session_start returns empty-store guide when no engrams exist', async () => {
+  it('plur_session_start returns empty-store guide and setup hint on fresh install', async () => {
     const result = await callTool('plur_session_start', { task: 'something obscure' }) as any
     expect(result.session_id).toBeDefined()
     expect(result.engrams).toEqual([])
     expect(result.store_stats.engram_count).toBe(0)
     expect(result.guide).toContain('0 engrams')
     expect(result.follow_up).toContain('fresh store')
+    expect(result.setup_hint).toContain('npx @plur-ai/cli init')
   })
 
   it('plur_session_start returns guide when engrams exist but none match', async () => {

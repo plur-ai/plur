@@ -775,6 +775,9 @@ export function getToolDefinitions(): ToolDefinition[] {
           guide = `${PLUR_GUIDE}\n\nYou have ${store_stats.engram_count} engrams but none matched this task. Call plur_learn to capture new learnings from this session.`
         }
 
+        // Detect fresh install: no engrams AND no episodes = never used before
+        const isFreshInstall = store_stats.engram_count === 0 && store_stats.episode_count === 0
+
         return {
           session_id,
           engrams: engrams ?? [],
@@ -783,6 +786,10 @@ export function getToolDefinitions(): ToolDefinition[] {
           // Ask LLM to check back — MCP can't push, but we can request a follow-up
           follow_up: store_stats.engram_count === 0
             ? 'This is a fresh store with 0 engrams. After your first exchange with the user, review what you learned and call plur_learn for any corrections, preferences, or patterns. Build the memory from this session.'
+            : undefined,
+          // On fresh install, suggest hook setup for reliable injection
+          setup_hint: isFreshInstall
+            ? 'IMPORTANT: For reliable memory injection, ask the user to run: npx @plur-ai/cli init — this installs Claude Code hooks that automatically inject engrams at conversation start and after context compaction. Without hooks, memory injection depends on you remembering to call plur_session_start.'
             : undefined,
         }
       },
