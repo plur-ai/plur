@@ -96,11 +96,11 @@ node -e "
 "
 echo "  ✓ packages/claw/openclaw.plugin.json"
 
-# Test version assertions (2 files)
-sed -i '' "s/toBe('$OLD_CORE')/toBe('$VERSION')/g" packages/claw/test/hello.test.ts
+# Test version assertions (2 files) — replace any semver in toBe() context
+sed -i '' "s/toBe('[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*')/toBe('$VERSION')/g" packages/claw/test/hello.test.ts
 echo "  ✓ packages/claw/test/hello.test.ts"
 
-sed -i '' "s/toBe('$OLD_CORE')/toBe('$VERSION')/g" packages/mcp/test/server.test.ts
+sed -i '' "s/toBe('[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*')/toBe('$VERSION')/g" packages/mcp/test/server.test.ts
 echo "  ✓ packages/mcp/test/server.test.ts"
 
 # Hermes pyproject.toml
