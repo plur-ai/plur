@@ -125,10 +125,11 @@ echo "Tests: $PASS_COUNT, $FAIL_COUNT"
 # Exclude known environment-dependent tests:
 # - openclaw-integration: requires OpenClaw runtime
 # - real-extraction: calls Anthropic API, flaky in CI
-REAL_FAILS=$(echo "$TEST_OUTPUT" | grep "FAIL " | grep -v "openclaw-integration\|real-extraction\|Failed Suites" | wc -l | tr -d ' ')
-if [ "$REAL_FAILS" != "0" ]; then
+FAIL_LINES=$(echo "$TEST_OUTPUT" | { grep "FAIL " || true; } | { grep -v "openclaw-integration\|real-extraction\|Failed Suites" || true; })
+REAL_FAILS=$(echo "$FAIL_LINES" | grep -c "FAIL" || true)
+if [ "$REAL_FAILS" -gt 0 ] 2>/dev/null; then
   echo "ERROR: $REAL_FAILS unexpected test failures. Aborting."
-  echo "$TEST_OUTPUT" | grep "FAIL" | grep -v "openclaw-integration"
+  echo "$FAIL_LINES"
   exit 1
 fi
 echo ""
