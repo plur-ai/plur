@@ -503,6 +503,30 @@ export function getToolDefinitions(): ToolDefinition[] {
     },
 
     {
+      name: 'plur_packs_discover',
+      description: 'Browse available engram packs from the registry — discover curated expertise packs to install',
+      annotations: { title: 'Discover packs', readOnlyHint: true, idempotentHint: true, openWorldHint: true },
+      inputSchema: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: 'Search query to filter packs by name or description' },
+          tags: { type: 'array', items: { type: 'string' }, description: 'Filter by tags' },
+          category: { type: 'string', description: 'Filter by category (e.g., devops, trading, writing)' },
+        },
+      },
+      handler: async (args, plur) => {
+        // TODO: Implement pack registry discovery
+        // This will connect to a pack registry API (plur.ai/packs or GitHub-based)
+        // For now, return a stub response
+        return {
+          packs: [],
+          count: 0,
+          message: 'Pack discovery coming soon. For now, install packs from local paths via plur_packs_install.',
+        }
+      },
+    },
+
+    {
       name: 'plur_sync',
       description: 'Sync engrams via git — initializes repo on first call, commits and pushes/pulls on subsequent calls. Provide a remote URL on first call to enable cross-device sync.',
       annotations: { title: 'Sync', openWorldHint: true, destructiveHint: false, idempotentHint: true },
