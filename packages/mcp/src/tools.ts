@@ -310,8 +310,15 @@ export function getToolDefinitions(): ToolDefinition[] {
           return { mode: 'batch', results, summary }
         }
         // Single mode
-        plur.feedback(args.id as string, args.signal as 'positive' | 'negative' | 'neutral')
-        return { success: true, id: args.id, signal: args.signal }
+        try {
+          plur.feedback(args.id as string, args.signal as 'positive' | 'negative' | 'neutral')
+          return { success: true, id: args.id, signal: args.signal }
+        } catch (err: any) {
+          if (err.message?.includes('readonly store')) {
+            return { success: false, id: args.id, signal: args.signal, note: 'Engram is in a readonly store. Feedback noted for this session but not persisted.' }
+          }
+          throw err
+        }
       },
     },
 

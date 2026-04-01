@@ -77,6 +77,21 @@ export function loadAllPacks(packsDir: string): LoadedPack[] {
   return packs
 }
 
+/** Derive a 3-char prefix from a store scope (e.g. 'datafund' → 'DFU', 'project:myapp' → 'PMY') */
+export function storePrefix(scope: string): string {
+  const parts = scope.split(/[:\-_./]/).filter(Boolean)
+  if (parts.length >= 2) {
+    // Multi-part: first char of part1 + first 2 chars of part2
+    const p2 = parts[1]
+    return (parts[0][0] + p2[0] + (p2[1] || p2[0])).toUpperCase()
+  }
+  // Single word: first + middle + last char
+  const w = parts[0] || scope
+  if (w.length >= 3) return (w[0] + w[Math.floor(w.length / 2)] + w[w.length - 1]).toUpperCase()
+  // Very short: pad with repeat
+  return (w[0] + (w[1] || w[0]) + (w[2] || w[0])).toUpperCase()
+}
+
 export function generateEngramId(existing: Engram[]): string {
   const now = new Date()
   const date = now.toISOString().slice(0, 10).replace(/-/g, '')
