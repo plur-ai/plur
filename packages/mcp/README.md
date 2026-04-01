@@ -8,22 +8,13 @@ Part of [PLUR](https://plur.ai) — where **Haiku with memory outperforms Opus w
 
 ### Claude Code
 
-```json
-// .claude/mcp.json
-{
-  "mcpServers": {
-    "plur": { "command": "npx", "args": ["-y", "@plur-ai/mcp"] }
-  }
-}
-```
-
-Then install hooks for automatic memory injection:
+One command — sets up storage, MCP config, and hooks:
 
 ```bash
-npx @plur-ai/cli init
+npx @plur-ai/mcp init
 ```
 
-This adds Claude Code hooks that inject relevant engrams at conversation start and re-inject after context compaction. Without hooks, injection depends on the LLM remembering to call `plur_session_start`.
+Restart Claude Code. Done. Your agent now has persistent memory with automatic injection.
 
 ### Cursor
 

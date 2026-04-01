@@ -20,40 +20,19 @@ Go to [plur.ai](https://plur.ai) and tell your agent to install memory for your 
 
 ### Manual setup (Claude Code)
 
-Two steps — add the MCP server, then install hooks:
-
-```json
-// .claude/mcp.json
-{
-  "mcpServers": {
-    "plur": { "command": "npx", "args": ["-y", "@plur-ai/mcp@latest"] }
-  }
-}
-```
+One command sets up everything — storage, MCP config, and Claude Code hooks:
 
 ```bash
-npx @plur-ai/cli init
+npx @plur-ai/mcp init
 ```
 
-The `init` command installs Claude Code hooks that automatically inject relevant engrams at conversation start and re-inject after context compaction. Without hooks, injection only happens when the LLM chooses to call `plur_session_start` — which it often forgets under context pressure.
-
-Storage at `~/.plur/` is created automatically on first use.
+This creates `~/.plur/` for storage, adds PLUR to your `.mcp.json`, and installs Claude Code hooks for automatic engram injection. Restart Claude Code to activate.
 
 ### Global install (faster startup)
 
 ```bash
-npm install -g @plur-ai/mcp @plur-ai/cli
-plur init
-```
-
-Then in `.claude/mcp.json`:
-
-```json
-{
-  "mcpServers": {
-    "plur": { "command": "plur-mcp", "args": ["serve"] }
-  }
-}
+npm install -g @plur-ai/mcp
+plur-mcp init
 ```
 
 ### OpenClaw
