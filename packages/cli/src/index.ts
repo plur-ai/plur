@@ -37,6 +37,8 @@ Commands:
   promote <id>            Promote an engram to active
   stores list             List configured stores
   stores add <path>       Add a knowledge store
+  init                    Install Claude Code hooks for automatic injection
+  hook-inject             (internal) Hook handler for engram injection
 
 Global flags:
   --json       Force JSON output (auto-detected when piped)
@@ -67,6 +69,8 @@ const COMMANDS: Record<string, string> = {
   ingest: './commands/ingest.js',
   promote: './commands/promote.js',
   stores: './commands/stores.js',
+  init: './commands/init.js',
+  'hook-inject': './commands/hook-inject.js',
 }
 
 if (!command || !COMMANDS[command]) {
