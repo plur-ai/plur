@@ -3,7 +3,7 @@ import yaml from 'js-yaml'
 import { detectPlurStorage, type PlurPaths } from './storage.js'
 import { IndexedStorage } from './storage-indexed.js'
 import { loadConfig } from './config.js'
-import { loadEngrams, saveEngrams, generateEngramId, loadAllPacks } from './engrams.js'
+import { loadEngrams, saveEngrams, generateEngramId, loadAllPacks, storePrefix } from './engrams.js'
 import { logger } from './logger.js'
 import { searchEngrams } from './fts.js'
 import { selectAndSpread, scoreEngramsPublic } from './inject.js'
@@ -93,17 +93,6 @@ export class Plur {
     }
   }
 
-  /** Derive a 2-char prefix from a store scope (e.g. 'datafund' → 'DF', 'project:myapp' → 'PM') */
-  private _storePrefix(scope: string): string {
-    // Split on common separators and take first letters of first two words
-    const parts = scope.split(/[:\-_./]/).filter(Boolean)
-    if (parts.length >= 2) {
-      return (parts[0][0] + parts[1][0]).toUpperCase()
-    }
-    // Single word: take first two characters
-    return scope.slice(0, 2).toUpperCase()
-  }
-
   /**
    * Load engrams from primary store + all configured stores, with mtime-based caching.
    * Store engram IDs get namespaced: ENG-2026-0401-001 → ENG-DF-2026-0401-001.
@@ -117,7 +106,7 @@ export class Plur {
     const all: Engram[] = [...primary]
     for (const store of stores) {
       const storeEngrams = this._loadCached(store.path)
-      const prefix = this._storePrefix(store.scope)
+      const prefix = storePrefix(store.scope)
       for (const e of storeEngrams) {
         // Phase 4: Scope validation
         if (e.scope !== 'global' && e.scope !== store.scope && !e.scope.startsWith(store.scope)) {
@@ -158,8 +147,8 @@ export class Plur {
 
   /** Find which store owns an engram by ID. For namespaced IDs, strips prefix to find in store. */
   private _findEngramStore(id: string): { path: string; readonly: boolean; originalId: string } | null {
-    // Check primary first
-    const primaryEngrams = loadEngrams(this.paths.engrams)
+    // Check primary first (uses mtime cache)
+    const primaryEngrams = this._loadCached(this.paths.engrams)
     if (primaryEngrams.find(e => e.id === id)) {
       return { path: this.paths.engrams, readonly: false, originalId: id }
     }
@@ -167,12 +156,12 @@ export class Plur {
     // Check stores — ID might be namespaced
     const stores = this.config.stores ?? []
     for (const store of stores) {
-      const prefix = this._storePrefix(store.scope)
+      const prefix = storePrefix(store.scope)
       const nsPattern = new RegExp(`^(ENG|ABS|META)-${prefix}-`)
       if (nsPattern.test(id)) {
         // Strip the namespace prefix to get the original ID
         const originalId = id.replace(nsPattern, '$1-')
-        const storeEngrams = loadEngrams(store.path)
+        const storeEngrams = this._loadCached(store.path)
         if (storeEngrams.find(e => e.id === originalId)) {
           return { path: store.path, readonly: store.readonly ?? false, originalId }
         }

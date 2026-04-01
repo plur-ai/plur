@@ -1,6 +1,6 @@
 import { existsSync } from 'fs'
 import { createRequire } from 'module'
-import { loadEngrams } from './engrams.js'
+import { loadEngrams, storePrefix } from './engrams.js'
 import type { Engram } from './schemas/engram.js'
 import type { StoreEntry } from './schemas/config.js'
 
@@ -134,7 +134,7 @@ export class IndexedStorage {
       for (const store of this.stores) {
         validSources.add(store.path)
         const storeEngrams = loadEngrams(store.path)
-        const prefix = this._storePrefix(store.scope)
+        const prefix = storePrefix(store.scope)
         for (const e of storeEngrams) {
           // Scope validation: skip mismatched scopes
           if (e.scope !== 'global' && e.scope !== store.scope && !e.scope.startsWith(store.scope)) {
@@ -157,15 +157,6 @@ export class IndexedStorage {
       }
     })
     tx()
-  }
-
-  /** Derive a 2-char prefix from a store scope */
-  private _storePrefix(scope: string): string {
-    const parts = scope.split(/[:\-_./]/).filter(Boolean)
-    if (parts.length >= 2) {
-      return (parts[0][0] + parts[1][0]).toUpperCase()
-    }
-    return scope.slice(0, 2).toUpperCase()
   }
 
   /** Drop and rebuild the entire index from YAML. */
