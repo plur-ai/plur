@@ -22,7 +22,7 @@ export const PlurConfigSchema = z.object({
     co_access: z.boolean().default(true),
   }).default({}),
   allow_secrets: z.boolean().default(false),
-  index: z.boolean().default(false),
+  index: z.boolean().default(true),
   stores: z.array(StoreEntrySchema).default([]),
 }).partial()
 
