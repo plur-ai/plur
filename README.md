@@ -142,16 +142,16 @@ plur.sync('git@github.com:you/plur-memory.git')
 
 We ran 19 decisive contests across three Claude models (Haiku, Sonnet, Opus). Same task, same prompt — one agent with PLUR, one without. Ties removed.
 
-| Knowledge type | Record | Win rate |
-|---------------|--------|----------|
-| House rules | 12–0 | **100%** |
-| Tool routing | 10–2 | **83%** |
-| Past experience | 4–0 | **100%** |
-| Learned style | 5–2 | 71% |
+| Knowledge type | Record | What it tests |
+|---------------|--------|---------------|
+| House rules | 12–0 | Tag conventions, file routing, project structure |
+| Tool routing | 10–2 | Finding the right tool among 100+ options |
+| Past experience | 4–0 | API quirks, debugging insights, infrastructure |
+| Learned style | 5–2 | Communication tone, design preferences |
 
-**89% overall win rate.** House rules — tag formats, file conventions, project structure — were 100% across every model. Not a single loss.
+**31 wins, 4 losses (89% win rate).** Without memory, agents got house rules right 10–38% of the time depending on model — with PLUR, 12–0 across every model. Memory isn't a reasoning crutch — it's information the model literally cannot infer.
 
-The cost insight was unexpected: Haiku + PLUR scored 0.80 on discoverability. Opus alone scored 0.31. A $0.25/MTok model with memory beat a $15/MTok model without it. Memory isn't a nice-to-have — it changes which model you need.
+The cost insight was unexpected: Haiku + PLUR scored 0.80 on discoverability. Opus alone scored 0.31. A $0.25/MTok model with memory beat a $15/MTok model without it.
 
 [Full methodology →](https://plur.ai/benchmark.html)
 

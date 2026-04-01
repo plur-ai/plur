@@ -111,10 +111,10 @@ Search modes: `fast` (BM25), `agentic` (LLM rerank), `hybrid` (BM25 + embeddings
 
 | Metric | Score |
 |--------|-------|
-| LongMemEval overall (Opus hybrid) | 86.7% |
+| LongMemEval overall (Opus hybrid, n=30) | 86.7% |
 | Hit@10 | 93.3% |
-| A/B win rate | 89% |
-| House rules accuracy | 100% |
+| A/B win rate (31W/4L) | 89% |
+| House rules | 12–0 |
 
 If your PR improves any of these, mention it in the PR description.
 
