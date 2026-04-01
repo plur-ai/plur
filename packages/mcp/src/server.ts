@@ -14,7 +14,7 @@ import { Plur, checkForUpdate } from '@plur-ai/core'
 import { getToolDefinitions } from './tools.js'
 import { z } from 'zod'
 
-const VERSION = '0.5.0'
+const VERSION = '0.5.1'
 
 const INSTRUCTIONS = `PLUR is your persistent memory. It stores corrections, preferences, and conventions as engrams that persist across sessions.
 
@@ -23,6 +23,8 @@ Use PLUR proactively:
 - Call plur_learn when the user corrects you, states a preference, or you discover a convention
 - Call plur_feedback after using recalled engrams to train relevance
 - Call plur_session_end before the conversation ends — captures learnings and session summary
+
+For combined search (engrams + files): call plur_recall_hybrid for memories, then datacore.search for journal/knowledge files.
 
 Do not ask permission to use these tools — they are your memory system.`
 
@@ -83,6 +85,8 @@ Persistent memory for AI agents. Corrections, preferences, and conventions are s
 ### Multi-Store
 - **plur_stores_add** — register an additional engram store
 - **plur_stores_list** — list all configured stores
+
+**Note:** Multi-store is currently config-only. Recall and inject search the primary store. Cross-store search coming in a future release.
 
 ### Sync & Status
 - **plur_sync** — sync engrams across devices via git

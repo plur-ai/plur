@@ -2,22 +2,51 @@
   "id": "plur-claw",
   "name": "PLUR Memory Engine",
   "description": "Persistent, learnable memory for OpenClaw agents. Local-first, no cloud required.",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "kind": "memory",
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
     "properties": {
-      "path": { "type": "string", "description": "Storage path for PLUR data" },
-      "auto_learn": { "type": "boolean", "default": true, "description": "Auto-extract learnings from conversations" },
-      "auto_capture": { "type": "boolean", "default": true, "description": "Auto-capture episodic summaries" },
-      "injection_budget": { "type": "number", "default": 2000, "description": "Token budget for memory injection" }
+      "path": {
+        "type": "string",
+        "description": "Storage path for PLUR data"
+      },
+      "auto_learn": {
+        "type": "boolean",
+        "default": true,
+        "description": "Auto-extract learnings from conversations"
+      },
+      "auto_capture": {
+        "type": "boolean",
+        "default": true,
+        "description": "Auto-capture episodic summaries"
+      },
+      "injection_budget": {
+        "type": "number",
+        "default": 2000,
+        "description": "Token budget for memory injection"
+      }
     }
   },
   "uiHints": {
-    "path": { "label": "Storage Path", "advanced": true, "placeholder": "~/.plur" },
-    "auto_learn": { "label": "Auto-learn", "help": "Automatically extract learnings from conversations" },
-    "auto_capture": { "label": "Auto-capture", "help": "Automatically record session episodes" },
-    "injection_budget": { "label": "Injection Budget", "advanced": true, "help": "Max tokens for memory context injection" }
+    "path": {
+      "label": "Storage Path",
+      "advanced": true,
+      "placeholder": "~/.plur"
+    },
+    "auto_learn": {
+      "label": "Auto-learn",
+      "help": "Automatically extract learnings from conversations"
+    },
+    "auto_capture": {
+      "label": "Auto-capture",
+      "help": "Automatically record session episodes"
+    },
+    "injection_budget": {
+      "label": "Injection Budget",
+      "advanced": true,
+      "help": "Max tokens for memory context injection"
+    }
   }
 }
