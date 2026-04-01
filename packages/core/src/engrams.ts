@@ -81,7 +81,11 @@ export function loadAllPacks(packsDir: string): LoadedPack[] {
 export function storePrefix(scope: string): string {
   const parts = scope.split(/[:\-_./]/).filter(Boolean)
   if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase()
-  return scope.slice(0, 2).toUpperCase()
+  // Single word: first char + char at position 4 (or last char if shorter)
+  // This differentiates 'datafund'→'DF' vs 'datacore'→'DC'
+  const word = parts[0] || scope
+  if (word.length > 4) return (word[0] + word[4]).toUpperCase()
+  return (word[0] + word[word.length - 1]).toUpperCase()
 }
 
 export function generateEngramId(existing: Engram[]): string {

@@ -4,6 +4,7 @@ import { join } from 'path'
 import { tmpdir } from 'os'
 import yaml from 'js-yaml'
 import { Plur } from '../src/index.js'
+import { storePrefix } from '../src/engrams.js'
 
 /** Minimal valid engram for store YAML files */
 function makeEngram(overrides: Record<string, unknown> = {}) {
@@ -35,7 +36,7 @@ function makeEngram(overrides: Record<string, unknown> = {}) {
 }
 
 // storePrefix('datafund') → 'DA' (first 2 chars of single-word scope)
-const NS_ID = 'ENG-DA-2026-0401-001'
+const NS_ID = 'ENG-DF-2026-0401-001'
 
 describe('Multi-store', () => {
   let primaryDir: string
@@ -208,5 +209,71 @@ describe('Multi-store', () => {
 
     const st = plur.status()
     expect(st.engram_count).toBe(0)
+  })
+
+  it('SQLite indexed path includes store engrams in recall and feedback', () => {
+    writeStoreEngrams([makeEngram({ statement: 'Indexed store engram about SQLite queries' })])
+    // Enable index for this test
+    writeFileSync(
+      join(primaryDir, 'config.yaml'),
+      yaml.dump({
+        index: true,
+        stores: [{ path: storePath, scope: 'datafund', readonly: false }],
+      }, { lineWidth: 120, noRefs: true }),
+    )
+    const plur = createPlur()
+    plur.learn('Primary engram about database indexing', { scope: 'global' })
+
+    // Recall through indexed path should find both
+    const results = plur.recall('SQLite database queries indexing')
+    const ids = results.map(e => e.id)
+    expect(ids.some(id => id.startsWith('ENG-DF-'))).toBe(true)
+
+    // Feedback on the indexed store engram should persist
+    const storeResult = results.find(e => e.id.startsWith('ENG-DF-'))
+    if (storeResult) {
+      plur.feedback(storeResult.id, 'positive')
+      const storeRaw = yaml.load(readFileSync(storePath, 'utf8')) as any
+      expect(storeRaw.engrams[0].feedback_signals.positive).toBe(1)
+    }
+  })
+
+  it('storePrefix handles potential collisions deterministically', () => {
+    // Two scopes that could collide: both start with 'data'
+    // Single words: first char + char at position 4 (differentiates similar prefixes)
+    expect(storePrefix('datafund')).toBe('DF')
+    expect(storePrefix('datacore')).toBe('DC')
+    // With separators: first char of each part
+    expect(storePrefix('data-fund')).toBe('DF')
+    expect(storePrefix('data-core')).toBe('DC')
+    expect(storePrefix('project:myapp')).toBe('PM')
+    expect(storePrefix('space:fds')).toBe('SF')
+    // Short words: first + last char
+    expect(storePrefix('fds')).toBe('FS')
+    expect(storePrefix('ab')).toBe('AB')
+    // Edge: single char scope
+    expect(storePrefix('x')).toBe('XX')
+  })
+
+  it('cache invalidates after feedback, next recall reflects change', () => {
+    writeStoreEngrams([makeEngram({
+      statement: 'Cache test engram with low strength',
+      activation: { retrieval_strength: 0.3, storage_strength: 1.0, frequency: 0, last_accessed: '2026-04-01' },
+    })])
+    writeConfig([{ path: storePath, scope: 'datafund', readonly: false }])
+    const plur = createPlur()
+
+    // First recall — gets the engram
+    const before = plur.getById(NS_ID)
+    expect(before).not.toBeNull()
+    expect(before!.activation.retrieval_strength).toBe(0.3)
+
+    // Positive feedback bumps strength
+    plur.feedback(NS_ID, 'positive')
+
+    // Next getById should reflect the updated strength (cache was invalidated)
+    const after = plur.getById(NS_ID)
+    expect(after).not.toBeNull()
+    expect(after!.activation.retrieval_strength).toBe(0.35)
   })
 })
