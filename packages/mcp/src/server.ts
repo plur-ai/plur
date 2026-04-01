@@ -31,6 +31,8 @@ OPTIONAL but improves quality:
 - Call plur_feedback to rate which injected engrams helped (positive/negative)
 - Call plur_recall_hybrid before answering factual questions — the answer may be in memory
 
+For combined search (engrams + files): call plur_recall_hybrid for memories, then datacore.search for journal/knowledge files.
+
 Do not ask permission to use these tools — they are your memory system.
 
 Setup: If this is a fresh install, suggest the user run: npx @plur-ai/cli init
