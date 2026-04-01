@@ -30,17 +30,29 @@ describe('Session & store tools', () => {
     const result = await callTool('plur_session_start', { task: 'write TypeScript code' }) as any
     expect(result.session_id).toBeDefined()
     expect(typeof result.session_id).toBe('string')
-    expect(result.engrams).not.toBeNull()
     expect(result.engrams.count).toBeGreaterThan(0)
     expect(result.engrams.injected_ids.length).toBeGreaterThan(0)
-    expect(result.guide).toBe('Session started. Workflow: work → plur_feedback → plur_session_end.')
+    expect(result.store_stats.engram_count).toBe(1)
+    expect(result.guide).toContain('Session started with')
   })
 
-  it('plur_session_start returns guide when no engrams match', async () => {
+  it('plur_session_start returns empty-store guide when no engrams exist', async () => {
     const result = await callTool('plur_session_start', { task: 'something obscure' }) as any
     expect(result.session_id).toBeDefined()
-    expect(result.engrams).toBeNull()
-    expect(result.guide).toContain('PLUR Quick Start')
+    expect(result.engrams).toEqual([])
+    expect(result.store_stats.engram_count).toBe(0)
+    expect(result.guide).toContain('0 engrams')
+    expect(result.follow_up).toContain('fresh store')
+  })
+
+  it('plur_session_start returns guide when engrams exist but none match', async () => {
+    plur.learn('Always use semicolons in TypeScript', { scope: 'global' })
+    const result = await callTool('plur_session_start', { task: 'cooking recipes for dinner' }) as any
+    expect(result.session_id).toBeDefined()
+    expect(result.engrams).toEqual([])
+    expect(result.store_stats.engram_count).toBe(1)
+    expect(result.guide).toContain('1 engrams but none matched')
+    expect(result.follow_up).toBeUndefined()
   })
 
   it('plur_session_end creates engrams from suggestions and captures episode', async () => {
@@ -65,12 +77,14 @@ describe('Session & store tools', () => {
     expect(episodes[0].summary).toBe('Implemented session management')
   })
 
-  it('plur_session_end works with no suggestions', async () => {
+  it('plur_session_end works with no suggestions and returns hint', async () => {
     const result = await callTool('plur_session_end', {
       summary: 'Quick session, nothing learned',
     }) as any
     expect(result.engrams_created).toBe(0)
     expect(result.episode_id).toBeDefined()
+    expect(result.hint).toContain('No engrams captured')
+    expect(result.total_engrams).toBe(0)
   })
 
   it('plur_stores_add registers a store in config', async () => {

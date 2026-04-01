@@ -40,19 +40,35 @@ export interface ToolDefinition {
   handler: (args: Record<string, unknown>, plur: Plur) => Promise<unknown>
 }
 
+const PLUR_GUIDE_EMPTY = `## PLUR — Empty Store
+
+You have **0 engrams**. This session's learnings will be lost unless you store them.
+
+### What to store (call plur_learn):
+- When the user corrects you ("no, use X not Y")
+- When the user states a preference ("always do X", "never Y")
+- When you discover a convention or pattern in the codebase
+- Architecture decisions and their rationale
+
+### Session workflow:
+1. Work on your task
+2. Call **plur_learn** whenever you encounter something worth remembering
+3. Call **plur_session_end** before the conversation ends — suggest new engrams
+
+The more you store now, the smarter you start next session.`
+
 const PLUR_GUIDE = `## PLUR Quick Start
 
-Persistent memory for AI agents. Corrections, preferences, and conventions stored as engrams.
-
 ### Session Workflow
-1. **plur_session_start** (you just called this) — get context
+1. **plur_session_start** (you just called this) — context loaded
 2. Work on your task
-3. **plur_feedback** — rate which injected engrams helped
-4. **plur_session_end** — capture summary + suggest new engrams
+3. Call **plur_learn** when the user corrects you or states a preference
+4. Call **plur_feedback** to rate which injected engrams helped
+5. Call **plur_session_end** before the conversation ends — suggest new engrams
 
 ### Core Tools
-- **plur_learn** — record patterns, preferences, insights
-- **plur_recall_hybrid** — search engrams
+- **plur_learn** — record corrections, preferences, patterns (CALL THIS OFTEN)
+- **plur_recall_hybrid** — search engrams by topic
 - **plur_forget** — retire an outdated engram`
 
 export function getToolDefinitions(): ToolDefinition[] {
@@ -714,6 +730,14 @@ export function getToolDefinitions(): ToolDefinition[] {
         const task = args.task as string
         const tags = args.tags as string[] | undefined
 
+        // Get store stats for context
+        const status = plur.status()
+        const store_stats = {
+          engram_count: status.engram_count,
+          episode_count: status.episode_count,
+          pack_count: status.pack_count,
+        }
+
         // Inject relevant engrams
         let engrams: { text: string; count: number; injected_ids: string[] } | null = null
         try {
@@ -741,10 +765,25 @@ export function getToolDefinitions(): ToolDefinition[] {
           }
         }
 
+        // Pick the right guide based on store state
+        let guide: string
+        if (engrams) {
+          guide = `Session started with ${engrams.count} engrams from ${store_stats.engram_count} total. Remember to call plur_learn when corrected and plur_session_end before the conversation ends.`
+        } else if (store_stats.engram_count === 0) {
+          guide = PLUR_GUIDE_EMPTY
+        } else {
+          guide = `${PLUR_GUIDE}\n\nYou have ${store_stats.engram_count} engrams but none matched this task. Call plur_learn to capture new learnings from this session.`
+        }
+
         return {
           session_id,
-          engrams,
-          guide: engrams ? 'Session started. Workflow: work → plur_feedback → plur_session_end.' : PLUR_GUIDE,
+          engrams: engrams ?? [],
+          store_stats,
+          guide,
+          // Ask LLM to check back — MCP can't push, but we can request a follow-up
+          follow_up: store_stats.engram_count === 0
+            ? 'This is a fresh store with 0 engrams. After your first exchange with the user, review what you learned and call plur_learn for any corrections, preferences, or patterns. Build the memory from this session.'
+            : undefined,
         }
       },
     },
@@ -793,9 +832,15 @@ export function getToolDefinitions(): ToolDefinition[] {
           channel: 'mcp',
         })
 
+        const status = plur.status()
+
         return {
           engrams_created,
           episode_id: episode.id,
+          total_engrams: status.engram_count,
+          hint: engrams_created === 0
+            ? 'No engrams captured this session. If any corrections, preferences, or patterns came up, consider calling plur_learn before ending.'
+            : undefined,
         }
       },
     },

@@ -16,15 +16,20 @@ import { z } from 'zod'
 
 const VERSION = '0.5.1'
 
-const INSTRUCTIONS = `PLUR is your persistent memory. It stores corrections, preferences, and conventions as engrams that persist across sessions.
+const INSTRUCTIONS = `PLUR is your persistent memory. Corrections, preferences, and conventions persist across sessions as engrams.
 
-Use PLUR proactively:
-- Call plur_session_start at session start with a task description — loads relevant context
-- Call plur_learn when the user corrects you, states a preference, or you discover a convention
-- Call plur_feedback after using recalled engrams to train relevance
-- Call plur_session_end before the conversation ends — captures learnings and session summary
+REQUIRED at session boundaries:
+- FIRST ACTION of every session: call plur_session_start with a task description
+- LAST ACTION before conversation ends: call plur_session_end with summary + engram_suggestions
 
-For combined search (engrams + files): call plur_recall_hybrid for memories, then datacore.search for journal/knowledge files.
+REQUIRED during the session:
+- When user corrects you ("no, use X not Y") → call plur_learn immediately
+- When user states a preference ("always X", "never Y") → call plur_learn immediately
+- When you discover a codebase convention or pattern → call plur_learn
+
+OPTIONAL but improves quality:
+- Call plur_feedback to rate which injected engrams helped (positive/negative)
+- Call plur_recall_hybrid before answering factual questions — the answer may be in memory
 
 Do not ask permission to use these tools — they are your memory system.`
 
