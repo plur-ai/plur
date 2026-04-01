@@ -187,8 +187,8 @@ export class Plur {
       const scope = context?.scope ?? 'global'
       const now = new Date().toISOString()
 
-      // Detect conflicts among active engrams in the same scope
-      const conflictingEngrams = detectConflicts({ statement, scope }, engrams)
+      // Detect conflicts among active engrams in the same scope (including stores)
+      const conflictingEngrams = detectConflicts({ statement, scope }, allEngrams)
       const conflictIds = conflictingEngrams.map(e => e.id)
 
       const engram: Engram = {
@@ -338,8 +338,11 @@ export class Plur {
   /** Reactivate accessed engrams and update co-access associations */
   private _reactivateResults(results: Engram[]): void {
     if (results.length === 0) return
-    // Filter out store engrams (those with _originalId) — they're managed by their source
-    const primaryResults = results.filter(e => !(e as any)._originalId)
+    // Filter out store engrams — they're managed by their source.
+    // Via YAML path: store engrams have _originalId. Via SQLite path: namespaced IDs (ENG-XX-...).
+    const isStoreEngram = (e: Engram) =>
+      (e as any)._originalId || /^(ENG|ABS|META)-[A-Z]{2}-/.test(e.id)
+    const primaryResults = results.filter(e => !isStoreEngram(e))
     if (primaryResults.length === 0) return
     withLock(this.paths.engrams, () => {
       const allEngrams = loadEngrams(this.paths.engrams)
@@ -505,8 +508,9 @@ export class Plur {
       if (storeInfo.readonly) {
         throw new Error('Engram is in a readonly store')
       }
-      const engrams = loadEngrams(storeInfo.path)
-      const engram = engrams.find(e => e.id === storeInfo.originalId)
+      // Must load fresh (not cached) since we're about to mutate and write back
+      const storeEngrams = loadEngrams(storeInfo.path)
+      const engram = storeEngrams.find(e => e.id === storeInfo.originalId)
       if (engram) {
         if (!engram.feedback_signals) {
           engram.feedback_signals = { positive: 0, negative: 0, neutral: 0 }
@@ -517,7 +521,9 @@ export class Plur {
         } else if (signal === 'negative') {
           engram.activation.retrieval_strength = Math.max(0.0, engram.activation.retrieval_strength - 0.1)
         }
-        saveEngrams(storeInfo.path, engrams)
+        saveEngrams(storeInfo.path, storeEngrams)
+        // Invalidate cache for this store since we just wrote to it
+        this._engramCache.delete(storeInfo.path)
         this._syncIndex()
         return
       }
@@ -589,14 +595,15 @@ export class Plur {
       if (storeInfo.readonly) {
         throw new Error('Cannot retire engram from readonly store')
       }
-      const engrams = loadEngrams(storeInfo.path)
-      const engram = engrams.find(e => e.id === storeInfo.originalId)
+      const storeEngrams = loadEngrams(storeInfo.path)
+      const engram = storeEngrams.find(e => e.id === storeInfo.originalId)
       if (engram) {
         engram.status = 'retired'
         if (reason && !engram.rationale) {
           engram.rationale = `Retired: ${reason}`
         }
-        saveEngrams(storeInfo.path, engrams)
+        saveEngrams(storeInfo.path, storeEngrams)
+        this._engramCache.delete(storeInfo.path)
         this._syncIndex()
         return
       }
@@ -790,11 +797,11 @@ export class Plur {
       scope: 'global',
       shared: false,
       readonly: false,
-      engram_count: loadEngrams(this.paths.engrams).filter(e => e.status !== 'retired').length,
+      engram_count: this._loadCached(this.paths.engrams).filter(e => e.status !== 'retired').length,
     }
     const additional = stores.map(s => {
       let count = 0
-      try { count = loadEngrams(s.path).filter(e => e.status !== 'retired').length } catch {}
+      try { count = this._loadCached(s.path).filter(e => e.status !== 'retired').length } catch {}
       return { ...s, engram_count: count }
     })
     return [primary, ...additional]
