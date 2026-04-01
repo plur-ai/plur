@@ -797,27 +797,35 @@ export function getToolDefinitions(): ToolDefinition[] {
 
     {
       name: 'plur_session_end',
-      description: 'End a session — captures an episode and creates engrams from suggestions. Call before the conversation ends.',
+      description: `End a session. BEFORE calling this tool, review the conversation and extract learnings:
+
+1. Corrections the user made ("no, use X not Y") → type: behavioral
+2. Preferences stated ("always X", "never Y") → type: behavioral
+3. Codebase patterns discovered (naming, structure, conventions) → type: architectural
+4. Technical facts learned (API quirks, config, gotchas) → type: procedural
+5. Terminology defined or clarified → type: terminological
+
+Include at least one engram_suggestion if ANYTHING was learned. An empty suggestions array means nothing worth remembering happened — this should be rare.`,
       annotations: { title: 'Session End', destructiveHint: false, idempotentHint: false },
       inputSchema: {
         type: 'object',
         properties: {
-          summary: { type: 'string', description: 'What happened in this session' },
+          summary: { type: 'string', description: 'What happened in this session (1-3 sentences)' },
           session_id: { type: 'string', description: 'Session ID from plur_session_start' },
           engram_suggestions: {
             type: 'array',
             items: {
               type: 'object',
               properties: {
-                statement: { type: 'string', description: 'The knowledge assertion' },
+                statement: { type: 'string', description: 'A concise, reusable assertion. Write it as advice to your future self.' },
                 type: { type: 'string', enum: ['behavioral', 'terminological', 'procedural', 'architectural'] },
               },
               required: ['statement'],
             },
-            description: 'New learnings to capture as engrams',
+            description: 'Learnings from this session. Review the conversation for corrections, preferences, patterns, and technical facts before calling.',
           },
         },
-        required: ['summary'],
+        required: ['summary', 'engram_suggestions'],
       },
       handler: async (args, plur) => {
         const summary = args.summary as string

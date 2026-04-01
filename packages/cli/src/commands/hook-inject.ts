@@ -1,4 +1,4 @@
-import { existsSync, writeFileSync, readFileSync, mkdirSync, readSync } from 'fs'
+import { existsSync, writeFileSync, readFileSync, mkdirSync, readSync, statSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { createPlur, type GlobalFlags } from '../plur.js'
@@ -7,7 +7,7 @@ import { createPlur, type GlobalFlags } from '../plur.js'
  * plur hook-inject — Claude Code hook for engram injection.
  *
  * Called by UserPromptSubmit hook. First call injects engrams based on the
- * user's prompt. Subsequent calls in the same session skip (~1ms).
+ * user's prompt. Subsequent calls check if a reminder is due (every 10 min).
  *
  * With --rehydrate: always injects (used by PostCompact hook after context
  * compaction to restore engrams that were lost).
@@ -16,18 +16,28 @@ import { createPlur, type GlobalFlags } from '../plur.js'
  * Output: JSON on stdout with {additionalContext} or empty (exit 0)
  */
 
-function sessionMarkerPath(): string {
-  const ppid = process.ppid || 'unknown'
+const REMINDER_INTERVAL_MS = 10 * 60 * 1000 // 10 minutes
+
+function sessionDir(): string {
   const dir = join(tmpdir(), 'plur-sessions')
   mkdirSync(dir, { recursive: true })
-  return join(dir, `${ppid}.marker`)
+  return dir
+}
+
+function sessionMarkerPath(): string {
+  const ppid = process.ppid || 'unknown'
+  return join(sessionDir(), `${ppid}.marker`)
+}
+
+function lastReminderPath(): string {
+  const ppid = process.ppid || 'unknown'
+  return join(sessionDir(), `${ppid}.reminded`)
 }
 
 function readStdinSync(): Record<string, unknown> {
   try {
     const chunks: Buffer[] = []
     const buf = Buffer.alloc(65536)
-    // readSync on fd 0 reads piped stdin synchronously
     while (true) {
       try {
         const n = readSync(0, buf, 0, buf.length, null)
@@ -44,12 +54,34 @@ function readStdinSync(): Record<string, unknown> {
   }
 }
 
+function isReminderDue(): boolean {
+  const path = lastReminderPath()
+  try {
+    const stat = statSync(path)
+    return Date.now() - stat.mtimeMs > REMINDER_INTERVAL_MS
+  } catch {
+    // File doesn't exist = never reminded = due
+    return true
+  }
+}
+
+function touchReminder(): void {
+  writeFileSync(lastReminderPath(), String(Date.now()))
+}
+
 export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   const isRehydrate = args.includes('--rehydrate')
   const marker = sessionMarkerPath()
 
-  // Hot path: session already started, skip (~1ms)
+  // Session already started — check if periodic reminder is due
   if (!isRehydrate && existsSync(marker)) {
+    if (isReminderDue()) {
+      touchReminder()
+      const output = {
+        additionalContext: '[PLUR Memory Reminder] If the user corrected you, stated a preference, or you discovered a pattern — call plur_learn now. Call plur_session_end with engram_suggestions before the conversation ends.',
+      }
+      process.stdout.write(JSON.stringify(output))
+    }
     return
   }
 
@@ -69,6 +101,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
       return
     }
     writeFileSync(marker, task)
+    touchReminder() // Reset reminder timer on first message
   }
 
   // Inject engrams
