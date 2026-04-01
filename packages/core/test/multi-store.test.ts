@@ -36,7 +36,7 @@ function makeEngram(overrides: Record<string, unknown> = {}) {
 }
 
 // storePrefix('datafund') → 'DA' (first 2 chars of single-word scope)
-const NS_ID = 'ENG-DF-2026-0401-001'
+const NS_ID = 'ENG-DFD-2026-0401-001'
 
 describe('Multi-store', () => {
   let primaryDir: string
@@ -227,10 +227,10 @@ describe('Multi-store', () => {
     // Recall through indexed path should find both
     const results = plur.recall('SQLite database queries indexing')
     const ids = results.map(e => e.id)
-    expect(ids.some(id => id.startsWith('ENG-DF-'))).toBe(true)
+    expect(ids.some(id => id.startsWith('ENG-DFD-'))).toBe(true)
 
     // Feedback on the indexed store engram should persist
-    const storeResult = results.find(e => e.id.startsWith('ENG-DF-'))
+    const storeResult = results.find(e => e.id.startsWith('ENG-DFD-'))
     if (storeResult) {
       plur.feedback(storeResult.id, 'positive')
       const storeRaw = yaml.load(readFileSync(storePath, 'utf8')) as any
@@ -240,19 +240,20 @@ describe('Multi-store', () => {
 
   it('storePrefix handles potential collisions deterministically', () => {
     // Two scopes that could collide: both start with 'data'
-    // Single words: first char + char at position 4 (differentiates similar prefixes)
-    expect(storePrefix('datafund')).toBe('DF')
-    expect(storePrefix('datacore')).toBe('DC')
-    // With separators: first char of each part
-    expect(storePrefix('data-fund')).toBe('DF')
-    expect(storePrefix('data-core')).toBe('DC')
-    expect(storePrefix('project:myapp')).toBe('PM')
-    expect(storePrefix('space:fds')).toBe('SF')
-    // Short words: first + last char
-    expect(storePrefix('fds')).toBe('FS')
-    expect(storePrefix('ab')).toBe('AB')
+    // Single words: first + middle + last char (differentiates similar prefixes)
+    expect(storePrefix('datafund')).toBe('DFD')
+    expect(storePrefix('datacore')).toBe('DCE')
+    expect(storePrefix('personal')).toBe('POL')
+    // With separators: first char of part1 + first 2 chars of part2
+    expect(storePrefix('data-fund')).toBe('DFU')
+    expect(storePrefix('data-core')).toBe('DCO')
+    expect(storePrefix('project:myapp')).toBe('PMY')
+    expect(storePrefix('space:fds')).toBe('SFD')
+    // Short words: first + middle + last
+    expect(storePrefix('fds')).toBe('FDS')
+    expect(storePrefix('ab')).toBe('ABA')
     // Edge: single char scope
-    expect(storePrefix('x')).toBe('XX')
+    expect(storePrefix('x')).toBe('XXX')
   })
 
   it('cache invalidates after feedback, next recall reflects change', () => {

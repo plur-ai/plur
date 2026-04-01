@@ -341,7 +341,7 @@ export class Plur {
     // Filter out store engrams — they're managed by their source.
     // Via YAML path: store engrams have _originalId. Via SQLite path: namespaced IDs (ENG-XX-...).
     const isStoreEngram = (e: Engram) =>
-      (e as any)._originalId || /^(ENG|ABS|META)-[A-Z]{2}-/.test(e.id)
+      (e as any)._originalId || /^(ENG|ABS|META)-[A-Z]{3}-/.test(e.id)
     const primaryResults = results.filter(e => !isStoreEngram(e))
     if (primaryResults.length === 0) return
     withLock(this.paths.engrams, () => {
