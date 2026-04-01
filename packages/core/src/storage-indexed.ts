@@ -2,6 +2,7 @@ import { existsSync } from 'fs'
 import { createRequire } from 'module'
 import { loadEngrams } from './engrams.js'
 import type { Engram } from './schemas/engram.js'
+import type { StoreEntry } from './schemas/config.js'
 
 const require = createRequire(import.meta.url)
 
@@ -23,11 +24,13 @@ function getDatabase(): any {
 export class IndexedStorage {
   private dbPath: string
   private engramsPath: string
+  private stores: StoreEntry[]
   private db: any = null
 
-  constructor(engramsPath: string, dbPath: string) {
+  constructor(engramsPath: string, dbPath: string, stores?: StoreEntry[]) {
     this.engramsPath = engramsPath
     this.dbPath = dbPath
+    this.stores = stores ?? []
   }
 
   private getDb(): any {
@@ -48,6 +51,13 @@ export class IndexedStorage {
         CREATE INDEX IF NOT EXISTS idx_scope ON engrams(scope);
         CREATE INDEX IF NOT EXISTS idx_domain ON engrams(domain);
       `)
+      // Add source column if not exists (multi-store support)
+      try {
+        this.db.exec("ALTER TABLE engrams ADD COLUMN source TEXT NOT NULL DEFAULT 'primary'")
+      } catch {
+        // Column already exists — expected on subsequent opens
+      }
+      this.db.exec('CREATE INDEX IF NOT EXISTS idx_source ON engrams(source)')
     }
     return this.db
   }
@@ -101,30 +111,61 @@ export class IndexedStorage {
     return (db.prepare('SELECT COUNT(*) as c FROM engrams').get() as any).c
   }
 
-  /** Sync SQLite index from YAML source of truth. */
+  /** Sync SQLite index from YAML source of truth (primary + all stores). */
   syncFromYaml(): void {
-    const engrams = loadEngrams(this.engramsPath)
     const db = this.getDb()
     const upsert = db.prepare(`
-      INSERT OR REPLACE INTO engrams (id, status, scope, domain, last_accessed, data)
-      VALUES (?, ?, ?, ?, ?, ?)
+      INSERT OR REPLACE INTO engrams (id, status, scope, domain, last_accessed, data, source)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
     `)
-    const deleteStmt = db.prepare('DELETE FROM engrams WHERE id = ?')
 
-    const yamlIds = new Set(engrams.map(e => e.id))
-    const dbIds = new Set(
-      (db.prepare('SELECT id FROM engrams').all() as { id: string }[]).map((r: { id: string }) => r.id)
-    )
+    const allSyncedIds = new Set<string>()
+    const validSources = new Set<string>(['primary'])
 
     const tx = db.transaction(() => {
-      for (const e of engrams) {
-        upsert.run(e.id, e.status, e.scope, e.domain ?? null, e.activation.last_accessed, JSON.stringify(e))
+      // Sync primary store
+      const primaryEngrams = loadEngrams(this.engramsPath)
+      for (const e of primaryEngrams) {
+        upsert.run(e.id, e.status, e.scope, e.domain ?? null, e.activation.last_accessed, JSON.stringify(e), 'primary')
+        allSyncedIds.add(e.id)
       }
-      for (const id of dbIds) {
-        if (!yamlIds.has(id)) deleteStmt.run(id)
+
+      // Sync additional stores with namespaced IDs
+      for (const store of this.stores) {
+        validSources.add(store.path)
+        const storeEngrams = loadEngrams(store.path)
+        const prefix = this._storePrefix(store.scope)
+        for (const e of storeEngrams) {
+          // Scope validation: skip mismatched scopes
+          if (e.scope !== 'global' && e.scope !== store.scope && !e.scope.startsWith(store.scope)) {
+            continue
+          }
+          const nsId = e.id.replace(/^(ENG|ABS|META)-/, `$1-${prefix}-`)
+          const scope = e.scope === 'global' ? store.scope : e.scope
+          upsert.run(nsId, e.status, scope, e.domain ?? null, e.activation.last_accessed, JSON.stringify({ ...e, id: nsId, scope }), store.path)
+          allSyncedIds.add(nsId)
+        }
+      }
+
+      // Delete rows not in any current source
+      const dbRows = db.prepare('SELECT id, source FROM engrams').all() as { id: string; source: string }[]
+      const deleteStmt = db.prepare('DELETE FROM engrams WHERE id = ?')
+      for (const row of dbRows) {
+        if (!allSyncedIds.has(row.id)) {
+          deleteStmt.run(row.id)
+        }
       }
     })
     tx()
+  }
+
+  /** Derive a 2-char prefix from a store scope */
+  private _storePrefix(scope: string): string {
+    const parts = scope.split(/[:\-_./]/).filter(Boolean)
+    if (parts.length >= 2) {
+      return (parts[0][0] + parts[1][0]).toUpperCase()
+    }
+    return scope.slice(0, 2).toUpperCase()
   }
 
   /** Drop and rebuild the entire index from YAML. */

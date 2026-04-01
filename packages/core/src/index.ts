@@ -4,6 +4,7 @@ import { detectPlurStorage, type PlurPaths } from './storage.js'
 import { IndexedStorage } from './storage-indexed.js'
 import { loadConfig } from './config.js'
 import { loadEngrams, saveEngrams, generateEngramId, loadAllPacks } from './engrams.js'
+import { logger } from './logger.js'
 import { searchEngrams } from './fts.js'
 import { selectAndSpread, scoreEngramsPublic } from './inject.js'
 import { reactivate } from './decay.js'
@@ -19,7 +20,7 @@ import { detectSecrets } from './secrets.js'
 import type { Engram } from './schemas/engram.js'
 import type { Episode } from './schemas/episode.js'
 import type { PackManifest } from './schemas/pack.js'
-import type { PlurConfig } from './schemas/config.js'
+import type { PlurConfig, StoreEntry } from './schemas/config.js'
 import type {
   LearnContext,
   RecallOptions,
@@ -82,13 +83,103 @@ export class Plur {
   private paths: PlurPaths
   private config: PlurConfig
   private indexedStorage: IndexedStorage | null = null
+  private _engramCache: Map<string, { mtime: number; engrams: Engram[] }> = new Map()
 
   constructor(options?: { path?: string }) {
     this.paths = detectPlurStorage(options?.path)
     this.config = loadConfig(this.paths.config)
     if (this.config.index) {
-      this.indexedStorage = new IndexedStorage(this.paths.engrams, this.paths.db)
+      this.indexedStorage = new IndexedStorage(this.paths.engrams, this.paths.db, this.config.stores)
     }
+  }
+
+  /** Derive a 2-char prefix from a store scope (e.g. 'datafund' → 'DF', 'project:myapp' → 'PM') */
+  private _storePrefix(scope: string): string {
+    // Split on common separators and take first letters of first two words
+    const parts = scope.split(/[:\-_./]/).filter(Boolean)
+    if (parts.length >= 2) {
+      return (parts[0][0] + parts[1][0]).toUpperCase()
+    }
+    // Single word: take first two characters
+    return scope.slice(0, 2).toUpperCase()
+  }
+
+  /**
+   * Load engrams from primary store + all configured stores, with mtime-based caching.
+   * Store engram IDs get namespaced: ENG-2026-0401-001 → ENG-DF-2026-0401-001.
+   * Primary engrams are returned unchanged.
+   */
+  private _loadAllEngrams(): Engram[] {
+    const primary = this._loadCached(this.paths.engrams)
+    const stores = this.config.stores ?? []
+    if (stores.length === 0) return primary
+
+    const all: Engram[] = [...primary]
+    for (const store of stores) {
+      const storeEngrams = this._loadCached(store.path)
+      const prefix = this._storePrefix(store.scope)
+      for (const e of storeEngrams) {
+        // Phase 4: Scope validation
+        if (e.scope !== 'global' && e.scope !== store.scope && !e.scope.startsWith(store.scope)) {
+          logger.debug(`Skipping engram ${e.id} from store ${store.scope}: scope mismatch (${e.scope})`)
+          continue
+        }
+
+        const cloned = { ...e } as any
+        // Narrow global scope to store scope
+        if (cloned.scope === 'global') {
+          cloned.scope = store.scope
+        }
+        // Namespace the ID to avoid collisions
+        const originalId = cloned.id
+        cloned.id = cloned.id.replace(/^(ENG|ABS|META)-/, `$1-${prefix}-`)
+        cloned._originalId = originalId
+        cloned._storeScope = store.scope
+        all.push(cloned)
+      }
+    }
+    return all
+  }
+
+  /** Load engrams from a path with mtime-based caching */
+  private _loadCached(path: string): Engram[] {
+    let mtime = 0
+    try {
+      mtime = fs.statSync(path).mtimeMs
+    } catch {
+      return []
+    }
+    const cached = this._engramCache.get(path)
+    if (cached && cached.mtime === mtime) return cached.engrams
+    const engrams = loadEngrams(path)
+    this._engramCache.set(path, { mtime, engrams })
+    return engrams
+  }
+
+  /** Find which store owns an engram by ID. For namespaced IDs, strips prefix to find in store. */
+  private _findEngramStore(id: string): { path: string; readonly: boolean; originalId: string } | null {
+    // Check primary first
+    const primaryEngrams = loadEngrams(this.paths.engrams)
+    if (primaryEngrams.find(e => e.id === id)) {
+      return { path: this.paths.engrams, readonly: false, originalId: id }
+    }
+
+    // Check stores — ID might be namespaced
+    const stores = this.config.stores ?? []
+    for (const store of stores) {
+      const prefix = this._storePrefix(store.scope)
+      const nsPattern = new RegExp(`^(ENG|ABS|META)-${prefix}-`)
+      if (nsPattern.test(id)) {
+        // Strip the namespace prefix to get the original ID
+        const originalId = id.replace(nsPattern, '$1-')
+        const storeEngrams = loadEngrams(store.path)
+        if (storeEngrams.find(e => e.id === originalId)) {
+          return { path: store.path, readonly: store.readonly ?? false, originalId }
+        }
+      }
+    }
+
+    return null
   }
 
   /** Create engram, detect conflicts, save. Returns the created engram. */
@@ -101,7 +192,9 @@ export class Plur {
     }
     return withLock(this.paths.engrams, () => {
       const engrams = loadEngrams(this.paths.engrams)
-      const id = generateEngramId(engrams)
+      // Use all engrams (including stores) for ID generation to avoid conflicts
+      const allEngrams = this._loadAllEngrams()
+      const id = generateEngramId(allEngrams)
       const scope = context?.scope ?? 'global'
       const now = new Date().toISOString()
 
@@ -207,9 +300,9 @@ export class Plur {
     return results
   }
 
-  /** Get a single engram by ID, regardless of status. Returns null if not found. */
+  /** Get a single engram by ID, regardless of status. Searches primary + all stores. */
   getById(id: string): Engram | null {
-    const engrams = loadEngrams(this.paths.engrams)
+    const engrams = this._loadAllEngrams()
     return engrams.find(e => e.id === id) ?? null
   }
 
@@ -228,7 +321,7 @@ export class Plur {
         domain: options?.domain,
       })
     } else {
-      engrams = loadEngrams(this.paths.engrams)
+      engrams = this._loadAllEngrams()
       engrams = engrams.filter(e => e.status === 'active')
       if (options?.domain) {
         engrams = engrams.filter(e => e.domain?.startsWith(options.domain!))
@@ -256,9 +349,12 @@ export class Plur {
   /** Reactivate accessed engrams and update co-access associations */
   private _reactivateResults(results: Engram[]): void {
     if (results.length === 0) return
+    // Filter out store engrams (those with _originalId) — they're managed by their source
+    const primaryResults = results.filter(e => !(e as any)._originalId)
+    if (primaryResults.length === 0) return
     withLock(this.paths.engrams, () => {
       const allEngrams = loadEngrams(this.paths.engrams)
-      const resultIds = new Set(results.map(e => e.id))
+      const resultIds = new Set(primaryResults.map(e => e.id))
       const today = new Date().toISOString().slice(0, 10)
       let modified = false
 
@@ -326,7 +422,7 @@ export class Plur {
     // Try to get embedding similarities for all active engrams
     let embeddingBoosts: Map<string, number> | undefined
     try {
-      const engrams = loadEngrams(this.paths.engrams).filter(e => e.status === 'active')
+      const engrams = this._loadAllEngrams().filter(e => e.status === 'active')
       const results = await embeddingSearch(engrams, task, engrams.length, this.paths.root)
       if (results.length > 0) {
         // Build boost map: rank-based scoring (top result gets 1.0, decays)
@@ -342,7 +438,7 @@ export class Plur {
   }
 
   private _formatInjection(task: string, options?: InjectOptions, embeddingBoosts?: Map<string, number>): InjectionResult {
-    const engrams = loadEngrams(this.paths.engrams)
+    const engrams = this._loadAllEngrams()
     const packs = loadAllPacks(this.paths.packs)
     const budget = options?.budget ?? this.config.injection_budget ?? 2000
 
@@ -388,9 +484,9 @@ export class Plur {
     }
   }
 
-  /** Update feedback_signals and adjust retrieval_strength. Searches packs if not found in personal engrams. */
+  /** Update feedback_signals and adjust retrieval_strength. Searches primary, stores, then packs. */
   feedback(id: string, signal: 'positive' | 'negative' | 'neutral'): void {
-    // Try personal engrams first
+    // Try primary engrams first
     const found = withLock(this.paths.engrams, () => {
       const engrams = loadEngrams(this.paths.engrams)
       const engram = engrams.find(e => e.id === id)
@@ -413,6 +509,30 @@ export class Plur {
     })
 
     if (found) return
+
+    // Try configured stores (namespaced IDs)
+    const storeInfo = this._findEngramStore(id)
+    if (storeInfo && storeInfo.path !== this.paths.engrams) {
+      if (storeInfo.readonly) {
+        throw new Error('Engram is in a readonly store')
+      }
+      const engrams = loadEngrams(storeInfo.path)
+      const engram = engrams.find(e => e.id === storeInfo.originalId)
+      if (engram) {
+        if (!engram.feedback_signals) {
+          engram.feedback_signals = { positive: 0, negative: 0, neutral: 0 }
+        }
+        engram.feedback_signals[signal] += 1
+        if (signal === 'positive') {
+          engram.activation.retrieval_strength = Math.min(1.0, engram.activation.retrieval_strength + 0.05)
+        } else if (signal === 'negative') {
+          engram.activation.retrieval_strength = Math.max(0.0, engram.activation.retrieval_strength - 0.1)
+        }
+        saveEngrams(storeInfo.path, engrams)
+        this._syncIndex()
+        return
+      }
+    }
 
     // Search pack engrams by scanning pack directories
     this._feedbackPack(id, signal)
@@ -454,12 +574,13 @@ export class Plur {
     })
   }
 
-  /** Set engram status to 'retired'. */
+  /** Set engram status to 'retired'. Supports primary and store engrams. */
   forget(id: string, reason?: string): void {
-    withLock(this.paths.engrams, () => {
+    // Check primary first
+    const foundInPrimary = withLock(this.paths.engrams, () => {
       const engrams = loadEngrams(this.paths.engrams)
       const engram = engrams.find(e => e.id === id)
-      if (!engram) throw new Error(`Engram not found: ${id}`)
+      if (!engram) return false
 
       engram.status = 'retired'
       if (reason && !engram.rationale) {
@@ -468,7 +589,31 @@ export class Plur {
 
       saveEngrams(this.paths.engrams, engrams)
       this._syncIndex()
+      return true
     })
+
+    if (foundInPrimary) return
+
+    // Check stores for namespaced IDs
+    const storeInfo = this._findEngramStore(id)
+    if (storeInfo && storeInfo.path !== this.paths.engrams) {
+      if (storeInfo.readonly) {
+        throw new Error('Cannot retire engram from readonly store')
+      }
+      const engrams = loadEngrams(storeInfo.path)
+      const engram = engrams.find(e => e.id === storeInfo.originalId)
+      if (engram) {
+        engram.status = 'retired'
+        if (reason && !engram.rationale) {
+          engram.rationale = `Retired: ${reason}`
+        }
+        saveEngrams(storeInfo.path, engrams)
+        this._syncIndex()
+        return
+      }
+    }
+
+    throw new Error(`Engram not found: ${id}`)
   }
 
   /** Remove retired engrams from storage. Returns count of removed and remaining. */
@@ -488,7 +633,7 @@ export class Plur {
   /** Rebuild SQLite index from YAML source of truth. Only works when index: true. */
   reindex(): void {
     if (!this.indexedStorage) {
-      this.indexedStorage = new IndexedStorage(this.paths.engrams, this.paths.db)
+      this.indexedStorage = new IndexedStorage(this.paths.engrams, this.paths.db, this.config.stores)
     }
     this.indexedStorage.reindex()
   }
@@ -611,7 +756,7 @@ export class Plur {
 
   /** Return system health info. */
   status(): StatusResult {
-    const engrams = loadEngrams(this.paths.engrams)
+    const engrams = this._loadAllEngrams()
     const episodes = queryTimeline(this.paths.episodes)
     const packs = listPacks(this.paths.packs)
 
