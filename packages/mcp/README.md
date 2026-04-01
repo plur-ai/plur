@@ -50,31 +50,32 @@ Your agent gets these tools automatically:
 
 | Tool | What it does |
 |------|-------------|
-| `plur.learn` | Store a memory — correction, preference, convention, or decision |
-| `plur.recall` | Keyword search (BM25, instant) |
-| `plur.recall.hybrid` | **Best default** — BM25 + embeddings merged via RRF. Zero cost. |
-| `plur.inject` | Load relevant memories for the current task |
-| `plur.feedback` | Rate a memory — trains relevance over time |
-| `plur.forget` | Retire a memory (history preserved) |
-| `plur.sync` | Sync memory across machines via git |
-| `plur.sync.status` | Check sync state |
-| `plur.capture` | Record a session event |
-| `plur.timeline` | Query session history |
-| `plur.ingest` | Extract learnings from text |
-| `plur.packs.install` | Install a shareable memory pack |
-| `plur.packs.list` | List installed packs |
-| `plur.status` | System health |
+| `plur_session_start` | Start a session — injects relevant engrams for your task |
+| `plur_learn` | Store a memory — correction, preference, convention, or decision |
+| `plur_recall_hybrid` | **Best default** — BM25 + embeddings merged via RRF. Zero cost. |
+| `plur_recall` | Keyword search (BM25 only, instant) |
+| `plur_inject_hybrid` | Load relevant memories for the current task |
+| `plur_feedback` | Rate a memory — trains relevance over time |
+| `plur_forget` | Retire a memory (history preserved) |
+| `plur_session_end` | End a session — captures summary and new learnings |
+| `plur_capture` | Record a session event |
+| `plur_timeline` | Query session history |
+| `plur_ingest` | Extract learnings from text |
+| `plur_sync` | Sync memory across machines via git |
+| `plur_packs_install` | Install a shareable memory pack |
+| `plur_packs_list` | List installed packs |
+| `plur_status` | System health |
 
 ## Sync across machines
 
 Your agent can sync memory to any git remote:
 
 ```
-Agent: plur.sync({ remote: "git@github.com:you/plur-memory.git" })
+Agent: plur_sync({ remote: "git@github.com:you/plur-memory.git" })
 → "Initialized and pushed."
 
 # On another machine, same remote:
-Agent: plur.sync()
+Agent: plur_sync()
 → "Synced. Pulled 12 remote commits."
 ```
 

@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.5.2 (2026-04-01)
+
+### Cold Start Fix (#7)
+- `plur_session_start` returns store stats (engram count, episodes, packs) and contextual guides
+- Empty store gets actionable messaging: "You have 0 engrams. Call plur_learn..."
+- Fresh install triggers `setup_hint` suggesting `npx @plur-ai/mcp init`
+- `plur_session_end` returns hint when no engrams captured
+
+### One-Command Setup
+- `npx @plur-ai/mcp init` now does everything: storage + MCP config + Claude Code hooks
+- `plur init` (CLI) installs hooks only, for users with existing MCP config
+- `plur hook-inject` — hook handler for automatic engram injection on first message
+- `plur hook-inject --rehydrate` — re-inject engrams after context compaction
+
+### Stronger Instructions
+- MCP INSTRUCTIONS split into REQUIRED (session boundaries, corrections) vs OPTIONAL (feedback, recall)
+- Concrete triggers ("when user corrects you") instead of vague "use proactively"
+
+### Packages
+- `@plur-ai/core` 0.5.2
+- `@plur-ai/mcp` 0.5.3 — cold start fix, one-command init, stronger instructions
+- `@plur-ai/cli` 0.5.4 — init, hook-inject commands
+- `@plur-ai/claw` 0.5.2
+
+### Update
+```
+npm update -g @plur-ai/mcp @plur-ai/cli
+```
+
 ## 0.5.0 (2026-03-31)
 
 ### Session Management
