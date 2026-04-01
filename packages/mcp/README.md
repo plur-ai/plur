@@ -8,15 +8,22 @@ Part of [PLUR](https://plur.ai) — where **Haiku with memory outperforms Opus w
 
 ### Claude Code
 
-Add to `.claude/mcp.json`:
-
 ```json
+// .claude/mcp.json
 {
   "mcpServers": {
     "plur": { "command": "npx", "args": ["-y", "@plur-ai/mcp"] }
   }
 }
 ```
+
+Then install hooks for automatic memory injection:
+
+```bash
+npx @plur-ai/cli init
+```
+
+This adds Claude Code hooks that inject relevant engrams at conversation start and re-inject after context compaction. Without hooks, injection depends on the LLM remembering to call `plur_session_start`.
 
 ### Cursor
 

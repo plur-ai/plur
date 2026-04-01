@@ -19,6 +19,9 @@ npx @plur-ai/cli status
 ## Quick Start
 
 ```bash
+# Install Claude Code hooks (automatic memory injection)
+plur init
+
 # Store a learning
 plur learn "Always validate user input at API boundaries"
 
@@ -54,6 +57,7 @@ plur forget ENG-2026-0329-001
 | `plur sync` | Cross-device sync via git |
 | `plur packs list` | List installed engram packs |
 | `plur packs install <source>` | Install an engram pack |
+| `plur init` | Install Claude Code hooks for automatic injection |
 
 ## Global Flags
 
