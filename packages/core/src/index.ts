@@ -14,7 +14,7 @@ import { agenticSearch } from './agentic-search.js'
 import { embeddingSearch } from './embeddings.js'
 import { hybridSearch } from './hybrid-search.js'
 import { expandedSearch } from './query-expansion.js'
-import { installPack, listPacks, exportPack } from './packs.js'
+import { installPack, uninstallPack, listPacks, exportPack, scanPrivacy, computePackHash } from './packs.js'
 import { sync as gitSync, getSyncStatus, withLock, type SyncResult, type SyncStatus } from './sync.js'
 import { detectSecrets } from './secrets.js'
 import type { Engram } from './schemas/engram.js'
@@ -721,21 +721,27 @@ export class Plur {
     return candidates
   }
 
-  /** Install a pack from a source path. */
-  installPack(source: string): { installed: number; name: string } {
-    return installPack(this.paths.packs, source)
+  /** Install a pack from a source path. Detects conflicts with existing engrams. */
+  installPack(source: string): ReturnType<typeof installPack> {
+    const existing = this._loadAllEngrams()
+    return installPack(this.paths.packs, source, existing)
   }
 
-  /** Export engrams as a shareable pack. */
+  /** Uninstall a pack by name. */
+  uninstallPack(name: string): ReturnType<typeof uninstallPack> {
+    return uninstallPack(this.paths.packs, name)
+  }
+
+  /** Export engrams as a shareable pack with privacy scanning and integrity hash. */
   exportPack(
     engrams: Engram[],
     outputDir: string,
     manifest: { name: string; version: string; description?: string; creator?: string },
-  ): { path: string; engram_count: number } {
+  ): ReturnType<typeof exportPack> {
     return exportPack(engrams, outputDir, manifest)
   }
 
-  /** List all installed packs. */
+  /** List all installed packs (with integrity hashes). */
   listPacks(): ReturnType<typeof listPacks> {
     return listPacks(this.paths.packs)
   }

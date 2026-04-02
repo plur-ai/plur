@@ -34,6 +34,7 @@ describe('pack management', () => {
       type: 'behavioral',
       scope: 'global',
       status: 'active',
+      visibility: 'public',
     })
     const outputDir = join(dir, 'exported-pack')
     const result = exportPack([engram], outputDir, {

@@ -31,14 +31,31 @@ const MCP_SERVER_CONFIG = {
   args: ['-y', '@plur-ai/mcp@latest'],
 }
 
+// Hook commands — all use npx for zero-install compatibility
+const CLI = 'npx @plur-ai/cli'
+
 const PLUR_HOOKS: Record<string, HookEntry[]> = {
+  // --- Session lifecycle ---
   UserPromptSubmit: [{
-    hooks: [{ type: 'command', command: 'npx @plur-ai/cli hook-inject', timeout: 15 }],
+    hooks: [{ type: 'command', command: `${CLI} hook-inject`, timeout: 15 }],
   }],
   PostCompact: [{
     matcher: 'auto|manual',
-    hooks: [{ type: 'command', command: 'npx @plur-ai/cli hook-inject --rehydrate', timeout: 15 }],
+    hooks: [{ type: 'command', command: `${CLI} hook-inject --rehydrate`, timeout: 15 }],
   }],
+  // --- Contextual injection ---
+  PreToolUse: [
+    { matcher: 'EnterPlanMode', hooks: [{ type: 'command', command: `${CLI} hook-inject --event plan_mode`, timeout: 10 }] },
+    { matcher: 'Skill', hooks: [{ type: 'command', command: `${CLI} hook-inject --event skill`, timeout: 10 }] },
+    { matcher: 'Agent', hooks: [{ type: 'command', command: `${CLI} hook-inject --event agent`, timeout: 10 }] },
+    { matcher: 'Bash|Edit|Write|Agent', hooks: [{ type: 'command', command: `${CLI} hook-observe`, timeout: 3 }] },
+  ],
+  PostToolUse: [
+    { matcher: 'Bash|Edit|Write|Agent', hooks: [{ type: 'command', command: `${CLI} hook-observe --post`, timeout: 3 }] },
+  ],
+  SubagentStart: [
+    { matcher: '.*', hooks: [{ type: 'command', command: `${CLI} hook-inject --event subagent`, timeout: 10 }] },
+  ],
 }
 
 // --- Types ---

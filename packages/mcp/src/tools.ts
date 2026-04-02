@@ -465,7 +465,7 @@ export function getToolDefinitions(): ToolDefinition[] {
 
     {
       name: 'plur_packs_install',
-      description: 'Install an engram pack from a directory path — adds curated engrams to the store',
+      description: 'Install an engram pack from a directory path — adds curated engrams to the store. Reports conflicts with existing engrams.',
       annotations: { title: 'Install pack', destructiveHint: false, idempotentHint: true },
       inputSchema: {
         type: 'object',
@@ -476,13 +476,34 @@ export function getToolDefinitions(): ToolDefinition[] {
       },
       handler: async (args, plur) => {
         const result = plur.installPack(args.source as string)
-        return { installed: result.installed, name: result.name, success: true }
+        return {
+          installed: result.installed,
+          name: result.name,
+          conflicts: result.conflicts,
+          success: true,
+        }
+      },
+    },
+
+    {
+      name: 'plur_packs_uninstall',
+      description: 'Uninstall an engram pack by name — removes the pack and all its engrams',
+      annotations: { title: 'Uninstall pack', destructiveHint: true, idempotentHint: false },
+      inputSchema: {
+        type: 'object',
+        properties: {
+          name: { type: 'string', description: 'Pack name to uninstall (use plur_packs_list to see names)' },
+        },
+        required: ['name'],
+      },
+      handler: async (args, plur) => {
+        return plur.uninstallPack(args.name as string)
       },
     },
 
     {
       name: 'plur_packs_list',
-      description: 'List all installed engram packs',
+      description: 'List all installed engram packs with integrity hashes',
       annotations: { title: 'List packs', readOnlyHint: true, idempotentHint: true },
       inputSchema: {
         type: 'object',
@@ -493,9 +514,10 @@ export function getToolDefinitions(): ToolDefinition[] {
         return {
           packs: packs.map(p => ({
             name: p.name,
-            version: p.version,
-            description: p.description,
+            version: p.manifest?.version,
+            description: p.manifest?.description,
             engram_count: p.engram_count,
+            integrity: p.integrity,
           })),
           count: packs.length,
         }
@@ -963,34 +985,59 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
 
     {
       name: 'plur_packs_export',
-      description: 'Export personal engrams as a shareable pack',
+      description: 'Export engrams as a shareable thematic pack with privacy scanning and integrity hash. Filters out private and secret-containing engrams automatically. Output goes to ~/plur-packs/<name> by default.',
       annotations: { title: 'Export pack', destructiveHint: false, idempotentHint: false },
       inputSchema: {
         type: 'object',
         properties: {
-          name: { type: 'string', description: 'Pack name' },
+          name: { type: 'string', description: 'Pack name (e.g. "react-patterns", "mcp-design")' },
           description: { type: 'string', description: 'Pack description' },
-          filter_domain: { type: 'string', description: 'Filter engrams by domain prefix' },
-          filter_scope: { type: 'string', description: 'Filter engrams by scope' },
-          output_dir: { type: 'string', description: 'Output directory for the pack (default: ~/.plur/exports/)' },
+          filter_domain: { type: 'string', description: 'Filter engrams by domain prefix (e.g. "mcp", "trading")' },
+          filter_scope: { type: 'string', description: 'Filter engrams by scope (e.g. "global", "project:myapp")' },
+          filter_tags: { type: 'array', items: { type: 'string' }, description: 'Filter by tags' },
+          filter_type: { type: 'string', enum: ['behavioral', 'procedural', 'architectural', 'terminological'], description: 'Filter by engram type' },
+          output_dir: { type: 'string', description: 'Output directory (default: ~/plur-packs/<name>)' },
+          creator: { type: 'string', description: 'Creator name' },
         },
         required: ['name'],
       },
       handler: async (args, plur) => {
         const name = args.name as string
-        const engrams = plur.list({
+        let engrams = plur.list({
           domain: args.filter_domain as string | undefined,
           scope: args.filter_scope as string | undefined,
-        }).filter(e => e.visibility !== 'private' || !args.filter_domain) // Don't export private unless explicitly filtered
+        })
 
-        const outputDir = (args.output_dir as string) || `${plur.status().storage_root}/exports`
+        // Additional thematic filters
+        const filterTags = args.filter_tags as string[] | undefined
+        if (filterTags) {
+          engrams = engrams.filter(e =>
+            e.tags && filterTags.some((t: string) => e.tags.includes(t))
+          )
+        }
+        const filterType = args.filter_type as string | undefined
+        if (filterType) {
+          engrams = engrams.filter(e => e.type === filterType)
+        }
+
+        const { homedir } = await import('os')
+        const { join } = await import('path')
+        const outputDir = (args.output_dir as string) || join(homedir(), 'plur-packs', name)
         const result = plur.exportPack(engrams, outputDir, {
           name,
           version: '1.0.0',
           description: args.description as string | undefined,
-          creator: 'plur-mcp',
+          creator: (args.creator as string) || undefined,
         })
-        return { path: result.path, engram_count: result.engram_count, name }
+        return {
+          path: result.path,
+          engram_count: result.engram_count,
+          integrity: result.integrity,
+          match_terms: result.match_terms,
+          privacy_clean: result.privacy.clean,
+          privacy_issues: result.privacy.issues.length,
+          name,
+        }
       },
     },
   ]
