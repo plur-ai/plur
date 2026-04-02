@@ -345,8 +345,42 @@ export function exportPack(
     `---\n${frontmatter}---\n\n# ${manifest.name}\n\n${manifest.description || ''}\n`
   )
 
+  // Strip internal references that are meaningless outside the original store
+  const exportEngrams = safeEngrams.map(e => {
+    const cleaned = { ...e }
+    // Strip conflict references (internal cross-refs to other engrams)
+    if (cleaned.relations) {
+      cleaned.relations = {
+        ...cleaned.relations,
+        conflicts: [],
+        related: [],
+      }
+    }
+    // Strip associations (co-access edges are store-specific)
+    if (cleaned.associations) {
+      cleaned.associations = []
+    }
+    // Strip knowledge_anchors (local file paths)
+    if (cleaned.knowledge_anchors) {
+      cleaned.knowledge_anchors = []
+    }
+    // Reset activation to fresh state (recipient builds their own usage)
+    if (cleaned.activation) {
+      cleaned.activation = {
+        ...cleaned.activation,
+        frequency: 0,
+        retrieval_strength: 0.7,
+      }
+    }
+    // Strip feedback_signals (recipient starts fresh)
+    if (cleaned.feedback_signals) {
+      cleaned.feedback_signals = { positive: 0, negative: 0, neutral: 0 }
+    }
+    return cleaned
+  })
+
   // Write engrams
-  const content = yaml.dump({ engrams: safeEngrams }, { lineWidth: 120, noRefs: true, quotingType: '"' })
+  const content = yaml.dump({ engrams: exportEngrams }, { lineWidth: 120, noRefs: true, quotingType: '"' })
   fs.writeFileSync(path.join(outputDir, 'engrams.yaml'), content)
 
   // Compute and write integrity hash
