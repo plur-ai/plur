@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.7.0 (2026-04-02)
+
+### Knowledge Packs: Share What You Know
+
+Knowledge Packs are thematic engram collections you can share with your team, community, or across machines. Export what you've learned about a domain, share the pack, and anyone can install it.
+
+- Thematic export: `plur packs export react-patterns --domain code.react --tags hooks,state`
+- Privacy scan on export: blocks secrets and private engrams, warns on personal paths and emails
+- Conflict detection on install: flags duplicates and contradictions with existing engrams
+- Uninstall: `plur packs uninstall <name>`
+- Integrity hash (SHA256) per pack for tamper detection
+- Auto-derived match_terms from engram tags and domains
+- Internal references stripped on export (clean, portable packs)
+- Output to ~/plur-packs/ (visible, easy to find and share)
+
+### Full Memory Lifecycle Hooks
+
+`plur init` now installs 8 hooks (was 2). Your agent gets contextual memory injection at every stage:
+
+- Plan mode entry: broad context for architecture decisions
+- Skill invocation: domain-specific engrams for the skill being used
+- Agent spawn: scoped engrams for the agent's task
+- Subagent start: memory carried into subagents
+- Observation capture: tool calls logged for offline pattern extraction
+
+### Observation Capture
+
+New `hook-observe` command logs tool calls to ~/.plur/observations/ for deterministic pattern extraction. Hooks fire 100% of the time vs LLM-driven learning at ~80%.
+
+### Packages
+- `@plur-ai/core` 0.7.0 — thematic export, privacy scan, conflict detection, uninstall, integrity hash, export sanitization
+- `@plur-ai/mcp` 0.7.0 — plur_packs_uninstall tool, improved export with thematic filtering, 8 hooks on init
+- `@plur-ai/cli` 0.7.0 — hook-observe command, hook-inject --event for contextual injection, packs uninstall
+- `@plur-ai/claw` 0.7.0 — version bump (pack features available via core)
+
 ## 0.6.0 (2026-04-01)
 
 ### Multi-Store: Share Knowledge Across Teams
