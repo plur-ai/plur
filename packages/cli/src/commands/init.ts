@@ -30,26 +30,81 @@ interface HookEntry {
   }>
 }
 
-// The hook script that runs on first user message — injects engrams based on the prompt.
-// Subsequent messages skip (~1ms) because the session marker file exists.
-const INJECT_HOOK = 'npx @plur-ai/cli hook-inject'
-
-// Re-inject after context compaction so engrams survive long conversations.
-const REHYDRATE_HOOK = 'npx @plur-ai/cli hook-inject --rehydrate'
+// Hook commands — all use npx for zero-install compatibility
+const CLI = 'npx @plur-ai/cli'
 
 const PLUR_HOOKS: Record<string, HookEntry[]> = {
+  // --- Session lifecycle ---
+
+  // First message: inject engrams based on the prompt.
+  // Subsequent messages: periodic reminder to call plur_learn (~1ms skip).
   UserPromptSubmit: [
     {
       hooks: [
-        { type: 'command', command: INJECT_HOOK, timeout: 15 },
+        { type: 'command', command: `${CLI} hook-inject`, timeout: 15 },
       ],
     },
   ],
+
+  // Re-inject after context compaction so engrams survive long conversations.
   PostCompact: [
     {
       matcher: 'auto|manual',
       hooks: [
-        { type: 'command', command: REHYDRATE_HOOK, timeout: 15 },
+        { type: 'command', command: `${CLI} hook-inject --rehydrate`, timeout: 15 },
+      ],
+    },
+  ],
+
+  // --- Contextual injection ---
+
+  PreToolUse: [
+    // Full injection when entering plan mode — planning needs broad context
+    {
+      matcher: 'EnterPlanMode',
+      hooks: [
+        { type: 'command', command: `${CLI} hook-inject --event plan_mode`, timeout: 10 },
+      ],
+    },
+    // Domain-specific engrams when a skill is invoked
+    {
+      matcher: 'Skill',
+      hooks: [
+        { type: 'command', command: `${CLI} hook-inject --event skill`, timeout: 10 },
+      ],
+    },
+    // Agent-scoped engrams when spawning an agent
+    {
+      matcher: 'Agent',
+      hooks: [
+        { type: 'command', command: `${CLI} hook-inject --event agent`, timeout: 10 },
+      ],
+    },
+    // Observation capture — log tool calls for offline pattern extraction
+    {
+      matcher: 'Bash|Edit|Write|Agent',
+      hooks: [
+        { type: 'command', command: `${CLI} hook-observe`, timeout: 3 },
+      ],
+    },
+  ],
+
+  // Observation capture — log tool results
+  PostToolUse: [
+    {
+      matcher: 'Bash|Edit|Write|Agent',
+      hooks: [
+        { type: 'command', command: `${CLI} hook-observe --post`, timeout: 3 },
+      ],
+    },
+  ],
+
+  // Inject agent-scoped engrams into subagent context
+  SubagentStart: [
+    {
+      matcher: '.*',
+      hooks: [
+        { type: 'command', command: `${CLI} hook-inject --event subagent`, timeout: 10 },
       ],
     },
   ],
@@ -201,9 +256,13 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
 
   outputText('PLUR installed for Claude Code.')
   outputText('')
-  outputText('Hooks added:')
+  outputText('Hooks added (8):')
   outputText('  UserPromptSubmit  — inject relevant engrams on first message')
   outputText('  PostCompact       — re-inject engrams after context compaction')
+  outputText('  PreToolUse        — contextual injection (plan mode, skills, agents)')
+  outputText('  PreToolUse        — observation capture for pattern learning')
+  outputText('  PostToolUse       — observation results capture')
+  outputText('  SubagentStart     — inject agent-scoped engrams into subagents')
   outputText('')
   outputText(`Settings:  ${settingsPath}`)
   outputText(`CLAUDE.md: ${claudeMdStatus}`)
