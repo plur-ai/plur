@@ -5,7 +5,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
 
-const VERSION = '0.7.0'
+const VERSION = '0.7.2'
 
 const HELP = `plur-mcp v${VERSION} — persistent memory for AI agents
 
