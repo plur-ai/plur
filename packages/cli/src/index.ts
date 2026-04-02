@@ -40,6 +40,7 @@ Commands:
   init                    Install Claude Code hooks for automatic injection
   hook-inject             (internal) Hook handler for engram injection
   hook-observe            (internal) Hook handler for observation capture
+  hook-learn-check        (internal) Hook handler for learning reflection
 
 Global flags:
   --json       Force JSON output (auto-detected when piped)
@@ -73,6 +74,7 @@ const COMMANDS: Record<string, string> = {
   init: './commands/init.js',
   'hook-inject': './commands/hook-inject.js',
   'hook-observe': './commands/hook-observe.js',
+  'hook-learn-check': './commands/hook-learn-check.js',
 }
 
 if (!command || !COMMANDS[command]) {

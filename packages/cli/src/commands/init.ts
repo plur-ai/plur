@@ -108,6 +108,17 @@ const PLUR_HOOKS: Record<string, HookEntry[]> = {
       ],
     },
   ],
+
+  // Learning reflection — nudge the LLM to call plur_learn after responses
+  // where it discovered or learned something. Fires every 3rd Stop to avoid fatigue.
+  Stop: [
+    {
+      matcher: '*',
+      hooks: [
+        { type: 'command', command: `${CLI} hook-learn-check`, timeout: 2 },
+      ],
+    },
+  ],
 }
 
 const CLAUDE_MD_SECTION = `## PLUR Memory
@@ -256,13 +267,14 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
 
   outputText('PLUR installed for Claude Code.')
   outputText('')
-  outputText('Hooks added (8):')
+  outputText('Hooks added (9):')
   outputText('  UserPromptSubmit  — inject relevant engrams on first message')
   outputText('  PostCompact       — re-inject engrams after context compaction')
   outputText('  PreToolUse        — contextual injection (plan mode, skills, agents)')
   outputText('  PreToolUse        — observation capture for pattern learning')
   outputText('  PostToolUse       — observation results capture')
   outputText('  SubagentStart     — inject agent-scoped engrams into subagents')
+  outputText('  Stop              — learning reflection nudge (every 3rd response)')
   outputText('')
   outputText(`Settings:  ${settingsPath}`)
   outputText(`CLAUDE.md: ${claudeMdStatus}`)

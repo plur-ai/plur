@@ -56,6 +56,9 @@ const PLUR_HOOKS: Record<string, HookEntry[]> = {
   SubagentStart: [
     { matcher: '.*', hooks: [{ type: 'command', command: `${CLI} hook-inject --event subagent`, timeout: 10 }] },
   ],
+  Stop: [
+    { matcher: '*', hooks: [{ type: 'command', command: `${CLI} hook-learn-check`, timeout: 2 }] },
+  ],
 }
 
 // --- Types ---
