@@ -149,6 +149,34 @@ const plugin = {
           return { text: parts.join('\n') }
         },
       })
+
+      api.registerCommand({
+        name: 'packs',
+        description: 'Manage knowledge packs: list, install <path>, uninstall <name>',
+        acceptsArgs: true,
+        handler: (ctx: any) => {
+          const args = (ctx.args?.trim() || '').split(/\s+/)
+          const sub = args[0] || 'list'
+          const e = getEngine(path)
+
+          if (sub === 'list') {
+            const packs = e.plur.listPacks()
+            if (!packs.length) return { text: 'No packs installed.' }
+            return { text: packs.map((p: any) => `${p.name} v${p.manifest?.version ?? '?'} (${p.engram_count} engrams)${p.integrity ? ` [${p.integrity.slice(0, 12)}]` : ''}`).join('\n') }
+          }
+          if (sub === 'install' && args[1]) {
+            const result = e.plur.installPack(args[1])
+            let text = `Installed "${result.name}": ${result.installed} engrams`
+            if (result.conflicts?.length) text += `\n${result.conflicts.length} conflicts detected — use /recall to review`
+            return { text }
+          }
+          if ((sub === 'uninstall' || sub === 'remove') && args[1]) {
+            const result = e.plur.uninstallPack(args[1])
+            return { text: `Uninstalled "${result.name}": ${result.engram_count} engrams removed` }
+          }
+          return { text: 'Usage: /packs [list | install <path> | uninstall <name>]' }
+        },
+      })
     }
 
     // 5. CLI commands
