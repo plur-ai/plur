@@ -12,9 +12,6 @@
     "extensions": [
       "dist/index.js"
     ],
-    "compat": {
-      "pluginApi": "1"
-    },
     "build": {
       "openclawVersion": "2026.3.7"
     }
@@ -27,7 +24,7 @@
     "@plur-ai/core": "workspace:*"
   },
   "peerDependencies": {
-    "openclaw": ">=2026.3.7"
+    "openclaw": ">=2026.3"
   },
   "peerDependenciesMeta": {
     "openclaw": {

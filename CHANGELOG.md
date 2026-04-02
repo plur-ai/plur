@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.3 (2026-04-02)
+
+- Fix OpenClaw compat: remove pluginApi:"1" that blocked install on OpenClaw >=2026.3.31
+
 ## 0.7.2 (2026-04-02)
 
 - Learning reflection hook: Stop hook nudges plur_learn every 3rd response — catches reasoning moments that tool-level hooks miss
