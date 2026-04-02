@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.7.2 (2026-04-02)
+
+- Learning reflection hook: Stop hook nudges plur_learn every 3rd response — catches reasoning moments that tool-level hooks miss
+- Claw system prompt updated to v3: session workflow, pack commands, correction protocol, verification rules
+- Claw /packs slash command: list, install, uninstall from OpenClaw
+- 9 hooks installed by plur init (was 8)
+
 ## 0.7.0 (2026-04-02)
 
 ### Knowledge Packs: Share What You Know
