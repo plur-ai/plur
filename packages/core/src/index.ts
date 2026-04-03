@@ -14,7 +14,7 @@ import { agenticSearch } from './agentic-search.js'
 import { embeddingSearch } from './embeddings.js'
 import { hybridSearch } from './hybrid-search.js'
 import { expandedSearch } from './query-expansion.js'
-import { installPack, uninstallPack, listPacks, exportPack, scanPrivacy, computePackHash } from './packs.js'
+import { installPack, uninstallPack, listPacks, exportPack, scanPrivacy, computePackHash, previewPack } from './packs.js'
 import { sync as gitSync, getSyncStatus, withLock, type SyncResult, type SyncStatus } from './sync.js'
 import { detectSecrets } from './secrets.js'
 import type { Engram } from './schemas/engram.js'
@@ -47,6 +47,7 @@ export { checkForUpdate, getCachedUpdateCheck, clearVersionCache, type VersionCh
 export type { Engram } from './schemas/engram.js'
 export type { Episode } from './schemas/episode.js'
 export type { PackManifest } from './schemas/pack.js'
+export type { PreviewResult, RegistryEntry, PrivacyScanResult, PrivacyIssue } from './packs.js'
 export type { PlurConfig, StoreEntry } from './schemas/config.js'
 export * from './types.js'
 
@@ -732,7 +733,12 @@ export class Plur {
     return candidates
   }
 
-  /** Install a pack from a source path. Detects conflicts with existing engrams. */
+  /** Preview a pack before installing — shows manifest, engrams, and security scan. */
+  previewPack(source: string): ReturnType<typeof previewPack> {
+    return previewPack(source)
+  }
+
+  /** Install a pack from a source path. Runs security scan (blocks on secrets), detects conflicts, records in registry. */
   installPack(source: string): ReturnType<typeof installPack> {
     const existing = this._loadAllEngrams()
     return installPack(this.paths.packs, source, existing)
