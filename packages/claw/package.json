@@ -1,6 +1,6 @@
 {
   "name": "@plur-ai/claw",
-  "version": "0.7.3",
+  "version": "0.7.6",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -12,6 +12,9 @@
     "extensions": [
       "dist/index.js"
     ],
+    "compat": {
+      "pluginApi": ">=2026.3.0"
+    },
     "build": {
       "openclawVersion": "2026.3.7"
     }

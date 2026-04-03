@@ -28,7 +28,7 @@ importers:
         specifier: workspace:*
         version: link:../core
       openclaw:
-        specifier: '>=2026.3.7'
+        specifier: '>=2026.3'
         version: 2026.3.13(@napi-rs/canvas@0.1.97)(@types/express@5.0.6)
     devDependencies:
       '@types/node':
