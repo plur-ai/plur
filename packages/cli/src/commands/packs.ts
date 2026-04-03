@@ -19,8 +19,53 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
       }
       for (const p of packs) {
         const version = p.manifest?.version ?? 'unknown'
-        const hash = p.integrity ? ` [${p.integrity.slice(0, 12)}]` : ''
-        outputText(`${p.name} v${version} (${p.engram_count} engrams)${hash}`)
+        const creator = p.manifest?.creator ? ` by ${p.manifest.creator}` : ''
+        const hash = p.integrity ? ` [${p.integrity.slice(0, 16)}]` : ''
+        const integrityFlag = p.integrity_ok === false ? ' ⚠️ MODIFIED' : ''
+        outputText(`${p.name} v${version}${creator} (${p.engram_count} engrams)${hash}${integrityFlag}`)
+        if (p.installed_at) {
+          const date = p.installed_at.slice(0, 10)
+          const source = p.source ? ` from ${p.source}` : ''
+          outputText(`  Installed: ${date}${source}`)
+        }
+      }
+    }
+    return
+  }
+
+  if (subcommand === 'preview' || subcommand === 'inspect') {
+    const source = args[1]
+    if (!source) {
+      exit(1, 'Usage: plur packs preview <source>')
+    }
+    const preview = plur.previewPack(source)
+    if (shouldOutputJson(flags)) {
+      outputJson(preview)
+    } else {
+      outputText(`Pack: ${preview.manifest.name} v${preview.manifest.version}`)
+      if (preview.manifest.creator) outputText(`Creator: ${preview.manifest.creator}`)
+      if (preview.manifest.description) outputText(`Description: ${preview.manifest.description}`)
+      outputText(`Engrams: ${preview.engram_count}`)
+      outputText('')
+      for (const e of preview.engrams) {
+        const domain = e.domain ? ` [${e.domain}]` : ''
+        const tags = e.tags.length > 0 ? ` {${e.tags.join(', ')}}` : ''
+        outputText(`  ${e.id} (${e.type})${domain}${tags}`)
+        outputText(`    ${e.statement}`)
+      }
+      if (!preview.security.clean) {
+        outputText('')
+        outputText('Security issues:')
+        for (const issue of preview.security.issues) {
+          outputText(`  ⚠ ${issue.engram_id}: ${issue.type} — ${issue.detail}`)
+        }
+      }
+      if (preview.warnings.length > 0) {
+        outputText('')
+        outputText('Warnings:')
+        for (const w of preview.warnings) {
+          outputText(`  ⚠ ${w}`)
+        }
       }
     }
     return
@@ -137,6 +182,20 @@ Options:
       outputJson(result)
     } else {
       outputText(`Installed pack "${result.name}": ${result.installed} engrams`)
+      if (result.registry) {
+        outputText(`  Integrity: ${result.registry.integrity}`)
+      }
+
+      if (!result.security.clean) {
+        const warnings = result.security.issues.filter(i => i.type !== 'secret')
+        if (warnings.length > 0) {
+          outputText(``)
+          outputText(`Security warnings (${warnings.length}):`)
+          for (const w of warnings) {
+            outputText(`  ⚠ ${w.engram_id}: ${w.type} — ${w.detail}`)
+          }
+        }
+      }
 
       if (result.conflicts.length > 0) {
         outputText(``)
@@ -170,5 +229,5 @@ Use 'plur packs list' to see installed packs.`)
     return
   }
 
-  exit(1, `Unknown packs subcommand: "${subcommand}". Use: list, install, uninstall, export`)
+  exit(1, `Unknown packs subcommand: "${subcommand}". Use: list, preview, install, uninstall, export`)
 }
