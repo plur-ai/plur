@@ -39,8 +39,9 @@ plur-mcp init
 
 ```bash
 openclaw plugins install @plur-ai/claw
-openclaw config set plur.enabled true
 ```
+
+Requires OpenClaw >= 2026.3. The plugin auto-registers on install — no additional config needed.
 
 That's it. PLUR works in the background from here. No workflow changes needed — just use your tools as usual. Corrections accumulate automatically.
 

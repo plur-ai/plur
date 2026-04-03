@@ -4,6 +4,7 @@
   "description": "Persistent, learnable memory for OpenClaw agents. Local-first, no cloud required.",
   "version": "0.7.6",
   "kind": "memory",
+  "pluginApi": ">=2026.3",
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
