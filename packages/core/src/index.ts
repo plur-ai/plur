@@ -101,7 +101,6 @@ export class Plur {
   private _loadAllEngrams(): Engram[] {
     const primary = this._loadCached(this.paths.engrams)
     const stores = this.config.stores ?? []
-    if (stores.length === 0) return primary
 
     const all: Engram[] = [...primary]
     for (const store of stores) {
