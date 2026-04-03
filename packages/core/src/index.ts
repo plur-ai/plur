@@ -127,6 +127,18 @@ export class Plur {
         all.push(cloned)
       }
     }
+
+    // Include pack engrams so they're searchable via recall
+    const packs = loadAllPacks(this.paths.packs)
+    for (const pack of packs) {
+      for (const e of pack.engrams) {
+        if (e.status !== 'active') continue
+        const cloned = { ...e } as any
+        cloned._pack = pack.manifest.name
+        all.push(cloned)
+      }
+    }
+
     return all
   }
 
@@ -198,7 +210,7 @@ export class Plur {
         consolidated: false,
         type: context?.type ?? 'behavioral',
         scope,
-        visibility: context?.visibility ?? 'private',
+        visibility: context?.visibility ?? (context?.domain ? 'public' : 'private'),
         statement,
         rationale: context?.rationale,
         source: context?.source,

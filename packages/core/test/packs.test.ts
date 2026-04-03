@@ -4,6 +4,7 @@ import { join } from 'path'
 import { tmpdir } from 'os'
 import { installPack, listPacks, exportPack } from '../src/packs.js'
 import { EngramSchema } from '../src/schemas/engram.js'
+import { Plur } from '../src/index.js'
 
 describe('pack management', () => {
   let dir: string
@@ -47,5 +48,51 @@ describe('pack management', () => {
     // Verify it can be re-imported
     const installResult = installPack(join(dir, 'packs'), outputDir)
     expect(installResult.installed).toBe(1)
+  })
+
+  it('installed pack engrams are findable via recall (issue #13)', () => {
+    // Set up a Plur instance with a temp directory
+    const plurDir = mkdtempSync(join(tmpdir(), 'plur-recall-'))
+    mkdirSync(join(plurDir, 'packs'), { recursive: true })
+    writeFileSync(join(plurDir, 'engrams.yaml'), 'engrams: []\n')
+    const plur = new Plur({ path: plurDir })
+
+    // Create and install a pack with a stoicism engram
+    const packSource = join(plurDir, 'stoicism-source')
+    mkdirSync(packSource)
+    writeFileSync(join(packSource, 'SKILL.md'), '---\nname: stoicism-applied\nversion: "1.0"\n---\n')
+    writeFileSync(join(packSource, 'engrams.yaml'), `engrams:
+  - id: ENG-2026-0101-001
+    statement: Stoic communication is not suppression of emotion but strategic channeling of response
+    type: behavioral
+    scope: global
+    status: active
+    version: 2
+    domain: philosophy.stoicism
+    tags: [stoicism, communication]
+    activation:
+      retrieval_strength: 0.7
+      storage_strength: 1.0
+      frequency: 0
+      last_accessed: "2026-01-01"
+`)
+    plur.installPack(packSource)
+
+    // Debug: check list and status
+    const allEngrams = plur.list()
+    console.log('All engrams via list():', allEngrams.length, allEngrams.map(e => e.id))
+    const status = plur.status()
+    console.log('Status engram_count:', status.engram_count, 'pack_count:', status.pack_count)
+
+    // Recall should find the pack engram
+    const results = plur.recall('stoicism philosophy communication')
+    expect(results.length).toBeGreaterThan(0)
+    expect(results[0].statement).toContain('Stoic communication')
+
+    // Status should count the pack engram
+    expect(status.engram_count).toBeGreaterThanOrEqual(1)
+    expect(status.pack_count).toBe(1)
+
+    rmSync(plurDir, { recursive: true })
   })
 })
