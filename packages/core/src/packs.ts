@@ -10,12 +10,97 @@ import { logger } from './logger.js'
 
 export { loadAllPacks } from './engrams.js'
 
+// --- Registry ---
+
+export interface RegistryEntry {
+  name: string
+  installed_at: string
+  source: string
+  integrity: string
+  version?: string
+  creator?: string
+}
+
+function registryPath(packsDir: string): string {
+  return path.join(packsDir, 'registry.yaml')
+}
+
+function loadRegistry(packsDir: string): RegistryEntry[] {
+  const p = registryPath(packsDir)
+  if (!fs.existsSync(p)) return []
+  try {
+    const raw = yaml.load(fs.readFileSync(p, 'utf8')) as any
+    return Array.isArray(raw?.packs) ? raw.packs : []
+  } catch {
+    return []
+  }
+}
+
+function saveRegistry(packsDir: string, entries: RegistryEntry[]): void {
+  const content = yaml.dump({ packs: entries }, { lineWidth: 120, noRefs: true, quotingType: '"' })
+  fs.writeFileSync(registryPath(packsDir), content)
+}
+
+function addToRegistry(packsDir: string, entry: RegistryEntry): void {
+  const entries = loadRegistry(packsDir)
+  const idx = entries.findIndex(e => e.name === entry.name)
+  if (idx >= 0) entries[idx] = entry
+  else entries.push(entry)
+  saveRegistry(packsDir, entries)
+}
+
+function removeFromRegistry(packsDir: string, name: string): void {
+  const entries = loadRegistry(packsDir).filter(e => e.name !== name)
+  saveRegistry(packsDir, entries)
+}
+
+// --- Preview ---
+
+export interface PreviewResult {
+  manifest: PackManifest
+  engram_count: number
+  engrams: Array<{ id: string; type: string; statement: string; domain?: string; tags: string[] }>
+  security: PrivacyScanResult
+  warnings: string[]
+}
+
+export function previewPack(source: string): PreviewResult {
+  if (!fs.existsSync(source)) throw new Error(`Pack source not found: ${source}`)
+
+  const pack = loadPack(source)
+  const security = scanPrivacy(pack.engrams)
+
+  const warnings: string[] = []
+  // Flag engrams with global scope (could override user's own engrams)
+  const globalCount = pack.engrams.filter(e => e.scope === 'global').length
+  if (globalCount > 0) warnings.push(`${globalCount} engram(s) have global scope — may interact with your own engrams`)
+  // Flag very high retrieval strength (unusual for fresh packs)
+  const hotEngrams = pack.engrams.filter(e => e.activation.retrieval_strength > 0.9)
+  if (hotEngrams.length > 0) warnings.push(`${hotEngrams.length} engram(s) have unusually high retrieval strength (>0.9)`)
+
+  return {
+    manifest: pack.manifest,
+    engram_count: pack.engrams.length,
+    engrams: pack.engrams.map(e => ({
+      id: e.id,
+      type: e.type,
+      statement: e.statement,
+      domain: e.domain,
+      tags: e.tags ?? [],
+    })),
+    security,
+    warnings,
+  }
+}
+
 // --- Install ---
 
 export interface InstallResult {
   installed: number
   name: string
   conflicts: ConflictItem[]
+  security: PrivacyScanResult
+  registry: RegistryEntry
 }
 
 export interface ConflictItem {
@@ -80,6 +165,14 @@ function detectConflicts(newEngrams: Engram[], existingEngrams: Engram[]): Confl
 export function installPack(packsDir: string, source: string, existingEngrams?: Engram[]): InstallResult {
   if (!fs.existsSync(source)) throw new Error(`Pack source not found: ${source}`)
 
+  // Security scan BEFORE copying — always runs, not opt-out
+  const preview = previewPack(source)
+  const secretIssues = preview.security.issues.filter(i => i.type === 'secret')
+  if (secretIssues.length > 0) {
+    const details = secretIssues.map(i => `  ${i.engram_id}: ${i.detail}`).join('\n')
+    throw new Error(`Pack contains secrets — install blocked:\n${details}`)
+  }
+
   const sourceName = path.basename(source)
   const destDir = path.join(packsDir, sourceName)
 
@@ -102,7 +195,19 @@ export function installPack(packsDir: string, source: string, existingEngrams?: 
   // Detect conflicts with existing engrams
   const conflicts = existingEngrams ? detectConflicts(newEngrams, existingEngrams) : []
 
-  return { installed: newEngrams.length, name: sourceName, conflicts }
+  // Compute integrity and record in registry
+  const integrity = `sha256:${computePackHash(destDir)}`
+  const registryEntry: RegistryEntry = {
+    name: preview.manifest.name,
+    installed_at: new Date().toISOString(),
+    source: path.resolve(source),
+    integrity,
+    version: preview.manifest.version,
+    creator: preview.manifest.creator,
+  }
+  addToRegistry(packsDir, registryEntry)
+
+  return { installed: newEngrams.length, name: sourceName, conflicts, security: preview.security, registry: registryEntry }
 }
 
 // --- Uninstall ---
@@ -127,10 +232,16 @@ export function uninstallPack(packsDir: string, name: string): UninstallResult {
     }
   }
 
-  // Count engrams before removal
+  // Count engrams and get manifest name before removal
   const engramsPath = path.join(packDir, 'engrams.yaml')
   let count = 0
   try { count = loadEngrams(engramsPath).length } catch {}
+  let manifestName: string | undefined
+  try { manifestName = loadPack(packDir).manifest.name } catch {}
+
+  // Remove from registry (try both directory name and manifest name)
+  removeFromRegistry(packsDir, name)
+  if (manifestName && manifestName !== name) removeFromRegistry(packsDir, manifestName)
 
   // Remove recursively
   fs.rmSync(packDir, { recursive: true, force: true })
@@ -146,10 +257,16 @@ export interface PackInfo {
   engram_count: number
   manifest?: PackManifest
   integrity?: string
+  installed_at?: string
+  source?: string
+  integrity_ok?: boolean
 }
 
 export function listPacks(packsDir: string): PackInfo[] {
   if (!fs.existsSync(packsDir)) return []
+
+  const registry = loadRegistry(packsDir)
+  const registryMap = new Map(registry.map(r => [r.name, r]))
 
   const result: PackInfo[] = []
   for (const entry of fs.readdirSync(packsDir)) {
@@ -158,20 +275,28 @@ export function listPacks(packsDir: string): PackInfo[] {
 
     try {
       const pack = loadPack(packDir)
+      const currentIntegrity = `sha256:${computePackHash(packDir)}`
+      const reg = registryMap.get(pack.manifest.name)
       result.push({
         name: pack.manifest.name,
         path: packDir,
         engram_count: pack.engrams.length,
         manifest: pack.manifest,
-        integrity: computePackHash(packDir),
+        integrity: currentIntegrity,
+        installed_at: reg?.installed_at,
+        source: reg?.source,
+        integrity_ok: reg ? reg.integrity === currentIntegrity : undefined,
       })
     } catch {
       const engramsPath = path.join(packDir, 'engrams.yaml')
       const engrams = fs.existsSync(engramsPath) ? loadEngrams(engramsPath) : []
+      const reg = registryMap.get(entry)
       result.push({
         name: entry,
         path: packDir,
         engram_count: engrams.length,
+        installed_at: reg?.installed_at,
+        source: reg?.source,
       })
     }
   }

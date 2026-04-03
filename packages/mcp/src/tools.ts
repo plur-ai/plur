@@ -464,8 +464,24 @@ export function getToolDefinitions(): ToolDefinition[] {
     },
 
     {
+      name: 'plur_packs_preview',
+      description: 'Preview a pack before installing — shows manifest, engram list, security scan, and warnings. Always call this before plur_packs_install to let the user review what they are importing.',
+      annotations: { title: 'Preview pack', readOnlyHint: true, idempotentHint: true },
+      inputSchema: {
+        type: 'object',
+        properties: {
+          source: { type: 'string', description: 'Path to the pack directory to preview' },
+        },
+        required: ['source'],
+      },
+      handler: async (args, plur) => {
+        return plur.previewPack(args.source as string)
+      },
+    },
+
+    {
       name: 'plur_packs_install',
-      description: 'Install an engram pack from a directory path — adds curated engrams to the store. Reports conflicts with existing engrams.',
+      description: 'Install an engram pack from a directory path. Runs a mandatory security scan (blocks if secrets found), detects conflicts with existing engrams, and records install metadata in the registry. Call plur_packs_preview first to show the user what the pack contains.',
       annotations: { title: 'Install pack', destructiveHint: false, idempotentHint: true },
       inputSchema: {
         type: 'object',
@@ -480,6 +496,8 @@ export function getToolDefinitions(): ToolDefinition[] {
           installed: result.installed,
           name: result.name,
           conflicts: result.conflicts,
+          security: result.security,
+          registry: result.registry,
           success: true,
         }
       },
@@ -503,7 +521,7 @@ export function getToolDefinitions(): ToolDefinition[] {
 
     {
       name: 'plur_packs_list',
-      description: 'List all installed engram packs with integrity hashes',
+      description: 'List all installed engram packs with integrity hashes, install dates, and source paths',
       annotations: { title: 'List packs', readOnlyHint: true, idempotentHint: true },
       inputSchema: {
         type: 'object',
@@ -515,9 +533,13 @@ export function getToolDefinitions(): ToolDefinition[] {
           packs: packs.map(p => ({
             name: p.name,
             version: p.manifest?.version,
+            creator: p.manifest?.creator,
             description: p.manifest?.description,
             engram_count: p.engram_count,
             integrity: p.integrity,
+            integrity_ok: p.integrity_ok,
+            installed_at: p.installed_at,
+            source: p.source,
           })),
           count: packs.length,
         }
