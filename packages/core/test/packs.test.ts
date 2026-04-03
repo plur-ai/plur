@@ -78,18 +78,13 @@ describe('pack management', () => {
 `)
     plur.installPack(packSource)
 
-    // Debug: check list and status
-    const allEngrams = plur.list()
-    console.log('All engrams via list():', allEngrams.length, allEngrams.map(e => e.id))
-    const status = plur.status()
-    console.log('Status engram_count:', status.engram_count, 'pack_count:', status.pack_count)
-
     // Recall should find the pack engram
     const results = plur.recall('stoicism philosophy communication')
     expect(results.length).toBeGreaterThan(0)
     expect(results[0].statement).toContain('Stoic communication')
 
     // Status should count the pack engram
+    const status = plur.status()
     expect(status.engram_count).toBeGreaterThanOrEqual(1)
     expect(status.pack_count).toBe(1)
 
