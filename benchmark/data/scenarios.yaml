@@ -1,0 +1,433 @@
+# LongMemEval Benchmark Scenarios for PLUR
+# 30 questions across 6 categories (5 each)
+# Based on LongMemEval methodology — tests memory retrieval quality
+
+- id: ss-user-1
+  category: single_session_user
+  conversations:
+    - session: 1
+      turns:
+        - role: user
+          content: "I just moved to Portland, Oregon from Austin. The rain is a big change."
+        - role: assistant
+          content: "Welcome to Portland! That's quite a climate shift from Austin's heat."
+        - role: user
+          content: "Yeah, I work as a data engineer at Nike now. Started last month."
+  query: "Where does the user work?"
+  expected_answer: "Nike"
+  expected_keywords: ["Nike"]
+
+- id: ss-user-2
+  category: single_session_user
+  conversations:
+    - session: 1
+      turns:
+        - role: user
+          content: "My daughter Emma just turned 7. We had a dinosaur-themed birthday party."
+        - role: assistant
+          content: "Happy birthday to Emma! Dinosaur parties are the best at that age."
+  query: "How old is the user's daughter?"
+  expected_answer: "7 years old"
+  expected_keywords: ["7"]
+
+- id: ss-user-3
+  category: single_session_user
+  conversations:
+    - session: 1
+      turns:
+        - role: user
+          content: "I've been learning Rust for the past 3 months. Coming from Python, the borrow checker is brutal."
+        - role: assistant
+          content: "The borrow checker is definitely the steepest part of the Rust learning curve."
+  query: "What programming language is the user learning?"
+  expected_answer: "Rust"
+  expected_keywords: ["Rust"]
+
+- id: ss-user-4
+  category: single_session_user
+  conversations:
+    - session: 1
+      turns:
+        - role: user
+          content: "I drive a 2022 Tesla Model 3. The autopilot is great for my commute on I-5."
+  query: "What car does the user drive?"
+  expected_answer: "2022 Tesla Model 3"
+  expected_keywords: ["Tesla", "Model 3"]
+
+- id: ss-user-5
+  category: single_session_user
+  conversations:
+    - session: 1
+      turns:
+        - role: user
+          content: "My cat Mochi keeps jumping on my keyboard while I code. She's a calico."
+        - role: assistant
+          content: "Calicos are known for being opinionated! Maybe a decoy keyboard would help."
+  query: "What is the name of the user's cat?"
+  expected_answer: "Mochi"
+  expected_keywords: ["Mochi"]
+
+- id: ss-pref-1
+  category: single_session_preference
+  conversations:
+    - session: 1
+      turns:
+        - role: user
+          content: "I always use dark mode in my editors. Light themes hurt my eyes."
+        - role: assistant
+          content: "Noted — I'll keep dark mode in mind for any UI suggestions."
+  query: "Does the user prefer dark mode or light mode?"
+  expected_answer: "Dark mode"
+  expected_keywords: ["dark"]
+
+- id: ss-pref-2
+  category: single_session_preference
+  conversations:
+    - session: 1
+      turns:
+        - role: user
+          content: "Please use tabs for indentation, not spaces. 4-width tabs specifically."
+        - role: assistant
+          content: "Got it — tabs with 4-width indentation for all code."
+  query: "What indentation style does the user prefer?"
+  expected_answer: "Tabs, 4-width"
+  expected_keywords: ["tabs"]
+
+- id: ss-pref-3
+  category: single_session_preference
+  conversations:
+    - session: 1
+      turns:
+        - role: user
+          content: "I prefer functional programming style. Avoid classes and mutation when possible."
+  query: "What programming style does the user prefer?"
+  expected_answer: "Functional programming, avoid classes and mutation"
+  expected_keywords: ["functional"]
+
+- id: ss-pref-4
+  category: single_session_preference
+  conversations:
+    - session: 1
+      turns:
+        - role: user
+          content: "When writing commit messages, I follow conventional commits. feat:, fix:, chore: etc."
+  query: "What commit message format does the user use?"
+  expected_answer: "Conventional commits (feat:, fix:, chore:)"
+  expected_keywords: ["conventional"]
+
+- id: ss-pref-5
+  category: single_session_preference
+  conversations:
+    - session: 1
+      turns:
+        - role: user
+          content: "I like to use PostgreSQL for everything. Even when SQLite would be fine."
+        - role: assistant
+          content: "PostgreSQL it is — even for small projects!"
+  query: "What database does the user prefer?"
+  expected_answer: "PostgreSQL"
+  expected_keywords: ["PostgreSQL"]
+
+- id: ss-asst-1
+  category: single_session_assistant
+  conversations:
+    - session: 1
+      turns:
+        - role: user
+          content: "Can you help me set up a Redis cache for my API?"
+        - role: assistant
+          content: "I'll set up Redis with a 5-minute TTL for API responses. Using ioredis as the client library since it has better cluster support than the default redis package."
+  query: "What Redis client library did the assistant recommend?"
+  expected_answer: "ioredis"
+  expected_keywords: ["ioredis"]
+
+- id: ss-asst-2
+  category: single_session_assistant
+  conversations:
+    - session: 1
+      turns:
+        - role: user
+          content: "Help me pick a testing framework for my Node project."
+        - role: assistant
+          content: "I recommend Vitest over Jest. It's faster, has native ESM support, and the API is nearly identical so migration is easy. The watch mode is particularly good."
+  query: "What testing framework did the assistant recommend?"
+  expected_answer: "Vitest"
+  expected_keywords: ["Vitest"]
+
+- id: ss-asst-3
+  category: single_session_assistant
+  conversations:
+    - session: 1
+      turns:
+        - role: user
+          content: "I'm getting CORS errors in my Express app."
+        - role: assistant
+          content: "The fix was adding the cors middleware before your routes, not after. The order matters because Express processes middleware sequentially. I also set the origin to your frontend URL instead of using wildcard."
+  query: "What was the fix for the CORS errors?"
+  expected_answer: "Add cors middleware before routes, set specific origin"
+  expected_keywords: ["before", "routes"]
+
+- id: ss-asst-4
+  category: single_session_assistant
+  conversations:
+    - session: 1
+      turns:
+        - role: user
+          content: "My Docker build is taking 15 minutes."
+        - role: assistant
+          content: "I restructured the Dockerfile to use multi-stage builds. The key optimization was separating the dependency install layer from the source code copy. Now npm install only re-runs when package.json changes. Build time dropped to 2 minutes."
+  query: "How much did the Docker build time improve?"
+  expected_answer: "From 15 minutes to 2 minutes"
+  expected_keywords: ["2 minutes"]
+
+- id: ss-asst-5
+  category: single_session_assistant
+  conversations:
+    - session: 1
+      turns:
+        - role: user
+          content: "What's the best way to handle environment variables in Next.js?"
+        - role: assistant
+          content: "Use NEXT_PUBLIC_ prefix for client-side variables. Server-only secrets go in .env.local without the prefix. I created a src/env.ts validation file using zod to catch missing variables at build time."
+  query: "What tool did the assistant use to validate environment variables?"
+  expected_answer: "Zod, in src/env.ts"
+  expected_keywords: ["zod"]
+
+- id: temp-1
+  category: temporal_reasoning
+  conversations:
+    - session: 1
+      turns:
+        - role: user
+          content: "On Monday I deployed version 2.1 to staging."
+        - role: assistant
+          content: "Noted — v2.1 deployed to staging on Monday."
+    - session: 2
+      turns:
+        - role: user
+          content: "On Wednesday we found a critical bug in v2.1, so I rolled back to v2.0."
+  query: "What happened after the v2.1 deployment?"
+  expected_answer: "A critical bug was found on Wednesday, leading to a rollback to v2.0"
+  expected_keywords: ["bug", "rollback", "2.0"]
+
+- id: temp-2
+  category: temporal_reasoning
+  conversations:
+    - session: 1
+      turns:
+        - role: user
+          content: "In January we migrated from MongoDB to PostgreSQL."
+    - session: 2
+      turns:
+        - role: user
+          content: "In March we added read replicas to handle the traffic spike."
+  query: "What database changes happened and in what order?"
+  expected_answer: "January: migrated from MongoDB to PostgreSQL. March: added read replicas."
+  expected_keywords: ["MongoDB", "PostgreSQL", "replicas"]
+
+- id: temp-3
+  category: temporal_reasoning
+  conversations:
+    - session: 1
+      turns:
+        - role: user
+          content: "Last Tuesday I started using Terraform for our infrastructure. Before that we were doing everything manually in the AWS console."
+  query: "When did the user start using Terraform?"
+  expected_answer: "Last Tuesday"
+  expected_keywords: ["Tuesday", "Terraform"]
+
+- id: temp-4
+  category: temporal_reasoning
+  conversations:
+    - session: 1
+      turns:
+        - role: user
+          content: "We launched the beta on March 1st with 50 users."
+    - session: 2
+      turns:
+        - role: user
+          content: "By March 15th we had 500 users. We hit 2000 by the end of March."
+  query: "How did user growth progress during March?"
+  expected_answer: "March 1: 50 users (beta launch), March 15: 500 users, end of March: 2000 users"
+  expected_keywords: ["50", "500", "2000"]
+
+- id: temp-5
+  category: temporal_reasoning
+  conversations:
+    - session: 1
+      turns:
+        - role: user
+          content: "The first version of our API used REST. We switched to GraphQL in Q2 last year. Then in Q4 we added gRPC for internal services."
+  query: "What was the progression of API technologies?"
+  expected_answer: "REST first, then GraphQL in Q2, then gRPC in Q4"
+  expected_keywords: ["REST", "GraphQL", "gRPC"]
+
+- id: ku-1
+  category: knowledge_updates
+  conversations:
+    - session: 1
+      turns:
+        - role: user
+          content: "Our production database is hosted on AWS RDS."
+    - session: 2
+      turns:
+        - role: user
+          content: "We just migrated our production database from AWS RDS to Google Cloud SQL."
+  query: "Where is the production database hosted?"
+  expected_answer: "Google Cloud SQL (migrated from AWS RDS)"
+  expected_keywords: ["Google Cloud SQL"]
+
+- id: ku-2
+  category: knowledge_updates
+  conversations:
+    - session: 1
+      turns:
+        - role: user
+          content: "I use VS Code as my primary editor."
+    - session: 2
+      turns:
+        - role: user
+          content: "I've switched from VS Code to Neovim. Much faster for my workflow."
+  query: "What editor does the user currently use?"
+  expected_answer: "Neovim (switched from VS Code)"
+  expected_keywords: ["Neovim"]
+
+- id: ku-3
+  category: knowledge_updates
+  conversations:
+    - session: 1
+      turns:
+        - role: user
+          content: "Our team uses Slack for communication."
+    - session: 2
+      turns:
+        - role: user
+          content: "We dropped Slack and moved to Discord. The threading in Slack was confusing everyone."
+  query: "What communication tool does the team use?"
+  expected_answer: "Discord (switched from Slack)"
+  expected_keywords: ["Discord"]
+
+- id: ku-4
+  category: knowledge_updates
+  conversations:
+    - session: 1
+      turns:
+        - role: user
+          content: "The API rate limit is set to 100 requests per minute."
+    - session: 2
+      turns:
+        - role: user
+          content: "We increased the API rate limit to 500 requests per minute after the infrastructure upgrade."
+  query: "What is the current API rate limit?"
+  expected_answer: "500 requests per minute"
+  expected_keywords: ["500"]
+
+- id: ku-5
+  category: knowledge_updates
+  conversations:
+    - session: 1
+      turns:
+        - role: user
+          content: "The project deadline is December 15th."
+    - session: 2
+      turns:
+        - role: user
+          content: "The deadline was pushed back to January 31st because of the scope change."
+  query: "When is the project deadline?"
+  expected_answer: "January 31st (pushed back from December 15th)"
+  expected_keywords: ["January 31"]
+
+- id: ms-1
+  category: multi_session_reasoning
+  conversations:
+    - session: 1
+      turns:
+        - role: user
+          content: "For our microservices, we use Python for the data pipeline service."
+    - session: 2
+      turns:
+        - role: user
+          content: "The authentication service is written in Go for performance."
+    - session: 3
+      turns:
+        - role: user
+          content: "Our frontend BFF is a Node.js service that aggregates the others."
+  query: "What languages are used across the microservices?"
+  expected_answer: "Python (data pipeline), Go (authentication), Node.js (frontend BFF)"
+  expected_keywords: ["Python", "Go", "Node"]
+
+- id: ms-2
+  category: multi_session_reasoning
+  conversations:
+    - session: 1
+      turns:
+        - role: user
+          content: "Alice handles the frontend development. She's our React expert."
+    - session: 2
+      turns:
+        - role: user
+          content: "Bob manages the infrastructure and CI/CD pipeline."
+    - session: 3
+      turns:
+        - role: user
+          content: "Carol joined last month as our first dedicated QA engineer."
+  query: "Who are the team members and what do they do?"
+  expected_answer: "Alice (frontend/React), Bob (infrastructure/CI/CD), Carol (QA)"
+  expected_keywords: ["Alice", "Bob", "Carol"]
+
+- id: ms-3
+  category: multi_session_reasoning
+  conversations:
+    - session: 1
+      turns:
+        - role: user
+          content: "Q1 revenue was $50,000."
+    - session: 2
+      turns:
+        - role: user
+          content: "Q2 we hit $120,000 in revenue."
+    - session: 3
+      turns:
+        - role: user
+          content: "Q3 was our best quarter yet at $200,000."
+  query: "What is the total revenue across all reported quarters?"
+  expected_answer: "$370,000 ($50K + $120K + $200K)"
+  expected_keywords: ["370"]
+
+- id: ms-4
+  category: multi_session_reasoning
+  conversations:
+    - session: 1
+      turns:
+        - role: user
+          content: "I own 2.5 ETH that I bought at $1,800 each."
+    - session: 2
+      turns:
+        - role: user
+          content: "I also have 10,000 DOGE and 0.1 BTC."
+    - session: 3
+      turns:
+        - role: user
+          content: "Last week I added 500 SOL to my portfolio."
+  query: "What cryptocurrencies does the user hold?"
+  expected_answer: "ETH (2.5), DOGE (10,000), BTC (0.1), SOL (500)"
+  expected_keywords: ["ETH", "BTC", "SOL", "DOGE"]
+
+- id: ms-5
+  category: multi_session_reasoning
+  conversations:
+    - session: 1
+      turns:
+        - role: user
+          content: "I have an office in New York where 3 engineers work."
+    - session: 2
+      turns:
+        - role: user
+          content: "Our London office handles sales. 5 people there."
+    - session: 3
+      turns:
+        - role: user
+          content: "We just opened a small office in Tokyo with 2 people for the APAC market. And our Singapore team has 4 engineers."
+  query: "How many offices does the user have and how many total employees?"
+  expected_answer: "4 offices (New York: 3, London: 5, Tokyo: 2, Singapore: 4) = 14 total"
+  expected_keywords: ["New York", "London", "Tokyo", "Singapore"]
