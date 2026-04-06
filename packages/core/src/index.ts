@@ -17,6 +17,7 @@ import { expandedSearch } from './query-expansion.js'
 import { installPack, uninstallPack, listPacks, exportPack, scanPrivacy, computePackHash, previewPack } from './packs.js'
 import { sync as gitSync, getSyncStatus, withLock, type SyncResult, type SyncStatus } from './sync.js'
 import { detectSecrets } from './secrets.js'
+import { appendHistory } from './history.js'
 import type { Engram } from './schemas/engram.js'
 import type { Episode } from './schemas/episode.js'
 import type { PackManifest } from './schemas/pack.js'
@@ -39,6 +40,8 @@ export { generateGuardrails } from './guardrails.js'
 export type { MetaField, StructuralTemplate, EvidenceEntry, MetaConfidence, DomainCoverage, HierarchyPosition, Falsification } from './schemas/meta-engram.js'
 export { MetaFieldSchema, StructuralTemplateSchema, EvidenceEntrySchema, MetaConfidenceSchema, DomainCoverageSchema, HierarchyPositionSchema, FalsificationSchema } from './schemas/meta-engram.js'
 export { engramSearchText } from './fts.js'
+export { appendHistory, readHistory, listHistoryMonths, type HistoryEvent } from './history.js'
+export { runMigrations, rollbackMigrations, getSchemaVersion, setSchemaVersion, ALL_MIGRATIONS, CURRENT_SCHEMA_VERSION, type Migration, type MigrationResult } from './migrations/index.js'
 export { detectSecrets } from './secrets.js'
 export { detectPlurStorage, type PlurPaths } from './storage.js'
 export { IndexedStorage } from './storage-indexed.js'
@@ -246,6 +249,12 @@ export class Plur {
       engrams.push(engram)
       saveEngrams(this.paths.engrams, engrams)
       this._syncIndex()
+      appendHistory(this.paths.root, {
+        event: 'engram_created',
+        engram_id: engram.id,
+        timestamp: now,
+        data: { type: engram.type, scope: engram.scope, source: engram.source },
+      })
       return engram
     })
   }
@@ -509,6 +518,12 @@ export class Plur {
 
       saveEngrams(this.paths.engrams, engrams)
       this._syncIndex()
+      appendHistory(this.paths.root, {
+        event: 'feedback_received',
+        engram_id: id,
+        timestamp: new Date().toISOString(),
+        data: { signal },
+      })
       return true
     })
 
@@ -596,6 +611,12 @@ export class Plur {
 
       saveEngrams(this.paths.engrams, engrams)
       this._syncIndex()
+      appendHistory(this.paths.root, {
+        event: 'engram_retired',
+        engram_id: id,
+        timestamp: new Date().toISOString(),
+        data: { reason: reason ?? null },
+      })
       return true
     })
 

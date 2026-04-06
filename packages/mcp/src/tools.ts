@@ -1006,6 +1006,54 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
     },
 
     {
+      name: 'plur_tensions',
+      description: 'List engram pairs that have conflicting knowledge — shows tensions in your memory that may need resolution',
+      annotations: { title: 'Tensions', readOnlyHint: true, idempotentHint: true },
+      inputSchema: {
+        type: 'object',
+        properties: {
+          scope: { type: 'string', description: 'Filter by scope' },
+          domain: { type: 'string', description: 'Filter by domain prefix' },
+        },
+      },
+      handler: async (args, plur) => {
+        const engrams = plur.list({
+          scope: args.scope as string | undefined,
+          domain: args.domain as string | undefined,
+        })
+
+        const tensions: Array<{
+          engram_a: { id: string; statement: string; type: string }
+          engram_b: { id: string; statement: string; type: string }
+          detected_at: string
+        }> = []
+
+        const seen = new Set<string>()
+
+        for (const engram of engrams) {
+          if (!engram.relations?.conflicts?.length) continue
+          for (const conflictId of engram.relations.conflicts) {
+            // Deduplicate: only show each pair once
+            const pairKey = [engram.id, conflictId].sort().join(':')
+            if (seen.has(pairKey)) continue
+            seen.add(pairKey)
+
+            const other = engrams.find(e => e.id === conflictId)
+            if (!other) continue
+
+            tensions.push({
+              engram_a: { id: engram.id, statement: engram.statement, type: engram.type },
+              engram_b: { id: other.id, statement: other.statement, type: other.type },
+              detected_at: engram.activation.last_accessed,
+            })
+          }
+        }
+
+        return { tensions, count: tensions.length }
+      },
+    },
+
+    {
       name: 'plur_packs_export',
       description: 'Export engrams as a shareable thematic pack with privacy scanning and integrity hash. Filters out private and secret-containing engrams automatically. Output goes to ~/plur-packs/<name> by default.',
       annotations: { title: 'Export pack', destructiveHint: false, idempotentHint: false },

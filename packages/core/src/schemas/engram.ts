@@ -179,6 +179,14 @@ export const EngramSchema = z.object({
   polarity: z.enum(['do', 'dont']).nullable().default(null),
 })
 
+/**
+ * Runtime schema with .passthrough() so unknown fields are preserved during parsing.
+ * This prevents data loss when new fields are added by hand or by other SPs.
+ * The Engram type is derived from the strict schema (without passthrough) to keep
+ * TypeScript type safety — passthrough only affects runtime Zod validation.
+ */
+export const EngramSchemaPassthrough = EngramSchema.passthrough()
+
 export type Engram = z.infer<typeof EngramSchema>
 export type KnowledgeAnchor = z.infer<typeof KnowledgeAnchorSchema>
 export type Association = z.infer<typeof AssociationSchema>
