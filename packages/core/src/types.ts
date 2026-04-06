@@ -20,27 +20,27 @@ export interface LearnContext {
   commitment?: 'exploring' | 'leaning' | 'decided' | 'locked'
   /** Reason for locking (required when commitment='locked'). */
   locked_reason?: string
+  /** Explicit memory_class override (SP2 Idea 3). Auto-set from type if not provided. */
+  memory_class?: 'semantic' | 'episodic' | 'procedural' | 'metacognitive'
+  /** Current session episode ID for episodic anchoring (SP2 Idea 24). */
+  session_episode_id?: string
 }
 
 /** Extended context for async learn with LLM dedup. */
 export interface LearnAsyncContext extends LearnContext {
-  /** LLM function for deduplication decisions. */
   llm?: LlmFunction
   budget?: RecallBudget
   caller_session_id?: string
 }
 
-/** LLM dedup decision. */
 export type DedupDecision = 'ADD' | 'UPDATE' | 'MERGE' | 'NOOP'
 
-/** Dedup configuration from config.yaml. */
 export interface DedupConfig {
   enabled?: boolean
   threshold?: number
   mode?: 'llm' | 'cosine' | 'off'
 }
 
-/** Result from learnAsync including dedup decision metadata. */
 export interface LearnAsyncResult {
   engram: Engram
   decision: DedupDecision
@@ -48,7 +48,6 @@ export interface LearnAsyncResult {
   tensions?: string[]
 }
 
-/** Result from learnBatch. */
 export interface LearnBatchResult {
   results: LearnAsyncResult[]
   stats: { added: number; updated: number; merged: number; noops: number }
