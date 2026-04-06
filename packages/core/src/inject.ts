@@ -480,12 +480,9 @@ export function assignLayer(bucket: 'directives' | 'constraints' | 'consider'): 
 export function formatWithLayer(engrams: WireEngram[], layer: InjectionLayer): string {
   if (engrams.length === 0) return ''
   switch (layer) {
-    case 1:
-      return engrams.map(formatLayer1).join(' | ')
-    case 2:
-      return engrams.map(formatLayer2).join('\n')
-    case 3:
-      return engrams.map(formatLayer3).join('\n')
+    case 1: return engrams.map(formatLayer1).join(' | ')
+    case 2: return engrams.map(formatLayer2).join('\n')
+    case 3: return engrams.map(formatLayer3).join('\n')
   }
 }
 

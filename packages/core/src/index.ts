@@ -315,6 +315,7 @@ export class Plur {
         locked_at: commitment === 'locked' ? now : undefined,
         locked_reason: commitment === 'locked' ? context?.locked_reason : undefined,
         knowledge_type: { cognitive_level: cogLevel as any, memory_class: 'semantic' as any },
+        summary: autoSummary(statement, undefined),
         relations: conflictIds.length > 0 ? {
           broader: [],
           narrower: [],
@@ -420,10 +421,7 @@ export class Plur {
     return results
   }
 
-  async recallAutoSearch(
-    query: string,
-    options?: RecallOptions,
-  ): Promise<AutoSearchResult> {
+  async recallAutoSearch(query: string, options?: RecallOptions): Promise<AutoSearchResult> {
     const filtered = this._filterEngrams(options)
     const limit = options?.limit ?? 20
     const result = await recallAuto(filtered, query, limit, this.paths.root, options?.llm)
@@ -591,14 +589,9 @@ export class Plur {
       embeddingBoosts,
     )
 
-    const formatEngrams = (wires: typeof result.directives): string => {
-      if (wires.length === 0) return ''
-      return wires.map(e => `[${e.id}] ${e.statement}`).join('\n')
-    }
-
-    const directivesStr = formatEngrams(result.directives)
-    const constraintsStr = formatEngrams(result.constraints)
-    const considerStr = formatEngrams(result.consider)
+    const directivesStr = formatWithLayer(result.directives, assignLayer('directives'))
+    const constraintsStr = formatWithLayer(result.constraints, assignLayer('constraints'))
+    const considerStr = formatWithLayer(result.consider, assignLayer('consider'))
     const count = result.directives.length + result.constraints.length + result.consider.length
     const tokensUsed = result.tokens_used.directives + result.tokens_used.consider
 

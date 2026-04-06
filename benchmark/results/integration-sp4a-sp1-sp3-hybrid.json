@@ -1,0 +1,2172 @@
+{
+  "timestamp": "2026-04-06T20:08:02.326Z",
+  "search_mode": "hybrid",
+  "total_scenarios": 30,
+  "categories": {
+    "single_session_user": {
+      "count": 5,
+      "hit_at_5": 1,
+      "hit_at_10": 1,
+      "avg_mrr": 0.8666666666666666,
+      "accuracy": 1
+    },
+    "single_session_preference": {
+      "count": 5,
+      "hit_at_5": 1,
+      "hit_at_10": 1,
+      "avg_mrr": 0.9,
+      "accuracy": 1
+    },
+    "single_session_assistant": {
+      "count": 5,
+      "hit_at_5": 1,
+      "hit_at_10": 1,
+      "avg_mrr": 1,
+      "accuracy": 1
+    },
+    "temporal_reasoning": {
+      "count": 5,
+      "hit_at_5": 0.6,
+      "hit_at_10": 0.6,
+      "avg_mrr": 0.5105263157894736,
+      "accuracy": 0.2
+    },
+    "knowledge_updates": {
+      "count": 5,
+      "hit_at_5": 0.4,
+      "hit_at_10": 0.6,
+      "avg_mrr": 0.17909774436090226,
+      "accuracy": 0.8
+    },
+    "multi_session_reasoning": {
+      "count": 5,
+      "hit_at_5": 1,
+      "hit_at_10": 1,
+      "avg_mrr": 1,
+      "accuracy": 0.6
+    }
+  },
+  "overall": {
+    "hit_at_5": 0.8333333333333334,
+    "hit_at_10": 0.8666666666666667,
+    "avg_mrr": 0.7427151211361737,
+    "accuracy": 0.7666666666666667
+  },
+  "scenario_results": [
+    {
+      "id": "ss-user-1",
+      "category": "single_session_user",
+      "query": "Where does the user currently live?",
+      "expected_answer": "Portland",
+      "expected_keywords": [
+        "Portland"
+      ],
+      "retrieved_engrams": [
+        {
+          "id": "ENG-2026-0406-026",
+          "statement": "I live in San Francisco. Love the city.",
+          "rank": 1
+        },
+        {
+          "id": "ENG-2026-0406-002",
+          "statement": "I work as a senior backend engineer at Stripe. Been there about two years now.",
+          "rank": 2
+        },
+        {
+          "id": "ENG-2026-0406-001",
+          "statement": "I just moved to Portland from Austin last month. Still getting used to the rain.",
+          "rank": 3
+        },
+        {
+          "id": "ENG-2026-0406-038",
+          "statement": "The app now has a social feature where users can share completed trails.",
+          "rank": 4
+        },
+        {
+          "id": "ENG-2026-0406-018",
+          "statement": "Meridian just hit its first 100 users this week!",
+          "rank": 5
+        },
+        {
+          "id": "ENG-2026-0406-004",
+          "statement": "I've been training for the Boston Marathon. My current best is 3:42.",
+          "rank": 6
+        },
+        {
+          "id": "ENG-2026-0406-028",
+          "statement": "I use React for all my frontend work. It's my go-to framework.",
+          "rank": 7
+        },
+        {
+          "id": "ENG-2026-0406-015",
+          "statement": "Help me optimize this SQL query that's taking 12 seconds.",
+          "rank": 8
+        },
+        {
+          "id": "ENG-2026-0406-031",
+          "statement": "We migrated from Jira to Linear last week. The whole team is much happier.",
+          "rank": 9
+        },
+        {
+          "id": "ENG-2026-0406-005",
+          "statement": "Hoping to break 3:30 this time.",
+          "rank": 10
+        }
+      ],
+      "hit_at_5": true,
+      "hit_at_10": true,
+      "mrr": 0.3333333333333333,
+      "keyword_matches": [
+        "portland"
+      ],
+      "keyword_misses": []
+    },
+    {
+      "id": "ss-user-2",
+      "category": "single_session_user",
+      "query": "Where does the user work and what is their role?",
+      "expected_answer": "Senior backend engineer at Stripe",
+      "expected_keywords": [
+        "Stripe",
+        "backend engineer"
+      ],
+      "retrieved_engrams": [
+        {
+          "id": "ENG-2026-0406-002",
+          "statement": "I work as a senior backend engineer at Stripe. Been there about two years now.",
+          "rank": 1
+        },
+        {
+          "id": "ENG-2026-0406-028",
+          "statement": "I use React for all my frontend work. It's my go-to framework.",
+          "rank": 2
+        },
+        {
+          "id": "ENG-2026-0406-021",
+          "statement": "It's been about 3 months since my promotion and I'm finally settling into the Staff role.",
+          "rank": 3
+        },
+        {
+          "id": "ENG-2026-0406-022",
+          "statement": "My company just acquired a startup called DataPipe for $12M.",
+          "rank": 4
+        },
+        {
+          "id": "ENG-2026-0406-017",
+          "statement": "I just started a new project called Meridian today. It's a real-time analytics dashboard.",
+          "rank": 5
+        },
+        {
+          "id": "ENG-2026-0406-040",
+          "statement": "Alice just completed the new dashboard redesign ahead of schedule.",
+          "rank": 6
+        },
+        {
+          "id": "ENG-2026-0406-023",
+          "statement": "The DataPipe integration is almost complete. We started integrating their API in February.",
+          "rank": 7
+        },
+        {
+          "id": "ENG-2026-0406-038",
+          "statement": "The app now has a social feature where users can share completed trails.",
+          "rank": 8
+        },
+        {
+          "id": "ENG-2026-0406-014",
+          "statement": "I need a name for my new SaaS product that does automated code review.",
+          "rank": 9
+        },
+        {
+          "id": "ENG-2026-0406-008",
+          "statement": "I hate when AI responses are too verbose. Keep things concise — bullet points over paragraphs.",
+          "rank": 10
+        }
+      ],
+      "hit_at_5": true,
+      "hit_at_10": true,
+      "mrr": 1,
+      "keyword_matches": [
+        "stripe",
+        "backend engineer"
+      ],
+      "keyword_misses": []
+    },
+    {
+      "id": "ss-user-3",
+      "category": "single_session_user",
+      "query": "What is the user's daughter's name and how old is she?",
+      "expected_answer": "Ellie, 7 years old",
+      "expected_keywords": [
+        "Ellie",
+        "7"
+      ],
+      "retrieved_engrams": [
+        {
+          "id": "ENG-2026-0406-003",
+          "statement": "My daughter Ellie just turned 7. We threw her a dinosaur-themed birthday party.",
+          "rank": 1
+        },
+        {
+          "id": "ENG-2026-0406-018",
+          "statement": "Meridian just hit its first 100 users this week!",
+          "rank": 2
+        },
+        {
+          "id": "ENG-2026-0406-015",
+          "statement": "Help me optimize this SQL query that's taking 12 seconds.",
+          "rank": 3
+        },
+        {
+          "id": "ENG-2026-0406-014",
+          "statement": "I need a name for my new SaaS product that does automated code review.",
+          "rank": 4
+        },
+        {
+          "id": "ENG-2026-0406-013",
+          "statement": "What's the best way to handle rate limiting in my API?",
+          "rank": 5
+        },
+        {
+          "id": "ENG-2026-0406-002",
+          "statement": "I work as a senior backend engineer at Stripe. Been there about two years now.",
+          "rank": 6
+        },
+        {
+          "id": "ENG-2026-0406-004",
+          "statement": "I've been training for the Boston Marathon. My current best is 3:42.",
+          "rank": 7
+        },
+        {
+          "id": "ENG-2026-0406-006",
+          "statement": "I adopted a rescue greyhound named Pixel. She's incredibly fast but also the laziest dog I've ever had.",
+          "rank": 8
+        },
+        {
+          "id": "ENG-2026-0406-017",
+          "statement": "I just started a new project called Meridian today. It's a real-time analytics dashboard.",
+          "rank": 9
+        },
+        {
+          "id": "ENG-2026-0406-005",
+          "statement": "Hoping to break 3:30 this time.",
+          "rank": 10
+        }
+      ],
+      "hit_at_5": true,
+      "hit_at_10": true,
+      "mrr": 1,
+      "keyword_matches": [
+        "ellie",
+        "7"
+      ],
+      "keyword_misses": []
+    },
+    {
+      "id": "ss-user-4",
+      "category": "single_session_user",
+      "query": "What marathon is the user training for and what is their goal time?",
+      "expected_answer": "Boston Marathon, goal is to break 3:30",
+      "expected_keywords": [
+        "Boston",
+        "3:30"
+      ],
+      "retrieved_engrams": [
+        {
+          "id": "ENG-2026-0406-004",
+          "statement": "I've been training for the Boston Marathon. My current best is 3:42.",
+          "rank": 1
+        },
+        {
+          "id": "ENG-2026-0406-005",
+          "statement": "Hoping to break 3:30 this time.",
+          "rank": 2
+        },
+        {
+          "id": "ENG-2026-0406-017",
+          "statement": "I just started a new project called Meridian today. It's a real-time analytics dashboard.",
+          "rank": 3
+        },
+        {
+          "id": "ENG-2026-0406-019",
+          "statement": "I'm switching from AWS to Google Cloud this month. The migration should take about 6 weeks.",
+          "rank": 4
+        },
+        {
+          "id": "ENG-2026-0406-038",
+          "statement": "The app now has a social feature where users can share completed trails.",
+          "rank": 5
+        },
+        {
+          "id": "ENG-2026-0406-024",
+          "statement": "I launched my podcast 'DevPath' last week. First episode got 500 downloads.",
+          "rank": 6
+        },
+        {
+          "id": "ENG-2026-0406-002",
+          "statement": "I work as a senior backend engineer at Stripe. Been there about two years now.",
+          "rank": 7
+        },
+        {
+          "id": "ENG-2026-0406-023",
+          "statement": "The DataPipe integration is almost complete. We started integrating their API in February.",
+          "rank": 8
+        },
+        {
+          "id": "ENG-2026-0406-018",
+          "statement": "Meridian just hit its first 100 users this week!",
+          "rank": 9
+        },
+        {
+          "id": "ENG-2026-0406-022",
+          "statement": "My company just acquired a startup called DataPipe for $12M.",
+          "rank": 10
+        }
+      ],
+      "hit_at_5": true,
+      "hit_at_10": true,
+      "mrr": 1,
+      "keyword_matches": [
+        "boston",
+        "3:30"
+      ],
+      "keyword_misses": []
+    },
+    {
+      "id": "ss-user-5",
+      "category": "single_session_user",
+      "query": "What kind of dog does the user have and what is its name?",
+      "expected_answer": "A rescue greyhound named Pixel",
+      "expected_keywords": [
+        "greyhound",
+        "Pixel"
+      ],
+      "retrieved_engrams": [
+        {
+          "id": "ENG-2026-0406-006",
+          "statement": "I adopted a rescue greyhound named Pixel. She's incredibly fast but also the laziest dog I've ever had.",
+          "rank": 1
+        },
+        {
+          "id": "ENG-2026-0406-014",
+          "statement": "I need a name for my new SaaS product that does automated code review.",
+          "rank": 2
+        },
+        {
+          "id": "ENG-2026-0406-002",
+          "statement": "I work as a senior backend engineer at Stripe. Been there about two years now.",
+          "rank": 3
+        },
+        {
+          "id": "ENG-2026-0406-045",
+          "statement": "I invested $5,000 in Ethereum back in December.",
+          "rank": 4
+        },
+        {
+          "id": "ENG-2026-0406-022",
+          "statement": "My company just acquired a startup called DataPipe for $12M.",
+          "rank": 5
+        },
+        {
+          "id": "ENG-2026-0406-038",
+          "statement": "The app now has a social feature where users can share completed trails.",
+          "rank": 6
+        },
+        {
+          "id": "ENG-2026-0406-013",
+          "statement": "What's the best way to handle rate limiting in my API?",
+          "rank": 7
+        },
+        {
+          "id": "ENG-2026-0406-004",
+          "statement": "I've been training for the Boston Marathon. My current best is 3:42.",
+          "rank": 8
+        },
+        {
+          "id": "ENG-2026-0406-017",
+          "statement": "I just started a new project called Meridian today. It's a real-time analytics dashboard.",
+          "rank": 9
+        },
+        {
+          "id": "ENG-2026-0406-008",
+          "statement": "I hate when AI responses are too verbose. Keep things concise — bullet points over paragraphs.",
+          "rank": 10
+        }
+      ],
+      "hit_at_5": true,
+      "hit_at_10": true,
+      "mrr": 1,
+      "keyword_matches": [
+        "greyhound",
+        "pixel"
+      ],
+      "keyword_misses": []
+    },
+    {
+      "id": "ss-pref-1",
+      "category": "single_session_preference",
+      "query": "What programming language and style does the user prefer for code examples?",
+      "expected_answer": "TypeScript with functional style",
+      "expected_keywords": [
+        "TypeScript",
+        "functional"
+      ],
+      "retrieved_engrams": [
+        {
+          "id": "ENG-2026-0406-007",
+          "statement": "When you write code examples for me, always use TypeScript, never plain JavaScript. I also prefer functional style over classes.",
+          "rank": 1
+        },
+        {
+          "id": "ENG-2026-0406-002",
+          "statement": "I work as a senior backend engineer at Stripe. Been there about two years now.",
+          "rank": 2
+        },
+        {
+          "id": "ENG-2026-0406-010",
+          "statement": "I use vim keybindings everywhere — VS Code, terminal, even my browser. Don't suggest Emacs shortcuts.",
+          "rank": 3
+        },
+        {
+          "id": "ENG-2026-0406-008",
+          "statement": "I hate when AI responses are too verbose. Keep things concise — bullet points over paragraphs.",
+          "rank": 4
+        },
+        {
+          "id": "ENG-2026-0406-014",
+          "statement": "I need a name for my new SaaS product that does automated code review.",
+          "rank": 5
+        },
+        {
+          "id": "ENG-2026-0406-009",
+          "statement": "For my projects, I always use PostgreSQL. Don't suggest MongoDB or any NoSQL database.",
+          "rank": 6
+        },
+        {
+          "id": "ENG-2026-0406-028",
+          "statement": "I use React for all my frontend work. It's my go-to framework.",
+          "rank": 7
+        },
+        {
+          "id": "ENG-2026-0406-035",
+          "statement": "I've upgraded all my services to Python 3.13. The new JIT compiler is fantastic.",
+          "rank": 8
+        },
+        {
+          "id": "ENG-2026-0406-022",
+          "statement": "My company just acquired a startup called DataPipe for $12M.",
+          "rank": 9
+        },
+        {
+          "id": "ENG-2026-0406-017",
+          "statement": "I just started a new project called Meridian today. It's a real-time analytics dashboard.",
+          "rank": 10
+        }
+      ],
+      "hit_at_5": true,
+      "hit_at_10": true,
+      "mrr": 1,
+      "keyword_matches": [
+        "typescript",
+        "functional"
+      ],
+      "keyword_misses": []
+    },
+    {
+      "id": "ss-pref-2",
+      "category": "single_session_preference",
+      "query": "How does the user prefer responses to be formatted?",
+      "expected_answer": "Concise, using bullet points rather than paragraphs",
+      "expected_keywords": [
+        "concise",
+        "bullet"
+      ],
+      "retrieved_engrams": [
+        {
+          "id": "ENG-2026-0406-007",
+          "statement": "When you write code examples for me, always use TypeScript, never plain JavaScript. I also prefer functional style over classes.",
+          "rank": 1
+        },
+        {
+          "id": "ENG-2026-0406-008",
+          "statement": "I hate when AI responses are too verbose. Keep things concise — bullet points over paragraphs.",
+          "rank": 2
+        },
+        {
+          "id": "ENG-2026-0406-002",
+          "statement": "I work as a senior backend engineer at Stripe. Been there about two years now.",
+          "rank": 3
+        },
+        {
+          "id": "ENG-2026-0406-005",
+          "statement": "Hoping to break 3:30 this time.",
+          "rank": 4
+        },
+        {
+          "id": "ENG-2026-0406-015",
+          "statement": "Help me optimize this SQL query that's taking 12 seconds.",
+          "rank": 5
+        },
+        {
+          "id": "ENG-2026-0406-010",
+          "statement": "I use vim keybindings everywhere — VS Code, terminal, even my browser. Don't suggest Emacs shortcuts.",
+          "rank": 6
+        },
+        {
+          "id": "ENG-2026-0406-028",
+          "statement": "I use React for all my frontend work. It's my go-to framework.",
+          "rank": 7
+        },
+        {
+          "id": "ENG-2026-0406-009",
+          "statement": "For my projects, I always use PostgreSQL. Don't suggest MongoDB or any NoSQL database.",
+          "rank": 8
+        },
+        {
+          "id": "ENG-2026-0406-014",
+          "statement": "I need a name for my new SaaS product that does automated code review.",
+          "rank": 9
+        },
+        {
+          "id": "ENG-2026-0406-013",
+          "statement": "What's the best way to handle rate limiting in my API?",
+          "rank": 10
+        }
+      ],
+      "hit_at_5": true,
+      "hit_at_10": true,
+      "mrr": 0.5,
+      "keyword_matches": [
+        "concise",
+        "bullet"
+      ],
+      "keyword_misses": []
+    },
+    {
+      "id": "ss-pref-3",
+      "category": "single_session_preference",
+      "query": "What database does the user prefer?",
+      "expected_answer": "PostgreSQL, no NoSQL/MongoDB",
+      "expected_keywords": [
+        "PostgreSQL"
+      ],
+      "retrieved_engrams": [
+        {
+          "id": "ENG-2026-0406-009",
+          "statement": "For my projects, I always use PostgreSQL. Don't suggest MongoDB or any NoSQL database.",
+          "rank": 1
+        },
+        {
+          "id": "ENG-2026-0406-002",
+          "statement": "I work as a senior backend engineer at Stripe. Been there about two years now.",
+          "rank": 2
+        },
+        {
+          "id": "ENG-2026-0406-008",
+          "statement": "I hate when AI responses are too verbose. Keep things concise — bullet points over paragraphs.",
+          "rank": 3
+        },
+        {
+          "id": "ENG-2026-0406-017",
+          "statement": "I just started a new project called Meridian today. It's a real-time analytics dashboard.",
+          "rank": 4
+        },
+        {
+          "id": "ENG-2026-0406-014",
+          "statement": "I need a name for my new SaaS product that does automated code review.",
+          "rank": 5
+        },
+        {
+          "id": "ENG-2026-0406-004",
+          "statement": "I've been training for the Boston Marathon. My current best is 3:42.",
+          "rank": 6
+        },
+        {
+          "id": "ENG-2026-0406-028",
+          "statement": "I use React for all my frontend work. It's my go-to framework.",
+          "rank": 7
+        },
+        {
+          "id": "ENG-2026-0406-015",
+          "statement": "Help me optimize this SQL query that's taking 12 seconds.",
+          "rank": 8
+        },
+        {
+          "id": "ENG-2026-0406-013",
+          "statement": "What's the best way to handle rate limiting in my API?",
+          "rank": 9
+        },
+        {
+          "id": "ENG-2026-0406-007",
+          "statement": "When you write code examples for me, always use TypeScript, never plain JavaScript. I also prefer functional style over classes.",
+          "rank": 10
+        }
+      ],
+      "hit_at_5": true,
+      "hit_at_10": true,
+      "mrr": 1,
+      "keyword_matches": [
+        "postgresql"
+      ],
+      "keyword_misses": []
+    },
+    {
+      "id": "ss-pref-4",
+      "category": "single_session_preference",
+      "query": "What editor keybindings does the user prefer?",
+      "expected_answer": "Vim keybindings",
+      "expected_keywords": [
+        "vim"
+      ],
+      "retrieved_engrams": [
+        {
+          "id": "ENG-2026-0406-010",
+          "statement": "I use vim keybindings everywhere — VS Code, terminal, even my browser. Don't suggest Emacs shortcuts.",
+          "rank": 1
+        },
+        {
+          "id": "ENG-2026-0406-007",
+          "statement": "When you write code examples for me, always use TypeScript, never plain JavaScript. I also prefer functional style over classes.",
+          "rank": 2
+        },
+        {
+          "id": "ENG-2026-0406-008",
+          "statement": "I hate when AI responses are too verbose. Keep things concise — bullet points over paragraphs.",
+          "rank": 3
+        },
+        {
+          "id": "ENG-2026-0406-016",
+          "statement": "What CI/CD setup do you recommend for my monorepo?",
+          "rank": 4
+        },
+        {
+          "id": "ENG-2026-0406-002",
+          "statement": "I work as a senior backend engineer at Stripe. Been there about two years now.",
+          "rank": 5
+        },
+        {
+          "id": "ENG-2026-0406-009",
+          "statement": "For my projects, I always use PostgreSQL. Don't suggest MongoDB or any NoSQL database.",
+          "rank": 6
+        },
+        {
+          "id": "ENG-2026-0406-014",
+          "statement": "I need a name for my new SaaS product that does automated code review.",
+          "rank": 7
+        },
+        {
+          "id": "ENG-2026-0406-013",
+          "statement": "What's the best way to handle rate limiting in my API?",
+          "rank": 8
+        },
+        {
+          "id": "ENG-2026-0406-031",
+          "statement": "We migrated from Jira to Linear last week. The whole team is much happier.",
+          "rank": 9
+        },
+        {
+          "id": "ENG-2026-0406-028",
+          "statement": "I use React for all my frontend work. It's my go-to framework.",
+          "rank": 10
+        }
+      ],
+      "hit_at_5": true,
+      "hit_at_10": true,
+      "mrr": 1,
+      "keyword_matches": [
+        "vim"
+      ],
+      "keyword_misses": []
+    },
+    {
+      "id": "ss-pref-5",
+      "category": "single_session_preference",
+      "query": "What dietary restriction does the user follow?",
+      "expected_answer": "Ketogenic diet, under 20g carbs per day",
+      "expected_keywords": [
+        "keto",
+        "20"
+      ],
+      "retrieved_engrams": [
+        {
+          "id": "ENG-2026-0406-011",
+          "statement": "I'm on a strict ketogenic diet. When suggesting meals or snacks, keep carbs under 20g per day.",
+          "rank": 1
+        },
+        {
+          "id": "ENG-2026-0406-013",
+          "statement": "What's the best way to handle rate limiting in my API?",
+          "rank": 2
+        },
+        {
+          "id": "ENG-2026-0406-002",
+          "statement": "I work as a senior backend engineer at Stripe. Been there about two years now.",
+          "rank": 3
+        },
+        {
+          "id": "ENG-2026-0406-005",
+          "statement": "Hoping to break 3:30 this time.",
+          "rank": 4
+        },
+        {
+          "id": "ENG-2026-0406-004",
+          "statement": "I've been training for the Boston Marathon. My current best is 3:42.",
+          "rank": 5
+        },
+        {
+          "id": "ENG-2026-0406-038",
+          "statement": "The app now has a social feature where users can share completed trails.",
+          "rank": 6
+        },
+        {
+          "id": "ENG-2026-0406-008",
+          "statement": "I hate when AI responses are too verbose. Keep things concise — bullet points over paragraphs.",
+          "rank": 7
+        },
+        {
+          "id": "ENG-2026-0406-017",
+          "statement": "I just started a new project called Meridian today. It's a real-time analytics dashboard.",
+          "rank": 8
+        },
+        {
+          "id": "ENG-2026-0406-045",
+          "statement": "I invested $5,000 in Ethereum back in December.",
+          "rank": 9
+        },
+        {
+          "id": "ENG-2026-0406-009",
+          "statement": "For my projects, I always use PostgreSQL. Don't suggest MongoDB or any NoSQL database.",
+          "rank": 10
+        }
+      ],
+      "hit_at_5": true,
+      "hit_at_10": true,
+      "mrr": 1,
+      "keyword_matches": [
+        "keto",
+        "20"
+      ],
+      "keyword_misses": []
+    },
+    {
+      "id": "ss-asst-1",
+      "category": "single_session_assistant",
+      "query": "What fix did the assistant suggest for the Docker build error?",
+      "expected_answer": "Change 'builder' to 'build-stage' on line 23 to match the AS alias",
+      "expected_keywords": [
+        "build-stage",
+        "line 23"
+      ],
+      "retrieved_engrams": [
+        {
+          "id": "ENG-2026-0406-012",
+          "statement": "Can you help me fix this Docker build error?",
+          "rank": 1
+        },
+        {
+          "id": "ENG-2026-0406-016",
+          "statement": "What CI/CD setup do you recommend for my monorepo?",
+          "rank": 2
+        },
+        {
+          "id": "ENG-2026-0406-009",
+          "statement": "For my projects, I always use PostgreSQL. Don't suggest MongoDB or any NoSQL database.",
+          "rank": 3
+        },
+        {
+          "id": "ENG-2026-0406-017",
+          "statement": "I just started a new project called Meridian today. It's a real-time analytics dashboard.",
+          "rank": 4
+        },
+        {
+          "id": "ENG-2026-0406-022",
+          "statement": "My company just acquired a startup called DataPipe for $12M.",
+          "rank": 5
+        },
+        {
+          "id": "ENG-2026-0406-024",
+          "statement": "I launched my podcast 'DevPath' last week. First episode got 500 downloads.",
+          "rank": 6
+        },
+        {
+          "id": "ENG-2026-0406-014",
+          "statement": "I need a name for my new SaaS product that does automated code review.",
+          "rank": 7
+        },
+        {
+          "id": "ENG-2026-0406-010",
+          "statement": "I use vim keybindings everywhere — VS Code, terminal, even my browser. Don't suggest Emacs shortcuts.",
+          "rank": 8
+        },
+        {
+          "id": "ENG-2026-0406-045",
+          "statement": "I invested $5,000 in Ethereum back in December.",
+          "rank": 9
+        },
+        {
+          "id": "ENG-2026-0406-013",
+          "statement": "What's the best way to handle rate limiting in my API?",
+          "rank": 10
+        }
+      ],
+      "hit_at_5": true,
+      "hit_at_10": true,
+      "mrr": 1,
+      "keyword_matches": [
+        "build-stage",
+        "line 23"
+      ],
+      "keyword_misses": []
+    },
+    {
+      "id": "ss-asst-2",
+      "category": "single_session_assistant",
+      "query": "What rate limiting approach did the assistant recommend?",
+      "expected_answer": "Token bucket algorithm with Redis, 100 requests bucket size, 10/second refill rate, using ioredis",
+      "expected_keywords": [
+        "token bucket",
+        "Redis"
+      ],
+      "retrieved_engrams": [
+        {
+          "id": "ENG-2026-0406-013",
+          "statement": "What's the best way to handle rate limiting in my API?",
+          "rank": 1
+        },
+        {
+          "id": "ENG-2026-0406-045",
+          "statement": "I invested $5,000 in Ethereum back in December.",
+          "rank": 2
+        },
+        {
+          "id": "ENG-2026-0406-004",
+          "statement": "I've been training for the Boston Marathon. My current best is 3:42.",
+          "rank": 3
+        },
+        {
+          "id": "ENG-2026-0406-002",
+          "statement": "I work as a senior backend engineer at Stripe. Been there about two years now.",
+          "rank": 4
+        },
+        {
+          "id": "ENG-2026-0406-022",
+          "statement": "My company just acquired a startup called DataPipe for $12M.",
+          "rank": 5
+        },
+        {
+          "id": "ENG-2026-0406-016",
+          "statement": "What CI/CD setup do you recommend for my monorepo?",
+          "rank": 6
+        },
+        {
+          "id": "ENG-2026-0406-014",
+          "statement": "I need a name for my new SaaS product that does automated code review.",
+          "rank": 7
+        },
+        {
+          "id": "ENG-2026-0406-031",
+          "statement": "We migrated from Jira to Linear last week. The whole team is much happier.",
+          "rank": 8
+        },
+        {
+          "id": "ENG-2026-0406-017",
+          "statement": "I just started a new project called Meridian today. It's a real-time analytics dashboard.",
+          "rank": 9
+        },
+        {
+          "id": "ENG-2026-0406-038",
+          "statement": "The app now has a social feature where users can share completed trails.",
+          "rank": 10
+        }
+      ],
+      "hit_at_5": true,
+      "hit_at_10": true,
+      "mrr": 1,
+      "keyword_matches": [
+        "token bucket",
+        "redis"
+      ],
+      "keyword_misses": []
+    },
+    {
+      "id": "ss-asst-3",
+      "category": "single_session_assistant",
+      "query": "What product name did the assistant recommend most strongly?",
+      "expected_answer": "PullSherpa",
+      "expected_keywords": [
+        "PullSherpa"
+      ],
+      "retrieved_engrams": [
+        {
+          "id": "ENG-2026-0406-014",
+          "statement": "I need a name for my new SaaS product that does automated code review.",
+          "rank": 1
+        },
+        {
+          "id": "ENG-2026-0406-002",
+          "statement": "I work as a senior backend engineer at Stripe. Been there about two years now.",
+          "rank": 2
+        },
+        {
+          "id": "ENG-2026-0406-017",
+          "statement": "I just started a new project called Meridian today. It's a real-time analytics dashboard.",
+          "rank": 3
+        },
+        {
+          "id": "ENG-2026-0406-013",
+          "statement": "What's the best way to handle rate limiting in my API?",
+          "rank": 4
+        },
+        {
+          "id": "ENG-2026-0406-004",
+          "statement": "I've been training for the Boston Marathon. My current best is 3:42.",
+          "rank": 5
+        },
+        {
+          "id": "ENG-2026-0406-045",
+          "statement": "I invested $5,000 in Ethereum back in December.",
+          "rank": 6
+        },
+        {
+          "id": "ENG-2026-0406-016",
+          "statement": "What CI/CD setup do you recommend for my monorepo?",
+          "rank": 7
+        },
+        {
+          "id": "ENG-2026-0406-022",
+          "statement": "My company just acquired a startup called DataPipe for $12M.",
+          "rank": 8
+        },
+        {
+          "id": "ENG-2026-0406-023",
+          "statement": "The DataPipe integration is almost complete. We started integrating their API in February.",
+          "rank": 9
+        },
+        {
+          "id": "ENG-2026-0406-006",
+          "statement": "I adopted a rescue greyhound named Pixel. She's incredibly fast but also the laziest dog I've ever had.",
+          "rank": 10
+        }
+      ],
+      "hit_at_5": true,
+      "hit_at_10": true,
+      "mrr": 1,
+      "keyword_matches": [
+        "pullsherpa"
+      ],
+      "keyword_misses": []
+    },
+    {
+      "id": "ss-asst-4",
+      "category": "single_session_assistant",
+      "query": "What was the main bottleneck the assistant identified in the slow SQL query?",
+      "expected_answer": "A correlated subquery in the WHERE clause",
+      "expected_keywords": [
+        "correlated subquery",
+        "WHERE"
+      ],
+      "retrieved_engrams": [
+        {
+          "id": "ENG-2026-0406-015",
+          "statement": "Help me optimize this SQL query that's taking 12 seconds.",
+          "rank": 1
+        },
+        {
+          "id": "ENG-2026-0406-017",
+          "statement": "I just started a new project called Meridian today. It's a real-time analytics dashboard.",
+          "rank": 2
+        },
+        {
+          "id": "ENG-2026-0406-013",
+          "statement": "What's the best way to handle rate limiting in my API?",
+          "rank": 3
+        },
+        {
+          "id": "ENG-2026-0406-004",
+          "statement": "I've been training for the Boston Marathon. My current best is 3:42.",
+          "rank": 4
+        },
+        {
+          "id": "ENG-2026-0406-022",
+          "statement": "My company just acquired a startup called DataPipe for $12M.",
+          "rank": 5
+        },
+        {
+          "id": "ENG-2026-0406-045",
+          "statement": "I invested $5,000 in Ethereum back in December.",
+          "rank": 6
+        },
+        {
+          "id": "ENG-2026-0406-024",
+          "statement": "I launched my podcast 'DevPath' last week. First episode got 500 downloads.",
+          "rank": 7
+        },
+        {
+          "id": "ENG-2026-0406-014",
+          "statement": "I need a name for my new SaaS product that does automated code review.",
+          "rank": 8
+        },
+        {
+          "id": "ENG-2026-0406-019",
+          "statement": "I'm switching from AWS to Google Cloud this month. The migration should take about 6 weeks.",
+          "rank": 9
+        },
+        {
+          "id": "ENG-2026-0406-009",
+          "statement": "For my projects, I always use PostgreSQL. Don't suggest MongoDB or any NoSQL database.",
+          "rank": 10
+        }
+      ],
+      "hit_at_5": true,
+      "hit_at_10": true,
+      "mrr": 1,
+      "keyword_matches": [
+        "correlated subquery",
+        "where"
+      ],
+      "keyword_misses": []
+    },
+    {
+      "id": "ss-asst-5",
+      "category": "single_session_assistant",
+      "query": "What CI/CD tools did the assistant recommend for the monorepo?",
+      "expected_answer": "GitHub Actions with Turborepo for build caching",
+      "expected_keywords": [
+        "GitHub Actions",
+        "Turborepo"
+      ],
+      "retrieved_engrams": [
+        {
+          "id": "ENG-2026-0406-016",
+          "statement": "What CI/CD setup do you recommend for my monorepo?",
+          "rank": 1
+        },
+        {
+          "id": "ENG-2026-0406-014",
+          "statement": "I need a name for my new SaaS product that does automated code review.",
+          "rank": 2
+        },
+        {
+          "id": "ENG-2026-0406-017",
+          "statement": "I just started a new project called Meridian today. It's a real-time analytics dashboard.",
+          "rank": 3
+        },
+        {
+          "id": "ENG-2026-0406-029",
+          "statement": "I've completely switched to Svelte. React felt too heavy for my current projects.",
+          "rank": 4
+        },
+        {
+          "id": "ENG-2026-0406-008",
+          "statement": "I hate when AI responses are too verbose. Keep things concise — bullet points over paragraphs.",
+          "rank": 5
+        },
+        {
+          "id": "ENG-2026-0406-002",
+          "statement": "I work as a senior backend engineer at Stripe. Been there about two years now.",
+          "rank": 6
+        },
+        {
+          "id": "ENG-2026-0406-043",
+          "statement": "I finished the Rust book and built a small CLI tool. Moving on to Kubernetes next.",
+          "rank": 7
+        },
+        {
+          "id": "ENG-2026-0406-013",
+          "statement": "What's the best way to handle rate limiting in my API?",
+          "rank": 8
+        },
+        {
+          "id": "ENG-2026-0406-022",
+          "statement": "My company just acquired a startup called DataPipe for $12M.",
+          "rank": 9
+        },
+        {
+          "id": "ENG-2026-0406-024",
+          "statement": "I launched my podcast 'DevPath' last week. First episode got 500 downloads.",
+          "rank": 10
+        }
+      ],
+      "hit_at_5": true,
+      "hit_at_10": true,
+      "mrr": 1,
+      "keyword_matches": [
+        "github actions",
+        "turborepo"
+      ],
+      "keyword_misses": []
+    },
+    {
+      "id": "temp-1",
+      "category": "temporal_reasoning",
+      "query": "When did the user start the Meridian project?",
+      "expected_answer": "January 15, 2026",
+      "expected_keywords": [
+        "January",
+        "2026"
+      ],
+      "retrieved_engrams": [
+        {
+          "id": "ENG-2026-0406-017",
+          "statement": "I just started a new project called Meridian today. It's a real-time analytics dashboard.",
+          "rank": 1
+        },
+        {
+          "id": "ENG-2026-0406-018",
+          "statement": "Meridian just hit its first 100 users this week!",
+          "rank": 2
+        },
+        {
+          "id": "ENG-2026-0406-042",
+          "statement": "I'm learning three new technologies this quarter: Rust, Kubernetes, and GraphQL.",
+          "rank": 3
+        },
+        {
+          "id": "ENG-2026-0406-023",
+          "statement": "The DataPipe integration is almost complete. We started integrating their API in February.",
+          "rank": 4
+        },
+        {
+          "id": "ENG-2026-0406-022",
+          "statement": "My company just acquired a startup called DataPipe for $12M.",
+          "rank": 5
+        },
+        {
+          "id": "ENG-2026-0406-030",
+          "statement": "My team uses Jira for project management.",
+          "rank": 6
+        },
+        {
+          "id": "ENG-2026-0406-002",
+          "statement": "I work as a senior backend engineer at Stripe. Been there about two years now.",
+          "rank": 7
+        },
+        {
+          "id": "ENG-2026-0406-005",
+          "statement": "Hoping to break 3:30 this time.",
+          "rank": 8
+        },
+        {
+          "id": "ENG-2026-0406-031",
+          "statement": "We migrated from Jira to Linear last week. The whole team is much happier.",
+          "rank": 9
+        },
+        {
+          "id": "ENG-2026-0406-008",
+          "statement": "I hate when AI responses are too verbose. Keep things concise — bullet points over paragraphs.",
+          "rank": 10
+        }
+      ],
+      "hit_at_5": false,
+      "hit_at_10": false,
+      "mrr": 0.05263157894736842,
+      "keyword_matches": [
+        "january"
+      ],
+      "keyword_misses": [
+        "2026"
+      ]
+    },
+    {
+      "id": "temp-2",
+      "category": "temporal_reasoning",
+      "query": "When did the user start migrating from AWS to Google Cloud, and when should it finish?",
+      "expected_answer": "Started March 2026, should finish around mid-April 2026",
+      "expected_keywords": [
+        "March",
+        "6 weeks"
+      ],
+      "retrieved_engrams": [
+        {
+          "id": "ENG-2026-0406-019",
+          "statement": "I'm switching from AWS to Google Cloud this month. The migration should take about 6 weeks.",
+          "rank": 1
+        },
+        {
+          "id": "ENG-2026-0406-023",
+          "statement": "The DataPipe integration is almost complete. We started integrating their API in February.",
+          "rank": 2
+        },
+        {
+          "id": "ENG-2026-0406-042",
+          "statement": "I'm learning three new technologies this quarter: Rust, Kubernetes, and GraphQL.",
+          "rank": 3
+        },
+        {
+          "id": "ENG-2026-0406-017",
+          "statement": "I just started a new project called Meridian today. It's a real-time analytics dashboard.",
+          "rank": 4
+        },
+        {
+          "id": "ENG-2026-0406-043",
+          "statement": "I finished the Rust book and built a small CLI tool. Moving on to Kubernetes next.",
+          "rank": 5
+        },
+        {
+          "id": "ENG-2026-0406-022",
+          "statement": "My company just acquired a startup called DataPipe for $12M.",
+          "rank": 6
+        },
+        {
+          "id": "ENG-2026-0406-018",
+          "statement": "Meridian just hit its first 100 users this week!",
+          "rank": 7
+        },
+        {
+          "id": "ENG-2026-0406-031",
+          "statement": "We migrated from Jira to Linear last week. The whole team is much happier.",
+          "rank": 8
+        },
+        {
+          "id": "ENG-2026-0406-001",
+          "statement": "I just moved to Portland from Austin last month. Still getting used to the rain.",
+          "rank": 9
+        },
+        {
+          "id": "ENG-2026-0406-002",
+          "statement": "I work as a senior backend engineer at Stripe. Been there about two years now.",
+          "rank": 10
+        }
+      ],
+      "hit_at_5": true,
+      "hit_at_10": true,
+      "mrr": 1,
+      "keyword_matches": [
+        "6 weeks"
+      ],
+      "keyword_misses": [
+        "march"
+      ]
+    },
+    {
+      "id": "temp-3",
+      "category": "temporal_reasoning",
+      "query": "When was the user promoted to Staff Engineer?",
+      "expected_answer": "November 2025",
+      "expected_keywords": [
+        "November",
+        "2025"
+      ],
+      "retrieved_engrams": [
+        {
+          "id": "ENG-2026-0406-020",
+          "statement": "I just got promoted to Staff Engineer!",
+          "rank": 1
+        },
+        {
+          "id": "ENG-2026-0406-002",
+          "statement": "I work as a senior backend engineer at Stripe. Been there about two years now.",
+          "rank": 2
+        },
+        {
+          "id": "ENG-2026-0406-021",
+          "statement": "It's been about 3 months since my promotion and I'm finally settling into the Staff role.",
+          "rank": 3
+        },
+        {
+          "id": "ENG-2026-0406-018",
+          "statement": "Meridian just hit its first 100 users this week!",
+          "rank": 4
+        },
+        {
+          "id": "ENG-2026-0406-005",
+          "statement": "Hoping to break 3:30 this time.",
+          "rank": 5
+        },
+        {
+          "id": "ENG-2026-0406-007",
+          "statement": "When you write code examples for me, always use TypeScript, never plain JavaScript. I also prefer functional style over classes.",
+          "rank": 6
+        },
+        {
+          "id": "ENG-2026-0406-031",
+          "statement": "We migrated from Jira to Linear last week. The whole team is much happier.",
+          "rank": 7
+        },
+        {
+          "id": "ENG-2026-0406-028",
+          "statement": "I use React for all my frontend work. It's my go-to framework.",
+          "rank": 8
+        },
+        {
+          "id": "ENG-2026-0406-008",
+          "statement": "I hate when AI responses are too verbose. Keep things concise — bullet points over paragraphs.",
+          "rank": 9
+        },
+        {
+          "id": "ENG-2026-0406-004",
+          "statement": "I've been training for the Boston Marathon. My current best is 3:42.",
+          "rank": 10
+        }
+      ],
+      "hit_at_5": false,
+      "hit_at_10": false,
+      "mrr": 0,
+      "keyword_matches": [],
+      "keyword_misses": [
+        "november",
+        "2025"
+      ]
+    },
+    {
+      "id": "temp-4",
+      "category": "temporal_reasoning",
+      "query": "When was DataPipe acquired and when did the integration start?",
+      "expected_answer": "Acquired in January 2026, integration started in February 2026",
+      "expected_keywords": [
+        "January",
+        "February"
+      ],
+      "retrieved_engrams": [
+        {
+          "id": "ENG-2026-0406-023",
+          "statement": "The DataPipe integration is almost complete. We started integrating their API in February.",
+          "rank": 1
+        },
+        {
+          "id": "ENG-2026-0406-022",
+          "statement": "My company just acquired a startup called DataPipe for $12M.",
+          "rank": 2
+        },
+        {
+          "id": "ENG-2026-0406-042",
+          "statement": "I'm learning three new technologies this quarter: Rust, Kubernetes, and GraphQL.",
+          "rank": 3
+        },
+        {
+          "id": "ENG-2026-0406-017",
+          "statement": "I just started a new project called Meridian today. It's a real-time analytics dashboard.",
+          "rank": 4
+        },
+        {
+          "id": "ENG-2026-0406-013",
+          "statement": "What's the best way to handle rate limiting in my API?",
+          "rank": 5
+        },
+        {
+          "id": "ENG-2026-0406-041",
+          "statement": "Bob has been struggling with the API migration. I'm pairing with him this week.",
+          "rank": 6
+        },
+        {
+          "id": "ENG-2026-0406-008",
+          "statement": "I hate when AI responses are too verbose. Keep things concise — bullet points over paragraphs.",
+          "rank": 7
+        },
+        {
+          "id": "ENG-2026-0406-007",
+          "statement": "When you write code examples for me, always use TypeScript, never plain JavaScript. I also prefer functional style over classes.",
+          "rank": 8
+        },
+        {
+          "id": "ENG-2026-0406-011",
+          "statement": "I'm on a strict ketogenic diet. When suggesting meals or snacks, keep carbs under 20g per day.",
+          "rank": 9
+        },
+        {
+          "id": "ENG-2026-0406-043",
+          "statement": "I finished the Rust book and built a small CLI tool. Moving on to Kubernetes next.",
+          "rank": 10
+        }
+      ],
+      "hit_at_5": true,
+      "hit_at_10": true,
+      "mrr": 1,
+      "keyword_matches": [
+        "february"
+      ],
+      "keyword_misses": [
+        "january"
+      ]
+    },
+    {
+      "id": "temp-5",
+      "category": "temporal_reasoning",
+      "query": "When was the DevPath podcast launched and how many episodes are there?",
+      "expected_answer": "Launched late January 2026, 6 episodes as of March 2026",
+      "expected_keywords": [
+        "January",
+        "6"
+      ],
+      "retrieved_engrams": [
+        {
+          "id": "ENG-2026-0406-024",
+          "statement": "I launched my podcast 'DevPath' last week. First episode got 500 downloads.",
+          "rank": 1
+        },
+        {
+          "id": "ENG-2026-0406-025",
+          "statement": "DevPath just crossed 10,000 total downloads across 6 episodes.",
+          "rank": 2
+        },
+        {
+          "id": "ENG-2026-0406-045",
+          "statement": "I invested $5,000 in Ethereum back in December.",
+          "rank": 3
+        },
+        {
+          "id": "ENG-2026-0406-002",
+          "statement": "I work as a senior backend engineer at Stripe. Been there about two years now.",
+          "rank": 4
+        },
+        {
+          "id": "ENG-2026-0406-008",
+          "statement": "I hate when AI responses are too verbose. Keep things concise — bullet points over paragraphs.",
+          "rank": 5
+        },
+        {
+          "id": "ENG-2026-0406-009",
+          "statement": "For my projects, I always use PostgreSQL. Don't suggest MongoDB or any NoSQL database.",
+          "rank": 6
+        },
+        {
+          "id": "ENG-2026-0406-015",
+          "statement": "Help me optimize this SQL query that's taking 12 seconds.",
+          "rank": 7
+        },
+        {
+          "id": "ENG-2026-0406-003",
+          "statement": "My daughter Ellie just turned 7. We threw her a dinosaur-themed birthday party.",
+          "rank": 8
+        },
+        {
+          "id": "ENG-2026-0406-014",
+          "statement": "I need a name for my new SaaS product that does automated code review.",
+          "rank": 9
+        },
+        {
+          "id": "ENG-2026-0406-007",
+          "statement": "When you write code examples for me, always use TypeScript, never plain JavaScript. I also prefer functional style over classes.",
+          "rank": 10
+        }
+      ],
+      "hit_at_5": true,
+      "hit_at_10": true,
+      "mrr": 0.5,
+      "keyword_matches": [
+        "6",
+        "january"
+      ],
+      "keyword_misses": []
+    },
+    {
+      "id": "ku-1",
+      "category": "knowledge_updates",
+      "query": "Where does the user currently live?",
+      "expected_answer": "Denver",
+      "expected_keywords": [
+        "Denver"
+      ],
+      "retrieved_engrams": [
+        {
+          "id": "ENG-2026-0406-026",
+          "statement": "I live in San Francisco. Love the city.",
+          "rank": 1
+        },
+        {
+          "id": "ENG-2026-0406-002",
+          "statement": "I work as a senior backend engineer at Stripe. Been there about two years now.",
+          "rank": 2
+        },
+        {
+          "id": "ENG-2026-0406-001",
+          "statement": "I just moved to Portland from Austin last month. Still getting used to the rain.",
+          "rank": 3
+        },
+        {
+          "id": "ENG-2026-0406-038",
+          "statement": "The app now has a social feature where users can share completed trails.",
+          "rank": 4
+        },
+        {
+          "id": "ENG-2026-0406-018",
+          "statement": "Meridian just hit its first 100 users this week!",
+          "rank": 5
+        },
+        {
+          "id": "ENG-2026-0406-004",
+          "statement": "I've been training for the Boston Marathon. My current best is 3:42.",
+          "rank": 6
+        },
+        {
+          "id": "ENG-2026-0406-028",
+          "statement": "I use React for all my frontend work. It's my go-to framework.",
+          "rank": 7
+        },
+        {
+          "id": "ENG-2026-0406-015",
+          "statement": "Help me optimize this SQL query that's taking 12 seconds.",
+          "rank": 8
+        },
+        {
+          "id": "ENG-2026-0406-031",
+          "statement": "We migrated from Jira to Linear last week. The whole team is much happier.",
+          "rank": 9
+        },
+        {
+          "id": "ENG-2026-0406-005",
+          "statement": "Hoping to break 3:30 this time.",
+          "rank": 10
+        }
+      ],
+      "hit_at_5": false,
+      "hit_at_10": false,
+      "mrr": 0,
+      "keyword_matches": [],
+      "keyword_misses": [
+        "denver"
+      ]
+    },
+    {
+      "id": "ku-2",
+      "category": "knowledge_updates",
+      "query": "What frontend framework does the user currently prefer?",
+      "expected_answer": "Svelte",
+      "expected_keywords": [
+        "Svelte"
+      ],
+      "retrieved_engrams": [
+        {
+          "id": "ENG-2026-0406-028",
+          "statement": "I use React for all my frontend work. It's my go-to framework.",
+          "rank": 1
+        },
+        {
+          "id": "ENG-2026-0406-007",
+          "statement": "When you write code examples for me, always use TypeScript, never plain JavaScript. I also prefer functional style over classes.",
+          "rank": 2
+        },
+        {
+          "id": "ENG-2026-0406-002",
+          "statement": "I work as a senior backend engineer at Stripe. Been there about two years now.",
+          "rank": 3
+        },
+        {
+          "id": "ENG-2026-0406-009",
+          "statement": "For my projects, I always use PostgreSQL. Don't suggest MongoDB or any NoSQL database.",
+          "rank": 4
+        },
+        {
+          "id": "ENG-2026-0406-029",
+          "statement": "I've completely switched to Svelte. React felt too heavy for my current projects.",
+          "rank": 5
+        },
+        {
+          "id": "ENG-2026-0406-039",
+          "statement": "I manage three developers: Alice (frontend), Bob (backend), and Carol (DevOps).",
+          "rank": 6
+        },
+        {
+          "id": "ENG-2026-0406-040",
+          "statement": "Alice just completed the new dashboard redesign ahead of schedule.",
+          "rank": 7
+        },
+        {
+          "id": "ENG-2026-0406-010",
+          "statement": "I use vim keybindings everywhere — VS Code, terminal, even my browser. Don't suggest Emacs shortcuts.",
+          "rank": 8
+        },
+        {
+          "id": "ENG-2026-0406-008",
+          "statement": "I hate when AI responses are too verbose. Keep things concise — bullet points over paragraphs.",
+          "rank": 9
+        },
+        {
+          "id": "ENG-2026-0406-014",
+          "statement": "I need a name for my new SaaS product that does automated code review.",
+          "rank": 10
+        }
+      ],
+      "hit_at_5": true,
+      "hit_at_10": true,
+      "mrr": 0.2,
+      "keyword_matches": [
+        "svelte"
+      ],
+      "keyword_misses": []
+    },
+    {
+      "id": "ku-3",
+      "category": "knowledge_updates",
+      "query": "What project management tool does the user's team currently use?",
+      "expected_answer": "Linear",
+      "expected_keywords": [
+        "Linear"
+      ],
+      "retrieved_engrams": [
+        {
+          "id": "ENG-2026-0406-030",
+          "statement": "My team uses Jira for project management.",
+          "rank": 1
+        },
+        {
+          "id": "ENG-2026-0406-039",
+          "statement": "I manage three developers: Alice (frontend), Bob (backend), and Carol (DevOps).",
+          "rank": 2
+        },
+        {
+          "id": "ENG-2026-0406-029",
+          "statement": "I've completely switched to Svelte. React felt too heavy for my current projects.",
+          "rank": 3
+        },
+        {
+          "id": "ENG-2026-0406-002",
+          "statement": "I work as a senior backend engineer at Stripe. Been there about two years now.",
+          "rank": 4
+        },
+        {
+          "id": "ENG-2026-0406-017",
+          "statement": "I just started a new project called Meridian today. It's a real-time analytics dashboard.",
+          "rank": 5
+        },
+        {
+          "id": "ENG-2026-0406-009",
+          "statement": "For my projects, I always use PostgreSQL. Don't suggest MongoDB or any NoSQL database.",
+          "rank": 6
+        },
+        {
+          "id": "ENG-2026-0406-031",
+          "statement": "We migrated from Jira to Linear last week. The whole team is much happier.",
+          "rank": 7
+        },
+        {
+          "id": "ENG-2026-0406-022",
+          "statement": "My company just acquired a startup called DataPipe for $12M.",
+          "rank": 8
+        },
+        {
+          "id": "ENG-2026-0406-014",
+          "statement": "I need a name for my new SaaS product that does automated code review.",
+          "rank": 9
+        },
+        {
+          "id": "ENG-2026-0406-018",
+          "statement": "Meridian just hit its first 100 users this week!",
+          "rank": 10
+        }
+      ],
+      "hit_at_5": false,
+      "hit_at_10": true,
+      "mrr": 0.14285714285714285,
+      "keyword_matches": [
+        "linear"
+      ],
+      "keyword_misses": []
+    },
+    {
+      "id": "ku-4",
+      "category": "knowledge_updates",
+      "query": "What is the user's current salary?",
+      "expected_answer": "$210,000",
+      "expected_keywords": [
+        "210"
+      ],
+      "retrieved_engrams": [
+        {
+          "id": "ENG-2026-0406-032",
+          "statement": "My salary is $180,000 per year.",
+          "rank": 1
+        },
+        {
+          "id": "ENG-2026-0406-002",
+          "statement": "I work as a senior backend engineer at Stripe. Been there about two years now.",
+          "rank": 2
+        },
+        {
+          "id": "ENG-2026-0406-045",
+          "statement": "I invested $5,000 in Ethereum back in December.",
+          "rank": 3
+        },
+        {
+          "id": "ENG-2026-0406-013",
+          "statement": "What's the best way to handle rate limiting in my API?",
+          "rank": 4
+        },
+        {
+          "id": "ENG-2026-0406-022",
+          "statement": "My company just acquired a startup called DataPipe for $12M.",
+          "rank": 5
+        },
+        {
+          "id": "ENG-2026-0406-017",
+          "statement": "I just started a new project called Meridian today. It's a real-time analytics dashboard.",
+          "rank": 6
+        },
+        {
+          "id": "ENG-2026-0406-004",
+          "statement": "I've been training for the Boston Marathon. My current best is 3:42.",
+          "rank": 7
+        },
+        {
+          "id": "ENG-2026-0406-018",
+          "statement": "Meridian just hit its first 100 users this week!",
+          "rank": 8
+        },
+        {
+          "id": "ENG-2026-0406-005",
+          "statement": "Hoping to break 3:30 this time.",
+          "rank": 9
+        },
+        {
+          "id": "ENG-2026-0406-019",
+          "statement": "I'm switching from AWS to Google Cloud this month. The migration should take about 6 weeks.",
+          "rank": 10
+        }
+      ],
+      "hit_at_5": false,
+      "hit_at_10": false,
+      "mrr": 0.05263157894736842,
+      "keyword_matches": [
+        "210"
+      ],
+      "keyword_misses": []
+    },
+    {
+      "id": "ku-5",
+      "category": "knowledge_updates",
+      "query": "What version of Python does the user currently use?",
+      "expected_answer": "Python 3.13",
+      "expected_keywords": [
+        "3.13"
+      ],
+      "retrieved_engrams": [
+        {
+          "id": "ENG-2026-0406-034",
+          "statement": "I'm using Python 3.11 for my backend services.",
+          "rank": 1
+        },
+        {
+          "id": "ENG-2026-0406-035",
+          "statement": "I've upgraded all my services to Python 3.13. The new JIT compiler is fantastic.",
+          "rank": 2
+        },
+        {
+          "id": "ENG-2026-0406-002",
+          "statement": "I work as a senior backend engineer at Stripe. Been there about two years now.",
+          "rank": 3
+        },
+        {
+          "id": "ENG-2026-0406-029",
+          "statement": "I've completely switched to Svelte. React felt too heavy for my current projects.",
+          "rank": 4
+        },
+        {
+          "id": "ENG-2026-0406-013",
+          "statement": "What's the best way to handle rate limiting in my API?",
+          "rank": 5
+        },
+        {
+          "id": "ENG-2026-0406-028",
+          "statement": "I use React for all my frontend work. It's my go-to framework.",
+          "rank": 6
+        },
+        {
+          "id": "ENG-2026-0406-016",
+          "statement": "What CI/CD setup do you recommend for my monorepo?",
+          "rank": 7
+        },
+        {
+          "id": "ENG-2026-0406-010",
+          "statement": "I use vim keybindings everywhere — VS Code, terminal, even my browser. Don't suggest Emacs shortcuts.",
+          "rank": 8
+        },
+        {
+          "id": "ENG-2026-0406-009",
+          "statement": "For my projects, I always use PostgreSQL. Don't suggest MongoDB or any NoSQL database.",
+          "rank": 9
+        },
+        {
+          "id": "ENG-2026-0406-022",
+          "statement": "My company just acquired a startup called DataPipe for $12M.",
+          "rank": 10
+        }
+      ],
+      "hit_at_5": true,
+      "hit_at_10": true,
+      "mrr": 0.5,
+      "keyword_matches": [
+        "3.13"
+      ],
+      "keyword_misses": []
+    },
+    {
+      "id": "ms-1",
+      "category": "multi_session_reasoning",
+      "query": "What are all the features of the user's hiking app?",
+      "expected_answer": "Trail tracking, offline maps (MapLibre), social trail sharing. Built with React Native.",
+      "expected_keywords": [
+        "trail",
+        "offline",
+        "MapLibre",
+        "social",
+        "React Native"
+      ],
+      "retrieved_engrams": [
+        {
+          "id": "ENG-2026-0406-038",
+          "statement": "The app now has a social feature where users can share completed trails.",
+          "rank": 1
+        },
+        {
+          "id": "ENG-2026-0406-036",
+          "statement": "I'm building a mobile app for tracking hiking trails. Using React Native.",
+          "rank": 2
+        },
+        {
+          "id": "ENG-2026-0406-017",
+          "statement": "I just started a new project called Meridian today. It's a real-time analytics dashboard.",
+          "rank": 3
+        },
+        {
+          "id": "ENG-2026-0406-037",
+          "statement": "I added offline map support to the app using MapLibre.",
+          "rank": 4
+        },
+        {
+          "id": "ENG-2026-0406-004",
+          "statement": "I've been training for the Boston Marathon. My current best is 3:42.",
+          "rank": 5
+        },
+        {
+          "id": "ENG-2026-0406-002",
+          "statement": "I work as a senior backend engineer at Stripe. Been there about two years now.",
+          "rank": 6
+        },
+        {
+          "id": "ENG-2026-0406-022",
+          "statement": "My company just acquired a startup called DataPipe for $12M.",
+          "rank": 7
+        },
+        {
+          "id": "ENG-2026-0406-031",
+          "statement": "We migrated from Jira to Linear last week. The whole team is much happier.",
+          "rank": 8
+        },
+        {
+          "id": "ENG-2026-0406-005",
+          "statement": "Hoping to break 3:30 this time.",
+          "rank": 9
+        },
+        {
+          "id": "ENG-2026-0406-024",
+          "statement": "I launched my podcast 'DevPath' last week. First episode got 500 downloads.",
+          "rank": 10
+        }
+      ],
+      "hit_at_5": true,
+      "hit_at_10": true,
+      "mrr": 1,
+      "keyword_matches": [
+        "trail",
+        "social",
+        "react native",
+        "offline",
+        "maplibre"
+      ],
+      "keyword_misses": []
+    },
+    {
+      "id": "ms-2",
+      "category": "multi_session_reasoning",
+      "query": "How many developers does the user manage and what are their current statuses?",
+      "expected_answer": "Three: Alice (frontend, completed dashboard redesign), Bob (backend, struggling with API migration), Carol (DevOps)",
+      "expected_keywords": [
+        "Alice",
+        "Bob",
+        "Carol",
+        "three",
+        "3"
+      ],
+      "retrieved_engrams": [
+        {
+          "id": "ENG-2026-0406-039",
+          "statement": "I manage three developers: Alice (frontend), Bob (backend), and Carol (DevOps).",
+          "rank": 1
+        },
+        {
+          "id": "ENG-2026-0406-002",
+          "statement": "I work as a senior backend engineer at Stripe. Been there about two years now.",
+          "rank": 2
+        },
+        {
+          "id": "ENG-2026-0406-013",
+          "statement": "What's the best way to handle rate limiting in my API?",
+          "rank": 3
+        },
+        {
+          "id": "ENG-2026-0406-028",
+          "statement": "I use React for all my frontend work. It's my go-to framework.",
+          "rank": 4
+        },
+        {
+          "id": "ENG-2026-0406-025",
+          "statement": "DevPath just crossed 10,000 total downloads across 6 episodes.",
+          "rank": 5
+        },
+        {
+          "id": "ENG-2026-0406-030",
+          "statement": "My team uses Jira for project management.",
+          "rank": 6
+        },
+        {
+          "id": "ENG-2026-0406-024",
+          "statement": "I launched my podcast 'DevPath' last week. First episode got 500 downloads.",
+          "rank": 7
+        },
+        {
+          "id": "ENG-2026-0406-022",
+          "statement": "My company just acquired a startup called DataPipe for $12M.",
+          "rank": 8
+        },
+        {
+          "id": "ENG-2026-0406-018",
+          "statement": "Meridian just hit its first 100 users this week!",
+          "rank": 9
+        },
+        {
+          "id": "ENG-2026-0406-023",
+          "statement": "The DataPipe integration is almost complete. We started integrating their API in February.",
+          "rank": 10
+        }
+      ],
+      "hit_at_5": true,
+      "hit_at_10": true,
+      "mrr": 1,
+      "keyword_matches": [
+        "alice",
+        "bob",
+        "carol",
+        "three",
+        "3"
+      ],
+      "keyword_misses": []
+    },
+    {
+      "id": "ms-3",
+      "category": "multi_session_reasoning",
+      "query": "What technologies is the user learning and what is their progress on each?",
+      "expected_answer": "Rust (completed — built a CLI tool), Kubernetes (in progress — working on networking), GraphQL (not started yet)",
+      "expected_keywords": [
+        "Rust",
+        "Kubernetes",
+        "GraphQL"
+      ],
+      "retrieved_engrams": [
+        {
+          "id": "ENG-2026-0406-042",
+          "statement": "I'm learning three new technologies this quarter: Rust, Kubernetes, and GraphQL.",
+          "rank": 1
+        },
+        {
+          "id": "ENG-2026-0406-023",
+          "statement": "The DataPipe integration is almost complete. We started integrating their API in February.",
+          "rank": 2
+        },
+        {
+          "id": "ENG-2026-0406-017",
+          "statement": "I just started a new project called Meridian today. It's a real-time analytics dashboard.",
+          "rank": 3
+        },
+        {
+          "id": "ENG-2026-0406-002",
+          "statement": "I work as a senior backend engineer at Stripe. Been there about two years now.",
+          "rank": 4
+        },
+        {
+          "id": "ENG-2026-0406-044",
+          "statement": "Kubernetes is harder than I expected. Still working through the networking concepts.",
+          "rank": 5
+        },
+        {
+          "id": "ENG-2026-0406-038",
+          "statement": "The app now has a social feature where users can share completed trails.",
+          "rank": 6
+        },
+        {
+          "id": "ENG-2026-0406-018",
+          "statement": "Meridian just hit its first 100 users this week!",
+          "rank": 7
+        },
+        {
+          "id": "ENG-2026-0406-028",
+          "statement": "I use React for all my frontend work. It's my go-to framework.",
+          "rank": 8
+        },
+        {
+          "id": "ENG-2026-0406-024",
+          "statement": "I launched my podcast 'DevPath' last week. First episode got 500 downloads.",
+          "rank": 9
+        },
+        {
+          "id": "ENG-2026-0406-022",
+          "statement": "My company just acquired a startup called DataPipe for $12M.",
+          "rank": 10
+        }
+      ],
+      "hit_at_5": true,
+      "hit_at_10": true,
+      "mrr": 1,
+      "keyword_matches": [
+        "rust",
+        "kubernetes",
+        "graphql"
+      ],
+      "keyword_misses": []
+    },
+    {
+      "id": "ms-4",
+      "category": "multi_session_reasoning",
+      "query": "What are all the user's crypto investments and total amount invested?",
+      "expected_answer": "$5,000 in ETH, $3,000 in SOL, $2,000 in BTC — $10,000 total",
+      "expected_keywords": [
+        "Ethereum",
+        "Solana",
+        "Bitcoin",
+        "10000",
+        "10,000"
+      ],
+      "retrieved_engrams": [
+        {
+          "id": "ENG-2026-0406-045",
+          "statement": "I invested $5,000 in Ethereum back in December.",
+          "rank": 1
+        },
+        {
+          "id": "ENG-2026-0406-025",
+          "statement": "DevPath just crossed 10,000 total downloads across 6 episodes.",
+          "rank": 2
+        },
+        {
+          "id": "ENG-2026-0406-002",
+          "statement": "I work as a senior backend engineer at Stripe. Been there about two years now.",
+          "rank": 3
+        },
+        {
+          "id": "ENG-2026-0406-022",
+          "statement": "My company just acquired a startup called DataPipe for $12M.",
+          "rank": 4
+        },
+        {
+          "id": "ENG-2026-0406-017",
+          "statement": "I just started a new project called Meridian today. It's a real-time analytics dashboard.",
+          "rank": 5
+        },
+        {
+          "id": "ENG-2026-0406-013",
+          "statement": "What's the best way to handle rate limiting in my API?",
+          "rank": 6
+        },
+        {
+          "id": "ENG-2026-0406-018",
+          "statement": "Meridian just hit its first 100 users this week!",
+          "rank": 7
+        },
+        {
+          "id": "ENG-2026-0406-004",
+          "statement": "I've been training for the Boston Marathon. My current best is 3:42.",
+          "rank": 8
+        },
+        {
+          "id": "ENG-2026-0406-024",
+          "statement": "I launched my podcast 'DevPath' last week. First episode got 500 downloads.",
+          "rank": 9
+        },
+        {
+          "id": "ENG-2026-0406-043",
+          "statement": "I finished the Rust book and built a small CLI tool. Moving on to Kubernetes next.",
+          "rank": 10
+        }
+      ],
+      "hit_at_5": true,
+      "hit_at_10": true,
+      "mrr": 1,
+      "keyword_matches": [
+        "ethereum",
+        "10,000",
+        "bitcoin",
+        "solana"
+      ],
+      "keyword_misses": [
+        "10000"
+      ]
+    },
+    {
+      "id": "ms-5",
+      "category": "multi_session_reasoning",
+      "query": "How many offices does the user's company have and where are they located?",
+      "expected_answer": "Four offices: New York (HQ), London (EMEA, moving to Canary Wharf), Tokyo (APAC), and Singapore (new, APAC)",
+      "expected_keywords": [
+        "New York",
+        "London",
+        "Tokyo",
+        "Singapore",
+        "four",
+        "4"
+      ],
+      "retrieved_engrams": [
+        {
+          "id": "ENG-2026-0406-049",
+          "statement": "My company has offices in New York, London, and Tokyo.",
+          "rank": 1
+        },
+        {
+          "id": "ENG-2026-0406-002",
+          "statement": "I work as a senior backend engineer at Stripe. Been there about two years now.",
+          "rank": 2
+        },
+        {
+          "id": "ENG-2026-0406-022",
+          "statement": "My company just acquired a startup called DataPipe for $12M.",
+          "rank": 3
+        },
+        {
+          "id": "ENG-2026-0406-014",
+          "statement": "I need a name for my new SaaS product that does automated code review.",
+          "rank": 4
+        },
+        {
+          "id": "ENG-2026-0406-051",
+          "statement": "We just opened a new office in Singapore to complement the Tokyo presence in APAC.",
+          "rank": 5
+        },
+        {
+          "id": "ENG-2026-0406-052",
+          "statement": "The London office is moving to a bigger space in Canary Wharf next quarter.",
+          "rank": 6
+        },
+        {
+          "id": "ENG-2026-0406-038",
+          "statement": "The app now has a social feature where users can share completed trails.",
+          "rank": 7
+        },
+        {
+          "id": "ENG-2026-0406-018",
+          "statement": "Meridian just hit its first 100 users this week!",
+          "rank": 8
+        },
+        {
+          "id": "ENG-2026-0406-009",
+          "statement": "For my projects, I always use PostgreSQL. Don't suggest MongoDB or any NoSQL database.",
+          "rank": 9
+        },
+        {
+          "id": "ENG-2026-0406-015",
+          "statement": "Help me optimize this SQL query that's taking 12 seconds.",
+          "rank": 10
+        }
+      ],
+      "hit_at_5": true,
+      "hit_at_10": true,
+      "mrr": 1,
+      "keyword_matches": [
+        "new york",
+        "london",
+        "tokyo",
+        "singapore",
+        "4"
+      ],
+      "keyword_misses": [
+        "four"
+      ]
+    }
+  ]
+}

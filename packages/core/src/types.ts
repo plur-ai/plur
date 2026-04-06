@@ -76,8 +76,9 @@ export interface RecallOptions {
   mode?: 'fast' | 'agentic'
   /** LLM function for agentic mode. Required when mode='agentic'. */
   llm?: LlmFunction
+  budget?: RecallBudget
+  caller_session_id?: string
 }
-
 
 export interface BoundedRecallResult {
   results: Engram[]
