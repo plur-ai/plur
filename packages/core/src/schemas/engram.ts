@@ -191,6 +191,9 @@ export const EngramSchema = z.object({
 
   /** Reason for locking this engram. */
   locked_reason: z.string().optional(),
+
+  // === SP3: Retrieval & Injection fields ===
+  summary: z.string().max(80).optional(),
 })
 
 /**
