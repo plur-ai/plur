@@ -1,4 +1,4 @@
-import { Plur, extractMetaEngrams, validateMetaEngram, confidenceBand } from '@plur-ai/core'
+import { Plur, extractMetaEngrams, validateMetaEngram, confidenceBand, generateProfile, getProfileForInjection, markProfileDirty, selectModelForOperation } from '@plur-ai/core'
 import type { LlmFunction, MetaField } from '@plur-ai/core'
 
 /** Create an OpenAI-compatible LLM function from a base URL + API key */
@@ -71,6 +71,14 @@ const PLUR_GUIDE = `## PLUR Quick Start
 - **plur_recall_hybrid** — search engrams by topic
 - **plur_forget** — retire an outdated engram`
 
+function getLlmFunction(): LlmFunction | undefined {
+  const openaiKey = process.env.OPENAI_API_KEY
+  const openrouterKey = process.env.OPENROUTER_API_KEY
+  if (openrouterKey) return makeHttpLlm('https://openrouter.ai/api/v1', openrouterKey, 'openai/gpt-4o-mini')
+  if (openaiKey) return makeHttpLlm('https://api.openai.com/v1', openaiKey, 'gpt-4o-mini')
+  return undefined
+}
+
 export function getToolDefinitions(): ToolDefinition[] {
   return [
     {
@@ -115,11 +123,14 @@ export function getToolDefinitions(): ToolDefinition[] {
           },
           abstract: { type: 'string', description: 'Abstract engram ID this was derived from' },
           derived_from: { type: 'string', description: 'Source engram ID this was derived from' },
+          commitment: { type: 'string', enum: ['exploring', 'leaning', 'decided', 'locked'], description: 'Commitment level (default: leaning)' },
+          locked_reason: { type: 'string', description: 'Reason for locking (when commitment=locked)' },
         },
         required: ['statement'],
       },
       handler: async (args, plur) => {
-        const engram = plur.learn(args.statement as string, {
+        const llm = getLlmFunction()
+        const context = {
           type: args.type as any,
           scope: args.scope as string | undefined,
           domain: args.domain as string | undefined,
@@ -131,8 +142,21 @@ export function getToolDefinitions(): ToolDefinition[] {
           dual_coding: args.dual_coding as any,
           abstract: args.abstract as string | undefined,
           derived_from: args.derived_from as string | undefined,
-        })
-        return { id: engram.id, statement: engram.statement, scope: engram.scope, type: engram.type }
+          commitment: args.commitment as any,
+          locked_reason: args.locked_reason as string | undefined,
+          llm,
+        }
+        try {
+          const result = await plur.learnAsync(args.statement as string, context)
+          return {
+            id: result.engram.id, statement: result.engram.statement,
+            scope: result.engram.scope, type: result.engram.type,
+            decision: result.decision, existing_id: result.existing_id, tensions: result.tensions,
+          }
+        } catch {
+          const engram = plur.learn(args.statement as string, context)
+          return { id: engram.id, statement: engram.statement, scope: engram.scope, type: engram.type, decision: 'ADD' }
+        }
       },
     },
 
@@ -184,18 +208,39 @@ export function getToolDefinitions(): ToolDefinition[] {
           domain: { type: 'string', description: 'Filter by domain prefix' },
           limit: { type: 'number', description: 'Max results to return (default 20)' },
           min_strength: { type: 'number', description: 'Minimum retrieval strength (0-1)' },
+          budget: { type: 'object', description: 'Budget constraints for sub-agent calls', properties: { max_tokens: { type: 'number' }, max_results: { type: 'number' }, ttl_seconds: { type: 'number' } } },
+          caller_session_id: { type: 'string', description: 'Session ID of calling agent' },
         },
         required: ['query'],
       },
       handler: async (args, plur) => {
+        const budget = args.budget as { max_tokens?: number; max_results?: number; ttl_seconds?: number } | undefined
+        const effectiveLimit = budget?.max_results ?? (args.limit as number | undefined) ?? 20
         const results = await plur.recallHybrid(args.query as string, {
           scope: args.scope as string | undefined,
           domain: args.domain as string | undefined,
-          limit: args.limit as number | undefined,
+          limit: effectiveLimit,
           min_strength: args.min_strength as number | undefined,
         })
+        let truncated = false
+        let boundedResults = results
+        if (budget?.max_results && results.length > budget.max_results) {
+          boundedResults = results.slice(0, budget.max_results)
+          truncated = true
+        }
+        if (budget?.max_tokens) {
+          let tokenCount = 0
+          const withinBudget = []
+          for (const e of boundedResults) {
+            const tokens = Math.ceil(e.statement.length / 4) + 20
+            if (tokenCount + tokens > budget.max_tokens) { truncated = true; break }
+            withinBudget.push(e)
+            tokenCount += tokens
+          }
+          boundedResults = withinBudget
+        }
         return {
-          results: results.map(e => ({
+          results: boundedResults.map(e => ({
             id: e.id,
             statement: e.statement,
             type: e.type,
@@ -203,7 +248,8 @@ export function getToolDefinitions(): ToolDefinition[] {
             domain: e.domain,
             retrieval_strength: e.activation.retrieval_strength,
           })),
-          count: results.length,
+          count: boundedResults.length,
+          truncated,
           mode: 'hybrid',
         }
       },
@@ -783,6 +829,8 @@ export function getToolDefinitions(): ToolDefinition[] {
           episode_count: status.episode_count,
           pack_count: status.pack_count,
           storage_root: status.storage_root,
+          locked_count: status.locked_count,
+          tension_count: status.tension_count,
         }
       },
     },
@@ -1108,6 +1156,40 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
           privacy_issues: result.privacy.issues.length,
           name,
         }
+      },
+    },
+
+    {
+      name: 'plur_profile',
+      description: 'Generate or retrieve a cognitive profile — a narrative summary synthesized from stored engrams. Cached for 24h.',
+      annotations: { title: 'Cognitive profile', readOnlyHint: true, idempotentHint: true },
+      inputSchema: {
+        type: 'object',
+        properties: {
+          scope: { type: 'string', description: 'Filter engrams by scope' },
+          llm_base_url: { type: 'string', description: 'OpenAI-compatible API base URL' },
+          llm_api_key: { type: 'string', description: 'API key for the LLM' },
+          llm_model: { type: 'string', description: 'Model name' },
+          force_regenerate: { type: 'boolean', description: 'Force regeneration (default false)' },
+        },
+      },
+      handler: async (args, plur) => {
+        const status = plur.status()
+        const storagePath = status.storage_root
+        if (!args.force_regenerate) {
+          const cached = getProfileForInjection(storagePath)
+          if (cached) return { profile: cached, source: 'cache' }
+        }
+        if (!args.llm_base_url || !args.llm_api_key) {
+          const cached = getProfileForInjection(storagePath)
+          if (cached) return { profile: cached, source: 'stale_cache' }
+          return { profile: null, error: 'No cached profile. Provide llm_base_url and llm_api_key.' }
+        }
+        const model = (args.llm_model as string) ?? selectModelForOperation('profile', status.config?.llm)
+        const llm = makeHttpLlm(args.llm_base_url as string, args.llm_api_key as string, model)
+        const engrams = plur.list({ scope: args.scope as string | undefined })
+        const profile = await generateProfile(engrams, llm, storagePath, status.config?.profile?.cache_ttl_hours ?? 24)
+        return { profile, source: 'generated', engram_count: engrams.length, model }
       },
     },
   ]

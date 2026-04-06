@@ -177,6 +177,20 @@ export const EngramSchema = z.object({
 
   /** Polarity classification: 'do' for directives, 'dont' for prohibitions, null for unclassified. */
   polarity: z.enum(['do', 'dont']).nullable().default(null),
+
+  // === SP1: Memory Intelligence fields ===
+
+  /** SHA256 hash of normalized statement for fast exact-duplicate detection. */
+  content_hash: z.string().optional(),
+
+  /** Commitment level — orthogonal to status. Controls injection priority and dedup behavior. */
+  commitment: z.enum(['exploring', 'leaning', 'decided', 'locked']).optional(),
+
+  /** When commitment was set to 'locked'. ISO timestamp. */
+  locked_at: z.string().optional(),
+
+  /** Reason for locking this engram. */
+  locked_reason: z.string().optional(),
 })
 
 /**

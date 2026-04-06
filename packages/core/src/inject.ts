@@ -1,9 +1,10 @@
 import type { Engram, Association } from './schemas/engram.js'
 import type { PackManifest } from './schemas/pack.js'
 import type { LoadedPack } from './engrams.js'
-import { decayedStrength, decayedCoAccessStrength, daysSince } from './decay.js'
+import { decayedStrength, decayedCoAccessStrength, daysSince, confidenceDecay } from './decay.js'
 import { classifyPolarity } from './polarity.js'
 import { computeConfidence } from './confidence.js'
+import { freshTailBoost } from './fresh-tail.js'
 
 export interface InjectionContext {
   prompt: string
@@ -23,6 +24,9 @@ export type AgentEngram = Omit<ScoredEngram, 'associations'>
 export type WireEngram = Omit<AgentEngram, 'keyword_match' | 'raw_score' | 'score'> & {
   confidence_score: number
 }
+
+/** Injection layer for progressive disclosure (Idea 10) */
+export type InjectionLayer = 1 | 2 | 3
 
 export interface InternalInjectionResult {
   directives: WireEngram[]
@@ -162,9 +166,15 @@ export function scoreEngram(
 
   // Base score from term hits * (decayed) retrieval strength
   // Pack engrams use raw RS (read-only, can't track usage)
-  const rs = isPack
+  let rs = isPack
     ? engram.activation.retrieval_strength
     : decayedStrength(engram.activation.retrieval_strength, daysSince(engram.activation.last_accessed))
+  // Idea 21 (SP1): Additional confidence decay for engrams without recent feedback
+  if (!isPack) {
+    const fb = engram.feedback_signals
+    const lastPositive = fb && fb.positive > 0 ? engram.activation.last_accessed : null
+    rs = confidenceDecay(rs, lastPositive, (engram as any).commitment, undefined)
+  }
   let score = termHits * rs
 
   // Feedback signal boost: positive feedback increases score, negative decreases
@@ -253,6 +263,12 @@ export function selectAndSpread(
       raw = embBoost * 2 // semantic-only signal, scaled to be comparable with keyword scores
     } else if (raw > 0 && embBoost > 0) {
       raw += embBoost // additive boost for keyword+semantic match
+    }
+    // Fresh tail boost (Idea 13): recently created engrams get a retrieval strength boost
+    if (raw > 0) {
+      const createdAt = engram.temporal?.learned_at ?? engram.activation.last_accessed
+      const ftBoost = freshTailBoost(createdAt, (engram as any).commitment, new Date())
+      if (ftBoost > 0) raw += ftBoost
     }
     if (raw > 0) {
       scored.push({ ...engram, keyword_match: raw, raw_score: raw, score: raw })
@@ -395,25 +411,81 @@ export function selectAndSpread(
   const wireAll = agentDirectives.map(stripScoring)
   const wireConsider = agentConsider.map(stripScoring)
 
-  // Auto-classify polarity for engrams where polarity is null, then split
+  // Auto-classify polarity, apply cognitive_level routing (SP1 Idea 5) and commitment scoring (SP1 Idea 6)
   const wireDirectives: WireEngram[] = []
   const wireConstraints: WireEngram[] = []
+  const cognitiveDemoted: WireEngram[] = []
   for (const wire of wireAll) {
     const polarity = wire.polarity ?? classifyPolarity(wire.statement)
-    if (polarity === 'dont') {
+    // Idea 6: Apply commitment multiplier to confidence score
+    const commitment = (wire as any).commitment as string | undefined
+    if (commitment) {
+      const mult: Record<string, number> = { locked: 1.0, decided: 0.9, leaning: 0.7, exploring: 0.5 }
+      wire.confidence_score *= mult[commitment] ?? 1.0
+    }
+    // Idea 5: Cognitive level bucket routing
+    const cogLevel = (wire as any).knowledge_type?.cognitive_level as string | undefined
+    if (cogLevel === 'remember' || cogLevel === 'understand') {
+      cognitiveDemoted.push(wire)
+    } else if (polarity === 'dont') {
+      wireConstraints.push(wire)
+    } else if (cogLevel === 'apply' || cogLevel === 'analyze') {
       wireConstraints.push(wire)
     } else {
       wireDirectives.push(wire)
     }
   }
 
+  const allWireConsider = [...wireConsider, ...cognitiveDemoted]
   const considerTokens = dip19PoolTokens + spreadTokens
 
   return {
     directives: wireDirectives,
     constraints: wireConstraints,
-    consider: wireConsider,
+    consider: allWireConsider,
     tokens_used: { directives: directiveTokens, consider: considerTokens },
+  }
+}
+
+// --- Progressive Disclosure (Idea 10) ---
+
+export function formatLayer1(engram: WireEngram): string {
+  const display = (engram as any).summary ?? engram.statement.slice(0, 60)
+  return `[${engram.id}] ${display}`
+}
+
+export function formatLayer2(engram: WireEngram): string {
+  return `[${engram.id}] ${engram.statement}`
+}
+
+export function formatLayer3(engram: WireEngram): string {
+  const lines = [`[${engram.id}] ${engram.statement}`]
+  if (engram.rationale) lines.push(`  Rationale: ${engram.rationale}`)
+  const meta: string[] = []
+  if (engram.domain) meta.push(`Domain: ${engram.domain}`)
+  if (engram.confidence_score != null) meta.push(`Confidence: ${engram.confidence_score.toFixed(2)}`)
+  if (engram.activation?.last_accessed) meta.push(`Last verified: ${engram.activation.last_accessed}`)
+  if (meta.length > 0) lines.push(`  ${meta.join(' | ')}`)
+  return lines.join('\n')
+}
+
+export function assignLayer(bucket: 'directives' | 'constraints' | 'consider'): InjectionLayer {
+  switch (bucket) {
+    case 'directives': return 3
+    case 'constraints': return 2
+    case 'consider': return 1
+  }
+}
+
+export function formatWithLayer(engrams: WireEngram[], layer: InjectionLayer): string {
+  if (engrams.length === 0) return ''
+  switch (layer) {
+    case 1:
+      return engrams.map(formatLayer1).join(' | ')
+    case 2:
+      return engrams.map(formatLayer2).join('\n')
+    case 3:
+      return engrams.map(formatLayer3).join('\n')
   }
 }
 
