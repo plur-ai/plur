@@ -12,7 +12,7 @@
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
-import yaml from 'js-yaml'
+import yaml from '../packages/core/node_modules/js-yaml/index.js'
 import { Plur } from '../packages/core/src/index.js'
 
 interface Scenario {

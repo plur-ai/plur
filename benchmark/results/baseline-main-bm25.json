@@ -1,0 +1,667 @@
+{
+  "date": "2026-04-06",
+  "search_mode": "bm25",
+  "overall": {
+    "hit5": 66.66666666666666,
+    "hit10": 76.66666666666667,
+    "mrr": 0.45642857142857135,
+    "accuracy": 76.66666666666667
+  },
+  "per_category": {
+    "single_session_user": {
+      "hit5": 80,
+      "hit10": 100,
+      "mrr": 0.5285714285714286,
+      "accuracy": 100
+    },
+    "single_session_preference": {
+      "hit5": 80,
+      "hit10": 100,
+      "mrr": 0.72,
+      "accuracy": 100
+    },
+    "single_session_assistant": {
+      "hit5": 80,
+      "hit10": 100,
+      "mrr": 0.5,
+      "accuracy": 100
+    },
+    "temporal_reasoning": {
+      "hit5": 60,
+      "hit10": 60,
+      "mrr": 0.44000000000000006,
+      "accuracy": 60
+    },
+    "knowledge_updates": {
+      "hit5": 60,
+      "hit10": 60,
+      "mrr": 0.25,
+      "accuracy": 60
+    },
+    "multi_session_reasoning": {
+      "hit5": 40,
+      "hit10": 40,
+      "mrr": 0.3,
+      "accuracy": 40
+    }
+  },
+  "results": [
+    {
+      "id": "ss-user-1",
+      "category": "single_session_user",
+      "query": "Where does the user work?",
+      "expected_keywords": [
+        "Nike"
+      ],
+      "retrieved_statements": [
+        "I have an office in New York where 3 engineers work.",
+        "Help me pick a testing framework for my Node project.",
+        "I've switched from VS Code to Neovim. Much faster for my workflow.",
+        "Yeah, I work as a data engineer at Nike now. Started last month.",
+        "I use VS Code as my primary editor."
+      ],
+      "hit_at_5": true,
+      "hit_at_10": true,
+      "mrr": 0.25,
+      "accuracy": true,
+      "rank": 4
+    },
+    {
+      "id": "ss-user-2",
+      "category": "single_session_user",
+      "query": "How old is the user's daughter?",
+      "expected_keywords": [
+        "7"
+      ],
+      "retrieved_statements": [
+        "My daughter Emma just turned 7. We had a dinosaur-themed birthday party.",
+        "I use VS Code as my primary editor.",
+        "We launched the beta on March 1st with 50 users.",
+        "For our microservices, we use Python for the data pipeline service.",
+        "Please use tabs for indentation, not spaces. 4-width tabs specifically."
+      ],
+      "hit_at_5": true,
+      "hit_at_10": true,
+      "mrr": 1,
+      "accuracy": true,
+      "rank": 1
+    },
+    {
+      "id": "ss-user-3",
+      "category": "single_session_user",
+      "query": "What programming language is the user learning?",
+      "expected_keywords": [
+        "Rust"
+      ],
+      "retrieved_statements": [
+        "Happy birthday to Emma! Dinosaur parties are the best at that age.",
+        "What's the best way to handle environment variables in Next.js?",
+        "I prefer functional programming style. Avoid classes and mutation when possible.",
+        "The borrow checker is definitely the steepest part of the Rust learning curve.",
+        "I've been learning Rust for the past 3 months. Coming from Python, the borrow checker is brutal."
+      ],
+      "hit_at_5": true,
+      "hit_at_10": true,
+      "mrr": 0.25,
+      "accuracy": true,
+      "rank": 4
+    },
+    {
+      "id": "ss-user-4",
+      "category": "single_session_user",
+      "query": "What car does the user drive?",
+      "expected_keywords": [
+        "Tesla",
+        "Model 3"
+      ],
+      "retrieved_statements": [
+        "I drive a 2022 Tesla Model 3. The autopilot is great for my commute on I-5.",
+        "What's the best way to handle environment variables in Next.js?",
+        "Carol joined last month as our first dedicated QA engineer.",
+        "I use VS Code as my primary editor.",
+        "We launched the beta on March 1st with 50 users."
+      ],
+      "hit_at_5": true,
+      "hit_at_10": true,
+      "mrr": 1,
+      "accuracy": true,
+      "rank": 1
+    },
+    {
+      "id": "ss-user-5",
+      "category": "single_session_user",
+      "query": "What is the name of the user's cat?",
+      "expected_keywords": [
+        "Mochi"
+      ],
+      "retrieved_statements": [
+        "What's the best way to handle environment variables in Next.js?",
+        "The authentication service is written in Go for performance.",
+        "Our team uses Slack for communication.",
+        "Carol joined last month as our first dedicated QA engineer.",
+        "I use VS Code as my primary editor."
+      ],
+      "hit_at_5": false,
+      "hit_at_10": true,
+      "mrr": 0.14285714285714285,
+      "accuracy": true,
+      "rank": 7
+    },
+    {
+      "id": "ss-pref-1",
+      "category": "single_session_preference",
+      "query": "Does the user prefer dark mode or light mode?",
+      "expected_keywords": [
+        "dark"
+      ],
+      "retrieved_statements": [
+        "I always use dark mode in my editors. Light themes hurt my eyes.",
+        "Noted — I'll keep dark mode in mind for any UI suggestions.",
+        "I drive a 2022 Tesla Model 3. The autopilot is great for my commute on I-5.",
+        "I recommend Vitest over Jest. It's faster, has native ESM support, and the API is nearly identical so migration is easy. The watch mode is particularly good.",
+        "I prefer functional programming style. Avoid classes and mutation when possible."
+      ],
+      "hit_at_5": true,
+      "hit_at_10": true,
+      "mrr": 1,
+      "accuracy": true,
+      "rank": 1
+    },
+    {
+      "id": "ss-pref-2",
+      "category": "single_session_preference",
+      "query": "What indentation style does the user prefer?",
+      "expected_keywords": [
+        "tabs"
+      ],
+      "retrieved_statements": [
+        "I prefer functional programming style. Avoid classes and mutation when possible.",
+        "Please use tabs for indentation, not spaces. 4-width tabs specifically.",
+        "What's the best way to handle environment variables in Next.js?",
+        "Got it — tabs with 4-width indentation for all code.",
+        "I use VS Code as my primary editor."
+      ],
+      "hit_at_5": true,
+      "hit_at_10": true,
+      "mrr": 0.5,
+      "accuracy": true,
+      "rank": 2
+    },
+    {
+      "id": "ss-pref-3",
+      "category": "single_session_preference",
+      "query": "What programming style does the user prefer?",
+      "expected_keywords": [
+        "functional"
+      ],
+      "retrieved_statements": [
+        "I prefer functional programming style. Avoid classes and mutation when possible.",
+        "What's the best way to handle environment variables in Next.js?",
+        "I use VS Code as my primary editor.",
+        "We launched the beta on March 1st with 50 users.",
+        "For our microservices, we use Python for the data pipeline service."
+      ],
+      "hit_at_5": true,
+      "hit_at_10": true,
+      "mrr": 1,
+      "accuracy": true,
+      "rank": 1
+    },
+    {
+      "id": "ss-pref-4",
+      "category": "single_session_preference",
+      "query": "What commit message format does the user use?",
+      "expected_keywords": [
+        "conventional"
+      ],
+      "retrieved_statements": [
+        "When writing commit messages, I follow conventional commits. feat:, fix:, chore: etc.",
+        "I use VS Code as my primary editor.",
+        "We launched the beta on March 1st with 50 users.",
+        "What's the best way to handle environment variables in Next.js?",
+        "For our microservices, we use Python for the data pipeline service."
+      ],
+      "hit_at_5": true,
+      "hit_at_10": true,
+      "mrr": 1,
+      "accuracy": true,
+      "rank": 1
+    },
+    {
+      "id": "ss-pref-5",
+      "category": "single_session_preference",
+      "query": "What database does the user prefer?",
+      "expected_keywords": [
+        "PostgreSQL"
+      ],
+      "retrieved_statements": [
+        "For our microservices, we use Python for the data pipeline service.",
+        "What's the best way to handle environment variables in Next.js?",
+        "I prefer functional programming style. Avoid classes and mutation when possible.",
+        "Our production database is hosted on AWS RDS.",
+        "Yeah, I work as a data engineer at Nike now. Started last month."
+      ],
+      "hit_at_5": false,
+      "hit_at_10": true,
+      "mrr": 0.1,
+      "accuracy": true,
+      "rank": 10
+    },
+    {
+      "id": "ss-asst-1",
+      "category": "single_session_assistant",
+      "query": "What Redis client library did the assistant recommend?",
+      "expected_keywords": [
+        "ioredis"
+      ],
+      "retrieved_statements": [
+        "I'll set up Redis with a 5-minute TTL for API responses. Using ioredis as the client library since it has better cluster support than the default redis package.",
+        "What's the best way to handle environment variables in Next.js?",
+        "Can you help me set up a Redis cache for my API?",
+        "By March 15th we had 500 users. We hit 2000 by the end of March.",
+        "I recommend Vitest over Jest. It's faster, has native ESM support, and the API is nearly identical so migration is easy. The watch mode is particularly good."
+      ],
+      "hit_at_5": true,
+      "hit_at_10": true,
+      "mrr": 1,
+      "accuracy": true,
+      "rank": 1
+    },
+    {
+      "id": "ss-asst-2",
+      "category": "single_session_assistant",
+      "query": "What testing framework did the assistant recommend?",
+      "expected_keywords": [
+        "Vitest"
+      ],
+      "retrieved_statements": [
+        "Help me pick a testing framework for my Node project.",
+        "What's the best way to handle environment variables in Next.js?",
+        "I have an office in New York where 3 engineers work.",
+        "By March 15th we had 500 users. We hit 2000 by the end of March.",
+        "Yeah, I work as a data engineer at Nike now. Started last month."
+      ],
+      "hit_at_5": false,
+      "hit_at_10": true,
+      "mrr": 0.16666666666666666,
+      "accuracy": true,
+      "rank": 6
+    },
+    {
+      "id": "ss-asst-3",
+      "category": "single_session_assistant",
+      "query": "What was the fix for the CORS errors?",
+      "expected_keywords": [
+        "before",
+        "routes"
+      ],
+      "retrieved_statements": [
+        "I'm getting CORS errors in my Express app.",
+        "What's the best way to handle environment variables in Next.js?",
+        "The fix was adding the cors middleware before your routes, not after. The order matters because Express processes middleware sequentially. I also set the origin to your frontend URL instead of using wildcard.",
+        "When writing commit messages, I follow conventional commits. feat:, fix:, chore: etc.",
+        "Use NEXT_PUBLIC_ prefix for client-side variables. Server-only secrets go in .env.local without the prefix. I created a src/env.ts validation file using zod to catch missing variables at build time."
+      ],
+      "hit_at_5": true,
+      "hit_at_10": true,
+      "mrr": 0.3333333333333333,
+      "accuracy": true,
+      "rank": 3
+    },
+    {
+      "id": "ss-asst-4",
+      "category": "single_session_assistant",
+      "query": "How much did the Docker build time improve?",
+      "expected_keywords": [
+        "2 minutes"
+      ],
+      "retrieved_statements": [
+        "My Docker build is taking 15 minutes.",
+        "I restructured the Dockerfile to use multi-stage builds. The key optimization was separating the dependency install layer from the source code copy. Now npm install only re-runs when package.json changes. Build time dropped to 2 minutes.",
+        "I've switched from VS Code to Neovim. Much faster for my workflow.",
+        "Use NEXT_PUBLIC_ prefix for client-side variables. Server-only secrets go in .env.local without the prefix. I created a src/env.ts validation file using zod to catch missing variables at build time."
+      ],
+      "hit_at_5": true,
+      "hit_at_10": true,
+      "mrr": 0.5,
+      "accuracy": true,
+      "rank": 2
+    },
+    {
+      "id": "ss-asst-5",
+      "category": "single_session_assistant",
+      "query": "What tool did the assistant use to validate environment variables?",
+      "expected_keywords": [
+        "zod"
+      ],
+      "retrieved_statements": [
+        "What's the best way to handle environment variables in Next.js?",
+        "Use NEXT_PUBLIC_ prefix for client-side variables. Server-only secrets go in .env.local without the prefix. I created a src/env.ts validation file using zod to catch missing variables at build time.",
+        "I use VS Code as my primary editor.",
+        "We launched the beta on March 1st with 50 users.",
+        "Our team uses Slack for communication."
+      ],
+      "hit_at_5": true,
+      "hit_at_10": true,
+      "mrr": 0.5,
+      "accuracy": true,
+      "rank": 2
+    },
+    {
+      "id": "temp-1",
+      "category": "temporal_reasoning",
+      "query": "What happened after the v2.1 deployment?",
+      "expected_keywords": [
+        "bug",
+        "rollback",
+        "2.0"
+      ],
+      "retrieved_statements": [
+        "I'm getting CORS errors in my Express app.",
+        "What's the best way to handle environment variables in Next.js?",
+        "We increased the API rate limit to 500 requests per minute after the infrastructure upgrade.",
+        "The fix was adding the cors middleware before your routes, not after. The order matters because Express processes middleware sequentially. I also set the origin to your frontend URL instead of using wildcard."
+      ],
+      "hit_at_5": false,
+      "hit_at_10": false,
+      "mrr": 0,
+      "accuracy": false,
+      "rank": null
+    },
+    {
+      "id": "temp-2",
+      "category": "temporal_reasoning",
+      "query": "What database changes happened and in what order?",
+      "expected_keywords": [
+        "MongoDB",
+        "PostgreSQL",
+        "replicas"
+      ],
+      "retrieved_statements": [
+        "What's the best way to handle environment variables in Next.js?",
+        "I'm getting CORS errors in my Express app.",
+        "Our production database is hosted on AWS RDS.",
+        "I just moved to Portland, Oregon from Austin. The rain is a big change.",
+        "The deadline was pushed back to January 31st because of the scope change."
+      ],
+      "hit_at_5": false,
+      "hit_at_10": false,
+      "mrr": 0,
+      "accuracy": false,
+      "rank": null
+    },
+    {
+      "id": "temp-3",
+      "category": "temporal_reasoning",
+      "query": "When did the user start using Terraform?",
+      "expected_keywords": [
+        "Tuesday",
+        "Terraform"
+      ],
+      "retrieved_statements": [
+        "Last Tuesday I started using Terraform for our infrastructure. Before that we were doing everything manually in the AWS console.",
+        "I like to use PostgreSQL for everything. Even when SQLite would be fine.",
+        "Yeah, I work as a data engineer at Nike now. Started last month.",
+        "I prefer functional programming style. Avoid classes and mutation when possible.",
+        "We dropped Slack and moved to Discord. The threading in Slack was confusing everyone."
+      ],
+      "hit_at_5": true,
+      "hit_at_10": true,
+      "mrr": 1,
+      "accuracy": true,
+      "rank": 1
+    },
+    {
+      "id": "temp-4",
+      "category": "temporal_reasoning",
+      "query": "How did user growth progress during March?",
+      "expected_keywords": [
+        "50",
+        "500",
+        "2000"
+      ],
+      "retrieved_statements": [
+        "We launched the beta on March 1st with 50 users.",
+        "By March 15th we had 500 users. We hit 2000 by the end of March.",
+        "In March we added read replicas to handle the traffic spike.",
+        "I use VS Code as my primary editor.",
+        "For our microservices, we use Python for the data pipeline service."
+      ],
+      "hit_at_5": true,
+      "hit_at_10": true,
+      "mrr": 1,
+      "accuracy": true,
+      "rank": 1
+    },
+    {
+      "id": "temp-5",
+      "category": "temporal_reasoning",
+      "query": "What was the progression of API technologies?",
+      "expected_keywords": [
+        "REST",
+        "GraphQL",
+        "gRPC"
+      ],
+      "retrieved_statements": [
+        "What's the best way to handle environment variables in Next.js?",
+        "Can you help me set up a Redis cache for my API?",
+        "The API rate limit is set to 100 requests per minute.",
+        "We increased the API rate limit to 500 requests per minute after the infrastructure upgrade.",
+        "The first version of our API used REST. We switched to GraphQL in Q2 last year. Then in Q4 we added gRPC for internal services."
+      ],
+      "hit_at_5": true,
+      "hit_at_10": true,
+      "mrr": 0.2,
+      "accuracy": true,
+      "rank": 5
+    },
+    {
+      "id": "ku-1",
+      "category": "knowledge_updates",
+      "query": "Where is the production database hosted?",
+      "expected_keywords": [
+        "Google Cloud SQL"
+      ],
+      "retrieved_statements": [
+        "Our production database is hosted on AWS RDS.",
+        "We just migrated our production database from AWS RDS to Google Cloud SQL.",
+        "I have an office in New York where 3 engineers work.",
+        "For our microservices, we use Python for the data pipeline service.",
+        "Yeah, I work as a data engineer at Nike now. Started last month."
+      ],
+      "hit_at_5": true,
+      "hit_at_10": true,
+      "mrr": 0.5,
+      "accuracy": true,
+      "rank": 2
+    },
+    {
+      "id": "ku-2",
+      "category": "knowledge_updates",
+      "query": "What editor does the user currently use?",
+      "expected_keywords": [
+        "Neovim"
+      ],
+      "retrieved_statements": [
+        "I use VS Code as my primary editor.",
+        "I always use dark mode in my editors. Light themes hurt my eyes.",
+        "We launched the beta on March 1st with 50 users.",
+        "What's the best way to handle environment variables in Next.js?",
+        "For our microservices, we use Python for the data pipeline service."
+      ],
+      "hit_at_5": false,
+      "hit_at_10": false,
+      "mrr": 0,
+      "accuracy": false,
+      "rank": null
+    },
+    {
+      "id": "ku-3",
+      "category": "knowledge_updates",
+      "query": "What communication tool does the team use?",
+      "expected_keywords": [
+        "Discord"
+      ],
+      "retrieved_statements": [
+        "Our team uses Slack for communication.",
+        "What's the best way to handle environment variables in Next.js?",
+        "My cat Mochi keeps jumping on my keyboard while I code. She's a calico.",
+        "We just opened a small office in Tokyo with 2 people for the APAC market. And our Singapore team has 4 engineers.",
+        "I use VS Code as my primary editor."
+      ],
+      "hit_at_5": false,
+      "hit_at_10": false,
+      "mrr": 0,
+      "accuracy": false,
+      "rank": null
+    },
+    {
+      "id": "ku-4",
+      "category": "knowledge_updates",
+      "query": "What is the current API rate limit?",
+      "expected_keywords": [
+        "500"
+      ],
+      "retrieved_statements": [
+        "The API rate limit is set to 100 requests per minute.",
+        "We increased the API rate limit to 500 requests per minute after the infrastructure upgrade.",
+        "What's the best way to handle environment variables in Next.js?",
+        "In January we migrated from MongoDB to PostgreSQL.",
+        "Can you help me set up a Redis cache for my API?"
+      ],
+      "hit_at_5": true,
+      "hit_at_10": true,
+      "mrr": 0.5,
+      "accuracy": true,
+      "rank": 2
+    },
+    {
+      "id": "ku-5",
+      "category": "knowledge_updates",
+      "query": "When is the project deadline?",
+      "expected_keywords": [
+        "January 31"
+      ],
+      "retrieved_statements": [
+        "The project deadline is December 15th.",
+        "PostgreSQL it is — even for small projects!",
+        "Help me pick a testing framework for my Node project.",
+        "The deadline was pushed back to January 31st because of the scope change.",
+        "I like to use PostgreSQL for everything. Even when SQLite would be fine."
+      ],
+      "hit_at_5": true,
+      "hit_at_10": true,
+      "mrr": 0.25,
+      "accuracy": true,
+      "rank": 4
+    },
+    {
+      "id": "ms-1",
+      "category": "multi_session_reasoning",
+      "query": "What languages are used across the microservices?",
+      "expected_keywords": [
+        "Python",
+        "Go",
+        "Node"
+      ],
+      "retrieved_statements": [
+        "For our microservices, we use Python for the data pipeline service.",
+        "Happy birthday to Emma! Dinosaur parties are the best at that age.",
+        "What's the best way to handle environment variables in Next.js?",
+        "The first version of our API used REST. We switched to GraphQL in Q2 last year. Then in Q4 we added gRPC for internal services.",
+        "The authentication service is written in Go for performance."
+      ],
+      "hit_at_5": true,
+      "hit_at_10": true,
+      "mrr": 1,
+      "accuracy": true,
+      "rank": 1
+    },
+    {
+      "id": "ms-2",
+      "category": "multi_session_reasoning",
+      "query": "Who are the team members and what do they do?",
+      "expected_keywords": [
+        "Alice",
+        "Bob",
+        "Carol"
+      ],
+      "retrieved_statements": [
+        "What's the best way to handle environment variables in Next.js?",
+        "Our team uses Slack for communication.",
+        "We just opened a small office in Tokyo with 2 people for the APAC market. And our Singapore team has 4 engineers."
+      ],
+      "hit_at_5": false,
+      "hit_at_10": false,
+      "mrr": 0,
+      "accuracy": false,
+      "rank": null
+    },
+    {
+      "id": "ms-3",
+      "category": "multi_session_reasoning",
+      "query": "What is the total revenue across all reported quarters?",
+      "expected_keywords": [
+        "370"
+      ],
+      "retrieved_statements": [
+        "PostgreSQL it is — even for small projects!",
+        "Q3 was our best quarter yet at $200,000.",
+        "What's the best way to handle environment variables in Next.js?",
+        "Q1 revenue was $50,000.",
+        "Q2 we hit $120,000 in revenue."
+      ],
+      "hit_at_5": false,
+      "hit_at_10": false,
+      "mrr": 0,
+      "accuracy": false,
+      "rank": null
+    },
+    {
+      "id": "ms-4",
+      "category": "multi_session_reasoning",
+      "query": "What cryptocurrencies does the user hold?",
+      "expected_keywords": [
+        "ETH",
+        "BTC",
+        "SOL",
+        "DOGE"
+      ],
+      "retrieved_statements": [
+        "What's the best way to handle environment variables in Next.js?",
+        "I use VS Code as my primary editor.",
+        "We launched the beta on March 1st with 50 users.",
+        "For our microservices, we use Python for the data pipeline service.",
+        "Please use tabs for indentation, not spaces. 4-width tabs specifically."
+      ],
+      "hit_at_5": false,
+      "hit_at_10": false,
+      "mrr": 0,
+      "accuracy": false,
+      "rank": null
+    },
+    {
+      "id": "ms-5",
+      "category": "multi_session_reasoning",
+      "query": "How many offices does the user have and how many total employees?",
+      "expected_keywords": [
+        "New York",
+        "London",
+        "Tokyo",
+        "Singapore"
+      ],
+      "retrieved_statements": [
+        "Noted — I'll keep dark mode in mind for any UI suggestions.",
+        "I have an office in New York where 3 engineers work.",
+        "Our London office handles sales. 5 people there.",
+        "I use VS Code as my primary editor.",
+        "We just opened a small office in Tokyo with 2 people for the APAC market. And our Singapore team has 4 engineers."
+      ],
+      "hit_at_5": true,
+      "hit_at_10": true,
+      "mrr": 0.5,
+      "accuracy": true,
+      "rank": 2
+    }
+  ]
+}
