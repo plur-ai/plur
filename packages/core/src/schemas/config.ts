@@ -9,6 +9,25 @@ export const StoreEntrySchema = z.object({
 
 export type StoreEntry = z.infer<typeof StoreEntrySchema>
 
+export const LlmTierConfigSchema = z.object({
+  dedup_tier: z.enum(['fast', 'balanced', 'thorough']).default('fast'),
+  profile_tier: z.enum(['fast', 'balanced', 'thorough']).default('balanced'),
+  meta_tier: z.enum(['fast', 'balanced', 'thorough']).default('thorough'),
+}).partial()
+
+export const ProfileConfigSchema = z.object({
+  enabled: z.boolean().default(true),
+  cache_ttl_hours: z.number().default(24),
+}).partial()
+
+export const DedupConfigSchema = z.object({
+  enabled: z.boolean().default(true),
+  threshold: z.number().min(0).max(1).default(0.85),
+  mode: z.enum(['llm', 'cosine', 'off']).default('llm'),
+}).partial()
+
+export type DedupConfigYaml = z.infer<typeof DedupConfigSchema>
+
 export const PlurConfigSchema = z.object({
   auto_learn: z.boolean().default(true),
   auto_capture: z.boolean().default(true),
@@ -21,9 +40,13 @@ export const PlurConfigSchema = z.object({
     spread_budget: z.number().default(480),
     co_access: z.boolean().default(true),
   }).default({}),
+  dedup: DedupConfigSchema.default({}),
+  decay_baseline: z.string().optional(),
   allow_secrets: z.boolean().default(false),
   index: z.boolean().default(true),
   stores: z.array(StoreEntrySchema).default([]),
+  llm: LlmTierConfigSchema.default({}),
+  profile: ProfileConfigSchema.default({}),
 }).partial()
 
 export type PlurConfig = z.infer<typeof PlurConfigSchema>

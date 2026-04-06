@@ -1,3 +1,4 @@
+import type { Engram } from './schemas/engram.js'
 export type { Engram, KnowledgeAnchor, Association } from './schemas/engram.js'
 export type { Episode } from './schemas/episode.js'
 export type { PlurConfig } from './schemas/config.js'
@@ -15,6 +16,42 @@ export interface LearnContext {
   dual_coding?: { example?: string; analogy?: string }
   abstract?: string | null
   derived_from?: string | null
+  /** Commitment level. Defaults to 'leaning' for new engrams. */
+  commitment?: 'exploring' | 'leaning' | 'decided' | 'locked'
+  /** Reason for locking (required when commitment='locked'). */
+  locked_reason?: string
+}
+
+/** Extended context for async learn with LLM dedup. */
+export interface LearnAsyncContext extends LearnContext {
+  /** LLM function for deduplication decisions. */
+  llm?: LlmFunction
+  budget?: RecallBudget
+  caller_session_id?: string
+}
+
+/** LLM dedup decision. */
+export type DedupDecision = 'ADD' | 'UPDATE' | 'MERGE' | 'NOOP'
+
+/** Dedup configuration from config.yaml. */
+export interface DedupConfig {
+  enabled?: boolean
+  threshold?: number
+  mode?: 'llm' | 'cosine' | 'off'
+}
+
+/** Result from learnAsync including dedup decision metadata. */
+export interface LearnAsyncResult {
+  engram: Engram
+  decision: DedupDecision
+  existing_id?: string
+  tensions?: string[]
+}
+
+/** Result from learnBatch. */
+export interface LearnBatchResult {
+  results: LearnAsyncResult[]
+  stats: { added: number; updated: number; merged: number; noops: number }
 }
 
 /**
@@ -22,6 +59,13 @@ export interface LearnContext {
  * Takes a prompt, returns the LLM's text response.
  */
 export type LlmFunction = (prompt: string) => Promise<string>
+
+/** Budget constraints for bounded sub-agent expansion (Idea 16). */
+export interface RecallBudget {
+  max_tokens?: number
+  max_results?: number
+  ttl_seconds?: number
+}
 
 export interface RecallOptions {
   scope?: string
@@ -32,6 +76,13 @@ export interface RecallOptions {
   mode?: 'fast' | 'agentic'
   /** LLM function for agentic mode. Required when mode='agentic'. */
   llm?: LlmFunction
+}
+
+
+export interface BoundedRecallResult {
+  results: Engram[]
+  truncated: boolean
+  strategy_used?: string
 }
 
 export interface InjectOptions {
@@ -63,4 +114,3 @@ export interface TimelineQuery {
   channel?: string
   search?: string
 }
-

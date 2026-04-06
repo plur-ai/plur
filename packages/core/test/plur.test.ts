@@ -141,11 +141,12 @@ describe('Plur', () => {
     expect(status.engram_count).toBeGreaterThan(0)
   })
 
-  it('inject formats directives as readable strings', () => {
+  it('inject formats engrams into buckets as readable strings', () => {
     plur.learn('Always validate inputs', { scope: 'global' })
     const result = plur.inject('validate user input')
     if (result.count > 0) {
-      expect(result.directives).toMatch(/\[ENG-/)
+      const allOutput = [result.directives, result.constraints, result.consider].join('\n')
+      expect(allOutput).toMatch(/\[ENG-/)
     }
   })
 
