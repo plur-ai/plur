@@ -17,7 +17,7 @@ import { expandedSearch } from './query-expansion.js'
 import { installPack, uninstallPack, listPacks, exportPack, scanPrivacy, computePackHash, previewPack } from './packs.js'
 import { sync as gitSync, getSyncStatus, withLock, type SyncResult, type SyncStatus } from './sync.js'
 import { detectSecrets } from './secrets.js'
-import { appendHistory } from './history.js'
+import { appendHistory, readHistoryForEngram, generateEventId } from './history.js'
 import type { Engram } from './schemas/engram.js'
 import type { Episode } from './schemas/episode.js'
 import type { PackManifest } from './schemas/pack.js'
@@ -40,14 +40,14 @@ export { generateGuardrails } from './guardrails.js'
 export type { MetaField, StructuralTemplate, EvidenceEntry, MetaConfidence, DomainCoverage, HierarchyPosition, Falsification } from './schemas/meta-engram.js'
 export { MetaFieldSchema, StructuralTemplateSchema, EvidenceEntrySchema, MetaConfidenceSchema, DomainCoverageSchema, HierarchyPositionSchema, FalsificationSchema } from './schemas/meta-engram.js'
 export { engramSearchText } from './fts.js'
-export { appendHistory, readHistory, listHistoryMonths, type HistoryEvent } from './history.js'
+export { appendHistory, readHistory, listHistoryMonths, readHistoryForEngram, generateEventId, type HistoryEvent } from './history.js'
 export { runMigrations, rollbackMigrations, getSchemaVersion, setSchemaVersion, ALL_MIGRATIONS, CURRENT_SCHEMA_VERSION, type Migration, type MigrationResult } from './migrations/index.js'
 export { detectSecrets } from './secrets.js'
 export { detectPlurStorage, type PlurPaths } from './storage.js'
 export { IndexedStorage } from './storage-indexed.js'
 export type { SyncResult, SyncStatus } from './sync.js'
 export { checkForUpdate, getCachedUpdateCheck, clearVersionCache, type VersionCheckResult } from './version-check.js'
-export type { Engram } from './schemas/engram.js'
+export type { Engram, PreviousVersionRef } from './schemas/engram.js'
 export type { Episode } from './schemas/episode.js'
 export type { PackManifest } from './schemas/pack.js'
 export type { PreviewResult, RegistryEntry, PrivacyScanResult, PrivacyIssue } from './packs.js'
@@ -73,6 +73,8 @@ export interface StatusResult {
   pack_count: number
   storage_root: string
   config: PlurConfig
+  /** Count of engrams with version > 1 (SP2 Idea 8) */
+  versioned_engram_count?: number
 }
 
 const INGEST_PATTERNS = [
@@ -206,12 +208,28 @@ export class Plur {
       const conflictingEngrams = detectConflicts({ statement, scope }, allEngrams)
       const conflictIds = conflictingEngrams.map(e => e.id)
 
+      // Auto-set memory_class based on type if not explicitly provided (SP2 Idea 3)
+      const TYPE_TO_MEMORY_CLASS: Record<string, 'semantic' | 'episodic' | 'procedural' | 'metacognitive'> = {
+        behavioral: 'semantic',
+        terminological: 'semantic',
+        procedural: 'procedural',
+        architectural: 'semantic',
+      }
+      const engramType = context?.type ?? 'behavioral'
+      const memoryClass = context?.memory_class ?? TYPE_TO_MEMORY_CLASS[engramType] ?? 'semantic'
+
+      // Auto-link to session episode if provided (SP2 Idea 24)
+      const episodeIds: string[] = []
+      if (context?.session_episode_id) {
+        episodeIds.push(context.session_episode_id)
+      }
+
       const engram: Engram = {
         id,
         version: 2,
         status: 'active',
         consolidated: false,
-        type: context?.type ?? 'behavioral',
+        type: engramType,
         scope,
         visibility: context?.visibility ?? (context?.domain ? 'public' : 'private'),
         statement,
@@ -225,6 +243,7 @@ export class Plur {
           last_accessed: now.slice(0, 10),
         },
         feedback_signals: { positive: 0, negative: 0, neutral: 0 },
+        knowledge_type: { memory_class: memoryClass, cognitive_level: 'remember' },
         knowledge_anchors: (context?.knowledge_anchors ?? []).map(a => ({
           path: a.path,
           relevance: (a.relevance as 'primary' | 'supporting' | 'example') ?? 'supporting',
@@ -238,6 +257,8 @@ export class Plur {
         derived_from: context?.derived_from ?? null,
         dual_coding: context?.dual_coding,
         polarity: null,
+        engram_version: 1,
+        episode_ids: episodeIds,
         relations: conflictIds.length > 0 ? {
           broader: [],
           narrower: [],
@@ -794,11 +815,173 @@ export class Plur {
     return getSyncStatus(this.paths.root)
   }
 
+  /**
+   * Promote an episode to an episodic engram (SP2 Idea 3).
+   * Creates a new engram with memory_class='episodic' from an episode's summary.
+   */
+  episodeToEngram(episodeId: string, context?: Omit<LearnContext, 'memory_class'>): Engram {
+    const episodes = queryTimeline(this.paths.episodes)
+    const episode = episodes.find(e => e.id === episodeId)
+    if (!episode) throw new Error(`Episode not found: ${episodeId}`)
+
+    const engram = this.learn(episode.summary, {
+      ...context,
+      type: context?.type ?? 'behavioral',
+      source: context?.source ?? `episode:${episodeId}`,
+      memory_class: 'episodic',
+      session_episode_id: episodeId,
+    })
+
+    appendHistory(this.paths.root, {
+      event: 'engram_promoted',
+      engram_id: engram.id,
+      timestamp: new Date().toISOString(),
+      data: { from_episode: episodeId },
+    })
+
+    return engram
+  }
+
+  /**
+   * Get history events for a specific engram (SP2 Idea 7).
+   * Returns all events across all months for the given engram ID.
+   */
+  getEngramHistory(engramId: string): import('./history.js').HistoryEvent[] {
+    return readHistoryForEngram(this.paths.root, engramId)
+  }
+
+  /**
+   * Report a failure for a procedural engram (SP2 Idea 18).
+   * If LLM is provided, generates an improved procedure and updates the engram.
+   * Without LLM, logs the failure without rewriting.
+   * Returns the updated engram and the failure episode.
+   */
+  async reportFailure(
+    engramId: string,
+    failureContext: string,
+    llm?: LlmFunction,
+  ): Promise<{ engram: Engram; episode: Episode; evolved: boolean }> {
+    const engram = this.getById(engramId)
+    if (!engram) throw new Error(`Engram not found: ${engramId}`)
+
+    // Only procedural engrams can evolve
+    const memClass = (engram as any).knowledge_type?.memory_class
+    if (memClass !== 'procedural' && engram.type !== 'procedural') {
+      throw new Error(`Only procedural engrams can evolve. This engram has type=${engram.type}, memory_class=${memClass}`)
+    }
+
+    // Rate limiting: max 3 revisions per procedure per 24h
+    const history = readHistoryForEngram(this.paths.root, engramId)
+    const dayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
+    const recentEvolutions = history.filter(
+      e => e.event === 'procedure_evolved' && e.timestamp > dayAgo
+    )
+    if (recentEvolutions.length >= 3) {
+      throw new Error(`Rate limit: engram ${engramId} has been evolved ${recentEvolutions.length} times in the last 24h (max 3)`)
+    }
+
+    // Create failure episode
+    const episode = this.capture(`Failure report for ${engramId}: ${failureContext}`, {
+      tags: ['failure', 'procedure-evolution'],
+    })
+
+    // Log the failure event
+    const failureEventId = generateEventId()
+    appendHistory(this.paths.root, {
+      event: 'failure_reported',
+      engram_id: engramId,
+      timestamp: new Date().toISOString(),
+      data: { failure_context: failureContext, episode_id: episode.id, event_id: failureEventId },
+    })
+
+    // Try to evolve the procedure with LLM
+    let evolved = false
+    if (llm) {
+      try {
+        const prompt = `You are improving a procedural memory based on a failure report.
+
+Current procedure: "${engram.statement}"
+Failure report: "${failureContext}"
+${recentEvolutions.length > 0 ? `\nPrevious revisions in last 24h: ${recentEvolutions.length}` : ''}
+
+Generate an improved version of the procedure that prevents this failure. Return ONLY the improved procedure statement, nothing else.`
+
+        const improved = await llm(prompt)
+        if (improved && improved.trim().length > 0) {
+          const eventId = generateEventId()
+          const now = new Date().toISOString()
+
+          // Update engram with new statement
+          return withLock(this.paths.engrams, () => {
+            const engrams = loadEngrams(this.paths.engrams)
+            const idx = engrams.findIndex(e => e.id === engramId)
+            if (idx === -1) throw new Error(`Engram not found in store: ${engramId}`)
+
+            const raw = engrams[idx] as any
+            const oldStatement = raw.statement
+            const oldVersion = raw.engram_version ?? 1
+
+            raw.statement = improved.trim()
+            raw.engram_version = oldVersion + 1
+            raw.previous_version_ref = { event_id: eventId, changed_at: now }
+            if (!raw.episode_ids) raw.episode_ids = []
+            raw.episode_ids.push(episode.id)
+
+            saveEngrams(this.paths.engrams, engrams)
+            this._syncIndex()
+
+            appendHistory(this.paths.root, {
+              event: 'procedure_evolved',
+              engram_id: engramId,
+              timestamp: now,
+              data: {
+                event_id: eventId,
+                old_statement: oldStatement,
+                new_statement: improved.trim(),
+                old_version: oldVersion,
+                new_version: oldVersion + 1,
+                failure_context: failureContext,
+                failure_episode_id: episode.id,
+              },
+            })
+
+            evolved = true
+            return { engram: engrams[idx], episode, evolved }
+          })
+        }
+      } catch {
+        // LLM failed — fallback: log without rewriting
+      }
+    }
+
+    // Fallback: link failure episode to engram without rewriting
+    withLock(this.paths.engrams, () => {
+      const engrams = loadEngrams(this.paths.engrams)
+      const idx = engrams.findIndex(e => e.id === engramId)
+      if (idx !== -1) {
+        const raw = engrams[idx] as any
+        if (!raw.episode_ids) raw.episode_ids = []
+        raw.episode_ids.push(episode.id)
+        saveEngrams(this.paths.engrams, engrams)
+        this._syncIndex()
+      }
+    })
+
+    const updated = this.getById(engramId)
+    return { engram: updated ?? engram, episode, evolved }
+  }
+
   /** Return system health info. */
   status(): StatusResult {
     const engrams = this._loadAllEngrams()
     const episodes = queryTimeline(this.paths.episodes)
     const packs = listPacks(this.paths.packs)
+
+    // Count engrams with version > 1 (SP2 Idea 8)
+    const versionedCount = engrams.filter(e => {
+      const raw = e as any
+      return (raw.engram_version ?? 1) > 1
+    }).length
 
     return {
       engram_count: engrams.filter(e => e.status !== 'retired').length,
@@ -806,6 +989,7 @@ export class Plur {
       pack_count: packs.length,
       storage_root: this.paths.root,
       config: this.config,
+      versioned_engram_count: versionedCount,
     }
   }
 
