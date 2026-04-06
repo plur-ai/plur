@@ -28,6 +28,13 @@ export const DedupConfigSchema = z.object({
 
 export type DedupConfigYaml = z.infer<typeof DedupConfigSchema>
 
+export const StorageConfigSchema = z.object({
+  backend: z.enum(['yaml', 'sqlite']).default('yaml'),
+  path: z.string().optional(),
+}).partial()
+
+export type StorageConfigYaml = z.infer<typeof StorageConfigSchema>
+
 export const PlurConfigSchema = z.object({
   auto_learn: z.boolean().default(true),
   auto_capture: z.boolean().default(true),
@@ -44,9 +51,11 @@ export const PlurConfigSchema = z.object({
   decay_baseline: z.string().optional(),
   allow_secrets: z.boolean().default(false),
   index: z.boolean().default(true),
+  storage: StorageConfigSchema.default({}),
   stores: z.array(StoreEntrySchema).default([]),
   llm: LlmTierConfigSchema.default({}),
   profile: ProfileConfigSchema.default({}),
+  registry_url: z.string().url().optional(),
 }).partial()
 
 export type PlurConfig = z.infer<typeof PlurConfigSchema>
