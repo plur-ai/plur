@@ -12,6 +12,11 @@ const RegisterSchema = z.object({
   hub: z.string().url('Hub must be a valid URL').default('https://api.plur.ai'),
   domain: z.string().optional(),
   queryPrice: z.string().optional(),
+  forwardTo: z.string().optional(),
+  capabilities: z.array(z.string()).optional(),
+  autoList: z.boolean().optional(),
+  autoListDelay: z.string().optional(),
+  autoListPrice: z.string().optional(),
 })
 
 export type RegisterOptions = z.input<typeof RegisterSchema>
@@ -35,6 +40,11 @@ export async function register(opts: RegisterOptions): Promise<RegisterResult> {
       wallet: parsed.wallet,
       domain: parsed.domain,
       queryPrice: parsed.queryPrice,
+      forwardTo: parsed.forwardTo,
+      capabilities: parsed.capabilities,
+      autoList: parsed.autoList,
+      autoListDelay: parsed.autoListDelay,
+      autoListPrice: parsed.autoListPrice,
     }),
   })
 
