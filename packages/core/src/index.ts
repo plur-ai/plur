@@ -6,7 +6,7 @@ import { loadConfig } from './config.js'
 import { loadEngrams, saveEngrams, generateEngramId, loadAllPacks, storePrefix } from './engrams.js'
 import { logger } from './logger.js'
 import { searchEngrams } from './fts.js'
-import { selectAndSpread, scoreEngramsPublic } from './inject.js'
+import { selectAndSpread, scoreEngramsPublic, formatWithLayer, assignLayer } from './inject.js'
 import { reactivate } from './decay.js'
 import { captureEpisode, queryTimeline } from './episodes.js'
 import { detectConflicts } from './conflict.js'
@@ -14,6 +14,8 @@ import { agenticSearch } from './agentic-search.js'
 import { embeddingSearch } from './embeddings.js'
 import { hybridSearch } from './hybrid-search.js'
 import { expandedSearch } from './query-expansion.js'
+import { recallAuto, type AutoSearchResult } from './search-orchestrator.js'
+import { autoSummary } from './summary.js'
 import { installPack, uninstallPack, listPacks, exportPack, scanPrivacy, computePackHash, previewPack } from './packs.js'
 import { sync as gitSync, getSyncStatus, withLock, type SyncResult, type SyncStatus } from './sync.js'
 import { detectSecrets } from './secrets.js'
@@ -40,6 +42,12 @@ export { generateGuardrails } from './guardrails.js'
 export type { MetaField, StructuralTemplate, EvidenceEntry, MetaConfidence, DomainCoverage, HierarchyPosition, Falsification } from './schemas/meta-engram.js'
 export { MetaFieldSchema, StructuralTemplateSchema, EvidenceEntrySchema, MetaConfidenceSchema, DomainCoverageSchema, HierarchyPositionSchema, FalsificationSchema } from './schemas/meta-engram.js'
 export { engramSearchText } from './fts.js'
+export { freshTailBoost } from './fresh-tail.js'
+export { autoSummary, generateSummary, needsSummary } from './summary.js'
+export { selectModel, selectModelForOperation, resolveOperationTier, type ModelTier, type LlmTierConfig } from './model-routing.js'
+export { recallAuto, type AutoSearchResult, type SearchStrategy } from './search-orchestrator.js'
+export { generateProfile, getProfileForInjection, loadProfileCache, saveProfileCache, markProfileDirty, profileNeedsRegeneration, type ProfileCache } from './profile.js'
+export { formatLayer1, formatLayer2, formatLayer3, formatWithLayer, assignLayer, type InjectionLayer } from './inject.js'
 export { appendHistory, readHistory, listHistoryMonths, type HistoryEvent } from './history.js'
 export { runMigrations, rollbackMigrations, getSchemaVersion, setSchemaVersion, ALL_MIGRATIONS, CURRENT_SCHEMA_VERSION, type Migration, type MigrationResult } from './migrations/index.js'
 export { detectSecrets } from './secrets.js'
@@ -238,6 +246,7 @@ export class Plur {
         derived_from: context?.derived_from ?? null,
         dual_coding: context?.dual_coding,
         polarity: null,
+        summary: autoSummary(statement, undefined),
         relations: conflictIds.length > 0 ? {
           broader: [],
           narrower: [],
@@ -308,6 +317,14 @@ export class Plur {
     const results = await expandedSearch(filtered, query, limit, options.llm, this.paths.root)
     this._reactivateResults(results)
     return results
+  }
+
+  async recallAutoSearch(query: string, options?: RecallOptions): Promise<AutoSearchResult> {
+    const filtered = this._filterEngrams(options)
+    const limit = options?.limit ?? 20
+    const result = await recallAuto(filtered, query, limit, this.paths.root, options?.llm)
+    this._reactivateResults(result.results)
+    return result
   }
 
   /** Get a single engram by ID, regardless of status. Searches primary + all stores. */
@@ -470,14 +487,9 @@ export class Plur {
       embeddingBoosts,
     )
 
-    const formatEngrams = (wires: typeof result.directives): string => {
-      if (wires.length === 0) return ''
-      return wires.map(e => `[${e.id}] ${e.statement}`).join('\n')
-    }
-
-    const directivesStr = formatEngrams(result.directives)
-    const constraintsStr = formatEngrams(result.constraints)
-    const considerStr = formatEngrams(result.consider)
+    const directivesStr = formatWithLayer(result.directives, assignLayer('directives'))
+    const constraintsStr = formatWithLayer(result.constraints, assignLayer('constraints'))
+    const considerStr = formatWithLayer(result.consider, assignLayer('consider'))
     const count = result.directives.length + result.constraints.length + result.consider.length
     const tokensUsed = result.tokens_used.directives + result.tokens_used.consider
 
