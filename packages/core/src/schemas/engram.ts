@@ -96,6 +96,13 @@ export const EpisodicFieldsSchema = z.object({
   journal_ref: z.string().optional(),
 })
 
+// === NEW: Version lineage (SP2 Idea 8) ===
+
+export const PreviousVersionRefSchema = z.object({
+  event_id: z.string(),
+  changed_at: z.string(),
+})
+
 // === NEW: Exchange metadata (marketplace fitness) ===
 
 export const ExchangeMetadataSchema = z.object({
@@ -179,18 +186,15 @@ export const EngramSchema = z.object({
   polarity: z.enum(['do', 'dont']).nullable().default(null),
 
   // === SP1: Memory Intelligence fields ===
-
-  /** SHA256 hash of normalized statement for fast exact-duplicate detection. */
   content_hash: z.string().optional(),
-
-  /** Commitment level — orthogonal to status. Controls injection priority and dedup behavior. */
   commitment: z.enum(['exploring', 'leaning', 'decided', 'locked']).optional(),
-
-  /** When commitment was set to 'locked'. ISO timestamp. */
   locked_at: z.string().optional(),
-
-  /** Reason for locking this engram. */
   locked_reason: z.string().optional(),
+
+  // === SP2: History & Evolution fields ===
+  engram_version: z.number().int().min(1).default(1),
+  previous_version_ref: PreviousVersionRefSchema.optional(),
+  episode_ids: z.array(z.string()).default([]),
 
   // === SP3: Retrieval & Injection fields ===
   summary: z.string().max(80).optional(),
@@ -212,3 +216,4 @@ export type Temporal = z.infer<typeof TemporalSchema>
 export type UsageStats = z.infer<typeof UsageStatsSchema>
 export type EpisodicFields = z.infer<typeof EpisodicFieldsSchema>
 export type ExchangeMetadata = z.infer<typeof ExchangeMetadataSchema>
+export type PreviousVersionRef = z.infer<typeof PreviousVersionRefSchema>
