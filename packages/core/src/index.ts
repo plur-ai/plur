@@ -17,8 +17,9 @@ import { expandedSearch } from './query-expansion.js'
 import { recallAuto, type AutoSearchResult } from './search-orchestrator.js'
 import { autoSummary } from './summary.js'
 import { installPack, uninstallPack, listPacks, exportPack, scanPrivacy, computePackHash, previewPack } from './packs.js'
-import { exportVault, type VaultExportOptions, type VaultExportResult } from './vault-export.js'
-import { fetchRegistry, discoverPacks, verifyPackIntegrity, DEFAULT_REGISTRY_URL, type PackRegistry, type RegistryPack } from './registry.js'
+// SP5 imports (deferred — vault-export, registry not yet merged)
+// import { exportVault, type VaultExportOptions, type VaultExportResult } from './vault-export.js'
+// import { fetchRegistry, discoverPacks, verifyPackIntegrity, DEFAULT_REGISTRY_URL, type PackRegistry, type RegistryPack } from './registry.js'
 import { sync as gitSync, getSyncStatus, withLock, type SyncResult, type SyncStatus } from './sync.js'
 import { detectSecrets } from './secrets.js'
 import { appendHistory, readHistoryForEngram, generateEventId } from './history.js'
@@ -318,7 +319,7 @@ export class Plur {
           last_accessed: now.slice(0, 10),
         },
         feedback_signals: { positive: 0, negative: 0, neutral: 0 },
-        knowledge_type: { memory_class: memoryClass, cognitive_level: 'remember' },
+        knowledge_type: { memory_class: memoryClass, cognitive_level: cogLevel as any },
         knowledge_anchors: (context?.knowledge_anchors ?? []).map(a => ({
           path: a.path,
           relevance: (a.relevance as 'primary' | 'supporting' | 'example') ?? 'supporting',
@@ -336,7 +337,6 @@ export class Plur {
         commitment,
         locked_at: commitment === 'locked' ? now : undefined,
         locked_reason: commitment === 'locked' ? context?.locked_reason : undefined,
-        knowledge_type: { cognitive_level: cogLevel as any, memory_class: 'semantic' as any },
         summary: autoSummary(statement, undefined),
         engram_version: 1,
         episode_ids: episodeIds ?? [],
@@ -926,23 +926,8 @@ export class Plur {
     return listPacks(this.paths.packs)
   }
 
-  /** Export all active engrams as individual markdown files to a vault directory. Export-only (Phase 1). */
-  exportToVault(options: VaultExportOptions): VaultExportResult {
-    const engrams = this._loadAllEngrams()
-    return exportVault(engrams, options)
-  }
-
-  /** Fetch the pack registry and discover available packs. */
-  async discoverPacks(query?: string, tags?: string[]): Promise<RegistryPack[]> {
-    const url = this.config.registry_url ?? DEFAULT_REGISTRY_URL
-    const registry = await fetchRegistry(url, this.paths.root)
-    return discoverPacks(registry, query, tags)
-  }
-
-  /** Get the configured registry URL. */
-  getRegistryUrl(): string {
-    return this.config.registry_url ?? DEFAULT_REGISTRY_URL
-  }
+  // SP5 methods (deferred — vault-export, registry not yet merged)
+  // exportToVault, discoverPacks, getRegistryUrl will be added when SP5 merges
 
   /** Get the PLUR storage root path. */
   getStorageRoot(): string {
