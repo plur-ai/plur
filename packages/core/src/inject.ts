@@ -4,6 +4,7 @@ import type { LoadedPack } from './engrams.js'
 import { decayedStrength, decayedCoAccessStrength, daysSince } from './decay.js'
 import { classifyPolarity } from './polarity.js'
 import { computeConfidence } from './confidence.js'
+import { freshTailBoost } from './fresh-tail.js'
 
 export interface InjectionContext {
   prompt: string
@@ -23,6 +24,9 @@ export type AgentEngram = Omit<ScoredEngram, 'associations'>
 export type WireEngram = Omit<AgentEngram, 'keyword_match' | 'raw_score' | 'score'> & {
   confidence_score: number
 }
+
+/** Injection layer for progressive disclosure (Idea 10) */
+export type InjectionLayer = 1 | 2 | 3
 
 export interface InternalInjectionResult {
   directives: WireEngram[]
@@ -254,6 +258,12 @@ export function selectAndSpread(
     } else if (raw > 0 && embBoost > 0) {
       raw += embBoost // additive boost for keyword+semantic match
     }
+    // Fresh tail boost (Idea 13)
+    if (raw > 0) {
+      const createdAt = engram.temporal?.learned_at ?? engram.activation.last_accessed
+      const ftBoost = freshTailBoost(createdAt, (engram as any).commitment, new Date())
+      if (ftBoost > 0) raw += ftBoost
+    }
     if (raw > 0) {
       scored.push({ ...engram, keyword_match: raw, raw_score: raw, score: raw })
     }
@@ -414,6 +424,45 @@ export function selectAndSpread(
     constraints: wireConstraints,
     consider: wireConsider,
     tokens_used: { directives: directiveTokens, consider: considerTokens },
+  }
+}
+
+// --- Progressive Disclosure (Idea 10) ---
+
+export function formatLayer1(engram: WireEngram): string {
+  const display = (engram as any).summary ?? engram.statement.slice(0, 60)
+  return `[${engram.id}] ${display}`
+}
+
+export function formatLayer2(engram: WireEngram): string {
+  return `[${engram.id}] ${engram.statement}`
+}
+
+export function formatLayer3(engram: WireEngram): string {
+  const lines = [`[${engram.id}] ${engram.statement}`]
+  if (engram.rationale) lines.push(`  Rationale: ${engram.rationale}`)
+  const meta: string[] = []
+  if (engram.domain) meta.push(`Domain: ${engram.domain}`)
+  if (engram.confidence_score != null) meta.push(`Confidence: ${engram.confidence_score.toFixed(2)}`)
+  if (engram.activation?.last_accessed) meta.push(`Last verified: ${engram.activation.last_accessed}`)
+  if (meta.length > 0) lines.push(`  ${meta.join(' | ')}`)
+  return lines.join('\n')
+}
+
+export function assignLayer(bucket: 'directives' | 'constraints' | 'consider'): InjectionLayer {
+  switch (bucket) {
+    case 'directives': return 3
+    case 'constraints': return 2
+    case 'consider': return 1
+  }
+}
+
+export function formatWithLayer(engrams: WireEngram[], layer: InjectionLayer): string {
+  if (engrams.length === 0) return ''
+  switch (layer) {
+    case 1: return engrams.map(formatLayer1).join(' | ')
+    case 2: return engrams.map(formatLayer2).join('\n')
+    case 3: return engrams.map(formatLayer3).join('\n')
   }
 }
 

@@ -1,3 +1,4 @@
+import type { Engram as EngramType } from './schemas/engram.js'
 export type { Engram, KnowledgeAnchor, Association } from './schemas/engram.js'
 export type { Episode } from './schemas/episode.js'
 export type { PlurConfig } from './schemas/config.js'
@@ -23,6 +24,12 @@ export interface LearnContext {
  */
 export type LlmFunction = (prompt: string) => Promise<string>
 
+export interface RecallBudget {
+  max_tokens?: number
+  max_results?: number
+  ttl_seconds?: number
+}
+
 export interface RecallOptions {
   scope?: string
   domain?: string
@@ -32,6 +39,14 @@ export interface RecallOptions {
   mode?: 'fast' | 'agentic'
   /** LLM function for agentic mode. Required when mode='agentic'. */
   llm?: LlmFunction
+  budget?: RecallBudget
+  caller_session_id?: string
+}
+
+export interface BoundedRecallResult {
+  results: EngramType[]
+  truncated: boolean
+  strategy_used?: string
 }
 
 export interface InjectOptions {

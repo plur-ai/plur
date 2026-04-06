@@ -1,4 +1,4 @@
-import { Plur, extractMetaEngrams, validateMetaEngram, confidenceBand } from '@plur-ai/core'
+import { Plur, extractMetaEngrams, validateMetaEngram, confidenceBand, generateProfile, getProfileForInjection, selectModelForOperation } from '@plur-ai/core'
 import type { LlmFunction, MetaField } from '@plur-ai/core'
 
 /** Create an OpenAI-compatible LLM function from a base URL + API key */
@@ -148,6 +148,8 @@ export function getToolDefinitions(): ToolDefinition[] {
           domain: { type: 'string', description: 'Filter by domain prefix' },
           limit: { type: 'number', description: 'Max results to return (default 20)' },
           min_strength: { type: 'number', description: 'Minimum retrieval strength (0-1)' },
+          budget: { type: 'object', description: 'Budget constraints for sub-agents', properties: { max_tokens: { type: 'number' }, max_results: { type: 'number' } } },
+          caller_session_id: { type: 'string', description: 'Caller session ID for budget enforcement' },
         },
         required: ['query'],
       },
@@ -184,27 +186,31 @@ export function getToolDefinitions(): ToolDefinition[] {
           domain: { type: 'string', description: 'Filter by domain prefix' },
           limit: { type: 'number', description: 'Max results to return (default 20)' },
           min_strength: { type: 'number', description: 'Minimum retrieval strength (0-1)' },
+          budget: { type: 'object', description: 'Budget constraints for sub-agents', properties: { max_tokens: { type: 'number' }, max_results: { type: 'number' } } },
+          caller_session_id: { type: 'string', description: 'Caller session ID for budget enforcement' },
         },
         required: ['query'],
       },
       handler: async (args, plur) => {
+        const budget = args.budget as { max_tokens?: number; max_results?: number } | undefined
+        const effectiveLimit = budget?.max_results ?? (args.limit as number | undefined) ?? 20
         const results = await plur.recallHybrid(args.query as string, {
           scope: args.scope as string | undefined,
           domain: args.domain as string | undefined,
-          limit: args.limit as number | undefined,
+          limit: effectiveLimit,
           min_strength: args.min_strength as number | undefined,
         })
+        let truncated = false
+        let bounded = results
+        if (budget?.max_results && results.length > budget.max_results) { bounded = results.slice(0, budget.max_results); truncated = true }
+        if (budget?.max_tokens) {
+          let tc = 0; const wb = []
+          for (const e of bounded) { const t = Math.ceil(e.statement.length/4)+20; if (tc+t>budget.max_tokens){truncated=true;break}; wb.push(e); tc+=t }
+          bounded = wb
+        }
         return {
-          results: results.map(e => ({
-            id: e.id,
-            statement: e.statement,
-            type: e.type,
-            scope: e.scope,
-            domain: e.domain,
-            retrieval_strength: e.activation.retrieval_strength,
-          })),
-          count: results.length,
-          mode: 'hybrid',
+          results: bounded.map(e => ({ id: e.id, statement: e.statement, type: e.type, scope: e.scope, domain: e.domain, retrieval_strength: e.activation.retrieval_strength })),
+          count: bounded.length, truncated, mode: 'hybrid',
         }
       },
     },
@@ -1108,6 +1114,26 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
           privacy_issues: result.privacy.issues.length,
           name,
         }
+      },
+    },
+
+    {
+      name: 'plur_profile',
+      description: 'Generate or retrieve cognitive profile from stored engrams. Cached 24h.',
+      annotations: { title: 'Cognitive profile', readOnlyHint: true, idempotentHint: true },
+      inputSchema: { type: 'object', properties: {
+        scope: { type: 'string' }, llm_base_url: { type: 'string' }, llm_api_key: { type: 'string' },
+        llm_model: { type: 'string' }, force_regenerate: { type: 'boolean' },
+      }},
+      handler: async (args, plur) => {
+        const status = plur.status()
+        if (!args.force_regenerate) { const c = getProfileForInjection(status.storage_root); if (c) return { profile: c, source: 'cache' } }
+        if (!args.llm_base_url || !args.llm_api_key) { const c = getProfileForInjection(status.storage_root); return c ? { profile: c, source: 'stale_cache' } : { profile: null, error: 'No LLM configured' } }
+        const model = (args.llm_model as string) ?? selectModelForOperation('profile', status.config?.llm)
+        const llm = makeHttpLlm(args.llm_base_url as string, args.llm_api_key as string, model)
+        const engrams = plur.list({ scope: args.scope as string | undefined })
+        const profile = await generateProfile(engrams, llm, status.storage_root, status.config?.profile?.cache_ttl_hours ?? 24)
+        return { profile, source: 'generated', engram_count: engrams.length, model }
       },
     },
   ]

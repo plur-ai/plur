@@ -177,6 +177,9 @@ export const EngramSchema = z.object({
 
   /** Polarity classification: 'do' for directives, 'dont' for prohibitions, null for unclassified. */
   polarity: z.enum(['do', 'dont']).nullable().default(null),
+
+  // === SP3: Retrieval & Injection fields ===
+  summary: z.string().max(80).optional(),
 })
 
 /**
