@@ -2,7 +2,7 @@ import * as fs from 'fs'
 import { join } from 'path'
 
 export interface HistoryEvent {
-  event: 'engram_created' | 'engram_updated' | 'engram_merged' | 'feedback_received' | 'engram_retired' | 'engram_promoted'
+  event: 'engram_created' | 'engram_updated' | 'engram_merged' | 'feedback_received' | 'engram_retired' | 'engram_promoted' | 'failure_reported' | 'procedure_evolved'
   engram_id: string
   timestamp: string // ISO
   data: Record<string, unknown> // event-specific payload
@@ -56,4 +56,31 @@ export function listHistoryMonths(root: string): string[] {
     .filter(f => f.endsWith('.jsonl'))
     .map(f => f.replace('.jsonl', ''))
     .sort()
+}
+
+/**
+ * Read all history events for a specific engram, across all months.
+ * Returns events sorted chronologically.
+ */
+export function readHistoryForEngram(root: string, engramId: string): HistoryEvent[] {
+  const months = listHistoryMonths(root)
+  const events: HistoryEvent[] = []
+  for (const month of months) {
+    const monthEvents = readHistory(root, month)
+    for (const event of monthEvents) {
+      if (event.engram_id === engramId) {
+        events.push(event)
+      }
+    }
+  }
+  return events
+}
+
+/**
+ * Generate a unique event ID for history entries.
+ */
+export function generateEventId(): string {
+  const ts = Date.now()
+  const rand = Math.random().toString(36).slice(2, 6)
+  return `EVT-${ts}-${rand}`
 }

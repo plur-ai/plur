@@ -96,6 +96,13 @@ export const EpisodicFieldsSchema = z.object({
   journal_ref: z.string().optional(),
 })
 
+// === NEW: Version lineage (SP2 Idea 8) ===
+
+export const PreviousVersionRefSchema = z.object({
+  event_id: z.string(),
+  changed_at: z.string(),
+})
+
 // === NEW: Exchange metadata (marketplace fitness) ===
 
 export const ExchangeMetadataSchema = z.object({
@@ -177,6 +184,15 @@ export const EngramSchema = z.object({
 
   /** Polarity classification: 'do' for directives, 'dont' for prohibitions, null for unclassified. */
   polarity: z.enum(['do', 'dont']).nullable().default(null),
+
+  /** Version lineage (SP2 Idea 8): version number, incremented on UPDATE/MERGE. */
+  engram_version: z.number().int().min(1).default(1),
+
+  /** Pointer to previous version in history JSONL (SP2 Idea 8). */
+  previous_version_ref: PreviousVersionRefSchema.optional(),
+
+  /** Episode IDs linked to this engram (SP2 Idea 24: episodic anchoring). */
+  episode_ids: z.array(z.string()).default([]),
 })
 
 /**
@@ -195,3 +211,4 @@ export type Temporal = z.infer<typeof TemporalSchema>
 export type UsageStats = z.infer<typeof UsageStatsSchema>
 export type EpisodicFields = z.infer<typeof EpisodicFieldsSchema>
 export type ExchangeMetadata = z.infer<typeof ExchangeMetadataSchema>
+export type PreviousVersionRef = z.infer<typeof PreviousVersionRefSchema>

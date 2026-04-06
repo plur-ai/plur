@@ -15,6 +15,10 @@ export interface LearnContext {
   dual_coding?: { example?: string; analogy?: string }
   abstract?: string | null
   derived_from?: string | null
+  /** Explicit memory_class override (SP2 Idea 3). Auto-set from type if not provided. */
+  memory_class?: 'semantic' | 'episodic' | 'procedural' | 'metacognitive'
+  /** Current session episode ID for episodic anchoring (SP2 Idea 24). */
+  session_episode_id?: string
 }
 
 /**
