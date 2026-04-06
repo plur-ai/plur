@@ -17,6 +17,8 @@ import { expandedSearch } from './query-expansion.js'
 import { recallAuto, type AutoSearchResult } from './search-orchestrator.js'
 import { autoSummary } from './summary.js'
 import { installPack, uninstallPack, listPacks, exportPack, scanPrivacy, computePackHash, previewPack } from './packs.js'
+import { exportVault, type VaultExportOptions, type VaultExportResult } from './vault-export.js'
+import { fetchRegistry, discoverPacks, verifyPackIntegrity, DEFAULT_REGISTRY_URL, type PackRegistry, type RegistryPack } from './registry.js'
 import { sync as gitSync, getSyncStatus, withLock, type SyncResult, type SyncStatus } from './sync.js'
 import { detectSecrets } from './secrets.js'
 import { appendHistory, readHistoryForEngram, generateEventId } from './history.js'
@@ -61,6 +63,8 @@ export { runMigrations, rollbackMigrations, getSchemaVersion, setSchemaVersion, 
 export { detectSecrets } from './secrets.js'
 export { detectPlurStorage, type PlurPaths } from './storage.js'
 export { IndexedStorage } from './storage-indexed.js'
+export { YamlStore, SqliteStore, createStore, migrateStore, type EngramStore, type StorageBackend, type StorageConfig } from './store/index.js'
+export { withAsyncLock, asyncAtomicWrite } from './store/index.js'
 export type { SyncResult, SyncStatus } from './sync.js'
 export { checkForUpdate, getCachedUpdateCheck, clearVersionCache, type VersionCheckResult } from './version-check.js'
 export type { Engram, PreviousVersionRef } from './schemas/engram.js'
@@ -920,6 +924,29 @@ export class Plur {
   /** List all installed packs (with integrity hashes). */
   listPacks(): ReturnType<typeof listPacks> {
     return listPacks(this.paths.packs)
+  }
+
+  /** Export all active engrams as individual markdown files to a vault directory. Export-only (Phase 1). */
+  exportToVault(options: VaultExportOptions): VaultExportResult {
+    const engrams = this._loadAllEngrams()
+    return exportVault(engrams, options)
+  }
+
+  /** Fetch the pack registry and discover available packs. */
+  async discoverPacks(query?: string, tags?: string[]): Promise<RegistryPack[]> {
+    const url = this.config.registry_url ?? DEFAULT_REGISTRY_URL
+    const registry = await fetchRegistry(url, this.paths.root)
+    return discoverPacks(registry, query, tags)
+  }
+
+  /** Get the configured registry URL. */
+  getRegistryUrl(): string {
+    return this.config.registry_url ?? DEFAULT_REGISTRY_URL
+  }
+
+  /** Get the PLUR storage root path. */
+  getStorageRoot(): string {
+    return this.paths.root
   }
 
   /** Sync engrams to git. Initializes repo on first call, commits + push/pull on subsequent calls. */
