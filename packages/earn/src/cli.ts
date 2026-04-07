@@ -32,6 +32,9 @@ async function init() {
 
   const name = await ask('  Choose a name: ')
   const hub = process.env.PLUR_HUB || 'https://api.plur.ai'
+  const auth = process.env.PLUR_HUB_AUTH || undefined
+  if (auth) console.log(`  → Hub: ${hub} (with basic auth)`)
+  else console.log(`  → Hub: ${hub}`)
 
   const password = await ask('  Set a password for your keystore: ')
   console.log('  Generating agent identity...')
@@ -73,6 +76,7 @@ async function init() {
   try {
     const result = await register({
       hub,
+      auth,
       name: name.trim().toLowerCase(),
       wallet: wallet.address,
       forwardTo: endpointInput || undefined,
