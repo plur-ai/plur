@@ -1,0 +1,68 @@
+{
+  "label": "main",
+  "iterations": 100,
+  "timestamp": "2026-04-07T19:35:17.896Z",
+  "operations": {
+    "learn": {
+      "count": 100,
+      "total_ms": 734.75,
+      "mean_ms": 7.348,
+      "median_ms": 6.1065,
+      "p95_ms": 15.073208,
+      "p99_ms": 23.264125,
+      "min_ms": 1.44,
+      "max_ms": 23.264125
+    },
+    "recall_bm25": {
+      "count": 100,
+      "total_ms": 1627.54,
+      "mean_ms": 16.275,
+      "median_ms": 17.132208,
+      "p95_ms": 20.41925,
+      "p99_ms": 35.740125,
+      "min_ms": 5.306958,
+      "max_ms": 35.740125
+    },
+    "recall_hybrid": {
+      "count": 100,
+      "total_ms": 4921.41,
+      "mean_ms": 49.214,
+      "median_ms": 33.629417,
+      "p95_ms": 68.202,
+      "p99_ms": 1065.802709,
+      "min_ms": 27.038209,
+      "max_ms": 1065.802709
+    },
+    "inject": {
+      "count": 100,
+      "total_ms": 91.18,
+      "mean_ms": 0.912,
+      "median_ms": 1.000625,
+      "p95_ms": 1.330458,
+      "p99_ms": 8.921208,
+      "min_ms": 0.219292,
+      "max_ms": 8.921208
+    },
+    "inject_tokens": {
+      "count": 100,
+      "total_ms": 226520,
+      "mean_ms": 2265.2,
+      "median_ms": 2380,
+      "p95_ms": 2513,
+      "p99_ms": 2513,
+      "min_ms": 1670,
+      "max_ms": 2513
+    }
+  },
+  "dedup": {
+    "tested": 5,
+    "decisions": [
+      "SYNC_NO_DEDUP",
+      "SYNC_NO_DEDUP",
+      "SYNC_NO_DEDUP",
+      "SYNC_NO_DEDUP",
+      "SYNC_NO_DEDUP"
+    ],
+    "has_async_dedup": false
+  }
+}
