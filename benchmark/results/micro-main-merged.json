@@ -1,0 +1,77 @@
+{
+  "label": "main-merged",
+  "iterations": 100,
+  "timestamp": "2026-04-07T20:47:43.429Z",
+  "operations": {
+    "learn": {
+      "count": 100,
+      "total_ms": 231.43,
+      "mean_ms": 2.314,
+      "median_ms": 1.657833,
+      "p95_ms": 4.4815,
+      "p99_ms": 6.835708,
+      "min_ms": 1.205834,
+      "max_ms": 6.835708
+    },
+    "recall_bm25": {
+      "count": 100,
+      "total_ms": 467.86,
+      "mean_ms": 4.679,
+      "median_ms": 4.22375,
+      "p95_ms": 8.890583,
+      "p99_ms": 15.184166,
+      "min_ms": 1.26675,
+      "max_ms": 15.184166
+    },
+    "recall_hybrid": {
+      "count": 100,
+      "total_ms": 2294.55,
+      "mean_ms": 22.946,
+      "median_ms": 14.81375,
+      "p95_ms": 19.850459,
+      "p99_ms": 796.559959,
+      "min_ms": 12.090291,
+      "max_ms": 796.559959
+    },
+    "inject": {
+      "count": 100,
+      "total_ms": 38.31,
+      "mean_ms": 0.383,
+      "median_ms": 0.379334,
+      "p95_ms": 0.783125,
+      "p99_ms": 3.047834,
+      "min_ms": 0.130958,
+      "max_ms": 3.047834
+    },
+    "inject_tokens": {
+      "count": 100,
+      "total_ms": 203480,
+      "mean_ms": 2034.8,
+      "median_ms": 2286,
+      "p95_ms": 2462,
+      "p99_ms": 2462,
+      "min_ms": 1027,
+      "max_ms": 2462
+    }
+  },
+  "dedup": {
+    "tested": 5,
+    "decisions": [
+      "NOOP",
+      "MERGE",
+      "NOOP",
+      "NOOP",
+      "NOOP"
+    ],
+    "latencies_ms": [
+      3931.427458,
+      2024.464541,
+      4726.983,
+      4347.012125,
+      4240.289667
+    ],
+    "avg_latency_ms": 3854.0353582000002,
+    "llm_used": true,
+    "llm_model": "openai/gpt-4o-mini"
+  }
+}
