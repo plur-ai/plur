@@ -35,6 +35,7 @@ Commands:
   packs install <source>  Install engram pack
   packs export <name>     Export engrams as a pack
   promote <id>            Promote an engram to active
+  migrate [up|down|status] Run schema migrations
   stores list             List configured stores
   stores add <path>       Add a knowledge store
   init                    Install Claude Code hooks for automatic injection
@@ -71,6 +72,7 @@ const COMMANDS: Record<string, string> = {
   ingest: './commands/ingest.js',
   promote: './commands/promote.js',
   stores: './commands/stores.js',
+  migrate: './commands/migrate.js',
   init: './commands/init.js',
   'hook-inject': './commands/hook-inject.js',
   'hook-observe': './commands/hook-observe.js',

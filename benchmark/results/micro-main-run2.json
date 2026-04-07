@@ -1,0 +1,77 @@
+{
+  "label": "main-run2",
+  "iterations": 100,
+  "timestamp": "2026-04-07T20:40:39.308Z",
+  "operations": {
+    "learn": {
+      "count": 100,
+      "total_ms": 707.85,
+      "mean_ms": 7.078,
+      "median_ms": 6.805042,
+      "p95_ms": 13.579334,
+      "p99_ms": 16.048541,
+      "min_ms": 1.485583,
+      "max_ms": 16.048541
+    },
+    "recall_bm25": {
+      "count": 100,
+      "total_ms": 1655.49,
+      "mean_ms": 16.555,
+      "median_ms": 17.072875,
+      "p95_ms": 21.138708,
+      "p99_ms": 71.319916,
+      "min_ms": 5.392333,
+      "max_ms": 71.319916
+    },
+    "recall_hybrid": {
+      "count": 100,
+      "total_ms": 5291.58,
+      "mean_ms": 52.916,
+      "median_ms": 39.701042,
+      "p95_ms": 54.565875,
+      "p99_ms": 1151.661208,
+      "min_ms": 31.017667,
+      "max_ms": 1151.661208
+    },
+    "inject": {
+      "count": 100,
+      "total_ms": 88.57,
+      "mean_ms": 0.886,
+      "median_ms": 1.001042,
+      "p95_ms": 1.565042,
+      "p99_ms": 7.361208,
+      "min_ms": 0.221167,
+      "max_ms": 7.361208
+    },
+    "inject_tokens": {
+      "count": 100,
+      "total_ms": 226520,
+      "mean_ms": 2265.2,
+      "median_ms": 2380,
+      "p95_ms": 2513,
+      "p99_ms": 2513,
+      "min_ms": 1670,
+      "max_ms": 2513
+    }
+  },
+  "dedup": {
+    "tested": 5,
+    "decisions": [
+      "ERROR:plur.learnAsync is not a function",
+      "ERROR:plur.learnAsync is not a function",
+      "ERROR:plur.learnAsync is not a function",
+      "ERROR:plur.learnAsync is not a function",
+      "ERROR:plur.learnAsync is not a function"
+    ],
+    "latencies_ms": [
+      0.189667,
+      0.168042,
+      0.516959,
+      0.171083,
+      0.31625
+    ],
+    "avg_latency_ms": 0.2724002,
+    "llm_used": true,
+    "llm_model": "openai/gpt-4o-mini"
+  }
+}
