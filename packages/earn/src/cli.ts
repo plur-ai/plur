@@ -1,6 +1,15 @@
 #!/usr/bin/env node
 import { createInterface } from 'readline'
-import { configExists, saveConfig, generateWallet, loadConfig } from './identity.js'
+import {
+  configExists,
+  saveConfig,
+  generateWallet,
+  loadConfig,
+  createKeystore,
+  backupToSwarm,
+  keystorePath,
+} from './identity.js'
+import { createErc8004Identity } from './erc8004.js'
 import { register } from './register.js'
 
 const rl = createInterface({ input: process.stdin, output: process.stdout })
@@ -23,9 +32,33 @@ async function init() {
   const name = await ask('  Choose a name: ')
   const hub = process.env.PLUR_HUB || 'https://api.plur.ai'
 
+  const password = await ask('  Set a password for your keystore: ')
   console.log('  Generating agent identity...')
   const { address, privateKeyHex } = generateWallet()
   console.log(`  → Address: ${address}`)
+
+  const keystore = createKeystore(privateKeyHex, password)
+  console.log(`  → Keystore saved: ${keystorePath()}`)
+
+  console.log('  Backing up to Swarm...')
+  const keystoreRef = await backupToSwarm(JSON.stringify(keystore))
+  if (keystoreRef) {
+    console.log(`  → Backup ref: ${keystoreRef}`)
+  } else {
+    console.log('  → Swarm backup unavailable — keep your keystore file safe!')
+  }
+
+  console.log('  Creating ERC-8004 identity...')
+  const erc8004 = await createErc8004Identity({
+    agentAddress: address as `0x${string}`,
+    name: name.trim().toLowerCase(),
+    domain: undefined,
+  })
+  if (erc8004) {
+    console.log(`  → Agent ID: ${erc8004.agentId}`)
+  } else {
+    console.log('  → ERC-8004 skipped (no registry configured)')
+  }
 
   const domain = await ask('  Claim a knowledge domain (optional, e.g. trading/wyckoff): ')
   const priceInput = await ask('  Query price in USDC (0 for free, e.g. 0.10): ')
@@ -55,6 +88,8 @@ async function init() {
       domain: domain || undefined,
       queryPrice,
       forwardTo: endpointInput || undefined,
+      keystoreRef: keystoreRef || undefined,
+      erc8004Id: erc8004?.agentId,
     })
 
     console.log(`\n  ✓ Agent registered!`)
@@ -82,6 +117,8 @@ async function status() {
   console.log(`Domain: ${config.domain || 'none'}`)
   console.log(`Price: $${(Number(config.queryPrice) / 1_000_000).toFixed(2)}/query`)
   console.log(`Hub: ${config.hub}`)
+  if (config.keystoreRef) console.log(`Swarm backup: ${config.keystoreRef}`)
+  if (config.erc8004Id) console.log(`ERC-8004 ID: ${config.erc8004Id}`)
 }
 
 async function main() {
@@ -89,10 +126,21 @@ async function main() {
   switch (cmd) {
     case 'init': return init()
     case 'status': return status()
+    case 'recover': {
+      const ref = await ask('Swarm backup reference: ')
+      const pwd = await ask('Password: ')
+      const { recoverFromSwarm } = await import('./identity.js')
+      const result = await recoverFromSwarm(ref, pwd)
+      if (result) console.log(`✓ Identity recovered: ${result.address}`)
+      else console.log('✗ Recovery failed — check reference and password')
+      rl.close()
+      return
+    }
     default:
       console.log('Usage: npx @plur-ai/earn <command>')
       console.log('  init      Set up your agent')
       console.log('  status    Show agent config')
+      console.log('  recover   Restore identity from Swarm backup')
       console.log('  discover  Find listable knowledge')
   }
 }
