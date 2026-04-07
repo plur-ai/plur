@@ -1,35 +1,32 @@
-import { randomBytes, createCipheriv, createDecipheriv, pbkdf2Sync } from 'crypto'
 import { writeFileSync, readFileSync, existsSync, mkdirSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
-import { privateKeyToAccount } from 'viem/accounts'
-import type { Hex } from 'viem'
+import {
+  Wallet,
+  FDSKeystoreManager,
+  FDS_DOMAINS,
+  type FDSAccount,
+  type FDSKeystore,
+} from '@fairdatasociety/fds-id'
 
 const PLUR_DIR = join(homedir(), '.plur')
 const KEYSTORE_PATH = join(PLUR_DIR, 'agent-keystore.json')
 const CONFIG_PATH = join(PLUR_DIR, 'agent-config.json')
 
-const PBKDF2_ITER = 100_000
-const KEY_LEN = 32
+// Use 'fairdrop' type so PLUR agents are interoperable with Fairdrop accounts
+const KEYSTORE_TYPE = 'fairdrop' as const
+export const ENS_DOMAIN = FDS_DOMAINS.FAIRDROP  // 'fairdrop.eth'
 
 export interface AgentConfig {
-  name: string
-  wallet: string
+  name: string                // subdomain (e.g., 'trading-expert')
+  ensName: string             // full ENS (e.g., 'trading-expert.fairdrop.eth')
+  wallet: string              // EIP-55 checksummed address
   hub: string
-  domain?: string
+  domain?: string             // PLUR knowledge domain (e.g., 'trading/wyckoff')
   queryPrice: string
   forwardTo?: string
-  keystoreRef?: string  // Swarm backup reference
+  keystoreRef?: string        // Swarm backup reference
   erc8004Id?: string
-}
-
-export interface EncryptedKeystore {
-  version: 1
-  address: string
-  iv: string  // base64
-  salt: string  // base64
-  ciphertext: string  // base64
-  authTag: string  // base64
 }
 
 export function getPlurDir(): string {
@@ -53,69 +50,54 @@ export function loadConfig(): AgentConfig | null {
 }
 
 /**
- * Generate a new wallet with proper Ethereum address derivation via viem.
+ * Create a new agent identity using fds-id Wallet.
+ * Returns the wallet and a complete FDSAccount ready for keystore encryption.
+ *
+ * publicKey: Wallet.publicKey is Uint8Array (65 bytes, uncompressed, starts with 0x04).
+ * bytesToHex encodes all 65 bytes → 130 hex chars starting with '04'.
+ * privateKey: Wallet.privateKey is Uint8Array (32 bytes) → 64 hex chars, no 0x prefix.
  */
-export function generateWallet(): { address: string; privateKeyHex: Hex } {
-  const privateKeyBytes = randomBytes(32)
-  const privateKeyHex = `0x${privateKeyBytes.toString('hex')}` as Hex
-  const account = privateKeyToAccount(privateKeyHex)
-  return { address: account.address, privateKeyHex }
+export function createAgentAccount(subdomain: string): { wallet: Wallet; account: FDSAccount } {
+  const wallet = Wallet.create()
+  const account: FDSAccount = {
+    subdomain,
+    publicKey: Buffer.from(wallet.publicKey).toString('hex'),   // 130 hex chars with 04 prefix
+    privateKey: Buffer.from(wallet.privateKey).toString('hex'), // 64 hex chars, no 0x
+    walletAddress: wallet.address,
+    created: Date.now(),
+  }
+  return { wallet, account }
 }
 
 /**
- * Encrypt a private key with a password and save to disk as a keystore file.
- * Uses PBKDF2 + AES-256-GCM (similar to Ethereum keystore v3 but simpler format).
+ * Encrypt an FDSAccount to a keystore file and write it to disk.
+ * Uses the FDS keystore format — interoperable with Fairdrop/Fairdrive.
  */
-export function createKeystore(privateKeyHex: Hex, password: string): EncryptedKeystore {
-  const account = privateKeyToAccount(privateKeyHex)
-  const salt = randomBytes(16)
-  const iv = randomBytes(12)
-  const key = pbkdf2Sync(password, salt, PBKDF2_ITER, KEY_LEN, 'sha256')
-
-  const cipher = createCipheriv('aes-256-gcm', key, iv)
-  const ciphertext = Buffer.concat([
-    cipher.update(privateKeyHex, 'utf8'),
-    cipher.final(),
-  ])
-  const authTag = cipher.getAuthTag()
-
-  const keystore: EncryptedKeystore = {
-    version: 1,
-    address: account.address,
-    iv: iv.toString('base64'),
-    salt: salt.toString('base64'),
-    ciphertext: ciphertext.toString('base64'),
-    authTag: authTag.toString('base64'),
-  }
-
+export async function createKeystore(account: FDSAccount, password: string): Promise<FDSKeystore> {
+  const keystore = await FDSKeystoreManager.encrypt(account, password, {
+    type: KEYSTORE_TYPE,
+    domain: ENS_DOMAIN,
+  })
   getPlurDir()
   writeFileSync(KEYSTORE_PATH, JSON.stringify(keystore, null, 2))
   return keystore
 }
 
 /**
- * Decrypt a keystore with a password to recover the private key.
+ * Load a keystore from disk.
  */
-export function decryptKeystore(keystore: EncryptedKeystore, password: string): Hex {
-  const salt = Buffer.from(keystore.salt, 'base64')
-  const iv = Buffer.from(keystore.iv, 'base64')
-  const ciphertext = Buffer.from(keystore.ciphertext, 'base64')
-  const authTag = Buffer.from(keystore.authTag, 'base64')
-
-  const key = pbkdf2Sync(password, salt, PBKDF2_ITER, KEY_LEN, 'sha256')
-  const decipher = createDecipheriv('aes-256-gcm', key, iv)
-  decipher.setAuthTag(authTag)
-
-  const plaintext = Buffer.concat([
-    decipher.update(ciphertext),
-    decipher.final(),
-  ])
-  return plaintext.toString('utf8') as Hex
+export function loadKeystore(): FDSKeystore | null {
+  if (!existsSync(KEYSTORE_PATH)) return null
+  const data = JSON.parse(readFileSync(KEYSTORE_PATH, 'utf-8'))
+  if (!FDSKeystoreManager.isValid(data)) return null
+  return data
 }
 
-export function loadKeystore(): EncryptedKeystore | null {
-  if (!existsSync(KEYSTORE_PATH)) return null
-  return JSON.parse(readFileSync(KEYSTORE_PATH, 'utf-8'))
+/**
+ * Decrypt a keystore to recover the FDSAccount.
+ */
+export async function decryptKeystore(keystore: FDSKeystore, password: string): Promise<FDSAccount> {
+  return FDSKeystoreManager.decrypt(keystore, password)
 }
 
 /**
@@ -140,25 +122,23 @@ export async function backupToSwarm(keystoreJson: string): Promise<string | null
 
 /**
  * Recover an encrypted keystore from Swarm and verify the password.
+ * Returns the decrypted account on success.
  */
-export async function recoverFromSwarm(reference: string, password: string): Promise<{ address: string } | null> {
+export async function recoverFromSwarm(reference: string, password: string): Promise<FDSAccount | null> {
   const gateway = process.env.SWARM_GATEWAY_URL || 'https://gateway.fairdatasociety.org'
   try {
     const res = await fetch(`${gateway}/bytes/${reference}`)
     if (!res.ok) return null
     const keystoreJson = await res.text()
-    const keystore = JSON.parse(keystoreJson) as EncryptedKeystore
+    const keystore = JSON.parse(keystoreJson) as FDSKeystore
+    if (!FDSKeystoreManager.isValid(keystore)) return null
 
-    // Verify password by attempting decryption
-    try {
-      decryptKeystore(keystore, password)
-    } catch {
-      return null  // Wrong password
-    }
+    // Verify password by decrypting
+    const account = await FDSKeystoreManager.decrypt(keystore, password)
 
     getPlurDir()
     writeFileSync(KEYSTORE_PATH, keystoreJson)
-    return { address: keystore.address }
+    return account
   } catch {
     return null
   }

@@ -3,11 +3,12 @@ import { createInterface } from 'readline'
 import {
   configExists,
   saveConfig,
-  generateWallet,
+  createAgentAccount,
   loadConfig,
   createKeystore,
   backupToSwarm,
   keystorePath,
+  ENS_DOMAIN,
 } from './identity.js'
 import { createErc8004Identity } from './erc8004.js'
 import { register } from './register.js'
@@ -34,11 +35,13 @@ async function init() {
 
   const password = await ask('  Set a password for your keystore: ')
   console.log('  Generating agent identity...')
-  const { address, privateKeyHex } = generateWallet()
-  console.log(`  → Address: ${address}`)
 
-  const keystore = createKeystore(privateKeyHex, password)
-  console.log(`  → Keystore saved: ${keystorePath()}`)
+  const { wallet, account } = createAgentAccount(name.trim().toLowerCase())
+  console.log(`  → Address: ${wallet.address}`)
+  console.log(`  → ENS: ${name.trim().toLowerCase()}.${ENS_DOMAIN}`)
+
+  const keystore = await createKeystore(account, password)
+  console.log(`  → Keystore saved: ${keystorePath()} (FDS format, interoperable with Fairdrop)`)
 
   console.log('  Backing up to Swarm...')
   const keystoreRef = await backupToSwarm(JSON.stringify(keystore))
@@ -50,7 +53,7 @@ async function init() {
 
   console.log('  Creating ERC-8004 identity...')
   const erc8004 = await createErc8004Identity({
-    agentAddress: address as `0x${string}`,
+    agentAddress: wallet.address as `0x${string}`,
     name: name.trim().toLowerCase(),
     domain: undefined,
   })
@@ -71,7 +74,7 @@ async function init() {
     const result = await register({
       hub,
       name: name.trim().toLowerCase(),
-      wallet: address,
+      wallet: wallet.address,
       forwardTo: endpointInput || undefined,
       domain: domain || undefined,
       queryPrice,
@@ -83,7 +86,8 @@ async function init() {
 
     saveConfig({
       name: result.name,
-      wallet: address,
+      ensName: `${result.name}.${ENS_DOMAIN}`,
+      wallet: wallet.address,
       hub,
       domain: domain || undefined,
       queryPrice,
@@ -94,6 +98,7 @@ async function init() {
 
     console.log(`\n  ✓ Agent registered!`)
     console.log(`  → URL: plur.ai/${result.name}`)
+    console.log(`  → ENS: ${result.name}.${ENS_DOMAIN}`)
     console.log(`  → Domain: ${domain || 'none'}`)
     console.log(`  → Price: $${(Number(queryPrice) / 1_000_000).toFixed(2)}/query`)
     console.log(`\n  Top up wallet: plur.ai/topup`)
@@ -113,6 +118,7 @@ async function status() {
   }
   console.log(`Agent: ${config.name}`)
   console.log(`URL: plur.ai/${config.name}`)
+  if (config.ensName) console.log(`ENS: ${config.ensName}`)
   console.log(`Wallet: ${config.wallet}`)
   console.log(`Domain: ${config.domain || 'none'}`)
   console.log(`Price: $${(Number(config.queryPrice) / 1_000_000).toFixed(2)}/query`)
@@ -130,9 +136,14 @@ async function main() {
       const ref = await ask('Swarm backup reference: ')
       const pwd = await ask('Password: ')
       const { recoverFromSwarm } = await import('./identity.js')
-      const result = await recoverFromSwarm(ref, pwd)
-      if (result) console.log(`✓ Identity recovered: ${result.address}`)
-      else console.log('✗ Recovery failed — check reference and password')
+      const account = await recoverFromSwarm(ref, pwd)
+      if (account) {
+        console.log(`✓ Identity recovered`)
+        console.log(`  Subdomain: ${account.subdomain}`)
+        console.log(`  Address: ${account.walletAddress}`)
+      } else {
+        console.log('✗ Recovery failed — check reference and password')
+      }
       rl.close()
       return
     }
