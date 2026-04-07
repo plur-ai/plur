@@ -1,0 +1,68 @@
+{
+  "label": "integration",
+  "iterations": 100,
+  "timestamp": "2026-04-07T19:50:40.856Z",
+  "operations": {
+    "learn": {
+      "count": 100,
+      "total_ms": 178.23,
+      "mean_ms": 1.782,
+      "median_ms": 1.31175,
+      "p95_ms": 3.803541,
+      "p99_ms": 5.548625,
+      "min_ms": 1.131084,
+      "max_ms": 5.548625
+    },
+    "recall_bm25": {
+      "count": 100,
+      "total_ms": 375.42,
+      "mean_ms": 3.754,
+      "median_ms": 3.856958,
+      "p95_ms": 4.969417,
+      "p99_ms": 14.906583,
+      "min_ms": 1.247083,
+      "max_ms": 14.906583
+    },
+    "recall_hybrid": {
+      "count": 100,
+      "total_ms": 2043.06,
+      "mean_ms": 20.431,
+      "median_ms": 11.074167,
+      "p95_ms": 17.842125,
+      "p99_ms": 819.132375,
+      "min_ms": 9.722167,
+      "max_ms": 819.132375
+    },
+    "inject": {
+      "count": 100,
+      "total_ms": 36.25,
+      "mean_ms": 0.363,
+      "median_ms": 0.361125,
+      "p95_ms": 0.625542,
+      "p99_ms": 2.869334,
+      "min_ms": 0.132709,
+      "max_ms": 2.869334
+    },
+    "inject_tokens": {
+      "count": 100,
+      "total_ms": 203480,
+      "mean_ms": 2034.8,
+      "median_ms": 2286,
+      "p95_ms": 2462,
+      "p99_ms": 2462,
+      "min_ms": 1027,
+      "max_ms": 2462
+    }
+  },
+  "dedup": {
+    "tested": 5,
+    "decisions": [
+      "ADD",
+      "ADD",
+      "ADD",
+      "ADD",
+      "ADD"
+    ],
+    "has_async_dedup": true
+  }
+}
