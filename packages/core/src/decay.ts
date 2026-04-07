@@ -51,3 +51,43 @@ export function decayedCoAccessStrength(
   const floor = 0.02
   return floor + (strength - floor) * Math.exp(-lambda * daysSinceUpdate)
 }
+
+/**
+ * Idea 21 (SP1): Confidence decay for engrams without recent positive feedback.
+ * If no positive feedback in 90 days AND not locked: apply 0.95x/month multiplier.
+ * Floor at 0.1. Locked engrams exempt.
+ */
+export function confidenceDecay(
+  retrievalStrength: number,
+  lastPositiveFeedbackDate: string | null,
+  commitment: string | undefined,
+  decayBaseline: string | undefined,
+  now?: Date,
+): number {
+  if (commitment === 'locked') return retrievalStrength
+
+  const CONFIDENCE_DECAY_FLOOR = 0.1
+  const GRACE_PERIOD_DAYS = 90
+  const MONTHLY_MULTIPLIER = 0.95
+
+  const current = now || new Date()
+
+  let referenceDate: Date
+  if (lastPositiveFeedbackDate) {
+    referenceDate = new Date(lastPositiveFeedbackDate)
+  } else if (decayBaseline) {
+    referenceDate = new Date(decayBaseline)
+  } else {
+    return retrievalStrength
+  }
+
+  const daysSinceRef = Math.max(0, Math.floor((current.getTime() - referenceDate.getTime()) / MS_PER_DAY))
+  if (daysSinceRef <= GRACE_PERIOD_DAYS) return retrievalStrength
+
+  const daysOverGrace = daysSinceRef - GRACE_PERIOD_DAYS
+  const monthsOverGrace = daysOverGrace / 30
+  const multiplier = Math.pow(MONTHLY_MULTIPLIER, monthsOverGrace)
+  const decayed = retrievalStrength * multiplier
+
+  return Math.max(CONFIDENCE_DECAY_FLOOR, decayed)
+}

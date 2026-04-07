@@ -1,6 +1,6 @@
 import * as fs from 'fs'
 import * as yaml from 'js-yaml'
-import { EngramSchema, type Engram } from './schemas/engram.js'
+import { EngramSchemaPassthrough, type Engram } from './schemas/engram.js'
 import { PackManifestSchema, type PackManifest } from './schemas/pack.js'
 import { logger } from './logger.js'
 import { atomicWrite } from './sync.js'
@@ -13,7 +13,7 @@ export function loadEngrams(filePath: string): Engram[] {
     const valid: Engram[] = []
     let skipped = 0
     for (const entry of raw.engrams) {
-      const result = EngramSchema.safeParse(entry)
+      const result = EngramSchemaPassthrough.safeParse(entry)
       if (result.success) valid.push(result.data)
       else skipped++
     }

@@ -4,3 +4,4 @@ dist/
 .worktrees/
 __pycache__/
 *.pyc
+.claude/worktrees/

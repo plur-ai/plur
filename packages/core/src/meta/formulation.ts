@@ -167,6 +167,8 @@ Return ONLY valid JSON, no markdown fencing.`
     abstract: null,
     derived_from: null,
     polarity: null,
+    engram_version: 1,
+    episode_ids: [],
     knowledge_type: {
       memory_class: 'metacognitive',
       cognitive_level: 'evaluate',

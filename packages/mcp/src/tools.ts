@@ -1,4 +1,4 @@
-import { Plur, extractMetaEngrams, validateMetaEngram, confidenceBand } from '@plur-ai/core'
+import { Plur, extractMetaEngrams, validateMetaEngram, confidenceBand, generateProfile, getProfileForInjection, markProfileDirty, selectModelForOperation, readHistoryForEngram } from '@plur-ai/core'
 import type { LlmFunction, MetaField } from '@plur-ai/core'
 
 /** Create an OpenAI-compatible LLM function from a base URL + API key */
@@ -71,6 +71,14 @@ const PLUR_GUIDE = `## PLUR Quick Start
 - **plur_recall_hybrid** — search engrams by topic
 - **plur_forget** — retire an outdated engram`
 
+function getLlmFunction(): LlmFunction | undefined {
+  const openaiKey = process.env.OPENAI_API_KEY
+  const openrouterKey = process.env.OPENROUTER_API_KEY
+  if (openrouterKey) return makeHttpLlm('https://openrouter.ai/api/v1', openrouterKey, 'openai/gpt-4o-mini')
+  if (openaiKey) return makeHttpLlm('https://api.openai.com/v1', openaiKey, 'gpt-4o-mini')
+  return undefined
+}
+
 export function getToolDefinitions(): ToolDefinition[] {
   return [
     {
@@ -115,11 +123,16 @@ export function getToolDefinitions(): ToolDefinition[] {
           },
           abstract: { type: 'string', description: 'Abstract engram ID this was derived from' },
           derived_from: { type: 'string', description: 'Source engram ID this was derived from' },
+          commitment: { type: 'string', enum: ['exploring', 'leaning', 'decided', 'locked'], description: 'Commitment level (default: leaning)' },
+          locked_reason: { type: 'string', description: 'Reason for locking (when commitment=locked)' },
+          memory_class: { type: 'string', enum: ['semantic', 'episodic', 'procedural', 'metacognitive'], description: 'Memory classification (auto-set from type if omitted)' },
+          session_episode_id: { type: 'string', description: 'Link to current session episode for episodic anchoring' },
         },
         required: ['statement'],
       },
       handler: async (args, plur) => {
-        const engram = plur.learn(args.statement as string, {
+        const llm = getLlmFunction()
+        const context = {
           type: args.type as any,
           scope: args.scope as string | undefined,
           domain: args.domain as string | undefined,
@@ -131,8 +144,23 @@ export function getToolDefinitions(): ToolDefinition[] {
           dual_coding: args.dual_coding as any,
           abstract: args.abstract as string | undefined,
           derived_from: args.derived_from as string | undefined,
-        })
-        return { id: engram.id, statement: engram.statement, scope: engram.scope, type: engram.type }
+          commitment: args.commitment as any,
+          locked_reason: args.locked_reason as string | undefined,
+          memory_class: args.memory_class as any,
+          session_episode_id: args.session_episode_id as string | undefined,
+          llm,
+        }
+        try {
+          const result = await plur.learnAsync(args.statement as string, context)
+          return {
+            id: result.engram.id, statement: result.engram.statement,
+            scope: result.engram.scope, type: result.engram.type,
+            decision: result.decision, existing_id: result.existing_id, tensions: result.tensions,
+          }
+        } catch {
+          const engram = plur.learn(args.statement as string, context)
+          return { id: engram.id, statement: engram.statement, scope: engram.scope, type: engram.type, decision: 'ADD' }
+        }
       },
     },
 
@@ -148,6 +176,8 @@ export function getToolDefinitions(): ToolDefinition[] {
           domain: { type: 'string', description: 'Filter by domain prefix' },
           limit: { type: 'number', description: 'Max results to return (default 20)' },
           min_strength: { type: 'number', description: 'Minimum retrieval strength (0-1)' },
+          budget: { type: 'object', description: 'Budget constraints for sub-agents', properties: { max_tokens: { type: 'number' }, max_results: { type: 'number' } } },
+          caller_session_id: { type: 'string', description: 'Caller session ID for budget enforcement' },
         },
         required: ['query'],
       },
@@ -184,26 +214,60 @@ export function getToolDefinitions(): ToolDefinition[] {
           domain: { type: 'string', description: 'Filter by domain prefix' },
           limit: { type: 'number', description: 'Max results to return (default 20)' },
           min_strength: { type: 'number', description: 'Minimum retrieval strength (0-1)' },
+          budget: { type: 'object', description: 'Budget constraints for sub-agents', properties: { max_tokens: { type: 'number' }, max_results: { type: 'number' }, ttl_seconds: { type: 'number' } } },
+          caller_session_id: { type: 'string', description: 'Session ID of calling agent for budget enforcement' },
+          include_episodes: { type: 'boolean', description: 'If true, include linked episode summaries for each engram (SP2 episodic anchoring)' },
         },
         required: ['query'],
       },
       handler: async (args, plur) => {
+        const budget = args.budget as { max_tokens?: number; max_results?: number; ttl_seconds?: number } | undefined
+        const effectiveLimit = budget?.max_results ?? (args.limit as number | undefined) ?? 20
         const results = await plur.recallHybrid(args.query as string, {
           scope: args.scope as string | undefined,
           domain: args.domain as string | undefined,
-          limit: args.limit as number | undefined,
+          limit: effectiveLimit,
           min_strength: args.min_strength as number | undefined,
         })
+        let truncated = false
+        let boundedResults = results
+        if (budget?.max_results && results.length > budget.max_results) {
+          boundedResults = results.slice(0, budget.max_results)
+          truncated = true
+        }
+        if (budget?.max_tokens) {
+          let tokenCount = 0
+          const withinBudget = []
+          for (const e of boundedResults) {
+            const tokens = Math.ceil(e.statement.length / 4) + 20
+            if (tokenCount + tokens > budget.max_tokens) { truncated = true; break }
+            withinBudget.push(e)
+            tokenCount += tokens
+          }
+          boundedResults = withinBudget
+        }
+        const includeEpisodes = args.include_episodes === true
         return {
-          results: results.map(e => ({
-            id: e.id,
-            statement: e.statement,
-            type: e.type,
-            scope: e.scope,
-            domain: e.domain,
-            retrieval_strength: e.activation.retrieval_strength,
-          })),
-          count: results.length,
+          results: boundedResults.map(e => {
+            const raw = e as any
+            const base: Record<string, unknown> = {
+              id: e.id,
+              statement: e.statement,
+              type: e.type,
+              scope: e.scope,
+              domain: e.domain,
+              retrieval_strength: e.activation.retrieval_strength,
+            }
+            if (includeEpisodes && raw.episode_ids?.length > 0) {
+              const episodes = plur.timeline({ search: '' })
+              base.episodes = episodes
+                .filter((ep: any) => raw.episode_ids.includes(ep.id))
+                .map((ep: any) => ({ id: ep.id, summary: ep.summary, timestamp: ep.timestamp }))
+            }
+            return base
+          }),
+          count: boundedResults.length,
+          truncated,
           mode: 'hybrid',
         }
       },
@@ -783,6 +847,9 @@ export function getToolDefinitions(): ToolDefinition[] {
           episode_count: status.episode_count,
           pack_count: status.pack_count,
           storage_root: status.storage_root,
+          locked_count: status.locked_count,
+          tension_count: status.tension_count,
+          versioned_engram_count: status.versioned_engram_count ?? 0,
         }
       },
     },
@@ -1006,6 +1073,171 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
     },
 
     {
+      name: 'plur_tensions',
+      description: 'List engram pairs that have conflicting knowledge — shows tensions in your memory that may need resolution',
+      annotations: { title: 'Tensions', readOnlyHint: true, idempotentHint: true },
+      inputSchema: {
+        type: 'object',
+        properties: {
+          scope: { type: 'string', description: 'Filter by scope' },
+          domain: { type: 'string', description: 'Filter by domain prefix' },
+        },
+      },
+      handler: async (args, plur) => {
+        const engrams = plur.list({
+          scope: args.scope as string | undefined,
+          domain: args.domain as string | undefined,
+        })
+
+        const tensions: Array<{
+          engram_a: { id: string; statement: string; type: string }
+          engram_b: { id: string; statement: string; type: string }
+          detected_at: string
+        }> = []
+
+        const seen = new Set<string>()
+
+        for (const engram of engrams) {
+          if (!engram.relations?.conflicts?.length) continue
+          for (const conflictId of engram.relations.conflicts) {
+            // Deduplicate: only show each pair once
+            const pairKey = [engram.id, conflictId].sort().join(':')
+            if (seen.has(pairKey)) continue
+            seen.add(pairKey)
+
+            const other = engrams.find(e => e.id === conflictId)
+            if (!other) continue
+
+            tensions.push({
+              engram_a: { id: engram.id, statement: engram.statement, type: engram.type },
+              engram_b: { id: other.id, statement: other.statement, type: other.type },
+              detected_at: engram.activation.last_accessed,
+            })
+          }
+        }
+
+        return { tensions, count: tensions.length }
+      },
+    },
+
+    {
+      name: 'plur_episode_to_engram',
+      description: 'Promote an episode to a persistent episodic engram — useful when a session event deserves long-term memory',
+      annotations: { title: 'Episode to Engram', destructiveHint: false, idempotentHint: false },
+      inputSchema: {
+        type: 'object',
+        properties: {
+          episode_id: { type: 'string', description: 'Episode ID to promote (from plur_timeline)' },
+          scope: { type: 'string', description: 'Scope for the new engram' },
+          domain: { type: 'string', description: 'Domain tag for the new engram' },
+          tags: { type: 'array', items: { type: 'string' }, description: 'Tags for the new engram' },
+        },
+        required: ['episode_id'],
+      },
+      handler: async (args, plur) => {
+        const engram = plur.episodeToEngram(args.episode_id as string, {
+          scope: args.scope as string | undefined,
+          domain: args.domain as string | undefined,
+          tags: args.tags as string[] | undefined,
+        })
+        return {
+          id: engram.id,
+          statement: engram.statement,
+          memory_class: (engram as any).knowledge_type?.memory_class,
+          episode_ids: (engram as any).episode_ids,
+          source: engram.source,
+        }
+      },
+    },
+
+    {
+      name: 'plur_history',
+      description: 'View the event-sourced history of an engram or all recent history — shows creation, updates, feedback, and evolution events',
+      annotations: { title: 'History', readOnlyHint: true, idempotentHint: true },
+      inputSchema: {
+        type: 'object',
+        properties: {
+          engram_id: { type: 'string', description: 'Filter history for a specific engram ID. If omitted, returns recent history across all engrams.' },
+          limit: { type: 'number', description: 'Max events to return (default 50)' },
+        },
+      },
+      handler: async (args, plur) => {
+        const engramId = args.engram_id as string | undefined
+        const limit = (args.limit as number | undefined) ?? 50
+
+        if (engramId) {
+          const events = plur.getEngramHistory(engramId)
+          return {
+            engram_id: engramId,
+            events: events.slice(-limit),
+            total: events.length,
+          }
+        }
+
+        // Return recent history across all engrams
+        const { listHistoryMonths, readHistory } = await import('@plur-ai/core')
+        const status = plur.status()
+        const months = listHistoryMonths(status.storage_root)
+        const allEvents: Array<Record<string, unknown>> = []
+        // Read from most recent months first
+        for (const month of months.reverse()) {
+          const events = readHistory(status.storage_root, month)
+          allEvents.push(...events)
+          if (allEvents.length >= limit) break
+        }
+        // Return most recent events
+        return {
+          events: allEvents.slice(-limit),
+          total: allEvents.length,
+        }
+      },
+    },
+
+    {
+      name: 'plur_report_failure',
+      description: 'Report a failure for a procedural engram — triggers procedure evolution via LLM if configured. Only works on procedural engrams. Max 3 revisions per procedure per 24h.',
+      annotations: { title: 'Report Failure', destructiveHint: false, idempotentHint: false },
+      inputSchema: {
+        type: 'object',
+        properties: {
+          engram_id: { type: 'string', description: 'ID of the procedural engram that failed' },
+          failure_context: { type: 'string', description: 'Description of what went wrong when following this procedure' },
+          llm_base_url: { type: 'string', description: 'OpenAI-compatible API base URL for procedure evolution' },
+          llm_api_key: { type: 'string', description: 'API key for the LLM' },
+          llm_model: { type: 'string', description: 'Model name (default: gpt-4o-mini)' },
+        },
+        required: ['engram_id', 'failure_context'],
+      },
+      handler: async (args, plur) => {
+        let llm: LlmFunction | undefined
+        if (args.llm_base_url && args.llm_api_key) {
+          llm = makeHttpLlm(
+            args.llm_base_url as string,
+            args.llm_api_key as string,
+            args.llm_model as string | undefined,
+          )
+        }
+
+        const result = await plur.reportFailure(
+          args.engram_id as string,
+          args.failure_context as string,
+          llm,
+        )
+
+        return {
+          engram_id: result.engram.id,
+          statement: result.engram.statement,
+          evolved: result.evolved,
+          engram_version: (result.engram as any).engram_version ?? 1,
+          failure_episode_id: result.episode.id,
+          note: result.evolved
+            ? 'Procedure was improved based on the failure report'
+            : 'Failure logged but procedure was not rewritten (no LLM configured or LLM unavailable)',
+        }
+      },
+    },
+
+    {
       name: 'plur_packs_export',
       description: 'Export engrams as a shareable thematic pack with privacy scanning and integrity hash. Filters out private and secret-containing engrams automatically. Output goes to ~/plur-packs/<name> by default.',
       annotations: { title: 'Export pack', destructiveHint: false, idempotentHint: false },
@@ -1060,6 +1292,40 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
           privacy_issues: result.privacy.issues.length,
           name,
         }
+      },
+    },
+
+    {
+      name: 'plur_profile',
+      description: 'Generate or retrieve a cognitive profile — a narrative summary synthesized from stored engrams. Cached for 24h.',
+      annotations: { title: 'Cognitive profile', readOnlyHint: true, idempotentHint: true },
+      inputSchema: {
+        type: 'object',
+        properties: {
+          scope: { type: 'string', description: 'Filter engrams by scope' },
+          llm_base_url: { type: 'string', description: 'OpenAI-compatible API base URL' },
+          llm_api_key: { type: 'string', description: 'API key for the LLM' },
+          llm_model: { type: 'string', description: 'Model name' },
+          force_regenerate: { type: 'boolean', description: 'Force regeneration (default false)' },
+        },
+      },
+      handler: async (args, plur) => {
+        const status = plur.status()
+        const storagePath = status.storage_root
+        if (!args.force_regenerate) {
+          const cached = getProfileForInjection(storagePath)
+          if (cached) return { profile: cached, source: 'cache' }
+        }
+        if (!args.llm_base_url || !args.llm_api_key) {
+          const cached = getProfileForInjection(storagePath)
+          if (cached) return { profile: cached, source: 'stale_cache' }
+          return { profile: null, error: 'No cached profile. Provide llm_base_url and llm_api_key.' }
+        }
+        const model = (args.llm_model as string) ?? selectModelForOperation('profile', status.config?.llm)
+        const llm = makeHttpLlm(args.llm_base_url as string, args.llm_api_key as string, model)
+        const engrams = plur.list({ scope: args.scope as string | undefined })
+        const profile = await generateProfile(engrams, llm, storagePath, status.config?.profile?.cache_ttl_hours ?? 24)
+        return { profile, source: 'generated', engram_count: engrams.length, model }
       },
     },
   ]

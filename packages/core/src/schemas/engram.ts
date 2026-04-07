@@ -96,6 +96,13 @@ export const EpisodicFieldsSchema = z.object({
   journal_ref: z.string().optional(),
 })
 
+// === NEW: Version lineage (SP2 Idea 8) ===
+
+export const PreviousVersionRefSchema = z.object({
+  event_id: z.string(),
+  changed_at: z.string(),
+})
+
 // === NEW: Exchange metadata (marketplace fitness) ===
 
 export const ExchangeMetadataSchema = z.object({
@@ -177,7 +184,29 @@ export const EngramSchema = z.object({
 
   /** Polarity classification: 'do' for directives, 'dont' for prohibitions, null for unclassified. */
   polarity: z.enum(['do', 'dont']).nullable().default(null),
+
+  // === SP1: Memory Intelligence fields ===
+  content_hash: z.string().optional(),
+  commitment: z.enum(['exploring', 'leaning', 'decided', 'locked']).optional(),
+  locked_at: z.string().optional(),
+  locked_reason: z.string().optional(),
+
+  // === SP2: History & Evolution fields ===
+  engram_version: z.number().int().min(1).default(1),
+  previous_version_ref: PreviousVersionRefSchema.optional(),
+  episode_ids: z.array(z.string()).default([]),
+
+  // === SP3: Retrieval & Injection fields ===
+  summary: z.string().max(80).optional(),
 })
+
+/**
+ * Runtime schema with .passthrough() so unknown fields are preserved during parsing.
+ * This prevents data loss when new fields are added by hand or by other SPs.
+ * The Engram type is derived from the strict schema (without passthrough) to keep
+ * TypeScript type safety — passthrough only affects runtime Zod validation.
+ */
+export const EngramSchemaPassthrough = EngramSchema.passthrough()
 
 export type Engram = z.infer<typeof EngramSchema>
 export type KnowledgeAnchor = z.infer<typeof KnowledgeAnchorSchema>
@@ -187,3 +216,4 @@ export type Temporal = z.infer<typeof TemporalSchema>
 export type UsageStats = z.infer<typeof UsageStatsSchema>
 export type EpisodicFields = z.infer<typeof EpisodicFieldsSchema>
 export type ExchangeMetadata = z.infer<typeof ExchangeMetadataSchema>
+export type PreviousVersionRef = z.infer<typeof PreviousVersionRefSchema>
