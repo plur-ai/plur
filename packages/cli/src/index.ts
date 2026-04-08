@@ -4,7 +4,7 @@ import { parseGlobalFlags, createPlur } from './plur.js'
 export type { GlobalFlags } from './plur.js'
 export { parseGlobalFlags, createPlur } from './plur.js'
 
-const VERSION = '0.8.0'
+const VERSION = '0.8.1'
 
 // --- Main ---
 const argv = process.argv.slice(2)
@@ -38,7 +38,8 @@ Commands:
   migrate [up|down|status] Run schema migrations
   stores list             List configured stores
   stores add <path>       Add a knowledge store
-  init                    Install Claude Code hooks for automatic injection
+  init                    Install Claude Code hooks + register plur MCP server
+  doctor                  Diagnose Claude Code / Claude Desktop integration
   hook-inject             (internal) Hook handler for engram injection
   hook-observe            (internal) Hook handler for observation capture
   hook-learn-check        (internal) Hook handler for learning reflection
@@ -74,6 +75,7 @@ const COMMANDS: Record<string, string> = {
   stores: './commands/stores.js',
   migrate: './commands/migrate.js',
   init: './commands/init.js',
+  doctor: './commands/doctor.js',
   'hook-inject': './commands/hook-inject.js',
   'hook-observe': './commands/hook-observe.js',
   'hook-learn-check': './commands/hook-learn-check.js',
