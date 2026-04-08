@@ -168,8 +168,8 @@ echo ""
 
 # --- 7. GitHub release ---
 echo "--- Step 7: GitHub release ---"
-# Extract current version section from CHANGELOG
-RELEASE_NOTES=$(awk "/^## $VERSION/,/^## [0-9]/" CHANGELOG.md | head -n -1)
+# Extract current version section from CHANGELOG (stop at next ## heading)
+RELEASE_NOTES=$(awk -v v="$VERSION" '$0 ~ "^## "v{p=1; next} /^## [0-9]/{if(p)exit} p' CHANGELOG.md)
 if [ -z "$RELEASE_NOTES" ]; then
   RELEASE_NOTES="Release v$VERSION — see CHANGELOG.md for details."
 fi
@@ -182,26 +182,46 @@ if [ "$SKIP_TWEET" = true ]; then
 else
   echo "--- Step 8: Tweet ---"
 
-  # Read tweet template features from CHANGELOG
-  FEATURES=$(awk "/^## $VERSION/,/^## [0-9]/" CHANGELOG.md | grep "^- " | head -4 | sed 's/^- /✅ /')
+  # Extract current version section from CHANGELOG
+  SECTION=$(awk -v v="$VERSION" '$0 ~ "^## "v{p=1; next} /^## [0-9]/{if(p)exit} p' CHANGELOG.md)
 
+  # Tweet template features: first 4 bullets become the tweet
+  FEATURES=$(echo "$SECTION" | grep "^- " | head -4 | sed 's/^- /✅ /')
+
+  # Headline count: extract "50+ improvements" style line if present
+  HEADLINE=$(echo "$SECTION" | grep -Eo "^[0-9]+\+ improvements" | head -1)
+  [ -z "$HEADLINE" ] && HEADLINE="Update:"
+
+  # Main tweet — under 280 chars
   TWEET="🚀 New release: PLUR $VERSION
+
+$HEADLINE
 
 $FEATURES
 
 Tell your agent to update.
 
-Manual update:
-Claude Code / Cursor / Windsurf: npm update -g @plur-ai/mcp
-OpenClaw: openclaw plugins install @plur-ai/claw
-Hermes: pip install --upgrade plur-hermes
+github.com/plur-ai/plur/releases/tag/v$VERSION"
 
-https://github.com/plur-ai/plur/releases/tag/v$VERSION"
+  # Reply tweet — manual install commands
+  REPLY="Manual update:
+
+Claude Code / Cursor / Windsurf:
+npm update -g @plur-ai/mcp @plur-ai/cli
+
+OpenClaw:
+openclaw plugins install @plur-ai/claw
+
+Hermes:
+pip install --upgrade plur-hermes"
 
   echo "$TWEET"
   echo ""
+  echo "--- Reply ---"
+  echo "$REPLY"
+  echo ""
 
-  # Post via X API v2
+  # Post main + reply via X API v2 (OAuth 1.0a)
   node -e "
     const crypto = require('crypto');
     const https = require('https');
@@ -216,56 +236,76 @@ https://github.com/plur-ai/plur/releases/tag/v$VERSION"
       process.exit(1);
     }
 
-    const method = 'POST';
-    const url = 'https://api.x.com/2/tweets';
-    const body = JSON.stringify({ text: process.argv[1] });
-
-    // OAuth 1.0a signature
-    const timestamp = Math.floor(Date.now() / 1000).toString();
-    const nonce = crypto.randomBytes(16).toString('hex');
-
-    const params = {
-      oauth_consumer_key: apiKey,
-      oauth_nonce: nonce,
-      oauth_signature_method: 'HMAC-SHA1',
-      oauth_timestamp: timestamp,
-      oauth_token: accessToken,
-      oauth_version: '1.0',
-    };
-
-    const paramString = Object.keys(params).sort()
-      .map(k => encodeURIComponent(k) + '=' + encodeURIComponent(params[k]))
-      .join('&');
-
-    const baseString = method + '&' + encodeURIComponent(url) + '&' + encodeURIComponent(paramString);
-    const signingKey = encodeURIComponent(apiSecret) + '&' + encodeURIComponent(accessSecret);
-    const signature = crypto.createHmac('sha1', signingKey).update(baseString).digest('base64');
-
-    const authHeader = 'OAuth ' + Object.entries({...params, oauth_signature: signature})
-      .map(([k, v]) => encodeURIComponent(k) + '=\"' + encodeURIComponent(v) + '\"')
-      .join(', ');
-
-    const req = https.request(url, {
-      method,
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': authHeader,
-      },
-    }, (res) => {
-      let data = '';
-      res.on('data', c => data += c);
-      res.on('end', () => {
-        if (res.statusCode === 201) {
-          const json = JSON.parse(data);
-          console.log('Tweet posted: https://x.com/plur_ai/status/' + json.data.id);
-        } else {
-          console.error('Tweet failed (' + res.statusCode + '):', data);
+    function postTweet(text, replyToId) {
+      return new Promise((resolve, reject) => {
+        const method = 'POST';
+        const url = 'https://api.x.com/2/tweets';
+        const bodyObj = { text };
+        if (replyToId) {
+          bodyObj.reply = { in_reply_to_tweet_id: replyToId };
         }
+        const body = JSON.stringify(bodyObj);
+
+        const timestamp = Math.floor(Date.now() / 1000).toString();
+        const nonce = crypto.randomBytes(16).toString('hex');
+
+        const params = {
+          oauth_consumer_key: apiKey,
+          oauth_nonce: nonce,
+          oauth_signature_method: 'HMAC-SHA1',
+          oauth_timestamp: timestamp,
+          oauth_token: accessToken,
+          oauth_version: '1.0',
+        };
+
+        const paramString = Object.keys(params).sort()
+          .map(k => encodeURIComponent(k) + '=' + encodeURIComponent(params[k]))
+          .join('&');
+
+        const baseString = method + '&' + encodeURIComponent(url) + '&' + encodeURIComponent(paramString);
+        const signingKey = encodeURIComponent(apiSecret) + '&' + encodeURIComponent(accessSecret);
+        const signature = crypto.createHmac('sha1', signingKey).update(baseString).digest('base64');
+
+        const authHeader = 'OAuth ' + Object.entries({...params, oauth_signature: signature})
+          .map(([k, v]) => encodeURIComponent(k) + '=\"' + encodeURIComponent(v) + '\"')
+          .join(', ');
+
+        const req = https.request(url, {
+          method,
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': authHeader,
+          },
+        }, (res) => {
+          let data = '';
+          res.on('data', c => data += c);
+          res.on('end', () => {
+            if (res.statusCode === 201) {
+              const json = JSON.parse(data);
+              resolve(json.data.id);
+            } else {
+              reject(new Error('Tweet failed (' + res.statusCode + '): ' + data));
+            }
+          });
+        });
+        req.on('error', reject);
+        req.write(body);
+        req.end();
       });
-    });
-    req.write(body);
-    req.end();
-  " "$TWEET"
+    }
+
+    (async () => {
+      try {
+        const mainId = await postTweet(process.argv[1], null);
+        console.log('Main tweet posted: https://x.com/plur_ai/status/' + mainId);
+        const replyId = await postTweet(process.argv[2], mainId);
+        console.log('Reply posted: https://x.com/plur_ai/status/' + replyId);
+      } catch (err) {
+        console.error(err.message);
+        process.exit(1);
+      }
+    })();
+  " "$TWEET" "$REPLY"
 fi
 
 echo ""

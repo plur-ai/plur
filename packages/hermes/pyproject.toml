@@ -1,6 +1,6 @@
 [project]
 name = "plur-hermes"
-version = "0.7.3"
+version = "0.8.0"
 description = "PLUR persistent memory plugin for Hermes Agent"
 readme = "README.md"
 license = "Apache-2.0"
