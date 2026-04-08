@@ -2,22 +2,41 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
 import { type GlobalFlags } from '../plur.js'
-import { outputText, exit } from '../output.js'
+import { outputText } from '../output.js'
+import {
+  buildMcpServerEntry,
+  claudeDesktopConfigPath,
+  hasPlurMcp,
+  mergePlurMcp,
+  readConfig,
+  writeConfig,
+} from '../mcp-config.js'
 
 /**
- * plur init — install Claude Code hooks for automatic engram injection.
+ * plur init — install Claude Code hooks AND register the plur MCP server.
  *
- * Adds hooks to .claude/settings.json (project-level if in a project, else global).
- * Hooks use `npx @plur-ai/cli inject` for engram selection — no Python, no Datacore deps.
+ * Two things must be in place for plur to work in Claude Code:
+ *
+ *   1. The `plur` MCP server must be registered, so the `plur_*` tools exist.
+ *   2. The lifecycle hooks must call `npx @plur-ai/cli hook-*` to inject
+ *      relevant engrams into the conversation.
+ *
+ * Earlier versions of `plur init` only did step 2, which led users to
+ * believe a separately-installed `datacore` MCP server *was* plur — because
+ * the CLAUDE.md section installed by init told the model to call
+ * `plur_session_start`, `plur_learn`, etc. and the model would then reach
+ * for whatever similarly-named tools it saw. This command now does both.
  *
  * Usage:
  *   plur init              # auto-detect project vs global
  *   plur init --global     # force global ~/.claude/settings.json
  *   plur init --project    # force project .claude/settings.json
+ *   plur init --no-desktop # skip Claude Desktop config registration
  */
 
 interface Settings {
   hooks?: Record<string, HookEntry[]>
+  mcpServers?: Record<string, unknown>
   [key: string]: unknown
 }
 
@@ -125,6 +144,8 @@ const CLAUDE_MD_SECTION = `## PLUR Memory
 
 You have persistent memory via PLUR. Corrections, preferences, and conventions persist across sessions as engrams.
 
+> **PLUR is its own MCP server.** The tools below come from the \`plur\` MCP server registered by \`plur init\` — \`plur_session_start\`, \`plur_learn\`, \`plur_recall_hybrid\`, \`plur_feedback\`, \`plur_session_end\`. If you do not see these exact tool names, **PLUR is not connected**: stop and run \`plur doctor\` to diagnose. Do **not** substitute tools from other MCP servers (e.g. \`datacore_*\`) — those belong to a different system and will not persist anything for PLUR.
+
 ### Session Workflow
 
 1. **Start**: Call \`plur_session_start\` with task description — injects relevant engrams
@@ -186,7 +207,7 @@ function installClaudeMd(): string {
   return `created ${claudeMdPath}`
 }
 
-function findSettingsPath(flags: GlobalFlags, args: string[]): string {
+function findSettingsPath(_flags: GlobalFlags, args: string[]): string {
   const forceGlobal = args.includes('--global')
   const forceProject = args.includes('--project')
 
@@ -239,35 +260,80 @@ function mergeHooks(settings: Settings): Settings {
   return { ...settings, hooks }
 }
 
+/**
+ * Register the plur MCP server in Claude Desktop's config file (if present
+ * or if --desktop is forced). Returns a status string for the report.
+ */
+function installDesktopMcp(args: string[]): string {
+  if (args.includes('--no-desktop')) return 'skipped (--no-desktop)'
+
+  const desktopPath = claudeDesktopConfigPath()
+  const forceDesktop = args.includes('--desktop')
+
+  if (!existsSync(desktopPath) && !forceDesktop) {
+    return 'not installed (Claude Desktop not detected — pass --desktop to force)'
+  }
+
+  const config = readConfig(desktopPath)
+  if (hasPlurMcp(config)) {
+    return `already registered in ${desktopPath}`
+  }
+
+  mergePlurMcp(config)
+  writeConfig(desktopPath, config)
+  return `registered in ${desktopPath}`
+}
+
 export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   const settingsPath = findSettingsPath(flags, args)
   const settingsDir = join(settingsPath, '..')
 
   // Load existing settings
-  const settings = loadSettings(settingsPath)
+  let settings = loadSettings(settingsPath)
 
-  // Check if already installed
-  if (hasPlurHooks(settings)) {
-    outputText('PLUR hooks are already installed.')
-    outputText(`  Settings: ${settingsPath}`)
-    return
+  const hooksAlreadyInstalled = hasPlurHooks(settings)
+  const mcpAlreadyInstalled = hasPlurMcp(settings)
+
+  let hooksStatus: string
+  let mcpStatus: string
+
+  if (hooksAlreadyInstalled && mcpAlreadyInstalled) {
+    hooksStatus = 'already installed'
+    mcpStatus = 'already registered'
+  } else {
+    if (!hooksAlreadyInstalled) {
+      settings = mergeHooks(settings)
+      hooksStatus = 'installed'
+    } else {
+      hooksStatus = 'already installed'
+    }
+
+    if (!mcpAlreadyInstalled) {
+      mergePlurMcp(settings as Record<string, unknown>)
+      mcpStatus = 'registered'
+    } else {
+      mcpStatus = 'already registered'
+    }
+
+    // Ensure directory exists and write
+    mkdirSync(settingsDir, { recursive: true })
+    writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n')
   }
-
-  // Merge hooks
-  const updated = mergeHooks(settings)
-
-  // Ensure directory exists
-  mkdirSync(settingsDir, { recursive: true })
-
-  // Write settings
-  writeFileSync(settingsPath, JSON.stringify(updated, null, 2) + '\n')
 
   // Install CLAUDE.md section
   const claudeMdStatus = installClaudeMd()
 
+  // Register in Claude Desktop too
+  const desktopStatus = installDesktopMcp(args)
+
+  const entry = buildMcpServerEntry()
+
   outputText('PLUR installed for Claude Code.')
   outputText('')
-  outputText('Hooks added (9):')
+  outputText(`MCP server (plur): ${mcpStatus}`)
+  outputText(`  command: ${entry.command} ${entry.args.join(' ')}`)
+  outputText('')
+  outputText(`Hooks (9):         ${hooksStatus}`)
   outputText('  UserPromptSubmit  — inject relevant engrams on first message')
   outputText('  PostCompact       — re-inject engrams after context compaction')
   outputText('  PreToolUse        — contextual injection (plan mode, skills, agents)')
@@ -276,8 +342,9 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   outputText('  SubagentStart     — inject agent-scoped engrams into subagents')
   outputText('  Stop              — learning reflection nudge (every 3rd response)')
   outputText('')
-  outputText(`Settings:  ${settingsPath}`)
-  outputText(`CLAUDE.md: ${claudeMdStatus}`)
+  outputText(`Settings:       ${settingsPath}`)
+  outputText(`Claude Desktop: ${desktopStatus}`)
+  outputText(`CLAUDE.md:      ${claudeMdStatus}`)
   outputText('')
-  outputText('Restart Claude Code to pick up the changes.')
+  outputText('Restart Claude Code to pick up the changes, then run `plur doctor` to verify.')
 }
