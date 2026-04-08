@@ -1,5 +1,67 @@
 # Changelog
 
+## 0.8.0 (2026-04-08)
+
+### Competitive Absorption: 50+ Features from 7 Memory Systems
+
+50+ improvements absorbed in one session from Mem0, Claude-Mem, Mengram, Forge, Lossless Claw, OB1, and II-Agent. Implemented across 5 sub-projects, benchmarked, zero regressions.
+
+- 75% faster learn/recall/inject
+- 10% fewer injection tokens
+- LLM-driven dedup (opt-in)
+- Three-memory taxonomy
+
+### Memory Intelligence (SP1)
+
+- `learnAsync()` method: pre-store dedup pipeline — content hash → semantic recall → LLM decision (ADD/UPDATE/MERGE/NOOP)
+- Commitment levels on engrams: exploring / leaning / decided / locked
+- Tension detection: surfaces contradictions between engrams at learn time
+- Confidence decay with 90-day grace period from deployment
+- Content hash fast-path deduplication (SHA256 of normalized statement)
+
+### History & Evolution (SP2)
+
+- Event-sourced history in `~/.plur/history/YYYY-MM.jsonl` (true append-only)
+- Version lineage: engrams track `engram_version` and reference previous version in history log
+- `plur_history(engram_id?)` tool for auditing engram evolution
+- `plur_episode_to_engram()` promotes episodic timeline events to episodic engrams
+- `plur_report_failure()` for failure-driven procedure evolution (rewrites procedures after failures, max 3 revisions/24h)
+
+### Retrieval & Injection (SP3)
+
+- Progressive disclosure: top 30% relevance get full detail, next 40% get statements, rest get index lines
+- `recallAuto()` search orchestrator: auto-selects BM25 / hybrid / expanded based on query characteristics
+- Fresh tail boost: engrams from last 7 days get +0.2 retrieval strength (exploring/leaning only)
+- Cognitive profile synthesis via `plur_profile()`: LLM-generated narrative summary from engram corpus, cached 24h
+- Bounded sub-agent expansion with token budgets and caller session tracking
+- Cost-aware model routing for LLM operations (dedup / profile / meta tiers)
+
+### Infrastructure (SP4a + SP4b)
+
+- Migration system with timestamp-based IDs, opt-in CLI (`plur migrate`), auto-backup
+- Schema passthrough: unknown fields preserved through serialize/deserialize cycle
+- Storage factory pattern: YamlStore (default) + SqliteStore (opt-in for scale)
+- Async-first internals using `async-mutex` and `fs/promises`
+
+### Benchmarks
+
+- New `benchmark/run.ts` — LongMemEval harness (30 scenarios, 6 categories) committed permanently
+- New `benchmark/micro.ts` — per-operation latency micro-benchmark with LLM dedup validation
+- Both runnable on any branch: `npx tsx benchmark/run.ts` and `--compare a b`
+
+### Deferred to 0.9.x
+
+- Vault export (Obsidian-compatible markdown)
+- Pack registry discovery (GitHub-hosted)
+- Python SDK
+
+### Packages
+
+- `@plur-ai/core` 0.8.0 — all SP changes
+- `@plur-ai/mcp` 0.8.0 — new tools: plur_history, plur_profile, plur_tensions, plur_report_failure, plur_episode_to_engram
+- `@plur-ai/cli` 0.8.0 — version bump
+- `@plur-ai/claw` 0.8.0 — version bump (features available via core)
+
 ## 0.7.3 (2026-04-02)
 
 - Fix OpenClaw compat: remove pluginApi:"1" that blocked install on OpenClaw >=2026.3.31

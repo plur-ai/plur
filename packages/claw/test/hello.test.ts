@@ -6,7 +6,7 @@ describe('PLUR ContextEngine plugin', () => {
   it('plugin has correct metadata', () => {
     expect(plugin.id).toBe('plur-claw')
     expect(plugin.kind).toBe('memory')
-    expect(plugin.version).toBe('0.7.7')
+    expect(plugin.version).toBe('0.8.0')
   })
 
   it('registers via plugin API', () => {
