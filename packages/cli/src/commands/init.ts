@@ -15,23 +15,23 @@ import {
 /**
  * plur init — install Claude Code hooks AND register the plur MCP server.
  *
+ * Architecture: PLUR is a GLOBAL tool. One MCP server, one engram store
+ * (~/.plur/), available in every project. Per-project scoping is handled
+ * via domain/scope fields on engrams, not separate installations.
+ *
  * Two things must be in place for plur to work in Claude Code:
  *
  *   1. The `plur` MCP server must be registered, so the `plur_*` tools exist.
  *   2. The lifecycle hooks must call `npx @plur-ai/cli hook-*` to inject
  *      relevant engrams into the conversation.
  *
- * Earlier versions of `plur init` only did step 2, which led users to
- * believe a separately-installed `datacore` MCP server *was* plur — because
- * the CLAUDE.md section installed by init told the model to call
- * `plur_session_start`, `plur_learn`, etc. and the model would then reach
- * for whatever similarly-named tools it saw. This command now does both.
- *
  * Usage:
  *   plur init              # auto-detect project vs global
  *   plur init --global     # force global ~/.claude/settings.json
  *   plur init --project    # force project .claude/settings.json
  *   plur init --no-desktop # skip Claude Desktop config registration
+ *   plur init --domain X   # set default domain for this project (.plur.yaml)
+ *   plur init --scope Y    # set default scope for this project (.plur.yaml)
  */
 
 interface Settings {
@@ -144,17 +144,25 @@ const CLAUDE_MD_SECTION = `## PLUR Memory
 
 You have persistent memory via PLUR. Corrections, preferences, and conventions persist across sessions as engrams.
 
-> **PLUR is its own MCP server.** The tools below come from the \`plur\` MCP server registered by \`plur init\` — \`plur_session_start\`, \`plur_learn\`, \`plur_recall_hybrid\`, \`plur_feedback\`, \`plur_session_end\`. If you do not see these exact tool names, **PLUR is not connected**: stop and run \`plur doctor\` to diagnose. Do **not** substitute tools from other MCP servers (e.g. \`datacore_*\`) — those belong to a different system and will not persist anything for PLUR.
+### Architecture
+
+PLUR is installed **globally** — one MCP server, one engram store (\`~/.plur/\`), available in every project. You do NOT need per-project installation. The \`plur\` MCP server provides tools named \`plur_session_start\`, \`plur_learn\`, \`plur_recall_hybrid\`, \`plur_feedback\`, \`plur_session_end\`, etc. If you cannot find these tools, run \`plur doctor\` to diagnose. Do **not** substitute tools from other MCP servers (e.g. \`datacore_*\`) — those belong to a different system.
+
+Hooks inject engrams automatically on every first message — you do not need to call \`plur_session_start\` manually (though you can for explicit session tracking).
 
 ### Session Workflow
 
-1. **Start**: Call \`plur_session_start\` with task description — injects relevant engrams
+1. **Automatic**: Hooks inject relevant engrams on first message — no action needed
 2. **Learn**: When corrected or discovering something new, call \`plur_learn\` immediately
 3. **Recall**: Before answering factual questions, call \`plur_recall_hybrid\` — check memory first
 4. **Feedback**: Rate injected engrams with \`plur_feedback\` (positive/negative) — trains relevance
 5. **End**: Call \`plur_session_end\` with summary + engram_suggestions
 
 Do not ask permission to use these tools — they are your memory system.
+
+### Multi-project scoping
+
+PLUR uses \`domain\` and \`scope\` fields on engrams to separate knowledge by project. When calling \`plur_learn\`, set \`scope\` (e.g. \`project:my-app\`) to namespace the engram. Scoped recall automatically includes global engrams.
 
 ### When to check memory
 
@@ -164,29 +172,35 @@ Before reaching for web search, file reads, or guessing — apply this priority:
 3. Is the answer derivable from context already loaded? → Just answer
 4. Only if 1-3 fail → Use external tools
 
-| Domain | When to recall |
-|--------|----------------|
-| Decisions | Past design choices, architecture rationale |
-| Corrections | API quirks, bugs, wrong assumptions |
-| Preferences | Formatting, tone, workflow, tool choices |
-| Conventions | Tag formats, file routing, naming rules |
-| Infrastructure | Server IPs, SSH configs, deployment targets |
-
 ### When corrected
 
 When the user corrects you ("no, use X not Y", "that's wrong"):
 1. Call \`plur_learn\` immediately — before continuing the task
 2. Call \`plur_feedback\` with negative signal on the wrong engram if one was injected
 3. Then continue with the corrected approach
-
-### Verification
-
-When recalling facts that will drive actions:
-1. State the recalled fact explicitly before acting on it
-2. Include the engram ID or search that produced it
-3. If no engram matches, say so and verify from the filesystem
-4. Never interpolate between two engrams to produce a "probably correct" composite
 `
+
+/**
+ * Write a .plur.yaml project config with default domain/scope.
+ * This file is read by hooks to auto-apply scoping to learn/recall calls.
+ */
+function installProjectConfig(args: string[]): string | null {
+  const domainIdx = args.indexOf('--domain')
+  const scopeIdx = args.indexOf('--scope')
+  const domain = domainIdx >= 0 ? args[domainIdx + 1] : null
+  const scope = scopeIdx >= 0 ? args[scopeIdx + 1] : null
+
+  if (!domain && !scope) return null
+
+  const configPath = join(process.cwd(), '.plur.yaml')
+  const lines: string[] = ['# PLUR project defaults — read by hooks for automatic scoping']
+  if (domain) lines.push(`domain: ${domain}`)
+  if (scope) lines.push(`scope: ${scope}`)
+  lines.push('')
+
+  writeFileSync(configPath, lines.join('\n'))
+  return configPath
+}
 
 function installClaudeMd(): string {
   const marker = '## PLUR Memory'
@@ -326,15 +340,22 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   // Register in Claude Desktop too
   const desktopStatus = installDesktopMcp(args)
 
+  // Write project config if --domain or --scope provided
+  const projectConfigPath = installProjectConfig(args)
+
   const entry = buildMcpServerEntry()
 
   outputText('PLUR installed for Claude Code.')
+  outputText('')
+  outputText('Architecture: PLUR is a global tool — one MCP server, one engram')
+  outputText('store (~/.plur/), available in every project. Multi-project scoping')
+  outputText('is handled via domain/scope fields on engrams, not per-project installs.')
   outputText('')
   outputText(`MCP server (plur): ${mcpStatus}`)
   outputText(`  command: ${entry.command} ${entry.args.join(' ')}`)
   outputText('')
   outputText(`Hooks (9):         ${hooksStatus}`)
-  outputText('  UserPromptSubmit  — inject relevant engrams on first message')
+  outputText('  UserPromptSubmit  — inject engrams + auto-start session')
   outputText('  PostCompact       — re-inject engrams after context compaction')
   outputText('  PreToolUse        — contextual injection (plan mode, skills, agents)')
   outputText('  PreToolUse        — observation capture for pattern learning')
@@ -345,6 +366,15 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   outputText(`Settings:       ${settingsPath}`)
   outputText(`Claude Desktop: ${desktopStatus}`)
   outputText(`CLAUDE.md:      ${claudeMdStatus}`)
+  if (projectConfigPath) {
+    outputText(`Project config: ${projectConfigPath}`)
+  }
   outputText('')
+  if (projectConfigPath) {
+    outputText('Project scoping configured. Engrams learned in this project will')
+    outputText('be tagged automatically. Run `plur init --domain X --scope Y` in')
+    outputText('other projects to set their defaults.')
+    outputText('')
+  }
   outputText('Restart Claude Code to pick up the changes, then run `plur doctor` to verify.')
 }

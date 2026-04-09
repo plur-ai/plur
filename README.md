@@ -26,7 +26,16 @@ One command sets up everything — storage, MCP config, and Claude Code hooks:
 npx @plur-ai/mcp init
 ```
 
-This creates `~/.plur/` for storage, adds PLUR to your `.mcp.json`, and installs Claude Code hooks for automatic engram injection. Restart Claude Code to activate.
+This creates `~/.plur/` for storage, adds PLUR to your `.mcp.json`, and installs Claude Code hooks for automatic engram injection. PLUR is installed **globally** — one MCP server, one store, available in every project. You only run init once.
+
+For **multi-project setups**, use domain/scope to separate knowledge:
+
+```bash
+cd ~/projects/my-app
+npx @plur-ai/cli init --domain myapp --scope project:my-app
+```
+
+This creates a `.plur.yaml` in the project with defaults that hooks apply automatically. Engrams learned in that project are tagged; recall filters by scope but always includes global knowledge.
 
 ### Global install (faster startup)
 
