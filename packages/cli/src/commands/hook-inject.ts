@@ -1,13 +1,18 @@
 import { existsSync, writeFileSync, readFileSync, mkdirSync, readSync, statSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
+import { randomUUID } from 'crypto'
 import { createPlur, type GlobalFlags } from '../plur.js'
 
 /**
- * plur hook-inject — Claude Code hook for engram injection.
+ * plur hook-inject — Claude Code hook for engram injection + auto session start.
  *
- * Called by UserPromptSubmit hook. First call injects engrams based on the
- * user's prompt. Subsequent calls check if a reminder is due (every 10 min).
+ * Called by UserPromptSubmit hook. First call:
+ *   1. Creates a session ID (auto session start — no need for explicit plur_session_start)
+ *   2. Reads .plur.yaml for project-level domain/scope defaults
+ *   3. Injects relevant engrams based on the user's prompt
+ *
+ * Subsequent calls check if a reminder is due (every 10 min).
  *
  * With --rehydrate: always injects (used by PostCompact hook after context
  * compaction to restore engrams that were lost).
@@ -23,6 +28,35 @@ import { createPlur, type GlobalFlags } from '../plur.js'
  */
 
 const REMINDER_INTERVAL_MS = 10 * 60 * 1000 // 10 minutes
+
+interface ProjectConfig {
+  domain?: string
+  scope?: string
+}
+
+/**
+ * Read .plur.yaml from cwd for project-level defaults.
+ * Returns {} if not found or unparseable.
+ */
+function readProjectConfig(): ProjectConfig {
+  const configPath = join(process.cwd(), '.plur.yaml')
+  if (!existsSync(configPath)) return {}
+  try {
+    const content = readFileSync(configPath, 'utf8')
+    const config: ProjectConfig = {}
+    for (const line of content.split('\n')) {
+      const trimmed = line.trim()
+      if (trimmed.startsWith('#') || !trimmed) continue
+      const [key, ...rest] = trimmed.split(':')
+      const value = rest.join(':').trim()
+      if (key === 'domain') config.domain = value
+      if (key === 'scope') config.scope = value
+    }
+    return config
+  } catch {
+    return {}
+  }
+}
 
 function sessionDir(): string {
   const dir = join(tmpdir(), 'plur-sessions')
@@ -158,8 +192,10 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   if (!isRehydrate && existsSync(marker)) {
     if (isReminderDue()) {
       touchReminder()
+      const projectConfig = readProjectConfig()
+      const scopeHint = projectConfig.scope ? ` Use scope "${projectConfig.scope}" for plur_learn calls in this project.` : ''
       const output = {
-        additionalContext: '[PLUR Memory Reminder] If the user corrected you, stated a preference, or you discovered a pattern — call plur_learn now. Call plur_session_end with engram_suggestions before the conversation ends.',
+        additionalContext: `[PLUR Memory Reminder] If the user corrected you, stated a preference, or you discovered a pattern — call plur_learn now.${scopeHint} Call plur_session_end with engram_suggestions before the conversation ends.`,
       }
       process.stdout.write(JSON.stringify(output))
     }
@@ -167,13 +203,18 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   }
 
   const input = readStdinSync()
+  const projectConfig = readProjectConfig()
 
   // Get task description from hook input
   let task: string
   if (isRehydrate) {
     const summary = (input.compact_summary as string) || ''
     let original = ''
-    try { original = readFileSync(marker, 'utf8') } catch {}
+    try {
+      const raw = readFileSync(marker, 'utf8')
+      // Marker is JSON since 0.8.2 (was plain text before)
+      try { original = JSON.parse(raw).task || raw } catch { original = raw }
+    } catch {}
     task = original ? `${original} ${summary}` : summary || 'general context rehydration'
   } else {
     task = (input.prompt as string) || ''
@@ -181,17 +222,20 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
       writeFileSync(marker, '')
       return
     }
-    writeFileSync(marker, task)
+    // Auto session start: generate session ID and save with task
+    const sessionId = randomUUID()
+    writeFileSync(marker, JSON.stringify({ task, sessionId }))
     touchReminder() // Reset reminder timer on first message
   }
 
-  // Inject engrams
+  // Inject engrams (with project scope if configured)
   const plur = createPlur(flags)
+  const injectOpts = projectConfig.scope ? { scope: projectConfig.scope } : undefined
   let context: string | null = null
   let count = 0
 
   try {
-    const result = await plur.injectHybrid(task)
+    const result = await plur.injectHybrid(task, injectOpts)
     if (result.count > 0) {
       const parts: string[] = []
       if (result.directives) parts.push(result.directives)
@@ -202,7 +246,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     }
   } catch {
     // Fall back to BM25
-    const result = plur.inject(task)
+    const result = plur.inject(task, injectOpts)
     if (result.count > 0) {
       const parts: string[] = []
       if (result.directives) parts.push(result.directives)
@@ -213,14 +257,32 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     }
   }
 
-  if (!context) {
-    return
+  // Build session header
+  const parts: string[] = []
+
+  // Read back session info for the label
+  let sessionId: string | undefined
+  try {
+    const markerData = JSON.parse(readFileSync(marker, 'utf8'))
+    sessionId = markerData.sessionId
+  } catch {}
+
+  if (isRehydrate) {
+    parts.push(`[PLUR Memory — rehydrated after compaction, ${count} engrams]`)
+  } else {
+    parts.push(`[PLUR Memory — session started, ${count} engrams injected]`)
+    if (sessionId) parts.push(`Session ID: ${sessionId}`)
+    if (projectConfig.domain) parts.push(`Project domain: ${projectConfig.domain}`)
+    if (projectConfig.scope) parts.push(`Project scope: ${projectConfig.scope} — use this scope for plur_learn calls`)
   }
 
-  const label = isRehydrate
-    ? `[PLUR Memory — rehydrated after compaction, ${count} engrams]`
-    : `[PLUR Memory — ${count} engrams injected]`
+  if (context) {
+    parts.push('')
+    parts.push(context)
+  }
 
-  const output = { additionalContext: `${label}\n\n${context}` }
+  if (parts.length === 0) return
+
+  const output = { additionalContext: parts.join('\n') }
   process.stdout.write(JSON.stringify(output))
 }

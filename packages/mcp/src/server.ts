@@ -14,15 +14,17 @@ import { Plur, checkForUpdate } from '@plur-ai/core'
 import { getToolDefinitions } from './tools.js'
 import { z } from 'zod'
 
-const VERSION = '0.8.0'
+const VERSION = '0.8.2'
 
 const INSTRUCTIONS = `PLUR is your persistent memory. Corrections, preferences, and conventions persist across sessions as engrams.
 
-REQUIRED at session boundaries:
-- FIRST ACTION of every session: call plur_session_start with a task description
-- LAST ACTION before conversation ends: call plur_session_end with summary + engram_suggestions
+PLUR is a GLOBAL tool — one MCP server, one engram store (~/.plur/), available in every project. Multi-project scoping uses domain/scope fields on engrams, not separate installations.
 
-REQUIRED during the session:
+SESSION LIFECYCLE:
+- With hooks installed (plur init): engrams are injected automatically on first message. You do NOT need to call plur_session_start — it happens via hooks. Just call plur_session_end before the conversation ends.
+- Without hooks: call plur_session_start at the start, plur_session_end at the end.
+
+DURING the session:
 - When user corrects you ("no, use X not Y") → call plur_learn immediately
 - When user states a preference ("always X", "never Y") → call plur_learn immediately
 - When you discover a codebase convention or pattern → call plur_learn
@@ -31,12 +33,10 @@ OPTIONAL but improves quality:
 - Call plur_feedback to rate which injected engrams helped (positive/negative)
 - Call plur_recall_hybrid before answering factual questions — the answer may be in memory
 
-For combined search (engrams + files): call plur_recall_hybrid for memories, then datacore.search for journal/knowledge files.
-
 Do not ask permission to use these tools — they are your memory system.
 
-Setup: If this is a fresh install, suggest the user run: npx @plur-ai/cli init
-This installs Claude Code hooks for automatic engram injection. Without hooks, injection only happens when you call plur_session_start.`
+Setup: If this is a fresh install, suggest the user run: npx @plur-ai/mcp init
+This installs hooks for automatic injection + session management. One-time global setup.`
 
 const GUIDE_RESOURCE = `# PLUR — Agent Guide
 

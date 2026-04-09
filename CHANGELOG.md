@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.8.2 (2026-04-09)
+
+### Architecture Clarity & Multi-Project Scoping
+
+Clarifies PLUR's architecture: **global tool, per-project scoping**. One MCP server, one engram store, available everywhere. Multi-project users scope via domain/scope fields — not per-project installations.
+
+- **Hook-driven session start**: `hook-inject` now auto-generates a session ID on first message — no need for explicit `plur_session_start` call. Session ID is included in injected context for `plur_session_end`.
+- **Project config (`.plur.yaml`)**: `plur init --domain X --scope Y` writes a `.plur.yaml` in the project root. Hooks read this file and auto-apply domain/scope to injection and learn reminders.
+- **Improved init messaging**: `plur init` output now explains the global architecture and scoping model.
+- **CLAUDE.md template rewrite**: Clearer architecture section, documents auto-session and multi-project scoping. Removed verbose sections in favor of concise guidance.
+- **MCP server instructions updated**: Clarifies hook-driven lifecycle vs manual session start.
+- **README multi-project docs**: Install section documents `--domain`/`--scope` workflow.
+
+### Packages
+
+- `@plur-ai/core` 0.8.2 — version bump
+- `@plur-ai/mcp` 0.8.2 — updated instructions, init messaging, CLAUDE.md template
+- `@plur-ai/cli` 0.8.2 — `.plur.yaml` support, auto session start, improved init output
+- `@plur-ai/claw` 0.8.2 — version bump
+
 ## 0.8.0 (2026-04-08)
 
 ### Competitive Absorption: 50+ Features from 7 Memory Systems
