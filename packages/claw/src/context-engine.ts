@@ -144,10 +144,16 @@ export class PlurContextEngine implements ContextEngine {
       let injection = null
       if (task) {
         const scope = this.sessionScopes.get(params.sessionKey || '') || undefined
-        injection = await this.plur.injectHybrid(task, {
+        const injectOpts = {
           budget: this.options.injection_budget,
           scope,
-        })
+        }
+        try {
+          injection = await this.plur.injectHybrid(task, injectOpts)
+        } catch {
+          // Fall back to BM25 when embeddings unavailable
+          injection = this.plur.inject(task, injectOpts)
+        }
       }
 
       return assembleContext({

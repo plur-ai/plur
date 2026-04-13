@@ -49,7 +49,7 @@ export async function withAsyncLock<T>(
       if (attempt === maxRetries) {
         throw new Error(`Failed to acquire lock on ${filePath} after ${maxRetries} retries`)
       }
-      const delay = baseDelay * Math.pow(2, attempt)
+      const delay = Math.min(baseDelay * Math.pow(2, attempt), 5000)
       await sleep(delay)
     }
   }
