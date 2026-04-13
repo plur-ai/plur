@@ -88,6 +88,14 @@ export function assembleContext(params: {
       lines.push('')
     }
 
+    if (injection.constraints) {
+      const usedTokens = Math.ceil(lines.join('\n').length / 4)
+      if ((remainingBudget - usedTokens) > 100) {
+        lines.push(injection.constraints)
+        lines.push('')
+      }
+    }
+
     // Only include "consider" section if we have budget for it
     const directiveTokens = Math.ceil(lines.join('\n').length / 4)
     if (injection.consider && (remainingBudget - directiveTokens) > 100) {

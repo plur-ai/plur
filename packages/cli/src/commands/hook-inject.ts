@@ -218,9 +218,9 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     task = original ? `${original} ${summary}` : summary || 'general context rehydration'
   } else {
     task = (input.prompt as string) || ''
+    // Even with empty prompt, start a session and inject broadly
     if (!task) {
-      writeFileSync(marker, '')
-      return
+      task = 'general session'
     }
     // Auto session start: generate session ID and save with task
     const sessionId = randomUUID()

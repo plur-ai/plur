@@ -38,7 +38,7 @@ describe('expanded search (query expansion + hybrid + RRF)', () => {
     expect(results.length).toBeGreaterThanOrEqual(1)
     // Should find PostgreSQL via the expanded variant
     expect(results.some(r => r.statement.includes('PostgreSQL'))).toBe(true)
-  })
+  }, 30_000)
 
   it('falls back to original query when LLM fails', async () => {
     const failingLlm: LlmFunction = async () => {

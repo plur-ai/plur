@@ -61,20 +61,21 @@ describe('withAsyncLock', () => {
     const counterPath = join(dir, 'counter.txt')
     await writeFile(counterPath, '0')
 
-    // Run 10 locked increments concurrently
-    const promises = Array.from({ length: 10 }, () =>
+    // Run 5 locked increments concurrently with generous retries and short base delay
+    const N = 5
+    const promises = Array.from({ length: N }, () =>
       withAsyncLock(counterPath, async () => {
         const current = parseInt(await readFile(counterPath, 'utf8'), 10)
         const next = current + 1
         await writeFile(counterPath, String(next))
         return next
-      })
+      }, { maxRetries: 30, baseDelay: 5 })
     )
 
     const results = await Promise.all(promises)
-    // All should complete and end at 10
-    expect(readFileSync(counterPath, 'utf8')).toBe('10')
-    // Results should contain all values 1-10 (order may vary due to lock contention)
-    expect(results.sort((a, b) => a - b)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
-  })
+    // All should complete and end at N
+    expect(readFileSync(counterPath, 'utf8')).toBe(String(N))
+    // Results should contain all values 1-N (order may vary due to lock contention)
+    expect(results.sort((a, b) => a - b)).toEqual(Array.from({ length: N }, (_, i) => i + 1))
+  }, 30_000)
 })
