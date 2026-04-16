@@ -53,6 +53,21 @@ interface HookEntry {
 const CLI = 'npx @plur-ai/cli'
 
 const PLUR_HOOKS: Record<string, HookEntry[]> = {
+  // --- Session enforcement ---
+  // These three hooks ensure plur_session_start is always called first.
+  // Without session start, feedback loops, episode tracking, and scoped
+  // injection don't work. The guard blocks all tools until the sentinel
+  // file exists; the mark creates it after plur_session_start succeeds.
+
+  // Forceful directive at session open
+  SessionStart: [
+    {
+      hooks: [
+        { type: 'command', command: `${CLI} hook-session-remind`, timeout: 3 },
+      ],
+    },
+  ],
+
   // --- Session lifecycle ---
 
   // First message: inject engrams based on the prompt.
@@ -75,9 +90,17 @@ const PLUR_HOOKS: Record<string, HookEntry[]> = {
     },
   ],
 
-  // --- Contextual injection ---
+  // --- Contextual injection + session guard ---
 
   PreToolUse: [
+    // Session guard — blocks all tools until plur_session_start is called.
+    // Must be first so it runs before any other PreToolUse hook.
+    {
+      matcher: '*',
+      hooks: [
+        { type: 'command', command: `${CLI} hook-session-guard`, timeout: 3 },
+      ],
+    },
     // Full injection when entering plan mode — planning needs broad context
     {
       matcher: 'EnterPlanMode',
@@ -108,8 +131,15 @@ const PLUR_HOOKS: Record<string, HookEntry[]> = {
     },
   ],
 
-  // Observation capture — log tool results
+  // Observation capture — log tool results + session sentinel
   PostToolUse: [
+    // Session sentinel — creates marker file after plur_session_start succeeds
+    {
+      matcher: 'mcp__plur__plur_session_start',
+      hooks: [
+        { type: 'command', command: `${CLI} hook-session-mark`, timeout: 3 },
+      ],
+    },
     {
       matcher: 'Bash|Edit|Write|Agent',
       hooks: [
@@ -148,11 +178,11 @@ You have persistent memory via PLUR. Corrections, preferences, and conventions p
 
 PLUR is installed **globally** — one MCP server, one engram store (\`~/.plur/\`), available in every project. You do NOT need per-project installation. The \`plur\` MCP server provides tools named \`plur_session_start\`, \`plur_learn\`, \`plur_recall_hybrid\`, \`plur_feedback\`, \`plur_session_end\`, etc. If you cannot find these tools, run \`plur doctor\` to diagnose. Do **not** substitute tools from other MCP servers (e.g. \`datacore_*\`) — those belong to a different system.
 
-Hooks inject engrams automatically on every first message — you do not need to call \`plur_session_start\` manually (though you can for explicit session tracking).
+A PreToolUse guard enforces that \`plur_session_start\` is called at the beginning of every session. All other tools are blocked until this is done. The flow is: ToolSearch to load \`plur_session_start\` → call it with a task description → proceed.
 
 ### Session Workflow
 
-1. **Automatic**: Hooks inject relevant engrams on first message — no action needed
+1. **Start**: Call \`plur_session_start\` with task description — enforced by guard hook
 2. **Learn**: When corrected or discovering something new, call \`plur_learn\` immediately
 3. **Recall**: Before answering factual questions, call \`plur_recall_hybrid\` — check memory first
 4. **Feedback**: Rate injected engrams with \`plur_feedback\` (positive/negative) — trains relevance
@@ -354,7 +384,10 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   outputText(`MCP server (plur): ${mcpStatus}`)
   outputText(`  command: ${entry.command} ${entry.args.join(' ')}`)
   outputText('')
-  outputText(`Hooks (9):         ${hooksStatus}`)
+  outputText(`Hooks (12):        ${hooksStatus}`)
+  outputText('  SessionStart      — enforce plur_session_start before any work')
+  outputText('  PreToolUse        — session guard (blocks tools until session started)')
+  outputText('  PostToolUse       — session sentinel (marks session as started)')
   outputText('  UserPromptSubmit  — inject engrams + auto-start session')
   outputText('  PostCompact       — re-inject engrams after context compaction')
   outputText('  PreToolUse        — contextual injection (plan mode, skills, agents)')
