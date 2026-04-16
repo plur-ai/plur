@@ -43,6 +43,9 @@ Commands:
   hook-inject             (internal) Hook handler for engram injection
   hook-observe            (internal) Hook handler for observation capture
   hook-learn-check        (internal) Hook handler for learning reflection
+  hook-session-guard      (internal) Hook handler for session enforcement
+  hook-session-mark       (internal) Hook handler for session sentinel
+  hook-session-remind     (internal) Hook handler for session start reminder
 
 Global flags:
   --json       Force JSON output (auto-detected when piped)
@@ -79,6 +82,9 @@ const COMMANDS: Record<string, string> = {
   'hook-inject': './commands/hook-inject.js',
   'hook-observe': './commands/hook-observe.js',
   'hook-learn-check': './commands/hook-learn-check.js',
+  'hook-session-guard': './commands/hook-session-guard.js',
+  'hook-session-mark': './commands/hook-session-mark.js',
+  'hook-session-remind': './commands/hook-session-remind.js',
 }
 
 if (!command || !COMMANDS[command]) {
