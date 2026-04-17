@@ -280,28 +280,42 @@ function loadSettings(path: string): Settings {
   }
 }
 
+function isPlurHook(entry: HookEntry): boolean {
+  return (entry.hooks ?? []).some((h) => h.command.includes('@plur-ai/cli'))
+}
+
 function hasPlurHooks(settings: Settings): boolean {
   const hooks = settings.hooks ?? {}
   for (const entries of Object.values(hooks)) {
-    for (const entry of entries) {
-      for (const h of entry.hooks ?? []) {
-        if (h.command.includes('@plur-ai/cli')) return true
-      }
-    }
+    if (entries.some(isPlurHook)) return true
   }
   return false
 }
 
-function mergeHooks(settings: Settings): Settings {
+function stripPlurHooks(settings: Settings): Settings {
   const hooks = { ...(settings.hooks ?? {}) }
+  for (const [event, entries] of Object.entries(hooks)) {
+    const kept = entries.filter((e) => !isPlurHook(e))
+    if (kept.length > 0) {
+      hooks[event] = kept
+    } else {
+      delete hooks[event]
+    }
+  }
+  return { ...settings, hooks }
+}
+
+function mergeHooks(settings: Settings): Settings {
+  // Strip old plur hooks first so init is idempotent (upgrade-safe)
+  const clean = stripPlurHooks(settings)
+  const hooks = { ...(clean.hooks ?? {}) }
 
   for (const [event, newEntries] of Object.entries(PLUR_HOOKS)) {
     const existing = hooks[event] ?? []
-    // Append PLUR hooks to existing hooks for this event
     hooks[event] = [...existing, ...newEntries]
   }
 
-  return { ...settings, hooks }
+  return { ...clean, hooks }
 }
 
 /**
@@ -335,34 +349,35 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   // Load existing settings
   let settings = loadSettings(settingsPath)
 
-  const hooksAlreadyInstalled = hasPlurHooks(settings)
+  const hadHooks = hasPlurHooks(settings)
   const mcpAlreadyInstalled = hasPlurMcp(settings)
 
+  // Always run mergeHooks — it strips old plur hooks first, so it's
+  // idempotent and handles upgrades (new hooks added in newer versions).
+  const before = JSON.stringify(settings.hooks ?? {})
+  settings = mergeHooks(settings)
+  const hooksChanged = JSON.stringify(settings.hooks ?? {}) !== before
+
   let hooksStatus: string
-  let mcpStatus: string
-
-  if (hooksAlreadyInstalled && mcpAlreadyInstalled) {
-    hooksStatus = 'already installed'
-    mcpStatus = 'already registered'
+  if (!hadHooks) {
+    hooksStatus = 'installed'
+  } else if (hooksChanged) {
+    hooksStatus = 'upgraded'
   } else {
-    if (!hooksAlreadyInstalled) {
-      settings = mergeHooks(settings)
-      hooksStatus = 'installed'
-    } else {
-      hooksStatus = 'already installed'
-    }
-
-    if (!mcpAlreadyInstalled) {
-      mergePlurMcp(settings as Record<string, unknown>)
-      mcpStatus = 'registered'
-    } else {
-      mcpStatus = 'already registered'
-    }
-
-    // Ensure directory exists and write
-    mkdirSync(settingsDir, { recursive: true })
-    writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n')
+    hooksStatus = 'already up to date'
   }
+
+  let mcpStatus: string
+  if (!mcpAlreadyInstalled) {
+    mergePlurMcp(settings as Record<string, unknown>)
+    mcpStatus = 'registered'
+  } else {
+    mcpStatus = 'already registered'
+  }
+
+  // Always write — mergeHooks may have upgraded hooks even if they existed
+  mkdirSync(settingsDir, { recursive: true })
+  writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n')
 
   // Install CLAUDE.md section
   const claudeMdStatus = installClaudeMd()
