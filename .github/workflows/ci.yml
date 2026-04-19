@@ -22,5 +22,7 @@ jobs:
           node-version: ${{ matrix.node-version }}
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - run: git config --global user.email "ci@plur.ai"
+      - run: git config --global user.name "PLUR CI"
       - run: pnpm build
       - run: pnpm test
