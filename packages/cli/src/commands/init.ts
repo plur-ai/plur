@@ -26,12 +26,18 @@ import {
  *      relevant engrams into the conversation.
  *
  * Usage:
- *   plur init              # auto-detect project vs global
+ *   plur init              # default: creates .claude/settings.json in current directory
  *   plur init --global     # force global ~/.claude/settings.json
- *   plur init --project    # force project .claude/settings.json
+ *   plur init --project    # force project .claude/settings.json (same as default)
  *   plur init --no-desktop # skip Claude Desktop config registration
  *   plur init --domain X   # set default domain for this project (.plur.yaml)
  *   plur init --scope Y    # set default scope for this project (.plur.yaml)
+ *
+ * For multi-project setups (Issue #19):
+ *   cd ~/projects/my-app
+ *   plur init --domain myapp.core --scope project:my-app
+ *
+ * This creates .claude/settings.json (hooks + MCP) and .plur.yaml (scoping).
  */
 
 interface Settings {
@@ -263,12 +269,19 @@ function findSettingsPath(_flags: GlobalFlags, args: string[]): string {
   const projectSettings = join(process.cwd(), '.claude', 'settings.json')
   const projectDir = join(process.cwd(), '.claude')
 
-  if (forceProject || existsSync(projectDir)) {
+  // --project flag forces project-level config, regardless of whether .claude/ exists
+  if (forceProject) {
     return projectSettings
   }
 
-  // Default to global
-  return join(homedir(), '.claude', 'settings.json')
+  // Auto-detect: prefer project if .claude/ already exists
+  if (existsSync(projectDir)) {
+    return projectSettings
+  }
+
+  // Default: create project-level config (Issue #19)
+  // PLUR works best with project-scoped hooks for multi-project setups
+  return projectSettings
 }
 
 function loadSettings(path: string): Settings {
@@ -392,9 +405,8 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
 
   outputText('PLUR installed for Claude Code.')
   outputText('')
-  outputText('Architecture: PLUR is a global tool — one MCP server, one engram')
-  outputText('store (~/.plur/), available in every project. Multi-project scoping')
-  outputText('is handled via domain/scope fields on engrams, not per-project installs.')
+  outputText('Architecture: One global engram store (~/.plur/), project-scoped hooks.')
+  outputText('Multi-project scoping via domain/scope fields on engrams, not separate installs.')
   outputText('')
   outputText(`MCP server (plur): ${mcpStatus}`)
   outputText(`  command: ${entry.command} ${entry.args.join(' ')}`)
