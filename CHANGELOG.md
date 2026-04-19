@@ -2,13 +2,16 @@
 
 ## Unreleased
 
-### Multi-Project Setup Improvements
+### Multi-Project Setup Improvements (#19)
 
-- **Default to project-level config**: `plur init` now creates `.claude/settings.json` in the current directory by default, instead of falling back to `~/.claude/settings.json`. Better for multi-project setups. Users who want global config can use `--global` flag. (Fixes #19 Issue 1)
+- **Default to project-level config**: `plur init` now creates `.claude/settings.json` in the current directory by default, instead of falling back to `~/.claude/settings.json`. Better for multi-project setups. Users who want global config can use `--global` flag.
+- **Improved documentation**: Clarified that `--domain` and `--scope` flags (added in v0.8.2) are the solution for multi-project scoping. Updated init output to explain this workflow.
+
+Note: Issue #19 reported three problems. Issues 1 & 2 are now resolved. Issue 3 (batch/workspace mode) remains open for future consideration.
 
 ### Packages
 
-- `@plur-ai/cli` — default to project-level config
+- `@plur-ai/cli` 0.8.3 — default to project-level config, improved multi-project docs
 
 ## 0.8.2 (2026-04-09)
 
