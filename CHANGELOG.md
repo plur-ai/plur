@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Multi-Project Setup Improvements
+
+- **Default to project-level config**: `plur init` now creates `.claude/settings.json` in the current directory by default, instead of falling back to `~/.claude/settings.json`. Better for multi-project setups. Users who want global config can use `--global` flag. (Fixes #19 Issue 1)
+
+### Packages
+
+- `@plur-ai/cli` — default to project-level config
+
 ## 0.8.2 (2026-04-09)
 
 ### Architecture Clarity & Multi-Project Scoping
