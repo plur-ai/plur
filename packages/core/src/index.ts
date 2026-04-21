@@ -127,7 +127,7 @@ export class Plur {
   private paths: PlurPaths
   private config: PlurConfig
   private indexedStorage: IndexedStorage | null = null
-  private _engramCache: Map<string, { mtime: number; engrams: Engram[] }> = new Map()
+  private _engramCache: Map<string, { mtime: bigint; engrams: Engram[] }> = new Map()
   private _llmFailureCount = 0
   private _llmDisabledUntil: number | null = null
 
@@ -189,9 +189,9 @@ export class Plur {
 
   /** Load engrams from a path with mtime-based caching */
   private _loadCached(path: string): Engram[] {
-    let mtime = 0
+    let mtime: bigint
     try {
-      mtime = fs.statSync(path).mtimeMs
+      mtime = fs.statSync(path, { bigint: true }).mtimeNs
     } catch {
       return []
     }
