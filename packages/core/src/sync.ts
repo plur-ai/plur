@@ -111,11 +111,12 @@ function hasConflictMarkers(root: string): boolean {
 }
 
 function pullRebase(root: string): boolean {
-  const result = gitSafe(['pull', '--rebase', 'origin', 'main'], root)
+  const branch = gitSafe(['rev-parse', '--abbrev-ref', 'HEAD'], root) || 'main'
+  const result = gitSafe(['pull', '--rebase', 'origin', branch], root)
   if (result !== null) return true
   // Rebase conflict — abort and try merge
   gitSafe(['rebase', '--abort'], root)
-  const mergeResult = gitSafe(['pull', 'origin', 'main', '--no-edit'], root)
+  const mergeResult = gitSafe(['pull', 'origin', branch, '--no-edit'], root)
   if (mergeResult !== null) return true
   // Merge conflict — check for conflict markers before staging
   if (hasConflictMarkers(root)) {

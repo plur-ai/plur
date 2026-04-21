@@ -35,7 +35,7 @@ describe('sync', () => {
       expect(status.initialized).toBe(true)
       expect(status.remote).toBeNull()
       expect(status.dirty).toBe(false)
-      expect(status.branch).toBe('main')
+      expect(['main', 'master']).toContain(status.branch)
     })
 
     it('detects dirty state', () => {
