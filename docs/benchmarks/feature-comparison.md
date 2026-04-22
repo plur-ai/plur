@@ -2,7 +2,7 @@
 
 **Status:** Draft, Phase 1 (feature matrix). Performance benchmarks tracked separately — see [Issue #8 Phase 2](https://github.com/plur-ai/plur/issues/8).
 
-**Last updated:** 2026-04-22 (MemOS row verified — 10 of 11 `?` cells resolved against upstream MemTensor docs + OpenClaw plugin README; Encryption remains `?`)
+**Last updated:** 2026-04-22 (MCP Memory Service row verified — 3 of 3 `?` cells resolved via upstream README/LICENSE; Temporal reframed as recency decay, Encryption clarified as not first-party, License confirmed Apache-2.0)
 
 ## Scope
 
@@ -42,7 +42,7 @@ The local-first memory space went from "a few projects" to "a credible category"
 | **Basic Memory** | Yes | Manual (`git` by hand) | User-managed git | Markdown + SQLite | Keyword | No | File mtime | No | ? | No | MIT |
 | **Engram (Go)** (Gentleman-Programming) | Yes | No | — | SQLite + FTS5 | Keyword (FTS5) | ? | ? | ? | ? | No | MIT |
 | **Engram (E2EE)** (EvolvingLMMs-Lab) | Yes | No | — | SQLite + AES-256-GCM | ? | ? | ? | **Yes (AES-256-GCM)** | ? | No | ? |
-| **MCP Memory Service** (doobidoo) | Yes (optional Cloudflare backend) | Via Cloudflare backend | Cloudflare sync (optional) | KG + embeddings | Hybrid | Auto-consolidation | ? | ? | Yes (MCP) | No | ? |
+| **MCP Memory Service** ([source](https://github.com/doobidoo/mcp-memory-service)) | Yes (optional Cloudflare backend) | Via Cloudflare backend | Cloudflare sync (optional) | KG + embeddings | [Hybrid (BM25 + vector)](https://github.com/doobidoo/mcp-memory-service) | [Auto-consolidation (decay + compression)](https://github.com/doobidoo/mcp-memory-service) | Recency decay + autonomous consolidation; no bi-temporal validity windows documented | Not first-party (TLS-in-transit via Let's Encrypt/nginx + OAuth 2.0 only; no at-rest encryption documented) | Yes (MCP; also Remote MCP via Streamable HTTP for claude.ai browser) | No | [Apache-2.0](https://github.com/doobidoo/mcp-memory-service/blob/main/LICENSE) |
 | **Cognee** ([source](https://github.com/topoteretes/cognee)) | Yes ([self-host, 1-click](https://github.com/topoteretes/cognee)) | No (multi-tenant isolation only; no first-party team-sharing mechanism) | — | Pluggable: vector ([LanceDB / Qdrant / PGVector](https://docs.cognee.ai/llms.txt)) + graph ([Neo4j / FalkorDB / Kuzu](https://docs.cognee.ai/llms.txt)) + relational | Graph + vector (auto-routing); no BM25/keyword documented | Yes (`improve` op; "Continuously learns to provide the right context") | [Time-aware queries / temporal mode](https://docs.cognee.ai/llms.txt) | ? (not documented) | Yes ([first-party `cognee-mcp`](https://github.com/topoteretes/cognee/tree/main/cognee-mcp); exposes `remember` / `recall` / `cognify` / `search`) | No | Apache-2.0 |
 
 ### Adjacent — local or local-capable, not fully MCP-native
