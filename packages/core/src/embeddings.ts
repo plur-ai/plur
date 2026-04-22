@@ -140,3 +140,68 @@ export async function embeddingSearch(
   similarities.sort((a, b) => b.score - a.score)
   return similarities.slice(0, limit).map(s => s.engram)
 }
+
+/** Result with cosine similarity score attached. */
+export interface SimilarityResult {
+  engram: Engram
+  score: number
+}
+
+/**
+ * Semantic search using embeddings, returning scored results.
+ * Identical to embeddingSearch but preserves cosine similarity scores.
+ */
+export async function embeddingSearchWithScores(
+  engrams: Engram[],
+  query: string,
+  limit: number,
+  storagePath?: string,
+): Promise<SimilarityResult[]> {
+  if (engrams.length === 0) return []
+
+  // Load embedding cache
+  const cachePath = storagePath
+    ? join(storagePath, '.embeddings-cache.json')
+    : '.embeddings-cache.json'
+  const cache = loadCache(cachePath)
+
+  // Embed the query
+  const queryEmbedding = await embed(query)
+  if (!queryEmbedding) {
+    // Embeddings unavailable — return empty (caller should fall back to BM25)
+    return []
+  }
+
+  // Embed engrams (with caching)
+  const similarities: SimilarityResult[] = []
+
+  for (const engram of engrams) {
+    const searchText = engramSearchText(engram)
+    const hash = hashStatement(searchText)
+    let engramEmbedding: Float32Array
+
+    if (cache[engram.id]?.hash === hash) {
+      // Cache hit
+      engramEmbedding = new Float32Array(cache[engram.id].embedding)
+    } else {
+      // Cache miss — compute embedding from enriched text
+      const emb = await embed(searchText)
+      if (!emb) return [] // model unloaded mid-search
+      engramEmbedding = emb
+      cache[engram.id] = {
+        hash,
+        embedding: Array.from(engramEmbedding),
+      }
+    }
+
+    const score = cosineSimilarity(queryEmbedding, engramEmbedding)
+    similarities.push({ engram, score })
+  }
+
+  // Save updated cache
+  saveCache(cachePath, cache)
+
+  // Sort by similarity (descending) and return top N with scores
+  similarities.sort((a, b) => b.score - a.score)
+  return similarities.slice(0, limit)
+}

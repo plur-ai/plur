@@ -11,7 +11,7 @@ import { reactivate } from './decay.js'
 import { captureEpisode, queryTimeline } from './episodes.js'
 import { detectConflicts } from './conflict.js'
 import { agenticSearch } from './agentic-search.js'
-import { embeddingSearch } from './embeddings.js'
+import { embeddingSearch, embeddingSearchWithScores, type SimilarityResult } from './embeddings.js'
 import { hybridSearch } from './hybrid-search.js'
 import { expandedSearch } from './query-expansion.js'
 import { recallAuto, type AutoSearchResult } from './search-orchestrator.js'
@@ -66,6 +66,7 @@ export { detectPlurStorage, type PlurPaths } from './storage.js'
 export { IndexedStorage } from './storage-indexed.js'
 export { YamlStore, SqliteStore, createStore, migrateStore, type EngramStore, type StorageBackend, type StorageConfig } from './store/index.js'
 export { withAsyncLock, asyncAtomicWrite } from './store/index.js'
+export type { SimilarityResult } from './embeddings.js'
 export type { SyncResult, SyncStatus } from './sync.js'
 export { checkForUpdate, getCachedUpdateCheck, clearVersionCache, type VersionCheckResult } from './version-check.js'
 export type { Engram, PreviousVersionRef } from './schemas/engram.js'
@@ -450,6 +451,16 @@ export class Plur {
     const results = await hybridSearch(filtered, query, limit, this.paths.root)
     this._reactivateResults(results)
     return results
+  }
+
+  /** Embedding search returning {engram, score}[] with cosine similarity scores. Async, no API calls. */
+  async similaritySearch(
+    query: string,
+    options?: { limit?: number; scope?: string; domain?: string },
+  ): Promise<SimilarityResult[]> {
+    const filtered = this._filterEngrams(options)
+    const limit = options?.limit ?? 20
+    return embeddingSearchWithScores(filtered, query, limit, this.paths.root)
   }
 
   /** Expanded search: LLM query expansion + hybrid search + RRF merge. Opt-in, requires LLM function. */
