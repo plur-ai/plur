@@ -82,7 +82,7 @@ The fundamental shift: memory and orchestration must move from **per-developer l
 
 **What this means**: Engrams already have rich relationships (broader/narrower/related/conflicts) and weighted associations (co-access edges). These are stored as arrays in YAML and traversed in JavaScript. At organizational scale with 50 users and thousands of engrams across 1,400 repos, this data is naturally a graph: engrams connect to projects, projects belong to groups, groups contain people, people create engrams. A graph-capable database makes these queries native rather than simulated.
 
-**Proposed solution — PostgreSQL with Apache AGE + pgvector**: Apache AGE is a PostgreSQL extension that adds Cypher graph query support. Combined with pgvector for embeddings, this gives us graph traversal, relational queries, and vector search in a single, familiar database. No new infrastructure — it's still PostgreSQL.
+**Proposed solution — PostgreSQL with Apache AGE + pgvector**: Apache AGE is a PostgreSQL extension that adds Cypher graph query support. Combined with pgvector for embeddings, this gives us graph traversal, relational queries, and vector search in a single, familiar database.
 
 ```sql
 -- Relational: standard user/audit queries
@@ -111,7 +111,7 @@ ORDER BY distance
 LIMIT 20;
 ```
 
-**Why AGE over a separate graph database**: Your team already knows PostgreSQL. AGE is an extension, not a new system to operate. If graph queries turn out to be unnecessary for a use case, you still have standard SQL. Worst case, you drop the extension and lose nothing. This is the lowest-risk path to graph capabilities.
+**Maturity caveat**: AGE is an Apache Incubator project (not yet graduated). We need to validate three things before committing: (1) performance under concurrent load with realistic data, (2) compatibility with managed PostgreSQL providers the client uses, and (3) that AGE Cypher queries and pgvector can compose in the same transactions. Phase 1 includes a validation spike for this. If AGE proves insufficient, the fallback is standard PostgreSQL with recursive CTEs for graph-like queries and relational JOINs for permission resolution — functional but less elegant. The architecture is designed so this fallback requires changing the query layer only, not the data model.
 
 ### 3.3 Authentication & Identity
 
@@ -122,6 +122,17 @@ LIMIT 20;
 | **Session management** | Local process lifecycle | JWT/token-based sessions | No session auth |
 
 **What this means**: PLUR currently has no concept of "who is using it." Every engram operation is anonymous and local. Enterprise needs every request authenticated against your existing GitLab identity provider, so developers log in with the credentials they already use.
+
+**UX challenge — authentication from within IDEs**: OAuth flows from inside MCP clients are not a solved problem across the ecosystem. Different IDE extensions (Continue, Cline, Copilot Chat, Cursor) handle authenticated MCP connections differently — some support it, some may not. The authentication UX will need to be validated per client:
+
+| IDE/Client | Likely auth approach |
+|-----------|---------------------|
+| Claude Code CLI | Device code flow or pre-provisioned token |
+| VS Code extensions | Browser popup OAuth or token from settings |
+| Cursor | Token-based (configured in settings) |
+| JetBrains | Token-based |
+
+For the pilot, we start with the simplest mechanism that works: **pre-provisioned API tokens** (admin generates a token per developer, developer pastes it into their MCP config). This gets 10 people running immediately. Full OAuth flow is built for Phase 2 once we know which clients support it natively.
 
 ### 3.4 Authorization & Permissions
 
@@ -134,13 +145,19 @@ LIMIT 20;
 
 **What this means**: PLUR's engram schema already has `scope` (e.g., `project:myapp`, `team:backend`) and `visibility` fields — but they're metadata only. Nobody checks them. Enterprise needs these enforced: when a developer queries engrams, they see only what their GitLab group and project memberships authorize.
 
-With a graph database, permission resolution becomes a native traversal rather than application-level logic:
+**Simplifications and edge cases**: GitLab's permission model is more complex than what we implement in Phase 1. We need to be explicit about what we support and what we defer:
 
-```
-(:User)-[:MEMBER_OF]->(:Group)-[:OWNS]->(:Project)<-[:SCOPED_TO]-(:Engram)
-```
+| GitLab feature | Phase 1 | Phase 2 | Notes |
+|---------------|---------|---------|-------|
+| Group membership (Member/Owner) | Yes | Yes | Core permission model |
+| Subgroup inheritance | Simplified | Full | Phase 1: flat group list. Phase 2: proper hierarchy traversal |
+| Project membership (Developer+) | Yes | Yes | Core permission model |
+| Role levels (Guest/Reporter/Developer/Maintainer/Owner) | No — all members see engrams | Yes — role-based visibility | Phase 1 treats membership as binary |
+| Shared projects (project shared with external group) | No | Evaluate | Complex — may defer to Phase 3 |
+| Forked projects | No | No | Fork creates a new project scope, no engram inheritance |
+| Deploy tokens / CI job tokens | No | Yes | Needed for CI/CD-triggered orchestration |
 
-"What can this user see?" is a single graph query, not a chain of SQL JOINs and application-level filtering.
+This means Phase 1 permissions are simpler than GitLab's: if you're a member of a project or group, you see its engrams. Role-level granularity (can a Guest see engrams but not create them?) comes in Phase 2.
 
 ### 3.5 AI Orchestration
 
@@ -154,36 +171,25 @@ With a graph database, permission resolution becomes a native traversal rather t
 
 **What this means**: Memory alone isn't enough. Your organization needs AI agents that can reliably execute multi-step tasks across repositories — code review, documentation generation, migration assistance, onboarding workflows. This requires orchestration: knowing which tasks need to run, which agent handles them, tracking execution, handling failures, and auditing results.
 
-PLUR's sister project (Datacore) has a production-grade orchestration system that handles exactly this:
+**What we bring**: PLUR's sister project (Datacore) has battle-tested orchestration **patterns** running in production:
 
-- **Task queuing**: Tasks tagged for AI execution are queued and prioritized
-- **Agent routing**: Specialized agents (research, content, data analysis, code review) are matched to task types based on capability
-- **Execution lifecycle**: Tasks move through states (pending → in_progress → completed/failed) with full audit trails
-- **Failure analysis**: Failed tasks are analyzed for root cause, with retry eligibility assessment
-- **Quality gates**: Multi-persona evaluation ensures output quality before delivery
+- **Task queuing**: Priority-based queue with dependency resolution
+- **Agent routing**: Specialized agents matched to task types by capability
+- **Execution lifecycle**: Full state tracking with audit trails
+- **Failure analysis**: Root cause analysis, retry eligibility assessment
+- **Quality gates**: Multi-persona evaluation before delivery
 - **Human-in-the-loop**: Results staged for human review when confidence is below threshold
 
-The enterprise solution brings this orchestration capability to your organization, scoped by the same permission model as memory.
+These are proven patterns, not portable code. Datacore's orchestrator is deeply coupled to a single-user, single-model workflow (org-mode files, Claude Code subagents, systemd timers). The enterprise orchestrator will be **rebuilt from these patterns** for multi-user, multi-model operation. This is new development, not a packaging exercise.
 
-In the graph database, orchestration state is naturally represented:
+**What we need to learn from you**: "Reliable orchestration" can mean many things. Before building, we need to understand your specific workflows:
 
-```
-(:Task)-[:ASSIGNED_TO]->(:Agent)
-(:Task)-[:DEPENDS_ON]->(:Task)
-(:Task)-[:SCOPED_TO]->(:Project)
-(:Agent)-[:HAS_CAPABILITY]->(:Capability)
-(:Execution)-[:OF_TASK]->(:Task)
-(:Execution)-[:PRODUCED]->(:Engram)
-(:Execution)-[:INFORMED_BY]->(:Engram)
-```
+- What are the 2-3 AI workflows you'd want to automate first? (e.g., MR code review, documentation generation, onboarding guides)
+- How do these workflows trigger? (developer request, GitLab webhook, scheduled)
+- What models/tools do your developers currently use for these tasks?
+- What does "reliable" mean in your context? (SLA targets, failure tolerance, approval gates)
 
-Finding ready-to-execute tasks becomes a graph query:
-
-```cypher
-MATCH (t:Task {status: 'TODO'})-[:SCOPED_TO]->(p:Project)
-WHERE NOT (t)-[:DEPENDS_ON]->(:Task {status: 'TODO'})
-RETURN t ORDER BY t.priority
-```
+Phase 1 includes structured discovery sessions to define these workflows before building.
 
 ### 3.6 GitLab Integration
 
@@ -214,7 +220,7 @@ RETURN t ORDER BY t.priority
 | **VS Code** | Via MCP-compatible extensions | Needs validation | Testing gap |
 | **Other IDEs** | MCP is the universal protocol | Should work with any MCP client | Testing gap |
 
-**What this means**: MCP is supported by most AI coding tools in VS Code (Continue, Cline, Copilot Chat, Cursor). With a centralized HTTP server, any MCP client connects to the same PLUR instance. The main work is validation and documentation, not new development.
+**What this means**: MCP is supported by most AI coding tools in VS Code (Continue, Cline, Copilot Chat, Cursor). With a centralized HTTP server, any MCP client connects to the same PLUR instance. The main work is validation and documentation, not new development. However, each client may handle authenticated MCP connections differently (see section 3.3).
 
 ### 3.9 Observability & Administration
 
@@ -227,6 +233,37 @@ RETURN t ORDER BY t.priority
 | **Knowledge coverage** | Pack statistics | Which repos/teams have engrams | No org-level reporting |
 
 **What this means**: Operations teams need visibility into adoption, health, and usage patterns — for both memory and orchestration. Currently all telemetry is local and per-user. Enterprise needs centralized logging and an admin interface that shows: who's learning what, which AI tasks are running, success/failure rates, and knowledge coverage across the organization.
+
+### 3.10 Knowledge Quality at Scale
+
+| | Current | Enterprise requirement | Gap |
+|---|---------|----------------------|-----|
+| **Curation** | Single user manages own engrams | 50 developers creating shared engrams | No quality control |
+| **Contradictions** | Rare (one person) | Inevitable (multiple perspectives) | No conflict resolution |
+| **Authority** | Implicit (one user = one authority) | Who decides what's true for a project? | No authority model |
+| **Noise filtering** | Manual feedback | Organizational signal-to-noise ratio | No automated quality gates |
+
+**What this means**: This is not a feature gap — it's a **product design challenge** that determines whether organizational memory becomes valuable or becomes a junk drawer.
+
+With one person using PLUR, quality is controlled by one brain. With 50 developers:
+
+- **Contradictions are inevitable**: Developer A learns "always use microservices for payment flows." Developer B learns "monolith for payment, keep it simple." Both are active engrams with high confidence. Which surfaces when a third developer asks about payment architecture?
+- **Not every correction is worth sharing**: "Semicolons required in this project" is useful project-scoped knowledge. "I forgot to save the file" is noise. The system needs to distinguish.
+- **Authority matters**: A tech lead's architectural decision should outweigh a junior developer's preference. But PLUR currently treats all learning signals equally.
+- **Decay alone won't help**: Without active curation, the graph accumulates low-quality engrams faster than decay removes them at organizational scale.
+
+**Our approach**:
+
+| Mechanism | Description | Phase |
+|-----------|-------------|-------|
+| **Scope-based isolation** | Personal engrams don't pollute project scope. Each developer's corrections stay personal unless promoted. | 1 |
+| **Promotion workflow** | Engrams must be explicitly promoted from personal → project → group → org scope. Promotion requires appropriate role (Developer+ for project, Maintainer+ for group). | 2 |
+| **Contradiction detection** | When a new engram contradicts an existing one in the same scope, flag both for review. Uses PLUR's existing `conflicts` relation edges. | 2 |
+| **Confidence weighting by role** | Tech lead engrams start with higher base confidence than junior developer engrams within the same project scope. Not hard gating — just ranking. | 2 |
+| **Automated noise filtering** | Engrams that receive consistent negative feedback across multiple users are auto-demoted. Engrams with zero recalls after N days are flagged for review. | 2 |
+| **Knowledge steward role** | Per-project or per-group role for curating shared engrams. Can merge, retire, or promote. Maps to GitLab Maintainer role. | 2 |
+
+This is an ongoing product design challenge, not a one-time feature. We'll learn what works through the pilot.
 
 ---
 
@@ -242,12 +279,15 @@ VS Code + Continue  ─────┐
 VS Code + Cline     ─────┤
 VS Code + Copilot   ─────┤               ┌──────────────────────┐
 Claude Code CLI     ─────┤   HTTPS/SSE   │   PLUR Enterprise    │
-Cursor              ─────┼──────────────→ │   Server (HTTP)      │
-JetBrains + MCP     ─────┤               │                      │
-Other MCP clients   ─────┘               │   ┌───────────────┐  │
-                                          │   │ Memory Engine  │  │
-GitLab webhooks     ─────────────────────→│   │ Orchestrator   │  │
-CI/CD pipelines     ─────────────────────→│   │ Admin API      │  │
+Cursor              ─────┼──────────────→ │                      │
+JetBrains + MCP     ─────┤               │   ┌───────────────┐  │
+Other MCP clients   ─────┘               │   │ HTTP Server    │  │
+                                          │   │ (MCP + Admin)  │  │
+GitLab webhooks     ─────────────────────→│   └───────┬───────┘  │
+CI/CD pipelines     ─────────────────────→│           │          │
+                                          │   ┌───────┴───────┐  │
+                                          │   │ Background     │  │
+                                          │   │ Workers        │  │
                                           │   └───────────────┘  │
                                           └──────────┬───────────┘
                                                      │
@@ -260,13 +300,16 @@ CI/CD pipelines     ────────────────────
                                    └──────────────┘    └─────────────────┘
 ```
 
-The PLUR Enterprise Server is a single deployable service running on your infrastructure. It combines three capabilities:
+**Operational reality**: This is not a single binary. The enterprise deployment consists of:
 
-- **Memory Engine** — Engram storage, search, injection, and feedback (PLUR core)
-- **Orchestrator** — Task queuing, agent routing, execution tracking, failure handling
-- **Admin API** — User management, audit logging, dashboards, configuration
+| Component | Purpose |
+|-----------|---------|
+| **HTTP server** | MCP protocol (memory + orchestration tools), admin API, SSE connections |
+| **Background workers** | Embedding generation, GitLab membership sync, orchestration task dispatch, decay computation |
+| **PostgreSQL** | With AGE and pgvector extensions — requires non-default Postgres setup or compatible managed provider |
+| **Job queue** | Redis or PostgreSQL-based (SKIP LOCKED) for worker coordination |
 
-All three share the same PostgreSQL database (with AGE for graph queries and pgvector for embeddings) and the same GitLab-based permission model.
+All components are containerized (Docker Compose for pilot, Kubernetes-ready for production). The operational burden is comparable to running a typical web application with a background worker — not a distributed system, but not a single process either.
 
 ### 4.2 The unified knowledge graph
 
@@ -315,32 +358,43 @@ This graph enables queries that would be complex or impossible with flat relatio
 
 ### 4.3 Authentication flow
 
+**Phase 1 (pilot)**: Token-based authentication.
+
 ```
-Developer opens IDE
+Admin generates API token per developer in PLUR admin
         │
         ▼
-MCP client connects to PLUR Enterprise Server
+Developer adds token to their MCP client config
+  (e.g., VS Code settings, Claude Code .mcp.json)
         │
         ▼
-Server redirects to GitLab OAuth2 flow
+Every MCP request includes token in headers
         │
         ▼
-Developer authenticates with GitLab credentials
-        │
-        ▼
-Server receives GitLab token → resolves user identity
-        │
-        ▼
-Server fetches user's group/project memberships from GitLab API
-        │
-        ▼
-User node created/updated in knowledge graph with membership edges
-        │
-        ▼
-Session token issued → MCP tools + orchestration available with scoped access
+Server validates token → resolves user → scoped access
 ```
 
-No new credentials. No separate user management. Your GitLab is the single source of truth for identity and permissions.
+This works immediately with every MCP client. No browser popups, no OAuth complexity, no per-client compatibility concerns.
+
+**Phase 2 (production)**: Full GitLab OAuth2/OIDC.
+
+```
+Developer opens IDE → MCP client connects to PLUR server
+        │
+        ▼
+Server returns auth challenge with GitLab OAuth URL
+        │
+        ▼
+Developer authenticates via browser (OAuth redirect or device code flow)
+        │
+        ▼
+Server receives GitLab token → resolves identity + memberships
+        │
+        ▼
+Session token issued → MCP tools available with scoped access
+```
+
+The specific OAuth mechanism (browser redirect vs. device code flow) will be determined per IDE client during Phase 1 validation. Token-based auth remains available as a fallback for clients that don't support interactive authentication.
 
 ### 4.4 Permission model
 
@@ -360,9 +414,9 @@ The permission model maps directly to GitLab's existing structure, represented a
 - All `project:backend/payments-api` engrams
 - All org-wide engrams (company-wide knowledge)
 
-All resolved by a single graph traversal from the user node outward.
-
 **Write rules**: By default, developers can create engrams scoped to projects they have Developer+ access to and groups they belong to. Admins can create org-wide engrams. The orchestrator creates engrams scoped to the project where the task originated.
+
+**What we deliberately simplify**: See section 3.4 for the full Phase 1 vs. Phase 2 permission matrix. Phase 1 treats membership as binary (member or not); role-level granularity (can a Guest see engrams but not create them?) comes in Phase 2.
 
 ### 4.5 Memory data flow
 
@@ -370,10 +424,10 @@ When a developer uses PLUR through their IDE:
 
 **Learning** (developer corrects AI, AI captures the correction):
 1. MCP tool `plur_learn` called with statement + context
-2. Server authenticates request (JWT)
+2. Server authenticates request (token or JWT)
 3. Server resolves scope from active repository → GitLab project
 4. Engram node created in graph with scope edges + relation edges
-5. Embedding generated and stored in pgvector
+5. Embedding generated asynchronously by background worker
 6. Audit log entry written
 
 **Recall** (AI searches for relevant knowledge):
@@ -413,19 +467,46 @@ When an AI task needs to be executed:
 2. Completion of one task triggers readiness check on downstream tasks
 3. Full execution lineage queryable: "Show me everything that happened for this workflow"
 
-### 4.7 Data isolation
+### 4.7 Data isolation and multi-org readiness
 
-All data stored in PostgreSQL with graph-level access control:
+Even in Phase 1 (single organization), the database schema is designed for multi-tenant operation from day one:
 
-- Every node has ownership and scope attributes
-- Every query traverses permission edges from the authenticated user
-- There is no way to reach engrams or tasks outside your authorized scope — the graph structure itself enforces this
-- Audit logging captures all operations for compliance
-- Multi-org tenancy uses separate PostgreSQL schemas (see section 6)
+- **Schema-per-org**: Each organization gets its own PostgreSQL schema with its own AGE graph. This is not a Phase 3 bolt-on — it's the architecture from the start.
+- **Org context**: Every request is executed within an org context. Phase 1 simply has one org.
+- **Configuration**: Org-level settings (injection budget, decay policy, orchestration rules) are per-schema.
+
+This means Phase 3 (white-label / multi-tenant) requires adding onboarding workflows and admin UI, not re-architecting the database.
 
 ---
 
-## 5. Open Core Model
+## 5. Bootstrapping: The Cold Start Problem
+
+On day one, the knowledge graph is empty. Fifty developers connecting to an empty memory system get zero value. This is a real risk — if the first two weeks feel useless, adoption dies.
+
+### Bootstrapping strategy
+
+| Phase | Action | Result |
+|-------|--------|--------|
+| **Pre-pilot** | Import existing documentation from GitLab (README files, wiki pages, CONTRIBUTING guides) as seed engrams per project | Developers immediately see project-relevant knowledge on session start |
+| **Pre-pilot** | Install domain-relevant knowledge packs (language conventions, framework patterns, security best practices) | General programming knowledge available from day one |
+| **Week 1** | Focus the pilot 10 developers on 3-5 active projects where they'll make frequent corrections | Concentrated learning in high-activity areas builds useful knowledge fast |
+| **Week 2-4** | Weekly review of accumulated engrams with pilot team — promote high-quality ones to project/group scope | Quality curation from the start, establishes promotion workflow |
+| **Ongoing** | Every new project gets a seed engram pack generated from its README + CI config | No project starts completely cold |
+
+### Realistic value timeline
+
+| Timeframe | What the team should expect |
+|-----------|---------------------------|
+| Day 1 | Seed knowledge available — documentation and best practices. Value: modest but non-zero. |
+| Week 2 | Active projects have 20-50 developer-created engrams. AI starts giving project-specific context. |
+| Month 1 | Knowledge graph has meaningful connections. Developers notice AI "remembering" team decisions. |
+| Month 2+ | Compound value — new developers get onboarded with organizational knowledge that took months to accumulate. |
+
+We should be honest with the pilot team: the system gets more valuable over time. The first week is about feeding it, not extracting value from it.
+
+---
+
+## 6. Open Core Model
 
 PLUR is and remains open source. The enterprise capabilities are a separate layer on top of the open core.
 
@@ -450,7 +531,7 @@ Everything an organization needs to run PLUR for a team:
 - **Identity**: SSO integration (GitLab, GitHub, generic OIDC)
 - **Permissions**: Scope-based access control with graph-enforced boundaries
 - **Orchestration**: Task queuing, agent routing, execution tracking, failure handling
-- **Knowledge management**: Team engram pools, promotion workflows, coverage reporting
+- **Quality**: Engram promotion workflows, contradiction detection, knowledge stewardship
 - **Administration**: Dashboard, audit logging, usage analytics, configuration
 - **Support**: SLA, priority issue resolution
 
@@ -462,7 +543,7 @@ Storage backends (including PostgreSQL + AGE) stay open source. A solo developer
 
 ---
 
-## 6. White-Label & Reseller Model
+## 7. White-Label & Reseller Model
 
 PLUR Enterprise can be deployed as a white-label solution, branded under your organization's identity. This enables a reseller model where you offer AI memory and orchestration as part of your services portfolio.
 
@@ -509,6 +590,8 @@ Client C developers  ─────┘         │  Memory + Orchestration │
 
 Your clients' data never mixes. Organization A cannot see Organization B's engrams or tasks, even at the database level. Each organization is a self-contained knowledge graph.
 
+Because multi-org isolation is built into the schema from Phase 1 (section 4.7), the white-label model doesn't require re-architecting. It requires onboarding automation, admin UI, and identity federation — new features, not structural changes.
+
 ### What this means for you
 
 - You deploy one PLUR Enterprise instance
@@ -520,44 +603,54 @@ Your clients' data never mixes. Organization A cannot see Organization B's engra
 
 ---
 
-## 7. Implementation Phases
+## 8. Implementation Phases
 
 ### Phase 1 — Pilot (10 developers, your organization)
 
 **Goal**: Prove value with a small team on real repositories.
 
+**Duration**: 3 months
+
 **Scope**:
+- AGE validation spike (week 1-2): benchmark graph queries under realistic load, validate managed Postgres compatibility. Go/no-go decision for AGE vs. recursive CTE fallback.
 - Centralized PLUR server with HTTP/SSE transport
-- PostgreSQL + AGE + pgvector backend
-- GitLab OAuth2 SSO for your organization
-- Basic scope enforcement (personal + project-level) via graph traversal
+- PostgreSQL + AGE + pgvector backend (schema-per-org from day one)
+- Token-based authentication (admin-provisioned)
+- GitLab API integration for membership import
+- Basic scope enforcement (personal + project-level)
 - Memory: learn, recall, inject working across the team
-- Orchestration: basic task queuing and execution tracking
+- Bootstrapping: seed engrams from existing documentation
+- Orchestration: basic task queuing and execution tracking for 1-2 defined workflows
 - VS Code compatibility validated with 2-3 MCP clients
+- Orchestration discovery: structured sessions to define target workflows
 
 **Success criteria**:
 - 10 developers using PLUR daily in their IDE
 - Engrams accumulating for active projects
-- At least one orchestrated AI workflow running (e.g., automated code review)
+- At least one orchestrated AI workflow running (defined during discovery sessions)
 - Measurable improvement in onboarding or code review quality
+- AGE validated or fallback path confirmed
 
 ### Phase 2 — Production (50 developers, full feature set)
 
 **Goal**: Roll out to the full organization with complete access control and orchestration.
 
 **Scope**:
-- Full GitLab group/project permission model via knowledge graph
+- Full GitLab OAuth2/OIDC SSO (with token fallback for incompatible clients)
+- Full GitLab group/project permission model with role-level granularity
 - Membership sync (periodic or webhook-based)
 - Full orchestration: multi-step workflows, agent routing, failure handling, human-in-the-loop
+- Knowledge quality: promotion workflows, contradiction detection, knowledge steward role
 - Admin dashboard (usage, health, audit, orchestration monitoring)
-- Team knowledge features (engram promotion, org-wide packs, coverage reporting)
+- Team knowledge features (org-wide packs, coverage reporting)
 - CI/CD integration (GitLab pipelines can trigger orchestrated tasks)
 - Monitoring and alerting
 
 **Success criteria**:
 - All 50 developers onboarded
 - Permission model correctly reflects GitLab structure
-- Multiple orchestrated workflows in production (code review, documentation, migration assistance)
+- Multiple orchestrated workflows in production
+- Knowledge quality metrics trending positive (fewer contradictions, healthy promotion rate)
 - Admin team can manage org-wide knowledge and monitor orchestration
 - AI tasks completing reliably with full audit trail
 
@@ -566,22 +659,60 @@ Your clients' data never mixes. Organization A cannot see Organization B's engra
 **Goal**: Offer AI memory and orchestration as a service to your client organizations.
 
 **Scope**:
-- Multi-organization tenancy (schema-per-org isolation with separate knowledge graphs)
-- Identity federation (each client's IdP)
+- Multi-organization management (create/configure/monitor org tenants)
+- Identity federation (each client's IdP — GitLab, GitHub, OIDC, SAML)
 - White-label branding (dashboard, docs, domain)
 - Per-organization configuration and billing hooks
 - Reseller admin panel (manage client orgs, monitor cross-org health)
 - Self-service client onboarding
+- Client-specific bootstrapping (seed from their documentation sources)
 
 **Success criteria**:
 - First client organization onboarded through your platform
-- Full data isolation verified
+- Full data isolation verified (security audit)
 - Self-service client onboarding operational
 - Revenue model validated
 
 ---
 
-## 8. Design Partnership
+## 9. Competitive Landscape
+
+We should be transparent about alternatives and our differentiation.
+
+### Memory alternatives
+
+| Product | Approach | Differentiation from PLUR |
+|---------|----------|--------------------------|
+| **Supermemory** | Cloud-hosted memory service | Requires sending all data to their cloud. PLUR is self-hosted — data stays on your infrastructure. |
+| **mem0** | Memory API (cloud + open source) | General-purpose memory, not optimized for code/development workflows. No orchestration. |
+| **Zep** | Long-term memory for AI apps | Focused on chatbot/RAG use cases, not developer tooling. No IDE integration. |
+
+### Orchestration alternatives
+
+| Product | Approach | Differentiation from PLUR |
+|---------|----------|--------------------------|
+| **Temporal** | Durable workflow execution | General-purpose workflow engine. Not AI-native — no memory injection, no engram-informed routing. |
+| **LangGraph / CrewAI** | Multi-agent frameworks | Framework, not infrastructure. Each developer runs their own agents with no shared memory or organizational orchestration. |
+| **GitLab CI/CD** | Pipeline automation | Already in use. PLUR complements it — AI tasks can be triggered from pipelines but execute with organizational memory. |
+
+### Our position
+
+PLUR's differentiation is the **combination**:
+- Memory + orchestration in one system (competitors offer one or the other)
+- Graph-based knowledge that connects people, projects, and knowledge (not just a key-value store)
+- Open source core with self-hosted enterprise tier (data sovereignty)
+- Model-agnostic via MCP (works with whatever tools the team already uses)
+- Designed for development workflows, not generic AI applications
+
+### Our weakness
+
+- Small team, no enterprise track record. This partnership builds that credibility.
+- No managed SaaS offering (yet). The client must host or we host on their behalf.
+- New product. The open source version is used in production, but enterprise features are greenfield.
+
+---
+
+## 10. Design Partnership
 
 This is a partnership proposal, not a vendor pitch. We're proposing to build PLUR Enterprise together.
 
@@ -601,7 +732,7 @@ This is a partnership proposal, not a vendor pitch. We're proposing to build PLU
 
 ### How it works
 
-- **Phase 1** is a design partnership — we build and iterate together
+- **Phase 1** is a design partnership — we build and iterate together, including orchestration discovery sessions
 - **Phase 2** transitions to a service agreement with committed terms
 - **Phase 3** is a reseller agreement with revenue sharing
 - Case study and reference rights are agreed upfront
@@ -629,7 +760,7 @@ We evaluated Neo4j, Memgraph, SurrealDB, and FalkorDB. PostgreSQL with Apache AG
 | **Risk** | Drop the extension, keep Postgres | Migration project if it doesn't work out |
 | **Managed hosting** | Every cloud provider | Limited options |
 
-AGE provides Cypher graph queries where we need them (permission traversal, spreading activation, knowledge paths, orchestration dependencies) while keeping standard SQL for everything else (user management, audit logs, session metadata, analytics). One system, not two.
+**Maturity risk**: AGE is in Apache Incubator (not graduated). Phase 1 includes a dedicated validation spike to confirm it meets our needs. If not, the fallback is standard PostgreSQL with recursive CTEs for graph-like queries — less elegant but functionally equivalent for our use cases. The data model is the same either way; only the query layer changes.
 
 ### Why graph capabilities matter
 
@@ -653,19 +784,17 @@ PLUR's engram schema already models a graph (relations, associations, scopes). T
 
 ---
 
-## Appendix C: Orchestration Capabilities (from Datacore)
+## Appendix C: Orchestration Patterns (from Datacore)
 
-The orchestration layer draws from a production-grade system currently running autonomous AI tasks nightly:
+The orchestration layer is built from patterns proven in a production system running autonomous AI tasks nightly. These are **design patterns**, not portable code — the enterprise orchestrator is purpose-built for multi-user, multi-model operation.
 
-| Capability | Description |
-|-----------|-------------|
-| **Task queuing** | Priority-based queue with dependency resolution |
-| **Agent routing** | Match tasks to agents by capability type (research, content, code review, data analysis, technical) |
-| **Execution lifecycle** | Pending → in_progress → completed/failed with full state tracking |
-| **Quality gates** | Multi-persona evaluation before delivering results |
-| **Failure analysis** | Root cause analysis of failed executions, retry eligibility assessment |
-| **Human-in-the-loop** | Results staged for human review when confidence is below threshold |
-| **Context injection** | Relevant engrams automatically injected into agent context before execution |
-| **Audit trail** | Full execution lineage: what ran, what it consumed, what it produced |
-| **Scheduling** | Cron-based and event-driven task triggering |
-| **Cost tracking** | Token usage and execution cost monitoring per task, agent, and project |
+| Pattern | Description | Enterprise adaptation |
+|---------|-------------|----------------------|
+| **Priority queue with dependency resolution** | Tasks queued by priority, only dispatched when dependencies are met | Graph-based dependency traversal replaces file-based scanning |
+| **Capability-based agent routing** | Tasks matched to agents by type (research, content, code review, data analysis) | Agent registry as graph nodes, capability matching via traversal |
+| **State machine execution** | Pending → in_progress → completed/failed with full state tracking | Execution nodes in graph with lineage edges |
+| **Multi-persona quality gates** | Output evaluated by multiple assessment criteria before delivery | Configurable per workflow, per organization |
+| **Failure analysis and retry** | Root cause analysis of failed tasks, retry eligibility assessment | Failure patterns accumulated as engrams — system learns from its mistakes |
+| **Human-in-the-loop escalation** | Results staged for human review when confidence is below threshold | Notification via GitLab comments, Slack, or dashboard |
+| **Context injection** | Relevant engrams automatically injected into agent context before execution | Native: orchestrator queries knowledge graph for task-relevant engrams |
+| **Cost tracking** | Token usage and execution cost monitoring per task | Per-organization, per-project, per-agent cost attribution |
