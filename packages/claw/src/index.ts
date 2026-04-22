@@ -35,7 +35,7 @@ const plugin = {
   id: 'plur-claw',
   name: 'PLUR Memory Engine',
   description: 'Persistent, learnable memory for OpenClaw agents. Local-first, no cloud required.',
-  version: '0.9.2',
+  version: '0.9.3',
   kind: 'memory' as const,
 
   register(api: any) {
