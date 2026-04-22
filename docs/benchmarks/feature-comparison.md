@@ -2,7 +2,7 @@
 
 **Status:** Draft, Phase 1 (feature matrix). Performance benchmarks tracked separately — see [Issue #8 Phase 2](https://github.com/plur-ai/plur/issues/8).
 
-**Last updated:** 2026-04-22 (Zep/Graphiti row split + verified)
+**Last updated:** 2026-04-22 (Letta row — temporal / encryption / MCP cells verified)
 
 ## Scope
 
@@ -49,7 +49,7 @@ The local-first memory space went from "a few projects" to "a credible category"
 | System | Local-first | Team-shareable | Sync mechanism | Storage | Search | Feedback loop | Temporal | Encryption | Cross-tool (MCP) | Pack format | License |
 |---|---|---|---|---|---|---|---|---|---|---|---|
 | **Claude Code built-in memory** | Yes | No | — | Markdown in `~/.claude/` | Keyword | No | File mtime | No | **No (Claude Code only)** | No | Proprietary |
-| **Letta / MemGPT** | Hybrid | Shared memory blocks (multi-agent, not multi-user) | Cloud | Postgres + custom | Self-managing recall | Yes (sleep-time compute) | ? | ? | SDK (not MCP-native) | No | Apache-2.0 |
+| **Letta / MemGPT** ([source](https://github.com/letta-ai/letta)) | Hybrid | [Shared memory blocks](https://docs.letta.com/guides/agents/memory) (multi-agent, not multi-user) | Cloud | Postgres + pgvector | Self-managing recall | Yes (sleep-time compute) | No (editable [memory blocks](https://docs.letta.com/guides/agents/memory); no validity windows / "what was true when") | Not first-party ([deploy-layer only, e.g. Postgres/Aurora encryption](https://aws.amazon.com/blogs/database/how-letta-builds-production-ready-ai-agents-with-amazon-aurora-postgresql/)) | [MCP client only](https://docs.letta.com/guides/mcp/overview) (consumes external MCP tools; memory exposed via SDK, not MCP) | No | Apache-2.0 |
 | **Graphiti** ([source](https://github.com/getzep/graphiti)) | Yes (self-hosted OSS) | No (single-instance OSS) | — | Neo4j / FalkorDB / Kuzu / Neptune (pluggable) | [Hybrid (semantic + BM25 + graph traversal)](https://github.com/getzep/graphiti#why-graphiti) | [Auto-invalidation of contradicting facts](https://github.com/getzep/graphiti#why-graphiti) (temporal; old facts invalidated, not deleted) | **Yes (bi-temporal validity windows)** | Not in OSS (backend-dependent) | **Yes ([first-party MCP server](https://github.com/getzep/graphiti/tree/main/mcp_server))** | No | Apache-2.0 |
 | **Zep** ([source](https://www.getzep.com/)) | Hybrid (managed cloud; self-host via Graphiti OSS) | **Yes (managed users/threads)** | Cloud | Managed (Graphiti-backed) | Hybrid (semantic + BM25 + graph) | [Auto-invalidation](https://blog.getzep.com/state-of-the-art-agent-memory/) (inherited from Graphiti) | **Yes (bi-temporal)** | [Enterprise security](https://docs.getzep.com/deployment/security/) (cloud tier) | Yes (via [Graphiti MCP server](https://help.getzep.com/graphiti/getting-started/mcp-server)) | No | Apache-2.0 (Graphiti core) / Proprietary (Zep platform) |
 | **LangMem** (LangChain) | Hybrid | No | — | Pluggable | Background manager | Yes | ? | ? | SDK only | No | MIT |
