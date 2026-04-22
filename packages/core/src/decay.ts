@@ -1,3 +1,6 @@
+import type { Engram } from './schemas/engram.js'
+import { appendHistory, type HistoryEvent } from './history.js'
+
 const DECAY_RATE = 0.05
 const FLOOR = 0.05
 const MS_PER_DAY = 86_400_000
@@ -90,4 +93,123 @@ export function confidenceDecay(
   const decayed = retrievalStrength * multiplier
 
   return Math.max(CONFIDENCE_DECAY_FLOOR, decayed)
+}
+
+// === Batch Decay ===
+
+/** Map retrieval strength to a human-readable status label. */
+export function strengthToStatus(strength: number): string {
+  if (strength > 0.5) return 'active'
+  if (strength > 0.3) return 'fading'
+  if (strength > 0.1) return 'dormant'
+  return 'retirement_candidate'
+}
+
+export interface DecayTransition {
+  engram_id: string
+  old_strength: number
+  new_strength: number
+  old_status: string
+  new_status: string
+}
+
+export interface BatchDecayResult {
+  total: number
+  decayed: number
+  skipped: number
+  transitions: DecayTransition[]
+}
+
+export interface BatchDecayOptions {
+  contextScope?: string
+  lambda?: number
+  now?: Date
+}
+
+/**
+ * Apply ACT-R decay to a batch of engrams.
+ * Scope-matched engrams are skipped (they never decay).
+ * Status transitions are logged to history.
+ * Returns the result summary and the list of engrams that were modified.
+ */
+export function applyBatchDecay(
+  engrams: Engram[],
+  historyRoot: string,
+  options?: BatchDecayOptions,
+): { result: BatchDecayResult; modified: Engram[] } {
+  const now = options?.now ?? new Date()
+  const lambda = options?.lambda ?? DECAY_RATE
+  const contextScope = options?.contextScope
+
+  const active = engrams.filter(e => e.status === 'active')
+  const transitions: DecayTransition[] = []
+  const modified: Engram[] = []
+
+  let decayed = 0
+  let skipped = 0
+
+  for (const engram of active) {
+    // Scope-matched engrams never decay
+    if (contextScope && isScopeMatched(engram.scope, contextScope)) {
+      skipped++
+      continue
+    }
+
+    const days = daysSince(engram.activation.last_accessed, now)
+    if (days === 0) continue // Accessed today, no decay
+
+    // Emotional weight modifier: higher emotion = slower decay
+    const emotionalWeight = (engram as any).episodic?.emotional_weight ?? 5
+    const effectiveLambda = lambda * (1 - emotionalWeight / 20)
+
+    const oldStrength = engram.activation.retrieval_strength
+    const newStrength = decayedStrength(oldStrength, days, effectiveLambda)
+
+    // Only count as decayed if strength actually changed
+    if (Math.abs(newStrength - oldStrength) < 1e-10) continue
+
+    const oldStatus = strengthToStatus(oldStrength)
+    const newStatus = strengthToStatus(newStrength)
+
+    engram.activation.retrieval_strength = newStrength
+    modified.push(engram)
+    decayed++
+
+    if (oldStatus !== newStatus) {
+      const transition: DecayTransition = {
+        engram_id: engram.id,
+        old_strength: oldStrength,
+        new_strength: newStrength,
+        old_status: oldStatus,
+        new_status: newStatus,
+      }
+      transitions.push(transition)
+
+      const event: HistoryEvent = {
+        event: 'engram_updated',
+        engram_id: engram.id,
+        timestamp: now.toISOString(),
+        data: {
+          reason: 'decay_status_transition',
+          old_strength: oldStrength,
+          new_strength: newStrength,
+          old_status: oldStatus,
+          new_status: newStatus,
+        },
+      }
+      appendHistory(historyRoot, event)
+    }
+  }
+
+  return {
+    result: { total: active.length, decayed, skipped, transitions },
+    modified,
+  }
+}
+
+/** Check if an engram scope matches the context scope. */
+function isScopeMatched(engramScope: string, contextScope: string): boolean {
+  if (engramScope === contextScope) return true
+  if (engramScope !== 'global' && engramScope.startsWith(contextScope.split(':')[0] + ':')) return true
+  return false
 }

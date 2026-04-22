@@ -7,7 +7,7 @@ import { loadEngrams, saveEngrams, generateEngramId, loadAllPacks, storePrefix }
 import { logger } from './logger.js'
 import { searchEngrams } from './fts.js'
 import { selectAndSpread, scoreEngramsPublic, formatWithLayer, assignLayer } from './inject.js'
-import { reactivate } from './decay.js'
+import { reactivate, applyBatchDecay, type BatchDecayResult } from './decay.js'
 import { captureEpisode, queryTimeline } from './episodes.js'
 import { detectConflicts } from './conflict.js'
 import { agenticSearch } from './agentic-search.js'
@@ -58,6 +58,7 @@ export { recallAuto, type AutoSearchResult, type SearchStrategy } from './search
 export { generateProfile, getProfileForInjection, loadProfileCache, saveProfileCache, markProfileDirty, profileNeedsRegeneration, type ProfileCache } from './profile.js'
 export { formatLayer1, formatLayer2, formatLayer3, formatWithLayer, assignLayer, type InjectionLayer } from './inject.js'
 export { appendHistory, readHistory, listHistoryMonths, readHistoryForEngram, generateEventId, type HistoryEvent } from './history.js'
+export { applyBatchDecay, strengthToStatus, type BatchDecayResult, type DecayTransition, type BatchDecayOptions } from './decay.js'
 export { computeContentHash, normalizeStatement } from './content-hash.js'
 export { parseDedupResponse, buildDedupPrompt, buildBatchDedupPrompt } from './dedup.js'
 export { runMigrations, rollbackMigrations, getSchemaVersion, setSchemaVersion, ALL_MIGRATIONS, CURRENT_SCHEMA_VERSION, type Migration, type MigrationResult } from './migrations/index.js'
@@ -822,6 +823,25 @@ export class Plur {
         this._syncIndex()
       }
       return { removed, remaining: active.length }
+    })
+  }
+
+  /**
+   * Apply ACT-R decay to all primary store engrams.
+   * Scope-matched engrams are skipped, status transitions logged to history.
+   * Modified engrams are saved back to the store.
+   */
+  batchDecay(options?: { contextScope?: string; lambda?: number; now?: Date }): BatchDecayResult {
+    return withLock(this.paths.engrams, () => {
+      const engrams = loadEngrams(this.paths.engrams)
+      const { result, modified } = applyBatchDecay(engrams, this.paths.root, options)
+
+      if (modified.length > 0) {
+        saveEngrams(this.paths.engrams, engrams)
+        this._syncIndex()
+      }
+
+      return result
     })
   }
 
