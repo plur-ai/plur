@@ -11,7 +11,7 @@ import shutil
 import subprocess
 from typing import Any
 
-_NPX_CLI_VERSION = "0.1.0"
+_NPX_CLI_VERSION = "0.9.0"
 
 
 class PlurBridgeError(Exception):
@@ -211,6 +211,18 @@ class PlurBridge:
 
     def packs_list(self) -> dict:
         return self.call("packs", ["list"])
+
+    def similarity_search(self, query: str, limit: int = 10, scope: str | None = None) -> dict:
+        args = [query, "--limit", str(limit)]
+        if scope:
+            args.extend(["--scope", scope])
+        return self.call("similarity-search", args)
+
+    def batch_decay(self, context_scope: str | None = None) -> dict:
+        args: list[str] = []
+        if context_scope:
+            args.extend(["--context-scope", context_scope])
+        return self.call("batch-decay", args)
 
     def packs_install(self, source: str) -> dict:
         return self.call("packs", ["install", source])
