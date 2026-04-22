@@ -872,6 +872,10 @@ export function getToolDefinitions(): ToolDefinition[] {
         const task = args.task as string
         const tags = args.tags as string[] | undefined
 
+        // Auto-discover project stores by walking up from CWD to git root.
+        // Uses CWD (the project the user is working in), not the Plur storage path.
+        const discovered = plur.autoDiscoverStores()
+
         // Get store stats for context
         const status = plur.status()
         const store_stats = {
@@ -929,6 +933,8 @@ export function getToolDefinitions(): ToolDefinition[] {
           follow_up: store_stats.engram_count === 0
             ? 'This is a fresh store with 0 engrams. After your first exchange with the user, review what you learned and call plur_learn for any corrections, preferences, or patterns. Build the memory from this session.'
             : undefined,
+          // Report auto-discovered project stores
+          discovered_stores: discovered.length > 0 ? discovered : undefined,
           // On fresh install, suggest hook setup for reliable injection
           setup_hint: isFreshInstall
             ? 'IMPORTANT: For reliable memory injection, ask the user to run: npx @plur-ai/cli init — this installs Claude Code hooks that automatically inject engrams at conversation start and after context compaction. Without hooks, memory injection depends on you remembering to call plur_session_start.'
