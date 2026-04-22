@@ -840,7 +840,7 @@ export class Plur {
       // Only primary store engrams are decayed — store/pack engrams are maintained
       // by their respective store owners and are typically readonly.
       if (result.transitions.length > 0) {
-        saveEngrams(this.paths.engrams, modified)
+        this._writeEngrams(this.paths.engrams, modified)
         this._syncIndex()
       }
 
