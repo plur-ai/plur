@@ -2,7 +2,7 @@
 
 **Status:** Draft, Phase 1 (feature matrix). Performance benchmarks tracked separately — see [Issue #8 Phase 2](https://github.com/plur-ai/plur/issues/8).
 
-**Last updated:** 2026-04-22 (Hindsight row verified — 6 `?` cells resolved, search cell upgraded from marketing term to retrieval primitives)
+**Last updated:** 2026-04-22 (LangMem row verified — 2 `?` cells resolved + search cell recategorized from "Background manager" to retrieval primitive)
 
 ## Scope
 
@@ -53,7 +53,7 @@ The local-first memory space went from "a few projects" to "a credible category"
 | **Letta / MemGPT** ([source](https://github.com/letta-ai/letta)) | Hybrid | [Shared memory blocks](https://docs.letta.com/guides/agents/memory) (multi-agent, not multi-user) | Cloud | Postgres + pgvector | Self-managing recall | Yes (sleep-time compute) | No (editable [memory blocks](https://docs.letta.com/guides/agents/memory); no validity windows / "what was true when") | Not first-party ([deploy-layer only, e.g. Postgres/Aurora encryption](https://aws.amazon.com/blogs/database/how-letta-builds-production-ready-ai-agents-with-amazon-aurora-postgresql/)) | [MCP client only](https://docs.letta.com/guides/mcp/overview) (consumes external MCP tools; memory exposed via SDK, not MCP) | No | Apache-2.0 |
 | **Graphiti** ([source](https://github.com/getzep/graphiti)) | Yes (self-hosted OSS) | No (single-instance OSS) | — | Neo4j / FalkorDB / Kuzu / Neptune (pluggable) | [Hybrid (semantic + BM25 + graph traversal)](https://github.com/getzep/graphiti#why-graphiti) | [Auto-invalidation of contradicting facts](https://github.com/getzep/graphiti#why-graphiti) (temporal; old facts invalidated, not deleted) | **Yes (bi-temporal validity windows)** | Not in OSS (backend-dependent) | **Yes ([first-party MCP server](https://github.com/getzep/graphiti/tree/main/mcp_server))** | No | Apache-2.0 |
 | **Zep** ([source](https://www.getzep.com/)) | Hybrid (managed cloud; self-host via Graphiti OSS) | **Yes (managed users/threads)** | Cloud | Managed (Graphiti-backed) | Hybrid (semantic + BM25 + graph) | [Auto-invalidation](https://blog.getzep.com/state-of-the-art-agent-memory/) (inherited from Graphiti) | **Yes (bi-temporal)** | [Enterprise security](https://docs.getzep.com/deployment/security/) (cloud tier) | Yes (via [Graphiti MCP server](https://help.getzep.com/graphiti/getting-started/mcp-server)) | No | Apache-2.0 (Graphiti core) / Proprietary (Zep platform) |
-| **LangMem** (LangChain) | Hybrid | No | — | Pluggable | Background manager | Yes | ? | ? | SDK only | No | MIT |
+| **LangMem** ([source](https://github.com/langchain-ai/langmem)) | Hybrid (any [LangGraph BaseStore](https://langchain-ai.github.io/langmem/): InMemoryStore local, AsyncPostgresStore self-host) | No | — | [Pluggable (any LangGraph BaseStore)](https://langchain-ai.github.io/langmem/) | [Semantic + exact match](https://langchain-ai.github.io/langmem/reference/tools/) via vector index (e.g. `openai:text-embedding-3-small`, 1536 dims) | Yes ([background memory manager](https://langchain-ai.github.io/langmem/); extracts/updates memories from conversations) | Not documented | Not documented (deploy-layer only if using Postgres) | SDK only (no first-party MCP server) | No | MIT |
 | **Google Always-On Memory Agent** | Yes | No | — | Agent-internal | LLM-driven (no vectors) | ? | ? | ? | ? | No | MIT |
 | **MemOS** (MemTensor) | ? | ? | ? | ? | ? | ? | ? | ? | ? | ? | ? |
 
