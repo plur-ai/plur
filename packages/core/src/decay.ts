@@ -207,9 +207,10 @@ export function applyBatchDecay(
   }
 }
 
-/** Check if an engram scope matches the context scope. */
+/** Check if an engram scope matches the context scope (exact match or child). */
 function isScopeMatched(engramScope: string, contextScope: string): boolean {
   if (engramScope === contextScope) return true
-  if (engramScope !== 'global' && engramScope.startsWith(contextScope.split(':')[0] + ':')) return true
+  // Child scope: project:alpha/sub matches project:alpha, but project:beta does NOT match project:alpha
+  if (engramScope.startsWith(contextScope + '/')) return true
   return false
 }
