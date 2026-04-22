@@ -12,7 +12,7 @@ from .learner import extract_learning_patterns
 
 logger = logging.getLogger("plur_hermes")
 
-__version__ = "0.9.0"
+__version__ = "0.9.2"
 
 _session_state: dict[str, dict] = {}
 _PRUNE_AGE_SECONDS = 3600
