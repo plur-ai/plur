@@ -136,6 +136,12 @@ export class Plur {
   constructor(options?: { path?: string }) {
     this.paths = detectPlurStorage(options?.path)
     this.config = loadConfig(this.paths.config)
+    // Auto-discover project stores from CWD (skips temp dirs for test safety)
+    this.autoDiscoverStores()
+    // Re-read config after potential store additions
+    if (this.config.stores?.length !== loadConfig(this.paths.config).stores?.length) {
+      this.config = loadConfig(this.paths.config)
+    }
     if (this.config.index) {
       this.indexedStorage = new IndexedStorage(this.paths.engrams, this.paths.db, this.config.stores)
     }
