@@ -238,7 +238,11 @@ describe('Multi-store', () => {
     }
   })
 
-  it('recallHybrid searches across stores', async () => {
+  // Timeout extended: first embedding-using test in this worker may spend 5-20s
+  // downloading the BGE-small ONNX model (~130MB). Subsequent tests reuse the
+  // cached pipeline. BM25 alone satisfies the assertions, so the test still
+  // passes fast once the pipeline is warm.
+  it('recallHybrid searches across stores', { timeout: 30000 }, async () => {
     writeStoreEngrams([makeEngram({ statement: 'PostgreSQL requires vacuum to reclaim dead tuples' })])
     writeConfig([{ path: storePath, scope: 'datafund' }])
     const plur = createPlur()
@@ -251,7 +255,7 @@ describe('Multi-store', () => {
     expect(statements.some(s => s.includes('Redis'))).toBe(true)
   })
 
-  it('similaritySearch includes store engrams', async () => {
+  it('similaritySearch includes store engrams', { timeout: 30000 }, async () => {
     writeStoreEngrams([makeEngram({ statement: 'PostgreSQL requires vacuum to reclaim dead tuples' })])
     writeConfig([{ path: storePath, scope: 'datafund' }])
     const plur = createPlur()
