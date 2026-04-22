@@ -34,6 +34,8 @@ Commands:
   packs list              List installed packs
   packs install <source>  Install engram pack
   packs export <name>     Export engrams as a pack
+  similarity-search <q>   Search by cosine similarity with scores
+  batch-decay             Apply ACT-R decay to all engrams
   promote <id>            Promote an engram to active
   migrate [up|down|status] Run schema migrations
   stores list             List configured stores
@@ -75,6 +77,8 @@ const COMMANDS: Record<string, string> = {
   packs: './commands/packs.js',
   ingest: './commands/ingest.js',
   promote: './commands/promote.js',
+  'similarity-search': './commands/similarity-search.js',
+  'batch-decay': './commands/batch-decay.js',
   stores: './commands/stores.js',
   migrate: './commands/migrate.js',
   init: './commands/init.js',

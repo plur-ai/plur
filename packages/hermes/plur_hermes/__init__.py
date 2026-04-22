@@ -12,7 +12,7 @@ from .learner import extract_learning_patterns
 
 logger = logging.getLogger("plur_hermes")
 
-__version__ = "0.1.1"
+__version__ = "0.9.0"
 
 _session_state: dict[str, dict] = {}
 _PRUNE_AGE_SECONDS = 3600
@@ -271,6 +271,29 @@ def register(ctx):
             "description": "List configured knowledge stores",
             "parameters": {"type": "object", "properties": {}},
         },
+        "plur_similarity_search": {
+            "name": "plur_similarity_search",
+            "description": "Search engrams by cosine similarity, returning scores. Scores > 0.9 indicate duplicates, 0.7-0.9 related, < 0.7 new.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Search query"},
+                    "limit": {"type": "integer", "default": 10},
+                    "scope": {"type": "string"},
+                },
+                "required": ["query"],
+            },
+        },
+        "plur_batch_decay": {
+            "name": "plur_batch_decay",
+            "description": "Apply ACT-R decay to all engrams. Run weekly. Returns status transitions.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "context_scope": {"type": "string", "description": "Scope to skip during decay"},
+                },
+            },
+        },
     }
 
     def _make_handler(tool_name: str):
@@ -332,6 +355,10 @@ def register(ctx):
                                                readonly=args.get("readonly", False))
                 elif tool_name == "plur_stores_list":
                     result = bridge.stores_list()
+                elif tool_name == "plur_similarity_search":
+                    result = bridge.similarity_search(args["query"], limit=args.get("limit", 10), scope=args.get("scope"))
+                elif tool_name == "plur_batch_decay":
+                    result = bridge.batch_decay(context_scope=args.get("context_scope"))
                 else:
                     result = {"error": f"Unknown tool: {tool_name}"}
                 return json.dumps(result)
