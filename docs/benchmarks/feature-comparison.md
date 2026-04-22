@@ -2,7 +2,7 @@
 
 **Status:** Draft, Phase 1 (feature matrix). Performance benchmarks tracked separately — see [Issue #8 Phase 2](https://github.com/plur-ai/plur/issues/8).
 
-**Last updated:** 2026-04-22 (Letta row — temporal / encryption / MCP cells verified)
+**Last updated:** 2026-04-22 (Cognee row added — direct competitor, verified against upstream docs)
 
 ## Scope
 
@@ -43,6 +43,7 @@ The local-first memory space went from "a few projects" to "a credible category"
 | **Engram (Go)** (Gentleman-Programming) | Yes | No | — | SQLite + FTS5 | Keyword (FTS5) | ? | ? | ? | ? | No | MIT |
 | **Engram (E2EE)** (EvolvingLMMs-Lab) | Yes | No | — | SQLite + AES-256-GCM | ? | ? | ? | **Yes (AES-256-GCM)** | ? | No | ? |
 | **MCP Memory Service** (doobidoo) | Yes (optional Cloudflare backend) | Via Cloudflare backend | Cloudflare sync (optional) | KG + embeddings | Hybrid | Auto-consolidation | ? | ? | Yes (MCP) | No | ? |
+| **Cognee** ([source](https://github.com/topoteretes/cognee)) | Yes ([self-host, 1-click](https://github.com/topoteretes/cognee)) | No (multi-tenant isolation only; no first-party team-sharing mechanism) | — | Pluggable: vector ([LanceDB / Qdrant / PGVector](https://docs.cognee.ai/llms.txt)) + graph ([Neo4j / FalkorDB / Kuzu](https://docs.cognee.ai/llms.txt)) + relational | Graph + vector (auto-routing); no BM25/keyword documented | Yes (`improve` op; "Continuously learns to provide the right context") | [Time-aware queries / temporal mode](https://docs.cognee.ai/llms.txt) | ? (not documented) | Yes ([first-party `cognee-mcp`](https://github.com/topoteretes/cognee/tree/main/cognee-mcp); exposes `remember` / `recall` / `cognify` / `search`) | No | Apache-2.0 |
 
 ### Adjacent — local or local-capable, not fully MCP-native
 
@@ -58,8 +59,8 @@ The local-first memory space went from "a few projects" to "a credible category"
 
 ## Provisional findings (to be firmed up as `?` cells resolve)
 
-1. **Team-shareable + local-first is still a narrow combination.** Of the 14 systems above, PLUR is currently the only one with first-party team-sharing that stays on the team's own infrastructure (git-backed). Mem0, Letta, and Zep offer team features but only via their cloud tier; Graphiti OSS is explicitly self-hosted single-instance. Basic Memory can be shared via git but only by manual user work — it's not a supported flow.
-2. **Temporal reasoning is rare.** Graphiti (and Zep, which uses Graphiti as its core) treats temporal as central via bi-temporal validity windows and automatic fact invalidation. Most others, PLUR and Mem0 included, rely on timestamps without first-class "what was true when" semantics. Mem0's `infer=True` extract-resolve flow gives auto-conflict-resolution at write-time ("latest truth wins"), but no temporal validity windows over time.
+1. **Team-shareable + local-first is still a narrow combination.** Of the 15 systems above, PLUR is currently the only one with first-party team-sharing that stays on the team's own infrastructure (git-backed). Mem0, Letta, and Zep offer team features but only via their cloud tier; Graphiti OSS and Cognee are explicitly single-instance / multi-tenant-isolation-only. Basic Memory can be shared via git but only by manual user work — it's not a supported flow.
+2. **Temporal reasoning is rare but growing.** Graphiti (and Zep, which uses Graphiti as its core) treats temporal as central via bi-temporal validity windows and automatic fact invalidation. Cognee advertises a "time-aware queries / temporal mode" (exact semantics not yet verified against Graphiti's bi-temporal model). Most others, PLUR and Mem0 included, rely on timestamps without first-class "what was true when" semantics. Mem0's `infer=True` extract-resolve flow gives auto-conflict-resolution at write-time ("latest truth wins"), but no temporal validity windows over time.
 3. **Encryption at rest is mostly absent.** Only Engram (E2EE) ships first-party encryption. For enterprise team use, this is a gap across the category.
 4. **Pack format as a first-class artifact is PLUR-specific in this set.** Other systems expose memory as a store, not as portable shareable bundles.
 
