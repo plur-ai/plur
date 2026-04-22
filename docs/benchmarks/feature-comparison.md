@@ -1,0 +1,75 @@
+# Local-first AI memory: feature comparison
+
+**Status:** Draft, Phase 1 (feature matrix). Performance benchmarks tracked separately — see [Issue #8 Phase 2](https://github.com/plur-ai/plur/issues/8).
+
+**Last updated:** 2026-04-22
+
+## Scope
+
+This page compares PLUR against the 10+ credible local-first (or local-capable) AI memory systems that emerged through early 2026. The goal is a verifiable feature map, not a beauty contest: every claim links to the competitor's own docs or source. Where we cannot verify a claim from public material, the cell is marked `?` rather than guessed.
+
+Phase 1 deliberately excludes performance numbers (LongMemEval, latency, footprint). Those need a reproducible harness and are tracked as Phase 2.
+
+## Why this comparison exists
+
+The local-first memory space went from "a few projects" to "a credible category" in roughly 90 days. PLUR's positioning thesis is that **local-first plus team-shareable** is the underexplored combination — most systems pick one. This table is intended to make that claim falsifiable.
+
+## Column legend
+
+| Column | Meaning |
+|---|---|
+| **Local-first** | Primary data path runs without a cloud service. "Hybrid" means cloud is optional; "cloud-only OSS" means self-host is possible but cloud is the default. |
+| **Team-shareable** | First-party mechanism to share memory across users while keeping data under team control (not just "you can rsync the directory"). |
+| **Sync mechanism** | How memory propagates between machines/agents. |
+| **Storage** | Underlying store(s). |
+| **Search** | Retrieval primitives (keyword, vector, graph, hybrid). |
+| **Feedback loop** | First-party mechanism for the system to learn from corrections over time (not just manual edits). |
+| **Temporal** | Tracks when facts were true / handles conflicting updates over time. |
+| **Encryption at rest** | First-party encryption (not just "put it on an encrypted disk"). |
+| **Cross-tool (MCP)** | Works across ≥2 AI tools via MCP (Claude Code, Cursor, Windsurf, etc.). |
+| **Pack format** | Portable, shareable knowledge bundles as a first-class artifact. |
+| **License** | SPDX identifier where known. |
+
+## Matrix
+
+### Direct competitors — local-first + MCP + cross-tool
+
+| System | Local-first | Team-shareable | Sync mechanism | Storage | Search | Feedback loop | Temporal | Encryption | Cross-tool (MCP) | Pack format | License |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| **PLUR** ([source](https://github.com/plur-ai/plur)) | Yes | **Yes (git-backed `plur sync`)** | Git, planned exchange protocol | Filesystem + SQLite FTS5 | Hybrid (BM25 + embeddings) | Yes (engram feedback, relevance training) | Per-engram timestamps | No (filesystem-level only) | Yes (Claude Code, Cursor, Windsurf, OpenClaw, Hermes) | Yes (knowledge packs) | Apache-2.0 |
+| **Mem0 / OpenMemory MCP** ([source](https://github.com/mem0ai/mem0)) | Hybrid (local + cloud sharing) | Cloud only | Cloud (local mode is single-user) | Vector + Neo4j graph | Hybrid | ? | ? | ? | Yes | No (app-level) | Apache-2.0 |
+| **Hindsight** (by Vectorize) | ? | No | — | Postgres + KG | Mental-models retrieval | ? | ? | ? | ? | ? | MIT |
+| **Basic Memory** | Yes | Manual (`git` by hand) | User-managed git | Markdown + SQLite | Keyword | No | File mtime | No | ? | No | MIT |
+| **Engram (Go)** (Gentleman-Programming) | Yes | No | — | SQLite + FTS5 | Keyword (FTS5) | ? | ? | ? | ? | No | MIT |
+| **Engram (E2EE)** (EvolvingLMMs-Lab) | Yes | No | — | SQLite + AES-256-GCM | ? | ? | ? | **Yes (AES-256-GCM)** | ? | No | ? |
+| **MCP Memory Service** (doobidoo) | Yes (optional Cloudflare backend) | Via Cloudflare backend | Cloudflare sync (optional) | KG + embeddings | Hybrid | Auto-consolidation | ? | ? | Yes (MCP) | No | ? |
+
+### Adjacent — local or local-capable, not fully MCP-native
+
+| System | Local-first | Team-shareable | Sync mechanism | Storage | Search | Feedback loop | Temporal | Encryption | Cross-tool (MCP) | Pack format | License |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| **Claude Code built-in memory** | Yes | No | — | Markdown in `~/.claude/` | Keyword | No | File mtime | No | **No (Claude Code only)** | No | Proprietary |
+| **Letta / MemGPT** | Hybrid | Shared memory blocks (multi-agent, not multi-user) | Cloud | Postgres + custom | Self-managing recall | Yes (sleep-time compute) | ? | ? | SDK (not MCP-native) | No | Apache-2.0 |
+| **Graphiti / Zep** | Hybrid (OSS = single-instance) | Cloud only | Cloud | Temporal KG | Graph + temporal | ? | **Yes (temporal KG core)** | ? | SDK | No | Apache-2.0 |
+| **LangMem** (LangChain) | Hybrid | No | — | Pluggable | Background manager | Yes | ? | ? | SDK only | No | MIT |
+| **Google Always-On Memory Agent** | Yes | No | — | Agent-internal | LLM-driven (no vectors) | ? | ? | ? | ? | No | MIT |
+| **MemOS** (MemTensor) | ? | ? | ? | ? | ? | ? | ? | ? | ? | ? | ? |
+
+## Provisional findings (to be firmed up as `?` cells resolve)
+
+1. **Team-shareable + local-first is still a narrow combination.** Of the 13 systems above, PLUR is currently the only one with first-party team-sharing that stays on the team's own infrastructure (git-backed). Mem0, Letta, and Graphiti/Zep offer team features but only via their cloud tier. Basic Memory can be shared via git but only by manual user work — it's not a supported flow.
+2. **Temporal reasoning is rare.** Graphiti/Zep treat temporal as core. Most others, PLUR included, rely on timestamps without a first-class "what was true when" semantics.
+3. **Encryption at rest is mostly absent.** Only Engram (E2EE) ships first-party encryption. For enterprise team use, this is a gap across the category.
+4. **Pack format as a first-class artifact is PLUR-specific in this set.** Other systems expose memory as a store, not as portable shareable bundles.
+
+These are provisional because `?` cells may overturn them. This file should be updated (not rewritten) as each cell is sourced.
+
+## Contributing
+
+If you maintain one of the systems above, or know one of the `?` cells cold, PRs against this file are welcome. Cell-level changes only; each change must link to the system's own docs or source. If you spot an inaccurate claim about PLUR, please open an issue — the positioning claim above is only useful if it holds up under adversarial checking.
+
+## Out of scope for Phase 1
+
+- Performance numbers (LongMemEval, retrieval latency, RAM/disk footprint) — see [Issue #8 Phase 2](https://github.com/plur-ai/plur/issues/8). Requires a reproducible harness that doesn't yet exist.
+- Subjective UX comparison — deliberately excluded to keep the matrix verifiable.
+- Pricing / commercial tier comparison — tracked separately under the enterprise positioning doc.
