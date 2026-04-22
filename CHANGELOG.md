@@ -2,16 +2,25 @@
 
 ## Unreleased
 
-### Multi-Project Setup Improvements (#19)
+### Multi-Project Setup Improvements (#19, #24)
 
 - **Default to project-level config**: `plur init` now creates `.claude/settings.json` in the current directory by default, instead of falling back to `~/.claude/settings.json`. Better for multi-project setups. Users who want global config can use `--global` flag.
 - **Improved documentation**: Clarified that `--domain` and `--scope` flags (added in v0.8.2) are the solution for multi-project scoping. Updated init output to explain this workflow.
 
 Note: Issue #19 reported three problems. Issues 1 & 2 are now resolved. Issue 3 (batch/workspace mode) remains open for future consideration.
 
-### Packages
+### Core: engram cache invalidation on write (#25, #26)
 
-- `@plur-ai/cli` 0.8.3 — default to project-level config, improved multi-project docs
+- **Fix flaky `learnAsync` → `recall` race**: writes now invalidate the engrams read-cache via a `_writeEngrams` helper paired with every `saveEngrams` call. Previously, a second-granularity mtime could collide when a read and write happened in the same second, leaving stale engrams in cache and causing intermittent "Engram not found" failures in CI (and, rarely, on fast disks in normal operation).
+
+### Docs
+
+- **Opt-in engagement telemetry design proposal** (#23, for v0.9.x): design doc covering threat model, on-by-default vs opt-in decision, event schema, and local-first storage. Community comment window open through 2026-04-29 before implementation.
+
+### Packages (next release)
+
+- `@plur-ai/core` 0.8.4 — engram cache invalidation on write
+- `@plur-ai/cli` 0.8.6 — default to project-level config, improved multi-project docs
 
 ## 0.8.2 (2026-04-09)
 
