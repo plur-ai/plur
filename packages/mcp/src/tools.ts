@@ -1296,6 +1296,57 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
     },
 
     {
+      name: 'plur_similarity_search',
+      description: 'Search engrams by cosine similarity, returning scores. Used for dedup classification — scores > 0.9 indicate duplicates, 0.7-0.9 related, < 0.7 new.',
+      annotations: { title: 'Similarity search', readOnlyHint: true, idempotentHint: true },
+      inputSchema: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: 'Search query to find similar engrams' },
+          limit: { type: 'number', description: 'Max results to return (default 20)' },
+          scope: { type: 'string', description: 'Filter by scope (also includes global)' },
+        },
+        required: ['query'],
+      },
+      handler: async (args, plur) => {
+        const results = await plur.similaritySearch(args.query as string, {
+          limit: args.limit as number | undefined,
+          scope: args.scope as string | undefined,
+        })
+        return {
+          results: results.map(r => ({
+            engram_id: r.engram.id,
+            statement: r.engram.statement,
+            scope: r.engram.scope,
+            cosine_score: Math.round(r.score * 1000) / 1000,
+            type: r.engram.type,
+            polarity: (r.engram as any).polarity,
+            tags: r.engram.tags,
+          })),
+          count: results.length,
+        }
+      },
+    },
+
+    {
+      name: 'plur_batch_decay',
+      description: 'Apply ACT-R decay to all engrams. Run weekly. Returns status transitions only.',
+      annotations: { title: 'Batch decay', destructiveHint: false, idempotentHint: false },
+      inputSchema: {
+        type: 'object',
+        properties: {
+          context_scope: { type: 'string', description: 'Scope to skip during decay (engrams in active scope are not decayed)' },
+        },
+      },
+      handler: async (args, plur) => {
+        const result = plur.batchDecay({
+          contextScope: args.context_scope as string | undefined,
+        })
+        return result
+      },
+    },
+
+    {
       name: 'plur_profile',
       description: 'Generate or retrieve a cognitive profile — a narrative summary synthesized from stored engrams. Cached for 24h.',
       annotations: { title: 'Cognitive profile', readOnlyHint: true, idempotentHint: true },
