@@ -238,6 +238,36 @@ describe('Multi-store', () => {
     }
   })
 
+  it('recallHybrid searches across stores', async () => {
+    writeStoreEngrams([makeEngram({ statement: 'PostgreSQL requires vacuum to reclaim dead tuples' })])
+    writeConfig([{ path: storePath, scope: 'datafund' }])
+    const plur = createPlur()
+    plur.learn('Redis maxmemory policy controls eviction behavior', { scope: 'global' })
+
+    const results = await plur.recallHybrid('database memory management postgres redis')
+    const statements = results.map(e => e.statement)
+    // Should find engrams from both primary and store
+    expect(statements.some(s => s.includes('PostgreSQL'))).toBe(true)
+    expect(statements.some(s => s.includes('Redis'))).toBe(true)
+  })
+
+  it('similaritySearch includes store engrams', async () => {
+    writeStoreEngrams([makeEngram({ statement: 'PostgreSQL requires vacuum to reclaim dead tuples' })])
+    writeConfig([{ path: storePath, scope: 'datafund' }])
+    const plur = createPlur()
+    plur.learn('Redis maxmemory policy controls eviction behavior', { scope: 'global' })
+
+    const results = await plur.similaritySearch('database memory management postgres redis')
+    // All scores should be in [0, 1]
+    for (const r of results) {
+      expect(r.score).toBeGreaterThanOrEqual(0)
+      expect(r.score).toBeLessThanOrEqual(1)
+    }
+    // Should include at least one store engram (id prefixed with ENG-DFD-)
+    const hasStoreEngram = results.some(r => r.engram.id.startsWith('ENG-DFD-'))
+    expect(hasStoreEngram).toBe(true)
+  })
+
   it('storePrefix handles potential collisions deterministically', () => {
     // Two scopes that could collide: both start with 'data'
     // Single words: first + middle + last char (differentiates similar prefixes)
