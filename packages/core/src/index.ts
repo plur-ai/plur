@@ -1,4 +1,6 @@
 import * as fs from 'fs'
+import { tmpdir } from 'os'
+import { join, dirname, basename } from 'path'
 import yaml from 'js-yaml'
 import { detectPlurStorage, type PlurPaths } from './storage.js'
 import { IndexedStorage } from './storage-indexed.js'
@@ -1220,18 +1222,16 @@ Generate an improved version of the procedure that prevents this failure. Return
     const discovered: Array<{ path: string; scope: string }> = []
 
     // Skip discovery if Plur storage is in a temp directory (test scenario)
-    const os = require('os')
-    const tmpDir = os.tmpdir()
+    const tmpDir = tmpdir()
     if (this.paths.root.startsWith(tmpDir) || this.paths.root.startsWith('/tmp/')) {
       return discovered
     }
 
     const knownPaths = new Set((this.config.stores ?? []).map(s => s.path))
     // Also exclude the primary store directory
-    const primaryDir = require('path').dirname(this.paths.engrams)
+    const primaryDir = dirname(this.paths.engrams)
 
     let dir = startDir
-    const { join, dirname, basename } = require('path')
     const visited = new Set<string>()
 
     while (dir && !visited.has(dir)) {

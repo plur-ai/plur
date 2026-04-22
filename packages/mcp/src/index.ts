@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 export {}
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs'
+import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, statSync } from 'fs'
 import { join } from 'path'
+import { fileURLToPath } from 'url'
 import { homedir } from 'os'
 
 const VERSION = '0.9.2'
@@ -223,6 +224,30 @@ async function runInit() {
   // Step 4: Add PLUR section to CLAUDE.md
   const claudeMdStatus = installClaudeMd()
   results.push(`CLAUDE.md: ${claudeMdStatus}`)
+
+  // Step 5: Install bundled knowledge packs
+  const { Plur } = await import('@plur-ai/core')
+  const plur = new Plur({ path: paths.root })
+  const bundledPacksDir = join(fileURLToPath(import.meta.url), '..', '..', 'packs')
+  let packsStatus = 'no bundled packs found'
+  if (existsSync(bundledPacksDir)) {
+    const installed = plur.listPacks()
+    const installedNames = new Set(installed.map((p: { name: string }) => p.name))
+    const entries = readdirSync(bundledPacksDir).filter(e => statSync(join(bundledPacksDir, e)).isDirectory())
+    const newPacks: string[] = []
+    for (const entry of entries) {
+      if (!installedNames.has(entry)) {
+        try {
+          plur.installPack(join(bundledPacksDir, entry))
+          newPacks.push(entry)
+        } catch {}
+      }
+    }
+    packsStatus = newPacks.length > 0
+      ? `installed ${newPacks.join(', ')}`
+      : `${entries.length} pack(s) already installed`
+  }
+  results.push(`Packs:    ${packsStatus}`)
 
   process.stdout.write(`PLUR initialized.
 

@@ -1,0 +1,121 @@
+engrams:
+  - id: ENG-PACK-EM-001
+    version: 1
+    status: active
+    type: procedural
+    scope: global
+    visibility: public
+    statement: "Every session must bookend with plur_session_start (beginning) and plur_session_end (end). Session start injects relevant engrams into context. Session end captures what was learned, what failed, and what to continue. Without bookends, the agent starts every conversation from zero."
+    rationale: "Session boundaries are the minimum viable memory habit. Everything else builds on this."
+    domain: plur.session
+    tags: [session, lifecycle, start, end]
+    activation: { retrieval_strength: 0.95, storage_strength: 0.95, frequency: 0, last_accessed: "2026-04-22" }
+    dual_coding:
+      example: "User says 'fix the auth bug'. Agent calls plur_session_start('fixing auth bug') — gets injected with 'OAuth tokens expire after 1h, not 24h' from last week's session. Fixes it in 5 minutes instead of rediscovering the issue."
+      analogy: "Like reading your notes before a meeting vs walking in cold every time."
+    pack: effective-memory
+
+  - id: ENG-PACK-EM-002
+    version: 1
+    status: active
+    type: behavioral
+    scope: global
+    visibility: public
+    statement: "When the user corrects you, call plur_learn immediately — before continuing the task. Corrections are the highest-value engrams because they prevent repeated mistakes. Don't wait until end of session. Don't batch them. Learn the correction the instant it happens."
+    rationale: "Corrections decay from working memory fast. Capturing them immediately is the difference between learning once and being corrected forever."
+    domain: plur.learning
+    tags: [correction, learn, immediate]
+    activation: { retrieval_strength: 0.95, storage_strength: 0.95, frequency: 0, last_accessed: "2026-04-22" }
+    dual_coding:
+      example: "User: 'No, use snake_case not camelCase in this repo.' Agent immediately calls plur_learn('This repo uses snake_case, not camelCase') before proceeding with the fix."
+    pack: effective-memory
+
+  - id: ENG-PACK-EM-003
+    version: 1
+    status: active
+    type: behavioral
+    scope: global
+    visibility: public
+    statement: "Call plur_feedback on injected engrams — positive when helpful, negative when wrong or stale. Feedback trains the injection algorithm. Without it, irrelevant engrams keep appearing and relevant ones get buried. This is how memory gets smarter, not just bigger."
+    rationale: "Feedback is the training signal for retrieval quality. Memory without feedback is a search engine that never improves its ranking."
+    domain: plur.feedback
+    tags: [feedback, relevance, training]
+    activation: { retrieval_strength: 0.9, storage_strength: 0.9, frequency: 0, last_accessed: "2026-04-22" }
+    dual_coding:
+      example: "Session starts, 8 engrams injected. 2 were directly useful for the task — call plur_feedback with positive. 1 was about a project you finished last month — call plur_feedback with negative. The rest were fine but not remarkable — skip or neutral."
+    pack: effective-memory
+
+  - id: ENG-PACK-EM-004
+    version: 1
+    status: active
+    type: behavioral
+    scope: global
+    visibility: public
+    statement: "Learn preferences, not just corrections. When the user says 'always X', 'never Y', 'I prefer Z' — that is a preference engram. Preferences shape how you work, not just what you know. They are high-value because they affect every future interaction."
+    rationale: "Preferences are the difference between a tool and an assistant that knows you."
+    domain: plur.learning
+    tags: [preference, learn, personalization]
+    activation: { retrieval_strength: 0.9, storage_strength: 0.9, frequency: 0, last_accessed: "2026-04-22" }
+    dual_coding:
+      example: "User: 'I like terse responses, skip the summaries.' Call plur_learn with type behavioral. Next session, this preference is injected and you're already concise."
+    pack: effective-memory
+
+  - id: ENG-PACK-EM-005
+    version: 1
+    status: active
+    type: behavioral
+    scope: global
+    visibility: public
+    statement: "Do NOT learn trivial facts, session-specific state, or things derivable from the codebase. Bad engrams: 'the user said hello', 'we are working on file X', 'function foo is on line 42'. Good engrams: 'this API returns snake_case despite the docs saying camelCase', 'user prefers DCA over single entries', 'deploy requires VPN connection first'."
+    rationale: "Memory quality matters more than quantity. Noisy engrams dilute injection relevance and waste context window."
+    domain: plur.learning
+    tags: [quality, anti-pattern, noise]
+    activation: { retrieval_strength: 0.9, storage_strength: 0.9, frequency: 0, last_accessed: "2026-04-22" }
+    pack: effective-memory
+
+  - id: ENG-PACK-EM-006
+    version: 1
+    status: active
+    type: procedural
+    scope: global
+    visibility: public
+    statement: "Before answering factual questions about past work, decisions, or conventions — call plur_recall_hybrid first. The answer may already be in memory. This prevents contradicting past decisions, rediscovering known patterns, and giving generic answers when specific learned context exists."
+    rationale: "Recall before reasoning. The most common memory failure is not forgetting — it's not checking."
+    domain: plur.recall
+    tags: [recall, search, before-answering]
+    activation: { retrieval_strength: 0.9, storage_strength: 0.9, frequency: 0, last_accessed: "2026-04-22" }
+    dual_coding:
+      example: "User asks 'how do we deploy to production?' — call plur_recall_hybrid('deployment production') before answering. You might find 'deploy requires git push to nightshift server, not GitHub' from a previous session."
+      analogy: "Like checking your notes before answering a question in a meeting, instead of guessing."
+    pack: effective-memory
+
+  - id: ENG-PACK-EM-007
+    version: 1
+    status: active
+    type: architectural
+    scope: global
+    visibility: public
+    statement: "Long-horizon agents — agents that run repeatedly on the same domain across days or weeks — MUST call plur_timeline at startup to read past episodes. Without timeline context, the agent rediscovers the same blockers, repeats failed approaches, and loses coherence across runs. This is 'coherence failure' — distinct from intelligence failure and the dominant failure mode for long-running agents."
+    rationale: "A doctor with amnesia is competent each visit but never builds on the previous one. Timeline is the patient chart."
+    domain: plur.agents
+    tags: [timeline, long-horizon, coherence, episodic]
+    activation: { retrieval_strength: 0.9, storage_strength: 0.9, frequency: 0, last_accessed: "2026-04-22" }
+    dual_coding:
+      example: "Project manager agent runs Monday, escalates blocker to teammate, no response. Without timeline: Tuesday it escalates again. With timeline: Tuesday it sees Monday's episode, knows escalation failed, tries different approach."
+      analogy: "Like having a doctor with anterograde amnesia treating the same patient daily — competent each visit but never builds on the previous one."
+    pack: effective-memory
+
+  - id: ENG-PACK-EM-008
+    version: 1
+    status: active
+    type: behavioral
+    scope: global
+    visibility: public
+    statement: "When memory and current reality conflict, trust what you observe now — then update the stale engram. Call plur_learn with the correction and plur_feedback with negative on the old engram. Memory is a starting point for reasoning, not a substitute for verification."
+    rationale: "Stale memory acted on without verification causes worse outcomes than no memory at all."
+    domain: plur.maintenance
+    tags: [staleness, verification, update, conflict]
+    activation: { retrieval_strength: 0.9, storage_strength: 0.9, frequency: 0, last_accessed: "2026-04-22" }
+    dual_coding:
+      example: "Memory says 'deploy to server at 10.0.0.5'. You SSH and it times out. Don't keep trying — the IP changed. Verify, update the engram, then proceed."
+    pack: effective-memory
