@@ -136,6 +136,12 @@ export class Plur {
   constructor(options?: { path?: string }) {
     this.paths = detectPlurStorage(options?.path)
     this.config = loadConfig(this.paths.config)
+    // Auto-discover project stores from CWD (skips temp dirs for test safety)
+    this.autoDiscoverStores()
+    // Re-read config after potential store additions
+    if (this.config.stores?.length !== loadConfig(this.paths.config).stores?.length) {
+      this.config = loadConfig(this.paths.config)
+    }
     if (this.config.index) {
       this.indexedStorage = new IndexedStorage(this.paths.engrams, this.paths.db, this.config.stores)
     }
@@ -1202,6 +1208,68 @@ Generate an improved version of the procedure that prevents this failure. Return
     fs.writeFileSync(this.paths.config, yaml.dump(configData, { lineWidth: 120, noRefs: true }))
     // Reload config
     this.config = loadConfig(this.paths.config)
+  }
+
+  /**
+   * Auto-discover .plur/engrams.yaml in CWD and parent dirs (up to git root).
+   * If found and not already registered, auto-register as a project store.
+   * Returns list of newly discovered stores (empty if none found or all already known).
+   */
+  autoDiscoverStores(cwd?: string): Array<{ path: string; scope: string }> {
+    const startDir = cwd || process.cwd()
+    const discovered: Array<{ path: string; scope: string }> = []
+
+    // Skip discovery if Plur storage is in a temp directory (test scenario)
+    const os = require('os')
+    const tmpDir = os.tmpdir()
+    if (this.paths.root.startsWith(tmpDir) || this.paths.root.startsWith('/tmp/')) {
+      return discovered
+    }
+
+    const knownPaths = new Set((this.config.stores ?? []).map(s => s.path))
+    // Also exclude the primary store directory
+    const primaryDir = require('path').dirname(this.paths.engrams)
+
+    let dir = startDir
+    const { join, dirname, basename } = require('path')
+    const visited = new Set<string>()
+
+    while (dir && !visited.has(dir)) {
+      visited.add(dir)
+      const candidate = join(dir, '.plur', 'engrams.yaml')
+
+      // Skip primary store
+      if (join(dir, '.plur') === primaryDir) {
+        dir = dirname(dir)
+        continue
+      }
+
+      if (fs.existsSync(candidate) && !knownPaths.has(candidate)) {
+        // Infer scope from directory name or git remote
+        let scope = `project:${basename(dir)}`
+        try {
+          // Try .plur.yaml for explicit scope
+          const plurYaml = join(dir, '.plur.yaml')
+          if (fs.existsSync(plurYaml)) {
+            const raw = yaml.load(fs.readFileSync(plurYaml, 'utf8')) as any
+            if (raw?.scope) scope = raw.scope
+          }
+        } catch {}
+
+        this.addStore(candidate, scope, { shared: true, readonly: false })
+        discovered.push({ path: candidate, scope })
+        knownPaths.add(candidate)
+        logger.info(`Auto-discovered project store: ${candidate} (${scope})`)
+      }
+
+      // Stop at git root or filesystem root
+      if (fs.existsSync(join(dir, '.git'))) break
+      const parent = dirname(dir)
+      if (parent === dir) break
+      dir = parent
+    }
+
+    return discovered
   }
 
   /** List all configured stores. */

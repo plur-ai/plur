@@ -111,9 +111,21 @@ export function searchEngrams(engrams: Engram[], query: string, limit = 20): Eng
     ? engrams.reduce((sum, e) => sum + ftsTokenize(engramSearchText(e)).length, 0) / engrams.length
     : 0
 
-  return engrams
+  let scored = engrams
     .map(e => ({ engram: e, score: ftsScore(e, queryTokens, idfWeights, avgDocLength) }))
     .filter(r => r.score > 0)
+
+  // Fallback: on tiny/uniform corpora, every query token can be either
+  // corpus-universal (IDF skipped to 0) or corpus-absent (tf=0), collapsing
+  // all scores to 0. Re-score with uniform weights so we still surface
+  // lexically-similar docs.
+  if (scored.length === 0) {
+    scored = engrams
+      .map(e => ({ engram: e, score: ftsScore(e, queryTokens, undefined, avgDocLength) }))
+      .filter(r => r.score > 0)
+  }
+
+  return scored
     .sort((a, b) => b.score - a.score)
     .slice(0, limit)
     .map(r => r.engram)

@@ -872,6 +872,8 @@ export function getToolDefinitions(): ToolDefinition[] {
         const task = args.task as string
         const tags = args.tags as string[] | undefined
 
+        // Auto-discovery happens in Plur constructor — no manual call needed.
+
         // Get store stats for context
         const status = plur.status()
         const store_stats = {

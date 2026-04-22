@@ -1,26 +1,34 @@
 # Changelog
 
-## Unreleased
+## 0.9.0 (2026-04-22)
+
+### Memory That Maintains Itself
+
+Engrams now have a lifecycle. They strengthen when used, weaken when forgotten, merge when duplicated, and leave an audit trail of every event. Until now PLUR had learn and recall but no maintenance — an untouched engram from January had the same injection priority as one used yesterday. 0.9.0 closes the loop.
+
+- **Similarity search with cosine scores**: `similaritySearch()` returns `{engram, score}[]` for dedup classification. Thresholds: >0.9 duplicate, 0.7-0.9 related, <0.7 new. Scores clamped to [0, 1].
+- **Batch decay**: `batchDecay()` applies ACT-R exponential decay to all primary engrams. Emotional weight slows decay for painful lessons. Scope-matched engrams are immune. Status transitions (active/fading/dormant/retirement) are logged to history.
+- **Extended lifecycle events**: 5 new history event types — `recurrence_detected`, `contradiction_detected`, `scope_promoted`, `buffer_pruned`, `weekly_review`. Foundation for weekly reports and team dashboards.
+- **MCP tools**: `plur_similarity_search` and `plur_batch_decay` exposed to agents for automated learning loops.
+- **Multi-store search verified**: `recallHybrid` and `similaritySearch` confirmed to include engrams from registered project stores.
+
+### Fixes
+
+- **Scope matching precision**: Decay now uses exact + child matching (`project:alpha/sub` matches `project:alpha`, but `project:beta` does not). Previously all same-type scopes matched.
+- **Engram cache invalidation**: `batchDecay` uses `_writeEngrams` for proper cache invalidation after writes.
+- **Engram cache race fix** (#25, #26): Writes invalidate the read-cache via `_writeEngrams` helper. Fixes intermittent "Engram not found" failures when read and write happen in the same second.
 
 ### Multi-Project Setup Improvements (#19, #24)
 
-- **Default to project-level config**: `plur init` now creates `.claude/settings.json` in the current directory by default, instead of falling back to `~/.claude/settings.json`. Better for multi-project setups. Users who want global config can use `--global` flag.
-- **Improved documentation**: Clarified that `--domain` and `--scope` flags (added in v0.8.2) are the solution for multi-project scoping. Updated init output to explain this workflow.
+- **Default to project-level config**: `plur init` creates `.claude/settings.json` in the current directory by default. Users who want global config can use `--global` flag.
+- **Improved documentation**: Clarified `--domain` and `--scope` flags as the multi-project scoping solution.
 
-Note: Issue #19 reported three problems. Issues 1 & 2 are now resolved. Issue 3 (batch/workspace mode) remains open for future consideration.
+### Packages
 
-### Core: engram cache invalidation on write (#25, #26)
-
-- **Fix flaky `learnAsync` → `recall` race**: writes now invalidate the engrams read-cache via a `_writeEngrams` helper paired with every `saveEngrams` call. Previously, a second-granularity mtime could collide when a read and write happened in the same second, leaving stale engrams in cache and causing intermittent "Engram not found" failures in CI (and, rarely, on fast disks in normal operation).
-
-### Docs
-
-- **Opt-in engagement telemetry design proposal** (#23, for v0.9.x): design doc covering threat model, on-by-default vs opt-in decision, event schema, and local-first storage. Community comment window open through 2026-04-29 before implementation.
-
-### Packages (next release)
-
-- `@plur-ai/core` 0.8.4 — engram cache invalidation on write
-- `@plur-ai/cli` 0.8.6 — default to project-level config, improved multi-project docs
+- `@plur-ai/core` 0.9.0 — similarity search, batch decay, extended history events
+- `@plur-ai/mcp` 0.9.0 — plur_similarity_search + plur_batch_decay tools
+- `@plur-ai/claw` 0.9.0 — version parity
+- `@plur-ai/cli` 0.9.0 — project-level config, multi-project docs
 
 ## 0.8.2 (2026-04-09)
 
