@@ -187,6 +187,11 @@ export async function learnAsync(
   } catch {
     candidates = deps.recall(statement, { limit: 5 })
   }
+  // Fallback to BM25 when hybrid returns empty (e.g. embedding model warmup on
+  // cold CI runners makes embeddings return []; BM25 usually still matches).
+  if (candidates.length === 0) {
+    candidates = deps.recall(statement, { limit: 5 })
+  }
   candidates = candidates.filter(c => c.status === 'active')
 
   if (candidates.length === 0) {
