@@ -202,6 +202,22 @@ export class Plur {
     return engrams
   }
 
+  /**
+   * Write engrams to disk and invalidate the cache for that path.
+   *
+   * Why: `_loadCached` uses mtime-based invalidation, but on CI tmpfs
+   * (ubuntu-latest runners) mtime resolution can be coarse enough that a
+   * stat() taken before and after a write returns the same mtime. When that
+   * happens the cache serves a pre-write snapshot and a subsequent `getById`
+   * returns `undefined` for an engram that `learn()` just created. Explicit
+   * invalidation on write removes the filesystem as a source of cache
+   * freshness and closes the race. See issue #25.
+   */
+  private _writeEngrams(path: string, engrams: Engram[]): void {
+    saveEngrams(path, engrams)
+    this._engramCache.delete(path)
+  }
+
   /** Find which store owns an engram by ID. For namespaced IDs, strips prefix to find in store. */
   private _findEngramStore(id: string): { path: string; readonly: boolean; originalId: string } | null {
     // Check primary first (uses mtime cache)
@@ -349,7 +365,7 @@ export class Plur {
       }
 
       engrams.push(engram)
-      saveEngrams(this.paths.engrams, engrams)
+      this._writeEngrams(this.paths.engrams, engrams)
       this._syncIndex()
       appendHistory(this.paths.root, {
         event: 'engram_created',
@@ -562,7 +578,7 @@ export class Plur {
       }
 
       if (modified) {
-        saveEngrams(this.paths.engrams, allEngrams)
+        this._writeEngrams(this.paths.engrams, allEngrams)
         this._syncIndex()
       }
     })
@@ -658,7 +674,7 @@ export class Plur {
         engram.activation.retrieval_strength = Math.max(0.0, engram.activation.retrieval_strength - 0.1)
       }
 
-      saveEngrams(this.paths.engrams, engrams)
+      this._writeEngrams(this.paths.engrams, engrams)
       this._syncIndex()
       appendHistory(this.paths.root, {
         event: 'feedback_received',
@@ -690,9 +706,7 @@ export class Plur {
         } else if (signal === 'negative') {
           engram.activation.retrieval_strength = Math.max(0.0, engram.activation.retrieval_strength - 0.1)
         }
-        saveEngrams(storeInfo.path, storeEngrams)
-        // Invalidate cache for this store since we just wrote to it
-        this._engramCache.delete(storeInfo.path)
+        this._writeEngrams(storeInfo.path, storeEngrams)
         this._syncIndex()
         return
       }
@@ -718,7 +732,7 @@ export class Plur {
         }
       }
       if (saved > 0) {
-        saveEngrams(this.paths.engrams, engrams)
+        this._writeEngrams(this.paths.engrams, engrams)
         this._syncIndex()
       }
       return { saved, skipped }
@@ -732,7 +746,7 @@ export class Plur {
       const idx = engrams.findIndex(e => e.id === updated.id)
       if (idx === -1) return false
       engrams[idx] = updated
-      saveEngrams(this.paths.engrams, engrams)
+      this._writeEngrams(this.paths.engrams, engrams)
       this._syncIndex()
       return true
     })
@@ -751,7 +765,7 @@ export class Plur {
         engram.rationale = `Retired: ${reason}`
       }
 
-      saveEngrams(this.paths.engrams, engrams)
+      this._writeEngrams(this.paths.engrams, engrams)
       this._syncIndex()
       appendHistory(this.paths.root, {
         event: 'engram_retired',
@@ -777,8 +791,7 @@ export class Plur {
         if (reason && !engram.rationale) {
           engram.rationale = `Retired: ${reason}`
         }
-        saveEngrams(storeInfo.path, storeEngrams)
-        this._engramCache.delete(storeInfo.path)
+        this._writeEngrams(storeInfo.path, storeEngrams)
         this._syncIndex()
         return
       }
@@ -794,7 +807,7 @@ export class Plur {
       const active = engrams.filter(e => e.status !== 'retired')
       const removed = engrams.length - active.length
       if (removed > 0) {
-        saveEngrams(this.paths.engrams, active)
+        this._writeEngrams(this.paths.engrams, active)
         this._syncIndex()
       }
       return { removed, remaining: active.length }
@@ -1056,7 +1069,7 @@ Generate an improved version of the procedure that prevents this failure. Return
             if (!raw.episode_ids) raw.episode_ids = []
             raw.episode_ids.push(episode.id)
 
-            saveEngrams(this.paths.engrams, engrams)
+            this._writeEngrams(this.paths.engrams, engrams)
             this._syncIndex()
 
             appendHistory(this.paths.root, {
@@ -1091,7 +1104,7 @@ Generate an improved version of the procedure that prevents this failure. Return
         const raw = engrams[idx] as any
         if (!raw.episode_ids) raw.episode_ids = []
         raw.episode_ids.push(episode.id)
-        saveEngrams(this.paths.engrams, engrams)
+        this._writeEngrams(this.paths.engrams, engrams)
         this._syncIndex()
       }
     })
