@@ -37,7 +37,7 @@ The local-first memory space went from "a few projects" to "a credible category"
 | System | Local-first | Team-shareable | Sync mechanism | Storage | Search | Feedback loop | Temporal | Encryption | Cross-tool (MCP) | Pack format | License |
 |---|---|---|---|---|---|---|---|---|---|---|---|
 | **PLUR** ([source](https://github.com/plur-ai/plur)) | Yes | **Yes (git-backed `plur sync`)** | Git, planned exchange protocol | Filesystem + SQLite FTS5 | Hybrid (BM25 + embeddings) | Yes (engram feedback, relevance training) | Per-engram timestamps | No (filesystem-level only) | Yes (Claude Code, Cursor, Windsurf, OpenClaw, Hermes) | Yes (knowledge packs) | Apache-2.0 |
-| **Mem0 / OpenMemory MCP** ([source](https://github.com/mem0ai/mem0)) | Hybrid (local + cloud sharing) | Cloud only | Cloud (local mode is single-user) | Vector + Neo4j graph | Hybrid | ? | ? | ? | Yes | No (app-level) | Apache-2.0 |
+| **Mem0 / OpenMemory MCP** ([source](https://github.com/mem0ai/mem0)) | Hybrid (local + cloud sharing) | Cloud only | Cloud (local mode is single-user) | Vector + Neo4j graph | Hybrid ([BM25 + entity linking](https://github.com/mem0ai/mem0)) | [Auto-conflict resolution](https://docs.mem0.ai/core-concepts/memory-operations) (`infer=True`: "duplicates or contradictions [resolved] so the latest truth wins") | No first-class temporal (timestamps only; no validity windows / "what was true when") | Not in OSS (cloud tier: SOC 2) | Yes | No (app-level) | Apache-2.0 |
 | **Hindsight** (by Vectorize) | ? | No | — | Postgres + KG | Mental-models retrieval | ? | ? | ? | ? | ? | MIT |
 | **Basic Memory** | Yes | Manual (`git` by hand) | User-managed git | Markdown + SQLite | Keyword | No | File mtime | No | ? | No | MIT |
 | **Engram (Go)** (Gentleman-Programming) | Yes | No | — | SQLite + FTS5 | Keyword (FTS5) | ? | ? | ? | ? | No | MIT |
@@ -58,7 +58,7 @@ The local-first memory space went from "a few projects" to "a credible category"
 ## Provisional findings (to be firmed up as `?` cells resolve)
 
 1. **Team-shareable + local-first is still a narrow combination.** Of the 13 systems above, PLUR is currently the only one with first-party team-sharing that stays on the team's own infrastructure (git-backed). Mem0, Letta, and Graphiti/Zep offer team features but only via their cloud tier. Basic Memory can be shared via git but only by manual user work — it's not a supported flow.
-2. **Temporal reasoning is rare.** Graphiti/Zep treat temporal as core. Most others, PLUR included, rely on timestamps without a first-class "what was true when" semantics.
+2. **Temporal reasoning is rare.** Graphiti/Zep treat temporal as core. Most others, PLUR and Mem0 included, rely on timestamps without first-class "what was true when" semantics. Mem0's `infer=True` extract-resolve flow gives auto-conflict-resolution at write-time ("latest truth wins"), but no temporal validity windows over time.
 3. **Encryption at rest is mostly absent.** Only Engram (E2EE) ships first-party encryption. For enterprise team use, this is a gap across the category.
 4. **Pack format as a first-class artifact is PLUR-specific in this set.** Other systems expose memory as a store, not as portable shareable bundles.
 
