@@ -2,7 +2,7 @@
 
 **Status:** Draft, Phase 1 (feature matrix). Performance benchmarks tracked separately — see [Issue #8 Phase 2](https://github.com/plur-ai/plur/issues/8).
 
-**Last updated:** 2026-04-22 (Cognee row added — direct competitor, verified against upstream docs)
+**Last updated:** 2026-04-22 (Hindsight row verified — 6 `?` cells resolved, search cell upgraded from marketing term to retrieval primitives)
 
 ## Scope
 
@@ -38,7 +38,7 @@ The local-first memory space went from "a few projects" to "a credible category"
 |---|---|---|---|---|---|---|---|---|---|---|---|
 | **PLUR** ([source](https://github.com/plur-ai/plur)) | Yes | **Yes (git-backed `plur sync`)** | Git, planned exchange protocol | Filesystem + SQLite FTS5 | Hybrid (BM25 + embeddings) | Yes (engram feedback, relevance training) | Per-engram timestamps | No (filesystem-level only) | Yes (Claude Code, Cursor, Windsurf, OpenClaw, Hermes) | Yes (knowledge packs) | Apache-2.0 |
 | **Mem0 / OpenMemory MCP** ([source](https://github.com/mem0ai/mem0)) | Hybrid (local + cloud sharing) | Cloud only | Cloud (local mode is single-user) | Vector + Neo4j graph | Hybrid ([BM25 + entity linking](https://github.com/mem0ai/mem0)) | [Auto-conflict resolution](https://docs.mem0.ai/core-concepts/memory-operations) (`infer=True`: "duplicates or contradictions [resolved] so the latest truth wins") | No first-class temporal (timestamps only; no validity windows / "what was true when") | Not in OSS (cloud tier: SOC 2) | Yes | No (app-level) | Apache-2.0 |
-| **Hindsight** (by Vectorize) | ? | No | — | Postgres + KG | Mental-models retrieval | ? | ? | ? | ? | ? | MIT |
+| **Hindsight** ([source](https://github.com/vectorize-io/hindsight)) | Yes ([embedded Python or self-hosted Postgres; cloud optional](https://hindsight.vectorize.io/guides/2026/04/16/guide-run-hindsight-as-a-local-mcp-server)) | No (per-user isolation; no multi-user team-sharing mechanism documented) | — | Postgres + KG | [Hybrid (vector + BM25 + graph + temporal)](https://hindsight.vectorize.io/) | Auto-consolidation ([Reflect op](https://hindsight.vectorize.io/) generates observations from memories; no explicit user correction/rating API documented) | [Time-range filter + evidence-based trend tracking](https://hindsight.vectorize.io/) (stable / strengthening / weakening / stale); no bi-temporal validity windows | Not documented | **Yes** ([first-party MCP server](https://hindsight.vectorize.io/developer/mcp-server); Claude Code, Claude Desktop, Cursor, Windsurf) | No (not documented) | MIT |
 | **Basic Memory** | Yes | Manual (`git` by hand) | User-managed git | Markdown + SQLite | Keyword | No | File mtime | No | ? | No | MIT |
 | **Engram (Go)** (Gentleman-Programming) | Yes | No | — | SQLite + FTS5 | Keyword (FTS5) | ? | ? | ? | ? | No | MIT |
 | **Engram (E2EE)** (EvolvingLMMs-Lab) | Yes | No | — | SQLite + AES-256-GCM | ? | ? | ? | **Yes (AES-256-GCM)** | ? | No | ? |
@@ -60,7 +60,7 @@ The local-first memory space went from "a few projects" to "a credible category"
 ## Provisional findings (to be firmed up as `?` cells resolve)
 
 1. **Team-shareable + local-first is still a narrow combination.** Of the 15 systems above, PLUR is currently the only one with first-party team-sharing that stays on the team's own infrastructure (git-backed). Mem0, Letta, and Zep offer team features but only via their cloud tier; Graphiti OSS and Cognee are explicitly single-instance / multi-tenant-isolation-only. Basic Memory can be shared via git but only by manual user work — it's not a supported flow.
-2. **Temporal reasoning is rare but growing.** Graphiti (and Zep, which uses Graphiti as its core) treats temporal as central via bi-temporal validity windows and automatic fact invalidation. Cognee advertises a "time-aware queries / temporal mode" (exact semantics not yet verified against Graphiti's bi-temporal model). Most others, PLUR and Mem0 included, rely on timestamps without first-class "what was true when" semantics. Mem0's `infer=True` extract-resolve flow gives auto-conflict-resolution at write-time ("latest truth wins"), but no temporal validity windows over time.
+2. **Temporal reasoning is rare but growing.** Graphiti (and Zep, which uses Graphiti as its core) treats temporal as central via bi-temporal validity windows and automatic fact invalidation. Cognee advertises a "time-aware queries / temporal mode" (exact semantics not yet verified against Graphiti's bi-temporal model). Hindsight adds time-range filtering and evidence-based trend tracking (stable / strengthening / weakening / stale) but also stops short of bi-temporal validity windows. Most others, PLUR and Mem0 included, rely on timestamps without first-class "what was true when" semantics. Mem0's `infer=True` extract-resolve flow gives auto-conflict-resolution at write-time ("latest truth wins"), but no temporal validity windows over time.
 3. **Encryption at rest is mostly absent.** Only Engram (E2EE) ships first-party encryption. For enterprise team use, this is a gap across the category.
 4. **Pack format as a first-class artifact is PLUR-specific in this set.** Other systems expose memory as a store, not as portable shareable bundles.
 
