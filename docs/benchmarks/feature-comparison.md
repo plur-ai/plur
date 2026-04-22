@@ -2,7 +2,7 @@
 
 **Status:** Draft, Phase 1 (feature matrix). Performance benchmarks tracked separately — see [Issue #8 Phase 2](https://github.com/plur-ai/plur/issues/8).
 
-**Last updated:** 2026-04-22
+**Last updated:** 2026-04-22 (Zep/Graphiti row split + verified)
 
 ## Scope
 
@@ -50,15 +50,16 @@ The local-first memory space went from "a few projects" to "a credible category"
 |---|---|---|---|---|---|---|---|---|---|---|---|
 | **Claude Code built-in memory** | Yes | No | — | Markdown in `~/.claude/` | Keyword | No | File mtime | No | **No (Claude Code only)** | No | Proprietary |
 | **Letta / MemGPT** | Hybrid | Shared memory blocks (multi-agent, not multi-user) | Cloud | Postgres + custom | Self-managing recall | Yes (sleep-time compute) | ? | ? | SDK (not MCP-native) | No | Apache-2.0 |
-| **Graphiti / Zep** | Hybrid (OSS = single-instance) | Cloud only | Cloud | Temporal KG | Graph + temporal | ? | **Yes (temporal KG core)** | ? | SDK | No | Apache-2.0 |
+| **Graphiti** ([source](https://github.com/getzep/graphiti)) | Yes (self-hosted OSS) | No (single-instance OSS) | — | Neo4j / FalkorDB / Kuzu / Neptune (pluggable) | [Hybrid (semantic + BM25 + graph traversal)](https://github.com/getzep/graphiti#why-graphiti) | [Auto-invalidation of contradicting facts](https://github.com/getzep/graphiti#why-graphiti) (temporal; old facts invalidated, not deleted) | **Yes (bi-temporal validity windows)** | Not in OSS (backend-dependent) | **Yes ([first-party MCP server](https://github.com/getzep/graphiti/tree/main/mcp_server))** | No | Apache-2.0 |
+| **Zep** ([source](https://www.getzep.com/)) | Hybrid (managed cloud; self-host via Graphiti OSS) | **Yes (managed users/threads)** | Cloud | Managed (Graphiti-backed) | Hybrid (semantic + BM25 + graph) | [Auto-invalidation](https://blog.getzep.com/state-of-the-art-agent-memory/) (inherited from Graphiti) | **Yes (bi-temporal)** | [Enterprise security](https://docs.getzep.com/deployment/security/) (cloud tier) | Yes (via [Graphiti MCP server](https://help.getzep.com/graphiti/getting-started/mcp-server)) | No | Apache-2.0 (Graphiti core) / Proprietary (Zep platform) |
 | **LangMem** (LangChain) | Hybrid | No | — | Pluggable | Background manager | Yes | ? | ? | SDK only | No | MIT |
 | **Google Always-On Memory Agent** | Yes | No | — | Agent-internal | LLM-driven (no vectors) | ? | ? | ? | ? | No | MIT |
 | **MemOS** (MemTensor) | ? | ? | ? | ? | ? | ? | ? | ? | ? | ? | ? |
 
 ## Provisional findings (to be firmed up as `?` cells resolve)
 
-1. **Team-shareable + local-first is still a narrow combination.** Of the 13 systems above, PLUR is currently the only one with first-party team-sharing that stays on the team's own infrastructure (git-backed). Mem0, Letta, and Graphiti/Zep offer team features but only via their cloud tier. Basic Memory can be shared via git but only by manual user work — it's not a supported flow.
-2. **Temporal reasoning is rare.** Graphiti/Zep treat temporal as core. Most others, PLUR and Mem0 included, rely on timestamps without first-class "what was true when" semantics. Mem0's `infer=True` extract-resolve flow gives auto-conflict-resolution at write-time ("latest truth wins"), but no temporal validity windows over time.
+1. **Team-shareable + local-first is still a narrow combination.** Of the 14 systems above, PLUR is currently the only one with first-party team-sharing that stays on the team's own infrastructure (git-backed). Mem0, Letta, and Zep offer team features but only via their cloud tier; Graphiti OSS is explicitly self-hosted single-instance. Basic Memory can be shared via git but only by manual user work — it's not a supported flow.
+2. **Temporal reasoning is rare.** Graphiti (and Zep, which uses Graphiti as its core) treats temporal as central via bi-temporal validity windows and automatic fact invalidation. Most others, PLUR and Mem0 included, rely on timestamps without first-class "what was true when" semantics. Mem0's `infer=True` extract-resolve flow gives auto-conflict-resolution at write-time ("latest truth wins"), but no temporal validity windows over time.
 3. **Encryption at rest is mostly absent.** Only Engram (E2EE) ships first-party encryption. For enterprise team use, this is a gap across the category.
 4. **Pack format as a first-class artifact is PLUR-specific in this set.** Other systems expose memory as a store, not as portable shareable bundles.
 
