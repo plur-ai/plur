@@ -194,7 +194,11 @@ export async function embeddingSearchWithScores(
       }
     }
 
-    const score = cosineSimilarity(queryEmbedding, engramEmbedding)
+    // Clamp to [0, 1] — cosine on normalized embeddings is [-1, 1] but
+    // same-language text is practically always non-negative. Clamping ensures
+    // dedup thresholds (>0.9, 0.7-0.9) work as documented.
+    const rawScore = cosineSimilarity(queryEmbedding, engramEmbedding)
+    const score = Math.max(0, Math.min(1, rawScore))
     similarities.push({ engram, score })
   }
 

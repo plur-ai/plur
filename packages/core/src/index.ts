@@ -836,8 +836,11 @@ export class Plur {
       const engrams = loadEngrams(this.paths.engrams)
       const { result, modified } = applyBatchDecay(engrams, this.paths.root, options)
 
-      if (modified.length > 0) {
-        saveEngrams(this.paths.engrams, engrams)
+      // Save modified engrams back (not the original unmodified list).
+      // Only primary store engrams are decayed — store/pack engrams are maintained
+      // by their respective store owners and are typically readonly.
+      if (result.transitions.length > 0) {
+        saveEngrams(this.paths.engrams, modified)
         this._syncIndex()
       }
 
