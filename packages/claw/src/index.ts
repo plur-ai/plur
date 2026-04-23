@@ -179,7 +179,43 @@ const plugin = {
       })
     }
 
-    // 5. CLI commands
+    // 5. Auto-configure @plur-ai/mcp as MCP server (gives agent callable tools)
+    if (typeof api.registerMcpServer === 'function') {
+      try {
+        api.registerMcpServer('plur', {
+          command: 'npx',
+          args: ['-y', '@plur-ai/mcp'],
+          env: { PLUR_PATH: path },
+        })
+        api.logger.info('PLUR: registered MCP server for agent tools')
+      } catch (err: any) {
+        // May already be configured or API unavailable — not fatal
+        api.logger.debug(`PLUR: MCP server registration skipped: ${err.message}`)
+      }
+    } else {
+      // Fallback: write MCP config directly if registerMcpServer not available
+      try {
+        const configPath = api.config?._path || `${process.env.HOME || '/root'}/.openclaw/openclaw.json`
+        const { existsSync, readFileSync, writeFileSync } = require('fs')
+        if (existsSync(configPath)) {
+          const config = JSON.parse(readFileSync(configPath, 'utf8'))
+          if (!config.mcpServers?.plur) {
+            config.mcpServers = config.mcpServers || {}
+            config.mcpServers.plur = {
+              command: 'npx',
+              args: ['-y', '@plur-ai/mcp'],
+              env: { PLUR_PATH: path },
+            }
+            writeFileSync(configPath, JSON.stringify(config, null, 2))
+            api.logger.info('PLUR: added MCP server config to openclaw.json')
+          }
+        }
+      } catch (err: any) {
+        api.logger.debug(`PLUR: MCP config fallback skipped: ${err.message}`)
+      }
+    }
+
+    // 7. CLI commands
     if (typeof api.registerCli === 'function') {
       api.registerCli((cliCtx: any) => {
         const cmd = cliCtx.program
@@ -203,7 +239,7 @@ const plugin = {
       }, { commands: ['plur'] })
     }
 
-    // 6. Service lifecycle
+    // 8. Service lifecycle
     api.registerService({
       id: 'plur-claw',
       start: () => api.logger.info(`PLUR: started (path: ${path})`),
