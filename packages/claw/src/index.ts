@@ -1,4 +1,3 @@
-import { existsSync, readFileSync, writeFileSync } from 'fs'
 import { PlurContextEngine, type PlurContextEngineOptions } from './context-engine.js'
 import { ensureSystemPrompt, PLUR_SYSTEM_SECTION } from './system-prompt.js'
 import { checkForUpdate } from '@plur-ai/core'
@@ -36,7 +35,7 @@ const plugin = {
   id: 'plur-claw',
   name: 'PLUR Memory Engine',
   description: 'Persistent, learnable memory for OpenClaw agents. Local-first, no cloud required.',
-  version: '0.9.6',
+  version: '0.9.7',
   kind: 'memory' as const,
 
   register(api: any) {
@@ -54,42 +53,7 @@ const plugin = {
       api.logger.warn(`PLUR: could not update SYSTEM.md: ${err.message}`)
     }
 
-    // 2. Auto-slot as memory provider if not already set
-    try {
-      const configPath = api.config?._configPath || api.config?._path ||
-        `${process.env.HOME || '/root'}/.openclaw/openclaw.json`
-      if (existsSync(configPath)) {
-        const config = JSON.parse(readFileSync(configPath, 'utf8'))
-        let changed = false
-
-        // Set memory slot
-        if (!config.plugins) config.plugins = {}
-        if (!config.plugins.slots) config.plugins.slots = {}
-        if (!config.plugins.slots.memory || config.plugins.slots.memory !== 'plur-claw') {
-          config.plugins.slots.memory = 'plur-claw'
-          changed = true
-        }
-
-        // Ensure plugin entry is enabled with defaults
-        if (!config.plugins.entries) config.plugins.entries = {}
-        if (!config.plugins.entries['plur-claw']) {
-          config.plugins.entries['plur-claw'] = {
-            enabled: true,
-            config: { auto_learn: true, auto_capture: true, injection_budget: 2000 },
-          }
-          changed = true
-        }
-
-        if (changed) {
-          writeFileSync(configPath, JSON.stringify(config, null, 2))
-          api.logger.info('PLUR: configured as memory provider in openclaw.json')
-        }
-      }
-    } catch (err: any) {
-      api.logger.debug(`PLUR: config auto-setup skipped: ${err.message}`)
-    }
-
-    // 3. Register context engine
+    // 2. Register context engine
     api.registerContextEngine('plur', () => {
       const e = getEngine(path)
       api.logger.info(`PLUR ContextEngine — engrams: ${e.plur.status().engram_count}`)
@@ -215,7 +179,7 @@ const plugin = {
       })
     }
 
-    // 6. Auto-configure @plur-ai/mcp as MCP server (gives agent callable tools)
+    // 6. Register MCP server via API if available (config fallback handled by setup.ts)
     if (typeof api.registerMcpServer === 'function') {
       try {
         api.registerMcpServer('plur', {
@@ -225,30 +189,7 @@ const plugin = {
         })
         api.logger.info('PLUR: registered MCP server for agent tools')
       } catch (err: any) {
-        // May already be configured or API unavailable — not fatal
         api.logger.debug(`PLUR: MCP server registration skipped: ${err.message}`)
-      }
-    } else {
-      // Fallback: write MCP config directly if registerMcpServer not available
-      try {
-        const mcpConfigPath = api.config?._path || `${process.env.HOME || '/root'}/.openclaw/openclaw.json`
-        if (existsSync(mcpConfigPath)) {
-          const config = JSON.parse(readFileSync(mcpConfigPath, 'utf8'))
-          // OpenClaw uses mcp.servers (not mcpServers)
-          if (!config.mcp?.servers?.plur) {
-            if (!config.mcp) config.mcp = {}
-            if (!config.mcp.servers) config.mcp.servers = {}
-            config.mcp.servers.plur = {
-              command: 'npx',
-              args: ['-y', '@plur-ai/mcp'],
-              env: { PLUR_PATH: path },
-            }
-            writeFileSync(mcpConfigPath, JSON.stringify(config, null, 2))
-            api.logger.info('PLUR: added MCP server config to openclaw.json')
-          }
-        }
-      } catch (err: any) {
-        api.logger.debug(`PLUR: MCP config fallback skipped: ${err.message}`)
       }
     }
 

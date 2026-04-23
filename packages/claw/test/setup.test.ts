@@ -31,7 +31,11 @@ describe('claw setup command', () => {
     const cfgStep = r.steps.find((s) => s.step === 'config_enabled')!
     expect(cfgStep.status).toBe('ok')
     const written = JSON.parse(readFileSync(cfgPath, 'utf8'))
-    expect(written.plugins.entries['plur-claw']).toEqual({ enabled: true })
+    expect(written.plugins.entries['plur-claw'].enabled).toBe(true)
+    expect(written.plugins.entries['plur-claw'].config).toEqual({ auto_learn: true, auto_capture: true, injection_budget: 2000 })
+    expect(written.plugins.slots.memory).toBe('plur-claw')
+    expect(written.mcp.servers.plur).toBeDefined()
+    expect(written.mcp.servers.plur.command).toBe('npx')
   })
 
   it('preserves existing plugin config fields when enabling', () => {
@@ -47,15 +51,19 @@ describe('claw setup command', () => {
     const r = runSetup({ configPath: cfgPath })
     expect(r.steps.find((s) => s.step === 'config_enabled')!.status).toBe('ok')
     const written = JSON.parse(readFileSync(cfgPath, 'utf8'))
-    expect(written.plugins.entries['plur-claw']).toEqual({
-      config: { injection_budget: 4000 },
-      enabled: true,
-    })
+    expect(written.plugins.entries['plur-claw'].config.injection_budget).toBe(4000)
+    expect(written.plugins.entries['plur-claw'].enabled).toBe(true)
     expect(written.plugins.entries['other-plugin']).toEqual({ enabled: true })
   })
 
-  it('is idempotent when already enabled (reports skip)', () => {
-    const prior = { plugins: { entries: { 'plur-claw': { enabled: true } } } }
+  it('is idempotent when fully configured (reports skip)', () => {
+    const prior = {
+      plugins: {
+        entries: { 'plur-claw': { enabled: true, config: { auto_learn: true, auto_capture: true, injection_budget: 2000 } } },
+        slots: { memory: 'plur-claw' },
+      },
+      mcp: { servers: { plur: { command: 'npx', args: ['-y', '@plur-ai/mcp'] } } },
+    }
     writeFileSync(cfgPath, JSON.stringify(prior), 'utf8')
     const r = runSetup({ configPath: cfgPath })
     const cfgStep = r.steps.find((s) => s.step === 'config_enabled')!

@@ -1,6 +1,6 @@
 {
   "name": "@plur-ai/claw",
-  "version": "0.9.6",
+  "version": "0.9.7",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -24,7 +24,8 @@
   },
   "scripts": {
     "build": "tsup",
-    "test": "vitest run"
+    "test": "vitest run",
+    "postinstall": "node dist/setup.js 2>/dev/null || true"
   },
   "dependencies": {
     "@plur-ai/core": "workspace:*"

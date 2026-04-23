@@ -56,11 +56,37 @@ function mergeEnable(cfg: OpenclawConfig): { cfg: OpenclawConfig; changed: boole
       : {}
   const existing = entries[PLUGIN_ID]
   const alreadyEnabled = !!(existing && existing.enabled === true)
-  const nextEntry = { ...(existing ?? {}), enabled: true }
-  const changed = !existing || existing.enabled !== true
+  const nextEntry = {
+    ...(existing ?? {}),
+    enabled: true,
+    config: (existing as any)?.config ?? { auto_learn: true, auto_capture: true, injection_budget: 2000 },
+  }
+  let changed = !existing || existing.enabled !== true
   entries[PLUGIN_ID] = nextEntry
   plugins.entries = entries
+
+  // Set memory slot
+  const slots = (plugins as any).slots && typeof (plugins as any).slots === 'object'
+    ? (plugins as any).slots : {}
+  if (slots.memory !== PLUGIN_ID) {
+    slots.memory = PLUGIN_ID
+    changed = true
+  }
+  ;(plugins as any).slots = slots
+
   cfg.plugins = plugins
+
+  // Configure MCP server for agent-callable tools
+  const mcp = (cfg as any).mcp && typeof (cfg as any).mcp === 'object' ? (cfg as any).mcp : {}
+  const servers = mcp.servers && typeof mcp.servers === 'object' ? mcp.servers : {}
+  if (!servers.plur) {
+    const plurPath = process.env.PLUR_PATH || join(homedir(), '.plur')
+    servers.plur = { command: 'npx', args: ['-y', '@plur-ai/mcp'], env: { PLUR_PATH: plurPath } }
+    changed = true
+  }
+  mcp.servers = servers
+  ;(cfg as any).mcp = mcp
+
   return { cfg, changed, alreadyEnabled }
 }
 
@@ -156,4 +182,10 @@ export function runSetupCli(): number {
   process.stdout.write(formatReport(report) + '\n')
   const failed = report.steps.some((s) => s.status === 'fail')
   return failed ? 1 : 0
+}
+
+// Auto-run when executed directly (postinstall)
+const isMain = typeof process !== 'undefined' && process.argv[1]?.endsWith('setup.js')
+if (isMain) {
+  process.exit(runSetupCli())
 }
