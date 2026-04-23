@@ -1,8 +1,8 @@
 # Local-first AI memory: feature comparison
 
-**Status:** Draft, Phase 1 (feature matrix). Performance benchmarks tracked separately — see [Issue #8 Phase 2](https://github.com/plur-ai/plur/issues/8).
+**Status:** Phase 1 sealed 2026-04-23 (12 of 12 rows cell-verified). Performance benchmarks are Phase 2 — scoped and tracked in [issue #46](https://github.com/plur-ai/plur/issues/46); methodology scaffold at [docs/benchmarks/phase2-methodology.md](./phase2-methodology.md).
 
-**Last updated:** 2026-04-23 (Engram (Go) row verified — 4 of 4 `?` cells resolved via upstream README: Feedback loop → No, Temporal → `mem_timeline` + session lifecycle (no bi-temporal windows), Encryption → not documented, Cross-tool MCP → Yes with 8 named clients)
+**Last updated:** 2026-04-23 (Finding 3 tightened to surface the Polyform NC 1.0.0 license implication on Engram (E2EE) — the category has zero Apache/MIT-licensed systems with first-party at-rest encryption)
 
 ## Scope
 
@@ -72,6 +72,6 @@ If you maintain one of the systems above, or know one of the `?` cells cold, PRs
 
 ## Out of scope for Phase 1
 
-- Performance numbers (LongMemEval, retrieval latency, RAM/disk footprint) — see [Issue #8 Phase 2](https://github.com/plur-ai/plur/issues/8). Requires a reproducible harness that doesn't yet exist.
+- Performance numbers (LongMemEval, retrieval latency, RAM/disk footprint) — tracked in [issue #46](https://github.com/plur-ai/plur/issues/46); methodology scaffold at [docs/benchmarks/phase2-methodology.md](./phase2-methodology.md). Requires a reproducible harness that doesn't yet exist.
 - Subjective UX comparison — deliberately excluded to keep the matrix verifiable.
 - Pricing / commercial tier comparison — tracked separately under the enterprise positioning doc.
