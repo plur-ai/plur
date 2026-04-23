@@ -1,5 +1,53 @@
 # Changelog
 
+## 0.9.3 (2026-04-22)
+
+### Fixes
+
+- **ESM import fix in core** (critical): Replaced `require('os')` and `require('path')` with ESM imports. The CJS `require()` calls crashed consumers running PLUR in pure-ESM environments (Node 20+ with `"type": "module"`, modern bundlers). Affects `autoDiscoverStores` and related code paths in `@plur-ai/core`.
+
+### Packages
+
+- `@plur-ai/core` 0.9.3 — ESM import fix
+- `@plur-ai/mcp` 0.9.3 — version parity
+- `@plur-ai/claw` 0.9.3 — version parity
+- `@plur-ai/cli` 0.9.3 — version parity
+
+## 0.9.2 (2026-04-22)
+
+### Auto-Discover Moved Into the Constructor
+
+Project-store auto-discovery now happens inside the `Plur` constructor instead of on first `init()`. Claw and Hermes get it for free — no extra wiring required.
+
+- **Auto-discover in constructor**: `new Plur({...})` scans for project stores immediately. Previously only the MCP server triggered discovery.
+- **MCP bundles effective-memory pack**: The MCP server ships the `effective-memory` pack bundled and auto-installs it on `plur init`. Closes the gap where new installs had zero prior-art knowledge until a manual `plur pack install`.
+- **BM25 fallback for tiny corpora** (#30, #31): Robust BM25 behavior for stores with very few engrams or uniform term frequencies — previously returned empty results. Matches expectations on fresh installs.
+
+### Packages
+
+- `@plur-ai/core` 0.9.2 — auto-discover in constructor, BM25 fallback
+- `@plur-ai/mcp` 0.9.2 — bundled effective-memory pack, auto-install on init
+- `@plur-ai/claw` 0.9.2 — version parity
+- `@plur-ai/cli` 0.9.2 — version parity
+
+## 0.9.1 (2026-04-22)
+
+### Auto-Discover Project Stores
+
+A multi-project setup used to need explicit `--domain`/`--scope` flags on every call. 0.9.1 auto-discovers `.plur/` directories in the working tree at session start, so engrams from parent and sibling projects join the recall pool automatically.
+
+- **Auto-discover project stores at session start**: Walks upward from `cwd` collecting `.plur/` stores; registers them alongside the global store. Makes multi-repo workflows work without config.
+- **Project engram store**: Adds 67 PLUR-specific learnings (architecture, conventions, gotchas) shipped in the repo itself so contributors inherit team knowledge on first clone.
+- **CLI + Hermes feature parity with 0.9.0**: `similarity-search` and `batch-decay` exposed in CLI and Hermes plugin to match the 0.9.0 core additions.
+- **skills.sh ecosystem publish**: `plur-memory` skill published to skills.sh — reach across amp, cline, opencode, cursor, kimi-cli, and warp via SKILL.md auto-indexing.
+
+### Packages
+
+- `@plur-ai/core` 0.9.1 — auto-discover project stores, project engram store
+- `@plur-ai/mcp` 0.9.1 — version parity
+- `@plur-ai/claw` 0.9.1 — version parity
+- `@plur-ai/cli` 0.9.1 — similarity-search + batch-decay parity
+
 ## 0.9.0 (2026-04-22)
 
 ### Memory That Maintains Itself
