@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { runSetupCli } from './setup.js'
+import { runDoctorCli, runSetupCli } from './setup.js'
 
 function help(): string {
   return [
@@ -7,6 +7,7 @@ function help(): string {
     '',
     'Commands:',
     '  setup    Enable plur-claw in ~/.openclaw/openclaw.json',
+    '  doctor   Inspect current activation state without modifying config',
     '  help     Show this help',
     '',
     'Env:',
@@ -21,6 +22,7 @@ function main(argv: string[]): number {
     return cmd ? 0 : 1
   }
   if (cmd === 'setup') return runSetupCli()
+  if (cmd === 'doctor') return runDoctorCli()
   process.stderr.write(`Unknown command: ${cmd}\n\n${help()}\n`)
   return 1
 }
