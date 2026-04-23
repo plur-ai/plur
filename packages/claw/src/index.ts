@@ -35,7 +35,7 @@ const plugin = {
   id: 'plur-claw',
   name: 'PLUR Memory Engine',
   description: 'Persistent, learnable memory for OpenClaw agents. Local-first, no cloud required.',
-  version: '0.9.7',
+  version: '0.9.8',
   kind: 'memory' as const,
 
   register(api: any) {
@@ -53,7 +53,18 @@ const plugin = {
       api.logger.warn(`PLUR: could not update SYSTEM.md: ${err.message}`)
     }
 
-    // 2. Register context engine
+    // 2. Run setup if config is incomplete (idempotent, skips if already configured)
+    import('./setup.js').then(({ runSetup }) => {
+      const report = runSetup()
+      const configStep = report.steps.find((s: any) => s.step === 'config_enabled')
+      if (configStep?.status === 'ok') {
+        api.logger.info('PLUR: auto-configured openclaw.json (memory slot + MCP server)')
+      }
+    }).catch((err: any) => {
+      api.logger.debug(`PLUR: setup skipped: ${err.message}`)
+    })
+
+    // 3. Register context engine
     api.registerContextEngine('plur', () => {
       const e = getEngine(path)
       api.logger.info(`PLUR ContextEngine — engrams: ${e.plur.status().engram_count}`)
