@@ -74,6 +74,15 @@ function mergeEnable(cfg: OpenclawConfig): { cfg: OpenclawConfig; changed: boole
   }
   ;(plugins as any).slots = slots
 
+  // Append to plugins.allow only when the user is already gating via a non-empty
+  // allowlist — matching OpenClaw's buildPluginsAllowPatch semantics. Creating an
+  // allowlist where none existed would silently gate other plugins the user had.
+  const allowCurrent = (plugins as any).allow
+  if (Array.isArray(allowCurrent) && allowCurrent.length > 0 && !allowCurrent.includes(PLUGIN_ID)) {
+    ;(plugins as any).allow = [...allowCurrent, PLUGIN_ID]
+    changed = true
+  }
+
   cfg.plugins = plugins
 
   // Configure MCP server for agent-callable tools
