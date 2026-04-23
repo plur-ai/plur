@@ -7,16 +7,24 @@ Part of [PLUR](https://plur.ai) — where **Haiku with memory outperforms Opus w
 ## Setup (30 seconds)
 
 ```bash
-npm install @plur-ai/claw
+openclaw plugins install @plur-ai/claw
 ```
+
+Then enable the plugin in `~/.openclaw/openclaw.json`:
 
 ```json
 {
-  "plugins": ["@plur-ai/claw"]
+  "plugins": {
+    "entries": {
+      "plur-claw": { "enabled": true }
+    }
+  }
 }
 ```
 
-That's it. Every agent session now has persistent memory.
+Restart the OpenClaw gateway so the new config is picked up. Every agent session now has persistent memory.
+
+> Until v0.9.4 ships `npx @plur-ai/claw setup` (tracked in [#39](https://github.com/plur-ai/plur/issues/39)), the `plugins.entries` block must be added manually — `openclaw plugins install` writes the package to disk but does not enable it in your config.
 
 ## What happens automatically
 
@@ -55,7 +63,11 @@ The plugin handles the automatic lifecycle (inject, capture, learn). For explici
   "mcpServers": {
     "plur": { "command": "npx", "args": ["-y", "@plur-ai/mcp"] }
   },
-  "plugins": ["@plur-ai/claw"]
+  "plugins": {
+    "entries": {
+      "plur-claw": { "enabled": true }
+    }
+  }
 }
 ```
 
