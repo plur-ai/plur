@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterAll } from 'vitest'
 import { mkdtempSync, readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { runSetup } from '../src/setup.js'
+import { runDoctor, runSetup } from '../src/setup.js'
 
 function newDir(): string {
   return mkdtempSync(join(tmpdir(), 'plur-setup-'))
@@ -168,5 +168,114 @@ describe('claw setup command', () => {
       'reload_required',
       'runtime_registered',
     ])
+  })
+})
+
+describe('claw doctor command', () => {
+  let dir: string
+  let cfgPath: string
+  beforeEach(() => {
+    dir = newDir()
+    cfgPath = join(dir, 'openclaw.json')
+  })
+
+  it('reports fail on enable + slot when config file is missing, and does NOT create it', () => {
+    const r = runDoctor({ configPath: cfgPath })
+    const enableStep = r.steps.find((s) => s.step === 'plugin_enabled')!
+    const slotStep = r.steps.find((s) => s.step === 'slot_selected')!
+    expect(enableStep.status).toBe('fail')
+    expect(enableStep.detail).toContain('config file not found')
+    expect(enableStep.detail).toContain('npx @plur-ai/claw setup')
+    expect(slotStep.status).toBe('fail')
+    expect(existsSync(cfgPath)).toBe(false)
+    expect(r.fallbackBlock).toBeUndefined()
+  })
+
+  it('reports ok on enable + slot when config is fully set up', () => {
+    const prior = {
+      plugins: {
+        entries: { 'plur-claw': { enabled: true, config: { auto_learn: true } } },
+        slots: { memory: 'plur-claw' },
+      },
+    }
+    writeFileSync(cfgPath, JSON.stringify(prior), 'utf8')
+    const r = runDoctor({ configPath: cfgPath })
+    expect(r.steps.find((s) => s.step === 'plugin_enabled')!.status).toBe('ok')
+    expect(r.steps.find((s) => s.step === 'slot_selected')!.status).toBe('ok')
+  })
+
+  it('does not mutate an otherwise-valid config that is missing plur-claw', () => {
+    const prior = { plugins: { entries: { 'other-plugin': { enabled: true } } } }
+    const raw = JSON.stringify(prior)
+    writeFileSync(cfgPath, raw, 'utf8')
+    const r = runDoctor({ configPath: cfgPath })
+    expect(r.steps.find((s) => s.step === 'plugin_enabled')!.status).toBe('fail')
+    expect(r.steps.find((s) => s.step === 'plugin_enabled')!.detail).toContain('no entry for plur-claw')
+    expect(r.steps.find((s) => s.step === 'slot_selected')!.status).toBe('fail')
+    expect(readFileSync(cfgPath, 'utf8')).toBe(raw)
+  })
+
+  it('flags plugin as disabled when entry exists but enabled=false', () => {
+    const prior = {
+      plugins: {
+        entries: { 'plur-claw': { enabled: false } },
+        slots: { memory: 'plur-claw' },
+      },
+    }
+    writeFileSync(cfgPath, JSON.stringify(prior), 'utf8')
+    const r = runDoctor({ configPath: cfgPath })
+    const step = r.steps.find((s) => s.step === 'plugin_enabled')!
+    expect(step.status).toBe('fail')
+    expect(step.detail).toContain('enabled is not true')
+  })
+
+  it('flags slot as wrong when memory slot points to a different plugin', () => {
+    const prior = {
+      plugins: {
+        entries: { 'plur-claw': { enabled: true } },
+        slots: { memory: 'other-memory' },
+      },
+    }
+    writeFileSync(cfgPath, JSON.stringify(prior), 'utf8')
+    const r = runDoctor({ configPath: cfgPath })
+    const step = r.steps.find((s) => s.step === 'slot_selected')!
+    expect(step.status).toBe('fail')
+    expect(step.detail).toContain('other-memory')
+    expect(step.detail).toContain('expected plur-claw')
+  })
+
+  it('reports fail on malformed JSON without overwriting', () => {
+    const raw = '{not json'
+    writeFileSync(cfgPath, raw, 'utf8')
+    const r = runDoctor({ configPath: cfgPath })
+    expect(r.steps.find((s) => s.step === 'plugin_enabled')!.status).toBe('fail')
+    expect(r.steps.find((s) => s.step === 'slot_selected')!.status).toBe('fail')
+    expect(readFileSync(cfgPath, 'utf8')).toBe(raw)
+  })
+
+  it('emits steps in install → activation order (same as setup)', () => {
+    writeFileSync(cfgPath, '{}', 'utf8')
+    const r = runDoctor({ configPath: cfgPath })
+    expect(r.steps.map((s) => s.step)).toEqual([
+      'package_present',
+      'plugin_discovered',
+      'plugin_enabled',
+      'slot_selected',
+      'reload_required',
+      'runtime_registered',
+    ])
+  })
+
+  it('always marks reload_required and runtime_registered as pending', () => {
+    const prior = {
+      plugins: {
+        entries: { 'plur-claw': { enabled: true } },
+        slots: { memory: 'plur-claw' },
+      },
+    }
+    writeFileSync(cfgPath, JSON.stringify(prior), 'utf8')
+    const r = runDoctor({ configPath: cfgPath })
+    expect(r.steps.find((s) => s.step === 'reload_required')!.status).toBe('pending')
+    expect(r.steps.find((s) => s.step === 'runtime_registered')!.status).toBe('pending')
   })
 })
