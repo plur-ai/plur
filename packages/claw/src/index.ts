@@ -56,8 +56,9 @@ const plugin = {
     // 2. Run setup if config is incomplete (idempotent, skips if already configured)
     import('./setup.js').then(({ runSetup }) => {
       const report = runSetup()
-      const configStep = report.steps.find((s: any) => s.step === 'config_enabled')
-      if (configStep?.status === 'ok') {
+      const enabled = report.steps.find((s: any) => s.step === 'plugin_enabled')
+      const slotted = report.steps.find((s: any) => s.step === 'slot_selected')
+      if (enabled?.status === 'ok' || slotted?.status === 'ok') {
         api.logger.info('PLUR: auto-configured openclaw.json (memory slot + MCP server)')
       }
     }).catch((err: any) => {

@@ -12,10 +12,17 @@ type OpenclawConfig = {
 
 const PLUGIN_ID = 'plur-claw'
 
-function resolveConfigPath(): string {
+function resolveOpenclawHome(): string {
   const envHome = process.env.OPENCLAW_HOME
-  const root = envHome && envHome.trim().length > 0 ? envHome : join(homedir(), '.openclaw')
-  return join(root, 'openclaw.json')
+  return envHome && envHome.trim().length > 0 ? envHome : join(homedir(), '.openclaw')
+}
+
+function resolveConfigPath(): string {
+  return join(resolveOpenclawHome(), 'openclaw.json')
+}
+
+function resolveExtensionPath(): string {
+  return join(resolveOpenclawHome(), 'extensions', PLUGIN_ID)
 }
 
 function canonicalBlock(): string {
@@ -25,6 +32,7 @@ function canonicalBlock(): string {
         entries: {
           [PLUGIN_ID]: { enabled: true },
         },
+        slots: { memory: PLUGIN_ID },
       },
     },
     null,
@@ -46,7 +54,16 @@ function readConfig(path: string): { ok: true; data: OpenclawConfig } | { ok: fa
   }
 }
 
-function mergeEnable(cfg: OpenclawConfig): { cfg: OpenclawConfig; changed: boolean; alreadyEnabled: boolean } {
+type MergeResult = {
+  cfg: OpenclawConfig
+  anyChanged: boolean
+  enableChanged: boolean
+  enableAlready: boolean
+  slotChanged: boolean
+  slotAlready: boolean
+}
+
+function mergeEnable(cfg: OpenclawConfig): MergeResult {
   const plugins = (cfg.plugins && typeof cfg.plugins === 'object' && !Array.isArray(cfg.plugins)
     ? cfg.plugins
     : {}) as NonNullable<OpenclawConfig['plugins']>
@@ -55,22 +72,23 @@ function mergeEnable(cfg: OpenclawConfig): { cfg: OpenclawConfig; changed: boole
       ? plugins.entries
       : {}
   const existing = entries[PLUGIN_ID]
-  const alreadyEnabled = !!(existing && existing.enabled === true)
+  const enableAlready = !!(existing && existing.enabled === true)
   const nextEntry = {
     ...(existing ?? {}),
     enabled: true,
     config: (existing as any)?.config ?? { auto_learn: true, auto_capture: true, injection_budget: 2000 },
   }
-  let changed = !existing || existing.enabled !== true
+  const enableChanged = !existing || existing.enabled !== true
   entries[PLUGIN_ID] = nextEntry
   plugins.entries = entries
 
   // Set memory slot
   const slots = (plugins as any).slots && typeof (plugins as any).slots === 'object'
     ? (plugins as any).slots : {}
-  if (slots.memory !== PLUGIN_ID) {
+  const slotAlready = slots.memory === PLUGIN_ID
+  const slotChanged = !slotAlready
+  if (slotChanged) {
     slots.memory = PLUGIN_ID
-    changed = true
   }
   ;(plugins as any).slots = slots
 
@@ -78,9 +96,10 @@ function mergeEnable(cfg: OpenclawConfig): { cfg: OpenclawConfig; changed: boole
   // allowlist — matching OpenClaw's buildPluginsAllowPatch semantics. Creating an
   // allowlist where none existed would silently gate other plugins the user had.
   const allowCurrent = (plugins as any).allow
+  let allowChanged = false
   if (Array.isArray(allowCurrent) && allowCurrent.length > 0 && !allowCurrent.includes(PLUGIN_ID)) {
     ;(plugins as any).allow = [...allowCurrent, PLUGIN_ID]
-    changed = true
+    allowChanged = true
   }
 
   cfg.plugins = plugins
@@ -88,15 +107,23 @@ function mergeEnable(cfg: OpenclawConfig): { cfg: OpenclawConfig; changed: boole
   // Configure MCP server for agent-callable tools
   const mcp = (cfg as any).mcp && typeof (cfg as any).mcp === 'object' ? (cfg as any).mcp : {}
   const servers = mcp.servers && typeof mcp.servers === 'object' ? mcp.servers : {}
+  let mcpChanged = false
   if (!servers.plur) {
     const plurPath = process.env.PLUR_PATH || join(homedir(), '.plur')
     servers.plur = { command: 'npx', args: ['-y', '@plur-ai/mcp'], env: { PLUR_PATH: plurPath } }
-    changed = true
+    mcpChanged = true
   }
   mcp.servers = servers
   ;(cfg as any).mcp = mcp
 
-  return { cfg, changed, alreadyEnabled }
+  return {
+    cfg,
+    anyChanged: enableChanged || slotChanged || allowChanged || mcpChanged,
+    enableChanged,
+    enableAlready,
+    slotChanged,
+    slotAlready,
+  }
 }
 
 function writeConfig(path: string, cfg: OpenclawConfig): { ok: true } | { ok: false; reason: string } {
@@ -109,7 +136,13 @@ function writeConfig(path: string, cfg: OpenclawConfig): { ok: true } | { ok: fa
   }
 }
 
-export type SetupStep = 'package_present' | 'config_enabled' | 'reload_required' | 'runtime_confirmed'
+export type SetupStep =
+  | 'package_present'
+  | 'plugin_discovered'
+  | 'plugin_enabled'
+  | 'slot_selected'
+  | 'reload_required'
+  | 'runtime_registered'
 export type SetupStatus = 'ok' | 'skip' | 'fail' | 'pending'
 export type SetupReport = {
   path: string
@@ -117,56 +150,91 @@ export type SetupReport = {
   fallbackBlock?: string
 }
 
+function discoveryStep(): { step: SetupStep; status: SetupStatus; detail?: string } {
+  const extPath = resolveExtensionPath()
+  if (existsSync(extPath)) {
+    return { step: 'plugin_discovered', status: 'ok', detail: extPath }
+  }
+  return {
+    step: 'plugin_discovered',
+    status: 'fail',
+    detail: `extensions dir missing: ${extPath} — run \`openclaw plugins install @plur-ai/claw\``,
+  }
+}
+
 export function runSetup(opts: { configPath?: string } = {}): SetupReport {
   const path = opts.configPath ?? resolveConfigPath()
-  const report: SetupReport = { path, steps: [{ step: 'package_present', status: 'ok' }] }
+  const report: SetupReport = {
+    path,
+    steps: [{ step: 'package_present', status: 'ok' }, discoveryStep()],
+  }
+
+  const tailPending = () => {
+    report.steps.push({
+      step: 'reload_required',
+      status: 'pending',
+      detail: 'restart the OpenClaw gateway so the plugin loader re-reads config',
+    })
+    report.steps.push({
+      step: 'runtime_registered',
+      status: 'pending',
+      detail: 'automatic verification not yet implemented (tracked in #39)',
+    })
+  }
 
   if (!existsSync(path)) {
-    report.steps.push({
-      step: 'config_enabled',
-      status: 'fail',
-      detail: `config file not found: ${path}`,
-    })
+    report.steps.push({ step: 'plugin_enabled', status: 'fail', detail: `config file not found: ${path}` })
+    report.steps.push({ step: 'slot_selected', status: 'fail', detail: 'config file missing' })
     report.fallbackBlock = canonicalBlock()
-    report.steps.push({ step: 'reload_required', status: 'pending', detail: 'restart OpenClaw gateway after editing config' })
-    report.steps.push({ step: 'runtime_confirmed', status: 'pending' })
+    tailPending()
     return report
   }
 
   const readRes = readConfig(path)
   if (!readRes.ok) {
-    report.steps.push({ step: 'config_enabled', status: 'fail', detail: readRes.reason })
+    report.steps.push({ step: 'plugin_enabled', status: 'fail', detail: readRes.reason })
+    report.steps.push({ step: 'slot_selected', status: 'fail', detail: 'config unreadable' })
     report.fallbackBlock = canonicalBlock()
-    report.steps.push({ step: 'reload_required', status: 'pending' })
-    report.steps.push({ step: 'runtime_confirmed', status: 'pending' })
+    tailPending()
     return report
   }
 
   const merged = mergeEnable(readRes.data)
-  if (merged.alreadyEnabled && !merged.changed) {
-    report.steps.push({ step: 'config_enabled', status: 'skip', detail: 'already enabled' })
-  } else {
-    const w = writeConfig(path, merged.cfg)
-    if (!w.ok) {
-      report.steps.push({ step: 'config_enabled', status: 'fail', detail: w.reason })
-      report.fallbackBlock = canonicalBlock()
-      report.steps.push({ step: 'reload_required', status: 'pending' })
-      report.steps.push({ step: 'runtime_confirmed', status: 'pending' })
-      return report
-    }
-    report.steps.push({ step: 'config_enabled', status: 'ok' })
+  if (!merged.anyChanged) {
+    report.steps.push({
+      step: 'plugin_enabled',
+      status: merged.enableAlready ? 'skip' : 'ok',
+      detail: merged.enableAlready ? 'already enabled' : undefined,
+    })
+    report.steps.push({
+      step: 'slot_selected',
+      status: merged.slotAlready ? 'skip' : 'ok',
+      detail: merged.slotAlready ? `already set to ${PLUGIN_ID}` : undefined,
+    })
+    tailPending()
+    return report
+  }
+
+  const w = writeConfig(path, merged.cfg)
+  if (!w.ok) {
+    report.steps.push({ step: 'plugin_enabled', status: 'fail', detail: w.reason })
+    report.steps.push({ step: 'slot_selected', status: 'fail', detail: 'write failed' })
+    report.fallbackBlock = canonicalBlock()
+    tailPending()
+    return report
   }
 
   report.steps.push({
-    step: 'reload_required',
-    status: 'pending',
-    detail: 'restart the OpenClaw gateway so the plugin loader re-reads config',
+    step: 'plugin_enabled',
+    status: merged.enableChanged ? 'ok' : 'skip',
+    detail: merged.enableChanged ? undefined : 'already enabled',
   })
   report.steps.push({
-    step: 'runtime_confirmed',
-    status: 'pending',
-    detail: 'automatic verification not yet implemented (tracked in #39)',
+    step: 'slot_selected',
+    status: merged.slotChanged ? 'ok' : 'skip',
+    detail: merged.slotChanged ? undefined : `already set to ${PLUGIN_ID}`,
   })
+  tailPending()
   return report
 }
 
