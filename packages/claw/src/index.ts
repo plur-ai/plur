@@ -1,3 +1,4 @@
+import { existsSync, readFileSync, writeFileSync } from 'fs'
 import { PlurContextEngine, type PlurContextEngineOptions } from './context-engine.js'
 import { ensureSystemPrompt, PLUR_SYSTEM_SECTION } from './system-prompt.js'
 import { checkForUpdate } from '@plur-ai/core'
@@ -35,7 +36,7 @@ const plugin = {
   id: 'plur-claw',
   name: 'PLUR Memory Engine',
   description: 'Persistent, learnable memory for OpenClaw agents. Local-first, no cloud required.',
-  version: '0.9.4',
+  version: '0.9.5',
   kind: 'memory' as const,
 
   register(api: any) {
@@ -53,14 +54,49 @@ const plugin = {
       api.logger.warn(`PLUR: could not update SYSTEM.md: ${err.message}`)
     }
 
-    // 2. Register context engine
+    // 2. Auto-slot as memory provider if not already set
+    try {
+      const configPath = api.config?._configPath || api.config?._path ||
+        `${process.env.HOME || '/root'}/.openclaw/openclaw.json`
+      if (existsSync(configPath)) {
+        const config = JSON.parse(readFileSync(configPath, 'utf8'))
+        let changed = false
+
+        // Set memory slot
+        if (!config.plugins) config.plugins = {}
+        if (!config.plugins.slots) config.plugins.slots = {}
+        if (!config.plugins.slots.memory || config.plugins.slots.memory !== 'plur-claw') {
+          config.plugins.slots.memory = 'plur-claw'
+          changed = true
+        }
+
+        // Ensure plugin entry is enabled with defaults
+        if (!config.plugins.entries) config.plugins.entries = {}
+        if (!config.plugins.entries['plur-claw']) {
+          config.plugins.entries['plur-claw'] = {
+            enabled: true,
+            config: { auto_learn: true, auto_capture: true, injection_budget: 2000 },
+          }
+          changed = true
+        }
+
+        if (changed) {
+          writeFileSync(configPath, JSON.stringify(config, null, 2))
+          api.logger.info('PLUR: configured as memory provider in openclaw.json')
+        }
+      }
+    } catch (err: any) {
+      api.logger.debug(`PLUR: config auto-setup skipped: ${err.message}`)
+    }
+
+    // 3. Register context engine
     api.registerContextEngine('plur', () => {
       const e = getEngine(path)
       api.logger.info(`PLUR ContextEngine — engrams: ${e.plur.status().engram_count}`)
       return e
     })
 
-    // 3. Event hooks (alongside ContextEngine for redundancy)
+    // 4. Event hooks (alongside ContextEngine for redundancy)
     api.on('before_agent_start', (event: any, ctx: any) => {
       const e = getEngine(path)
       const task = typeof event?.prompt === 'string' ? event.prompt : ''
@@ -88,7 +124,7 @@ const plugin = {
       }
     })
 
-    // 4. Slash commands
+    // 5. Slash commands
     if (typeof api.registerCommand === 'function') {
       api.registerCommand({
         name: 'learn',
@@ -179,7 +215,7 @@ const plugin = {
       })
     }
 
-    // 5. Auto-configure @plur-ai/mcp as MCP server (gives agent callable tools)
+    // 6. Auto-configure @plur-ai/mcp as MCP server (gives agent callable tools)
     if (typeof api.registerMcpServer === 'function') {
       try {
         api.registerMcpServer('plur', {
@@ -195,10 +231,9 @@ const plugin = {
     } else {
       // Fallback: write MCP config directly if registerMcpServer not available
       try {
-        const configPath = api.config?._path || `${process.env.HOME || '/root'}/.openclaw/openclaw.json`
-        const { existsSync, readFileSync, writeFileSync } = require('fs')
-        if (existsSync(configPath)) {
-          const config = JSON.parse(readFileSync(configPath, 'utf8'))
+        const mcpConfigPath = api.config?._path || `${process.env.HOME || '/root'}/.openclaw/openclaw.json`
+        if (existsSync(mcpConfigPath)) {
+          const config = JSON.parse(readFileSync(mcpConfigPath, 'utf8'))
           if (!config.mcpServers?.plur) {
             config.mcpServers = config.mcpServers || {}
             config.mcpServers.plur = {
@@ -206,7 +241,7 @@ const plugin = {
               args: ['-y', '@plur-ai/mcp'],
               env: { PLUR_PATH: path },
             }
-            writeFileSync(configPath, JSON.stringify(config, null, 2))
+            writeFileSync(mcpConfigPath, JSON.stringify(config, null, 2))
             api.logger.info('PLUR: added MCP server config to openclaw.json')
           }
         }
