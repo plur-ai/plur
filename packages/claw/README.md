@@ -8,23 +8,36 @@ Part of [PLUR](https://plur.ai) — where **Haiku with memory outperforms Opus w
 
 ```bash
 openclaw plugins install @plur-ai/claw
+npx @plur-ai/claw setup
 ```
 
-Then enable the plugin in `~/.openclaw/openclaw.json`:
+`setup` enables the plugin in `~/.openclaw/openclaw.json`, assigns it to the memory slot, and (if you've opted into a community allowlist) adds `plur-claw` to it. Restart the OpenClaw gateway and every agent session now has persistent memory.
+
+If you'd rather configure by hand, the equivalent edit to `~/.openclaw/openclaw.json` is:
 
 ```json
 {
   "plugins": {
     "entries": {
       "plur-claw": { "enabled": true }
+    },
+    "slots": {
+      "memory": "plur-claw"
     }
   }
 }
 ```
 
-Restart the OpenClaw gateway so the new config is picked up. Every agent session now has persistent memory.
+### Troubleshooting activation
 
-> Until v0.9.4 ships `npx @plur-ai/claw setup` (tracked in [#39](https://github.com/plur-ai/plur/issues/39)), the `plugins.entries` block must be added manually — `openclaw plugins install` writes the package to disk but does not enable it in your config.
+If `setup` ran but PLUR still isn't active, two read/fix tools ship with the package:
+
+```bash
+npx @plur-ai/claw doctor          # read-only: reports which step is failing
+npx @plur-ai/claw setup --repair  # re-runs only the failing steps, preserves the rest
+```
+
+`doctor` walks the full activation chain — `package_present` → `plugin_discovered` → `plugin_enabled` → `slot_selected` → `reload_required` → `runtime_registered` — and names the specific step that's off, along with whether the fix is on `setup`, on upstream `openclaw`, or a human judgment call (slot owned by another plugin). `setup --repair` then fixes only the steps `doctor` flagged, leaving healthy config fields byte-identical.
 
 ## What happens automatically
 
