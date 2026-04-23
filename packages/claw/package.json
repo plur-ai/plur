@@ -9,6 +9,7 @@
   },
   "files": [
     "dist",
+    "scripts",
     "openclaw.plugin.json"
   ],
   "openclaw": {
@@ -24,7 +25,8 @@
   },
   "scripts": {
     "build": "tsup",
-    "test": "vitest run"
+    "test": "vitest run",
+    "postinstall": "node scripts/postinstall.mjs"
   },
   "dependencies": {
     "@plur-ai/core": "workspace:*"
