@@ -85,6 +85,37 @@ describe('claw setup command', () => {
     expect(r.steps.find((s) => s.step === 'runtime_confirmed')!.status).toBe('pending')
   })
 
+  it('appends plur-claw to a non-empty plugins.allow allowlist', () => {
+    const prior = { plugins: { allow: ['other-plugin'] } }
+    writeFileSync(cfgPath, JSON.stringify(prior), 'utf8')
+    runSetup({ configPath: cfgPath })
+    const written = JSON.parse(readFileSync(cfgPath, 'utf8'))
+    expect(written.plugins.allow).toEqual(['other-plugin', 'plur-claw'])
+  })
+
+  it('does not create plugins.allow when it is absent (avoid gating other plugins)', () => {
+    writeFileSync(cfgPath, '{}', 'utf8')
+    runSetup({ configPath: cfgPath })
+    const written = JSON.parse(readFileSync(cfgPath, 'utf8'))
+    expect(written.plugins.allow).toBeUndefined()
+  })
+
+  it('does not create plugins.allow when it is present but empty', () => {
+    const prior = { plugins: { allow: [] } }
+    writeFileSync(cfgPath, JSON.stringify(prior), 'utf8')
+    runSetup({ configPath: cfgPath })
+    const written = JSON.parse(readFileSync(cfgPath, 'utf8'))
+    expect(written.plugins.allow).toEqual([])
+  })
+
+  it('leaves plugins.allow alone when plur-claw is already allowlisted', () => {
+    const prior = { plugins: { allow: ['other-plugin', 'plur-claw'] } }
+    writeFileSync(cfgPath, JSON.stringify(prior), 'utf8')
+    runSetup({ configPath: cfgPath })
+    const written = JSON.parse(readFileSync(cfgPath, 'utf8'))
+    expect(written.plugins.allow).toEqual(['other-plugin', 'plur-claw'])
+  })
+
   it('creates valid JSON output on write', () => {
     writeFileSync(cfgPath, '{}', 'utf8')
     runSetup({ configPath: cfgPath })
