@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterAll } from 'vitest'
 import { mkdtempSync, readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { runDoctor, runSetup } from '../src/setup.js'
+import { runDoctor, runRepair, runSetup } from '../src/setup.js'
 
 function newDir(): string {
   return mkdtempSync(join(tmpdir(), 'plur-setup-'))
@@ -277,5 +277,142 @@ describe('claw doctor command', () => {
     const r = runDoctor({ configPath: cfgPath })
     expect(r.steps.find((s) => s.step === 'reload_required')!.status).toBe('pending')
     expect(r.steps.find((s) => s.step === 'runtime_registered')!.status).toBe('pending')
+  })
+})
+
+describe('claw setup --repair mode', () => {
+  let dir: string
+  let cfgPath: string
+  beforeEach(() => {
+    dir = newDir()
+    cfgPath = join(dir, 'openclaw.json')
+  })
+
+  it('no-ops when doctor reports enable + slot healthy', () => {
+    const prior = {
+      plugins: {
+        entries: { 'plur-claw': { enabled: true, config: { injection_budget: 4000 } } },
+        slots: { memory: 'plur-claw' },
+      },
+    }
+    const raw = JSON.stringify(prior)
+    writeFileSync(cfgPath, raw, 'utf8')
+    const r = runRepair({ configPath: cfgPath })
+    expect(r.steps.find((s) => s.step === 'plugin_enabled')!.status).toBe('ok')
+    expect(r.steps.find((s) => s.step === 'slot_selected')!.status).toBe('ok')
+    // Byte-identical: repair didn't write.
+    expect(readFileSync(cfgPath, 'utf8')).toBe(raw)
+  })
+
+  it('flips enabled=false to true without rewriting config.injection_budget', () => {
+    const prior = {
+      plugins: {
+        entries: { 'plur-claw': { enabled: false, config: { injection_budget: 4000 } } },
+        slots: { memory: 'plur-claw' },
+      },
+    }
+    writeFileSync(cfgPath, JSON.stringify(prior), 'utf8')
+    const r = runRepair({ configPath: cfgPath })
+    expect(r.steps.find((s) => s.step === 'plugin_enabled')!.status).toBe('ok')
+    const written = JSON.parse(readFileSync(cfgPath, 'utf8'))
+    expect(written.plugins.entries['plur-claw'].enabled).toBe(true)
+    expect(written.plugins.entries['plur-claw'].config.injection_budget).toBe(4000)
+  })
+
+  it('adds missing plur-claw entry with default config when only entry is missing', () => {
+    const prior = {
+      plugins: {
+        entries: { 'other-plugin': { enabled: true } },
+        slots: { memory: 'plur-claw' },
+      },
+    }
+    writeFileSync(cfgPath, JSON.stringify(prior), 'utf8')
+    const r = runRepair({ configPath: cfgPath })
+    expect(r.steps.find((s) => s.step === 'plugin_enabled')!.status).toBe('ok')
+    const written = JSON.parse(readFileSync(cfgPath, 'utf8'))
+    expect(written.plugins.entries['plur-claw'].enabled).toBe(true)
+    expect(written.plugins.entries['plur-claw'].config).toEqual({
+      auto_learn: true,
+      auto_capture: true,
+      injection_budget: 2000,
+    })
+    expect(written.plugins.entries['other-plugin']).toEqual({ enabled: true })
+  })
+
+  it('sets memory slot when it is unset, without adding MCP config', () => {
+    const prior = {
+      plugins: {
+        entries: { 'plur-claw': { enabled: true, config: { injection_budget: 2000 } } },
+      },
+    }
+    writeFileSync(cfgPath, JSON.stringify(prior), 'utf8')
+    const r = runRepair({ configPath: cfgPath })
+    expect(r.steps.find((s) => s.step === 'slot_selected')!.status).toBe('ok')
+    const written = JSON.parse(readFileSync(cfgPath, 'utf8'))
+    expect(written.plugins.slots.memory).toBe('plur-claw')
+    // MCP is not a doctor step; repair doesn't add it.
+    expect(written.mcp).toBeUndefined()
+  })
+
+  it('does NOT overwrite a memory slot pointing to a different plugin', () => {
+    const prior = {
+      plugins: {
+        entries: { 'plur-claw': { enabled: true } },
+        slots: { memory: 'other-memory' },
+      },
+    }
+    const raw = JSON.stringify(prior)
+    writeFileSync(cfgPath, raw, 'utf8')
+    const r = runRepair({ configPath: cfgPath })
+    const slotStep = r.steps.find((s) => s.step === 'slot_selected')!
+    expect(slotStep.status).toBe('fail')
+    expect(slotStep.detail).toContain('other-memory')
+    // Slot conflict preserved; file untouched.
+    expect(readFileSync(cfgPath, 'utf8')).toBe(raw)
+  })
+
+  it('creates a minimal config when file is missing', () => {
+    const r = runRepair({ configPath: cfgPath })
+    expect(r.steps.find((s) => s.step === 'plugin_enabled')!.status).toBe('ok')
+    expect(r.steps.find((s) => s.step === 'slot_selected')!.status).toBe('ok')
+    const written = JSON.parse(readFileSync(cfgPath, 'utf8'))
+    expect(written.plugins.entries['plur-claw'].enabled).toBe(true)
+    expect(written.plugins.slots.memory).toBe('plur-claw')
+    expect(written.mcp).toBeUndefined()
+  })
+
+  it('does not overwrite a malformed config file', () => {
+    const raw = '{not json'
+    writeFileSync(cfgPath, raw, 'utf8')
+    const r = runRepair({ configPath: cfgPath })
+    expect(r.steps.find((s) => s.step === 'plugin_enabled')!.status).toBe('fail')
+    expect(readFileSync(cfgPath, 'utf8')).toBe(raw)
+  })
+
+  it('fixes both enable and slot in a single pass when both failed', () => {
+    writeFileSync(cfgPath, '{}', 'utf8')
+    const r = runRepair({ configPath: cfgPath })
+    expect(r.steps.find((s) => s.step === 'plugin_enabled')!.status).toBe('ok')
+    expect(r.steps.find((s) => s.step === 'slot_selected')!.status).toBe('ok')
+    const written = JSON.parse(readFileSync(cfgPath, 'utf8'))
+    expect(written.plugins.entries['plur-claw'].enabled).toBe(true)
+    expect(written.plugins.slots.memory).toBe('plur-claw')
+  })
+
+  it('preserves unrelated plugin entries when flipping enabled', () => {
+    const prior = {
+      plugins: {
+        entries: {
+          'plur-claw': { enabled: false, config: { injection_budget: 1500 } },
+          'other-plugin': { enabled: true, config: { foo: 'bar' } },
+        },
+        slots: { memory: 'plur-claw' },
+      },
+    }
+    writeFileSync(cfgPath, JSON.stringify(prior), 'utf8')
+    runRepair({ configPath: cfgPath })
+    const written = JSON.parse(readFileSync(cfgPath, 'utf8'))
+    expect(written.plugins.entries['other-plugin']).toEqual({ enabled: true, config: { foo: 'bar' } })
+    expect(written.plugins.entries['plur-claw'].config.injection_budget).toBe(1500)
   })
 })
