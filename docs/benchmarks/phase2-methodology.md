@@ -163,10 +163,39 @@ The following decisions are proposed above but not yet ratified:
 
 Additional open items that are **not** ratifiable yet:
 
-- **PLUR v0.2.1 reference write-up** — the 86.7% / 93.3% number needs its own doc (`docs/reports/longmemeval-v0.2.1.md`) before we can gate the harness against it. Currently the number lives in `CLAUDE.md` only.
-- **LongMemEval licensing** — public set is [CC-BY-NC-4.0](https://github.com/xiaowu0162/LongMemEval); we can redistribute a processed derivative with attribution but not commercialize. Doc required.
+- **PLUR v0.2.1 reference write-up** — landed 2026-04-23 as [`docs/reports/longmemeval-v0.2.1.md`](../reports/longmemeval-v0.2.1.md) (PR #48). The F5 anchor now resolves to a real doc; the path-1/2/3 decision on reproducibility remains open.
+- **LongMemEval licensing** — resolved in [Appendix A](#appendix-a-longmemeval-license--redistribution-terms) below. Redistribution of a processed derivative is permitted under CC-BY-NC-4.0 with attribution; benchmark publication is in-scope, enterprise bundling is not.
 - **Funding the external-LLM runs** — agentic-mode competitor runs (Letta, LangMem, some Mem0 configs) call OpenAI / Anthropic. Flag against CTO budget when those land; out-of-scope for the scaffold PR.
 
 ## Non-goals (restating for clarity)
 
 Phase 2 is not a marketing exercise. Results that make PLUR look worse on an axis are published same as results that make it look better. The purpose is a credible shared substrate for the category — useful to us *because* it's useful to everyone.
+
+## Appendix A: LongMemEval license & redistribution terms
+
+The LongMemEval corpus is published by Wu et al. at [github.com/xiaowu0162/LongMemEval](https://github.com/xiaowu0162/LongMemEval) under [Creative Commons Attribution-NonCommercial 4.0](https://creativecommons.org/licenses/by-nc/4.0/) (CC-BY-NC-4.0). The harness depends on it; this appendix documents how we comply.
+
+### What the license permits
+
+- **Redistribution of the corpus and derivatives** (including per-system preprocessed JSON produced by the ingest adapters in `benchmarks/phase2/systems/<slug>/`) in non-commercial contexts, with attribution.
+- **Adaptation** — the per-system ingestion adapters restructure LongMemEval's records into each system's expected input shape. This is a derivative and is permitted under the license.
+- **Publication of accuracy numbers** derived from running the corpus through each system. Numbers are not the corpus; sharing measurement results is unrestricted.
+
+### What the license does not permit
+
+- **Commercial redistribution.** LongMemEval (raw or processed) must not be bundled into any paid PLUR offering. This rules out shipping the corpus inside the enterprise tarball, demo environments gated by a paywall, or a hosted service that exposes it behind a subscription.
+- **Sublicensing under terms incompatible with NC.** Our harness code is Apache-2.0 (consistent with the rest of PLUR); the *corpus data* under `benchmarks/phase2/data/longmemeval/` carries its own CC-BY-NC-4.0 LICENSE file and is not relicensed.
+- **Removing attribution.** Every results page and the results CSV fingerprint (`env.json`) must cite the upstream paper and repo.
+
+### Practical requirements for this benchmark
+
+1. **License file in the data directory.** A verbatim copy of the CC-BY-NC-4.0 LICENSE text lives at `benchmarks/phase2/data/longmemeval/LICENSE`, alongside a `SOURCE.md` naming the upstream repo, commit SHA of the snapshot used, and date pulled.
+2. **Attribution in published artifacts.** `docs/benchmarks/phase2-results.md` and each `summary.csv` carry a top-of-file attribution: *"Corpus: LongMemEval (Wu et al., 2024), CC-BY-NC-4.0. See `benchmarks/phase2/data/longmemeval/SOURCE.md`."*
+3. **Changes documented.** Preprocessing that materially alters a record (e.g. turn concatenation in F3) is logged in the adapter's README so the derivative is distinguishable from the upstream corpus.
+4. **NonCommercial boundary.** The benchmark harness and results page are published research artifacts on the `plur-ai/plur` repo — non-commercial use. Enterprise materials (offers, proposals, anything under `docs/enterprise/`) may **cite** published numbers and link to the results page, but must not bundle or reproduce the corpus itself.
+5. **Downstream consumer guidance.** If a reader re-runs the harness, the `make bench` flow pulls LongMemEval from upstream at a pinned SHA; we don't vendor the corpus into the repo's primary tree. This keeps the distribution boundary clean.
+
+### Open sub-questions (ratifiable with the F1–F5 block on 2026-05-01)
+
+- Should we vendor a pinned snapshot at `benchmarks/phase2/data/longmemeval/` for reproducibility (simpler, but puts us squarely in redistribution), or fetch-on-demand from upstream (lighter-touch, but breaks if upstream rewrites history)? Proposed: vendor a pinned SHA with the LICENSE + SOURCE.md per (1) above; reproducibility outweighs the trivial redistribution burden. Contestable.
+- The 30-question sanity subset we already use internally — is the selection itself a derivative worth publishing under the same terms? Proposed: yes, ship `benchmarks/phase2/data/longmemeval/sanity-30.json` with the same LICENSE/attribution block.
