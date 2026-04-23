@@ -36,7 +36,7 @@ const plugin = {
   id: 'plur-claw',
   name: 'PLUR Memory Engine',
   description: 'Persistent, learnable memory for OpenClaw agents. Local-first, no cloud required.',
-  version: '0.9.5',
+  version: '0.9.6',
   kind: 'memory' as const,
 
   register(api: any) {
@@ -234,9 +234,11 @@ const plugin = {
         const mcpConfigPath = api.config?._path || `${process.env.HOME || '/root'}/.openclaw/openclaw.json`
         if (existsSync(mcpConfigPath)) {
           const config = JSON.parse(readFileSync(mcpConfigPath, 'utf8'))
-          if (!config.mcpServers?.plur) {
-            config.mcpServers = config.mcpServers || {}
-            config.mcpServers.plur = {
+          // OpenClaw uses mcp.servers (not mcpServers)
+          if (!config.mcp?.servers?.plur) {
+            if (!config.mcp) config.mcp = {}
+            if (!config.mcp.servers) config.mcp.servers = {}
+            config.mcp.servers.plur = {
               command: 'npx',
               args: ['-y', '@plur-ai/mcp'],
               env: { PLUR_PATH: path },
