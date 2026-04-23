@@ -1,14 +1,15 @@
 #!/usr/bin/env node
-import { runDoctorCli, runSetupCli } from './setup.js'
+import { runDoctorCli, runRepairCli, runSetupCli } from './setup.js'
 
 function help(): string {
   return [
     'Usage: npx @plur-ai/claw <command>',
     '',
     'Commands:',
-    '  setup    Enable plur-claw in ~/.openclaw/openclaw.json',
-    '  doctor   Inspect current activation state without modifying config',
-    '  help     Show this help',
+    '  setup            Enable plur-claw in ~/.openclaw/openclaw.json',
+    '  setup --repair   Fix only the steps that `doctor` reports as failed',
+    '  doctor           Inspect current activation state without modifying config',
+    '  help             Show this help',
     '',
     'Env:',
     '  OPENCLAW_HOME   Override the OpenClaw config directory (default: ~/.openclaw)',
@@ -21,7 +22,10 @@ function main(argv: string[]): number {
     process.stdout.write(help() + '\n')
     return cmd ? 0 : 1
   }
-  if (cmd === 'setup') return runSetupCli()
+  if (cmd === 'setup') {
+    if (argv[3] === '--repair') return runRepairCli()
+    return runSetupCli()
+  }
   if (cmd === 'doctor') return runDoctorCli()
   process.stderr.write(`Unknown command: ${cmd}\n\n${help()}\n`)
   return 1

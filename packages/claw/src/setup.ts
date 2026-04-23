@@ -354,6 +354,76 @@ export function runDoctorCli(): number {
   return failed ? 1 : 0
 }
 
+export function runRepair(opts: { configPath?: string } = {}): SetupReport {
+  const path = opts.configPath ?? resolveConfigPath()
+
+  // Diagnose first — repair only acts on steps doctor reports as failing.
+  const pre = runDoctor({ configPath: path })
+  const enableFailed = pre.steps.find((s) => s.step === 'plugin_enabled')!.status === 'fail'
+  const slotFailed = pre.steps.find((s) => s.step === 'slot_selected')!.status === 'fail'
+  if (!enableFailed && !slotFailed) return pre
+
+  // Slot conflicts (memory slot taken by a different plugin) are preserved — repair
+  // does not overturn a human judgment call on which plugin owns the memory slot.
+  let cfg: OpenclawConfig = {}
+  if (existsSync(path)) {
+    const readRes = readConfig(path)
+    if (!readRes.ok) return pre
+    cfg = readRes.data
+  }
+
+  const plugins = (cfg.plugins && typeof cfg.plugins === 'object' && !Array.isArray(cfg.plugins)
+    ? cfg.plugins
+    : {}) as NonNullable<OpenclawConfig['plugins']>
+  const entries =
+    plugins.entries && typeof plugins.entries === 'object' && !Array.isArray(plugins.entries)
+      ? plugins.entries
+      : {}
+  let changed = false
+
+  if (enableFailed) {
+    const existing = entries[PLUGIN_ID]
+    if (!existing) {
+      entries[PLUGIN_ID] = {
+        enabled: true,
+        config: { auto_learn: true, auto_capture: true, injection_budget: 2000 },
+      }
+      changed = true
+    } else if (existing.enabled !== true) {
+      entries[PLUGIN_ID] = { ...existing, enabled: true }
+      changed = true
+    }
+    plugins.entries = entries
+  }
+
+  const slots =
+    (plugins as any).slots && typeof (plugins as any).slots === 'object'
+      ? (plugins as any).slots
+      : {}
+  if (slotFailed && !slots.memory) {
+    slots.memory = PLUGIN_ID
+    ;(plugins as any).slots = slots
+    changed = true
+  }
+
+  cfg.plugins = plugins
+
+  if (changed) {
+    const w = writeConfig(path, cfg)
+    if (!w.ok) return pre
+  }
+
+  return runDoctor({ configPath: path })
+}
+
+export function runRepairCli(): number {
+  const report = runRepair()
+  const rendered = formatReport(report).replace(/^PLUR setup →/, 'PLUR repair →')
+  process.stdout.write(rendered + '\n')
+  const failed = report.steps.some((s) => s.status === 'fail')
+  return failed ? 1 : 0
+}
+
 // Auto-run when executed directly (postinstall)
 const isMain = typeof process !== 'undefined' && process.argv[1]?.endsWith('setup.js')
 if (isMain) {
