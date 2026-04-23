@@ -261,6 +261,99 @@ export function runSetupCli(): number {
   return failed ? 1 : 0
 }
 
+export function runDoctor(opts: { configPath?: string } = {}): SetupReport {
+  const path = opts.configPath ?? resolveConfigPath()
+  const report: SetupReport = {
+    path,
+    steps: [{ step: 'package_present', status: 'ok' }, discoveryStep()],
+  }
+
+  const tailPending = () => {
+    report.steps.push({
+      step: 'reload_required',
+      status: 'pending',
+      detail: 'cannot verify OpenClaw gateway reload state from here',
+    })
+    report.steps.push({
+      step: 'runtime_registered',
+      status: 'pending',
+      detail: 'automatic verification not yet implemented (tracked in #39)',
+    })
+  }
+
+  if (!existsSync(path)) {
+    report.steps.push({
+      step: 'plugin_enabled',
+      status: 'fail',
+      detail: `config file not found: ${path} — run \`npx @plur-ai/claw setup\``,
+    })
+    report.steps.push({ step: 'slot_selected', status: 'fail', detail: 'config file missing' })
+    tailPending()
+    return report
+  }
+
+  const readRes = readConfig(path)
+  if (!readRes.ok) {
+    report.steps.push({ step: 'plugin_enabled', status: 'fail', detail: readRes.reason })
+    report.steps.push({ step: 'slot_selected', status: 'fail', detail: 'config unreadable' })
+    tailPending()
+    return report
+  }
+
+  const cfg = readRes.data
+  const plugins = (cfg.plugins && typeof cfg.plugins === 'object' && !Array.isArray(cfg.plugins)
+    ? cfg.plugins
+    : {}) as NonNullable<OpenclawConfig['plugins']>
+  const entries =
+    plugins.entries && typeof plugins.entries === 'object' && !Array.isArray(plugins.entries)
+      ? plugins.entries
+      : {}
+  const entry = entries[PLUGIN_ID]
+  if (!entry) {
+    report.steps.push({
+      step: 'plugin_enabled',
+      status: 'fail',
+      detail: `no entry for ${PLUGIN_ID} in plugins.entries — run \`npx @plur-ai/claw setup\``,
+    })
+  } else if (entry.enabled !== true) {
+    report.steps.push({
+      step: 'plugin_enabled',
+      status: 'fail',
+      detail: `plugins.entries.${PLUGIN_ID}.enabled is not true`,
+    })
+  } else {
+    report.steps.push({ step: 'plugin_enabled', status: 'ok' })
+  }
+
+  const slots =
+    (plugins as any).slots && typeof (plugins as any).slots === 'object' ? (plugins as any).slots : {}
+  if (slots.memory === PLUGIN_ID) {
+    report.steps.push({ step: 'slot_selected', status: 'ok', detail: `memory → ${PLUGIN_ID}` })
+  } else if (!slots.memory) {
+    report.steps.push({
+      step: 'slot_selected',
+      status: 'fail',
+      detail: 'plugins.slots.memory not set — run `npx @plur-ai/claw setup`',
+    })
+  } else {
+    report.steps.push({
+      step: 'slot_selected',
+      status: 'fail',
+      detail: `plugins.slots.memory is ${slots.memory}, expected ${PLUGIN_ID}`,
+    })
+  }
+
+  tailPending()
+  return report
+}
+
+export function runDoctorCli(): number {
+  const report = runDoctor()
+  process.stdout.write(formatReport(report) + '\n')
+  const failed = report.steps.some((s) => s.status === 'fail')
+  return failed ? 1 : 0
+}
+
 // Auto-run when executed directly (postinstall)
 const isMain = typeof process !== 'undefined' && process.argv[1]?.endsWith('setup.js')
 if (isMain) {
