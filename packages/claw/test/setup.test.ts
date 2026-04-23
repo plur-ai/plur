@@ -1,5 +1,5 @@
-import { describe, it, expect, beforeEach } from 'vitest'
-import { mkdtempSync, readFileSync, writeFileSync, existsSync } from 'node:fs'
+import { describe, it, expect, beforeEach, afterAll } from 'vitest'
+import { mkdtempSync, readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { runSetup } from '../src/setup.js'
@@ -16,20 +16,20 @@ describe('claw setup command', () => {
     cfgPath = join(dir, 'openclaw.json')
   })
 
-  it('reports fail + fallback when config file is missing', () => {
+  it('reports fail on enable + slot when config file is missing', () => {
     const r = runSetup({ configPath: cfgPath })
     expect(r.path).toBe(cfgPath)
-    const cfgStep = r.steps.find((s) => s.step === 'config_enabled')!
-    expect(cfgStep.status).toBe('fail')
+    expect(r.steps.find((s) => s.step === 'plugin_enabled')!.status).toBe('fail')
+    expect(r.steps.find((s) => s.step === 'slot_selected')!.status).toBe('fail')
     expect(r.fallbackBlock).toContain('plur-claw')
     expect(r.fallbackBlock).toContain('"enabled": true')
   })
 
-  it('enables plugin in empty object config', () => {
+  it('enables plugin + selects slot in empty object config', () => {
     writeFileSync(cfgPath, '{}', 'utf8')
     const r = runSetup({ configPath: cfgPath })
-    const cfgStep = r.steps.find((s) => s.step === 'config_enabled')!
-    expect(cfgStep.status).toBe('ok')
+    expect(r.steps.find((s) => s.step === 'plugin_enabled')!.status).toBe('ok')
+    expect(r.steps.find((s) => s.step === 'slot_selected')!.status).toBe('ok')
     const written = JSON.parse(readFileSync(cfgPath, 'utf8'))
     expect(written.plugins.entries['plur-claw'].enabled).toBe(true)
     expect(written.plugins.entries['plur-claw'].config).toEqual({ auto_learn: true, auto_capture: true, injection_budget: 2000 })
@@ -49,14 +49,14 @@ describe('claw setup command', () => {
     }
     writeFileSync(cfgPath, JSON.stringify(prior), 'utf8')
     const r = runSetup({ configPath: cfgPath })
-    expect(r.steps.find((s) => s.step === 'config_enabled')!.status).toBe('ok')
+    expect(r.steps.find((s) => s.step === 'plugin_enabled')!.status).toBe('ok')
     const written = JSON.parse(readFileSync(cfgPath, 'utf8'))
     expect(written.plugins.entries['plur-claw'].config.injection_budget).toBe(4000)
     expect(written.plugins.entries['plur-claw'].enabled).toBe(true)
     expect(written.plugins.entries['other-plugin']).toEqual({ enabled: true })
   })
 
-  it('is idempotent when fully configured (reports skip)', () => {
+  it('is idempotent when fully configured (reports skip on enable + slot)', () => {
     const prior = {
       plugins: {
         entries: { 'plur-claw': { enabled: true, config: { auto_learn: true, auto_capture: true, injection_budget: 2000 } } },
@@ -66,23 +66,27 @@ describe('claw setup command', () => {
     }
     writeFileSync(cfgPath, JSON.stringify(prior), 'utf8')
     const r = runSetup({ configPath: cfgPath })
-    const cfgStep = r.steps.find((s) => s.step === 'config_enabled')!
-    expect(cfgStep.status).toBe('skip')
-    expect(cfgStep.detail).toBe('already enabled')
+    const enableStep = r.steps.find((s) => s.step === 'plugin_enabled')!
+    const slotStep = r.steps.find((s) => s.step === 'slot_selected')!
+    expect(enableStep.status).toBe('skip')
+    expect(enableStep.detail).toBe('already enabled')
+    expect(slotStep.status).toBe('skip')
+    expect(slotStep.detail).toBe('already set to plur-claw')
   })
 
   it('reports fail + fallback on malformed JSON', () => {
     writeFileSync(cfgPath, '{not json', 'utf8')
     const r = runSetup({ configPath: cfgPath })
-    expect(r.steps.find((s) => s.step === 'config_enabled')!.status).toBe('fail')
+    expect(r.steps.find((s) => s.step === 'plugin_enabled')!.status).toBe('fail')
+    expect(r.steps.find((s) => s.step === 'slot_selected')!.status).toBe('fail')
     expect(r.fallbackBlock).toBeDefined()
   })
 
-  it('always marks reload_required and runtime_confirmed as pending', () => {
+  it('always marks reload_required and runtime_registered as pending', () => {
     writeFileSync(cfgPath, '{}', 'utf8')
     const r = runSetup({ configPath: cfgPath })
     expect(r.steps.find((s) => s.step === 'reload_required')!.status).toBe('pending')
-    expect(r.steps.find((s) => s.step === 'runtime_confirmed')!.status).toBe('pending')
+    expect(r.steps.find((s) => s.step === 'runtime_registered')!.status).toBe('pending')
   })
 
   it('appends plur-claw to a non-empty plugins.allow allowlist', () => {
@@ -122,5 +126,47 @@ describe('claw setup command', () => {
     expect(existsSync(cfgPath)).toBe(true)
     const parsed = JSON.parse(readFileSync(cfgPath, 'utf8'))
     expect(parsed).toBeTypeOf('object')
+  })
+
+  describe('plugin_discovered step', () => {
+    const origHome = process.env.OPENCLAW_HOME
+    beforeEach(() => {
+      process.env.OPENCLAW_HOME = dir
+    })
+    afterAll(() => {
+      if (origHome === undefined) delete process.env.OPENCLAW_HOME
+      else process.env.OPENCLAW_HOME = origHome
+    })
+
+    it('reports fail with guidance when extensions dir is missing', () => {
+      writeFileSync(cfgPath, '{}', 'utf8')
+      const r = runSetup({ configPath: cfgPath })
+      const step = r.steps.find((s) => s.step === 'plugin_discovered')!
+      expect(step.status).toBe('fail')
+      expect(step.detail).toContain('openclaw plugins install @plur-ai/claw')
+    })
+
+    it('reports ok when plur-claw is present under OPENCLAW_HOME/extensions', () => {
+      mkdirSync(join(dir, 'extensions', 'plur-claw'), { recursive: true })
+      writeFileSync(cfgPath, '{}', 'utf8')
+      const r = runSetup({ configPath: cfgPath })
+      const step = r.steps.find((s) => s.step === 'plugin_discovered')!
+      expect(step.status).toBe('ok')
+      expect(step.detail).toContain('plur-claw')
+    })
+  })
+
+  it('emits steps in install → activation order', () => {
+    writeFileSync(cfgPath, '{}', 'utf8')
+    const r = runSetup({ configPath: cfgPath })
+    const stepNames = r.steps.map((s) => s.step)
+    expect(stepNames).toEqual([
+      'package_present',
+      'plugin_discovered',
+      'plugin_enabled',
+      'slot_selected',
+      'reload_required',
+      'runtime_registered',
+    ])
   })
 })
