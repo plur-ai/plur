@@ -65,7 +65,7 @@ Next session starts      →  relevant ones injected →  agent remembers
 Agent rates the result   →  engram strengthens    →  quality improves
 ```
 
-**86.7% on LongMemEval** — on par with cloud memory services that charge per query.
+Search is independently benchmarked. [Methodology →](https://plur.ai/benchmark.html)
 
 ## Adding explicit memory tools
 
