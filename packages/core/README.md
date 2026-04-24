@@ -56,7 +56,7 @@ Next session starts     →  relevant ones injected →  agent remembers
 You rate the result     →  engram strengthens    →  quality improves
 ```
 
-Search is fully local: BM25 over enriched text + BGE-small-en-v1.5 embeddings + Reciprocal Rank Fusion. **86.7% on LongMemEval** — on par with cloud solutions that charge per query.
+Search is fully local: BM25 over enriched text + BGE-small-en-v1.5 embeddings + Reciprocal Rank Fusion. Zero API calls, zero per-query cost. [Benchmark methodology →](https://plur.ai/benchmark.html)
 
 ## Search modes
 
