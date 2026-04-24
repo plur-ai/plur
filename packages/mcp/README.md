@@ -42,7 +42,7 @@ Next session starts     →  relevant ones injected →  agent remembers
 You rate the result     →  engram strengthens    →  quality improves
 ```
 
-Knowledge is stored as **engrams** — small assertions that strengthen with use and decay when irrelevant. Search is fully local (BM25 + embeddings), so memory recall costs nothing and works offline. **86.7% on LongMemEval** — on par with cloud memory services.
+Knowledge is stored as **engrams** — small assertions that strengthen with use and decay when irrelevant. Search is fully local (BM25 + embeddings), so memory recall costs nothing and works offline. [Benchmark methodology →](https://plur.ai/benchmark.html)
 
 ## Tools
 
