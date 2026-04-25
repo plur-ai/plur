@@ -1,204 +1,227 @@
-# PLUR Enterprise — Presentation Deck (Slovenian)
+# PLUR Enterprise — Presentation Deck
 
-## Za Claude Design — slide-by-slide vsebina
+## Slide-by-slide content for deck creation
 
 ---
 
-### Slide 1: Naslov
+### Slide 1: Title
 **PLUR Enterprise**
-AI spomin in inteligenca za vaso razvojno ekipo
+Organizational Learning for Your Development Team
 
-Ponudba za partnerstvo | April 2026
-
----
-
-### Slide 2: Problem
-**Vasa AI orodja imajo amnezijo**
-
-- 50 razvijalcev, 1.400 repozitorijev, 300 GitLab skupin
-- Vsaka AI seja se zacne od nicle
-- Znanje zivi v glavah ljudi — ko odidejo, znanje odide z njimi
-- Novi zaposleni potrebujejo mesece, da se nauci "kako mi to delamo"
-- Iste napake se ponavljajo, ker se post-mortem znanje izgubi
+Founding Partner Proposal | May 2026
 
 ---
 
-### Slide 3: Cena amnezije
-**Koliko vas to stane**
+### Slide 2: The Problem
+**Your AI tools have amnesia**
 
-Vsak od 50 razvijalcev izgubi vsaj 20 minut na dan:
-- Ponavljanje konteksta AI orodjem
-- Iskanje odlocitev zakopanih v Confluence
-- Odgovarjanje na ista vprasanja novih zaposlenih
-- Odkrivanje resitev, ki jih je drug tim ze nasel
-
-**20 min/dan x 50 razvijalcev = 330 ur/mesec**
-**Pri 85 EUR/uro = ~28.000 EUR/mesec izgubljene produktivnosti**
-
-Celotna narocnina se povrne v manj kot 3 mesecih.
+- 50 developers, 1,400 repos, 300 GitLab groups
+- Every AI session starts from zero
+- Tribal knowledge lives in people's heads
+- When someone leaves, their knowledge leaves too
+- New hires take months to learn "how we do things here"
 
 ---
 
-### Slide 4: Resitev
-**Dajte svojim AI orodjem organizacijski spomin**
+### Slide 3: The Cost of Amnesia
 
-PLUR Enterprise: trajni, deljeni, pravicno omejeni spomin, ki se povezuje z vsakim IDE, ki ga vasa ekipa uporablja.
+Developers spend **1.8 hours/day** searching for information (McKinsey)
 
-- Popravki vztrajajo med sejami
-- Odlocitve se ohranijo v celotni ekipi
-- Znanje se kopici, ne resetira
+Context switching costs **~EUR 50,000/year** per developer
 
----
+Fortune 500 companies lose **$31.5 billion/year** failing to share knowledge
 
-### Slide 5: Tri faze
-
-**Faza 1: Deljeni spomin** (meseca 1-2)
-50 razvijalcev povezanih na skupni AI spomin, omejen z GitLab pravicami
-
-**Faza 2: Znanjsko inzenirstvo** (meseci 2-4)
-Skeniranje 1.400 repozitorijev, ekstrakcija konvencij in pravil, zivi paketi znanja
-
-**Faza 3: AI razvojna ekipa** (meseci 4-6)
-Tri AI vloge, ki delujejo na podlagi vasega organizacijskega znanja
+*Conservative: 15 min/day saved per dev = EUR 234,000/year recovered*
 
 ---
 
-### Slide 6: Faza 1 — Deljeni spomin
-**Vasa AI orodja si zapomnijo**
+### Slide 4: The Solution
+**Organizational Learning — not just memory, but a system that gets smarter**
 
-- Centralni MCP streznik (deluje z vsakim IDE)
-- GitLab SSO — uporaba obstojecih poverilnic
-- Pravice — uposteva pripadnost skupinam in projektom
-- Self-hosted — vasi podatki ostanejo na vasi infrastrukturi
-- Admin pregledna plosca za vpogled
-
-*Prva vrednost: razvijalci uporabljajo skupni spomin v tednih, ne mesecih*
+- A developer corrects the AI on Monday — the whole team's AI knows it on Tuesday
+- Conventions captured once persist across all sessions, all IDEs
+- Knowledge compounds instead of resetting
+- Scoped to your GitLab permissions
 
 ---
 
-### Slide 7: Faza 2 — Znanjsko inzenirstvo
-**Zajemite, kar vasa ekipa ze ve**
+### Slide 5: What Nobody Else Does
 
-- Skeniranje vseh 1.400 repozitorijev
-- Ekstrakcija konvencij, vzorcev, arhitekturnih odlocitev
-- Pakiranje v zive pakete znanja
-- Avtomatska posodobitev ob spremembi kode
-- Novi projekti se samodejno inicializirajo
-- Kuracija s vasimi tehnicnimi vodji v vec iteracijah
+| Generic AI tools | PLUR Enterprise |
+|---|---|
+| No memory between sessions | Persistent — no expiry |
+| Doesn't learn from corrections | Correction-based learning |
+| Individual — no team sharing | Org-wide knowledge graph |
+| One IDE vendor | MCP — works with every IDE |
 
----
+*Zero competitors have correction-based learning + organizational knowledge sharing.*
 
-### Slide 8: AI Chief of Staff
-**Organizacijska inteligenca na dosegu roke**
-
-"Kaj se dogaja v backend skupini ta sprint?"
-"Zakaj smo zgradili placilni servis na ta nacin?"
-"Kateri timi delajo na podobnih problemih?"
-
-Nobena posamezna oseba ne more drzati konteksta cez 1.400 repozitorijev.
-Chief of Staff lahko.
+*a16z (April 2026): "User corrections and feedback loops are the future of AI learning."*
 
 ---
 
-### Slide 9: Insight Agent
-**Pove vam, cesar niste vedeli, da morate vprasati**
+### Slide 6: How It Works
 
-- "Tim A in Tim C resujeta isti avtentikacijski problem na razlicne nacine"
-- "Ta arhitekturna odlocitev iz januarja korelira s 30% CI napak"
-- "Trije repozitoriji so ta mesec odstopili od vasega deployment standarda"
+```
+Your IDEs ──> PLUR Enterprise ──> PostgreSQL + Knowledge Graph
+                    │
+              GitLab SSO + Permissions
+```
 
-Proaktiven. Neprestano deluje nad vasim grafom znanja.
-Spremeni nakopiceni spomin v uporabno inteligenco.
-
----
-
-### Slide 10: Onboarding Companion
-**Od novinca do prispevka v dnevih, ne mesecih**
-
-Dan 1: interaktivni vodic, ki pozna vsak projekt
-Ne staticni wiki — odgovarja na "zakaj?" iz dejanskih odlocitev ekipe
-Vsaka konvencija, vsak vzorec, vsaka pretekla napaka — takoj dostopna
+- Self-hosted — your data stays on your infrastructure
+- MCP protocol — VS Code, Cursor, Claude Code, JetBrains
+- GitLab SSO — existing credentials
+- Permission-aware — respects group/project membership
 
 ---
 
-### Slide 11: Arhitektura
-**Self-hosted, model-agnosticen, pravicno omejen**
+### Slide 7: Three Phases
 
-[Arhitekturni diagram]
-- PostgreSQL + AGE (graf) + pgvector (semanticno iskanje)
-- MCP protokol — deluje z VS Code, Cursor, Claude Code, JetBrains
-- GitLab SSO + model pravic
-- Vasa infrastruktura, vasi podatki
+**1. PLUR Enterprise** — Organizational Learning (subscription)
+Connect 50 developers to shared AI memory that learns
 
----
+**2. Knowledge Engineering** — Your codebase (one-time project)
+Scan 1,400 repos, extract conventions, build custom pipeline
 
-### Slide 12: Zakaj genericna AI orodja tega ne morejo
-
-| Genericna AI | PLUR Enterprise |
-|-------------|----------------|
-| Pozabi vse med sejami | Zapomni si popravke in odlocitve |
-| Enaki genericni odgovori za vsako podjetje | Odgovori iz znanja VASE ekipe |
-| Ne pozna vase organizacijske strukture | Omejeno na GitLab skupine in projekte |
-| Ne more povezati znanja med timi | Graf znanja povezuje repozitorije, time, odlocitve |
-| Reaktivno — odgovori ko vprasas | Insight Agent — pove kar niste vprasali |
+**3. Datacore Enterprise** — AI Development Team (Q3/Q4)
+Chief of Staff, Insight Agent, Onboarding Companion
 
 ---
 
-### Slide 13: Poslovni primer
-**Povrne se v prvem kvartalu**
+### Slide 8: Knowledge Engineering — How It Works
 
-- Investicija v prvem letu: ~65.000 EUR
-- 20 min/dan prihranka na razvijalca = 330 ur/mesec
-- Pri 85 EUR/uro: ~28.000 EUR/mesec povrnjena produktivnost
-- Tocka preloma: manj kot 3 meseci
+**Start small, iterate, scale:**
 
-Plus: hitrejse uvajanje, manj ponovljenih incidentov, ohranitev znanja
+1. Scan first **5 repos** — extract conventions
+2. Present results to your **tech leads** — get feedback
+3. **Tune** the extraction pipeline
+4. Repeat on next batch
+5. Once pipeline is proven: **automate** for all 1,370 remaining repos
 
----
-
-### Slide 14: Oblikovalsko partnerstvo
-**Gradimo skupaj**
-
-Kaj dobite vi:
-- 20% popust na projektno izvedbo
-- Neposredni vpliv na produktni nacrt
-- Pravice za white-label in preprodajo (za prihodnje faze)
-- Prednostna podpora z namensko ekipo
-
-Kaj dobimo mi:
-- Resnicna Enterprise namestitev, ki poganja zahteve
-- Referencna stranka
-- Povratne informacije, ki oblikujejo produkt
+**Deliverable:** A custom ingest pipeline that runs automatically on every new repo.
 
 ---
 
-### Slide 15: Ekipa
+### Slide 9: AI Chief of Staff
+**Organizational intelligence at your fingertips**
+
+"What's happening across the backend group?"
+"Why did we build the payment service this way?"
+"Which teams are working on similar problems?"
+
+No single person can hold context across 1,400 repos.
+
+---
+
+### Slide 10: Insight Agent
+**Tells you what you didn't know to ask**
+
+- "Team A and Team C are solving the same auth problem differently"
+- "This January decision correlates with 30% of CI failures"
+- "Three repos drifted from your deployment convention this month"
+
+Proactive. Continuous. Powered by your knowledge graph.
+
+---
+
+### Slide 11: Onboarding Companion
+**New hire to contributor in days, not months**
+
+Day 1: interactive guide that knows every project
+Not a static wiki — answers "why?" from real team decisions
+
+Studies show AI onboarding tools cut time-to-productivity by 40-80%.
+
+---
+
+### Slide 12: Pricing
+
+**PLUR Enterprise: EUR 49/seat/month** (Founding Partner, 30% off list)
+50 seats = EUR 2,450/month
+
+**Knowledge Engineering:** Custom project at standard consulting rate
+
+**Datacore Enterprise:** Monthly AI roles, scoped together Q3/Q4
+
+---
+
+### Slide 13: Market Context
+
+| Product | Per seat/month |
+|---------|---------------|
+| GitHub Copilot Enterprise | $39-60 |
+| Sourcegraph Cody | $59 |
+| Augment Code | $60 |
+| JetBrains AI Enterprise | $60+ |
+| **PLUR Enterprise (Founding Partner)** | **EUR 49** |
+| PLUR Enterprise (list) | EUR 70 |
+
+Priced below Cody and Augment. Does what none of them can.
+
+---
+
+### Slide 14: The Business Case
+
+| | |
+|---|---|
+| First-year investment | ~EUR 45,000 |
+| Recovered value (15 min/day x 50 devs) | ~EUR 234,000/year |
+| **ROI** | **~5x** |
+| **Break-even** | **~2.5 months** |
+
+---
+
+### Slide 15: Timeline
+
+| When | What |
+|------|------|
+| May W1-2 | Integration + first 5 repos |
+| May W2-3 | Feedback loop with tech leads |
+| May W3-4 | Test run + next batch |
+| June | Go-live, 50 users — subscription starts |
+| June-Aug | Knowledge Engineering completes |
+| Q3/Q4 | Datacore Enterprise scoped |
+
+No charges before go-live.
+
+---
+
+### Slide 16: Founding Partner Benefits
+
+- 30% discount on subscription — guaranteed best rate
+- Influence product roadmap
+- White-label & reseller rights (pre-negotiated)
+- Partnership continues with Datacore Enterprise
+- Case study & reference customer
+- Weekly check-ins + quarterly strategic reviews
+
+---
+
+### Slide 17: The Team
 
 | Gregor | Tadej | Marko | Crt |
 |--------|-------|-------|-----|
-| Vodja projekta | CTO, Tech Lead | DevOps | PM, Data Scientist |
-| Arhitektura & AI | Backend & Produkcija | Infrastruktura | Znanjsko inzenirstvo |
+| Project Director | CTO, Tech Lead | DevOps | PM, Data Scientist |
+| Architecture & AI | Backend & Production | Infrastructure | Knowledge Engineering |
 
 ---
 
-### Slide 16: Naslednji koraki
+### Slide 18: Next Steps
 
-1. Pregled ponudbe in podrobnega stroskkovnega pregleda
-2. Sestanek: pogovor o vasih delovnih tokovih in prioritetah
-3. Dogovor o partnerskih pogojih
-4. Zacetek Faze 1 — deljeni spomin za vaso ekipo
+1. Review proposal & cost breakdown
+2. Meeting: discuss your priorities
+3. Agree on Founding Partner terms
+4. May: integration + first 5 repos
 
-**Kontakt:** gregor@datafund.io
+**Contact:** gregor@datafund.io
 
 ---
 
-## Navodila za Claude Design
+## Design Notes
 
-- Cist, minimalen dizajn — obcinstvo so razvijalci, ne marketing
-- Primeren za temni nacin (dark mode)
-- Uporabi arhitekturni diagram iz ponudbe
-- Progresija faz kot vizualna casovnica
-- AI vloge (Chief of Staff, Insight Agent, Onboarding Companion) — vsaka svojo stran z enim mocnim vprasanjem/citatom
-- Minimalno besedilo — to je za predstavljanje, ne za branje
-- Brez stock fotografij — samo diagrami in tipografija
-- Barve: temno modra (#2F5496) kot primarna, zelena (#2E7D32) za popuste/pozitivno
+- Clean, minimal — developer audience
+- Light mode primary
+- Diagrams and typography, no stock photos
+- Primary: dark blue (#2F5496), accent: green (#2E7D32)
+- Keep text minimal — this is for presenting, not reading
+- Key numbers should be large and prominent on their own slides

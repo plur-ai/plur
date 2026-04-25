@@ -1,72 +1,172 @@
-# PLUR Enterprise — Design Partnership Proposal
+# PLUR Enterprise — Founding Partner Proposal
 
 **Prepared for:** [Client Name]
-**Date:** April 2026
+**Date:** May 2026
 **From:** Datafund d.o.o.
 
 ---
 
 ## The Problem
 
-Your 50 developers work across 1,400 repositories and 300 GitLab groups. Every AI tool they use today — Copilot, Cursor, Claude — starts every session from zero. No memory of your conventions, your architectural decisions, or the mistakes your team already made.
+Your 50 developers work across 1,400 repositories and 300 GitLab groups. Every AI tool they use today starts every session from zero. No memory of your conventions, your architectural decisions, or the mistakes your team already made.
 
-The result:
+**What this costs you:**
 
-- **Developers re-explain the same things** to AI tools, session after session
-- **Tribal knowledge lives in people's heads** — when they leave, it leaves with them
-- **New hires take months** to understand "how we do things here"
-- **The same mistakes repeat** because post-mortem knowledge never reaches the next developer who touches that code
-- **Teams duplicate work** across 300 groups without knowing someone already solved the problem
+- Developers spend **1.8 hours/day** searching for information (McKinsey)
+- Context switching costs **~EUR 50,000/year per developer** (multiple studies)
+- Fortune 500 companies lose **$31.5 billion/year** failing to share knowledge
+- New hires take 3-6 months to learn "how we do things here"
+- Post-mortem knowledge dies in Confluence pages nobody reads
 
-AI tools are powerful. But without organizational memory, they're amnesiac assistants that treat every conversation like the first.
-
----
-
-## The Solution
-
-PLUR Enterprise gives your AI tools persistent, shared, permission-aware memory.
-
-**Phase 1 — Shared Memory**
-Every developer's AI tools connect to a shared knowledge server. Corrections persist. Decisions stick. A developer learns something on Monday, and every teammate's AI knows it on Tuesday. Scoped to your GitLab permissions — teams only see what they should.
-
-**Phase 2 — Knowledge Engineering**
-We scan your 1,400 repositories and extract the conventions, patterns, and rules that currently live only in people's heads. Packaged as living knowledge packs that update when your code changes. New projects get bootstrapped automatically.
-
-**Phase 3 — AI Development Team**
-Three AI roles that use your organizational memory to do real work:
-
-### AI Chief of Staff
-Operational intelligence across your entire org. Ask it anything:
-- "What's happening across the backend group this sprint?"
-- "Why did we build the payment service this way?"
-- "Which teams are working on similar problems?"
-
-It knows — because it has access to the accumulated knowledge from every team, every project, every decision. Today, no single person can hold this context across 1,400 repos. The Chief of Staff can.
-
-### Insight Agent
-Doesn't wait for questions. Proactively surfaces what you didn't know to ask:
-- "Team A and Team C are solving the same auth problem differently"
-- "This architectural decision from January correlates with 30% of recent CI failures"
-- "Three repos drifted from your deployment convention this month"
-
-Runs continuously against your knowledge graph. Turns accumulated memory into actionable intelligence.
-
-### Onboarding Companion
-Day 1, every new developer gets an interactive guide that knows every project they'll touch. Not a static wiki — a companion that answers "why do we do it this way?" from actual team decisions, not outdated documentation.
-
-The difference: new hires submitting meaningful MRs in week 1 instead of month 2.
+AI tools are powerful. But without organizational learning, they're amnesiac assistants that treat every conversation like the first.
 
 ---
 
-## Why This Works (and why generic AI tools can't do it)
+## The Solution: Organizational Learning
 
-These three roles are **impossible without organizational memory**. GitHub Copilot can write code. ChatGPT can answer questions. But neither of them can:
+PLUR Enterprise gives your AI tools persistent, shared, permission-aware memory that **learns from your team and gets smarter over time**.
 
-- Tell you why YOUR team chose microservices for payment flows
-- Warn you that the last time someone changed THIS config, staging broke for 3 days
-- Notice that two teams across different groups are solving the same problem
+This is not shared storage. This is organizational learning:
+- A developer corrects the AI on Monday — every teammate's AI knows it on Tuesday
+- Conventions captured once persist across all sessions, all IDEs
+- Knowledge compounds instead of resetting
+- Scoped to your GitLab permissions — teams only see what they should
 
-PLUR's differentiator is the **knowledge graph** — engrams (learned knowledge units) connected to projects, groups, people, and decisions. Powered by PostgreSQL with Apache AGE (graph queries) and pgvector (semantic search). Self-hosted on your infrastructure. Your data never leaves your servers.
+### What makes this different from Copilot, Cursor, or any other AI tool
+
+| | Generic AI tools | PLUR Enterprise |
+|---|---|---|
+| Memory between sessions | None or 28-day expiry | Persistent, no expiry |
+| Learns from corrections | No | Yes — correction-based learning |
+| Shares knowledge across team | No | Yes — org-wide knowledge graph |
+| Respects your org structure | No | GitLab group/project permissions |
+| Gets smarter over time | No | Feedback-trained retrieval |
+| Works with any IDE | Single vendor lock-in | MCP protocol — works with all |
+
+No competitor has correction-based learning, spreading activation retrieval, or organizational knowledge sharing. This is validated by a16z's April 2026 thesis: "user corrections and feedback loops are the future of AI learning" — which is exactly what PLUR does.
+
+---
+
+## What You Get
+
+### 1. PLUR Enterprise — Organizational Learning (subscription)
+
+Your AI tools connected to shared organizational memory.
+
+**Includes:**
+- PLUR Enterprise server (HTTP/SSE MCP, multi-user)
+- PostgreSQL + AGE (knowledge graph) + pgvector (semantic search)
+- GitLab SSO (OAuth2/OIDC + PKCE)
+- Scope-based access control + role-level permissions
+- MCP tool security (allowlist, write enforcement, audit)
+- Admin dashboard (usage, health, audit log)
+- Deployment, TLS, CI/CD, monitoring & alerting
+- Infrastructure hosting & AI compute (included)
+- Security patches, platform upgrades
+- Priority bug fixes (< 24h response, < 72h resolution)
+- Weekly check-ins + quarterly strategic reviews
+
+**Pricing:**
+- List price: EUR 70/seat/month
+- **Founding Partner price: EUR 49/seat/month (30% discount)**
+- 50 seats = EUR 2,450/month
+- 12-month commitment starting at go-live
+
+### 2. Knowledge Engineering (one-time custom project)
+
+We scan your codebase, extract your conventions, and build your custom ingest pipeline.
+
+**Phase A — 30 Active Repos (high-touch):**
+- Start with first 5 repos, present results, get feedback, tune
+- Iterate on next batches with refined pipeline
+- Convention extraction, engram generation, knowledge pack curation
+- Multiple passes with your tech leads
+- Custom ingest pipeline development (reusable for Phase B)
+
+**Phase B — 1,370 Repos (automated):**
+- Run tuned pipeline on all remaining repos
+- Quality review and outlier handling
+- New project hook — every new repo auto-bootstrapped on creation
+- Coverage report and handover
+
+**Deliverables:**
+- Custom ingest pipeline tuned to your codebase (reusable, automated)
+- 30 active repos: curated knowledge packs, reviewed with your tech leads
+- 1,370 repos: auto-processed, coverage report
+- New project hook: every new repo auto-bootstrapped on creation
+
+**Pricing:** Standard consulting rate, invoiced on actuals with weekly reporting. See cost breakdown for detail.
+
+### 3. Datacore Enterprise — AI Development Team (Q3/Q4 2026)
+
+Autonomous AI agents powered by your organizational learning. Separate product, same partnership.
+
+**Three AI roles (scoped together after PLUR is in place):**
+
+- **AI Chief of Staff** — organizational intelligence. Answers any question about your 1,400 repos, decisions, and team activity.
+- **Insight Agent** — proactive pattern detection. Surfaces what you didn't know to ask across teams and projects.
+- **Onboarding Companion** — interactive guide for new developers, built from your actual conventions and decisions.
+
+Priced as monthly AI roles. Exact scope determined together based on your workflows and priorities.
+
+---
+
+## Timeline
+
+| When | Milestone | Details |
+|------|-----------|---------|
+| Early May | Contract signed | |
+| May W1-2 | Integration + first 5 repos | GitLab SSO, deployment + scanning first 5 repos in parallel |
+| May W2-3 | Feedback loop | Present results to tech leads, tune extraction pipeline |
+| May W3-4 | Test run + next batch | Infra live, 10-15 users collecting memories. Next 10-15 repos scanned. |
+| June | Onboarding — subscription starts | 50 users, setup workshop. 20-30 repos curated, packs deployed. |
+| June-July | Phase A completes | Remaining active repos, pipeline refinement |
+| July-Aug | Phase B | 1,370 repos automated, new project hook, handover |
+| Q3/Q4 2026 | Datacore Enterprise | AI Development Team scoped together |
+
+**Subscription starts at go-live (June), not at contract signing. Integration and test run (May) are included — no charges before go-live.**
+
+---
+
+## The Business Case
+
+**Conservative estimate: saving 15 minutes/day per developer.**
+
+| Metric | Value |
+|--------|-------|
+| Recovered time (50 devs x 15 min x 220 days) | 2,750 hours/year |
+| Recovered value (at EUR 85/hour) | ~EUR 234,000/year |
+| First-year investment | ~EUR 45,000 |
+| **ROI** | **~5x** |
+| **Break-even** | **~2.5 months** |
+
+Studies show 25-55% developer productivity gains with AI tools (GitHub/Accenture). We're using a conservative 15 min/day — less than 4% of a developer's day.
+
+---
+
+## Founding Partner Benefits
+
+- **30% discount** on PLUR Enterprise subscription (Founding Partner rate)
+- **Guaranteed best rate** — you will never pay more than any future customer
+- Influence on product roadmap — your requirements built first
+- White-label & reseller rights (pre-negotiated for future)
+- Partnership continues with Datacore Enterprise on same terms
+- Case study & reference customer agreement
+- Integration phase included — no charges before go-live
+- Weekly check-ins + quarterly strategic reviews
+
+---
+
+## Market Context
+
+| Product | Price/seat/month | What it offers |
+|---------|-----------------|----------------|
+| GitHub Copilot Enterprise | $39-60 | Code completion, 28-day memory, no learning |
+| Augment Code Standard | $60 | Project memory, no correction-based learning |
+| Sourcegraph Cody Enterprise | $59 | Code search, no persistent memory |
+| JetBrains AI Enterprise | $60+ | IDE AI features, no org memory |
+| **PLUR Enterprise (list)** | **EUR 70** | **Persistent org learning, knowledge graph** |
+| **PLUR Enterprise (Founding Partner)** | **EUR 49** | **Same — 30% Founding Partner discount** |
 
 ---
 
@@ -84,7 +184,6 @@ JetBrains + MCP     ───┤              │  (MCP Server)     │
 Other MCP clients   ───┘              └────────┬─────────┘
                                                │
 GitLab webhooks     ──────────────────>        │
-CI/CD pipelines     ──────────────────>        │
                                       ┌────────┴─────────┐
                                       │ PostgreSQL        │
                                       │ + AGE (graph)     │
@@ -92,90 +191,10 @@ CI/CD pipelines     ──────────────────>     
                                       └──────────────────┘
 ```
 
+- **Self-hosted** — your data stays on your infrastructure
 - **MCP protocol** — works with any AI tool that supports Model Context Protocol
 - **GitLab SSO** — developers log in with existing credentials
-- **Permission-aware** — respects your GitLab group/project membership model
-- **Self-hosted** — your data stays on your infrastructure
-
----
-
-## Timeline & Deliverables
-
-| Phase | Duration | Deliverable | Value |
-|-------|----------|-------------|-------|
-| **Phase 1** | Months 1-2 | Shared Memory for 50 users | AI tools remember across sessions and across your team |
-| **Phase 2** | Months 2-4 | Knowledge Engineering | 1,400 repos scanned, conventions extracted, living knowledge packs |
-| **Phase 3** | Months 4-6 | AI Development Team | Chief of Staff, Insight Agent, Onboarding Companion |
-
-First value delivered: **working shared memory in weeks, not months.**
-
----
-
-## Pricing
-
-### Project Delivery
-
-| Phase | Description | Standard | Design Partner |
-|-------|-------------|----------|----------------|
-| Phase 1 | Shared Memory (50 users) | See cost breakdown | -20% |
-| Phase 2 | Knowledge Engineering | See cost breakdown | -20% |
-| Phase 3 | AI Development Team | See cost breakdown | -20% |
-
-Detailed cost breakdown with per-person hours: **see PLUR-Enterprise-Cost-Breakdown.xlsx**
-
-### Monthly Support & Maintenance
-
-Starts after Phase 1 delivery:
-
-- Security patches, dependency updates, PLUR core upgrades
-- Infrastructure monitoring, 99.5% uptime SLA, incident response
-- Knowledge pipeline tuning (extraction quality, pack curation)
-- New user onboarding (team growth, offboarding cleanup)
-- Priority bug fixes (< 24h response, < 72h resolution)
-- Platform evolution (new MCP clients, IDE support, model changes)
-- AI compute (token budget for agents, extraction, orchestration)
-- Quarterly review & optimization session
-
-### Add-on: GitHub Provider
-
-Available when needed — enables multi-provider SSO for clients using GitHub alongside or instead of GitLab.
-
----
-
-## The Business Case
-
-**The cost of not having organizational memory:**
-
-Your 50 developers lose time every day to:
-- Re-explaining context to AI tools
-- Hunting for decisions buried in Confluence
-- Answering the same questions from new hires
-- Rediscovering solutions that another team already found
-
-**Conservative estimate:** 20 minutes/day per developer recovered = 330 hours/month.
-
-At senior developer rates, **the system pays for itself within the first quarter.**
-
----
-
-## Design Partnership
-
-This is a partnership, not a vendor contract.
-
-### What you get
-- Enterprise-grade AI memory before it's generally available
-- Direct influence on the product roadmap
-- White-label & reseller rights (pre-negotiated for future phase)
-- 20% discount on project delivery
-- Priority support with a dedicated team
-
-### What we get
-- A real enterprise deployment driving real requirements
-- A reference customer for future enterprise sales
-- Feedback that shapes the product correctly
-
-### Open source commitment
-PLUR's core engine is and remains open source. Your investment improves the ecosystem while giving you exclusive early access to enterprise capabilities.
+- **No vendor lock-in** — open source core, open data format
 
 ---
 
@@ -183,7 +202,7 @@ PLUR's core engine is and remains open source. Your investment improves the ecos
 
 | Name | Role | Focus |
 |------|------|-------|
-| **Gregor** | Project Director, Lead Dev | Architecture, orchestration, AI agent design |
+| **Gregor** | Project Director, Lead Dev | Architecture, AI agent design, orchestration |
 | **Tadej** | CTO, Tech Lead | Backend, auth, permissions, production readiness |
 | **Marko** | DevOps | Infrastructure, CI/CD, monitoring, deployment |
 | **Crt** | PM, Data Scientist | Knowledge engineering, onboarding, client coordination |
@@ -193,9 +212,9 @@ PLUR's core engine is and remains open source. Your investment improves the ecos
 ## Next Steps
 
 1. Review this proposal and the detailed cost breakdown
-2. Schedule a meeting to discuss your specific workflows and priorities
-3. Agree on design partnership terms
-4. Begin Phase 1 — shared memory for your team
+2. Schedule a meeting to discuss your priorities
+3. Agree on Founding Partner terms
+4. Begin integration + first 5 repos (May)
 
 ---
 

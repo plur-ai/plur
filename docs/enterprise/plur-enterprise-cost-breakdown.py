@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""PLUR Enterprise — platform fee + custom services + retainer. Two sheets."""
+"""PLUR Enterprise — Organizational Learning + Knowledge Engineering + Datacore vision."""
 
 from openpyxl import Workbook
 from openpyxl.styles import Font, Alignment, Border, Side, PatternFill
@@ -24,16 +24,18 @@ recurring_fill = PatternFill(start_color="FFF3E0", end_color="FFF3E0", fill_type
 recurring_font = Font(name="Calibri", size=12, bold=True, color="E65100")
 param_fill = PatternFill(start_color="FFFDE7", end_color="FFFDE7", fill_type="solid")
 param_font = Font(name="Calibri", size=11, bold=True, color="E65100")
-platform_fill = PatternFill(start_color="E3F2FD", end_color="E3F2FD", fill_type="solid")
-platform_font = Font(name="Calibri", size=12, bold=True, color="1565C0")
 annual_fill = PatternFill(start_color="E8F5E9", end_color="E8F5E9", fill_type="solid")
 annual_font = Font(name="Calibri", size=13, bold=True, color="1B5E20")
 margin_fill = PatternFill(start_color="F3E5F5", end_color="F3E5F5", fill_type="solid")
 margin_font = Font(name="Calibri", size=12, bold=True, color="6A1B9A")
+vision_fill = PatternFill(start_color="F5F5F5", end_color="F5F5F5", fill_type="solid")
+datacore_fill = PatternFill(start_color="E8EAF6", end_color="E8EAF6", fill_type="solid")
+datacore_font = Font(name="Calibri", size=12, bold=True, color="283593")
 thin_border = Border(bottom=Side(style="thin", color="CCCCCC"))
 thick_border = Border(top=Side(style="medium", color="2F5496"), bottom=Side(style="medium", color="2F5496"))
 phase_border = Border(top=Side(style="thin", color="2F5496"), bottom=Side(style="thin", color="2F5496"))
 eur_fmt = '#,##0 "EUR"'
+NC = 8
 
 def style_param(cell):
     cell.fill = param_fill
@@ -43,7 +45,6 @@ def style_param(cell):
         top=Side(style="thin", color="E65100"), bottom=Side(style="thin", color="E65100"),
     )
 
-# ===== DATA =====
 team_info = [
     ("Gregor", "Project Director, Lead Dev"),
     ("Tadej", "CTO, Tech Lead"),
@@ -51,105 +52,70 @@ team_info = [
     ("Crt", "PM, Data Scientist"),
 ]
 
-# Platform setup fees — flat, bundled, not hourly
-platform_fees = [
-    {
-        "name": "Quick Start \u2014 Platform Setup",
-        "desc": "PLUR Enterprise server, PostgreSQL+AGE+pgvector, GitLab SSO, permissions, MCP security, deployment with TLS & CI/CD",
-        "fee": 8000,
-    },
-    {
-        "name": "Phase 1 \u2014 Platform Scale",
-        "desc": "Role-level permissions, admin dashboard, structured logging & audit trail, monitoring & alerting, CI/CD hardening",
-        "fee": 6000,
-    },
-    {
-        "name": "Phase 3 \u2014 Orchestration Platform",
-        "desc": "Datacore Enterprise orchestration engine, GitLab CI/CD integration, execution dashboard",
-        "fee": 5000,
-    },
+# Subscription includes
+subscription_includes = [
+    "PLUR Enterprise server (HTTP/SSE MCP, multi-user)",
+    "PostgreSQL + AGE (knowledge graph) + pgvector (semantic search)",
+    "SSO integration (configured for your identity provider)",
+    "Scope-based access control + role-level permissions",
+    "MCP tool security (allowlist, write enforcement, audit)",
+    "Admin dashboard (usage, health, audit log)",
+    "Deployment, TLS, CI/CD, monitoring & alerting",
+    "Security patches, dependency updates, platform upgrades",
+    "Infrastructure hosting & AI compute (included)",
+    "Priority bug fixes (< 24h response, < 72h resolution)",
+    "Weekly check-in + quarterly strategic review",
 ]
 
-# Custom services — hourly, per-phase, defensible
-# (description, gregor, tadej, marko, crt)
+# Custom services (Gregor, Tadej, Marko, Crt)
 custom_phases = [
     {
-        "name": "Quick Start \u2014 Your Environment",
-        "token_cost": 500,
+        "name": "Integration \u2014 GitLab & Deployment",
+        "token_cost": 200,
         "items": [
-            #                                                                   Gr  Ta  Ma  Crt
-            ("Project kick-off, planning & requirements alignment",              0,  0,  0,  8),
-            ("Bootstrapping \u2014 scan 3-5 active repos, create seed engrams",  4,  0,  0,  8),
-            ("Onboarding 10-15 pilot users (hands-on setup & training)",         4,  0,  0,  8),
-            ("Phase report & deliverables review with stakeholders",             0,  0,  0,  4),
+            ("GitLab OAuth2/OIDC + PKCE integration",                          0, 16,  0,  0),
+            ("GitLab group/project membership sync & webhooks",                0, 12,  0,  0),
+            ("Deployment & configuration for your GitLab instance",            0,  4,  8,  0),
+            ("Setup workshop (all hands, 2-3h)",                               4,  0,  0,  4),
+            ("Project management & weekly check-ins (across all phases)",       0,  0,  0, 16),
         ],
     },
     {
-        "name": "Phase 1 \u2014 Scale to 50 Users",
+        "name": "Phase A \u2014 30 Active Repos (high-touch curation)",
+        "token_cost": 600,
+        "items": [
+            ("Extraction strategy & planning with your tech leads",            0,  0,  0,  8),
+            ("Convention extraction & analysis (30 repos, multiple passes)",   4,  0,  0, 24),
+            ("Engram generation + quality tuning with your tech leads",         8,  0,  0, 16),
+            ("Knowledge pack curation (per-project + per-group)",              4,  0,  0, 12),
+            ("Custom ingest pipeline development (reusable for Phase B)",      0, 16,  0,  4),
+            ("Phase report & deliverables review",                             0,  0,  0,  6),
+        ],
+    },
+    {
+        "name": "Phase B \u2014 1,370 Repos (automated processing)",
         "token_cost": 400,
         "items": [
-            ("Phase planning & milestone definition",                             0,  0,  0,  4),
-            ("IDE compatibility validation for your tool stack",                  0,  4,  0,  8),
-            ("Onboarding remaining 35-40 users",                                 0,  0,  0, 12),
-            ("Progress tracking, weekly status updates",                          0,  0,  0,  8),
-            ("Phase report & deliverables handover",                              0,  0,  0,  4),
-        ],
-    },
-    {
-        "name": "Phase 2 \u2014 Knowledge Engineering (your codebase)",
-        "token_cost": 580,
-        "items": [
-            ("Phase planning & extraction strategy",                              0,  0,  0,  6),
-            ("Scan 1,400 repos \u2014 configs, CI, linters, docs",              0,  0,  0, 16),
-            ("Convention & pattern extraction from your codebase",               0,  0,  0, 20),
-            ("Engram generation + quality tuning (multiple passes)",             8,  0,  0, 12),
-            ("Knowledge pack packaging (per-project, per-group, org-wide)",      0,  8,  0,  8),
-            ("Review & curation workflow with your tech leads",                  8,  0,  0,  8),
-            ("Quality feedback loop (your tech leads' signals tune extraction)", 0,  4,  0,  8),
-            ("New project hook \u2014 auto-extraction on repo creation",         0,  8,  8,  0),
-            ("Progress tracking, weekly status updates",                          0,  0,  0,  8),
-            ("Phase report, knowledge coverage analysis & deliverables review",  0,  0,  0,  6),
-        ],
-    },
-    {
-        "name": "Phase 3 \u2014 AI Development Team (your org)",
-        "token_cost": 870,
-        "items": [
-            ("Phase planning & workflow discovery with your team",               4,  0,  0,  8),
-            ("AI Chief of Staff \u2014 configured for your org structure",       8, 16,  0,  4),
-            ("Insight Agent \u2014 tuned to your knowledge graph",              8, 12,  0,  8),
-            ("Onboarding Companion \u2014 built from your conventions",         4, 12,  0,  8),
-            ("Agent testing & validation with your team",                        0,  0,  0,  8),
-            ("Progress tracking, weekly status updates",                          0,  0,  0,  8),
-            ("Final report, outcomes documentation & handover",                  0,  0,  0,  6),
+            ("Batch processing \u2014 run pipeline on all remaining repos",    0,  0,  0, 12),
+            ("Quality review & outlier handling",                              4,  0,  0,  8),
+            ("New project hook (auto-extraction on repo creation via CI)",     0,  8,  8,  0),
+            ("Coverage report & final handover",                               0,  0,  0,  6),
         ],
     },
 ]
 
-# Add-on (separate)
-addon = {
-    "name": "Add-on \u2014 GitHub Provider (when needed)",
-    "fee": 2400,
-    "desc": "GitHub SSO, OAuth, org sync, webhook handler \u2014 enables multi-provider support",
-}
-
-support_items = [
-    "Security patches, dependency updates & PLUR core upgrades",
-    "Infrastructure monitoring, uptime SLA (99.5%), incident response",
-    "Knowledge pipeline tuning (extraction quality, pack curation)",
-    "New user onboarding (team growth, offboarding cleanup)",
-    "Priority bug fixes (< 24h response, < 72h resolution)",
-    "Platform evolution (new MCP clients, IDE support, model changes)",
-    "AI compute (token budget for agents, extraction, orchestration)",
-    "Quarterly review & optimization session",
+# Datacore AI roles (monthly pricing, vision)
+datacore_roles = [
+    ("AI Chief of Staff", "Org-wide operational intelligence \u2014 answers any question about your repos, decisions, team activity", 800),
+    ("Insight Agent", "Proactive pattern detection \u2014 surfaces what you didn\u2019t know to ask across teams", 600),
+    ("Onboarding Companion", "Interactive guide for new developers \u2014 built from your actual conventions", 400),
 ]
 
 
 def render_sheet(ws, internal=False):
-    NC = 8  # A:# B:desc C:Gregor D:Tadej E:Marko F:Crt G:total H:cost
-    COL_P0 = 3  # first person col
-    COL_TOTAL = 7
-    COL_COST = 8
+    def brd(r, b=thin_border):
+        for c in range(1, NC + 1):
+            ws.cell(row=r, column=c).border = b
 
     ws.column_dimensions["A"].width = 4
     ws.column_dimensions["B"].width = 58
@@ -160,14 +126,9 @@ def render_sheet(ws, internal=False):
     ws.column_dimensions["G"].width = 11
     ws.column_dimensions["H"].width = 16
 
-    def pcol(i): return chr(ord('C') + i)
-    def brd(r, b=thin_border):
-        for c in range(1, NC + 1):
-            ws.cell(row=r, column=c).border = b
-
     row = 1
     ws.merge_cells(f"A1:H1")
-    t = "PLUR Enterprise \u2014 Cost Breakdown (INTERNAL)" if internal else "PLUR Enterprise \u2014 Cost Breakdown"
+    t = "PLUR Enterprise \u2014 Offer (INTERNAL)" if internal else "PLUR Enterprise \u2014 Offer"
     ws["A1"].value = t
     ws["A1"].font = header_font
     row = 3
@@ -186,14 +147,14 @@ def render_sheet(ws, internal=False):
         if fmt: c.number_format = fmt
         return f"$C${r}"
 
-    params["rate"] = add_p(row, "Hourly rate (EUR)", 85, '#,##0'); row += 1
-    params["discount"] = add_p(row, "Design partner discount", 0.20, '0%'); row += 1
-    params["support_base"] = add_p(row, "Monthly support retainer (EUR)", 2500, '#,##0'); row += 1
-    params["support_tokens"] = add_p(row, "Monthly token budget (EUR)", 150, '#,##0'); row += 1
-    params["infra"] = add_p(row, "Monthly infrastructure (EUR)", 100, '#,##0'); row += 1
-    params["commitment"] = add_p(row, "Annual commitment (months)", 12, '0'); row += 1
+    params["seats"] = add_p(row, "Number of seats", 50, '0'); row += 1
+    params["seat_price"] = add_p(row, "List price per seat (EUR/month)", 70, '#,##0'); row += 1
+    params["fp_discount"] = add_p(row, "Founding Partner discount", 0.30, '0%'); row += 1
+    params["rate"] = add_p(row, "Consulting rate (EUR/hour)", 85, '#,##0'); row += 1
+    params["commitment"] = add_p(row, "Subscription commitment (months)", 12, '0'); row += 1
     if internal:
         params["int_rate"] = add_p(row, "Internal team rate (EUR)", 60, '#,##0'); row += 1
+        params["plat_cost"] = add_p(row, "Platform internal cost (mostly built)", 3000, '#,##0'); row += 1
     row += 1
 
     # Team
@@ -208,67 +169,155 @@ def render_sheet(ws, internal=False):
     row += 1
 
     # ================================================================
-    # SECTION 1: PLATFORM SETUP (flat fees)
+    # TIMELINE
     # ================================================================
     ws.merge_cells(f"A{row}:H{row}")
-    ws.cell(row=row, column=1, value="1. PLATFORM SETUP (one-time)").font = Font(name="Calibri", size=13, bold=True)
+    ws.cell(row=row, column=1, value="Timeline").font = Font(name="Calibri", size=13, bold=True)
     row += 1
 
-    ws.merge_cells(f"A{row}:G{row}")
-    ws.cell(row=row, column=1, value="PLUR Enterprise platform \u2014 deployed and configured for your infrastructure").font = italic_grey
+    timeline_items = [
+        ("Early May", "Contract signed", ""),
+        ("May W1\u20132", "Integration + first 5 repos", "GitLab SSO, deployment in parallel with scanning first 5 repos"),
+        ("May W2\u20133", "Feedback loop", "Present results to tech leads, tune extraction pipeline"),
+        ("May W3\u20134", "Test run + next batch", "Infra live, 10-15 users collecting memories. Scan next 10-15 repos with tuned pipeline."),
+        ("June", "Onboarding month \u2014 subscription starts", "50 users, setup workshop. 20-30 repos curated, packs deployed."),
+        ("June\u2013July", "Knowledge Engineering Phase A completes", "Remaining active repos, pipeline refinement"),
+        ("July\u2013Aug", "Knowledge Engineering Phase B", "1,370 repos automated, new project hook, coverage report, handover"),
+        ("Q3/Q4 2026", "Datacore Enterprise (scoped together)", "AI Development Team \u2014 Chief of Staff, Insight Agent, Onboarding Companion"),
+    ]
+
+    for col in range(1, NC + 1):
+        ws.cell(row=row, column=col).fill = section_fill
+    ws.cell(row=row, column=2, value="When").font = section_font
+    ws.cell(row=row, column=4, value="Milestone").font = section_font
+    ws.cell(row=row, column=6, value="Details").font = section_font
     row += 1
 
-    platform_rows = []
-    for idx, pf in enumerate(platform_fees, 1):
-        ws.cell(row=row, column=1, value=idx).font = body_font
-        ws.cell(row=row, column=1).alignment = Alignment(horizontal="center")
-        ws.cell(row=row, column=2, value=pf["name"]).font = total_font
-        ws.merge_cells(start_row=row, start_column=2, end_row=row, end_column=6)
-        c = ws.cell(row=row, column=COL_COST, value=pf["fee"])
-        style_param(c)
-        c.alignment = Alignment(horizontal="right")
-        c.number_format = eur_fmt
+    for when, milestone, details in timeline_items:
+        ws.cell(row=row, column=2, value=when).font = total_font
+        ws.merge_cells(start_row=row, start_column=2, end_row=row, end_column=3)
+        ws.cell(row=row, column=4, value=milestone).font = body_font
+        ws.merge_cells(start_row=row, start_column=4, end_row=row, end_column=5)
+        ws.cell(row=row, column=6, value=details).font = note_font
+        ws.merge_cells(start_row=row, start_column=6, end_row=row, end_column=NC)
         brd(row)
         row += 1
-        # Description
-        ws.cell(row=row, column=2, value=pf["desc"]).font = note_font
-        ws.merge_cells(start_row=row, start_column=2, end_row=row, end_column=NC)
-        platform_rows.append(row - 1)
-        row += 1
 
-    # Platform subtotal
-    plat_total_row = row
-    brd(row, phase_border)
-    ws.cell(row=row, column=2, value="Platform setup total").font = total_font
-    c = ws.cell(row=row, column=COL_COST)
-    c.value = f"={'+'.join(f'H{r}' for r in platform_rows)}"
+    row += 1
+    ws.cell(row=row, column=2, value="Subscription starts at go-live (June 2026), not at contract signing.").font = Font(name="Calibri", size=11, bold=True, color="2E7D32")
+    ws.merge_cells(start_row=row, start_column=2, end_row=row, end_column=NC)
+    row += 1
+    ws.cell(row=row, column=2, value="Integration + test run (May) included \u2014 no subscription charges before go-live.").font = Font(name="Calibri", size=11, color="2E7D32")
+    ws.merge_cells(start_row=row, start_column=2, end_row=row, end_column=NC)
+    row += 2
+
+    # ================================================================
+    # 1. PLUR ENTERPRISE — ORGANIZATIONAL LEARNING
+    # ================================================================
+    ws.merge_cells(f"A{row}:H{row}")
+    ws.cell(row=row, column=1, value="1. PLUR ENTERPRISE \u2014 Organizational Learning (subscription)").font = Font(name="Calibri", size=13, bold=True)
+    row += 1
+
+    # List price
+    ws.cell(row=row, column=2, value="List price per seat").font = grey_font
+    c = ws.cell(row=row, column=8)
+    c.value = f"={params['seat_price']}"
+    c.font = grey_font
+    c.alignment = Alignment(horizontal="right")
+    c.number_format = '#,##0 "EUR/mo"'
+    row += 1
+
+    # Founding Partner price per seat
+    dp_seat_row = row
+    ws.cell(row=row, column=2, value="Founding Partner price per seat").font = discount_font
+    c = ws.cell(row=row, column=8)
+    c.value = f"={params['seat_price']}*(1-{params['fp_discount']})"
+    c.font = discount_font
+    c.alignment = Alignment(horizontal="right")
+    c.number_format = '#,##0 "EUR/mo"'
+    row += 1
+
+    # Monthly
+    sub_monthly_row = row
+    for col in range(1, NC + 1):
+        ws.cell(row=row, column=col).fill = recurring_fill
+        ws.cell(row=row, column=col).border = thick_border
+    ws.cell(row=row, column=2).value = "Monthly subscription"
+    ws.cell(row=row, column=2).font = recurring_font
+    ws.cell(row=row, column=6, value="seats \u00d7 price =").font = grey_font
+    ws.cell(row=row, column=6).alignment = Alignment(horizontal="right")
+    c = ws.cell(row=row, column=8)
+    c.value = f"={params['seats']}*H{dp_seat_row}"
+    c.font = recurring_font
+    c.fill = recurring_fill
+    c.alignment = Alignment(horizontal="right")
+    c.number_format = '#,##0 "EUR/mo"'
+    row += 1
+
+    # Annual
+    sub_annual_row = row
+    ws.cell(row=row, column=2, value="Annual commitment").font = total_font
+    c = ws.cell(row=row, column=8)
+    c.value = f"=H{sub_monthly_row}*{params['commitment']}"
     c.font = total_font
     c.alignment = Alignment(horizontal="right")
     c.number_format = eur_fmt
     row += 1
 
-    # Add-on
-    addon_row = row
-    ws.cell(row=row, column=2, value=addon["name"]).font = body_font
-    ws.merge_cells(start_row=row, start_column=2, end_row=row, end_column=6)
-    c = ws.cell(row=row, column=COL_COST, value=addon["fee"])
-    style_param(c)
+    # Savings vs list
+    ws.cell(row=row, column=2, value="Annual savings vs list price").font = Font(name="Calibri", size=11, color="2E7D32")
+    c = ws.cell(row=row, column=8)
+    c.value = f"={params['seats']}*{params['seat_price']}*{params['fp_discount']}*{params['commitment']}"
+    c.font = Font(name="Calibri", size=11, color="2E7D32")
     c.alignment = Alignment(horizontal="right")
-    c.number_format = eur_fmt
-    brd(row)
+    c.number_format = '#,##0 "EUR"'
+    row += 2
+
+    # What's included
+    ws.merge_cells(f"A{row}:H{row}")
+    ws.cell(row=row, column=1, value="What\u2019s included:").font = subsection_font
     row += 1
-    ws.cell(row=row, column=2, value=addon["desc"]).font = note_font
-    ws.merge_cells(start_row=row, start_column=2, end_row=row, end_column=NC)
+    for idx, item in enumerate(subscription_includes, 1):
+        ws.cell(row=row, column=1, value=idx).font = body_font
+        ws.cell(row=row, column=1).alignment = Alignment(horizontal="center")
+        ws.cell(row=row, column=2, value=item).font = body_font
+        brd(row)
+        row += 1
+
+    # Market comparison
+    row += 1
+    ws.merge_cells(f"A{row}:H{row}")
+    ws.cell(row=row, column=1, value="Market context:").font = subsection_font
+    row += 1
+    comparisons = [
+        ("GitHub Copilot Enterprise", "$39-60/seat/mo", "Code completion, 28-day memory, no learning"),
+        ("Augment Code Standard", "$60/seat/mo", "Project memory, no correction-based learning"),
+        ("Sourcegraph Cody Enterprise", "$59/seat/mo", "Code search, no persistent memory"),
+        ("JetBrains AI Enterprise", "$60+/seat/mo", "IDE AI features, no org memory"),
+        ("PLUR Enterprise (list)", "\u20ac70/seat/mo", "Persistent org learning, correction-based, knowledge graph"),
+        ("PLUR Enterprise (Founding Partner)", "\u20ac49/seat/mo", "Same \u2014 30% Founding Partner discount"),
+    ]
+    for name, price, notes in comparisons:
+        ws.cell(row=row, column=2, value=name).font = body_font
+        ws.cell(row=row, column=5, value=price).font = total_font
+        ws.cell(row=row, column=5).alignment = Alignment(horizontal="right")
+        ws.cell(row=row, column=6, value=notes).font = note_font
+        ws.merge_cells(start_row=row, start_column=6, end_row=row, end_column=NC)
+        brd(row)
+        row += 1
     row += 2
 
     # ================================================================
-    # SECTION 2: CUSTOM SERVICES (hourly)
+    # 2. KNOWLEDGE ENGINEERING (one-time project)
     # ================================================================
     ws.merge_cells(f"A{row}:H{row}")
-    ws.cell(row=row, column=1, value="2. CUSTOM SERVICES (your organization)").font = Font(name="Calibri", size=13, bold=True)
+    ws.cell(row=row, column=1, value="2. KNOWLEDGE ENGINEERING (one-time project)").font = Font(name="Calibri", size=13, bold=True)
     row += 1
 
-    # Column headers
+    ws.merge_cells(f"A{row}:H{row}")
+    ws.cell(row=row, column=1, value="Scan your codebase, extract conventions, build your custom ingest pipeline").font = italic_grey
+    row += 1
+
     hdrs = ["#", "Deliverable", "Gregor", "Tadej", "Marko", "Crt", "Total h", "Cost (EUR)"]
     for col, h in enumerate(hdrs, 1):
         c = ws.cell(row=row, column=col, value=h)
@@ -277,8 +326,7 @@ def render_sheet(ws, internal=False):
         c.alignment = Alignment(horizontal="left" if col <= 2 else "right")
     row += 1
 
-    custom_subtotal_rows = []
-    all_custom_hours_row = None  # we'll track the grand subtotal row
+    ke_subtotal_rows = []
 
     for phase in custom_phases:
         ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=NC)
@@ -290,13 +338,11 @@ def render_sheet(ws, internal=False):
         for idx, item in enumerate(phase["items"], 1):
             desc = item[0]
             phrs = list(item[1:5])
-
             ws.cell(row=row, column=1, value=idx).font = body_font
             ws.cell(row=row, column=1).alignment = Alignment(horizontal="center")
             ws.cell(row=row, column=2, value=desc).font = body_font
-
             for i, ph in enumerate(phrs):
-                c = ws.cell(row=row, column=COL_P0 + i)
+                c = ws.cell(row=row, column=3 + i)
                 if ph > 0:
                     c.value = ph
                     c.font = body_font
@@ -304,275 +350,285 @@ def render_sheet(ws, internal=False):
                 else:
                     c.value = None
                 c.alignment = Alignment(horizontal="right")
-
-            ws.cell(row=row, column=COL_TOTAL, value=f"=SUM(C{row}:F{row})").font = body_font
-            ws.cell(row=row, column=COL_TOTAL).alignment = Alignment(horizontal="right")
-            c = ws.cell(row=row, column=COL_COST, value=f"=G{row}*{params['rate']}")
-            c.font = body_font
-            c.alignment = Alignment(horizontal="right")
-            c.number_format = eur_fmt
+            ws.cell(row=row, column=7, value=f"=SUM(C{row}:F{row})").font = body_font
+            ws.cell(row=row, column=7).alignment = Alignment(horizontal="right")
+            c = ws.cell(row=row, column=8, value=f"=G{row}*{params['rate']}")
+            c.font = body_font; c.alignment = Alignment(horizontal="right"); c.number_format = eur_fmt
             brd(row)
             item_rows.append(row)
             row += 1
 
-        # Phase subtotal
         sub_row = row
         dash = "\u2014"
         short = phase["name"].split(dash)[0].strip()
         ws.cell(row=row, column=2, value=f"Subtotal \u2014 {short}").font = total_font
         for i in range(4):
-            pl = pcol(i)
-            c = ws.cell(row=row, column=COL_P0 + i)
+            pl = chr(67 + i)
+            c = ws.cell(row=row, column=3 + i)
             c.value = f"=SUM({pl}{item_rows[0]}:{pl}{item_rows[-1]})"
-            c.font = total_font
-            c.alignment = Alignment(horizontal="right")
-        ws.cell(row=row, column=COL_TOTAL, value=f"=SUM(G{item_rows[0]}:G{item_rows[-1]})").font = total_font
-        ws.cell(row=row, column=COL_TOTAL).alignment = Alignment(horizontal="right")
-        c = ws.cell(row=row, column=COL_COST, value=f"=SUM(H{item_rows[0]}:H{item_rows[-1]})")
-        c.font = total_font
-        c.alignment = Alignment(horizontal="right")
-        c.number_format = eur_fmt
+            c.font = total_font; c.alignment = Alignment(horizontal="right")
+        ws.cell(row=row, column=7, value=f"=SUM(G{item_rows[0]}:G{item_rows[-1]})").font = total_font
+        ws.cell(row=row, column=7).alignment = Alignment(horizontal="right")
+        c = ws.cell(row=row, column=8, value=f"=SUM(H{item_rows[0]}:H{item_rows[-1]})")
+        c.font = total_font; c.alignment = Alignment(horizontal="right"); c.number_format = eur_fmt
         brd(row, phase_border)
         row += 1
 
-        # Token cost
         tok_row = row
         ws.cell(row=row, column=2, value="AI compute (tokens)").font = italic_grey
-        c = ws.cell(row=row, column=COL_COST, value=phase["token_cost"])
-        style_param(c)
-        c.alignment = Alignment(horizontal="right")
-        c.number_format = eur_fmt
+        c = ws.cell(row=row, column=8, value=phase["token_cost"])
+        style_param(c); c.alignment = Alignment(horizontal="right"); c.number_format = eur_fmt
         brd(row)
         row += 1
 
-        custom_subtotal_rows.append((sub_row, tok_row))
+        ke_subtotal_rows.append((sub_row, tok_row))
         row += 1
 
-    # Custom services total
-    cust_total_row = row
+    # KE total
+    ke_total_row = row
     brd(row, thick_border)
-    ws.cell(row=row, column=2, value="CUSTOM SERVICES TOTAL").font = grand_font
-    h_refs = "+".join(f"G{sr}" for sr, _ in custom_subtotal_rows)
-    ws.cell(row=row, column=COL_TOTAL, value=f"={h_refs}").font = grand_font
-    ws.cell(row=row, column=COL_TOTAL).alignment = Alignment(horizontal="right")
-    cost_refs = "+".join(f"H{sr}+H{tr}" for sr, tr in custom_subtotal_rows)
-    c = ws.cell(row=row, column=COL_COST, value=f"={cost_refs}")
-    c.font = grand_font
-    c.alignment = Alignment(horizontal="right")
-    c.number_format = eur_fmt
+    ws.cell(row=row, column=2, value="KNOWLEDGE ENGINEERING TOTAL").font = grand_font
+    h_refs = "+".join(f"G{sr}" for sr, _ in ke_subtotal_rows)
+    ws.cell(row=row, column=7, value=f"={h_refs}").font = grand_font
+    ws.cell(row=row, column=7).alignment = Alignment(horizontal="right")
+    cost_refs = "+".join(f"H{sr}+H{tr}" for sr, tr in ke_subtotal_rows)
+    c = ws.cell(row=row, column=8, value=f"={cost_refs}")
+    c.font = grand_font; c.alignment = Alignment(horizontal="right"); c.number_format = eur_fmt
     brd(row, thick_border)
+    row += 1
+
+    ke_dp_row = ke_total_row  # no discount on custom work
+
+    # Deliverables
+    row += 1
+    ws.merge_cells(f"A{row}:H{row}")
+    ws.cell(row=row, column=1, value="Deliverables:").font = subsection_font
+    row += 1
+    for d in [
+        "Custom ingest pipeline tuned to your codebase (reusable, automated)",
+        "30 active repos: curated knowledge packs, reviewed with your tech leads",
+        "1,370 repos: auto-processed, coverage report",
+        "New project hook: every new repo auto-bootstrapped on creation",
+    ]:
+        ws.cell(row=row, column=2, value=f"  {d}").font = body_font
+        row += 1
     row += 2
 
     # ================================================================
-    # PROJECT TOTAL (platform + custom)
-    # ================================================================
-    proj_total_row = row
-    brd(row, thick_border)
-    ws.cell(row=row, column=2, value="PROJECT TOTAL (platform + custom)").font = grand_font
-    c = ws.cell(row=row, column=COL_COST)
-    c.value = f"=H{plat_total_row}+H{cust_total_row}"
-    c.font = grand_font
-    c.alignment = Alignment(horizontal="right")
-    c.number_format = eur_fmt
-    brd(row, thick_border)
-    row += 1
-
-    # Discount
-    disc_row = row
-    ws.cell(row=row, column=2, value="Design partner discount").font = Font(name="Calibri", size=11, color="2E7D32")
-    c = ws.cell(row=row, column=COL_COST)
-    c.value = f"=-H{proj_total_row}*{params['discount']}"
-    c.font = Font(name="Calibri", size=11, color="2E7D32")
-    c.alignment = Alignment(horizontal="right")
-    c.number_format = '-#,##0 "EUR"'
-    row += 1
-
-    dp_row = row
-    for col in range(1, NC + 1):
-        ws.cell(row=row, column=col).fill = discount_fill
-        ws.cell(row=row, column=col).border = thick_border
-    ws.cell(row=row, column=2, value="PROJECT TOTAL (design partner price)").font = discount_font
-    c = ws.cell(row=row, column=COL_COST)
-    c.value = f"=H{proj_total_row}+H{disc_row}"
-    c.font = discount_font
-    c.fill = discount_fill
-    c.alignment = Alignment(horizontal="right")
-    c.number_format = eur_fmt
-    row += 3
-
-    # ================================================================
-    # SECTION 3: MONTHLY SUPPORT
+    # 3. DATACORE ENTERPRISE — AI DEVELOPMENT TEAM (future)
     # ================================================================
     ws.merge_cells(f"A{row}:H{row}")
-    ws.cell(row=row, column=1, value="3. MONTHLY SUPPORT & MAINTENANCE").font = Font(name="Calibri", size=13, bold=True)
+    ws.cell(row=row, column=1, value="3. DATACORE ENTERPRISE \u2014 AI Development Team (Founding Partnership continues)").font = Font(name="Calibri", size=13, bold=True)
     row += 1
+
+    ws.merge_cells(f"A{row}:H{row}")
+    ws.cell(row=row, column=1, value="Autonomous AI agents powered by your organizational learning. Separate product, same partnership. Scoped together after PLUR is in place.").font = italic_grey
+    row += 2
 
     for col in range(1, NC + 1):
-        ws.cell(row=row, column=col).fill = section_fill
-    ws.cell(row=row, column=2, value="Included in monthly retainer").font = section_font
-    ws.cell(row=row, column=COL_COST, value="Monthly").font = section_font
-    ws.cell(row=row, column=COL_COST).alignment = Alignment(horizontal="right")
+        ws.cell(row=row, column=col).fill = datacore_fill
+    ws.cell(row=row, column=2, value="AI Role").font = datacore_font
+    ws.cell(row=row, column=6, value="Description").font = datacore_font
+    ws.cell(row=row, column=8, value="Indicative").font = datacore_font
+    ws.cell(row=row, column=8).alignment = Alignment(horizontal="right")
     row += 1
 
-    for idx, desc in enumerate(support_items, 1):
-        ws.cell(row=row, column=1, value=idx).font = body_font
-        ws.cell(row=row, column=1).alignment = Alignment(horizontal="center")
-        ws.cell(row=row, column=2, value=desc).font = body_font
+    dc_role_rows = []
+    for name, desc, monthly in datacore_roles:
+        for col in range(1, NC + 1):
+            ws.cell(row=row, column=col).fill = PatternFill(start_color="F5F5F5", end_color="F5F5F5", fill_type="solid")
+        ws.cell(row=row, column=2, value=name).font = total_font
+        ws.cell(row=row, column=6, value=desc).font = note_font
+        ws.merge_cells(start_row=row, start_column=6, end_row=row, end_column=7)
+        c = ws.cell(row=row, column=8, value=monthly)
+        style_param(c); c.alignment = Alignment(horizontal="right"); c.number_format = '#,##0 "EUR/mo"'
         brd(row)
+        dc_role_rows.append(row)
         row += 1
 
     row += 1
-    support_row = row
-    for col in range(1, NC + 1):
-        ws.cell(row=row, column=col).fill = recurring_fill
-        ws.cell(row=row, column=col).border = thick_border
-    ws.cell(row=row, column=2, value="MONTHLY RETAINER (50 users)").font = recurring_font
-    c = ws.cell(row=row, column=COL_COST)
-    c.value = f"={params['support_base']}+{params['support_tokens']}"
-    c.font = recurring_font
-    c.fill = recurring_fill
-    c.alignment = Alignment(horizontal="right")
-    c.number_format = '#,##0 "EUR/mo"'
+    ws.cell(row=row, column=2, value="Pricing model: monthly per AI role. Exact scope determined together after Phase 1+2.").font = note_font
+    ws.merge_cells(start_row=row, start_column=2, end_row=row, end_column=NC)
+    row += 1
+    ws.cell(row=row, column=2, value="Founding Partnership discount applies to Datacore on same terms as PLUR.").font = note_font
+    ws.merge_cells(start_row=row, start_column=2, end_row=row, end_column=NC)
     row += 3
 
     # ================================================================
-    # ANNUAL COMMITMENT
+    # FIRST-YEAR COMMITMENT
     # ================================================================
     ws.merge_cells(f"A{row}:H{row}")
-    ws.cell(row=row, column=1, value="ANNUAL COMMITMENT (12 months)").font = Font(name="Calibri", size=13, bold=True)
+    ws.cell(row=row, column=1, value="FIRST-YEAR COMMITMENT").font = Font(name="Calibri", size=13, bold=True)
     row += 1
 
-    annual_items = [
-        ("Platform setup (one-time)", f"=H{plat_total_row}"),
-        ("Custom services (one-time)", f"=H{cust_total_row}"),
-        ("Design partner discount", f"=H{disc_row}"),
-        ("Support & maintenance (12 months)", f"=H{support_row}*{params['commitment']}"),
-        ("Infrastructure (at cost)", f"={params['infra']}*{params['commitment']}"),
-    ]
-    a_rows = []
-    for label, formula in annual_items:
-        ws.cell(row=row, column=2, value=label).font = body_font
-        c = ws.cell(row=row, column=COL_COST)
-        c.value = formula
-        c.font = body_font
-        c.alignment = Alignment(horizontal="right")
-        c.number_format = eur_fmt
-        brd(row)
-        a_rows.append(row)
-        row += 1
+    a1_row = row
+    ws.cell(row=row, column=2, value="PLUR Enterprise subscription (12 months, Founding Partner rate)").font = body_font
+    c = ws.cell(row=row, column=8, value=f"=H{sub_annual_row}")
+    c.font = body_font; c.alignment = Alignment(horizontal="right"); c.number_format = eur_fmt
+    brd(row); row += 1
 
-    at_row = row
+    a2_row = row
+    ws.cell(row=row, column=2, value="Knowledge Engineering (custom project, standard rate)").font = body_font
+    c = ws.cell(row=row, column=8, value=f"=H{ke_dp_row}")
+    c.font = body_font; c.alignment = Alignment(horizontal="right"); c.number_format = eur_fmt
+    brd(row); row += 1
+
+    fy_row = row
     for col in range(1, NC + 1):
         ws.cell(row=row, column=col).border = thick_border
         ws.cell(row=row, column=col).fill = annual_fill
-    ws.cell(row=row, column=2, value="ANNUAL COMMITMENT TOTAL").font = annual_font
-    c = ws.cell(row=row, column=COL_COST)
-    c.value = f"={'+'.join(f'H{r}' for r in a_rows)}"
-    c.font = annual_font
-    c.fill = annual_fill
-    c.alignment = Alignment(horizontal="right")
-    c.number_format = eur_fmt
+    ws.cell(row=row, column=2, value="FIRST-YEAR TOTAL").font = annual_font
+    c = ws.cell(row=row, column=8, value=f"=H{a1_row}+H{a2_row}")
+    c.font = annual_font; c.fill = annual_fill
+    c.alignment = Alignment(horizontal="right"); c.number_format = eur_fmt
     row += 1
 
     ws.cell(row=row, column=2, value="Monthly equivalent").font = grey_font
-    c = ws.cell(row=row, column=COL_COST)
-    c.value = f"=H{at_row}/{params['commitment']}"
-    c.font = total_font
-    c.alignment = Alignment(horizontal="right")
-    c.number_format = '#,##0 "EUR/mo"'
+    c = ws.cell(row=row, column=8, value=f"=H{fy_row}/{params['commitment']}")
+    c.font = total_font; c.alignment = Alignment(horizontal="right"); c.number_format = '#,##0 "EUR/mo"'
+    row += 1
+
+    # Savings line
+    ws.cell(row=row, column=2, value="vs list price (no Founding Partner discount)").font = grey_font
+    list_formula = f"={params['seats']}*{params['seat_price']}*{params['commitment']}+H{ke_total_row}"
+    c = ws.cell(row=row, column=8, value=list_formula)
+    c.font = grey_font; c.alignment = Alignment(horizontal="right"); c.number_format = eur_fmt
+    row += 1
+
+    ws.cell(row=row, column=2, value="Your savings as Founding Partner").font = Font(name="Calibri", size=11, bold=True, color="2E7D32")
+    c = ws.cell(row=row, column=8, value=f"=H{row-1}-H{fy_row}")
+    c.font = Font(name="Calibri", size=11, bold=True, color="2E7D32")
+    c.alignment = Alignment(horizontal="right"); c.number_format = eur_fmt
     row += 3
 
     # ================================================================
-    # INTERNAL: MARGIN ANALYSIS
+    # ROI (client sheet only — not internal detail)
+    # ================================================================
+    ws.merge_cells(f"A{row}:H{row}")
+    ws.cell(row=row, column=1, value="ROI ESTIMATE").font = Font(name="Calibri", size=13, bold=True)
+    row += 1
+
+    roi_items = [
+        ("Developer time searching for information (McKinsey)", "1.8 hours/day"),
+        ("Context switching cost per developer/year", "~\u20ac50,000"),
+        ("Saving just 15 min/day per developer (conservative)", ""),
+        ("  \u2192 Annual recovered value (50 devs \u00d7 15 min \u00d7 220 days \u00d7 \u20ac85/h)", ""),
+        ("  \u2192 ROI vs first-year investment", ""),
+    ]
+    # Row for 15 min calc
+    ws.cell(row=row, column=2, value=roi_items[0][0]).font = body_font
+    ws.cell(row=row, column=8, value=roi_items[0][1]).font = total_font
+    ws.cell(row=row, column=8).alignment = Alignment(horizontal="right")
+    brd(row); row += 1
+    ws.cell(row=row, column=2, value=roi_items[1][0]).font = body_font
+    ws.cell(row=row, column=8, value=roi_items[1][1]).font = total_font
+    ws.cell(row=row, column=8).alignment = Alignment(horizontal="right")
+    brd(row); row += 1
+    row += 1
+
+    ws.cell(row=row, column=2, value="Conservative: saving 15 min/day per developer").font = total_font
+    brd(row); row += 1
+
+    roi_val_row = row
+    ws.cell(row=row, column=2, value="Annual recovered value").font = total_font
+    # 50 devs * 0.25h * 220 days * 85 EUR
+    c = ws.cell(row=row, column=8)
+    c.value = f"={params['seats']}*0.25*220*{params['rate']}"
+    c.font = grand_font; c.alignment = Alignment(horizontal="right"); c.number_format = eur_fmt
+    brd(row); row += 1
+
+    roi_row = row
+    for col in range(1, NC + 1):
+        ws.cell(row=row, column=col).fill = annual_fill
+        ws.cell(row=row, column=col).border = thick_border
+    ws.cell(row=row, column=2, value="ROI (recovered value / investment)").font = annual_font
+    c = ws.cell(row=row, column=8, value=f"=H{roi_val_row}/H{fy_row}")
+    c.font = annual_font; c.fill = annual_fill
+    c.alignment = Alignment(horizontal="right"); c.number_format = '0.0"x"'
+    row += 1
+
+    ws.cell(row=row, column=2, value="Break-even (months)").font = grey_font
+    c = ws.cell(row=row, column=8)
+    c.value = f"=H{fy_row}/(H{roi_val_row}/12)"
+    c.font = total_font; c.alignment = Alignment(horizontal="right"); c.number_format = '0.0 "months"'
+    row += 3
+
+    # ================================================================
+    # INTERNAL MARGIN
     # ================================================================
     if internal:
         ws.merge_cells(f"A{row}:H{row}")
         ws.cell(row=row, column=1, value="MARGIN ANALYSIS (INTERNAL ONLY)").font = margin_font
         row += 1
 
-        rev_row = row
-        ws.cell(row=row, column=2, value="Project revenue (design partner)").font = body_font
-        c = ws.cell(row=row, column=COL_COST, value=f"=H{dp_row}")
+        r1 = row
+        ws.cell(row=row, column=2, value="Subscription revenue (12 months)").font = body_font
+        c = ws.cell(row=row, column=8, value=f"=H{sub_annual_row}")
         c.font = body_font; c.alignment = Alignment(horizontal="right"); c.number_format = eur_fmt
         brd(row); row += 1
 
-        plat_cost_row = row
-        ws.cell(row=row, column=2, value="Platform internal cost (mostly built \u2014 estimate)").font = body_font
-        c = ws.cell(row=row, column=COL_COST, value=3000)
-        style_param(c); c.alignment = Alignment(horizontal="right"); c.number_format = eur_fmt
-        brd(row); row += 1
-
-        cust_cost_row = row
-        ws.cell(row=row, column=2, value="Custom services internal cost (hours \u00d7 internal rate)").font = body_font
-        c = ws.cell(row=row, column=COL_COST)
-        c.value = f"=G{cust_total_row}*{params['int_rate']}"
+        r2 = row
+        ws.cell(row=row, column=2, value="Subscription cost (platform + ~8h/mo support)").font = body_font
+        c = ws.cell(row=row, column=8, value=f"={params['plat_cost']}+8*{params['int_rate']}*{params['commitment']}")
         c.font = body_font; c.alignment = Alignment(horizontal="right"); c.number_format = eur_fmt
         brd(row); row += 1
+
+        r3 = row
+        ws.cell(row=row, column=2, value="Subscription margin").font = total_font
+        c = ws.cell(row=row, column=8, value=f"=H{r1}-H{r2}")
+        c.font = total_font; c.alignment = Alignment(horizontal="right"); c.number_format = eur_fmt
+        brd(row, phase_border); row += 1
+        row += 1
+
+        r4 = row
+        ws.cell(row=row, column=2, value="Knowledge Engineering revenue").font = body_font
+        c = ws.cell(row=row, column=8, value=f"=H{ke_dp_row}")
+        c.font = body_font; c.alignment = Alignment(horizontal="right"); c.number_format = eur_fmt
+        brd(row); row += 1
+
+        r5 = row
+        ws.cell(row=row, column=2, value="Knowledge Engineering cost (hours \u00d7 internal rate)").font = body_font
+        c = ws.cell(row=row, column=8, value=f"=G{ke_total_row}*{params['int_rate']}")
+        c.font = body_font; c.alignment = Alignment(horizontal="right"); c.number_format = eur_fmt
+        brd(row); row += 1
+
+        r6 = row
+        ws.cell(row=row, column=2, value="Knowledge Engineering margin").font = total_font
+        c = ws.cell(row=row, column=8, value=f"=H{r4}-H{r5}")
+        c.font = total_font; c.alignment = Alignment(horizontal="right"); c.number_format = eur_fmt
+        brd(row, phase_border); row += 1
+        row += 1
 
         mg_row = row
         for col in range(1, NC + 1):
             ws.cell(row=row, column=col).fill = margin_fill
             ws.cell(row=row, column=col).border = thick_border
-        ws.cell(row=row, column=2, value="PROJECT MARGIN").font = margin_font
-        c = ws.cell(row=row, column=COL_COST)
-        c.value = f"=H{rev_row}-H{plat_cost_row}-H{cust_cost_row}"
+        ws.cell(row=row, column=2, value="TOTAL FIRST-YEAR MARGIN").font = margin_font
+        c = ws.cell(row=row, column=8, value=f"=H{r3}+H{r6}")
         c.font = margin_font; c.fill = margin_fill
         c.alignment = Alignment(horizontal="right"); c.number_format = eur_fmt
         row += 1
 
-        ws.cell(row=row, column=2, value="Margin %").font = grey_font
-        c = ws.cell(row=row, column=COL_COST)
-        c.value = f"=H{mg_row}/H{rev_row}"
+        ws.cell(row=row, column=2, value="Margin % on revenue").font = grey_font
+        c = ws.cell(row=row, column=8, value=f"=H{mg_row}/H{fy_row}")
         c.font = total_font; c.alignment = Alignment(horizontal="right"); c.number_format = '0%'
-        row += 1
-
-        sup_mg_row = row
-        ws.cell(row=row, column=2, value="Annual support margin (retainer \u2212 ~8h/mo internal)").font = grey_font
-        c = ws.cell(row=row, column=COL_COST)
-        c.value = f"=(H{support_row}-8*{params['int_rate']})*{params['commitment']}"
-        c.font = total_font; c.alignment = Alignment(horizontal="right"); c.number_format = eur_fmt
-        row += 1
-
-        ws.cell(row=row, column=2, value="TOTAL ANNUAL MARGIN").font = margin_font
-        c = ws.cell(row=row, column=COL_COST)
-        c.value = f"=H{mg_row}+H{sup_mg_row}"
-        c.font = margin_font; c.alignment = Alignment(horizontal="right"); c.number_format = eur_fmt
         row += 3
 
     # ================================================================
-    # PAYMENT SCHEDULE
-    # ================================================================
-    ws.merge_cells(f"A{row}:H{row}")
-    ws.cell(row=row, column=1, value="Payment Schedule").font = Font(name="Calibri", size=12, bold=True)
-    row += 1
-
-    sched = [
-        ("Quick Start (platform + custom)", "Weeks 1-3"),
-        ("Phase 1 \u2014 Scale to 50", "Months 1-3"),
-        ("Phase 2 \u2014 Knowledge Engineering", "Months 3-5"),
-        ("Phase 3 \u2014 AI Development Team", "Months 5-7"),
-        ("Monthly support (12-month commitment)", "Ongoing"),
-    ]
-    for name, timeline in sched:
-        ws.cell(row=row, column=2, value=name).font = body_font
-        ws.cell(row=row, column=3, value=timeline).font = body_font
-        ws.merge_cells(start_row=row, start_column=3, end_row=row, end_column=6)
-        brd(row)
-        row += 1
-    row += 2
-
-    # ================================================================
-    # BENEFITS
+    # DESIGN PARTNER BENEFITS
     # ================================================================
     ws.merge_cells(f"A{row}:H{row}")
     ws.cell(row=row, column=1, value="Design Partner Benefits").font = Font(name="Calibri", size=12, bold=True)
     row += 1
     for b in [
+        "30% Founding Partner discount on PLUR Enterprise subscription",
+        "Guaranteed best rate \u2014 you will never pay more than any future customer",
         "Influence on product roadmap \u2014 your requirements built first",
-        "White-label & reseller rights (future phase, pre-negotiated)",
+        "White-label & reseller rights (pre-negotiated for future)",
+        "Partnership continues with Datacore Enterprise on same terms",
         "Case study & reference customer agreement",
-        "Priority support with dedicated team",
-        "Quarterly product review & roadmap alignment sessions",
+        "Integration phase included \u2014 no charges before go-live",
+        "Weekly check-ins + quarterly strategic reviews",
     ]:
         ws.cell(row=row, column=2, value=f"  {b}").font = body_font
         row += 1
@@ -586,13 +642,14 @@ def render_sheet(ws, internal=False):
     row += 1
     notes = [
         "All prices exclude VAT.",
-        "Platform fees are flat \u2014 one-time setup, not hourly.",
-        "Custom services invoiced on actuals with weekly reporting.",
-        "12-month support commitment \u2014 retainer locked for the full year.",
-        "Infrastructure (hosting, database) billed at cost.",
-        "Support covers up to 50 users. Additional users: 30 EUR/user/month.",
+        "Subscription: 12-month commitment starting at go-live (June 2026). No charges during integration.",
+        "Founding Partner rate: guaranteed best rate \u2014 you will never pay more than any future customer.",
+        "Knowledge Engineering: invoiced on actuals at standard consulting rate, with weekly reporting.",
+        "Datacore Enterprise (AI Development Team): scoped and priced as monthly AI roles after PLUR is in place.",
+        "GitHub provider available as future add-on when needed.",
         "We use Claude Code and AI-assisted development \u2014 this is how we deliver fast.",
         "Yellow cells are adjustable \u2014 all totals recalculate automatically.",
+        "ROI based on McKinsey research (1.8h/day searching) and GitHub/Accenture productivity studies (25-55% gain).",
     ]
     if internal:
         notes.append("INTERNAL SHEET \u2014 do not share with client.")
@@ -604,7 +661,7 @@ def render_sheet(ws, internal=False):
     ws.print_area = f"A1:H{row}"
 
 
-# ===== Generate =====
+# Generate
 ws_client = wb.active
 ws_client.title = "Client"
 render_sheet(ws_client, internal=False)
@@ -615,5 +672,10 @@ render_sheet(ws_internal, internal=True)
 out = "/Users/gregor/Data/5-plur/2-projects/plur/docs/enterprise/PLUR-Enterprise-Cost-Breakdown.xlsx"
 wb.save(out)
 print(f"Saved: {out}")
-print("Client sheet: platform fees (flat) + custom services (hourly) + retainer")
-print("Internal sheet: + margin analysis with internal rate")
+print()
+print("1. PLUR Enterprise: 50 seats x EUR 70 list, EUR 49 Founding Partner = EUR 2,450/mo")
+print("2. Knowledge Engineering: hourly custom work, -20% Founding Partner")
+print("3. Datacore Enterprise: AI roles, monthly pricing, vision (scoped later)")
+print()
+print("Reframed: Organizational Learning, not Shared Memory")
+print("Two products: PLUR (learning) + Datacore (orchestration)")
