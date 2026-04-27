@@ -52,6 +52,46 @@ git tag "$TAG"
 git push origin "$TAG"
 ```
 
+## Consumer-side bump after a `core` (or other dependency) fix
+
+When a fix lands in a workspace package that other packages depend on — most often `core`,
+which `cli`, `mcp`, and `claw` all consume — bumping and publishing the dep alone is **not
+enough** to ship the fix to users.
+
+`workspace:*` pins are concretized at **publish time**, not at install time. So a consumer
+that was published before the fix carries a hard pin to the broken dep version, even after
+the fixed dep is on npm `latest`. `npm i @plur-ai/<consumer>@latest` will still pull the
+broken dep.
+
+This is what bricked `@plur-ai/cli@0.9.2` for 5 days (2026-04-22 → 2026-04-27): `core@0.9.3`
+shipped a fix for `autoDiscoverStores` (#59 thread), but `cli@0.9.2` had already been
+published with `@plur-ai/core: 0.9.2` baked into its `dependencies` field. Every
+`npx @plur-ai/cli@latest` invocation returned `Dynamic require of "os" is not supported`
+until `cli@0.9.3` was bumped (#64) and republished.
+
+### Recipe — after publishing a `core` fix
+
+1. For each workspace consumer of `core` (`cli`, `mcp`, `claw`), check the `core` pin baked
+   into the latest published artifact:
+   ```sh
+   for pkg in cli mcp claw; do
+     printf "%-20s -> " "@plur-ai/$pkg"
+     npm view "@plur-ai/$pkg@latest" dependencies.@plur-ai/core
+   done
+   ```
+2. If a consumer's published `core` pin is older than the fix, that consumer is shipping the
+   broken dep. Bump it: follow the nine-place version-bump checklist in `CLAUDE.md`
+   (package.json + in-source `VERSION` constants + test assertions), open a PR, merge.
+3. After merge, run the **Manual publish** recipe above for each bumped consumer.
+4. Verify the pin landed:
+   ```sh
+   npm view @plur-ai/cli@latest dependencies   # expect: { "@plur-ai/core": "<fixed-version>" }
+   ```
+
+The eventual publish-on-merge workflow (#59) should encode this auto-cascade: when `core`
+bumps, every workspace consumer also bumps in the same release so the published artifact
+graph stays internally consistent.
+
 ## Long-term: publish-on-merge workflow
 
 The right long-term shape is a GitHub Actions workflow that detects `packages/*/package.json`
