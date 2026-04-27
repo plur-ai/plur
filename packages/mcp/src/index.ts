@@ -12,15 +12,21 @@ const HELP = `plur-mcp v${VERSION} — persistent memory for AI agents
 
 Usage:
   plur-mcp              Start the MCP server (stdio transport)
+  plur-mcp --http       Start HTTP/SSE server (enterprise/team deployment)
   plur-mcp init         Set up PLUR: storage + MCP config + hooks + CLAUDE.md
   plur-mcp --help       Show this help message
   plur-mcp --version    Show version
 
 Environment:
   PLUR_PATH             Storage location (default: ~/.plur/)
+  PLUR_HTTP_PORT        HTTP server port (default: 3000)
+  PLUR_AUTH_TOKENS      Comma-separated bearer tokens for auth
 
 Quick start:
   npx @plur-ai/mcp init
+
+HTTP mode (enterprise):
+  PLUR_AUTH_TOKENS=secret1,secret2 npx @plur-ai/mcp --http
 
 Docs: https://plur.ai · https://github.com/plur-ai/plur
 `
@@ -285,7 +291,13 @@ if (arg === 'init') {
   process.exit(0)
 }
 
-if (arg === 'serve' || arg === undefined) {
+if (arg === '--http') {
+  const { runHttpTransport } = await import('./http-transport.js')
+  runHttpTransport().catch(err => {
+    console.error('Failed to start PLUR HTTP server:', err)
+    process.exit(1)
+  })
+} else if (arg === 'serve' || arg === undefined) {
   const { runStdio } = await import('./server.js')
   runStdio().catch(err => {
     console.error('Failed to start PLUR MCP server:', err)
