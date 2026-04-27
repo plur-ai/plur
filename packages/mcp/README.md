@@ -99,6 +99,30 @@ Custom storage path:
 
 Default: `~/.plur/`. Everything is plain YAML — open it, read it, edit it.
 
+## HTTP Mode (Enterprise/Teams)
+
+For team deployments, run PLUR as a centralized HTTP server instead of per-user stdio:
+
+```bash
+# Start HTTP server with auth tokens
+PLUR_AUTH_TOKENS=token1,token2 npx @plur-ai/mcp --http
+
+# Or with custom port
+PLUR_HTTP_PORT=8080 PLUR_AUTH_TOKENS=secret npx @plur-ai/mcp --http
+```
+
+Endpoints:
+- `GET /health` — Health check (no auth required)
+- `GET /sse` — SSE connection (requires `Authorization: Bearer <token>`)
+- `POST /message` — Send MCP messages (requires auth)
+
+This enables:
+- 50+ concurrent users sharing a centralized PLUR server
+- Team engram sharing without per-machine setup
+- Managed hosting with proper auth
+
+**Note:** HTTP mode is Phase 1 (pre-provisioned tokens). OAuth/device-code auth coming in Phase 2.
+
 ## Benchmark
 
 | Metric | Score |
