@@ -16,6 +16,12 @@ Or use without installing:
 npx @plur-ai/cli status
 ```
 
+> ### Known issue: avoid `0.9.2` on npm
+>
+> The currently published `@plur-ai/cli@0.9.2` (latest tag on npm) is bricked — every command throws `{"error":"Dynamic require of \"os\" is not supported"}` due to an esbuild bundling regression. The fix is on `main` as `0.9.3` (see commit `7af15a8`) and a CI regression guard is now in place ([#68](https://github.com/plur-ai/plur/pull/68)), but the `0.9.3` artifact has not yet shipped to npm — tracking in [#59](https://github.com/plur-ai/plur/issues/59).
+>
+> **Workaround until `0.9.3` is published:** install the prior working version `npm install -g @plur-ai/cli@0.9.1`, or run from source by cloning the repo and `pnpm install && pnpm --filter @plur-ai/cli build`.
+
 ## Quick Start
 
 ```bash
