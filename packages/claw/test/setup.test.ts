@@ -263,6 +263,7 @@ describe('claw doctor command', () => {
       'slot_selected',
       'reload_required',
       'runtime_registered',
+      'telemetry_optin',
     ])
   })
 
@@ -277,6 +278,28 @@ describe('claw doctor command', () => {
     const r = runDoctor({ configPath: cfgPath })
     expect(r.steps.find((s) => s.step === 'reload_required')!.status).toBe('pending')
     expect(r.steps.find((s) => s.step === 'runtime_registered')!.status).toBe('pending')
+  })
+
+  it('surfaces telemetry as skip by default with no env or config', () => {
+    const telemetryCfg = join(dir, 'telemetry.json')
+    const r = runDoctor({ configPath: cfgPath, env: {}, telemetryConfigPath: telemetryCfg })
+    const step = r.steps.find((s) => s.step === 'telemetry_optin')!
+    expect(step.status).toBe('skip')
+    expect(step.detail).toContain('off')
+    expect(step.detail).toContain('default')
+  })
+
+  it('surfaces telemetry as ok when PLUR_TELEMETRY=on', () => {
+    const telemetryCfg = join(dir, 'telemetry.json')
+    const r = runDoctor({
+      configPath: cfgPath,
+      env: { PLUR_TELEMETRY: 'on' },
+      telemetryConfigPath: telemetryCfg,
+    })
+    const step = r.steps.find((s) => s.step === 'telemetry_optin')!
+    expect(step.status).toBe('ok')
+    expect(step.detail).toContain('on')
+    expect(step.detail).toContain('PLUR_TELEMETRY')
   })
 })
 
