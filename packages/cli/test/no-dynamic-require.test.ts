@@ -3,7 +3,10 @@ import { readFileSync, readdirSync, statSync, existsSync } from 'fs'
 import { join } from 'path'
 
 const PACKAGES_ROOT = join(__dirname, '..', '..')
-const PACKAGES = ['core', 'cli', 'mcp', 'claw']
+// User-facing entrypoints only. core/dist intentionally uses __require to load
+// ONNX native bindings via @xenova/transformers — that shim is fine as long as
+// cli/mcp/claw keep @plur-ai/core external and don't inline it into their bundles.
+const PACKAGES = ['cli', 'mcp', 'claw']
 
 function walkJs(dir: string): string[] {
   if (!existsSync(dir)) return []
