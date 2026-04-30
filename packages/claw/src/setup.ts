@@ -1,6 +1,7 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join, dirname } from 'node:path'
+import { resolveTelemetry } from './telemetry.js'
 
 type OpenclawConfig = {
   plugins?: {
@@ -143,6 +144,7 @@ export type SetupStep =
   | 'slot_selected'
   | 'reload_required'
   | 'runtime_registered'
+  | 'telemetry_optin'
 export type SetupStatus = 'ok' | 'skip' | 'fail' | 'pending'
 export type SetupReport = {
   path: string
@@ -261,7 +263,9 @@ export function runSetupCli(): number {
   return failed ? 1 : 0
 }
 
-export function runDoctor(opts: { configPath?: string } = {}): SetupReport {
+export function runDoctor(
+  opts: { configPath?: string; env?: NodeJS.ProcessEnv; telemetryConfigPath?: string } = {},
+): SetupReport {
   const path = opts.configPath ?? resolveConfigPath()
   const report: SetupReport = {
     path,
@@ -279,6 +283,7 @@ export function runDoctor(opts: { configPath?: string } = {}): SetupReport {
       status: 'pending',
       detail: 'automatic verification not yet implemented (tracked in #39)',
     })
+    report.steps.push(telemetryStep(opts))
   }
 
   if (!existsSync(path)) {
@@ -345,6 +350,18 @@ export function runDoctor(opts: { configPath?: string } = {}): SetupReport {
 
   tailPending()
   return report
+}
+
+function telemetryStep(opts: { env?: NodeJS.ProcessEnv; telemetryConfigPath?: string }): {
+  step: SetupStep
+  status: SetupStatus
+  detail?: string
+} {
+  const r = resolveTelemetry({ env: opts.env, configPath: opts.telemetryConfigPath })
+  const sourceLabel =
+    r.source === 'env' ? 'PLUR_TELEMETRY env' : r.source === 'config' ? r.configPath : 'default (off)'
+  if (r.state === 'on') return { step: 'telemetry_optin', status: 'ok', detail: `on — ${sourceLabel}` }
+  return { step: 'telemetry_optin', status: 'skip', detail: `off — ${sourceLabel}` }
 }
 
 export function runDoctorCli(): number {
