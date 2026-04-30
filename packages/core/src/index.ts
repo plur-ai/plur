@@ -77,6 +77,26 @@ export type { Episode } from './schemas/episode.js'
 export type { PackManifest } from './schemas/pack.js'
 export type { PreviewResult, RegistryEntry, PrivacyScanResult, PrivacyIssue } from './packs.js'
 export type { PlurConfig, StoreEntry } from './schemas/config.js'
+export type { ManifestSummary, PayloadDescriptor, Producer, Signer, CapsuleHeader, CapsulePreamble } from './schemas/capsule.js'
+export {
+  CAPSULE_MAGIC,
+  CAPSULE_MAGIC_HEX,
+  FORMAT_VERSION_V1,
+  SUPPORTED_FORMAT_VERSIONS,
+  CAPSULE_FLAGS,
+  CAPSULE_FLAG_RESERVED_MASK,
+  PREAMBLE_LEN,
+  CAPSULE_SIZE_LIMITS,
+  ED25519_SIG_LEN,
+  ManifestSummarySchema,
+  PayloadDescriptorSchema,
+  ProducerSchema,
+  SignerSchema,
+  CapsuleHeaderSchema,
+  parseCapsulePreamble,
+  serializeCapsulePreamble,
+  hasFlag,
+} from './schemas/capsule.js'
 export * from './types.js'
 
 export interface IngestOptions {
