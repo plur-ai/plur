@@ -97,6 +97,8 @@ export {
   serializeCapsulePreamble,
   hasFlag,
 } from './schemas/capsule.js'
+export { writeCapsule, readCapsule, verifyCapsuleIntegrity } from './capsule.js'
+export type { WriteCapsuleOptions, ReadCapsuleResult } from './capsule.js'
 export * from './types.js'
 
 export interface IngestOptions {
