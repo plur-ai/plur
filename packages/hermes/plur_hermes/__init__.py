@@ -58,7 +58,10 @@ def register(ctx):
         status = bridge.status()
         logger.info(f"PLUR: connected — {status.get('engram_count', '?')} engrams")
     except PlurNotFoundError:
-        logger.error("PLUR CLI not found. Install: npm install -g @plur-ai/cli")
+        logger.error(
+            "PLUR CLI not found. Install: npm install -g @plur-ai/cli@0.9.1 "
+            "(0.9.2 is bricked on npm — see https://github.com/plur-ai/plur/issues/59)"
+        )
         return
 
     # Install SKILL.md

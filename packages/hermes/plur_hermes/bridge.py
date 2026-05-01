@@ -55,7 +55,8 @@ class PlurBridge:
             return self._binary
 
         raise PlurNotFoundError(
-            "PLUR CLI not found. Install: npm install -g @plur-ai/cli"
+            "PLUR CLI not found. Install: npm install -g @plur-ai/cli@0.9.1 "
+            "(0.9.2 is bricked on npm — see https://github.com/plur-ai/plur/issues/59)"
         )
 
     def call(self, command: str, args: list[str] | None = None, timeout: int = 30) -> dict[str, Any]:
@@ -76,7 +77,10 @@ class PlurBridge:
         except subprocess.TimeoutExpired:
             raise PlurBridgeError(f"CLI timed out after {timeout}s: plur {command}")
         except FileNotFoundError:
-            raise PlurNotFoundError("PLUR CLI not found. Install: npm install -g @plur-ai/cli")
+            raise PlurNotFoundError(
+                "PLUR CLI not found. Install: npm install -g @plur-ai/cli@0.9.1 "
+                "(0.9.2 is bricked on npm — see https://github.com/plur-ai/plur/issues/59)"
+            )
 
         if result.returncode == 2:
             return json.loads(result.stdout) if result.stdout.strip() else {"results": [], "count": 0}
