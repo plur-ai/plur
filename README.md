@@ -59,7 +59,7 @@ That's it. PLUR works in the background from here. No workflow changes needed â€
 pip install plur-hermes
 ```
 
-The plugin registers automatically via Hermes' plugin system. It injects relevant memories before each LLM call, extracts learnings from agent responses, and exposes all PLUR tools to the agent. Requires the PLUR CLI (`npm install -g @plur-ai/cli`).
+The plugin registers automatically via Hermes' plugin system. It injects relevant memories before each LLM call, extracts learnings from agent responses, and exposes all PLUR tools to the agent. Requires the PLUR CLI â€” pin to the last working version: `npm install -g @plur-ai/cli@0.9.1` (the `0.9.2` latest tag on npm is bricked; tracking in [#59](https://github.com/plur-ai/plur/issues/59)).
 
 ### Verify it works
 
