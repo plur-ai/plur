@@ -22,5 +22,7 @@ Without them, memory is a growing pile of assertions nobody retrieves. With them
 ## Install
 
 ```bash
-npx @plur-ai/cli packs install effective-memory
+npx @plur-ai/cli@0.9.1 packs install effective-memory
 ```
+
+> `@0.9.1` is pinned because `@plur-ai/cli@latest` (0.9.2) is bricked — see [plur-ai/plur#59](https://github.com/plur-ai/plur/issues/59). The pin can be removed once 0.9.3 ships.
