@@ -32,10 +32,12 @@ For **multi-project setups**, use domain/scope to separate knowledge:
 
 ```bash
 cd ~/projects/my-app
-npx @plur-ai/cli init --domain myapp --scope project:my-app
+npx @plur-ai/cli@0.9.1 init --domain myapp --scope project:my-app
 ```
 
 This creates a `.plur.yaml` in the project with defaults that hooks apply automatically. Engrams learned in that project are tagged; recall filters by scope but always includes global knowledge.
+
+> Pin to `@0.9.1` — the `0.9.2` latest tag on npm is bricked (`Dynamic require of "os" is not supported`). Tracking in [#59](https://github.com/plur-ai/plur/issues/59).
 
 ### Global install (faster startup)
 
