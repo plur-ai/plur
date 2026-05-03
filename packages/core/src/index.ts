@@ -14,7 +14,8 @@ import { captureEpisode, queryTimeline } from './episodes.js'
 import { detectConflicts } from './conflict.js'
 import { agenticSearch } from './agentic-search.js'
 import { embeddingSearch, embeddingSearchWithScores, type SimilarityResult } from './embeddings.js'
-import { hybridSearch } from './hybrid-search.js'
+import { hybridSearch, hybridSearchWithMeta, type HybridSearchResult } from './hybrid-search.js'
+import { embedderStatus, resetEmbedder, type EmbedderStatus } from './embeddings.js'
 import { expandedSearch } from './query-expansion.js'
 import { recallAuto, type AutoSearchResult } from './search-orchestrator.js'
 import { autoSummary } from './summary.js'
@@ -482,6 +483,32 @@ export class Plur {
     const results = await hybridSearch(filtered, query, limit, this.paths.root)
     this._reactivateResults(results)
     return results
+  }
+
+  /**
+   * Hybrid search with diagnostic metadata — returns both the engrams and
+   * whether embeddings actually contributed (mode: "hybrid" vs "hybrid-degraded").
+   * Use this when you want to surface degraded-mode warnings to users.
+   */
+  async recallHybridWithMeta(
+    query: string,
+    options?: Omit<RecallOptions, 'mode' | 'llm'>,
+  ): Promise<HybridSearchResult> {
+    const filtered = this._filterEngrams(options)
+    const limit = options?.limit ?? 20
+    const result = await hybridSearchWithMeta(filtered, query, limit, this.paths.root)
+    this._reactivateResults(result.engrams)
+    return result
+  }
+
+  /** Inspect embedder availability without forcing a load. */
+  embedderStatus(): EmbedderStatus {
+    return embedderStatus()
+  }
+
+  /** Reset cached embedder failure state — next call will retry the model load. */
+  resetEmbedder(): void {
+    resetEmbedder()
   }
 
   /** Embedding search returning {engram, score}[] with cosine similarity scores. Async, no API calls. */

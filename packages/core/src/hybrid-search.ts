@@ -1,6 +1,15 @@
 import type { Engram } from './schemas/engram.js'
 import { searchEngrams } from './fts.js'
-import { embeddingSearch } from './embeddings.js'
+import { embeddingSearch, embedderStatus } from './embeddings.js'
+
+/** Result of a hybrid search call with diagnostic metadata. */
+export interface HybridSearchResult {
+  engrams: Engram[]
+  /** "hybrid" when both BM25 and embeddings contributed; "hybrid-degraded"
+   * when embeddings were unavailable and only BM25 ran. */
+  mode: 'hybrid' | 'hybrid-degraded'
+  embedderError: string | null
+}
 
 /**
  * Reciprocal Rank Fusion (RRF) merges results from multiple search methods.
@@ -64,11 +73,26 @@ export async function hybridSearch(
   limit: number,
   storagePath?: string,
 ): Promise<Engram[]> {
-  if (engrams.length === 0) return []
+  const result = await hybridSearchWithMeta(engrams, query, limit, storagePath)
+  return result.engrams
+}
+
+/**
+ * Same as hybridSearch but returns metadata about whether embeddings
+ * actually contributed. Use this when you want to surface a
+ * "hybrid-degraded" warning to users instead of silent fallback.
+ */
+export async function hybridSearchWithMeta(
+  engrams: Engram[],
+  query: string,
+  limit: number,
+  storagePath?: string,
+): Promise<HybridSearchResult> {
+  if (engrams.length === 0) {
+    return { engrams: [], mode: 'hybrid', embedderError: null }
+  }
 
   const exhaustive = isAggregationQuery(query)
-
-  // For aggregation queries, cast a much wider net
   const effectiveLimit = exhaustive ? Math.max(limit, 50) : limit
   const bm25Limit = Math.min(engrams.length, exhaustive ? effectiveLimit * 5 : effectiveLimit * 3)
   const embLimit = Math.min(engrams.length, exhaustive ? effectiveLimit * 3 : effectiveLimit * 2)
@@ -78,6 +102,16 @@ export async function hybridSearch(
     embeddingSearch(engrams, query, embLimit, storagePath),
   ])
 
+  const status = embedderStatus()
+  // Embedder is degraded when it returned 0 results AND its lastError is set,
+  // OR when status reports unavailable. Empty embResults alone isn't enough —
+  // a query may legitimately have no semantic neighbors above threshold.
+  const degraded = !status.available || (embResults.length === 0 && !!status.lastError)
+
   const merged = rrfMerge([bm25Results, embResults])
-  return merged.slice(0, effectiveLimit)
+  return {
+    engrams: merged.slice(0, effectiveLimit),
+    mode: degraded ? 'hybrid-degraded' : 'hybrid',
+    embedderError: degraded ? status.lastError : null,
+  }
 }

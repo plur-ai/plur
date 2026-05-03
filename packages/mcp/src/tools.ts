@@ -223,12 +223,13 @@ export function getToolDefinitions(): ToolDefinition[] {
       handler: async (args, plur) => {
         const budget = args.budget as { max_tokens?: number; max_results?: number; ttl_seconds?: number } | undefined
         const effectiveLimit = budget?.max_results ?? (args.limit as number | undefined) ?? 20
-        const results = await plur.recallHybrid(args.query as string, {
+        const meta = await plur.recallHybridWithMeta(args.query as string, {
           scope: args.scope as string | undefined,
           domain: args.domain as string | undefined,
           limit: effectiveLimit,
           min_strength: args.min_strength as number | undefined,
         })
+        const results = meta.engrams
         let truncated = false
         let boundedResults = results
         if (budget?.max_results && results.length > budget.max_results) {
@@ -247,7 +248,7 @@ export function getToolDefinitions(): ToolDefinition[] {
           boundedResults = withinBudget
         }
         const includeEpisodes = args.include_episodes === true
-        return {
+        const response: Record<string, unknown> = {
           results: boundedResults.map(e => {
             const raw = e as any
             const base: Record<string, unknown> = {
@@ -268,8 +269,12 @@ export function getToolDefinitions(): ToolDefinition[] {
           }),
           count: boundedResults.length,
           truncated,
-          mode: 'hybrid',
+          mode: meta.mode,
         }
+        if (meta.mode === 'hybrid-degraded') {
+          response.warning = `Embedding layer unavailable — results are BM25-only. Run plur_doctor for diagnosis. Last error: ${meta.embedderError ?? 'unknown'}`
+        }
+        return response
       },
     },
 
@@ -850,6 +855,74 @@ export function getToolDefinitions(): ToolDefinition[] {
           locked_count: status.locked_count,
           tension_count: status.tension_count,
           versioned_engram_count: status.versioned_engram_count ?? 0,
+        }
+      },
+    },
+
+    {
+      name: 'plur_doctor',
+      description: 'Diagnose the PLUR install. Reports whether the embedding model loaded, whether hybrid search is fully operational, and what to do if it is degraded. Run this first when recall feels off.',
+      annotations: { title: 'Doctor', readOnlyHint: false, idempotentHint: false },
+      inputSchema: {
+        type: 'object',
+        properties: {
+          retry: { type: 'boolean', description: 'If true, reset cached embedder failure state and retry the model load before reporting' },
+        },
+      },
+      handler: async (args, plur) => {
+        if (args.retry === true) {
+          plur.resetEmbedder()
+        }
+        const status = plur.status()
+        const before = plur.embedderStatus()
+        // Force a load probe by issuing a tiny semantic search
+        try {
+          await plur.recallSemantic('plur doctor probe', { limit: 1 })
+        } catch {
+          // ignore — probe is best-effort
+        }
+        const after = plur.embedderStatus()
+        const checks: Record<string, unknown>[] = []
+        checks.push({
+          check: 'engram store',
+          ok: status.engram_count > 0,
+          detail: `${status.engram_count} engrams across ${status.pack_count} packs at ${status.storage_root}`,
+        })
+        checks.push({
+          check: 'embedder available',
+          ok: after.available && after.loaded,
+          detail: after.loaded
+            ? 'BGE-small-en-v1.5 loaded'
+            : after.lastError
+            ? `Failed to load: ${after.lastError}`
+            : 'Not yet loaded — first call may have raced; try again or use retry:true',
+        })
+        const hybridOk = after.available && after.loaded
+        checks.push({
+          check: 'hybrid search operational',
+          ok: hybridOk,
+          detail: hybridOk
+            ? 'Hybrid search will use BM25 + embeddings (fully functional)'
+            : 'Hybrid search will silently degrade to BM25-only — semantic recall disabled',
+        })
+        const remediation: string[] = []
+        if (!hybridOk) {
+          remediation.push(
+            'Embedding model is not loaded. Common causes:',
+            '  • First-run download not yet completed (try: plur_doctor with retry:true)',
+            '  • Network blocked HuggingFace Hub fetch — check connectivity to huggingface.co',
+            '  • pnpm hoisting issue: @huggingface/transformers must resolve onnxruntime-node from the package root, not a workspace package',
+            '  • Manual fix: from the @plur-ai/core package directory, run a script that imports @huggingface/transformers and calls pipeline() to trigger the download',
+          )
+        }
+        return {
+          ok: checks.every(c => c.ok),
+          checks,
+          embedder: {
+            before_probe: before,
+            after_probe: after,
+          },
+          remediation: remediation.length > 0 ? remediation : ['All checks passed — PLUR is healthy.'],
         }
       },
     },
