@@ -661,16 +661,24 @@ export class Plur {
 
   /** Scored injection with embedding boost when available. Falls back to BM25 if embeddings not installed. */
   async injectHybrid(task: string, options?: InjectOptions): Promise<InjectionResult> {
-    // Try to get embedding similarities for all active engrams
+    // Use actual cosine similarity scores as boosts so the 0.5 threshold in
+    // selectAndSpread is meaningful. (Pre-0.9.4 used rank-based 1/(1+i*0.1)
+    // which gave the top result boost=1.0 even when its cosine was 0.4 —
+    // letting unrelated short sentences leak through once embeddings actually
+    // started running.)
     let embeddingBoosts: Map<string, number> | undefined
     try {
       const engrams = this._loadAllEngrams().filter(e => e.status === 'active')
-      const results = await embeddingSearch(engrams, task, engrams.length, this.paths.root)
+      const results: SimilarityResult[] = await embeddingSearchWithScores(
+        engrams,
+        task,
+        engrams.length,
+        this.paths.root,
+      )
       if (results.length > 0) {
-        // Build boost map: rank-based scoring (top result gets 1.0, decays)
         embeddingBoosts = new Map()
-        for (let i = 0; i < results.length; i++) {
-          embeddingBoosts.set(results[i].id, 1.0 / (1 + i * 0.1))
+        for (const r of results) {
+          embeddingBoosts.set(r.engram.id, r.score)
         }
       }
     } catch {

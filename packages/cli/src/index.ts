@@ -48,6 +48,8 @@ Commands:
   hook-session-guard      (internal) Hook handler for session enforcement
   hook-session-mark       (internal) Hook handler for session sentinel
   hook-session-remind     (internal) Hook handler for session start reminder
+  hook-correction-detect  (internal) UserPromptSubmit hook — detect corrections
+  hook-revert-detect      (internal) PostToolUse hook — detect revert operations
 
 Global flags:
   --json       Force JSON output (auto-detected when piped)
@@ -89,6 +91,8 @@ const COMMANDS: Record<string, string> = {
   'hook-session-guard': './commands/hook-session-guard.js',
   'hook-session-mark': './commands/hook-session-mark.js',
   'hook-session-remind': './commands/hook-session-remind.js',
+  'hook-correction-detect': './commands/hook-correction-detect.js',
+  'hook-revert-detect': './commands/hook-revert-detect.js',
 }
 
 if (!command || !COMMANDS[command]) {
