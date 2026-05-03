@@ -1,5 +1,5 @@
 import { spawn } from 'child_process'
-import { type GlobalFlags } from '../plur.js'
+import { createPlur, type GlobalFlags } from '../plur.js'
 import { outputText, outputJson, shouldOutputJson } from '../output.js'
 import {
   type ConfigFile,
@@ -38,6 +38,7 @@ interface DoctorReport {
   mcpRegistered: boolean
   datacoreCollision: boolean
   handshake: { ok: boolean; serverName?: string; serverVersion?: string; error?: string }
+  embedder: { available: boolean; loaded: boolean; lastError: string | null; modelLoaded: boolean }
   overall: 'ok' | 'fail'
 }
 
@@ -162,7 +163,34 @@ async function mcpHandshake(timeoutMs = 20000): Promise<{ ok: boolean; serverNam
   })
 }
 
-function buildReport(skipHandshake: boolean): Promise<DoctorReport> {
+async function checkEmbedder(flags: GlobalFlags): Promise<{ available: boolean; loaded: boolean; lastError: string | null; modelLoaded: boolean }> {
+  try {
+    const plur = createPlur(flags)
+    // Force a probe so we get a real load attempt rather than just the cached state
+    plur.resetEmbedder()
+    try {
+      await plur.recallSemantic('plur doctor probe', { limit: 1 })
+    } catch {
+      // best effort
+    }
+    const status = plur.embedderStatus()
+    return {
+      available: status.available,
+      loaded: status.loaded,
+      lastError: status.lastError,
+      modelLoaded: status.available && status.loaded,
+    }
+  } catch (err) {
+    return {
+      available: false,
+      loaded: false,
+      lastError: err instanceof Error ? err.message : String(err),
+      modelLoaded: false,
+    }
+  }
+}
+
+function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<DoctorReport> {
   const configs = inspectConfigs()
   const hooksInstalled = configs.some((c) => c.hasPlurHooks)
   const mcpRegistered = configs.some((c) => c.hasPlurMcp)
@@ -172,9 +200,12 @@ function buildReport(skipHandshake: boolean): Promise<DoctorReport> {
     ? Promise.resolve({ ok: false, error: 'skipped (--no-handshake)' })
     : mcpHandshake()
 
-  return handshakePromise.then((handshake) => {
-    const overall: 'ok' | 'fail' = hooksInstalled && mcpRegistered && (skipHandshake || handshake.ok) ? 'ok' : 'fail'
-    return { configs, hooksInstalled, mcpRegistered, datacoreCollision, handshake, overall }
+  return Promise.all([handshakePromise, checkEmbedder(flags)]).then(([handshake, embedder]) => {
+    const overall: 'ok' | 'fail' =
+      hooksInstalled && mcpRegistered && (skipHandshake || handshake.ok) && embedder.modelLoaded
+        ? 'ok'
+        : 'fail'
+    return { configs, hooksInstalled, mcpRegistered, datacoreCollision, handshake, embedder, overall }
   })
 }
 
@@ -222,6 +253,21 @@ function printText(report: DoctorReport): void {
   }
 
   outputText('')
+  if (report.embedder.modelLoaded) {
+    outputText('✓ Embedding model loaded — hybrid search is fully operational')
+  } else {
+    outputText('✗ Embedding model NOT loaded — hybrid search will silently degrade to BM25-only')
+    if (report.embedder.lastError) {
+      outputText(`  Last error: ${report.embedder.lastError}`)
+    }
+    outputText('  Likely causes:')
+    outputText('    - First-run download not completed (try again in a few seconds)')
+    outputText('    - Network blocked HuggingFace Hub — check huggingface.co connectivity')
+    outputText('    - @huggingface/transformers package failed to load (ONNX runtime issue)')
+    outputText('    - pnpm hoisting: onnxruntime-node not findable from transformers package root')
+  }
+
+  outputText('')
   if (report.overall === 'ok') {
     outputText('✓ Healthy. plur is ready to use in Claude Code.')
   } else {
@@ -234,12 +280,17 @@ function printText(report: DoctorReport): void {
       outputText('       — try launching Claude from your terminal once,')
       outputText('       — or replace the plur entry command with an absolute path to your shell.')
     }
+    if (!report.embedder.modelLoaded) {
+      outputText('  Fix: from the @plur-ai/core package directory, run a script that imports')
+      outputText('       @huggingface/transformers and calls pipeline() once to trigger the')
+      outputText('       BGE-small-en-v1.5 download (~130MB).')
+    }
   }
 }
 
 export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   const skipHandshake = args.includes('--no-handshake')
-  const report = await buildReport(skipHandshake)
+  const report = await buildReport(skipHandshake, flags)
 
   if (shouldOutputJson(flags)) {
     outputJson(report)

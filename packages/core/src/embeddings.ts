@@ -21,22 +21,52 @@ import { atomicWrite } from './sync.js'
 
 // Lazy-loaded pipeline — only initialized when first needed
 let embedPipeline: any = null
+let lastLoadError: string | null = null
+// Allow callers to reset the cached failure state (e.g. after fixing model
+// download). Setting transformersUnavailable=true here is a soft signal —
+// getEmbedder() retries on every call until success.
 let transformersUnavailable = false
 
-async function getEmbedder() {
-  if (transformersUnavailable) return null
-  if (!embedPipeline) {
-    try {
-      const { pipeline } = await import('@huggingface/transformers')
-      embedPipeline = await pipeline('feature-extraction', 'Xenova/bge-small-en-v1.5', {
-        dtype: 'fp32',
-      })
-    } catch {
-      transformersUnavailable = true
-      return null
-    }
+export interface EmbedderStatus {
+  available: boolean
+  loaded: boolean
+  lastError: string | null
+}
+
+/** Inspect embedder state without forcing a load. Used by `plur doctor`. */
+export function embedderStatus(): EmbedderStatus {
+  return {
+    available: !transformersUnavailable,
+    loaded: embedPipeline !== null,
+    lastError: lastLoadError,
   }
-  return embedPipeline
+}
+
+/** Reset cached error state — next embed() call will retry the load. */
+export function resetEmbedder(): void {
+  transformersUnavailable = false
+  lastLoadError = null
+  embedPipeline = null
+}
+
+async function getEmbedder() {
+  if (embedPipeline) return embedPipeline
+  // Soft retry: even if a previous load failed, try again on every call.
+  // Loads are cheap once the model is cached; failures are rare and
+  // transient (network, sandbox restrictions on first download).
+  try {
+    const { pipeline } = await import('@huggingface/transformers')
+    embedPipeline = await pipeline('feature-extraction', 'Xenova/bge-small-en-v1.5', {
+      dtype: 'fp32',
+    })
+    transformersUnavailable = false
+    lastLoadError = null
+    return embedPipeline
+  } catch (err) {
+    transformersUnavailable = true
+    lastLoadError = err instanceof Error ? err.message : String(err)
+    return null
+  }
 }
 
 /** Generate embedding for a text string. Returns Float32Array of 384 dims, or null if unavailable. */
