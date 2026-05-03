@@ -127,6 +127,7 @@ export function getToolDefinitions(): ToolDefinition[] {
           locked_reason: { type: 'string', description: 'Reason for locking (when commitment=locked)' },
           memory_class: { type: 'string', enum: ['semantic', 'episodic', 'procedural', 'metacognitive'], description: 'Memory classification (auto-set from type if omitted)' },
           session_episode_id: { type: 'string', description: 'Link to current session episode for episodic anchoring' },
+          pinned: { type: 'boolean', description: 'Always-load flag. If true, this engram bypasses the keyword-relevance gate and is eligible for injection on every session, regardless of overlap with the user task. Use sparingly: meta-rules, safety conventions, core operating principles only.' },
         },
         required: ['statement'],
       },
@@ -148,6 +149,7 @@ export function getToolDefinitions(): ToolDefinition[] {
           locked_reason: args.locked_reason as string | undefined,
           memory_class: args.memory_class as any,
           session_episode_id: args.session_episode_id as string | undefined,
+          pinned: args.pinned as boolean | undefined,
           llm,
         }
         try {
@@ -155,6 +157,7 @@ export function getToolDefinitions(): ToolDefinition[] {
           return {
             id: result.engram.id, statement: result.engram.statement,
             scope: result.engram.scope, type: result.engram.type,
+            pinned: (result.engram as any).pinned === true,
             decision: result.decision, existing_id: result.existing_id, tensions: result.tensions,
           }
         } catch {
@@ -387,6 +390,38 @@ export function getToolDefinitions(): ToolDefinition[] {
             return { success: false, id: args.id, signal: args.signal, note: 'Engram is in a readonly store. Feedback noted for this session but not persisted.' }
           }
           throw err
+        }
+      },
+    },
+
+    {
+      name: 'plur_pin',
+      description: 'Toggle the always-load (pinned) flag on an engram. Pinned engrams bypass the keyword-relevance gate at injection time and are eligible for loading on every session, regardless of overlap with the user task. Use sparingly — meta-rules, safety conventions, core operating principles. Pass {id, pinned:true} to pin or {id, pinned:false} to unpin. List current pinned with {list:true}.',
+      annotations: { title: 'Pin', destructiveHint: false, idempotentHint: true },
+      inputSchema: {
+        type: 'object',
+        properties: {
+          id: { type: 'string', description: 'Engram ID to pin or unpin' },
+          pinned: { type: 'boolean', description: 'Target value (default true)' },
+          list: { type: 'boolean', description: 'If true, just return the current set of pinned engrams (no mutation)' },
+        },
+      },
+      handler: async (args, plur) => {
+        if (args.list === true) {
+          const pinned = plur.listPinned()
+          return {
+            count: pinned.length,
+            pinned: pinned.map(e => ({ id: e.id, statement: e.statement, scope: e.scope, domain: e.domain })),
+          }
+        }
+        if (!args.id) throw new Error('Provide id (or list:true to list pinned)')
+        const target = (args.pinned as boolean | undefined) ?? true
+        const updated = plur.setPinned(args.id as string, target)
+        if (!updated) throw new Error(`Engram not found: ${args.id}`)
+        return {
+          id: updated.id,
+          statement: updated.statement,
+          pinned: (updated as any).pinned === true,
         }
       },
     },

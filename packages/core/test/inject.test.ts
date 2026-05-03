@@ -148,4 +148,48 @@ describe('injection engine', () => {
     expect(scoreLow).toBeLessThan(scoreNeutral)
     expect(scoreLow).toBeCloseTo(scoreNeutral * 0.84, 5)
   })
+
+  // === Pinned engram tests ===
+
+  it('pinned engram with zero keyword overlap still scores > 0', () => {
+    const pinned = makeEngram({
+      id: 'ENG-PIN-001',
+      pinned: true,
+      statement: 'For coding tasks, verify the artifact, not the narrative',
+      tags: ['verification', 'artifact-first'],
+    })
+    const promptLower = 'help me write a poem about clouds'
+    const promptWords = new Set(promptLower.split(/\W+/).filter(w => w.length > 2))
+    const score = scoreEngram(pinned, promptLower, promptWords, [], undefined, false)
+    expect(score).toBeGreaterThan(0)
+  })
+
+  it('non-pinned engram with zero keyword overlap returns 0', () => {
+    const unpinned = makeEngram({
+      id: 'ENG-NOPIN-001',
+      statement: 'For coding tasks, verify the artifact, not the narrative',
+      tags: ['verification', 'artifact-first'],
+    })
+    const promptLower = 'help me write a poem about clouds'
+    const promptWords = new Set(promptLower.split(/\W+/).filter(w => w.length > 2))
+    const score = scoreEngram(unpinned, promptLower, promptWords, [], undefined, false)
+    expect(score).toBe(0)
+  })
+
+  it('pinned engram with keyword overlap is boosted over non-pinned', () => {
+    const pinned = makeEngram({
+      id: 'ENG-PIN-002',
+      pinned: true,
+      statement: 'Always deploy using blue-green strategy',
+    })
+    const unpinned = makeEngram({
+      id: 'ENG-NOPIN-002',
+      statement: 'Always deploy using blue-green strategy',
+    })
+    const promptLower = 'deploy the app'
+    const promptWords = new Set(promptLower.split(/\W+/).filter(w => w.length > 2))
+    const scorePinned = scoreEngram(pinned, promptLower, promptWords, [], undefined, false)
+    const scoreUnpinned = scoreEngram(unpinned, promptLower, promptWords, [], undefined, false)
+    expect(scorePinned).toBeCloseTo(scoreUnpinned * 2.0, 5)
+  })
 })

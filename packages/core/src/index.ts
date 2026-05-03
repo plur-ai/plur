@@ -395,6 +395,7 @@ export class Plur {
           related: [],
           conflicts: conflictIds,
         } : undefined,
+        pinned: context?.pinned === true ? true : undefined,
       }
 
       engrams.push(engram)
@@ -819,6 +820,30 @@ export class Plur {
       this._syncIndex()
       return true
     })
+  }
+
+  /**
+   * Toggle the always-load (pinned) flag for an engram.
+   * Returns the updated engram on success, null if not found.
+   */
+  setPinned(id: string, pinned: boolean): Engram | null {
+    return withLock(this.paths.engrams, () => {
+      const engrams = loadEngrams(this.paths.engrams)
+      const idx = engrams.findIndex(e => e.id === id)
+      if (idx === -1) return null
+      const e = engrams[idx]
+      const updated: Engram = { ...e, pinned: pinned === true ? true : undefined }
+      engrams[idx] = updated
+      this._writeEngrams(this.paths.engrams, engrams)
+      this._syncIndex()
+      return updated
+    })
+  }
+
+  /** List engrams that have pinned: true. */
+  listPinned(): Engram[] {
+    const all = this._loadAllEngrams()
+    return all.filter(e => (e as any).pinned === true && e.status === 'active')
   }
 
   /** Set engram status to 'retired'. Supports primary and store engrams. */
