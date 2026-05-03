@@ -162,7 +162,17 @@ export function scoreEngram(
     if (statementWords.has(word)) termHits += 0.5
   }
 
-  if (termHits === 0) return 0
+  // Pinned engrams bypass the term-hits gate. They get a baseline score
+  // derived from retrieval strength alone so they remain eligible for
+  // injection on every session, regardless of keyword overlap. Use the
+  // pinned flag sparingly — meta-rules, safety conventions, core operating
+  // principles. Per-pack/per-domain caps in fillTokenBudget still apply.
+  const isPinned = (engram as any).pinned === true
+  if (termHits === 0 && !isPinned) return 0
+  if (termHits === 0 && isPinned) {
+    // Synthetic minimal hit so downstream scoring math works
+    termHits = 0.5
+  }
 
   // Base score from term hits * (decayed) retrieval strength
   // Pack engrams use raw RS (read-only, can't track usage)
@@ -188,6 +198,11 @@ export function scoreEngram(
   // Consolidated engrams get a slight boost (survived reconsolidation)
   if (engram.consolidated) score *= 1.1
 
+  // Pinned engrams get a sizeable boost so they reliably beat low-relevance
+  // organic matches into the budget. Not infinite — they still compete with
+  // other pinned + highly-relevant engrams.
+  if (isPinned) score *= 2.0
+
   // Emotional weight multiplier: maps [1,10] to [0.84, 1.20], neutral at 5
   const emotionalWeight = engram.episodic?.emotional_weight ?? 5
   score *= 1 + (emotionalWeight - 5) * 0.04
@@ -206,7 +221,24 @@ export function fillTokenBudget(
   const domainCounts = new Map<string, number>()
   let tokensUsed = 0
 
-  for (const engram of scored) {
+  // Two-pass selection: pinned engrams first, then the rest. Pinned items
+  // ignore per-pack and per-domain fairness caps because they're meant to be
+  // always-load — but they still respect maxTokens.
+  const pinned = scored.filter(e => (e as any).pinned === true)
+  const unpinned = scored.filter(e => (e as any).pinned !== true)
+
+  for (const engram of pinned) {
+    const cost = estimateTokens(engram)
+    if (tokensUsed + cost > maxTokens) continue
+    result.push(engram)
+    tokensUsed += cost
+    const pack = engram.pack ?? '__personal__'
+    packCounts.set(pack, (packCounts.get(pack) ?? 0) + 1)
+    const topDomain = (engram.domain ?? '__none__').split('.')[0]
+    domainCounts.set(topDomain, (domainCounts.get(topDomain) ?? 0) + 1)
+  }
+
+  for (const engram of unpinned) {
     const cost = estimateTokens(engram)
     if (tokensUsed + cost > maxTokens) continue
 

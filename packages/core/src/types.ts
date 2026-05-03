@@ -24,6 +24,8 @@ export interface LearnContext {
   memory_class?: 'semantic' | 'episodic' | 'procedural' | 'metacognitive'
   /** Current session episode ID for episodic anchoring (SP2 Idea 24). */
   session_episode_id?: string
+  /** Always-load flag — bypass keyword-relevance gate during injection. */
+  pinned?: boolean
 }
 
 /** Extended context for async learn with LLM dedup. */
