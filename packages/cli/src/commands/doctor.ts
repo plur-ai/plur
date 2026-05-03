@@ -201,10 +201,12 @@ function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<Doctor
     : mcpHandshake()
 
   return Promise.all([handshakePromise, checkEmbedder(flags)]).then(([handshake, embedder]) => {
+    // Wiring overall: hooks + MCP + handshake. Embedder status is reported
+    // separately as a warning — a degraded embedder doesn't fail the overall
+    // doctor check (BM25 still works); it just signals semantic recall is
+    // disabled until the model loads.
     const overall: 'ok' | 'fail' =
-      hooksInstalled && mcpRegistered && (skipHandshake || handshake.ok) && embedder.modelLoaded
-        ? 'ok'
-        : 'fail'
+      hooksInstalled && mcpRegistered && (skipHandshake || handshake.ok) ? 'ok' : 'fail'
     return { configs, hooksInstalled, mcpRegistered, datacoreCollision, handshake, embedder, overall }
   })
 }

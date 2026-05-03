@@ -289,9 +289,13 @@ export function selectAndSpread(
     if (engram.temporal?.valid_from && engram.temporal.valid_from > today) continue
     engramMap.set(engram.id, engram)
     let raw = scoreEngram(engram, promptLower, promptWords, [], ctx.scope, false)
-    // Embedding boost: semantically similar engrams with zero keyword hits still get scored
+    // Embedding boost: semantically similar engrams with zero keyword hits still get scored.
+    // Threshold raised from 0.3 -> 0.5 in 0.9.4 — with embeddings now actually running
+    // (post-build-config fix), 0.3 was too generous and surfaced spurious matches between
+    // unrelated short English sentences. 0.5 is a typical BGE-small threshold for
+    // "actually related". Keyword+semantic matches still get the additive bonus regardless.
     const embBoost = embeddingBoosts?.get(engram.id) ?? 0
-    if (raw === 0 && embBoost > 0.3) {
+    if (raw === 0 && embBoost > 0.5) {
       raw = embBoost * 2 // semantic-only signal, scaled to be comparable with keyword scores
     } else if (raw > 0 && embBoost > 0) {
       raw += embBoost // additive boost for keyword+semantic match
@@ -318,7 +322,7 @@ export function selectAndSpread(
       engramMap.set(engram.id, engram)
       let raw = scoreEngram(engram, promptLower, promptWords, matchTerms, ctx.scope, true)
       const embBoost = embeddingBoosts?.get(engram.id) ?? 0
-      if (raw === 0 && embBoost > 0.3) {
+      if (raw === 0 && embBoost > 0.5) {
         raw = embBoost * 2
       } else if (raw > 0 && embBoost > 0) {
         raw += embBoost
