@@ -32,7 +32,7 @@ describe('MCP server (wire protocol)', () => {
   it('returns server info with instructions on initialize', () => {
     const info = client.getServerVersion()
     expect(info?.name).toBe('plur-mcp')
-    expect(info?.version).toBe('0.9.3')
+    expect(info?.version).toBe('0.9.4')
   })
 
   // --- Tools ---
@@ -129,7 +129,7 @@ describe('MCP server (wire protocol)', () => {
     const result = await client.readResource({ uri: 'plur://status' })
     const data = JSON.parse((result.contents[0] as any).text)
     expect(data.engram_count).toBe(1)
-    expect(data.version).toBe('0.9.3')
+    expect(data.version).toBe('0.9.4')
     expect(data.storage_root).toBe(dir)
   })
 
