@@ -15,7 +15,7 @@ import { detectConflicts } from './conflict.js'
 import { agenticSearch } from './agentic-search.js'
 import { embeddingSearch, embeddingSearchWithScores, type SimilarityResult } from './embeddings.js'
 import { hybridSearch, hybridSearchWithMeta, type HybridSearchResult } from './hybrid-search.js'
-import { embedderStatus, resetEmbedder, type EmbedderStatus } from './embeddings.js'
+import { embedderStatus, resetEmbedder, setEmbeddingsEnabled, type EmbedderStatus } from './embeddings.js'
 import { expandedSearch } from './query-expansion.js'
 import { recallAuto, type AutoSearchResult } from './search-orchestrator.js'
 import { autoSummary } from './summary.js'
@@ -169,6 +169,13 @@ export class Plur {
     }
     if (this.config.index) {
       this.indexedStorage = new IndexedStorage(this.paths.engrams, this.paths.db, this.config.stores)
+    }
+    // Wire config-level embeddings opt-out into the embedder module. The env
+    // var PLUR_DISABLE_EMBEDDINGS takes precedence at import time; this
+    // honors an explicit config override too. Default (undefined or true)
+    // leaves embeddings enabled.
+    if (this.config.embeddings?.enabled === false) {
+      setEmbeddingsEnabled(false, 'embeddings disabled in config.yaml (embeddings.enabled = false)')
     }
   }
 

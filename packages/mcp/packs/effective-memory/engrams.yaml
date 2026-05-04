@@ -1,121 +1,332 @@
 engrams:
+  # === Session lifecycle ===
+
   - id: ENG-PACK-EM-001
-    version: 1
+    version: 2
     status: active
     type: procedural
     scope: global
     visibility: public
-    statement: "Every session must bookend with plur_session_start (beginning) and plur_session_end (end). Session start injects relevant engrams into context. Session end captures what was learned, what failed, and what to continue. Without bookends, the agent starts every conversation from zero."
-    rationale: "Session boundaries are the minimum viable memory habit. Everything else builds on this."
+    pinned: true
+    statement: >-
+      Every session must bookend with plur_session_start (beginning) and
+      plur_session_end (end). Session start injects relevant engrams into
+      context. Session end captures what was learned, what failed, and what
+      to continue. Without bookends, the agent starts every conversation
+      from zero.
+    rationale: >-
+      Session boundaries are the minimum viable memory habit. Everything
+      else builds on them.
     domain: plur.session
     tags: [session, lifecycle, start, end]
-    activation: { retrieval_strength: 0.95, storage_strength: 0.95, frequency: 0, last_accessed: "2026-04-22" }
+    activation: { retrieval_strength: 0.95, storage_strength: 0.95, frequency: 0, last_accessed: "2026-05-04" }
     dual_coding:
       example: "User says 'fix the auth bug'. Agent calls plur_session_start('fixing auth bug') — gets injected with 'OAuth tokens expire after 1h, not 24h' from last week's session. Fixes it in 5 minutes instead of rediscovering the issue."
       analogy: "Like reading your notes before a meeting vs walking in cold every time."
     pack: effective-memory
+    polarity: do
+    commitment: locked
+
+  # === Capture: corrections and learn-triggers ===
 
   - id: ENG-PACK-EM-002
-    version: 1
+    version: 2
     status: active
     type: behavioral
     scope: global
     visibility: public
-    statement: "When the user corrects you, call plur_learn immediately — before continuing the task. Corrections are the highest-value engrams because they prevent repeated mistakes. Don't wait until end of session. Don't batch them. Learn the correction the instant it happens."
-    rationale: "Corrections decay from working memory fast. Capturing them immediately is the difference between learning once and being corrected forever."
+    pinned: true
+    statement: >-
+      When the user corrects you, call plur_learn IMMEDIATELY — before
+      continuing the task. Acknowledging the correction in prose is not
+      enough; that lesson disappears with context-window compression. Don't
+      batch corrections, don't wait until end of session — capture them the
+      instant they happen.
+    rationale: >-
+      Corrections are the highest-value engrams because they prevent
+      repeated mistakes. Without immediate plur_learn the same correction
+      will need to be given again next session — and self-observation of
+      the correction moment is the primary input gap of memory systems.
     domain: plur.learning
-    tags: [correction, learn, immediate]
-    activation: { retrieval_strength: 0.95, storage_strength: 0.95, frequency: 0, last_accessed: "2026-04-22" }
+    tags: [correction, learn, immediate, capture, plur_learn]
+    activation: { retrieval_strength: 0.95, storage_strength: 0.95, frequency: 0, last_accessed: "2026-05-04" }
     dual_coding:
       example: "User: 'No, use snake_case not camelCase in this repo.' Agent immediately calls plur_learn('This repo uses snake_case, not camelCase') before proceeding with the fix."
     pack: effective-memory
+    polarity: do
+    commitment: locked
 
   - id: ENG-PACK-EM-003
-    version: 1
+    version: 2
     status: active
     type: behavioral
     scope: global
     visibility: public
-    statement: "Call plur_feedback on injected engrams — positive when helpful, negative when wrong or stale. Feedback trains the injection algorithm. Without it, irrelevant engrams keep appearing and relevant ones get buried. This is how memory gets smarter, not just bigger."
-    rationale: "Feedback is the training signal for retrieval quality. Memory without feedback is a search engine that never improves its ranking."
-    domain: plur.feedback
-    tags: [feedback, relevance, training]
-    activation: { retrieval_strength: 0.9, storage_strength: 0.9, frequency: 0, last_accessed: "2026-04-22" }
-    dual_coding:
-      example: "Session starts, 8 engrams injected. 2 were directly useful for the task — call plur_feedback with positive. 1 was about a project you finished last month — call plur_feedback with negative. The rest were fine but not remarkable — skip or neutral."
+    pinned: true
+    statement: >-
+      Treat correction-shaped phrases as engram triggers. When the user
+      uses "actually", "no, what I meant", "wait", "I want X not Y", "from
+      now on", "the right way is", "you misunderstood", or similar, pause
+      and ask whether the rule belongs in plur_learn before continuing.
+    rationale: >-
+      Many corrections are subtle — they don't say "remember this" but
+      they establish a durable rule. The phrase pattern is a reliable
+      signal that a learnable rule has just been stated.
+    domain: plur.learning
+    tags: [correction-detection, plur_learn, signal, meta]
+    activation: { retrieval_strength: 0.9, storage_strength: 0.9, frequency: 0, last_accessed: "2026-05-04" }
     pack: effective-memory
+    polarity: do
+    commitment: decided
+
+  # === Recall: don't confabulate ===
 
   - id: ENG-PACK-EM-004
-    version: 1
-    status: active
-    type: behavioral
-    scope: global
-    visibility: public
-    statement: "Learn preferences, not just corrections. When the user says 'always X', 'never Y', 'I prefer Z' — that is a preference engram. Preferences shape how you work, not just what you know. They are high-value because they affect every future interaction."
-    rationale: "Preferences are the difference between a tool and an assistant that knows you."
-    domain: plur.learning
-    tags: [preference, learn, personalization]
-    activation: { retrieval_strength: 0.9, storage_strength: 0.9, frequency: 0, last_accessed: "2026-04-22" }
-    dual_coding:
-      example: "User: 'I like terse responses, skip the summaries.' Call plur_learn with type behavioral. Next session, this preference is injected and you're already concise."
-    pack: effective-memory
-
-  - id: ENG-PACK-EM-005
-    version: 1
-    status: active
-    type: behavioral
-    scope: global
-    visibility: public
-    statement: "Do NOT learn trivial facts, session-specific state, or things derivable from the codebase. Bad engrams: 'the user said hello', 'we are working on file X', 'function foo is on line 42'. Good engrams: 'this API returns snake_case despite the docs saying camelCase', 'user prefers DCA over single entries', 'deploy requires VPN connection first'."
-    rationale: "Memory quality matters more than quantity. Noisy engrams dilute injection relevance and waste context window."
-    domain: plur.learning
-    tags: [quality, anti-pattern, noise]
-    activation: { retrieval_strength: 0.9, storage_strength: 0.9, frequency: 0, last_accessed: "2026-04-22" }
-    pack: effective-memory
-
-  - id: ENG-PACK-EM-006
-    version: 1
+    version: 2
     status: active
     type: procedural
     scope: global
     visibility: public
-    statement: "Before answering factual questions about past work, decisions, or conventions — call plur_recall_hybrid first. The answer may already be in memory. This prevents contradicting past decisions, rediscovering known patterns, and giving generic answers when specific learned context exists."
-    rationale: "Recall before reasoning. The most common memory failure is not forgetting — it's not checking."
+    pinned: true
+    statement: >-
+      Before answering factual questions about the user's project, codebase,
+      preferences, infrastructure, or past decisions, call plur_recall_hybrid
+      first. The answer may already be in memory. Do not fabricate or compose
+      answers from prior-conversation context — that context is often stale
+      or invented.
+    rationale: >-
+      Confabulation is the failure mode when memory exists but isn't
+      queried. Recall before reasoning. The most common memory failure
+      is not forgetting — it's not checking.
     domain: plur.recall
-    tags: [recall, search, before-answering]
-    activation: { retrieval_strength: 0.9, storage_strength: 0.9, frequency: 0, last_accessed: "2026-04-22" }
+    tags: [recall, search, before-answering, plur_recall_hybrid, confabulation]
+    activation: { retrieval_strength: 0.95, storage_strength: 0.95, frequency: 0, last_accessed: "2026-05-04" }
     dual_coding:
       example: "User asks 'how do we deploy to production?' — call plur_recall_hybrid('deployment production') before answering. You might find 'deploy requires git push to nightshift server, not GitHub' from a previous session."
       analogy: "Like checking your notes before answering a question in a meeting, instead of guessing."
     pack: effective-memory
+    polarity: do
+    commitment: locked
+
+  # === Feedback loop ===
+
+  - id: ENG-PACK-EM-005
+    version: 2
+    status: active
+    type: behavioral
+    scope: global
+    visibility: public
+    pinned: true
+    statement: >-
+      Call plur_feedback on injected engrams — positive when helpful,
+      negative when wrong or stale. Feedback trains the injection
+      algorithm. Without it, irrelevant engrams keep appearing and
+      relevant ones get buried. This is how memory gets smarter, not
+      just bigger.
+    rationale: >-
+      Feedback is the training signal for retrieval quality. Memory
+      without feedback is a search engine that never improves its
+      ranking.
+    domain: plur.feedback
+    tags: [feedback, relevance, training, plur_feedback]
+    activation: { retrieval_strength: 0.9, storage_strength: 0.9, frequency: 0, last_accessed: "2026-05-04" }
+    dual_coding:
+      example: "Session starts, 8 engrams injected. 2 were directly useful for the task — call plur_feedback positive. 1 was about a project you finished last month — call plur_feedback negative. The rest fine but unremarkable — skip or neutral."
+    pack: effective-memory
+    polarity: do
+    commitment: locked
+
+  # === Engram quality ===
+
+  - id: ENG-PACK-EM-006
+    version: 2
+    status: active
+    type: behavioral
+    scope: global
+    visibility: public
+    pinned: true
+    statement: >-
+      Learn preferences and durable rules — not trivial facts,
+      session-specific state, or things derivable from the codebase. Good
+      engrams: "this API returns snake_case despite the docs saying
+      camelCase", "user prefers DCA over single entries", "deploy requires
+      VPN connection first". Bad engrams: "the user said hello", "we are
+      working on file X", "function foo is on line 42".
+    rationale: >-
+      Memory quality matters more than quantity. Noisy engrams dilute
+      injection relevance and waste context window. Preferences are the
+      difference between a tool and an assistant that knows you;
+      derivable facts are noise.
+    domain: plur.learning
+    tags: [quality, preference, anti-pattern, noise, personalization]
+    activation: { retrieval_strength: 0.9, storage_strength: 0.9, frequency: 0, last_accessed: "2026-05-04" }
+    dual_coding:
+      example: "User: 'I like terse responses, skip the summaries.' → high-value engram (preference). User: 'okay, sounds good' → no engram (no rule, just acknowledgement)."
+    pack: effective-memory
+    polarity: do
+    commitment: locked
+
+  # === Long-horizon agents ===
 
   - id: ENG-PACK-EM-007
-    version: 1
+    version: 2
     status: active
     type: architectural
     scope: global
     visibility: public
-    statement: "Long-horizon agents — agents that run repeatedly on the same domain across days or weeks — MUST call plur_timeline at startup to read past episodes. Without timeline context, the agent rediscovers the same blockers, repeats failed approaches, and loses coherence across runs. This is 'coherence failure' — distinct from intelligence failure and the dominant failure mode for long-running agents."
-    rationale: "A doctor with amnesia is competent each visit but never builds on the previous one. Timeline is the patient chart."
+    pinned: true
+    statement: >-
+      Long-horizon agents — agents that run repeatedly on the same domain
+      across days or weeks — MUST call plur_timeline at startup to read
+      past episodes. Without timeline context, the agent rediscovers the
+      same blockers, repeats failed approaches, and loses coherence across
+      runs. This is "coherence failure" — distinct from intelligence
+      failure and the dominant failure mode for long-running agents.
+    rationale: >-
+      A doctor with amnesia is competent each visit but never builds on
+      the previous one. Timeline is the patient chart.
     domain: plur.agents
-    tags: [timeline, long-horizon, coherence, episodic]
-    activation: { retrieval_strength: 0.9, storage_strength: 0.9, frequency: 0, last_accessed: "2026-04-22" }
+    tags: [timeline, long-horizon, coherence, episodic, plur_timeline]
+    activation: { retrieval_strength: 0.9, storage_strength: 0.9, frequency: 0, last_accessed: "2026-05-04" }
     dual_coding:
       example: "Project manager agent runs Monday, escalates blocker to teammate, no response. Without timeline: Tuesday it escalates again. With timeline: Tuesday it sees Monday's episode, knows escalation failed, tries different approach."
       analogy: "Like having a doctor with anterograde amnesia treating the same patient daily — competent each visit but never builds on the previous one."
     pack: effective-memory
+    polarity: do
+    commitment: locked
+
+  # === Trust observation over stale memory ===
 
   - id: ENG-PACK-EM-008
+    version: 2
+    status: active
+    type: behavioral
+    scope: global
+    visibility: public
+    pinned: true
+    statement: >-
+      When memory and current reality conflict, trust what you observe
+      now — then update the stale engram. Call plur_learn with the
+      correction and plur_feedback negative on the old engram. Memory
+      is a starting point for reasoning, not a substitute for verification.
+    rationale: >-
+      Stale memory acted on without verification causes worse outcomes
+      than no memory at all.
+    domain: plur.maintenance
+    tags: [staleness, verification, update, conflict]
+    activation: { retrieval_strength: 0.9, storage_strength: 0.9, frequency: 0, last_accessed: "2026-05-04" }
+    dual_coding:
+      example: "Memory says 'deploy to server at 10.0.0.5'. You SSH and it times out. Don't keep trying — the IP changed. Verify, update the engram, then proceed."
+    pack: effective-memory
+    polarity: do
+    commitment: locked
+
+  # === Verification: what "done" means ===
+
+  - id: ENG-PACK-EM-009
     version: 1
     status: active
     type: behavioral
     scope: global
     visibility: public
-    statement: "When memory and current reality conflict, trust what you observe now — then update the stale engram. Call plur_learn with the correction and plur_feedback with negative on the old engram. Memory is a starting point for reasoning, not a substitute for verification."
-    rationale: "Stale memory acted on without verification causes worse outcomes than no memory at all."
-    domain: plur.maintenance
-    tags: [staleness, verification, update, conflict]
-    activation: { retrieval_strength: 0.9, storage_strength: 0.9, frequency: 0, last_accessed: "2026-04-22" }
-    dual_coding:
-      example: "Memory says 'deploy to server at 10.0.0.5'. You SSH and it times out. Don't keep trying — the IP changed. Verify, update the engram, then proceed."
+    pinned: true
+    statement: >-
+      For coding/work tasks, "verify if done" means checking the actual
+      artifact (code, file, deployment, commit, infrastructure), not
+      keyword-matching against narrative text (journals, notes,
+      briefings). Per-item verification against the deliverable. Never
+      bulk-action without per-item artifact-level evidence.
+    rationale: >-
+      Narrative text mentions topics in passing. Bulk action that depends
+      on keyword matches has been observed to mark genuinely-incomplete
+      work as done, hiding state from the user.
+    domain: agent.verification
+    tags: [verification, artifact-first, no-bulk-action]
+    activation: { retrieval_strength: 0.95, storage_strength: 1, frequency: 0, last_accessed: "2026-05-04" }
     pack: effective-memory
+    polarity: do
+    commitment: locked
+
+  # === Safety: irreversibility & consent ===
+
+  - id: ENG-PACK-EM-010
+    version: 1
+    status: active
+    type: behavioral
+    scope: global
+    visibility: public
+    pinned: true
+    statement: >-
+      "User confirms" steps in plans, sensitive-file actions, and
+      destructive operations require an actual user message in the
+      conversation. Self-authorization, prior-session approval, configured
+      allowlists, or inferred consent do NOT satisfy. Before any
+      irreversible action (delete, force-push, drop table, chmod near
+      $HOME, mass-rename, mass-cancel) run a one-item dry-run first and
+      surface the result for the user.
+    rationale: >-
+      Auto-confirming "user confirms" steps defeats the purpose of having
+      them — they exist precisely for moments where automation should
+      pause. One-item-first turns a potentially catastrophic mistake into
+      a single easy revert.
+    domain: agent.safety
+    tags: [confirmation, consent, safety, sensitive, irreversible, dry-run, bulk]
+    activation: { retrieval_strength: 0.95, storage_strength: 1, frequency: 0, last_accessed: "2026-05-04" }
+    pack: effective-memory
+    polarity: do
+    commitment: locked
+
+  # === Discipline: read first, ask less ===
+
+  - id: ENG-PACK-EM-011
+    version: 1
+    status: active
+    type: behavioral
+    scope: global
+    visibility: public
+    pinned: true
+    statement: >-
+      Read the target file before editing it; don't edit based on imagined
+      content or remembered structure. Read → diff → write. Separately,
+      don't ask the user "want to continue?", "should I proceed?", or
+      "shall I keep going?" mid-task. Keep working until blocked, the task
+      is done, or you hit a genuine decision-point (destructive action,
+      new direction, sensitive choice). The user already said yes by
+      giving the task.
+    rationale: >-
+      Memory of file content drifts during a session — edits to imagined
+      content corrupt the file or introduce silent regressions.
+      "Want to continue?" prompts add friction without information; they
+      train the user to ignore agent prompts, which then bleeds into
+      ignoring the asks that DO matter.
+    domain: agent.discipline
+    tags: [read-before-edit, discipline, flow, prompts, agent-behavior]
+    activation: { retrieval_strength: 0.9, storage_strength: 1, frequency: 0, last_accessed: "2026-05-04" }
+    pack: effective-memory
+    polarity: do
+    commitment: locked
+
+  # === Time: don't hallucinate dates ===
+
+  - id: ENG-PACK-EM-012
+    version: 1
+    status: active
+    type: behavioral
+    scope: global
+    visibility: public
+    pinned: true
+    statement: >-
+      Never type a day-of-week from memory. LLMs systematically
+      hallucinate weekdays for dates outside their training cutoff or for
+      any specific date. Always verify via a date utility (system clock,
+      datacore.date, `date`, or `python -c "from datetime import date;
+      ..."`) before writing a date+weekday into any file or message.
+    rationale: >-
+      Wrong weekdays in calendar entries, journal headers, and scheduled
+      tasks cause real misalignment. The check costs ~50ms.
+    domain: agent.time
+    tags: [dates, weekday, time, hallucination]
+    activation: { retrieval_strength: 0.9, storage_strength: 1, frequency: 0, last_accessed: "2026-05-04" }
+    pack: effective-memory
+    polarity: do
+    commitment: locked

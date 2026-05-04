@@ -5,9 +5,14 @@ import { embeddingSearch, embedderStatus } from './embeddings.js'
 /** Result of a hybrid search call with diagnostic metadata. */
 export interface HybridSearchResult {
   engrams: Engram[]
-  /** "hybrid" when both BM25 and embeddings contributed; "hybrid-degraded"
-   * when embeddings were unavailable and only BM25 ran. */
-  mode: 'hybrid' | 'hybrid-degraded'
+  /**
+   * - "hybrid": both BM25 and embeddings contributed (full operation).
+   * - "hybrid-degraded": embeddings were configured to load but failed —
+   *   ran BM25-only as a fallback. Indicates a fault to surface to the user.
+   * - "bm25-only": embeddings are explicitly disabled (env var or
+   *   config.yaml); ran BM25 by design. Not a fault, no remediation needed.
+   */
+  mode: 'hybrid' | 'hybrid-degraded' | 'bm25-only'
   embedderError: string | null
 }
 
@@ -103,15 +108,27 @@ export async function hybridSearchWithMeta(
   ])
 
   const status = embedderStatus()
-  // Embedder is degraded when it returned 0 results AND its lastError is set,
-  // OR when status reports unavailable. Empty embResults alone isn't enough —
-  // a query may legitimately have no semantic neighbors above threshold.
-  const degraded = !status.available || (embResults.length === 0 && !!status.lastError)
+  // Three-way mode:
+  //   - bm25-only: user opted out (env var or config) — by design, not a fault.
+  //   - hybrid-degraded: embeddings were configured to load but failed.
+  //   - hybrid: both methods contributed.
+  // Empty embResults with no error means "no semantic neighbors above
+  // threshold", which is normal — don't flag as degraded.
+  let mode: 'hybrid' | 'hybrid-degraded' | 'bm25-only'
+  let embedderError: string | null = null
+  if (status.disabled) {
+    mode = 'bm25-only'
+  } else if (!status.available || (embResults.length === 0 && !!status.lastError)) {
+    mode = 'hybrid-degraded'
+    embedderError = status.lastError
+  } else {
+    mode = 'hybrid'
+  }
 
   const merged = rrfMerge([bm25Results, embResults])
   return {
     engrams: merged.slice(0, effectiveLimit),
-    mode: degraded ? 'hybrid-degraded' : 'hybrid',
-    embedderError: degraded ? status.lastError : null,
+    mode,
+    embedderError,
   }
 }
