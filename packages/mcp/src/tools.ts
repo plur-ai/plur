@@ -910,11 +910,14 @@ export function getToolDefinitions(): ToolDefinition[] {
         }
         const status = plur.status()
         const before = plur.embedderStatus()
-        // Force a load probe by issuing a tiny semantic search
-        try {
-          await plur.recallSemantic('plur doctor probe', { limit: 1 })
-        } catch {
-          // ignore — probe is best-effort
+        // Skip the load probe when explicitly disabled — would short-circuit
+        // anyway and pollute the report with a misleading "load attempt".
+        if (!before.disabled) {
+          try {
+            await plur.recallSemantic('plur doctor probe', { limit: 1 })
+          } catch {
+            // ignore — probe is best-effort
+          }
         }
         const after = plur.embedderStatus()
         const checks: Record<string, unknown>[] = []
@@ -923,31 +926,49 @@ export function getToolDefinitions(): ToolDefinition[] {
           ok: status.engram_count > 0,
           detail: `${status.engram_count} engrams across ${status.pack_count} packs at ${status.storage_root}`,
         })
-        checks.push({
-          check: 'embedder available',
-          ok: after.available && after.loaded,
-          detail: after.loaded
-            ? 'BGE-small-en-v1.5 loaded'
-            : after.lastError
-            ? `Failed to load: ${after.lastError}`
-            : 'Not yet loaded — first call may have raced; try again or use retry:true',
-        })
-        const hybridOk = after.available && after.loaded
-        checks.push({
-          check: 'hybrid search operational',
-          ok: hybridOk,
-          detail: hybridOk
-            ? 'Hybrid search will use BM25 + embeddings (fully functional)'
-            : 'Hybrid search will silently degrade to BM25-only — semantic recall disabled',
-        })
+        // When embeddings are explicitly disabled, mark the embedder check as
+        // ok with a "disabled-on-purpose" detail. Hybrid search is then
+        // expected to run BM25-only and that's a healthy state, not a fault.
+        if (after.disabled) {
+          checks.push({
+            check: 'embedder available',
+            ok: true,
+            detail: `Disabled on purpose — ${after.disabledReason ?? 'embeddings disabled'}`,
+          })
+          checks.push({
+            check: 'hybrid search operational',
+            ok: true,
+            detail: 'Running in BM25-only mode (embeddings opted out)',
+          })
+        } else {
+          checks.push({
+            check: 'embedder available',
+            ok: after.available && after.loaded,
+            detail: after.loaded
+              ? 'BGE-small-en-v1.5 loaded'
+              : after.lastError
+              ? `Failed to load: ${after.lastError}`
+              : 'Not yet loaded — first call may have raced; try again or use retry:true',
+          })
+          const hybridOk = after.available && after.loaded
+          checks.push({
+            check: 'hybrid search operational',
+            ok: hybridOk,
+            detail: hybridOk
+              ? 'Hybrid search will use BM25 + embeddings (fully functional)'
+              : 'Hybrid search will silently degrade to BM25-only — semantic recall disabled',
+          })
+        }
         const remediation: string[] = []
-        if (!hybridOk) {
+        if (!after.disabled && !(after.available && after.loaded)) {
           remediation.push(
             'Embedding model is not loaded. Common causes:',
             '  • First-run download not yet completed (try: plur_doctor with retry:true)',
             '  • Network blocked HuggingFace Hub fetch — check connectivity to huggingface.co',
             '  • pnpm hoisting issue: @huggingface/transformers must resolve onnxruntime-node from the package root, not a workspace package',
+            '  • Corrupt model cache: a half-completed download leaves a broken cache that fails every subsequent load. Delete `~/.cache/huggingface/hub/models--Xenova--bge-small-en-v1.5/` and retry — the model will redownload on next call.',
             '  • Manual fix: from the @plur-ai/core package directory, run a script that imports @huggingface/transformers and calls pipeline() to trigger the download',
+            '  • Or opt out: set PLUR_DISABLE_EMBEDDINGS=1, or write `embeddings: { enabled: false }` to ~/.plur/config.yaml — hybrid search will run BM25-only',
           )
         }
         return {

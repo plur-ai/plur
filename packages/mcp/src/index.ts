@@ -32,6 +32,66 @@ const MCP_SERVER_CONFIG = {
   args: ['-y', '@plur-ai/mcp@latest'],
 }
 
+// --- Pack-upgrade helpers ---
+
+/**
+ * Compare two semver strings (e.g. "1.0.0" vs "1.1.0"). Returns negative if
+ * a < b, 0 if equal, positive if a > b. Tolerates missing patch segments
+ * (treats "1.0" as "1.0.0"). Strips prerelease suffixes — "1.0.0-rc1" is
+ * compared as "1.0.0", which means a prerelease compares EQUAL to its base
+ * release. Adequate for the controlled pack ecosystem; for prerelease
+ * support add a dedicated semver lib.
+ *
+ * Non-numeric leading segments (e.g. "v1.0.0", "abc.1.0") parse as 0 — so
+ * "v1.0.0" compares as [0,0,0]. This is intentional: we'd rather accept the
+ * pack and treat it as version-zero than throw. The `extractManifestVersion`
+ * regex normally strips the leading `v`; this is a defense-in-depth fallback.
+ *
+ * Calendar versioning (e.g. "2025.04") parses correctly as numeric segments,
+ * but a calendar-versioned pack will compare as far-future against semver-
+ * versioned bundled packs and never receive upgrades. Packs ship semver.
+ */
+export function compareSemver(a: string, b: string): number {
+  const stripPrerelease = (v: string): string => v.split('-')[0].split('+')[0]
+  const stripV = (v: string): string => v.replace(/^v/i, '')
+  const parse = (v: string): number[] =>
+    stripV(stripPrerelease(v))
+      .split('.')
+      .map(n => {
+        const parsed = parseInt(n, 10)
+        return Number.isNaN(parsed) ? 0 : parsed
+      })
+  const pa = parse(a)
+  const pb = parse(b)
+  for (let i = 0; i < Math.max(pa.length, pb.length, 3); i++) {
+    const ai = pa[i] ?? 0
+    const bi = pb[i] ?? 0
+    if (ai !== bi) return ai - bi
+  }
+  return 0
+}
+
+/**
+ * Extract the `version` field from a pack's SKILL.md frontmatter without
+ * loading the whole pack. Returns null when SKILL.md is missing, the
+ * frontmatter has no version, or the version is nested under another key.
+ *
+ * Accepts both quoted (`version: "1.0.0"`) and unquoted (`version: 1.0.0`)
+ * forms. Rejects nested keys (`metadata:\n  version: 1.0.0`) — the regex
+ * anchors to start-of-line so a leading space breaks the match.
+ */
+export function extractManifestVersion(skillMdPath: string): string | null {
+  try {
+    const content = readFileSync(skillMdPath, 'utf8')
+    const fmMatch = content.match(/^---\s*\n([\s\S]*?)\n---/m)
+    if (!fmMatch) return null
+    const versionMatch = fmMatch[1].match(/^version:\s*"?([^"\n]+)"?\s*$/m)
+    return versionMatch ? versionMatch[1].trim() : null
+  } catch {
+    return null
+  }
+}
+
 // Hook commands — all use npx for zero-install compatibility
 const CLI = 'npx @plur-ai/cli'
 
@@ -225,27 +285,56 @@ async function runInit() {
   const claudeMdStatus = installClaudeMd()
   results.push(`CLAUDE.md: ${claudeMdStatus}`)
 
-  // Step 5: Install bundled knowledge packs
+  // Step 5: Install bundled knowledge packs.
+  // Two cases: (1) pack not installed → install fresh. (2) pack installed at
+  // an older version → reinstall to upgrade. We compare manifest versions
+  // (semver, dotted ints) instead of just-presence so existing users running
+  // `plur init` after an upgrade actually receive new content.
   const { Plur } = await import('@plur-ai/core')
   const plur = new Plur({ path: paths.root })
   const bundledPacksDir = join(fileURLToPath(import.meta.url), '..', '..', 'packs')
   let packsStatus = 'no bundled packs found'
   if (existsSync(bundledPacksDir)) {
     const installed = plur.listPacks()
-    const installedNames = new Set(installed.map((p: { name: string }) => p.name))
+    const installedByName = new Map(installed.map((p: { name: string; manifest?: { version?: string } }) => [p.name, p.manifest?.version]))
     const entries = readdirSync(bundledPacksDir).filter(e => statSync(join(bundledPacksDir, e)).isDirectory())
     const newPacks: string[] = []
+    const upgradedPacks: string[] = []
     for (const entry of entries) {
-      if (!installedNames.has(entry)) {
+      const bundledManifestPath = join(bundledPacksDir, entry, 'SKILL.md')
+      const bundledVersion = existsSync(bundledManifestPath)
+        ? extractManifestVersion(bundledManifestPath)
+        : null
+      const installedVersion = installedByName.get(entry)
+      if (!installedByName.has(entry)) {
         try {
           plur.installPack(join(bundledPacksDir, entry))
           newPacks.push(entry)
         } catch {}
+      } else if (
+        bundledVersion &&
+        (!installedVersion || compareSemver(bundledVersion, installedVersion) > 0)
+      ) {
+        // Upgrade in place — installPack overwrites the pack directory and
+        // re-registers integrity in the registry. The `!installedVersion`
+        // case catches packs installed with a missing or unreadable manifest
+        // version (older installs predating versioned manifests, or
+        // hand-edited packs without a `version:` field). In that case we
+        // can't do a comparison, so we upgrade unconditionally rather than
+        // leave a versionless pack stale forever.
+        try {
+          plur.installPack(join(bundledPacksDir, entry))
+          upgradedPacks.push(
+            `${entry} ${installedVersion ?? 'unknown'}→${bundledVersion}`,
+          )
+        } catch {}
       }
     }
-    packsStatus = newPacks.length > 0
-      ? `installed ${newPacks.join(', ')}`
-      : `${entries.length} pack(s) already installed`
+    const segments: string[] = []
+    if (newPacks.length > 0) segments.push(`installed ${newPacks.join(', ')}`)
+    if (upgradedPacks.length > 0) segments.push(`upgraded ${upgradedPacks.join(', ')}`)
+    if (segments.length === 0) segments.push(`${entries.length} pack(s) already up-to-date`)
+    packsStatus = segments.join('; ')
   }
   results.push(`Packs:    ${packsStatus}`)
 

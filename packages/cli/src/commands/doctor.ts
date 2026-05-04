@@ -38,7 +38,7 @@ interface DoctorReport {
   mcpRegistered: boolean
   datacoreCollision: boolean
   handshake: { ok: boolean; serverName?: string; serverVersion?: string; error?: string }
-  embedder: { available: boolean; loaded: boolean; lastError: string | null; modelLoaded: boolean }
+  embedder: { available: boolean; loaded: boolean; lastError: string | null; modelLoaded: boolean; disabled: boolean; disabledReason: string | null }
   overall: 'ok' | 'fail'
 }
 
@@ -163,15 +163,21 @@ async function mcpHandshake(timeoutMs = 20000): Promise<{ ok: boolean; serverNam
   })
 }
 
-async function checkEmbedder(flags: GlobalFlags): Promise<{ available: boolean; loaded: boolean; lastError: string | null; modelLoaded: boolean }> {
+async function checkEmbedder(flags: GlobalFlags): Promise<{ available: boolean; loaded: boolean; lastError: string | null; modelLoaded: boolean; disabled: boolean; disabledReason: string | null }> {
   try {
     const plur = createPlur(flags)
-    // Force a probe so we get a real load attempt rather than just the cached state
-    plur.resetEmbedder()
-    try {
-      await plur.recallSemantic('plur doctor probe', { limit: 1 })
-    } catch {
-      // best effort
+    // Skip the load probe when explicitly disabled — calling recallSemantic
+    // would still short-circuit (getEmbedder returns null) but the probe is
+    // misleading noise in that case.
+    const preStatus = plur.embedderStatus()
+    if (!preStatus.disabled) {
+      // Force a probe so we get a real load attempt rather than just the cached state
+      plur.resetEmbedder()
+      try {
+        await plur.recallSemantic('plur doctor probe', { limit: 1 })
+      } catch {
+        // best effort
+      }
     }
     const status = plur.embedderStatus()
     return {
@@ -179,6 +185,8 @@ async function checkEmbedder(flags: GlobalFlags): Promise<{ available: boolean; 
       loaded: status.loaded,
       lastError: status.lastError,
       modelLoaded: status.available && status.loaded,
+      disabled: status.disabled,
+      disabledReason: status.disabledReason,
     }
   } catch (err) {
     return {
@@ -186,6 +194,8 @@ async function checkEmbedder(flags: GlobalFlags): Promise<{ available: boolean; 
       loaded: false,
       lastError: err instanceof Error ? err.message : String(err),
       modelLoaded: false,
+      disabled: false,
+      disabledReason: null,
     }
   }
 }
@@ -255,7 +265,11 @@ function printText(report: DoctorReport): void {
   }
 
   outputText('')
-  if (report.embedder.modelLoaded) {
+  if (report.embedder.disabled) {
+    outputText(`○ Embedding layer DISABLED — ${report.embedder.disabledReason ?? 'embeddings disabled'}`)
+    outputText('  Hybrid recall is running in BM25-only mode (this is intentional).')
+    outputText('  Re-enable: unset PLUR_DISABLE_EMBEDDINGS or set embeddings.enabled: true in ~/.plur/config.yaml')
+  } else if (report.embedder.modelLoaded) {
     outputText('✓ Embedding model loaded — hybrid search is fully operational')
   } else {
     outputText('✗ Embedding model NOT loaded — hybrid search will silently degrade to BM25-only')
@@ -267,6 +281,8 @@ function printText(report: DoctorReport): void {
     outputText('    - Network blocked HuggingFace Hub — check huggingface.co connectivity')
     outputText('    - @huggingface/transformers package failed to load (ONNX runtime issue)')
     outputText('    - pnpm hoisting: onnxruntime-node not findable from transformers package root')
+    outputText('  To opt out (run BM25-only intentionally): set PLUR_DISABLE_EMBEDDINGS=1')
+    outputText('    or write `embeddings: { enabled: false }` to ~/.plur/config.yaml')
   }
 
   outputText('')
@@ -282,7 +298,7 @@ function printText(report: DoctorReport): void {
       outputText('       — try launching Claude from your terminal once,')
       outputText('       — or replace the plur entry command with an absolute path to your shell.')
     }
-    if (!report.embedder.modelLoaded) {
+    if (!report.embedder.modelLoaded && !report.embedder.disabled) {
       outputText('  Fix: from the @plur-ai/core package directory, run a script that imports')
       outputText('       @huggingface/transformers and calls pipeline() once to trigger the')
       outputText('       BGE-small-en-v1.5 download (~130MB).')

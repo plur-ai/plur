@@ -27,18 +27,71 @@ let lastLoadError: string | null = null
 // getEmbedder() retries on every call until success.
 let transformersUnavailable = false
 
+// Opt-out: when true, getEmbedder() short-circuits to null without attempting
+// a model load. Configurable via PLUR_DISABLE_EMBEDDINGS env var (read at
+// import time) or PlurConfigSchema.embeddings.enabled=false (wired by Plur
+// constructor via setEmbeddingsEnabled). Default: enabled.
+
+/**
+ * Parse the PLUR_DISABLE_EMBEDDINGS env var. Returns a human-readable
+ * disabled-reason when the variable indicates opt-out, or null when
+ * embeddings should remain enabled. Exported for unit testing — the
+ * module-level capture happens once at import time and cannot be retested
+ * from within the same process.
+ *
+ * Accepts truthy spellings: "1", "true", "yes" (case-insensitive). Any
+ * other value (including unset, "0", "false", "") leaves embeddings enabled.
+ */
+export function readDisabledFromEnv(env: Record<string, string | undefined>): string | null {
+  const raw = env.PLUR_DISABLE_EMBEDDINGS
+  if (!raw) return null
+  const normalized = raw.trim().toLowerCase()
+  if (normalized === '1' || normalized === 'true' || normalized === 'yes') {
+    return 'embeddings disabled by PLUR_DISABLE_EMBEDDINGS env var'
+  }
+  return null
+}
+
+const ENV_DISABLED_REASON = readDisabledFromEnv(process.env)
+let embeddingsDisabled = ENV_DISABLED_REASON !== null
+let disabledReason: string | null = ENV_DISABLED_REASON
+
 export interface EmbedderStatus {
   available: boolean
   loaded: boolean
   lastError: string | null
+  /** True when embeddings are explicitly disabled by user (env var or config). */
+  disabled: boolean
+  /** Human-readable reason when disabled is true; null otherwise. */
+  disabledReason: string | null
 }
 
 /** Inspect embedder state without forcing a load. Used by `plur doctor`. */
 export function embedderStatus(): EmbedderStatus {
   return {
-    available: !transformersUnavailable,
+    available: !embeddingsDisabled && !transformersUnavailable,
     loaded: embedPipeline !== null,
     lastError: lastLoadError,
+    disabled: embeddingsDisabled,
+    disabledReason,
+  }
+}
+
+/**
+ * Toggle embeddings on/off at runtime.
+ *
+ * Called by the Plur constructor when config.embeddings.enabled is false, and
+ * available to host code that needs to flip state for tests or runtime
+ * overrides. The PLUR_DISABLE_EMBEDDINGS env var takes precedence at import
+ * time; calling setEmbeddingsEnabled(true) after that env var is set will
+ * still re-enable.
+ */
+export function setEmbeddingsEnabled(enabled: boolean, reason?: string): void {
+  embeddingsDisabled = !enabled
+  disabledReason = enabled ? null : (reason ?? 'embeddings disabled by config')
+  if (!enabled) {
+    // Drop any loaded pipeline so the model can be unloaded by the GC.
+    embedPipeline = null
   }
 }
 
@@ -50,6 +103,7 @@ export function resetEmbedder(): void {
 }
 
 async function getEmbedder() {
+  if (embeddingsDisabled) return null
   if (embedPipeline) return embedPipeline
   // Soft retry: even if a previous load failed, try again on every call.
   // Loads are cheap once the model is cached; failures are rare and

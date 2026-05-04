@@ -39,6 +39,11 @@ const DEFAULT_MAX_TOKENS = 8000
 const DEFAULT_MIN_RELEVANCE = 0.3
 const MAX_PER_PACK = 5
 const MAX_PER_DOMAIN = 10
+// Pinned engrams bypass per-pack/per-domain caps but must not eat the entire
+// budget — left unbounded, a single user with many pinned packs could starve
+// every relevance-scored engram. Cap at 50% of maxTokens so contextual recall
+// still gets at least half the budget. Tuned for default 8000 → 4000 pinned.
+const PINNED_TOKEN_BUDGET_RATIO = 0.5
 
 // DIP-0019 consider pool (bottom 1/3 of first-pass)
 const DIP19_CONSIDER_MAX = 5
@@ -223,13 +228,17 @@ export function fillTokenBudget(
 
   // Two-pass selection: pinned engrams first, then the rest. Pinned items
   // ignore per-pack and per-domain fairness caps because they're meant to be
-  // always-load — but they still respect maxTokens.
+  // always-load — but they respect both maxTokens AND a sub-budget so they
+  // can't starve the relevance-scored engrams. With many pinned packs, the
+  // pinned set can grow unboundedly; the sub-budget caps at 50% of maxTokens.
   const pinned = scored.filter(e => (e as any).pinned === true)
   const unpinned = scored.filter(e => (e as any).pinned !== true)
+  const pinnedBudget = Math.floor(maxTokens * PINNED_TOKEN_BUDGET_RATIO)
 
   for (const engram of pinned) {
     const cost = estimateTokens(engram)
     if (tokensUsed + cost > maxTokens) continue
+    if (tokensUsed + cost > pinnedBudget) continue
     result.push(engram)
     tokensUsed += cost
     const pack = engram.pack ?? '__personal__'
@@ -348,8 +357,12 @@ export function selectAndSpread(
     e.score = e.keyword_match + aBoost
   }
 
-  // Step 5: Filter by minimum relevance
-  const filtered = scored.filter(s => s.score >= minRelevance)
+  // Step 5: Filter by minimum relevance.
+  // Pinned engrams bypass the relevance gate — that is the whole contract of
+  // pinning. Without this exemption, a session with strong personal-engram
+  // matches normalizes pinned scores below DEFAULT_MIN_RELEVANCE (0.3) and
+  // the pinned engram is silently dropped before fillTokenBudget sees it.
+  const filtered = scored.filter(s => (s as any).pinned === true || s.score >= minRelevance)
 
   // Sort by score descending
   filtered.sort((a, b) => b.score - a.score)

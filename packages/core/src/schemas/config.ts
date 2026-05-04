@@ -35,6 +35,22 @@ export const StorageConfigSchema = z.object({
 
 export type StorageConfigYaml = z.infer<typeof StorageConfigSchema>
 
+/**
+ * Embedding-layer configuration. When enabled is false, the BGE model is not
+ * loaded and recall_hybrid runs in BM25-only mode. The PLUR_DISABLE_EMBEDDINGS
+ * env var also disables embeddings (env precedence at import time).
+ *
+ * Hardware footprint of enabled embeddings: ~130MB BGE model on first use,
+ * a few hundred MB RAM while the model is resident, ONNX runtime native
+ * binary. Disable for low-resource environments or strict-offline setups
+ * where the first-run model download is unwanted.
+ */
+export const EmbeddingsConfigSchema = z.object({
+  enabled: z.boolean().default(true),
+}).partial()
+
+export type EmbeddingsConfigYaml = z.infer<typeof EmbeddingsConfigSchema>
+
 export const PlurConfigSchema = z.object({
   auto_learn: z.boolean().default(true),
   auto_capture: z.boolean().default(true),
@@ -52,6 +68,7 @@ export const PlurConfigSchema = z.object({
   allow_secrets: z.boolean().default(false),
   index: z.boolean().default(true),
   storage: StorageConfigSchema.default({}),
+  embeddings: EmbeddingsConfigSchema.default({}),
   stores: z.array(StoreEntrySchema).default([]),
   llm: LlmTierConfigSchema.default({}),
   profile: ProfileConfigSchema.default({}),

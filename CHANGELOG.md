@@ -1,5 +1,48 @@
 # Changelog
 
+## 0.9.4 (2026-05-04)
+
+Hybrid recall, restored.
+
+- BGE embeddings actually work
+- Pinned engrams (always-inject)
+- plur_doctor diagnostic
+- PLUR_DISABLE_EMBEDDINGS opt-out
+
+### Fixes
+
+- **Hybrid search degraded-mode surfacing** — `plur_recall_hybrid` now reports `mode: 'hybrid-degraded'` (with the underlying error) when the embedding model failed to load. Previously it lied with `mode: 'hybrid'` while silently falling back to BM25-only.
+- **Embeddings build config** — `@huggingface/transformers`, `onnxruntime-node`, `onnxruntime-web`, `sharp`, `@huggingface/jinja` now marked external in the core tsup config. Bundling them broke ONNX backend registration in production with "listSupportedBackends is not a function".
+- **Embedder retry** — `getEmbedder()` no longer latches the first-load failure forever. Each call re-attempts so first-run download races resolve themselves.
+- **Embedding boost uses cosine, not rank** — `injectHybrid` previously gave the top semantic result a hardcoded boost of 1.0 regardless of how unrelated it was. Now uses the actual cosine score so the threshold is meaningful.
+- **Embedding threshold raised 0.3 → 0.5** — the lower threshold was tuned for a non-functional embedder. Once BGE actually loaded, 0.3 surfaced spurious matches between unrelated short English sentences.
+- **Pinned engrams bypass minRelevance filter** — without this, sessions with strong unpinned matches would silently drop pinned engrams (the entire pinning contract failed). Pinned engrams are also now sub-capped at 50% of the token budget so they can't starve relevance-scored engrams when many pinned packs are installed.
+- **`plur init` upgrades stale packs** — was name-only (existing installs missed new pack content); now compares manifest versions and reinstalls when bundled > installed. Versionless packs are upgraded unconditionally.
+
+### Features
+
+- **`plur_doctor` MCP tool + extended `plur doctor` CLI** — probes embedder availability, reports the actual load error, and lists remediation steps including the corrupt-cache recovery path. Use this first when recall feels off.
+- **Pinned engrams** (`pinned: true` on the schema) — bypass the keyword-relevance gate in `scoreEngram`, the per-pack/per-domain caps in `fillTokenBudget`, and the minRelevance filter. Use sparingly — meta-rules and safety conventions only.
+- **`plur_pin` MCP tool + `pinned` param on `plur_learn`** — toggle and create pinned engrams.
+- **API additions**: `Plur.setPinned(id, bool)`, `Plur.listPinned()`, `Plur.embedderStatus()`, `Plur.resetEmbedder()`, `Plur.recallHybridWithMeta()`.
+- **Embeddings opt-out** — `PLUR_DISABLE_EMBEDDINGS=1` env var (also accepts `true`, `yes`) or `embeddings.enabled: false` in `~/.plur/config.yaml`. Doctor distinguishes "disabled by design" from "embedder broken." Hybrid recall reports the new `mode: 'bm25-only'` when opted out.
+- **Three-way mode reporting on hybrid search** — `mode: 'hybrid' | 'hybrid-degraded' | 'bm25-only'`. `bm25-only` is the new "by design" state; `hybrid-degraded` is reserved for actual embedder load failures.
+
+### Hardware footprint
+
+0.9.4 makes embeddings actually work. First `plur_recall_hybrid` after upgrade triggers a one-time **~130MB BGE model download** (Xenova/bge-small-en-v1.5) plus ONNX runtime load (~few hundred MB RAM while resident, a few seconds first-call latency). Subsequent calls are fast. **Opt out** for low-resource or strict-offline environments via `PLUR_DISABLE_EMBEDDINGS=1` or `embeddings.enabled: false` in `~/.plur/config.yaml`.
+
+### Knowledge pack consolidated
+
+`effective-memory` v1.0.0 (8 engrams) → **v1.1.0 (12 engrams, all pinned)**. Merged the meta-rules from the standalone `plur-required` pack into the canonical `effective-memory` pack so users get one essential pack, pinned, with examples and analogies preserved. Existing 0.9.2/0.9.3 installs auto-upgrade on the next `plur init` (now version-aware).
+
+### Packages
+
+- `@plur-ai/core` 0.9.4 — pinned field, embedder helpers, build config fix, opt-out, mode reporting
+- `@plur-ai/mcp` 0.9.4 — `plur_doctor`, `plur_pin`, hybrid-degraded + bm25-only mode reporting, version-aware pack upgrade
+- `@plur-ai/cli` 0.9.4 — extended `doctor` with embedder check + opt-out hints
+- `@plur-ai/claw` 0.9.10 — version bump (independent track; was 0.9.9 on npm)
+
 ## 0.9.3 (2026-04-22)
 
 ### Fixes
