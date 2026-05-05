@@ -27,6 +27,7 @@ import { sync as gitSync, getSyncStatus, withLock, type SyncResult, type SyncSta
 import { detectSecrets } from './secrets.js'
 import { appendHistory, readHistoryForEngram, generateEventId } from './history.js'
 import { computeContentHash } from './content-hash.js'
+import { RemoteStore } from './store/remote-store.js'
 import type { Engram } from './schemas/engram.js'
 import type { Episode } from './schemas/episode.js'
 import type { PackManifest } from './schemas/pack.js'
@@ -190,7 +191,9 @@ export class Plur {
 
     const all: Engram[] = [...primary]
     for (const store of stores) {
-      const storeEngrams = this._loadCached(store.path)
+      const storeEngrams = store.url
+        ? this._loadRemoteCached(store)
+        : this._loadCached(store.path!)
       const prefix = storePrefix(store.scope)
       for (const e of storeEngrams) {
         // Phase 4: Scope validation
@@ -243,6 +246,34 @@ export class Plur {
   }
 
   /**
+   * Per-instance pool of RemoteStore drivers, keyed by url+scope.
+   * RemoteStore holds its own internal TTL cache so repeated load()
+   * within ttlMs returns the same array without a network call.
+   *
+   * Note `_loadAllEngrams` is sync but RemoteStore.load() is async.
+   * We bridge that by returning whatever's in the driver's cache
+   * synchronously and triggering a background refresh on cache miss.
+   * The first call after server start returns [] for that store; the
+   * call after the first refresh sees the data. For our pilot this
+   * is acceptable — recall is expected to be tried more than once
+   * in any real session.
+   */
+  private _remoteStores = new Map<string, RemoteStore>()
+  private _loadRemoteCached(store: StoreEntry): Engram[] {
+    const key = `${store.url}::${store.scope}`
+    let driver = this._remoteStores.get(key)
+    if (!driver) {
+      driver = new RemoteStore(store.url!, store.token ?? '', store.scope)
+      this._remoteStores.set(key, driver)
+    }
+    // Synchronously read whatever the driver currently has cached.
+    // Trigger a refresh in the background; the next call sees fresh data.
+    const cached = (driver as unknown as { cache: { engrams: Engram[] } | null }).cache
+    void driver.load().catch(() => { /* errors logged inside RemoteStore */ })
+    return cached?.engrams ?? []
+  }
+
+  /**
    * Write engrams to disk and invalidate the cache for that path.
    *
    * Why: `_loadCached` uses mtime-based invalidation, but on CI tmpfs
@@ -266,9 +297,13 @@ export class Plur {
       return { path: this.paths.engrams, readonly: false, originalId: id }
     }
 
-    // Check stores — ID might be namespaced
+    // Check stores — ID might be namespaced. Remote stores are skipped
+    // here because remote IDs are not namespaced (the remote PLUR
+    // Enterprise server assigns its own IDs); writes to remote stores
+    // go through their own path.
     const stores = this.config.stores ?? []
     for (const store of stores) {
+      if (!store.path) continue
       const prefix = storePrefix(store.scope)
       const nsPattern = new RegExp(`^(ENG|ABS|META)-${prefix}-`)
       if (nsPattern.test(id)) {
@@ -1278,18 +1313,43 @@ Generate an improved version of the procedure that prevents this failure. Return
     }
   }
 
-  /** Register an additional engram store. */
-  addStore(storePath: string, scope: string, options?: { shared?: boolean; readonly?: boolean }): void {
+  /**
+   * Register an additional engram store.
+   *
+   * Two shapes — exactly one of `pathOrUrl` semantics applies:
+   *   - filesystem (default): pass a path. `options.url` undefined.
+   *   - remote (PLUR Enterprise / any compatible REST API):
+   *     pass any string for the first arg (it goes into a slot we
+   *     never read), set `options.url` + `options.token`.
+   *
+   * Backwards compatible: existing call sites that pass a filesystem
+   * path keep working.
+   */
+  addStore(
+    storePath: string,
+    scope: string,
+    options?: { shared?: boolean; readonly?: boolean; url?: string; token?: string },
+  ): void {
     const config = loadConfig(this.paths.config)
-    const existing = config.stores?.find(s => s.path === storePath)
-    if (existing) return // Already registered
-    const stores = [...(config.stores ?? []), {
-      path: storePath,
-      scope,
-      shared: options?.shared ?? false,
-      readonly: options?.readonly ?? false,
-    }]
-    // Write updated config
+    const isRemote = Boolean(options?.url)
+    const dedupKey = isRemote ? options!.url : storePath
+    const existing = config.stores?.find(s => (isRemote ? s.url === dedupKey : s.path === dedupKey))
+    if (existing) return
+    const newEntry: StoreEntry = isRemote
+      ? {
+          url:      options!.url!,
+          token:    options!.token,
+          scope,
+          shared:   options?.shared   ?? true,    // remote stores are shared by definition
+          readonly: options?.readonly ?? false,
+        }
+      : {
+          path:     storePath,
+          scope,
+          shared:   options?.shared   ?? false,
+          readonly: options?.readonly ?? false,
+        }
+    const stores = [...(config.stores ?? []), newEntry]
     let configData: Record<string, unknown> = {}
     try {
       const raw = fs.readFileSync(this.paths.config, 'utf8')
@@ -1297,7 +1357,6 @@ Generate an improved version of the procedure that prevents this failure. Return
     } catch {}
     configData.stores = stores
     fs.writeFileSync(this.paths.config, yaml.dump(configData, { lineWidth: 120, noRefs: true }))
-    // Reload config
     this.config = loadConfig(this.paths.config)
   }
 
@@ -1362,7 +1421,9 @@ Generate an improved version of the procedure that prevents this failure. Return
   }
 
   /** List all configured stores. */
-  listStores(): Array<{ path: string; scope: string; shared: boolean; readonly: boolean; engram_count: number }> {
+  listStores(): Array<{
+    path?: string; url?: string; scope: string; shared: boolean; readonly: boolean; engram_count: number
+  }> {
     const stores = this.config.stores ?? []
     // Always include the primary store
     const primary = {
@@ -1374,8 +1435,19 @@ Generate an improved version of the procedure that prevents this failure. Return
     }
     const additional = stores.map(s => {
       let count = 0
-      try { count = this._loadCached(s.path).filter(e => e.status !== 'retired').length } catch {}
-      return { ...s, engram_count: count }
+      if (s.url) {
+        try { count = this._loadRemoteCached(s).filter(e => e.status !== 'retired').length } catch {}
+      } else if (s.path) {
+        try { count = this._loadCached(s.path).filter(e => e.status !== 'retired').length } catch {}
+      }
+      return {
+        path:     s.path,
+        url:      s.url,
+        scope:    s.scope,
+        shared:   s.shared,
+        readonly: s.readonly,
+        engram_count: count,
+      }
     })
     return [primary, ...additional]
   }

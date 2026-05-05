@@ -1,11 +1,22 @@
 import { z } from 'zod'
 
+/**
+ * A store can be either:
+ *   - filesystem (path) — historical default; YAML or SQLite
+ *   - remote (url + token) — speaks to a PLUR Enterprise server over HTTP
+ * Exactly one of path/url must be present.
+ */
 export const StoreEntrySchema = z.object({
-  path: z.string(),
+  path: z.string().optional(),
+  url: z.string().url().optional(),
+  token: z.string().optional(),       // Bearer for remote stores; ignored for path
   scope: z.string(),
   shared: z.boolean().default(false),
   readonly: z.boolean().default(false),
-})
+}).refine(
+  (s) => Boolean(s.path) !== Boolean(s.url),
+  { message: 'StoreEntry requires exactly one of path or url' },
+)
 
 export type StoreEntry = z.infer<typeof StoreEntrySchema>
 

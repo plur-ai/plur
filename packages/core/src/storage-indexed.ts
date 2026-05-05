@@ -130,8 +130,12 @@ export class IndexedStorage {
         allSyncedIds.add(e.id)
       }
 
-      // Sync additional stores with namespaced IDs
+      // Sync additional stores with namespaced IDs.
+      // Remote (url) stores are skipped here — the SQLite index only
+      // tracks file-backed stores; remote engrams are queried live
+      // through the in-memory _loadAllEngrams path.
       for (const store of this.stores) {
+        if (!store.path) continue
         validSources.add(store.path)
         const storeEngrams = loadEngrams(store.path)
         const prefix = storePrefix(store.scope)
