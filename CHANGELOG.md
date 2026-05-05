@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.9.5 (2026-05-05)
+
+Remote stores — register PLUR Enterprise (or any compatible REST endpoint) as a store via `plur_stores_add`.
+
+### Features
+
+- **`RemoteStore` driver** in `@plur-ai/core` — implements the same `EngramStore` interface as `YamlStore`/`SqliteStore` but reads/writes against an HTTP endpoint (PLUR Enterprise's `/api/v1`). 60s TTL cache, in-flight request dedup, paginated load, never-throws on network failure.
+- **`plur_stores_add` accepts `url`+`token`** — was `{path, scope}`-only; now `{path | url+token, scope}`. Schema requires exactly one of path/url. Backwards compatible: existing filesystem-store call sites unchanged.
+- **`StoreEntry` config schema** — adds optional `url` and `token` fields, refine() enforces exactly-one-of-path-or-url.
+- **`Plur.addStore()`** — accepts `options.url` and `options.token` to register remote stores. `Plur.listStores()` returns `{path?, url?, scope, ...}` shape.
+- **MCP `plur_stores_add` tool** — `required: ['scope']` (was `['path', 'scope']`). Returns `kind: 'filesystem' | 'remote'`.
+
+### Why this matters
+
+The PLUR Enterprise pilot needed a clean answer to "what does an existing local-PLUR user do?" The previous answer was "configure two MCP servers in `mcp.json` and prefix every call with `plur-local__` or `plur-enterprise__`." The new answer is `plur_stores_add url=... token=... scope=...`, registered once on the existing single-MCP-server install. Existing multi-store recall machinery handles the merge.
+
 ## 0.9.4 (2026-05-04)
 
 Hybrid recall, restored.
