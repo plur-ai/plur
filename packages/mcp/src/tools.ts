@@ -1135,24 +1135,37 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
 
     {
       name: 'plur_stores_add',
-      description: 'Register an additional engram store at a filesystem path with a scope identifier',
+      description: 'Register an additional engram store. Either filesystem (path) or remote (url+token, e.g. PLUR Enterprise).',
       annotations: { title: 'Add store', destructiveHint: false, idempotentHint: true },
       inputSchema: {
         type: 'object',
         properties: {
-          path: { type: 'string', description: 'Filesystem path to engrams.yaml' },
-          scope: { type: 'string', description: 'Scope identifier (e.g. space:1-datafund, module:trading)' },
-          shared: { type: 'boolean', description: 'Whether this store is git-committed / team-visible' },
-          readonly: { type: 'boolean', description: 'Whether this store is read-only (e.g. purchased packs)' },
+          path:    { type: 'string', description: 'Filesystem path to engrams.yaml (omit if registering a remote store)' },
+          url:     { type: 'string', description: 'Remote store base URL, e.g. https://plur.datafund.io/sse — pair with token' },
+          token:   { type: 'string', description: 'Bearer token (JWT or plur_sk_... API key) for remote stores' },
+          scope:   { type: 'string', description: 'Scope identifier (e.g. space:1-datafund, group:plur/plur-ai/engineering)' },
+          shared:  { type: 'boolean', description: 'Whether this store is git-committed / team-visible (remote stores default true)' },
+          readonly:{ type: 'boolean', description: 'Whether this store is read-only (e.g. purchased packs)' },
         },
-        required: ['path', 'scope'],
+        required: ['scope'],
       },
       handler: async (args, plur) => {
-        plur.addStore(args.path as string, args.scope as string, {
-          shared: args.shared as boolean | undefined,
+        const path  = args.path  as string | undefined
+        const url   = args.url   as string | undefined
+        const token = args.token as string | undefined
+        if (!path && !url) return { error: 'Either path or url must be provided' }
+        if (path && url) return { error: 'Provide path OR url, not both' }
+        plur.addStore(path ?? '', args.scope as string, {
+          shared:   args.shared   as boolean | undefined,
           readonly: args.readonly as boolean | undefined,
+          url, token,
         })
-        return { success: true, path: args.path, scope: args.scope }
+        return {
+          success: true,
+          ...(path ? { path } : { url }),
+          scope: args.scope,
+          kind: url ? 'remote' : 'filesystem',
+        }
       },
     },
 
