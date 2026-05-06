@@ -1,6 +1,6 @@
 {
   "name": "@plur-ai/claw",
-  "version": "0.9.12",
+  "version": "0.9.13",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
