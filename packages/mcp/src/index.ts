@@ -6,7 +6,7 @@ import { join } from 'path'
 import { fileURLToPath } from 'url'
 import { homedir } from 'os'
 
-const VERSION = '0.9.7'
+const VERSION = '0.9.8'
 
 const HELP = `plur-mcp v${VERSION} — persistent memory for AI agents
 
