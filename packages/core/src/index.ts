@@ -289,6 +289,32 @@ export class Plur {
     this._engramCache.delete(path)
   }
 
+  /**
+   * Resolve a remote store for a write scope. Returns the RemoteStore driver
+   * if the engram's scope matches a registered remote entry, else null.
+   *
+   * Match rule (pilot scope): exact-match `entry.scope === engramScope`. We
+   * intentionally don't do prefix-match yet — agents that want to write to a
+   * narrower scope than they registered must explicitly register the narrower
+   * scope. Keeps routing predictable and prevents accidental cross-team writes.
+   */
+  private _resolveRemoteStoreForScope(scope: string): RemoteStore | null {
+    const stores = this.config.stores ?? []
+    for (const entry of stores) {
+      if (!entry.url) continue
+      if (entry.readonly === true) continue
+      if (entry.scope !== scope) continue
+      const key = `${entry.url}::${entry.scope}`
+      let driver = this._remoteStores.get(key)
+      if (!driver) {
+        driver = new RemoteStore(entry.url!, entry.token ?? '', entry.scope)
+        this._remoteStores.set(key, driver)
+      }
+      return driver
+    }
+    return null
+  }
+
   /** Find which store owns an engram by ID. For namespaced IDs, strips prefix to find in store. */
   private _findEngramStore(id: string): { path: string; readonly: boolean; originalId: string } | null {
     // Check primary first (uses mtime cache)
@@ -438,6 +464,31 @@ export class Plur {
           conflicts: conflictIds,
         } : undefined,
         pinned: context?.pinned === true ? true : undefined,
+      }
+
+      // Multi-store routing: if the engram's scope matches a writable
+      // remote store, send it there instead of writing to the local YAML.
+      // Local history still gets an entry so the user has a personal
+      // audit trail of what they wrote where.
+      //
+      // Sync/async impedance: learn() is sync, RemoteStore.append() is
+      // async. We fire-and-forget here — the caller gets the engram object
+      // back immediately, and the network write completes in the background.
+      // Failures are logged loudly. See issue #26 for the proper outbox
+      // pattern (queue + retry + reconcile) — this is the minimum viable
+      // routing that unblocks the pilot.
+      const remoteDriver = this._resolveRemoteStoreForScope(scope)
+      if (remoteDriver) {
+        void remoteDriver.append(engram).catch(err => {
+          logger.error(`[plur:learn] remote append failed for ${engram.id} (scope=${scope}): ${(err as Error).message}`)
+        })
+        appendHistory(this.paths.root, {
+          event: 'engram_created',
+          engram_id: engram.id,
+          timestamp: now,
+          data: { type: engram.type, scope: engram.scope, source: engram.source, routed_to: 'remote' },
+        })
+        return engram
       }
 
       engrams.push(engram)

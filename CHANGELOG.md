@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.9.6 (2026-05-06)
+
+`plur_learn` now actually writes to remote stores. Closes the half-shipped
+RemoteStore work from 0.9.5.
+
+### Fixes
+
+- **`learn()` routes writes to matching remote stores** ([plur-ai/enterprise#25](https://github.com/plur-ai/enterprise/issues/25)) — when an engram's scope matches a registered remote store entry (writable, exact-scope match), the engram is POSTed to that store's `/api/v1/engrams` endpoint instead of being written to the local YAML. 0.9.5 shipped registration (`plur_stores_add`) and remote reads (`RemoteStore.load()`) but missed the write routing — engrams with team scopes silently stayed local. The Datafund pilot's entire shared-memory value prop was broken until this fix.
+- Routing is **fire-and-forget for the sync path** — `learn()` returns the engram object immediately and the network append completes in the background. Failures log loudly via `[plur:learn] remote append failed for ...`. The proper outbox pattern (queue + retry + reconcile) is tracked in [plur-ai/enterprise#26](https://github.com/plur-ai/enterprise/issues/26).
+- Match rule (pilot scope): exact-match `entry.scope === engram.scope`. Prefix-match deferred — narrower scopes need explicit registration. Keeps routing predictable, prevents accidental cross-team writes.
+- Read-only remote entries (`readonly: true`) keep writes local — same as filesystem stores.
+
+### Versions
+
+- `@plur-ai/core` 0.9.5 → 0.9.6
+- `@plur-ai/mcp` 0.9.5 → 0.9.6
+- `@plur-ai/claw` 0.9.11 → 0.9.12
+
+### Migration
+
+If you followed the onboarding for 0.9.5 and `plur_learn` with a team scope wrote locally — those engrams need to be re-published. There's no auto-sync. Either:
+- Manual: read each affected engram from local YAML, call `plur_learn` again with the same statement+scope (now-fixed routing sends it to the server)
+- Wait for #26 (outbox pattern) which will reconcile pending local writes against the remote on next session start
+
 ## 0.9.5 (2026-05-05)
 
 Remote stores — register PLUR Enterprise (or any compatible REST endpoint) as a store via `plur_stores_add`.
