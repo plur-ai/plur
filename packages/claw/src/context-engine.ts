@@ -50,7 +50,7 @@ export class PlurContextEngine implements ContextEngine {
   readonly info: ContextEngineInfo = {
     id: 'plur-claw',
     name: 'PLUR Memory Engine',
-    version: '0.9.13',
+    version: '0.9.14',
     ownsCompaction: false,
   }
 

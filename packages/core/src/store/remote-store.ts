@@ -104,8 +104,24 @@ export class RemoteStore implements EngramStore {
    * Append a single engram to the remote store. POST /api/v1/engrams
    * carries statement + scope + domain + type — the server handles
    * ID assignment, content_hash, status.
+   *
+   * Returns void to satisfy the EngramStore interface contract. Callers
+   * that need the server-assigned ID (e.g. so the user can later
+   * forget/feedback on it) should use `appendAndGetServerId()` instead.
    */
   async append(engram: Engram): Promise<void> {
+    await this.appendAndGetServerId(engram)
+  }
+
+  /**
+   * Like append() but returns the server-assigned ID. Required because
+   * the server picks its own ID (e.g. ENG-2026-05-06-007) and ignores
+   * any id we'd send. Without this, callers see the local placeholder
+   * ID (e.g. ENG-2026-0506-017) and a later `forget(id)` against that
+   * placeholder will fail — the engram only exists on the server with
+   * the server's ID.
+   */
+  async appendAndGetServerId(engram: Engram): Promise<{ id: string }> {
     const body = JSON.stringify({
       statement: (engram as any).statement,
       scope:     engram.scope,
@@ -121,8 +137,12 @@ export class RemoteStore implements EngramStore {
       const text = await r.text().catch(() => '')
       throw new Error(`Remote store append failed: ${r.status} ${text}`)
     }
-    // Invalidate cache so next load() picks up the new row
+    const data = await r.json().catch(() => ({})) as { id?: string }
+    if (!data.id) {
+      throw new Error(`Remote store append succeeded but server returned no id`)
+    }
     this.cache = null
+    return { id: data.id }
   }
 
   /**

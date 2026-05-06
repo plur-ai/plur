@@ -152,17 +152,34 @@ export function getToolDefinitions(): ToolDefinition[] {
           pinned: args.pinned as boolean | undefined,
           llm,
         }
+        // Route through learnRouted FIRST so remote-scope writes get
+        // the server-assigned engram id (e.g. ENG-2026-05-06-007).
+        // Without this, the caller sees a local placeholder id like
+        // ENG-2026-0506-017 and any later forget(id)/feedback(id) call
+        // against that placeholder fails — the engram only exists on
+        // the server with the server's id. For local-scope writes,
+        // learnRouted defers to sync learn() so dedup behavior is
+        // unchanged. We try learnAsync second only as a fallback for
+        // the LLM-driven dedup pathway (local routes).
         try {
-          const result = await plur.learnAsync(args.statement as string, context)
+          const engram = await plur.learnRouted(args.statement as string, context)
           return {
-            id: result.engram.id, statement: result.engram.statement,
-            scope: result.engram.scope, type: result.engram.type,
-            pinned: (result.engram as any).pinned === true,
-            decision: result.decision, existing_id: result.existing_id, tensions: result.tensions,
+            id: engram.id, statement: engram.statement,
+            scope: engram.scope, type: engram.type,
+            pinned: (engram as any).pinned === true,
+            decision: 'ADD',
           }
-        } catch {
+        } catch (err) {
+          // learnRouted throws when remote-write fails (network down,
+          // 5xx, etc). Fall back to sync learn() so the user gets
+          // *something* recorded locally — but warn loudly that the
+          // returned id is local-only and will not match the server.
           const engram = plur.learn(args.statement as string, context)
-          return { id: engram.id, statement: engram.statement, scope: engram.scope, type: engram.type, decision: 'ADD' }
+          return {
+            id: engram.id, statement: engram.statement,
+            scope: engram.scope, type: engram.type, decision: 'ADD',
+            warning: `Remote write failed (${(err as Error).message}); fell back to local. The id above is the local placeholder — the canonical engram is NOT on the server.`,
+          }
         }
       },
     },
