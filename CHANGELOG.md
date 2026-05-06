@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.9.7 (2026-05-06)
+
+`loadConfig` no longer drops the entire `stores` array on a single bad
+entry. Closes the silent-clobber pathway that made the 0.9.6 fix hard
+to land.
+
+### Fixes
+
+- **Per-entry tolerance in `loadConfig`** — previously `loadConfig` parsed the entire config with `PlurConfigSchema.parse()`. Any single invalid `stores` entry threw, and the catch returned an empty config (`{}`), silently dropping every other valid entry too. In the wild this meant a pre-0.9.5 MCP process running against a 0.9.6+ config (which has `url`-based remote stores its old schema doesn't know about) would: load → throw → fall back to empty → save back over the file → permanently lose the user's remote store registration. Now each store entry is validated independently with `safeParse`; invalid entries are dropped with a `[plur:config] dropping invalid stores[N] (label) ...` warning, valid entries survive.
+- **Loud failure on top-level config parse errors** — when `loadConfig` falls back to defaults due to YAML or schema issues at the top level, it now logs the path and the error reason. Silent fall-back was the worst kind of failure mode.
+
+### End-to-end verification (production)
+
+This release was verified against `https://plur.datafund.io` before publish:
+1. Config with mixed valid (URL+token) and invalid entries → only the invalid entry dropped, URL store survived
+2. `plur.learn(stmt, { scope: 'group:plur/plur-ai/engineering' })` → POSTed to `/api/v1/engrams`, returned server-assigned ID
+3. REST GET on the new ID → confirmed engram on server with correct scope
+4. Local `engrams.yaml` not created → no leak
+
+All 516 core tests pass.
+
+### Versions
+
+- `@plur-ai/core` 0.9.6 → 0.9.7
+- `@plur-ai/mcp` 0.9.6 → 0.9.7
+- `@plur-ai/claw` 0.9.12 → 0.9.13
+
+### Why this matters
+
+0.9.6 shipped the `learn()` routing fix for plur-ai/enterprise#25 but in practice teams couldn't observe it: any pre-0.9.5 MCP instance still running on the same machine would clobber the config file on each load/save cycle, dropping the URL store entry. 0.9.7 removes that pathway — even an old client behaving badly can no longer take down the whole stores array.
+
 ## 0.9.6 (2026-05-06)
 
 `plur_learn` now actually writes to remote stores. Closes the half-shipped
