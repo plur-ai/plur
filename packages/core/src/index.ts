@@ -472,16 +472,38 @@ export class Plur {
       // audit trail of what they wrote where.
       //
       // Sync/async impedance: learn() is sync, RemoteStore.append() is
-      // async. We fire-and-forget here — the caller gets the engram object
-      // back immediately, and the network write completes in the background.
-      // Failures are logged loudly. See issue #26 for the proper outbox
-      // pattern (queue + retry + reconcile) — this is the minimum viable
-      // routing that unblocks the pilot.
+      // async. The background task retries once on failure, then falls
+      // back to local with _routed:false metadata so the outbox (#26)
+      // can re-publish when the server is reachable.
       const remoteDriver = this._resolveRemoteStoreForScope(scope)
       if (remoteDriver) {
-        void remoteDriver.append(engram).catch(err => {
-          logger.error(`[plur:learn] remote append failed for ${engram.id} (scope=${scope}): ${(err as Error).message}`)
-        })
+        void (async () => {
+          for (let attempt = 1; attempt <= 2; attempt++) {
+            try {
+              await remoteDriver.append(engram)
+              return // success
+            } catch (err) {
+              logger.warning(`[plur:learn] remote append attempt ${attempt}/2 failed for ${engram.id}: ${(err as Error).message}`)
+            }
+          }
+          // Both attempts failed — save locally for outbox retry (#26).
+          // See: https://github.com/plur-ai/plur/issues/88
+          withLock(this.paths.engrams, () => {
+            const fallbackEngrams = loadEngrams(this.paths.engrams)
+            ;(engram as any)._routed = false
+            ;(engram as any)._intended_scope = scope
+            ;(engram as any)._route_attempts = 2
+            fallbackEngrams.push(engram)
+            this._writeEngrams(this.paths.engrams, fallbackEngrams)
+          })
+          appendHistory(this.paths.root, {
+            event: 'engram_route_failed',
+            engram_id: engram.id,
+            timestamp: new Date().toISOString(),
+            data: { scope, reason: 'remote append failed after 2 attempts', routed_to: 'local_fallback' },
+          })
+          logger.warning(`[plur:learn] saved ${engram.id} locally with _routed:false — outbox will retry`)
+        })()
         appendHistory(this.paths.root, {
           event: 'engram_created',
           engram_id: engram.id,
