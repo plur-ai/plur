@@ -27,7 +27,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     const engram = plur.getById(target)
     if (!engram) exit(1, `Engram not found: ${target}`)
     if (engram.status === 'retired') exit(1, `Already retired: ${target}`)
-    plur.forget(target, reason)
+    await plur.forget(target, reason)
     if (shouldOutputJson(flags)) {
       outputJson({ success: true, retired: { id: target, statement: engram.statement } })
     } else {
@@ -47,7 +47,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     return
   }
   if (matches.length === 1) {
-    plur.forget(matches[0].id, reason)
+    await plur.forget(matches[0].id, reason)
     if (shouldOutputJson(flags)) {
       outputJson({ success: true, retired: { id: matches[0].id, statement: matches[0].statement } })
     } else {

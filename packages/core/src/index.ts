@@ -823,7 +823,7 @@ export class Plur {
   }
 
   /** Update feedback_signals and adjust retrieval_strength. Searches primary, stores, then packs. */
-  feedback(id: string, signal: 'positive' | 'negative' | 'neutral'): void {
+  async feedback(id: string, signal: 'positive' | 'negative' | 'neutral'): Promise<void> {
     // Try primary engrams first
     const found = withLock(this.paths.engrams, () => {
       const engrams = loadEngrams(this.paths.engrams)
@@ -948,7 +948,7 @@ export class Plur {
   }
 
   /** Set engram status to 'retired'. Supports primary and store engrams. */
-  forget(id: string, reason?: string): void {
+  async forget(id: string, reason?: string): Promise<void> {
     // Check primary first
     const foundInPrimary = withLock(this.paths.engrams, () => {
       const engrams = loadEngrams(this.paths.engrams)

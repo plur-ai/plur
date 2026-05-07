@@ -106,12 +106,12 @@ describe('Multi-store', () => {
     expect(second.id).toMatch(/^ENG-/)
   })
 
-  it('feedback on writable store engram persists', () => {
+  it('feedback on writable store engram persists', async () => {
     writeStoreEngrams([makeEngram({ statement: 'Writable store engram for feedback' })])
     writeConfig([{ path: storePath, scope: 'datafund', readonly: false }])
     const plur = createPlur()
 
-    plur.feedback(NS_ID, 'positive')
+    await plur.feedback(NS_ID, 'positive')
 
     // Verify the store file was updated
     const storeRaw = yaml.load(readFileSync(storePath, 'utf8')) as any
@@ -120,32 +120,32 @@ describe('Multi-store', () => {
     expect(updated.activation.retrieval_strength).toBe(0.75)
   })
 
-  it('feedback on readonly store engram throws', () => {
+  it('feedback on readonly store engram throws', async () => {
     writeStoreEngrams([makeEngram()])
     writeConfig([{ path: storePath, scope: 'datafund', readonly: true }])
     const plur = createPlur()
 
-    expect(() => plur.feedback(NS_ID, 'positive')).toThrow('readonly store')
+    await expect(plur.feedback(NS_ID, 'positive')).rejects.toThrow('readonly store')
   })
 
-  it('forget on writable store engram works', () => {
+  it('forget on writable store engram works', async () => {
     writeStoreEngrams([makeEngram()])
     writeConfig([{ path: storePath, scope: 'datafund', readonly: false }])
     const plur = createPlur()
 
-    plur.forget(NS_ID, 'no longer needed')
+    await plur.forget(NS_ID, 'no longer needed')
 
     const storeRaw = yaml.load(readFileSync(storePath, 'utf8')) as any
     const retired = storeRaw.engrams.find((e: any) => e.id === 'ENG-2026-0401-001')
     expect(retired.status).toBe('retired')
   })
 
-  it('forget on readonly store engram throws', () => {
+  it('forget on readonly store engram throws', async () => {
     writeStoreEngrams([makeEngram()])
     writeConfig([{ path: storePath, scope: 'datafund', readonly: true }])
     const plur = createPlur()
 
-    expect(() => plur.forget(NS_ID, 'test')).toThrow('readonly store')
+    await expect(plur.forget(NS_ID, 'test')).rejects.toThrow('readonly store')
   })
 
   it('getById finds store engrams by namespaced ID', () => {
@@ -211,7 +211,7 @@ describe('Multi-store', () => {
     expect(st.engram_count).toBe(0)
   })
 
-  it('SQLite indexed path includes store engrams in recall and feedback', () => {
+  it('SQLite indexed path includes store engrams in recall and feedback', async () => {
     writeStoreEngrams([makeEngram({ statement: 'Indexed store engram about SQLite queries' })])
     // Enable index for this test
     writeFileSync(
@@ -232,7 +232,7 @@ describe('Multi-store', () => {
     // Feedback on the indexed store engram should persist
     const storeResult = results.find(e => e.id.startsWith('ENG-DFD-'))
     if (storeResult) {
-      plur.feedback(storeResult.id, 'positive')
+      await plur.feedback(storeResult.id, 'positive')
       const storeRaw = yaml.load(readFileSync(storePath, 'utf8')) as any
       expect(storeRaw.engrams[0].feedback_signals.positive).toBe(1)
     }
@@ -294,7 +294,7 @@ describe('Multi-store', () => {
     expect(storePrefix('x')).toBe('XXX')
   })
 
-  it('cache invalidates after feedback, next recall reflects change', () => {
+  it('cache invalidates after feedback, next recall reflects change', async () => {
     writeStoreEngrams([makeEngram({
       statement: 'Cache test engram with low strength',
       activation: { retrieval_strength: 0.3, storage_strength: 1.0, frequency: 0, last_accessed: '2026-04-01' },
@@ -308,7 +308,7 @@ describe('Multi-store', () => {
     expect(before!.activation.retrieval_strength).toBe(0.3)
 
     // Positive feedback bumps strength
-    plur.feedback(NS_ID, 'positive')
+    await plur.feedback(NS_ID, 'positive')
 
     // Next getById should reflect the updated strength (cache was invalidated)
     const after = plur.getById(NS_ID)

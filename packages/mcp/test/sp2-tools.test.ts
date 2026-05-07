@@ -60,7 +60,7 @@ describe('SP2 MCP Tools', () => {
 
     it('returns history for a specific engram', async () => {
       const engram = plur.learn('Test history')
-      plur.feedback(engram.id, 'positive')
+      await plur.feedback(engram.id, 'positive')
 
       const result = await getTool('plur_history').handler(
         { engram_id: engram.id },
