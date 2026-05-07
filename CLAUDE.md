@@ -141,6 +141,22 @@ If your PR improves any of these, mention it in the PR description.
 | `packages/claw/src/assembler.ts` | Context assembly for OpenClaw |
 | `packages/claw/src/learner.ts` | Auto-extraction of learnings from conversation |
 
+## Remote Store Test Plan
+
+A comprehensive test scenario matrix lives at `~/Data/3-plur/1-tracks/engineering/remote-store-test-plan.md`. It maps 62 scenarios across write routing, read merging, config resilience, network edge cases, and ID consistency.
+
+**When working on remote store issues (#78-#93):**
+- Use the test plan as a reference for which scenarios to cover
+- After implementing a fix, update the scenario's **Status** column (e.g. `**Untested**` → `Verified 0.9.9`)
+- After adding new tests, update the **Summary** table counts in section 9
+- If you discover new scenarios during implementation, add them to the appropriate table
+- The test plan is the source of truth for what's tested and what's not — keep it current
+
+Tracked epics:
+- #78 — Test infrastructure (Level 2/3/4)
+- #79 — Write routing bugs (forget, feedback, pin, promote)
+- #80 — Write resilience (retry, consistency, guards)
+
 ## Datacore Space Context
 
 This project lives inside a Datacore space. Session lifecycle commands are available:

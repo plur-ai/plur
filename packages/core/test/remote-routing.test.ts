@@ -188,3 +188,115 @@ describe('learn() — remote routing (issue #25)', () => {
     consoleErr.mockRestore()
   })
 })
+
+/**
+ * Issue #89 — after a successful remote append, the engram should be
+ * visible in the RemoteStore's cache immediately (optimistic insert),
+ * so that the next synchronous _loadRemoteCached() call sees it without
+ * waiting for a background load() refresh.
+ */
+describe('RemoteStore — optimistic cache after append (issue #89)', () => {
+  let originalFetch: typeof globalThis.fetch
+  let fetchMock: ReturnType<typeof vi.fn>
+
+  beforeEach(() => {
+    originalFetch = globalThis.fetch
+    fetchMock = vi.fn()
+    globalThis.fetch = fetchMock as any
+  })
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch
+  })
+
+  // Import RemoteStore directly for unit-level tests
+  async function getRemoteStore() {
+    const { RemoteStore } = await import('../src/store/remote-store.js')
+    return RemoteStore
+  }
+
+  it('engram is in cache immediately after successful append', async () => {
+    const RemoteStore = await getRemoteStore()
+
+    // Mock: POST returns server-assigned row
+    fetchMock.mockResolvedValueOnce({
+      ok: true, status: 201,
+      json: async () => ({ id: 'ENG-SRV-001', scope: 'group:test', status: 'active', data: { statement: 'hello' } }),
+      text: async () => '',
+    } as Response)
+
+    const store = new RemoteStore('https://example.com/sse', 'tok', 'group:test')
+    await store.append({ id: 'ENG-LOCAL-TMP', scope: 'group:test', status: 'active', statement: 'hello' } as any)
+
+    // Cache should contain the server-assigned engram — no additional fetch needed
+    const cached = (store as any).cache
+    expect(cached).not.toBeNull()
+    expect(cached.engrams.length).toBe(1)
+    expect(cached.engrams[0].id).toBe('ENG-SRV-001')
+  })
+
+  it('uses input engram if server response has no JSON body', async () => {
+    const RemoteStore = await getRemoteStore()
+
+    // Mock: POST returns 201 with empty body (no JSON)
+    fetchMock.mockResolvedValueOnce({
+      ok: true, status: 201,
+      json: async () => { throw new SyntaxError('Unexpected end of JSON input') },
+      text: async () => '',
+    } as Response)
+
+    const store = new RemoteStore('https://example.com/sse', 'tok', 'group:test')
+    const inputEngram = { id: 'ENG-LOCAL-TMP', scope: 'group:test', status: 'active', statement: 'fallback test' } as any
+    await store.append(inputEngram)
+
+    const cached = (store as any).cache
+    expect(cached).not.toBeNull()
+    expect(cached.engrams.length).toBe(1)
+    expect(cached.engrams[0].id).toBe('ENG-LOCAL-TMP') // input engram used as fallback
+  })
+
+  it('appends to existing cache without replacing it', async () => {
+    const RemoteStore = await getRemoteStore()
+
+    // First: seed the cache via a load()
+    fetchMock.mockResolvedValueOnce({
+      ok: true, status: 200,
+      json: async () => ({ rows: [{ id: 'ENG-EXISTING', scope: 'group:test', status: 'active', data: { statement: 'old' } }], total_count: 1 }),
+      text: async () => '',
+    } as Response)
+
+    const store = new RemoteStore('https://example.com/sse', 'tok', 'group:test')
+    await store.load()
+
+    // Then: append a new engram
+    fetchMock.mockResolvedValueOnce({
+      ok: true, status: 201,
+      json: async () => ({ id: 'ENG-NEW', scope: 'group:test', status: 'active', data: { statement: 'new' } }),
+      text: async () => '',
+    } as Response)
+
+    await store.append({ id: 'tmp', scope: 'group:test', status: 'active', statement: 'new' } as any)
+
+    const cached = (store as any).cache
+    expect(cached.engrams.length).toBe(2)
+    expect(cached.engrams[0].id).toBe('ENG-EXISTING')
+    expect(cached.engrams[1].id).toBe('ENG-NEW')
+  })
+
+  it('does not pollute cache on failed append', async () => {
+    const RemoteStore = await getRemoteStore()
+
+    // Mock: POST returns 500
+    fetchMock.mockResolvedValueOnce({
+      ok: false, status: 500,
+      json: async () => ({ error: 'boom' }),
+      text: async () => 'boom',
+    } as Response)
+
+    const store = new RemoteStore('https://example.com/sse', 'tok', 'group:test')
+    await expect(store.append({ id: 'tmp', scope: 'group:test', status: 'active' } as any)).rejects.toThrow('Remote store append failed')
+
+    // Cache must remain null — no pollution
+    expect((store as any).cache).toBeNull()
+  })
+})

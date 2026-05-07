@@ -121,8 +121,25 @@ export class RemoteStore implements EngramStore {
       const text = await r.text().catch(() => '')
       throw new Error(`Remote store append failed: ${r.status} ${text}`)
     }
-    // Invalidate cache so next load() picks up the new row
-    this.cache = null
+    // Optimistic cache insert: make the new engram visible to the next
+    // synchronous _loadRemoteCached() call immediately, instead of waiting
+    // for a background load() refresh. The next full load() after TTL
+    // expiry will replace this with the server-canonical version.
+    // See: https://github.com/plur-ai/plur/issues/89
+    let inserted: Engram = engram
+    try {
+      const row = await r.json() as any
+      if (row?.id) {
+        inserted = { id: row.id, scope: row.scope ?? engram.scope, status: row.status ?? 'active', ...(row.data ?? {}), ...(!row.data ? { statement: (engram as any).statement } : {}) } as unknown as Engram
+      }
+    } catch {
+      // Response may not be JSON (e.g. 201 with empty body) — use the input engram as-is
+    }
+    if (this.cache) {
+      this.cache.engrams.push(inserted)
+    } else {
+      this.cache = { ts: Date.now(), engrams: [inserted] }
+    }
   }
 
   /**
