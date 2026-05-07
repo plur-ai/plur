@@ -187,4 +187,97 @@ describe('learn() — remote routing (issue #25)', () => {
     expect(errCall).toBeDefined()
     consoleErr.mockRestore()
   })
+
+  it('private visibility + remote scope writes locally, not to remote (#90)', async () => {
+    mockSuccessfulAppend()
+
+    writeStoresConfig(primaryDir, [
+      {
+        url: 'https://plur.example.com/sse',
+        token: 'plur_sk_test',
+        scope: 'group:plur/plur-ai/engineering',
+        shared: true,
+        readonly: false,
+      },
+    ])
+    const plur = new Plur({ path: primaryDir })
+
+    const engram = plur.learn('private team thought', {
+      scope: 'group:plur/plur-ai/engineering',
+      type: 'behavioral',
+      visibility: 'private',
+    })
+
+    expect(engram.visibility).toBe('private')
+
+    // No POST to remote
+    await new Promise(r => setTimeout(r, 10))
+    expect(postCalls().length).toBe(0)
+
+    // Saved locally
+    const localYaml = join(primaryDir, 'engrams.yaml')
+    expect(existsSync(localYaml)).toBe(true)
+    const local = yaml.load(readFileSync(localYaml, 'utf-8')) as { engrams: Array<{ statement: string; visibility?: string }> }
+    const saved = local.engrams.find(e => e.statement === 'private team thought')
+    expect(saved).toBeTruthy()
+    expect(saved!.visibility).toBe('private')
+  })
+
+  it('public visibility + remote scope routes to server normally', async () => {
+    mockSuccessfulAppend()
+
+    writeStoresConfig(primaryDir, [
+      {
+        url: 'https://plur.example.com/sse',
+        token: 'plur_sk_test',
+        scope: 'group:plur/plur-ai/engineering',
+        shared: true,
+        readonly: false,
+      },
+    ])
+    const plur = new Plur({ path: primaryDir })
+
+    plur.learn('public team engram', {
+      scope: 'group:plur/plur-ai/engineering',
+      type: 'behavioral',
+      visibility: 'public',
+    })
+
+    await new Promise(r => setTimeout(r, 10))
+    expect(postCalls().length).toBe(1)
+
+    // NOT in local
+    const localYaml = join(primaryDir, 'engrams.yaml')
+    if (existsSync(localYaml)) {
+      const local = yaml.load(readFileSync(localYaml, 'utf-8')) as { engrams?: Array<{ statement: string }> } | null
+      expect((local?.engrams ?? []).find(e => e.statement === 'public team engram')).toBeUndefined()
+    }
+  })
+
+  it('private visibility + no remote scope writes locally (baseline)', () => {
+    writeStoresConfig(primaryDir, [
+      {
+        url: 'https://plur.example.com/sse',
+        token: 'plur_sk_test',
+        scope: 'group:plur/plur-ai/engineering',
+        shared: true,
+        readonly: false,
+      },
+    ])
+    const plur = new Plur({ path: primaryDir })
+
+    const engram = plur.learn('private global note', {
+      scope: 'global',
+      type: 'behavioral',
+      visibility: 'private',
+    })
+
+    expect(engram.visibility).toBe('private')
+    expect(postCalls().length).toBe(0)
+
+    const localYaml = join(primaryDir, 'engrams.yaml')
+    expect(existsSync(localYaml)).toBe(true)
+    const local = yaml.load(readFileSync(localYaml, 'utf-8')) as { engrams: Array<{ statement: string }> }
+    expect(local.engrams.find(e => e.statement === 'private global note')).toBeTruthy()
+  })
 })

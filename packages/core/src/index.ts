@@ -478,7 +478,11 @@ export class Plur {
       // pattern (queue + retry + reconcile) — this is the minimum viable
       // routing that unblocks the pilot.
       const remoteDriver = this._resolveRemoteStoreForScope(scope)
-      if (remoteDriver) {
+      if (remoteDriver && context?.visibility === 'private') {
+        // Private engrams stay local — sending to a shared remote contradicts
+        // the "only I see this" semantics. See: https://github.com/plur-ai/plur/issues/90
+        logger.warning(`[plur:learn] private engram not routed to remote (scope=${scope}), writing locally`)
+      } else if (remoteDriver) {
         void remoteDriver.append(engram).catch(err => {
           logger.error(`[plur:learn] remote append failed for ${engram.id} (scope=${scope}): ${(err as Error).message}`)
         })
