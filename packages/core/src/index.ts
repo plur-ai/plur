@@ -998,6 +998,30 @@ export class Plur {
       }
     }
 
+    // Check remote stores — the engram may live on an enterprise server.
+    // See: https://github.com/plur-ai/plur/issues/85
+    for (const entry of (this.config.stores ?? [])) {
+      if (!entry.url) continue
+      if (entry.readonly === true) {
+        const roDriver = this._getRemoteDriver({ url: entry.url, token: entry.token, scope: entry.scope })
+        const roFound = await roDriver.getById(id)
+        if (roFound) throw new Error('Engram is in a readonly store')
+        continue
+      }
+      const driver = this._getRemoteDriver({ url: entry.url, token: entry.token, scope: entry.scope })
+      const found = await driver.getById(id)
+      if (found) {
+        await driver.feedback(id, signal)
+        appendHistory(this.paths.root, {
+          event: 'feedback_received',
+          engram_id: id,
+          timestamp: new Date().toISOString(),
+          data: { signal, routed_to: 'remote' },
+        })
+        return
+      }
+    }
+
     // Search pack engrams by scanning pack directories
     this._feedbackPack(id, signal)
   }
