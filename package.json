@@ -5,6 +5,7 @@
     "build": "pnpm -r build",
     "test": "vitest run",
     "test:integration": "vitest run packages/core/test/remote-integration.test.ts",
+    "test:mcp-e2e": "vitest run packages/mcp/test/e2e-remote.test.ts",
     "test:watch": "vitest"
   },
   "devDependencies": {

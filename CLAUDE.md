@@ -100,6 +100,14 @@ pnpm test:integration
 
 Tests RemoteStore against an in-process HTTP stub server (real TCP, no fetch mocking). The stub implements the `/api/v1/engrams` REST surface and lives at `packages/core/test/helpers/stub-server.ts`. When RemoteStore adds new endpoints, add the corresponding handler to the stub.
 
+### MCP E2E tests (remote store)
+
+```
+pnpm test:mcp-e2e
+```
+
+Tests the full MCP pipeline: Client → InMemoryTransport → Server → Plur → RemoteStore → StubServer. Uses `@modelcontextprotocol/sdk` Client with in-process transport (no child process). Catches bugs where MCP tool handlers diverge from the core Plur API — the exact 0.9.6 bug class.
+
 ### Benchmarking a PR
 
 Two benchmark suites measure whether a change actually improves memory quality:
