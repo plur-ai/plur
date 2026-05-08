@@ -2,7 +2,7 @@
 
 Persistent memory for [OpenClaw](https://openclaw.com) agents — fully automatic. Your agents remember corrections, learn preferences, and build knowledge across sessions. No workflow changes needed.
 
-Part of [PLUR](https://plur.ai) — where **Haiku with memory outperforms Opus without it** at 10x less cost.
+Part of [PLUR](https://plur.ai) — where, in our tool-routing and local-knowledge benchmark, **Haiku with memory outperformed Opus without it** at 10x less cost.
 
 ## Setup (30 seconds)
 
