@@ -156,6 +156,7 @@ def register(ctx):
                     "dual_coding": {"type": "object", "properties": {"example": {"type": "string"}, "analogy": {"type": "string"}}, "description": "Concrete example and analogy"},
                     "abstract": {"type": "string", "description": "One-line abstract"},
                     "derived_from": {"type": "string", "description": "Source engram ID this was derived from"},
+                    "force": {"type": "boolean", "default": False, "description": "Skip duplicate detection and always create a new engram"},
                 },
                 "required": ["statement"],
             },
@@ -311,7 +312,8 @@ def register(ctx):
                                           knowledge_anchors=args.get("knowledge_anchors"),
                                           dual_coding=args.get("dual_coding"),
                                           abstract=args.get("abstract"),
-                                          derived_from=args.get("derived_from"))
+                                          derived_from=args.get("derived_from"),
+                                          force=args.get("force", False))
                 elif tool_name == "plur_recall":
                     result = bridge.recall(args["query"], limit=args.get("limit", 10), fast=args.get("fast", False))
                 elif tool_name == "plur_inject":

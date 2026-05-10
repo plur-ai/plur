@@ -103,6 +103,119 @@ class TestPlurBridge:
             call_args = mock_run.call_args[0][0]
             assert "--fast" in call_args
 
+    def test_learn_dedupes_exact_text_match(self):
+        bridge = PlurBridge()
+        bridge._binary = "/usr/local/bin/plur"
+
+        recall_result = MagicMock()
+        recall_result.returncode = 0
+        recall_result.stdout = json.dumps({
+            "results": [{"id": "ENG-042", "statement": "Use tabs not spaces"}],
+            "count": 1,
+        })
+
+        with patch("subprocess.run", return_value=recall_result) as mock_run:
+            result = bridge.learn("Use tabs not spaces")
+            assert result["id"] == "ENG-042"
+            assert result["deduplicated"] is True
+            assert mock_run.call_count == 1
+            assert "recall" in mock_run.call_args_list[0][0][0]
+
+    def test_learn_dedupe_is_case_insensitive_and_trims(self):
+        bridge = PlurBridge()
+        bridge._binary = "/usr/local/bin/plur"
+
+        recall_result = MagicMock()
+        recall_result.returncode = 0
+        recall_result.stdout = json.dumps({
+            "results": [{"id": "ENG-042", "statement": "Use tabs not spaces"}],
+        })
+
+        with patch("subprocess.run", return_value=recall_result):
+            result = bridge.learn("  use TABS not SPACES  ")
+            assert result["deduplicated"] is True
+            assert result["id"] == "ENG-042"
+
+    def test_learn_force_bypasses_dedupe(self):
+        bridge = PlurBridge()
+        bridge._binary = "/usr/local/bin/plur"
+
+        learn_result = MagicMock()
+        learn_result.returncode = 0
+        learn_result.stdout = json.dumps({"id": "ENG-099"})
+
+        with patch("subprocess.run", return_value=learn_result) as mock_run:
+            result = bridge.learn("Use tabs not spaces", force=True)
+            assert result["id"] == "ENG-099"
+            assert "deduplicated" not in result
+            assert mock_run.call_count == 1
+            assert "learn" in mock_run.call_args_list[0][0][0]
+
+    def test_learn_calls_cli_when_no_duplicate(self):
+        bridge = PlurBridge()
+        bridge._binary = "/usr/local/bin/plur"
+
+        recall_response = MagicMock()
+        recall_response.returncode = 0
+        recall_response.stdout = json.dumps({"results": [], "count": 0})
+        learn_response = MagicMock()
+        learn_response.returncode = 0
+        learn_response.stdout = json.dumps({"id": "ENG-100"})
+
+        with patch("subprocess.run", side_effect=[recall_response, learn_response]) as mock_run:
+            result = bridge.learn("A brand new fact")
+            assert result["id"] == "ENG-100"
+            assert "deduplicated" not in result
+            assert mock_run.call_count == 2
+
+    def test_learn_falls_through_when_recall_fails(self):
+        bridge = PlurBridge()
+        bridge._binary = "/usr/local/bin/plur"
+
+        failed_recall = MagicMock()
+        failed_recall.returncode = 1
+        failed_recall.stdout = ""
+        failed_recall.stderr = "recall blew up"
+        learn_response = MagicMock()
+        learn_response.returncode = 0
+        learn_response.stdout = json.dumps({"id": "ENG-200"})
+
+        with patch("subprocess.run", side_effect=[failed_recall, learn_response]):
+            result = bridge.learn("Something to remember")
+            assert result["id"] == "ENG-200"
+            assert "deduplicated" not in result
+
+    def test_learn_three_identical_calls_yields_one_engram(self):
+        bridge = PlurBridge()
+        bridge._binary = "/usr/local/bin/plur"
+
+        first_recall = MagicMock()
+        first_recall.returncode = 0
+        first_recall.stdout = json.dumps({"results": [], "count": 0})
+        first_learn = MagicMock()
+        first_learn.returncode = 0
+        first_learn.stdout = json.dumps({"id": "ENG-501", "statement": "Prefer pnpm over npm"})
+        second_recall = MagicMock()
+        second_recall.returncode = 0
+        second_recall.stdout = json.dumps({
+            "results": [{"id": "ENG-501", "statement": "Prefer pnpm over npm"}],
+        })
+        third_recall = MagicMock()
+        third_recall.returncode = 0
+        third_recall.stdout = json.dumps({
+            "results": [{"id": "ENG-501", "statement": "Prefer pnpm over npm"}],
+        })
+
+        with patch("subprocess.run", side_effect=[first_recall, first_learn, second_recall, third_recall]):
+            r1 = bridge.learn("Prefer pnpm over npm")
+            r2 = bridge.learn("Prefer pnpm over npm")
+            r3 = bridge.learn("Prefer pnpm over npm")
+
+        assert r1["id"] == "ENG-501"
+        assert "deduplicated" not in r1
+        assert r2 == {"id": "ENG-501", "statement": "Prefer pnpm over npm", "deduplicated": True}
+        assert r3 == {"id": "ENG-501", "statement": "Prefer pnpm over npm", "deduplicated": True}
+
     def test_plur_path_passed_to_cli(self):
         bridge = PlurBridge(plur_path="/tmp/test-plur")
         bridge._binary = "/usr/local/bin/plur"
