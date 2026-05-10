@@ -141,7 +141,16 @@ export class RemoteStore implements EngramStore {
     if (!data.id) {
       throw new Error(`Remote store append succeeded but server returned no id`)
     }
-    this.cache = null
+    // Optimistic cache insert (issue #89): the POST succeeded so the server
+    // has the engram. Insert with the server-assigned id so the very next
+    // recall sees it without waiting for a background refresh. If the server
+    // transformed other fields, the next refresh corrects them.
+    const stored = { ...(engram as any), id: data.id } as Engram
+    if (this.cache) {
+      this.cache.engrams.push(stored)
+    } else {
+      this.cache = { ts: Date.now(), engrams: [stored] }
+    }
     return { id: data.id }
   }
 
