@@ -1,5 +1,6 @@
 import { Plur, extractMetaEngrams, validateMetaEngram, confidenceBand, generateProfile, getProfileForInjection, markProfileDirty, selectModelForOperation, readHistoryForEngram } from '@plur-ai/core'
 import type { LlmFunction, MetaField } from '@plur-ai/core'
+import { VERSION } from './version.js'
 
 /** Create an OpenAI-compatible LLM function from a base URL + API key */
 function makeHttpLlm(baseUrl: string, apiKey: string, model: string = 'gpt-4o-mini'): LlmFunction {
@@ -891,7 +892,7 @@ export function getToolDefinitions(): ToolDefinition[] {
 
     {
       name: 'plur_status',
-      description: 'Return system health — engram count, episode count, pack count, storage root',
+      description: 'Return system health — running version, engram count, episode count, pack count, storage root',
       annotations: { title: 'Status', readOnlyHint: true, idempotentHint: true },
       inputSchema: {
         type: 'object',
@@ -900,6 +901,7 @@ export function getToolDefinitions(): ToolDefinition[] {
       handler: async (_args, plur) => {
         const status = plur.status()
         return {
+          version: VERSION,
           engram_count: status.engram_count,
           episode_count: status.episode_count,
           pack_count: status.pack_count,
