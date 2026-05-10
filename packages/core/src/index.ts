@@ -260,12 +260,7 @@ export class Plur {
    */
   private _remoteStores = new Map<string, RemoteStore>()
   private _loadRemoteCached(store: StoreEntry): Engram[] {
-    const key = `${store.url}::${store.scope}`
-    let driver = this._remoteStores.get(key)
-    if (!driver) {
-      driver = new RemoteStore(store.url!, store.token ?? '', store.scope)
-      this._remoteStores.set(key, driver)
-    }
+    const driver = this._getRemoteDriver({ url: store.url!, token: store.token, scope: store.scope })
     // Synchronously read whatever the driver currently has cached.
     // Trigger a refresh in the background; the next call sees fresh data.
     const cached = (driver as unknown as { cache: { engrams: Engram[] } | null }).cache
@@ -289,6 +284,17 @@ export class Plur {
     this._engramCache.delete(path)
   }
 
+  /** Get or create a RemoteStore driver for a store config entry. */
+  private _getRemoteDriver(entry: { url: string; token?: string; scope: string }): RemoteStore {
+    const key = `${entry.url}::${entry.scope}`
+    let driver = this._remoteStores.get(key)
+    if (!driver) {
+      driver = new RemoteStore(entry.url, entry.token ?? '', entry.scope)
+      this._remoteStores.set(key, driver)
+    }
+    return driver
+  }
+
   /**
    * Resolve a remote store for a write scope. Returns the RemoteStore driver
    * if the engram's scope matches a registered remote entry, else null.
@@ -304,13 +310,7 @@ export class Plur {
       if (!entry.url) continue
       if (entry.readonly === true) continue
       if (entry.scope !== scope) continue
-      const key = `${entry.url}::${entry.scope}`
-      let driver = this._remoteStores.get(key)
-      if (!driver) {
-        driver = new RemoteStore(entry.url!, entry.token ?? '', entry.scope)
-        this._remoteStores.set(key, driver)
-      }
-      return driver
+      return this._getRemoteDriver({ url: entry.url!, token: entry.token, scope: entry.scope })
     }
     return null
   }
@@ -1104,6 +1104,34 @@ export class Plur {
         this._writeEngrams(storeInfo.path, storeEngrams)
         this._syncIndex()
         return
+      }
+    }
+
+    // Check remote stores — the engram may live on an enterprise server.
+    // See: https://github.com/plur-ai/plur/issues/84
+    for (const entry of (this.config.stores ?? [])) {
+      if (!entry.url) continue
+      if (entry.readonly === true) {
+        // Check if the engram exists here before throwing, so readonly
+        // errors are specific ("cannot retire from readonly") not generic.
+        const roDriver = this._getRemoteDriver({ url: entry.url, token: entry.token, scope: entry.scope })
+        const roFound = await roDriver.getById(id)
+        if (roFound) throw new Error('Cannot retire engram from readonly store')
+        continue
+      }
+      const driver = this._getRemoteDriver({ url: entry.url, token: entry.token, scope: entry.scope })
+      const found = await driver.getById(id)
+      if (found) {
+        const removed = await driver.remove(id)
+        if (removed) {
+          appendHistory(this.paths.root, {
+            event: 'engram_retired',
+            engram_id: id,
+            timestamp: new Date().toISOString(),
+            data: { reason: reason ?? null, routed_to: 'remote' },
+          })
+          return
+        }
       }
     }
 
