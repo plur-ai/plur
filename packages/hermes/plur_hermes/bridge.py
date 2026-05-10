@@ -100,7 +100,13 @@ class PlurBridge:
               knowledge_anchors: list[dict] | None = None,
               dual_coding: dict | None = None,
               abstract: str | None = None,
-              derived_from: str | None = None) -> dict:
+              derived_from: str | None = None,
+              force: bool = False) -> dict:
+        if not force:
+            existing = self._find_duplicate(statement)
+            if existing is not None:
+                return {**existing, "deduplicated": True}
+
         args = [statement, "--scope", scope, "--type", type]
         if domain:
             args.extend(["--domain", domain])
@@ -121,6 +127,25 @@ class PlurBridge:
         if derived_from:
             args.extend(["--derived-from", derived_from])
         return self.call("learn", args)
+
+    def _find_duplicate(self, statement: str) -> dict | None:
+        """Return existing engram if statement matches verbatim, else None.
+
+        Falls through silently on any recall failure so learn() never blocks
+        on a bridge issue.
+        """
+        needle = statement.strip().casefold()
+        if not needle:
+            return None
+        try:
+            response = self.recall(statement, limit=3, fast=True)
+        except Exception:
+            return None
+        for engram in response.get("results", []) or []:
+            existing_statement = (engram.get("statement") or "").strip().casefold()
+            if existing_statement and existing_statement == needle:
+                return {"id": engram.get("id"), "statement": engram.get("statement")}
+        return None
 
     def recall(self, query: str, limit: int = 10, fast: bool = False) -> dict:
         args = [query, "--limit", str(limit)]
