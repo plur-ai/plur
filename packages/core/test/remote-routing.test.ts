@@ -364,3 +364,177 @@ describe('forget() — remote routing (issue #84)', () => {
     await expect(plur.forget('ENG-NETERR-001')).rejects.toThrow('Engram not found')
   })
 })
+
+/**
+ * Issue #85 — feedback() must route to remote stores when the engram
+ * is not found locally. Sends the signal to the server via
+ * POST /api/v1/engrams/:id/feedback; server owns the mutation logic.
+ */
+describe('feedback() — remote routing (issue #85)', () => {
+  let primaryDir: string
+  let fetchMock: ReturnType<typeof vi.fn>
+  let originalFetch: typeof globalThis.fetch
+
+  beforeEach(() => {
+    primaryDir = mkdtempSync(join(tmpdir(), 'plur-feedback-'))
+    originalFetch = globalThis.fetch
+    fetchMock = vi.fn()
+    globalThis.fetch = fetchMock as any
+  })
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch
+    rmSync(primaryDir, { recursive: true, force: true })
+  })
+
+  function feedbackPostCalls() {
+    return fetchMock.mock.calls.filter(
+      ([url, init]) => (init as any)?.method === 'POST' && typeof url === 'string' && url.includes('/feedback'),
+    )
+  }
+
+  function mockRemoteWithFeedback(id: string) {
+    fetchMock.mockImplementation((async (url: string, init?: { method?: string }) => {
+      const method = init?.method ?? 'GET'
+      // GET /engrams/:id — found
+      if (method === 'GET' && typeof url === 'string' && url.includes(`/engrams/${id}`)) {
+        return {
+          ok: true, status: 200,
+          json: async () => ({ id, scope: 'group:test', status: 'active', data: { statement: 'test' } }),
+          text: async () => '',
+        } as Response
+      }
+      // POST /engrams/:id/feedback — success
+      if (method === 'POST' && typeof url === 'string' && url.includes(`/engrams/${id}/feedback`)) {
+        return { ok: true, status: 200, json: async () => ({ success: true }), text: async () => '' } as Response
+      }
+      // GET /engrams?scope=... (load) — empty list
+      if (method === 'GET') {
+        return {
+          ok: true, status: 200,
+          json: async () => ({ rows: [], total_count: 0 }),
+          text: async () => '',
+        } as Response
+      }
+      return { ok: false, status: 404, text: async () => 'not found' } as Response
+    }) as any)
+  }
+
+  it('feedback routes to remote for server-assigned ID', async () => {
+    mockRemoteWithFeedback('ENG-REMOTE-FB-001')
+
+    writeStoresConfig(primaryDir, [
+      { url: 'https://plur.example.com/sse', token: 'tok', scope: 'group:test', shared: true, readonly: false },
+    ])
+    const plur = new Plur({ path: primaryDir })
+
+    await plur.feedback('ENG-REMOTE-FB-001', 'positive')
+
+    const posts = feedbackPostCalls()
+    expect(posts.length).toBe(1)
+    expect(posts[0][0]).toContain('/engrams/ENG-REMOTE-FB-001/feedback')
+    const body = JSON.parse((posts[0][1] as any).body)
+    expect(body.signal).toBe('positive')
+  })
+
+  it('feedback logs history with routed_to: remote', async () => {
+    mockRemoteWithFeedback('ENG-REMOTE-FB-002')
+
+    writeStoresConfig(primaryDir, [
+      { url: 'https://plur.example.com/sse', token: 'tok', scope: 'group:test', shared: true, readonly: false },
+    ])
+    const plur = new Plur({ path: primaryDir })
+    await plur.feedback('ENG-REMOTE-FB-002', 'negative')
+
+    const historyDir = join(primaryDir, 'history')
+    const files = existsSync(historyDir) ? readdirSync(historyDir) : []
+    expect(files.length).toBeGreaterThan(0)
+
+    const historyContent = readFileSync(join(historyDir, files[0]), 'utf-8')
+    expect(historyContent).toContain('feedback_received')
+    expect(historyContent).toContain('ENG-REMOTE-FB-002')
+    expect(historyContent).toContain('remote')
+  })
+
+  it('feedback prefers local over remote', async () => {
+    mockRemoteWithFeedback('ENG-LOCAL-FB-001')
+
+    writeStoresConfig(primaryDir, [
+      { url: 'https://plur.example.com/sse', token: 'tok', scope: 'group:test', shared: true, readonly: false },
+    ])
+    const plur = new Plur({ path: primaryDir })
+
+    const engram = plur.learn('local engram for feedback', { scope: 'global' })
+    await plur.feedback(engram.id, 'positive')
+
+    // No feedback POST to remote
+    const posts = feedbackPostCalls()
+    expect(posts.length).toBe(0)
+
+    // Local engram was updated
+    const found = plur.getById(engram.id)
+    expect(found!.feedback_signals?.positive).toBe(1)
+  })
+
+  it('feedback on readonly remote throws', async () => {
+    mockRemoteWithFeedback('ENG-READONLY-FB-001')
+
+    writeStoresConfig(primaryDir, [
+      { url: 'https://plur.example.com/sse', token: 'tok', scope: 'group:test', shared: true, readonly: true },
+    ])
+    const plur = new Plur({ path: primaryDir })
+
+    await expect(plur.feedback('ENG-READONLY-FB-001', 'positive')).rejects.toThrow('readonly store')
+  })
+
+  it('feedback throws when engram not in local or remote', async () => {
+    // Remote getById returns null
+    fetchMock.mockImplementation((async (url: string, init?: { method?: string }) => {
+      const method = init?.method ?? 'GET'
+      if (method === 'GET' && typeof url === 'string' && url.includes('/engrams/ENG-')) {
+        return { ok: false, status: 404, json: async () => null, text: async () => '' } as Response
+      }
+      return {
+        ok: true, status: 200,
+        json: async () => ({ rows: [], total_count: 0 }),
+        text: async () => '',
+      } as Response
+    }) as any)
+
+    writeStoresConfig(primaryDir, [
+      { url: 'https://plur.example.com/sse', token: 'tok', scope: 'group:test', shared: true, readonly: false },
+    ])
+    const plur = new Plur({ path: primaryDir })
+
+    await expect(plur.feedback('ENG-NONEXISTENT-001', 'positive')).rejects.toThrow('Engram not found')
+  })
+
+  it('feedback surfaces server error clearly', async () => {
+    // getById succeeds but feedback POST fails
+    fetchMock.mockImplementation((async (url: string, init?: { method?: string }) => {
+      const method = init?.method ?? 'GET'
+      if (method === 'GET' && typeof url === 'string' && url.includes('/engrams/ENG-SRV-ERR')) {
+        return {
+          ok: true, status: 200,
+          json: async () => ({ id: 'ENG-SRV-ERR', scope: 'group:test', status: 'active', data: { statement: 'test' } }),
+          text: async () => '',
+        } as Response
+      }
+      if (method === 'POST' && typeof url === 'string' && url.includes('/feedback')) {
+        return { ok: false, status: 500, json: async () => ({}), text: async () => 'internal server error' } as Response
+      }
+      return {
+        ok: true, status: 200,
+        json: async () => ({ rows: [], total_count: 0 }),
+        text: async () => '',
+      } as Response
+    }) as any)
+
+    writeStoresConfig(primaryDir, [
+      { url: 'https://plur.example.com/sse', token: 'tok', scope: 'group:test', shared: true, readonly: false },
+    ])
+    const plur = new Plur({ path: primaryDir })
+
+    await expect(plur.feedback('ENG-SRV-ERR', 'positive')).rejects.toThrow('Remote feedback failed')
+  })
+})
