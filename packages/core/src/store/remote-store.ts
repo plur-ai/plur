@@ -177,6 +177,27 @@ export class RemoteStore implements EngramStore {
     return true
   }
 
+  /**
+   * Apply feedback to a remote engram. POST /api/v1/engrams/:id/feedback
+   * sends the raw signal; the server owns the mutation logic (strength
+   * adjustment, commitment promotion, counter increment).
+   *
+   * Not part of the EngramStore interface — RemoteStore-specific.
+   * Requires server support: see https://github.com/plur-ai/plur/issues/85
+   */
+  async feedback(id: string, signal: 'positive' | 'negative' | 'neutral'): Promise<void> {
+    const r = await fetch(`${this.apiBase}/engrams/${encodeURIComponent(id)}/feedback`, {
+      method: 'POST',
+      headers: this.headers({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ signal }),
+    })
+    if (!r.ok) {
+      const text = await r.text().catch(() => '')
+      throw new Error(`Remote feedback failed: ${r.status} ${text}`)
+    }
+    this.cache = null
+  }
+
   async count(filter?: { status?: string }): Promise<number> {
     // Cheap-ish: load (cached) and filter client-side. The server has
     // a count column we could add an endpoint for, but at pilot scale
