@@ -390,7 +390,7 @@ export function getToolDefinitions(): ToolDefinition[] {
           const summary = { positive: 0, negative: 0, neutral: 0 }
           for (const { id, signal } of args.signals as Array<{ id: string; signal: 'positive' | 'negative' | 'neutral' }>) {
             try {
-              plur.feedback(id, signal)
+              await plur.feedback(id, signal)
               results.push({ id, signal, success: true })
               summary[signal]++
             } catch (err: any) {
@@ -401,7 +401,7 @@ export function getToolDefinitions(): ToolDefinition[] {
         }
         // Single mode
         try {
-          plur.feedback(args.id as string, args.signal as 'positive' | 'negative' | 'neutral')
+          await plur.feedback(args.id as string, args.signal as 'positive' | 'negative' | 'neutral')
           return { success: true, id: args.id, signal: args.signal }
         } catch (err: any) {
           if (err.message?.includes('readonly store')) {
@@ -460,14 +460,14 @@ export function getToolDefinitions(): ToolDefinition[] {
           const engram = plur.getById(args.id as string)
           if (!engram) throw new Error(`Engram not found: ${args.id}`)
           if (engram.status === 'retired') return { success: false, error: `Already retired: ${args.id}` }
-          plur.forget(args.id as string)
+          await plur.forget(args.id as string)
           return { success: true, retired: { id: engram.id, statement: engram.statement } }
         }
         if (args.search) {
           const matches = plur.recall(args.search as string, { limit: 100 })
           if (matches.length === 0) return { success: false, error: `No active engrams matching "${args.search}"` }
           if (matches.length === 1) {
-            plur.forget(matches[0].id)
+            await plur.forget(matches[0].id)
             return { success: true, retired: { id: matches[0].id, statement: matches[0].statement } }
           }
           return {

@@ -14,7 +14,7 @@ describe('E2E: full learn-inject-feedback-recall lifecycle', () => {
   })
   afterEach(() => { rmSync(dir, { recursive: true }) })
 
-  it('full lifecycle', () => {
+  it('full lifecycle', async () => {
     // Learn
     const e1 = plur.learn('Always run tests before deploying', { scope: 'global', type: 'procedural' })
     const e2 = plur.learn('Project X uses PostgreSQL', { scope: 'project:x', type: 'architectural' })
@@ -25,7 +25,7 @@ describe('E2E: full learn-inject-feedback-recall lifecycle', () => {
     expect(injected.count).toBeGreaterThanOrEqual(1)
 
     // Feedback
-    plur.feedback(e1.id, 'positive')
+    await plur.feedback(e1.id, 'positive')
 
     // Capture episode
     plur.capture('Deployed project X to staging', { agent: 'claude-code' })
@@ -39,7 +39,7 @@ describe('E2E: full learn-inject-feedback-recall lifecycle', () => {
     expect(episodes).toHaveLength(1)
 
     // Forget
-    plur.forget(e3.id, 'no longer relevant')
+    await plur.forget(e3.id, 'no longer relevant')
     const afterForget = plur.recall('verbose output')
     expect(afterForget).toHaveLength(0)
   })
@@ -57,17 +57,17 @@ describe('E2E: full learn-inject-feedback-recall lifecycle', () => {
     expect(resultB.directives).toContain('Vue')
   })
 
-  it('feedback loop improves injection', () => {
+  it('feedback loop improves injection', async () => {
     const e1 = plur.learn('Use docker for deployment', { scope: 'global', type: 'procedural' })
     const e2 = plur.learn('Use kubernetes for deployment', { scope: 'global', type: 'procedural' })
 
     // Positive feedback on e1
-    plur.feedback(e1.id, 'positive')
-    plur.feedback(e1.id, 'positive')
-    plur.feedback(e1.id, 'positive')
+    await plur.feedback(e1.id, 'positive')
+    await plur.feedback(e1.id, 'positive')
+    await plur.feedback(e1.id, 'positive')
     // Negative feedback on e2
-    plur.feedback(e2.id, 'negative')
-    plur.feedback(e2.id, 'negative')
+    await plur.feedback(e2.id, 'negative')
+    await plur.feedback(e2.id, 'negative')
 
     // e1 should score higher and appear before e2 in formatted directives string
     const result = plur.inject('deploy the application', { budget: 500 })
