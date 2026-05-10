@@ -75,4 +75,9 @@ describe('MCP tools', () => {
     const result2 = await callTool('plur_status', {}) as any
     expect(result2.engram_count).toBe(1)
   })
+
+  it('plur_status includes running version', async () => {
+    const result = await callTool('plur_status', {}) as any
+    expect(result.version).toMatch(/^\d+\.\d+\.\d+/)
+  })
 })
