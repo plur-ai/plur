@@ -11,7 +11,11 @@ import shutil
 import subprocess
 from typing import Any
 
-_NPX_CLI_VERSION = "0.9.0"
+_NPX_CLI_VERSION = "0.9.4"
+
+_NOT_FOUND_MSG = (
+    f"PLUR CLI not found. Install: npm install -g @plur-ai/cli@{_NPX_CLI_VERSION}"
+)
 
 
 class PlurBridgeError(Exception):
@@ -54,10 +58,7 @@ class PlurBridge:
             self._binary = f"npx:@plur-ai/cli@{_NPX_CLI_VERSION}"
             return self._binary
 
-        raise PlurNotFoundError(
-            "PLUR CLI not found. Install: npm install -g @plur-ai/cli@0.9.1 "
-            "(0.9.2 is bricked on npm — see https://github.com/plur-ai/plur/issues/59)"
-        )
+        raise PlurNotFoundError(_NOT_FOUND_MSG)
 
     def call(self, command: str, args: list[str] | None = None, timeout: int = 30) -> dict[str, Any]:
         binary = self._find_binary()
@@ -77,10 +78,7 @@ class PlurBridge:
         except subprocess.TimeoutExpired:
             raise PlurBridgeError(f"CLI timed out after {timeout}s: plur {command}")
         except FileNotFoundError:
-            raise PlurNotFoundError(
-                "PLUR CLI not found. Install: npm install -g @plur-ai/cli@0.9.1 "
-                "(0.9.2 is bricked on npm — see https://github.com/plur-ai/plur/issues/59)"
-            )
+            raise PlurNotFoundError(_NOT_FOUND_MSG)
 
         if result.returncode == 2:
             return json.loads(result.stdout) if result.stdout.strip() else {"results": [], "count": 0}
