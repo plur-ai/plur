@@ -49,19 +49,19 @@ describe.skipIf(!hasSqlite)('SQLite indexed storage', () => {
     expect(results.length).toBe(2)
   })
 
-  it('forget + compact works with index', () => {
+  it('forget + compact works with index', async () => {
     const e1 = plur.learn('Keep this', { scope: 'global' })
     const e2 = plur.learn('Remove this', { scope: 'global' })
-    plur.forget(e2.id, 'test')
+    await plur.forget(e2.id, 'test')
     plur.compact()
     const all = plur.list()
     expect(all.length).toBe(1)
     expect(all[0].id).toBe(e1.id)
   })
 
-  it('feedback persists through index', () => {
+  it('feedback persists through index', async () => {
     const engram = plur.learn('Use feature flags', { scope: 'global' })
-    plur.feedback(engram.id, 'positive')
+    await plur.feedback(engram.id, 'positive')
     const recalled = plur.recall('feature flags')
     expect(recalled[0].feedback_signals?.positive).toBe(1)
   })
