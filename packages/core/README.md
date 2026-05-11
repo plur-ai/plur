@@ -4,7 +4,7 @@ The engine behind [PLUR](https://plur.ai) — persistent memory for AI agents.
 
 You correct your agent on Monday. On Tuesday, it makes the same mistake. PLUR fixes this. Corrections, preferences, and conventions persist across sessions. Your data stays on your disk as plain YAML. Search runs locally with zero API calls.
 
-The result: **Haiku with PLUR memory outperforms Opus without it** — 2.6x better on tool routing, at 10x less cost. The bottleneck isn't model intelligence. It's context.
+In our tool-routing and local-knowledge benchmark, **Haiku with PLUR memory outperformed Opus without it** — 2.6x better on tool routing, at 10x less cost. The bottleneck isn't model intelligence. It's context.
 
 ## Why @plur-ai/core
 
