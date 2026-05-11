@@ -58,14 +58,11 @@ interface HookEntry {
 // Hook commands — all use npx for zero-install compatibility
 const CLI = 'npx @plur-ai/cli'
 
-const PLUR_HOOKS: Record<string, HookEntry[]> = {
-  // --- Session enforcement ---
-  // These three hooks ensure plur_session_start is always called first.
-  // Without session start, feedback loops, episode tracking, and scoped
-  // injection don't work. The guard blocks all tools until the sentinel
-  // file exists; the mark creates it after plur_session_start succeeds.
-
-  // Forceful directive at session open
+// Enforcement hooks ensure plur_session_start is always called first.
+// Installed into global ~/.claude/settings.json unconditionally (issue #95) so
+// they fire from any subdirectory project. Each hook silent-passes when
+// isPlurConfigured() is false, so projects without plur are unaffected.
+const PLUR_HOOKS_ENFORCEMENT: Record<string, HookEntry[]> = {
   SessionStart: [
     {
       hooks: [
@@ -74,8 +71,32 @@ const PLUR_HOOKS: Record<string, HookEntry[]> = {
     },
   ],
 
-  // --- Session lifecycle ---
+  PreToolUse: [
+    // Session guard — blocks all tools until plur_session_start is called.
+    // Must be first so it runs before any other PreToolUse hook.
+    {
+      matcher: '*',
+      hooks: [
+        { type: 'command', command: `${CLI} hook-session-guard`, timeout: 3 },
+      ],
+    },
+  ],
 
+  PostToolUse: [
+    // Session sentinel — creates marker file after plur_session_start succeeds
+    {
+      matcher: 'mcp__plur__plur_session_start',
+      hooks: [
+        { type: 'command', command: `${CLI} hook-session-mark`, timeout: 3 },
+      ],
+    },
+  ],
+}
+
+// Injection hooks pull relevant engrams into the conversation context. Installed
+// at the path chosen by --global/--project (default project) because per-project
+// domain/scope tuning may matter for what gets injected.
+const PLUR_HOOKS_INJECTION: Record<string, HookEntry[]> = {
   // First message: inject engrams based on the prompt.
   // Subsequent messages: periodic reminder to call plur_learn (~1ms skip).
   UserPromptSubmit: [
@@ -96,17 +117,7 @@ const PLUR_HOOKS: Record<string, HookEntry[]> = {
     },
   ],
 
-  // --- Contextual injection + session guard ---
-
   PreToolUse: [
-    // Session guard — blocks all tools until plur_session_start is called.
-    // Must be first so it runs before any other PreToolUse hook.
-    {
-      matcher: '*',
-      hooks: [
-        { type: 'command', command: `${CLI} hook-session-guard`, timeout: 3 },
-      ],
-    },
     // Full injection when entering plan mode — planning needs broad context
     {
       matcher: 'EnterPlanMode',
@@ -137,15 +148,7 @@ const PLUR_HOOKS: Record<string, HookEntry[]> = {
     },
   ],
 
-  // Observation capture — log tool results + session sentinel
   PostToolUse: [
-    // Session sentinel — creates marker file after plur_session_start succeeds
-    {
-      matcher: 'mcp__plur__plur_session_start',
-      hooks: [
-        { type: 'command', command: `${CLI} hook-session-mark`, timeout: 3 },
-      ],
-    },
     {
       matcher: 'Bash|Edit|Write|Agent',
       hooks: [
@@ -174,6 +177,18 @@ const PLUR_HOOKS: Record<string, HookEntry[]> = {
       ],
     },
   ],
+}
+
+function mergeHookMaps(
+  a: Record<string, HookEntry[]>,
+  b: Record<string, HookEntry[]>,
+): Record<string, HookEntry[]> {
+  const out: Record<string, HookEntry[]> = {}
+  for (const [event, entries] of Object.entries(a)) out[event] = [...entries]
+  for (const [event, entries] of Object.entries(b)) {
+    out[event] = [...(out[event] ?? []), ...entries]
+  }
+  return out
 }
 
 const CLAUDE_MD_SECTION = `## PLUR Memory
@@ -318,12 +333,12 @@ function stripPlurHooks(settings: Settings): Settings {
   return { ...settings, hooks }
 }
 
-function mergeHooks(settings: Settings): Settings {
+function mergeHooks(settings: Settings, hooksMap: Record<string, HookEntry[]>): Settings {
   // Strip old plur hooks first so init is idempotent (upgrade-safe)
   const clean = stripPlurHooks(settings)
   const hooks = { ...(clean.hooks ?? {}) }
 
-  for (const [event, newEntries] of Object.entries(PLUR_HOOKS)) {
+  for (const [event, newEntries] of Object.entries(hooksMap)) {
     const existing = hooks[event] ?? []
     hooks[event] = [...existing, ...newEntries]
   }
@@ -355,42 +370,73 @@ function installDesktopMcp(args: string[]): string {
   return `registered in ${desktopPath}`
 }
 
+function writeSettings(path: string, settings: Settings): void {
+  mkdirSync(join(path, '..'), { recursive: true })
+  writeFileSync(path, JSON.stringify(settings, null, 2) + '\n')
+}
+
+function hooksStatusFor(before: string, after: string, hadHooks: boolean): string {
+  if (!hadHooks) return 'installed'
+  return before === after ? 'already up to date' : 'upgraded'
+}
+
 export async function run(args: string[], flags: GlobalFlags): Promise<void> {
-  const settingsPath = findSettingsPath(flags, args)
-  const settingsDir = join(settingsPath, '..')
+  const injectionPath = findSettingsPath(flags, args)
+  const enforcementPath = join(homedir(), '.claude', 'settings.json')
+  const samePath = injectionPath === enforcementPath
 
-  // Load existing settings
-  let settings = loadSettings(settingsPath)
-
-  const hadHooks = hasPlurHooks(settings)
-  const mcpAlreadyInstalled = hasPlurMcp(settings)
-
-  // Always run mergeHooks — it strips old plur hooks first, so it's
-  // idempotent and handles upgrades (new hooks added in newer versions).
-  const before = JSON.stringify(settings.hooks ?? {})
-  settings = mergeHooks(settings)
-  const hooksChanged = JSON.stringify(settings.hooks ?? {}) !== before
-
-  let hooksStatus: string
-  if (!hadHooks) {
-    hooksStatus = 'installed'
-  } else if (hooksChanged) {
-    hooksStatus = 'upgraded'
-  } else {
-    hooksStatus = 'already up to date'
-  }
-
+  let injectionHooksStatus: string
+  let enforcementHooksStatus: string
   let mcpStatus: string
-  if (!mcpAlreadyInstalled) {
-    mergePlurMcp(settings as Record<string, unknown>)
-    mcpStatus = 'registered'
-  } else {
-    mcpStatus = 'already registered'
-  }
 
-  // Always write — mergeHooks may have upgraded hooks even if they existed
-  mkdirSync(settingsDir, { recursive: true })
-  writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n')
+  if (samePath) {
+    // Single file — combined enforcement + injection hooks
+    let settings = loadSettings(enforcementPath)
+    const hadHooks = hasPlurHooks(settings)
+    const mcpAlready = hasPlurMcp(settings)
+    const before = JSON.stringify(settings.hooks ?? {})
+
+    settings = mergeHooks(settings, mergeHookMaps(PLUR_HOOKS_ENFORCEMENT, PLUR_HOOKS_INJECTION))
+    const after = JSON.stringify(settings.hooks ?? {})
+
+    if (!mcpAlready) {
+      mergePlurMcp(settings as Record<string, unknown>)
+      mcpStatus = 'registered'
+    } else {
+      mcpStatus = 'already registered'
+    }
+
+    writeSettings(enforcementPath, settings)
+    const status = hooksStatusFor(before, after, hadHooks)
+    injectionHooksStatus = status
+    enforcementHooksStatus = status
+  } else {
+    // Enforcement at global, injection at project (or wherever findSettingsPath chose)
+    let globalSettings = loadSettings(enforcementPath)
+    const globalHadHooks = hasPlurHooks(globalSettings)
+    const globalBefore = JSON.stringify(globalSettings.hooks ?? {})
+    globalSettings = mergeHooks(globalSettings, PLUR_HOOKS_ENFORCEMENT)
+    const globalAfter = JSON.stringify(globalSettings.hooks ?? {})
+    writeSettings(enforcementPath, globalSettings)
+    enforcementHooksStatus = hooksStatusFor(globalBefore, globalAfter, globalHadHooks)
+
+    let projectSettings = loadSettings(injectionPath)
+    const projectHadHooks = hasPlurHooks(projectSettings)
+    const projectMcpAlready = hasPlurMcp(projectSettings)
+    const projectBefore = JSON.stringify(projectSettings.hooks ?? {})
+    projectSettings = mergeHooks(projectSettings, PLUR_HOOKS_INJECTION)
+    const projectAfter = JSON.stringify(projectSettings.hooks ?? {})
+
+    if (!projectMcpAlready) {
+      mergePlurMcp(projectSettings as Record<string, unknown>)
+      mcpStatus = 'registered'
+    } else {
+      mcpStatus = 'already registered'
+    }
+
+    writeSettings(injectionPath, projectSettings)
+    injectionHooksStatus = hooksStatusFor(projectBefore, projectAfter, projectHadHooks)
+  }
 
   // Install CLAUDE.md section
   const claudeMdStatus = installClaudeMd()
@@ -405,16 +451,18 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
 
   outputText('PLUR installed for Claude Code.')
   outputText('')
-  outputText('Architecture: One global engram store (~/.plur/), project-scoped hooks.')
+  outputText('Architecture: One global engram store (~/.plur/), enforcement hooks global, injection hooks project-scoped.')
   outputText('Multi-project scoping via domain/scope fields on engrams, not separate installs.')
   outputText('')
   outputText(`MCP server (plur): ${mcpStatus}`)
   outputText(`  command: ${entry.command} ${entry.args.join(' ')}`)
   outputText('')
-  outputText(`Hooks (12):        ${hooksStatus}`)
+  outputText(`Enforcement hooks (3, always global): ${enforcementHooksStatus}`)
   outputText('  SessionStart      — enforce plur_session_start before any work')
   outputText('  PreToolUse        — session guard (blocks tools until session started)')
   outputText('  PostToolUse       — session sentinel (marks session as started)')
+  outputText('')
+  outputText(`Injection hooks (9): ${injectionHooksStatus}`)
   outputText('  UserPromptSubmit  — inject engrams + auto-start session')
   outputText('  PostCompact       — re-inject engrams after context compaction')
   outputText('  PreToolUse        — contextual injection (plan mode, skills, agents)')
@@ -423,13 +471,15 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   outputText('  SubagentStart     — inject agent-scoped engrams into subagents')
   outputText('  Stop              — learning reflection nudge (every 3rd response)')
   outputText('')
-  outputText(`Settings:       ${settingsPath}`)
-  outputText(`Claude Desktop: ${desktopStatus}`)
-  outputText(`CLAUDE.md:      ${claudeMdStatus}`)
+  outputText(`Enforcement file: ${enforcementPath}`)
+  if (!samePath) outputText(`Injection file:   ${injectionPath}`)
+  outputText(`Claude Desktop:   ${desktopStatus}`)
+  outputText(`CLAUDE.md:        ${claudeMdStatus}`)
   if (projectConfigPath) {
-    outputText(`Project config: ${projectConfigPath}`)
+    outputText(`Project config:   ${projectConfigPath}`)
   }
   outputText('')
+  outputText('Enforcement hooks fire from any subdirectory; they silent-pass when plur is not configured.')
   if (projectConfigPath) {
     outputText('Project scoping configured. Engrams learned in this project will')
     outputText('be tagged automatically. Run `plur init --domain X --scope Y` in')
