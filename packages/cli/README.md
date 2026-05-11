@@ -7,18 +7,16 @@ PLUR stores corrections, preferences, and patterns as **engrams** that strengthe
 ## Install
 
 ```bash
-npm install -g @plur-ai/cli@0.9.1
+npm install -g @plur-ai/cli@0.9.4
 ```
 
 Or use without installing:
 
 ```bash
-npx @plur-ai/cli@0.9.1 status
+npx @plur-ai/cli@0.9.4 status
 ```
 
-> ### Why `@0.9.1` is pinned
->
-> The `latest` tag on npm currently resolves to `@plur-ai/cli@0.9.2`, which is bricked — every command throws `{"error":"Dynamic require of \"os\" is not supported"}` due to an esbuild bundling regression. The fix is on `main` as `0.9.3` (see commit `7af15a8`) and a CI regression guard is in place ([#68](https://github.com/plur-ai/plur/pull/68)), but the `0.9.3` artifact has not yet shipped to npm — tracking in [#59](https://github.com/plur-ai/plur/issues/59). Until `0.9.3` is published, use the explicit `@0.9.1` pin shown above (or run from source: clone the repo and `pnpm install && pnpm --filter @plur-ai/cli build`).
+> Current verified CLI release: `@plur-ai/cli@0.9.4`.
 
 ## Quick Start
 

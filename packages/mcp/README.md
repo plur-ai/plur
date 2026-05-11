@@ -2,7 +2,7 @@
 
 Give your AI agent persistent memory. One line in your MCP config — corrections, preferences, and conventions persist across sessions. No workflow changes, no cloud, no API costs for search.
 
-Part of [PLUR](https://plur.ai) — where **Haiku with memory outperforms Opus without it** at 10x less cost.
+Part of [PLUR](https://plur.ai) — where, in our tool-routing and local-knowledge benchmark, **Haiku with memory outperformed Opus without it** at 10x less cost.
 
 ## Setup (30 seconds)
 
