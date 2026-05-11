@@ -151,15 +151,13 @@ describe('learn() — remote routing (issue #25)', () => {
     expect(local.engrams.find(e => e.statement === 'readonly-store engram')).toBeTruthy()
   })
 
-  it('logs but does not throw if remote append fails', async () => {
+  it('does not throw if remote append fails — saves locally with _routed:false', async () => {
     fetchMock.mockResolvedValue({
       ok: false,
       status: 500,
       json: async () => ({ error: 'server boom' }),
       text: async () => 'server boom',
     } as Response)
-
-    const consoleErr = vi.spyOn(console, 'error').mockImplementation(() => {})
 
     writeStoresConfig(primaryDir, [
       {
@@ -173,19 +171,179 @@ describe('learn() — remote routing (issue #25)', () => {
     const plur = new Plur({ path: primaryDir })
 
     // Should NOT throw — the engram object still comes back.
-    expect(() => {
-      plur.learn('engram-with-failing-remote', {
-        scope: 'group:plur/plur-ai/engineering',
-        type: 'behavioral',
-      })
-    }).not.toThrow()
+    const engram = plur.learn('engram-with-failing-remote', {
+      scope: 'group:plur/plur-ai/engineering',
+      type: 'behavioral',
+    })
+    expect(engram.statement).toBe('engram-with-failing-remote')
 
-    // Wait for the fire-and-forget rejection handler to run.
-    await new Promise(r => setTimeout(r, 10))
-    expect(consoleErr).toHaveBeenCalled()
-    const errCall = consoleErr.mock.calls.find(c => String(c[1] ?? '').includes('remote append failed'))
-    expect(errCall).toBeDefined()
-    consoleErr.mockRestore()
+    // Wait for the background retry (2 attempts) + local fallback to complete.
+    await new Promise(r => setTimeout(r, 50))
+
+    // Engram should now be in local store with outbox metadata.
+    const localYaml = join(primaryDir, 'engrams.yaml')
+    expect(existsSync(localYaml)).toBe(true)
+    const local = yaml.load(readFileSync(localYaml, 'utf-8')) as { engrams: any[] }
+    const saved = local.engrams.find(e => e.statement === 'engram-with-failing-remote')
+    expect(saved).toBeDefined()
+    expect(saved._routed).toBe(false)
+    expect(saved._intended_scope).toBe('group:plur/plur-ai/engineering')
+    expect(saved._route_attempts).toBe(2)
+  })
+})
+
+/**
+ * Issue #88 — learn() retry + local fallback for remote store failures.
+ * When remote append fails, retry once, then save locally with outbox
+ * metadata (_routed:false) so #26 can re-publish later.
+ */
+describe('learn() — retry + local fallback (issue #88)', () => {
+  let primaryDir: string
+  let fetchMock: ReturnType<typeof vi.fn>
+  let originalFetch: typeof globalThis.fetch
+
+  beforeEach(() => {
+    primaryDir = mkdtempSync(join(tmpdir(), 'plur-retry-'))
+    originalFetch = globalThis.fetch
+    fetchMock = vi.fn()
+    globalThis.fetch = fetchMock as any
+  })
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch
+    rmSync(primaryDir, { recursive: true, force: true })
+  })
+
+  function mockSuccessfulAppend() {
+    fetchMock.mockImplementation((async (_url: string, init?: { method?: string }) => {
+      const method = init?.method ?? 'GET'
+      if (method === 'POST') {
+        return {
+          ok: true, status: 201,
+          json: async () => ({ id: 'ENG-REMOTE-001' }),
+          text: async () => '',
+        } as Response
+      }
+      return {
+        ok: true, status: 200,
+        json: async () => ({ rows: [], total_count: 0 }),
+        text: async () => '',
+      } as Response
+    }) as any)
+  }
+
+  function postCalls() {
+    return fetchMock.mock.calls.filter(([, init]) => (init as any)?.method === 'POST')
+  }
+
+  it('retries once and succeeds — no local fallback', async () => {
+    let callCount = 0
+    fetchMock.mockImplementation((async (_url: string, init?: { method?: string }) => {
+      const method = init?.method ?? 'GET'
+      if (method === 'POST') {
+        callCount++
+        if (callCount === 1) {
+          // First attempt fails
+          return { ok: false, status: 500, json: async () => ({}), text: async () => 'server error' } as Response
+        }
+        // Second attempt succeeds
+        return { ok: true, status: 201, json: async () => ({ id: 'ENG-SRV-RETRY' }), text: async () => '' } as Response
+      }
+      return { ok: true, status: 200, json: async () => ({ rows: [], total_count: 0 }), text: async () => '' } as Response
+    }) as any)
+
+    writeStoresConfig(primaryDir, [
+      { url: 'https://plur.example.com/sse', token: 'tok', scope: 'group:test', shared: true, readonly: false },
+    ])
+    const plur = new Plur({ path: primaryDir })
+    plur.learn('retry-success', { scope: 'group:test', type: 'behavioral' })
+
+    await new Promise(r => setTimeout(r, 50))
+
+    // Two POST calls made (initial + retry)
+    const posts = fetchMock.mock.calls.filter(([, init]) => (init as any)?.method === 'POST')
+    expect(posts.length).toBe(2)
+
+    // NOT saved locally — remote succeeded on retry
+    const localYaml = join(primaryDir, 'engrams.yaml')
+    if (existsSync(localYaml)) {
+      const local = yaml.load(readFileSync(localYaml, 'utf-8')) as { engrams?: any[] } | null
+      const found = (local?.engrams ?? []).find((e: any) => e.statement === 'retry-success')
+      expect(found).toBeUndefined()
+    }
+  })
+
+  it('succeeds on first attempt — no retry, no fallback', async () => {
+    fetchMock.mockImplementation((async (_url: string, init?: { method?: string }) => {
+      const method = init?.method ?? 'GET'
+      if (method === 'POST') {
+        return { ok: true, status: 201, json: async () => ({ id: 'ENG-SRV-OK' }), text: async () => '' } as Response
+      }
+      return { ok: true, status: 200, json: async () => ({ rows: [], total_count: 0 }), text: async () => '' } as Response
+    }) as any)
+
+    writeStoresConfig(primaryDir, [
+      { url: 'https://plur.example.com/sse', token: 'tok', scope: 'group:test', shared: true, readonly: false },
+    ])
+    const plur = new Plur({ path: primaryDir })
+    plur.learn('first-attempt-ok', { scope: 'group:test', type: 'behavioral' })
+
+    await new Promise(r => setTimeout(r, 50))
+
+    // Only one POST call
+    const posts = fetchMock.mock.calls.filter(([, init]) => (init as any)?.method === 'POST')
+    expect(posts.length).toBe(1)
+
+    // NOT saved locally
+    const localYaml = join(primaryDir, 'engrams.yaml')
+    if (existsSync(localYaml)) {
+      const local = yaml.load(readFileSync(localYaml, 'utf-8')) as { engrams?: any[] } | null
+      const found = (local?.engrams ?? []).find((e: any) => e.statement === 'first-attempt-ok')
+      expect(found).toBeUndefined()
+    }
+  })
+
+  it('fallback logs engram_route_failed history event', async () => {
+    fetchMock.mockResolvedValue({
+      ok: false, status: 503,
+      json: async () => ({}), text: async () => 'service unavailable',
+    } as Response)
+
+    writeStoresConfig(primaryDir, [
+      { url: 'https://plur.example.com/sse', token: 'tok', scope: 'group:test', shared: true, readonly: false },
+    ])
+    const plur = new Plur({ path: primaryDir })
+    plur.learn('history-fallback-test', { scope: 'group:test', type: 'behavioral' })
+
+    await new Promise(r => setTimeout(r, 50))
+
+    const historyDir = join(primaryDir, 'history')
+    const files = existsSync(historyDir) ? readdirSync(historyDir) : []
+    expect(files.length).toBeGreaterThan(0)
+
+    // Should have both engram_created (optimistic) and engram_route_failed
+    const allHistory = files.map(f => readFileSync(join(historyDir, f), 'utf-8')).join('\n')
+    expect(allHistory).toContain('engram_route_failed')
+    expect(allHistory).toContain('local_fallback')
+  })
+
+  it('network error triggers fallback (not just HTTP errors)', async () => {
+    fetchMock.mockRejectedValue(new Error('ECONNREFUSED'))
+
+    writeStoresConfig(primaryDir, [
+      { url: 'https://plur.example.com/sse', token: 'tok', scope: 'group:test', shared: true, readonly: false },
+    ])
+    const plur = new Plur({ path: primaryDir })
+    plur.learn('network-error-test', { scope: 'group:test', type: 'behavioral' })
+
+    await new Promise(r => setTimeout(r, 50))
+
+    const localYaml = join(primaryDir, 'engrams.yaml')
+    expect(existsSync(localYaml)).toBe(true)
+    const local = yaml.load(readFileSync(localYaml, 'utf-8')) as { engrams: any[] }
+    const saved = local.engrams.find(e => e.statement === 'network-error-test')
+    expect(saved).toBeDefined()
+    expect(saved._routed).toBe(false)
   })
 
   it('private visibility + remote scope writes locally, not to remote (#90)', async () => {
