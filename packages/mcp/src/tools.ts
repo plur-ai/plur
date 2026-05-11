@@ -164,22 +164,24 @@ export function getToolDefinitions(): ToolDefinition[] {
         // the LLM-driven dedup pathway (local routes).
         try {
           const engram = await plur.learnRouted(args.statement as string, context)
+          const isOutbox = !!(engram as any).structured_data?._outbox
           return {
             id: engram.id, statement: engram.statement,
             scope: engram.scope, type: engram.type,
             pinned: (engram as any).pinned === true,
             decision: 'ADD',
+            ...(isOutbox ? { outbox: true, warning: 'Remote write failed; engram queued locally for retry on next session start or plur_sync.' } : {}),
           }
         } catch (err) {
-          // learnRouted throws when remote-write fails (network down,
-          // 5xx, etc). Fall back to sync learn() so the user gets
-          // *something* recorded locally — but warn loudly that the
-          // returned id is local-only and will not match the server.
+          // learnRouted now saves to outbox on remote failure, so this
+          // path should rarely be reached. Keep as defense-in-depth.
           const engram = plur.learn(args.statement as string, context)
+          const isOutbox = !!(engram as any).structured_data?._outbox
           return {
             id: engram.id, statement: engram.statement,
             scope: engram.scope, type: engram.type, decision: 'ADD',
-            warning: `Remote write failed (${(err as Error).message}); fell back to local. The id above is the local placeholder — the canonical engram is NOT on the server.`,
+            ...(isOutbox ? { outbox: true } : {}),
+            warning: `Remote write failed (${(err as Error).message}); engram queued for retry.`,
           }
         }
       },
@@ -707,7 +709,23 @@ export function getToolDefinitions(): ToolDefinition[] {
       },
       handler: async (args, plur) => {
         const result = plur.sync(args.remote as string | undefined)
-        return result
+
+        // Flush outbox after git sync (issue #26)
+        let outbox_result: { flushed: number; failed: number; expired_warnings: string[] } | undefined
+        try {
+          outbox_result = await plur.flushOutbox()
+        } catch { /* logged inside flushOutbox */ }
+
+        return {
+          ...result,
+          ...(outbox_result && (outbox_result.flushed > 0 || outbox_result.failed > 0) ? {
+            outbox: {
+              flushed: outbox_result.flushed,
+              pending: outbox_result.failed,
+              warnings: outbox_result.expired_warnings,
+            },
+          } : {}),
+        }
       },
     },
 
@@ -909,6 +927,7 @@ export function getToolDefinitions(): ToolDefinition[] {
           locked_count: status.locked_count,
           tension_count: status.tension_count,
           versioned_engram_count: status.versioned_engram_count ?? 0,
+          outbox_count: status.outbox_count ?? 0,
         }
       },
     },
@@ -1022,6 +1041,12 @@ export function getToolDefinitions(): ToolDefinition[] {
 
         // Auto-discovery happens in Plur constructor — no manual call needed.
 
+        // Flush outbox — retry pending remote writes (issue #26)
+        let outbox_result: { flushed: number; failed: number; expired_warnings: string[] } | undefined
+        try {
+          outbox_result = await plur.flushOutbox()
+        } catch { /* logged inside flushOutbox */ }
+
         // Get store stats for context
         const status = plur.status()
         const store_stats = {
@@ -1083,6 +1108,14 @@ export function getToolDefinitions(): ToolDefinition[] {
           setup_hint: isFreshInstall
             ? 'IMPORTANT: For reliable memory injection, ask the user to run: npx @plur-ai/cli init — this installs Claude Code hooks that automatically inject engrams at conversation start and after context compaction. Without hooks, memory injection depends on you remembering to call plur_session_start.'
             : undefined,
+          // Outbox flush results (issue #26)
+          ...(outbox_result && (outbox_result.flushed > 0 || outbox_result.failed > 0) ? {
+            outbox: {
+              flushed: outbox_result.flushed,
+              pending: outbox_result.failed,
+              warnings: outbox_result.expired_warnings,
+            },
+          } : {}),
         }
       },
     },
@@ -1195,7 +1228,12 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
       inputSchema: { type: 'object', properties: {} },
       handler: async (_args, plur) => {
         const stores = plur.listStores()
-        return { stores, count: stores.length }
+        const outboxCount = plur.outboxCount()
+        return {
+          stores,
+          count: stores.length,
+          ...(outboxCount > 0 ? { outbox_pending: outboxCount } : {}),
+        }
       },
     },
 

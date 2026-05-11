@@ -82,9 +82,10 @@ describe('learn() — remote routing (issue #25)', () => {
     expect(engram.scope).toBe('group:plur/plur-ai/engineering')
     expect(engram.statement).toBe('test engram for remote')
 
-    // Network POST to /api/v1/engrams should have been made (fire-and-forget;
-    // give the microtask queue a tick to drain).
-    await new Promise(r => setTimeout(r, 10))
+    // Network POST to /api/v1/engrams should have been made. With the
+    // outbox pattern (issue #26), learn() saves locally first then pushes
+    // async — give it time for the write-then-delete cycle.
+    await new Promise(r => setTimeout(r, 100))
     const posts = postCalls()
     expect(posts.length).toBe(1)
     const [url, init] = posts[0]
@@ -93,7 +94,8 @@ describe('learn() — remote routing (issue #25)', () => {
     expect(body.statement).toBe('test engram for remote')
     expect(body.scope).toBe('group:plur/plur-ai/engineering')
 
-    // Local YAML must NOT contain the engram — the entire point of #25.
+    // After successful remote push, the local outbox copy should be
+    // removed — no engram left in local YAML.
     const localYaml = join(primaryDir, 'engrams.yaml')
     if (existsSync(localYaml)) {
       const local = yaml.load(readFileSync(localYaml, 'utf-8')) as { engrams?: unknown[] } | null
@@ -151,15 +153,22 @@ describe('learn() — remote routing (issue #25)', () => {
     expect(local.engrams.find(e => e.statement === 'readonly-store engram')).toBeTruthy()
   })
 
-  it('logs but does not throw if remote append fails', async () => {
-    fetchMock.mockResolvedValue({
-      ok: false,
-      status: 500,
-      json: async () => ({ error: 'server boom' }),
-      text: async () => 'server boom',
-    } as Response)
-
-    const consoleErr = vi.spyOn(console, 'error').mockImplementation(() => {})
+  it('saves to outbox when remote append fails (issue #26)', async () => {
+    fetchMock.mockImplementation((async (_url: string, init?: { method?: string }) => {
+      const method = init?.method ?? 'GET'
+      if (method === 'POST') {
+        return {
+          ok: false, status: 500,
+          json: async () => ({ error: 'server boom' }),
+          text: async () => 'server boom',
+        } as Response
+      }
+      return {
+        ok: true, status: 200,
+        json: async () => ({ rows: [], total_count: 0 }),
+        text: async () => '',
+      } as Response
+    }) as any)
 
     writeStoresConfig(primaryDir, [
       {
@@ -172,7 +181,7 @@ describe('learn() — remote routing (issue #25)', () => {
     ])
     const plur = new Plur({ path: primaryDir })
 
-    // Should NOT throw — the engram object still comes back.
+    // Should NOT throw — the engram is saved to local outbox.
     expect(() => {
       plur.learn('engram-with-failing-remote', {
         scope: 'group:plur/plur-ai/engineering',
@@ -180,12 +189,16 @@ describe('learn() — remote routing (issue #25)', () => {
       })
     }).not.toThrow()
 
-    // Wait for the fire-and-forget rejection handler to run.
-    await new Promise(r => setTimeout(r, 10))
-    expect(consoleErr).toHaveBeenCalled()
-    const errCall = consoleErr.mock.calls.find(c => String(c[1] ?? '').includes('remote append failed'))
-    expect(errCall).toBeDefined()
-    consoleErr.mockRestore()
+    // Wait for the fire-and-forget push attempt to settle.
+    await new Promise(r => setTimeout(r, 50))
+
+    // Engram should be in local YAML with outbox metadata (issue #26).
+    const localYaml = join(primaryDir, 'engrams.yaml')
+    const local = yaml.load(readFileSync(localYaml, 'utf-8')) as { engrams: Array<{ statement: string; structured_data?: any }> }
+    const found = local.engrams.find(e => e.statement === 'engram-with-failing-remote')
+    expect(found).toBeDefined()
+    expect(found!.structured_data?._outbox).toBeDefined()
+    expect(found!.structured_data._outbox.target_scope).toBe('group:plur/plur-ai/engineering')
   })
 })
 

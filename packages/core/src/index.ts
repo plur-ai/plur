@@ -125,6 +125,7 @@ export interface StatusResult {
   locked_count?: number
   tension_count?: number
   versioned_engram_count?: number
+  outbox_count?: number
 }
 
 /** Commitment level scoring multipliers for injection priority (Idea 6). */
@@ -466,27 +467,64 @@ export class Plur {
         pinned: context?.pinned === true ? true : undefined,
       }
 
-      // Multi-store routing: if the engram's scope matches a writable
-      // remote store, send it there instead of writing to the local YAML.
-      // Local history still gets an entry so the user has a personal
-      // audit trail of what they wrote where.
-      //
-      // Sync/async impedance: learn() is sync, RemoteStore.append() is
-      // async. We fire-and-forget here — the caller gets the engram object
-      // back immediately, and the network write completes in the background.
-      // Failures are logged loudly. See issue #26 for the proper outbox
-      // pattern (queue + retry + reconcile) — this is the minimum viable
-      // routing that unblocks the pilot.
+      // Multi-store routing (issue #26 outbox pattern): if the engram's
+      // scope matches a writable remote store, save locally with outbox
+      // metadata first (durable from this point), then fire-and-forget the
+      // remote push. On success the local copy is removed asynchronously;
+      // on failure it stays in the outbox for retry at next session start
+      // or plur_sync.
       const remoteDriver = this._resolveRemoteStoreForScope(scope)
       if (remoteDriver) {
-        void remoteDriver.append(engram).catch(err => {
-          logger.error(`[plur:learn] remote append failed for ${engram.id} (scope=${scope}): ${(err as Error).message}`)
-        })
+        const storeEntry = (this.config.stores ?? []).find(s => s.url && s.scope === scope && !s.readonly)
+        ;(engram as any).structured_data = {
+          ...((engram as any).structured_data ?? {}),
+          _outbox: {
+            target_url: storeEntry!.url!,
+            target_scope: scope,
+            queued_at: now,
+            last_attempt: now,
+            attempt_count: 0,
+            last_error: '',
+          },
+        }
+        engrams.push(engram)
+        this._writeEngrams(this.paths.engrams, engrams)
+        this._syncIndex()
+
+        // Fire-and-forget: attempt immediate push, clean up on success
+        void (async () => {
+          try {
+            await remoteDriver.append(engram)
+            // Success: remove outbox entry from local store
+            withLock(this.paths.engrams, () => {
+              const fresh = loadEngrams(this.paths.engrams)
+              const idx = fresh.findIndex(e => e.id === engram.id)
+              if (idx !== -1) {
+                fresh.splice(idx, 1)
+                this._writeEngrams(this.paths.engrams, fresh)
+                this._syncIndex()
+              }
+            })
+          } catch (err) {
+            // Already saved locally with outbox metadata — will be retried
+            logger.warning(`[plur:outbox] immediate push failed for ${engram.id}, queued for retry: ${(err as Error).message}`)
+            withLock(this.paths.engrams, () => {
+              const fresh = loadEngrams(this.paths.engrams)
+              const target = fresh.find(e => e.id === engram.id) as any
+              if (target?.structured_data?._outbox) {
+                target.structured_data._outbox.last_error = (err as Error).message
+                target.structured_data._outbox.attempt_count = 1
+                this._writeEngrams(this.paths.engrams, fresh)
+              }
+            })
+          }
+        })()
+
         appendHistory(this.paths.root, {
           event: 'engram_created',
           engram_id: engram.id,
           timestamp: now,
-          data: { type: engram.type, scope: engram.scope, source: engram.source, routed_to: 'remote' },
+          data: { type: engram.type, scope: engram.scope, source: engram.source, routed_to: 'remote', outbox: true },
         })
         return engram
       }
@@ -538,21 +576,54 @@ export class Plur {
     }
     // Remote route — dedup against the merged local+cached-remote view,
     // then POST and merge the server-assigned ID into the local engram
-    // representation we hand back to the caller.
+    // representation we hand back to the caller. On failure, save to
+    // local outbox for retry (issue #26).
     const allEngrams = this._loadAllEngrams()
     const hashMatch = this._hashDedup(statement, allEngrams)
     if (hashMatch) return hashMatch
     const now = new Date().toISOString()
     const localPlaceholder = this._buildEngramShape(statement, scope, context, now)
-    const { id: serverId } = await remoteDriver.appendAndGetServerId(localPlaceholder)
-    const serverEngram: Engram = { ...localPlaceholder, id: serverId }
-    appendHistory(this.paths.root, {
-      event: 'engram_created',
-      engram_id: serverId,
-      timestamp: now,
-      data: { type: serverEngram.type, scope: serverEngram.scope, source: serverEngram.source, routed_to: 'remote' },
-    })
-    return serverEngram
+    try {
+      const { id: serverId } = await remoteDriver.appendAndGetServerId(localPlaceholder)
+      const serverEngram: Engram = { ...localPlaceholder, id: serverId }
+      appendHistory(this.paths.root, {
+        event: 'engram_created',
+        engram_id: serverId,
+        timestamp: now,
+        data: { type: serverEngram.type, scope: serverEngram.scope, source: serverEngram.source, routed_to: 'remote' },
+      })
+      return serverEngram
+    } catch (err) {
+      // Remote failed — save locally with outbox metadata for retry
+      const storeEntry = (this.config.stores ?? []).find(s => s.url && s.scope === scope && !s.readonly)
+      return withLock(this.paths.engrams, () => {
+        const engrams = loadEngrams(this.paths.engrams)
+        // Replace placeholder ID with a real local ID
+        localPlaceholder.id = generateEngramId([...engrams, ...allEngrams])
+        ;(localPlaceholder as any).structured_data = {
+          ...((localPlaceholder as any).structured_data ?? {}),
+          _outbox: {
+            target_url: storeEntry!.url!,
+            target_scope: scope,
+            queued_at: now,
+            last_attempt: now,
+            attempt_count: 1,
+            last_error: (err as Error).message,
+          },
+        }
+        engrams.push(localPlaceholder)
+        this._writeEngrams(this.paths.engrams, engrams)
+        this._syncIndex()
+        appendHistory(this.paths.root, {
+          event: 'engram_created',
+          engram_id: localPlaceholder.id,
+          timestamp: now,
+          data: { type: localPlaceholder.type, scope, source: localPlaceholder.source, routed_to: 'outbox', error: (err as Error).message },
+        })
+        logger.warning(`[plur:outbox] remote write failed for ${localPlaceholder.id}, queued for retry: ${(err as Error).message}`)
+        return localPlaceholder
+      })
+    }
   }
 
   /**
@@ -1341,6 +1412,96 @@ export class Plur {
     return getSyncStatus(this.paths.root)
   }
 
+  /** Count engrams pending remote sync (outbox entries). */
+  outboxCount(): number {
+    const engrams = this._loadCached(this.paths.engrams)
+    return engrams.filter(e => (e as any).structured_data?._outbox).length
+  }
+
+  /**
+   * Flush the outbox — retry pushing pending engrams to their target remote
+   * stores. Called automatically on session_start and plur_sync.
+   *
+   * On success: removes the local copy (remote is source of truth).
+   * On failure: updates attempt metadata for next retry.
+   * After 7 days: includes warning in expired_warnings.
+   */
+  async flushOutbox(): Promise<{ flushed: number; failed: number; expired_warnings: string[] }> {
+    const engrams = loadEngrams(this.paths.engrams)
+    const pending = engrams.filter(e => (e as any).structured_data?._outbox)
+    if (pending.length === 0) return { flushed: 0, failed: 0, expired_warnings: [] }
+
+    let flushed = 0
+    let failed = 0
+    const expired_warnings: string[] = []
+    const now = new Date()
+    const TTL_MS = 7 * 24 * 60 * 60 * 1000
+
+    for (const engram of pending) {
+      const outbox = (engram as any).structured_data._outbox as {
+        target_url: string; target_scope: string; queued_at: string
+        last_attempt: string; attempt_count: number; last_error: string
+      }
+
+      // Check TTL warning
+      const ageMs = now.getTime() - new Date(outbox.queued_at).getTime()
+      if (ageMs > TTL_MS) {
+        expired_warnings.push(
+          `${engram.id} queued ${outbox.queued_at} (${Math.floor(ageMs / 86400000)}d ago) — consider manual resolution`
+        )
+      }
+
+      // Resolve remote driver from current config (don't store tokens in outbox)
+      const storeEntry = (this.config.stores ?? []).find(
+        s => s.url && s.scope === outbox.target_scope && !s.readonly
+      )
+      if (!storeEntry) {
+        expired_warnings.push(`${engram.id}: no matching remote store for scope ${outbox.target_scope}`)
+        failed++
+        continue
+      }
+      const driver = this._getRemoteDriver({ url: storeEntry.url!, token: storeEntry.token, scope: storeEntry.scope })
+
+      // Build clean copy without outbox metadata for the remote
+      const cleanEngram = { ...engram } as any
+      const sd = { ...(cleanEngram.structured_data ?? {}) }
+      delete sd._outbox
+      if (Object.keys(sd).length === 0) {
+        delete cleanEngram.structured_data
+      } else {
+        cleanEngram.structured_data = sd
+      }
+
+      try {
+        await driver.appendAndGetServerId(cleanEngram)
+        // Success: remove from local store
+        const idx = engrams.findIndex(e => e.id === engram.id)
+        if (idx !== -1) engrams.splice(idx, 1)
+        flushed++
+        appendHistory(this.paths.root, {
+          event: 'engram_created',
+          engram_id: engram.id,
+          timestamp: now.toISOString(),
+          data: { routed_to: 'remote', outbox_flush: true, scope: engram.scope },
+        })
+      } catch (err) {
+        outbox.last_attempt = now.toISOString()
+        outbox.attempt_count += 1
+        outbox.last_error = (err as Error).message
+        failed++
+        logger.warning(`[plur:outbox] retry failed for ${engram.id}: ${(err as Error).message}`)
+      }
+    }
+
+    // Write back changes (removals + updated outbox metadata)
+    if (flushed > 0 || failed > 0) {
+      this._writeEngrams(this.paths.engrams, engrams)
+      this._syncIndex()
+    }
+
+    return { flushed, failed, expired_warnings }
+  }
+
   /**
    * Promote an episode to an episodic engram (SP2 Idea 3).
    * Creates a new engram with memory_class='episodic' from an episode's summary.
@@ -1528,6 +1689,7 @@ Generate an improved version of the procedure that prevents this failure. Return
       locked_count: lockedCount,
       tension_count: tensionPairs.size,
       versioned_engram_count: versionedCount,
+      outbox_count: this.outboxCount(),
     }
   }
 
