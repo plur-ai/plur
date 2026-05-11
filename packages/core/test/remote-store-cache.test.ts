@@ -66,20 +66,34 @@ describe('RemoteStore — optimistic cache insert (issue #89)', () => {
     expect(getCallsAfter).toBe(getCallsBefore) // no extra GETs needed
   })
 
-  it('append() initialises the cache when no prior load() has happened', async () => {
+  it('cold-cache append does not block a subsequent full load() (issue #130)', async () => {
+    // Regression: a cold-cache append used to set ts: Date.now(), which made
+    // the partial single-engram cache look "fresh" for ttlMs and hid every
+    // other engram in the scope on the next load(). The fix marks the
+    // cold-cache entry stale (ts: 0) so load() refetches from the server.
     fetchMock.mockImplementation((async (_url: string, init?: { method?: string }) => {
       const method = init?.method ?? 'GET'
       if (method === 'POST') {
         return {
           ok: true, status: 201,
-          json: async () => ({ id: 'ENG-SERVER-002' }),
+          json: async () => ({ id: 'ENG-NEW' }),
           text: async () => '',
         } as Response
       }
-      // Should NOT be reached in this test — load() reads from the optimistic cache.
+      // Server-side listing — three pre-existing engrams the cold-cache append
+      // never knew about. (The just-appended engram would normally be here too,
+      // but omitting it lets the test assert that load() returns the server's
+      // view rather than the optimistic single-row cache.)
       return {
         ok: true, status: 200,
-        json: async () => ({ rows: [], total_count: 0 }),
+        json: async () => ({
+          rows: [
+            { id: 'ENG-A', scope: 'user:plur:tester', status: 'active', data: { statement: 'a' } },
+            { id: 'ENG-B', scope: 'user:plur:tester', status: 'active', data: { statement: 'b' } },
+            { id: 'ENG-C', scope: 'user:plur:tester', status: 'active', data: { statement: 'c' } },
+          ],
+          total_count: 3,
+        }),
         text: async () => '',
       } as Response
     }) as any)
@@ -95,14 +109,13 @@ describe('RemoteStore — optimistic cache insert (issue #89)', () => {
     } as any)
 
     const got = await store.load()
-    expect(got.length).toBe(1)
-    expect((got[0] as any).statement).toBe('first ever write')
-    expect(got[0].id).toBe('ENG-SERVER-002')
+    // Before the fix this returned 1 (the optimistic single-engram cache).
+    // After the fix it returns the full server list.
+    expect(got.map(e => e.id).sort()).toEqual(['ENG-A', 'ENG-B', 'ENG-C'])
 
-    // Only the POST should have hit the network — load() served from optimistic cache.
     const posts = fetchMock.mock.calls.filter(([, init]) => (init as any)?.method === 'POST')
     const gets  = fetchMock.mock.calls.filter(([, init]) => !(init as any)?.method || (init as any)?.method === 'GET')
     expect(posts.length).toBe(1)
-    expect(gets.length).toBe(0)
+    expect(gets.length).toBe(1) // cold-cache must refetch on the next load()
   })
 })

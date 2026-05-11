@@ -149,7 +149,10 @@ export class RemoteStore implements EngramStore {
     if (this.cache) {
       this.cache.engrams.push(stored)
     } else {
-      this.cache = { ts: Date.now(), engrams: [stored] }
+      // Cold cache (no prior load()): one engram is not "all engrams in
+      // this scope". Mark stale (ts: 0) so the next load() refetches
+      // from the server instead of treating the partial view as fresh.
+      this.cache = { ts: 0, engrams: [stored] }
     }
     return { id: data.id }
   }
