@@ -2,6 +2,7 @@ import { readSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { type GlobalFlags } from '../plur.js'
+import { isPlurConfigured } from '../lib/plur-configured.js'
 
 /**
  * plur hook-session-mark — PostToolUse hook on mcp__plur__plur_session_start.
@@ -32,6 +33,9 @@ function readStdinRaw(): string {
 }
 
 export async function run(_args: string[], _flags: GlobalFlags): Promise<void> {
+  // Silent pass-through for projects without plur configured (#95).
+  if (!isPlurConfigured()) return
+
   const raw = readStdinRaw()
   let data: { session_id?: string }
   try {

@@ -1,4 +1,5 @@
 import { type GlobalFlags } from '../plur.js'
+import { isPlurConfigured } from '../lib/plur-configured.js'
 
 /**
  * plur hook-session-remind — SessionStart hook.
@@ -12,6 +13,9 @@ import { type GlobalFlags } from '../plur.js'
  */
 
 export async function run(_args: string[], _flags: GlobalFlags): Promise<void> {
+  // Silent pass-through for projects without plur configured (#95).
+  if (!isPlurConfigured()) return
+
   const output = {
     hookSpecificOutput: {
       hookEventName: 'SessionStart',
