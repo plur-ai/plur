@@ -151,7 +151,7 @@ describe('Session & store tools', () => {
 
   it('plur_promote returns error for retired engrams', async () => {
     const engram = plur.learn('Soon retired', { scope: 'global' })
-    plur.forget(engram.id)
+    await plur.forget(engram.id)
     const result = await callTool('plur_promote', { id: engram.id }) as any
     expect(result.success).toBe(false)
     expect(result.errors).toHaveLength(1)

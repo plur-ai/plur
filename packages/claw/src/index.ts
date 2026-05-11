@@ -35,7 +35,7 @@ const plugin = {
   id: 'plur-claw',
   name: 'PLUR Memory Engine',
   description: 'Persistent, learnable memory for OpenClaw agents. Local-first, no cloud required.',
-  version: '0.9.12',
+  version: '0.9.14',
   kind: 'memory' as const,
 
   register(api: any) {
@@ -129,9 +129,9 @@ const plugin = {
         name: 'forget',
         description: 'Retire a PLUR memory by ID',
         acceptsArgs: true,
-        handler: (ctx: any) => {
+        handler: async (ctx: any) => {
           if (!ctx.args?.trim()) return { text: 'Usage: /forget <engram-id>' }
-          getEngine(path).plur.forget(ctx.args.trim())
+          await getEngine(path).plur.forget(ctx.args.trim())
           return { text: `Retired: ${ctx.args.trim()}` }
         },
       })

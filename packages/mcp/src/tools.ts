@@ -1,5 +1,6 @@
 import { Plur, extractMetaEngrams, validateMetaEngram, confidenceBand, generateProfile, getProfileForInjection, markProfileDirty, selectModelForOperation, readHistoryForEngram } from '@plur-ai/core'
 import type { LlmFunction, MetaField } from '@plur-ai/core'
+import { VERSION } from './version.js'
 
 /** Create an OpenAI-compatible LLM function from a base URL + API key */
 function makeHttpLlm(baseUrl: string, apiKey: string, model: string = 'gpt-4o-mini'): LlmFunction {
@@ -152,17 +153,34 @@ export function getToolDefinitions(): ToolDefinition[] {
           pinned: args.pinned as boolean | undefined,
           llm,
         }
+        // Route through learnRouted FIRST so remote-scope writes get
+        // the server-assigned engram id (e.g. ENG-2026-05-06-007).
+        // Without this, the caller sees a local placeholder id like
+        // ENG-2026-0506-017 and any later forget(id)/feedback(id) call
+        // against that placeholder fails — the engram only exists on
+        // the server with the server's id. For local-scope writes,
+        // learnRouted defers to sync learn() so dedup behavior is
+        // unchanged. We try learnAsync second only as a fallback for
+        // the LLM-driven dedup pathway (local routes).
         try {
-          const result = await plur.learnAsync(args.statement as string, context)
+          const engram = await plur.learnRouted(args.statement as string, context)
           return {
-            id: result.engram.id, statement: result.engram.statement,
-            scope: result.engram.scope, type: result.engram.type,
-            pinned: (result.engram as any).pinned === true,
-            decision: result.decision, existing_id: result.existing_id, tensions: result.tensions,
+            id: engram.id, statement: engram.statement,
+            scope: engram.scope, type: engram.type,
+            pinned: (engram as any).pinned === true,
+            decision: 'ADD',
           }
-        } catch {
+        } catch (err) {
+          // learnRouted throws when remote-write fails (network down,
+          // 5xx, etc). Fall back to sync learn() so the user gets
+          // *something* recorded locally — but warn loudly that the
+          // returned id is local-only and will not match the server.
           const engram = plur.learn(args.statement as string, context)
-          return { id: engram.id, statement: engram.statement, scope: engram.scope, type: engram.type, decision: 'ADD' }
+          return {
+            id: engram.id, statement: engram.statement,
+            scope: engram.scope, type: engram.type, decision: 'ADD',
+            warning: `Remote write failed (${(err as Error).message}); fell back to local. The id above is the local placeholder — the canonical engram is NOT on the server.`,
+          }
         }
       },
     },
@@ -372,7 +390,7 @@ export function getToolDefinitions(): ToolDefinition[] {
           const summary = { positive: 0, negative: 0, neutral: 0 }
           for (const { id, signal } of args.signals as Array<{ id: string; signal: 'positive' | 'negative' | 'neutral' }>) {
             try {
-              plur.feedback(id, signal)
+              await plur.feedback(id, signal)
               results.push({ id, signal, success: true })
               summary[signal]++
             } catch (err: any) {
@@ -383,7 +401,7 @@ export function getToolDefinitions(): ToolDefinition[] {
         }
         // Single mode
         try {
-          plur.feedback(args.id as string, args.signal as 'positive' | 'negative' | 'neutral')
+          await plur.feedback(args.id as string, args.signal as 'positive' | 'negative' | 'neutral')
           return { success: true, id: args.id, signal: args.signal }
         } catch (err: any) {
           if (err.message?.includes('readonly store')) {
@@ -442,14 +460,14 @@ export function getToolDefinitions(): ToolDefinition[] {
           const engram = plur.getById(args.id as string)
           if (!engram) throw new Error(`Engram not found: ${args.id}`)
           if (engram.status === 'retired') return { success: false, error: `Already retired: ${args.id}` }
-          plur.forget(args.id as string)
+          await plur.forget(args.id as string)
           return { success: true, retired: { id: engram.id, statement: engram.statement } }
         }
         if (args.search) {
           const matches = plur.recall(args.search as string, { limit: 100 })
           if (matches.length === 0) return { success: false, error: `No active engrams matching "${args.search}"` }
           if (matches.length === 1) {
-            plur.forget(matches[0].id)
+            await plur.forget(matches[0].id)
             return { success: true, retired: { id: matches[0].id, statement: matches[0].statement } }
           }
           return {
@@ -874,7 +892,7 @@ export function getToolDefinitions(): ToolDefinition[] {
 
     {
       name: 'plur_status',
-      description: 'Return system health — engram count, episode count, pack count, storage root',
+      description: 'Return system health — running version, engram count, episode count, pack count, storage root',
       annotations: { title: 'Status', readOnlyHint: true, idempotentHint: true },
       inputSchema: {
         type: 'object',
@@ -883,6 +901,7 @@ export function getToolDefinitions(): ToolDefinition[] {
       handler: async (_args, plur) => {
         const status = plur.status()
         return {
+          version: VERSION,
           engram_count: status.engram_count,
           episode_count: status.episode_count,
           pack_count: status.pack_count,

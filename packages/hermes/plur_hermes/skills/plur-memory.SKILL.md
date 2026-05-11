@@ -1,7 +1,7 @@
 ---
 name: plur-memory
 description: Persistent learning for AI agents. Open engram format. Your agent learns from corrections, remembers across sessions, and transfers knowledge across domains.
-version: 0.9.0
+version: 0.9.4
 metadata:
   hermes:
     tags: [memory, learning, knowledge, engrams]

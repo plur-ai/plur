@@ -145,4 +145,46 @@ describe('plur init', () => {
     expect(existsSync(desktopOnDarwin)).toBe(false)
     expect(existsSync(desktopOnLinux)).toBe(false)
   })
+
+  it('--project installs enforcement hooks globally and injection hooks at project (issue #95)', () => {
+    const project = mkdtempSync(join(tmpdir(), 'plur-init-project-'))
+    try {
+      execSync(`node ${CLI} init --project --no-desktop`, {
+        encoding: 'utf-8',
+        timeout: 15000,
+        env: { ...process.env, HOME: home, USERPROFILE: home },
+        cwd: project,
+      })
+
+      const globalSettings: Settings = JSON.parse(
+        readFileSync(join(home, '.claude', 'settings.json'), 'utf-8'),
+      )
+      const projectSettings: Settings = JSON.parse(
+        readFileSync(join(project, '.claude', 'settings.json'), 'utf-8'),
+      )
+
+      // Enforcement hooks (SessionStart, session-guard PreToolUse, session-mark PostToolUse) live globally
+      expect(globalSettings.hooks?.SessionStart).toBeDefined()
+      const globalGuard = globalSettings.hooks?.PreToolUse?.find((h) =>
+        h.hooks.some((c) => c.command.includes('hook-session-guard')),
+      )
+      expect(globalGuard).toBeDefined()
+      const globalMark = globalSettings.hooks?.PostToolUse?.find((h) =>
+        h.hooks.some((c) => c.command.includes('hook-session-mark')),
+      )
+      expect(globalMark).toBeDefined()
+
+      // Injection hooks (UserPromptSubmit etc.) live at project, NOT globally
+      expect(projectSettings.hooks?.UserPromptSubmit).toBeDefined()
+      expect(globalSettings.hooks?.UserPromptSubmit).toBeUndefined()
+
+      // Enforcement hooks NOT duplicated at project
+      expect(projectSettings.hooks?.SessionStart).toBeUndefined()
+
+      // MCP server registered at project (the path that does work in this project)
+      expect(projectSettings.mcpServers?.plur).toBeDefined()
+    } finally {
+      rmSync(project, { recursive: true, force: true })
+    }
+  })
 })

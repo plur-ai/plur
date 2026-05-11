@@ -5,6 +5,7 @@ import logging
 import os
 import shutil
 import time
+from importlib.metadata import PackageNotFoundError, version as _pkg_version
 from pathlib import Path
 
 from .bridge import PlurBridge, PlurNotFoundError
@@ -12,7 +13,10 @@ from .learner import extract_learning_patterns
 
 logger = logging.getLogger("plur_hermes")
 
-__version__ = "0.9.2"
+try:
+    __version__ = _pkg_version("plur-hermes")
+except PackageNotFoundError:
+    __version__ = "0.0.0+unknown"
 
 _session_state: dict[str, dict] = {}
 _PRUNE_AGE_SECONDS = 3600
@@ -57,11 +61,8 @@ def register(ctx):
     try:
         status = bridge.status()
         logger.info(f"PLUR: connected — {status.get('engram_count', '?')} engrams")
-    except PlurNotFoundError:
-        logger.error(
-            "PLUR CLI not found. Install: npm install -g @plur-ai/cli@0.9.1 "
-            "(0.9.2 is bricked on npm — see https://github.com/plur-ai/plur/issues/59)"
-        )
+    except PlurNotFoundError as e:
+        logger.error(str(e))
         return
 
     # Install SKILL.md
@@ -155,6 +156,7 @@ def register(ctx):
                     "dual_coding": {"type": "object", "properties": {"example": {"type": "string"}, "analogy": {"type": "string"}}, "description": "Concrete example and analogy"},
                     "abstract": {"type": "string", "description": "One-line abstract"},
                     "derived_from": {"type": "string", "description": "Source engram ID this was derived from"},
+                    "force": {"type": "boolean", "default": False, "description": "Skip duplicate detection and always create a new engram"},
                 },
                 "required": ["statement"],
             },
@@ -310,7 +312,8 @@ def register(ctx):
                                           knowledge_anchors=args.get("knowledge_anchors"),
                                           dual_coding=args.get("dual_coding"),
                                           abstract=args.get("abstract"),
-                                          derived_from=args.get("derived_from"))
+                                          derived_from=args.get("derived_from"),
+                                          force=args.get("force", False))
                 elif tool_name == "plur_recall":
                     result = bridge.recall(args["query"], limit=args.get("limit", 10), fast=args.get("fast", False))
                 elif tool_name == "plur_inject":

@@ -9,9 +9,16 @@ import json
 import os
 import shutil
 import subprocess
+from collections import OrderedDict
 from typing import Any
 
-_NPX_CLI_VERSION = "0.9.0"
+_NPX_CLI_VERSION = "0.9.4"
+
+_DEFAULT_DEDUP_CACHE_SIZE = 256
+
+_NOT_FOUND_MSG = (
+    f"PLUR CLI not found. Install: npm install -g @plur-ai/cli@{_NPX_CLI_VERSION}"
+)
 
 
 class PlurBridgeError(Exception):
@@ -27,9 +34,31 @@ class PlurNotFoundError(PlurBridgeError):
 class PlurBridge:
     """Manages subprocess calls to the plur CLI."""
 
-    def __init__(self, plur_path: str | None = None):
+    def __init__(self, plur_path: str | None = None,
+                 dedup_cache_size: int = _DEFAULT_DEDUP_CACHE_SIZE):
         self._binary: str | None = None
         self._plur_path = plur_path or os.environ.get("PLUR_PATH")
+        self._dedup_cache_size = max(0, dedup_cache_size)
+        self._dedup_cache: "OrderedDict[str, dict]" = OrderedDict()
+
+    def _cache_get(self, normalized: str) -> dict | None:
+        if self._dedup_cache_size == 0 or not normalized:
+            return None
+        if normalized not in self._dedup_cache:
+            return None
+        self._dedup_cache.move_to_end(normalized)
+        return self._dedup_cache[normalized]
+
+    def _cache_put(self, normalized: str, value: dict) -> None:
+        if self._dedup_cache_size == 0 or not normalized:
+            return
+        if normalized in self._dedup_cache:
+            self._dedup_cache.move_to_end(normalized)
+            self._dedup_cache[normalized] = value
+            return
+        self._dedup_cache[normalized] = value
+        while len(self._dedup_cache) > self._dedup_cache_size:
+            self._dedup_cache.popitem(last=False)
 
     def _find_binary(self) -> str:
         if self._binary:
@@ -54,10 +83,7 @@ class PlurBridge:
             self._binary = f"npx:@plur-ai/cli@{_NPX_CLI_VERSION}"
             return self._binary
 
-        raise PlurNotFoundError(
-            "PLUR CLI not found. Install: npm install -g @plur-ai/cli@0.9.1 "
-            "(0.9.2 is bricked on npm — see https://github.com/plur-ai/plur/issues/59)"
-        )
+        raise PlurNotFoundError(_NOT_FOUND_MSG)
 
     def call(self, command: str, args: list[str] | None = None, timeout: int = 30) -> dict[str, Any]:
         binary = self._find_binary()
@@ -77,10 +103,7 @@ class PlurBridge:
         except subprocess.TimeoutExpired:
             raise PlurBridgeError(f"CLI timed out after {timeout}s: plur {command}")
         except FileNotFoundError:
-            raise PlurNotFoundError(
-                "PLUR CLI not found. Install: npm install -g @plur-ai/cli@0.9.1 "
-                "(0.9.2 is bricked on npm — see https://github.com/plur-ai/plur/issues/59)"
-            )
+            raise PlurNotFoundError(_NOT_FOUND_MSG)
 
         if result.returncode == 2:
             return json.loads(result.stdout) if result.stdout.strip() else {"results": [], "count": 0}
@@ -102,7 +125,19 @@ class PlurBridge:
               knowledge_anchors: list[dict] | None = None,
               dual_coding: dict | None = None,
               abstract: str | None = None,
-              derived_from: str | None = None) -> dict:
+              derived_from: str | None = None,
+              force: bool = False) -> dict:
+        needle = statement.strip().casefold()
+
+        if not force:
+            cached = self._cache_get(needle)
+            if cached is not None:
+                return {**cached, "deduplicated": True}
+            existing = self._find_duplicate(statement)
+            if existing is not None:
+                self._cache_put(needle, existing)
+                return {**existing, "deduplicated": True}
+
         args = [statement, "--scope", scope, "--type", type]
         if domain:
             args.extend(["--domain", domain])
@@ -122,7 +157,32 @@ class PlurBridge:
             args.extend(["--abstract", abstract])
         if derived_from:
             args.extend(["--derived-from", derived_from])
-        return self.call("learn", args)
+        result = self.call("learn", args)
+        if result.get("id"):
+            self._cache_put(needle, {
+                "id": result["id"],
+                "statement": result.get("statement", statement),
+            })
+        return result
+
+    def _find_duplicate(self, statement: str) -> dict | None:
+        """Return existing engram if statement matches verbatim, else None.
+
+        Falls through silently on any recall failure so learn() never blocks
+        on a bridge issue.
+        """
+        needle = statement.strip().casefold()
+        if not needle:
+            return None
+        try:
+            response = self.recall(statement, limit=3, fast=True)
+        except Exception:
+            return None
+        for engram in response.get("results", []) or []:
+            existing_statement = (engram.get("statement") or "").strip().casefold()
+            if existing_statement and existing_statement == needle:
+                return {"id": engram.get("id"), "statement": engram.get("statement")}
+        return None
 
     def recall(self, query: str, limit: int = 10, fast: bool = False) -> dict:
         args = [query, "--limit", str(limit)]

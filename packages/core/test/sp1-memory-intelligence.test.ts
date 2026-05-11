@@ -101,24 +101,24 @@ describe('SP1: Memory Intelligence', () => {
       expect(result.count).toBeGreaterThan(0)
     })
 
-    it('positive feedback promotes exploring → leaning', () => {
+    it('positive feedback promotes exploring → leaning', async () => {
       const engram = plur.learn('Maybe try Bun for build', { commitment: 'exploring' })
       expect((engram as any).commitment).toBe('exploring')
-      plur.feedback(engram.id, 'positive')
+      await plur.feedback(engram.id, 'positive')
       const updated = plur.getById(engram.id)
       expect((updated as any).commitment).toBe('leaning')
     })
 
-    it('positive feedback promotes leaning → decided', () => {
+    it('positive feedback promotes leaning → decided', async () => {
       const engram = plur.learn('Prefer pnpm over npm', { commitment: 'leaning' })
-      plur.feedback(engram.id, 'positive')
+      await plur.feedback(engram.id, 'positive')
       const updated = plur.getById(engram.id)
       expect((updated as any).commitment).toBe('decided')
     })
 
-    it('positive feedback does NOT promote decided → locked', () => {
+    it('positive feedback does NOT promote decided → locked', async () => {
       const engram = plur.learn('Use TypeScript always', { commitment: 'decided' })
-      plur.feedback(engram.id, 'positive')
+      await plur.feedback(engram.id, 'positive')
       const updated = plur.getById(engram.id)
       // decided stays decided — locked requires explicit parameter
       expect((updated as any).commitment).toBe('decided')

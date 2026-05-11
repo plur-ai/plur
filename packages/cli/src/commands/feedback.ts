@@ -27,7 +27,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
         continue
       }
       try {
-        plur.feedback(item.id, item.signal as Signal)
+        await plur.feedback(item.id, item.signal as Signal)
         results.push({ id: item.id, signal: item.signal, success: true })
         summary[item.signal as Signal]++
       } catch (err: any) {
@@ -63,7 +63,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     exit(1, `Invalid signal: "${signal}". Must be one of: positive, negative, neutral`)
   }
 
-  plur.feedback(id, signal as Signal)
+  await plur.feedback(id, signal as Signal)
 
   if (shouldOutputJson(flags)) {
     outputJson({ id, signal, status: 'recorded' })

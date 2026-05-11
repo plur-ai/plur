@@ -31,17 +31,17 @@ describe('Plur', () => {
     expect(result.tokens_used).toBeLessThanOrEqual(500)
   })
 
-  it('feedback strengthens engrams', () => {
+  it('feedback strengthens engrams', async () => {
     const engram = plur.learn('Use feature flags', { scope: 'global' })
-    plur.feedback(engram.id, 'positive')
-    plur.feedback(engram.id, 'positive')
+    await plur.feedback(engram.id, 'positive')
+    await plur.feedback(engram.id, 'positive')
     const recalled = plur.recall('feature flags')
     expect(recalled[0].feedback_signals?.positive).toBe(2)
   })
 
-  it('forget retires engrams', () => {
+  it('forget retires engrams', async () => {
     const engram = plur.learn('Wrong info about something specific', { scope: 'global' })
-    plur.forget(engram.id, 'incorrect')
+    await plur.forget(engram.id, 'incorrect')
     const recalled = plur.recall('Wrong info specific')
     expect(recalled).toHaveLength(0)
   })
@@ -119,12 +119,12 @@ describe('Plur', () => {
     expect(results.length).toBeLessThanOrEqual(3)
   })
 
-  it('feedback throws on unknown id', () => {
-    expect(() => plur.feedback('ENG-9999-01-001', 'positive')).toThrow('Engram not found')
+  it('feedback throws on unknown id', async () => {
+    await expect(plur.feedback('ENG-9999-01-001', 'positive')).rejects.toThrow('Engram not found')
   })
 
-  it('forget throws on unknown id', () => {
-    expect(() => plur.forget('ENG-9999-01-001', 'test')).toThrow('Engram not found')
+  it('forget throws on unknown id', async () => {
+    await expect(plur.forget('ENG-9999-01-001', 'test')).rejects.toThrow('Engram not found')
   })
 
   it('status includes storage root', () => {
@@ -384,10 +384,10 @@ describe('Plur', () => {
     }
   })
 
-  it('compact removes retired engrams from storage', () => {
+  it('compact removes retired engrams from storage', async () => {
     plur.learn('Keep this one', { scope: 'global' })
     const toRetire = plur.learn('Remove this one', { scope: 'global' })
-    plur.forget(toRetire.id, 'test cleanup')
+    await plur.forget(toRetire.id, 'test cleanup')
     const result = plur.compact()
     expect(result.removed).toBe(1)
     expect(result.remaining).toBe(1)
@@ -483,9 +483,9 @@ describe('Plur', () => {
     expect(found!.status).toBe('active')
   })
 
-  it('getById finds retired engrams', () => {
+  it('getById finds retired engrams', async () => {
     const engram = plur.learn('Will be retired', { scope: 'global' })
-    plur.forget(engram.id, 'test')
+    await plur.forget(engram.id, 'test')
     const found = plur.getById(engram.id)
     expect(found).not.toBeNull()
     expect(found!.status).toBe('retired')
@@ -496,7 +496,7 @@ describe('Plur', () => {
     expect(found).toBeNull()
   })
 
-  it('feedback works on pack engrams', () => {
+  it('feedback works on pack engrams', async () => {
     // Create a temp pack directory with engrams
     const packsDir = join(dir, 'packs')
     mkdirSync(packsDir, { recursive: true })
@@ -533,7 +533,7 @@ describe('Plur', () => {
 
     // Re-create Plur instance so it picks up the pack
     const plurWithPacks = new Plur({ path: dir })
-    plurWithPacks.feedback('ENG-2026-0101-001', 'positive')
+    await plurWithPacks.feedback('ENG-2026-0101-001', 'positive')
 
     // Verify the feedback was written to the pack engrams.yaml
     const raw = yaml.load(readFileSync(join(packDir, 'engrams.yaml'), 'utf8')) as any
@@ -542,7 +542,7 @@ describe('Plur', () => {
     expect(updated.activation.retrieval_strength).toBe(0.75)
   })
 
-  it('feedback on pack engram throws for unknown id', () => {
-    expect(() => plur.feedback('ENG-9999-01-001', 'positive')).toThrow('Engram not found')
+  it('feedback on pack engram throws for unknown id', async () => {
+    await expect(plur.feedback('ENG-9999-01-001', 'positive')).rejects.toThrow('Engram not found')
   })
 })

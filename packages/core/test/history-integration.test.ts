@@ -32,9 +32,9 @@ describe('history integration', () => {
     expect(created!.data.type).toBe('behavioral')
   })
 
-  it('records feedback_received event on feedback()', () => {
+  it('records feedback_received event on feedback()', async () => {
     const engram = plur.learn('Test feedback history')
-    plur.feedback(engram.id, 'positive')
+    await plur.feedback(engram.id, 'positive')
     const now = new Date().toISOString().slice(0, 7)
     const events = readHistory(dir, now)
     const feedback = events.find(e => e.event === 'feedback_received' && e.engram_id === engram.id)
@@ -42,9 +42,9 @@ describe('history integration', () => {
     expect(feedback!.data.signal).toBe('positive')
   })
 
-  it('records engram_retired event on forget()', () => {
+  it('records engram_retired event on forget()', async () => {
     const engram = plur.learn('Test retire history')
-    plur.forget(engram.id, 'No longer relevant')
+    await plur.forget(engram.id, 'No longer relevant')
     const now = new Date().toISOString().slice(0, 7)
     const events = readHistory(dir, now)
     const retired = events.find(e => e.event === 'engram_retired' && e.engram_id === engram.id)

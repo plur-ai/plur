@@ -47,7 +47,7 @@ Nine places. Miss one and something breaks:
 
 1. `packages/core/package.json`
 2. `packages/mcp/package.json`
-3. `packages/mcp/src/server.ts` — `const VERSION`
+3. `packages/mcp/src/version.ts` — `VERSION` (shared by server.ts and tools.ts)
 4. `packages/mcp/src/index.ts` — `const VERSION` (CLI)
 5. `packages/claw/package.json`
 6. `packages/claw/src/index.ts` — `version:` in plugin object
@@ -91,6 +91,14 @@ Install the MCP server locally and test with Claude Code:
 ```
 
 Then ask Claude to learn something, recall it, and check if injection works.
+
+### Integration tests (remote store)
+
+```
+pnpm test:integration
+```
+
+Tests RemoteStore against an in-process HTTP stub server (real TCP, no fetch mocking). The stub implements the `/api/v1/engrams` REST surface and lives at `packages/core/test/helpers/stub-server.ts`. When RemoteStore adds new endpoints, add the corresponding handler to the stub.
 
 ### Benchmarking a PR
 

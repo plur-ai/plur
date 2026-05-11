@@ -18,11 +18,11 @@ describe('SP2 Idea 7: Enhanced Event-Sourced History', () => {
     fs.rmSync(dir, { recursive: true })
   })
 
-  it('readHistoryForEngram returns events for specific engram', () => {
+  it('readHistoryForEngram returns events for specific engram', async () => {
     const plur = new Plur({ path: dir })
     const e1 = plur.learn('First statement')
     const e2 = plur.learn('Second statement')
-    plur.feedback(e1.id, 'positive')
+    await plur.feedback(e1.id, 'positive')
 
     const history = readHistoryForEngram(dir, e1.id)
     expect(history.length).toBe(2) // created + feedback
@@ -33,10 +33,10 @@ describe('SP2 Idea 7: Enhanced Event-Sourced History', () => {
     expect(history2.length).toBe(1) // created only
   })
 
-  it('getEngramHistory works via Plur instance', () => {
+  it('getEngramHistory works via Plur instance', async () => {
     const plur = new Plur({ path: dir })
     const engram = plur.learn('Test engram')
-    plur.feedback(engram.id, 'negative')
+    await plur.feedback(engram.id, 'negative')
 
     const history = plur.getEngramHistory(engram.id)
     expect(history.length).toBe(2)
@@ -55,10 +55,10 @@ describe('SP2 Idea 7: Enhanced Event-Sourced History', () => {
     expect(id1).not.toBe(id2)
   })
 
-  it('forget logs engram_retired in history', () => {
+  it('forget logs engram_retired in history', async () => {
     const plur = new Plur({ path: dir })
     const engram = plur.learn('Will be forgotten')
-    plur.forget(engram.id, 'No longer relevant')
+    await plur.forget(engram.id, 'No longer relevant')
 
     const history = plur.getEngramHistory(engram.id)
     const retiredEvent = history.find(e => e.event === 'engram_retired')

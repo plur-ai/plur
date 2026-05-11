@@ -260,12 +260,7 @@ export class Plur {
    */
   private _remoteStores = new Map<string, RemoteStore>()
   private _loadRemoteCached(store: StoreEntry): Engram[] {
-    const key = `${store.url}::${store.scope}`
-    let driver = this._remoteStores.get(key)
-    if (!driver) {
-      driver = new RemoteStore(store.url!, store.token ?? '', store.scope)
-      this._remoteStores.set(key, driver)
-    }
+    const driver = this._getRemoteDriver({ url: store.url!, token: store.token, scope: store.scope })
     // Synchronously read whatever the driver currently has cached.
     // Trigger a refresh in the background; the next call sees fresh data.
     const cached = (driver as unknown as { cache: { engrams: Engram[] } | null }).cache
@@ -289,6 +284,17 @@ export class Plur {
     this._engramCache.delete(path)
   }
 
+  /** Get or create a RemoteStore driver for a store config entry. */
+  private _getRemoteDriver(entry: { url: string; token?: string; scope: string }): RemoteStore {
+    const key = `${entry.url}::${entry.scope}`
+    let driver = this._remoteStores.get(key)
+    if (!driver) {
+      driver = new RemoteStore(entry.url, entry.token ?? '', entry.scope)
+      this._remoteStores.set(key, driver)
+    }
+    return driver
+  }
+
   /**
    * Resolve a remote store for a write scope. Returns the RemoteStore driver
    * if the engram's scope matches a registered remote entry, else null.
@@ -304,13 +310,7 @@ export class Plur {
       if (!entry.url) continue
       if (entry.readonly === true) continue
       if (entry.scope !== scope) continue
-      const key = `${entry.url}::${entry.scope}`
-      let driver = this._remoteStores.get(key)
-      if (!driver) {
-        driver = new RemoteStore(entry.url!, entry.token ?? '', entry.scope)
-        this._remoteStores.set(key, driver)
-      }
-      return driver
+      return this._getRemoteDriver({ url: entry.url!, token: entry.token, scope: entry.scope })
     }
     return null
   }
@@ -476,7 +476,11 @@ export class Plur {
       // back to local with _routed:false metadata so the outbox (#26)
       // can re-publish when the server is reachable.
       const remoteDriver = this._resolveRemoteStoreForScope(scope)
-      if (remoteDriver) {
+      if (remoteDriver && context?.visibility === 'private') {
+        // Private engrams stay local — sending to a shared remote contradicts
+        // the "only I see this" semantics. See: https://github.com/plur-ai/plur/issues/90
+        logger.warning(`[plur:learn] private engram not routed to remote (scope=${scope}), writing locally`)
+      } else if (remoteDriver) {
         void (async () => {
           for (let attempt = 1; attempt <= 2; attempt++) {
             try {
@@ -524,6 +528,121 @@ export class Plur {
       })
       return engram
     })
+  }
+
+  /**
+   * Async learn that returns the canonical engram — server-assigned ID
+   * for remote-routed writes, locally-built engram for local writes.
+   *
+   * Use this from async callers (MCP handlers, OpenClaw plugins, etc.)
+   * when the user later needs to reference the engram by ID (forget,
+   * feedback, history). The sync `learn()` returns a local-placeholder
+   * ID for remote-routed writes — the actual server engram has a
+   * different ID, so feedback/forget against the placeholder fails.
+   *
+   * Local writes: just delegates to sync learn(). Same dedup, same
+   * history append, same return shape.
+   *
+   * Remote writes: bypasses local YAML entirely. POSTs to the remote's
+   * /api/v1/engrams, awaits the server's response, and returns an
+   * Engram with the server-assigned id. Throws on remote failure
+   * (caller knows the write didn't land — better UX than a fire-and-
+   * forget that pretends success and leaves the user with a phantom ID).
+   */
+  async learnRouted(statement: string, context?: LearnContext): Promise<Engram> {
+    if (!this.config.allow_secrets) {
+      const secrets = detectSecrets(statement)
+      if (secrets.length > 0) {
+        throw new Error(`Secret detected in statement: ${secrets[0].pattern}. Use config.allow_secrets to override.`)
+      }
+    }
+    const scope = context?.scope ?? 'global'
+    const remoteDriver = this._resolveRemoteStoreForScope(scope)
+    if (!remoteDriver) {
+      // Local route — sync learn() owns dedup, build, write, history.
+      return this.learn(statement, context)
+    }
+    // Remote route — dedup against the merged local+cached-remote view,
+    // then POST and merge the server-assigned ID into the local engram
+    // representation we hand back to the caller.
+    const allEngrams = this._loadAllEngrams()
+    const hashMatch = this._hashDedup(statement, allEngrams)
+    if (hashMatch) return hashMatch
+    const now = new Date().toISOString()
+    const localPlaceholder = this._buildEngramShape(statement, scope, context, now)
+    const { id: serverId } = await remoteDriver.appendAndGetServerId(localPlaceholder)
+    const serverEngram: Engram = { ...localPlaceholder, id: serverId }
+    appendHistory(this.paths.root, {
+      event: 'engram_created',
+      engram_id: serverId,
+      timestamp: now,
+      data: { type: serverEngram.type, scope: serverEngram.scope, source: serverEngram.source, routed_to: 'remote' },
+    })
+    return serverEngram
+  }
+
+  /**
+   * Build an Engram object without persisting it. Used by learnRouted to
+   * give callers a fully-shaped Engram with the server's ID after the
+   * remote POST completes. Mirrors the construction in learn() but
+   * doesn't acquire the lock or touch disk.
+   */
+  private _buildEngramShape(statement: string, scope: string, context: LearnContext | undefined, now: string): Engram {
+    const type = context?.type ?? 'behavioral'
+    const cogLevel = TYPE_TO_COGNITIVE[type] ?? 'remember'
+    const TYPE_TO_MEMORY_CLASS: Record<string, 'semantic' | 'episodic' | 'procedural' | 'metacognitive'> = {
+      behavioral: 'semantic',
+      terminological: 'semantic',
+      procedural: 'procedural',
+      architectural: 'semantic',
+    }
+    const memoryClass = context?.memory_class ?? TYPE_TO_MEMORY_CLASS[type] ?? 'semantic'
+    const commitment = context?.commitment ?? 'leaning'
+    return {
+      // Placeholder id — overwritten by the server's assigned id before return.
+      // Any consumer that observes this id directly (rather than via learnRouted's
+      // return value) is doing it wrong — log says so.
+      id: '__pending__',
+      version: 2,
+      status: 'active',
+      consolidated: false,
+      type,
+      scope,
+      visibility: context?.visibility ?? (context?.domain ? 'public' : 'private'),
+      statement,
+      rationale: context?.rationale,
+      source: context?.source,
+      domain: context?.domain,
+      activation: {
+        retrieval_strength: 0.7,
+        storage_strength: 1.0,
+        frequency: 0,
+        last_accessed: now.slice(0, 10),
+      },
+      feedback_signals: { positive: 0, negative: 0, neutral: 0 },
+      knowledge_type: { memory_class: memoryClass, cognitive_level: cogLevel as any },
+      knowledge_anchors: (context?.knowledge_anchors ?? []).map(a => ({
+        path: a.path,
+        relevance: (a.relevance as 'primary' | 'supporting' | 'example') ?? 'supporting',
+        snippet: a.snippet,
+      })),
+      associations: [],
+      derivation_count: 1,
+      tags: context?.tags ?? [],
+      pack: null,
+      abstract: context?.abstract ?? null,
+      derived_from: context?.derived_from ?? null,
+      dual_coding: context?.dual_coding,
+      polarity: null,
+      content_hash: computeContentHash(statement),
+      commitment,
+      locked_at: commitment === 'locked' ? now : undefined,
+      locked_reason: commitment === 'locked' ? context?.locked_reason : undefined,
+      summary: autoSummary(statement, undefined),
+      engram_version: 1,
+      episode_ids: context?.session_episode_id ? [context.session_episode_id] : [],
+      pinned: context?.pinned === true ? true : undefined,
+    }
   }
 
   /** Build deps for learn-async module. */
@@ -845,7 +964,7 @@ export class Plur {
   }
 
   /** Update feedback_signals and adjust retrieval_strength. Searches primary, stores, then packs. */
-  feedback(id: string, signal: 'positive' | 'negative' | 'neutral'): void {
+  async feedback(id: string, signal: 'positive' | 'negative' | 'neutral'): Promise<void> {
     // Try primary engrams first
     const found = withLock(this.paths.engrams, () => {
       const engrams = loadEngrams(this.paths.engrams)
@@ -901,6 +1020,30 @@ export class Plur {
         }
         this._writeEngrams(storeInfo.path, storeEngrams)
         this._syncIndex()
+        return
+      }
+    }
+
+    // Check remote stores — the engram may live on an enterprise server.
+    // See: https://github.com/plur-ai/plur/issues/85
+    for (const entry of (this.config.stores ?? [])) {
+      if (!entry.url) continue
+      if (entry.readonly === true) {
+        const roDriver = this._getRemoteDriver({ url: entry.url, token: entry.token, scope: entry.scope })
+        const roFound = await roDriver.getById(id)
+        if (roFound) throw new Error('Engram is in a readonly store')
+        continue
+      }
+      const driver = this._getRemoteDriver({ url: entry.url, token: entry.token, scope: entry.scope })
+      const found = await driver.getById(id)
+      if (found) {
+        await driver.feedback(id, signal)
+        appendHistory(this.paths.root, {
+          event: 'feedback_received',
+          engram_id: id,
+          timestamp: new Date().toISOString(),
+          data: { signal, routed_to: 'remote' },
+        })
         return
       }
     }
@@ -970,7 +1113,7 @@ export class Plur {
   }
 
   /** Set engram status to 'retired'. Supports primary and store engrams. */
-  forget(id: string, reason?: string): void {
+  async forget(id: string, reason?: string): Promise<void> {
     // Check primary first
     const foundInPrimary = withLock(this.paths.engrams, () => {
       const engrams = loadEngrams(this.paths.engrams)
@@ -1011,6 +1154,34 @@ export class Plur {
         this._writeEngrams(storeInfo.path, storeEngrams)
         this._syncIndex()
         return
+      }
+    }
+
+    // Check remote stores — the engram may live on an enterprise server.
+    // See: https://github.com/plur-ai/plur/issues/84
+    for (const entry of (this.config.stores ?? [])) {
+      if (!entry.url) continue
+      if (entry.readonly === true) {
+        // Check if the engram exists here before throwing, so readonly
+        // errors are specific ("cannot retire from readonly") not generic.
+        const roDriver = this._getRemoteDriver({ url: entry.url, token: entry.token, scope: entry.scope })
+        const roFound = await roDriver.getById(id)
+        if (roFound) throw new Error('Cannot retire engram from readonly store')
+        continue
+      }
+      const driver = this._getRemoteDriver({ url: entry.url, token: entry.token, scope: entry.scope })
+      const found = await driver.getById(id)
+      if (found) {
+        const removed = await driver.remove(id)
+        if (removed) {
+          appendHistory(this.paths.root, {
+            event: 'engram_retired',
+            engram_id: id,
+            timestamp: new Date().toISOString(),
+            data: { reason: reason ?? null, routed_to: 'remote' },
+          })
+          return
+        }
       }
     }
 

@@ -104,8 +104,24 @@ export class RemoteStore implements EngramStore {
    * Append a single engram to the remote store. POST /api/v1/engrams
    * carries statement + scope + domain + type — the server handles
    * ID assignment, content_hash, status.
+   *
+   * Returns void to satisfy the EngramStore interface contract. Callers
+   * that need the server-assigned ID (e.g. so the user can later
+   * forget/feedback on it) should use `appendAndGetServerId()` instead.
    */
   async append(engram: Engram): Promise<void> {
+    await this.appendAndGetServerId(engram)
+  }
+
+  /**
+   * Like append() but returns the server-assigned ID. Required because
+   * the server picks its own ID (e.g. ENG-2026-05-06-007) and ignores
+   * any id we'd send. Without this, callers see the local placeholder
+   * ID (e.g. ENG-2026-0506-017) and a later `forget(id)` against that
+   * placeholder will fail — the engram only exists on the server with
+   * the server's ID.
+   */
+  async appendAndGetServerId(engram: Engram): Promise<{ id: string }> {
     const body = JSON.stringify({
       statement: (engram as any).statement,
       scope:     engram.scope,
@@ -121,8 +137,21 @@ export class RemoteStore implements EngramStore {
       const text = await r.text().catch(() => '')
       throw new Error(`Remote store append failed: ${r.status} ${text}`)
     }
-    // Invalidate cache so next load() picks up the new row
-    this.cache = null
+    const data = await r.json().catch(() => ({})) as { id?: string }
+    if (!data.id) {
+      throw new Error(`Remote store append succeeded but server returned no id`)
+    }
+    // Optimistic cache insert (issue #89): the POST succeeded so the server
+    // has the engram. Insert with the server-assigned id so the very next
+    // recall sees it without waiting for a background refresh. If the server
+    // transformed other fields, the next refresh corrects them.
+    const stored = { ...(engram as any), id: data.id } as Engram
+    if (this.cache) {
+      this.cache.engrams.push(stored)
+    } else {
+      this.cache = { ts: Date.now(), engrams: [stored] }
+    }
+    return { id: data.id }
   }
 
   /**
@@ -155,6 +184,27 @@ export class RemoteStore implements EngramStore {
     if (!r.ok) return false
     this.cache = null
     return true
+  }
+
+  /**
+   * Apply feedback to a remote engram. POST /api/v1/engrams/:id/feedback
+   * sends the raw signal; the server owns the mutation logic (strength
+   * adjustment, commitment promotion, counter increment).
+   *
+   * Not part of the EngramStore interface — RemoteStore-specific.
+   * Requires server support: see https://github.com/plur-ai/plur/issues/85
+   */
+  async feedback(id: string, signal: 'positive' | 'negative' | 'neutral'): Promise<void> {
+    const r = await fetch(`${this.apiBase}/engrams/${encodeURIComponent(id)}/feedback`, {
+      method: 'POST',
+      headers: this.headers({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ signal }),
+    })
+    if (!r.ok) {
+      const text = await r.text().catch(() => '')
+      throw new Error(`Remote feedback failed: ${r.status} ${text}`)
+    }
+    this.cache = null
   }
 
   async count(filter?: { status?: string }): Promise<number> {

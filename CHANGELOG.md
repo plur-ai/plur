@@ -1,5 +1,67 @@
 # Changelog
 
+## 0.9.8 (2026-05-06)
+
+`plur_learn` with a remote scope now returns the **server-canonical
+engram id** so a later `plur_forget(id)` / `plur_feedback(id)` actually
+finds the engram.
+
+### Fixes
+
+- **New `Plur.learnRouted(statement, context)` async method** — for remote-scope writes, awaits the POST to `/api/v1/engrams` and returns an Engram with the server-assigned id (e.g. `ENG-2026-05-06-008`). For local-scope writes, defers to sync `learn()` so dedup behavior is unchanged.
+- **`RemoteStore.appendAndGetServerId(engram)`** — companion to `append()` that returns `{ id }` parsed from the server's response. The existing `append()` keeps its `Promise<void>` shape to satisfy the `EngramStore` interface contract; the new method is for callers that need the canonical id.
+- **MCP `plur_learn` handler routes through `learnRouted` first** — was using `learnAsync` (LLM-driven dedup) which ultimately called sync `learn()` and returned the local placeholder id. Users saw e.g. `ENG-2026-0506-017`, then `plur_forget("ENG-2026-0506-017")` returned "Engram not found" because the engram only existed on the server with id `ENG-2026-05-06-008`.
+- **Loud failure on remote-write failure** — `learnRouted` throws when the POST fails (network, 5xx). The MCP handler catches and falls back to sync `learn()`, returning the local placeholder id with a `warning` field naming the trade-off so the caller can react instead of silently believing the write succeeded.
+
+### Verification (against production)
+
+Verified end-to-end before publish:
+1. `plur.learnRouted(stmt, { scope: 'group:plur/plur-ai/engineering' })` returned `ENG-2026-05-06-008` (server format `^ENG-\d{4}-\d{2}-\d{2}-\d{3}$`)
+2. `GET /api/v1/engrams/ENG-2026-05-06-008` returned 200 with the same statement → roundtrip works
+
+All 806 tests pass.
+
+### Versions
+
+- `@plur-ai/core` 0.9.7 → 0.9.8
+- `@plur-ai/mcp` 0.9.7 → 0.9.8
+- `@plur-ai/claw` 0.9.13 → 0.9.14
+
+### Why this matters
+
+0.9.7 fixed routing-to-remote and the silent config clobber. But the engram object returned to the caller still had the *local* placeholder id — meaning that any code holding onto that id (to pass to `forget`, `feedback`, or `history`) had a phantom reference. Users would write a team engram, copy the id, try to retire it, and get "Engram not found" — even though the write succeeded on the server. 0.9.8 closes the id-roundtrip loop so the value the caller gets back is the value they can use.
+
+## 0.9.7 (2026-05-06)
+
+`loadConfig` no longer drops the entire `stores` array on a single bad
+entry. Closes the silent-clobber pathway that made the 0.9.6 fix hard
+to land.
+
+### Fixes
+
+- **Per-entry tolerance in `loadConfig`** — previously `loadConfig` parsed the entire config with `PlurConfigSchema.parse()`. Any single invalid `stores` entry threw, and the catch returned an empty config (`{}`), silently dropping every other valid entry too. In the wild this meant a pre-0.9.5 MCP process running against a 0.9.6+ config (which has `url`-based remote stores its old schema doesn't know about) would: load → throw → fall back to empty → save back over the file → permanently lose the user's remote store registration. Now each store entry is validated independently with `safeParse`; invalid entries are dropped with a `[plur:config] dropping invalid stores[N] (label) ...` warning, valid entries survive.
+- **Loud failure on top-level config parse errors** — when `loadConfig` falls back to defaults due to YAML or schema issues at the top level, it now logs the path and the error reason. Silent fall-back was the worst kind of failure mode.
+
+### End-to-end verification (production)
+
+This release was verified against `https://plur.datafund.io` before publish:
+1. Config with mixed valid (URL+token) and invalid entries → only the invalid entry dropped, URL store survived
+2. `plur.learn(stmt, { scope: 'group:plur/plur-ai/engineering' })` → POSTed to `/api/v1/engrams`, returned server-assigned ID
+3. REST GET on the new ID → confirmed engram on server with correct scope
+4. Local `engrams.yaml` not created → no leak
+
+All 516 core tests pass.
+
+### Versions
+
+- `@plur-ai/core` 0.9.6 → 0.9.7
+- `@plur-ai/mcp` 0.9.6 → 0.9.7
+- `@plur-ai/claw` 0.9.12 → 0.9.13
+
+### Why this matters
+
+0.9.6 shipped the `learn()` routing fix for plur-ai/enterprise#25 but in practice teams couldn't observe it: any pre-0.9.5 MCP instance still running on the same machine would clobber the config file on each load/save cycle, dropping the URL store entry. 0.9.7 removes that pathway — even an old client behaving badly can no longer take down the whole stores array.
+
 ## 0.9.6 (2026-05-06)
 
 `plur_learn` now actually writes to remote stores. Closes the half-shipped
