@@ -2,6 +2,7 @@ import { readSync, existsSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { type GlobalFlags } from '../plur.js'
+import { isPlurConfigured } from '../lib/plur-configured.js'
 
 /**
  * plur hook-session-guard — PreToolUse hook that blocks all tools until
@@ -46,6 +47,10 @@ function sentinelPath(sessionId: string): string {
 }
 
 export async function run(_args: string[], _flags: GlobalFlags): Promise<void> {
+  // Silent pass-through for projects without plur configured. Lets the hook
+  // be installed globally without blocking tools in unrelated projects (#95).
+  if (!isPlurConfigured()) return
+
   const raw = readStdinRaw()
   let data: { session_id?: string; tool_name?: string }
   try {
