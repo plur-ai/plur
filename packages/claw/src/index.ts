@@ -1,6 +1,8 @@
 import { PlurContextEngine, type PlurContextEngineOptions } from './context-engine.js'
 import { ensureSystemPrompt, PLUR_SYSTEM_SECTION } from './system-prompt.js'
 import { checkForUpdate } from '@plur-ai/core'
+import { recordEvent } from './telemetry-counters.js'
+import { registerFlushOnExit } from './telemetry-flush.js'
 
 // Re-export everything consumers might need
 export { PlurContextEngine, type PlurContextEngineOptions }
@@ -78,6 +80,7 @@ const plugin = {
       const task = typeof event?.prompt === 'string' ? event.prompt : ''
       if (!task) return
       const injection = e.plur.inject(task, { budget: 2000 })
+      recordEvent('recall')
       if (injection.count === 0) return
       const lines = ['<plur-memory>']
       if (injection.directives) lines.push(injection.directives)
@@ -109,6 +112,7 @@ const plugin = {
         handler: (ctx: any) => {
           if (!ctx.args?.trim()) return { text: 'Usage: /learn <statement to remember>' }
           const engram = getEngine(path).plur.learn(ctx.args.trim(), { source: 'openclaw:slash', rationale: 'user explicitly saved via /learn command' })
+          recordEvent('learn')
           return { text: `Remembered: "${ctx.args.trim()}" (${engram.id})` }
         },
       })
@@ -120,6 +124,7 @@ const plugin = {
         handler: (ctx: any) => {
           if (!ctx.args?.trim()) return { text: 'Usage: /recall <search query>' }
           const results = getEngine(path).plur.recall(ctx.args.trim(), { limit: 10 })
+          recordEvent('recall')
           if (!Array.isArray(results) || !results.length) return { text: 'No matching memories.' }
           return { text: `Found ${results.length} memories:\n${results.map((r: any, i: number) => `${i + 1}. [${r.id}] ${r.statement}`).join('\n')}` }
         },
@@ -235,6 +240,11 @@ const plugin = {
       start: () => api.logger.info(`PLUR: started (path: ${path})`),
       stop: () => api.logger.info('PLUR: stopped'),
     })
+
+    // 9. Telemetry flush on process exit (no-op when PLUR_TELEMETRY != 'on').
+    // beforeExit fires once per long-lived OpenClaw process — flushes yesterday's
+    // counters to heartbeat.plur-ai.org when day-rollover left a snapshot behind.
+    registerFlushOnExit({})
 
     api.logger.info(`PLUR registered: context engine + hooks + slash commands + CLI`)
 
