@@ -100,6 +100,17 @@ pnpm test:integration
 
 Tests RemoteStore against an in-process HTTP stub server (real TCP, no fetch mocking). The stub implements the `/api/v1/engrams` REST surface and lives at `packages/core/test/helpers/stub-server.ts`. When RemoteStore adds new endpoints, add the corresponding handler to the stub.
 
+### Production smoke tests
+
+```
+PLUR_REMOTE_TEST_URL=https://plur.datafund.io \
+PLUR_REMOTE_TEST_TOKEN=<token> \
+PLUR_REMOTE_TEST_SCOPE=group:plur/test/smoke \
+pnpm test:smoke
+```
+
+Runs a full roundtrip (append → getById → load → remove) against the live enterprise server. Skipped automatically when env vars are not set. Run after publishing to verify the deployment. All test engrams are tagged with a unique run ID and cleaned up in `afterAll`.
+
 ### Benchmarking a PR
 
 Two benchmark suites measure whether a change actually improves memory quality:
