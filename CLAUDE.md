@@ -92,6 +92,14 @@ Install the MCP server locally and test with Claude Code:
 
 Then ask Claude to learn something, recall it, and check if injection works.
 
+### Integration tests (remote store)
+
+```
+pnpm test:integration
+```
+
+Tests RemoteStore against an in-process HTTP stub server (real TCP, no fetch mocking). The stub implements the `/api/v1/engrams` REST surface and lives at `packages/core/test/helpers/stub-server.ts`. When RemoteStore adds new endpoints, add the corresponding handler to the stub.
+
 ### Benchmarking a PR
 
 Two benchmark suites measure whether a change actually improves memory quality:
