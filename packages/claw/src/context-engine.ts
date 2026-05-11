@@ -8,6 +8,14 @@ import type {
 import { extractLearnings, isCorrection } from './learner.js'
 import { assembleContext } from './assembler.js'
 import { recordEvent } from './telemetry-counters.js'
+import { flushIfNeeded } from './telemetry-flush.js'
+
+// #128: if recordEvent rolled the day, ship yesterday's pending snapshot now
+// (rather than waiting for process exit — long-lived plugin sessions might
+// span multiple days otherwise). Fire-and-forget; flushIfNeeded swallows.
+function maybeFlushAfter(rolledOver: boolean): void {
+  if (rolledOver) void flushIfNeeded({}).catch(() => {})
+}
 
 /**
  * Extract text from message content — handles string and array-of-blocks formats.
@@ -155,7 +163,7 @@ export class PlurContextEngine implements ContextEngine {
           // Fall back to BM25 when embeddings unavailable
           injection = this.plur.inject(task, injectOpts)
         }
-        recordEvent('recall')
+        maybeFlushAfter(recordEvent('recall'))
       }
 
       return assembleContext({
@@ -334,6 +342,6 @@ export class PlurContextEngine implements ContextEngine {
     if (seen.has(key)) return
     seen.add(key)
     this.plur.learn(statement, context)
-    recordEvent('learn')
+    maybeFlushAfter(recordEvent('learn'))
   }
 }

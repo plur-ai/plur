@@ -7,24 +7,28 @@
 //   1. Default-off install makes zero network calls.
 //   2. Telemetry-on but no counter file → zero network calls.
 //
-// Trigger semantics: flush fires when `snapshot.date < today` (i.e. there is
-// *yesterday* data to ship). Two call sites:
-//   - lazy: `recordEvent` calls `flushIfNeeded` after the day-rollover write
+// Trigger semantics: flush drains the pending-flush directory written by
+// `recordEvent` on day-rollover (#128). Two call sites:
+//   - rollover: `recordEvent` returns `true` from its rollover branch; callers
+//     fire `flushIfNeeded` async
 //   - exit: `registerFlushOnExit` registered from cli startup (best-effort)
 // No setInterval, no background polling.
 //
 // Failure semantics: `sendHeartbeat` never throws. On any failure (network,
-// timeout, non-2xx) it returns false; counters stay local and the next
-// rollover retries.
+// timeout, non-2xx) it returns false; pending files stay on disk for the next
+// rollover or process restart to retry.
 
-import { existsSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
+import { existsSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
 import { isTelemetryEnabled } from './telemetry.js'
 import {
+  deletePending,
   getCounters,
-  resetCounters,
+  listPendingDates,
+  migrateStaleCounters,
+  readPendingCounters,
   type CounterSnapshot,
   type CountersOpts,
 } from './telemetry-counters.js'
@@ -48,10 +52,6 @@ export type FlushOpts = CountersOpts & {
 
 const DEFAULT_ENDPOINT = 'https://heartbeat.plur-ai.org/v1/heartbeat'
 const DEFAULT_TIMEOUT_MS = 5000
-
-function utcDate(d: Date): string {
-  return d.toISOString().slice(0, 10)
-}
 
 function resolveEndpoint(opts: FlushOpts): string {
   if (opts.endpoint) return opts.endpoint
@@ -122,24 +122,41 @@ export async function flushIfNeeded(opts: FlushOpts = {}): Promise<void> {
   if (!isTelemetryEnabled({ env: opts.env, configPath: opts.configPath })) return
 
   const countersPath = opts.countersPath
-  // When countersPath is provided (tests), short-circuit if missing.
-  // When unset (production default in telemetry-counters), getCounters will
-  // create the install-id file on first read; we still need to short-circuit
-  // when there is no counter file yet, which getCounters handles by returning
-  // a zero snapshot for today — that snapshot's date === today so we no-op
-  // below, never touching the network.
-  if (countersPath && !existsSync(countersPath)) return
+  // Privacy invariant 2: telemetry-on but no on-disk state → zero network.
+  // When countersPath is set (tests), if it's missing AND pending-dir has
+  // nothing, we have no data to ship. In production (no countersPath), the
+  // pending-dir check below handles the empty case.
+  if (countersPath && !existsSync(countersPath) && listPendingDates(opts).length === 0) return
 
-  const snapshot = getCounters(opts)
-  if (!snapshot) return
+  // Migrate any stale counters.json (e.g. upgrade from pre-#128, or beforeExit
+  // firing after midnight on a process that never re-recorded). Adds an entry
+  // to pending-dir; the drain loop below ships it.
+  migrateStaleCounters(opts)
 
-  const now = (opts.now ?? (() => new Date()))()
-  const today = utcDate(now)
-  if (snapshot.date >= today) return
+  // getCounters gives us install_id; we ignore its date/counts and instead
+  // ship each pending file as its own heartbeat.
+  const baseSnapshot = getCounters(opts)
+  if (!baseSnapshot) return
 
-  const payload = buildHeartbeatPayload(snapshot, opts)
-  const ok = await sendHeartbeat(payload, opts)
-  if (ok) resetCounters(opts)
+  for (const date of listPendingDates(opts)) {
+    const pending = readPendingCounters(date, opts)
+    if (!pending) {
+      // Malformed or already-removed; drop the file so we don't loop on it.
+      deletePending(date, opts)
+      continue
+    }
+    const snapshot: CounterSnapshot = {
+      installId: baseSnapshot.installId,
+      date: pending.date,
+      learn: pending.learn,
+      recall: pending.recall,
+      session: pending.session,
+    }
+    const payload = buildHeartbeatPayload(snapshot, opts)
+    const ok = await sendHeartbeat(payload, opts)
+    if (ok) deletePending(date, opts)
+    // On failure, file stays on disk and is retried on next flush.
+  }
 }
 
 export function registerFlushOnExit(opts: FlushOpts = {}): () => void {
