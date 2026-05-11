@@ -214,6 +214,28 @@ describe('learn() — retry + local fallback (issue #88)', () => {
     rmSync(primaryDir, { recursive: true, force: true })
   })
 
+  function mockSuccessfulAppend() {
+    fetchMock.mockImplementation((async (_url: string, init?: { method?: string }) => {
+      const method = init?.method ?? 'GET'
+      if (method === 'POST') {
+        return {
+          ok: true, status: 201,
+          json: async () => ({ id: 'ENG-REMOTE-001' }),
+          text: async () => '',
+        } as Response
+      }
+      return {
+        ok: true, status: 200,
+        json: async () => ({ rows: [], total_count: 0 }),
+        text: async () => '',
+      } as Response
+    }) as any)
+  }
+
+  function postCalls() {
+    return fetchMock.mock.calls.filter(([, init]) => (init as any)?.method === 'POST')
+  }
+
   it('retries once and succeeds — no local fallback', async () => {
     let callCount = 0
     fetchMock.mockImplementation((async (_url: string, init?: { method?: string }) => {
