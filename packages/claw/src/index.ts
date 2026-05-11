@@ -2,7 +2,14 @@ import { PlurContextEngine, type PlurContextEngineOptions } from './context-engi
 import { ensureSystemPrompt, PLUR_SYSTEM_SECTION } from './system-prompt.js'
 import { checkForUpdate } from '@plur-ai/core'
 import { recordEvent } from './telemetry-counters.js'
-import { registerFlushOnExit } from './telemetry-flush.js'
+import { flushIfNeeded, registerFlushOnExit } from './telemetry-flush.js'
+
+// #128: when recordEvent rolls the day, ship yesterday's pending snapshot
+// immediately. Without this, a long-lived plugin process would only flush on
+// `beforeExit`, which can be days away.
+function maybeFlushAfter(rolledOver: boolean): void {
+  if (rolledOver) void flushIfNeeded({}).catch(() => {})
+}
 
 // Re-export everything consumers might need
 export { PlurContextEngine, type PlurContextEngineOptions }
@@ -80,7 +87,7 @@ const plugin = {
       const task = typeof event?.prompt === 'string' ? event.prompt : ''
       if (!task) return
       const injection = e.plur.inject(task, { budget: 2000 })
-      recordEvent('recall')
+      maybeFlushAfter(recordEvent('recall'))
       if (injection.count === 0) return
       const lines = ['<plur-memory>']
       if (injection.directives) lines.push(injection.directives)
@@ -112,7 +119,7 @@ const plugin = {
         handler: (ctx: any) => {
           if (!ctx.args?.trim()) return { text: 'Usage: /learn <statement to remember>' }
           const engram = getEngine(path).plur.learn(ctx.args.trim(), { source: 'openclaw:slash', rationale: 'user explicitly saved via /learn command' })
-          recordEvent('learn')
+          maybeFlushAfter(recordEvent('learn'))
           return { text: `Remembered: "${ctx.args.trim()}" (${engram.id})` }
         },
       })
@@ -124,7 +131,7 @@ const plugin = {
         handler: (ctx: any) => {
           if (!ctx.args?.trim()) return { text: 'Usage: /recall <search query>' }
           const results = getEngine(path).plur.recall(ctx.args.trim(), { limit: 10 })
-          recordEvent('recall')
+          maybeFlushAfter(recordEvent('recall'))
           if (!Array.isArray(results) || !results.length) return { text: 'No matching memories.' }
           return { text: `Found ${results.length} memories:\n${results.map((r: any, i: number) => `${i + 1}. [${r.id}] ${r.statement}`).join('\n')}` }
         },
