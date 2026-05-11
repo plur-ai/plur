@@ -42,6 +42,7 @@ Commands:
   stores add <path>       Add a knowledge store
   init                    Install Claude Code hooks + register plur MCP server
   doctor                  Diagnose Claude Code / Claude Desktop integration
+  audit [--source X]      Audit working memory (claude-code|claw|hermes) for conflicts vs engrams
   hook-inject             (internal) Hook handler for engram injection
   hook-observe            (internal) Hook handler for observation capture
   hook-learn-check        (internal) Hook handler for learning reflection
@@ -85,6 +86,7 @@ const COMMANDS: Record<string, string> = {
   migrate: './commands/migrate.js',
   init: './commands/init.js',
   doctor: './commands/doctor.js',
+  audit: './commands/audit.js',
   'hook-inject': './commands/hook-inject.js',
   'hook-observe': './commands/hook-observe.js',
   'hook-learn-check': './commands/hook-learn-check.js',
