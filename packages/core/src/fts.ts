@@ -31,6 +31,22 @@ export function engramSearchText(engram: Engram): string {
     if (engram.temporal.valid_until) parts.push(engram.temporal.valid_until)
   }
   if (engram.rationale) parts.push(engram.rationale)
+  // Provenance: helps surface engrams by their origin (URL, paper, conversation ref).
+  if (engram.source) parts.push(engram.source)
+  // Dual-coding cues: example + analogy are *meant* to be alternate retrieval
+  // anchors — same memory, different verbal route in. Including them in the
+  // search corpus is the whole point of the field. plur-ai/plur#139.
+  if (engram.dual_coding) {
+    if (engram.dual_coding.example) parts.push(engram.dual_coding.example)
+    if (engram.dual_coding.analogy) parts.push(engram.dual_coding.analogy)
+  }
+  // Knowledge-anchor snippets: short excerpts from linked source documents.
+  // Text-bearing; should retrieve when a query matches the snippet content.
+  if (engram.knowledge_anchors && engram.knowledge_anchors.length > 0) {
+    for (const a of engram.knowledge_anchors) {
+      if (a.snippet) parts.push(a.snippet)
+    }
+  }
   return parts.join(' ')
 }
 
