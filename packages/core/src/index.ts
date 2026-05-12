@@ -100,9 +100,6 @@ export {
 } from './schemas/capsule.js'
 export { writeCapsule, readCapsule, verifyCapsuleIntegrity } from './capsule.js'
 export type { WriteCapsuleOptions, ReadCapsuleResult } from './capsule.js'
-export { isTelemetryEnabled, resolveTelemetry, type TelemetryResolution, type TelemetryState, type TelemetrySource } from './telemetry.js'
-export { recordEvent, getCounters, resetCounters, migrateStaleCounters, listPendingDates, readPendingCounters, deletePending, type CounterEvent, type CounterSnapshot, type CountersOpts } from './telemetry-counters.js'
-export { buildHeartbeatPayload, sendHeartbeat, flushIfNeeded, registerFlushOnExit, type HeartbeatPayload, type FlushOpts } from './telemetry-flush.js'
 export * from './types.js'
 
 export interface IngestOptions {
