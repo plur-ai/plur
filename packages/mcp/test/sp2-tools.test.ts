@@ -120,27 +120,32 @@ describe('SP2 MCP Tools', () => {
     })
   })
 
-  describe('plur_learn (memory_class + session_episode_id)', () => {
-    it('accepts memory_class parameter', async () => {
-      const result = await getTool('plur_learn').handler(
-        { statement: 'An episodic memory', memory_class: 'episodic' },
-        plur,
-      ) as any
-
-      const engram = plur.getById(result.id)
+  // memory_class and session_episode_id were removed from the MCP tool
+  // inputSchema in plur-ai/plur#139 (LLMs don't fill them meaningfully and
+  // the schema bloat costs tokens every session). The features still work
+  // at the Plur class level — these tests now assert that contract.
+  describe('plur.learn() — memory_class + session_episode_id at Plur class level', () => {
+    it('Plur.learn accepts memory_class and stores it on the engram', () => {
+      const engram = plur.learn('An episodic memory', { memory_class: 'episodic' })
       expect((engram as any).knowledge_type?.memory_class).toBe('episodic')
     })
 
-    it('accepts session_episode_id parameter', async () => {
+    it('Plur.learn accepts session_episode_id and pushes to episode_ids', () => {
       const episode = plur.capture('Test session')
-
-      const result = await getTool('plur_learn').handler(
-        { statement: 'Learned in session', session_episode_id: episode.id },
-        plur,
-      ) as any
-
-      const engram = plur.getById(result.id)
+      const engram = plur.learn('Learned in session', { session_episode_id: episode.id })
       expect((engram as any).episode_ids).toContain(episode.id)
+    })
+
+    it('MCP plur_learn tool no longer surfaces memory_class or session_episode_id', () => {
+      const tool = getTool('plur_learn') as any
+      const props = tool.inputSchema.properties
+      expect(props.memory_class).toBeUndefined()
+      expect(props.session_episode_id).toBeUndefined()
+      // But the kept-and-trimmed set is intact:
+      expect(props.statement).toBeDefined()
+      expect(props.tags).toBeDefined()
+      expect(props.rationale).toBeDefined()
+      expect(props.pinned).toBeDefined()
     })
   })
 

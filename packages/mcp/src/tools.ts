@@ -97,43 +97,23 @@ export function getToolDefinitions(): ToolDefinition[] {
           },
           scope: { type: 'string', description: 'Namespace, e.g. global, project:myapp' },
           domain: { type: 'string', description: 'Domain tag, e.g. software.deployment' },
-          source: { type: 'string', description: 'Origin of this knowledge' },
-          tags: { type: 'array', items: { type: 'string' }, description: 'Searchable keyword tags' },
-          rationale: { type: 'string', description: 'Why this knowledge matters' },
-          visibility: { type: 'string', enum: ['private', 'public', 'template'], description: 'Visibility level' },
-          knowledge_anchors: {
-            type: 'array',
-            items: {
-              type: 'object',
-              properties: {
-                path: { type: 'string', description: 'Path to related document' },
-                relevance: { type: 'string', enum: ['primary', 'supporting', 'example'] },
-                snippet: { type: 'string', description: 'Short snippet (max 200 chars)' },
-              },
-              required: ['path'],
-            },
-            description: 'Links to related knowledge documents',
-          },
-          dual_coding: {
-            type: 'object',
-            properties: {
-              example: { type: 'string', description: 'Concrete example' },
-              analogy: { type: 'string', description: 'Analogy to aid understanding' },
-            },
-            description: 'Dual coding for richer encoding',
-          },
-          abstract: { type: 'string', description: 'Abstract engram ID this was derived from' },
-          derived_from: { type: 'string', description: 'Source engram ID this was derived from' },
-          commitment: { type: 'string', enum: ['exploring', 'leaning', 'decided', 'locked'], description: 'Commitment level (default: leaning)' },
-          locked_reason: { type: 'string', description: 'Reason for locking (when commitment=locked)' },
-          memory_class: { type: 'string', enum: ['semantic', 'episodic', 'procedural', 'metacognitive'], description: 'Memory classification (auto-set from type if omitted)' },
-          session_episode_id: { type: 'string', description: 'Link to current session episode for episodic anchoring' },
-          pinned: { type: 'boolean', description: 'Always-load flag. If true, this engram bypasses the keyword-relevance gate and is eligible for injection on every session, regardless of overlap with the user task. Use sparingly: meta-rules, safety conventions, core operating principles only.' },
+          tags: { type: 'array', items: { type: 'string' }, description: 'Searchable keyword tags — contribute to BM25/embedding recall, so concrete keywords pay off' },
+          rationale: { type: 'string', description: 'Why this knowledge matters — also enters the search corpus, helps recall by intent not just statement' },
+          source: { type: 'string', description: 'Origin of this knowledge (URL, conversation ref, etc.)' },
+          pinned: { type: 'boolean', description: 'Always-load flag. If true, this engram bypasses the keyword-relevance gate at injection time. Use sparingly: meta-rules, safety conventions, core operating principles only.' },
+          commitment: { type: 'string', enum: ['exploring', 'leaning', 'decided', 'locked'], description: 'How firmly the user has committed to this belief (default: leaning)' },
+          locked_reason: { type: 'string', description: 'Why this engram is locked (only meaningful when commitment=locked)' },
         },
         required: ['statement'],
       },
       handler: async (args, plur) => {
         const llm = getLlmFunction()
+        // LLM-facing context. Fields not in inputSchema (visibility,
+        // knowledge_anchors, dual_coding, abstract, derived_from, memory_class,
+        // session_episode_id) stay in the engram spec and remain settable via
+        // the Plur class / REST — just not asked of the LLM. Their feature
+        // paths (private/public gating, meta-engram routing, etc.) are
+        // unaffected. See plur-ai/plur#139.
         const context = {
           type: args.type as any,
           scope: args.scope as string | undefined,
@@ -141,15 +121,8 @@ export function getToolDefinitions(): ToolDefinition[] {
           source: args.source as string | undefined,
           tags: args.tags as string[] | undefined,
           rationale: args.rationale as string | undefined,
-          visibility: args.visibility as any,
-          knowledge_anchors: args.knowledge_anchors as any,
-          dual_coding: args.dual_coding as any,
-          abstract: args.abstract as string | undefined,
-          derived_from: args.derived_from as string | undefined,
           commitment: args.commitment as any,
           locked_reason: args.locked_reason as string | undefined,
-          memory_class: args.memory_class as any,
-          session_episode_id: args.session_episode_id as string | undefined,
           pinned: args.pinned as boolean | undefined,
           llm,
         }
@@ -196,7 +169,6 @@ export function getToolDefinitions(): ToolDefinition[] {
           scope: { type: 'string', description: 'Filter by scope (also includes global)' },
           domain: { type: 'string', description: 'Filter by domain prefix' },
           limit: { type: 'number', description: 'Max results to return (default 20)' },
-          min_strength: { type: 'number', description: 'Minimum retrieval strength (0-1)' },
           budget: { type: 'object', description: 'Budget constraints for sub-agents', properties: { max_tokens: { type: 'number' }, max_results: { type: 'number' } } },
           caller_session_id: { type: 'string', description: 'Caller session ID for budget enforcement' },
         },
@@ -207,7 +179,6 @@ export function getToolDefinitions(): ToolDefinition[] {
           scope: args.scope as string | undefined,
           domain: args.domain as string | undefined,
           limit: args.limit as number | undefined,
-          min_strength: args.min_strength as number | undefined,
         })
         return {
           results: results.map(e => ({
@@ -234,7 +205,6 @@ export function getToolDefinitions(): ToolDefinition[] {
           scope: { type: 'string', description: 'Filter by scope (also includes global)' },
           domain: { type: 'string', description: 'Filter by domain prefix' },
           limit: { type: 'number', description: 'Max results to return (default 20)' },
-          min_strength: { type: 'number', description: 'Minimum retrieval strength (0-1)' },
           budget: { type: 'object', description: 'Budget constraints for sub-agents', properties: { max_tokens: { type: 'number' }, max_results: { type: 'number' }, ttl_seconds: { type: 'number' } } },
           caller_session_id: { type: 'string', description: 'Session ID of calling agent for budget enforcement' },
           include_episodes: { type: 'boolean', description: 'If true, include linked episode summaries for each engram (SP2 episodic anchoring)' },
@@ -248,7 +218,6 @@ export function getToolDefinitions(): ToolDefinition[] {
           scope: args.scope as string | undefined,
           domain: args.domain as string | undefined,
           limit: effectiveLimit,
-          min_strength: args.min_strength as number | undefined,
         })
         const results = meta.engrams
         let truncated = false
