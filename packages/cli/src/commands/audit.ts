@@ -208,16 +208,18 @@ function sharedEntityNames(a: string, b: string): string[] {
 }
 
 /** Look for negation phrases near any of the shared entities in the engram.
- *  Negation must be within ~80 chars of the entity, not anywhere in the
- *  statement — this rejects the false positive where "not" lives in an
- *  unrelated clause. */
+ *  Negation must be (a) within ~60 chars of the entity, AND (b) a verb-
+ *  phrase form like "is no longer", "was replaced by", "has been retired".
+ *  Bare "not"/"never" are excluded — they fire on harmless contrastive
+ *  language like "Chief of Staff, not the generic AI". v0.3 (2026-05-12). */
 function detectEntityConflict(engram: string, entities: string[]): { entity: string; phrase: string } | null {
-  const NEG = /(no longer|not (?:running|on|the|a)|never (?:ran|was|had)|removed|decommissioned|repurposed|deprecated|stale|wrong|outdated|replaced(?: by| with)?|migrated (?:to|away)|moved (?:to|away)|retired)/i
+  // Verb-phrase negation: must include a state verb or strong action
+  const NEG = /(is\s+no\s+longer|was\s+no\s+longer|has\s+been\s+(?:removed|deprecated|retired|replaced|decommissioned|repurposed|migrated|relocated|abandoned|archived)|(?:was|is|are|were)\s+replaced\s+(?:by|with)|(?:was|is)\s+(?:not\s+)?(?:running|installed|registered|loaded|reachable|available|active|enabled|present)|(?:has|have)\s+(?:moved|migrated)\s+(?:to|away\s+from)|(?:was|is)\s+(?:decommissioned|repurposed|deprecated|retired|abandoned|archived|outdated|stale)|no\s+longer\s+(?:runs|hosts|provides|works|valid|active|used)|deleted\s+(?:as\s+of|on)|retired\s+(?:as\s+of|on))/i
   for (const e of entities) {
     const idx = engram.indexOf(e)
     if (idx === -1) continue
-    const start = Math.max(0, idx - 80)
-    const end = Math.min(engram.length, idx + e.length + 80)
+    const start = Math.max(0, idx - 60)
+    const end = Math.min(engram.length, idx + e.length + 60)
     const window = engram.slice(start, end)
     const m = window.match(NEG)
     if (m) return { entity: e, phrase: m[0] }
