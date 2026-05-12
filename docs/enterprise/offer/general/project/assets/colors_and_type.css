@@ -1,0 +1,248 @@
+/* =========================================================
+   Datafund Design System — Colors & Type
+   Sourced from github.com/datafund/website (Astro + Tailwind)
+   Fonts: Geist (variable) + Geist Mono (variable)
+   Brand: a single electric pure blue (#0000FF) over soft
+   off-whites and near-black text. Minimal, confident,
+   "fintech for the machine economy".
+   ========================================================= */
+
+/* ---------- Webfonts ---------- */
+@font-face {
+  font-family: "Geist";
+  src: url("./fonts/GeistVF.woff2") format("woff2-variations");
+  font-weight: 100 900;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Geist Mono";
+  src: url("./fonts/GeistMonoVF.woff2") format("woff2-variations");
+  font-weight: 100 900;
+  font-display: swap;
+}
+
+:root {
+  /* ---------- Brand / core colors ---------- */
+  --df-blue:        #0000FF;      /* signature "pure blue" — buttons, links, accents */
+  --df-blue-hover:  rgba(0, 0, 255, 0.75); /* hover = 75% opacity of blue */
+  --df-blue-soft:   #8A8AFF;      /* the lavender glow in bg1/bg2 */
+  --df-blue-deep:   #0000B3;      /* deeper navy in bg3 */
+
+  --df-black:       #000000;      /* primary text */
+  --df-white:       #FFFFFF;
+
+  /* Neutrals (warm off-white page bg + cool gray surfaces) */
+  --df-bg:          #FAFAFA;      /* base page neutral reading under bg1/bg2 */
+  --df-surface:     #F6F6F6;      /* card/blog-card surface (50% opacity in site) */
+  --df-surface-50:  rgba(246, 246, 246, 0.5);   /* #F6F6F680 — blog card bg */
+  --df-divider:     rgba(0, 0, 0, 0.08);
+
+  /* ---------- Foreground scale ---------- */
+  --df-fg-1: #000000;             /* headings, hero copy */
+  --df-fg-2: #1A1A1A;             /* body */
+  --df-fg-3: #4A4A4A;             /* secondary body */
+  --df-fg-muted: #8A8A8A;         /* captions / meta */
+  --df-fg-inverse: #FFFFFF;       /* on blue / on dark bg3 */
+
+  /* ---------- Semantic ---------- */
+  --df-accent:      var(--df-blue);
+  --df-accent-fg:   #FFFFFF;
+  --df-link:        var(--df-blue);
+  --df-link-hover:  var(--df-blue-hover);
+  --df-focus-ring:  var(--df-blue);
+
+  /* ---------- Type families ---------- */
+  --df-font-sans: "Geist", ui-sans-serif, system-ui, -apple-system,
+                  "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --df-font-mono: "Geist Mono", ui-monospace, SFMono-Regular, Menlo,
+                  Consolas, "Liberation Mono", monospace;
+
+  /* ---------- Type scale (matches site Tailwind usage) ---------- */
+  --df-text-hero:   60px;   /* sm:text-6xl — hero h1 */
+  --df-text-hero-lh: 70px;
+  --df-text-sub:    32px;   /* hero subtitle */
+  --df-text-sub-lh: 40px;
+  --df-text-h2:     45px;   /* section title lg:text-[45px] */
+  --df-text-h2-lh:  1.1;
+  --df-text-h3:     24px;   /* list item / inline headings — text-2xl */
+  --df-text-h3-lh:  30px;
+  --df-text-body:   24px;   /* main reading size — text-2xl */
+  --df-text-body-lh: 1.1;   /* leading-tight */
+  --df-text-lg:     18px;   /* text-lg — secondary body / feature body */
+  --df-text-lg-lh:  1.1;
+  --df-text-small:  14px;
+  --df-text-xs:     12px;   /* nav IPA / meta */
+
+  /* ---------- Spacing (Tailwind-ish, matching site rhythm) ---------- */
+  --df-space-1: 4px;
+  --df-space-2: 8px;
+  --df-space-3: 12px;
+  --df-space-4: 16px;
+  --df-space-5: 20px;
+  --df-space-6: 24px;
+  --df-space-8: 32px;
+  --df-space-10: 40px;
+  --df-space-12: 48px;
+  --df-space-16: 64px;
+  --df-space-24: 96px;
+  --df-space-32: 128px;
+  --df-space-48: 192px;  /* my-48 = the deep vertical rhythm between sections */
+
+  /* ---------- Radius ---------- */
+  --df-radius-xs: 2px;     /* buttons + blog cards — almost-square, rounded-[2px] */
+  --df-radius-sm: 4px;
+  --df-radius-md: 8px;
+  --df-radius-full: 9999px; /* step numbers, social icons */
+
+  /* ---------- Shadows (the site is essentially shadow-less) ---------- */
+  --df-shadow-none: 0 0 0 0 transparent;
+  --df-shadow-sm:   0 1px 2px rgba(0,0,0,0.04);
+  --df-shadow-md:   0 6px 20px rgba(0, 0, 80, 0.08);
+
+  /* ---------- Motion ---------- */
+  --df-ease: cubic-bezier(0.4, 0, 0.2, 1);
+  --df-dur-fast: 150ms;
+  --df-dur: 200ms;          /* duration-200 — the button hover */
+  --df-dur-slow: 400ms;
+}
+
+/* =========================================================
+   Semantic element styles — use these as "h1", "p", etc.
+   They apply the site's actual cadence.
+   ========================================================= */
+
+html, body {
+  background: var(--df-bg);
+  color: var(--df-fg-1);
+  font-family: var(--df-font-sans);
+  font-size: var(--df-text-body);
+  line-height: var(--df-text-body-lh);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+.df-hero-title,
+h1.df {
+  font-family: var(--df-font-sans);
+  font-weight: 700;
+  font-size: var(--df-text-hero);
+  line-height: var(--df-text-hero-lh);
+  letter-spacing: -0.01em;
+  text-wrap: balance;
+  color: var(--df-fg-1);
+}
+
+.df-hero-sub {
+  font-size: var(--df-text-sub);
+  line-height: var(--df-text-sub-lh);
+  font-weight: 400;
+  color: var(--df-fg-2);
+}
+
+.df-h2,
+h2.df {
+  font-family: var(--df-font-sans);
+  font-weight: 700;
+  font-size: var(--df-text-h2);
+  line-height: 1.1;
+  letter-spacing: -0.005em;
+  text-wrap: balance;
+  color: var(--df-fg-1);
+}
+
+.df-h3,
+h3.df {
+  font-weight: 700;
+  font-size: var(--df-text-h3);
+  line-height: var(--df-text-h3-lh);
+  color: var(--df-fg-1);
+}
+
+.df-feature-title {
+  font-weight: 700;
+  font-size: var(--df-text-lg);
+  line-height: 1.1;
+  color: var(--df-blue);
+}
+
+p.df,
+.df-body {
+  font-size: var(--df-text-body);
+  line-height: 1.1;
+  color: var(--df-fg-2);
+  max-width: 60ch;
+}
+
+.df-body-lg {
+  font-size: var(--df-text-lg);
+  line-height: 1.1;
+  color: var(--df-fg-2);
+}
+
+.df-mono,
+code.df,
+kbd.df {
+  font-family: var(--df-font-mono);
+  font-size: var(--df-text-xs);
+  font-weight: 500;
+}
+
+a.df,
+.df-link {
+  color: var(--df-link);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  font-weight: 600;
+  transition: opacity var(--df-dur) var(--df-ease);
+}
+a.df:hover,
+.df-link:hover { opacity: 0.75; }
+
+/* =========================================================
+   Components — buttons, cards, numbered list
+   Lifted directly from the site's Tailwind classes.
+   ========================================================= */
+
+.df-button {
+  display: inline-block;
+  background: var(--df-blue);
+  color: var(--df-accent-fg);
+  font-weight: 700;
+  font-size: var(--df-text-lg);
+  line-height: 1.1;
+  padding: 10px 20px;                 /* py-2.5 px-5 */
+  border-radius: var(--df-radius-xs); /* rounded-[2px] */
+  text-decoration: none;
+  transition: background-color var(--df-dur) var(--df-ease),
+              opacity var(--df-dur) var(--df-ease);
+}
+.df-button:hover { background: var(--df-blue-hover); }
+
+.df-numbered-step {
+  width: 32px; height: 32px;
+  border-radius: var(--df-radius-full);
+  background: var(--df-blue);
+  color: var(--df-white);
+  font-weight: 700;
+  font-size: 24px;
+  line-height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+}
+
+.df-social-button {
+  width: 40px; height: 40px;
+  border-radius: var(--df-radius-full);
+  background: var(--df-blue);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.df-card-blog {
+  background: var(--df-surface-50);
+  border-radius: var(--df-radius-xs);
+  overflow: hidden;
+}

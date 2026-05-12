@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>PLUR Enterprise — Founding Partner Proposal</title>
+<link rel="stylesheet" href="assets/site.css"/>
+<style>
+  body { background: #ECECEE; }
+  /* Canvas artboards look nice with subtle shadow */
+  .page { box-shadow: 0 6px 30px rgba(0, 0, 80, 0.08); }
+  /* Print: when user prints v1 or v2 via its print button */
+  .print-only { display: none; }
+</style>
+</head>
+<body>
+
+<div id="root"></div>
+
+<!-- Print view outlets (hidden unless we navigate to one) -->
+<div id="print-root"></div>
+
+<!-- React + Babel -->
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+<script type="text/babel" src="design-canvas.jsx"></script>
+<script type="text/babel" src="tweaks-panel.jsx"></script>
+<script type="text/babel" src="proposal-shared.jsx"></script>
+<script type="text/babel" src="proposal-v2.jsx"></script>
+
+<script type="text/babel">
+/* global React, ReactDOM, DesignCanvas, DCSection, DCArtboard,
+   TweaksPanel, TweakSection, TweakSlider, TweakNumber, TweakColor, TweakText,
+   useTweaks, ProposalV2 */
+
+const { useEffect, useMemo, useState } = React;
+
+function App() {
+  const [tweaks, setTweaks] = useTweaks(window.__PROPOSAL_DEFAULTS__);
+
+  // Expose live tweaks so non-prop-driven components (Page header, ArchDiagram)
+  // pick up changes without prop drilling.
+  window.__PROPOSAL_TWEAKS__ = tweaks;
+
+  // Apply brand color live — override --df-blue so every component re-tints
+  useEffect(() => {
+    const c = tweaks.brandColor || '#0000FF';
+    document.documentElement.style.setProperty('--df-blue', c);
+    // derived hover
+    const m = c.match(/^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i);
+    if (m) {
+      const [r,g,b] = [1,2,3].map(i => parseInt(m[i], 16));
+      document.documentElement.style.setProperty('--df-blue-hover', `rgba(${r},${g},${b},0.75)`);
+    }
+  }, [tweaks.brandColor]);
+
+  // Print-mode: if ?print=v2, just render the proposal full-bleed for PDF
+  const printMode = useMemo(() => new URLSearchParams(location.search).get('print'), []);
+  if (printMode === 'v2') return <div style={{background:'white'}}><ProposalV2 tweaks={tweaks}/></div>;
+
+  return (
+    <>
+      <DesignCanvas
+        title="PLUR Enterprise — Founding Partner Offer"
+        subtitle={`General offer · ${tweaks.seats} seats · PDF-ready`}
+      >
+        <DCSection id="proposals" title="Structured offer — open in print view to save as PDF">
+          <DCArtboard id="v2" label="Structured — specification / data-forward" width={794} height={1123 * 11 + 24*10}>
+            <ProposalV2 tweaks={tweaks}/>
+            <div style={{padding:'16px 64px 48px', background:'#ECECEE'}}>
+              <a className="df-button" href={`?print=v2`} target="_blank" rel="noopener">
+                Open for print / PDF →
+              </a>
+              <span style={{marginLeft:12, fontSize:12, color:'var(--df-fg-muted)', fontFamily:'var(--df-font-mono)'}}>
+                Cmd/Ctrl+P · Save as PDF
+              </span>
+            </div>
+          </DCArtboard>
+        </DCSection>
+      </DesignCanvas>
+
+      <TweaksPanel title="Tweaks">
+        <TweakSection title="Flat pricing">
+          <TweakSlider label="Seats (minimum tier)" min={10} max={500} step={5} value={tweaks.seats} onChange={v => setTweaks({seats: v})}/>
+          <TweakSlider label="List price (€/seat/mo)" min={20} max={150} step={1} value={tweaks.listPrice} onChange={v => setTweaks({listPrice: v})}/>
+          <TweakSlider label="Founding Partner discount (%)" min={0} max={50} step={1} value={tweaks.discountPct} onChange={v => setTweaks({discountPct: v})}/>
+          <TweakSlider label="Commitment (months)" min={6} max={36} step={3} value={tweaks.commitmentMonths} onChange={v => setTweaks({commitmentMonths: v})}/>
+        </TweakSection>
+        <TweakSection title="Metered (by request)">
+          <TweakSlider label="Savings share (%)" min={10} max={50} step={5} value={tweaks.meteredSavingsPct} onChange={v => setTweaks({meteredSavingsPct: v})}/>
+          <TweakSlider label="Monthly floor (€)" min={0} max={2000} step={50} value={tweaks.meteredFloor} onChange={v => setTweaks({meteredFloor: v})}/>
+        </TweakSection>
+        <TweakSection title="Add-ons">
+          <TweakSlider label="Feature request rate (€/h)" min={50} max={200} step={5} value={tweaks.featureRequestRate} onChange={v => setTweaks({featureRequestRate: v})}/>
+        </TweakSection>
+        <TweakSection title="Brand">
+          <TweakColor label="Accent color" value={tweaks.brandColor} onChange={v => setTweaks({brandColor: v})}/>
+          <div style={{display:'flex',gap:6,flexWrap:'wrap',marginTop:6}}>
+            {[
+              ['Datafund blue', '#0000FF'],
+              ['Deep ink', '#101828'],
+              ['Emerald', '#047857'],
+              ['Indigo', '#4338CA'],
+              ['Crimson', '#B91C1C'],
+            ].map(([l,c]) => (
+              <button key={c} onClick={() => setTweaks({brandColor: c})}
+                style={{border:'1px solid #D0D5DD', background:'white', padding:'6px 8px', fontSize:11, cursor:'pointer', display:'flex', alignItems:'center', gap:6, borderRadius:2}}>
+                <span style={{width:12,height:12,background:c,display:'inline-block'}}></span>{l}
+              </button>
+            ))}
+          </div>
+        </TweakSection>
+      </TweaksPanel>
+    </>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+</script>
+
+</body>
+</html>

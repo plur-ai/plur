@@ -1,0 +1,279 @@
+@import url("./colors_and_type.css");
+
+/* ==========================================================
+   PLUR Enterprise Offer — page styles
+   Datafund brand. Print-first: A4 pages, generous type, minimal color.
+   ========================================================== */
+
+* { box-sizing: border-box; }
+
+/* ---------- Page frame for proposal (screen + print) ---------- */
+.page {
+  width: 794px;  /* A4 @ 96dpi */
+  height: 1123px;
+  background: #FFFFFF;
+  color: var(--df-fg-1);
+  font-family: var(--df-font-sans);
+  font-size: 12px;
+  line-height: 1.45;
+  padding: 72px 64px 88px;
+  position: relative;
+  page-break-after: always;
+  overflow: hidden;
+}
+.page + .page { margin-top: 24px; }
+
+/* Running headers / footers */
+.page__header {
+  position: absolute; top: 28px; left: 64px; right: 64px;
+  display: flex; justify-content: space-between; align-items: center;
+  font-family: var(--df-font-mono);
+  font-size: 10px;
+  color: var(--df-fg-muted);
+  letter-spacing: 0.02em;
+}
+.page__header .hdr-brand { display:flex; align-items:center; gap: 10px; color: var(--df-fg-1); font-weight: 600; }
+.page__header .hdr-brand .dot { width:8px; height:8px; background: var(--df-blue); border-radius: 999px; display:inline-block; }
+
+.page__footer {
+  position: absolute; bottom: 32px; left: 64px; right: 64px;
+  display: flex; justify-content: space-between; align-items: center;
+  font-family: var(--df-font-mono);
+  font-size: 10px;
+  color: var(--df-fg-muted);
+}
+.page__footer .conf { letter-spacing: 0.08em; text-transform: uppercase; }
+
+/* ---------- Type helpers (proposal-scoped — smaller than site) ---------- */
+.p-display {
+  font-size: 56px; line-height: 1.02; font-weight: 700;
+  letter-spacing: -0.015em; text-wrap: balance;
+}
+.p-h1 {
+  font-size: 36px; line-height: 1.08; font-weight: 700;
+  letter-spacing: -0.01em; text-wrap: balance;
+}
+.p-h2 {
+  font-size: 22px; line-height: 1.15; font-weight: 700;
+  letter-spacing: -0.005em;
+}
+.p-h3 {
+  font-size: 14px; line-height: 1.2; font-weight: 700;
+  letter-spacing: 0.01em;
+  text-transform: uppercase;
+  color: var(--df-fg-1);
+}
+.p-h3--blue { color: var(--df-blue); }
+.p-body { font-size: 12px; line-height: 1.5; color: var(--df-fg-2); }
+.p-body-lg { font-size: 14px; line-height: 1.5; color: var(--df-fg-2); }
+.p-lede { font-size: 18px; line-height: 1.35; color: var(--df-fg-1); font-weight: 400; text-wrap: pretty; }
+.p-meta, .p-mono {
+  font-family: var(--df-font-mono);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--df-fg-muted);
+}
+.p-muted { color: var(--df-fg-muted); }
+.p-number {
+  font-family: var(--df-font-mono);
+  font-variant-numeric: tabular-nums;
+}
+.p-blue { color: var(--df-blue); }
+.p-divider {
+  height: 1px; background: #000; opacity: 0.12; margin: 0;
+}
+.p-divider--blue { background: var(--df-blue); opacity: 1; height: 2px; }
+
+/* ---------- Section label / eyebrow ---------- */
+.p-eyebrow {
+  display: inline-flex; align-items: center; gap: 8px;
+  font-family: var(--df-font-mono);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--df-fg-muted);
+}
+.p-eyebrow .pip {
+  display: inline-block; width: 6px; height: 6px;
+  background: var(--df-blue); border-radius: 999px;
+}
+
+/* ---------- Tables (offer, cost breakdown) ---------- */
+.p-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+}
+.p-table th, .p-table td {
+  padding: 6px 8px;
+  text-align: left;
+  border-bottom: 1px solid rgba(0,0,0,0.08);
+  vertical-align: top;
+}
+.p-table--dense th, .p-table--dense td { padding: 4px 8px; font-size: 10.5px; }
+.p-table th {
+  font-family: var(--df-font-mono);
+  font-weight: 500;
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--df-fg-muted);
+  border-bottom: 1px solid rgba(0,0,0,0.25);
+}
+.p-table td.num, .p-table th.num { text-align: right; white-space: nowrap; }
+.p-table tr.sum td {
+  font-weight: 700;
+  color: var(--df-fg-1);
+  border-top: 1px solid rgba(0,0,0,0.25);
+  border-bottom: none;
+}
+.p-table tr.grand td {
+  font-weight: 700;
+  color: var(--df-blue);
+  border-top: 2px solid var(--df-blue);
+  border-bottom: none;
+  padding-top: 14px;
+  font-size: 13px;
+}
+.p-table td.cat {
+  font-family: var(--df-font-mono);
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--df-fg-muted);
+  padding-top: 12px;
+  border-bottom: 1px solid rgba(0,0,0,0.25);
+}
+
+/* ---------- Callout box ---------- */
+.p-callout {
+  border-left: 3px solid var(--df-blue);
+  padding: 12px 16px;
+  background: #F6F6F6;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+/* ---------- KPI / number grid ---------- */
+.p-kpi {
+  display: grid; grid-template-columns: repeat(4, 1fr);
+  gap: 0;
+  border-top: 1px solid rgba(0,0,0,0.12);
+  border-bottom: 1px solid rgba(0,0,0,0.12);
+}
+.p-kpi__cell {
+  padding: 16px 14px;
+  border-right: 1px solid rgba(0,0,0,0.08);
+  min-height: 88px;
+}
+.p-kpi__cell:last-child { border-right: none; }
+.p-kpi__val {
+  font-size: 26px; font-weight: 700; line-height: 1;
+  letter-spacing: -0.015em;
+  font-variant-numeric: tabular-nums;
+}
+.p-kpi__label {
+  font-family: var(--df-font-mono);
+  font-size: 9px; letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--df-fg-muted);
+  margin-top: 6px;
+}
+.p-kpi__sub { font-size: 11px; color: var(--df-fg-3); margin-top: 4px; line-height: 1.3; }
+
+/* ---------- Numbered step (reused from Datafund) ---------- */
+.p-step {
+  width: 22px; height: 22px;
+  border-radius: 999px;
+  background: var(--df-blue);
+  color: white;
+  font-weight: 700;
+  font-size: 12px;
+  display: inline-flex; align-items: center; justify-content: center;
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+}
+.p-step--lg { width: 28px; height: 28px; font-size: 14px; }
+
+/* ---------- Feature / definition list ---------- */
+.p-deflist { display: grid; grid-template-columns: 24px 1fr; column-gap: 12px; row-gap: 10px; }
+.p-deflist .n {
+  font-family: var(--df-font-mono);
+  font-size: 11px; color: var(--df-blue); font-weight: 600;
+  padding-top: 1px;
+}
+.p-deflist .t { font-size: 12px; line-height: 1.5; color: var(--df-fg-2); }
+.p-deflist .t b { color: var(--df-fg-1); font-weight: 600; }
+
+/* ---------- Comparison table (market context) ---------- */
+.p-compare td.mark { color: var(--df-blue); font-weight: 700; }
+.p-compare tr.highlight td {
+  background: rgba(0, 0, 255, 0.04);
+}
+
+/* ---------- Timeline ---------- */
+.p-timeline { display: grid; grid-template-columns: 120px 1fr; gap: 10px 16px; }
+.p-timeline .when {
+  font-family: var(--df-font-mono);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--df-fg-muted);
+  padding-top: 2px;
+}
+.p-timeline .what { font-size: 12px; line-height: 1.45; }
+.p-timeline .what b { font-weight: 700; color: var(--df-fg-1); }
+
+/* ---------- Two-column grid used in editorial layout ---------- */
+.p-col2 { display: grid; grid-template-columns: 1fr 1fr; gap: 36px; }
+.p-col2--weighted { grid-template-columns: 7fr 5fr; }
+.p-col2--title { grid-template-columns: 5fr 7fr; align-items: start; }
+
+/* ---------- Signature / acceptance (kept simple) ---------- */
+.p-sign {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 32px;
+  margin-top: 28px;
+}
+.p-sign__line {
+  border-top: 1px solid #000;
+  padding-top: 8px;
+  font-family: var(--df-font-mono);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--df-fg-muted);
+  min-height: 84px;
+  display: flex; flex-direction: column; justify-content: flex-end;
+}
+
+/* ---------- Architecture diagram ---------- */
+.p-arch { width: 100%; height: auto; display: block; }
+
+/* ---------- Cover page specifics ---------- */
+.p-cover {
+  height: 100%; display: flex; flex-direction: column;
+}
+.p-cover__top { flex: 1; }
+.p-cover__bot { }
+
+/* ---------- Links ---------- */
+.page a { color: var(--df-blue); text-decoration: underline; text-underline-offset: 2px; }
+.page a:hover { opacity: 0.75; }
+
+/* ---------- Print ---------- */
+@media print {
+  @page { size: A4; margin: 0; }
+  html, body { background: white !important; }
+  body > *:not(#print-root) { display: none !important; }
+  /* When in print mode we render proposal directly in body */
+  .page { box-shadow: none !important; margin: 0 !important; page-break-after: always; }
+  .page:last-child { page-break-after: auto; }
+  .no-print { display: none !important; }
+}
+
+/* Root background when in print mode for the ?print=v1 / v2 routes */
+body.print-view { background: white; }
+body.print-view .page { margin: 0 auto 0; box-shadow: none; }
+body.print-view .page + .page { margin-top: 0; }

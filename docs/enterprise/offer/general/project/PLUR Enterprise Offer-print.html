@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>PLUR Enterprise — Founding Partner Proposal (Print)</title>
+<link rel="stylesheet" href="assets/site.css"/>
+<style>
+  /* Screen preview: white letterbox, each A4 page laid vertically */
+  html, body { background: white; margin: 0; padding: 0; }
+
+  /* Force backgrounds + colors to print — Chrome strips them otherwise
+     which leaves the Gantt bars, callouts and highlights invisible. */
+  *, *::before, *::after {
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+  body.print-view .page {
+    box-shadow: 0 4px 20px rgba(0, 0, 80, 0.06);
+    margin: 0 auto;
+  }
+  body.print-view .page + .page { margin-top: 12px; }
+
+  /* Print: edge-to-edge, one .page per A4 */
+  @media print {
+    @page { size: A4; margin: 0; }
+    html, body { background: white !important; }
+    body.print-view .page {
+      box-shadow: none !important;
+      margin: 0 !important;
+      page-break-after: always;
+      break-after: page;
+    }
+    body.print-view .page:last-child {
+      page-break-after: auto;
+      break-after: auto;
+    }
+    /* Kill hover states and any animation on print */
+    * { animation: none !important; transition: none !important; }
+  }
+</style>
+</head>
+<body class="print-view">
+
+<div id="print-root"></div>
+
+<!-- React + Babel -->
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+<script type="text/babel" src="proposal-shared.jsx"></script>
+<script type="text/babel" src="proposal-v2.jsx"></script>
+
+<script type="text/babel">
+/* global React, ReactDOM, ProposalV2 */
+
+const tweaks = window.__PROPOSAL_DEFAULTS__;
+
+// Apply brand color via CSS variable (same as main app)
+const c = tweaks.brandColor || '#0000FF';
+document.documentElement.style.setProperty('--df-blue', c);
+const m = c.match(/^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i);
+if (m) {
+  const [r,g,b] = [1,2,3].map(i => parseInt(m[i], 16));
+  document.documentElement.style.setProperty('--df-blue-hover', `rgba(${r},${g},${b},0.75)`);
+}
+
+ReactDOM.createRoot(document.getElementById('print-root'))
+  .render(<ProposalV2 tweaks={tweaks}/>);
+
+// Auto-print once fonts + layout have settled and React has actually painted
+(async () => {
+  // Wait until react has rendered at least one .page element
+  await new Promise(resolve => {
+    const check = () => {
+      if (document.querySelectorAll('#print-root .page').length >= 11) return resolve();
+      requestAnimationFrame(check);
+    };
+    check();
+  });
+  try {
+    if (document.fonts && document.fonts.ready) {
+      await document.fonts.ready;
+    }
+  } catch (e) { /* ignore */ }
+  // Wait for images (the datafund SVG logo) to load
+  await Promise.all(
+    [...document.images].map(img => img.complete
+      ? Promise.resolve()
+      : new Promise(r => { img.onload = img.onerror = r; })
+    )
+  );
+  // Give layout one more beat
+  await new Promise(r => setTimeout(r, 600));
+  window.print();
+})();
+</script>
+
+</body>
+</html>
