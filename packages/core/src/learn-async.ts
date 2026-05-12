@@ -12,8 +12,8 @@ import type { Engram } from './schemas/engram.js'
 import type { LearnContext, LearnAsyncContext, LearnAsyncResult, LearnBatchResult, DedupDecision, LlmFunction } from './types.js'
 
 export interface LearnAsyncDeps {
-  /** Content hash dedup against all engrams. Returns existing engram or null. */
-  hashDedup: (statement: string) => Engram | null
+  /** Content hash dedup against all engrams. Scope-aware: only matches same scope. */
+  hashDedup: (statement: string, scope?: string) => Engram | null
   /** Hybrid recall for semantic similarity. */
   recallHybrid: (query: string, options?: { limit?: number }) => Promise<Engram[]>
   /** BM25 recall fallback. */
@@ -46,7 +46,6 @@ function executeDedupDecision(
   context: LearnContext | undefined,
   decision: DedupDecision,
   targetId: string | null,
-  conflicts: string[],
 ): LearnAsyncResult {
   switch (decision) {
     case 'NOOP': {
@@ -71,10 +70,6 @@ function executeDedupDecision(
             updated.version = (updated.version ?? 1) + 1
             updated.activation.last_accessed = new Date().toISOString().slice(0, 10)
             if (context?.tags) updated.tags = [...new Set([...updated.tags, ...context.tags])]
-            if (conflicts.length > 0) {
-              if (!updated.relations) updated.relations = { broader: [], narrower: [], related: [], conflicts: [] }
-              updated.relations.conflicts = [...new Set([...(updated.relations.conflicts ?? []), ...conflicts])]
-            }
             engrams[idx] = updated
             saveEngrams(deps.engramsPath, engrams)
             deps.syncIndex()
@@ -84,12 +79,7 @@ function executeDedupDecision(
               timestamp: new Date().toISOString(),
               data: { old_statement: existing.statement, new_statement: statement, reason: 'LLM dedup UPDATE' },
             })
-            return {
-              engram: updated as Engram,
-              decision: 'UPDATE' as DedupDecision,
-              existing_id: targetId,
-              tensions: conflicts.length > 0 ? conflicts : undefined,
-            }
+            return { engram: updated as Engram, decision: 'UPDATE' as DedupDecision, existing_id: targetId }
           })
         }
       }
@@ -111,10 +101,6 @@ function executeDedupDecision(
             merged.activation.last_accessed = new Date().toISOString().slice(0, 10)
             if (context?.tags) merged.tags = [...new Set([...merged.tags, ...context.tags])]
             if (0.7 > merged.activation.retrieval_strength) merged.activation.retrieval_strength = 0.7
-            if (conflicts.length > 0) {
-              if (!merged.relations) merged.relations = { broader: [], narrower: [], related: [], conflicts: [] }
-              merged.relations.conflicts = [...new Set([...(merged.relations.conflicts ?? []), ...conflicts])]
-            }
             engrams[idx] = merged
             saveEngrams(deps.engramsPath, engrams)
             deps.syncIndex()
@@ -124,12 +110,7 @@ function executeDedupDecision(
               timestamp: new Date().toISOString(),
               data: { merged_statement: statement, reason: 'LLM dedup MERGE' },
             })
-            return {
-              engram: merged as Engram,
-              decision: 'MERGE' as DedupDecision,
-              existing_id: targetId,
-              tensions: conflicts.length > 0 ? conflicts : undefined,
-            }
+            return { engram: merged as Engram, decision: 'MERGE' as DedupDecision, existing_id: targetId }
           })
         }
       }
@@ -137,25 +118,8 @@ function executeDedupDecision(
     }
 
     case 'ADD':
-    default: {
-      const engram = deps.learn(statement, context)
-      // Wire in tension conflicts from LLM detection
-      if (conflicts.length > 0) {
-        withLock(deps.engramsPath, () => {
-          const engrams = loadEngrams(deps.engramsPath)
-          const idx = engrams.findIndex(e => e.id === engram.id)
-          if (idx !== -1) {
-            const updated = engrams[idx] as any
-            if (!updated.relations) updated.relations = { broader: [], narrower: [], related: [], conflicts: [] }
-            updated.relations.conflicts = [...new Set([...(updated.relations.conflicts ?? []), ...conflicts])]
-            engrams[idx] = updated
-            saveEngrams(deps.engramsPath, engrams)
-            deps.syncIndex()
-          }
-        })
-      }
-      return { engram, decision: 'ADD', tensions: conflicts.length > 0 ? conflicts : undefined }
-    }
+    default:
+      return { engram: deps.learn(statement, context), decision: 'ADD' }
   }
 }
 
@@ -168,8 +132,8 @@ export async function learnAsync(
   statement: string,
   context?: LearnAsyncContext,
 ): Promise<LearnAsyncResult> {
-  // Step 1: Content hash fast-path
-  const hashMatch = deps.hashDedup(statement)
+  // Step 1: Content hash fast-path (scope-aware — issue #136)
+  const hashMatch = deps.hashDedup(statement, context?.scope)
   if (hashMatch) {
     return { engram: hashMatch, decision: 'NOOP', existing_id: hashMatch.id }
   }
@@ -202,7 +166,6 @@ export async function learnAsync(
   const llm = context?.llm
   let decision: DedupDecision = 'ADD'
   let targetId: string | null = null
-  let conflicts: string[] = []
 
   if (mode === 'llm' && llm && deps.isLlmAvailable()) {
     try {
@@ -214,7 +177,6 @@ export async function learnAsync(
       const parsed = parseDedupResponse(response)
       decision = parsed.decision
       targetId = parsed.target_id
-      conflicts = parsed.conflicts
       deps.recordLlmSuccess()
     } catch (err) {
       logger.warning(`LLM dedup failed, falling back to cosine: ${err}`)
@@ -225,7 +187,7 @@ export async function learnAsync(
   // cosine mode: conservative ADD (hash-only NOOP already handled)
 
   // Step 5: Execute
-  return executeDedupDecision(deps, statement, context, decision, targetId, conflicts)
+  return executeDedupDecision(deps, statement, context, decision, targetId)
 }
 
 /**

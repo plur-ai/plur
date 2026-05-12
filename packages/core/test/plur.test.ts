@@ -71,13 +71,23 @@ describe('Plur', () => {
     expect(status2.engram_count).toBe(1)
   })
 
-  it('conflict detection warns on learn', () => {
+  it('conflicting statements are both saved (no auto-conflict detection)', () => {
     plur.learn('API uses camelCase for responses', { scope: 'project:myapp' })
     const conflicting = plur.learn('API uses snake_case for responses', { scope: 'project:myapp' })
-    // Conflicting engram should still be saved (conflicts are surfaced, not blocked)
+    // Both engrams are saved — conflicts are surfaced via plur_tensions, not auto-detected on learn
     expect(conflicting.id).toMatch(/^ENG-/)
-    // The relations.conflicts field should reference the first engram
-    expect(conflicting.relations?.conflicts?.length).toBeGreaterThan(0)
+    // Auto-conflict detection was removed (issue #137 — produced 109K false positives)
+    expect(conflicting.relations?.conflicts ?? []).toHaveLength(0)
+  })
+
+  it('same statement in a different scope is a promotion, not a duplicate (issue #136)', () => {
+    const local = plur.learn('pnpm build before tests', { scope: 'global' })
+    const promoted = plur.learn('pnpm build before tests', { scope: 'group:team/eng' })
+    // Different scope → new engram, not a dedup hit
+    expect(promoted.id).not.toBe(local.id)
+    expect(promoted.id).toMatch(/^ENG-/)
+    expect(promoted.scope).toBe('group:team/eng')
+    expect(plur.status().engram_count).toBe(2)
   })
 
   it('inject returns empty result when no engrams match', () => {

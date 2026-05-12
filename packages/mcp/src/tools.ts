@@ -1253,6 +1253,21 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
     },
 
     {
+      name: 'plur_tensions_purge',
+      description: 'Purge all conflict relations from local engrams — removes accumulated false positives from the legacy tension-detection system',
+      annotations: { title: 'Purge Tensions', destructiveHint: true, idempotentHint: true },
+      inputSchema: { type: 'object', properties: {} },
+      handler: async (_args, plur) => {
+        const result = plur.purgeTensions()
+        return {
+          purged_conflict_refs: result.purged_count,
+          engrams_modified: result.engrams_modified,
+          message: `Purged ${result.purged_count} conflict references from ${result.engrams_modified} engrams.`,
+        }
+      },
+    },
+
+    {
       name: 'plur_episode_to_engram',
       description: 'Promote an episode to a persistent episodic engram — useful when a session event deserves long-term memory',
       annotations: { title: 'Episode to Engram', destructiveHint: false, idempotentHint: false },
