@@ -168,12 +168,13 @@ describe('SP1: Memory Intelligence', () => {
   // === Idea 19: Tension Detection ===
 
   describe('Idea 19: Tension Detection', () => {
-    it('status includes tension_count from conflicts', () => {
-      // Create conflicting engrams
+    it('status includes tension_count — zero when no explicit tensions recorded', () => {
+      // Auto-detection via dedup was removed (caused 109K false positives, issue #137).
+      // Tensions are now user-managed via plur_tensions_purge.
       plur.learn('API uses camelCase for responses', { scope: 'project:myapp' })
       plur.learn('API uses snake_case for responses', { scope: 'project:myapp' })
       const status = plur.status()
-      expect(status.tension_count).toBeGreaterThanOrEqual(1)
+      expect(status.tension_count).toBe(0)
     })
   })
 
@@ -194,12 +195,10 @@ describe('SP1: Memory Intelligence', () => {
       const result = parseDedupResponse(`
 DECISION: ADD
 TARGET: none
-CONFLICTS: none
 REASON: This is genuinely new knowledge
       `)
       expect(result.decision).toBe('ADD')
       expect(result.target_id).toBeNull()
-      expect(result.conflicts).toHaveLength(0)
     })
 
     it('parseDedupResponse extracts UPDATE with target', () => {
@@ -213,22 +212,21 @@ REASON: New version has more detail
       expect(result.target_id).toBe('ENG-2026-0406-001')
     })
 
-    it('parseDedupResponse extracts NOOP with conflicts', () => {
+    it('parseDedupResponse extracts NOOP decision', () => {
+      // CONFLICTS field removed from prompt/parse (issue #137 — 109K false positives).
       const result = parseDedupResponse(`
 DECISION: NOOP
 TARGET: ENG-2026-0406-001
-CONFLICTS: ENG-2026-0406-002, ENG-2026-0406-003
 REASON: Duplicate of existing
       `)
       expect(result.decision).toBe('NOOP')
-      expect(result.conflicts).toEqual(['ENG-2026-0406-002', 'ENG-2026-0406-003'])
+      expect(result.target_id).toBe('ENG-2026-0406-001')
     })
 
     it('parseDedupResponse handles malformed input gracefully', () => {
       const result = parseDedupResponse('This is not a valid response')
       expect(result.decision).toBe('ADD') // Safe default
       expect(result.target_id).toBeNull()
-      expect(result.conflicts).toHaveLength(0)
     })
 
     it('learnAsync returns NOOP on exact hash match', async () => {
