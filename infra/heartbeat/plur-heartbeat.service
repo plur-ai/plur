@@ -1,0 +1,21 @@
+[Unit]
+Description=plur heartbeat ingress
+After=network.target
+
+[Service]
+Type=simple
+User=plur-heartbeat
+Group=plur-heartbeat
+ExecStart=/usr/bin/python3 /opt/plur-heartbeat/server.py
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=plur-heartbeat
+
+Environment=HEARTBEAT_DATA_DIR=/var/lib/plur-heartbeat
+Environment=HEARTBEAT_HOST=127.0.0.1
+Environment=HEARTBEAT_PORT=8001
+
+[Install]
+WantedBy=multi-user.target
