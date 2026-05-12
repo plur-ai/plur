@@ -465,19 +465,16 @@ REASON: This contradicts the REST-only policy
 STATEMENT_1:
 DECISION: ADD
 TARGET: none
-CONFLICTS: none
 
 STATEMENT_2:
 DECISION: NOOP
 TARGET: ENG-001
-CONFLICTS: ENG-002
       `, 2)
 
       expect(results).toHaveLength(2)
       expect(results[0].decision).toBe('ADD')
       expect(results[1].decision).toBe('NOOP')
       expect(results[1].target_id).toBe('ENG-001')
-      expect(results[1].conflicts).toEqual(['ENG-002'])
     })
 
     it('parseBatchDedupResponse defaults to ADD for unparseable', () => {
