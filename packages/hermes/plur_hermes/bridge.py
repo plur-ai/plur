@@ -6,15 +6,25 @@ with --json output, timeout handling, and error parsing.
 """
 
 import json
+import logging
 import os
 import shutil
 import subprocess
+import time
 from collections import OrderedDict
 from typing import Any
+
+logger = logging.getLogger("plur_hermes.bridge")
 
 _NPX_CLI_VERSION = "0.9.4"
 
 _DEFAULT_DEDUP_CACHE_SIZE = 256
+_DEFAULT_TIMEOUT = 30
+_DEFAULT_INJECT_TIMEOUT = 5
+_DEFAULT_RETRIES = 3
+_RETRY_DELAYS = (5, 15, 30)
+
+_SAFE_RESPONSE: dict = {"results": [], "count": 0, "injected_ids": []}
 
 _NOT_FOUND_MSG = (
     f"PLUR CLI not found. Install: npm install -g @plur-ai/cli@{_NPX_CLI_VERSION}"
@@ -40,6 +50,9 @@ class PlurBridge:
         self._plur_path = plur_path or os.environ.get("PLUR_PATH")
         self._dedup_cache_size = max(0, dedup_cache_size)
         self._dedup_cache: "OrderedDict[str, dict]" = OrderedDict()
+        self._timeout = int(os.environ.get("PLUR_BRIDGE_TIMEOUT", str(_DEFAULT_TIMEOUT)))
+        self._inject_timeout = int(os.environ.get("PLUR_BRIDGE_INJECT_TIMEOUT", str(_DEFAULT_INJECT_TIMEOUT)))
+        self._retry_enabled = os.environ.get("PLUR_BRIDGE_RETRY", "true").lower() != "false"
 
     def _cache_get(self, normalized: str) -> dict | None:
         if self._dedup_cache_size == 0 or not normalized:
@@ -85,9 +98,12 @@ class PlurBridge:
 
         raise PlurNotFoundError(_NOT_FOUND_MSG)
 
-    def call(self, command: str, args: list[str] | None = None, timeout: int = 30) -> dict[str, Any]:
+    def call(self, command: str, args: list[str] | None = None,
+             timeout: int | None = None, retries: int = _DEFAULT_RETRIES) -> dict[str, Any]:
         binary = self._find_binary()
         args = args or []
+        effective_timeout = timeout if timeout is not None else self._timeout
+        effective_retries = retries if self._retry_enabled else 0
 
         if binary.startswith("npx:"):
             package = binary.split(":", 1)[1]
@@ -98,25 +114,36 @@ class PlurBridge:
         if self._plur_path:
             cmd.extend(["--path", self._plur_path])
 
-        try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-        except subprocess.TimeoutExpired:
-            raise PlurBridgeError(f"CLI timed out after {timeout}s: plur {command}")
-        except FileNotFoundError:
-            raise PlurNotFoundError(_NOT_FOUND_MSG)
+        for attempt in range(effective_retries + 1):
+            try:
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=effective_timeout)
+            except subprocess.TimeoutExpired:
+                if attempt < effective_retries:
+                    delay = _RETRY_DELAYS[min(attempt, len(_RETRY_DELAYS) - 1)]
+                    logger.warning("PLUR CLI timed out (attempt %d/%d): plur %s — retrying in %ds",
+                                   attempt + 1, effective_retries + 1, command, delay)
+                    time.sleep(delay)
+                    continue
+                logger.warning("PLUR CLI timed out after %d attempt(s): plur %s — returning safe fallback",
+                               effective_retries + 1, command)
+                return _SAFE_RESPONSE.copy()
+            except FileNotFoundError:
+                raise PlurNotFoundError(_NOT_FOUND_MSG)
 
-        if result.returncode == 2:
-            return json.loads(result.stdout) if result.stdout.strip() else {"results": [], "count": 0}
+            if result.returncode == 2:
+                return json.loads(result.stdout) if result.stdout.strip() else {"results": [], "count": 0}
 
-        if result.returncode != 0:
-            raise PlurBridgeError(
-                f"CLI error (exit {result.returncode}): {result.stderr.strip() or result.stdout.strip()}"
-            )
+            if result.returncode != 0:
+                raise PlurBridgeError(
+                    f"CLI error (exit {result.returncode}): {result.stderr.strip() or result.stdout.strip()}"
+                )
 
-        try:
-            return json.loads(result.stdout)
-        except json.JSONDecodeError:
-            raise PlurBridgeError(f"Invalid JSON from CLI: {result.stdout[:200]}")
+            try:
+                return json.loads(result.stdout)
+            except json.JSONDecodeError:
+                raise PlurBridgeError(f"Invalid JSON from CLI: {result.stdout[:200]}")
+
+        return _SAFE_RESPONSE.copy()  # unreachable; satisfies type checker
 
     def learn(self, statement: str, scope: str = "global", type: str = "behavioral",
               domain: str | None = None, source: str | None = None,
@@ -194,7 +221,8 @@ class PlurBridge:
         args = [task, "--budget", str(budget)]
         if fast:
             args.append("--fast")
-        return self.call("inject", args)
+        # Short timeout, no retries — inject runs on the pre-LLM blocking path.
+        return self.call("inject", args, timeout=self._inject_timeout, retries=0)
 
     def list_engrams(self, domain: str | None = None, type: str | None = None,
                      scope: str | None = None, limit: int | None = None,
