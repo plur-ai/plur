@@ -107,7 +107,7 @@ def register(ctx):
     def post_llm_call(session_id, assistant_response, **kwargs):
         try:
             learnings = extract_learning_patterns(assistant_response or "")
-            for statement in learnings:
+            for statement, _confidence in learnings:
                 bridge.learn(statement, source="hermes:auto",
                              rationale="Auto-extracted from assistant self-report")
                 if session_id in _session_state:
