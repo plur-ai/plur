@@ -80,6 +80,23 @@ function getLlmFunction(): LlmFunction | undefined {
   return undefined
 }
 
+/**
+ * Strip XML parameter-envelope artifacts from a statement string.
+ * When an LLM generates tool calls in the old XML format, the raw statement
+ * value sometimes contains the closing tag followed by the full duplicated body:
+ *   "clean text</statement>\n\n<parameter name="statement">clean text..."
+ * Truncate at whichever marker appears first.
+ */
+function sanitizeStatement(raw: string): string {
+  const markers = ['</statement>', '<parameter name=']
+  let cut = raw.length
+  for (const m of markers) {
+    const pos = raw.indexOf(m)
+    if (pos !== -1 && pos < cut) cut = pos
+  }
+  return raw.slice(0, cut).trimEnd()
+}
+
 export function getToolDefinitions(): ToolDefinition[] {
   return [
     {
@@ -135,8 +152,9 @@ export function getToolDefinitions(): ToolDefinition[] {
         // learnRouted defers to sync learn() so dedup behavior is
         // unchanged. We try learnAsync second only as a fallback for
         // the LLM-driven dedup pathway (local routes).
+        const statement = sanitizeStatement(args.statement as string)
         try {
-          const engram = await plur.learnRouted(args.statement as string, context)
+          const engram = await plur.learnRouted(statement, context)
           return {
             id: engram.id, statement: engram.statement,
             scope: engram.scope, type: engram.type,
@@ -148,7 +166,7 @@ export function getToolDefinitions(): ToolDefinition[] {
           // 5xx, etc). Fall back to sync learn() so the user gets
           // *something* recorded locally — but warn loudly that the
           // returned id is local-only and will not match the server.
-          const engram = plur.learn(args.statement as string, context)
+          const engram = plur.learn(statement, context)
           return {
             id: engram.id, statement: engram.statement,
             scope: engram.scope, type: engram.type, decision: 'ADD',
