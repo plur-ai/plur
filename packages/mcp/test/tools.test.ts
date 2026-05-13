@@ -44,6 +44,22 @@ describe('MCP tools', () => {
     expect(result.statement).toBe('Test learning')
   })
 
+  it('plur_learn strips XML envelope artifacts from statement (#145)', async () => {
+    // Reproduce the corruption: LLM generates old XML tool-call format where the
+    // statement value contains the closing tag + duplicated parameter body.
+    const corrupted = 'Use snake_case for all identifiers.</statement>\n\n<parameter name="statement">Use snake_case for all identifiers.</parameter>\n<parameter name="type">behavioral</parameter>'
+    const result = await callTool('plur_learn', { statement: corrupted }) as any
+    expect(result.statement).toBe('Use snake_case for all identifiers.')
+    expect(result.statement).not.toContain('</statement>')
+    expect(result.statement).not.toContain('<parameter name=')
+  })
+
+  it('plur_learn does not truncate clean statements', async () => {
+    const clean = 'Always verify timestamps with python before committing.'
+    const result = await callTool('plur_learn', { statement: clean }) as any
+    expect(result.statement).toBe(clean)
+  })
+
   it('plur_recall finds learned engrams', async () => {
     await callTool('plur_learn', { statement: 'API uses snake_case', scope: 'global' })
     const result = await callTool('plur_recall', { query: 'API snake' }) as any
