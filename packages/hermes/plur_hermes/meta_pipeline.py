@@ -2,15 +2,19 @@
 Multi-turn meta-engram extraction pipeline.
 
 Pipeline state persists to ~/.plur/meta-pipeline-{session_id}.json
-after each stage transition. Resumes on crash. 24h TTL on state files.
+after each stage transition. Resumes on crash. 24h total TTL; 10-minute
+per-stage TTL resets the pipeline if the LLM fails to call submit_analysis.
 """
 
 import json
+import logging
 import os
 import time
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -24,6 +28,7 @@ class MetaPipelineState:
     meta_engrams: list[dict] = field(default_factory=list)
     dry_run: bool = False
     created_at: float = field(default_factory=time.time)
+    stage_updated_at: float = field(default_factory=time.time)
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -33,7 +38,8 @@ class MetaPipelineState:
         return cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})
 
 
-_STATE_TTL_SECONDS = 86400  # 24 hours
+_STATE_TTL_SECONDS = 86400  # 24 hours total
+_STAGE_TTL_SECONDS = 600    # 10 minutes per stage before auto-reset
 
 
 class MetaPipeline:
@@ -51,7 +57,15 @@ class MetaPipeline:
         try:
             data = json.loads(path.read_text())
             state = MetaPipelineState.from_dict(data)
-            if time.time() - state.created_at > _STATE_TTL_SECONDS:
+            now = time.time()
+            if now - state.created_at > _STATE_TTL_SECONDS:
+                path.unlink(missing_ok=True)
+                return None
+            if now - state.stage_updated_at > _STAGE_TTL_SECONDS:
+                logger.warning(
+                    "meta-pipeline %s expired at stage %d (>%ds inactivity) — resetting",
+                    session_id, state.stage, _STAGE_TTL_SECONDS,
+                )
                 path.unlink(missing_ok=True)
                 return None
             return state
@@ -101,6 +115,7 @@ class MetaPipeline:
             pending_prompts=prompts, dry_run=dry_run,
         )
         self._save_state(state)
+        logger.info("meta-pipeline %s started at stage 1 (%d engrams)", session_id, len(engrams))
 
         return {
             "status": "prompts_ready",
@@ -108,7 +123,11 @@ class MetaPipeline:
             "stage_name": "structural_analysis",
             "total_stages": 6,
             "prompts": prompts,
-            "message": f"Process these {len(prompts)} prompts and call plur_meta_submit_analysis with your responses.",
+            "message": (
+                f"Process these {len(prompts)} prompts and "
+                "call plur_meta_submit_analysis({'responses': [...]}) within this turn to proceed. "
+                "Skipping this call will cause the pipeline to reset after 10 minutes."
+            ),
         }
 
     def submit_analysis(self, session_id: str, responses: list[str]) -> dict:
@@ -119,7 +138,16 @@ class MetaPipeline:
                 "message": "No extraction in progress. Call plur_extract_meta first.",
             }
 
-        state.collected_responses.extend(responses)
+        seen = set(state.collected_responses)
+        for r in responses:
+            if r not in seen:
+                seen.add(r)
+                state.collected_responses.append(r)
+
+        _must_call_msg = (
+            "You MUST call plur_meta_submit_analysis({'responses': [...]}) within this turn to proceed. "
+            "Skipping this call will cause the pipeline to reset after 10 minutes."
+        )
 
         if state.stage == 1:
             state.stage = 2
@@ -142,8 +170,16 @@ class MetaPipeline:
                 )
             state.stage = 3
             state.pending_prompts = prompts
+            state.stage_updated_at = time.time()
             self._save_state(state)
-            return {"status": "prompts_ready", "stage": 3, "stage_name": "structural_alignment", "prompts": prompts, "message": f"Process these {len(prompts)} alignment prompts."}
+            logger.info("meta-pipeline %s advanced to stage 3 (%d clusters)", session_id, len(clusters))
+            return {
+                "status": "prompts_ready",
+                "stage": 3,
+                "stage_name": "structural_alignment",
+                "prompts": prompts,
+                "message": f"Process these {len(prompts)} alignment prompts. " + _must_call_msg,
+            }
 
         elif state.stage == 3:
             state.stage = 4
@@ -163,8 +199,16 @@ class MetaPipeline:
                     f"\"domains\": [...], \"confidence\": <0-1>}}"
                 )
             state.pending_prompts = prompts
+            state.stage_updated_at = time.time()
             self._save_state(state)
-            return {"status": "prompts_ready", "stage": 4, "stage_name": "formulation", "prompts": prompts, "message": f"Process these {len(prompts)} formulation prompts."}
+            logger.info("meta-pipeline %s advanced to stage 4 (%d alignments)", session_id, len(aligned))
+            return {
+                "status": "prompts_ready",
+                "stage": 4,
+                "stage_name": "formulation",
+                "prompts": prompts,
+                "message": f"Process these {len(prompts)} formulation prompts. " + _must_call_msg,
+            }
 
         elif state.stage == 4:
             state.stage = 5
@@ -184,6 +228,7 @@ class MetaPipeline:
                         pass
 
             self._cleanup_state(session_id)
+            logger.info("meta-pipeline %s complete (%d meta-engrams)", session_id, len(meta_engrams))
             return {
                 "status": "complete",
                 "meta_engrams": meta_engrams,
