@@ -20,6 +20,50 @@ except PackageNotFoundError:
 
 _session_state: dict[str, dict] = {}
 _PRUNE_AGE_SECONDS = 3600
+_FEEDBACK_MIN_CONFIDENCE = 0.6
+_CORRECTION_MARKERS = ("actually,", "actually ", "no,", "wrong,", "incorrect,",
+                        "that's wrong", "not correct", "that is wrong")
+
+
+def _get_trigrams(text: str) -> set[str]:
+    words = text.lower().split()
+    if len(words) < 3:
+        return set(words)
+    return {" ".join(words[i:i + 3]) for i in range(len(words) - 2)}
+
+
+def _detect_injection_signal(engram_text: str, response: str) -> tuple[str | None, float]:
+    """Heuristic signal detection for a single injected engram vs. assistant response.
+
+    Returns (signal, confidence) where signal is 'positive', 'negative', or None.
+    Only signals above _FEEDBACK_MIN_CONFIDENCE are meaningful.
+    """
+    response_lower = response.lower()
+    engram_lower = engram_text.lower().strip()
+    if not engram_lower:
+        return None, 0.0
+
+    if engram_lower in response_lower:
+        return "positive", 0.95
+
+    engram_tris = _get_trigrams(engram_lower)
+    if engram_tris:
+        response_tris = _get_trigrams(response_lower)
+        overlap = len(engram_tris & response_tris) / len(engram_tris)
+        if overlap >= 0.8:
+            return "positive", 0.7 + 0.3 * overlap
+
+    engram_words = {w for w in engram_lower.split() if len(w) > 4}
+    if engram_words:
+        for marker in _CORRECTION_MARKERS:
+            idx = response_lower.find(marker)
+            while idx != -1:
+                window = response_lower[max(0, idx - 100):idx + 200]
+                if any(w in window for w in engram_words):
+                    return "negative", 0.65
+                idx = response_lower.find(marker, idx + 1)
+
+    return None, 0.0
 
 
 def _prune_stale_sessions():
@@ -88,9 +132,16 @@ def register(ctx):
             if result.get("count", 0) == 0:
                 return
             injected_ids = result.get("injected_ids", [])
+            injected_engrams = [
+                {"id": e.get("id"), "statement": e.get("statement", "")}
+                for e in result.get("results", [])
+                if e.get("id") and e.get("statement")
+            ]
             if session_id in _session_state:
-                prev = _session_state[session_id].get("injected_ids", [])
-                _session_state[session_id]["injected_ids"] = prev + injected_ids
+                prev_ids = _session_state[session_id].get("injected_ids", [])
+                prev_engrams = _session_state[session_id].get("injected_engrams", [])
+                _session_state[session_id]["injected_ids"] = prev_ids + injected_ids
+                _session_state[session_id]["injected_engrams"] = prev_engrams + injected_engrams
             lines = ["<plur-memory>"]
             if result.get("directives"):
                 lines.append(result["directives"])
@@ -105,8 +156,9 @@ def register(ctx):
             return None
 
     def post_llm_call(session_id, assistant_response, **kwargs):
+        response = assistant_response or ""
         try:
-            learnings = extract_learning_patterns(assistant_response or "")
+            learnings = extract_learning_patterns(response)
             for statement in learnings:
                 bridge.learn(statement, source="hermes:auto",
                              rationale="Auto-extracted from assistant self-report")
@@ -114,6 +166,28 @@ def register(ctx):
                     _session_state[session_id]["count"] += 1
         except Exception as e:
             logger.debug(f"PLUR learning extraction failed: {e}")
+
+        if os.environ.get("PLUR_INJECTION_FEEDBACK", "true").lower() == "false":
+            return
+        try:
+            injected_engrams = (_session_state.get(session_id) or {}).get("injected_engrams", [])
+            if not injected_engrams or not response:
+                return
+            feedback_batch: list[tuple[str, str]] = []
+            for engram in injected_engrams:
+                eid = engram.get("id")
+                text = engram.get("statement", "")
+                if not eid or not text:
+                    continue
+                signal, confidence = _detect_injection_signal(text, response)
+                if signal and confidence >= _FEEDBACK_MIN_CONFIDENCE:
+                    feedback_batch.append((eid, signal))
+            if feedback_batch:
+                bridge.feedback(batch=feedback_batch)
+            if session_id in _session_state:
+                _session_state[session_id]["injected_engrams"] = []
+        except Exception as e:
+            logger.debug(f"PLUR injection feedback failed: {e}")
 
     def on_session_end(session_id, completed=False, interrupted=False, **kwargs):
         try:
