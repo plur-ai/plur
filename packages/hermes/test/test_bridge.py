@@ -66,13 +66,60 @@ class TestPlurBridge:
             with pytest.raises(PlurBridgeError, match="Engram not found"):
                 bridge.call("forget", ["ENG-999"])
 
-    def test_call_handles_timeout(self):
+    def test_call_timeout_returns_safe_fallback(self):
         bridge = PlurBridge()
         bridge._binary = "/usr/local/bin/plur"
 
-        with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("plur", 30)):
-            with pytest.raises(PlurBridgeError, match="timed out"):
-                bridge.call("learn", ["test"])
+        with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("plur", 30)), \
+             patch("time.sleep"):
+            result = bridge.call("inject", ["test"], retries=0)
+        assert result == {"results": [], "count": 0, "injected_ids": []}
+
+    def test_call_timeout_retries_then_falls_back(self):
+        bridge = PlurBridge()
+        bridge._binary = "/usr/local/bin/plur"
+
+        with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("plur", 5)) as mock_run, \
+             patch("time.sleep") as mock_sleep:
+            result = bridge.call("recall", ["query"], retries=2)
+
+        assert result == {"results": [], "count": 0, "injected_ids": []}
+        assert mock_run.call_count == 3
+        assert mock_sleep.call_count == 2
+
+    def test_inject_graceful_fallback_on_timeout(self):
+        bridge = PlurBridge()
+        bridge._binary = "/usr/local/bin/plur"
+
+        with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("plur", 5)), \
+             patch("time.sleep"):
+            result = bridge.inject("some task")
+        assert result["count"] == 0
+        assert result["injected_ids"] == []
+
+    def test_env_var_timeout_override(self, monkeypatch):
+        monkeypatch.setenv("PLUR_BRIDGE_TIMEOUT", "10")
+        bridge = PlurBridge()
+        assert bridge._timeout == 10
+
+    def test_env_var_inject_timeout_override(self, monkeypatch):
+        monkeypatch.setenv("PLUR_BRIDGE_INJECT_TIMEOUT", "2")
+        bridge = PlurBridge()
+        assert bridge._inject_timeout == 2
+
+    def test_env_var_retry_false_disables_retries(self, monkeypatch):
+        monkeypatch.setenv("PLUR_BRIDGE_RETRY", "false")
+        bridge = PlurBridge()
+        bridge._binary = "/usr/local/bin/plur"
+
+        with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("plur", 30)) as mock_run, \
+             patch("time.sleep") as mock_sleep:
+            result = bridge.call("recall", ["test"], retries=3)
+
+        # retries disabled: only 1 attempt despite retries=3
+        assert mock_run.call_count == 1
+        assert mock_sleep.call_count == 0
+        assert result == {"results": [], "count": 0, "injected_ids": []}
 
     def test_learn_builds_correct_args(self):
         bridge = PlurBridge()
