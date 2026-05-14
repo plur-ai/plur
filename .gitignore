@@ -7,7 +7,7 @@ __pycache__/
 .claude/worktrees/
 debug-*.mjs
 
-# Private paths — not for public repo
+# Private paths — not for public repo (customer materials live in plur-ai/enterprise)
 docs/enterprise/
 docs/architecture/plur-geo-tech-brief.md
 docs/architecture/vertical-extensions.md
