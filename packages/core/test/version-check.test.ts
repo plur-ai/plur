@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { checkForUpdate, getCachedUpdateCheck, clearVersionCache } from '../src/version-check.js'
+import { checkForUpdate, getCachedUpdateCheck, clearVersionCache, minorVersionsBehind } from '../src/version-check.js'
 
 describe('version-check', () => {
   const originalFetch = globalThis.fetch
@@ -75,6 +75,32 @@ describe('version-check', () => {
     expect((await checkForUpdate('c', '1.1.9')).updateAvailable).toBe(true)
     clearVersionCache()
     expect((await checkForUpdate('d', '1.3.0')).updateAvailable).toBe(false)
+  })
+
+  describe('minorVersionsBehind', () => {
+    it('counts minor version gap', () => {
+      expect(minorVersionsBehind('0.7.7', '0.9.9')).toBe(2)
+    })
+
+    it('returns 0 when same minor', () => {
+      expect(minorVersionsBehind('0.9.8', '0.9.9')).toBe(0)
+    })
+
+    it('returns 0 when same version', () => {
+      expect(minorVersionsBehind('0.9.9', '0.9.9')).toBe(0)
+    })
+
+    it('returns 0 when current is newer', () => {
+      expect(minorVersionsBehind('0.9.9', '0.9.8')).toBe(0)
+    })
+
+    it('handles major version gap', () => {
+      expect(minorVersionsBehind('1.0.0', '2.3.0')).toBe(13)
+    })
+
+    it('handles single minor behind', () => {
+      expect(minorVersionsBehind('0.8.0', '0.9.0')).toBe(1)
+    })
   })
 
   describe('caching', () => {
