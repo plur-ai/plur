@@ -13,3 +13,10 @@ docs/enterprise/
 docs/enterprise/
 
 
+
+
+# Enterprise/customer-facing material — must NOT be committed to public repo
+# Lives in private storage or plur-ai/plur-space (private)
+docs/enterprise/
+docs/architecture/plur-geo-tech-brief.md
+docs/architecture/vertical-extensions.md
