@@ -272,6 +272,26 @@ async function runInit() {
   } catch {}
   results.push(`Search:   ${searchMode}`)
 
+  // Check for global installs that shadow npx @latest (issue #152)
+  try {
+    const { execSync } = await import('child_process')
+    const output = execSync('npm list -g @plur-ai/mcp @plur-ai/cli --depth=0 --json', {
+      encoding: 'utf-8', timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'],
+    })
+    const data = JSON.parse(output)
+    const deps = data.dependencies ?? {}
+    const globals = Object.entries(deps).filter(([, v]: [string, any]) => v?.version)
+    if (globals.length > 0) {
+      console.error('')
+      console.error('⚠  Global npm install detected — this shadows npx @latest and prevents auto-updates:')
+      for (const [name, info] of globals) {
+        console.error(`   ${name}@${(info as any).version}`)
+      }
+      console.error('   Fix: npm uninstall -g @plur-ai/mcp @plur-ai/cli')
+      console.error('')
+    }
+  } catch { /* npm not found or no globals — fine */ }
+
   // Step 2: Write MCP config
   const mcpConfigPath = findMcpConfig()
   const mcpStatus = writeMcpConfig(mcpConfigPath)

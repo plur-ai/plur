@@ -1,4 +1,4 @@
-import { spawn } from 'child_process'
+import { spawn, execSync } from 'child_process'
 import { createPlur, type GlobalFlags } from '../plur.js'
 import { outputText, outputJson, shouldOutputJson } from '../output.js'
 import {
@@ -32,11 +32,17 @@ interface ConfigFileReport {
   hasPlurHooks: boolean
 }
 
+interface GlobalInstallReport {
+  found: boolean
+  packages: Array<{ name: string; version: string }>
+}
+
 interface DoctorReport {
   configs: ConfigFileReport[]
   hooksInstalled: boolean
   mcpRegistered: boolean
   datacoreCollision: boolean
+  globalInstall: GlobalInstallReport
   handshake: { ok: boolean; serverName?: string; serverVersion?: string; error?: string }
   embedder: { available: boolean; loaded: boolean; lastError: string | null; modelLoaded: boolean; disabled: boolean; disabledReason: string | null }
   overall: 'ok' | 'fail'
@@ -76,6 +82,25 @@ function inspectConfigs(): ConfigFileReport[] {
       hasPlurHooks: hasAnyPlurHook(config),
     }
   })
+}
+
+function checkGlobalInstall(): GlobalInstallReport {
+  const packages: Array<{ name: string; version: string }> = []
+  for (const pkg of ['@plur-ai/mcp', '@plur-ai/cli']) {
+    try {
+      const output = execSync(`npm list -g ${pkg} --depth=0 --json`, {
+        encoding: 'utf-8',
+        timeout: 5000,
+        stdio: ['pipe', 'pipe', 'pipe'],
+      })
+      const data = JSON.parse(output)
+      const version = data.dependencies?.[pkg]?.version
+      if (version) packages.push({ name: pkg, version })
+    } catch {
+      // Not installed globally — good
+    }
+  }
+  return { found: packages.length > 0, packages }
 }
 
 /**
@@ -205,6 +230,7 @@ function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<Doctor
   const hooksInstalled = configs.some((c) => c.hasPlurHooks)
   const mcpRegistered = configs.some((c) => c.hasPlurMcp)
   const datacoreCollision = configs.some((c) => c.hasDatacoreMcp)
+  const globalInstall = checkGlobalInstall()
 
   const handshakePromise = skipHandshake
     ? Promise.resolve({ ok: false, error: 'skipped (--no-handshake)' })
@@ -214,10 +240,10 @@ function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<Doctor
     // Wiring overall: hooks + MCP + handshake. Embedder status is reported
     // separately as a warning — a degraded embedder doesn't fail the overall
     // doctor check (BM25 still works); it just signals semantic recall is
-    // disabled until the model loads.
+    // disabled until the model loads. Global install is a warning, not a failure.
     const overall: 'ok' | 'fail' =
       hooksInstalled && mcpRegistered && (skipHandshake || handshake.ok) ? 'ok' : 'fail'
-    return { configs, hooksInstalled, mcpRegistered, datacoreCollision, handshake, embedder, overall }
+    return { configs, hooksInstalled, mcpRegistered, datacoreCollision, globalInstall, handshake, embedder, overall }
   })
 }
 
@@ -251,6 +277,15 @@ function printText(report: DoctorReport): void {
     outputText('   plur tools are prefixed plur_* (plur_learn, plur_recall_hybrid, etc.).')
     outputText('   datacore tools are prefixed datacore_*. They do NOT share memory.')
     outputText('   If your agent confuses them, this is the cause.')
+  }
+
+  if (report.globalInstall.found) {
+    outputText('')
+    outputText('⚠  Global npm install detected — this shadows npx @latest and prevents auto-updates:')
+    for (const pkg of report.globalInstall.packages) {
+      outputText(`   ${pkg.name}@${pkg.version}`)
+    }
+    outputText('   Fix: npm uninstall -g @plur-ai/mcp @plur-ai/cli')
   }
 
   outputText('')

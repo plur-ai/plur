@@ -119,6 +119,15 @@ describe('plur doctor', () => {
     expect(labels).toContain('Claude Code (.mcp.json)')
   })
 
+  it('includes globalInstall field in report (clean env = not found)', () => {
+    const { stdout } = runDoctor()
+    const report = JSON.parse(stdout)
+
+    expect(report.globalInstall).toBeDefined()
+    expect(report.globalInstall.found).toBe(false)
+    expect(report.globalInstall.packages).toEqual([])
+  })
+
   it('handshake is skipped when --no-handshake is passed', () => {
     writeGlobalSettings({
       hooks: {
