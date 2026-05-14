@@ -4,7 +4,7 @@ import json
 import subprocess
 import pytest
 from unittest.mock import patch, MagicMock
-from plur_hermes.bridge import PlurBridge, PlurBridgeError, PlurNotFoundError
+from plur_hermes.bridge import PlurBridge, PlurBridgeError, PlurLockError, PlurNotFoundError
 
 
 class TestPlurBridge:
@@ -367,3 +367,436 @@ class TestPlurBridge:
             call_args = mock_run.call_args[0][0]
             assert "--path" in call_args
             assert "/tmp/test-plur" in call_args
+
+
+class TestLockRetry:
+    """Lock-failure retry behavior (covers cron-driven contention scenarios).
+
+    The CLI itself retries internally for ~3.1s before reporting "Failed to
+    acquire lock". The bridge retries on top of that for sustained contention
+    (e.g. a Twitter cron writing while another Hermes session is mid-save).
+    """
+
+    @staticmethod
+    def _lock_failure_result() -> MagicMock:
+        r = MagicMock()
+        r.returncode = 1
+        r.stdout = json.dumps({"error": "Failed to acquire lock on /tmp/plur/engrams.yaml after 5 retries"})
+        r.stderr = ""
+        return r
+
+    @staticmethod
+    def _success_result() -> MagicMock:
+        r = MagicMock()
+        r.returncode = 0
+        r.stdout = json.dumps({"id": "ENG-001", "statement": "test"})
+        r.stderr = ""
+        return r
+
+    def test_lock_failure_is_distinct_exception(self):
+        """Lock failures raise PlurLockError, not generic PlurBridgeError, after retries."""
+        bridge = PlurBridge()
+        bridge._binary = "/usr/local/bin/plur"
+
+        with patch("subprocess.run", return_value=self._lock_failure_result()), \
+             patch("plur_hermes.bridge.time.sleep"):
+            with pytest.raises(PlurLockError, match="acquire engram-store lock"):
+                bridge.call("learn", ["test"])
+
+    def test_lock_error_is_bridge_error_subclass(self):
+        """PlurLockError must be catchable as PlurBridgeError to preserve legacy callers."""
+        bridge = PlurBridge()
+        bridge._binary = "/usr/local/bin/plur"
+
+        with patch("subprocess.run", return_value=self._lock_failure_result()), \
+             patch("plur_hermes.bridge.time.sleep"):
+            with pytest.raises(PlurBridgeError):  # subclass — must still match
+                bridge.call("learn", ["test"])
+
+    def test_call_retries_on_lock_failure_then_succeeds(self):
+        """Two consecutive lock failures, then success → no error, success returned."""
+        bridge = PlurBridge()
+        bridge._binary = "/usr/local/bin/plur"
+
+        seq = [self._lock_failure_result(), self._lock_failure_result(), self._success_result()]
+        # Pin jitter to 0 so exact delay assertions are deterministic.
+        with patch("subprocess.run", side_effect=seq) as mock_run, \
+             patch("plur_hermes.bridge.time.sleep") as mock_sleep, \
+             patch("plur_hermes.bridge.random.uniform", return_value=0.0):
+            result = bridge.call("learn", ["test"])
+            assert result["id"] == "ENG-001"
+            assert mock_run.call_count == 3
+            # Backoff sleeps: 1.0s after first failure, 2.0s after second
+            assert mock_sleep.call_count == 2
+            assert mock_sleep.call_args_list[0][0][0] == 1.0
+            assert mock_sleep.call_args_list[1][0][0] == 2.0
+
+    def test_call_exhausts_retries_then_raises(self):
+        """4 consecutive lock failures (initial + 3 retries) → PlurLockError raised."""
+        bridge = PlurBridge()
+        bridge._binary = "/usr/local/bin/plur"
+
+        seq = [self._lock_failure_result()] * 4
+        with patch("subprocess.run", side_effect=seq) as mock_run, \
+             patch("plur_hermes.bridge.time.sleep"):
+            with pytest.raises(PlurLockError):
+                bridge.call("learn", ["test"])
+            assert mock_run.call_count == 4  # 1 initial + 3 retries
+
+    def test_non_lock_errors_do_not_retry(self):
+        """Generic CLI errors (e.g. malformed args) must NOT be retried."""
+        bridge = PlurBridge()
+        bridge._binary = "/usr/local/bin/plur"
+
+        err = MagicMock()
+        err.returncode = 1
+        err.stdout = ""
+        err.stderr = "Error: Engram not found"
+
+        with patch("subprocess.run", return_value=err) as mock_run, \
+             patch("plur_hermes.bridge.time.sleep") as mock_sleep:
+            with pytest.raises(PlurBridgeError, match="Engram not found"):
+                bridge.call("forget", ["ENG-999"])
+            assert mock_run.call_count == 1
+            assert mock_sleep.call_count == 0
+
+    def test_lock_failure_in_stderr_detected(self):
+        """Lock marker should be detected whether it lands in stderr or stdout."""
+        bridge = PlurBridge()
+        bridge._binary = "/usr/local/bin/plur"
+
+        r = MagicMock()
+        r.returncode = 1
+        r.stdout = ""
+        r.stderr = "Error: Failed to acquire lock on /tmp/plur/engrams.yaml after 5 retries"
+        seq = [r, self._success_result()]
+
+        with patch("subprocess.run", side_effect=seq), \
+             patch("plur_hermes.bridge.time.sleep"):
+            result = bridge.call("learn", ["test"])
+            assert result["id"] == "ENG-001"
+
+    def test_lock_marker_matches_alternative_phrasings(self):
+        """Detection must survive minor upstream wording changes — match any
+        'acquire ... lock' phrasing, not just the current exact string."""
+        bridge = PlurBridge()
+        bridge._binary = "/usr/local/bin/plur"
+
+        # Variant 1: "Could not acquire" instead of "Failed to acquire"
+        r1 = MagicMock()
+        r1.returncode = 1
+        r1.stdout = json.dumps({"error": "Could not acquire engram-store lock"})
+        r1.stderr = ""
+
+        with patch("subprocess.run", side_effect=[r1, self._success_result()]), \
+             patch("plur_hermes.bridge.time.sleep"):
+            result = bridge.call("learn", ["test"])
+            assert result["id"] == "ENG-001"
+
+        # Variant 2: "Lock acquisition timed out"
+        r2 = MagicMock()
+        r2.returncode = 1
+        r2.stdout = json.dumps({"error": "Lock acquisition timed out"})
+        r2.stderr = ""
+
+        with patch("subprocess.run", side_effect=[r2, self._success_result()]), \
+             patch("plur_hermes.bridge.time.sleep"):
+            result = bridge.call("learn", ["test"])
+            assert result["id"] == "ENG-001"
+
+    def test_lock_fail_then_real_error_bubbles_immediately(self):
+        """If a lock retry yields a real (non-lock) CLI error on a later
+        attempt, that error must surface immediately — no further retries,
+        no swallow back to PlurLockError."""
+        bridge = PlurBridge()
+        bridge._binary = "/usr/local/bin/plur"
+
+        non_lock_err = MagicMock()
+        non_lock_err.returncode = 1
+        non_lock_err.stdout = ""
+        non_lock_err.stderr = "Error: Engram schema validation failed"
+
+        with patch("subprocess.run", side_effect=[self._lock_failure_result(), non_lock_err]) as mock_run, \
+             patch("plur_hermes.bridge.time.sleep"):
+            with pytest.raises(PlurBridgeError, match="schema validation"):
+                bridge.call("learn", ["test"])
+            # PlurBridgeError is NOT PlurLockError — confirm via type, not match
+            try:
+                bridge_again = PlurBridge()
+                bridge_again._binary = "/usr/local/bin/plur"
+                with patch("subprocess.run", side_effect=[self._lock_failure_result(), non_lock_err]):
+                    bridge_again.call("learn", ["test"])
+            except PlurLockError:
+                pytest.fail("Real CLI error was incorrectly classified as PlurLockError")
+            except PlurBridgeError:
+                pass  # expected
+            assert mock_run.call_count == 2  # initial + 1 retry, then non-lock fails fast
+
+    def test_three_retries_then_success(self):
+        """Boundary: succeed on the LAST possible retry (3 fails → success on 4th call).
+        Off-by-one in the loop would cause this to fail or never succeed."""
+        bridge = PlurBridge()
+        bridge._binary = "/usr/local/bin/plur"
+
+        seq = [self._lock_failure_result()] * 3 + [self._success_result()]
+        with patch("subprocess.run", side_effect=seq) as mock_run, \
+             patch("plur_hermes.bridge.time.sleep") as mock_sleep, \
+             patch("plur_hermes.bridge.random.uniform", return_value=0.0):
+            result = bridge.call("learn", ["test"])
+            assert result["id"] == "ENG-001"
+            assert mock_run.call_count == 4  # 1 initial + 3 retries
+            # All three backoff delays consumed (jitter pinned to 0)
+            assert [c[0][0] for c in mock_sleep.call_args_list] == [1.0, 2.0, 4.0]
+
+    def test_timeout_during_lock_retry_does_not_retry(self):
+        """subprocess.TimeoutExpired is NOT a lock failure — must bubble as
+        PlurBridgeError immediately without further retries."""
+        bridge = PlurBridge()
+        bridge._binary = "/usr/local/bin/plur"
+
+        with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("plur", 30)) as mock_run, \
+             patch("plur_hermes.bridge.time.sleep"):
+            with pytest.raises(PlurBridgeError, match="timed out"):
+                bridge.call("learn", ["test"])
+            # TimeoutExpired bubbles directly from _invoke_cli; not retried
+            assert mock_run.call_count == 1
+
+    def test_jitter_breaks_phase_lock(self):
+        """Retry delays must include ±50% jitter so two concurrent bridges
+        don't retry in lockstep. Verify random.uniform is invoked per retry."""
+        bridge = PlurBridge()
+        bridge._binary = "/usr/local/bin/plur"
+
+        seq = [self._lock_failure_result()] * 2 + [self._success_result()]
+        with patch("subprocess.run", side_effect=seq), \
+             patch("plur_hermes.bridge.time.sleep"), \
+             patch("plur_hermes.bridge.random.uniform") as mock_uniform:
+            mock_uniform.return_value = 0.0
+            bridge.call("learn", ["test"])
+
+            # One jitter call per retry (2 retries before success)
+            assert mock_uniform.call_count == 2
+            # Verify jitter is ±50% of base (so for base=1.0, fuzz=0.5)
+            first_call_args = mock_uniform.call_args_list[0][0]
+            assert first_call_args == (-0.5, 0.5)  # base 1.0 × ±0.5
+            second_call_args = mock_uniform.call_args_list[1][0]
+            assert second_call_args == (-1.0, 1.0)  # base 2.0 × ±0.5
+
+    def test_jitter_actually_varies_delays(self):
+        """Statistical check: with real random jitter, 100 jitter draws produce
+        a non-trivial spread around the base delay (proves jitter is not a stub)."""
+        from plur_hermes.bridge import _jittered_delay
+        samples = [_jittered_delay(2.0) for _ in range(100)]
+        # All within ±50% bounds
+        assert all(1.0 <= s <= 3.0 for s in samples)
+        # Spread is real — std dev must be > 0 (not all identical)
+        spread = max(samples) - min(samples)
+        assert spread > 0.5, f"Jitter spread too small: {spread}"
+
+    def test_succeeded_after_retries_emits_info_log(self, caplog):
+        """When a retry succeeds, an INFO log should announce the recovery
+        so operators can correlate WARNING retry logs with eventual success."""
+        import logging
+        bridge = PlurBridge()
+        bridge._binary = "/usr/local/bin/plur"
+
+        seq = [self._lock_failure_result(), self._success_result()]
+        with patch("subprocess.run", side_effect=seq), \
+             patch("plur_hermes.bridge.time.sleep"), \
+             patch("plur_hermes.bridge.random.uniform", return_value=0.0):
+            with caplog.at_level(logging.INFO, logger="plur_hermes.bridge"):
+                bridge.call("learn", ["test"])
+
+        info_msgs = [r.message for r in caplog.records if r.levelno == logging.INFO]
+        assert any("succeeded on retry #1" in m for m in info_msgs), \
+            f"Expected 'succeeded on retry #N' INFO log; got: {info_msgs}"
+
+    def test_no_success_log_on_first_attempt(self, caplog):
+        """A successful first attempt must NOT emit the recovery INFO log —
+        that would create noise on every healthy call."""
+        import logging
+        bridge = PlurBridge()
+        bridge._binary = "/usr/local/bin/plur"
+
+        with patch("subprocess.run", return_value=self._success_result()), \
+             patch("plur_hermes.bridge.time.sleep"):
+            with caplog.at_level(logging.INFO, logger="plur_hermes.bridge"):
+                bridge.call("learn", ["test"])
+
+        info_msgs = [r.message for r in caplog.records if r.levelno == logging.INFO]
+        assert not any("succeeded on retry" in m for m in info_msgs), \
+            f"Unexpected success log on first attempt: {info_msgs}"
+
+    def test_error_message_unwraps_json_envelope(self):
+        """When the CLI emits {'error': '...'} on stdout (the --json path),
+        the resulting exception message must contain the inner error text,
+        not the raw JSON wrapper."""
+        bridge = PlurBridge()
+        bridge._binary = "/usr/local/bin/plur"
+
+        non_lock_err = MagicMock()
+        non_lock_err.returncode = 1
+        non_lock_err.stdout = json.dumps({"error": "Engram schema validation failed: bad tag"})
+        non_lock_err.stderr = ""
+
+        with patch("subprocess.run", return_value=non_lock_err):
+            with pytest.raises(PlurBridgeError) as exc_info:
+                bridge.call("learn", ["bad"])
+
+        msg = str(exc_info.value)
+        assert "Engram schema validation failed: bad tag" in msg
+        # Raw JSON envelope must NOT appear in the user-facing message
+        assert '"error":' not in msg
+        assert "{" not in msg
+
+    def test_lock_error_message_unwraps_json_envelope(self):
+        """Same unwrap for lock errors — the message should be the clean
+        underlying text, not the JSON wrapper."""
+        bridge = PlurBridge()
+        bridge._binary = "/usr/local/bin/plur"
+
+        with patch("subprocess.run", return_value=self._lock_failure_result()), \
+             patch("plur_hermes.bridge.time.sleep"), \
+             patch("plur_hermes.bridge.random.uniform", return_value=0.0):
+            with pytest.raises(PlurLockError) as exc_info:
+                bridge.call("learn", ["test"])
+
+        msg = str(exc_info.value)
+        assert "Failed to acquire lock" in msg
+        assert '"error":' not in msg  # JSON envelope stripped
+
+    def test_retry_logic_survives_python_optimize_flag(self):
+        """The retry-exhaustion raise must NOT depend on `assert` (stripped
+        under python -O). Scan the bytecode for an `ASSERT` opcode — that's
+        the actual fingerprint of an `assert` statement, free from comment
+        false-positives."""
+        import dis
+        from plur_hermes import bridge as bridge_module
+        ops = [i.opname for i in dis.get_instructions(bridge_module.PlurBridge.call)]
+        # Python emits LOAD_ASSERTION_ERROR / RAISE_VARARGS pair for asserts.
+        # Either opcode appearing inside this method means an assert is present.
+        assert "LOAD_ASSERTION_ERROR" not in ops, \
+            "PlurBridge.call has an `assert` statement; will be stripped under -O"
+
+    def test_non_lock_error_after_lock_failure_uses_unwrapped_message(self):
+        """Mixed scenario: lock fail → retry → real CLI error. The real error's
+        message should be cleanly extracted, not concatenated with prior state."""
+        bridge = PlurBridge()
+        bridge._binary = "/usr/local/bin/plur"
+
+        non_lock_err = MagicMock()
+        non_lock_err.returncode = 1
+        non_lock_err.stdout = json.dumps({"error": "Engram ENG-999 not found"})
+        non_lock_err.stderr = ""
+
+        with patch("subprocess.run", side_effect=[self._lock_failure_result(), non_lock_err]), \
+             patch("plur_hermes.bridge.time.sleep"), \
+             patch("plur_hermes.bridge.random.uniform", return_value=0.0):
+            with pytest.raises(PlurBridgeError, match="Engram ENG-999 not found") as exc_info:
+                bridge.call("learn", ["test"])
+            # Must not be classified as PlurLockError (the real error is not a lock issue)
+            assert not isinstance(exc_info.value, PlurLockError)
+
+    def test_stderr_npm_noise_does_not_hide_stdout_json_error(self):
+        """Real-world: npm prints deprecation warnings to stderr, the actual
+        CLI error lands as --json on stdout. We must extract the stdout JSON
+        error, not return the stderr noise."""
+        bridge = PlurBridge()
+        bridge._binary = "/usr/local/bin/plur"
+
+        noisy = MagicMock()
+        noisy.returncode = 1
+        noisy.stderr = "npm warn deprecated some-pkg@1.0.0: use new-pkg instead\n"
+        noisy.stdout = json.dumps({"error": "Engram validation failed: bad tag"})
+
+        with patch("subprocess.run", return_value=noisy):
+            with pytest.raises(PlurBridgeError) as exc_info:
+                bridge.call("learn", ["test"])
+
+        msg = str(exc_info.value)
+        assert "Engram validation failed: bad tag" in msg, \
+            f"npm noise hid the real CLI error: {msg}"
+        assert "npm warn" not in msg, \
+            f"npm noise leaked into user-facing error: {msg}"
+
+    def test_lock_error_unwraps_under_stderr_noise(self):
+        """Same npm-noise scenario but with the inner error being a lock failure.
+        Must (a) classify as PlurLockError, (b) message must NOT contain npm noise."""
+        bridge = PlurBridge()
+        bridge._binary = "/usr/local/bin/plur"
+
+        noisy = MagicMock()
+        noisy.returncode = 1
+        noisy.stderr = "npm warn config global is deprecated\n"
+        noisy.stdout = json.dumps({"error": "Failed to acquire lock on /tmp/engrams.yaml after 5 retries"})
+
+        with patch("subprocess.run", return_value=noisy), \
+             patch("plur_hermes.bridge.time.sleep"), \
+             patch("plur_hermes.bridge.random.uniform", return_value=0.0):
+            with pytest.raises(PlurLockError) as exc_info:
+                bridge.call("learn", ["test"])
+
+        msg = str(exc_info.value)
+        assert "Failed to acquire lock" in msg
+        assert "npm warn" not in msg
+
+    def test_extract_error_falls_back_to_stderr_when_stdout_empty(self):
+        """When stdout has no JSON error, stderr should be used as the message."""
+        from plur_hermes.bridge import _extract_cli_error_message
+        assert _extract_cli_error_message("Actual error text", "") == "Actual error text"
+        assert _extract_cli_error_message("Actual error text", None) == "Actual error text"
+
+    def test_extract_error_falls_back_to_stderr_when_stdout_json_lacks_error_key(self):
+        """If stdout is JSON but has no 'error' key, fall through to stderr."""
+        from plur_hermes.bridge import _extract_cli_error_message
+        # stdout has {"status": "ok"} — no error key. stderr has real text.
+        result = _extract_cli_error_message("stderr text", '{"status": "ok"}')
+        assert result == "stderr text", \
+            f"Expected stderr fallback when stdout JSON has no 'error' key, got: {result}"
+
+    def test_extract_error_handles_malformed_json(self):
+        """Malformed JSON on stdout should fall through to stderr."""
+        from plur_hermes.bridge import _extract_cli_error_message
+        result = _extract_cli_error_message("real error", "{not valid json")
+        assert result == "real error"
+
+    def test_extract_error_empty_inputs_returns_empty(self):
+        """Both fields empty → empty string, no exception."""
+        from plur_hermes.bridge import _extract_cli_error_message
+        assert _extract_cli_error_message("", "") == ""
+        assert _extract_cli_error_message(None, None) == ""
+
+    def test_extract_error_null_error_value_does_not_fall_back_to_stderr(self):
+        """{"error": null} from CLI is the authoritative signal — don't let
+        stderr noise (npm warnings) leak in via fallthrough."""
+        from plur_hermes.bridge import _extract_cli_error_message
+        result = _extract_cli_error_message(
+            "npm warn deprecated some-pkg",
+            json.dumps({"error": None}),
+        )
+        assert result == "", f"Expected '' for null error; got: {result!r}"
+        assert "npm warn" not in result
+
+    def test_extract_error_empty_string_error_value_does_not_fall_back(self):
+        """{"error": ""} same treatment as null — authoritative empty signal."""
+        from plur_hermes.bridge import _extract_cli_error_message
+        result = _extract_cli_error_message(
+            "DeprecationWarning: ...",
+            json.dumps({"error": ""}),
+        )
+        assert result == "", f"Expected '' for empty error; got: {result!r}"
+        assert "Deprecation" not in result
+
+    def test_extract_error_empty_object_falls_back_to_stderr(self):
+        """{} has no 'error' key at all — that's NOT an authoritative signal,
+        so fall through to stderr."""
+        from plur_hermes.bridge import _extract_cli_error_message
+        result = _extract_cli_error_message("real stderr error", "{}")
+        assert result == "real stderr error"
+
+    def test_extract_error_non_object_json_falls_through(self):
+        """A JSON array on stdout (not an object) — startswith('{') is False,
+        so no parse is attempted; falls to stderr."""
+        from plur_hermes.bridge import _extract_cli_error_message
+        result = _extract_cli_error_message("stderr msg", '[{"error": "bad"}]')
+        assert result == "stderr msg"
