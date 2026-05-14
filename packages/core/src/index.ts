@@ -73,7 +73,7 @@ export { YamlStore, SqliteStore, createStore, migrateStore, type EngramStore, ty
 export { withAsyncLock, asyncAtomicWrite } from './store/index.js'
 export type { SimilarityResult } from './embeddings.js'
 export type { SyncResult, SyncStatus } from './sync.js'
-export { checkForUpdate, getCachedUpdateCheck, clearVersionCache, type VersionCheckResult } from './version-check.js'
+export { checkForUpdate, getCachedUpdateCheck, clearVersionCache, minorVersionsBehind, type VersionCheckResult } from './version-check.js'
 export type { Engram, PreviousVersionRef } from './schemas/engram.js'
 export type { Episode } from './schemas/episode.js'
 export type { PackManifest } from './schemas/pack.js'

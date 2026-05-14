@@ -66,6 +66,20 @@ export function clearVersionCache(): void {
   cache.clear()
 }
 
+/** Count how many minor versions behind `current` is from `latest`. Returns 0 if current >= latest. */
+export function minorVersionsBehind(current: string, latest: string): number {
+  const pa = current.split('.').map(Number)
+  const pb = latest.split('.').map(Number)
+  if ((pa[0] ?? 0) < (pb[0] ?? 0)) {
+    // Different major — treat as very stale
+    return ((pb[0] ?? 0) - (pa[0] ?? 0)) * 10 + (pb[1] ?? 0)
+  }
+  if ((pa[0] ?? 0) > (pb[0] ?? 0)) return 0
+  // Same major
+  const diff = (pb[1] ?? 0) - (pa[1] ?? 0)
+  return diff > 0 ? diff : 0
+}
+
 /** True if a is newer than b (simple semver comparison). */
 function isNewer(a: string, b: string): boolean {
   const pa = a.split('.').map(Number)

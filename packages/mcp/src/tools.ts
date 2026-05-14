@@ -1,4 +1,4 @@
-import { Plur, extractMetaEngrams, validateMetaEngram, confidenceBand, generateProfile, getProfileForInjection, markProfileDirty, selectModelForOperation, readHistoryForEngram } from '@plur-ai/core'
+import { Plur, extractMetaEngrams, validateMetaEngram, confidenceBand, generateProfile, getProfileForInjection, markProfileDirty, selectModelForOperation, readHistoryForEngram, getCachedUpdateCheck, minorVersionsBehind } from '@plur-ai/core'
 import type { LlmFunction, MetaField } from '@plur-ai/core'
 import { VERSION } from './version.js'
 
@@ -918,6 +918,7 @@ export function getToolDefinitions(): ToolDefinition[] {
       },
       handler: async (_args, plur) => {
         const status = plur.status()
+        const versionCheck = getCachedUpdateCheck('@plur-ai/mcp')
         return {
           version: VERSION,
           engram_count: status.engram_count,
@@ -928,6 +929,14 @@ export function getToolDefinitions(): ToolDefinition[] {
           tension_count: status.tension_count,
           versioned_engram_count: status.versioned_engram_count ?? 0,
           outbox_count: status.outbox_count ?? 0,
+          // Version check (issue #151)
+          ...(versionCheck?.updateAvailable && versionCheck.latest ? {
+            update_available: {
+              current: versionCheck.current,
+              latest: versionCheck.latest,
+              behind: minorVersionsBehind(versionCheck.current, versionCheck.latest),
+            },
+          } : {}),
         }
       },
     },
@@ -1095,6 +1104,19 @@ export function getToolDefinitions(): ToolDefinition[] {
         // Detect fresh install: no engrams AND no episodes = never used before
         const isFreshInstall = store_stats.engram_count === 0 && store_stats.episode_count === 0
 
+        // Version staleness check — zero-cost cache read (issue #151)
+        const versionCheck = getCachedUpdateCheck('@plur-ai/mcp')
+        let version_warning: string | undefined
+        if (versionCheck?.updateAvailable && versionCheck.latest) {
+          const behind = minorVersionsBehind(versionCheck.current, versionCheck.latest)
+          if (behind > 2) {
+            version_warning = `CRITICAL: Running PLUR v${versionCheck.current} — latest is v${versionCheck.latest} (${behind} minor versions behind). Known bugs may be present. Update immediately: npx @plur-ai/mcp@latest`
+            guide = `⚠️ ${version_warning}\n\n${guide}`
+          } else {
+            version_warning = `Update available: PLUR v${versionCheck.current} → v${versionCheck.latest}. Run: npx @plur-ai/mcp@latest`
+          }
+        }
+
         return {
           session_id,
           engrams: engrams ?? [],
@@ -1116,6 +1138,8 @@ export function getToolDefinitions(): ToolDefinition[] {
               warnings: outbox_result.expired_warnings,
             },
           } : {}),
+          // Version staleness warning (issue #151)
+          ...(version_warning ? { version_warning, version: VERSION } : {}),
         }
       },
     },

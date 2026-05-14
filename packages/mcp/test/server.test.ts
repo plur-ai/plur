@@ -1,10 +1,10 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { mkdtempSync, rmSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
-import { Plur } from '@plur-ai/core'
+import { Plur, checkForUpdate, clearVersionCache } from '@plur-ai/core'
 import { createServer } from '../src/server.js'
 
 describe('MCP server (wire protocol)', () => {
@@ -173,5 +173,100 @@ describe('MCP server (wire protocol)', () => {
     const text = (result.messages[0].content as any).text
     expect(text).toContain('refactor auth module')
     expect(text).toContain('project:webapp')
+  })
+
+  // --- Version staleness warnings (issue #151) ---
+
+  describe('version staleness warnings', () => {
+    const originalFetch = globalThis.fetch
+
+    afterEach(() => {
+      globalThis.fetch = originalFetch
+      clearVersionCache()
+    })
+
+    it('session_start includes version_warning when update available', async () => {
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve({ version: '99.0.0' }),
+      }) as any
+      await checkForUpdate('@plur-ai/mcp', '0.9.8')
+
+      const result = await client.callTool({
+        name: 'plur_session_start',
+        arguments: { task: 'test' },
+      })
+      const data = JSON.parse((result.content as any)[0].text)
+      expect(data.version_warning).toBeDefined()
+      expect(data.version_warning).toContain('99.0.0')
+      expect(data.version).toBeDefined()
+    })
+
+    it('session_start prepends hard warning to guide when critically stale', async () => {
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve({ version: '1.5.0' }),
+      }) as any
+      await checkForUpdate('@plur-ai/mcp', '0.9.8')
+
+      const result = await client.callTool({
+        name: 'plur_session_start',
+        arguments: { task: 'test' },
+      })
+      const data = JSON.parse((result.content as any)[0].text)
+      expect(data.version_warning).toContain('CRITICAL')
+      expect(data.guide).toContain('CRITICAL')
+    })
+
+    it('session_start omits version_warning when cache empty', async () => {
+      clearVersionCache()
+      const result = await client.callTool({
+        name: 'plur_session_start',
+        arguments: { task: 'test' },
+      })
+      const data = JSON.parse((result.content as any)[0].text)
+      expect(data.version_warning).toBeUndefined()
+    })
+
+    it('session_start omits version_warning when version is current', async () => {
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve({ version: '0.9.8' }),
+      }) as any
+      await checkForUpdate('@plur-ai/mcp', '0.9.8')
+
+      const result = await client.callTool({
+        name: 'plur_session_start',
+        arguments: { task: 'test' },
+      })
+      const data = JSON.parse((result.content as any)[0].text)
+      expect(data.version_warning).toBeUndefined()
+    })
+
+    it('plur_status includes update_available when newer version exists', async () => {
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve({ version: '99.0.0' }),
+      }) as any
+      await checkForUpdate('@plur-ai/mcp', '0.9.8')
+
+      const result = await client.callTool({ name: 'plur_status', arguments: {} })
+      const data = JSON.parse((result.content as any)[0].text)
+      expect(data.update_available).toBeDefined()
+      expect(data.update_available.latest).toBe('99.0.0')
+      expect(data.update_available.behind).toBeGreaterThan(0)
+    })
+
+    it('plur_status omits update_available when version is current', async () => {
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve({ version: '0.9.8' }),
+      }) as any
+      await checkForUpdate('@plur-ai/mcp', '0.9.8')
+
+      const result = await client.callTool({ name: 'plur_status', arguments: {} })
+      const data = JSON.parse((result.content as any)[0].text)
+      expect(data.update_available).toBeUndefined()
+    })
   })
 })
