@@ -1,6 +1,6 @@
 import { PlurContextEngine, type PlurContextEngineOptions } from './context-engine.js'
 import { ensureSystemPrompt, PLUR_SYSTEM_SECTION } from './system-prompt.js'
-import { checkForUpdate } from '@plur-ai/core'
+import { checkForUpdate, CapabilityCanary } from '@plur-ai/core'
 import { recordEvent } from './telemetry-counters.js'
 import { flushIfNeeded, registerFlushOnExit } from './telemetry-flush.js'
 
@@ -74,29 +74,53 @@ const plugin = {
       api.logger.debug(`PLUR: setup skipped: ${err.message}`)
     })
 
-    // 3. Register context engine
+    // 3. Capability canary — detect silently blocked hooks (#159)
+    const canary = new CapabilityCanary({ threshold: 3 })
+    canary.expect({
+      id: 'agent_end',
+      description: 'Learning from conversations (agent_end hook)',
+      fix: 'openclaw config set plugins.entries.plur-claw.hooks.allowConversationAccess true --strict-json && openclaw gateway restart',
+    })
+
+    // 4. Register context engine
     api.registerContextEngine('plur', () => {
       const e = getEngine(path)
       api.logger.info(`PLUR ContextEngine — engrams: ${e.plur.status().engram_count}`)
       return e
     })
 
-    // 4. Event hooks (alongside ContextEngine for redundancy)
+    // 5. Event hooks (alongside ContextEngine for redundancy)
     api.on('before_agent_start', (event: any, ctx: any) => {
+      canary.tick()
       const e = getEngine(path)
       const task = typeof event?.prompt === 'string' ? event.prompt : ''
       if (!task) return
+
       const injection = e.plur.inject(task, { budget: 2000 })
       maybeFlushAfter(recordEvent('recall'))
-      if (injection.count === 0) return
-      const lines = ['<plur-memory>']
-      if (injection.directives) lines.push(injection.directives)
-      if (injection.consider) lines.push(injection.consider)
-      lines.push('</plur-memory>')
+
+      const lines: string[] = []
+
+      // Canary warning: blocked hooks
+      const warnings = canary.warnings()
+      if (warnings) {
+        lines.push(`<plur-warning>\n${warnings}\n</plur-warning>`)
+        api.logger.warn(`PLUR canary: ${warnings.replace(/\n/g, ' ')}`)
+      }
+
+      if (injection.count > 0) {
+        lines.push('<plur-memory>')
+        if (injection.directives) lines.push(injection.directives)
+        if (injection.consider) lines.push(injection.consider)
+        lines.push('</plur-memory>')
+      }
+
+      if (lines.length === 0) return
       return { prependContext: lines.join('\n') }
     })
 
     api.on('agent_end', (event: any, ctx: any) => {
+      canary.signal('agent_end')
       const e = getEngine(path)
       const messages = event?.messages
       if (Array.isArray(messages) && messages.length > 0) {

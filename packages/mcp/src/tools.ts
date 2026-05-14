@@ -1,4 +1,4 @@
-import { Plur, extractMetaEngrams, validateMetaEngram, confidenceBand, generateProfile, getProfileForInjection, markProfileDirty, selectModelForOperation, readHistoryForEngram } from '@plur-ai/core'
+import { Plur, extractMetaEngrams, validateMetaEngram, confidenceBand, generateProfile, getProfileForInjection, markProfileDirty, selectModelForOperation, readHistoryForEngram, CapabilityCanary } from '@plur-ai/core'
 import type { LlmFunction, MetaField } from '@plur-ai/core'
 import { VERSION } from './version.js'
 
@@ -97,6 +97,17 @@ function sanitizeStatement(raw: string): string {
   return raw.slice(0, cut).trimEnd()
 }
 
+// Module-level canary for MCP integration (#159)
+const mcpCanary = new CapabilityCanary({ threshold: 10 })
+mcpCanary.expect({
+  id: 'learn_activity',
+  description: 'Learning from corrections (plur_learn calls)',
+  fix: 'Call plur_learn when corrected. If using hooks, verify they are installed with: npx @plur-ai/cli init',
+})
+
+/** Get the MCP capability canary (for status/doctor reporting). */
+export function getMcpCanary(): CapabilityCanary { return mcpCanary }
+
 export function getToolDefinitions(): ToolDefinition[] {
   return [
     {
@@ -153,6 +164,7 @@ export function getToolDefinitions(): ToolDefinition[] {
         // unchanged. We try learnAsync second only as a fallback for
         // the LLM-driven dedup pathway (local routes).
         const statement = sanitizeStatement(args.statement as string)
+        mcpCanary.signal('learn_activity')
         try {
           const engram = await plur.learnRouted(statement, context)
           return {
@@ -896,6 +908,8 @@ export function getToolDefinitions(): ToolDefinition[] {
           locked_count: status.locked_count,
           tension_count: status.tension_count,
           versioned_engram_count: status.versioned_engram_count ?? 0,
+          // Capability canary (#159)
+          capabilities: mcpCanary.status(),
         }
       },
     },
@@ -977,6 +991,18 @@ export function getToolDefinitions(): ToolDefinition[] {
             '  • Or opt out: set PLUR_DISABLE_EMBEDDINGS=1, or write `embeddings: { enabled: false }` to ~/.plur/config.yaml — hybrid search will run BM25-only',
           )
         }
+        // Capability canary health (#159)
+        const canaryStatuses = mcpCanary.status()
+        for (const cs of canaryStatuses) {
+          checks.push({
+            check: `capability: ${cs.capability}`,
+            ok: cs.healthy,
+            detail: cs.healthy
+              ? `${cs.description} — verified (${cs.firedCount} signals in ${cs.tickCount} sessions)`
+              : cs.warning,
+          })
+        }
+
         return {
           ok: checks.every(c => c.ok),
           checks,
@@ -984,6 +1010,7 @@ export function getToolDefinitions(): ToolDefinition[] {
             before_probe: before,
             after_probe: after,
           },
+          capabilities: canaryStatuses,
           remediation: remediation.length > 0 ? remediation : ['All checks passed — PLUR is healthy.'],
         }
       },
@@ -1004,6 +1031,7 @@ export function getToolDefinitions(): ToolDefinition[] {
       handler: async (args, plur) => {
         const crypto = await import('crypto')
         const session_id = crypto.randomUUID()
+        mcpCanary.tick()
         const task = args.task as string
         const tags = args.tags as string[] | undefined
 
