@@ -56,10 +56,44 @@ describe('claw setup command', () => {
     expect(written.plugins.entries['other-plugin']).toEqual({ enabled: true })
   })
 
+  it('sets hooks.allowConversationAccess on fresh setup', () => {
+    writeFileSync(cfgPath, '{}', 'utf8')
+    runSetup({ configPath: cfgPath })
+    const written = JSON.parse(readFileSync(cfgPath, 'utf8'))
+    expect(written.plugins.entries['plur-claw'].hooks?.allowConversationAccess).toBe(true)
+  })
+
+  it('sets hooks.allowConversationAccess on existing entry without it', () => {
+    const prior = {
+      plugins: {
+        entries: { 'plur-claw': { enabled: true, config: { auto_learn: true } } },
+        slots: { memory: 'plur-claw' },
+      },
+    }
+    writeFileSync(cfgPath, JSON.stringify(prior), 'utf8')
+    runSetup({ configPath: cfgPath })
+    const written = JSON.parse(readFileSync(cfgPath, 'utf8'))
+    expect(written.plugins.entries['plur-claw'].hooks?.allowConversationAccess).toBe(true)
+  })
+
+  it('preserves existing hooks when adding allowConversationAccess', () => {
+    const prior = {
+      plugins: {
+        entries: { 'plur-claw': { enabled: true, hooks: { someOtherHook: true } } },
+        slots: { memory: 'plur-claw' },
+      },
+    }
+    writeFileSync(cfgPath, JSON.stringify(prior), 'utf8')
+    runSetup({ configPath: cfgPath })
+    const written = JSON.parse(readFileSync(cfgPath, 'utf8'))
+    expect(written.plugins.entries['plur-claw'].hooks.allowConversationAccess).toBe(true)
+    expect(written.plugins.entries['plur-claw'].hooks.someOtherHook).toBe(true)
+  })
+
   it('is idempotent when fully configured (reports skip on enable + slot)', () => {
     const prior = {
       plugins: {
-        entries: { 'plur-claw': { enabled: true, config: { auto_learn: true, auto_capture: true, injection_budget: 2000 } } },
+        entries: { 'plur-claw': { enabled: true, config: { auto_learn: true, auto_capture: true, injection_budget: 2000 }, hooks: { allowConversationAccess: true } } },
         slots: { memory: 'plur-claw' },
       },
       mcp: { servers: { plur: { command: 'npx', args: ['-y', '@plur-ai/mcp'] } } },
@@ -311,10 +345,10 @@ describe('claw setup --repair mode', () => {
     cfgPath = join(dir, 'openclaw.json')
   })
 
-  it('no-ops when doctor reports enable + slot healthy', () => {
+  it('no-ops when doctor reports enable + slot + hooks healthy', () => {
     const prior = {
       plugins: {
-        entries: { 'plur-claw': { enabled: true, config: { injection_budget: 4000 } } },
+        entries: { 'plur-claw': { enabled: true, config: { injection_budget: 4000 }, hooks: { allowConversationAccess: true } } },
         slots: { memory: 'plur-claw' },
       },
     }
@@ -384,14 +418,14 @@ describe('claw setup --repair mode', () => {
         slots: { memory: 'other-memory' },
       },
     }
-    const raw = JSON.stringify(prior)
-    writeFileSync(cfgPath, raw, 'utf8')
+    writeFileSync(cfgPath, JSON.stringify(prior), 'utf8')
     const r = runRepair({ configPath: cfgPath })
     const slotStep = r.steps.find((s) => s.step === 'slot_selected')!
     expect(slotStep.status).toBe('fail')
     expect(slotStep.detail).toContain('other-memory')
-    // Slot conflict preserved; file untouched.
-    expect(readFileSync(cfgPath, 'utf8')).toBe(raw)
+    // Slot conflict preserved — slot still points to other plugin.
+    const written = JSON.parse(readFileSync(cfgPath, 'utf8'))
+    expect(written.plugins.slots.memory).toBe('other-memory')
   })
 
   it('creates a minimal config when file is missing', () => {
@@ -402,6 +436,19 @@ describe('claw setup --repair mode', () => {
     expect(written.plugins.entries['plur-claw'].enabled).toBe(true)
     expect(written.plugins.slots.memory).toBe('plur-claw')
     expect(written.mcp).toBeUndefined()
+  })
+
+  it('sets hooks.allowConversationAccess during repair', () => {
+    const prior = {
+      plugins: {
+        entries: { 'plur-claw': { enabled: true } },
+        slots: { memory: 'plur-claw' },
+      },
+    }
+    writeFileSync(cfgPath, JSON.stringify(prior), 'utf8')
+    runRepair({ configPath: cfgPath })
+    const written = JSON.parse(readFileSync(cfgPath, 'utf8'))
+    expect(written.plugins.entries['plur-claw'].hooks?.allowConversationAccess).toBe(true)
   })
 
   it('does not overwrite a malformed config file', () => {
