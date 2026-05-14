@@ -6,3 +6,10 @@ __pycache__/
 *.pyc
 .claude/worktrees/
 debug-*.mjs
+
+# IGEA confidential — must NOT be committed to public repo
+# Customer materials live in plur-ai/enterprise (private)
+docs/enterprise/igea/
+docs/enterprise/igea-monday/
+docs/enterprise/offer/*-IGEA*
+docs/enterprise/offer/*IGEA*
