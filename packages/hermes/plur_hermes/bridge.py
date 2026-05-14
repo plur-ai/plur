@@ -16,11 +16,17 @@ import time
 from collections import OrderedDict
 from typing import Any
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("plur_hermes.bridge")
 
 _NPX_CLI_VERSION = "0.9.4"
 
 _DEFAULT_DEDUP_CACHE_SIZE = 256
+_DEFAULT_TIMEOUT = 30
+_DEFAULT_INJECT_TIMEOUT = 5
+_DEFAULT_RETRIES = 3
+_RETRY_DELAYS = (5, 15, 30)
+
+_SAFE_RESPONSE: dict = {"results": [], "count": 0, "injected_ids": []}
 
 _NOT_FOUND_MSG = (
     f"PLUR CLI not found. Install: npm install -g @plur-ai/cli@{_NPX_CLI_VERSION}"
@@ -130,6 +136,9 @@ class PlurBridge:
         self._plur_path = plur_path or os.environ.get("PLUR_PATH")
         self._dedup_cache_size = max(0, dedup_cache_size)
         self._dedup_cache: "OrderedDict[str, dict]" = OrderedDict()
+        self._timeout = int(os.environ.get("PLUR_BRIDGE_TIMEOUT", str(_DEFAULT_TIMEOUT)))
+        self._inject_timeout = int(os.environ.get("PLUR_BRIDGE_INJECT_TIMEOUT", str(_DEFAULT_INJECT_TIMEOUT)))
+        self._retry_enabled = os.environ.get("PLUR_BRIDGE_RETRY", "true").lower() != "false"
 
     def _cache_get(self, normalized: str) -> dict | None:
         if self._dedup_cache_size == 0 or not normalized:
@@ -175,9 +184,12 @@ class PlurBridge:
 
         raise PlurNotFoundError(_NOT_FOUND_MSG)
 
-    def call(self, command: str, args: list[str] | None = None, timeout: int = 30) -> dict[str, Any]:
+    def call(self, command: str, args: list[str] | None = None,
+             timeout: int | None = None, retries: int = _DEFAULT_RETRIES) -> dict[str, Any]:
         binary = self._find_binary()
         args = args or []
+        effective_timeout = timeout if timeout is not None else self._timeout
+        effective_retries = retries if self._retry_enabled else 0
 
         if binary.startswith("npx:"):
             package = binary.split(":", 1)[1]
@@ -188,10 +200,45 @@ class PlurBridge:
         if self._plur_path:
             cmd.extend(["--path", self._plur_path])
 
+        # Two-layer retry:
+        #   OUTER (Miles's, slow 5/15/30s) — TimeoutExpired = hung CLI.
+        #     Returns _SAFE_RESPONSE on exhaustion so the LLM turn doesn't abort.
+        #   INNER (lock retry, fast jittered 1/2/4s) — PlurLockError = lock contention.
+        #     Re-raises typed exception on exhaustion so callers can react.
+        # Both honor `_retry_enabled` (PLUR_BRIDGE_RETRY=false disables everything).
+        for timeout_attempt in range(effective_retries + 1):
+            try:
+                return self._call_with_lock_retry(cmd, command, effective_timeout)
+            except subprocess.TimeoutExpired:
+                if timeout_attempt < effective_retries:
+                    delay = _RETRY_DELAYS[min(timeout_attempt, len(_RETRY_DELAYS) - 1)]
+                    logger.warning(
+                        "PLUR CLI timed out (attempt %d/%d): plur %s — retrying in %ds",
+                        timeout_attempt + 1, effective_retries + 1, command, delay,
+                    )
+                    time.sleep(delay)
+                    continue
+                logger.warning(
+                    "PLUR CLI timed out after %d attempt(s): plur %s — returning safe fallback",
+                    effective_retries + 1, command,
+                )
+                return _SAFE_RESPONSE.copy()
+            except FileNotFoundError:
+                raise PlurNotFoundError(_NOT_FOUND_MSG)
+
+    def _call_with_lock_retry(self, cmd: list[str], command: str, timeout: int) -> dict[str, Any]:
+        """Inner retry layer — handles PlurLockError (lock contention) with
+        fast jittered backoff. Propagates TimeoutExpired and FileNotFoundError
+        so the outer layer in call() can handle them.
+
+        Lock retries also honor PLUR_BRIDGE_RETRY=false (disables all retries).
+        """
         # First attempt — no delay, no log.
         try:
             return self._invoke_cli(cmd, command, timeout)
         except PlurLockError as e:
+            if not self._retry_enabled:
+                raise
             last_lock_error: PlurLockError = e
 
         # Retries — only entered on lock failure. Each retry uses jittered
@@ -210,20 +257,18 @@ class PlurBridge:
             except PlurLockError as e:
                 last_lock_error = e
 
-        # All retries exhausted. last_lock_error is guaranteed set by the
-        # initial attempt above; this raise is not behind an assert so it
-        # remains valid under `python -O`.
+        # All retries exhausted. last_lock_error was set by the initial attempt
+        # above (not behind an assert so it remains valid under `python -O`).
         raise last_lock_error
 
     def _invoke_cli(self, cmd: list[str], command: str, timeout: int) -> dict[str, Any]:
-        """Single CLI invocation. Raises PlurLockError on lock contention so
-        the caller can retry; other failures raise PlurBridgeError directly."""
-        try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-        except subprocess.TimeoutExpired:
-            raise PlurBridgeError(f"CLI timed out after {timeout}s: plur {command}")
-        except FileNotFoundError:
-            raise PlurNotFoundError(_NOT_FOUND_MSG)
+        """Single CLI invocation. Returns the parsed response dict on success.
+
+        Raises PlurLockError on lock contention (caught by _call_with_lock_retry).
+        Lets subprocess.TimeoutExpired and FileNotFoundError propagate (caught
+        by call()'s outer layer). All other CLI failures raise PlurBridgeError.
+        """
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
 
         if result.returncode == 2:
             return json.loads(result.stdout) if result.stdout.strip() else {"results": [], "count": 0}
@@ -239,6 +284,7 @@ class PlurBridge:
                 f"CLI error (exit {result.returncode}): {clean_msg}"
             )
 
+        # Success case — parse JSON response.
         try:
             return json.loads(result.stdout)
         except json.JSONDecodeError:
@@ -320,7 +366,8 @@ class PlurBridge:
         args = [task, "--budget", str(budget)]
         if fast:
             args.append("--fast")
-        return self.call("inject", args)
+        # Short timeout, no retries — inject runs on the pre-LLM blocking path.
+        return self.call("inject", args, timeout=self._inject_timeout, retries=0)
 
     def list_engrams(self, domain: str | None = None, type: str | None = None,
                      scope: str | None = None, limit: int | None = None,

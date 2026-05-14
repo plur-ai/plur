@@ -66,13 +66,60 @@ class TestPlurBridge:
             with pytest.raises(PlurBridgeError, match="Engram not found"):
                 bridge.call("forget", ["ENG-999"])
 
-    def test_call_handles_timeout(self):
+    def test_call_timeout_returns_safe_fallback(self):
         bridge = PlurBridge()
         bridge._binary = "/usr/local/bin/plur"
 
-        with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("plur", 30)):
-            with pytest.raises(PlurBridgeError, match="timed out"):
-                bridge.call("learn", ["test"])
+        with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("plur", 30)), \
+             patch("time.sleep"):
+            result = bridge.call("inject", ["test"], retries=0)
+        assert result == {"results": [], "count": 0, "injected_ids": []}
+
+    def test_call_timeout_retries_then_falls_back(self):
+        bridge = PlurBridge()
+        bridge._binary = "/usr/local/bin/plur"
+
+        with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("plur", 5)) as mock_run, \
+             patch("time.sleep") as mock_sleep:
+            result = bridge.call("recall", ["query"], retries=2)
+
+        assert result == {"results": [], "count": 0, "injected_ids": []}
+        assert mock_run.call_count == 3
+        assert mock_sleep.call_count == 2
+
+    def test_inject_graceful_fallback_on_timeout(self):
+        bridge = PlurBridge()
+        bridge._binary = "/usr/local/bin/plur"
+
+        with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("plur", 5)), \
+             patch("time.sleep"):
+            result = bridge.inject("some task")
+        assert result["count"] == 0
+        assert result["injected_ids"] == []
+
+    def test_env_var_timeout_override(self, monkeypatch):
+        monkeypatch.setenv("PLUR_BRIDGE_TIMEOUT", "10")
+        bridge = PlurBridge()
+        assert bridge._timeout == 10
+
+    def test_env_var_inject_timeout_override(self, monkeypatch):
+        monkeypatch.setenv("PLUR_BRIDGE_INJECT_TIMEOUT", "2")
+        bridge = PlurBridge()
+        assert bridge._inject_timeout == 2
+
+    def test_env_var_retry_false_disables_retries(self, monkeypatch):
+        monkeypatch.setenv("PLUR_BRIDGE_RETRY", "false")
+        bridge = PlurBridge()
+        bridge._binary = "/usr/local/bin/plur"
+
+        with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("plur", 30)) as mock_run, \
+             patch("time.sleep") as mock_sleep:
+            result = bridge.call("recall", ["test"], retries=3)
+
+        # retries disabled: only 1 attempt despite retries=3
+        assert mock_run.call_count == 1
+        assert mock_sleep.call_count == 0
+        assert result == {"results": [], "count": 0, "injected_ids": []}
 
     def test_learn_builds_correct_args(self):
         bridge = PlurBridge()
@@ -548,18 +595,26 @@ class TestLockRetry:
             # All three backoff delays consumed (jitter pinned to 0)
             assert [c[0][0] for c in mock_sleep.call_args_list] == [1.0, 2.0, 4.0]
 
-    def test_timeout_during_lock_retry_does_not_retry(self):
-        """subprocess.TimeoutExpired is NOT a lock failure — must bubble as
-        PlurBridgeError immediately without further retries."""
+    def test_timeout_triggers_outer_retry_not_lock_retry(self):
+        """subprocess.TimeoutExpired is handled by the OUTER timeout-retry
+        layer (Miles's, slow 5/15/30s, graceful degradation), NOT the INNER
+        lock-retry layer (ours, fast jittered). Lock retries must not fire
+        on hangs — those are a different failure mode."""
         bridge = PlurBridge()
         bridge._binary = "/usr/local/bin/plur"
 
         with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("plur", 30)) as mock_run, \
-             patch("plur_hermes.bridge.time.sleep"):
-            with pytest.raises(PlurBridgeError, match="timed out"):
-                bridge.call("learn", ["test"])
-            # TimeoutExpired bubbles directly from _invoke_cli; not retried
-            assert mock_run.call_count == 1
+             patch("plur_hermes.bridge.time.sleep") as mock_sleep:
+            # All timeouts → graceful safe fallback after outer retries exhaust
+            result = bridge.call("learn", ["test"])
+            # Outer retry layer: _DEFAULT_RETRIES + 1 attempts = 4 total
+            assert mock_run.call_count == 4
+            # Sleep called for outer-retry delays (5, 15, 30) — not lock-retry jittered
+            sleep_args = [c.args[0] for c in mock_sleep.call_args_list]
+            assert sleep_args == [5, 15, 30], \
+                f"Expected outer-retry delays [5, 15, 30]; got {sleep_args}"
+            # Safe fallback returned (no exception raised)
+            assert result == {"results": [], "count": 0, "injected_ids": []}
 
     def test_jitter_breaks_phase_lock(self):
         """Retry delays must include ±50% jitter so two concurrent bridges
