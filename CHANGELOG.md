@@ -1,5 +1,50 @@
 # Changelog
 
+## 0.9.9 (2026-05-14)
+
+Concurrent writes — hardened.
+
+- Multi-agent writes serialize cleanly
+- Failed saves logged, not silent
+- Pipelines auto-resume mid-run
+- Jittered retries bound wall time
+
+### What changed (Hermes plugin)
+
+When two agents write engrams at the same time — a Twitter cron and a Telegram bot, say — they can race for the engram-store lock. Before 0.9.9, the second writer's call would fail silently and the engram would be lost. 0.9.9 retries lock-contended writes with jittered exponential backoff, surfaces typed `PlurLockError` exceptions for callers that want to react, and bounds wall-time exposure via a circuit breaker.
+
+The meta-extraction pipeline now preserves recovery state on partial failure — if 3 of 10 saves fail mid-run, the failed three are retained and can be retried via an empty-body resubmit (caller doesn't have to re-run the full 6-stage pipeline).
+
+### Improvements
+
+- **Layered retry**: outer layer handles CLI hangs (TimeoutExpired → graceful safe-fallback after 5/15/30s backoff). Inner layer handles lock contention (PlurLockError → jittered 1/2/4s backoff). Both honor `PLUR_BRIDGE_RETRY=false`.
+- **`PlurLockError`** — new typed exception (subclass of `PlurBridgeError`) so callers can distinguish transient lock contention from permanent errors. Backwards compatible: existing `except PlurBridgeError` still catches it.
+- **Jitter** (±50% on each retry delay) defeats thundering-herd phase-lock between concurrent bridge instances.
+- **Failed engram saves** in the meta-pipeline are now logged at WARNING with `exc_info=True` instead of silently swallowed by `except: pass`. The response surfaces `saved` / `failed` / `skipped` / `failed_engrams` counts.
+- **Stage-5 retry path** in `submit_analysis`: after a partial save failure, the pipeline state is preserved with only the failed engrams. Resubmit with `submit_analysis(session_id, [])` to retry exactly those — no need to re-run the full pipeline.
+- **Crash-resume guidance**: `start_extraction` on a stage-5 retry-pending session returns `status: "retry_pending"` with explicit instructions instead of confusing `status: "resuming"` with empty prompts.
+- **Circuit breaker** in `_save_and_finalize` (3 consecutive failures → defer remaining engrams) bounds wall time on sustained contention. Prevents N × bridge-timeout blocking when the engram store is unreachable.
+- **JSON error message extraction** unwraps `{"error": "..."}` from `--json` CLI output authoritatively, suppressing npm/Node stderr noise from leaking into user-facing exception messages.
+
+### Internal
+
+- New `_call_with_lock_retry()` helper extracts the inner retry; `_invoke_cli()` is the single CLI invocation that propagates `TimeoutExpired` / `FileNotFoundError` to the outer layer and raises `PlurLockError` / `PlurBridgeError` for callers.
+- `_is_lock_failure()` regex covers 3 phrasings — survives minor wording changes in core's `withLock` / `withAsyncLock` messages.
+- 38 net-new tests (42 → 88 total) covering retry boundaries, jitter bounds, JSON-envelope edge cases (null/empty/malformed/array), circuit breaker, multi-round retry, stderr-noise scenarios, `_save_state` failure path, None-responses guard, bytecode-level `-O` safety.
+- 4 evaluator audit iterations (critic ×4, dijkstra ×2, data ×3). Final critic verdict: ready to merge.
+
+### Versions
+
+- `@plur-ai/core` 0.9.8 → 0.9.9
+- `@plur-ai/mcp` 0.9.8 → 0.9.9
+- `@plur-ai/cli` 0.9.4 → 0.9.9
+- `plur-hermes` 0.9.4 → 0.9.9
+
+### Deferred to follow-up
+
+- Core-side `withLock` retry-budget bump (needs configurable per-consumer defaults, not a global change).
+- `_find_duplicate` swallows `PlurLockError` silently — pre-existing, results in one extra CLI call under contention, not data loss.
+
 ## 0.9.8 (2026-05-06)
 
 `plur_learn` with a remote scope now returns the **server-canonical
