@@ -6,11 +6,14 @@ after each stage transition. Resumes on crash. 24h TTL on state files.
 """
 
 import json
+import logging
 import os
 import time
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -69,6 +72,21 @@ class MetaPipeline:
     def start_extraction(self, session_id: str, dry_run: bool = False) -> dict:
         existing = self._load_state(session_id)
         if existing and existing.stage > 0:
+            # Stage 5 with preserved meta_engrams is a retry-pending state,
+            # not a normal resume. The caller has no prompts to process — they
+            # must call submit_analysis with an empty body to re-attempt the
+            # previously-failed saves.
+            if existing.stage == 5 and existing.meta_engrams and not existing.pending_prompts:
+                return {
+                    "status": "retry_pending",
+                    "message": (
+                        f"Previous run had {len(existing.meta_engrams)} unfinished "
+                        f"meta-engram saves. Call submit_analysis with an empty "
+                        f"body ([]) to retry them."
+                    ),
+                    "stage": 5,
+                    "failed_engrams": existing.meta_engrams,
+                }
             return {
                 "status": "resuming",
                 "message": f"Pipeline interrupted at stage {existing.stage}/6. Resuming.",
@@ -111,7 +129,7 @@ class MetaPipeline:
             "message": f"Process these {len(prompts)} prompts and call plur_meta_submit_analysis with your responses.",
         }
 
-    def submit_analysis(self, session_id: str, responses: list[str]) -> dict:
+    def submit_analysis(self, session_id: str, responses: list[str] | None) -> dict:
         state = self._load_state(session_id)
         if not state:
             return {
@@ -119,7 +137,20 @@ class MetaPipeline:
                 "message": "No extraction in progress. Call plur_extract_meta first.",
             }
 
-        state.collected_responses.extend(responses)
+        # Stage 5 = retry-pending. Ignore any responses passed in; the retry
+        # operates on `state.meta_engrams` (the preserved failed engrams), not
+        # on response data. Don't pollute collected_responses with garbage.
+        if state.stage == 5:
+            if responses:
+                logger.warning(
+                    "meta_pipeline: stage-5 submit_analysis received %d response(s); "
+                    "ignoring (stage 5 is retry-only, operates on preserved engrams)",
+                    len(responses),
+                )
+        else:
+            # Guard against None — type hint says list but MCP wrappers can
+            # plausibly pass None for "no responses yet".
+            state.collected_responses.extend(responses or [])
 
         if state.stage == 1:
             state.stage = 2
@@ -129,7 +160,14 @@ class MetaPipeline:
 
             if len(clusters) == 0:
                 self._cleanup_state(session_id)
-                return {"status": "complete", "meta_engrams": [], "message": "No clusters found."}
+                return {
+                    "status": "complete",
+                    "meta_engrams": [],
+                    "count": 0,
+                    "saved": 0,
+                    "failed": 0,
+                    "message": "No clusters found.",
+                }
 
             prompts = []
             for i, cluster in enumerate(clusters):
@@ -152,7 +190,14 @@ class MetaPipeline:
 
             if len(aligned) == 0:
                 self._cleanup_state(session_id)
-                return {"status": "complete", "meta_engrams": [], "message": "No alignments passed quality gate."}
+                return {
+                    "status": "complete",
+                    "meta_engrams": [],
+                    "count": 0,
+                    "saved": 0,
+                    "failed": 0,
+                    "message": "No alignments passed quality gate.",
+                }
 
             prompts = []
             for alignment in aligned:
@@ -174,26 +219,139 @@ class MetaPipeline:
 
             if len(meta_engrams) == 0:
                 self._cleanup_state(session_id)
-                return {"status": "complete", "meta_engrams": [], "message": "No meta-engrams passed formulation."}
+                return {
+                    "status": "complete",
+                    "meta_engrams": [],
+                    "count": 0,
+                    "saved": 0,
+                    "failed": 0,
+                    "message": "No meta-engrams passed formulation.",
+                }
 
-            if not state.dry_run:
-                for me in meta_engrams:
-                    try:
-                        self._bridge.learn(me["statement"], scope="global", type="architectural", domain=me.get("domain", "meta"))
-                    except Exception:
-                        pass
+            return self._save_and_finalize(state, meta_engrams, retry_round=False)
 
-            self._cleanup_state(session_id)
-            return {
-                "status": "complete",
-                "meta_engrams": meta_engrams,
-                "count": len(meta_engrams),
-                "message": f"Extracted {len(meta_engrams)} meta-engrams." + (" (dry run — not saved)" if state.dry_run else ""),
-            }
+        elif state.stage == 5:
+            # Retry path: caller is re-submitting after partial-save failure.
+            # state.meta_engrams holds only the engrams that previously failed.
+            # Ignore any new responses — we operate on preserved state only.
+            if not state.meta_engrams:
+                self._cleanup_state(session_id)
+                return {
+                    "status": "error",
+                    "message": "Stage-5 retry called but no failed engrams preserved.",
+                }
+            return self._save_and_finalize(state, state.meta_engrams, retry_round=True)
 
         else:
             self._cleanup_state(session_id)
             return {"status": "error", "message": f"Unexpected stage: {state.stage}"}
+
+    # ------------------------------------------------------------------
+    # save helpers
+    # ------------------------------------------------------------------
+
+    # Bound wall-time exposure under sustained contention. After this many
+    # CONSECUTIVE failures in a single save loop, abort the remaining engrams
+    # and surface partial results immediately so the caller isn't blocked for
+    # `len(meta_engrams) × bridge_timeout` seconds.
+    _MAX_CONSECUTIVE_SAVE_FAILURES = 3
+
+    def _save_and_finalize(self, state: 'MetaPipelineState', engrams_to_save: list[dict],
+                           retry_round: bool) -> dict:
+        """Run the save loop with a consecutive-failure circuit breaker, then
+        either clean up state (all good) or preserve it for retry (partial)."""
+        session_id = state.session_id
+        saved_count = 0
+        failed_count = 0
+        skipped_count = 0
+        failed_engrams: list[dict] = []
+        consecutive_failures = 0
+        circuit_broke = False
+
+        if not state.dry_run:
+            for idx, me in enumerate(engrams_to_save):
+                if circuit_broke:
+                    # Remaining engrams are deferred, not failed — caller can
+                    # retry them later via stage-5 resubmit.
+                    skipped_count += 1
+                    failed_engrams.append(me)
+                    continue
+                try:
+                    self._bridge.learn(me["statement"], scope="global",
+                                       type="architectural",
+                                       domain=me.get("domain", "meta"))
+                    saved_count += 1
+                    consecutive_failures = 0
+                except Exception as e:
+                    failed_count += 1
+                    consecutive_failures += 1
+                    failed_engrams.append(me)
+                    logger.warning(
+                        "meta_pipeline: failed to save meta-engram (%s): %s",
+                        me.get("statement", "")[:60], e,
+                        exc_info=True,
+                    )
+                    if consecutive_failures >= self._MAX_CONSECUTIVE_SAVE_FAILURES:
+                        circuit_broke = True
+                        remaining = len(engrams_to_save) - idx - 1
+                        logger.warning(
+                            "meta_pipeline: circuit-breaker tripped after %d "
+                            "consecutive failures; deferring %d remaining engrams",
+                            consecutive_failures, remaining,
+                        )
+
+        any_unfinished = failed_count > 0 or skipped_count > 0
+        if not any_unfinished:
+            self._cleanup_state(session_id)
+            state_status = "cleaned"
+        else:
+            # Preserve only the unfinished engrams so the next retry round
+            # targets exactly them. Guard _save_state in case disk is gone —
+            # we still want to return a structured response.
+            state.meta_engrams = failed_engrams
+            try:
+                self._save_state(state)
+                state_status = "preserved_for_retry"
+            except Exception as save_err:
+                logger.error(
+                    "meta_pipeline: failed to persist retry state (%s); "
+                    "in-memory failed_engrams returned but not recoverable on next session",
+                    save_err, exc_info=True,
+                )
+                state_status = "preservation_failed"
+
+        total = len(engrams_to_save)
+        message = (
+            f"Retry round: re-attempted {total} previously-failed meta-engrams."
+            if retry_round
+            else f"Extracted {total} meta-engrams."
+        )
+        if state.dry_run:
+            message += " (dry run — not saved)"
+        elif any_unfinished:
+            parts = [f"Saved {saved_count}"]
+            if failed_count:
+                parts.append(f"{failed_count} failed")
+            if skipped_count:
+                parts.append(f"{skipped_count} deferred (circuit breaker)")
+            message += " " + ", ".join(parts) + "."
+            if state_status == "preserved_for_retry":
+                message += " Resubmit with an empty body to retry."
+            elif state_status == "preservation_failed":
+                message += " WARNING: state file write failed; retry data lost."
+
+        return {
+            "status": "complete",
+            "meta_engrams": engrams_to_save,
+            "count": total,
+            "saved": saved_count,
+            "failed": failed_count,
+            "skipped": skipped_count,
+            "failed_engrams": failed_engrams,
+            "state": state_status,
+            "circuit_broke": circuit_broke,
+            "message": message,
+        }
 
     def _cluster_triples(self, responses: list[str]) -> list[dict]:
         triples = []
