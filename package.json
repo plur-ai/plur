@@ -4,6 +4,8 @@
   "scripts": {
     "build": "pnpm -r build",
     "test": "vitest run",
+    "test:integration": "vitest run packages/core/test/remote-integration.test.ts",
+    "test:smoke": "vitest run packages/core/test/remote-smoke.test.ts",
     "test:watch": "vitest"
   },
   "devDependencies": {

@@ -10,7 +10,7 @@ You correct your agent's coding style on Monday. On Tuesday, it makes the same m
 
 PLUR fixes this. Install it once, and corrections, preferences, and conventions persist — across sessions, tools, and machines. Your memory is stored as plain YAML on your disk. No cloud, no API calls, no black box.
 
-The interesting part: **Haiku with PLUR memory outperforms Opus without it** — 2.6x better on tool routing, at roughly 10x less cost. Turns out the bottleneck isn't model intelligence. It's context.
+The interesting part: in our tool-routing and local-knowledge benchmark, **Haiku with PLUR memory outperformed Opus without it** — 2.6x better on tool routing, at roughly 10x less cost. Turns out the bottleneck isn't model intelligence. It's context.
 
 ## Install
 
@@ -32,12 +32,10 @@ For **multi-project setups**, use domain/scope to separate knowledge:
 
 ```bash
 cd ~/projects/my-app
-npx @plur-ai/cli@0.9.1 init --domain myapp --scope project:my-app
+npx @plur-ai/cli@0.9.4 init --domain myapp --scope project:my-app
 ```
 
 This creates a `.plur.yaml` in the project with defaults that hooks apply automatically. Engrams learned in that project are tagged; recall filters by scope but always includes global knowledge.
-
-> Pin to `@0.9.1` — the `0.9.2` latest tag on npm is bricked (`Dynamic require of "os" is not supported`). Tracking in [#59](https://github.com/plur-ai/plur/issues/59).
 
 ### Global install (faster startup)
 
@@ -59,9 +57,10 @@ That's it. PLUR works in the background from here. No workflow changes needed �
 
 ```bash
 pip install plur-hermes
+npm install -g @plur-ai/cli@0.9.4
 ```
 
-The plugin registers automatically via Hermes' plugin system. It injects relevant memories before each LLM call, extracts learnings from agent responses, and exposes all PLUR tools to the agent. Requires the PLUR CLI — pin to the last working version: `npm install -g @plur-ai/cli@0.9.1` (the `0.9.2` latest tag on npm is bricked; tracking in [#59](https://github.com/plur-ai/plur/issues/59)).
+The plugin registers automatically via Hermes' plugin system. It injects relevant memories before each LLM call, extracts learnings from agent responses, and exposes all PLUR tools to the agent. Hermes shells out to the PLUR CLI; current verified pairing is `plur-hermes==0.9.4` with `@plur-ai/cli@0.9.4`.
 
 ### Verify it works
 
@@ -104,7 +103,7 @@ const plur = new Plur()
 
 // Learn from a correction
 plur.learn('toEqual() in Vitest is strict — use toMatchObject() for partial matching', {
-  type: 'correction',
+  type: 'behavioral',
   scope: 'project:my-app',
   domain: 'dev/testing'
 })
@@ -142,7 +141,7 @@ plur.sync('git@github.com:you/plur-memory.git')
 | `plur_recall_hybrid` | Retrieve relevant memories (BM25 + embeddings) |
 | `plur_inject_hybrid` | Select engrams for current task within token budget |
 | `plur_feedback` | Rate relevance (trains quality over time) |
-| `plur_forget` | Retire a memory (activaton decays, eventually pruned) |
+| `plur_forget` | Retire a memory (activation decays, eventually pruned) |
 | `plur_capture` | Record an event — incident, resolution, session milestone |
 | `plur_timeline` | Query episode history by time, agent, or channel |
 | `plur_ingest` | Extract engrams from text automatically |
@@ -162,7 +161,7 @@ We ran 19 decisive contests across three Claude models (Haiku, Sonnet, Opus). Sa
 
 **31 wins, 4 losses (89% win rate).** Without memory, agents got house rules right 10–38% of the time depending on model — with PLUR, 12–0 across every model. Memory isn't a reasoning crutch — it's information the model literally cannot infer.
 
-The cost insight was unexpected: Haiku + PLUR scored 0.80 on discoverability. Opus alone scored 0.31. A $0.25/MTok model with memory beat a $15/MTok model without it.
+The cost insight was unexpected: in the reported local-knowledge benchmark setup, Haiku + PLUR scored 0.80 on discoverability while Opus alone scored 0.31. A $0.25/MTok model with memory beat a $15/MTok model without it on this task set.
 
 [Full methodology →](https://plur.ai/benchmark.html)
 

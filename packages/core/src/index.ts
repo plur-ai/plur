@@ -11,7 +11,6 @@ import { searchEngrams } from './fts.js'
 import { selectAndSpread, scoreEngramsPublic, formatWithLayer, assignLayer } from './inject.js'
 import { reactivate, applyBatchDecay, type BatchDecayResult } from './decay.js'
 import { captureEpisode, queryTimeline } from './episodes.js'
-import { detectConflicts } from './conflict.js'
 import { agenticSearch } from './agentic-search.js'
 import { embeddingSearch, embeddingSearchWithScores, type SimilarityResult } from './embeddings.js'
 import { hybridSearch, hybridSearchWithMeta, type HybridSearchResult } from './hybrid-search.js'
@@ -346,11 +345,13 @@ export class Plur {
     return null
   }
 
-  /** Content hash fast-path dedup. */
-  private _hashDedup(statement: string, engrams: Engram[]): Engram | null {
+  /** Content hash fast-path dedup. Scope-aware: same statement in a different scope is a promotion, not a duplicate. */
+  private _hashDedup(statement: string, engrams: Engram[], scope?: string): Engram | null {
     const hash = computeContentHash(statement)
     for (const e of engrams) {
-      if (e.status === 'active' && (e as any).content_hash === hash) return e
+      if (e.status === 'active' && (e as any).content_hash === hash) {
+        if (scope === undefined || e.scope === scope) return e
+      }
     }
     return null
   }
@@ -388,19 +389,19 @@ export class Plur {
       const engrams = loadEngrams(this.paths.engrams)
       const allEngrams = this._loadAllEngrams()
 
-      // Idea 29: Content hash fast-path dedup
-      const hashMatch = this._hashDedup(statement, allEngrams)
+      const scope = context?.scope ?? 'global'
+
+      // Idea 29: Content hash fast-path dedup (scope-aware — issue #136)
+      const hashMatch = this._hashDedup(statement, allEngrams, scope)
       if (hashMatch) return hashMatch
 
       const id = generateEngramId(allEngrams)
-      const scope = context?.scope ?? 'global'
       const now = new Date().toISOString()
       const type = context?.type ?? 'behavioral'
       const cogLevel = TYPE_TO_COGNITIVE[type] ?? 'remember'
       const commitment = context?.commitment ?? 'leaning'
 
-      const conflictingEngrams = detectConflicts({ statement, scope }, allEngrams)
-      const conflictIds = conflictingEngrams.map(e => e.id)
+      const conflictIds: string[] = []
 
       // Auto-set memory_class based on type if not explicitly provided (SP2 Idea 3)
       const TYPE_TO_MEMORY_CLASS: Record<string, 'semantic' | 'episodic' | 'procedural' | 'metacognitive'> = {
@@ -474,7 +475,11 @@ export class Plur {
       // on failure it stays in the outbox for retry at next session start
       // or plur_sync.
       const remoteDriver = this._resolveRemoteStoreForScope(scope)
-      if (remoteDriver) {
+      if (remoteDriver && context?.visibility === 'private') {
+        // Private engrams stay local — sending to a shared remote contradicts
+        // the "only I see this" semantics. See: https://github.com/plur-ai/plur/issues/90
+        logger.warning(`[plur:learn] private engram not routed to remote (scope=${scope}), writing locally`)
+      } else if (remoteDriver) {
         const storeEntry = (this.config.stores ?? []).find(s => s.url && s.scope === scope && !s.readonly)
         ;(engram as any).structured_data = {
           ...((engram as any).structured_data ?? {}),
@@ -579,7 +584,7 @@ export class Plur {
     // representation we hand back to the caller. On failure, save to
     // local outbox for retry (issue #26).
     const allEngrams = this._loadAllEngrams()
-    const hashMatch = this._hashDedup(statement, allEngrams)
+    const hashMatch = this._hashDedup(statement, allEngrams, scope)
     if (hashMatch) return hashMatch
     const now = new Date().toISOString()
     const localPlaceholder = this._buildEngramShape(statement, scope, context, now)
@@ -693,7 +698,7 @@ export class Plur {
   /** Build deps for learn-async module. */
   private _learnAsyncDeps() {
     return {
-      hashDedup: (statement: string) => this._hashDedup(statement, this._loadAllEngrams()),
+      hashDedup: (statement: string, scope?: string) => this._hashDedup(statement, this._loadAllEngrams(), scope),
       recallHybrid: (query: string, options?: { limit?: number }) => this.recallHybrid(query, options),
       recall: (query: string, options?: { limit?: number }) => this.recall(query, options),
       learn: (statement: string, context?: LearnContext) => this.learn(statement, context),
@@ -1691,6 +1696,28 @@ Generate an improved version of the procedure that prevents this failure. Return
       versioned_engram_count: versionedCount,
       outbox_count: this.outboxCount(),
     }
+  }
+
+  /**
+   * Remove all conflict relations from every local engram.
+   * Used after tension-detection redesign to clear accumulated false positives.
+   */
+  purgeTensions(): { purged_count: number; engrams_modified: number } {
+    const engrams = this._loadCached(this.paths.engrams)
+    let purgedCount = 0
+    let modified = 0
+    for (const e of engrams) {
+      const len = e.relations?.conflicts?.length ?? 0
+      if (len > 0) {
+        e.relations!.conflicts = []
+        purgedCount += len
+        modified++
+      }
+    }
+    if (modified > 0) {
+      this._writeEngrams(this.paths.engrams, engrams)
+    }
+    return { purged_count: purgedCount, engrams_modified: modified }
   }
 
   /**
