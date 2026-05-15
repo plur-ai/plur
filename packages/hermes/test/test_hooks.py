@@ -1,6 +1,8 @@
 """Tests for injection feedback in post_llm_call and signal detection helpers."""
 
+import os
 import pytest
+from unittest.mock import MagicMock, patch
 from plur_hermes import _detect_injection_signal, _get_trigrams, _FEEDBACK_MIN_CONFIDENCE
 
 
@@ -62,20 +64,38 @@ class TestDetectInjectionSignal:
         assert confidence >= _FEEDBACK_MIN_CONFIDENCE
 
     def test_negative_no_engram_topic_nearby(self):
-        # Correction marker present but engram topic words not in the window
         engram = "deploy with rsync to production servers"
         response = "Actually, that's wrong about completely unrelated topic X."
         signal, _ = _detect_injection_signal(engram, response)
-        # rsync, deploy, production, servers — none likely in the window around marker
-        # Acceptable if None or negative; just check it doesn't crash
-        assert signal in (None, "negative")
+        assert signal is None
+
+    def test_multi_engram_mixed_signals(self):
+        # Positive match
+        s1, c1 = _detect_injection_signal(
+            "always use pnpm not npm",
+            "I'll always use pnpm not npm. Actually, the deploy path is wrong."
+        )
+        assert s1 == "positive"
+
+        # Negative match — response contradicts engram without repeating it verbatim
+        s2, c2 = _detect_injection_signal(
+            "always commit with --no-verify to skip hooks",
+            "I'll always use pnpm not npm. Actually, skipping hooks with --no-verify is dangerous."
+        )
+        assert s2 == "negative"
+
+        # No signal
+        s3, c3 = _detect_injection_signal(
+            "use snake_case for Python variables",
+            "I'll always use pnpm not npm. Actually, the deploy path is wrong."
+        )
+        assert s3 is None
 
 
 class TestPostLlmCallFeedback:
     """Integration-style tests for the feedback path via mock bridge."""
 
     def _make_ctx(self):
-        """Return a minimal ctx stub that records registered hooks."""
         class Ctx:
             def __init__(self):
                 self.hooks = {}
@@ -89,8 +109,8 @@ class TestPostLlmCallFeedback:
 
         return Ctx()
 
-    def _make_bridge(self, mocker):
-        bridge = mocker.MagicMock()
+    def _make_bridge(self):
+        bridge = MagicMock()
         bridge._plur_path = None
         bridge.status.return_value = {"engram_count": 10}
         bridge.inject.return_value = {
@@ -103,82 +123,78 @@ class TestPostLlmCallFeedback:
         bridge.feedback.return_value = {"ok": True}
         return bridge
 
-    def test_positive_feedback_sent(self, mocker):
+    @patch.dict(os.environ, {"PLUR_INJECTION_FEEDBACK": "true"})
+    def test_positive_feedback_sent(self):
         import plur_hermes
-        bridge = self._make_bridge(mocker)
-        mocker.patch("plur_hermes.PlurBridge", return_value=bridge)
-        mocker.patch.dict("os.environ", {"PLUR_INJECTION_FEEDBACK": "true"})
+        bridge = self._make_bridge()
+        with patch("plur_hermes.PlurBridge", return_value=bridge):
+            ctx = self._make_ctx()
+            plur_hermes.register(ctx)
+            plur_hermes._session_state["s1"] = {
+                "count": 0, "started": 0,
+                "injected_ids": ["ENG-001"],
+                "injected_engrams": [{"id": "ENG-001", "statement": "always use pnpm not npm"}],
+            }
 
-        ctx = self._make_ctx()
-        plur_hermes.register(ctx)
-        plur_hermes._session_state["s1"] = {
-            "count": 0, "started": 0,
-            "injected_ids": ["ENG-001"],
-            "injected_engrams": [{"id": "ENG-001", "statement": "always use pnpm not npm"}],
-        }
+            ctx.hooks["post_llm_call"](
+                "s1",
+                "Sure, I'll use always use pnpm not npm for this project."
+            )
 
-        ctx.hooks["post_llm_call"](
-            "s1",
-            "Sure, I'll use always use pnpm not npm for this project."
-        )
+            bridge.feedback.assert_called_once()
+            batch = bridge.feedback.call_args[1]["batch"]
+            assert ("ENG-001", "positive") in batch
 
-        bridge.feedback.assert_called_once()
-        batch = bridge.feedback.call_args[1]["batch"]
-        assert ("ENG-001", "positive") in batch
-
-    def test_feedback_disabled_by_env(self, mocker):
+    @patch.dict(os.environ, {"PLUR_INJECTION_FEEDBACK": "false"})
+    def test_feedback_disabled_by_env(self):
         import plur_hermes
-        bridge = self._make_bridge(mocker)
-        mocker.patch("plur_hermes.PlurBridge", return_value=bridge)
-        mocker.patch.dict("os.environ", {"PLUR_INJECTION_FEEDBACK": "false"})
+        bridge = self._make_bridge()
+        with patch("plur_hermes.PlurBridge", return_value=bridge):
+            ctx = self._make_ctx()
+            plur_hermes.register(ctx)
+            plur_hermes._session_state["s2"] = {
+                "count": 0, "started": 0,
+                "injected_ids": ["ENG-001"],
+                "injected_engrams": [{"id": "ENG-001", "statement": "always use pnpm not npm"}],
+            }
 
-        ctx = self._make_ctx()
-        plur_hermes.register(ctx)
-        plur_hermes._session_state["s2"] = {
-            "count": 0, "started": 0,
-            "injected_ids": ["ENG-001"],
-            "injected_engrams": [{"id": "ENG-001", "statement": "always use pnpm not npm"}],
-        }
+            ctx.hooks["post_llm_call"](
+                "s2",
+                "I'll use always use pnpm not npm for this project."
+            )
 
-        ctx.hooks["post_llm_call"](
-            "s2",
-            "I'll use always use pnpm not npm for this project."
-        )
+            bridge.feedback.assert_not_called()
 
-        bridge.feedback.assert_not_called()
-
-    def test_no_feedback_on_unrelated_response(self, mocker):
+    @patch.dict(os.environ, {"PLUR_INJECTION_FEEDBACK": "true"})
+    def test_no_feedback_on_unrelated_response(self):
         import plur_hermes
-        bridge = self._make_bridge(mocker)
-        mocker.patch("plur_hermes.PlurBridge", return_value=bridge)
-        mocker.patch.dict("os.environ", {"PLUR_INJECTION_FEEDBACK": "true"})
+        bridge = self._make_bridge()
+        with patch("plur_hermes.PlurBridge", return_value=bridge):
+            ctx = self._make_ctx()
+            plur_hermes.register(ctx)
+            plur_hermes._session_state["s3"] = {
+                "count": 0, "started": 0,
+                "injected_ids": ["ENG-001"],
+                "injected_engrams": [{"id": "ENG-001", "statement": "always use pnpm not npm"}],
+            }
 
-        ctx = self._make_ctx()
-        plur_hermes.register(ctx)
-        plur_hermes._session_state["s3"] = {
-            "count": 0, "started": 0,
-            "injected_ids": ["ENG-001"],
-            "injected_engrams": [{"id": "ENG-001", "statement": "always use pnpm not npm"}],
-        }
+            ctx.hooks["post_llm_call"]("s3", "The sky is blue and the sun is bright today.")
 
-        ctx.hooks["post_llm_call"]("s3", "The sky is blue and the sun is bright today.")
+            bridge.feedback.assert_not_called()
 
-        bridge.feedback.assert_not_called()
-
-    def test_engrams_cleared_after_feedback(self, mocker):
+    @patch.dict(os.environ, {"PLUR_INJECTION_FEEDBACK": "true"})
+    def test_engrams_cleared_after_feedback(self):
         import plur_hermes
-        bridge = self._make_bridge(mocker)
-        mocker.patch("plur_hermes.PlurBridge", return_value=bridge)
-        mocker.patch.dict("os.environ", {"PLUR_INJECTION_FEEDBACK": "true"})
+        bridge = self._make_bridge()
+        with patch("plur_hermes.PlurBridge", return_value=bridge):
+            ctx = self._make_ctx()
+            plur_hermes.register(ctx)
+            plur_hermes._session_state["s4"] = {
+                "count": 0, "started": 0,
+                "injected_ids": ["ENG-001"],
+                "injected_engrams": [{"id": "ENG-001", "statement": "always use pnpm not npm"}],
+            }
 
-        ctx = self._make_ctx()
-        plur_hermes.register(ctx)
-        plur_hermes._session_state["s4"] = {
-            "count": 0, "started": 0,
-            "injected_ids": ["ENG-001"],
-            "injected_engrams": [{"id": "ENG-001", "statement": "always use pnpm not npm"}],
-        }
+            ctx.hooks["post_llm_call"]("s4", "I will always use pnpm not npm.")
 
-        ctx.hooks["post_llm_call"]("s4", "I will always use pnpm not npm.")
-
-        assert plur_hermes._session_state["s4"]["injected_engrams"] == []
+            assert plur_hermes._session_state["s4"]["injected_engrams"] == []
