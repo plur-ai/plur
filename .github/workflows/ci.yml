@@ -6,9 +6,15 @@ on:
   pull_request:
     branches: [main]
 
+# Principle of least privilege: workflow only needs to checkout and run tests.
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     strategy:
       matrix:
         node-version: [20, 22]
