@@ -178,6 +178,24 @@ export class Plur {
     if (this.config.embeddings?.enabled === false) {
       setEmbeddingsEnabled(false, 'embeddings disabled in config.yaml (embeddings.enabled = false)')
     }
+    // Auto-purge legacy tension false positives (#156). PR #138 removed all
+    // conflict creation from the dedup prompt, so any remaining conflicts are
+    // false positives from the old system. Run once, mark with a sentinel file.
+    this._autoPurgeLegacyTensions()
+  }
+
+  private _autoPurgeLegacyTensions(): void {
+    const sentinel = join(this.paths.root, '.tensions-purged')
+    if (fs.existsSync(sentinel)) return
+    try {
+      const result = this.purgeTensions()
+      if (result.purged_count > 0) {
+        logger.info(`[plur] Auto-purged ${result.purged_count} legacy tension refs from ${result.engrams_modified} engrams across ${result.stores_cleaned} stores`)
+      }
+      fs.writeFileSync(sentinel, new Date().toISOString() + '\n', 'utf8')
+    } catch {
+      // Non-fatal — purge will retry next startup
+    }
   }
 
   /**
@@ -1702,22 +1720,39 @@ Generate an improved version of the procedure that prevents this failure. Return
    * Remove all conflict relations from every local engram.
    * Used after tension-detection redesign to clear accumulated false positives.
    */
-  purgeTensions(): { purged_count: number; engrams_modified: number } {
-    const engrams = this._loadCached(this.paths.engrams)
+  purgeTensions(): { purged_count: number; engrams_modified: number; stores_cleaned: number } {
+    // Collect all filesystem store paths (primary + project-scoped + pack stores)
+    const storePaths = new Set<string>()
+    storePaths.add(this.paths.engrams)
+    for (const store of this.config.stores ?? []) {
+      if (store.path && !store.url) storePaths.add(store.path)
+    }
+
     let purgedCount = 0
     let modified = 0
-    for (const e of engrams) {
-      const len = e.relations?.conflicts?.length ?? 0
-      if (len > 0) {
-        e.relations!.conflicts = []
-        purgedCount += len
-        modified++
+    let storesCleaned = 0
+    for (const storePath of storePaths) {
+      try {
+        const engrams = this._loadCached(storePath)
+        let storeModified = 0
+        for (const e of engrams) {
+          const len = e.relations?.conflicts?.length ?? 0
+          if (len > 0) {
+            e.relations!.conflicts = []
+            purgedCount += len
+            modified++
+            storeModified++
+          }
+        }
+        if (storeModified > 0) {
+          this._writeEngrams(storePath, engrams)
+          storesCleaned++
+        }
+      } catch {
+        // Store file missing or unreadable — skip
       }
     }
-    if (modified > 0) {
-      this._writeEngrams(this.paths.engrams, engrams)
-    }
-    return { purged_count: purgedCount, engrams_modified: modified }
+    return { purged_count: purgedCount, engrams_modified: modified, stores_cleaned: storesCleaned }
   }
 
   /**
