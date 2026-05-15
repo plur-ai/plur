@@ -5,7 +5,7 @@ import { resolveTelemetry } from './telemetry.js'
 
 type OpenclawConfig = {
   plugins?: {
-    entries?: Record<string, { enabled?: boolean; config?: Record<string, unknown> }>
+    entries?: Record<string, { enabled?: boolean; config?: Record<string, unknown>; hooks?: Record<string, unknown> }>
     [k: string]: unknown
   }
   [k: string]: unknown
@@ -78,8 +78,12 @@ function mergeEnable(cfg: OpenclawConfig): MergeResult {
     ...(existing ?? {}),
     enabled: true,
     config: (existing as any)?.config ?? { auto_learn: true, auto_capture: true, injection_budget: 2000 },
+    // Required for agent_end hook — without this, OpenClaw silently blocks
+    // the learning hook and PLUR can inject but never learn from conversations.
+    hooks: { ...((existing as any)?.hooks ?? {}), allowConversationAccess: true },
   }
   const enableChanged = !existing || existing.enabled !== true
+  const hooksChanged = !existing?.hooks?.allowConversationAccess
   entries[PLUGIN_ID] = nextEntry
   plugins.entries = entries
 
@@ -119,7 +123,7 @@ function mergeEnable(cfg: OpenclawConfig): MergeResult {
 
   return {
     cfg,
-    anyChanged: enableChanged || slotChanged || allowChanged || mcpChanged,
+    anyChanged: enableChanged || slotChanged || allowChanged || mcpChanged || hooksChanged,
     enableChanged,
     enableAlready,
     slotChanged,
@@ -378,7 +382,19 @@ export function runRepair(opts: { configPath?: string } = {}): SetupReport {
   const pre = runDoctor({ configPath: path })
   const enableFailed = pre.steps.find((s) => s.step === 'plugin_enabled')!.status === 'fail'
   const slotFailed = pre.steps.find((s) => s.step === 'slot_selected')!.status === 'fail'
-  if (!enableFailed && !slotFailed) return pre
+
+  // Also check if hooks.allowConversationAccess is missing — without it the
+  // learning hook is silently blocked by OpenClaw (issue #51).
+  let hooksMissing = false
+  if (existsSync(path)) {
+    const peek = readConfig(path)
+    if (peek.ok) {
+      const entry = peek.data.plugins?.entries?.[PLUGIN_ID]
+      hooksMissing = !entry?.hooks?.allowConversationAccess
+    }
+  }
+
+  if (!enableFailed && !slotFailed && !hooksMissing) return pre
 
   // Slot conflicts (memory slot taken by a different plugin) are preserved — repair
   // does not overturn a human judgment call on which plugin owns the memory slot.
@@ -404,13 +420,21 @@ export function runRepair(opts: { configPath?: string } = {}): SetupReport {
       entries[PLUGIN_ID] = {
         enabled: true,
         config: { auto_learn: true, auto_capture: true, injection_budget: 2000 },
+        hooks: { allowConversationAccess: true },
       }
       changed = true
     } else if (existing.enabled !== true) {
-      entries[PLUGIN_ID] = { ...existing, enabled: true }
+      entries[PLUGIN_ID] = { ...existing, enabled: true, hooks: { ...(existing as any)?.hooks, allowConversationAccess: true } }
       changed = true
     }
     plugins.entries = entries
+  }
+
+  // Ensure hooks.allowConversationAccess is set even if plugin was already enabled
+  const currentEntry = entries[PLUGIN_ID]
+  if (currentEntry && !(currentEntry as any)?.hooks?.allowConversationAccess) {
+    ;(currentEntry as any).hooks = { ...((currentEntry as any)?.hooks ?? {}), allowConversationAccess: true }
+    changed = true
   }
 
   const slots =
