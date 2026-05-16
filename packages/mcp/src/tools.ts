@@ -1,4 +1,4 @@
-import { Plur, extractMetaEngrams, validateMetaEngram, confidenceBand, generateProfile, getProfileForInjection, markProfileDirty, selectModelForOperation, readHistoryForEngram, getCachedUpdateCheck, minorVersionsBehind } from '@plur-ai/core'
+import { Plur, extractMetaEngrams, validateMetaEngram, confidenceBand, generateProfile, getProfileForInjection, markProfileDirty, selectModelForOperation, readHistoryForEngram, getCachedUpdateCheck, minorVersionsBehind, CapabilityCanary } from '@plur-ai/core'
 import type { LlmFunction, MetaField } from '@plur-ai/core'
 import { VERSION } from './version.js'
 
@@ -97,6 +97,18 @@ function sanitizeStatement(raw: string): string {
   return raw.slice(0, cut).trimEnd()
 }
 
+const mcpCanary = new CapabilityCanary({ threshold: 10 })
+mcpCanary.expect({
+  id: 'session_start_hook',
+  description: 'Automatic memory injection via hooks',
+  fix: 'Run: npx @plur-ai/mcp init',
+})
+mcpCanary.expect({
+  id: 'learn_activity',
+  description: 'Learning from corrections',
+  fix: 'Call plur_learn when corrected. If using hooks, verify they are installed.',
+})
+
 export function getToolDefinitions(): ToolDefinition[] {
   return [
     {
@@ -154,8 +166,9 @@ export function getToolDefinitions(): ToolDefinition[] {
         // the LLM-driven dedup pathway (local routes).
         const statement = sanitizeStatement(args.statement as string)
         try {
-const engram = await plur.learnRouted(statement, context)
+          const engram = await plur.learnRouted(statement, context)
           const isOutbox = !!(engram as any).structured_data?._outbox
+          mcpCanary.signal('learn_activity')
           return {
             id: engram.id, statement: engram.statement,
             scope: engram.scope, type: engram.type,
@@ -168,6 +181,7 @@ const engram = await plur.learnRouted(statement, context)
           // path should rarely be reached. Keep as defense-in-depth.
           const engram = plur.learn(statement, context)
           const isOutbox = !!(engram as any).structured_data?._outbox
+          mcpCanary.signal('learn_activity')
           return {
             id: engram.id, statement: engram.statement,
             scope: engram.scope, type: engram.type, decision: 'ADD',
@@ -924,6 +938,7 @@ const engram = await plur.learnRouted(statement, context)
               behind: minorVersionsBehind(versionCheck.current, versionCheck.latest),
             },
           } : {}),
+          capabilities: mcpCanary.status(),
         }
       },
     },
@@ -1005,6 +1020,13 @@ const engram = await plur.learnRouted(statement, context)
             '  • Or opt out: set PLUR_DISABLE_EMBEDDINGS=1, or write `embeddings: { enabled: false }` to ~/.plur/config.yaml — hybrid search will run BM25-only',
           )
         }
+        const canaryStatuses = mcpCanary.status()
+        for (const cs of canaryStatuses) {
+          if (!cs.healthy) {
+            checks.push({ check: `capability: ${cs.capability}`, ok: false, detail: cs.warning })
+            if (cs.warning) remediation.push(cs.warning)
+          }
+        }
         return {
           ok: checks.every(c => c.ok),
           checks,
@@ -1012,6 +1034,7 @@ const engram = await plur.learnRouted(statement, context)
             before_probe: before,
             after_probe: after,
           },
+          capabilities: canaryStatuses,
           remediation: remediation.length > 0 ? remediation : ['All checks passed — PLUR is healthy.'],
         }
       },
@@ -1030,6 +1053,8 @@ const engram = await plur.learnRouted(statement, context)
         required: ['task'],
       },
       handler: async (args, plur) => {
+        mcpCanary.tick()
+        mcpCanary.signal('session_start_hook')
         const crypto = await import('crypto')
         const session_id = crypto.randomUUID()
         const task = args.task as string
@@ -1328,7 +1353,11 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
           }
         }
 
-        return { tensions, count: tensions.length }
+        const purge_hint = tensions.length > 0
+          ? 'These are legacy conflict relations. Run plur_tensions_purge to clear them.'
+          : undefined
+
+        return { tensions, count: tensions.length, ...(purge_hint ? { purge_hint } : {}) }
       },
     },
 
