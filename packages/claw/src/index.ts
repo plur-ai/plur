@@ -1,6 +1,6 @@
 import { PlurContextEngine, type PlurContextEngineOptions } from './context-engine.js'
 import { ensureSystemPrompt, PLUR_SYSTEM_SECTION } from './system-prompt.js'
-import { checkForUpdate } from '@plur-ai/core'
+import { checkForUpdate, CapabilityCanary } from '@plur-ai/core'
 import { recordEvent } from './telemetry-counters.js'
 import { flushIfNeeded, registerFlushOnExit } from './telemetry-flush.js'
 
@@ -82,21 +82,35 @@ const plugin = {
     })
 
     // 4. Event hooks (alongside ContextEngine for redundancy)
+    const canary = new CapabilityCanary({ threshold: 3 })
+    canary.expect({
+      id: 'agent_end',
+      description: 'Learning from conversations',
+      fix: 'openclaw config set plugins.entries.plur-claw.hooks.allowConversationAccess true --strict-json && openclaw gateway restart',
+    })
+
     api.on('before_agent_start', (event: any, ctx: any) => {
+      canary.tick()
       const e = getEngine(path)
       const task = typeof event?.prompt === 'string' ? event.prompt : ''
       if (!task) return
       const injection = e.plur.inject(task, { budget: 2000 })
       maybeFlushAfter(recordEvent('recall'))
-      if (injection.count === 0) return
-      const lines = ['<plur-memory>']
-      if (injection.directives) lines.push(injection.directives)
-      if (injection.consider) lines.push(injection.consider)
-      lines.push('</plur-memory>')
+      const lines: string[] = []
+      const warnings = canary.warnings()
+      if (warnings) lines.push(warnings)
+      if (injection.count > 0) {
+        lines.push('<plur-memory>')
+        if (injection.directives) lines.push(injection.directives)
+        if (injection.consider) lines.push(injection.consider)
+        lines.push('</plur-memory>')
+      }
+      if (lines.length === 0) return
       return { prependContext: lines.join('\n') }
     })
 
     api.on('agent_end', (event: any, ctx: any) => {
+      canary.signal('agent_end')
       const e = getEngine(path)
       const messages = event?.messages
       if (Array.isArray(messages) && messages.length > 0) {
