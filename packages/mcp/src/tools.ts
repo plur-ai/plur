@@ -1557,7 +1557,7 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
 
     {
       name: 'plur_batch_decay',
-      description: 'Apply ACT-R decay to all engrams. Run weekly. Returns status transitions only.',
+      description: 'Apply ACT-R decay to all local engrams. Run weekly. Only decays engrams in the local YAML store — remote-store engrams are not decayed client-side. Returns status transitions only.',
       annotations: { title: 'Batch decay', destructiveHint: false, idempotentHint: false },
       inputSchema: {
         type: 'object',
