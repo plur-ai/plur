@@ -9,11 +9,26 @@ function tmpDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'plur-tensions-'))
 }
 
+function injectLegacyConflict(plur: Plur, fromId: string, toId: string): void {
+  const engrams = plur.list()
+  const engram = engrams.find(e => e.id === fromId)!
+  plur.updateEngram({
+    ...engram,
+    relations: {
+      broader: [],
+      narrower: [],
+      related: [],
+      conflicts: [toId],
+    },
+  })
+}
+
 describe('plur_tensions tool', () => {
   let dir: string
   let plur: Plur
   const tools = getToolDefinitions()
   const tensionsTool = tools.find(t => t.name === 'plur_tensions')!
+  const purgeTool = tools.find(t => t.name === 'plur_tensions_purge')!
 
   beforeEach(() => {
     dir = tmpDir()
@@ -29,22 +44,24 @@ describe('plur_tensions tool', () => {
     expect(tensionsTool.name).toBe('plur_tensions')
   })
 
+  it('plur_tensions_purge is registered as a tool', () => {
+    expect(purgeTool).toBeDefined()
+    expect(purgeTool.name).toBe('plur_tensions_purge')
+  })
+
   it('returns empty tensions when no conflicts', async () => {
     plur.learn('Always use TypeScript')
     const result = await tensionsTool.handler({}, plur) as any
     expect(result.tensions).toEqual([])
     expect(result.count).toBe(0)
+    expect(result.purge_hint).toBeUndefined()
   })
 
   it('detects tensions between conflicting engrams', async () => {
-    // Create two engrams that will conflict (high keyword overlap)
     const e1 = plur.learn('Always use tabs for indentation in TypeScript files')
     const e2 = plur.learn('Always use spaces for indentation in TypeScript files')
 
-    // At least one should have conflicts detected
     const result = await tensionsTool.handler({}, plur) as any
-    // The conflict detection is keyword-based (BM25 score threshold)
-    // These two statements share enough tokens to trigger it
     if (result.count > 0) {
       expect(result.tensions[0].engram_a.id).toBeDefined()
       expect(result.tensions[0].engram_b.id).toBeDefined()
@@ -53,12 +70,10 @@ describe('plur_tensions tool', () => {
   })
 
   it('deduplicates conflict pairs', async () => {
-    // Manually create engrams with mutual conflicts
     const e1 = plur.learn('Use PostgreSQL for the database')
     const e2 = plur.learn('Use MySQL for the database instead of PostgreSQL')
 
     const result = await tensionsTool.handler({}, plur) as any
-    // Even if both reference each other, each pair should appear at most once
     if (result.count > 0) {
       const pairKeys = result.tensions.map((t: any) =>
         [t.engram_a.id, t.engram_b.id].sort().join(':')
@@ -67,18 +82,22 @@ describe('plur_tensions tool', () => {
     }
   })
 
-  it('legacy mode includes purge_hint when conflicts exist', async () => {
-    // Inject a legacy conflict directly into the engram
-    const e1 = plur.learn('Use spaces for indentation')
-    const e2 = plur.learn('Use tabs for indentation')
-    // Manually set conflicts to simulate legacy state
-    const stored1 = plur.list().find(e => e.statement.includes('spaces'))!
-    ;(stored1.relations as any) = { conflicts: [stored1.id] } // self-ref won't match but triggers branch
-    // The purge_hint is only shown when a conflict pair is resolved — no easy way to inject
-    // without access to internals, so just verify the empty path
+  it('includes purge_hint when legacy conflict relations exist', async () => {
+    const e1 = plur.learn('Always use PostgreSQL')
+    const e2 = plur.learn('Always use MySQL')
+    injectLegacyConflict(plur, e1.id, e2.id)
+
     const result = await tensionsTool.handler({}, plur) as any
-    expect(result.tensions).toBeInstanceOf(Array)
-    expect(result).toHaveProperty('count')
+    expect(result.count).toBe(1)
+    expect(result.purge_hint).toBeDefined()
+    expect(result.purge_hint).toContain('plur_tensions_purge')
+  })
+
+  it('omits purge_hint when there are no tensions', async () => {
+    plur.learn('Use TypeScript')
+    const result = await tensionsTool.handler({}, plur) as any
+    expect(result.count).toBe(0)
+    expect(result.purge_hint).toBeUndefined()
   })
 })
 
@@ -195,5 +214,47 @@ describe('plur_tensions scan mode', () => {
     const result = await tensionsTool.handler({ scan: true }, plur) as any
     expect(result.count).toBeGreaterThan(0)
     delete process.env.OPENAI_API_KEY
+  })
+})
+
+describe('plur_tensions_purge tool', () => {
+  let dir: string
+  let plur: Plur
+  const tools = getToolDefinitions()
+  const tensionsTool = tools.find(t => t.name === 'plur_tensions')!
+  const purgeTool = tools.find(t => t.name === 'plur_tensions_purge')!
+
+  beforeEach(() => {
+    dir = tmpDir()
+    plur = new Plur({ path: dir })
+  })
+
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('clears all legacy conflict relations', async () => {
+    const e1 = plur.learn('Use tabs for indentation')
+    const e2 = plur.learn('Use spaces for indentation')
+    injectLegacyConflict(plur, e1.id, e2.id)
+
+    const before = await tensionsTool.handler({}, plur) as any
+    expect(before.count).toBe(1)
+
+    const purgeResult = await purgeTool.handler({}, plur) as any
+    expect(purgeResult.purged_conflict_refs).toBe(1)
+    expect(purgeResult.engrams_modified).toBe(1)
+    expect(purgeResult.message).toContain('1')
+
+    const after = await tensionsTool.handler({}, plur) as any
+    expect(after.count).toBe(0)
+    expect(after.purge_hint).toBeUndefined()
+  })
+
+  it('returns zero counts when nothing to purge', async () => {
+    plur.learn('Use TypeScript')
+    const result = await purgeTool.handler({}, plur) as any
+    expect(result.purged_conflict_refs).toBe(0)
+    expect(result.engrams_modified).toBe(0)
   })
 })
