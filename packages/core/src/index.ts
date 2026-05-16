@@ -1271,9 +1271,15 @@ export class Plur {
   }
 
   /**
-   * Apply ACT-R decay to all primary store engrams.
+   * Apply ACT-R decay to all primary (local YAML) store engrams.
    * Scope-matched engrams are skipped, status transitions logged to history.
    * Modified engrams are saved back to the store.
+   *
+   * Decay ownership: the enterprise server does NOT run decay server-side
+   * (see plur-ai/enterprise ARCHITECTURE.md — decay belongs in @plur-ai/core).
+   * Remote-store engrams are intentionally excluded here because multiple
+   * clients decaying the same shared store would cause conflicts. A dedicated
+   * server-side decay endpoint is tracked separately.
    */
   batchDecay(options?: { contextScope?: string; lambda?: number; now?: Date }): BatchDecayResult {
     return withLock(this.paths.engrams, () => {
