@@ -258,9 +258,24 @@ function readRemoteFromConfig(path: string): ReadConfig {
 /**
  * Verify connectivity: GET ${url}/api/v1/me with the token.
  * Returns the response body or throws with a useful message.
+ *
+ * URL normalization uses `new URL().origin` — same approach as
+ * hook-inject.ts tryRemoteInject. The earlier regex-strip diverged from
+ * the hook: a remote_url with any path component (`/api`, `/sse/...`)
+ * passed --verify with a wrong probe URL while the hook normalized
+ * correctly to the origin (critic NEW-2).
+ *
+ * clearTimeout deferred to finally — same fix as tryRemoteInject. The
+ * earlier early-clear pattern released the abort guard before r.json()
+ * began, leaving a stalled body read unprotected (dijkstra NEW-5).
  */
 async function verifyConnectivity(url: string, token: string): Promise<{ username: string; org_id: string; scopes: string[] }> {
-  const base = url.replace(/\/sse\/?$/, '').replace(/\/$/, '')
+  let base: string
+  try {
+    base = new URL(url).origin
+  } catch {
+    throw new Error(`Invalid URL: ${url}`)
+  }
   const probeUrl = `${base}/api/v1/me`
   const ctrl = new AbortController()
   const timer = setTimeout(() => ctrl.abort(), 5000)
@@ -269,7 +284,6 @@ async function verifyConnectivity(url: string, token: string): Promise<{ usernam
       signal: ctrl.signal,
       headers: { 'authorization': `Bearer ${token}`, 'accept': 'application/json' },
     })
-    clearTimeout(timer)
     if (r.status === 401) throw new Error(`401 Unauthorized — check your API token`)
     if (r.status === 403) throw new Error(`403 Forbidden — token lacks /me access`)
     if (!r.ok) throw new Error(`HTTP ${r.status} from ${probeUrl}`)
@@ -280,9 +294,8 @@ async function verifyConnectivity(url: string, token: string): Promise<{ usernam
       org_id:   data.org_id ?? '(unknown)',
       scopes:   Array.isArray(data.scopes) ? data.scopes : [],
     }
-  } catch (err) {
+  } finally {
     clearTimeout(timer)
-    throw err
   }
 }
 

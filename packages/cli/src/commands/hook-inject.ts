@@ -1,4 +1,4 @@
-import { existsSync, writeFileSync, readFileSync, mkdirSync, readSync, statSync } from 'fs'
+import { existsSync, writeFileSync, readFileSync, appendFileSync, mkdirSync, readSync, statSync } from 'fs'
 import { dirname, join, resolve } from 'path'
 import { tmpdir, homedir } from 'os'
 import { randomUUID } from 'crypto'
@@ -19,6 +19,45 @@ const MAX_REMOTE_RESPONSE_BYTES = 128 * 1024  // 128 KB
 // (Taleb #4). 1500ms is the trade-off: long enough for healthy remote
 // round trips, short enough to be invisible when the network is fine.
 const REMOTE_TIMEOUT_MS = 1500
+
+// Failure-log path. tryRemoteInject is fail-open by design (it MUST
+// never block the user's prompt) — but silent fail-open is unfalsifiable
+// (Taleb #2): you cannot distinguish "Enterprise is working but had no
+// engrams for this query" from "Enterprise is unreachable and we
+// silently degraded to local." This log writes ONE LINE per remote
+// attempt so the operator can `tail -f` it or `plur doctor` summarises
+// it. Rotated by size at 256KB.
+const REMOTE_INJECT_LOG_PATH = join(homedir(), '.plur', 'remote-inject.log')
+const REMOTE_INJECT_LOG_MAX_BYTES = 256 * 1024
+
+function logRemoteAttempt(entry: {
+  ts:        string
+  url:       string
+  outcome:   'ok' | 'http_error' | 'timeout' | 'network_error' | 'bad_response' | 'oversize'
+  ms:        number
+  http?:     number
+  engrams?:  number
+  detail?:   string
+}): void {
+  try {
+    mkdirSync(dirname(REMOTE_INJECT_LOG_PATH), { recursive: true })
+    // Crude rotation: if the file is over the cap, truncate by overwriting
+    // with just this entry. Lossy but simple — full audit lives server-side.
+    let openMode: 'append' | 'truncate' = 'append'
+    if (existsSync(REMOTE_INJECT_LOG_PATH)) {
+      try {
+        if (statSync(REMOTE_INJECT_LOG_PATH).size > REMOTE_INJECT_LOG_MAX_BYTES) {
+          openMode = 'truncate'
+        }
+      } catch { /* stat failed → keep appending */ }
+    }
+    const line = JSON.stringify(entry) + '\n'
+    if (openMode === 'truncate') writeFileSync(REMOTE_INJECT_LOG_PATH, line)
+    else                          appendFileSync(REMOTE_INJECT_LOG_PATH, line)
+  } catch {
+    // Log write failed — accept silently. The hook MUST never throw.
+  }
+}
 
 /**
  * plur hook-inject — Claude Code hook for engram injection + auto session start.
@@ -219,6 +258,7 @@ async function tryRemoteInject(
   task:   string,
 ): Promise<{ text: string; count: number; injectedIds: string[] } | null> {
   if (!config.remote_url || !config.remote_token) return null
+  const startTs = Date.now()
 
   // Normalize the URL to the origin so /api/v1/inject can't double up
   // on a misconfigured remote_url with a path component.
@@ -226,6 +266,7 @@ async function tryRemoteInject(
   try {
     base = new URL(config.remote_url).origin
   } catch {
+    logRemoteAttempt({ ts: new Date().toISOString(), url: config.remote_url ?? '?', outcome: 'bad_response', ms: 0, detail: 'invalid URL' })
     return null  // bogus URL → silent local fallback
   }
   const url  = `${base}/api/v1/inject`
@@ -252,26 +293,43 @@ async function tryRemoteInject(
       },
       body: JSON.stringify(body),
     })
-    if (!r.ok) return null
+    if (!r.ok) {
+      logRemoteAttempt({ ts: new Date().toISOString(), url, outcome: 'http_error', ms: Date.now() - startTs, http: r.status })
+      return null
+    }
 
     // Guard against oversized response. content-length is advisory but
     // most servers set it correctly; for missing/chunked responses the
     // AbortController still terminates the body read at timeout.
     const contentLength = r.headers.get('content-length')
     if (contentLength && parseInt(contentLength, 10) > MAX_REMOTE_RESPONSE_BYTES) {
+      logRemoteAttempt({ ts: new Date().toISOString(), url, outcome: 'oversize', ms: Date.now() - startTs, http: r.status, detail: `content-length=${contentLength}` })
       return null
     }
 
     // r.json() reads the body — AbortController still live so a slow
     // body trickle gets cut off at REMOTE_TIMEOUT_MS overall budget.
     const data = await r.json() as { text?: string; count?: number; injected_ids?: string[] }
-    if (typeof data.text !== 'string' || !data.text.trim()) return null
+    if (typeof data.text !== 'string' || !data.text.trim()) {
+      logRemoteAttempt({ ts: new Date().toISOString(), url, outcome: 'bad_response', ms: Date.now() - startTs, http: r.status, detail: 'empty or non-string text field' })
+      return null
+    }
+    const count = typeof data.count === 'number' ? data.count : 0
+    logRemoteAttempt({ ts: new Date().toISOString(), url, outcome: 'ok', ms: Date.now() - startTs, http: r.status, engrams: count })
     return {
       text:        data.text,
-      count:       typeof data.count === 'number' ? data.count : 0,
+      count,
       injectedIds: Array.isArray(data.injected_ids) ? data.injected_ids : [],
     }
-  } catch {
+  } catch (err: unknown) {
+    const isAbort = err instanceof Error && err.name === 'AbortError'
+    logRemoteAttempt({
+      ts: new Date().toISOString(),
+      url,
+      outcome: isAbort ? 'timeout' : 'network_error',
+      ms: Date.now() - startTs,
+      detail: err instanceof Error ? err.message.slice(0, 120) : undefined,
+    })
     return null
   } finally {
     clearTimeout(t)
