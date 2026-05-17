@@ -1,5 +1,6 @@
-import { existsSync, readFileSync, writeFileSync, appendFileSync, statSync } from 'fs'
-import { join } from 'path'
+import { existsSync, readFileSync, writeFileSync, appendFileSync } from 'fs'
+import { dirname, join, resolve } from 'path'
+import { homedir } from 'os'
 import { type GlobalFlags } from '../plur.js'
 import { outputText } from '../output.js'
 
@@ -63,16 +64,33 @@ interface ParsedArgs {
   help?: boolean
 }
 
-function parseArgs(args: string[]): ParsedArgs {
+function parseArgs(args: string[]): ParsedArgs | { error: string } {
   const out: ParsedArgs = {}
+  // Value-bearing flags require a following argument that is not itself
+  // another flag. Missing or flag-shaped values are explicit errors
+  // rather than silent "undefined" coercions (critic #5, cto #2,
+  // data #EC02, dijkstra #8).
+  const consumeValue = (i: number, flag: string): { value: string } | { error: string } => {
+    const next = args[i + 1]
+    if (next === undefined || next.startsWith('--')) {
+      return { error: `${flag} requires a value (got ${next === undefined ? 'nothing' : `another flag: ${next}`})` }
+    }
+    return { value: next }
+  }
   for (let i = 0; i < args.length; i++) {
     const a = args[i]
-    if (a === '--help' || a === '-h') { out.help = true; continue }
-    if (a === '--verify')           { out.verify = true; continue }
-    if (a === '--no-gitignore')     { out.noGitignore = true; continue }
-    if (a === '--url')     { out.url = args[++i]; continue }
-    if (a === '--token')   { out.token = args[++i]; continue }
-    if (a === '--scopes')  { out.scopes = args[++i].split(',').map(s => s.trim()).filter(Boolean); continue }
+    if (a === '--help' || a === '-h')  { out.help = true; continue }
+    if (a === '--verify')              { out.verify = true; continue }
+    if (a === '--no-gitignore')        { out.noGitignore = true; continue }
+    if (a === '--url' || a === '--token' || a === '--scopes') {
+      const r = consumeValue(i, a)
+      if ('error' in r) return r
+      i++
+      if (a === '--url')    out.url = r.value
+      if (a === '--token')  out.token = r.value
+      if (a === '--scopes') out.scopes = r.value.split(',').map(s => s.trim()).filter(Boolean)
+      continue
+    }
   }
   return out
 }
@@ -80,23 +98,39 @@ function parseArgs(args: string[]): ParsedArgs {
 /**
  * Strip the existing remote_* keys from .plur.yaml content so we can
  * append a fresh block — keeps non-remote keys (domain, scope) intact.
- * Preserves comments and ordering of unrelated keys.
+ *
+ * Fixed (cto #1, data #EC03, dijkstra #5):
+ *   - Blank lines INSIDE a remote_scopes list no longer terminate the
+ *     skip. Only a non-dash, non-blank line breaks out.
+ *   - Block-scalar marker (`remote_scopes: |` / `>`) also triggers list
+ *     skipping, matching the parser's accepted forms.
+ *   - The list-skip activates whenever the value-after-colon is empty
+ *     OR is one of the block-scalar markers, regardless of trailing
+ *     whitespace.
  */
 function stripRemoteKeys(content: string): string {
   const lines = content.split('\n')
   const out: string[] = []
   let skippingList = false
+  const REMOTE_KEY = /^remote_(url|token|scopes)\s*:(.*)$/
   for (const line of lines) {
     const trimmed = line.trim()
     if (skippingList) {
-      // Inside a YAML list — skip dashes until a new key or blank
-      if (trimmed.startsWith('-') || trimmed === '') continue
+      // Inside a previous remote_scopes list — skip dash items AND
+      // intervening blank lines. Only break out when a non-dash
+      // non-blank line appears.
+      if (trimmed === '' || trimmed.startsWith('-')) continue
       skippingList = false
     }
-    if (/^remote_(url|token|scopes)\s*:/.test(trimmed)) {
-      // Skip this key. If it's remote_scopes with a multi-line list, swallow
-      // the subsequent dashed lines too.
-      if (/^remote_scopes\s*:\s*$/.test(trimmed)) skippingList = true
+    const m = trimmed.match(REMOTE_KEY)
+    if (m) {
+      const key = m[1]
+      const rest = m[2].trim()
+      // If remote_scopes had an empty or block-scalar value, the next
+      // lines are dash items — keep skipping.
+      if (key === 'scopes' && (rest === '' || rest === '|' || rest === '>')) {
+        skippingList = true
+      }
       continue
     }
     out.push(line)
@@ -127,29 +161,38 @@ function buildConfigBody(existing: string, url: string, token: string, scopes?: 
 
 /**
  * Add `.plur.yaml` to the project's .gitignore if not already present.
- * Walks upward looking for an existing .gitignore (so we update the right
- * one if the user is in a subdirectory). Creates one in cwd as a fallback.
+ *
+ * Bounded by the .git boundary (dijkstra #2, critic #2):
+ *   - Walk upward looking for the nearest .gitignore, but stop at the
+ *     directory containing .git (the project root). Never escape into
+ *     a parent monorepo's gitignore or — worse — into the user's
+ *     global ~/.gitignore.
+ *   - If no .gitignore is found within the project tree, create one
+ *     in the same directory as .plur.yaml (cwd).
+ *   - Uses dirname() to avoid accumulating `..` components, which
+ *     `join(dir, '..')` does silently.
  */
 function ensureGitignore(): { path: string; action: 'added' | 'already' | 'created' } {
-  // Find the nearest .gitignore (project root usually)
-  let dir = process.cwd()
-  const root = '/'
+  const home = resolve(homedir())
+  let dir = resolve(process.cwd())
   let gitignorePath: string | null = null
-  while (true) {
+  const MAX_DEPTH = 12
+  for (let depth = 0; depth < MAX_DEPTH; depth++) {
     const candidate = join(dir, '.gitignore')
     if (existsSync(candidate)) { gitignorePath = candidate; break }
-    if (dir === root) break
-    const parent = join(dir, '..')
-    try {
-      if (statSync(parent).ino === statSync(dir).ino) break  // hit FS boundary
-    } catch { break }
+    // Stop at .git boundary — don't escape the project.
+    if (existsSync(join(dir, '.git'))) break
+    // Hard ceilings: home, root.
+    if (dir === home || dir === '/' || dir === '.') break
+    const parent = dirname(dir)
+    if (parent === dir) break
     dir = parent
   }
 
   const PATTERN = '.plur.yaml'
 
   if (!gitignorePath) {
-    // No .gitignore found — create one in cwd
+    // No .gitignore found within the project — create one alongside .plur.yaml.
     const newPath = join(process.cwd(), '.gitignore')
     writeFileSync(newPath, `# Added by 'plur init-remote' — .plur.yaml may hold an API token\n${PATTERN}\n`)
     return { path: newPath, action: 'created' }
@@ -163,6 +206,29 @@ function ensureGitignore(): { path: string; action: 'added' | 'already' | 'creat
   const sep = content.endsWith('\n') ? '' : '\n'
   appendFileSync(gitignorePath, `${sep}# Added by 'plur init-remote' — .plur.yaml may hold an API token\n${PATTERN}\n`)
   return { path: gitignorePath, action: 'added' }
+}
+
+/**
+ * Walk upward from cwd to find the nearest existing .plur.yaml.
+ * Mirrors hook-inject.ts findProjectConfigPath but locally scoped here
+ * to avoid a cross-command import. Same boundaries: .git, home, root.
+ */
+function findExistingConfigPath(): string | null {
+  const home = resolve(homedir())
+  let dir = resolve(process.cwd())
+  const MAX_DEPTH = 12
+  for (let depth = 0; depth < MAX_DEPTH; depth++) {
+    if (dir !== home) {
+      const candidate = join(dir, '.plur.yaml')
+      if (existsSync(candidate)) return candidate
+    }
+    if (existsSync(join(dir, '.git'))) return null
+    if (dir === home || dir === '/' || dir === '.') return null
+    const parent = dirname(dir)
+    if (parent === dir) return null
+    dir = parent
+  }
+  return null
 }
 
 /**
@@ -221,7 +287,12 @@ async function verifyConnectivity(url: string, token: string): Promise<{ usernam
 }
 
 export async function run(args: string[], flags: GlobalFlags): Promise<void> {
-  const opts = parseArgs(args)
+  const parsed = parseArgs(args)
+  if ('error' in parsed) {
+    outputText(`Error: ${parsed.error}\n\n${HELP}`, flags)
+    process.exit(1)
+  }
+  const opts = parsed
 
   if (opts.help) {
     outputText(HELP, flags)
@@ -230,13 +301,18 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
 
   const configPath = join(process.cwd(), '.plur.yaml')
 
-  // --verify mode — connectivity check against existing config
+  // --verify mode — connectivity check against existing config.
+  // Walk upward to find the nearest .plur.yaml, matching the hook's
+  // discovery so `--verify` from a project subdirectory finds the same
+  // config the hook would actually use (data #EC06).
   if (opts.verify) {
-    const cfg = readRemoteFromConfig(configPath)
+    const verifyPath = findExistingConfigPath() ?? configPath
+    const cfg = readRemoteFromConfig(verifyPath)
     if (!cfg.url || !cfg.token) {
-      outputText(`No remote config in ${configPath}. Run \`plur init-remote --url <url> --token <key>\` first.`, flags)
+      outputText(`No remote config found (walked upward from ${process.cwd()}). Run \`plur init-remote --url <url> --token <key>\` first.`, flags)
       process.exit(1)
     }
+    outputText(`Using config at ${verifyPath}`, flags)
     try {
       const me = await verifyConnectivity(cfg.url, cfg.token)
       outputText(`✓ Connected to ${cfg.url} as ${me.username} (org: ${me.org_id})`, flags)
@@ -251,6 +327,25 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   // Setup mode — validate inputs
   if (!opts.url || !opts.token) {
     outputText(`Missing required flags.\n${HELP}`, flags)
+    process.exit(1)
+  }
+
+  // Reject control characters in the token — they corrupt the YAML write
+  // and silently break the parser (data #EC09).
+  if (/[\n\r\t]/.test(opts.token)) {
+    outputText(`Error: token contains newline/tab characters. Refusing to write a corrupt config.`, flags)
+    process.exit(1)
+  }
+
+  // Validate URL — fail fast on schemes other than http/https.
+  try {
+    const u = new URL(opts.url)
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') {
+      outputText(`Error: remote_url must be http:// or https:// (got ${u.protocol})`, flags)
+      process.exit(1)
+    }
+  } catch {
+    outputText(`Error: remote_url is not a valid URL: ${opts.url}`, flags)
     process.exit(1)
   }
 
@@ -289,6 +384,15 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   }
 
   outputText(`\nDone. The UserPromptSubmit hook will now query ${opts.url} on every prompt`, flags)
-  outputText(`from this directory and its descendants. Personal/non-project sessions`, flags)
-  outputText(`(without a .plur.yaml in the path) stay local-only.`, flags)
+  outputText(`from this directory tree (bounded by the nearest .git). Personal/non-project`, flags)
+  outputText(`sessions (without a .plur.yaml in the path) stay local-only.`, flags)
+  outputText(``, flags)
+  outputText(`⚠ Token sensitivity:`, flags)
+  outputText(`  .plur.yaml now contains an API token in plaintext.`, flags)
+  outputText(`  - .gitignore protects against git commits but NOT against cloud sync`, flags)
+  outputText(`    (iCloud Drive, Dropbox, Google Drive). If this project lives in a`, flags)
+  outputText(`    synced folder, the token will leave your machine.`, flags)
+  outputText(`  - Also not protected: \`cp -r\`, \`zip\`, \`rsync\`, archived backups.`, flags)
+  outputText(`  - Consider moving the token to an env var if your project ships with`, flags)
+  outputText(`    others (future: env-var substitution in .plur.yaml).`, flags)
 }

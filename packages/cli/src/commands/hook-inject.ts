@@ -1,8 +1,24 @@
 import { existsSync, writeFileSync, readFileSync, mkdirSync, readSync, statSync } from 'fs'
-import { dirname, join } from 'path'
+import { dirname, join, resolve } from 'path'
 import { tmpdir, homedir } from 'os'
 import { randomUUID } from 'crypto'
 import { createPlur, type GlobalFlags } from '../plur.js'
+
+// Hard cap on the prompt text sent to Enterprise. Engram retrieval only
+// needs enough signal to rank candidates; the rest is privacy bleed
+// (Taleb #5, critic #4). 1KB is generous for relevance and trivial for
+// the network.
+const MAX_REMOTE_TASK_CHARS = 1000
+
+// Hard cap on remote response body. Prevents OOM/stall from a misconfigured
+// or adversarial server returning multi-megabyte JSON (critic #9).
+const MAX_REMOTE_RESPONSE_BYTES = 128 * 1024  // 128 KB
+
+// AbortController timeout — keep low. The hook is on the hot path of
+// every prompt; slow networks make this a perceptible latency tax
+// (Taleb #4). 1500ms is the trade-off: long enough for healthy remote
+// round trips, short enough to be invisible when the network is fine.
+const REMOTE_TIMEOUT_MS = 1500
 
 /**
  * plur hook-inject — Claude Code hook for engram injection + auto session start.
@@ -43,25 +59,50 @@ interface ProjectConfig {
 }
 
 /**
- * Walk upward from cwd looking for .plur.yaml. Stops at the home dir or
- * filesystem root so we don't accidentally pick up an unrelated config
- * from above the user's space.
+ * Walk upward from cwd looking for .plur.yaml — but stop at the project
+ * boundary (.git directory) so we don't pick up an unrelated config from
+ * a parent directory or, worse, from the user's HOME.
  *
- * Matches the discovery pattern of .git, .envrc, tsconfig.json — lets the
- * user work from any subdirectory of an opted-in project without copying
- * the config everywhere.
+ * Why the .git boundary (Taleb #1, data #EC05, dijkstra #1):
+ *   The original "walk to homedir" semantics meant that a single
+ *   .plur.yaml placed in HOME would silently route EVERY project's
+ *   prompts to whatever Enterprise URL it contained. That's a privacy
+ *   leak masquerading as ergonomics. The right boundary is the project
+ *   itself — defined by .git.
+ *
+ * Termination guarantees:
+ *   - Stop at the first .plur.yaml we hit (success).
+ *   - Stop when a sibling .git directory is found at the same level as
+ *     the candidate — that's the project boundary.
+ *   - Stop at the home directory or filesystem root as a hard ceiling.
+ *   - Refuse to consider a .plur.yaml that sits IN the home directory
+ *     itself (not a subdir) — that's the "global opt-in" trap.
+ *
+ * Paths are resolved (`path.resolve`) to normalize trailing slashes,
+ * symlink components, and `..` segments before comparison (dijkstra #1,
+ * cto #7).
  */
 function findProjectConfigPath(startDir: string = process.cwd()): string | null {
-  const home = homedir()
-  let dir = startDir
-  while (true) {
-    const candidate = join(dir, '.plur.yaml')
-    if (existsSync(candidate)) return candidate
+  const home = resolve(homedir())
+  let dir = resolve(startDir)
+  const MAX_DEPTH = 12  // hard ceiling — beyond ~12 dirs deep, give up
+  for (let depth = 0; depth < MAX_DEPTH; depth++) {
+    // Refuse to accept a .plur.yaml that lives directly in HOME.
+    // That's the failure mode where a stray home-level config silently
+    // intercepts every project the user opens.
+    if (dir !== home) {
+      const candidate = join(dir, '.plur.yaml')
+      if (existsSync(candidate)) return candidate
+    }
+    // Stop at .git boundary — never escape the current project.
+    if (existsSync(join(dir, '.git'))) return null
+    // Hard ceilings: home, root, current-dir sentinel.
     if (dir === home || dir === '/' || dir === '.') return null
     const parent = dirname(dir)
     if (parent === dir) return null
     dir = parent
   }
+  return null
 }
 
 /**
@@ -73,16 +114,30 @@ function findProjectConfigPath(startDir: string = process.cwd()): string | null 
  * and dependency-free keeps the CLI bundle tiny. Arrays use comma-
  * separated values OR YAML-style "- item" lines.
  */
+/** Strip balanced single or double quotes around a YAML scalar value.
+ * Defensive: a user (or editor auto-format) may quote values. The bespoke
+ * parser would otherwise pass `"abc"` through verbatim, breaking URL
+ * construction and auth headers (cto #5, dijkstra #4). */
+function unquoteYamlValue(v: string): string {
+  return v.replace(/^(['"])(.*)\1$/, '$2')
+}
+
 function readProjectConfig(): ProjectConfig {
   const configPath = findProjectConfigPath()
   if (!configPath) return {}
   try {
-    const content = readFileSync(configPath, 'utf8')
+    // Strip UTF-8 BOM — some Windows editors prepend it and the first
+    // key would otherwise be read as `﻿domain` and silently dropped
+    // (dijkstra #10).
+    const content = readFileSync(configPath, 'utf8').replace(/^﻿/, '')
     const config: ProjectConfig = {}
-    let inListKey: keyof ProjectConfig | null = null
+    let inListKey: 'remote_scopes' | null = null
     let listAcc: string[] = []
     const finishList = () => {
-      if (inListKey === 'remote_scopes' && listAcc.length > 0) {
+      if (inListKey === 'remote_scopes') {
+        // Always commit — even an empty list is a valid user intent
+        // (the difference between "no whitelist" and "explicitly empty"
+        // is downstream's problem, not ours) (dijkstra #3).
         config.remote_scopes = listAcc
       }
       inListKey = null
@@ -94,18 +149,20 @@ function readProjectConfig(): ProjectConfig {
       const trimmed = line.trim()
       if (trimmed.startsWith('#') || !trimmed) continue
 
-      // List continuation: "- item" lines belong to the previous key
-      if (inListKey && trimmed.startsWith('-')) {
-        listAcc.push(trimmed.slice(1).trim())
+      // List continuation: ONLY active while we're inside remote_scopes
+      // (critic #7). A `- foo` value on an unrelated key like
+      // remote_token would otherwise be silently swallowed into listAcc.
+      if (inListKey === 'remote_scopes' && trimmed.startsWith('-')) {
+        listAcc.push(unquoteYamlValue(trimmed.slice(1).trim()))
         continue
       }
-      // Any non-list line ends the previous list
+      // Any non-dash line ends the previous list
       if (inListKey) finishList()
 
       const colonIdx = trimmed.indexOf(':')
       if (colonIdx < 0) continue
       const key = trimmed.slice(0, colonIdx).trim()
-      const value = trimmed.slice(colonIdx + 1).trim()
+      const value = unquoteYamlValue(trimmed.slice(colonIdx + 1).trim())
 
       switch (key) {
         case 'domain':       config.domain = value; break
@@ -113,13 +170,15 @@ function readProjectConfig(): ProjectConfig {
         case 'remote_url':   config.remote_url = value; break
         case 'remote_token': config.remote_token = value; break
         case 'remote_scopes':
-          if (value === '' || value === '|') {
-            // Multi-line YAML list follows — start accumulator
+          // Multi-line YAML list form: `remote_scopes:` (empty) OR
+          // `remote_scopes: |` (block scalar marker) — both trigger list
+          // accumulation (data #EC03, dijkstra #5).
+          if (value === '' || value === '|' || value === '>') {
             inListKey = 'remote_scopes'
             listAcc = []
           } else {
             // Inline comma-separated form
-            config.remote_scopes = value.split(',').map(s => s.trim()).filter(Boolean)
+            config.remote_scopes = value.split(',').map(s => unquoteYamlValue(s.trim())).filter(Boolean)
           }
           break
       }
@@ -136,23 +195,54 @@ function readProjectConfig(): ProjectConfig {
  *
  * Returns the formatted context text on success, or null on any failure.
  * NEVER throws: hooks must degrade open or they break the user's prompt.
- * Timeout 2s — slow enough to allow real round trips, fast enough that a
- * dead server doesn't perceptibly delay every prompt.
+ *
+ * Privacy:
+ *   - Only the first MAX_REMOTE_TASK_CHARS of the task are sent (truncated
+ *     locally before transmission). Engram ranking doesn't need the full
+ *     prompt; truncation reduces inadvertent exfiltration of pasted
+ *     secrets, credentials, or proprietary content (critic #4, taleb #5).
+ *   - URL is normalized via the URL constructor — strips path/query/
+ *     fragment cleanly so /api/v1/inject doesn't double up if the user
+ *     wrote `remote_url: https://x.com/api` (data #EC07).
+ *
+ * Robustness:
+ *   - AbortController stays live through the full request lifecycle
+ *     (headers + body). Cleared in finally so the timer doesn't fire
+ *     against a settled request (critic #1, cto #4, data #EC01, dijkstra #7).
+ *   - Response body is capped at MAX_REMOTE_RESPONSE_BYTES via
+ *     content-length check; oversize responses → null (critic #9).
+ *   - data.text trimmed before truthy check; whitespace-only payloads
+ *     are treated as empty (data #EC08).
  */
 async function tryRemoteInject(
   config: ProjectConfig,
   task:   string,
 ): Promise<{ text: string; count: number; injectedIds: string[] } | null> {
   if (!config.remote_url || !config.remote_token) return null
-  const base = config.remote_url.replace(/\/sse\/?$/, '').replace(/\/$/, '')
+
+  // Normalize the URL to the origin so /api/v1/inject can't double up
+  // on a misconfigured remote_url with a path component.
+  let base: string
+  try {
+    base = new URL(config.remote_url).origin
+  } catch {
+    return null  // bogus URL → silent local fallback
+  }
   const url  = `${base}/api/v1/inject`
-  const body: Record<string, unknown> = { task }
+
+  // Truncate task before it leaves the machine.
+  const truncatedTask = task.length > MAX_REMOTE_TASK_CHARS
+    ? task.slice(0, MAX_REMOTE_TASK_CHARS)
+    : task
+
+  const body: Record<string, unknown> = { task: truncatedTask }
   if (config.remote_scopes && config.remote_scopes.length > 0) {
     body.scopes = config.remote_scopes
   }
+
+  const ctrl = new AbortController()
+  const t = setTimeout(() => ctrl.abort(), REMOTE_TIMEOUT_MS)
   try {
-    const ctrl = new AbortController()
-    const t = setTimeout(() => ctrl.abort(), 2000)
     const r = await fetch(url, {
       method: 'POST',
       signal: ctrl.signal,
@@ -162,10 +252,20 @@ async function tryRemoteInject(
       },
       body: JSON.stringify(body),
     })
-    clearTimeout(t)
     if (!r.ok) return null
+
+    // Guard against oversized response. content-length is advisory but
+    // most servers set it correctly; for missing/chunked responses the
+    // AbortController still terminates the body read at timeout.
+    const contentLength = r.headers.get('content-length')
+    if (contentLength && parseInt(contentLength, 10) > MAX_REMOTE_RESPONSE_BYTES) {
+      return null
+    }
+
+    // r.json() reads the body — AbortController still live so a slow
+    // body trickle gets cut off at REMOTE_TIMEOUT_MS overall budget.
     const data = await r.json() as { text?: string; count?: number; injected_ids?: string[] }
-    if (!data.text || typeof data.text !== 'string') return null
+    if (typeof data.text !== 'string' || !data.text.trim()) return null
     return {
       text:        data.text,
       count:       typeof data.count === 'number' ? data.count : 0,
@@ -173,6 +273,8 @@ async function tryRemoteInject(
     }
   } catch {
     return null
+  } finally {
+    clearTimeout(t)
   }
 }
 
