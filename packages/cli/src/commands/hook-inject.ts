@@ -1,6 +1,6 @@
 import { existsSync, writeFileSync, readFileSync, mkdirSync, readSync, statSync } from 'fs'
-import { join } from 'path'
-import { tmpdir } from 'os'
+import { dirname, join } from 'path'
+import { tmpdir, homedir } from 'os'
 import { randomUUID } from 'crypto'
 import { createPlur, type GlobalFlags } from '../plur.js'
 
@@ -30,31 +30,149 @@ import { createPlur, type GlobalFlags } from '../plur.js'
 const REMINDER_INTERVAL_MS = 10 * 60 * 1000 // 10 minutes
 
 interface ProjectConfig {
-  domain?: string
-  scope?: string
+  domain?:        string
+  scope?:         string
+  // Remote-Enterprise opt-in (per-project).
+  // When set, the hook queries the remote /api/v1/inject before falling
+  // back to local PLUR. Without these fields, the hook is local-only and
+  // Enterprise never sees a query — personal/non-project prompts stay
+  // private to the local engram store.
+  remote_url?:    string   // e.g. https://plur.datafund.io
+  remote_token?:  string   // API key (kept out of git via .gitignore)
+  remote_scopes?: string[] // optional scope whitelist for the server query
 }
 
 /**
- * Read .plur.yaml from cwd for project-level defaults.
+ * Walk upward from cwd looking for .plur.yaml. Stops at the home dir or
+ * filesystem root so we don't accidentally pick up an unrelated config
+ * from above the user's space.
+ *
+ * Matches the discovery pattern of .git, .envrc, tsconfig.json — lets the
+ * user work from any subdirectory of an opted-in project without copying
+ * the config everywhere.
+ */
+function findProjectConfigPath(startDir: string = process.cwd()): string | null {
+  const home = homedir()
+  let dir = startDir
+  while (true) {
+    const candidate = join(dir, '.plur.yaml')
+    if (existsSync(candidate)) return candidate
+    if (dir === home || dir === '/' || dir === '.') return null
+    const parent = dirname(dir)
+    if (parent === dir) return null
+    dir = parent
+  }
+}
+
+/**
+ * Read .plur.yaml from the nearest enclosing project directory.
  * Returns {} if not found or unparseable.
+ *
+ * The parser is intentionally minimal (line-by-line) rather than pulling
+ * js-yaml into @plur-ai/cli — config files are short, fields are flat,
+ * and dependency-free keeps the CLI bundle tiny. Arrays use comma-
+ * separated values OR YAML-style "- item" lines.
  */
 function readProjectConfig(): ProjectConfig {
-  const configPath = join(process.cwd(), '.plur.yaml')
-  if (!existsSync(configPath)) return {}
+  const configPath = findProjectConfigPath()
+  if (!configPath) return {}
   try {
     const content = readFileSync(configPath, 'utf8')
     const config: ProjectConfig = {}
-    for (const line of content.split('\n')) {
+    let inListKey: keyof ProjectConfig | null = null
+    let listAcc: string[] = []
+    const finishList = () => {
+      if (inListKey === 'remote_scopes' && listAcc.length > 0) {
+        config.remote_scopes = listAcc
+      }
+      inListKey = null
+      listAcc = []
+    }
+
+    for (const rawLine of content.split('\n')) {
+      const line = rawLine.replace(/\r$/, '')
       const trimmed = line.trim()
       if (trimmed.startsWith('#') || !trimmed) continue
-      const [key, ...rest] = trimmed.split(':')
-      const value = rest.join(':').trim()
-      if (key === 'domain') config.domain = value
-      if (key === 'scope') config.scope = value
+
+      // List continuation: "- item" lines belong to the previous key
+      if (inListKey && trimmed.startsWith('-')) {
+        listAcc.push(trimmed.slice(1).trim())
+        continue
+      }
+      // Any non-list line ends the previous list
+      if (inListKey) finishList()
+
+      const colonIdx = trimmed.indexOf(':')
+      if (colonIdx < 0) continue
+      const key = trimmed.slice(0, colonIdx).trim()
+      const value = trimmed.slice(colonIdx + 1).trim()
+
+      switch (key) {
+        case 'domain':       config.domain = value; break
+        case 'scope':        config.scope = value; break
+        case 'remote_url':   config.remote_url = value; break
+        case 'remote_token': config.remote_token = value; break
+        case 'remote_scopes':
+          if (value === '' || value === '|') {
+            // Multi-line YAML list follows — start accumulator
+            inListKey = 'remote_scopes'
+            listAcc = []
+          } else {
+            // Inline comma-separated form
+            config.remote_scopes = value.split(',').map(s => s.trim()).filter(Boolean)
+          }
+          break
+      }
     }
+    finishList()
     return config
   } catch {
     return {}
+  }
+}
+
+/**
+ * POST to ${remote_url}/api/v1/inject — fire a fast HTTP injection.
+ *
+ * Returns the formatted context text on success, or null on any failure.
+ * NEVER throws: hooks must degrade open or they break the user's prompt.
+ * Timeout 2s — slow enough to allow real round trips, fast enough that a
+ * dead server doesn't perceptibly delay every prompt.
+ */
+async function tryRemoteInject(
+  config: ProjectConfig,
+  task:   string,
+): Promise<{ text: string; count: number; injectedIds: string[] } | null> {
+  if (!config.remote_url || !config.remote_token) return null
+  const base = config.remote_url.replace(/\/sse\/?$/, '').replace(/\/$/, '')
+  const url  = `${base}/api/v1/inject`
+  const body: Record<string, unknown> = { task }
+  if (config.remote_scopes && config.remote_scopes.length > 0) {
+    body.scopes = config.remote_scopes
+  }
+  try {
+    const ctrl = new AbortController()
+    const t = setTimeout(() => ctrl.abort(), 2000)
+    const r = await fetch(url, {
+      method: 'POST',
+      signal: ctrl.signal,
+      headers: {
+        'authorization': `Bearer ${config.remote_token}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    })
+    clearTimeout(t)
+    if (!r.ok) return null
+    const data = await r.json() as { text?: string; count?: number; injected_ids?: string[] }
+    if (!data.text || typeof data.text !== 'string') return null
+    return {
+      text:        data.text,
+      count:       typeof data.count === 'number' ? data.count : 0,
+      injectedIds: Array.isArray(data.injected_ids) ? data.injected_ids : [],
+    }
+  } catch {
+    return null
   }
 }
 
@@ -233,27 +351,46 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   const injectOpts = projectConfig.scope ? { scope: projectConfig.scope } : undefined
   let context: string | null = null
   let count = 0
+  let remoteUsed = false
 
-  try {
-    const result = await plur.injectHybrid(task, injectOpts)
-    if (result.count > 0) {
-      const parts: string[] = []
-      if (result.directives) parts.push(result.directives)
-      if (result.constraints) parts.push(result.constraints)
-      if (result.consider) parts.push(result.consider)
-      context = parts.join('\n')
-      count = result.count
+  // Remote-first when the project has opted in (.plur.yaml has remote_url +
+  // remote_token). Personal/non-project sessions skip this entirely —
+  // findProjectConfigPath returns null and the config is empty, so the
+  // network call is never made. Privacy guarantee: prompts from a CWD
+  // without a .plur.yaml never reach Enterprise.
+  if (projectConfig.remote_url && projectConfig.remote_token) {
+    const remote = await tryRemoteInject(projectConfig, task)
+    if (remote && remote.count > 0) {
+      context = remote.text
+      count = remote.count
+      remoteUsed = true
     }
-  } catch {
-    // Fall back to BM25
-    const result = plur.inject(task, injectOpts)
-    if (result.count > 0) {
-      const parts: string[] = []
-      if (result.directives) parts.push(result.directives)
-      if (result.constraints) parts.push(result.constraints)
-      if (result.consider) parts.push(result.consider)
-      context = parts.join('\n')
-      count = result.count
+    // If remote returned null or zero engrams, fall through to local so
+    // the user still gets personal-store context.
+  }
+
+  if (!remoteUsed) {
+    try {
+      const result = await plur.injectHybrid(task, injectOpts)
+      if (result.count > 0) {
+        const parts: string[] = []
+        if (result.directives) parts.push(result.directives)
+        if (result.constraints) parts.push(result.constraints)
+        if (result.consider) parts.push(result.consider)
+        context = parts.join('\n')
+        count = result.count
+      }
+    } catch {
+      // Fall back to BM25
+      const result = plur.inject(task, injectOpts)
+      if (result.count > 0) {
+        const parts: string[] = []
+        if (result.directives) parts.push(result.directives)
+        if (result.constraints) parts.push(result.constraints)
+        if (result.consider) parts.push(result.consider)
+        context = parts.join('\n')
+        count = result.count
+      }
     }
   }
 
@@ -267,10 +404,11 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     sessionId = markerData.sessionId
   } catch {}
 
+  const sourceLabel = remoteUsed ? ' (Enterprise)' : ''
   if (isRehydrate) {
-    parts.push(`[PLUR Memory — rehydrated after compaction, ${count} engrams]`)
+    parts.push(`[PLUR Memory${sourceLabel} — rehydrated after compaction, ${count} engrams]`)
   } else {
-    parts.push(`[PLUR Memory — session started, ${count} engrams injected]`)
+    parts.push(`[PLUR Memory${sourceLabel} — session started, ${count} engrams injected]`)
     if (sessionId) parts.push(`Session ID: ${sessionId}`)
     if (projectConfig.domain) parts.push(`Project domain: ${projectConfig.domain}`)
     if (projectConfig.scope) parts.push(`Project scope: ${projectConfig.scope} — use this scope for plur_learn calls`)

@@ -41,6 +41,7 @@ Commands:
   stores list             List configured stores
   stores add <path>       Add a knowledge store
   init                    Install Claude Code hooks + register plur MCP server
+  init-remote             Opt this project into recall from a PLUR Enterprise server
   doctor                  Diagnose Claude Code / Claude Desktop integration
   audit [--source X]      Audit working memory (claude-code|claw|hermes) for conflicts vs engrams
   hook-inject             (internal) Hook handler for engram injection
@@ -85,6 +86,7 @@ const COMMANDS: Record<string, string> = {
   stores: './commands/stores.js',
   migrate: './commands/migrate.js',
   init: './commands/init.js',
+  'init-remote': './commands/init-remote.js',
   doctor: './commands/doctor.js',
   audit: './commands/audit.js',
   'hook-inject': './commands/hook-inject.js',
