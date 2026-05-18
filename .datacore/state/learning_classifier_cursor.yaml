@@ -1,0 +1,12 @@
+# Learning Classifier Cursor
+# Written by learning-classifier agent after each run.
+# Keyed by relative path from ~/Data root.
+
+last_run: "2026-05-18"
+
+cursors:
+  "2-datacore/.datacore/learning/patterns.md": "2026-05-17"
+  "2-datacore/.datacore/learning/corrections.md": "2026-05-17"
+  "2-datacore/.datacore/learning/preferences.md": "2026-05-12"
+
+retries: {}
