@@ -4,7 +4,7 @@ import type { DedupDecision } from './types.js'
 /**
  * Build the LLM prompt for deduplication decision (Ideas 1 + 2 + 19).
  * Asks the LLM to compare new statement against existing candidates and decide:
- * ADD, UPDATE, MERGE, or NOOP — plus richness comparison and tension detection.
+ * ADD, UPDATE, MERGE, or NOOP — plus richness comparison.
  */
 export function buildDedupPrompt(
   newStatement: string,

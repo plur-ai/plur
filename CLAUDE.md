@@ -156,6 +156,8 @@ If your PR improves any of these, mention it in the PR description.
 | `packages/core/src/inject.ts` | Context-aware engram selection + spreading activation |
 | `packages/core/src/sync.ts` | Git-based sync across machines |
 | `packages/core/src/schemas/engram.ts` | Engram schema (Zod) — the core data model |
+| `packages/core/src/tensions.ts` | Contradiction scan — three-stage pre-filter + LLM judge |
+| `packages/core/src/dedup.ts` | LLM dedup prompt (ADD/UPDATE/MERGE/NOOP) |
 | `packages/mcp/src/tools.ts` | All MCP tool definitions |
 | `packages/claw/src/assembler.ts` | Context assembly for OpenClaw |
 | `packages/claw/src/learner.ts` | Auto-extraction of learnings from conversation |
