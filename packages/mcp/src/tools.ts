@@ -1,4 +1,4 @@
-import { Plur, extractMetaEngrams, validateMetaEngram, confidenceBand, generateProfile, getProfileForInjection, markProfileDirty, selectModelForOperation, readHistoryForEngram, getCachedUpdateCheck, minorVersionsBehind } from '@plur-ai/core'
+import { Plur, extractMetaEngrams, validateMetaEngram, confidenceBand, generateProfile, getProfileForInjection, markProfileDirty, selectModelForOperation, readHistoryForEngram, getCachedUpdateCheck, minorVersionsBehind, scanForTensions } from '@plur-ai/core'
 import type { LlmFunction, MetaField } from '@plur-ai/core'
 import { VERSION } from './version.js'
 
@@ -1286,13 +1286,19 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
 
     {
       name: 'plur_tensions',
-      description: 'List engram pairs that have conflicting knowledge — shows tensions in your memory that may need resolution',
+      description: 'List or scan for engram pairs that have conflicting knowledge. Without scan mode, shows previously detected conflicts. With scan:true, runs an active LLM-powered contradiction scan and returns only high-confidence tensions.',
       annotations: { title: 'Tensions', readOnlyHint: true, idempotentHint: true },
       inputSchema: {
         type: 'object',
         properties: {
           scope: { type: 'string', description: 'Filter by scope' },
           domain: { type: 'string', description: 'Filter by domain prefix' },
+          scan: { type: 'boolean', description: 'Run an active contradiction scan using an LLM judge. Requires OPENAI_API_KEY or OPENROUTER_API_KEY env var, or explicit llm_base_url + llm_api_key args.' },
+          llm_base_url: { type: 'string', description: 'OpenAI-compatible API base URL for scan mode (e.g. https://api.openai.com/v1)' },
+          llm_api_key: { type: 'string', description: 'API key for the LLM (scan mode)' },
+          llm_model: { type: 'string', description: 'Model name for scan mode (default: gpt-4o-mini)' },
+          min_confidence: { type: 'number', description: 'Minimum confidence threshold for scan mode (0–1, default: 0.7)' },
+          max_pairs: { type: 'number', description: 'Maximum candidate pairs to evaluate in scan mode (default: 50)' },
         },
       },
       handler: async (args, plur) => {
@@ -1301,10 +1307,43 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
           domain: args.domain as string | undefined,
         })
 
+        if (args.scan) {
+          const llm = args.llm_base_url && args.llm_api_key
+            ? makeHttpLlm(args.llm_base_url as string, args.llm_api_key as string, args.llm_model as string | undefined)
+            : getLlmFunction()
+
+          if (!llm) {
+            return {
+              error: 'scan mode requires an LLM. Set OPENAI_API_KEY or OPENROUTER_API_KEY, or pass llm_base_url + llm_api_key.',
+              tensions: [],
+              count: 0,
+            }
+          }
+
+          const result = await scanForTensions(engrams, llm, {
+            min_confidence: args.min_confidence as number | undefined,
+            max_pairs: args.max_pairs as number | undefined,
+          })
+
+          return {
+            pairs_checked: result.pairs_checked,
+            count: result.new_tensions,
+            tensions: result.tensions.map(t => ({
+              engram_a: { id: t.id_a, statement: t.statement_a },
+              engram_b: { id: t.id_b, statement: t.statement_b },
+              confidence: t.confidence,
+              reason: t.reason,
+            })),
+          }
+        }
+
+        // Legacy mode: read from relations.conflicts (kept for backward compat;
+        // returns empty for stores that have been through purgeTensions).
         const tensions: Array<{
           engram_a: { id: string; statement: string; type: string }
           engram_b: { id: string; statement: string; type: string }
           detected_at: string
+          purge_hint?: string
         }> = []
 
         const seen = new Set<string>()
@@ -1312,7 +1351,6 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
         for (const engram of engrams) {
           if (!engram.relations?.conflicts?.length) continue
           for (const conflictId of engram.relations.conflicts) {
-            // Deduplicate: only show each pair once
             const pairKey = [engram.id, conflictId].sort().join(':')
             if (seen.has(pairKey)) continue
             seen.add(pairKey)
@@ -1324,6 +1362,7 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
               engram_a: { id: engram.id, statement: engram.statement, type: engram.type },
               engram_b: { id: other.id, statement: other.statement, type: other.type },
               detected_at: engram.activation.last_accessed,
+              purge_hint: 'These conflicts are from the legacy detection system. Run plur_tensions_purge to clear them, then use scan:true for active contradiction detection.',
             })
           }
         }

@@ -43,6 +43,7 @@ Commands:
   init                    Install Claude Code hooks + register plur MCP server
   init-remote             Opt this project into recall from a PLUR Enterprise server
   doctor                  Diagnose Claude Code / Claude Desktop integration
+  tensions [--scan]       List or scan for engram contradictions
   audit [--source X]      Audit working memory (claude-code|claw|hermes) for conflicts vs engrams
   hook-inject             (internal) Hook handler for engram injection
   hook-observe            (internal) Hook handler for observation capture
@@ -88,6 +89,7 @@ const COMMANDS: Record<string, string> = {
   init: './commands/init.js',
   'init-remote': './commands/init-remote.js',
   doctor: './commands/doctor.js',
+  tensions: './commands/tensions.js',
   audit: './commands/audit.js',
   'hook-inject': './commands/hook-inject.js',
   'hook-observe': './commands/hook-observe.js',
