@@ -1,5 +1,11 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, beforeAll, afterAll, vi } from 'vitest'
+import { mkdtempSync, rmSync, writeFileSync, existsSync } from 'fs'
+import { join } from 'path'
+import { tmpdir } from 'os'
+import yaml from 'js-yaml'
 import { RemoteStore } from '../src/store/remote-store.js'
+import { Plur } from '../src/index.js'
+import { StubServer } from './helpers/stub-server.js'
 
 /**
  * Issue #89 — write-then-read consistency. After append() succeeds,
@@ -117,5 +123,187 @@ describe('RemoteStore — optimistic cache insert (issue #89)', () => {
     const gets  = fetchMock.mock.calls.filter(([, init]) => !(init as any)?.method || (init as any)?.method === 'GET')
     expect(posts.length).toBe(1)
     expect(gets.length).toBe(1) // cold-cache must refetch on the next load()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Cold-start behavior — Plur-level (issue #184, #185 gap 3)
+// ---------------------------------------------------------------------------
+
+const STUB_TOKEN = 'cache-test-token'
+let stubServer: StubServer
+let stubUrl: string
+
+beforeAll(async () => {
+  stubServer = new StubServer(STUB_TOKEN)
+  const info = await stubServer.start()
+  stubUrl = info.url
+})
+
+afterAll(async () => {
+  await stubServer.stop()
+})
+
+describe('Plur cold-start with remote store (issues #184, #185)', () => {
+  let dir: string
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'plur-cold-'))
+    stubServer.reset()
+    writeFileSync(
+      join(dir, 'config.yaml'),
+      yaml.dump({
+        stores: [{
+          url: stubUrl,
+          token: STUB_TOKEN,
+          scope: 'group:test',
+          shared: true,
+          readonly: false,
+        }],
+        index: false,
+      }, { lineWidth: 120, noRefs: true }),
+    )
+  })
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('listStores returns 0 for remote store before cache populated (#184)', () => {
+    const plur = new Plur({ path: dir })
+
+    // Seed the stub with an engram so the remote is non-empty
+    stubServer.seedEngram({
+      id: 'ENG-SEED-001',
+      scope: 'group:test',
+      status: 'active',
+      data: { statement: 'seeded engram', scope: 'group:test', status: 'active' },
+    })
+
+    // On cold start, listStores reports 0 for remote (cache empty)
+    const stores = plur.listStores()
+    const remote = stores.find(s => s.url)
+    expect(remote).toBeTruthy()
+    // This documents the current (broken) behavior — #184
+    expect(remote!.engram_count).toBe(0)
+  })
+
+  it('listStores returns correct count after cache warms up', async () => {
+    const plur = new Plur({ path: dir })
+
+    stubServer.seedEngram({
+      id: 'ENG-SEED-001',
+      scope: 'group:test',
+      status: 'active',
+      data: { statement: 'seeded engram', scope: 'group:test', status: 'active' },
+    })
+
+    // Trigger cache population
+    plur.list({ scope: 'group:test' })
+    await new Promise(r => setTimeout(r, 2000))
+
+    const stores = plur.listStores()
+    const remote = stores.find(s => s.url)
+    expect(remote).toBeTruthy()
+    expect(remote!.engram_count).toBeGreaterThanOrEqual(1)
+  })
+
+  it('getById returns null for remote engram before cache populated', () => {
+    const plur = new Plur({ path: dir })
+
+    stubServer.seedEngram({
+      id: 'ENG-SEED-001',
+      scope: 'group:test',
+      status: 'active',
+      data: { statement: 'seeded engram', scope: 'group:test', status: 'active' },
+    })
+
+    // Cold start — cache not populated
+    const found = plur.getById('ENG-GTE-SEED-001') // prefixed
+    expect(found).toBeNull()
+  })
+
+  it('getById finds remote engram after cache warms up', async () => {
+    const plur = new Plur({ path: dir })
+
+    stubServer.seedEngram({
+      id: 'ENG-SEED-001',
+      scope: 'group:test',
+      status: 'active',
+      data: { statement: 'seeded engram', scope: 'group:test', status: 'active' },
+    })
+
+    plur.list()
+    await new Promise(r => setTimeout(r, 2000))
+
+    const found = plur.getById('ENG-GTE-SEED-001')
+    expect(found).toBeTruthy()
+    expect(found!.statement).toBe('seeded engram')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Pin/promote on remote engrams — pinned failing tests (#86, #185 gap 2)
+// These will pass once enterprise server PATCH endpoint (enterprise#110)
+// and RemoteStore.update() are implemented.
+// ---------------------------------------------------------------------------
+
+describe.skip('updateEngram remote routing (blocked on enterprise#110)', () => {
+  let dir: string
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'plur-update-'))
+    stubServer.reset()
+    writeFileSync(
+      join(dir, 'config.yaml'),
+      yaml.dump({
+        stores: [{
+          url: stubUrl,
+          token: STUB_TOKEN,
+          scope: 'group:test',
+          shared: true,
+          readonly: false,
+        }],
+        index: false,
+      }, { lineWidth: 120, noRefs: true }),
+    )
+  })
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('pin on remote engram reaches server', async () => {
+    const plur = new Plur({ path: dir })
+    plur.learn('remote engram for pin test', { scope: 'group:test', type: 'behavioral' })
+    await new Promise(r => setTimeout(r, 2000))
+
+    const loaded = plur.list({ scope: 'group:test' })
+    const remote = loaded.find(e => e.id.includes('-GTE-'))
+    expect(remote).toBeTruthy()
+
+    remote!.pinned = true
+    plur.updateEngram(remote!)
+
+    // Verify server received the pin update
+    const serverEngram = stubServer.getEngram(remote!.id.replace(/^ENG-GTE-/, 'ENG-'))
+    expect((serverEngram?.data as any)?.pinned).toBe(true)
+  })
+
+  it('promote on remote engram reaches server', async () => {
+    const plur = new Plur({ path: dir })
+    plur.learn('remote candidate engram', { scope: 'group:test', type: 'behavioral' })
+    await new Promise(r => setTimeout(r, 2000))
+
+    const loaded = plur.list({ scope: 'group:test' })
+    const remote = loaded.find(e => e.id.includes('-GTE-'))
+    expect(remote).toBeTruthy()
+
+    remote!.status = 'active'
+    remote!.activation.retrieval_strength = 0.7
+    plur.updateEngram(remote!)
+
+    const serverEngram = stubServer.getEngram(remote!.id.replace(/^ENG-GTE-/, 'ENG-'))
+    expect(serverEngram?.status).toBe('active')
   })
 })
