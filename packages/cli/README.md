@@ -21,7 +21,7 @@ npx @plur-ai/cli@0.9.4 status
 ## Quick Start
 
 ```bash
-# Install Claude Code hooks (automatic memory injection)
+# Install Claude Code hooks + local hook binary (automatic memory injection)
 plur init
 
 # Store a learning
@@ -59,7 +59,8 @@ plur forget ENG-2026-0329-001
 | `plur sync` | Cross-device sync via git |
 | `plur packs list` | List installed engram packs |
 | `plur packs install <source>` | Install an engram pack |
-| `plur init` | Install Claude Code hooks for automatic injection |
+| `plur init` | Install Claude Code hooks + local hook binary for automatic injection |
+| `plur doctor` | Diagnose installation health (hooks, MCP, shim, embedder) |
 
 ## Global Flags
 

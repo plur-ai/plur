@@ -4,7 +4,7 @@ export {}
 import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, statSync } from 'fs'
 import { join } from 'path'
 import { fileURLToPath } from 'url'
-import { homedir } from 'os'
+import { homedir, platform } from 'os'
 
 const VERSION = '0.9.9'
 
@@ -92,8 +92,11 @@ export function extractManifestVersion(skillMdPath: string): string | null {
   }
 }
 
-// Hook commands — all use npx for zero-install compatibility
-const CLI = 'npx @plur-ai/cli'
+// Prefer local hook shim if available (installed by `plur init`, see #178).
+// Fall back to npx for first-time users who haven't run `plur init` yet.
+const _shimName = platform() === 'win32' ? 'plur-hook.cmd' : 'plur-hook'
+const _shimCandidate = join(homedir(), '.plur', 'bin', _shimName)
+const CLI = existsSync(_shimCandidate) ? _shimCandidate : 'npx @plur-ai/cli'
 
 const PLUR_HOOKS: Record<string, HookEntry[]> = {
   // --- Session lifecycle ---
