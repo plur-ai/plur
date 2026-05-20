@@ -1,4 +1,4 @@
-import { readSync, existsSync } from 'fs'
+import { readSync, existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { type GlobalFlags } from '../plur.js'
@@ -12,6 +12,12 @@ import { isPlurConfigured } from '../lib/plur-configured.js'
  * the session has been started. The sentinel is created by hook-session-mark
  * (PostToolUse on mcp__plur__plur_session_start).
  *
+ * Deadlock prevention (#199): if the guard has blocked more than
+ * MAX_BLOCKS_BEFORE_FALLBACK tool calls without a session starting (e.g.
+ * because the MCP server failed to start), it stops blocking and warns
+ * via stderr instead. This prevents permanent deadlock while still
+ * enforcing the session start flow under normal conditions.
+ *
  * Exempt tools (allowed without session): ToolSearch, mcp__plur__plur_session_start
  *
  * Input: JSON on stdin (Claude Code PreToolUse hook format)
@@ -22,6 +28,8 @@ const EXEMPT_TOOLS = new Set([
   'mcp__plur__plur_session_start',
   'ToolSearch',
 ])
+
+const MAX_BLOCKS_BEFORE_FALLBACK = 5
 
 function readStdinRaw(): string {
   try {
@@ -44,6 +52,23 @@ function readStdinRaw(): string {
 
 function sentinelPath(sessionId: string): string {
   return join(tmpdir(), `plur-session-${sessionId}`)
+}
+
+function blockCountPath(sessionId: string): string {
+  const dir = join(tmpdir(), 'plur-sessions')
+  mkdirSync(dir, { recursive: true })
+  return join(dir, `${sessionId}.guard-count`)
+}
+
+function incrementBlockCount(sessionId: string): number {
+  const path = blockCountPath(sessionId)
+  let count = 0
+  try {
+    count = parseInt(readFileSync(path, 'utf8'), 10) || 0
+  } catch { /* file doesn't exist yet */ }
+  count++
+  writeFileSync(path, String(count))
+  return count
 }
 
 export async function run(_args: string[], _flags: GlobalFlags): Promise<void> {
@@ -70,6 +95,18 @@ export async function run(_args: string[], _flags: GlobalFlags): Promise<void> {
 
   // Check sentinel
   if (existsSync(sentinelPath(sessionId))) return
+
+  // Deadlock prevention (#199): if we've blocked too many times without a
+  // session starting, the MCP server likely failed to load. Stop blocking
+  // to prevent permanent deadlock.
+  const blockCount = incrementBlockCount(sessionId)
+  if (blockCount > MAX_BLOCKS_BEFORE_FALLBACK) {
+    process.stderr.write(
+      `[plur] WARNING: session guard gave up after ${MAX_BLOCKS_BEFORE_FALLBACK} blocked calls. ` +
+      `The plur MCP server may not be running. Run \`plur doctor\` to diagnose.\n`,
+    )
+    return
+  }
 
   // Block
   const output = {
