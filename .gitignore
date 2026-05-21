@@ -11,3 +11,7 @@ debug-*.mjs
 docs/enterprise/
 docs/architecture/plur-geo-tech-brief.md
 docs/architecture/vertical-extensions.md
+
+# Local Datacore installation state — references personal install paths
+# (e.g. 5-plur/, 0-personal/). Belongs to the user's machine, not this repo.
+.datacore/state/
