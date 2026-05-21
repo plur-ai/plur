@@ -334,7 +334,7 @@ ENTRIES = [
         [],
     ),
     entry(
-        "Looking at the telemetry design: each client sends a daily heartbeat POST to `heartbeat.plur-ai.org/v1/heartbeat`. The payload includes install_id, version, platform, date, and usage counters. No PII, no IP logging.",
+        "Looking at the telemetry design: each client sends a daily heartbeat POST to `plur.ai/v1/heartbeat`. The payload includes install_id, version, platform, date, and usage counters. No PII, no IP logging.",
         [],
     ),
     entry(
