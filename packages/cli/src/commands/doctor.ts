@@ -1,4 +1,7 @@
 import { spawn } from 'child_process'
+import { existsSync, readFileSync } from 'fs'
+import { join } from 'path'
+import { homedir, platform } from 'os'
 import { createPlur, type GlobalFlags } from '../plur.js'
 import { outputText, outputJson, shouldOutputJson } from '../output.js'
 import {
@@ -32,11 +35,19 @@ interface ConfigFileReport {
   hasPlurHooks: boolean
 }
 
+interface HookShimReport {
+  valid: boolean
+  shimPath: string
+  error?: string
+}
+
 interface DoctorReport {
   configs: ConfigFileReport[]
   hooksInstalled: boolean
   mcpRegistered: boolean
   datacoreCollision: boolean
+  staleNpxHooks: boolean
+  hookShim: HookShimReport
   handshake: { ok: boolean; serverName?: string; serverVersion?: string; error?: string }
   embedder: { available: boolean; loaded: boolean; lastError: string | null; modelLoaded: boolean; disabled: boolean; disabledReason: string | null }
   overall: 'ok' | 'fail'
@@ -47,11 +58,44 @@ function hasAnyPlurHook(config: Record<string, unknown>): boolean {
   for (const entries of Object.values(hooks)) {
     for (const entry of entries) {
       for (const h of entry.hooks ?? []) {
-        if (h.command && h.command.includes('@plur-ai/cli')) return true
+        if (h.command && (h.command.includes('@plur-ai/cli') || h.command.includes('.plur/bin/plur-hook'))) return true
       }
     }
   }
   return false
+}
+
+function hasStaleNpxHooks(config: Record<string, unknown>): boolean {
+  const hooks = (config.hooks ?? {}) as Record<string, Array<{ hooks?: Array<{ command?: string }> }>>
+  for (const entries of Object.values(hooks)) {
+    for (const entry of entries) {
+      for (const h of entry.hooks ?? []) {
+        if (h.command && h.command.includes('npx') && h.command.includes('@plur-ai/cli')) return true
+      }
+    }
+  }
+  return false
+}
+
+function validateHookShim(): HookShimReport {
+  const name = platform() === 'win32' ? 'plur-hook.cmd' : 'plur-hook'
+  const path = join(homedir(), '.plur', 'bin', name)
+
+  if (!existsSync(path)) {
+    return { valid: false, shimPath: path, error: 'shim not found — run `plur init` to create it' }
+  }
+
+  const content = readFileSync(path, 'utf-8')
+  const match = content.match(/"([^"]+index\.js)"/)
+  if (!match) {
+    return { valid: false, shimPath: path, error: 'shim has unexpected format' }
+  }
+
+  if (!existsSync(match[1])) {
+    return { valid: false, shimPath: path, error: `entrypoint missing: ${match[1]} — run \`plur init\` to fix` }
+  }
+
+  return { valid: true, shimPath: path }
 }
 
 function inspectConfigs(): ConfigFileReport[] {
@@ -206,6 +250,15 @@ function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<Doctor
   const mcpRegistered = configs.some((c) => c.hasPlurMcp)
   const datacoreCollision = configs.some((c) => c.hasDatacoreMcp)
 
+  // Check for stale npx hooks across all existing configs (#178)
+  const staleNpxHooks = configs.some((c) => {
+    if (!c.exists) return false
+    const config = readConfig(c.path)
+    return hasStaleNpxHooks(config)
+  })
+
+  const hookShim = validateHookShim()
+
   const handshakePromise = skipHandshake
     ? Promise.resolve({ ok: false, error: 'skipped (--no-handshake)' })
     : mcpHandshake()
@@ -217,7 +270,7 @@ function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<Doctor
     // disabled until the model loads.
     const overall: 'ok' | 'fail' =
       hooksInstalled && mcpRegistered && (skipHandshake || handshake.ok) ? 'ok' : 'fail'
-    return { configs, hooksInstalled, mcpRegistered, datacoreCollision, handshake, embedder, overall }
+    return { configs, hooksInstalled, mcpRegistered, datacoreCollision, staleNpxHooks, hookShim, handshake, embedder, overall }
   })
 }
 
@@ -251,6 +304,20 @@ function printText(report: DoctorReport): void {
     outputText('   plur tools are prefixed plur_* (plur_learn, plur_recall_hybrid, etc.).')
     outputText('   datacore tools are prefixed datacore_*. They do NOT share memory.')
     outputText('   If your agent confuses them, this is the cause.')
+  }
+
+  // Hook shim status (#178)
+  outputText('')
+  if (report.hookShim.valid) {
+    outputText(`✓ Hook shim: ${report.hookShim.shimPath}`)
+  } else {
+    outputText(`✗ Hook shim: ${report.hookShim.error}`)
+  }
+
+  if (report.staleNpxHooks) {
+    outputText('')
+    outputText('⚠  Hooks still use npx — slow (200-2000ms per hook) and vulnerable to cache corruption.')
+    outputText('   Fix: run `plur init` to migrate to the local hook binary (<5ms per hook).')
   }
 
   outputText('')

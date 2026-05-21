@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, readFileSync, writeFileSync, mkdirSync, existsSync } from 'fs'
+import { mkdtempSync, rmSync, readFileSync, writeFileSync, mkdirSync, existsSync, statSync } from 'fs'
 import { join } from 'path'
 import { tmpdir, platform } from 'os'
 import { execSync } from 'child_process'
@@ -42,10 +42,11 @@ describe('plur init', () => {
 
     const settings = readSettings()
 
-    // Hooks installed
+    // Hooks installed — now using local shim instead of npx (#178)
     expect(settings.hooks).toBeDefined()
     expect(settings.hooks?.UserPromptSubmit).toBeDefined()
-    expect(settings.hooks?.UserPromptSubmit?.[0]?.hooks?.[0]?.command).toContain('@plur-ai/cli hook-inject')
+    expect(settings.hooks?.UserPromptSubmit?.[0]?.hooks?.[0]?.command).toContain('hook-inject')
+    expect(settings.hooks?.UserPromptSubmit?.[0]?.hooks?.[0]?.command).toContain('.plur/bin/plur-hook')
 
     // MCP server registered
     expect(settings.mcpServers).toBeDefined()
@@ -186,5 +187,101 @@ describe('plur init', () => {
     } finally {
       rmSync(project, { recursive: true, force: true })
     }
+  })
+
+  // ── Local hook binary tests (#178) ──────────────────────────────────────
+
+  it('creates ~/.plur/bin/plur-hook shim on init', () => {
+    runInit()
+    const shim = join(home, '.plur', 'bin', platform() === 'win32' ? 'plur-hook.cmd' : 'plur-hook')
+    expect(existsSync(shim)).toBe(true)
+
+    const content = readFileSync(shim, 'utf-8')
+    expect(content).not.toContain('npx')
+    expect(content).toContain('index.js')
+
+    if (platform() !== 'win32') {
+      expect(content).toContain('#!/bin/sh')
+      expect(content).toContain('exec')
+      // Shim should be executable
+      const stat = statSync(shim)
+      expect(stat.mode & 0o111).toBeGreaterThan(0)
+    }
+  })
+
+  it('hooks use local shim path instead of npx (#178)', () => {
+    runInit()
+    const settings = readSettings()
+
+    const hookCommands: string[] = []
+    for (const entries of Object.values(settings.hooks ?? {})) {
+      for (const entry of entries) {
+        for (const h of entry.hooks) {
+          hookCommands.push(h.command)
+        }
+      }
+    }
+
+    // No hook should reference npx
+    for (const cmd of hookCommands) {
+      expect(cmd).not.toContain('npx')
+    }
+
+    // All plur hooks should reference the local shim
+    const plurCommands = hookCommands.filter((c) => c.includes('plur-hook') || c.includes('@plur-ai/cli'))
+    expect(plurCommands.length).toBeGreaterThan(0)
+    for (const cmd of plurCommands) {
+      expect(cmd).toContain('.plur/bin/plur-hook')
+    }
+  })
+
+  it('migration: re-init replaces npx hooks with local shim hooks (#178)', () => {
+    // Simulate old npx-style hooks
+    const settingsPath = join(home, '.claude', 'settings.json')
+    mkdirSync(join(home, '.claude'), { recursive: true })
+    writeFileSync(
+      settingsPath,
+      JSON.stringify({
+        hooks: {
+          UserPromptSubmit: [
+            { hooks: [{ type: 'command', command: 'npx @plur-ai/cli hook-inject', timeout: 15 }] },
+          ],
+          PreToolUse: [
+            { matcher: '*', hooks: [{ type: 'command', command: 'npx @plur-ai/cli hook-session-guard', timeout: 3 }] },
+          ],
+        },
+        mcpServers: {
+          plur: { command: '/bin/sh', args: ['-lc', 'exec npx -y @plur-ai/mcp@latest'] },
+        },
+      }, null, 2),
+    )
+
+    runInit()
+    const settings = readSettings()
+
+    // Old npx hooks should be replaced
+    const hookCommands: string[] = []
+    for (const entries of Object.values(settings.hooks ?? {})) {
+      for (const entry of entries) {
+        for (const h of entry.hooks) hookCommands.push(h.command)
+      }
+    }
+
+    for (const cmd of hookCommands) {
+      expect(cmd).not.toContain('npx @plur-ai/cli')
+    }
+    expect(hookCommands.some((c) => c.includes('.plur/bin/plur-hook'))).toBe(true)
+  })
+
+  it('creates plur-hook.meta.json with entrypoint info (#178)', () => {
+    runInit()
+    const metaPath = join(home, '.plur', 'bin', 'plur-hook.meta.json')
+    expect(existsSync(metaPath)).toBe(true)
+
+    const meta = JSON.parse(readFileSync(metaPath, 'utf-8'))
+    expect(meta.entrypoint).toBeDefined()
+    expect(meta.entrypoint).toContain('index.js')
+    expect(meta.node).toBeDefined()
+    expect(meta.installed).toBeDefined()
   })
 })

@@ -1,6 +1,7 @@
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs'
-import { join } from 'path'
-import { homedir } from 'os'
+import { existsSync, readFileSync, writeFileSync, mkdirSync, chmodSync } from 'fs'
+import { join, dirname } from 'path'
+import { fileURLToPath } from 'url'
+import { homedir, platform } from 'os'
 import { type GlobalFlags } from '../plur.js'
 import { outputText } from '../output.js'
 import {
@@ -22,8 +23,9 @@ import {
  * Two things must be in place for plur to work in Claude Code:
  *
  *   1. The `plur` MCP server must be registered, so the `plur_*` tools exist.
- *   2. The lifecycle hooks must call `npx @plur-ai/cli hook-*` to inject
- *      relevant engrams into the conversation.
+ *   2. The lifecycle hooks must call the plur CLI to inject relevant engrams
+ *      into the conversation. A local shim at ~/.plur/bin/plur-hook is
+ *      created to avoid npx overhead and race conditions (#178).
  *
  * Usage:
  *   plur init              # default: creates .claude/settings.json in current directory
@@ -55,128 +57,177 @@ interface HookEntry {
   }>
 }
 
-// Hook commands — all use npx for zero-install compatibility
-const CLI = 'npx @plur-ai/cli'
+// ── Hook shim installation ──────────────────────────────────────────────────
+// Instead of using `npx @plur-ai/cli hook-*` (slow, races on version bumps),
+// plur init creates a local shim at ~/.plur/bin/plur-hook that calls
+// `node <resolved-path-to-dist/index.js>` directly. See #178.
+
+function resolveCliEntrypoint(): string {
+  // import.meta.url → file:///path/to/dist/commands/init.js
+  // CLI entrypoint is dist/index.js (parent of commands/)
+  const thisFile = fileURLToPath(import.meta.url)
+  return join(dirname(thisFile), '..', 'index.js')
+}
+
+function shimPath(): string {
+  const name = platform() === 'win32' ? 'plur-hook.cmd' : 'plur-hook'
+  return join(homedir(), '.plur', 'bin', name)
+}
+
+function installHookBinary(): { shimPath: string; status: string } {
+  const binDir = join(homedir(), '.plur', 'bin')
+  mkdirSync(binDir, { recursive: true })
+
+  const entrypoint = resolveCliEntrypoint()
+  const nodeBin = process.execPath
+
+  if (!existsSync(entrypoint)) {
+    return { shimPath: '', status: `error: CLI entrypoint not found at ${entrypoint}` }
+  }
+
+  const target = shimPath()
+
+  if (platform() === 'win32') {
+    writeFileSync(target, `@echo off\r\n"${nodeBin}" "${entrypoint}" %*\r\n`)
+  } else {
+    writeFileSync(target, `#!/bin/sh\nexec "${nodeBin}" "${entrypoint}" "$@"\n`, { mode: 0o755 })
+    try { chmodSync(target, 0o755) } catch { /* masked umask fallback */ }
+  }
+
+  // Metadata for doctor diagnostics
+  const meta = { entrypoint, node: nodeBin, installed: new Date().toISOString() }
+  writeFileSync(join(binDir, 'plur-hook.meta.json'), JSON.stringify(meta, null, 2) + '\n')
+
+  return { shimPath: target, status: 'installed' }
+}
+
+// ── Hook map builders ───────────────────────────────────────────────────────
+// Parameterized by command prefix so the same definitions work with both
+// the local shim (default) and npx fallback.
 
 // Enforcement hooks ensure plur_session_start is always called first.
 // Installed into global ~/.claude/settings.json unconditionally (issue #95) so
 // they fire from any subdirectory project. Each hook silent-passes when
 // isPlurConfigured() is false, so projects without plur are unaffected.
-const PLUR_HOOKS_ENFORCEMENT: Record<string, HookEntry[]> = {
-  SessionStart: [
-    {
-      hooks: [
-        { type: 'command', command: `${CLI} hook-session-remind`, timeout: 3 },
-      ],
-    },
-  ],
+function buildEnforcementHooks(cmd: string): Record<string, HookEntry[]> {
+  return {
+    SessionStart: [
+      {
+        hooks: [
+          { type: 'command', command: `${cmd} hook-session-remind`, timeout: 3 },
+        ],
+      },
+    ],
 
-  PreToolUse: [
-    // Session guard — blocks all tools until plur_session_start is called.
-    // Must be first so it runs before any other PreToolUse hook.
-    {
-      matcher: '*',
-      hooks: [
-        { type: 'command', command: `${CLI} hook-session-guard`, timeout: 3 },
-      ],
-    },
-  ],
+    PreToolUse: [
+      // Session guard — blocks all tools until plur_session_start is called.
+      // Must be first so it runs before any other PreToolUse hook.
+      {
+        matcher: '*',
+        hooks: [
+          { type: 'command', command: `${cmd} hook-session-guard`, timeout: 3 },
+        ],
+      },
+    ],
 
-  PostToolUse: [
-    // Session sentinel — creates marker file after plur_session_start succeeds
-    {
-      matcher: 'mcp__plur__plur_session_start',
-      hooks: [
-        { type: 'command', command: `${CLI} hook-session-mark`, timeout: 3 },
-      ],
-    },
-  ],
+    PostToolUse: [
+      // Session sentinel — creates marker file after plur_session_start succeeds
+      {
+        matcher: 'mcp__plur__plur_session_start',
+        hooks: [
+          { type: 'command', command: `${cmd} hook-session-mark`, timeout: 3 },
+        ],
+      },
+    ],
+  }
 }
 
 // Injection hooks pull relevant engrams into the conversation context. Installed
 // at the path chosen by --global/--project (default project) because per-project
 // domain/scope tuning may matter for what gets injected.
-const PLUR_HOOKS_INJECTION: Record<string, HookEntry[]> = {
-  // First message: inject engrams based on the prompt.
-  // Subsequent messages: periodic reminder to call plur_learn (~1ms skip).
-  UserPromptSubmit: [
-    {
-      hooks: [
-        { type: 'command', command: `${CLI} hook-inject`, timeout: 15 },
-      ],
-    },
-  ],
+function buildInjectionHooks(cmd: string): Record<string, HookEntry[]> {
+  return {
+    // First message: inject engrams based on the prompt.
+    // Subsequent messages: periodic reminder to call plur_learn (~1ms skip).
+    UserPromptSubmit: [
+      {
+        hooks: [
+          { type: 'command', command: `${cmd} hook-inject`, timeout: 15 },
+        ],
+      },
+    ],
 
-  // Re-inject after context compaction so engrams survive long conversations.
-  PostCompact: [
-    {
-      matcher: 'auto|manual',
-      hooks: [
-        { type: 'command', command: `${CLI} hook-inject --rehydrate`, timeout: 15 },
-      ],
-    },
-  ],
+    // Re-inject after context compaction so engrams survive long conversations.
+    PostCompact: [
+      {
+        matcher: 'auto|manual',
+        hooks: [
+          { type: 'command', command: `${cmd} hook-inject --rehydrate`, timeout: 15 },
+        ],
+      },
+    ],
 
-  PreToolUse: [
-    // Full injection when entering plan mode — planning needs broad context
-    {
-      matcher: 'EnterPlanMode',
-      hooks: [
-        { type: 'command', command: `${CLI} hook-inject --event plan_mode`, timeout: 10 },
-      ],
-    },
-    // Domain-specific engrams when a skill is invoked
-    {
-      matcher: 'Skill',
-      hooks: [
-        { type: 'command', command: `${CLI} hook-inject --event skill`, timeout: 10 },
-      ],
-    },
-    // Agent-scoped engrams when spawning an agent
-    {
-      matcher: 'Agent',
-      hooks: [
-        { type: 'command', command: `${CLI} hook-inject --event agent`, timeout: 10 },
-      ],
-    },
-    // Observation capture — log tool calls for offline pattern extraction
-    {
-      matcher: 'Bash|Edit|Write|Agent',
-      hooks: [
-        { type: 'command', command: `${CLI} hook-observe`, timeout: 3 },
-      ],
-    },
-  ],
+    PreToolUse: [
+      // Full injection when entering plan mode — planning needs broad context
+      {
+        matcher: 'EnterPlanMode',
+        hooks: [
+          { type: 'command', command: `${cmd} hook-inject --event plan_mode`, timeout: 10 },
+        ],
+      },
+      // Domain-specific engrams when a skill is invoked
+      {
+        matcher: 'Skill',
+        hooks: [
+          { type: 'command', command: `${cmd} hook-inject --event skill`, timeout: 10 },
+        ],
+      },
+      // Agent-scoped engrams when spawning an agent
+      {
+        matcher: 'Agent',
+        hooks: [
+          { type: 'command', command: `${cmd} hook-inject --event agent`, timeout: 10 },
+        ],
+      },
+      // Observation capture — log tool calls for offline pattern extraction
+      {
+        matcher: 'Bash|Edit|Write|Agent',
+        hooks: [
+          { type: 'command', command: `${cmd} hook-observe`, timeout: 3 },
+        ],
+      },
+    ],
 
-  PostToolUse: [
-    {
-      matcher: 'Bash|Edit|Write|Agent',
-      hooks: [
-        { type: 'command', command: `${CLI} hook-observe --post`, timeout: 3 },
-      ],
-    },
-  ],
+    PostToolUse: [
+      {
+        matcher: 'Bash|Edit|Write|Agent',
+        hooks: [
+          { type: 'command', command: `${cmd} hook-observe --post`, timeout: 3 },
+        ],
+      },
+    ],
 
-  // Inject agent-scoped engrams into subagent context
-  SubagentStart: [
-    {
-      matcher: '.*',
-      hooks: [
-        { type: 'command', command: `${CLI} hook-inject --event subagent`, timeout: 10 },
-      ],
-    },
-  ],
+    // Inject agent-scoped engrams into subagent context
+    SubagentStart: [
+      {
+        matcher: '.*',
+        hooks: [
+          { type: 'command', command: `${cmd} hook-inject --event subagent`, timeout: 10 },
+        ],
+      },
+    ],
 
-  // Learning reflection — nudge the LLM to call plur_learn after responses
-  // where it discovered or learned something. Fires every 3rd Stop to avoid fatigue.
-  Stop: [
-    {
-      matcher: '*',
-      hooks: [
-        { type: 'command', command: `${CLI} hook-learn-check`, timeout: 2 },
-      ],
-    },
-  ],
+    // Learning reflection — nudge the LLM to call plur_learn after responses
+    // where it discovered or learned something. Fires every 3rd Stop to avoid fatigue.
+    Stop: [
+      {
+        matcher: '*',
+        hooks: [
+          { type: 'command', command: `${cmd} hook-learn-check`, timeout: 2 },
+        ],
+      },
+    ],
+  }
 }
 
 function mergeHookMaps(
@@ -309,7 +360,9 @@ function loadSettings(path: string): Settings {
 }
 
 function isPlurHook(entry: HookEntry): boolean {
-  return (entry.hooks ?? []).some((h) => h.command.includes('@plur-ai/cli'))
+  return (entry.hooks ?? []).some((h) =>
+    h.command.includes('@plur-ai/cli') || h.command.includes('.plur/bin/plur-hook'),
+  )
 }
 
 function hasPlurHooks(settings: Settings): boolean {
@@ -381,6 +434,13 @@ function hooksStatusFor(before: string, after: string, hadHooks: boolean): strin
 }
 
 export async function run(args: string[], flags: GlobalFlags): Promise<void> {
+  // Install local hook shim FIRST — hook commands depend on it (#178)
+  const shim = installHookBinary()
+  const cmd = shim.shimPath || 'npx @plur-ai/cli' // fallback if shim failed
+
+  const PLUR_HOOKS_ENFORCEMENT = buildEnforcementHooks(cmd)
+  const PLUR_HOOKS_INJECTION = buildInjectionHooks(cmd)
+
   const injectionPath = findSettingsPath(flags, args)
   const enforcementPath = join(homedir(), '.claude', 'settings.json')
   const samePath = injectionPath === enforcementPath
@@ -450,6 +510,8 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   const entry = buildMcpServerEntry()
 
   outputText('PLUR installed for Claude Code.')
+  outputText('')
+  outputText(`Hook binary: ${shim.status}${shim.shimPath ? ` (${shim.shimPath})` : ''}`)
   outputText('')
   outputText('Architecture: One global engram store (~/.plur/), enforcement hooks global, injection hooks project-scoped.')
   outputText('Multi-project scoping via domain/scope fields on engrams, not separate installs.')
