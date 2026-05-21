@@ -264,7 +264,7 @@ const plugin = {
 
     // 9. Telemetry flush on process exit (no-op when PLUR_TELEMETRY != 'on').
     // beforeExit fires once per long-lived OpenClaw process — flushes yesterday's
-    // counters to heartbeat.plur-ai.org when day-rollover left a snapshot behind.
+    // counters to plur.ai/v1/heartbeat when day-rollover left a snapshot behind.
     registerFlushOnExit({})
 
     api.logger.info(`PLUR registered: context engine + hooks + slash commands + CLI`)
