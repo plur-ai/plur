@@ -175,7 +175,7 @@ echo "=== PLUR Release $VERSION ==="
 echo "Dry run: $DRY_RUN"
 echo ""
 
-# --- 1. Version bump (12 locations) ---
+# --- 1. Version bump (11 locations) ---
 echo "--- Step 1: Version bump ---"
 
 OLD_CORE=$(node -e "console.log(require('./packages/core/package.json').version)")
@@ -193,9 +193,10 @@ for pkg in core mcp cli; do
   echo "  ✓ packages/$pkg/package.json"
 done
 
-# TypeScript VERSION constants (3) — core has no VERSION constant; mcp + cli do
-sed -i '' "s/const VERSION = '.*'/const VERSION = '$VERSION'/" packages/mcp/src/server.ts
-echo "  ✓ packages/mcp/src/server.ts"
+# TypeScript VERSION constants — core has no VERSION constant; mcp + cli do.
+# server.ts imports VERSION from version.ts, so version.ts is the source of truth.
+sed -i '' "s/export const VERSION = '.*'/export const VERSION = '$VERSION'/" packages/mcp/src/version.ts
+echo "  ✓ packages/mcp/src/version.ts"
 
 sed -i '' "s/const VERSION = '.*'/const VERSION = '$VERSION'/" packages/mcp/src/index.ts
 echo "  ✓ packages/mcp/src/index.ts"
@@ -350,12 +351,13 @@ for pkg_check in "cli:$VERSION"; do
   pkg_name="${pkg_check%%:*}"
   pkg_ver="${pkg_check##*:}"
   echo -n "  npx -y @plur-ai/$pkg_name@$pkg_ver --version → "
-  smoke_out=$(npx -y "@plur-ai/$pkg_name@$pkg_ver" --version 2>&1 || echo "EXEC_FAILED")
-  if echo "$smoke_out" | grep -q "$pkg_ver"; then
+  smoke_out=$(npx -y "@plur-ai/$pkg_name@$pkg_ver" --version 2>&1)
+  smoke_exit=$?
+  if [ "$smoke_exit" -eq 0 ] && echo "$smoke_out" | grep -q "$pkg_ver"; then
     echo "✓ ($smoke_out)"
   else
     echo "✗"
-    echo "      Expected version $pkg_ver in output, got: $smoke_out"
+    echo "      Expected exit 0 + version $pkg_ver in output (exit=$smoke_exit): $smoke_out"
     SMOKE_OK=false
   fi
 done
