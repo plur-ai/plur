@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'fs'
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, chmodSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { execSync } from 'child_process'
@@ -137,5 +137,73 @@ describe('plur doctor', () => {
     expect(report.handshake.error).toContain('skipped')
     // ok overall because handshake is gated behind the skip flag
     expect(report.overall).toBe('ok')
+  })
+
+  // ── Stale npx hook detection (#178) ─────────────────────────────────────
+
+  it('detects stale npx hooks and recommends migration (#178)', () => {
+    writeGlobalSettings({
+      hooks: {
+        UserPromptSubmit: [
+          { hooks: [{ type: 'command', command: 'npx @plur-ai/cli hook-inject' }] },
+        ],
+      },
+      mcpServers: {
+        plur: { command: '/bin/sh', args: ['-lc', 'exec npx -y @plur-ai/mcp@latest'] },
+      },
+    })
+
+    const { stdout } = runDoctor()
+    const report = JSON.parse(stdout)
+
+    expect(report.staleNpxHooks).toBe(true)
+    expect(report.hooksInstalled).toBe(true)
+  })
+
+  it('reports hookShim.valid=false when shim does not exist (#178)', () => {
+    writeGlobalSettings({
+      hooks: {
+        UserPromptSubmit: [
+          { hooks: [{ type: 'command', command: `${join(home, '.plur', 'bin', 'plur-hook')} hook-inject` }] },
+        ],
+      },
+      mcpServers: {
+        plur: { command: '/bin/sh', args: ['-lc', 'exec npx -y @plur-ai/mcp@latest'] },
+      },
+    })
+
+    const { stdout } = runDoctor()
+    const report = JSON.parse(stdout)
+
+    expect(report.hookShim).toBeDefined()
+    expect(report.hookShim.valid).toBe(false)
+  })
+
+  it('reports staleNpxHooks=false with new-style shim hooks (#178)', () => {
+    // Create a valid shim pointing to the real CLI dist
+    const cliDist = join(__dirname, '..', 'dist', 'index.js')
+    const binDir = join(home, '.plur', 'bin')
+    mkdirSync(binDir, { recursive: true })
+    const shimPath = join(binDir, 'plur-hook')
+    writeFileSync(shimPath, `#!/bin/sh\nexec "${process.execPath}" "${cliDist}" "$@"\n`, { mode: 0o755 })
+    try { chmodSync(shimPath, 0o755) } catch {}
+
+    writeGlobalSettings({
+      hooks: {
+        UserPromptSubmit: [
+          { hooks: [{ type: 'command', command: `${shimPath} hook-inject` }] },
+        ],
+      },
+      mcpServers: {
+        plur: { command: '/bin/sh', args: ['-lc', 'exec npx -y @plur-ai/mcp@latest'] },
+      },
+    })
+
+    const { stdout } = runDoctor()
+    const report = JSON.parse(stdout)
+
+    expect(report.staleNpxHooks).toBe(false)
+    expect(report.hooksInstalled).toBe(true)
+    expect(report.hookShim.valid).toBe(true)
   })
 })
