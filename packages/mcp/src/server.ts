@@ -160,7 +160,7 @@ export async function createServer(plur?: Plur): Promise<Server> {
     const tool = tools.find(t => t.name === request.params.name)
     if (!tool) {
       return {
-        content: [{ type: 'text', text: `Unknown tool: ${request.params.name}` }],
+        content: [{ type: 'text', text: JSON.stringify({ error: `Unknown tool: ${request.params.name}`, success: false }) }],
         isError: true,
       }
     }
@@ -181,8 +181,9 @@ export async function createServer(plur?: Plur): Promise<Server> {
         }
         const parsed = z.object(shape).passthrough().safeParse(args)
         if (!parsed.success) {
+          const details = parsed.error.issues.map(i => `${i.path.join('.')}: ${i.message}`).join(', ')
           return {
-            content: [{ type: 'text', text: `Invalid arguments: ${parsed.error.issues.map(i => `${i.path.join('.')}: ${i.message}`).join(', ')}` }],
+            content: [{ type: 'text', text: JSON.stringify({ error: `Invalid arguments: ${details}`, success: false }) }],
             isError: true,
           }
         }
@@ -193,7 +194,7 @@ export async function createServer(plur?: Plur): Promise<Server> {
       const message = err?.message ?? String(err)
       server.sendLoggingMessage({ level: 'error', data: `Tool ${request.params.name} failed: ${message}` })
       return {
-        content: [{ type: 'text', text: `Error: ${message}` }],
+        content: [{ type: 'text', text: JSON.stringify({ error: message, success: false }) }],
         isError: true,
       }
     }

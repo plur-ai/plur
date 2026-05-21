@@ -96,6 +96,15 @@ describe('MCP server (wire protocol)', () => {
     expect((result.content as any)[0].text).toContain('Unknown tool')
   })
 
+  it('error responses are valid JSON with success:false (#207)', async () => {
+    const result = await client.callTool({ name: 'plur_nonexistent', arguments: {} })
+    expect(result.isError).toBe(true)
+    const parsed = JSON.parse((result.content as any)[0].text)
+    expect(parsed.success).toBe(false)
+    expect(parsed.error).toBeDefined()
+    expect(typeof parsed.error).toBe('string')
+  })
+
   // --- Resources ---
 
   it('lists resources (guide + status)', async () => {
