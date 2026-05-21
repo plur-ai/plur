@@ -364,6 +364,22 @@ export class Plur {
     return null
   }
 
+  /**
+   * Strip the store namespace prefix from an ID before sending to a remote server.
+   * _loadAllEngrams adds ENG-{PREFIX}- to avoid local ID collisions; the remote
+   * server only knows the original ID. If the ID doesn't match this store's prefix,
+   * return it unchanged (it may belong to a different store or be unprefixed).
+   * See: https://github.com/plur-ai/plur/issues/86
+   */
+  private _stripRemotePrefix(id: string, scope: string): string {
+    const prefix = storePrefix(scope)
+    const nsPattern = new RegExp(`^(ENG|ABS|META)-${prefix}-`)
+    if (nsPattern.test(id)) {
+      return id.replace(nsPattern, '$1-')
+    }
+    return id
+  }
+
   /** Content hash fast-path dedup. Scope-aware: same statement in a different scope is a promotion, not a duplicate. */
   private _hashDedup(statement: string, engrams: Engram[], scope?: string): Engram | null {
     const hash = computeContentHash(statement)
@@ -1095,18 +1111,21 @@ export class Plur {
 
     // Check remote stores — the engram may live on an enterprise server.
     // See: https://github.com/plur-ai/plur/issues/85
+    // The ID may be prefixed (ENG-GPL-...) from _loadAllEngrams namespacing.
+    // Strip the prefix before querying the remote server. See: #86
     for (const entry of (this.config.stores ?? [])) {
       if (!entry.url) continue
+      const serverId = this._stripRemotePrefix(id, entry.scope)
       if (entry.readonly === true) {
         const roDriver = this._getRemoteDriver({ url: entry.url, token: entry.token, scope: entry.scope })
-        const roFound = await roDriver.getById(id)
+        const roFound = await roDriver.getById(serverId)
         if (roFound) throw new Error('Engram is in a readonly store')
         continue
       }
       const driver = this._getRemoteDriver({ url: entry.url, token: entry.token, scope: entry.scope })
-      const found = await driver.getById(id)
+      const found = await driver.getById(serverId)
       if (found) {
-        await driver.feedback(id, signal)
+        await driver.feedback(serverId, signal)
         appendHistory(this.paths.root, {
           event: 'feedback_received',
           engram_id: id,
@@ -1228,20 +1247,22 @@ export class Plur {
 
     // Check remote stores — the engram may live on an enterprise server.
     // See: https://github.com/plur-ai/plur/issues/84
+    // Strip store prefix before querying remote. See: #86
     for (const entry of (this.config.stores ?? [])) {
       if (!entry.url) continue
+      const serverId = this._stripRemotePrefix(id, entry.scope)
       if (entry.readonly === true) {
         // Check if the engram exists here before throwing, so readonly
         // errors are specific ("cannot retire from readonly") not generic.
         const roDriver = this._getRemoteDriver({ url: entry.url, token: entry.token, scope: entry.scope })
-        const roFound = await roDriver.getById(id)
+        const roFound = await roDriver.getById(serverId)
         if (roFound) throw new Error('Cannot retire engram from readonly store')
         continue
       }
       const driver = this._getRemoteDriver({ url: entry.url, token: entry.token, scope: entry.scope })
-      const found = await driver.getById(id)
+      const found = await driver.getById(serverId)
       if (found) {
-        const removed = await driver.remove(id)
+        const removed = await driver.remove(serverId)
         if (removed) {
           appendHistory(this.paths.root, {
             event: 'engram_retired',

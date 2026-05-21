@@ -272,3 +272,101 @@ describe('Plur integration with stub server', () => {
     expect(existsSync(localYaml)).toBe(true)
   })
 })
+
+// ---------------------------------------------------------------------------
+// ID prefix round-trip — the #86 regression test
+// ---------------------------------------------------------------------------
+
+describe('ID prefix round-trip (issue #86)', () => {
+  let primaryDir: string
+
+  beforeEach(() => {
+    primaryDir = mkdtempSync(join(tmpdir(), 'plur-prefix-'))
+    server.reset()
+    writeFileSync(
+      join(primaryDir, 'config.yaml'),
+      yaml.dump({
+        stores: [{
+          url: baseUrl,
+          token: TOKEN,
+          scope: 'group:test',
+          shared: true,
+          readonly: false,
+        }],
+        index: false,
+      }, { lineWidth: 120, noRefs: true }),
+    )
+  })
+
+  afterAll(() => {
+    if (primaryDir && existsSync(primaryDir)) rmSync(primaryDir, { recursive: true, force: true })
+  })
+
+  it('feedback() works with prefixed ID from _loadAllEngrams', async () => {
+    const plur = new Plur({ path: primaryDir })
+
+    // Learn to remote
+    plur.learn('remote engram for feedback test', { scope: 'group:test', type: 'behavioral' })
+    await new Promise(r => setTimeout(r, 100))
+    expect(server.engramCount).toBe(1)
+
+    // Load engrams — this adds the store prefix (e.g. ENG-GTE-...)
+    const loaded = plur.list({ scope: 'group:test' })
+
+    // Wait for remote cache to populate
+    await new Promise(r => setTimeout(r, 2000))
+    const loadedAfter = plur.list({ scope: 'group:test' })
+    const remoteEngrams = loadedAfter.filter(e => e.id.includes('-GTE-'))
+    expect(remoteEngrams.length).toBeGreaterThanOrEqual(1)
+
+    const prefixedId = remoteEngrams[0].id
+    expect(prefixedId).toMatch(/^ENG-GTE-/) // Prefixed
+
+    // Feedback with the prefixed ID — should succeed, not "Engram not found"
+    await plur.feedback(prefixedId, 'positive')
+
+    // Verify the server received the feedback (on the unprefixed ID)
+    const serverEngram = server.getEngram('ENG-SRV-001')
+    expect(serverEngram).toBeTruthy()
+    expect((serverEngram?.data as any)?.feedback_signals?.positive).toBeGreaterThanOrEqual(1)
+  })
+
+  it('forget() works with prefixed ID from _loadAllEngrams', async () => {
+    const plur = new Plur({ path: primaryDir })
+
+    // Learn to remote
+    plur.learn('remote engram for forget test', { scope: 'group:test', type: 'behavioral' })
+    await new Promise(r => setTimeout(r, 100))
+    expect(server.engramCount).toBe(1)
+
+    // Wait for remote cache to populate
+    await new Promise(r => setTimeout(r, 2000))
+    const loaded = plur.list({ scope: 'group:test' })
+    const remoteEngrams = loaded.filter(e => e.id.includes('-GTE-'))
+    expect(remoteEngrams.length).toBeGreaterThanOrEqual(1)
+
+    const prefixedId = remoteEngrams[0].id
+    expect(prefixedId).toMatch(/^ENG-GTE-/)
+
+    // Forget with the prefixed ID — should succeed
+    await plur.forget(prefixedId)
+
+    // Verify the server retired it
+    const serverEngram = server.getEngram('ENG-SRV-001')
+    expect(serverEngram?.status).toBe('retired')
+  })
+
+  it('feedback() still works with unprefixed server ID', async () => {
+    const plur = new Plur({ path: primaryDir })
+
+    // Learn to remote
+    plur.learn('remote engram for unprefixed test', { scope: 'group:test', type: 'behavioral' })
+    await new Promise(r => setTimeout(r, 100))
+
+    // Feedback with the server-side ID directly (no prefix)
+    await plur.feedback('ENG-SRV-001', 'positive')
+
+    const serverEngram = server.getEngram('ENG-SRV-001')
+    expect((serverEngram?.data as any)?.feedback_signals?.positive).toBeGreaterThanOrEqual(1)
+  })
+})

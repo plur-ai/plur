@@ -101,6 +101,18 @@ export class StubServer {
     return e ? { ...e } : undefined
   }
 
+  /** Seed an engram directly (for cold-start tests). */
+  seedEngram(engram: { id: string; scope: string; status: string; data: Record<string, unknown> }): void {
+    this.engrams.set(engram.id, {
+      id: engram.id,
+      scope: engram.scope,
+      status: engram.status,
+      data: engram.data,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    })
+  }
+
   /** Reset all data without restarting. */
   reset(): void {
     this.engrams.clear()
