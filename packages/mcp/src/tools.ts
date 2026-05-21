@@ -461,10 +461,16 @@ export function getToolDefinitions(): ToolDefinition[] {
       handler: async (args, plur) => {
         if (args.id) {
           const engram = plur.getById(args.id as string)
-          if (!engram) throw new Error(`Engram not found: ${args.id}`)
-          if (engram.status === 'retired') return { success: false, error: `Already retired: ${args.id}` }
+          if (engram) {
+            if (engram.status === 'retired') return { success: false, error: `Already retired: ${args.id}` }
+            await plur.forget(args.id as string)
+            return { success: true, retired: { id: engram.id, statement: engram.statement } }
+          }
+          // Not in local store — fall through to plur.forget() which routes to
+          // remote stores (with prefix stripping per #86 / PR #186). Throws
+          // "Engram not found" if it's nowhere.
           await plur.forget(args.id as string)
-          return { success: true, retired: { id: engram.id, statement: engram.statement } }
+          return { success: true, retired: { id: args.id as string } }
         }
         if (args.search) {
           const matches = plur.recall(args.search as string, { limit: 100 })
