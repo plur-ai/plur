@@ -1236,6 +1236,23 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
           channel: 'mcp',
         })
 
+        // Clean up session checkpoint (#215) — session ended cleanly
+        try {
+          const { existsSync, unlinkSync } = await import('fs')
+          const { join } = await import('path')
+          const { homedir } = await import('os')
+          const plurDir = process.env.PLUR_PATH ?? join(homedir(), '.plur')
+          const sessionsDir = join(plurDir, 'sessions')
+          // Try session_id first, then CLAUDE_SESSION_ID, then ppid
+          const keys = [session_id, process.env.CLAUDE_SESSION_ID, String(process.ppid)]
+            .filter(Boolean)
+            .map(k => k!.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 64))
+          for (const key of keys) {
+            const cp = join(sessionsDir, `${key}.checkpoint.json`)
+            if (existsSync(cp)) { unlinkSync(cp); break }
+          }
+        } catch { /* cleanup is best-effort */ }
+
         const status = plur.status()
 
         return {

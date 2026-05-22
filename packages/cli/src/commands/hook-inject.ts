@@ -1,4 +1,4 @@
-import { existsSync, writeFileSync, readFileSync, appendFileSync, mkdirSync, readSync, statSync } from 'fs'
+import { existsSync, writeFileSync, readFileSync, appendFileSync, mkdirSync, readSync, statSync, readdirSync, unlinkSync } from 'fs'
 import { dirname, join, resolve } from 'path'
 import { tmpdir, homedir } from 'os'
 import { randomUUID } from 'crypto'
@@ -419,6 +419,65 @@ function extractEventTask(input: Record<string, unknown>, event: string): string
   }
 }
 
+/**
+ * Deferred wrap-up (#216): detect orphaned sessions from previous runs.
+ *
+ * Scans ~/.plur/sessions/ for checkpoint files without a matching
+ * session_end episode. If found, generates a brief recovery notice
+ * and cleans up the checkpoint. Returns a notice string or null.
+ *
+ * Conservative: only reports metadata (stop count, duration, cwd).
+ * Does not attempt LLM-quality summaries — that context is gone.
+ */
+function processDeferredWrapups(): string | null {
+  const plurDir = process.env.PLUR_PATH ?? join(homedir(), '.plur')
+  const sessionsDir = join(plurDir, 'sessions')
+  if (!existsSync(sessionsDir)) return null
+
+  const notices: string[] = []
+  try {
+    const files = readdirSync(sessionsDir).filter(f => f.endsWith('.checkpoint.json'))
+    const now = Date.now()
+    const STALE_THRESHOLD_MS = 5 * 60 * 1000 // 5 min — skip if possibly still active
+
+    for (const file of files) {
+      const path = join(sessionsDir, file)
+      try {
+        const checkpoint = JSON.parse(readFileSync(path, 'utf8'))
+        const lastCheckpoint = new Date(checkpoint.last_checkpoint).getTime()
+
+        // Skip if checkpoint is too recent (session may still be active elsewhere)
+        if (now - lastCheckpoint < STALE_THRESHOLD_MS) continue
+
+        // Calculate session duration
+        const started = new Date(checkpoint.started_at)
+        const ended = new Date(checkpoint.last_checkpoint)
+        const durationMin = Math.round((ended.getTime() - started.getTime()) / 60000)
+        const durationStr = durationMin >= 60
+          ? `${Math.floor(durationMin / 60)}h ${durationMin % 60}m`
+          : `${durationMin}m`
+
+        notices.push(
+          `Previous session (${durationStr}, ${checkpoint.stop_count} responses` +
+          `${checkpoint.cwd ? ', ' + checkpoint.cwd.split('/').slice(-2).join('/') : ''}) ` +
+          `ended without wrap-up.`,
+        )
+
+        // Clean up the checkpoint
+        unlinkSync(path)
+      } catch {
+        // Corrupt checkpoint — remove it
+        try { unlinkSync(path) } catch {}
+      }
+    }
+  } catch {
+    return null
+  }
+
+  if (notices.length === 0) return null
+  return `[PLUR] ${notices.join(' ')}\nConsider running plur_session_end with engram_suggestions when this session ends.`
+}
+
 export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   const isRehydrate = args.includes('--rehydrate')
   const eventIdx = args.indexOf('--event')
@@ -571,6 +630,10 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     if (sessionId) parts.push(`Session ID: ${sessionId}`)
     if (projectConfig.domain) parts.push(`Project domain: ${projectConfig.domain}`)
     if (projectConfig.scope) parts.push(`Project scope: ${projectConfig.scope} — use this scope for plur_learn calls`)
+
+    // Deferred wrap-up: notify about orphaned previous sessions (#216)
+    const deferredNotice = processDeferredWrapups()
+    if (deferredNotice) parts.push('', deferredNotice)
   }
 
   if (context) {
