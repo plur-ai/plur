@@ -1058,7 +1058,7 @@ export function getToolDefinitions(): ToolDefinition[] {
         properties: {
           task: { type: 'string', description: 'What you are working on (triggers engram injection)' },
           tags: { type: 'array', items: { type: 'string' }, description: 'Tags to filter injected engrams' },
-          default_scope: { type: 'string', description: 'Default scope for plur_learn calls this session. If omitted and exactly one writable remote store exists, its scope is used automatically.' },
+          default_scope: { type: 'string', description: 'Default scope for plur_learn calls this session when no explicit scope is provided. Only set this if you want ALL engrams to route to a specific store. Usually, leave unset and pass scope per-engram based on relevance.' },
         },
         required: ['task'],
       },
@@ -1079,10 +1079,11 @@ export function getToolDefinitions(): ToolDefinition[] {
         } catch { /* logged inside flushOutbox */ }
 
         // Surface writable remote scopes so AI caller knows what's available (#229)
+        // NOTE: we do NOT auto-set session scope — the AI caller must judge per-engram
+        // whether it belongs on the enterprise store or stays local. Auto-setting would
+        // route ALL engrams to the remote, including personal/project-local knowledge.
         const remote_scopes = plur.getWritableRemoteScopes()
-        const default_scope = (args.default_scope as string | undefined)
-          ?? (remote_scopes.length === 1 ? remote_scopes[0].scope : undefined)
-          ?? null
+        const default_scope = (args.default_scope as string | undefined) ?? null
         if (default_scope) {
           plur.setSessionScope(default_scope)
         }
@@ -1153,7 +1154,7 @@ export function getToolDefinitions(): ToolDefinition[] {
           const scopeList = remote_scopes.map(s => `"${s.scope}"`).join(', ')
           guide += default_scope
             ? `\n\nSession default scope: "${default_scope}" — plur_learn calls without explicit scope will route to the enterprise store.`
-            : `\n\nRemote store scopes available: ${scopeList}. Use these in plur_learn scope parameter to route engrams to the enterprise store.`
+            : `\n\nRemote store scopes available: ${scopeList}. When an engram is relevant to the team (engineering patterns, architecture decisions, project conventions), set scope to the matching remote scope in plur_learn. Personal preferences, local project details, and corrections specific to your workflow should stay at default scope (local).`
         }
 
         return {
