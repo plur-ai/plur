@@ -1,3 +1,6 @@
+import { existsSync, unlinkSync } from 'fs'
+import { join } from 'path'
+import { homedir } from 'os'
 import { Plur, extractMetaEngrams, validateMetaEngram, confidenceBand, generateProfile, getProfileForInjection, markProfileDirty, selectModelForOperation, readHistoryForEngram, getCachedUpdateCheck, minorVersionsBehind, scanForTensions, CapabilityCanary } from '@plur-ai/core'
 import type { LlmFunction, MetaField } from '@plur-ai/core'
 import { VERSION } from './version.js'
@@ -1238,9 +1241,6 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
 
         // Clean up session checkpoint (#215) — session ended cleanly
         try {
-          const { existsSync, unlinkSync } = await import('fs')
-          const { join } = await import('path')
-          const { homedir } = await import('os')
           const plurDir = process.env.PLUR_PATH ?? join(homedir(), '.plur')
           const sessionsDir = join(plurDir, 'sessions')
           // Try session_id first, then CLAUDE_SESSION_ID, then ppid
