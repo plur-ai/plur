@@ -1096,6 +1096,10 @@ export function getToolDefinitions(): ToolDefinition[] {
           pack_count: status.pack_count,
         }
 
+        // Warm remote store caches before injection (#235)
+        // Ensures enterprise engrams are available for the first injectHybrid call.
+        await plur.warmRemoteCaches().catch(() => {})
+
         // Inject relevant engrams
         let engrams: { text: string; count: number; injected_ids: string[] } | null = null
         try {

@@ -181,4 +181,52 @@ describe('session scope (#229)', () => {
     const posts = postCalls()
     expect(posts.length).toBe(1)
   })
+
+  // --- warmRemoteCaches (#235) ---
+
+  it('warmRemoteCaches loads remote store data into cache', async () => {
+    fetchMock.mockImplementation((async (url: string) => {
+      return {
+        ok: true, status: 200,
+        json: async () => ({
+          rows: [{ id: 'ENG-WARM-001', scope: 'group:plur/eng', status: 'active', data: { statement: 'warm test' } }],
+          total_count: 1,
+        }),
+        text: async () => '',
+      } as Response
+    }) as any)
+
+    writeStoresConfig(primaryDir, [
+      { url: 'https://enterprise.example.com/sse', token: 'test_token', scope: 'group:plur/eng', shared: true, readonly: false },
+    ])
+    const plur = new Plur({ path: primaryDir })
+
+    // Before warming — _loadAllEngrams won't have remote data yet on cold start
+    await plur.warmRemoteCaches()
+
+    // After warming — remote engrams should be in the merged view
+    const all = (plur as any)._loadAllEngrams() as Array<{ id: string; statement?: string }>
+    const remoteEngram = all.find(e => e.id.includes('WARM-001'))
+    expect(remoteEngram).toBeDefined()
+  })
+
+  it('warmRemoteCaches handles unreachable remote gracefully', async () => {
+    fetchMock.mockImplementation((async () => {
+      throw new Error('Network error')
+    }) as any)
+
+    writeStoresConfig(primaryDir, [
+      { url: 'https://down.example.com/sse', token: 'test_token', scope: 'group:test', shared: true, readonly: false },
+    ])
+    const plur = new Plur({ path: primaryDir })
+
+    // Should not throw
+    await expect(plur.warmRemoteCaches()).resolves.toBeUndefined()
+  })
+
+  it('warmRemoteCaches with no remote stores is a no-op', async () => {
+    const plur = new Plur({ path: primaryDir })
+    await expect(plur.warmRemoteCaches()).resolves.toBeUndefined()
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
 })

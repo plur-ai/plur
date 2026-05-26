@@ -2244,6 +2244,21 @@ Generate an improved version of the procedure that prevents this failure. Return
     return [this._primaryStoreRow(), ...additional]
   }
 
+  /**
+   * Pre-load all remote store caches so subsequent sync reads see data.
+   * Call once before injection to avoid the cold-start race (#235).
+   */
+  async warmRemoteCaches(): Promise<void> {
+    const stores = this.config.stores ?? []
+    const remoteStores = stores.filter(s => s.url)
+    await Promise.all(
+      remoteStores.map(s => {
+        const driver = this._getRemoteDriver({ url: s.url!, token: s.token, scope: s.scope })
+        return driver.load().catch(() => { /* errors logged inside RemoteStore */ })
+      }),
+    )
+  }
+
   /** Return writable remote store scopes for AI caller guidance. */
   getWritableRemoteScopes(): Array<{ scope: string; url: string }> {
     return (this.config.stores ?? [])
