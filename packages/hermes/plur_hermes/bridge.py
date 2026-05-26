@@ -18,7 +18,7 @@ from typing import Any
 
 logger = logging.getLogger("plur_hermes.bridge")
 
-_NPX_CLI_VERSION = "0.9.4"
+_NPX_CLI_VERSION = "0.9.11"
 
 _DEFAULT_DEDUP_CACHE_SIZE = 256
 _DEFAULT_TIMEOUT = 30
