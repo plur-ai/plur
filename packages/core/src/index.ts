@@ -160,6 +160,7 @@ export class Plur {
   private _engramCache: Map<string, { mtime: bigint; engrams: Engram[] }> = new Map()
   private _llmFailureCount = 0
   private _llmDisabledUntil: number | null = null
+  private _sessionScope: string | null = null
 
   constructor(options?: { path?: string }) {
     this.paths = detectPlurStorage(options?.path)
@@ -468,7 +469,7 @@ export class Plur {
       const engrams = loadEngrams(this.paths.engrams)
       const allEngrams = this._loadAllEngrams()
 
-      const scope = context?.scope ?? 'global'
+      const scope = context?.scope ?? this._sessionScope ?? 'global'
 
       // Idea 29: Content hash fast-path dedup (scope-aware — issue #136).
       // On dedup hit, mutate: increment reference_count, append source (#107).
@@ -655,7 +656,7 @@ export class Plur {
         throw new Error(`Secret detected in statement: ${secrets[0].pattern}. Use config.allow_secrets to override.`)
       }
     }
-    const scope = context?.scope ?? 'global'
+    const scope = context?.scope ?? this._sessionScope ?? 'global'
     const remoteDriver = this._resolveRemoteStoreForScope(scope)
     if (!remoteDriver) {
       // Local route — sync learn() owns dedup, build, write, history.
@@ -2241,5 +2242,22 @@ Generate an improved version of the procedure that prevents this failure. Return
       }
     }))
     return [this._primaryStoreRow(), ...additional]
+  }
+
+  /** Return writable remote store scopes for AI caller guidance. */
+  getWritableRemoteScopes(): Array<{ scope: string; url: string }> {
+    return (this.config.stores ?? [])
+      .filter(s => s.url && !s.readonly)
+      .map(s => ({ scope: s.scope, url: s.url! }))
+  }
+
+  /** Set a session-level default scope. Used as fallback in learn/learnRouted when no explicit scope is provided. */
+  setSessionScope(scope: string | null): void {
+    this._sessionScope = scope
+  }
+
+  /** Get the current session-level default scope, or null if not set. */
+  getSessionScope(): string | null {
+    return this._sessionScope
   }
 }

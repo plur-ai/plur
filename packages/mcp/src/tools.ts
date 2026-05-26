@@ -1058,6 +1058,7 @@ export function getToolDefinitions(): ToolDefinition[] {
         properties: {
           task: { type: 'string', description: 'What you are working on (triggers engram injection)' },
           tags: { type: 'array', items: { type: 'string' }, description: 'Tags to filter injected engrams' },
+          default_scope: { type: 'string', description: 'Default scope for plur_learn calls this session. If omitted and exactly one writable remote store exists, its scope is used automatically.' },
         },
         required: ['task'],
       },
@@ -1076,6 +1077,15 @@ export function getToolDefinitions(): ToolDefinition[] {
         try {
           outbox_result = await plur.flushOutbox()
         } catch { /* logged inside flushOutbox */ }
+
+        // Surface writable remote scopes so AI caller knows what's available (#229)
+        const remote_scopes = plur.getWritableRemoteScopes()
+        const default_scope = (args.default_scope as string | undefined)
+          ?? (remote_scopes.length === 1 ? remote_scopes[0].scope : undefined)
+          ?? null
+        if (default_scope) {
+          plur.setSessionScope(default_scope)
+        }
 
         // Get store stats for context
         const status = plur.status()
@@ -1138,11 +1148,22 @@ export function getToolDefinitions(): ToolDefinition[] {
           }
         }
 
+        // Append remote scope guidance to guide text (#229)
+        if (remote_scopes.length > 0) {
+          const scopeList = remote_scopes.map(s => `"${s.scope}"`).join(', ')
+          guide += default_scope
+            ? `\n\nSession default scope: "${default_scope}" — plur_learn calls without explicit scope will route to the enterprise store.`
+            : `\n\nRemote store scopes available: ${scopeList}. Use these in plur_learn scope parameter to route engrams to the enterprise store.`
+        }
+
         return {
           session_id,
           engrams: engrams ?? [],
           store_stats,
           guide,
+          // Remote scope routing info (#229)
+          ...(remote_scopes.length > 0 ? { remote_scopes } : {}),
+          ...(default_scope ? { default_scope } : {}),
           // Ask LLM to check back — MCP can't push, but we can request a follow-up
           follow_up: store_stats.engram_count === 0
             ? 'This is a fresh store with 0 engrams. After your first exchange with the user, review what you learned and call plur_learn for any corrections, preferences, or patterns. Build the memory from this session.'
