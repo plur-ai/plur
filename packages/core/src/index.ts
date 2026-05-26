@@ -415,6 +415,9 @@ export class Plur {
    * Fast-path hash dedup returns existing on exact match.
    */
   learn(statement: string, context?: LearnContext): Engram {
+    if (typeof statement !== 'string' || statement.length === 0) {
+      throw new TypeError(`plur.learn: statement must be a non-empty string, got ${typeof statement}`)
+    }
     if (!this.config.allow_secrets) {
       const secrets = detectSecrets(statement)
       if (secrets.length > 0) {
@@ -1891,19 +1894,30 @@ Generate an improved version of the procedure that prevents this failure. Return
     return discovered
   }
 
-  /** List all configured stores. */
-  listStores(): Array<{
+  /** Build the primary-store summary row. Shared by listStores +
+   * listStoresAsync to keep them in lockstep. */
+  private _primaryStoreRow(): {
     path?: string; url?: string; scope: string; shared: boolean; readonly: boolean; engram_count: number
-  }> {
-    const stores = this.config.stores ?? []
-    // Always include the primary store
-    const primary = {
+  } {
+    return {
       path: this.paths.engrams,
       scope: 'global',
       shared: false,
       readonly: false,
       engram_count: this._loadCached(this.paths.engrams).filter(e => e.status !== 'retired').length,
     }
+  }
+
+  /**
+   * @deprecated Use {@link listStoresAsync} for accurate remote engram counts.
+   * The sync variant returns engram_count: 0 for remote stores on the first
+   * call after server start because the remote cache hasn't populated yet
+   * (issue #184). Retained for callers that cannot await.
+   */
+  listStores(): Array<{
+    path?: string; url?: string; scope: string; shared: boolean; readonly: boolean; engram_count: number
+  }> {
+    const stores = this.config.stores ?? []
     const additional = stores.map(s => {
       let count = 0
       if (s.url) {
@@ -1920,6 +1934,57 @@ Generate an improved version of the procedure that prevents this failure. Return
         engram_count: count,
       }
     })
-    return [primary, ...additional]
+    return [this._primaryStoreRow(), ...additional]
+  }
+
+  /**
+   * List all configured stores with accurate remote engram counts. Awaits
+   * remote driver loads with a 5s per-store timeout so a single slow or
+   * unreachable remote can never hang the entire call (issue #184).
+   *
+   * Use for `plur_stores_list` and CLI diagnostics where freshness matters
+   * more than latency.
+   */
+  async listStoresAsync(): Promise<Array<{
+    path?: string; url?: string; scope: string; shared: boolean; readonly: boolean; engram_count: number
+  }>> {
+    const stores = this.config.stores ?? []
+    const REMOTE_LOAD_TIMEOUT_MS = 5000
+
+    const additional = await Promise.all(stores.map(async s => {
+      let count = 0
+      if (s.url) {
+        try {
+          const driver = this._getRemoteDriver({ url: s.url, token: s.token, scope: s.scope })
+          // Race driver.load() against a timeout — a hung remote must not
+          // hang the listing call. On timeout, count stays 0. The clearTimeout
+          // in finally is critical: in a long-lived MCP server, uncleaned
+          // timers per remote × per call would keep the event loop active.
+          let timeoutHandle: ReturnType<typeof setTimeout> | undefined
+          const loadWithTimeout = Promise.race([
+            driver.load().finally(() => { if (timeoutHandle) clearTimeout(timeoutHandle) }),
+            new Promise<never>((_, reject) => {
+              timeoutHandle = setTimeout(
+                () => reject(new Error(`remote load timeout (${REMOTE_LOAD_TIMEOUT_MS}ms)`)),
+                REMOTE_LOAD_TIMEOUT_MS,
+              )
+            }),
+          ])
+          const engrams = await loadWithTimeout
+          count = engrams.filter(e => e.status !== 'retired').length
+        } catch { /* network/auth failure or timeout — report 0, don't crash */ }
+      } else if (s.path) {
+        try { count = this._loadCached(s.path).filter(e => e.status !== 'retired').length } catch {}
+      }
+      return {
+        path:     s.path,
+        url:      s.url,
+        scope:    s.scope,
+        shared:   s.shared,
+        readonly: s.readonly,
+        engram_count: count,
+      }
+    }))
+    return [this._primaryStoreRow(), ...additional]
   }
 }

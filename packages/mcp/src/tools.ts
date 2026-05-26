@@ -1182,14 +1182,21 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
           engram_suggestions: {
             type: 'array',
             items: {
-              type: 'object',
-              properties: {
-                statement: { type: 'string', description: 'A concise, reusable assertion. Write it as advice to your future self.' },
-                type: { type: 'string', enum: ['behavioral', 'terminological', 'procedural', 'architectural'] },
-              },
-              required: ['statement'],
+              // Prefer {statement, type} objects. Bare strings are tolerated
+              // and treated as {statement: <string>} (issue #231).
+              anyOf: [
+                { type: 'string' },
+                {
+                  type: 'object',
+                  properties: {
+                    statement: { type: 'string', description: 'A concise, reusable assertion. Write it as advice to your future self.' },
+                    type: { type: 'string', enum: ['behavioral', 'terminological', 'procedural', 'architectural'] },
+                  },
+                  required: ['statement'],
+                },
+              ],
             },
-            description: 'Learnings from this session. Review the conversation for corrections, preferences, patterns, and technical facts before calling.',
+            description: 'Learnings from this session. Preferred shape is {statement: "...", type?: "..."}; bare strings are also accepted and treated as the statement. Review the conversation for corrections, preferences, patterns, and technical facts before calling.',
           },
         },
         required: ['summary', 'engram_suggestions'],
@@ -1197,13 +1204,28 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
       handler: async (args, plur) => {
         const summary = args.summary as string
         const session_id = args.session_id as string | undefined
-        const suggestions = args.engram_suggestions as Array<{ statement: string; type?: string }> | undefined
+        const suggestions = args.engram_suggestions as unknown[] | undefined
 
-        // Create engrams from suggestions
+        // Create engrams from suggestions. Tolerate bare strings (a common
+        // LLM mistake — see issue #231) by coercing them into {statement} objects.
         let engrams_created = 0
-        if (suggestions?.length) {
-          for (const s of suggestions) {
-            plur.learn(s.statement, { type: s.type as any })
+        if (Array.isArray(suggestions) && suggestions.length) {
+          for (let i = 0; i < suggestions.length; i++) {
+            const s = suggestions[i]
+            let statement: string | undefined
+            let type: string | undefined
+            if (typeof s === 'string') {
+              statement = s
+            } else if (s && typeof s === 'object') {
+              statement = (s as any).statement
+              type = (s as any).type
+            }
+            if (typeof statement !== 'string' || statement.length === 0) {
+              throw new Error(
+                `engram_suggestions[${i}] must be a string or {statement: string, type?: string}, got ${typeof s}`,
+              )
+            }
+            plur.learn(statement, { type: type as any })
             engrams_created++
           }
         }
@@ -1269,7 +1291,9 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
       annotations: { title: 'List stores', readOnlyHint: true, idempotentHint: true },
       inputSchema: { type: 'object', properties: {} },
       handler: async (_args, plur) => {
-        const stores = plur.listStores()
+        // Use async variant so remote store engram_count reflects real data
+        // even on first call after server start (issue #184).
+        const stores = await plur.listStoresAsync()
         const outboxCount = plur.outboxCount()
         return {
           stores,

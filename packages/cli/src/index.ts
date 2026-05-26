@@ -4,7 +4,7 @@ import { parseGlobalFlags, createPlur } from './plur.js'
 export type { GlobalFlags } from './plur.js'
 export { parseGlobalFlags, createPlur } from './plur.js'
 
-const VERSION = '0.9.10'
+const VERSION = '0.9.11'
 
 // --- Main ---
 const argv = process.argv.slice(2)
@@ -99,6 +99,10 @@ const COMMANDS: Record<string, string> = {
   'hook-session-remind': './commands/hook-session-remind.js',
   'hook-correction-detect': './commands/hook-correction-detect.js',
   'hook-revert-detect': './commands/hook-revert-detect.js',
+  // Hidden internal subcommand — spawned by `plur doctor` to isolate the
+  // ONNX embedder probe (issue #197). If the probe crashes with SIGABRT
+  // on libc++ thread pool cleanup, only the subprocess dies; doctor stays alive.
+  '_embedder-probe': './commands/embedder-probe.js',
 }
 
 if (!command || !COMMANDS[command]) {

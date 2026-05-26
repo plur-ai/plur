@@ -1,6 +1,6 @@
 {
   "name": "@plur-ai/mcp",
-  "version": "0.9.10",
+  "version": "0.9.11",
   "type": "module",
   "bin": {
     "plur-mcp": "dist/index.js"

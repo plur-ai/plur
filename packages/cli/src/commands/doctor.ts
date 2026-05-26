@@ -1,6 +1,6 @@
 import { spawn } from 'child_process'
-import { existsSync, readFileSync } from 'fs'
-import { join } from 'path'
+import { existsSync, readFileSync, realpathSync } from 'fs'
+import { join, extname } from 'path'
 import { homedir, platform } from 'os'
 import { createPlur, type GlobalFlags } from '../plur.js'
 import { outputText, outputJson, shouldOutputJson } from '../output.js'
@@ -207,41 +207,124 @@ async function mcpHandshake(timeoutMs = 20000): Promise<{ ok: boolean; serverNam
   })
 }
 
-async function checkEmbedder(flags: GlobalFlags): Promise<{ available: boolean; loaded: boolean; lastError: string | null; modelLoaded: boolean; disabled: boolean; disabledReason: string | null }> {
+/**
+ * Resolve the CLI's JavaScript entry path for subprocess spawning.
+ *
+ * `process.argv[1]` is the script Node was told to run, but:
+ *   - npx/global installs route through bin shims (often symlinks)
+ *   - pkg/bun/nexe compile the entire CLI into a single binary — no .js file exists
+ *
+ * Strategy: realpath the argv[1] symlink chain, then check the extension.
+ * If the resolved path is not a Node-executable script, return null and let
+ * the caller fall back gracefully.
+ */
+function resolveCliJsEntry(): string | null {
+  const argv1 = process.argv[1]
+  if (!argv1) return null
+  let resolved: string
   try {
-    const plur = createPlur(flags)
-    // Skip the load probe when explicitly disabled — calling recallSemantic
-    // would still short-circuit (getEmbedder returns null) but the probe is
-    // misleading noise in that case.
-    const preStatus = plur.embedderStatus()
-    if (!preStatus.disabled) {
-      // Force a probe so we get a real load attempt rather than just the cached state
-      plur.resetEmbedder()
-      try {
-        await plur.recallSemantic('plur doctor probe', { limit: 1 })
-      } catch {
-        // best effort
-      }
-    }
-    const status = plur.embedderStatus()
-    return {
-      available: status.available,
-      loaded: status.loaded,
-      lastError: status.lastError,
-      modelLoaded: status.available && status.loaded,
-      disabled: status.disabled,
-      disabledReason: status.disabledReason,
-    }
-  } catch (err) {
-    return {
+    resolved = realpathSync(argv1)
+  } catch {
+    return null
+  }
+  const ext = extname(resolved).toLowerCase()
+  if (ext !== '.js' && ext !== '.mjs' && ext !== '.cjs') return null
+  return resolved
+}
+
+/**
+ * Probe the embedder in an isolated subprocess (issue #197).
+ *
+ * Why subprocess: onnxruntime-node has a known SIGABRT crash on macOS during
+ * thread pool cleanup on process exit. Running the probe in-process makes
+ * `plur doctor` itself exit with code 134 even when everything is healthy.
+ * Subprocess isolation contains the crash — if the probe dies, parent reports
+ * embedder as degraded and continues with the rest of the doctor checks.
+ *
+ * Timeout: 10s default. BGE model cold-load on slow hardware takes ~3-5s; 10s
+ * is enough for honest cases without making doctor feel unresponsive.
+ */
+async function checkEmbedder(_flags: GlobalFlags, timeoutMs = 10000): Promise<{ available: boolean; loaded: boolean; lastError: string | null; modelLoaded: boolean; disabled: boolean; disabledReason: string | null }> {
+  return new Promise((resolve) => {
+    const fallback = (lastError: string) => ({
       available: false,
       loaded: false,
-      lastError: err instanceof Error ? err.message : String(err),
+      lastError,
       modelLoaded: false,
       disabled: false,
       disabledReason: null,
+    })
+
+    const cliEntry = resolveCliJsEntry()
+    if (!cliEntry) {
+      // Compiled binary, missing entry, or unresolvable symlink. We can't spawn
+      // a subprocess that re-enters the CLI. Report skipped — the user will
+      // see this in the doctor output and know to investigate manually.
+      resolve(fallback('embedder probe skipped: CLI entry is not a JS file (compiled binary?)'))
+      return
     }
-  }
+
+    let resolved = false
+    const finish = (result: ReturnType<typeof fallback>) => {
+      if (resolved) return
+      resolved = true
+      try { proc.kill() } catch { /* ignore */ }
+      resolve(result)
+    }
+
+    let proc: ReturnType<typeof spawn>
+    try {
+      proc = spawn(process.execPath, [cliEntry, '_embedder-probe'], {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        // Mark the subprocess as the parent-spawned probe — the probe checks
+        // this and refuses to run if invoked directly by a curious user.
+        env: { ...process.env, PLUR_INTERNAL_PROBE: '1' },
+      })
+    } catch (err: unknown) {
+      finish(fallback(`spawn failed: ${(err as Error).message}`))
+      return
+    }
+
+    const timeout = setTimeout(() => {
+      finish(fallback(`probe timeout after ${timeoutMs}ms`))
+    }, timeoutMs)
+
+    let stdoutBuf = ''
+    let stderrBuf = ''
+    proc.stdout?.on('data', (chunk: Buffer) => { stdoutBuf += chunk.toString('utf8') })
+    proc.stderr?.on('data', (chunk: Buffer) => { stderrBuf += chunk.toString('utf8') })
+
+    proc.on('error', (err: Error) => {
+      clearTimeout(timeout)
+      finish(fallback(`probe spawn error: ${err.message}`))
+    })
+
+    proc.on('exit', (code: number | null, signal: NodeJS.Signals | null) => {
+      clearTimeout(timeout)
+      // Parse the LAST line starting with `{` — defends against any stdout
+      // pollution (logs, warnings) that might precede the result line.
+      const lines = stdoutBuf.split('\n').map((l) => l.trim()).filter((l) => l.startsWith('{'))
+      const resultLine = lines[lines.length - 1]
+      if (resultLine) {
+        try {
+          const parsed = JSON.parse(resultLine)
+          finish({
+            available: !!parsed.available,
+            loaded: !!parsed.loaded,
+            lastError: parsed.lastError ?? null,
+            modelLoaded: !!parsed.modelLoaded,
+            disabled: !!parsed.disabled,
+            disabledReason: parsed.disabledReason ?? null,
+          })
+          return
+        } catch { /* fall through */ }
+      }
+      // No parseable output — crash or timeout. Report degraded with diagnostics.
+      const detail = signal ? `signal ${signal}` : `exit ${code}`
+      const stderrTrim = stderrBuf.trim().slice(0, 200)
+      finish(fallback(`embedder probe failed (${detail})${stderrTrim ? `: ${stderrTrim}` : ''}`))
+    })
+  })
 }
 
 function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<DoctorReport> {

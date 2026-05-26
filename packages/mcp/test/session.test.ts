@@ -88,6 +88,34 @@ describe('Session & store tools', () => {
     expect(result.total_engrams).toBe(0)
   })
 
+  // Issue #231 — handler used to crash with cryptic
+  // "Cannot read properties of undefined (reading 'match')"
+  // when callers passed bare strings instead of {statement, type} objects.
+  it('plur_session_end coerces string-array engram_suggestions (#231)', async () => {
+    const result = await callTool('plur_session_end', {
+      summary: 'Session with string-shaped suggestions',
+      engram_suggestions: ['First learning as a bare string', 'Second learning as a bare string'],
+    }) as any
+    expect(result.engrams_created).toBe(2)
+    expect(result.episode_id).toBeDefined()
+    const status = plur.status()
+    expect(status.engram_count).toBe(2)
+  })
+
+  it('plur_session_end throws a clear error for non-string non-object items (#231)', async () => {
+    await expect(callTool('plur_session_end', {
+      summary: 'Session with malformed suggestions',
+      engram_suggestions: [42, true],
+    })).rejects.toThrow(/engram_suggestions\[0\] must be a string or \{statement/)
+  })
+
+  it('plur_session_end throws a clear error for object items missing statement (#231)', async () => {
+    await expect(callTool('plur_session_end', {
+      summary: 'Session with empty objects',
+      engram_suggestions: [{ type: 'behavioral' }],
+    })).rejects.toThrow(/must be a string or \{statement/)
+  })
+
   it('plur_stores_add registers a store in config', async () => {
     const storePath = join(dir, 'extra-store', 'engrams.yaml')
     const storeDir = join(dir, 'extra-store')

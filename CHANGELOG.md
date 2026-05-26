@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.9.11 (2026-05-26)
+
+Bug sweep — three independent fixes bundled.
+
+### `plur_session_end` no longer crashes on string-array suggestions (#231)
+
+Calling `plur_session_end` with `engram_suggestions: ["a", "b"]` (bare strings rather than `{statement, type}` objects) used to crash with the cryptic `Cannot read properties of undefined (reading 'match')`. The MCP JSON-Schema→Zod converter ignored nested `items` shape, the handler dereferenced `s.statement` on a string, and `detectSecrets()` exploded inside `plur.learn` with no context. Fixed at every layer:
+
+- **`packages/mcp/src/server.ts`** — schema-to-Zod converter now recurses into array `items` and supports `anyOf`/`oneOf` via `z.union`.
+- **`packages/mcp/src/tools.ts`** — `engram_suggestions` schema declares `items` as `anyOf: [string, object]`. Handler coerces bare strings into `{statement: s}` (LLM-friendly recovery) and throws a clear error for non-string non-object items.
+- **`packages/core/src/secrets.ts`** + **`packages/core/src/index.ts`** — `detectSecrets()` and `plur.learn()` throw clear `TypeError` when called with non-strings, instead of letting `undefined.match()` propagate.
+
+### `plur_stores_list` reports accurate remote engram counts (#184)
+
+`plur_stores_list` used to return `engram_count: 0` for remote stores on the first call of a fresh MCP server session because `_loadRemoteCached` is synchronous and returns whatever's in the driver cache (empty on first call) while triggering an async load in the background. New `Plur.listStoresAsync()` awaits each remote driver's `load()` with a per-store 5-second timeout race so a hung remote can never block the listing call. The MCP `plur_stores_list` handler and the `plur stores list` CLI command both call the async variant. Sync `listStores()` is retained with `@deprecated` for callers that cannot await.
+
+### `plur doctor` exits cleanly even when the embedder crashes (#197)
+
+`onnxruntime-node` has a known SIGABRT crash on macOS during libc++ thread-pool cleanup on process exit, which caused `plur doctor` itself to exit with code 134 even when everything else was healthy. The embedder probe now runs in an isolated subprocess (`plur _embedder-probe`, an internal subcommand guarded by `PLUR_INTERNAL_PROBE=1`) — if it crashes, only the subprocess dies and the doctor reports `embedder: degraded` with the parent's exit code intact. Handles compiled binaries (pkg, bun --compile, nexe) gracefully by skipping the probe when the CLI entry isn't a JS file.
+
+### Tests
+
+11 new tests across `packages/core/test/secrets.test.ts`, `packages/core/test/remote-store-cache.test.ts`, `packages/mcp/test/server.test.ts`, `packages/mcp/test/session.test.ts`, and `packages/cli/test/embedder-probe.test.ts`. Full suite: 1045 passed, 19 skipped.
+
+### Packages bumped
+
+- `@plur-ai/core`: 0.9.10 → 0.9.11
+- `@plur-ai/mcp`: 0.9.10 → 0.9.11
+- `@plur-ai/cli`: 0.9.10 → 0.9.11
+- `@plur-ai/claw`: unchanged (no claw-side changes)
+
 ## 0.9.9 (2026-05-14)
 
 Concurrent writes — hardened.

@@ -63,4 +63,17 @@ describe('detectSecrets', () => {
     const matches = detectSecrets('Store API keys in environment variables, never in code')
     expect(matches).toHaveLength(0)
   })
+
+  // Issue #231 — detectSecrets used to crash with cryptic
+  // "Cannot read properties of undefined (reading 'match')" when called with
+  // a non-string. Now throws a clear TypeError at the front door.
+  it('throws TypeError when called with undefined (#231)', () => {
+    expect(() => detectSecrets(undefined as unknown as string))
+      .toThrow(/expected string, got undefined/)
+  })
+
+  it('throws TypeError when called with a number (#231)', () => {
+    expect(() => detectSecrets(42 as unknown as string))
+      .toThrow(/expected string, got number/)
+  })
 })

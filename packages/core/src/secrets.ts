@@ -17,6 +17,9 @@ const SECRET_PATTERNS: { name: string; regex: RegExp }[] = [
 
 /** Scan text for potential secrets. Returns empty array if clean. */
 export function detectSecrets(text: string): SecretMatch[] {
+  if (typeof text !== 'string') {
+    throw new TypeError(`detectSecrets: expected string, got ${typeof text}`)
+  }
   const matches: SecretMatch[] = []
   for (const { name, regex } of SECRET_PATTERNS) {
     const m = text.match(regex)

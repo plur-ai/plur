@@ -24,7 +24,8 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   }
 
   if (!subcommand || subcommand === 'list') {
-    const storeList = plur.listStores()
+    // Async variant — accurate remote store engram_count (issue #184)
+    const storeList = await plur.listStoresAsync()
     if (shouldOutputJson(flags)) {
       outputJson({ stores: storeList, count: storeList.length })
     } else {

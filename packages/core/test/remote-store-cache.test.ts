@@ -208,6 +208,69 @@ describe('Plur cold-start with remote store (issues #184, #185)', () => {
     expect(remote!.engram_count).toBeGreaterThanOrEqual(1)
   })
 
+  // Issue #184 — fix: listStoresAsync awaits driver.load() so cold-start
+  // diagnostics report accurate counts on the first call.
+  it('listStoresAsync returns correct count on first call (#184)', async () => {
+    const plur = new Plur({ path: dir })
+
+    stubServer.seedEngram({
+      id: 'ENG-SEED-001',
+      scope: 'group:test',
+      status: 'active',
+      data: { statement: 'seeded engram', scope: 'group:test', status: 'active' },
+    })
+
+    // No cache warm-up — the fix is to await driver.load() inside listStoresAsync
+    const stores = await plur.listStoresAsync()
+    const remote = stores.find(s => s.url)
+    expect(remote).toBeTruthy()
+    expect(remote!.engram_count).toBeGreaterThanOrEqual(1)
+  })
+
+  it('listStoresAsync reports 0 (not crash) when remote is empty (#184)', async () => {
+    const plur = new Plur({ path: dir })
+    // Empty stub, no engrams. Should report 0, not throw.
+    const stores = await plur.listStoresAsync()
+    const remote = stores.find(s => s.url)
+    expect(remote).toBeTruthy()
+    expect(remote!.engram_count).toBe(0)
+  })
+
+  // Issue #184 evaluator finding (Data) — a hung remote must not hang
+  // the entire MCP server. listStoresAsync wraps each driver.load() in a
+  // 5s timeout race.
+  it('listStoresAsync recovers from network failure within timeout window (#184)', async () => {
+    // Configure a deliberately unreachable URL (TCP-rejected port).
+    writeFileSync(
+      join(dir, 'config.yaml'),
+      yaml.dump({
+        stores: [{
+          url: 'http://127.0.0.1:1',  // port 1 → connection refused
+          scope: 'group:unreachable',
+          token: 'fake',
+          shared: true,
+          readonly: false,
+        }],
+        index: false,
+      }, { lineWidth: 120, noRefs: true }),
+    )
+    const plur = new Plur({ path: dir })
+
+    const start = Date.now()
+    const stores = await plur.listStoresAsync()
+    const elapsed = Date.now() - start
+
+    const remote = stores.find(s => s.url)
+    expect(remote).toBeTruthy()
+    expect(remote!.engram_count).toBe(0)
+    // Must complete within the 5s timeout window plus generous buffer.
+    // We're validating the timeout mechanism, not localhost RTT.
+    // Connection-refused on localhost is normally sub-millisecond; if a
+    // loaded CI host takes longer to deliver the RST, we still pass as
+    // long as the timeout fires within its window.
+    expect(elapsed).toBeLessThan(6000)
+  }, 15000)
+
   it('getById returns null for remote engram before cache populated', () => {
     const plur = new Plur({ path: dir })
 

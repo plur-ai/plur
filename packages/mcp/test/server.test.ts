@@ -32,7 +32,7 @@ describe('MCP server (wire protocol)', () => {
   it('returns server info with instructions on initialize', () => {
     const info = client.getServerVersion()
     expect(info?.name).toBe('plur-mcp')
-    expect(info?.version).toBe('0.9.10')
+    expect(info?.version).toBe('0.9.11')
   })
 
   // --- Tools ---
@@ -105,6 +105,37 @@ describe('MCP server (wire protocol)', () => {
     expect(typeof parsed.error).toBe('string')
   })
 
+  // Issue #231 — plur_session_end used to crash with unhelpful
+  // "Cannot read properties of undefined (reading 'match')" when callers passed
+  // engram_suggestions as an array of strings. The schema validator now
+  // recursively validates array items; the handler coerces bare strings.
+  it('session_end tolerates string-array engram_suggestions through wire protocol (#231)', async () => {
+    const result = await client.callTool({
+      name: 'plur_session_end',
+      arguments: {
+        summary: 'wire-level string array test',
+        engram_suggestions: ['a learning', 'another learning'],
+      },
+    })
+    expect(result.isError).toBeFalsy()
+    const parsed = JSON.parse((result.content as any)[0].text)
+    expect(parsed.engrams_created).toBe(2)
+  })
+
+  it('session_end rejects invalid item types with clear error (#231)', async () => {
+    const result = await client.callTool({
+      name: 'plur_session_end',
+      arguments: {
+        summary: 'wire-level invalid types',
+        engram_suggestions: [42],
+      },
+    })
+    expect(result.isError).toBe(true)
+    const parsed = JSON.parse((result.content as any)[0].text)
+    expect(parsed.success).toBe(false)
+    expect(parsed.error).toMatch(/engram_suggestions/)
+  })
+
   // --- Resources ---
 
   it('lists resources (guide + status)', async () => {
@@ -138,7 +169,7 @@ describe('MCP server (wire protocol)', () => {
     const result = await client.readResource({ uri: 'plur://status' })
     const data = JSON.parse((result.contents[0] as any).text)
     expect(data.engram_count).toBe(1)
-    expect(data.version).toBe('0.9.10')
+    expect(data.version).toBe('0.9.11')
     expect(data.storage_root).toBe(dir)
   })
 

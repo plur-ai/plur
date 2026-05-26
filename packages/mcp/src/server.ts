@@ -121,6 +121,39 @@ Use \`scope\` to namespace engrams per project:
 Override with \`PLUR_PATH\` environment variable.
 `
 
+// Recursive JSON-Schema → Zod converter for tool input validation.
+// Handles nested array items + anyOf/oneOf so callers can't pass strings
+// where objects are expected (issue #231). When the schema allows multiple
+// item shapes via anyOf, the handler is expected to coerce — see tools.ts
+// session_end handler for an example.
+function jsonSchemaPropToZod(prop: any): z.ZodTypeAny {
+  if (!prop || typeof prop !== 'object') return z.unknown()
+  const variants = (prop.anyOf as any[] | undefined) ?? (prop.oneOf as any[] | undefined)
+  if (Array.isArray(variants) && variants.length > 0) {
+    const zodVariants = variants.map(jsonSchemaPropToZod)
+    if (zodVariants.length === 1) return zodVariants[0]
+    // z.union requires a 2+ tuple at the type level. We've guaranteed >= 2
+    // via the length check above, so the cast carries a real invariant.
+    return z.union(zodVariants as [z.ZodTypeAny, z.ZodTypeAny, ...z.ZodTypeAny[]])
+  }
+  if (prop.type === 'string') return prop.enum ? z.enum(prop.enum) : z.string()
+  if (prop.type === 'number' || prop.type === 'integer') return z.number()
+  if (prop.type === 'boolean') return z.boolean()
+  if (prop.type === 'array') {
+    const itemSchema = prop.items ? jsonSchemaPropToZod(prop.items) : z.unknown()
+    return z.array(itemSchema)
+  }
+  if (prop.type === 'object' && prop.properties) {
+    const shape: Record<string, z.ZodTypeAny> = {}
+    for (const [k, p] of Object.entries(prop.properties) as [string, any][]) {
+      const field = jsonSchemaPropToZod(p)
+      shape[k] = prop.required?.includes(k) ? field : field.optional()
+    }
+    return z.object(shape).passthrough()
+  }
+  return z.unknown()
+}
+
 export async function createServer(plur?: Plur): Promise<Server> {
   const instance = plur ?? new Plur()
   const tools = getToolDefinitions()
@@ -171,12 +204,7 @@ export async function createServer(plur?: Plur): Promise<Server> {
       if (schema?.properties) {
         const shape: Record<string, z.ZodTypeAny> = {}
         for (const [key, prop] of Object.entries(schema.properties) as [string, any][]) {
-          let field: z.ZodTypeAny
-          if (prop.type === 'string') field = prop.enum ? z.enum(prop.enum) : z.string()
-          else if (prop.type === 'number') field = z.number()
-          else if (prop.type === 'boolean') field = z.boolean()
-          else if (prop.type === 'array') field = z.array(z.unknown())
-          else field = z.unknown()
+          const field = jsonSchemaPropToZod(prop)
           shape[key] = schema.required?.includes(key) ? field : field.optional()
         }
         const parsed = z.object(shape).passthrough().safeParse(args)
