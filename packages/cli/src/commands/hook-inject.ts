@@ -438,7 +438,11 @@ function processDeferredWrapups(): string | null {
   try {
     const files = readdirSync(sessionsDir).filter(f => f.endsWith('.checkpoint.json'))
     const now = Date.now()
-    const STALE_THRESHOLD_MS = 5 * 60 * 1000 // 5 min — skip if possibly still active
+    // Skip checkpoints touched within the stale threshold — that session may
+    // still be active in another terminal. Default 5 min; override via
+    // PLUR_CHECKPOINT_STALE_MIN (minutes) for slower-cadence users.
+    const staleMin = parseInt(process.env.PLUR_CHECKPOINT_STALE_MIN ?? '5', 10)
+    const STALE_THRESHOLD_MS = Math.max(1, staleMin) * 60 * 1000
 
     for (const file of files) {
       const path = join(sessionsDir, file)

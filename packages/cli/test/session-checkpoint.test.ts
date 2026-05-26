@@ -111,6 +111,9 @@ describe('deferred wrap-up detection (#216)', () => {
       }),
     )
     mkdirSync(join(home, '.plur'), { recursive: true })
+    // Per-test TMPDIR so the session marker (keyed by ppid in tmpdir/plur-sessions)
+    // doesn't leak across tests sharing the test runner's PID.
+    mkdirSync(join(home, 'tmp'), { recursive: true })
   })
 
   afterEach(() => {
@@ -136,7 +139,7 @@ describe('deferred wrap-up detection (#216)', () => {
     )
   }
 
-  function runInject(prompt: string): { stdout: string } {
+  function runInject(prompt: string, extraEnv?: Record<string, string>): { stdout: string } {
     const result = spawnSync('node', [CLI, 'hook-inject'], {
       input: JSON.stringify({ prompt }),
       encoding: 'utf-8',
@@ -145,8 +148,10 @@ describe('deferred wrap-up detection (#216)', () => {
         ...process.env,
         HOME: home,
         USERPROFILE: home,
+        TMPDIR: join(home, 'tmp'),
         PLUR_PATH: join(home, '.plur'),
         CLAUDE_SESSION_ID: 'new-session-456',
+        ...extraEnv,
       },
       cwd: home,
     })
@@ -157,14 +162,14 @@ describe('deferred wrap-up detection (#216)', () => {
     createOrphanedCheckpoint('old-session-789', 30) // 30 min old — stale
 
     const { stdout } = runInject('hello, new session')
-    // hook-inject may output JSON or nothing (if no engrams to inject)
-    // The deferred notice is included when output exists
-    if (stdout.trim()) {
-      const output = JSON.parse(stdout)
-      expect(output.additionalContext).toContain('Previous session')
-      expect(output.additionalContext).toContain('ended without wrap-up')
-    }
-    // Checkpoint should be cleaned up regardless
+    // hook-inject always emits output on non-rehydrate path (session header
+    // is unconditional), so we can assert directly without a guard.
+    expect(stdout.trim()).not.toBe('')
+    const output = JSON.parse(stdout)
+    expect(output.additionalContext).toContain('Previous session')
+    expect(output.additionalContext).toContain('ended without wrap-up')
+
+    // Checkpoint was cleaned up after detection
     const checkpointPath = join(home, '.plur', 'sessions', 'old-session-789.checkpoint.json')
     expect(existsSync(checkpointPath)).toBe(false)
   })
@@ -175,12 +180,9 @@ describe('deferred wrap-up detection (#216)', () => {
 
     expect(existsSync(checkpointPath)).toBe(true)
     const { stdout } = runInject('start fresh')
-    // If injection mentions the orphaned session, the checkpoint should be gone
-    if (stdout.includes('Previous session')) {
-      expect(existsSync(checkpointPath)).toBe(false)
-    }
-    // If injection didn't run the deferred check (e.g. no engrams to inject),
-    // the checkpoint persists — that's acceptable, it'll be caught next time
+    // Session header is unconditional → output should mention the orphan
+    expect(stdout).toContain('Previous session')
+    expect(existsSync(checkpointPath)).toBe(false)
   })
 
   it('skips recent checkpoints (possibly still active)', () => {
@@ -194,10 +196,19 @@ describe('deferred wrap-up detection (#216)', () => {
 
   it('no orphaned checkpoints means no deferred notice', () => {
     const { stdout } = runInject('clean start')
-    // When no orphaned checkpoints, output should not mention "Previous session"
-    if (stdout.trim()) {
-      expect(stdout).not.toContain('Previous session')
-    }
-    // No crash — test passes if we get here
+    // Output is non-empty (session header) but must not mention the orphan path
+    expect(stdout.trim()).not.toBe('')
+    expect(stdout).not.toContain('Previous session')
+  })
+
+  it('PLUR_CHECKPOINT_STALE_MIN env var overrides 5-min default', () => {
+    // Create a 3-min-old checkpoint. With default 5-min threshold it would be
+    // skipped; with threshold lowered to 1 min via env, it should trigger.
+    createOrphanedCheckpoint('threshold-test', 3)
+    const checkpointPath = join(home, '.plur', 'sessions', 'threshold-test.checkpoint.json')
+
+    const { stdout } = runInject('with custom threshold', { PLUR_CHECKPOINT_STALE_MIN: '1' })
+    expect(stdout).toContain('Previous session')
+    expect(existsSync(checkpointPath)).toBe(false)
   })
 })
