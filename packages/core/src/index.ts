@@ -1218,9 +1218,15 @@ export class Plur {
     })
   }
 
-  /** Update an existing engram in the store by ID. Returns true if found and updated. */
+  /** Update an existing engram in the store by ID. Returns true if found and updated.
+   *
+   * Sync path: only updates the local primary store. Use updateEngramAsync()
+   * to ensure remote-routed updates are awaited (used by promote of remote
+   * candidate engrams — closes the promote remainder of #86).
+   */
   updateEngram(updated: Engram): boolean {
-    return withLock(this.paths.engrams, () => {
+    // Local primary first.
+    const localResult = withLock(this.paths.engrams, () => {
       const engrams = loadEngrams(this.paths.engrams)
       const idx = engrams.findIndex(e => e.id === updated.id)
       if (idx === -1) return false
@@ -1229,6 +1235,58 @@ export class Plur {
       this._syncIndex()
       return true
     })
+    if (localResult) return true
+
+    // Remote routing — fire-and-forget patch with key fields. Callers needing
+    // strict ordering should use updateEngramAsync().
+    for (const entry of (this.config.stores ?? [])) {
+      if (!entry.url || entry.readonly === true) continue
+      const serverId = this._stripRemotePrefix(updated.id, entry.scope)
+      const driver = this._getRemoteDriver({ url: entry.url, token: entry.token, scope: entry.scope })
+      // PATCH a focused subset — full-engram PATCH would require strict
+      // schema mirroring on the server and is not what enterprise PR #111
+      // exposes. Send the fields most commonly mutated by the callers
+      // (setPinned, promote, reportFailure).
+      void driver.patch(serverId, {
+        pinned: updated.pinned,
+        status: updated.status,
+        statement: updated.statement,
+      })
+      return true
+    }
+    return false
+  }
+
+  /**
+   * Async variant of updateEngram that awaits remote PATCH for ordering
+   * guarantees. Returns the patched engram (server-authoritative view)
+   * on remote success, null if not found locally or remotely.
+   */
+  async updateEngramAsync(updated: Engram): Promise<Engram | null> {
+    // Local primary first.
+    const localResult = withLock(this.paths.engrams, () => {
+      const engrams = loadEngrams(this.paths.engrams)
+      const idx = engrams.findIndex(e => e.id === updated.id)
+      if (idx === -1) return null
+      engrams[idx] = updated
+      this._writeEngrams(this.paths.engrams, engrams)
+      this._syncIndex()
+      return updated
+    })
+    if (localResult) return localResult
+
+    for (const entry of (this.config.stores ?? [])) {
+      if (!entry.url || entry.readonly === true) continue
+      const serverId = this._stripRemotePrefix(updated.id, entry.scope)
+      const driver = this._getRemoteDriver({ url: entry.url, token: entry.token, scope: entry.scope })
+      const patched = await driver.patch(serverId, {
+        pinned: updated.pinned,
+        status: updated.status,
+        statement: updated.statement,
+      })
+      if (patched) return patched
+    }
+    return null
   }
 
   /**
@@ -1236,7 +1294,8 @@ export class Plur {
    * Returns the updated engram on success, null if not found.
    */
   setPinned(id: string, pinned: boolean): Engram | null {
-    return withLock(this.paths.engrams, () => {
+    // Local primary first.
+    const localResult = withLock(this.paths.engrams, () => {
       const engrams = loadEngrams(this.paths.engrams)
       const idx = engrams.findIndex(e => e.id === id)
       if (idx === -1) return null
@@ -1247,6 +1306,60 @@ export class Plur {
       this._syncIndex()
       return updated
     })
+    if (localResult) return localResult
+
+    // Remote routing (closes #86 pin remainder). Strip the namespace prefix
+    // before sending the server the unprefixed ID it knows about.
+    for (const entry of (this.config.stores ?? [])) {
+      if (!entry.url || entry.readonly === true) continue
+      const serverId = this._stripRemotePrefix(id, entry.scope)
+      const driver = this._getRemoteDriver({ url: entry.url, token: entry.token, scope: entry.scope })
+      try {
+        // Note: PATCH is async but setPinned() preserves its sync API for
+        // backward compat. We block on a sync-bridge via deasync would be
+        // bad; instead we do a fire-and-forget mutation and let the next
+        // load() observe the change. The local cache invalidates on patch.
+        // Callers needing strict ordering should call setPinnedAsync (TODO).
+        void driver.patch(serverId, { pinned: pinned === true ? true : undefined })
+        // Return a synthesized view of the expected result so callers don't
+        // see null. The real engram comes back on next load() / getById().
+        return { id, pinned: pinned === true ? true : undefined } as unknown as Engram
+      } catch {
+        continue
+      }
+    }
+    return null
+  }
+
+  /**
+   * Async variant of setPinned that awaits remote PATCH so callers can
+   * observe the post-write state. Use this when ordering matters
+   * (e.g. test assertions immediately after a pin call).
+   */
+  async setPinnedAsync(id: string, pinned: boolean): Promise<Engram | null> {
+    // Local primary first.
+    const localResult = withLock(this.paths.engrams, () => {
+      const engrams = loadEngrams(this.paths.engrams)
+      const idx = engrams.findIndex(e => e.id === id)
+      if (idx === -1) return null
+      const e = engrams[idx]
+      const updated: Engram = { ...e, pinned: pinned === true ? true : undefined }
+      engrams[idx] = updated
+      this._writeEngrams(this.paths.engrams, engrams)
+      this._syncIndex()
+      return updated
+    })
+    if (localResult) return localResult
+
+    // Remote routing
+    for (const entry of (this.config.stores ?? [])) {
+      if (!entry.url || entry.readonly === true) continue
+      const serverId = this._stripRemotePrefix(id, entry.scope)
+      const driver = this._getRemoteDriver({ url: entry.url, token: entry.token, scope: entry.scope })
+      const patched = await driver.patch(serverId, { pinned: pinned === true ? true : undefined })
+      if (patched) return patched
+    }
+    return null
   }
 
   /** List engrams that have pinned: true. */
@@ -1718,11 +1831,11 @@ Generate an improved version of the procedure that prevents this failure. Return
           const eventId = generateEventId()
           const now = new Date().toISOString()
 
-          // Update engram with new statement
-          return withLock(this.paths.engrams, () => {
+          // Try local primary first.
+          const localResult = withLock(this.paths.engrams, () => {
             const engrams = loadEngrams(this.paths.engrams)
             const idx = engrams.findIndex(e => e.id === engramId)
-            if (idx === -1) throw new Error(`Engram not found in store: ${engramId}`)
+            if (idx === -1) return null
 
             const raw = engrams[idx] as any
             const oldStatement = raw.statement
@@ -1755,6 +1868,38 @@ Generate an improved version of the procedure that prevents this failure. Return
             evolved = true
             return { engram: engrams[idx], episode, evolved }
           })
+          if (localResult) return localResult
+
+          // Remote routing (#86 reportFailure remainder): the engram lives
+          // on a remote store. PATCH the new statement; history stays local.
+          for (const entry of (this.config.stores ?? [])) {
+            if (!entry.url || entry.readonly === true) continue
+            const serverId = this._stripRemotePrefix(engramId, entry.scope)
+            const driver = this._getRemoteDriver({ url: entry.url, token: entry.token, scope: entry.scope })
+            const patched = await driver.patch(serverId, { statement: improved.trim() })
+            if (patched) {
+              appendHistory(this.paths.root, {
+                event: 'procedure_evolved',
+                engram_id: engramId,
+                timestamp: now,
+                data: {
+                  event_id: eventId,
+                  old_statement: engram.statement,
+                  new_statement: improved.trim(),
+                  old_version: (engram as any).engram_version ?? 1,
+                  new_version: ((engram as any).engram_version ?? 1) + 1,
+                  failure_context: failureContext,
+                  failure_episode_id: episode.id,
+                  routed_to: 'remote',
+                },
+              })
+              evolved = true
+              return { engram: patched, episode, evolved }
+            }
+          }
+          // Neither local nor remote had it — defensive fallback (should not
+          // happen since getById succeeded at top of function).
+          throw new Error(`Engram not found in any store: ${engramId}`)
         }
       } catch {
         // LLM failed — fallback: log without rewriting

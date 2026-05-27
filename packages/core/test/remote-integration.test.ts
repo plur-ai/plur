@@ -370,3 +370,170 @@ describe('ID prefix round-trip (issue #86)', () => {
     expect((serverEngram?.data as any)?.feedback_signals?.positive).toBeGreaterThanOrEqual(1)
   })
 })
+
+/**
+ * Remote routing for pin / promote / reportFailure (issue #185 + #86 remainder).
+ *
+ * Closes the pin/promote/reportFailure gap left by #86 — these mutations
+ * used to write only to the local primary store, silently failing when the
+ * engram lived on a remote server. The Enterprise PATCH /api/v1/engrams/:id
+ * endpoint (PR #111) is now consumed by RemoteStore.patch(), and setPinned,
+ * updateEngram, and reportFailure route to remote when the engram lives there.
+ */
+describe('Remote mutation routing — pin / promote / reportFailure (#185, #86)', () => {
+  let primaryDir: string
+
+  beforeEach(() => {
+    primaryDir = mkdtempSync(join(tmpdir(), 'plur-mutation-'))
+    server.reset()
+    writeFileSync(
+      join(primaryDir, 'config.yaml'),
+      yaml.dump({
+        stores: [{
+          url: baseUrl,
+          token: TOKEN,
+          scope: 'group:test',
+          shared: true,
+          readonly: false,
+        }],
+        index: false,
+      }, { lineWidth: 120, noRefs: true }),
+    )
+  })
+
+  afterAll(() => {
+    if (primaryDir && existsSync(primaryDir)) rmSync(primaryDir, { recursive: true, force: true })
+  })
+
+  it('setPinnedAsync(prefixedId, true) reaches remote server via PATCH', async () => {
+    const plur = new Plur({ path: primaryDir })
+
+    // Learn to remote
+    plur.learn('engram to pin', { scope: 'group:test', type: 'behavioral' })
+    await new Promise(r => setTimeout(r, 100))
+    await new Promise(r => setTimeout(r, 2000)) // cache populate
+
+    const loaded = plur.list({ scope: 'group:test' })
+    const remoteEngrams = loaded.filter(e => e.id.includes('-GTE-'))
+    expect(remoteEngrams.length).toBeGreaterThanOrEqual(1)
+    const prefixedId = remoteEngrams[0].id
+    expect(prefixedId).toMatch(/^ENG-GTE-/)
+
+    // Pin via the async variant — must reach the server (unprefixed)
+    const patched = await plur.setPinnedAsync(prefixedId, true)
+    expect(patched).toBeTruthy()
+
+    // Verify the server received the pin
+    const serverEngram = server.getEngram('ENG-SRV-001')
+    expect((serverEngram?.data as any)?.pinned).toBe(true)
+  })
+
+  it('updateEngramAsync routes statement change to remote (promote path)', async () => {
+    const plur = new Plur({ path: primaryDir })
+
+    plur.learn('original procedure', { scope: 'group:test', type: 'procedural' })
+    await new Promise(r => setTimeout(r, 100))
+    await new Promise(r => setTimeout(r, 2000))
+
+    const loaded = plur.list({ scope: 'group:test' })
+    const remoteEngrams = loaded.filter(e => e.id.includes('-GTE-'))
+    expect(remoteEngrams.length).toBeGreaterThanOrEqual(1)
+    const target = remoteEngrams[0]
+
+    // Promote-style update: change status + statement, send via updateEngramAsync
+    const updated = { ...target, statement: 'rewritten procedure', status: 'active' as const }
+    const result = await plur.updateEngramAsync(updated)
+    expect(result).toBeTruthy()
+
+    // Server should reflect the new statement
+    const serverEngram = server.getEngram('ENG-SRV-001')
+    expect((serverEngram?.data as any)?.statement).toBe('rewritten procedure')
+  })
+
+  it('reportFailure with LLM rewrite routes new statement to remote', async () => {
+    const plur = new Plur({ path: primaryDir })
+
+    plur.learn('flaky procedure that fails', { scope: 'group:test', type: 'procedural' })
+    await new Promise(r => setTimeout(r, 100))
+    await new Promise(r => setTimeout(r, 2000))
+
+    const loaded = plur.list({ scope: 'group:test' })
+    const remoteEngrams = loaded.filter(e => e.id.includes('-GTE-'))
+    const target = remoteEngrams[0]
+
+    // Mock LLM that returns an improved version
+    const llm = async () => 'improved procedure that handles the failure case'
+
+    const result = await plur.reportFailure(target.id, 'failed on edge case X', llm)
+    expect(result.evolved).toBe(true)
+    expect(result.engram.statement).toBe('improved procedure that handles the failure case')
+
+    // Server should have the improved statement
+    const serverEngram = server.getEngram('ENG-SRV-001')
+    expect((serverEngram?.data as any)?.statement).toBe('improved procedure that handles the failure case')
+  })
+
+  it('updateEngramAsync returns null when ID not found in any store', async () => {
+    const plur = new Plur({ path: primaryDir })
+    const fakeEngram = {
+      id: 'ENG-GTE-DOES-NOT-EXIST',
+      version: 2,
+      status: 'active' as const,
+      consolidated: false,
+      type: 'behavioral' as const,
+      scope: 'group:test',
+      visibility: 'private' as const,
+      statement: 'phantom',
+      activation: { retrieval_strength: 0.7, storage_strength: 1.0, frequency: 0, last_accessed: '2026-01-01' },
+      feedback_signals: { positive: 0, negative: 0, neutral: 0 },
+      knowledge_anchors: [],
+      associations: [],
+      derivation_count: 1,
+      tags: [],
+      pack: null,
+      abstract: null,
+      derived_from: null,
+      polarity: null,
+      engram_version: 1,
+      episode_ids: [],
+      reference_count: 1,
+      sources: [],
+    } as any
+    const result = await plur.updateEngramAsync(fakeEngram)
+    expect(result).toBeNull()
+  })
+
+  it('setPinnedAsync against a readonly remote returns null', async () => {
+    // Reset config with readonly remote
+    rmSync(join(primaryDir, 'config.yaml'))
+    writeFileSync(
+      join(primaryDir, 'config.yaml'),
+      yaml.dump({
+        stores: [{
+          url: baseUrl,
+          token: TOKEN,
+          scope: 'group:test',
+          shared: true,
+          readonly: true,
+        }],
+        index: false,
+      }, { lineWidth: 120, noRefs: true }),
+    )
+
+    // Seed an engram directly on the server (since the store is readonly)
+    server.seedEngram({
+      id: 'ENG-RO-001',
+      scope: 'group:test',
+      status: 'active',
+      data: { statement: 'readonly engram', scope: 'group:test', status: 'active' },
+    })
+
+    const plur = new Plur({ path: primaryDir })
+    const result = await plur.setPinnedAsync('ENG-GTE-RO-001', true)
+    expect(result).toBeNull()
+
+    // Server should NOT have been patched
+    const serverEngram = server.getEngram('ENG-RO-001')
+    expect((serverEngram?.data as any)?.pinned).toBeUndefined()
+  })
+})
