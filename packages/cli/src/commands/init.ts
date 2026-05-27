@@ -101,6 +101,85 @@ function installHookBinary(): { shimPath: string; status: string } {
   return { shimPath: target, status: 'installed' }
 }
 
+// ─── MCP shim — closes #234 (npx ENOTEMPTY race on MCP server launch) ──────
+//
+// Same problem as #178 (hooks), same fix pattern. The MCP server is launched
+// by Claude Code via `npx -y @plur-ai/mcp@latest` on every session start.
+// When a new MCP version publishes, the npx cache update races with concurrent
+// MCP launches → ENOTEMPTY → the user's Claude Code session can't reach PLUR
+// memory until the cache is manually wiped.
+//
+// Fix: write a local shim at ~/.plur/bin/plur-mcp that calls
+// `node <resolved-mcp-entry>` directly. Same path resolution strategy as
+// the hook shim — walks node_modules looking for @plur-ai/mcp/dist/index.js
+// since the MCP package is a sibling of the CLI in global node_modules.
+
+/**
+ * Find @plur-ai/mcp's CLI entrypoint by walking up from the CLI's own
+ * location and looking for it in nearby node_modules. Returns null if
+ * the MCP package isn't installed alongside the CLI.
+ *
+ * The typical layout (npm install -g @plur-ai/mcp) is:
+ *   <prefix>/lib/node_modules/@plur-ai/mcp/dist/index.js     ← target
+ *   <prefix>/lib/node_modules/@plur-ai/cli/dist/index.js     ← we're here
+ *
+ * Walks up from CLI's dist looking for a node_modules dir that contains
+ * @plur-ai/mcp. Returns null if not found (caller falls back to npx).
+ */
+function resolveMcpEntrypoint(): string | null {
+  // Start from CLI's dist directory.
+  const cliEntry = resolveCliEntrypoint()
+  let dir = dirname(cliEntry)
+  const MAX_DEPTH = 12
+  for (let depth = 0; depth < MAX_DEPTH; depth++) {
+    // Look for a sibling @plur-ai/mcp install
+    const candidate = join(dir, 'node_modules', '@plur-ai', 'mcp', 'dist', 'index.js')
+    if (existsSync(candidate)) return candidate
+    // Also check if we're already inside node_modules — common after `npm i -g`
+    const adjacent = join(dir, '..', '@plur-ai', 'mcp', 'dist', 'index.js')
+    if (existsSync(adjacent)) return adjacent
+    const parent = dirname(dir)
+    if (parent === dir) break
+    dir = parent
+  }
+  return null
+}
+
+function mcpShimPath(): string {
+  const name = platform() === 'win32' ? 'plur-mcp.cmd' : 'plur-mcp'
+  return join(homedir(), '.plur', 'bin', name)
+}
+
+function installMcpBinary(): { shimPath: string; status: string } {
+  const binDir = join(homedir(), '.plur', 'bin')
+  mkdirSync(binDir, { recursive: true })
+
+  const entrypoint = resolveMcpEntrypoint()
+  const nodeBin = process.execPath
+
+  if (!entrypoint) {
+    // MCP package not found in nearby node_modules. This is fine for the
+    // CLI-only install (`npm install -g @plur-ai/cli`); the user will get
+    // the npx fallback in mcp-config.json. Doctor will flag if they later
+    // install @plur-ai/mcp and forget to re-run plur init.
+    return { shimPath: '', status: 'skipped: @plur-ai/mcp not installed alongside CLI' }
+  }
+
+  const target = mcpShimPath()
+
+  if (platform() === 'win32') {
+    writeFileSync(target, `@echo off\r\n"${nodeBin}" "${entrypoint}" %*\r\n`)
+  } else {
+    writeFileSync(target, `#!/bin/sh\nexec "${nodeBin}" "${entrypoint}" "$@"\n`, { mode: 0o755 })
+    try { chmodSync(target, 0o755) } catch { /* masked umask fallback */ }
+  }
+
+  const meta = { entrypoint, node: nodeBin, installed: new Date().toISOString() }
+  writeFileSync(join(binDir, 'plur-mcp.meta.json'), JSON.stringify(meta, null, 2) + '\n')
+
+  return { shimPath: target, status: 'installed' }
+}
+
 // ── Hook map builders ───────────────────────────────────────────────────────
 // Parameterized by command prefix so the same definitions work with both
 // the local shim (default) and npx fallback.
@@ -438,6 +517,9 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   const shim = installHookBinary()
   const cmd = shim.shimPath || 'npx @plur-ai/cli' // fallback if shim failed
 
+  // Install local MCP shim — same fix pattern for MCP server launch (#234)
+  const mcpShim = installMcpBinary()
+
   const PLUR_HOOKS_ENFORCEMENT = buildEnforcementHooks(cmd)
   const PLUR_HOOKS_INJECTION = buildInjectionHooks(cmd)
 
@@ -512,6 +594,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   outputText('PLUR installed for Claude Code.')
   outputText('')
   outputText(`Hook binary: ${shim.status}${shim.shimPath ? ` (${shim.shimPath})` : ''}`)
+  outputText(`MCP binary:  ${mcpShim.status}${mcpShim.shimPath ? ` (${mcpShim.shimPath})` : ''}`)
   outputText('')
   outputText('Architecture: One global engram store (~/.plur/), enforcement hooks global, injection hooks project-scoped.')
   outputText('Multi-project scoping via domain/scope fields on engrams, not separate installs.')

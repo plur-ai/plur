@@ -27,16 +27,37 @@ export interface ConfigFile {
 }
 
 /**
+ * Locate the local MCP shim installed by `plur init` (#234 fix).
+ * Returns the shim path if it exists, null otherwise.
+ *
+ * The shim at ~/.plur/bin/plur-mcp calls `node <mcp-dist>/index.js` directly,
+ * eliminating the npx cache race that ENOTEMPTY'd Claude Code sessions
+ * on @plur-ai/mcp version bumps (#234, same bug class as #178).
+ */
+export function findMcpShim(): string | null {
+  const name = platform() === 'win32' ? 'plur-mcp.cmd' : 'plur-mcp'
+  const path = join(homedir(), '.plur', 'bin', name)
+  return existsSync(path) ? path : null
+}
+
+/**
  * Build the MCP server entry to register for the `plur` server.
  *
- * Uses a login-shell wrapper on macOS/Linux so that PATH (nvm/brew/volta/asdf)
- * is loaded — Claude Desktop launches GUI apps without the user's shell PATH,
- * which would otherwise cause `npx` to fail with "command not found".
+ * Preferred: local shim at ~/.plur/bin/plur-mcp installed by `plur init`.
+ * No npx, no cache, no race conditions (#234).
  *
- * On Windows, uses `cmd.exe /c npx ...` which inherits the system PATH that
- * already includes Node from the installer.
+ * Fallback: npx with a login-shell wrapper on macOS/Linux so that PATH
+ * (nvm/brew/volta/asdf) is loaded — Claude Desktop launches GUI apps
+ * without the user's shell PATH, which would cause `npx` to fail with
+ * "command not found". On Windows, uses `cmd.exe /c npx ...` which
+ * inherits the system PATH.
  */
 export function buildMcpServerEntry(): McpServerEntry {
+  // Prefer the local shim if `plur init` has installed it.
+  const shim = findMcpShim()
+  if (shim) {
+    return { command: shim, args: [] }
+  }
   if (platform() === 'win32') {
     return {
       command: 'cmd.exe',

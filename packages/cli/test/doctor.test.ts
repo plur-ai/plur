@@ -206,4 +206,70 @@ describe('plur doctor', () => {
     expect(report.hooksInstalled).toBe(true)
     expect(report.hookShim.valid).toBe(true)
   })
+
+  // ─── #234 — stale npx-based MCP entry detection ──────────────────────────
+
+  it('detects stale npx-based MCP server entry and recommends migration (#234)', () => {
+    writeGlobalSettings({
+      hooks: {
+        UserPromptSubmit: [
+          { hooks: [{ type: 'command', command: `${join(home, '.plur', 'bin', 'plur-hook')} hook-inject` }] },
+        ],
+      },
+      mcpServers: {
+        plur: { command: '/bin/sh', args: ['-lc', 'exec npx -y @plur-ai/mcp@latest'] },
+      },
+    })
+
+    const { stdout } = runDoctor()
+    const report = JSON.parse(stdout)
+
+    expect(report.staleNpxMcp).toBe(true)
+    expect(report.mcpRegistered).toBe(true)
+  })
+
+  it('reports staleNpxMcp=false when MCP entry uses local shim (#234)', () => {
+    const binDir = join(home, '.plur', 'bin')
+    mkdirSync(binDir, { recursive: true })
+    const mcpShim = join(binDir, 'plur-mcp')
+    // Point at a real JS file so validateMcpShim's existsSync passes
+    const fakeMcpDist = join(home, 'fake-mcp', 'index.js')
+    mkdirSync(join(home, 'fake-mcp'), { recursive: true })
+    writeFileSync(fakeMcpDist, '// fake mcp')
+    writeFileSync(mcpShim, `#!/bin/sh\nexec "${process.execPath}" "${fakeMcpDist}" "$@"\n`, { mode: 0o755 })
+    try { chmodSync(mcpShim, 0o755) } catch {}
+
+    writeGlobalSettings({
+      hooks: {
+        UserPromptSubmit: [
+          { hooks: [{ type: 'command', command: `${join(binDir, 'plur-hook')} hook-inject` }] },
+        ],
+      },
+      mcpServers: {
+        plur: { command: mcpShim, args: [] },
+      },
+    })
+
+    const { stdout } = runDoctor()
+    const report = JSON.parse(stdout)
+
+    expect(report.staleNpxMcp).toBe(false)
+    expect(report.mcpRegistered).toBe(true)
+    expect(report.mcpShim.valid).toBe(true)
+  })
+
+  it('reports mcpShim.valid=false when shim missing (#234)', () => {
+    writeGlobalSettings({
+      mcpServers: {
+        plur: { command: '/bin/sh', args: ['-lc', 'exec npx -y @plur-ai/mcp@latest'] },
+      },
+    })
+
+    const { stdout } = runDoctor()
+    const report = JSON.parse(stdout)
+
+    expect(report.mcpShim).toBeDefined()
+    expect(report.mcpShim.valid).toBe(false)
+    expect(report.mcpShim.error).toMatch(/shim not found|plur init/)
+  })
 })

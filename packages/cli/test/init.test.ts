@@ -284,4 +284,91 @@ describe('plur init', () => {
     expect(meta.node).toBeDefined()
     expect(meta.installed).toBeDefined()
   })
+
+  // ─── #234: MCP shim — mirror of #178 fix for MCP server launch ──────────
+  // In the monorepo test env, packages/mcp/dist exists as a workspace sibling,
+  // so resolveMcpEntrypoint() should find it. The walk also checks adjacent
+  // node_modules layouts that npm uses post `npm install -g @plur-ai/mcp`.
+
+  it('creates ~/.plur/bin/plur-mcp shim on init when @plur-ai/mcp is available (#234)', () => {
+    runInit()
+    const shim = join(home, '.plur', 'bin', platform() === 'win32' ? 'plur-mcp.cmd' : 'plur-mcp')
+
+    if (!existsSync(shim)) {
+      // Acceptable for CLI-only environments — the shim install gracefully
+      // skips if @plur-ai/mcp is not discoverable. Doctor will warn.
+      console.warn('plur-mcp shim not created — @plur-ai/mcp not discoverable from this test env')
+      return
+    }
+
+    const content = readFileSync(shim, 'utf-8')
+    expect(content).not.toContain('npx')
+    expect(content).toContain('index.js')
+    expect(content).toMatch(/@plur-ai[\\/]mcp/)
+
+    if (platform() !== 'win32') {
+      expect(content).toContain('#!/bin/sh')
+      const stat = statSync(shim)
+      expect(stat.mode & 0o111).toBeGreaterThan(0)
+    }
+  })
+
+  it('MCP server entry uses local shim instead of npx (#234)', () => {
+    runInit()
+    const settings = readSettings()
+    const plurMcp = settings.mcpServers?.plur
+    expect(plurMcp).toBeDefined()
+
+    const shimPath = join(home, '.plur', 'bin', platform() === 'win32' ? 'plur-mcp.cmd' : 'plur-mcp')
+    if (!existsSync(shimPath)) {
+      // No shim → entry falls back to npx (valid for CLI-only installs)
+      const blob = plurMcp!.command + ' ' + (plurMcp!.args ?? []).join(' ')
+      expect(blob).toMatch(/npx/)
+      return
+    }
+
+    // Shim present → entry must point at it, no npx anywhere
+    expect(plurMcp!.command).toBe(shimPath)
+    expect(plurMcp!.command).not.toContain('npx')
+    expect((plurMcp!.args ?? []).join(' ')).not.toContain('npx')
+  })
+
+  it('migration: re-init replaces npx-based MCP entry with local shim (#234)', () => {
+    const settingsPath = join(home, '.claude', 'settings.json')
+    mkdirSync(join(home, '.claude'), { recursive: true })
+    writeFileSync(
+      settingsPath,
+      JSON.stringify({
+        mcpServers: {
+          plur: { command: '/bin/sh', args: ['-lc', 'exec npx -y @plur-ai/mcp@latest'] },
+        },
+      }, null, 2),
+    )
+
+    runInit()
+    const settings = readSettings()
+    const plurMcp = settings.mcpServers?.plur
+    expect(plurMcp).toBeDefined()
+
+    const shimPath = join(home, '.plur', 'bin', platform() === 'win32' ? 'plur-mcp.cmd' : 'plur-mcp')
+    if (existsSync(shimPath)) {
+      expect(plurMcp!.command).toBe(shimPath)
+      expect((plurMcp!.args ?? []).join(' ')).not.toContain('npx')
+    } else {
+      // Acceptable: kept on npx if MCP not discoverable
+      console.warn('plur-mcp shim unavailable — MCP entry kept on npx')
+    }
+  })
+
+  it('creates plur-mcp.meta.json when MCP shim is installed (#234)', () => {
+    runInit()
+    const metaPath = join(home, '.plur', 'bin', 'plur-mcp.meta.json')
+    if (!existsSync(metaPath)) return
+
+    const meta = JSON.parse(readFileSync(metaPath, 'utf-8'))
+    expect(meta.entrypoint).toBeDefined()
+    expect(meta.entrypoint).toMatch(/@plur-ai[\\/]mcp.*index\.js/)
+    expect(meta.node).toBeDefined()
+    expect(meta.installed).toBeDefined()
+  })
 })

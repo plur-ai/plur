@@ -47,7 +47,9 @@ interface DoctorReport {
   mcpRegistered: boolean
   datacoreCollision: boolean
   staleNpxHooks: boolean
+  staleNpxMcp: boolean
   hookShim: HookShimReport
+  mcpShim: HookShimReport
   handshake: { ok: boolean; serverName?: string; serverVersion?: string; error?: string }
   embedder: { available: boolean; loaded: boolean; lastError: string | null; modelLoaded: boolean; disabled: boolean; disabledReason: string | null }
   overall: 'ok' | 'fail'
@@ -75,6 +77,44 @@ function hasStaleNpxHooks(config: Record<string, unknown>): boolean {
     }
   }
   return false
+}
+
+/**
+ * Detect stale npx-based MCP server registration (#234). Returns true if
+ * the plur MCP entry uses npx instead of the local shim.
+ *
+ * The args[] check catches both layouts we ship: `cmd.exe /c npx ...` on
+ * Windows and `/bin/sh -lc 'exec npx -y @plur-ai/mcp@latest'` on unix.
+ */
+function hasStaleNpxMcp(config: Record<string, unknown>): boolean {
+  const servers = (config.mcpServers ?? {}) as Record<string, { command?: string; args?: string[] }>
+  const plur = servers.plur
+  if (!plur) return false
+  if (plur.command && plur.command.includes('npx')) return true
+  const argsBlob = (plur.args ?? []).join(' ')
+  return argsBlob.includes('npx') && argsBlob.includes('@plur-ai/mcp')
+}
+
+/** Mirror of validateHookShim() for the MCP shim (#234). */
+function validateMcpShim(): HookShimReport {
+  const name = platform() === 'win32' ? 'plur-mcp.cmd' : 'plur-mcp'
+  const path = join(homedir(), '.plur', 'bin', name)
+
+  if (!existsSync(path)) {
+    return { valid: false, shimPath: path, error: 'shim not found — run `plur init` to create it (requires @plur-ai/mcp installed alongside CLI)' }
+  }
+
+  const content = readFileSync(path, 'utf-8')
+  const match = content.match(/"([^"]+index\.js)"/)
+  if (!match) {
+    return { valid: false, shimPath: path, error: 'shim has unexpected format' }
+  }
+
+  if (!existsSync(match[1])) {
+    return { valid: false, shimPath: path, error: `entrypoint missing: ${match[1]} — run \`plur init\` to fix` }
+  }
+
+  return { valid: true, shimPath: path }
 }
 
 function validateHookShim(): HookShimReport {
@@ -340,7 +380,15 @@ function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<Doctor
     return hasStaleNpxHooks(config)
   })
 
+  // Check for stale npx-based MCP server registration (#234)
+  const staleNpxMcp = configs.some((c) => {
+    if (!c.exists) return false
+    const config = readConfig(c.path)
+    return hasStaleNpxMcp(config)
+  })
+
   const hookShim = validateHookShim()
+  const mcpShim = validateMcpShim()
 
   const handshakePromise = skipHandshake
     ? Promise.resolve({ ok: false, error: 'skipped (--no-handshake)' })
@@ -353,7 +401,7 @@ function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<Doctor
     // disabled until the model loads.
     const overall: 'ok' | 'fail' =
       hooksInstalled && mcpRegistered && (skipHandshake || handshake.ok) ? 'ok' : 'fail'
-    return { configs, hooksInstalled, mcpRegistered, datacoreCollision, staleNpxHooks, hookShim, handshake, embedder, overall }
+    return { configs, hooksInstalled, mcpRegistered, datacoreCollision, staleNpxHooks, staleNpxMcp, hookShim, mcpShim, handshake, embedder, overall }
   })
 }
 
@@ -401,6 +449,21 @@ function printText(report: DoctorReport): void {
     outputText('')
     outputText('⚠  Hooks still use npx — slow (200-2000ms per hook) and vulnerable to cache corruption.')
     outputText('   Fix: run `plur init` to migrate to the local hook binary (<5ms per hook).')
+  }
+
+  // MCP shim status (#234) — same problem on MCP launch, same fix pattern
+  if (report.mcpShim.valid) {
+    outputText(`✓ MCP shim:  ${report.mcpShim.shimPath}`)
+  } else {
+    outputText(`✗ MCP shim:  ${report.mcpShim.error}`)
+  }
+
+  if (report.staleNpxMcp) {
+    outputText('')
+    outputText('⚠  plur MCP still launched via npx — vulnerable to ENOTEMPTY cache corruption on version bumps (#234).')
+    outputText('   This is the same bug class as #178 (which fixed hooks). Symptom: Claude Code')
+    outputText('   sessions silently lose PLUR memory after a new @plur-ai/mcp publish.')
+    outputText('   Fix: run `plur init` to migrate to the local MCP binary (no npx, no race).')
   }
 
   outputText('')
