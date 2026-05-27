@@ -171,6 +171,19 @@ describe('cross-scope recurrence (#176)', () => {
         // existing stored state.)
         expect(Array.isArray((stored as any).sources)).toBe(true)
         expect((stored as any).sources.length).toBe(2)
+
+        // Iter-4 (Critic medium): the history event for the broadening
+        // (2nd cross-scope hit) must record persisted_to='secondary' so an
+        // observability consumer can confirm the mutation landed on disk
+        // outside the primary store.
+        const broadenEvents = readHistoryForEngram(plur.getStorageRoot(), after1.id)
+          .filter(e => e.event === 'recurrence_detected')
+        // Exactly one event: the broadening at recurrence=2 (1st hit doesn't fire here
+        // because the engram is in a WRITABLE secondary store, so persisted_to='secondary'
+        // is durable and the no-material-change branch correctly skips emission).
+        expect(broadenEvents.length).toBe(1)
+        expect(broadenEvents[0].data.persisted_to).toBe('secondary')
+        expect(broadenEvents[0].data.new_scope).toBe('global')
       } finally {
         rmSync(secondaryDir, { recursive: true, force: true })
       }
@@ -290,6 +303,58 @@ describe('cross-scope recurrence (#176)', () => {
       expect(recurrences[0].data.previous_commitment).toBe('leaning')
       expect(recurrences[0].data.new_commitment).toBe('decided')
       expect(recurrences[0].data.recurrence_count).toBe(2)
+      // Audit iter-4 fix (Critic medium): persisted_to field must be present
+      // and accurate. Primary store engram → 'primary'.
+      expect(recurrences[0].data.persisted_to).toBe('primary')
+    })
+
+    it('emits in-memory history event on 1st hit when stored engram is in a remote/readonly store (audit iter-4 Data)', () => {
+      // Set up a READONLY secondary store containing an engram. Cross-scope
+      // re-learn cannot persist there — mutation stays in-memory only. Even
+      // on the 1st hit (no scope/commitment change), the history event MUST
+      // fire so consumers can detect divergence.
+      const readonlyDir = mkdtempSync(join(tmpdir(), 'plur-readonly-'))
+      const readonlyPath = join(readonlyDir, 'engrams.yaml')
+      const stmt = 'readonly-divergence rule'
+      const readonlyEngram = EngramSchema.parse({
+        id: 'ENG-RO-001',
+        version: 2,
+        status: 'active',
+        consolidated: false,
+        type: 'behavioral',
+        scope: 'project:readonly-a',
+        visibility: 'private',
+        statement: stmt,
+        activation: {
+          retrieval_strength: 0.7,
+          storage_strength: 1.0,
+          frequency: 0,
+          last_accessed: '2024-01-01',
+        },
+        feedback_signals: { positive: 0, negative: 0, neutral: 0 },
+        episode_ids: [],
+      })
+      ;(readonlyEngram as any).content_hash = computeContentHash(stmt)
+      saveEngrams(readonlyPath, [readonlyEngram])
+      try {
+        plur.addStore(readonlyPath, 'project:readonly-a', { shared: true, readonly: true })
+
+        // 1st cross-scope re-learn — no scope/commitment change, but the
+        // mutation can't persist to the readonly store. Event SHOULD fire
+        // with persisted_to='in-memory'.
+        const after = plur.learn(stmt, { scope: 'project:b' })
+        expect(after.recurrence_count).toBe(1)
+        // Use the engram's full (possibly namespaced) id to fetch history
+        const events = readHistoryForEngram(plur.getStorageRoot(), after.id)
+          .filter(e => e.event === 'recurrence_detected')
+        expect(events.length).toBe(1)
+        expect(events[0].data.persisted_to).toBe('in-memory')
+        expect(events[0].data.recurrence_count).toBe(1)
+        // No material change yet, so previous/new should match
+        expect(events[0].data.previous_scope).toBe(events[0].data.new_scope)
+      } finally {
+        rmSync(readonlyDir, { recursive: true, force: true })
+      }
     })
 
     it('does NOT spam history on subsequent recurrences once at global+locked (audit iter-1)', () => {

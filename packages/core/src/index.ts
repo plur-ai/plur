@@ -476,19 +476,28 @@ export class Plur {
     const previousScope = hit.scope
     const previousCommitment = hit.commitment
 
-    // Audit iter-3 fix (Critic + Data): single mutation function applied to
-    // BOTH the in-memory `hit` AND the persisted engram (primary or secondary).
-    // Previous approach copied selected fields from hit→stored, which (1) lost
-    // any existing sources/recurrence_count on legacy engrams where hit lacked
-    // those fields, and (2) silently dropped unrelated mutable fields. Now
-    // both paths apply the identical mutation logic — no drift, no field-copy
-    // gap.
+    // Audit iter-4 fix (Critic + Data convergence): mutate ONCE on the canonical
+    // writable target (primary or secondary store engram), then sync hit from
+    // the post-mutation state. Eliminates:
+    //   - Iter-3 holdover: primary path did `engrams[primaryIdx] = hit` (Zod-
+    //     defaulted overwrite of raw stored object) while secondary mutated
+    //     in place — asymmetric semantics + accumulated schema drift on primary.
+    //   - Iter-4 Critic HIGH: double-mutation against two independent objects
+    //     (hit + storeEngrams[sidx]) is correct today only because each call
+    //     reads fresh from disk. Mutating once removes that implicit contract.
+    //   - Iter-4 Critic LOW: locked_at timestamps diverged by µs between hit
+    //     and stored. Single mutation → single timestamp.
+    //
+    // applyMutation is pure-ish: takes everything it needs as parameters,
+    // returns the new recurrence count so callers don't need to read back via
+    // unsafe cast.
     const sourceEntry = this._buildSourceEntry(scope, context)
-    const applyMutation = (e: Engram): void => {
+    const lockTimestamp = new Date().toISOString()
+    const applyMutation = (e: Engram, source: typeof sourceEntry, lockedAt: string): number => {
       const newRecurrence = ((e as any).recurrence_count ?? 0) + 1
       ;(e as any).recurrence_count = newRecurrence
       ;(e as any).reference_count = ((e as any).reference_count ?? 1) + 1
-      ;(e as any).sources = [...((e as any).sources ?? []), sourceEntry]
+      ;(e as any).sources = [...((e as any).sources ?? []), source]
 
       if (newRecurrence >= 2) {
         if (e.scope !== 'global') e.scope = 'global'
@@ -502,71 +511,91 @@ export class Plur {
                 ? 'locked'
                 : (e.commitment ?? 'leaning')
           if (e.commitment === 'locked' && !e.locked_at) {
-            const now = new Date().toISOString()
-            e.locked_at = now
+            e.locked_at = lockedAt
             e.locked_reason = `Auto-locked: cross-scope recurrence detected (${newRecurrence}x)`
           }
         }
       }
+      return newRecurrence
     }
 
-    // Apply to in-memory hit (caller-visible state)
-    applyMutation(hit)
+    // Helper: project the post-mutation fields from one engram onto another.
+    // Bounded to the fields applyMutation touches — no risk of carrying
+    // undefined into the target since applyMutation guarantees these are set.
+    const syncHitFrom = (mutated: Engram): void => {
+      hit.scope = mutated.scope
+      hit.commitment = mutated.commitment
+      ;(hit as any).recurrence_count = (mutated as any).recurrence_count
+      ;(hit as any).reference_count = (mutated as any).reference_count
+      ;(hit as any).sources = (mutated as any).sources
+      if (mutated.locked_at !== undefined) hit.locked_at = mutated.locked_at
+      if (mutated.locked_reason !== undefined) hit.locked_reason = mutated.locked_reason
+    }
 
-    // Persist to wherever the engram actually lives:
-    // - Primary store: write in-place (fast path)
-    // - Writable secondary local store: load the store file fresh, apply same
-    //   mutation to the un-prefixed id, write back. We re-apply rather than
-    //   copy fields so the stored engram's other mutable fields (activation,
-    //   feedback_signals, pinned, etc.) are untouched.
-    // - Readonly stores and remote stores: in-memory mutation only; emit
-    //   history event so callers can audit the skip.
+    type PersistenceTarget = 'primary' | 'secondary' | 'in-memory'
     const primaryIdx = engrams.findIndex(e => e.id === hit.id)
-    let persistedTo: 'primary' | 'secondary' | 'in-memory' = 'in-memory'
+    let persistedTo: PersistenceTarget
+    let newRecurrence: number
+
     if (primaryIdx !== -1) {
-      engrams[primaryIdx] = hit
+      // Primary store: mutate the engram in the loaded array (symmetric with
+      // secondary path — both mutate the on-disk-bound object, not hit).
+      newRecurrence = applyMutation(engrams[primaryIdx], sourceEntry, lockTimestamp)
       this._writeEngrams(this.paths.engrams, engrams)
       this._syncIndex()
       persistedTo = 'primary'
+      syncHitFrom(engrams[primaryIdx])
     } else {
+      // primaryIdx already proved this isn't in primary; only check writability.
       const storeInfo = this._findEngramStore(hit.id)
-      if (storeInfo && storeInfo.path !== this.paths.engrams && !storeInfo.readonly) {
+      if (storeInfo && !storeInfo.readonly) {
         const storeEngrams = loadEngrams(storeInfo.path)
         const sidx = storeEngrams.findIndex(e => e.id === storeInfo.originalId)
         if (sidx !== -1) {
-          // Re-apply the same mutation to the stored engram (no field-copy drift)
-          applyMutation(storeEngrams[sidx])
+          newRecurrence = applyMutation(storeEngrams[sidx], sourceEntry, lockTimestamp)
           this._writeEngrams(storeInfo.path, storeEngrams)
           this._syncIndex()
           persistedTo = 'secondary'
+          syncHitFrom(storeEngrams[sidx])
+        } else {
+          // Audit iter-4 Critic medium: silent skip is operationally dangerous.
+          // Log a warning so the divergence is observable in logs, and emit the
+          // history event with persisted_to='in-memory' so consumers can detect.
+          logger.warning(
+            `[plur:recurrence] engram ${hit.id} (originalId=${storeInfo.originalId}) `
+            + `not found in store ${storeInfo.path} — mutation stayed in-memory only`,
+          )
+          newRecurrence = applyMutation(hit, sourceEntry, lockTimestamp)
+          persistedTo = 'in-memory'
         }
+      } else {
+        // Readonly or remote — apply to hit only. Remote PATCH wiring tracked
+        // separately; in-memory state is still returned to the caller.
+        newRecurrence = applyMutation(hit, sourceEntry, lockTimestamp)
+        persistedTo = 'in-memory'
       }
-      // For readonly + remote stores: persistedTo stays 'in-memory'.
-      // Remote PATCH wiring tracked separately.
     }
 
-    // Append history event for observability — distinct event so consumers
-    // can pattern on "this engram graduated to universal."
+    // History event for observability.
     //
-    // Audit iter-1 fix (Critic): only emit when something MATERIALLY changed
-    // (scope broadened OR commitment escalated). Once an engram is already
-    // global + locked, every subsequent cross-scope re-learn still increments
-    // recurrence_count (preserved for telemetry via the field itself) but
-    // doesn't spam the history log with identical "no change" events.
+    // Iter-1 fix (Critic): only emit on material change (scope or commitment)
+    // to avoid spam from already-global+locked engrams.
     //
-    // Audit iter-3 fix (Data): include `persisted_to` so consumers can audit
-    // whether the mutation actually landed on disk. When persistedTo='in-memory'
-    // and a material change happened, the engram is in a divergent state — the
-    // remote/readonly store still shows the old scope/commitment until the next
-    // material change reaches a writable path.
-    const newRecurrence = (hit as any).recurrence_count as number
+    // Iter-3 fix (Data): include `persisted_to` so consumers can audit whether
+    // the mutation actually landed on disk.
+    //
+    // Iter-4 fix (Data): ALSO emit when persistedTo='in-memory' even without a
+    // material change. An in-memory-only mutation is observable divergence even
+    // on the 1st cross-scope hit (counter incremented but stored remote/readonly
+    // engram lags). The 'primary'/'secondary' no-change case still skips to
+    // avoid spam — those mutations are durable so no observability gap exists.
     const scopeChanged = hit.scope !== previousScope
     const commitmentChanged = hit.commitment !== previousCommitment
-    if (scopeChanged || commitmentChanged) {
+    if (scopeChanged || commitmentChanged || persistedTo === 'in-memory') {
       appendHistory(this.paths.root, {
         event: 'recurrence_detected',
         engram_id: hit.id,
-        timestamp: new Date().toISOString(),
+        timestamp: lockTimestamp,
         data: {
           previous_scope: previousScope,
           new_scope: hit.scope,
