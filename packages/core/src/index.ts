@@ -434,6 +434,102 @@ export class Plur {
     return hit
   }
 
+  /** Find an active engram with the same content_hash but a DIFFERENT scope.
+   * A hit indicates cross-context recurrence — the same knowledge is being
+   * re-learned across scopes, which is evidence of universal applicability.
+   * See issue #176. */
+  private _crossScopeRecurrenceDetect(
+    statement: string,
+    engrams: Engram[],
+    currentScope: string,
+  ): Engram | null {
+    const hash = computeContentHash(statement)
+    for (const e of engrams) {
+      if (e.status === 'active'
+          && (e as any).content_hash === hash
+          && e.scope !== currentScope) {
+        return e
+      }
+    }
+    return null
+  }
+
+  /** Record a cross-scope recurrence: append source, increment counters,
+   * escalate commitment, and broaden scope to 'global' once the threshold
+   * is crossed. Returns the (possibly broadened) engram.
+   *
+   * Escalation ladder (graduated, not all-at-once):
+   * - 1st cross-scope hit:   record source + recurrence_count++  (no scope/commitment change)
+   * - 2nd+ cross-scope hit:  + broaden scope → 'global'
+   *                          + escalate commitment one step (leaning → decided → locked)
+   *
+   * Locked engrams stop escalating (you can't promote past locked).
+   *
+   * See issue #176.
+   */
+  private _recordCrossScopeRecurrence(
+    hit: Engram,
+    engrams: Engram[],
+    scope: string,
+    context: LearnContext | undefined,
+  ): Engram {
+    const previousScope = hit.scope
+    const previousCommitment = hit.commitment
+
+    // Counters always advance
+    const newRecurrence = ((hit as any).recurrence_count ?? 0) + 1
+    ;(hit as any).recurrence_count = newRecurrence
+    ;(hit as any).reference_count = ((hit as any).reference_count ?? 1) + 1
+    ;(hit as any).sources = [
+      ...((hit as any).sources ?? []),
+      this._buildSourceEntry(scope, context),
+    ]
+
+    // Threshold-based broadening + escalation
+    if (newRecurrence >= 2) {
+      if (hit.scope !== 'global') hit.scope = 'global'
+
+      if (hit.commitment !== 'locked') {
+        hit.commitment = hit.commitment === 'leaning'
+          ? 'decided'
+          : hit.commitment === 'decided'
+            ? 'locked'
+            : (hit.commitment ?? 'leaning')
+        if (hit.commitment === 'locked' && !hit.locked_at) {
+          const now = new Date().toISOString()
+          hit.locked_at = now
+          hit.locked_reason = `Auto-locked: cross-scope recurrence detected (${newRecurrence}x)`
+        }
+      }
+    }
+
+    // Persist (best-effort, primary store only — same limitation as _recordDuplicate)
+    const idx = engrams.findIndex(e => e.id === hit.id)
+    if (idx !== -1) {
+      engrams[idx] = hit
+      this._writeEngrams(this.paths.engrams, engrams)
+      this._syncIndex()
+    }
+
+    // Append history event for observability — distinct event so consumers
+    // can pattern on "this engram graduated to universal."
+    appendHistory(this.paths.root, {
+      event: 'recurrence_detected',
+      engram_id: hit.id,
+      timestamp: new Date().toISOString(),
+      data: {
+        previous_scope: previousScope,
+        new_scope: hit.scope,
+        previous_commitment: previousCommitment ?? null,
+        new_commitment: hit.commitment ?? null,
+        recurrence_count: newRecurrence,
+        from_scope: scope,
+      },
+    })
+
+    return hit
+  }
+
   private _isLlmDedupAvailable(): boolean {
     if (this._llmDisabledUntil !== null) {
       if (Date.now() < this._llmDisabledUntil) return false
@@ -476,6 +572,13 @@ export class Plur {
       // On dedup hit, mutate: increment reference_count, append source (#107).
       const hashMatch = this._hashDedup(statement, allEngrams, scope)
       if (hashMatch) return this._recordDuplicate(hashMatch, engrams, scope, context)
+
+      // #176: cross-scope recurrence — same statement, different scope.
+      // Treated as evidence of universal applicability: graduates the
+      // existing engram toward 'global' + 'locked' commitment instead of
+      // creating a new scope-bound duplicate.
+      const crossMatch = this._crossScopeRecurrenceDetect(statement, allEngrams, scope)
+      if (crossMatch) return this._recordCrossScopeRecurrence(crossMatch, engrams, scope, context)
 
       const id = generateEngramId(allEngrams)
       const now = new Date().toISOString()
@@ -540,6 +643,7 @@ export class Plur {
         locked_reason: commitment === 'locked' ? context?.locked_reason : undefined,
         reference_count: 1,
         sources: [this._buildSourceEntry(scope, context)],
+        recurrence_count: 0,
         summary: autoSummary(statement, undefined),
         engram_version: 1,
         episode_ids: episodeIds ?? [],
@@ -676,6 +780,14 @@ export class Plur {
         return this._recordDuplicate(hashMatch, engrams, scope, context)
       })
     }
+    // #176: cross-scope recurrence (same semantics as the local learn() path).
+    const crossMatch = this._crossScopeRecurrenceDetect(statement, allEngrams, scope)
+    if (crossMatch) {
+      return withLock(this.paths.engrams, () => {
+        const engrams = loadEngrams(this.paths.engrams)
+        return this._recordCrossScopeRecurrence(crossMatch, engrams, scope, context)
+      })
+    }
     const now = new Date().toISOString()
     const localPlaceholder = this._buildEngramShape(statement, scope, context, now)
     try {
@@ -780,6 +892,7 @@ export class Plur {
       locked_reason: commitment === 'locked' ? context?.locked_reason : undefined,
       reference_count: 1,
       sources: [this._buildSourceEntry(scope, context)],
+      recurrence_count: 0,
       summary: autoSummary(statement, undefined),
       engram_version: 1,
       episode_ids: context?.session_episode_id ? [context.session_episode_id] : [],

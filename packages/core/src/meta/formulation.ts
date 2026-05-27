@@ -175,6 +175,7 @@ Return ONLY valid JSON, no markdown fencing.`
     },
     reference_count: 1,
     sources: [{ scope: 'global', session_id: null, stored_at: now }],
+    recurrence_count: 0,
     structured_data: { meta: metaField },
   }
 
