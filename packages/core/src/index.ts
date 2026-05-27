@@ -570,6 +570,10 @@ export class Plur {
           // Audit iter-5 fix (Data finding 3): index/store divergence is a
           // data-consistency defect, not a transient warning. logger.error so
           // it surfaces above default WARNING filters in production.
+          //
+          // Ternary order: the sidx === -1 arm fires first when sidx is
+          // out-of-bounds, so storeEngrams[sidx].status in the else arm is
+          // safe (only reached when sidx is a valid index but status != active).
           const reason = sidx === -1
             ? 'not found in store file'
             : `is ${storeEngrams[sidx].status} in store file (expected active)`
