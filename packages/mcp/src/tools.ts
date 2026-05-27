@@ -1,7 +1,7 @@
 import { existsSync, unlinkSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
-import { Plur, extractMetaEngrams, validateMetaEngram, confidenceBand, generateProfile, getProfileForInjection, markProfileDirty, selectModelForOperation, readHistoryForEngram, getCachedUpdateCheck, minorVersionsBehind, scanForTensions, CapabilityCanary } from '@plur-ai/core'
+import { Plur, extractMetaEngrams, validateMetaEngram, confidenceBand, generateProfile, getProfileForInjection, markProfileDirty, selectModelForOperation, readHistoryForEngram, getCachedUpdateCheck, minorVersionsBehind, scanForTensions, CapabilityCanary, readProjectConfig } from '@plur-ai/core'
 import type { LlmFunction, MetaField } from '@plur-ai/core'
 import { VERSION } from './version.js'
 
@@ -1079,11 +1079,26 @@ export function getToolDefinitions(): ToolDefinition[] {
         } catch { /* logged inside flushOutbox */ }
 
         // Surface writable remote scopes so AI caller knows what's available (#229)
-        // NOTE: we do NOT auto-set session scope — the AI caller must judge per-engram
-        // whether it belongs on the enterprise store or stays local. Auto-setting would
-        // route ALL engrams to the remote, including personal/project-local knowledge.
+        // NOTE: we do NOT auto-set session scope FROM REMOTE STORES — the AI
+        // caller must judge per-engram whether it belongs on the enterprise
+        // store or stays local. Auto-setting all engrams to remote would
+        // route personal/project-local knowledge to the team store.
         const remote_scopes = plur.getWritableRemoteScopes()
-        const default_scope = (args.default_scope as string | undefined) ?? null
+
+        // Project scope detection (#177) — read .plur.yaml from the MCP
+        // server's cwd. Walking stops at .git boundary and refuses
+        // .plur.yaml in HOME (privacy guard from hook-inject). When the
+        // project declares a scope, auto-apply it as the session default
+        // UNLESS the caller explicitly passed a different default_scope.
+        const projectConfig = readProjectConfig()
+        const explicit_default_scope = (args.default_scope as string | undefined) ?? null
+        const default_scope = explicit_default_scope ?? projectConfig.scope ?? null
+        const scope_source = explicit_default_scope
+          ? 'caller'
+          : projectConfig.scope
+            ? 'project-config'
+            : 'none'
+
         // Always reset _sessionScope BEFORE possibly setting it. The MCP server
         // is one long-lived process serving many sequential session_start calls;
         // without this reset, a default_scope set in session A leaks into every
@@ -1155,12 +1170,32 @@ export function getToolDefinitions(): ToolDefinition[] {
           }
         }
 
+        // Project scope guidance (#177) — surface auto-detected project
+        // scope so the agent knows engrams will be tagged with it.
+        if (scope_source === 'project-config') {
+          guide += `\n\nAuto-detected project scope: "${default_scope}" (from .plur.yaml in the current project). ` +
+            `plur_learn calls without an explicit scope will be tagged with this scope, keeping this project's ` +
+            `knowledge separate from your other projects. Pass scope: "global" only for genuinely cross-project ` +
+            `knowledge (general coding conventions, language gotchas, tool quirks).`
+        } else if (scope_source === 'none') {
+          // No project scope detected — warn about cross-project context bleed
+          // (this is the #177 failure mode: agents that don't pass scope get
+          // 'global', and global pollutes every future session).
+          guide += `\n\n⚠️ No project scope detected. plur_learn calls without explicit scope will be tagged ` +
+            `"global" and will appear in EVERY project's future sessions. To avoid context bleed across ` +
+            `projects, create a .plur.yaml in this project's root with: scope: "project:<your-project-name>"`
+        }
+
         // Append remote scope guidance to guide text (#229)
         if (remote_scopes.length > 0) {
           const scopeList = remote_scopes.map(s => `"${s.scope}"`).join(', ')
           guide += default_scope
-            ? `\n\nSession default scope: "${default_scope}" — plur_learn calls without explicit scope will route to the enterprise store.`
-            : `\n\nRemote store scopes available: ${scopeList}. When an engram is relevant to the team (engineering patterns, architecture decisions, project conventions), set scope to the matching remote scope in plur_learn. Personal preferences, local project details, and corrections specific to your workflow should stay at default scope (local).`
+            ? `\n\nSession default scope is set to "${default_scope}". To route an engram to a remote ` +
+              `enterprise store instead, pass scope explicitly to plur_learn (available remote scopes: ${scopeList}).`
+            : `\n\nRemote store scopes available: ${scopeList}. When an engram is relevant to the team ` +
+              `(engineering patterns, architecture decisions, project conventions), set scope to the matching ` +
+              `remote scope in plur_learn. Personal preferences, local project details, and corrections specific ` +
+              `to your workflow should stay at default scope (local).`
         }
 
         return {
@@ -1170,7 +1205,7 @@ export function getToolDefinitions(): ToolDefinition[] {
           guide,
           // Remote scope routing info (#229)
           ...(remote_scopes.length > 0 ? { remote_scopes } : {}),
-          ...(default_scope ? { default_scope } : {}),
+          ...(default_scope ? { default_scope, scope_source } : {}),
           // Ask LLM to check back — MCP can't push, but we can request a follow-up
           follow_up: store_stats.engram_count === 0
             ? 'This is a fresh store with 0 engrams. After your first exchange with the user, review what you learned and call plur_learn for any corrections, preferences, or patterns. Build the memory from this session.'
