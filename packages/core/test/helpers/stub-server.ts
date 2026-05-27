@@ -178,6 +178,33 @@ export class StubServer {
       return
     }
 
+    // PATCH /api/v1/engrams/:id — partial update (enterprise PR #111).
+    // Accepts subset of {pinned, status, statement, ...}; merges into engram.data.
+    if (method === 'PATCH' && idMatch) {
+      const id = decodeURIComponent(idMatch[1])
+      const engram = this.engrams.get(id)
+      if (!engram) {
+        this.json(res, 404, { error: 'Not found' })
+        return
+      }
+      this.readBody(req, (body) => {
+        const data = engram.data as any
+        // Apply each field present in body to engram.data
+        for (const [k, v] of Object.entries(body)) {
+          if (v === undefined) continue
+          if (k === 'status') {
+            engram.status = String(v)
+          }
+          data[k] = v
+        }
+        engram.updated_at = new Date().toISOString()
+        // Server returns the patched engram in {engram: ...} envelope so the
+        // client can observe the post-write authoritative state.
+        this.json(res, 200, { engram: { id: engram.id, scope: engram.scope, status: engram.status, data } })
+      })
+      return
+    }
+
     // GET /api/v1/engrams?scope=...&limit=...&offset=... — list
     if (method === 'GET' && path === '/api/v1/engrams') {
       const scope = url.searchParams.get('scope')
