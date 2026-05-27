@@ -185,4 +185,115 @@ describe('Session & store tools', () => {
     expect(result.errors).toHaveLength(1)
     expect(result.errors[0].error).toBe('Cannot promote retired')
   })
+
+  // ── #177: plur_session_start auto-detects project scope from .plur.yaml ──
+  //
+  // Root cause of #177: session_start didn't read .plur.yaml. Without explicit
+  // scope, every plur_learn fell back to 'global', causing context bleed across
+  // projects. These tests pin the new behavior: project scope is auto-applied
+  // as the session default + surfaced in the response.
+
+  describe('project scope auto-detection (#177)', () => {
+    let projectDir: string
+    let originalCwd: string
+
+    beforeEach(() => {
+      projectDir = mkdtempSync(join(tmpdir(), 'plur-project-'))
+      mkdirSync(join(projectDir, '.git'), { recursive: true })  // marks project boundary
+      originalCwd = process.cwd()
+    })
+
+    afterEach(() => {
+      process.chdir(originalCwd)
+      rmSync(projectDir, { recursive: true, force: true })
+    })
+
+    it('auto-sets session scope from .plur.yaml when present', async () => {
+      writeFileSync(join(projectDir, '.plur.yaml'), 'scope: project:test-app\n')
+      process.chdir(projectDir)
+
+      const result = await callTool('plur_session_start', { task: 'work' }) as any
+
+      expect(result.default_scope).toBe('project:test-app')
+      expect(result.scope_source).toBe('project-config')
+      expect(plur.getSessionScope()).toBe('project:test-app')
+    })
+
+    it('explicit default_scope arg overrides .plur.yaml', async () => {
+      writeFileSync(join(projectDir, '.plur.yaml'), 'scope: project:test-app\n')
+      process.chdir(projectDir)
+
+      const result = await callTool('plur_session_start', {
+        task: 'work',
+        default_scope: 'group:override',
+      }) as any
+
+      expect(result.default_scope).toBe('group:override')
+      expect(result.scope_source).toBe('caller')
+      expect(plur.getSessionScope()).toBe('group:override')
+    })
+
+    it('omits default_scope from response when no project config and no explicit arg', async () => {
+      // No .plur.yaml; project boundary still present
+      process.chdir(projectDir)
+
+      const result = await callTool('plur_session_start', { task: 'work' }) as any
+
+      expect(result.default_scope).toBeUndefined()
+      expect(result.scope_source).toBeUndefined()
+      expect(plur.getSessionScope()).toBeNull()
+    })
+
+    it('learn() without explicit scope uses auto-detected project scope (full integration)', async () => {
+      writeFileSync(join(projectDir, '.plur.yaml'), 'scope: project:integration-test\n')
+      process.chdir(projectDir)
+
+      await callTool('plur_session_start', { task: 'integration test' })
+
+      const engram = plur.learn('this should NOT leak to global')
+      expect(engram.scope).toBe('project:integration-test')
+    })
+
+    it('guide includes warning when no project scope detected', async () => {
+      process.chdir(projectDir)
+
+      const result = await callTool('plur_session_start', { task: 'work' }) as any
+
+      expect(result.guide).toContain('No project scope detected')
+      expect(result.guide).toContain('context bleed')
+      expect(result.guide).toContain('.plur.yaml')
+    })
+
+    it('guide includes confirmation when project scope is auto-detected', async () => {
+      writeFileSync(join(projectDir, '.plur.yaml'), 'scope: project:detected\n')
+      process.chdir(projectDir)
+
+      const result = await callTool('plur_session_start', { task: 'work' }) as any
+
+      expect(result.guide).toContain('Auto-detected project scope')
+      expect(result.guide).toContain('project:detected')
+      expect(result.guide).toContain('.plur.yaml')
+    })
+
+    it('cross-session: project A scope does not leak into project B', async () => {
+      const projectA = projectDir
+      writeFileSync(join(projectA, '.plur.yaml'), 'scope: project:a\n')
+      process.chdir(projectA)
+      await callTool('plur_session_start', { task: 'A' })
+      expect(plur.getSessionScope()).toBe('project:a')
+
+      const projectB = mkdtempSync(join(tmpdir(), 'plur-project-b-'))
+      mkdirSync(join(projectB, '.git'), { recursive: true })
+      try {
+        process.chdir(projectB)
+        await callTool('plur_session_start', { task: 'B' })
+        expect(plur.getSessionScope()).toBeNull()  // not "project:a"!
+
+        const bEngram = plur.learn('B-side engram')
+        expect(bEngram.scope).toBe('global')  // not "project:a"
+      } finally {
+        rmSync(projectB, { recursive: true, force: true })
+      }
+    })
+  })
 })
