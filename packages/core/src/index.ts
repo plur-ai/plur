@@ -476,56 +476,161 @@ export class Plur {
     const previousScope = hit.scope
     const previousCommitment = hit.commitment
 
-    // Counters always advance
-    const newRecurrence = ((hit as any).recurrence_count ?? 0) + 1
-    ;(hit as any).recurrence_count = newRecurrence
-    ;(hit as any).reference_count = ((hit as any).reference_count ?? 1) + 1
-    ;(hit as any).sources = [
-      ...((hit as any).sources ?? []),
-      this._buildSourceEntry(scope, context),
-    ]
+    // Audit iter-4 fix (Critic + Data convergence): mutate ONCE on the canonical
+    // writable target (primary or secondary store engram), then sync hit from
+    // the post-mutation state. Eliminates:
+    //   - Iter-3 holdover: primary path did `engrams[primaryIdx] = hit` (Zod-
+    //     defaulted overwrite of raw stored object) while secondary mutated
+    //     in place — asymmetric semantics + accumulated schema drift on primary.
+    //   - Iter-4 Critic HIGH: double-mutation against two independent objects
+    //     (hit + storeEngrams[sidx]) is correct today only because each call
+    //     reads fresh from disk. Mutating once removes that implicit contract.
+    //   - Iter-4 Critic LOW: locked_at timestamps diverged by µs between hit
+    //     and stored. Single mutation → single timestamp.
+    //
+    // applyMutation is pure-ish: takes everything it needs as parameters,
+    // returns the new recurrence count so callers don't need to read back via
+    // unsafe cast.
+    const sourceEntry = this._buildSourceEntry(scope, context)
+    const lockTimestamp = new Date().toISOString()
+    const applyMutation = (e: Engram, source: typeof sourceEntry, lockedAt: string): number => {
+      const newRecurrence = ((e as any).recurrence_count ?? 0) + 1
+      ;(e as any).recurrence_count = newRecurrence
+      ;(e as any).reference_count = ((e as any).reference_count ?? 1) + 1
+      ;(e as any).sources = [...((e as any).sources ?? []), source]
 
-    // Threshold-based broadening + escalation
-    if (newRecurrence >= 2) {
-      if (hit.scope !== 'global') hit.scope = 'global'
-
-      if (hit.commitment !== 'locked') {
-        hit.commitment = hit.commitment === 'leaning'
-          ? 'decided'
-          : hit.commitment === 'decided'
-            ? 'locked'
-            : (hit.commitment ?? 'leaning')
-        if (hit.commitment === 'locked' && !hit.locked_at) {
-          const now = new Date().toISOString()
-          hit.locked_at = now
-          hit.locked_reason = `Auto-locked: cross-scope recurrence detected (${newRecurrence}x)`
+      if (newRecurrence >= 2) {
+        if (e.scope !== 'global') e.scope = 'global'
+        if (e.commitment !== 'locked') {
+          // Forward-only ladder: exploring → leaning → decided → locked.
+          e.commitment = e.commitment === 'exploring'
+            ? 'leaning'
+            : e.commitment === 'leaning'
+              ? 'decided'
+              : e.commitment === 'decided'
+                ? 'locked'
+                : (e.commitment ?? 'leaning')
+          if (e.commitment === 'locked' && !e.locked_at) {
+            e.locked_at = lockedAt
+            e.locked_reason = `Auto-locked: cross-scope recurrence detected (${newRecurrence}x)`
+          }
         }
+      }
+      return newRecurrence
+    }
+
+    // Helper: project the post-mutation fields from one engram onto another.
+    // Bounded to the fields applyMutation touches — no risk of carrying
+    // undefined into the target since applyMutation guarantees these are set.
+    const syncHitFrom = (mutated: Engram): void => {
+      hit.scope = mutated.scope
+      hit.commitment = mutated.commitment
+      ;(hit as any).recurrence_count = (mutated as any).recurrence_count
+      ;(hit as any).reference_count = (mutated as any).reference_count
+      ;(hit as any).sources = (mutated as any).sources
+      if (mutated.locked_at !== undefined) hit.locked_at = mutated.locked_at
+      if (mutated.locked_reason !== undefined) hit.locked_reason = mutated.locked_reason
+    }
+
+    type PersistenceTarget = 'primary' | 'secondary' | 'in-memory'
+    const primaryIdx = engrams.findIndex(e => e.id === hit.id)
+    let persistedTo: PersistenceTarget
+    let newRecurrence: number
+
+    if (primaryIdx !== -1) {
+      // Primary store: mutate the engram in the loaded array (symmetric with
+      // secondary path — both mutate the on-disk-bound object, not hit).
+      const target = engrams[primaryIdx]
+      newRecurrence = applyMutation(target, sourceEntry, lockTimestamp)
+      this._writeEngrams(this.paths.engrams, engrams)
+      this._syncIndex()
+      persistedTo = 'primary'
+      // Audit iter-5 fix (Data finding 1): explicit identity guard makes the
+      // self-assign no-op contract visible. When _loadAllEngrams and the primary
+      // engrams array share references, target IS hit and syncing is redundant;
+      // the guard documents the assumption without changing behavior today.
+      if (target !== hit) syncHitFrom(target)
+    } else {
+      // primaryIdx already proved this isn't in primary; only check writability.
+      const storeInfo = this._findEngramStore(hit.id)
+      if (storeInfo && !storeInfo.readonly) {
+        const storeEngrams = loadEngrams(storeInfo.path)
+        const sidx = storeEngrams.findIndex(e => e.id === storeInfo.originalId)
+        // Audit iter-5 defense (Critic low #3): _crossScopeRecurrenceDetect
+        // filters status==='active' at the entry point, but a cross-process
+        // race could retire the secondary-store copy between detection and
+        // mutation. Treat retired-on-arrival the same as not-found.
+        if (sidx !== -1 && storeEngrams[sidx].status === 'active') {
+          newRecurrence = applyMutation(storeEngrams[sidx], sourceEntry, lockTimestamp)
+          this._writeEngrams(storeInfo.path, storeEngrams)
+          this._syncIndex()
+          persistedTo = 'secondary'
+          if (storeEngrams[sidx] !== hit) syncHitFrom(storeEngrams[sidx])
+        } else {
+          // Audit iter-5 fix (Data finding 3): index/store divergence is a
+          // data-consistency defect, not a transient warning. logger.error so
+          // it surfaces above default WARNING filters in production.
+          //
+          // Ternary order: the sidx === -1 arm fires first when sidx is
+          // out-of-bounds, so storeEngrams[sidx].status in the else arm is
+          // safe (only reached when sidx is a valid index but status != active).
+          const reason = sidx === -1
+            ? 'not found in store file'
+            : `is ${storeEngrams[sidx].status} in store file (expected active)`
+          logger.error(
+            `[plur:recurrence] engram ${hit.id} (originalId=${storeInfo.originalId}) `
+            + `${reason} at ${storeInfo.path} — mutation stayed in-memory only`,
+          )
+          newRecurrence = applyMutation(hit, sourceEntry, lockTimestamp)
+          persistedTo = 'in-memory'
+        }
+      } else {
+        // Readonly or remote — apply to hit only. Remote PATCH wiring tracked
+        // separately; in-memory state is still returned to the caller.
+        newRecurrence = applyMutation(hit, sourceEntry, lockTimestamp)
+        persistedTo = 'in-memory'
       }
     }
 
-    // Persist (best-effort, primary store only — same limitation as _recordDuplicate)
-    const idx = engrams.findIndex(e => e.id === hit.id)
-    if (idx !== -1) {
-      engrams[idx] = hit
-      this._writeEngrams(this.paths.engrams, engrams)
-      this._syncIndex()
+    // History event for observability.
+    //
+    // Iter-1 fix (Critic): only emit on material change (scope or commitment)
+    // to avoid spam from already-global+locked engrams.
+    //
+    // Iter-3 fix (Data): include `persisted_to` so consumers can audit whether
+    // the mutation actually landed on disk.
+    //
+    // Iter-4 fix (Data): ALSO emit when persistedTo='in-memory' even without a
+    // material change. An in-memory-only mutation is observable divergence even
+    // on the 1st cross-scope hit (counter incremented but stored remote/readonly
+    // engram lags). The 'primary'/'secondary' no-change case still skips to
+    // avoid spam — those mutations are durable so no observability gap exists.
+    //
+    // Iter-5 design note: in production with many readonly stores, a session
+    // that hits N readonly engrams once each emits N history events (1 per
+    // appendHistory file write). Consumers concerned about emission rate
+    // should filter on data.persisted_to !== 'in-memory' or on material change
+    // (data.previous_scope !== data.new_scope). Acceptable tradeoff because
+    // the alternative — silent in-memory mutations — was the iter-3 Data
+    // observability gap.
+    const scopeChanged = hit.scope !== previousScope
+    const commitmentChanged = hit.commitment !== previousCommitment
+    if (scopeChanged || commitmentChanged || persistedTo === 'in-memory') {
+      appendHistory(this.paths.root, {
+        event: 'recurrence_detected',
+        engram_id: hit.id,
+        timestamp: lockTimestamp,
+        data: {
+          previous_scope: previousScope,
+          new_scope: hit.scope,
+          previous_commitment: previousCommitment ?? null,
+          new_commitment: hit.commitment ?? null,
+          recurrence_count: newRecurrence,
+          from_scope: scope,
+          persisted_to: persistedTo,
+        },
+      })
     }
-
-    // Append history event for observability — distinct event so consumers
-    // can pattern on "this engram graduated to universal."
-    appendHistory(this.paths.root, {
-      event: 'recurrence_detected',
-      engram_id: hit.id,
-      timestamp: new Date().toISOString(),
-      data: {
-        previous_scope: previousScope,
-        new_scope: hit.scope,
-        previous_commitment: previousCommitment ?? null,
-        new_commitment: hit.commitment ?? null,
-        recurrence_count: newRecurrence,
-        from_scope: scope,
-      },
-    })
 
     return hit
   }
@@ -668,17 +773,28 @@ export class Plur {
         // the "only I see this" semantics. See: https://github.com/plur-ai/plur/issues/90
         logger.warning(`[plur:learn] private engram not routed to remote (scope=${scope}), writing locally`)
       } else if (remoteDriver) {
+        // Audit iter-1 fix (Dijkstra): defensive lookup. The resolver and
+        // this find use the same predicate semantically (writable + matching
+        // scope), but we still guard for null because config drift between
+        // resolver-time and outbox-time is possible if config is reloaded.
         const storeEntry = (this.config.stores ?? []).find(s => s.url && s.scope === scope && !s.readonly)
-        ;(engram as any).structured_data = {
-          ...((engram as any).structured_data ?? {}),
-          _outbox: {
-            target_url: storeEntry!.url!,
-            target_scope: scope,
-            queued_at: now,
-            last_attempt: now,
-            attempt_count: 0,
-            last_error: '',
-          },
+        if (!storeEntry) {
+          // Resolver gave us a driver (probably readonly), but we can't queue
+          // an outbox entry without a writable target. Skip outbox; the
+          // remote driver call below will surface the readonly error.
+          logger.warning(`[plur:learn] remote driver resolved for scope=${scope} but no writable entry — skipping outbox`)
+        } else {
+          ;(engram as any).structured_data = {
+            ...((engram as any).structured_data ?? {}),
+            _outbox: {
+              target_url: storeEntry.url!,
+              target_scope: scope,
+              queued_at: now,
+              last_attempt: now,
+              attempt_count: 0,
+              last_error: '',
+            },
+          }
         }
         engrams.push(engram)
         this._writeEngrams(this.paths.engrams, engrams)
@@ -801,22 +917,30 @@ export class Plur {
       })
       return serverEngram
     } catch (err) {
-      // Remote failed — save locally with outbox metadata for retry
+      // Remote failed — save locally with outbox metadata for retry.
+      // Audit iter-1 fix (Dijkstra): defensive lookup; the catch is the
+      // graceful-fallback path that must never throw. If no writable entry
+      // matches the scope (e.g. readonly remote), we still save the local
+      // engram but omit the outbox marker — the retry path will skip it.
       const storeEntry = (this.config.stores ?? []).find(s => s.url && s.scope === scope && !s.readonly)
       return withLock(this.paths.engrams, () => {
         const engrams = loadEngrams(this.paths.engrams)
         // Replace placeholder ID with a real local ID
         localPlaceholder.id = generateEngramId([...engrams, ...allEngrams])
-        ;(localPlaceholder as any).structured_data = {
-          ...((localPlaceholder as any).structured_data ?? {}),
-          _outbox: {
-            target_url: storeEntry!.url!,
-            target_scope: scope,
-            queued_at: now,
-            last_attempt: now,
-            attempt_count: 1,
-            last_error: (err as Error).message,
-          },
+        if (storeEntry) {
+          ;(localPlaceholder as any).structured_data = {
+            ...((localPlaceholder as any).structured_data ?? {}),
+            _outbox: {
+              target_url: storeEntry.url!,
+              target_scope: scope,
+              queued_at: now,
+              last_attempt: now,
+              attempt_count: 1,
+              last_error: (err as Error).message,
+            },
+          }
+        } else {
+          logger.warning(`[plur:learnRouted] no writable store for scope=${scope} — saving locally without outbox marker`)
         }
         engrams.push(localPlaceholder)
         this._writeEngrams(this.paths.engrams, engrams)
@@ -1495,7 +1619,14 @@ export class Plur {
       const engram = engrams.find(e => e.id === id)
       if (!engram) return false
 
-      const currentCount = (engram as any).reference_count ?? 1
+      // Audit iter-2 fix (Data): for legacy engrams created before #107
+      // landed, `reference_count` is missing. Defaulting to 1 means the
+      // first forget() retires them even if they have multiple sources
+      // (i.e., the engram was learned multiple times pre-feature). Infer
+      // from sources[] length when available so legacy cross-store dups
+      // don't get prematurely retired.
+      const currentCount = (engram as any).reference_count
+        ?? Math.max(1, ((engram as any).sources?.length ?? 1))
       const newCount = Math.max(0, currentCount - 1)
       ;(engram as any).reference_count = newCount
 
@@ -1523,7 +1654,12 @@ export class Plur {
 
     if (foundInPrimary) return
 
-    // Check stores for namespaced IDs
+    // Check stores for namespaced IDs.
+    // Audit iter-1 fix (Taleb): apply same reference-count decrement as
+    // primary store. The original implementation retired secondary-store
+    // engrams unconditionally on the first forget() call regardless of
+    // reference_count — asymmetric with primary-store behavior and breaks
+    // the #107 contract for cross-store engrams.
     const storeInfo = this._findEngramStore(id)
     if (storeInfo && storeInfo.path !== this.paths.engrams) {
       if (storeInfo.readonly) {
@@ -1532,12 +1668,32 @@ export class Plur {
       const storeEngrams = loadEngrams(storeInfo.path)
       const engram = storeEngrams.find(e => e.id === storeInfo.originalId)
       if (engram) {
-        engram.status = 'retired'
-        if (reason && !engram.rationale) {
-          engram.rationale = `Retired: ${reason}`
+        // Same legacy-engram migration as primary path (audit iter-2, Data).
+        const currentCount = (engram as any).reference_count
+          ?? Math.max(1, ((engram as any).sources?.length ?? 1))
+        const newCount = Math.max(0, currentCount - 1)
+        ;(engram as any).reference_count = newCount
+
+        if (newCount === 0) {
+          engram.status = 'retired'
+          if (reason && !engram.rationale) {
+            engram.rationale = `Retired: ${reason}`
+          }
         }
+
         this._writeEngrams(storeInfo.path, storeEngrams)
         this._syncIndex()
+        appendHistory(this.paths.root, {
+          event: newCount === 0 ? 'engram_retired' : 'engram_decremented',
+          engram_id: id,
+          timestamp: new Date().toISOString(),
+          data: {
+            reason: reason ?? null,
+            reference_count_before: currentCount,
+            reference_count_after: newCount,
+            routed_to: 'secondary-store',
+          },
+        })
         return
       }
     }
