@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync } from 'fs'
+import { mkdtempSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { Plur } from '../src/index.js'
@@ -102,6 +102,44 @@ describe('cross-scope recurrence (#176)', () => {
       expect(after.commitment).toBe('leaning')
       expect(after.scope).toBe('global')
       expect(after.recurrence_count).toBe(2)
+    })
+
+    it('persists escalation to a writable secondary store (audit iter-2 fix)', () => {
+      // Set up a writable secondary store. _findEngramStore handles the
+      // namespace stripping; _recordCrossScopeRecurrence must route the
+      // write to the right store path (not silently drop).
+      const secondaryDir = mkdtempSync(join(tmpdir(), 'plur-secondary-'))
+      const secondaryPath = join(secondaryDir, 'engrams.yaml')
+      // Initialize an empty store file so saveEngrams can be called
+      writeFileSync(secondaryPath, '[]\n')
+      try {
+        plur.addStore(secondaryPath, 'project:secondary-a', { shared: true, readonly: false })
+
+        // Learn at the secondary scope (writes to the secondary store path)
+        const seed = plur.learn('cross-store rule', { scope: 'project:secondary-a' })
+        expect(seed.scope).toBe('project:secondary-a')
+
+        // Cross-scope re-learn at primary scope. Engram match is in the
+        // secondary store; mutation must persist there.
+        plur.learn('cross-store rule', { scope: 'project:primary-b' })  // recurrence=1, no scope change yet
+        const after = plur.learn('cross-store rule', { scope: 'project:primary-c' })  // recurrence=2, broadens
+
+        // In-memory state shows broadening
+        expect(after.recurrence_count).toBe(2)
+        expect(after.scope).toBe('global')
+
+        // Reload from disk to verify durability — the mutation should
+        // have been written to the SECONDARY store, not silently dropped
+        // (this was the iter-1 defect Critic + Data flagged).
+        const fresh = new Plur({ path: dir })
+        const reloaded = fresh.list({ scope: 'global' })
+          .find(e => e.statement === 'cross-store rule')
+        expect(reloaded).toBeDefined()
+        expect(reloaded!.recurrence_count).toBe(2)
+        expect(reloaded!.scope).toBe('global')
+      } finally {
+        rmSync(secondaryDir, { recursive: true, force: true })
+      }
     })
   })
 

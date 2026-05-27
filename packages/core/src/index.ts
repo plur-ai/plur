@@ -509,28 +509,52 @@ export class Plur {
       }
     }
 
-    // Persist if the engram lives in the primary store. Cross-store cases:
-    // - matched engram is in a readonly remote → cannot mutate, silently
-    //   drop the mutation (don't write a divergent local copy that would
-    //   conflict with the upstream truth — audit iter-1 fix, Data).
-    // - matched engram is in another writable local store → also skip
-    //   primary-store write; the routing fix from #239 handles writes via
-    //   the proper store path.
-    const idx = engrams.findIndex(e => e.id === hit.id)
-    if (idx !== -1) {
-      // Found in primary store — safe to write
-      engrams[idx] = hit
+    // Persist to wherever the engram actually lives.
+    // Audit iter-2 fix (Critic + Data): the previous "skip if not in primary"
+    // logic had two defects:
+    //   1. Used unnamespaced findIndex against `engrams[]`, but `hit.id` is
+    //      namespaced (e.g. ENG-FOO-...) when from a secondary store → check
+    //      always missed, escalation never persisted for cross-store engrams.
+    //   2. Even when the matched engram was in a *writable* secondary store,
+    //      the code silently dropped the mutation → recurrence_count never
+    //      reached the broadening threshold for any non-primary engram.
+    // Now: route the write through the store's own write path.
+    // - Primary store: write in-place (fast path)
+    // - Writable secondary local store: load the store file, mutate by the
+    //   STRIPPED id, write back via _writeEngrams
+    // - Readonly secondary store (local or remote): cannot mutate; skip
+    //   silently — the in-memory `hit` mutation still returns to the caller.
+    const primaryIdx = engrams.findIndex(e => e.id === hit.id)
+    if (primaryIdx !== -1) {
+      // Found in primary store — safe to write directly
+      engrams[primaryIdx] = hit
       this._writeEngrams(this.paths.engrams, engrams)
       this._syncIndex()
     } else {
-      // Not in primary — the matched engram came from a secondary store
-      // (probably a remote driver cache or a readonly local store). The
-      // mutations on `hit` are still returned to the caller for the
-      // current-call view, but we don't persist them. Future enhancement:
-      // route through the store's own update mechanism (RemoteStore.patch
-      // for remote, secondary store write for local). For now, log so
-      // operators can see when this is happening.
-      logger.warning(`[plur:_recordCrossScopeRecurrence] engram ${hit.id} not in primary store — escalation not persisted`)
+      // Try secondary stores via _findEngramStore (handles namespace stripping)
+      const storeInfo = this._findEngramStore(hit.id)
+      if (storeInfo && storeInfo.path !== this.paths.engrams && !storeInfo.readonly) {
+        // Writable secondary local store — load fresh, mutate by stripped id, write
+        const storeEngrams = loadEngrams(storeInfo.path)
+        const sidx = storeEngrams.findIndex(e => e.id === storeInfo.originalId)
+        if (sidx !== -1) {
+          // Copy mutations onto the stored engram (which has the un-prefixed id)
+          const stored = storeEngrams[sidx]
+          stored.scope = hit.scope
+          stored.commitment = hit.commitment
+          ;(stored as any).recurrence_count = (hit as any).recurrence_count
+          ;(stored as any).reference_count = (hit as any).reference_count
+          ;(stored as any).sources = (hit as any).sources
+          if (hit.locked_at) stored.locked_at = hit.locked_at
+          if (hit.locked_reason) stored.locked_reason = hit.locked_reason
+          this._writeEngrams(storeInfo.path, storeEngrams)
+          this._syncIndex()
+        }
+      }
+      // For readonly stores and remote stores: the mutation stays in-memory
+      // only for this call. Remote PATCH is not invoked (would require
+      // RemoteStore.patch + handling the namespaced→unnamespaced id mapping,
+      // tracked separately).
     }
 
     // Append history event for observability — distinct event so consumers
@@ -700,12 +724,10 @@ export class Plur {
         // the "only I see this" semantics. See: https://github.com/plur-ai/plur/issues/90
         logger.warning(`[plur:learn] private engram not routed to remote (scope=${scope}), writing locally`)
       } else if (remoteDriver) {
-        // Audit iter-1 fix (Dijkstra): align predicate with the resolver so
-        // the non-null assertion below carries a real invariant. Previously,
-        // the predicate `s.url && s.scope === scope && !s.readonly` differed
-        // from `_resolveRemoteStoreForScope` (which doesn't filter !readonly),
-        // so a readonly remote could give us a driver but fail this find →
-        // throw inside the graceful-fallback path.
+        // Audit iter-1 fix (Dijkstra): defensive lookup. The resolver and
+        // this find use the same predicate semantically (writable + matching
+        // scope), but we still guard for null because config drift between
+        // resolver-time and outbox-time is possible if config is reloaded.
         const storeEntry = (this.config.stores ?? []).find(s => s.url && s.scope === scope && !s.readonly)
         if (!storeEntry) {
           // Resolver gave us a driver (probably readonly), but we can't queue
@@ -1548,7 +1570,14 @@ export class Plur {
       const engram = engrams.find(e => e.id === id)
       if (!engram) return false
 
-      const currentCount = (engram as any).reference_count ?? 1
+      // Audit iter-2 fix (Data): for legacy engrams created before #107
+      // landed, `reference_count` is missing. Defaulting to 1 means the
+      // first forget() retires them even if they have multiple sources
+      // (i.e., the engram was learned multiple times pre-feature). Infer
+      // from sources[] length when available so legacy cross-store dups
+      // don't get prematurely retired.
+      const currentCount = (engram as any).reference_count
+        ?? Math.max(1, ((engram as any).sources?.length ?? 1))
       const newCount = Math.max(0, currentCount - 1)
       ;(engram as any).reference_count = newCount
 
@@ -1590,7 +1619,9 @@ export class Plur {
       const storeEngrams = loadEngrams(storeInfo.path)
       const engram = storeEngrams.find(e => e.id === storeInfo.originalId)
       if (engram) {
-        const currentCount = (engram as any).reference_count ?? 1
+        // Same legacy-engram migration as primary path (audit iter-2, Data).
+        const currentCount = (engram as any).reference_count
+          ?? Math.max(1, ((engram as any).sources?.length ?? 1))
         const newCount = Math.max(0, currentCount - 1)
         ;(engram as any).reference_count = newCount
 
