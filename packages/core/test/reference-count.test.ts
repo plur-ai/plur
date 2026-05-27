@@ -95,12 +95,17 @@ describe('reference-counted content-addressed dedup (#107)', () => {
       expect(second.reference_count).toBe(2)
     })
 
-    it('creates separate engrams across different scopes (no cross-scope dedup)', () => {
+    it('cross-scope re-learn merges into existing engram as recurrence (#107 superseded by #176)', () => {
+      // ORIGINAL #107 semantics: cross-scope was NOT deduplicated — fresh engram per scope.
+      // SUPERSEDED by #176: cross-scope re-learn is treated as evidence of
+      // universal applicability and merges into the existing engram with
+      // recurrence_count++ instead of creating a duplicate.
       const a = plur.learn('use 2-space indent', { scope: 'project:a' })
       const b = plur.learn('use 2-space indent', { scope: 'project:b' })
-      expect(a.id).not.toBe(b.id)
-      expect(a.reference_count).toBe(1)
-      expect(b.reference_count).toBe(1)
+      expect(b.id).toBe(a.id)                         // SAME engram, mutated
+      expect(b.recurrence_count).toBe(1)              // 1st cross-scope hit
+      expect(b.reference_count).toBe(2)               // also bumped by recurrence path
+      expect(b.scope).toBe('project:a')               // unchanged on 1st hit (no broadening)
     })
 
     it('records different session_ids across multiple write sources', () => {

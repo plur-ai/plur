@@ -80,14 +80,20 @@ describe('Plur', () => {
     expect(conflicting.relations?.conflicts ?? []).toHaveLength(0)
   })
 
-  it('same statement in a different scope is a promotion, not a duplicate (issue #136)', () => {
+  it('same statement in a different scope is a cross-scope recurrence (#136 superseded by #176)', () => {
+    // ORIGINAL #136 semantics: cross-scope re-learn created a NEW engram —
+    // scopes were strict isolation boundaries.
+    // SUPERSEDED by #176: cross-scope re-learn is now evidence of universal
+    // applicability and is recorded as a recurrence on the existing engram
+    // (recurrence_count++) instead of creating a duplicate at the new scope.
+    // The 2nd cross-scope hit auto-broadens scope to 'global' and escalates
+    // commitment; this first-hit case still preserves the original scope.
     const local = plur.learn('pnpm build before tests', { scope: 'global' })
-    const promoted = plur.learn('pnpm build before tests', { scope: 'group:team/eng' })
-    // Different scope → new engram, not a dedup hit
-    expect(promoted.id).not.toBe(local.id)
-    expect(promoted.id).toMatch(/^ENG-/)
-    expect(promoted.scope).toBe('group:team/eng')
-    expect(plur.status().engram_count).toBe(2)
+    const recurrence = plur.learn('pnpm build before tests', { scope: 'group:team/eng' })
+    expect(recurrence.id).toBe(local.id)              // SAME engram, mutated
+    expect(recurrence.recurrence_count).toBe(1)       // 1st cross-scope hit
+    expect(recurrence.scope).toBe('global')           // unchanged on 1st hit
+    expect(plur.status().engram_count).toBe(1)        // no duplicate created
   })
 
   it('inject returns empty result when no engrams match', () => {
