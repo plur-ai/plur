@@ -219,6 +219,36 @@ export class RemoteStore implements EngramStore {
     return all.length
   }
 
+  /**
+   * Partial update of a remote engram. PATCH /api/v1/engrams/:id accepts
+   * any subset of {pinned, status, statement, ...}. The server applies
+   * the diff atomically; unsupplied fields are unchanged.
+   *
+   * Not part of the EngramStore interface — RemoteStore-specific.
+   * Requires server support: enterprise PR #111 (merged 2026-05-21).
+   * Used by setPinned, promote, reportFailure for remote routing
+   * (closes the pin/promote/reportFailure remainder of issue #86).
+   */
+  async patch(id: string, updates: Partial<Engram>): Promise<Engram | null> {
+    const r = await fetch(`${this.apiBase}/engrams/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      headers: this.headers({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify(updates),
+    })
+    if (r.status === 404) return null
+    if (!r.ok) {
+      const text = await r.text().catch(() => '')
+      throw new Error(`Remote patch failed: ${r.status} ${text}`)
+    }
+    this.cache = null
+    // Server returns {engram: {id, scope, status, data: {...}, ...}}; reshape
+    // to top-level Engram (same as load() does for rows[]).
+    const body = await r.json().catch(() => null) as { engram?: { id: string; scope: string; status: string; data?: any } } | null
+    if (!body?.engram) return null
+    const e = body.engram
+    return { id: e.id, scope: e.scope, status: e.status, ...(e.data ?? {}) } as unknown as Engram
+  }
+
   async close(): Promise<void> {
     // Stateless HTTP — nothing to close. Drop the cache for hygiene.
     this.cache = null
