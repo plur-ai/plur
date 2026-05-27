@@ -2012,13 +2012,56 @@ Generate an improved version of the procedure that prevents this failure. Return
   addStore(
     storePath: string,
     scope: string,
-    options?: { shared?: boolean; readonly?: boolean; url?: string; token?: string },
+    options?: { shared?: boolean; readonly?: boolean; url?: string; token?: string; overwriteScope?: boolean },
   ): void {
-    const config = loadConfig(this.paths.config)
     const isRemote = Boolean(options?.url)
+
+    // Validation gate (#93): catch malformed URLs and duplicate scopes at
+    // registration time instead of silently failing on first use.
+    if (isRemote) {
+      const url = options!.url!
+      // Permissive URL check — must parse, must be http(s).
+      let parsed: URL
+      try {
+        parsed = new URL(url)
+      } catch {
+        throw new Error(`addStore: invalid URL "${url}" — must be a valid http(s) URL`)
+      }
+      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+        throw new Error(`addStore: URL "${url}" has unsupported protocol "${parsed.protocol}" — must be http(s)`)
+      }
+    } else {
+      if (!storePath || typeof storePath !== 'string') {
+        throw new Error(`addStore: storePath must be a non-empty string, got ${typeof storePath}`)
+      }
+    }
+    if (!scope || typeof scope !== 'string') {
+      throw new Error(`addStore: scope must be a non-empty string, got ${typeof scope}`)
+    }
+
+    const config = loadConfig(this.paths.config)
     const dedupKey = isRemote ? options!.url : storePath
-    const existing = config.stores?.find(s => (isRemote ? s.url === dedupKey : s.path === dedupKey))
-    if (existing) return
+
+    // Same path/url → already registered, idempotent (existing behavior).
+    const sameEndpoint = config.stores?.find(s => (isRemote ? s.url === dedupKey : s.path === dedupKey))
+    if (sameEndpoint) return
+
+    // Different endpoint, same scope (#93): forbid by default to prevent
+    // silent ambiguity ("which store does scope X belong to?"). Override
+    // with options.overwriteScope=true to replace the existing entry.
+    const scopeConflict = config.stores?.find(s => s.scope === scope)
+    if (scopeConflict) {
+      if (options?.overwriteScope !== true) {
+        const existingId = scopeConflict.url ?? scopeConflict.path
+        throw new Error(
+          `addStore: scope "${scope}" is already registered to a different store (${existingId}). ` +
+          `Pass overwriteScope: true to replace, or pick a unique scope.`,
+        )
+      }
+      // Caller opted in — drop the conflicting entry before appending.
+      logger.warning(`[plur:addStore] overwriting scope "${scope}" (was: ${scopeConflict.url ?? scopeConflict.path})`)
+    }
+
     const newEntry: StoreEntry = isRemote
       ? {
           url:      options!.url!,
@@ -2033,7 +2076,9 @@ Generate an improved version of the procedure that prevents this failure. Return
           shared:   options?.shared   ?? false,
           readonly: options?.readonly ?? false,
         }
-    const stores = [...(config.stores ?? []), newEntry]
+    const stores = scopeConflict
+      ? [...(config.stores ?? []).filter(s => s.scope !== scope), newEntry]
+      : [...(config.stores ?? []), newEntry]
     let configData: Record<string, unknown> = {}
     try {
       const raw = fs.readFileSync(this.paths.config, 'utf8')

@@ -1,0 +1,60 @@
+name: Production Smoke
+
+# Post-publish health check against plur.datafund.io. Closes the Level-4
+# slice of issue #78 / #92 — the rest of the test pyramid runs in ci.yml
+# using in-process stub servers (faster + deterministic than Dockerized
+# enterprise containers, and already covers Levels 1-3 from #78).
+#
+# Manual trigger via workflow_dispatch; the publish.yml workflow (when it
+# exists) should also call this via workflow_call.
+
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: 'Remote URL to smoke (defaults to https://plur.datafund.io)'
+        required: false
+        default: 'https://plur.datafund.io'
+      scope:
+        description: 'Test scope (defaults to group:plur/test/smoke)'
+        required: false
+        default: 'group:plur/test/smoke'
+  workflow_call:
+    inputs:
+      url:
+        type: string
+        required: false
+        default: 'https://plur.datafund.io'
+      scope:
+        type: string
+        required: false
+        default: 'group:plur/test/smoke'
+    secrets:
+      PLUR_REMOTE_TEST_TOKEN:
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - name: Run smoke roundtrip against ${{ inputs.url }}
+        env:
+          PLUR_REMOTE_TEST_URL: ${{ inputs.url }}
+          PLUR_REMOTE_TEST_TOKEN: ${{ secrets.PLUR_REMOTE_TEST_TOKEN }}
+          PLUR_REMOTE_TEST_SCOPE: ${{ inputs.scope }}
+        run: pnpm test:smoke
