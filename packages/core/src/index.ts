@@ -540,30 +540,42 @@ export class Plur {
     if (primaryIdx !== -1) {
       // Primary store: mutate the engram in the loaded array (symmetric with
       // secondary path — both mutate the on-disk-bound object, not hit).
-      newRecurrence = applyMutation(engrams[primaryIdx], sourceEntry, lockTimestamp)
+      const target = engrams[primaryIdx]
+      newRecurrence = applyMutation(target, sourceEntry, lockTimestamp)
       this._writeEngrams(this.paths.engrams, engrams)
       this._syncIndex()
       persistedTo = 'primary'
-      syncHitFrom(engrams[primaryIdx])
+      // Audit iter-5 fix (Data finding 1): explicit identity guard makes the
+      // self-assign no-op contract visible. When _loadAllEngrams and the primary
+      // engrams array share references, target IS hit and syncing is redundant;
+      // the guard documents the assumption without changing behavior today.
+      if (target !== hit) syncHitFrom(target)
     } else {
       // primaryIdx already proved this isn't in primary; only check writability.
       const storeInfo = this._findEngramStore(hit.id)
       if (storeInfo && !storeInfo.readonly) {
         const storeEngrams = loadEngrams(storeInfo.path)
         const sidx = storeEngrams.findIndex(e => e.id === storeInfo.originalId)
-        if (sidx !== -1) {
+        // Audit iter-5 defense (Critic low #3): _crossScopeRecurrenceDetect
+        // filters status==='active' at the entry point, but a cross-process
+        // race could retire the secondary-store copy between detection and
+        // mutation. Treat retired-on-arrival the same as not-found.
+        if (sidx !== -1 && storeEngrams[sidx].status === 'active') {
           newRecurrence = applyMutation(storeEngrams[sidx], sourceEntry, lockTimestamp)
           this._writeEngrams(storeInfo.path, storeEngrams)
           this._syncIndex()
           persistedTo = 'secondary'
-          syncHitFrom(storeEngrams[sidx])
+          if (storeEngrams[sidx] !== hit) syncHitFrom(storeEngrams[sidx])
         } else {
-          // Audit iter-4 Critic medium: silent skip is operationally dangerous.
-          // Log a warning so the divergence is observable in logs, and emit the
-          // history event with persisted_to='in-memory' so consumers can detect.
-          logger.warning(
+          // Audit iter-5 fix (Data finding 3): index/store divergence is a
+          // data-consistency defect, not a transient warning. logger.error so
+          // it surfaces above default WARNING filters in production.
+          const reason = sidx === -1
+            ? 'not found in store file'
+            : `is ${storeEngrams[sidx].status} in store file (expected active)`
+          logger.error(
             `[plur:recurrence] engram ${hit.id} (originalId=${storeInfo.originalId}) `
-            + `not found in store ${storeInfo.path} — mutation stayed in-memory only`,
+            + `${reason} at ${storeInfo.path} — mutation stayed in-memory only`,
           )
           newRecurrence = applyMutation(hit, sourceEntry, lockTimestamp)
           persistedTo = 'in-memory'
@@ -589,6 +601,14 @@ export class Plur {
     // on the 1st cross-scope hit (counter incremented but stored remote/readonly
     // engram lags). The 'primary'/'secondary' no-change case still skips to
     // avoid spam — those mutations are durable so no observability gap exists.
+    //
+    // Iter-5 design note: in production with many readonly stores, a session
+    // that hits N readonly engrams once each emits N history events (1 per
+    // appendHistory file write). Consumers concerned about emission rate
+    // should filter on data.persisted_to !== 'in-memory' or on material change
+    // (data.previous_scope !== data.new_scope). Acceptable tradeoff because
+    // the alternative — silent in-memory mutations — was the iter-3 Data
+    // observability gap.
     const scopeChanged = hit.scope !== previousScope
     const commitmentChanged = hit.commitment !== previousCommitment
     if (scopeChanged || commitmentChanged || persistedTo === 'in-memory') {
