@@ -1058,6 +1058,7 @@ export function getToolDefinitions(): ToolDefinition[] {
         properties: {
           task: { type: 'string', description: 'What you are working on (triggers engram injection)' },
           tags: { type: 'array', items: { type: 'string' }, description: 'Tags to filter injected engrams' },
+          default_scope: { type: 'string', description: 'Default scope for plur_learn calls this session when no explicit scope is provided. Only set this if you want ALL engrams to route to a specific store. Usually, leave unset and pass scope per-engram based on relevance.' },
         },
         required: ['task'],
       },
@@ -1077,6 +1078,18 @@ export function getToolDefinitions(): ToolDefinition[] {
           outbox_result = await plur.flushOutbox()
         } catch { /* logged inside flushOutbox */ }
 
+        // Surface writable remote scopes so AI caller knows what's available (#229)
+        // NOTE: we do NOT auto-set session scope — the AI caller must judge per-engram
+        // whether it belongs on the enterprise store or stays local. Auto-setting would
+        // route ALL engrams to the remote, including personal/project-local knowledge.
+        const remote_scopes = plur.getWritableRemoteScopes()
+        const default_scope = (args.default_scope as string | undefined) ?? null
+        // Always reset _sessionScope BEFORE possibly setting it. The MCP server
+        // is one long-lived process serving many sequential session_start calls;
+        // without this reset, a default_scope set in session A leaks into every
+        // subsequent session that didn't pass its own default_scope.
+        plur.setSessionScope(default_scope)
+
         // Get store stats for context
         const status = plur.status()
         const store_stats = {
@@ -1084,6 +1097,10 @@ export function getToolDefinitions(): ToolDefinition[] {
           episode_count: status.episode_count,
           pack_count: status.pack_count,
         }
+
+        // Warm remote store caches before injection (#235)
+        // Ensures enterprise engrams are available for the first injectHybrid call.
+        await plur.warmRemoteCaches().catch(() => {})
 
         // Inject relevant engrams
         let engrams: { text: string; count: number; injected_ids: string[] } | null = null
@@ -1138,11 +1155,22 @@ export function getToolDefinitions(): ToolDefinition[] {
           }
         }
 
+        // Append remote scope guidance to guide text (#229)
+        if (remote_scopes.length > 0) {
+          const scopeList = remote_scopes.map(s => `"${s.scope}"`).join(', ')
+          guide += default_scope
+            ? `\n\nSession default scope: "${default_scope}" — plur_learn calls without explicit scope will route to the enterprise store.`
+            : `\n\nRemote store scopes available: ${scopeList}. When an engram is relevant to the team (engineering patterns, architecture decisions, project conventions), set scope to the matching remote scope in plur_learn. Personal preferences, local project details, and corrections specific to your workflow should stay at default scope (local).`
+        }
+
         return {
           session_id,
           engrams: engrams ?? [],
           store_stats,
           guide,
+          // Remote scope routing info (#229)
+          ...(remote_scopes.length > 0 ? { remote_scopes } : {}),
+          ...(default_scope ? { default_scope } : {}),
           // Ask LLM to check back — MCP can't push, but we can request a follow-up
           follow_up: store_stats.engram_count === 0
             ? 'This is a fresh store with 0 engrams. After your first exchange with the user, review what you learned and call plur_learn for any corrections, preferences, or patterns. Build the memory from this session.'

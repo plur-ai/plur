@@ -160,6 +160,7 @@ export class Plur {
   private _engramCache: Map<string, { mtime: bigint; engrams: Engram[] }> = new Map()
   private _llmFailureCount = 0
   private _llmDisabledUntil: number | null = null
+  private _sessionScope: string | null = null
 
   constructor(options?: { path?: string }) {
     this.paths = detectPlurStorage(options?.path)
@@ -468,7 +469,7 @@ export class Plur {
       const engrams = loadEngrams(this.paths.engrams)
       const allEngrams = this._loadAllEngrams()
 
-      const scope = context?.scope ?? 'global'
+      const scope = context?.scope ?? this._sessionScope ?? 'global'
 
       // Idea 29: Content hash fast-path dedup (scope-aware — issue #136).
       // On dedup hit, mutate: increment reference_count, append source (#107).
@@ -655,7 +656,7 @@ export class Plur {
         throw new Error(`Secret detected in statement: ${secrets[0].pattern}. Use config.allow_secrets to override.`)
       }
     }
-    const scope = context?.scope ?? 'global'
+    const scope = context?.scope ?? this._sessionScope ?? 'global'
     const remoteDriver = this._resolveRemoteStoreForScope(scope)
     if (!remoteDriver) {
       // Local route — sync learn() owns dedup, build, write, history.
@@ -2241,5 +2242,52 @@ Generate an improved version of the procedure that prevents this failure. Return
       }
     }))
     return [this._primaryStoreRow(), ...additional]
+  }
+
+  /**
+   * Pre-load all remote store caches so subsequent sync reads see data.
+   * Call once before injection to avoid the cold-start race (#235).
+   *
+   * Each remote load races against a 5-second timeout — a single hung or
+   * slow remote must not block session_start indefinitely. Same pattern as
+   * listStoresAsync (#184). clearTimeout on the success path prevents
+   * accumulating dangling timers in the long-lived MCP server process.
+   */
+  async warmRemoteCaches(): Promise<void> {
+    const stores = this.config.stores ?? []
+    const remoteStores = stores.filter(s => s.url)
+    const REMOTE_LOAD_TIMEOUT_MS = 5000
+    await Promise.all(
+      remoteStores.map(s => {
+        const driver = this._getRemoteDriver({ url: s.url!, token: s.token, scope: s.scope })
+        let timeoutHandle: ReturnType<typeof setTimeout> | undefined
+        return Promise.race([
+          driver.load().finally(() => { if (timeoutHandle) clearTimeout(timeoutHandle) }),
+          new Promise<never>((_, reject) => {
+            timeoutHandle = setTimeout(
+              () => reject(new Error(`remote warm timeout (${REMOTE_LOAD_TIMEOUT_MS}ms)`)),
+              REMOTE_LOAD_TIMEOUT_MS,
+            )
+          }),
+        ]).catch(() => { /* errors logged inside RemoteStore; timeout swallowed */ })
+      }),
+    )
+  }
+
+  /** Return writable remote store scopes for AI caller guidance. */
+  getWritableRemoteScopes(): Array<{ scope: string; url: string }> {
+    return (this.config.stores ?? [])
+      .filter(s => s.url && !s.readonly)
+      .map(s => ({ scope: s.scope, url: s.url! }))
+  }
+
+  /** Set a session-level default scope. Used as fallback in learn/learnRouted when no explicit scope is provided. */
+  setSessionScope(scope: string | null): void {
+    this._sessionScope = scope
+  }
+
+  /** Get the current session-level default scope, or null if not set. */
+  getSessionScope(): string | null {
+    return this._sessionScope
   }
 }
