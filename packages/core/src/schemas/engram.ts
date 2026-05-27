@@ -191,6 +191,19 @@ export const EngramSchema = z.object({
   locked_at: z.string().optional(),
   locked_reason: z.string().optional(),
 
+  // === SP1: Reference counting (issue #107) ===
+  /** Number of write attempts that resolved to this engram.
+   * Incremented on every hash-dedup hit; decremented by forget().
+   * Engram physically retires only when this reaches 0. */
+  reference_count: z.number().int().min(0).default(1),
+  /** Provenance of each write attempt. One entry per write (including the
+   * first). Migrated old engrams without this field start with []. */
+  sources: z.array(z.object({
+    scope: z.string(),
+    session_id: z.string().nullable().default(null),
+    stored_at: z.string(),  // ISO timestamp of this write
+  })).default([]),
+
   // === SP2: History & Evolution fields ===
   engram_version: z.number().int().min(1).default(1),
   previous_version_ref: PreviousVersionRefSchema.optional(),
