@@ -173,6 +173,8 @@ Return ONLY valid JSON, no markdown fencing.`
       memory_class: 'metacognitive',
       cognitive_level: 'evaluate',
     },
+    reference_count: 1,
+    sources: [{ scope: 'global', session_id: null, stored_at: now }],
     structured_data: { meta: metaField },
   }
 

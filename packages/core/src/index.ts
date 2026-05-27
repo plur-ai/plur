@@ -381,7 +381,9 @@ export class Plur {
     return id
   }
 
-  /** Content hash fast-path dedup. Scope-aware: same statement in a different scope is a promotion, not a duplicate. */
+  /** Content hash fast-path dedup. Scope-aware: same statement in a different
+   * scope is a promotion, not a duplicate. Retired engrams are excluded —
+   * re-learning a retired statement creates a fresh engram (issue #107). */
   private _hashDedup(statement: string, engrams: Engram[], scope?: string): Engram | null {
     const hash = computeContentHash(statement)
     for (const e of engrams) {
@@ -390,6 +392,44 @@ export class Plur {
       }
     }
     return null
+  }
+
+  /** Build the {scope, session_id, stored_at} source entry that gets appended
+   * to an engram's sources[] on every write (initial or duplicate). */
+  private _buildSourceEntry(scope: string, context?: LearnContext): {
+    scope: string; session_id: string | null; stored_at: string
+  } {
+    return {
+      scope,
+      session_id: context?.session_episode_id ?? null,
+      stored_at: new Date().toISOString(),
+    }
+  }
+
+  /** Apply a duplicate-write to an existing engram: increment reference_count,
+   * append source, persist to primary store if that's where the engram lives.
+   * Mutates the engram and (best-effort) writes back. See issue #107. */
+  private _recordDuplicate(
+    hit: Engram,
+    engrams: Engram[],
+    scope: string,
+    context: LearnContext | undefined,
+  ): Engram {
+    // Use defaults for engrams migrated without these fields.
+    const currentCount = (hit as any).reference_count ?? 1
+    const currentSources = (hit as any).sources ?? []
+    ;(hit as any).reference_count = currentCount + 1
+    ;(hit as any).sources = [...currentSources, this._buildSourceEntry(scope, context)]
+
+    // Persist if the engram is in the primary store. Cross-store duplicates
+    // (same scope across stores) are deduplicated but not persisted in v1.
+    const idx = engrams.findIndex(e => e.id === hit.id)
+    if (idx !== -1) {
+      engrams[idx] = hit
+      this._writeEngrams(this.paths.engrams, engrams)
+      this._syncIndex()
+    }
+    return hit
   }
 
   private _isLlmDedupAvailable(): boolean {
@@ -430,9 +470,10 @@ export class Plur {
 
       const scope = context?.scope ?? 'global'
 
-      // Idea 29: Content hash fast-path dedup (scope-aware — issue #136)
+      // Idea 29: Content hash fast-path dedup (scope-aware — issue #136).
+      // On dedup hit, mutate: increment reference_count, append source (#107).
       const hashMatch = this._hashDedup(statement, allEngrams, scope)
-      if (hashMatch) return hashMatch
+      if (hashMatch) return this._recordDuplicate(hashMatch, engrams, scope, context)
 
       const id = generateEngramId(allEngrams)
       const now = new Date().toISOString()
@@ -495,6 +536,8 @@ export class Plur {
         commitment,
         locked_at: commitment === 'locked' ? now : undefined,
         locked_reason: commitment === 'locked' ? context?.locked_reason : undefined,
+        reference_count: 1,
+        sources: [this._buildSourceEntry(scope, context)],
         summary: autoSummary(statement, undefined),
         engram_version: 1,
         episode_ids: episodeIds ?? [],
@@ -624,7 +667,13 @@ export class Plur {
     // local outbox for retry (issue #26).
     const allEngrams = this._loadAllEngrams()
     const hashMatch = this._hashDedup(statement, allEngrams, scope)
-    if (hashMatch) return hashMatch
+    if (hashMatch) {
+      // Mutate + persist if local; otherwise return mutated (best-effort)
+      return withLock(this.paths.engrams, () => {
+        const engrams = loadEngrams(this.paths.engrams)
+        return this._recordDuplicate(hashMatch, engrams, scope, context)
+      })
+    }
     const now = new Date().toISOString()
     const localPlaceholder = this._buildEngramShape(statement, scope, context, now)
     try {
@@ -727,6 +776,8 @@ export class Plur {
       commitment,
       locked_at: commitment === 'locked' ? now : undefined,
       locked_reason: commitment === 'locked' ? context?.locked_reason : undefined,
+      reference_count: 1,
+      sources: [this._buildSourceEntry(scope, context)],
       summary: autoSummary(statement, undefined),
       engram_version: 1,
       episode_ids: context?.session_episode_id ? [context.session_episode_id] : [],
@@ -1206,24 +1257,38 @@ export class Plur {
 
   /** Set engram status to 'retired'. Supports primary and store engrams. */
   async forget(id: string, reason?: string): Promise<void> {
-    // Check primary first
+    // Check primary first.
+    // Reference-counted retirement (#107): decrement reference_count; only
+    // physically retire when it reaches 0. forget() called N times on an
+    // engram with reference_count=N retires it; called fewer times, the
+    // engram stays active with a lower count.
     const foundInPrimary = withLock(this.paths.engrams, () => {
       const engrams = loadEngrams(this.paths.engrams)
       const engram = engrams.find(e => e.id === id)
       if (!engram) return false
 
-      engram.status = 'retired'
-      if (reason && !engram.rationale) {
-        engram.rationale = `Retired: ${reason}`
+      const currentCount = (engram as any).reference_count ?? 1
+      const newCount = Math.max(0, currentCount - 1)
+      ;(engram as any).reference_count = newCount
+
+      if (newCount === 0) {
+        engram.status = 'retired'
+        if (reason && !engram.rationale) {
+          engram.rationale = `Retired: ${reason}`
+        }
       }
 
       this._writeEngrams(this.paths.engrams, engrams)
       this._syncIndex()
       appendHistory(this.paths.root, {
-        event: 'engram_retired',
+        event: newCount === 0 ? 'engram_retired' : 'engram_decremented',
         engram_id: id,
         timestamp: new Date().toISOString(),
-        data: { reason: reason ?? null },
+        data: {
+          reason: reason ?? null,
+          reference_count_before: currentCount,
+          reference_count_after: newCount,
+        },
       })
       return true
     })
