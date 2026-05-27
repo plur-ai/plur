@@ -229,4 +229,45 @@ describe('session scope (#229)', () => {
     await expect(plur.warmRemoteCaches()).resolves.toBeUndefined()
     expect(fetchMock).not.toHaveBeenCalled()
   })
+
+  // ── Cross-session safety (review fixes on PR #230) ────────────────────────
+  // The MCP server is one long-lived process serving many sequential
+  // session_start calls. Without explicit reset, default_scope from session
+  // A would leak into every subsequent session B that didn't pass its own.
+
+  it('setSessionScope(null) clears a previously-set scope (cross-session safety)', () => {
+    const plur = new Plur({ path: primaryDir })
+    plur.setSessionScope('group:session-a')
+    expect(plur.getSessionScope()).toBe('group:session-a')
+
+    // New session starts without a default_scope → reset
+    plur.setSessionScope(null)
+    expect(plur.getSessionScope()).toBeNull()
+
+    // Subsequent learn() without explicit scope falls back to 'global', not the
+    // previously-set group:session-a
+    const engram = plur.learn('no scope leakage')
+    expect(engram.scope).toBe('global')
+  })
+
+  it('warmRemoteCaches with hung remote returns within timeout window', async () => {
+    // Simulate a hung remote (never resolves). Without the 5s timeout, this
+    // would block session_start indefinitely.
+    fetchMock.mockImplementation((async () => {
+      return new Promise<Response>(() => { /* never resolves */ })
+    }) as any)
+
+    writeStoresConfig(primaryDir, [
+      { url: 'https://hung.example.com/sse', token: 'test_token', scope: 'group:test', shared: true, readonly: false },
+    ])
+    const plur = new Plur({ path: primaryDir })
+
+    const start = Date.now()
+    await plur.warmRemoteCaches()
+    const elapsed = Date.now() - start
+
+    // 5s timeout + small buffer for the race to fire
+    expect(elapsed).toBeLessThan(7000)
+    expect(elapsed).toBeGreaterThanOrEqual(4500)
+  }, 10000)
 })

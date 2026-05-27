@@ -2247,14 +2247,29 @@ Generate an improved version of the procedure that prevents this failure. Return
   /**
    * Pre-load all remote store caches so subsequent sync reads see data.
    * Call once before injection to avoid the cold-start race (#235).
+   *
+   * Each remote load races against a 5-second timeout — a single hung or
+   * slow remote must not block session_start indefinitely. Same pattern as
+   * listStoresAsync (#184). clearTimeout on the success path prevents
+   * accumulating dangling timers in the long-lived MCP server process.
    */
   async warmRemoteCaches(): Promise<void> {
     const stores = this.config.stores ?? []
     const remoteStores = stores.filter(s => s.url)
+    const REMOTE_LOAD_TIMEOUT_MS = 5000
     await Promise.all(
       remoteStores.map(s => {
         const driver = this._getRemoteDriver({ url: s.url!, token: s.token, scope: s.scope })
-        return driver.load().catch(() => { /* errors logged inside RemoteStore */ })
+        let timeoutHandle: ReturnType<typeof setTimeout> | undefined
+        return Promise.race([
+          driver.load().finally(() => { if (timeoutHandle) clearTimeout(timeoutHandle) }),
+          new Promise<never>((_, reject) => {
+            timeoutHandle = setTimeout(
+              () => reject(new Error(`remote warm timeout (${REMOTE_LOAD_TIMEOUT_MS}ms)`)),
+              REMOTE_LOAD_TIMEOUT_MS,
+            )
+          }),
+        ]).catch(() => { /* errors logged inside RemoteStore; timeout swallowed */ })
       }),
     )
   }

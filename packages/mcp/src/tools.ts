@@ -1084,9 +1084,11 @@ export function getToolDefinitions(): ToolDefinition[] {
         // route ALL engrams to the remote, including personal/project-local knowledge.
         const remote_scopes = plur.getWritableRemoteScopes()
         const default_scope = (args.default_scope as string | undefined) ?? null
-        if (default_scope) {
-          plur.setSessionScope(default_scope)
-        }
+        // Always reset _sessionScope BEFORE possibly setting it. The MCP server
+        // is one long-lived process serving many sequential session_start calls;
+        // without this reset, a default_scope set in session A leaks into every
+        // subsequent session that didn't pass its own default_scope.
+        plur.setSessionScope(default_scope)
 
         // Get store stats for context
         const status = plur.status()
