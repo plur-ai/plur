@@ -1,3 +1,6 @@
+import { existsSync, unlinkSync } from 'fs'
+import { join } from 'path'
+import { homedir } from 'os'
 import { Plur, extractMetaEngrams, validateMetaEngram, confidenceBand, generateProfile, getProfileForInjection, markProfileDirty, selectModelForOperation, readHistoryForEngram, getCachedUpdateCheck, minorVersionsBehind, scanForTensions, CapabilityCanary } from '@plur-ai/core'
 import type { LlmFunction, MetaField } from '@plur-ai/core'
 import { VERSION } from './version.js'
@@ -1235,6 +1238,20 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
           session_id,
           channel: 'mcp',
         })
+
+        // Clean up session checkpoint (#215) — session ended cleanly
+        try {
+          const plurDir = process.env.PLUR_PATH ?? join(homedir(), '.plur')
+          const sessionsDir = join(plurDir, 'sessions')
+          // Try session_id first, then CLAUDE_SESSION_ID, then ppid
+          const keys = [session_id, process.env.CLAUDE_SESSION_ID, String(process.ppid)]
+            .filter(Boolean)
+            .map(k => k!.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 64))
+          for (const key of keys) {
+            const cp = join(sessionsDir, `${key}.checkpoint.json`)
+            if (existsSync(cp)) { unlinkSync(cp); break }
+          }
+        } catch { /* cleanup is best-effort */ }
 
         const status = plur.status()
 
