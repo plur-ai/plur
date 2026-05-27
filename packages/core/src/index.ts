@@ -476,85 +476,73 @@ export class Plur {
     const previousScope = hit.scope
     const previousCommitment = hit.commitment
 
-    // Counters always advance
-    const newRecurrence = ((hit as any).recurrence_count ?? 0) + 1
-    ;(hit as any).recurrence_count = newRecurrence
-    ;(hit as any).reference_count = ((hit as any).reference_count ?? 1) + 1
-    ;(hit as any).sources = [
-      ...((hit as any).sources ?? []),
-      this._buildSourceEntry(scope, context),
-    ]
+    // Audit iter-3 fix (Critic + Data): single mutation function applied to
+    // BOTH the in-memory `hit` AND the persisted engram (primary or secondary).
+    // Previous approach copied selected fields from hit→stored, which (1) lost
+    // any existing sources/recurrence_count on legacy engrams where hit lacked
+    // those fields, and (2) silently dropped unrelated mutable fields. Now
+    // both paths apply the identical mutation logic — no drift, no field-copy
+    // gap.
+    const sourceEntry = this._buildSourceEntry(scope, context)
+    const applyMutation = (e: Engram): void => {
+      const newRecurrence = ((e as any).recurrence_count ?? 0) + 1
+      ;(e as any).recurrence_count = newRecurrence
+      ;(e as any).reference_count = ((e as any).reference_count ?? 1) + 1
+      ;(e as any).sources = [...((e as any).sources ?? []), sourceEntry]
 
-    // Threshold-based broadening + escalation
-    if (newRecurrence >= 2) {
-      if (hit.scope !== 'global') hit.scope = 'global'
-
-      if (hit.commitment !== 'locked') {
-        // Forward-only ladder: exploring → leaning → decided → locked.
-        // Audit iter-1 fix (Dijkstra): missing 'exploring' branch silently
-        // demoted exploring engrams via the fallback arm. Explicit branches
-        // prevent backward moves regardless of unknown future enum values.
-        hit.commitment = hit.commitment === 'exploring'
-          ? 'leaning'
-          : hit.commitment === 'leaning'
-            ? 'decided'
-            : hit.commitment === 'decided'
-              ? 'locked'
-              : (hit.commitment ?? 'leaning')
-        if (hit.commitment === 'locked' && !hit.locked_at) {
-          const now = new Date().toISOString()
-          hit.locked_at = now
-          hit.locked_reason = `Auto-locked: cross-scope recurrence detected (${newRecurrence}x)`
+      if (newRecurrence >= 2) {
+        if (e.scope !== 'global') e.scope = 'global'
+        if (e.commitment !== 'locked') {
+          // Forward-only ladder: exploring → leaning → decided → locked.
+          e.commitment = e.commitment === 'exploring'
+            ? 'leaning'
+            : e.commitment === 'leaning'
+              ? 'decided'
+              : e.commitment === 'decided'
+                ? 'locked'
+                : (e.commitment ?? 'leaning')
+          if (e.commitment === 'locked' && !e.locked_at) {
+            const now = new Date().toISOString()
+            e.locked_at = now
+            e.locked_reason = `Auto-locked: cross-scope recurrence detected (${newRecurrence}x)`
+          }
         }
       }
     }
 
-    // Persist to wherever the engram actually lives.
-    // Audit iter-2 fix (Critic + Data): the previous "skip if not in primary"
-    // logic had two defects:
-    //   1. Used unnamespaced findIndex against `engrams[]`, but `hit.id` is
-    //      namespaced (e.g. ENG-FOO-...) when from a secondary store → check
-    //      always missed, escalation never persisted for cross-store engrams.
-    //   2. Even when the matched engram was in a *writable* secondary store,
-    //      the code silently dropped the mutation → recurrence_count never
-    //      reached the broadening threshold for any non-primary engram.
-    // Now: route the write through the store's own write path.
+    // Apply to in-memory hit (caller-visible state)
+    applyMutation(hit)
+
+    // Persist to wherever the engram actually lives:
     // - Primary store: write in-place (fast path)
-    // - Writable secondary local store: load the store file, mutate by the
-    //   STRIPPED id, write back via _writeEngrams
-    // - Readonly secondary store (local or remote): cannot mutate; skip
-    //   silently — the in-memory `hit` mutation still returns to the caller.
+    // - Writable secondary local store: load the store file fresh, apply same
+    //   mutation to the un-prefixed id, write back. We re-apply rather than
+    //   copy fields so the stored engram's other mutable fields (activation,
+    //   feedback_signals, pinned, etc.) are untouched.
+    // - Readonly stores and remote stores: in-memory mutation only; emit
+    //   history event so callers can audit the skip.
     const primaryIdx = engrams.findIndex(e => e.id === hit.id)
+    let persistedTo: 'primary' | 'secondary' | 'in-memory' = 'in-memory'
     if (primaryIdx !== -1) {
-      // Found in primary store — safe to write directly
       engrams[primaryIdx] = hit
       this._writeEngrams(this.paths.engrams, engrams)
       this._syncIndex()
+      persistedTo = 'primary'
     } else {
-      // Try secondary stores via _findEngramStore (handles namespace stripping)
       const storeInfo = this._findEngramStore(hit.id)
       if (storeInfo && storeInfo.path !== this.paths.engrams && !storeInfo.readonly) {
-        // Writable secondary local store — load fresh, mutate by stripped id, write
         const storeEngrams = loadEngrams(storeInfo.path)
         const sidx = storeEngrams.findIndex(e => e.id === storeInfo.originalId)
         if (sidx !== -1) {
-          // Copy mutations onto the stored engram (which has the un-prefixed id)
-          const stored = storeEngrams[sidx]
-          stored.scope = hit.scope
-          stored.commitment = hit.commitment
-          ;(stored as any).recurrence_count = (hit as any).recurrence_count
-          ;(stored as any).reference_count = (hit as any).reference_count
-          ;(stored as any).sources = (hit as any).sources
-          if (hit.locked_at) stored.locked_at = hit.locked_at
-          if (hit.locked_reason) stored.locked_reason = hit.locked_reason
+          // Re-apply the same mutation to the stored engram (no field-copy drift)
+          applyMutation(storeEngrams[sidx])
           this._writeEngrams(storeInfo.path, storeEngrams)
           this._syncIndex()
+          persistedTo = 'secondary'
         }
       }
-      // For readonly stores and remote stores: the mutation stays in-memory
-      // only for this call. Remote PATCH is not invoked (would require
-      // RemoteStore.patch + handling the namespaced→unnamespaced id mapping,
-      // tracked separately).
+      // For readonly + remote stores: persistedTo stays 'in-memory'.
+      // Remote PATCH wiring tracked separately.
     }
 
     // Append history event for observability — distinct event so consumers
@@ -565,6 +553,13 @@ export class Plur {
     // global + locked, every subsequent cross-scope re-learn still increments
     // recurrence_count (preserved for telemetry via the field itself) but
     // doesn't spam the history log with identical "no change" events.
+    //
+    // Audit iter-3 fix (Data): include `persisted_to` so consumers can audit
+    // whether the mutation actually landed on disk. When persistedTo='in-memory'
+    // and a material change happened, the engram is in a divergent state — the
+    // remote/readonly store still shows the old scope/commitment until the next
+    // material change reaches a writable path.
+    const newRecurrence = (hit as any).recurrence_count as number
     const scopeChanged = hit.scope !== previousScope
     const commitmentChanged = hit.commitment !== previousCommitment
     if (scopeChanged || commitmentChanged) {
@@ -579,6 +574,7 @@ export class Plur {
           new_commitment: hit.commitment ?? null,
           recurrence_count: newRecurrence,
           from_scope: scope,
+          persisted_to: persistedTo,
         },
       })
     }

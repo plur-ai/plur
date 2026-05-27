@@ -4,6 +4,9 @@ import { join } from 'path'
 import { tmpdir } from 'os'
 import { Plur } from '../src/index.js'
 import { readHistoryForEngram } from '../src/history.js'
+import { computeContentHash } from '../src/content-hash.js'
+import { loadEngrams, saveEngrams } from '../src/engrams.js'
+import { EngramSchema } from '../src/schemas/engram.js'
 
 /**
  * Cross-scope recurrence detection (issue #176).
@@ -102,6 +105,75 @@ describe('cross-scope recurrence (#176)', () => {
       expect(after.commitment).toBe('leaning')
       expect(after.scope).toBe('global')
       expect(after.recurrence_count).toBe(2)
+    })
+
+    it('preserves sources/refcount on legacy secondary-store engrams (audit iter-3 fix)', () => {
+      // Critic iter-3: field-copy approach would set stored.sources = hit.sources,
+      // which destroys an existing sources array when hit's sources was loaded
+      // through Zod defaults (empty array on a legacy engram without the field).
+      // Single-mutation refactor re-applies the same mutation to the stored
+      // engram, never copies undefined-able fields.
+      const secondaryDir = mkdtempSync(join(tmpdir(), 'plur-secondary-legacy-'))
+      const secondaryPath = join(secondaryDir, 'engrams.yaml')
+      const legacyStmt = 'legacy rule that pre-dates ref-counting'
+      // Build a legacy engram via schema defaults — no reference_count, no
+      // sources, no recurrence_count in the input → all defaulted on parse.
+      const legacy = EngramSchema.parse({
+        id: 'ENG-LEGACY-001',
+        version: 2,
+        status: 'active',
+        consolidated: false,
+        type: 'behavioral',
+        scope: 'project:legacy-a',
+        visibility: 'private',
+        statement: legacyStmt,
+        activation: {
+          retrieval_strength: 0.7,
+          storage_strength: 1.0,
+          frequency: 0,
+          last_accessed: '2024-01-01',
+        },
+        feedback_signals: { positive: 0, negative: 0, neutral: 0 },
+        episode_ids: [],
+      })
+      // computeContentHash matches what cross-scope detection will compute
+      ;(legacy as any).content_hash = computeContentHash(legacyStmt)
+      saveEngrams(secondaryPath, [legacy])
+      try {
+        plur.addStore(secondaryPath, 'project:legacy-a', { shared: true, readonly: false })
+
+        // 1st cross-scope hit — no broadening yet but sources should append cleanly
+        // Note: id may be namespaced (e.g. ENG-{prefix}-LEGACY-001) via secondary store
+        const after1 = plur.learn(legacyStmt, { scope: 'project:b' })
+        expect(after1.id).toContain('LEGACY-001')
+        expect(after1.recurrence_count).toBe(1)
+        // sources started empty (Zod default) → should now have 1 entry
+        expect(after1.sources).toHaveLength(1)
+        expect(after1.sources![0].scope).toBe('project:b')
+
+        // 2nd cross-scope hit — broadens to global, mutation should persist
+        // to the SECONDARY store (where the engram actually lives), and the
+        // stored engram's sources array must NOT be undefined after the round trip.
+        plur.learn(legacyStmt, { scope: 'project:c' })
+
+        // Read the secondary store file directly to verify durability.
+        // This bypasses namespace lookup ambiguity and asserts the on-disk truth.
+        const storedEngrams = loadEngrams(secondaryPath)
+        const stored = storedEngrams.find(e => e.id === 'ENG-LEGACY-001')
+        expect(stored).toBeDefined()
+        expect(stored!.scope).toBe('global')
+        expect((stored as any).recurrence_count).toBe(2)
+        // Critical: sources is a real array with 2 entries, NOT undefined or empty.
+        // (Iter-3 bug: field-copy approach overwrote stored.sources with hit.sources,
+        // which would be [...defaultedEmpty, newEntry] losing nothing here BUT
+        // if hit.sources had been undefined (legacy not yet defaulted in caller chain)
+        // the stored array would be destroyed. Single-mutation re-applies from
+        // existing stored state.)
+        expect(Array.isArray((stored as any).sources)).toBe(true)
+        expect((stored as any).sources.length).toBe(2)
+      } finally {
+        rmSync(secondaryDir, { recursive: true, force: true })
+      }
     })
 
     it('persists escalation to a writable secondary store (audit iter-2 fix)', () => {
