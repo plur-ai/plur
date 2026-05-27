@@ -490,11 +490,17 @@ export class Plur {
       if (hit.scope !== 'global') hit.scope = 'global'
 
       if (hit.commitment !== 'locked') {
-        hit.commitment = hit.commitment === 'leaning'
-          ? 'decided'
-          : hit.commitment === 'decided'
-            ? 'locked'
-            : (hit.commitment ?? 'leaning')
+        // Forward-only ladder: exploring → leaning → decided → locked.
+        // Audit iter-1 fix (Dijkstra): missing 'exploring' branch silently
+        // demoted exploring engrams via the fallback arm. Explicit branches
+        // prevent backward moves regardless of unknown future enum values.
+        hit.commitment = hit.commitment === 'exploring'
+          ? 'leaning'
+          : hit.commitment === 'leaning'
+            ? 'decided'
+            : hit.commitment === 'decided'
+              ? 'locked'
+              : (hit.commitment ?? 'leaning')
         if (hit.commitment === 'locked' && !hit.locked_at) {
           const now = new Date().toISOString()
           hit.locked_at = now
@@ -503,29 +509,55 @@ export class Plur {
       }
     }
 
-    // Persist (best-effort, primary store only — same limitation as _recordDuplicate)
+    // Persist if the engram lives in the primary store. Cross-store cases:
+    // - matched engram is in a readonly remote → cannot mutate, silently
+    //   drop the mutation (don't write a divergent local copy that would
+    //   conflict with the upstream truth — audit iter-1 fix, Data).
+    // - matched engram is in another writable local store → also skip
+    //   primary-store write; the routing fix from #239 handles writes via
+    //   the proper store path.
     const idx = engrams.findIndex(e => e.id === hit.id)
     if (idx !== -1) {
+      // Found in primary store — safe to write
       engrams[idx] = hit
       this._writeEngrams(this.paths.engrams, engrams)
       this._syncIndex()
+    } else {
+      // Not in primary — the matched engram came from a secondary store
+      // (probably a remote driver cache or a readonly local store). The
+      // mutations on `hit` are still returned to the caller for the
+      // current-call view, but we don't persist them. Future enhancement:
+      // route through the store's own update mechanism (RemoteStore.patch
+      // for remote, secondary store write for local). For now, log so
+      // operators can see when this is happening.
+      logger.warning(`[plur:_recordCrossScopeRecurrence] engram ${hit.id} not in primary store — escalation not persisted`)
     }
 
     // Append history event for observability — distinct event so consumers
     // can pattern on "this engram graduated to universal."
-    appendHistory(this.paths.root, {
-      event: 'recurrence_detected',
-      engram_id: hit.id,
-      timestamp: new Date().toISOString(),
-      data: {
-        previous_scope: previousScope,
-        new_scope: hit.scope,
-        previous_commitment: previousCommitment ?? null,
-        new_commitment: hit.commitment ?? null,
-        recurrence_count: newRecurrence,
-        from_scope: scope,
-      },
-    })
+    //
+    // Audit iter-1 fix (Critic): only emit when something MATERIALLY changed
+    // (scope broadened OR commitment escalated). Once an engram is already
+    // global + locked, every subsequent cross-scope re-learn still increments
+    // recurrence_count (preserved for telemetry via the field itself) but
+    // doesn't spam the history log with identical "no change" events.
+    const scopeChanged = hit.scope !== previousScope
+    const commitmentChanged = hit.commitment !== previousCommitment
+    if (scopeChanged || commitmentChanged) {
+      appendHistory(this.paths.root, {
+        event: 'recurrence_detected',
+        engram_id: hit.id,
+        timestamp: new Date().toISOString(),
+        data: {
+          previous_scope: previousScope,
+          new_scope: hit.scope,
+          previous_commitment: previousCommitment ?? null,
+          new_commitment: hit.commitment ?? null,
+          recurrence_count: newRecurrence,
+          from_scope: scope,
+        },
+      })
+    }
 
     return hit
   }
@@ -668,17 +700,30 @@ export class Plur {
         // the "only I see this" semantics. See: https://github.com/plur-ai/plur/issues/90
         logger.warning(`[plur:learn] private engram not routed to remote (scope=${scope}), writing locally`)
       } else if (remoteDriver) {
+        // Audit iter-1 fix (Dijkstra): align predicate with the resolver so
+        // the non-null assertion below carries a real invariant. Previously,
+        // the predicate `s.url && s.scope === scope && !s.readonly` differed
+        // from `_resolveRemoteStoreForScope` (which doesn't filter !readonly),
+        // so a readonly remote could give us a driver but fail this find →
+        // throw inside the graceful-fallback path.
         const storeEntry = (this.config.stores ?? []).find(s => s.url && s.scope === scope && !s.readonly)
-        ;(engram as any).structured_data = {
-          ...((engram as any).structured_data ?? {}),
-          _outbox: {
-            target_url: storeEntry!.url!,
-            target_scope: scope,
-            queued_at: now,
-            last_attempt: now,
-            attempt_count: 0,
-            last_error: '',
-          },
+        if (!storeEntry) {
+          // Resolver gave us a driver (probably readonly), but we can't queue
+          // an outbox entry without a writable target. Skip outbox; the
+          // remote driver call below will surface the readonly error.
+          logger.warning(`[plur:learn] remote driver resolved for scope=${scope} but no writable entry — skipping outbox`)
+        } else {
+          ;(engram as any).structured_data = {
+            ...((engram as any).structured_data ?? {}),
+            _outbox: {
+              target_url: storeEntry.url!,
+              target_scope: scope,
+              queued_at: now,
+              last_attempt: now,
+              attempt_count: 0,
+              last_error: '',
+            },
+          }
         }
         engrams.push(engram)
         this._writeEngrams(this.paths.engrams, engrams)
@@ -801,22 +846,30 @@ export class Plur {
       })
       return serverEngram
     } catch (err) {
-      // Remote failed — save locally with outbox metadata for retry
+      // Remote failed — save locally with outbox metadata for retry.
+      // Audit iter-1 fix (Dijkstra): defensive lookup; the catch is the
+      // graceful-fallback path that must never throw. If no writable entry
+      // matches the scope (e.g. readonly remote), we still save the local
+      // engram but omit the outbox marker — the retry path will skip it.
       const storeEntry = (this.config.stores ?? []).find(s => s.url && s.scope === scope && !s.readonly)
       return withLock(this.paths.engrams, () => {
         const engrams = loadEngrams(this.paths.engrams)
         // Replace placeholder ID with a real local ID
         localPlaceholder.id = generateEngramId([...engrams, ...allEngrams])
-        ;(localPlaceholder as any).structured_data = {
-          ...((localPlaceholder as any).structured_data ?? {}),
-          _outbox: {
-            target_url: storeEntry!.url!,
-            target_scope: scope,
-            queued_at: now,
-            last_attempt: now,
-            attempt_count: 1,
-            last_error: (err as Error).message,
-          },
+        if (storeEntry) {
+          ;(localPlaceholder as any).structured_data = {
+            ...((localPlaceholder as any).structured_data ?? {}),
+            _outbox: {
+              target_url: storeEntry.url!,
+              target_scope: scope,
+              queued_at: now,
+              last_attempt: now,
+              attempt_count: 1,
+              last_error: (err as Error).message,
+            },
+          }
+        } else {
+          logger.warning(`[plur:learnRouted] no writable store for scope=${scope} — saving locally without outbox marker`)
         }
         engrams.push(localPlaceholder)
         this._writeEngrams(this.paths.engrams, engrams)
@@ -1523,7 +1576,12 @@ export class Plur {
 
     if (foundInPrimary) return
 
-    // Check stores for namespaced IDs
+    // Check stores for namespaced IDs.
+    // Audit iter-1 fix (Taleb): apply same reference-count decrement as
+    // primary store. The original implementation retired secondary-store
+    // engrams unconditionally on the first forget() call regardless of
+    // reference_count — asymmetric with primary-store behavior and breaks
+    // the #107 contract for cross-store engrams.
     const storeInfo = this._findEngramStore(id)
     if (storeInfo && storeInfo.path !== this.paths.engrams) {
       if (storeInfo.readonly) {
@@ -1532,12 +1590,30 @@ export class Plur {
       const storeEngrams = loadEngrams(storeInfo.path)
       const engram = storeEngrams.find(e => e.id === storeInfo.originalId)
       if (engram) {
-        engram.status = 'retired'
-        if (reason && !engram.rationale) {
-          engram.rationale = `Retired: ${reason}`
+        const currentCount = (engram as any).reference_count ?? 1
+        const newCount = Math.max(0, currentCount - 1)
+        ;(engram as any).reference_count = newCount
+
+        if (newCount === 0) {
+          engram.status = 'retired'
+          if (reason && !engram.rationale) {
+            engram.rationale = `Retired: ${reason}`
+          }
         }
+
         this._writeEngrams(storeInfo.path, storeEngrams)
         this._syncIndex()
+        appendHistory(this.paths.root, {
+          event: newCount === 0 ? 'engram_retired' : 'engram_decremented',
+          engram_id: id,
+          timestamp: new Date().toISOString(),
+          data: {
+            reason: reason ?? null,
+            reference_count_before: currentCount,
+            reference_count_after: newCount,
+            routed_to: 'secondary-store',
+          },
+        })
         return
       }
     }

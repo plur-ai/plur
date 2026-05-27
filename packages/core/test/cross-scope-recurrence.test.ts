@@ -87,6 +87,22 @@ describe('cross-scope recurrence (#176)', () => {
       expect(fifth.recurrence_count).toBe(4)  // counter still increments
       // No additional locked_at updates after first lock
     })
+
+    it('escalates exploring → leaning forward, never backward (audit iter-1 fix)', () => {
+      // Pre-create an engram with commitment='exploring' (the lowest rung)
+      // and verify the ladder advances it FORWARD, not silently fallback
+      // to 'leaning' via the ternary default arm.
+      const first = plur.learn('exploring rule', { scope: 'project:a', commitment: 'exploring' })
+      expect(first.commitment).toBe('exploring')
+
+      plur.learn('exploring rule', { scope: 'project:b' })  // recurrence=1, no change
+      const after = plur.learn('exploring rule', { scope: 'project:c' })  // recurrence=2
+
+      // Forward ladder: exploring → leaning (NOT skipped, NOT demoted)
+      expect(after.commitment).toBe('leaning')
+      expect(after.scope).toBe('global')
+      expect(after.recurrence_count).toBe(2)
+    })
   })
 
   describe('does not trigger when it should not', () => {
@@ -141,33 +157,54 @@ describe('cross-scope recurrence (#176)', () => {
       expect(found!.commitment).toBe('decided')
     })
 
-    it('emits a recurrence_detected history event with before/after state', () => {
+    it('emits recurrence_detected history event ONLY when scope or commitment changes (audit iter-1)', () => {
       const first = plur.learn('history-watched rule', { scope: 'project:a' })
-      plur.learn('history-watched rule', { scope: 'project:b' })
 
-      const events = readHistoryForEngram(plur.getStorageRoot(), first.id)
-      const recurrence = events.find(e => e.event === 'recurrence_detected')
-      expect(recurrence).toBeDefined()
-      expect(recurrence!.data.from_scope).toBe('project:b')
-      expect(recurrence!.data.previous_scope).toBe('project:a')
-      expect(recurrence!.data.recurrence_count).toBe(1)
+      // 1st cross-scope hit: counter increments but no scope/commitment
+      // change (threshold is >=2). No history event emitted (would be a
+      // no-op spam event). Counter is still visible via the engram field.
+      const afterFirstHit = plur.learn('history-watched rule', { scope: 'project:b' })
+      expect(afterFirstHit.recurrence_count).toBe(1)
+      let events = readHistoryForEngram(plur.getStorageRoot(), first.id)
+      expect(events.filter(e => e.event === 'recurrence_detected').length).toBe(0)
+
+      // 2nd cross-scope hit: scope broadens to global + commitment escalates
+      // → THIS time a history event fires, with before/after state.
+      plur.learn('history-watched rule', { scope: 'project:c' })
+      events = readHistoryForEngram(plur.getStorageRoot(), first.id)
+      const recurrences = events.filter(e => e.event === 'recurrence_detected')
+      expect(recurrences.length).toBe(1)
+      expect(recurrences[0].data.from_scope).toBe('project:c')
+      expect(recurrences[0].data.previous_scope).toBe('project:a')
+      expect(recurrences[0].data.new_scope).toBe('global')
+      expect(recurrences[0].data.previous_commitment).toBe('leaning')
+      expect(recurrences[0].data.new_commitment).toBe('decided')
+      expect(recurrences[0].data.recurrence_count).toBe(2)
     })
 
-    it('emits history events for each subsequent recurrence', () => {
-      const first = plur.learn('multi-recurrence rule', { scope: 'project:a' })
-      plur.learn('multi-recurrence rule', { scope: 'project:b' })
-      plur.learn('multi-recurrence rule', { scope: 'project:c' })
+    it('does NOT spam history on subsequent recurrences once at global+locked (audit iter-1)', () => {
+      // Drive engram to global + locked
+      const first = plur.learn('rule', { scope: 'project:a' })
+      plur.learn('rule', { scope: 'project:b' })  // recurrence_count=1, no event
+      plur.learn('rule', { scope: 'project:c' })  // recurrence_count=2, scope→global commit→decided EVENT
+      plur.learn('rule', { scope: 'project:d' })  // recurrence_count=3, commit→locked EVENT
 
-      const events = readHistoryForEngram(plur.getStorageRoot(), first.id)
-      const recurrences = events.filter(e => e.event === 'recurrence_detected')
-      expect(recurrences.length).toBe(2)
+      const eventsAfterLock = readHistoryForEngram(plur.getStorageRoot(), first.id)
+        .filter(e => e.event === 'recurrence_detected')
+      expect(eventsAfterLock.length).toBe(2)  // events at recurrence=2 and recurrence=3
 
-      // Second recurrence event should show the scope BROADENED transition
-      const second = recurrences[1]
-      expect(second.data.previous_scope).toBe('project:a')  // before broadening
-      expect(second.data.new_scope).toBe('global')           // after broadening
-      expect(second.data.previous_commitment).toBe('leaning')
-      expect(second.data.new_commitment).toBe('decided')
+      // Subsequent learns at new scopes: counter increments, NO events
+      // (engram already at global+locked, nothing further to escalate).
+      plur.learn('rule', { scope: 'project:e' })
+      plur.learn('rule', { scope: 'project:f' })
+
+      const finalEvents = readHistoryForEngram(plur.getStorageRoot(), first.id)
+        .filter(e => e.event === 'recurrence_detected')
+      expect(finalEvents.length).toBe(2)  // no new spurious events
+
+      // But the counter is still incrementing for telemetry
+      const final = plur.list({ scope: 'global' }).find(e => e.statement === 'rule')
+      expect(final?.recurrence_count).toBe(5)
     })
   })
 })
