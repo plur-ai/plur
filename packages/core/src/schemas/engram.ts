@@ -204,6 +204,14 @@ export const EngramSchema = z.object({
     stored_at: z.string(),  // ISO timestamp of this write
   })).default([]),
 
+  // === SP1: Cross-scope recurrence (issue #176) ===
+  /** Number of times this engram's content was re-learned at a DIFFERENT
+   * scope than the original. Triggers auto-broadening + commitment
+   * escalation when threshold is crossed. Distinct from reference_count
+   * (which counts re-learns in the SAME scope) — recurrence_count is
+   * evidence of universal applicability, not just repetition. */
+  recurrence_count: z.number().int().min(0).default(0),
+
   // === SP2: History & Evolution fields ===
   engram_version: z.number().int().min(1).default(1),
   previous_version_ref: PreviousVersionRefSchema.optional(),
