@@ -440,7 +440,13 @@ export function getToolDefinitions(): ToolDefinition[] {
         }
         if (!args.id) throw new Error('Provide id (or list:true to list pinned)')
         const target = (args.pinned as boolean | undefined) ?? true
-        const updated = plur.setPinned(args.id as string, target)
+        // Audit iter-1 fix (CTO): use async variant so remote pin operations
+        // await the PATCH instead of returning an optimistic shell engram.
+        // The sync setPinned() fire-and-forgets the remote PATCH and returns
+        // a synthesized {id, pinned} object — caller observes stale state on
+        // immediate getById. The async variant awaits and returns the real
+        // server response.
+        const updated = await plur.setPinnedAsync(args.id as string, target)
         if (!updated) throw new Error(`Engram not found: ${args.id}`)
         return {
           id: updated.id,
