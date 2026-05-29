@@ -6,7 +6,9 @@ import { homedir } from 'os'
  * Detect whether plur is registered as an MCP server for the current project.
  *
  * Walks up from `cwd` looking for `.mcp.json` or `.claude/settings.json` with
- * a `plur` server entry, then falls back to the global `~/.claude/settings.json`.
+ * a `plur` server entry. Does NOT fall back to `~/.claude/settings.json` —
+ * when hooks are installed globally, that file always contains plur, which
+ * would defeat the purpose of this check.
  *
  * Used by the session enforcement hooks (`hook-session-guard`,
  * `hook-session-remind`, `hook-session-mark`) so they can be installed into
@@ -17,7 +19,7 @@ import { homedir } from 'os'
  */
 export function isPlurConfigured(
   cwd: string = process.cwd(),
-  home: string = homedir(),
+  _home: string = homedir(),
 ): boolean {
   const start = resolve(cwd)
   let dir = start
@@ -29,7 +31,10 @@ export function isPlurConfigured(
     if (parent === dir) break
     dir = parent
   }
-  return configHasPlur(join(home, '.claude', 'settings.json'))
+  // Do NOT fall back to ~/.claude/settings.json — when hooks are installed
+  // globally, that file always has plur in mcpServers, which makes this
+  // return true for every project regardless of whether it uses plur (#95).
+  return false
 }
 
 function configHasPlur(path: string): boolean {
