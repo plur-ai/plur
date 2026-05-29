@@ -58,4 +58,18 @@ describe('isPlurConfigured', () => {
     writeFileSync(join(root, '.mcp.json'), '{ not valid json')
     expect(isPlurConfigured(root, root)).toBe(false)
   })
+
+  it('returns false even when global ~/.claude/settings.json has plur', () => {
+    // Simulate a home dir with plur in global settings
+    const fakeHome = join(root, 'fakehome')
+    mkdirSync(join(fakeHome, '.claude'), { recursive: true })
+    writeFileSync(
+      join(fakeHome, '.claude', 'settings.json'),
+      JSON.stringify({ mcpServers: { plur: { command: 'plur-mcp' } } }),
+    )
+    // cwd has no plur config — should return false despite global having it
+    const projectDir = join(root, 'some-project')
+    mkdirSync(projectDir)
+    expect(isPlurConfigured(projectDir, fakeHome)).toBe(false)
+  })
 })
