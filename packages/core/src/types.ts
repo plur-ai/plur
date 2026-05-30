@@ -79,6 +79,25 @@ export interface RecallOptions {
   llm?: LlmFunction
   budget?: RecallBudget
   caller_session_id?: string
+  /**
+   * Force a specific query intent for intent-aware ranking (#224).
+   * Bypasses the deterministic classifier. Use for testing or when the
+   * caller knows the intent better than the classifier can infer.
+   * Default: classifier auto-detects from the query.
+   */
+  intentOverride?: 'entity' | 'temporal' | 'event' | 'general'
+  /**
+   * Cross-encoder reranker stage (Sprint 0, #220). Applies to
+   * `recallHybrid` / `recallSemantic` / `injectHybrid`.
+   *
+   *   - `true`  → opt in for this call. Loads bge-reranker-v2-m3 if no
+   *               PLUR_RERANKER is set, otherwise the env-selected adapter.
+   *   - `false` → skip the rerank stage even if PLUR_RERANKER is set.
+   *   - undefined → respect PLUR_RERANKER (default: off).
+   *
+   * Adds ~50-500ms per query depending on candidate count.
+   */
+  rerank?: boolean
 }
 
 export interface BoundedRecallResult {
@@ -91,6 +110,17 @@ export interface InjectOptions {
   budget?: number
   scope?: string
   boost_recent?: boolean
+  /**
+   * Force a specific query intent for intent-aware ranking (#224).
+   * Bypasses the deterministic classifier. Use for testing or when the
+   * caller knows the intent better than the classifier can infer.
+   */
+  intentOverride?: 'entity' | 'temporal' | 'event' | 'general'
+  /**
+   * Cross-encoder reranker stage (Sprint 0, #220). Applies to
+   * `injectHybrid`. See `RecallOptions.rerank` for semantics.
+   */
+  rerank?: boolean
 }
 
 export interface InjectionResult {

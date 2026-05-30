@@ -78,6 +78,12 @@ export interface RunOptions {
   outputDir?: string
   /** Silence per-query log output. */
   quiet?: boolean
+  /**
+   * Cross-encoder reranker stage (#220). Default: 'off' (backward-compatible
+   * with prior reports). Use 'on' to enable the BGE reranker for every
+   * recall call so the report reflects rerank-on numbers.
+   */
+  rerank?: 'on' | 'off'
 }
 
 export interface RunOutput {
@@ -93,6 +99,8 @@ export interface BenchmarkSummary {
   embedder: EmbedderName
   embedder_stub_fallback: boolean
   search_mode: string
+  /** Cross-encoder reranker state (#220). 'on' or 'off'. */
+  rerank: 'on' | 'off'
   scenario_count: number
   iterations_per_category: number | null
   seed: number
@@ -327,6 +335,10 @@ export async function runBenchmark(opts: RunOptions = {}): Promise<RunOutput> {
   let peakRssBytes = process.memoryUsage().rss
 
   // ─── Query ───────────────────────────────────────────────────────
+  // #220: cross-encoder reranker is opt-in via --rerank on. When on, every
+  // recall call passes `rerank: true` so the BGE reranker reshuffles the
+  // top-K candidates and the report reflects rerank-on numbers.
+  const rerankOn = opts.rerank === 'on'
   const results: ScenarioResult[] = []
   for (const scenario of scenarios) {
     let retrieved: Array<{ id: string; statement: string }>
@@ -334,9 +346,9 @@ export async function runBenchmark(opts: RunOptions = {}): Promise<RunOutput> {
     if (searchMode === 'bm25') {
       retrieved = plur.recall(scenario.query, { limit: 10 })
     } else if (searchMode === 'semantic') {
-      retrieved = await plur.recallSemantic(scenario.query, { limit: 10 })
+      retrieved = await plur.recallSemantic(scenario.query, { limit: 10, rerank: rerankOn })
     } else {
-      retrieved = await plur.recallHybrid(scenario.query, { limit: 10 })
+      retrieved = await plur.recallHybrid(scenario.query, { limit: 10, rerank: rerankOn })
     }
     const t1 = process.hrtime.bigint()
     const latency_ms = Number(t1 - t0) / 1_000_000
@@ -412,6 +424,7 @@ export async function runBenchmark(opts: RunOptions = {}): Promise<RunOutput> {
     embedder,
     embedder_stub_fallback: embedderStubFallback,
     search_mode: searchMode,
+    rerank: rerankOn ? 'on' : 'off',
     scenario_count: results.length,
     iterations_per_category: opts.iterations ?? null,
     seed,
@@ -455,6 +468,7 @@ function printSummary(s: BenchmarkSummary) {
   console.log('===============\n')
   console.log(`Embedder:        ${s.embedder}${s.embedder_stub_fallback ? ' (stub fallback → minilm)' : ''}`)
   console.log(`Search mode:     ${s.search_mode}`)
+  console.log(`Reranker:        ${s.rerank}`)
   console.log(`Scenarios:       ${s.scenario_count}${s.iterations_per_category !== null ? ` (N=${s.iterations_per_category}/category, seed=${s.seed})` : ''}`)
   console.log(`Commit:          ${s.commit}`)
   console.log()
@@ -486,6 +500,7 @@ function renderMarkdown(s: BenchmarkSummary): string {
   lines.push('')
   lines.push(`Embedder: \`${s.embedder}\`${s.embedder_stub_fallback ? ' (stub fallback → minilm, real adapter lands in PR 4)' : ''}`)
   lines.push(`Search mode: \`${s.search_mode}\``)
+  lines.push(`Reranker: \`${s.rerank}\``)
   lines.push(`Scenarios: ${s.scenario_count}${s.iterations_per_category !== null ? ` (N=${s.iterations_per_category}/category, seed=${s.seed})` : ' (default fixture)'}`)
   lines.push('')
   lines.push('## Headline')
@@ -525,6 +540,13 @@ function parseArgs(argv: string[]): RunOptions {
     else if (a === '--seed' && argv[i + 1]) opts.seed = parseInt(argv[++i], 10)
     else if ((a === '--output' || a === '--output-dir') && argv[i + 1]) opts.outputDir = argv[++i]
     else if (a === '--quiet') opts.quiet = true
+    else if (a === '--rerank' && argv[i + 1]) {
+      const r = argv[++i]
+      if (r !== 'on' && r !== 'off') {
+        throw new Error(`--rerank takes "on" or "off", got "${r}"`)
+      }
+      opts.rerank = r
+    }
   }
   return opts
 }
