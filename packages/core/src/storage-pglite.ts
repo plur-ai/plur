@@ -29,9 +29,28 @@ import { loadEngrams } from './engrams.js'
 import { searchEngrams } from './fts.js'
 import { logger } from './logger.js'
 import type { StorageAdapter, StorageFilter, VectorSearchHit } from './storage-adapter.js'
+import type { EmbedderAdapter } from './embedders/types.js'
 
-/** Vector dimension used by the default BGE-small-en-v1.5 model. */
-const DEFAULT_VECTOR_DIM = 384
+/**
+ * Default vector dimension when no PLUR_EMBEDDER is set. Matches the dim of
+ * the default embedder (EmbeddingGemma, 768d, promoted in Sprint 0 PR 5 /
+ * #219). Construction-time overrides via PGLiteAdapterOptions.vectorDim take
+ * precedence — the integration path in index.ts always passes the active
+ * adapter.dim so this default is only the bare-PGLite-adapter fallback.
+ */
+const DEFAULT_VECTOR_DIM = 768
+
+/**
+ * Test-only embedder override. Set via `_setEmbedderForTests()` so reembed
+ * migration tests can inject a deterministic fake embedder without loading a
+ * real ONNX model. Null means "use the real active embedder".
+ */
+let testEmbedder: EmbedderAdapter | null = null
+
+/** Test-only: inject a fake embedder for migration tests. */
+export function _setEmbedderForTests(adapter: EmbedderAdapter | null): void {
+  testEmbedder = adapter
+}
 
 /** Minimal async mutex — serializes writes inside the adapter. */
 class AsyncMutex {
@@ -399,6 +418,113 @@ export class PGLiteAdapter implements StorageAdapter {
         )
       }
     })
+  }
+
+  /**
+   * Return the dim of the `engram_embeddings.embedding` column when the
+   * pgvector path is in use, or null when the table doesn't exist or the
+   * adapter is on the BYTEA fallback. Used by `plur doctor` and the reembed
+   * migration to detect a dim mismatch between the indexed column and the
+   * configured embedder.
+   */
+  async getVectorColumnDim(): Promise<number | null> {
+    const db = await this.getDb()
+    if (!this.hasVector) return null
+    // format_type(atttypid, atttypmod) on a `vector(N)` column returns the
+    // literal string "vector(N)" — parse the N back out.
+    const res = await db.query(
+      `SELECT format_type(a.atttypid, a.atttypmod) AS t
+       FROM pg_attribute a
+       JOIN pg_class c ON c.oid = a.attrelid
+       WHERE c.relname = 'engram_embeddings' AND a.attname = 'embedding' AND a.attnum > 0`,
+    )
+    if (res.rows.length === 0) return null
+    const t = String(res.rows[0].t)
+    const m = t.match(/vector\((\d+)\)/i)
+    return m ? Number(m[1]) : null
+  }
+
+  /** Count rows in `engram_embeddings`. Used by the reembed migration tests. */
+  async countEmbeddings(): Promise<number> {
+    const db = await this.getDb()
+    const res = await db.query('SELECT COUNT(*)::int AS c FROM engram_embeddings')
+    return Number(res.rows[0].c)
+  }
+
+  /**
+   * Drop the embedding table and recreate it with a new vector dim. Used by
+   * the reembed migration (`plur sync --reembed --full`) when the active
+   * embedder produces a different dim than the indexed column.
+   *
+   * YAML is never touched — only the derived index column type changes.
+   */
+  async recreateVectorColumn(newDim: number): Promise<void> {
+    return this.mutex.run(async () => {
+      const db = await this.getDb()
+      this.vectorDim = newDim
+      await db.exec('DROP TABLE IF EXISTS engram_embeddings')
+      if (this.hasVector) {
+        await db.exec(`
+          CREATE TABLE engram_embeddings (
+            engram_id TEXT PRIMARY KEY,
+            embedding vector(${newDim}) NOT NULL
+          );
+        `)
+      } else {
+        await db.exec(`
+          CREATE TABLE engram_embeddings (
+            engram_id TEXT PRIMARY KEY,
+            embedding BYTEA NOT NULL
+          );
+        `)
+      }
+    })
+  }
+
+  /**
+   * Re-embed every engram in YAML using the supplied embedder, replacing the
+   * contents of `engram_embeddings`.
+   *
+   * - `full=true`: recreates the embedding column at the embedder's dim first
+   *   (use this when the dim is changing — e.g. 384 → 768). This is the
+   *   `plur sync --reembed --full` recovery path.
+   * - `full=false`: only re-embeds when the column dim already matches the
+   *   embedder. If dims differ, this is a no-op and the caller is expected
+   *   to surface the mismatch as a doctor warning.
+   *
+   * Idempotent. Returns the number of engrams that were re-embedded.
+   */
+  async reembedAll(opts?: { full?: boolean; embedder?: EmbedderAdapter }): Promise<{ reembedded: number; skipped: boolean; reason?: string }> {
+    // testEmbedder takes precedence when set so reembed-migration tests can
+    // inject a deterministic fake without loading a real ONNX model.
+    const embedder = testEmbedder ?? opts?.embedder
+    if (!embedder) {
+      return { reembedded: 0, skipped: true, reason: 'no embedder supplied' }
+    }
+    // Ensure the column exists. getVectorColumnDim is null when there's no
+    // table yet (or the BYTEA fallback is in use — in that case we still
+    // re-embed but skip the dim guard).
+    const currentDim = await this.getVectorColumnDim()
+    if (opts?.full) {
+      await this.recreateVectorColumn(embedder.dim)
+    } else if (currentDim !== null && currentDim !== embedder.dim) {
+      return {
+        reembedded: 0,
+        skipped: true,
+        reason: `column dim ${currentDim} differs from embedder dim ${embedder.dim} — run with full=true to migrate`,
+      }
+    }
+    if (!existsSync(this.yamlPath)) {
+      return { reembedded: 0, skipped: true, reason: 'yaml not present' }
+    }
+    const engrams = loadEngrams(this.yamlPath)
+    let count = 0
+    for (const e of engrams) {
+      const vec = await embedder.embed(e.statement)
+      await this.upsertEmbedding(e.id, vec)
+      count++
+    }
+    return { reembedded: count, skipped: false }
   }
 
   async close(): Promise<void> {

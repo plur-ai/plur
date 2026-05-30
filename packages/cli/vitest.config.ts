@@ -1,7 +1,6 @@
 import { defineConfig } from 'vitest/config'
 
-// Sprint 0 PR 5 (#219): pin the test embedder to bge-small. The production
-// default is EmbeddingGemma — overridden here only to keep tests fast.
+// Sprint 0 PR 5 (#219): pin embedder for hermetic CI runs.
 export default defineConfig({
   test: {
     globals: true,
