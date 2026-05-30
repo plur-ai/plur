@@ -388,10 +388,16 @@ async function inspectEmbedderDim(flags: GlobalFlags): Promise<{ activeEmbedder:
     const name = resolveEmbedderName()
     const paths = detectPlurStorage(flags.path)
     const adapter = getEmbedder(name)
+    // Iter-2 audit B-3: pass jsonCachePath + activeEmbedderName so the
+    // mismatch check covers default (non-PGLite) installs too. The dim-check
+    // helper picks whichever path actually has a populated index/cache.
+    const { defaultJsonCachePath } = await import('@plur-ai/core')
     const mismatch = await checkEmbedderDimMismatch({
       pglitePath: paths.pglite,
       yamlPath: paths.engrams,
       activeEmbedderDim: adapter.dim,
+      jsonCachePath: defaultJsonCachePath(paths.root),
+      activeEmbedderName: name,
     })
     return { activeEmbedder: name, mismatch }
   } catch {
