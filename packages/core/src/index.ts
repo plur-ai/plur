@@ -15,7 +15,14 @@ import { reactivate, applyBatchDecay, type BatchDecayResult } from './decay.js'
 import { captureEpisode, queryTimeline } from './episodes.js'
 import { agenticSearch } from './agentic-search.js'
 import { embeddingSearch, embeddingSearchWithScores, type SimilarityResult } from './embeddings.js'
-import { hybridSearchWithMeta, rrfMerge as pgliteRrfMerge, type HybridSearchResult } from './hybrid-search.js'
+import {
+  hybridSearchWithMeta,
+  rrfMerge as pgliteRrfMerge,
+  applyReranker,
+  type HybridSearchResult,
+  type RerankOptions,
+} from './hybrid-search.js'
+import { getReranker, resolveRerankerName, isRerankerOff, type RerankerAdapter } from './rerankers/index.js'
 import { embedderStatus, resetEmbedder, setEmbeddingsEnabled, type EmbedderStatus } from './embeddings.js'
 import { expandedSearch } from './query-expansion.js'
 import { recallAuto, type AutoSearchResult } from './search-orchestrator.js'
@@ -205,6 +212,13 @@ export class Plur {
   private _llmFailureCount = 0
   private _llmDisabledUntil: number | null = null
   private _sessionScope: string | null = null
+  /**
+   * Cross-encoder reranker adapter (Sprint 0, #220). Resolved lazily on
+   * first use of recallHybrid / injectHybrid / recallSemantic with
+   * `rerank: true`. Defaults to the "off" sentinel when PLUR_RERANKER is
+   * unset, so existing call sites pay zero cost until they opt in.
+   */
+  private _reranker: RerankerAdapter | null = null
 
   constructor(options?: { path?: string }) {
     this.paths = detectPlurStorage(options?.path)
@@ -1199,23 +1213,37 @@ export class Plur {
   async recallSemantic(query: string, options?: Omit<RecallOptions, 'mode' | 'llm'>): Promise<Engram[]> {
     const filtered = this._filterEngrams(options)
     const limit = options?.limit ?? 20
+    const rerank = this._resolveRerankOptions(options?.rerank)
     const intent = this._resolveIntentProfile(query, options?.intentOverride)
     // Iter-2 audit B-1: when PGLite is active, route the vector portion
     // through the persistent pgvector index instead of the in-memory
     // JSON cache. Falls back to embeddingSearch when PGLite has no vectors
     // yet (cold start) or the embedder is unavailable.
     //
-    // Intent routing: over-fetch so the re-rank has room. Falls back to
-    // plain ranking when intent is neutral (general).
-    const fetchLimit = intent ? Math.max(limit * 2, limit + 10) : limit
+    // Two over-fetch sources stack: intent routing wants headroom for its
+    // re-rank, and the reranker wants topK candidates for cross-encoder
+    // rescoring. Pick the larger of the two so both stages have what they
+    // need; the final truncation back to `limit` happens after both run.
+    const intentFetch = intent ? Math.max(limit * 2, limit + 10) : limit
+    const rerankFetch = rerank ? Math.max(limit, rerank.topK ?? 50) : limit
+    const fetchLimit = Math.max(intentFetch, rerankFetch)
     let results: Engram[]
     if (this.pgliteAdapter) {
       results = await this._pgliteSemanticRecall(query, fetchLimit, filtered)
     } else {
       results = await embeddingSearch(filtered, query, fetchLimit, this.paths.root)
     }
+    // Intent routing comes before reranking: it picks which engrams belong
+    // in the candidate set based on query intent, then the reranker reorders
+    // that set by cross-encoder relevance.
     if (intent) {
-      results = applyIntentRouting(results, intent.profile).slice(0, limit)
+      results = applyIntentRouting(results, intent.profile).slice(0, fetchLimit)
+    }
+    if (rerank) {
+      const reranked = await applyReranker(results, query, rerank)
+      results = reranked.engrams.slice(0, limit)
+    } else {
+      results = results.slice(0, limit)
     }
     this._reactivateResults(results)
     return results
@@ -1238,6 +1266,7 @@ export class Plur {
   ): Promise<HybridSearchResult> {
     const filtered = this._filterEngrams(options)
     const limit = options?.limit ?? 20
+    const rerank = this._resolveRerankOptions(options?.rerank)
     const intent = this._resolveIntentProfile(query, options?.intentOverride)
     // Iter-2 audit B-1: PGLite path delegates the vector portion to
     // pgvector via searchVector. The JSON cache path stays for the default
@@ -1247,21 +1276,70 @@ export class Plur {
     // apply intent re-rank, then truncate to `limit`. Degrades gracefully
     // when the classifier returns 'general' — _resolveIntentProfile returns
     // undefined and the existing path runs unchanged.
+    //
+    // When intent routing is on we run the downstream hybrid call without
+    // the reranker (so we get more candidates), apply intent routing, then
+    // run the reranker locally on the routed set. When intent is off the
+    // hybrid call handles reranking inline so PGLite/JSON paths stay
+    // symmetric.
     const intentLimit = intent ? Math.max(limit * 2, limit + 10) : limit
     let result: HybridSearchResult
-    if (this.pgliteAdapter) {
-      result = await this._pgliteHybridRecall(query, intentLimit, filtered)
-    } else {
-      result = await hybridSearchWithMeta(filtered, query, intentLimit, this.paths.root)
-    }
     if (intent) {
+      if (this.pgliteAdapter) {
+        result = await this._pgliteHybridRecall(query, intentLimit, filtered)
+      } else {
+        result = await hybridSearchWithMeta(filtered, query, intentLimit, this.paths.root)
+      }
+      let routed = applyIntentRouting(result.engrams, intent.profile)
+      let rerankedCount = result.reranked
+      if (rerank) {
+        const reranked = await applyReranker(routed, query, rerank)
+        routed = reranked.engrams
+        rerankedCount = reranked.count
+      }
       result = {
         ...result,
-        engrams: applyIntentRouting(result.engrams, intent.profile).slice(0, limit),
+        engrams: routed.slice(0, limit),
+        reranked: rerankedCount,
       }
+    } else if (this.pgliteAdapter) {
+      result = await this._pgliteHybridRecall(query, limit, filtered, rerank)
+    } else {
+      result = await hybridSearchWithMeta(filtered, query, limit, this.paths.root, rerank)
     }
     this._reactivateResults(result.engrams)
     return result
+  }
+
+  /**
+   * Resolve the reranker config for a single recall call.
+   *
+   *   - explicit `rerank: false` → returns undefined (skip stage entirely)
+   *   - explicit `rerank: true`  → load the active PLUR_RERANKER, fall back
+   *     to the bge-reranker-v2-m3 default when env var is unset or `off`
+   *   - omitted → respect PLUR_RERANKER. When the env resolves to `off`
+   *     (the default), returns undefined so existing call sites stay
+   *     at zero cost.
+   */
+  private _resolveRerankOptions(rerank?: boolean): RerankOptions | undefined {
+    if (rerank === false) return undefined
+    if (rerank === true) {
+      // Explicit opt-in: pick the active reranker, but if PLUR_RERANKER is
+      // off (the global default), upgrade to the bge-reranker-v2-m3 adapter
+      // for this call only so opt-in actually does something.
+      const envName = resolveRerankerName()
+      const name = envName === 'off' ? 'bge-reranker-v2-m3' : envName
+      this._reranker = getReranker(name)
+      return { reranker: this._reranker }
+    }
+    // Implicit: follow the env. When env is off, return undefined so the
+    // rerank stage is skipped without the recall path having to know.
+    const envName = resolveRerankerName()
+    if (envName === 'off') return undefined
+    if (!this._reranker || isRerankerOff(this._reranker)) {
+      this._reranker = getReranker(envName)
+    }
+    return { reranker: this._reranker }
   }
 
   /**
@@ -1313,12 +1391,17 @@ export class Plur {
    * portion, then merges via RRF — identical contract to hybridSearchWithMeta
    * but persistent vector index instead of JSON-cache cosine.
    */
-  private async _pgliteHybridRecall(query: string, limit: number, filtered: Engram[]): Promise<HybridSearchResult> {
+  private async _pgliteHybridRecall(
+    query: string,
+    limit: number,
+    filtered: Engram[],
+    rerank?: RerankOptions,
+  ): Promise<HybridSearchResult> {
     if (!this.pgliteAdapter) {
-      return hybridSearchWithMeta(filtered, query, limit, this.paths.root)
+      return hybridSearchWithMeta(filtered, query, limit, this.paths.root, rerank)
     }
     if (filtered.length === 0) {
-      return { engrams: [], mode: 'hybrid', embedderError: null }
+      return { engrams: [], mode: 'hybrid', embedderError: null, reranked: 0 }
     }
     const { embed } = await import('./embeddings.js')
     const queryVec = await embed(query)
@@ -1326,7 +1409,7 @@ export class Plur {
     // Empty vector or disabled embeddings: fall back to BM25-only / JSON cache.
     if (!queryVec) {
       // Use the existing hybrid path so degraded-mode semantics stay consistent.
-      return hybridSearchWithMeta(filtered, query, limit, this.paths.root)
+      return hybridSearchWithMeta(filtered, query, limit, this.paths.root, rerank)
     }
     let pgHits: Engram[] = []
     try {
@@ -1339,21 +1422,23 @@ export class Plur {
     } catch (err) {
       logger.warning(`[plur] PGLite searchVector failed in hybrid: ${(err as Error).message}.`)
       // PGLite vector portion failed — fall back to the JSON path entirely.
-      return hybridSearchWithMeta(filtered, query, limit, this.paths.root)
+      return hybridSearchWithMeta(filtered, query, limit, this.paths.root, rerank)
     }
     if (pgHits.length === 0) {
       // Cold-start fallback: JSON cache likely has more populated entries.
-      return hybridSearchWithMeta(filtered, query, limit, this.paths.root)
+      return hybridSearchWithMeta(filtered, query, limit, this.paths.root, rerank)
     }
     // BM25 portion + RRF merge — share rrfMerge with the JSON path.
     const bm25Limit = Math.min(filtered.length, Math.max(limit * 3, 50))
     const bm25Results = searchEngrams(filtered, query, bm25Limit)
     const merged = pgliteRrfMerge([bm25Results, pgHits])
+    const reranked = await applyReranker(merged, query, rerank)
     const mode: HybridSearchResult['mode'] = status.disabled ? 'bm25-only' : 'hybrid'
     return {
-      engrams: merged.slice(0, limit),
+      engrams: reranked.engrams.slice(0, limit),
       mode,
       embedderError: null,
+      reranked: reranked.count,
     }
   }
 
@@ -1577,6 +1662,37 @@ export class Plur {
       if (results.length === 0) {
         // JSON cache fallback / non-PGLite path.
         results = await embeddingSearchWithScores(engrams, task, engrams.length, this.paths.root)
+      }
+      // Cross-encoder reranker stage (Sprint 0, #220). Replaces the cosine
+      // boost map with the reranker's relevance scores for the top K so
+      // the cross-encoder gets the final say on which engrams pass the
+      // selectAndSpread 0.5 threshold. Skipped when off / not opted-in.
+      const rerank = this._resolveRerankOptions(options?.rerank)
+      if (rerank && results.length > 0) {
+        const topK = Math.max(1, Math.min(results.length, rerank.topK ?? 50))
+        const head = results.slice(0, topK)
+        try {
+          const scores = await rerank.reranker!.scoreBatch(task, head.map(r => r.engram.statement))
+          if (scores.length === head.length) {
+            // Normalize cross-encoder logits into [0, 1] via min-max over
+            // the batch so the threshold semantics in selectAndSpread stay
+            // meaningful. Cosine scores are already in [0, 1]; logits can
+            // span ~[-10, +10] and would otherwise dominate the boost map.
+            const min = Math.min(...scores)
+            const max = Math.max(...scores)
+            const span = max - min
+            for (let i = 0; i < head.length; i++) {
+              const normalized = span > 0 ? (scores[i] - min) / span : 0.5
+              head[i] = { engram: head[i].engram, score: normalized }
+            }
+            head.sort((a, b) => b.score - a.score)
+            results = [...head, ...results.slice(topK)]
+          }
+        } catch (err) {
+          logger.warning(
+            `[plur] injectHybrid reranker "${rerank.reranker!.name}" failed: ${(err as Error).message}. Falling back to cosine boosts.`,
+          )
+        }
       }
       if (results.length > 0) {
         embeddingBoosts = new Map()
