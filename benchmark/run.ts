@@ -26,6 +26,12 @@ import { execSync } from 'child_process'
 import { fileURLToPath } from 'url'
 import yaml from '../packages/core/node_modules/js-yaml/index.js'
 import { Plur } from '../packages/core/src/index.js'
+import {
+  getEmbedder as getEmbedderAdapter,
+  EMBEDDER_NAMES as KNOWN_EMBEDDERS_FROM_CORE,
+  type EmbedderAdapter,
+} from '../packages/core/src/embedders/index.js'
+import { resetEmbedder } from '../packages/core/src/embeddings.js'
 
 // ─── ESM-safe __dirname ─────────────────────────────────────────────
 const __filename = fileURLToPath(import.meta.url)
@@ -216,7 +222,15 @@ function isoStamp(): string {
   return new Date().toISOString().replace(/[:.]/g, '-')
 }
 
+// Source of truth for embedder names lives in @plur-ai/core. We keep a local
+// constant for CLI parsing and assert it matches at module-load time so the
+// two lists never drift.
 const KNOWN_EMBEDDERS: EmbedderName[] = ['minilm', 'bge-small', 'bge-base', 'embedding-gemma']
+if ([...KNOWN_EMBEDDERS_FROM_CORE].sort().join(',') !== [...KNOWN_EMBEDDERS].sort().join(',')) {
+  throw new Error(
+    `Embedder name drift: harness=${KNOWN_EMBEDDERS.join(',')} core=${KNOWN_EMBEDDERS_FROM_CORE.join(',')}`,
+  )
+}
 
 // ─── Main harness ───────────────────────────────────────────────────
 
@@ -225,12 +239,33 @@ export async function runBenchmark(opts: RunOptions = {}): Promise<RunOutput> {
   if (!KNOWN_EMBEDDERS.includes(embedder)) {
     throw new Error(`Unknown embedder "${embedder}". Use one of: ${KNOWN_EMBEDDERS.join(', ')}`)
   }
-  // PR 4 wires the BGE / EmbeddingGemma ONNX adapters. Until then, every
-  // non-minilm name falls back to the MiniLM path while still recording the
-  // requested label so traceability holds.
-  const embedderStubFallback = embedder !== 'minilm'
-  if (embedderStubFallback && !opts.quiet) {
-    console.log(`[embedder] "${embedder}" not yet implemented; using MiniLM fallback (PR 4 will wire the real adapter).`)
+
+  // PR 4: all four embedders have real adapters behind them. We route the
+  // active model through the EmbedderAdapter factory + PLUR_EMBEDDER env var,
+  // so the engine actually switches embedding model when --embedder changes.
+  const adapter: EmbedderAdapter = getEmbedderAdapter(embedder)
+  // Force the engine to pick the same embedder we are about to benchmark.
+  // Reset any embedder pipeline cached by a previous run in this process so
+  // back-to-back bake-off runs don't stick to whichever model loaded first.
+  process.env.PLUR_EMBEDDER = embedder
+  resetEmbedder()
+  // Pre-warm the adapter so first-query latency includes one cold load
+  // instead of polluting the first scenario's p50 reading. Swallow errors —
+  // if the load fails (e.g. the model isn't reachable on a sandboxed CI
+  // runner) the engine still degrades gracefully to BM25-only via
+  // embeddings.ts and the run produces a valid (lower-recall) report.
+  const embedderStubFallback = false
+  try {
+    await adapter.embed('warmup')
+    if (!opts.quiet) {
+      console.log(`[embedder] "${embedder}" loaded (${adapter.modelId}, ${adapter.dim}d).`)
+    }
+  } catch (err) {
+    if (!opts.quiet) {
+      const msg = err instanceof Error ? err.message : String(err)
+      console.log(`[embedder] "${embedder}" cold-load failed: ${msg}`)
+      console.log('[embedder] continuing — hybrid search will fall back to BM25 for any missed embeddings.')
+    }
   }
 
   const searchMode = opts.searchMode ?? 'hybrid'
