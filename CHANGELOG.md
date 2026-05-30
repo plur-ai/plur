@@ -29,7 +29,9 @@ YAML is never touched in either mode. `plur doctor` warns on dim mismatch in bot
 
 The yaml-truth Test A and Test B suites are parameterized over `PLUR_BACKEND=indexed` and `PLUR_BACKEND=pglite` — both backends must pass. Added an adversarial Test B variant that inserts directly into PGLite (bypassing YAML) and confirms no public method surfaces it.
 
-Full suite: 1230+ passed, 24 skipped (count rises slightly with iter-2 parameterized tests + new edge-case coverage).
+Iter-4 audit: strengthened the adversarial Test B to insert into BOTH `engrams` and `engram_embeddings` (closes F-DATA-NEW-001) so the application-level YAML-rooted intersect defense is actually exercised. Pinned `vitest` poolOptions.forks.maxForks=4 (closes F-CTO-NEW-001 / F-DATA-NEW-005) so concurrent PGLite WASM init races no longer flake the CI gate.
+
+Full suite: 1267+ passed, 24 skipped (count rises slightly with iter-2 parameterized tests + new edge-case coverage).
 
 ### Packages bumped
 
