@@ -19,6 +19,7 @@ import { hybridSearchWithMeta, rrfMerge as pgliteRrfMerge, type HybridSearchResu
 import { embedderStatus, resetEmbedder, setEmbeddingsEnabled, type EmbedderStatus } from './embeddings.js'
 import { expandedSearch } from './query-expansion.js'
 import { recallAuto, type AutoSearchResult } from './search-orchestrator.js'
+import { classifyQuery, routeForIntent, applyIntentRouting, isIntentRoutingDisabled, isEntityDomain, type QueryIntent, type IntentRoutingProfile } from './intent/index.js'
 import { autoSummary } from './summary.js'
 import { installPack, uninstallPack, listPacks, exportPack, scanPrivacy, computePackHash, previewPack } from './packs.js'
 // SP5 imports (deferred — vault-export, registry not yet merged)
@@ -123,6 +124,19 @@ export {
 export { writeCapsule, readCapsule, verifyCapsuleIntegrity } from './capsule.js'
 export type { WriteCapsuleOptions, ReadCapsuleResult } from './capsule.js'
 export * from './types.js'
+// Intent-aware query rewriting (#224) — public API.
+export {
+  classifyQuery,
+  routeForIntent,
+  applyIntentRouting,
+  isIntentRoutingDisabled,
+  isEntityDomain,
+} from './intent/index.js'
+export type {
+  QueryIntent,
+  IntentMatch,
+  IntentRoutingProfile,
+} from './intent/index.js'
 
 export interface IngestOptions {
   source?: string
@@ -267,6 +281,32 @@ export class Plur {
     } catch {
       // Non-fatal — purge will retry next startup
     }
+  }
+
+  /**
+   * Resolve the intent routing profile for a single recall call (#224).
+   *
+   * - explicit `intentOverride` → use that intent
+   * - env `PLUR_INTENT_ROUTING=off` → return undefined (neutral path)
+   * - otherwise → run the deterministic classifier on the query
+   *
+   * Returns undefined when intent routing is disabled OR the resolved
+   * profile is neutral (general). Callers can then skip the re-rank step
+   * entirely on the hot path.
+   */
+  private _resolveIntentProfile(
+    query: string,
+    intentOverride?: QueryIntent,
+  ): { intent: QueryIntent; profile: IntentRoutingProfile } | undefined {
+    if (isIntentRoutingDisabled()) return undefined
+    let intent: QueryIntent
+    if (intentOverride) {
+      intent = intentOverride
+    } else {
+      intent = classifyQuery(query).intent
+    }
+    if (intent === 'general') return undefined
+    return { intent, profile: routeForIntent(intent) }
   }
 
   /**
@@ -1134,7 +1174,14 @@ export class Plur {
   recall(query: string, options?: Omit<RecallOptions, 'mode' | 'llm'>): Engram[] {
     const filtered = this._filterEngrams(options)
     const limit = options?.limit ?? 20
-    const results = searchEngrams(filtered, query, limit)
+    const intent = this._resolveIntentProfile(query, options?.intentOverride)
+    // When intent routing is active, over-fetch so the re-rank has room to
+    // shuffle. Falls back to plain BM25 ordering when intent is neutral.
+    const fetchLimit = intent ? Math.max(limit * 2, limit + 10) : limit
+    let results = searchEngrams(filtered, query, fetchLimit)
+    if (intent) {
+      results = applyIntentRouting(results, intent.profile).slice(0, limit)
+    }
     this._reactivateResults(results)
     return results
   }
@@ -1152,15 +1199,23 @@ export class Plur {
   async recallSemantic(query: string, options?: Omit<RecallOptions, 'mode' | 'llm'>): Promise<Engram[]> {
     const filtered = this._filterEngrams(options)
     const limit = options?.limit ?? 20
+    const intent = this._resolveIntentProfile(query, options?.intentOverride)
     // Iter-2 audit B-1: when PGLite is active, route the vector portion
     // through the persistent pgvector index instead of the in-memory
     // JSON cache. Falls back to embeddingSearch when PGLite has no vectors
     // yet (cold start) or the embedder is unavailable.
+    //
+    // Intent routing: over-fetch so the re-rank has room. Falls back to
+    // plain ranking when intent is neutral (general).
+    const fetchLimit = intent ? Math.max(limit * 2, limit + 10) : limit
     let results: Engram[]
     if (this.pgliteAdapter) {
-      results = await this._pgliteSemanticRecall(query, limit, filtered)
+      results = await this._pgliteSemanticRecall(query, fetchLimit, filtered)
     } else {
-      results = await embeddingSearch(filtered, query, limit, this.paths.root)
+      results = await embeddingSearch(filtered, query, fetchLimit, this.paths.root)
+    }
+    if (intent) {
+      results = applyIntentRouting(results, intent.profile).slice(0, limit)
     }
     this._reactivateResults(results)
     return results
@@ -1183,14 +1238,27 @@ export class Plur {
   ): Promise<HybridSearchResult> {
     const filtered = this._filterEngrams(options)
     const limit = options?.limit ?? 20
+    const intent = this._resolveIntentProfile(query, options?.intentOverride)
     // Iter-2 audit B-1: PGLite path delegates the vector portion to
     // pgvector via searchVector. The JSON cache path stays for the default
     // backend so existing installs are unchanged.
+    //
+    // Intent routing: over-fetch from the underlying hybrid call, then
+    // apply intent re-rank, then truncate to `limit`. Degrades gracefully
+    // when the classifier returns 'general' — _resolveIntentProfile returns
+    // undefined and the existing path runs unchanged.
+    const intentLimit = intent ? Math.max(limit * 2, limit + 10) : limit
     let result: HybridSearchResult
     if (this.pgliteAdapter) {
-      result = await this._pgliteHybridRecall(query, limit, filtered)
+      result = await this._pgliteHybridRecall(query, intentLimit, filtered)
     } else {
-      result = await hybridSearchWithMeta(filtered, query, limit, this.paths.root)
+      result = await hybridSearchWithMeta(filtered, query, intentLimit, this.paths.root)
+    }
+    if (intent) {
+      result = {
+        ...result,
+        engrams: applyIntentRouting(result.engrams, intent.profile).slice(0, limit),
+      }
     }
     this._reactivateResults(result.engrams)
     return result
@@ -1514,6 +1582,37 @@ export class Plur {
         embeddingBoosts = new Map()
         for (const r of results) {
           embeddingBoosts.set(r.engram.id, r.score)
+        }
+      }
+      // Intent-aware boost (#224): for entity / temporal / event intents,
+      // upweight the boost-map entries for engrams matching the profile.
+      // Multipliers are modest (<=1.5x) so a wrong-intent boost cannot
+      // silently destroy ranking. The boost cap stays at 1.0 so the
+      // selectAndSpread 0.5 threshold keeps its meaning.
+      const intent = this._resolveIntentProfile(task, options?.intentOverride)
+      if (intent && embeddingBoosts) {
+        for (const e of results.map(r => r.engram)) {
+          let mult = 1.0
+          if (intent.profile.entityBoost !== 1.0 && isEntityDomain(e.domain)) {
+            mult *= intent.profile.entityBoost
+          }
+          if (intent.profile.episodeBoost !== 1.0 && Array.isArray(e.episode_ids) && e.episode_ids.length > 0) {
+            mult *= intent.profile.episodeBoost
+          }
+          if (intent.profile.recencyBoost !== 1.0) {
+            const ts = e.activation?.last_accessed ?? e.temporal?.learned_at
+            if (ts) {
+              const days = (Date.now() - Date.parse(ts)) / (1000 * 60 * 60 * 24)
+              if (Number.isFinite(days) && days >= 0) {
+                const r = Math.exp(-days / 30) // half-life ~30 days
+                mult *= 1.0 + r * (intent.profile.recencyBoost - 1.0)
+              }
+            }
+          }
+          if (mult !== 1.0) {
+            const cur = embeddingBoosts.get(e.id) ?? 0
+            embeddingBoosts.set(e.id, Math.min(1.0, cur * mult))
+          }
         }
       }
     } catch {
