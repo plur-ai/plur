@@ -109,10 +109,12 @@ async function getEmbedder() {
   // Loads are cheap once the model is cached; failures are rare and
   // transient (network, sandbox restrictions on first download).
   try {
-    const { pipeline } = await import('@huggingface/transformers')
-    embedPipeline = await pipeline('feature-extraction', 'Xenova/bge-small-en-v1.5', {
-      dtype: 'fp32',
-    })
+    // Sprint 0 PR 4: route through the embedder factory so PLUR_EMBEDDER
+    // controls which model is loaded. Default stays bge-small (the v0.9.x
+    // model) when the env var is unset, so existing installs are unchanged.
+    const { getEmbedder: getAdapter, resolveEmbedderName } = await import('./embedders/index.js')
+    const adapter = getAdapter(resolveEmbedderName())
+    embedPipeline = adapter
     transformersUnavailable = false
     lastLoadError = null
     return embedPipeline
@@ -123,10 +125,23 @@ async function getEmbedder() {
   }
 }
 
-/** Generate embedding for a text string. Returns Float32Array of 384 dims, or null if unavailable. */
+/** Generate embedding for a text string. Returns the active embedder's native dim, or null if unavailable. */
 export async function embed(text: string): Promise<Float32Array | null> {
   const embedder = await getEmbedder()
   if (!embedder) return null
+  // When the cached value is an EmbedderAdapter (PR 4 path) it has an .embed
+  // method; the legacy code path stored the raw transformers pipeline. Branch
+  // on shape so the swap is backward-compatible in tests that stub the cache.
+  if (typeof embedder.embed === 'function') {
+    try {
+      return await embedder.embed(text)
+    } catch (err) {
+      transformersUnavailable = true
+      lastLoadError = err instanceof Error ? err.message : String(err)
+      embedPipeline = null
+      return null
+    }
+  }
   const result = await embedder(text, { pooling: 'cls', normalize: true })
   return new Float32Array(result.data)
 }
