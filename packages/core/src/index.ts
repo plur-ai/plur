@@ -15,7 +15,7 @@ import { reactivate, applyBatchDecay, type BatchDecayResult } from './decay.js'
 import { captureEpisode, queryTimeline } from './episodes.js'
 import { agenticSearch } from './agentic-search.js'
 import { embeddingSearch, embeddingSearchWithScores, type SimilarityResult } from './embeddings.js'
-import { hybridSearch, hybridSearchWithMeta, type HybridSearchResult } from './hybrid-search.js'
+import { hybridSearchWithMeta, rrfMerge as pgliteRrfMerge, type HybridSearchResult } from './hybrid-search.js'
 import { embedderStatus, resetEmbedder, setEmbeddingsEnabled, type EmbedderStatus } from './embeddings.js'
 import { expandedSearch } from './query-expansion.js'
 import { recallAuto, type AutoSearchResult } from './search-orchestrator.js'
@@ -1144,18 +1144,24 @@ export class Plur {
   async recallSemantic(query: string, options?: Omit<RecallOptions, 'mode' | 'llm'>): Promise<Engram[]> {
     const filtered = this._filterEngrams(options)
     const limit = options?.limit ?? 20
-    const results = await embeddingSearch(filtered, query, limit, this.paths.root)
+    // Iter-2 audit B-1: when PGLite is active, route the vector portion
+    // through the persistent pgvector index instead of the in-memory
+    // JSON cache. Falls back to embeddingSearch when PGLite has no vectors
+    // yet (cold start) or the embedder is unavailable.
+    let results: Engram[]
+    if (this.pgliteAdapter) {
+      results = await this._pgliteSemanticRecall(query, limit, filtered)
+    } else {
+      results = await embeddingSearch(filtered, query, limit, this.paths.root)
+    }
     this._reactivateResults(results)
     return results
   }
 
   /** Hybrid search: BM25 + embeddings merged via Reciprocal Rank Fusion. Async, no API calls. */
   async recallHybrid(query: string, options?: Omit<RecallOptions, 'mode' | 'llm'>): Promise<Engram[]> {
-    const filtered = this._filterEngrams(options)
-    const limit = options?.limit ?? 20
-    const results = await hybridSearch(filtered, query, limit, this.paths.root)
-    this._reactivateResults(results)
-    return results
+    const result = await this.recallHybridWithMeta(query, options)
+    return result.engrams
   }
 
   /**
@@ -1169,9 +1175,110 @@ export class Plur {
   ): Promise<HybridSearchResult> {
     const filtered = this._filterEngrams(options)
     const limit = options?.limit ?? 20
-    const result = await hybridSearchWithMeta(filtered, query, limit, this.paths.root)
+    // Iter-2 audit B-1: PGLite path delegates the vector portion to
+    // pgvector via searchVector. The JSON cache path stays for the default
+    // backend so existing installs are unchanged.
+    let result: HybridSearchResult
+    if (this.pgliteAdapter) {
+      result = await this._pgliteHybridRecall(query, limit, filtered)
+    } else {
+      result = await hybridSearchWithMeta(filtered, query, limit, this.paths.root)
+    }
     this._reactivateResults(result.engrams)
     return result
+  }
+
+  /**
+   * Internal: PGLite-backed semantic recall. Embeds the query, calls
+   * `pgliteAdapter.searchVector`, intersects with the filtered active
+   * engrams (so scope/domain options still apply), and returns the top-N
+   * IDs in vector-similarity order.
+   *
+   * Falls back to the JSON cache path (embeddingSearch) when the embedder
+   * is unavailable or PGLite has no embeddings yet — recall always returns
+   * something usable.
+   */
+  private async _pgliteSemanticRecall(query: string, limit: number, filtered: Engram[]): Promise<Engram[]> {
+    if (!this.pgliteAdapter) return []
+    const { embed } = await import('./embeddings.js')
+    const queryVec = await embed(query)
+    if (!queryVec) {
+      // Embedder unavailable — degrade gracefully.
+      return embeddingSearch(filtered, query, limit, this.paths.root)
+    }
+    try {
+      // Over-fetch so the post-filter intersection still has enough hits.
+      const hits = await this.pgliteAdapter.searchVector(queryVec, Math.max(limit * 3, 50))
+      if (hits.length === 0) {
+        // Cold start (no embeddings indexed yet) — fall back to the JSON
+        // cache path so first-recall isn't empty.
+        return embeddingSearch(filtered, query, limit, this.paths.root)
+      }
+      // Intersect with the active filter set. PGLite stores all active
+      // engrams but the caller may have asked for scope/domain filters that
+      // the adapter's WHERE clauses don't know about.
+      const allowed = new Map<string, Engram>(filtered.map(e => [e.id, e]))
+      const results: Engram[] = []
+      for (const hit of hits) {
+        const allowedEngram = allowed.get(hit.engram.id)
+        if (allowedEngram) results.push(allowedEngram)
+        if (results.length >= limit) break
+      }
+      return results
+    } catch (err) {
+      logger.warning(`[plur] PGLite searchVector failed: ${(err as Error).message}. Falling back to JSON cache.`)
+      return embeddingSearch(filtered, query, limit, this.paths.root)
+    }
+  }
+
+  /**
+   * Internal: PGLite-backed hybrid recall. Runs BM25 over the filtered
+   * engrams in JS (single ranking authority) and pgvector for the vector
+   * portion, then merges via RRF — identical contract to hybridSearchWithMeta
+   * but persistent vector index instead of JSON-cache cosine.
+   */
+  private async _pgliteHybridRecall(query: string, limit: number, filtered: Engram[]): Promise<HybridSearchResult> {
+    if (!this.pgliteAdapter) {
+      return hybridSearchWithMeta(filtered, query, limit, this.paths.root)
+    }
+    if (filtered.length === 0) {
+      return { engrams: [], mode: 'hybrid', embedderError: null }
+    }
+    const { embed } = await import('./embeddings.js')
+    const queryVec = await embed(query)
+    const status = embedderStatus()
+    // Empty vector or disabled embeddings: fall back to BM25-only / JSON cache.
+    if (!queryVec) {
+      // Use the existing hybrid path so degraded-mode semantics stay consistent.
+      return hybridSearchWithMeta(filtered, query, limit, this.paths.root)
+    }
+    let pgHits: Engram[] = []
+    try {
+      const overFetch = Math.max(limit * 3, 50)
+      const hits = await this.pgliteAdapter.searchVector(queryVec, overFetch)
+      const allowed = new Map<string, Engram>(filtered.map(e => [e.id, e]))
+      pgHits = hits
+        .map(h => allowed.get(h.engram.id))
+        .filter((e): e is Engram => !!e)
+    } catch (err) {
+      logger.warning(`[plur] PGLite searchVector failed in hybrid: ${(err as Error).message}.`)
+      // PGLite vector portion failed — fall back to the JSON path entirely.
+      return hybridSearchWithMeta(filtered, query, limit, this.paths.root)
+    }
+    if (pgHits.length === 0) {
+      // Cold-start fallback: JSON cache likely has more populated entries.
+      return hybridSearchWithMeta(filtered, query, limit, this.paths.root)
+    }
+    // BM25 portion + RRF merge — share rrfMerge with the JSON path.
+    const bm25Limit = Math.min(filtered.length, Math.max(limit * 3, 50))
+    const bm25Results = searchEngrams(filtered, query, bm25Limit)
+    const merged = pgliteRrfMerge([bm25Results, pgHits])
+    const mode: HybridSearchResult['mode'] = status.disabled ? 'bm25-only' : 'hybrid'
+    return {
+      engrams: merged.slice(0, limit),
+      mode,
+      embedderError: null,
+    }
   }
 
   /** Inspect embedder availability without forcing a load. */
@@ -1191,6 +1298,29 @@ export class Plur {
   ): Promise<SimilarityResult[]> {
     const filtered = this._filterEngrams(options)
     const limit = options?.limit ?? 20
+    // Iter-2 audit B-1: PGLite path uses pgvector cosine. JSON cache path
+    // stays for the default backend.
+    if (this.pgliteAdapter) {
+      const { embed } = await import('./embeddings.js')
+      const queryVec = await embed(query)
+      if (queryVec) {
+        try {
+          const hits = await this.pgliteAdapter.searchVector(queryVec, Math.max(limit * 3, 50))
+          if (hits.length > 0) {
+            const allowed = new Map<string, Engram>(filtered.map(e => [e.id, e]))
+            const scored: SimilarityResult[] = []
+            for (const hit of hits) {
+              const e = allowed.get(hit.engram.id)
+              if (e) scored.push({ engram: e, score: Math.max(0, Math.min(1, hit.score)) })
+              if (scored.length >= limit) break
+            }
+            return scored
+          }
+        } catch (err) {
+          logger.warning(`[plur] PGLite searchVector failed in similaritySearch: ${(err as Error).message}.`)
+        }
+      }
+    }
     return embeddingSearchWithScores(filtered, query, limit, this.paths.root)
   }
 
@@ -1347,12 +1477,31 @@ export class Plur {
     let embeddingBoosts: Map<string, number> | undefined
     try {
       const engrams = this._loadAllEngrams().filter(e => e.status === 'active')
-      const results: SimilarityResult[] = await embeddingSearchWithScores(
-        engrams,
-        task,
-        engrams.length,
-        this.paths.root,
-      )
+      // Iter-2 audit B-1: route through PGLite when active so the boost
+      // scores come from the persistent pgvector index.
+      let results: SimilarityResult[] = []
+      if (this.pgliteAdapter) {
+        const { embed } = await import('./embeddings.js')
+        const queryVec = await embed(task)
+        if (queryVec) {
+          try {
+            const hits = await this.pgliteAdapter.searchVector(queryVec, engrams.length)
+            if (hits.length > 0) {
+              const allowed = new Map<string, Engram>(engrams.map(e => [e.id, e]))
+              for (const hit of hits) {
+                const e = allowed.get(hit.engram.id)
+                if (e) results.push({ engram: e, score: Math.max(0, Math.min(1, hit.score)) })
+              }
+            }
+          } catch (err) {
+            logger.warning(`[plur] PGLite searchVector failed in injectHybrid: ${(err as Error).message}.`)
+          }
+        }
+      }
+      if (results.length === 0) {
+        // JSON cache fallback / non-PGLite path.
+        results = await embeddingSearchWithScores(engrams, task, engrams.length, this.paths.root)
+      }
       if (results.length > 0) {
         embeddingBoosts = new Map()
         for (const r of results) {
@@ -1878,9 +2027,14 @@ export class Plur {
   /** Sync index after YAML write (no-op if no index is active). */
   private _syncIndex(): void {
     if (this.pgliteAdapter) {
-      // Synchronous-shaped path: kick off the sync, track the promise.
-      // The YAML write already happened — this is the index catching up.
-      this._pgliteInitPromise = this.pgliteAdapter.syncFromYaml()
+      const adapter = this.pgliteAdapter
+      // Sprint 0 iter-2 audit B-1: after syncFromYaml lands relational rows
+      // for new engrams, embed each one and upsert its vector into
+      // engram_embeddings. Without this, learn() persists YAML + a relational
+      // row but no vector — every PGLite searchVector call would miss the
+      // newly-learned engram until the next `plur sync --reembed`.
+      this._pgliteInitPromise = adapter.syncFromYaml()
+        .then(() => this._autoEmbedNewEngrams(adapter))
         .catch((err: unknown) => {
           logger.warning(`[plur] PGLite syncFromYaml failed (YAML is still source of truth): ${(err as Error).message}`)
         })
@@ -1888,6 +2042,47 @@ export class Plur {
     }
     if (this.indexedStorage) {
       this.indexedStorage.syncFromYaml()
+    }
+  }
+
+  /**
+   * Embed any active engrams that don't already have a row in
+   * `engram_embeddings` and upsert them. Runs after every syncFromYaml so
+   * learn() / learnAsync() / sync() all keep the vector index in step with
+   * YAML. Skips silently when the embedder isn't available (search still
+   * works on existing entries; the gap closes on the next learn cycle).
+   */
+  private async _autoEmbedNewEngrams(adapter: PGLiteAdapter): Promise<void> {
+    try {
+      const { embed } = await import('./embeddings.js')
+      // Cheap path: only embed engrams that are active AND missing from the
+      // embedding table. We load active engrams (already cached) and ask the
+      // adapter which IDs are missing.
+      const active = this._loadAllEngrams().filter(e => e.status === 'active' && !(e as any)._originalId && !(e as any)._pack)
+      if (active.length === 0) return
+      const missing: string[] = []
+      for (const e of active) {
+        if (!(await adapter.hasEmbedding(e.id))) missing.push(e.id)
+      }
+      if (missing.length === 0) return
+      const byId = new Map(active.map(e => [e.id, e]))
+      for (const id of missing) {
+        const engram = byId.get(id)
+        if (!engram) continue
+        // Use the canonical search text so the cached vector matches whatever
+        // recall path (hybrid, semantic) computes against the same engram.
+        const { engramSearchText } = await import('./fts.js')
+        const text = engramSearchText(engram)
+        const vec = await embed(text)
+        if (!vec) {
+          // Embedder unavailable — let next cycle retry. Recall on this
+          // engram degrades to BM25 in the meantime.
+          return
+        }
+        await adapter.upsertEmbedding(id, vec)
+      }
+    } catch (err) {
+      logger.warning(`[plur] auto-embed failed: ${(err as Error).message}`)
     }
   }
 

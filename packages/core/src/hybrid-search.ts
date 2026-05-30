@@ -25,7 +25,7 @@ export interface HybridSearchResult {
  * This gives high-ranked results from ANY method a boost, while naturally
  * handling the case where a result appears in multiple lists (scores add up).
  */
-function rrfMerge(resultSets: Engram[][], k = 60): Engram[] {
+export function rrfMerge(resultSets: Engram[][], k = 60): Engram[] {
   const scores = new Map<string, { engram: Engram; score: number }>()
 
   for (const results of resultSets) {
