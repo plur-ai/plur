@@ -5,11 +5,23 @@ the default for `@plur-ai/core` v0.10.
 
 ## TL;DR
 
-EmbeddingGemma is the provisional default unless a Phase C 500-iter run upsets
-the ordering. BGE-small is the steady-state fallback (current production
-embedder, smallest acceptable footprint, lowest latency). MiniLM ships as the
-historical baseline for traceability. BGE-base is parked — it costs 2-3x the
-RAM and 2-3x the latency of BGE-small for no meaningful R@5 gain at this N.
+**Iter-2 audit update (2026-05-30)**: the default-flip to EmbeddingGemma was
+reverted. BGE-small is the v0.10 default. EmbeddingGemma remains a first-class
+adapter (`PLUR_EMBEDDER=embedding-gemma`); the default decision is deferred
+to Phase C real LongMemEval-S evidence (N=500 per category, distinct
+scenarios). The original text below reflects the PR 4 bake-off as published;
+the iter-1 audit concluded the N=5 fixture cannot justify the swap on the
+plan's gate rule ("≥2pp R@5 at or below CPU cost"). See
+docs/audit/sprint-0/iter-1-gaps-consolidated.md for the full decision trail.
+
+EmbeddingGemma ties BGE-small at R@5, loses on R@1 (43.3% vs 46.7%), costs
+2.4x peak RSS and 11x p99 latency. BGE-small is the conservative pick until
+Phase C produces real signal — the bake-off doc below is preserved verbatim
+for historical traceability but the headline decision is reversed.
+
+BGE-small is the v0.10 default. MiniLM ships as the historical baseline for
+traceability. BGE-base is parked — it costs 2-3x the RAM and 2-3x the
+latency of BGE-small for no meaningful R@5 gain at this N.
 
 This is a small-N report (N=5 per category, 30 scenarios total). Headline
 numbers will move at the Phase C run; the model ranking on this fixture
@@ -117,27 +129,36 @@ A few warnings before drawing conclusions from N=30:
 
 ## Decision
 
-**Provisional**: EmbeddingGemma remains the planned default for the
-post-PR-4 substrate. It (a) ties BGE-small at R@5 on this small N, (b) wins
-on Accuracy (full-keyword coverage in top 10), and (c) has the most upstream
-headroom of the four (Matryoshka, multilingual, recent training data, larger
-parameter count). The latency and RSS cost is real but the Phase C run will
-tell us whether it's worth the swap on the actual workload.
+**Original (PR 4)**: EmbeddingGemma was proposed as the new default.
 
-**Fallback**: BGE-small stays as the conservative pick. If Phase C shows
-EmbeddingGemma underperforming or producing unstable rank behavior, BGE-small
-ships as the v0.10 default and EmbeddingGemma stays opt-in via PLUR_EMBEDDER.
+**Iter-2 audit (2026-05-30, B-2)**: reverted. BGE-small is the v0.10 default.
+The PR 4 fixture (N=5/category, 30 scenarios) fails the plan's gate rule
+("confirm EmbeddingGemma as default unless another candidate beats it by
+≥2pp R@5 at or below CPU cost"): EmbeddingGemma ties BGE-small on R@5, loses
+on R@1 (43.3% vs 46.7%), and costs 2.4x peak RSS plus 11x p99 latency. The
+decision is deferred to Phase C — real LongMemEval-S import (or 100 reps of
+the 30-scenario fixture with explicit "n=30 source, 100 reps" framing) before
+re-evaluating.
+
+**Status quo**: BGE-small is the conservative pick. EmbeddingGemma remains
+opt-in via `PLUR_EMBEDDER=embedding-gemma`.
 
 **Out of scope this PR**: BGE-base is dropped from contention. R@5 gain is
 within the noise floor at this N, but latency and RSS are 2-3x BGE-small —
 a bad trade for laptop users on the path to a 1M-engram store.
 
-## What changes on PR 5
+## Phase C — deferred
 
-PR 5 (`feat/embedding-gemma-default`) wires EmbeddingGemma as the engine
-default, runs LongMemEval-S full (N=500 per category) for both EmbeddingGemma
-and BGE-small, and publishes a follow-up report. If the small-N ordering
-reverses, the PR 5 spec changes accordingly — the spec defers to the data.
+The original PR 5 plan was to wire EmbeddingGemma as the engine default and
+run the N=500 LongMemEval-S confirmation as Phase C. The iter-1 audit found
+this is impossible with the current 30-scenario fixture (sampleScenarios
+samples with replacement above pool size). Phase C must either (a) import
+the upstream LongMemEval-S dataset into
+`benchmark/data/longmemeval-s.yaml` and re-run, or (b) honestly publish
+"n=30 source, 100 reps" with the bootstrapped confidence intervals.
+
+Default-flip happens after Phase C produces evidence that meets the gate
+rule. Until then, BGE-small stays.
 
 ## Files referenced
 
