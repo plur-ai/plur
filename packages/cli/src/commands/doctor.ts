@@ -2,6 +2,13 @@ import { spawn } from 'child_process'
 import { existsSync, readFileSync, realpathSync } from 'fs'
 import { join, extname } from 'path'
 import { homedir, platform } from 'os'
+import {
+  checkEmbedderDimMismatch,
+  detectPlurStorage,
+  getEmbedder,
+  resolveEmbedderName,
+  type DimMismatchWarning,
+} from '@plur-ai/core'
 import { createPlur, type GlobalFlags } from '../plur.js'
 import { outputText, outputJson, shouldOutputJson } from '../output.js'
 import {
@@ -52,6 +59,10 @@ interface DoctorReport {
   mcpShim: HookShimReport
   handshake: { ok: boolean; serverName?: string; serverVersion?: string; error?: string }
   embedder: { available: boolean; loaded: boolean; lastError: string | null; modelLoaded: boolean; disabled: boolean; disabledReason: string | null }
+  /** Sprint 0 PR 5 (#219): PGLite vector column dim vs active embedder dim. */
+  embedderDimMismatch: DimMismatchWarning | null
+  /** Active embedder name resolved from PLUR_EMBEDDER (or default). */
+  activeEmbedder: string
   overall: 'ok' | 'fail'
 }
 
@@ -367,6 +378,27 @@ async function checkEmbedder(_flags: GlobalFlags, timeoutMs = 10000): Promise<{ 
   })
 }
 
+/**
+ * Resolve the active embedder name + dim and check whether the configured
+ * PGLite index column dim matches. Both numbers are metadata-only (no model
+ * load) so the check is cheap and safe to run on every doctor invocation.
+ */
+async function inspectEmbedderDim(flags: GlobalFlags): Promise<{ activeEmbedder: string; mismatch: DimMismatchWarning | null }> {
+  try {
+    const name = resolveEmbedderName()
+    const paths = detectPlurStorage(flags.path)
+    const adapter = getEmbedder(name)
+    const mismatch = await checkEmbedderDimMismatch({
+      pglitePath: paths.pglite,
+      yamlPath: paths.engrams,
+      activeEmbedderDim: adapter.dim,
+    })
+    return { activeEmbedder: name, mismatch }
+  } catch {
+    return { activeEmbedder: 'unknown', mismatch: null }
+  }
+}
+
 function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<DoctorReport> {
   const configs = inspectConfigs()
   const hooksInstalled = configs.some((c) => c.hasPlurHooks)
@@ -394,14 +426,28 @@ function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<Doctor
     ? Promise.resolve({ ok: false, error: 'skipped (--no-handshake)' })
     : mcpHandshake()
 
-  return Promise.all([handshakePromise, checkEmbedder(flags)]).then(([handshake, embedder]) => {
+  return Promise.all([handshakePromise, checkEmbedder(flags), inspectEmbedderDim(flags)]).then(([handshake, embedder, dimInfo]) => {
     // Wiring overall: hooks + MCP + handshake. Embedder status is reported
     // separately as a warning — a degraded embedder doesn't fail the overall
     // doctor check (BM25 still works); it just signals semantic recall is
     // disabled until the model loads.
     const overall: 'ok' | 'fail' =
       hooksInstalled && mcpRegistered && (skipHandshake || handshake.ok) ? 'ok' : 'fail'
-    return { configs, hooksInstalled, mcpRegistered, datacoreCollision, staleNpxHooks, staleNpxMcp, hookShim, mcpShim, handshake, embedder, overall }
+    return {
+      configs,
+      hooksInstalled,
+      mcpRegistered,
+      datacoreCollision,
+      staleNpxHooks,
+      staleNpxMcp,
+      hookShim,
+      mcpShim,
+      handshake,
+      embedder,
+      embedderDimMismatch: dimInfo.mismatch,
+      activeEmbedder: dimInfo.activeEmbedder,
+      overall,
+    }
   })
 }
 
@@ -496,6 +542,20 @@ function printText(report: DoctorReport): void {
     outputText('    - pnpm hoisting: onnxruntime-node not findable from transformers package root')
     outputText('  To opt out (run BM25-only intentionally): set PLUR_DISABLE_EMBEDDINGS=1')
     outputText('    or write `embeddings: { enabled: false }` to ~/.plur/config.yaml')
+  }
+
+  // Sprint 0 PR 5 (#219): warn loudly when the PGLite vector column dim
+  // disagrees with the active embedder's dim. Hybrid recall silently degrades
+  // to BM25 in this state, so the warning has to be prominent and point at
+  // the fix command.
+  outputText('')
+  outputText(`  Active embedder: ${report.activeEmbedder}`)
+  if (report.embedderDimMismatch) {
+    const m = report.embedderDimMismatch
+    outputText('')
+    outputText(`⚠  Embedder dim mismatch: PGLite vector column is ${m.indexedDim}d, active embedder produces ${m.activeDim}d vectors.`)
+    outputText('   Hybrid recall will silently degrade to BM25 until you migrate.')
+    outputText('   Fix: plur sync --reembed --full')
   }
 
   outputText('')

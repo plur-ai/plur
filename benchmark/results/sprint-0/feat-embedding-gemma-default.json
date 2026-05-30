@@ -1,0 +1,77 @@
+{
+  "label": "feat-embedding-gemma-default",
+  "iterations": 100,
+  "timestamp": "2026-05-30T12:07:46.572Z",
+  "operations": {
+    "learn": {
+      "count": 100,
+      "total_ms": 301.78,
+      "mean_ms": 3.018,
+      "median_ms": 3.191125,
+      "p95_ms": 3.591333,
+      "p99_ms": 4.139708,
+      "min_ms": 1.639583,
+      "max_ms": 4.139708
+    },
+    "recall_bm25": {
+      "count": 100,
+      "total_ms": 400.95,
+      "mean_ms": 4.009,
+      "median_ms": 4.009125,
+      "p95_ms": 4.382,
+      "p99_ms": 4.596167,
+      "min_ms": 3.681542,
+      "max_ms": 4.596167
+    },
+    "recall_hybrid": {
+      "count": 100,
+      "total_ms": 1517.52,
+      "mean_ms": 15.175,
+      "median_ms": 10.457958,
+      "p95_ms": 12.726417,
+      "p99_ms": 456.922084,
+      "min_ms": 9.534334,
+      "max_ms": 456.922084
+    },
+    "inject": {
+      "count": 100,
+      "total_ms": 35.34,
+      "mean_ms": 0.353,
+      "median_ms": 0.367333,
+      "p95_ms": 0.542417,
+      "p99_ms": 2.917625,
+      "min_ms": 0.126791,
+      "max_ms": 2.917625
+    },
+    "inject_tokens": {
+      "count": 100,
+      "total_ms": 183260,
+      "mean_ms": 1832.6,
+      "median_ms": 2080,
+      "p95_ms": 2141,
+      "p99_ms": 2141,
+      "min_ms": 1033,
+      "max_ms": 2141
+    }
+  },
+  "dedup": {
+    "tested": 5,
+    "decisions": [
+      "ADD",
+      "ADD",
+      "ADD",
+      "ADD",
+      "ADD"
+    ],
+    "latencies_ms": [
+      41.930292,
+      30.0915,
+      24.50025,
+      26.262375,
+      26.813083
+    ],
+    "avg_latency_ms": 29.9195,
+    "llm_used": false,
+    "llm_model": null
+  }
+}
