@@ -1,6 +1,9 @@
 import type { Engram } from './schemas/engram.js'
 import { searchEngrams } from './fts.js'
 import { embeddingSearch, embedderStatus } from './embeddings.js'
+import { logger } from './logger.js'
+import type { RerankerAdapter } from './rerankers/types.js'
+import { isRerankerOff } from './rerankers/index.js'
 
 /** Result of a hybrid search call with diagnostic metadata. */
 export interface HybridSearchResult {
@@ -14,6 +17,24 @@ export interface HybridSearchResult {
    */
   mode: 'hybrid' | 'hybrid-degraded' | 'bm25-only'
   embedderError: string | null
+  /**
+   * Number of candidates re-scored by the cross-encoder reranker, or 0 when
+   * the reranker was off (default), unavailable, or the candidate pool was
+   * empty. Useful for benchmark + diagnostic reporting.
+   */
+  reranked?: number
+}
+
+/** Options for the reranker stage. */
+export interface RerankOptions {
+  /** Adapter to use. When omitted or `isRerankerOff(adapter)` is true, skips. */
+  reranker?: RerankerAdapter
+  /**
+   * How many top RRF candidates to feed into the cross-encoder. Larger K
+   * means more chances to surface a buried gem but more model passes. The
+   * cost is O(K) cross-encoder calls per query. Default 50.
+   */
+  topK?: number
 }
 
 /**
@@ -77,8 +98,9 @@ export async function hybridSearch(
   query: string,
   limit: number,
   storagePath?: string,
+  rerank?: RerankOptions,
 ): Promise<Engram[]> {
-  const result = await hybridSearchWithMeta(engrams, query, limit, storagePath)
+  const result = await hybridSearchWithMeta(engrams, query, limit, storagePath, rerank)
   return result.engrams
 }
 
@@ -86,15 +108,21 @@ export async function hybridSearch(
  * Same as hybridSearch but returns metadata about whether embeddings
  * actually contributed. Use this when you want to surface a
  * "hybrid-degraded" warning to users instead of silent fallback.
+ *
+ * When `rerank.reranker` is a real (non-off) adapter, the top-K of the
+ * RRF-merged list is rescored by the cross-encoder and the result reordered
+ * by joint relevance before being truncated to `limit`. The default K is
+ * 50; configure via `rerank.topK`.
  */
 export async function hybridSearchWithMeta(
   engrams: Engram[],
   query: string,
   limit: number,
   storagePath?: string,
+  rerank?: RerankOptions,
 ): Promise<HybridSearchResult> {
   if (engrams.length === 0) {
-    return { engrams: [], mode: 'hybrid', embedderError: null }
+    return { engrams: [], mode: 'hybrid', embedderError: null, reranked: 0 }
   }
 
   const exhaustive = isAggregationQuery(query)
@@ -126,9 +154,56 @@ export async function hybridSearchWithMeta(
   }
 
   const merged = rrfMerge([bm25Results, embResults])
+  const reranked = await applyReranker(merged, query, rerank)
   return {
-    engrams: merged.slice(0, effectiveLimit),
+    engrams: reranked.engrams.slice(0, effectiveLimit),
     mode,
     embedderError,
+    reranked: reranked.count,
+  }
+}
+
+/**
+ * Internal: apply the cross-encoder reranker to the top-K of a fused list.
+ *
+ * - When no reranker is supplied (or the sentinel `off` adapter is supplied)
+ *   returns the input order unchanged with count=0.
+ * - When the reranker throws (model unavailable, network, etc.) logs a
+ *   warning and falls back to the RRF order — recall should always return
+ *   something, even when the optional rerank stage fails.
+ */
+export async function applyReranker(
+  candidates: Engram[],
+  query: string,
+  rerank?: RerankOptions,
+): Promise<{ engrams: Engram[]; count: number }> {
+  if (!rerank?.reranker || isRerankerOff(rerank.reranker)) {
+    return { engrams: candidates, count: 0 }
+  }
+  if (candidates.length === 0) {
+    return { engrams: candidates, count: 0 }
+  }
+  const topK = Math.max(1, Math.min(candidates.length, rerank.topK ?? 50))
+  const head = candidates.slice(0, topK)
+  const tail = candidates.slice(topK)
+  try {
+    const docs = head.map(e => e.statement)
+    const scores = await rerank.reranker.scoreBatch(query, docs)
+    if (scores.length !== head.length) {
+      logger.warning(
+        `[hybrid-search] reranker returned ${scores.length} scores for ${head.length} candidates; skipping rerank.`,
+      )
+      return { engrams: candidates, count: 0 }
+    }
+    const ranked = head
+      .map((engram, i) => ({ engram, score: scores[i] }))
+      .sort((a, b) => b.score - a.score)
+      .map(r => r.engram)
+    return { engrams: [...ranked, ...tail], count: head.length }
+  } catch (err) {
+    logger.warning(
+      `[hybrid-search] reranker "${rerank.reranker.name}" failed: ${(err as Error).message}. Falling back to RRF order.`,
+    )
+    return { engrams: candidates, count: 0 }
   }
 }
