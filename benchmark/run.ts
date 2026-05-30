@@ -1,21 +1,41 @@
 #!/usr/bin/env npx tsx
 /**
- * LongMemEval Benchmark Runner for PLUR
+ * LongMemEval Benchmark Runner for PLUR — Sprint 0 edition.
  *
- * Tests memory retrieval quality across 6 categories:
- * - single_session_user, single_session_preference, single_session_assistant
- * - temporal_reasoning, knowledge_updates, multi_session_reasoning
+ * Tests memory retrieval quality across 6 categories and now captures
+ * latency p50/p95/p99 + peak RSS + on-disk store size so the Sprint 0 final
+ * run (Phase C: N=500 per category) can fill the headline table.
  *
  * Usage:
- *   npx tsx benchmark/run.ts [--search-mode hybrid|bm25|semantic] [--category <cat>]
+ *   npx tsx benchmark/run.ts                                # default 30-scenario smoke run
+ *   npx tsx benchmark/run.ts --iterations 500               # N per category, seeded
+ *   npx tsx benchmark/run.ts --embedder embedding-gemma     # pick an adapter
+ *   npx tsx benchmark/run.ts --search-mode hybrid|bm25|semantic
+ *   npx tsx benchmark/run.ts --category temporal_reasoning
+ *   npx tsx benchmark/run.ts --seed 1337                    # reproducible sampling
+ *   npx tsx benchmark/run.ts --output /tmp/results          # override output dir
+ *
+ * Outputs:
+ *   <output>/<sha>-<ts>.json    machine-readable summary + per-scenario results
+ *   <output>/<sha>-<ts>.md      human-readable headline table
  */
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
+import { execSync } from 'child_process'
+import { fileURLToPath } from 'url'
 import yaml from '../packages/core/node_modules/js-yaml/index.js'
 import { Plur } from '../packages/core/src/index.js'
 
-interface Scenario {
+// ─── ESM-safe __dirname ─────────────────────────────────────────────
+const __filename = fileURLToPath(import.meta.url)
+const __dirname = path.dirname(__filename)
+
+// ─── Types ──────────────────────────────────────────────────────────
+
+export type EmbedderName = 'minilm' | 'bge-small' | 'bge-base' | 'embedding-gemma'
+
+export interface Scenario {
   id: string
   category: string
   conversations: Array<{ session: number; turns: Array<{ role: string; content: string }> }>
@@ -24,25 +44,136 @@ interface Scenario {
   expected_keywords: string[]
 }
 
-interface ScenarioResult {
+export interface ScenarioResult {
   id: string
   category: string
   query: string
   expected_keywords: string[]
   retrieved_statements: string[]
+  hit_at_1: boolean
   hit_at_5: boolean
   hit_at_10: boolean
   mrr: number
   accuracy: boolean
   rank: number | null
+  latency_ms: number
 }
 
-function loadScenarios(filterCategory?: string): Scenario[] {
+export interface RunOptions {
+  /** Per-category sample count. When undefined, runs the full default scenario set. */
+  iterations?: number
+  embedder?: EmbedderName
+  /** 'hybrid' (default), 'bm25', or 'semantic'. */
+  searchMode?: string
+  category?: string
+  /** Deterministic seed for sampling. Default 1337. */
+  seed?: number
+  /** Where to write the JSON + Markdown output. Default: benchmark/results. */
+  outputDir?: string
+  /** Silence per-query log output. */
+  quiet?: boolean
+}
+
+export interface RunOutput {
+  jsonPath: string
+  mdPath: string
+  summary: BenchmarkSummary
+  results: ScenarioResult[]
+}
+
+export interface BenchmarkSummary {
+  commit: string
+  timestamp: string
+  embedder: EmbedderName
+  embedder_stub_fallback: boolean
+  search_mode: string
+  scenario_count: number
+  iterations_per_category: number | null
+  seed: number
+  // Headline metrics (LongMemEval taxonomy):
+  r5: number          // % of queries with the right engram in the top 5 (a.k.a. Hit@5).
+  r1: number          // % of queries with the right engram at rank 1 (a.k.a. Hit@1).
+  accuracy: number    // % of queries where every expected_keyword is found in top 10.
+  // Latency over recall() / recallHybrid() / recallSemantic() per query, in ms:
+  latency_p50_ms: number
+  latency_p95_ms: number
+  latency_p99_ms: number
+  // Footprint:
+  peak_rss_mb: number
+  store_size_bytes: number
+  // Per-category breakdown:
+  per_category: Record<string, {
+    r5: number
+    r1: number
+    hit10: number
+    mrr: number
+    accuracy: number
+    latency_p50_ms: number
+    latency_p95_ms: number
+    latency_p99_ms: number
+    count: number
+  }>
+}
+
+// ─── Loaders ────────────────────────────────────────────────────────
+
+export function loadScenarios(filterCategory?: string): Scenario[] {
   const raw = fs.readFileSync(path.join(__dirname, 'data', 'scenarios.yaml'), 'utf-8')
   let scenarios = yaml.load(raw) as Scenario[]
   if (filterCategory) scenarios = scenarios.filter(s => s.category === filterCategory)
   return scenarios
 }
+
+// ─── Seeded sampling ────────────────────────────────────────────────
+
+/**
+ * Deterministic per-category sampler. Given an `N`, returns N scenarios from
+ * each category, sampled with a seeded PRNG. When N exceeds the per-category
+ * pool we sample with replacement so callers can request the full Sprint 0
+ * LongMemEval-S size (N=500) even though the local fixture only has 5/category.
+ */
+export function sampleScenarios(all: Scenario[], n: number, seed: number): Scenario[] {
+  const categories = [...new Set(all.map(s => s.category))].sort()
+  const rng = mulberry32(seed >>> 0)
+  const out: Scenario[] = []
+
+  for (const cat of categories) {
+    const pool = all.filter(s => s.category === cat)
+    if (pool.length === 0) continue
+
+    if (n <= pool.length) {
+      // Sample without replacement — Fisher–Yates partial shuffle.
+      const idx = Array.from({ length: pool.length }, (_, i) => i)
+      for (let i = idx.length - 1; i > 0; i--) {
+        const j = Math.floor(rng() * (i + 1))
+        ;[idx[i], idx[j]] = [idx[j], idx[i]]
+      }
+      for (let i = 0; i < n; i++) out.push(pool[idx[i]])
+    } else {
+      // Sample with replacement (needed when n > pool.length).
+      for (let i = 0; i < n; i++) {
+        const j = Math.floor(rng() * pool.length)
+        out.push(pool[j])
+      }
+    }
+  }
+  return out
+}
+
+/** mulberry32 — small, fast, well-distributed PRNG with explicit seed. */
+function mulberry32(seed: number): () => number {
+  let a = seed
+  return function () {
+    a |= 0
+    a = (a + 0x6d2b79f5) | 0
+    let t = a
+    t = Math.imul(t ^ (t >>> 15), t | 1)
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61)
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+  }
+}
+
+// ─── Helpers ────────────────────────────────────────────────────────
 
 function keywordMatch(statement: string, keywords: string[]): boolean {
   const lower = statement.toLowerCase()
@@ -56,24 +187,83 @@ function findRank(results: Array<{ statement: string }>, keywords: string[]): nu
   return null
 }
 
-async function runBenchmark(searchMode: string, category?: string) {
-  const scenarios = loadScenarios(category)
-  if (!scenarios.length) { console.error('No scenarios found.'); process.exit(1) }
+function percentile(sorted: number[], p: number): number {
+  if (sorted.length === 0) return 0
+  const idx = Math.min(sorted.length - 1, Math.floor((p / 100) * sorted.length))
+  return sorted[idx]
+}
 
-  // Create isolated temp PLUR instance
+function dirSize(dir: string): number {
+  let total = 0
+  try {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name)
+      if (entry.isDirectory()) total += dirSize(full)
+      else if (entry.isFile()) total += fs.statSync(full).size
+    }
+  } catch { /* path gone */ }
+  return total
+}
+
+function commitSha(): string {
+  try {
+    return execSync('git rev-parse --short HEAD', { cwd: __dirname, stdio: ['ignore', 'pipe', 'ignore'] })
+      .toString().trim() || 'unknown'
+  } catch { return 'unknown' }
+}
+
+function isoStamp(): string {
+  return new Date().toISOString().replace(/[:.]/g, '-')
+}
+
+const KNOWN_EMBEDDERS: EmbedderName[] = ['minilm', 'bge-small', 'bge-base', 'embedding-gemma']
+
+// ─── Main harness ───────────────────────────────────────────────────
+
+export async function runBenchmark(opts: RunOptions = {}): Promise<RunOutput> {
+  const embedder: EmbedderName = (opts.embedder ?? 'minilm') as EmbedderName
+  if (!KNOWN_EMBEDDERS.includes(embedder)) {
+    throw new Error(`Unknown embedder "${embedder}". Use one of: ${KNOWN_EMBEDDERS.join(', ')}`)
+  }
+  // PR 4 wires the BGE / EmbeddingGemma ONNX adapters. Until then, every
+  // non-minilm name falls back to the MiniLM path while still recording the
+  // requested label so traceability holds.
+  const embedderStubFallback = embedder !== 'minilm'
+  if (embedderStubFallback && !opts.quiet) {
+    console.log(`[embedder] "${embedder}" not yet implemented; using MiniLM fallback (PR 4 will wire the real adapter).`)
+  }
+
+  const searchMode = opts.searchMode ?? 'hybrid'
+  const seed = opts.seed ?? 1337
+  const outputDir = opts.outputDir ?? path.join(__dirname, 'results')
+
+  // Pick scenarios. With --iterations, sample N per category deterministically.
+  // Without --iterations, use the full default scenario set (backward-compat).
+  const all = loadScenarios(opts.category)
+  const scenarios = opts.iterations !== undefined
+    ? sampleScenarios(all, opts.iterations, seed)
+    : all
+
+  if (!scenarios.length) {
+    throw new Error('No scenarios found.')
+  }
+
+  // Create an isolated PLUR store for this run.
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'plur-bench-'))
-  const engDir = path.join(tmpDir, 'engrams.yaml')
-  const epDir = path.join(tmpDir, 'episodes.yaml')
-  const cfgDir = path.join(tmpDir, 'config.yaml')
-  fs.writeFileSync(engDir, '[]')
-  fs.writeFileSync(epDir, '[]')
-  fs.writeFileSync(cfgDir, 'auto_learn: true\nindex: false\n')
+  fs.writeFileSync(path.join(tmpDir, 'engrams.yaml'), '[]')
+  fs.writeFileSync(path.join(tmpDir, 'episodes.yaml'), '[]')
+  fs.writeFileSync(path.join(tmpDir, 'config.yaml'), 'auto_learn: true\nindex: false\n')
 
   const plur = new Plur({ path: tmpDir })
 
-  // Ingest all conversations
+  // ─── Ingest ──────────────────────────────────────────────────────
   let engramCount = 0
+  // Use a Set on scenario ID to dedupe ingestion when N > pool.length (sampling
+  // with replacement returns the same conversation more than once).
+  const ingestedScenarios = new Set<string>()
   for (const scenario of scenarios) {
+    if (ingestedScenarios.has(scenario.id)) continue
+    ingestedScenarios.add(scenario.id)
     for (const session of scenario.conversations) {
       for (const turn of session.turns) {
         if (turn.role === 'user') {
@@ -87,21 +277,30 @@ async function runBenchmark(searchMode: string, category?: string) {
     }
   }
 
-  console.log(`Ingested ${engramCount} engrams from ${scenarios.length} scenarios.\n`)
+  if (!opts.quiet) {
+    console.log(`Ingested ${engramCount} engrams from ${ingestedScenarios.size} unique scenarios (${scenarios.length} query rounds).\n`)
+  }
 
-  // Run queries
+  // Track peak RSS continuously while we hammer recall().
+  let peakRssBytes = process.memoryUsage().rss
+
+  // ─── Query ───────────────────────────────────────────────────────
   const results: ScenarioResult[] = []
   for (const scenario of scenarios) {
     let retrieved: Array<{ id: string; statement: string }>
-
+    const t0 = process.hrtime.bigint()
     if (searchMode === 'bm25') {
       retrieved = plur.recall(scenario.query, { limit: 10 })
     } else if (searchMode === 'semantic') {
       retrieved = await plur.recallSemantic(scenario.query, { limit: 10 })
     } else {
-      // hybrid (default)
       retrieved = await plur.recallHybrid(scenario.query, { limit: 10 })
     }
+    const t1 = process.hrtime.bigint()
+    const latency_ms = Number(t1 - t0) / 1_000_000
+
+    const rss = process.memoryUsage().rss
+    if (rss > peakRssBytes) peakRssBytes = rss
 
     const rank = findRank(retrieved, scenario.expected_keywords)
     const allKeywordsFound = scenario.expected_keywords.every(kw =>
@@ -114,76 +313,190 @@ async function runBenchmark(searchMode: string, category?: string) {
       query: scenario.query,
       expected_keywords: scenario.expected_keywords,
       retrieved_statements: retrieved.map(r => r.statement).slice(0, 5),
+      hit_at_1: rank === 1,
       hit_at_5: rank !== null && rank <= 5,
       hit_at_10: rank !== null && rank <= 10,
       mrr: rank !== null ? 1 / rank : 0,
       accuracy: allKeywordsFound,
       rank,
+      latency_ms,
     }
     results.push(result)
 
-    const mark = result.hit_at_10 ? '[o]' : '[x]'
-    const matches = scenario.expected_keywords.filter(kw =>
-      retrieved.some(r => r.statement.toLowerCase().includes(kw.toLowerCase()))
-    )
-    console.log(`  ${mark} ${scenario.id}: rank=${rank ?? 'miss'} mrr=${result.mrr.toFixed(3)} matches=[${matches.join(', ')}]`)
+    if (!opts.quiet) {
+      const mark = result.hit_at_10 ? '[o]' : '[x]'
+      const matches = scenario.expected_keywords.filter(kw =>
+        retrieved.some(r => r.statement.toLowerCase().includes(kw.toLowerCase()))
+      )
+      console.log(`  ${mark} ${scenario.id}: rank=${rank ?? 'miss'} lat=${latency_ms.toFixed(1)}ms mrr=${result.mrr.toFixed(3)} matches=[${matches.join(', ')}]`)
+    }
   }
 
-  // Compute aggregates
-  const categories = [...new Set(results.map(r => r.category))]
-
-  console.log('\n\nResults Summary')
-  console.log('===============\n')
-
-  const hit5 = results.filter(r => r.hit_at_5).length / results.length * 100
-  const hit10 = results.filter(r => r.hit_at_10).length / results.length * 100
-  const avgMrr = results.reduce((sum, r) => sum + r.mrr, 0) / results.length
+  // ─── Aggregate ───────────────────────────────────────────────────
+  const r5 = results.filter(r => r.hit_at_5).length / results.length * 100
+  const r1 = results.filter(r => r.hit_at_1).length / results.length * 100
   const accuracy = results.filter(r => r.accuracy).length / results.length * 100
 
-  console.log('Overall:')
-  console.log(`  Hit@5:     ${hit5.toFixed(1)}%`)
-  console.log(`  Hit@10:    ${hit10.toFixed(1)}%`)
-  console.log(`  MRR:       ${avgMrr.toFixed(3)}`)
-  console.log(`  Accuracy:  ${accuracy.toFixed(1)}% (all keywords found)`)
+  const allLatencies = results.map(r => r.latency_ms).sort((a, b) => a - b)
+  const latency_p50_ms = percentile(allLatencies, 50)
+  const latency_p95_ms = percentile(allLatencies, 95)
+  const latency_p99_ms = percentile(allLatencies, 99)
 
-  console.log('\nPer Category:')
-  console.log(`${'Category'.padEnd(30)} ${'Hit@5'.padEnd(8)} ${'Hit@10'.padEnd(8)} ${'MRR'.padEnd(8)} ${'Accuracy'.padEnd(8)}`)
-  console.log('-'.repeat(75))
+  // Store footprint: total bytes on disk for the temp PLUR dir at end of run.
+  const store_size_bytes = dirSize(tmpDir)
+  const peak_rss_mb = Math.round((peakRssBytes / (1024 * 1024)) * 100) / 100
 
+  const categories = [...new Set(results.map(r => r.category))]
+  const per_category: BenchmarkSummary['per_category'] = {}
   for (const cat of categories) {
-    const catResults = results.filter(r => r.category === cat)
-    const cHit5 = catResults.filter(r => r.hit_at_5).length / catResults.length * 100
-    const cHit10 = catResults.filter(r => r.hit_at_10).length / catResults.length * 100
-    const cMrr = catResults.reduce((s, r) => s + r.mrr, 0) / catResults.length
-    const cAcc = catResults.filter(r => r.accuracy).length / catResults.length * 100
-    console.log(`${cat.padEnd(30)} ${(cHit5.toFixed(0) + '%').padEnd(8)} ${(cHit10.toFixed(0) + '%').padEnd(8)} ${cMrr.toFixed(3).padEnd(8)} ${(cAcc.toFixed(0) + '%').padEnd(8)}`)
+    const cr = results.filter(r => r.category === cat)
+    const lat = cr.map(r => r.latency_ms).sort((a, b) => a - b)
+    per_category[cat] = {
+      r5: cr.filter(r => r.hit_at_5).length / cr.length * 100,
+      r1: cr.filter(r => r.hit_at_1).length / cr.length * 100,
+      hit10: cr.filter(r => r.hit_at_10).length / cr.length * 100,
+      mrr: cr.reduce((s, r) => s + r.mrr, 0) / cr.length,
+      accuracy: cr.filter(r => r.accuracy).length / cr.length * 100,
+      latency_p50_ms: percentile(lat, 50),
+      latency_p95_ms: percentile(lat, 95),
+      latency_p99_ms: percentile(lat, 99),
+      count: cr.length,
+    }
   }
 
-  // Save results
-  const resultsDir = path.join(__dirname, 'results')
-  fs.mkdirSync(resultsDir, { recursive: true })
-  const date = new Date().toISOString().slice(0, 10)
-  const filename = `${date}-${searchMode}.json`
-  const outPath = path.join(resultsDir, filename)
-  fs.writeFileSync(outPath, JSON.stringify({ date, search_mode: searchMode, overall: { hit5, hit10, mrr: avgMrr, accuracy }, per_category: Object.fromEntries(categories.map(cat => {
-    const cr = results.filter(r => r.category === cat)
-    return [cat, { hit5: cr.filter(r => r.hit_at_5).length / cr.length * 100, hit10: cr.filter(r => r.hit_at_10).length / cr.length * 100, mrr: cr.reduce((s, r) => s + r.mrr, 0) / cr.length, accuracy: cr.filter(r => r.accuracy).length / cr.length * 100 }]
-  })), results }, null, 2))
-  console.log(`\nResults saved to: ${outPath}`)
+  const summary: BenchmarkSummary = {
+    commit: commitSha(),
+    timestamp: new Date().toISOString(),
+    embedder,
+    embedder_stub_fallback: embedderStubFallback,
+    search_mode: searchMode,
+    scenario_count: results.length,
+    iterations_per_category: opts.iterations ?? null,
+    seed,
+    r5,
+    r1,
+    accuracy,
+    latency_p50_ms,
+    latency_p95_ms,
+    latency_p99_ms,
+    peak_rss_mb,
+    store_size_bytes,
+    per_category,
+  }
 
-  // Cleanup
+  if (!opts.quiet) {
+    printSummary(summary)
+  }
+
+  // ─── Write outputs ───────────────────────────────────────────────
+  fs.mkdirSync(outputDir, { recursive: true })
+  const baseName = `${summary.commit}-${isoStamp()}`
+  const jsonPath = path.join(outputDir, `${baseName}.json`)
+  const mdPath = path.join(outputDir, `${baseName}.md`)
+
+  fs.writeFileSync(jsonPath, JSON.stringify({ ...summary, results }, null, 2))
+  fs.writeFileSync(mdPath, renderMarkdown(summary))
+
+  if (!opts.quiet) {
+    console.log(`\nJSON saved to: ${jsonPath}`)
+    console.log(`Markdown saved to: ${mdPath}`)
+  }
+
+  // Cleanup the per-run store.
   fs.rmSync(tmpDir, { recursive: true, force: true })
-  console.log('Temp storage cleaned up.')
+
+  return { jsonPath, mdPath, summary, results }
 }
 
-// Parse args
-const args = process.argv.slice(2)
-let searchMode = 'hybrid'
-let category: string | undefined
-
-for (let i = 0; i < args.length; i++) {
-  if (args[i] === '--search-mode' && args[i + 1]) searchMode = args[++i]
-  if (args[i] === '--category' && args[i + 1]) category = args[++i]
+function printSummary(s: BenchmarkSummary) {
+  console.log('\n\nResults Summary')
+  console.log('===============\n')
+  console.log(`Embedder:        ${s.embedder}${s.embedder_stub_fallback ? ' (stub fallback → minilm)' : ''}`)
+  console.log(`Search mode:     ${s.search_mode}`)
+  console.log(`Scenarios:       ${s.scenario_count}${s.iterations_per_category !== null ? ` (N=${s.iterations_per_category}/category, seed=${s.seed})` : ''}`)
+  console.log(`Commit:          ${s.commit}`)
+  console.log()
+  console.log('Overall:')
+  console.log(`  R@5:           ${s.r5.toFixed(1)}%`)
+  console.log(`  R@1:           ${s.r1.toFixed(1)}%`)
+  console.log(`  Accuracy:      ${s.accuracy.toFixed(1)}% (all keywords found)`)
+  console.log()
+  console.log('Latency:')
+  console.log(`  p50:           ${s.latency_p50_ms.toFixed(2)}ms`)
+  console.log(`  p95:           ${s.latency_p95_ms.toFixed(2)}ms`)
+  console.log(`  p99:           ${s.latency_p99_ms.toFixed(2)}ms`)
+  console.log()
+  console.log('Footprint:')
+  console.log(`  Peak RSS:      ${s.peak_rss_mb} MB`)
+  console.log(`  Store size:    ${s.store_size_bytes} bytes`)
+  console.log()
+  console.log('Per Category:')
+  console.log(`${'Category'.padEnd(30)} ${'R@5'.padEnd(8)} ${'R@1'.padEnd(8)} ${'MRR'.padEnd(8)} ${'p95'.padEnd(8)}`)
+  console.log('-'.repeat(70))
+  for (const [cat, m] of Object.entries(s.per_category)) {
+    console.log(`${cat.padEnd(30)} ${(m.r5.toFixed(0) + '%').padEnd(8)} ${(m.r1.toFixed(0) + '%').padEnd(8)} ${m.mrr.toFixed(3).padEnd(8)} ${(m.latency_p95_ms.toFixed(1) + 'ms').padEnd(8)}`)
+  }
 }
 
-runBenchmark(searchMode, category).catch(err => { console.error(err); process.exit(1) })
+function renderMarkdown(s: BenchmarkSummary): string {
+  const lines: string[] = []
+  lines.push(`# PLUR Benchmark — ${s.commit} (${s.timestamp})`)
+  lines.push('')
+  lines.push(`Embedder: \`${s.embedder}\`${s.embedder_stub_fallback ? ' (stub fallback → minilm, real adapter lands in PR 4)' : ''}`)
+  lines.push(`Search mode: \`${s.search_mode}\``)
+  lines.push(`Scenarios: ${s.scenario_count}${s.iterations_per_category !== null ? ` (N=${s.iterations_per_category}/category, seed=${s.seed})` : ' (default fixture)'}`)
+  lines.push('')
+  lines.push('## Headline')
+  lines.push('')
+  lines.push('| Metric | Value |')
+  lines.push('|---|---|')
+  lines.push(`| R@5 | ${s.r5.toFixed(1)}% |`)
+  lines.push(`| R@1 | ${s.r1.toFixed(1)}% |`)
+  lines.push(`| Accuracy | ${s.accuracy.toFixed(1)}% |`)
+  lines.push(`| Latency p50 | ${s.latency_p50_ms.toFixed(2)} ms |`)
+  lines.push(`| Latency p95 | ${s.latency_p95_ms.toFixed(2)} ms |`)
+  lines.push(`| Latency p99 | ${s.latency_p99_ms.toFixed(2)} ms |`)
+  lines.push(`| Peak RSS | ${s.peak_rss_mb} MB |`)
+  lines.push(`| Store size | ${s.store_size_bytes} bytes |`)
+  lines.push('')
+  lines.push('## Per Category')
+  lines.push('')
+  lines.push('| Category | N | R@5 | R@1 | Hit@10 | MRR | Accuracy | p50 ms | p95 ms | p99 ms |')
+  lines.push('|---|---|---|---|---|---|---|---|---|---|')
+  for (const [cat, m] of Object.entries(s.per_category)) {
+    lines.push(`| ${cat} | ${m.count} | ${m.r5.toFixed(1)}% | ${m.r1.toFixed(1)}% | ${m.hit10.toFixed(1)}% | ${m.mrr.toFixed(3)} | ${m.accuracy.toFixed(1)}% | ${m.latency_p50_ms.toFixed(2)} | ${m.latency_p95_ms.toFixed(2)} | ${m.latency_p99_ms.toFixed(2)} |`)
+  }
+  lines.push('')
+  return lines.join('\n')
+}
+
+// ─── CLI entry point ────────────────────────────────────────────────
+
+function parseArgs(argv: string[]): RunOptions {
+  const opts: RunOptions = {}
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i]
+    if (a === '--iterations' && argv[i + 1]) opts.iterations = parseInt(argv[++i], 10)
+    else if (a === '--embedder' && argv[i + 1]) opts.embedder = argv[++i] as EmbedderName
+    else if (a === '--search-mode' && argv[i + 1]) opts.searchMode = argv[++i]
+    else if (a === '--category' && argv[i + 1]) opts.category = argv[++i]
+    else if (a === '--seed' && argv[i + 1]) opts.seed = parseInt(argv[++i], 10)
+    else if ((a === '--output' || a === '--output-dir') && argv[i + 1]) opts.outputDir = argv[++i]
+    else if (a === '--quiet') opts.quiet = true
+  }
+  return opts
+}
+
+const isMain = (() => {
+  // Detect "run directly" in both ESM and tsx modes.
+  try {
+    return process.argv[1] && fs.realpathSync(process.argv[1]) === fs.realpathSync(__filename)
+  } catch { return false }
+})()
+
+if (isMain) {
+  runBenchmark(parseArgs(process.argv.slice(2))).catch(err => {
+    console.error(err)
+    process.exit(1)
+  })
+}
