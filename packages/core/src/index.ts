@@ -237,14 +237,22 @@ export class Plur {
    * Resolve the active index backend. Order:
    *   1. PLUR_BACKEND env var (pglite|sqlite)
    *   2. config.yaml `backend` field
-   *   3. default: sqlite (historical)
+   *   3. default: pglite (ADR-0001, iter-2 audit M-3)
+   *
+   * Iter-2 audit M-3: default flipped from 'sqlite' to 'pglite' per
+   * ADR-0001 ("single backend family across all shapes — PGLite +
+   * pgvector + AGE locally"). The legacy SQLite/IndexedStorage path stays
+   * opt-in via PLUR_BACKEND=sqlite or backend: sqlite in config.yaml as
+   * a one-minor-version deprecation flag. YAML is the source of truth
+   * either way, so the migration is transparent — first start with the
+   * new default mirrors YAML into PGLite in the background.
    */
   private _resolveBackend(): 'sqlite' | 'pglite' {
     const env = process.env.PLUR_BACKEND
     if (env === 'pglite' || env === 'sqlite') return env
     const fromConfig = (this.config as { backend?: string }).backend
     if (fromConfig === 'pglite' || fromConfig === 'sqlite') return fromConfig
-    return 'sqlite'
+    return 'pglite'
   }
 
   private _autoPurgeLegacyTensions(): void {
