@@ -5,6 +5,12 @@ import { tmpdir } from 'os'
 import yaml from 'js-yaml'
 import { Plur } from '../src/index.js'
 
+// Iter-2 audit M-3: pin sqlite. session-scope tests use a hung fetch mock
+// to test timeout behavior, not local indexing. PGLite WASM init adds
+// flakiness without coverage value here.
+const originalBackend = process.env.PLUR_BACKEND
+process.env.PLUR_BACKEND = 'sqlite'
+
 function writeStoresConfig(dir: string, stores: Array<Record<string, unknown>>) {
   writeFileSync(
     join(dir, 'config.yaml'),

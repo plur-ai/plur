@@ -2,34 +2,34 @@
 
 ## Unreleased
 
-Sprint 0: PGLite substrate, benchmark harness, 4 ONNX embedder adapters, EmbeddingGemma as new default. Opt-in `text-embedding-3-large` via `PLUR_EMBEDDER=openai-3-large`. YAML-as-truth invariant enforced in CI.
+Sprint 0: PGLite substrate wired into recall, benchmark harness, 4 ONNX embedder adapters, opt-in `text-embedding-3-large` via `PLUR_EMBEDDER=openai-3-large`. YAML-as-truth invariant enforced in CI across both backends. BGE-small remains the default embedder — the EmbeddingGemma default-flip is deferred to Phase C real LongMemEval-S evidence.
 
-### EmbeddingGemma is the new default embedder (#219)
+### Default embedder stays `bge-small` (iter-2 audit B-2)
 
-The default embedder for `@plur-ai/core` is now `embedding-gemma` (Google EmbeddingGemma-300M, Apache-2.0, 768d, ~325 MB on disk q8). The previous default `bge-small` (BAAI/bge-small-en-v1.5, MIT, 384d, ~130 MB) is still available via `PLUR_EMBEDDER=bge-small`. The Sprint 0 bake-off (docs/benchmarks/embedder-bake-off-2026-05.md) showed EmbeddingGemma matching BGE-small on R@5 at the small-N fixture, winning on Accuracy (full-keyword coverage in the top 10), and shipping under a permissive license with the most upstream headroom of the four candidates.
+The PR 5 (#219) default flip to EmbeddingGemma was reverted in the iter-2 audit. The PR 4 bake-off ran on N=5 per category (30 scenarios total) — too small to justify the swap on the plan's gate rule ("≥2pp R@5 at or below CPU cost"). EmbeddingGemma ties BGE-small on R@5, loses on R@1 (43.3% vs 46.7%), and costs 2.4x peak RSS plus 11x p99 latency.
 
-**First-run impact**: new installs incur a one-time ~325 MB model download. Existing users with `PLUR_BACKEND=pglite` who already have a 384d index must run `plur sync --reembed --full` to recreate the PGLite `vector(N)` column at 768d. The mismatch warning surfaces in `plur doctor`.
+EmbeddingGemma remains a first-class adapter via `PLUR_EMBEDDER=embedding-gemma`. The default decision is deferred to Phase C (real LongMemEval-S, N=500 per category, distinct scenarios). See `docs/benchmarks/embedder-bake-off-2026-05.md` and `docs/audit/sprint-0/iter-1-gaps-consolidated.md` for the full decision trail.
 
-### Opt-in API tier — `text-embedding-3-large`
+### PGLite is the default backend, wired into recall (iter-2 audit B-1, M-3)
 
-A new `openai-3-large` adapter exposes OpenAI's `text-embedding-3-large` (3072d) for users who want the higher retrieval ceiling and are happy to pay the API cost. Activated via `PLUR_EMBEDDER=openai-3-large`; requires `OPENAI_API_KEY`. The adapter throws a clear error pointing at the env var when the key is missing — no confusing 401 from the OpenAI SDK.
+`Plur` constructor now defaults `backend` to `'pglite'` per ADR-0001. The legacy `sqlite` (better-sqlite3 IndexedStorage) path stays opt-in via `PLUR_BACKEND=sqlite` or `backend: sqlite` in `config.yaml` — one minor-version deprecation flag, no data loss.
 
-### Migration: `plur sync --reembed [--full]`
+`recallHybrid` / `recallSemantic` / `injectHybrid` now route through `pgliteAdapter.searchVector` when the adapter is active; the JSON `.embeddings-cache.json` path stays live as the fallback for the SQLite/in-memory backend. `Plur.learn()` and `learnAsync` auto-call `pgliteAdapter.upsertEmbedding` after the YAML write succeeds, so engrams created during a session are immediately vector-searchable. YAML-as-truth invariant preserved — both tests (Test A nuke-rebuild, Test B traceability) now run against both backends.
 
-- `--reembed` alone: re-embeds engrams whose stored vector dim already matches the active embedder (no-op on a matched index, useful after upgrading the embedder family within the same dim).
-- `--reembed --full`: drops the PGLite embedding table, recreates it at the active embedder's dim, and re-embeds every engram from YAML. The recovery path when switching between 384d and 768d embedders.
+### Migration: `plur sync --reembed [--full]` works for non-PGLite users too (iter-2 audit B-3)
 
-YAML is never touched in either mode (YAML-as-truth invariant). The same surface is available via the MCP `plur_sync` tool with `reembed: true`.
+The `.embeddings-cache.json` file is now stamped with `{ embedder_name, embedder_dim, version }` in a metadata header. On load, if the active embedder name or dim differs from the cache header, the cache is invalidated and rebuilt — the silent-poison-on-embedder-switch scenario from iter-1 critic concern #2 is closed.
 
-### `plur doctor` surfaces the dim mismatch
+- `--reembed` alone: re-embeds engrams whose stored vector dim already matches the active embedder (no-op on a matched index).
+- `--reembed --full`: drops the PGLite embedding table (or the JSON cache), recreates at the active embedder's dim, and re-embeds every engram from YAML.
 
-`plur doctor` now reports the active embedder name and, when the PGLite vector column dim differs from the embedder's dim, prints a prominent warning pointing at `plur sync --reembed --full`. Without the migration, hybrid recall silently degrades to BM25 — the warning makes the cause obvious.
+YAML is never touched in either mode. `plur doctor` warns on dim mismatch in both PGLite and JSON cache paths.
 
 ### Tests
 
-19 new tests across `packages/core/test/embedder-default.test.ts`, `packages/core/test/reembed-migration.test.ts`, and `packages/core/test/doctor-dim-mismatch.test.ts`. Full suite: 1224 passed, 24 skipped.
+The yaml-truth Test A and Test B suites are parameterized over `PLUR_BACKEND=indexed` and `PLUR_BACKEND=pglite` — both backends must pass. Added an adversarial Test B variant that inserts directly into PGLite (bypassing YAML) and confirms no public method surfaces it.
 
-The workspace test config pins `PLUR_EMBEDDER=bge-small` so the suite stays hermetic — only `embedder-default.test.ts` overrides it to verify the production default. Production code uses the embedding-gemma default.
+Full suite: 1230+ passed, 24 skipped (count rises slightly with iter-2 parameterized tests + new edge-case coverage).
 
 ### Packages bumped
 

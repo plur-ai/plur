@@ -7,6 +7,11 @@ import { RemoteStore } from '../src/store/remote-store.js'
 import { Plur } from '../src/index.js'
 import { StubServer } from './helpers/stub-server.js'
 
+// Iter-2 audit M-3: pin sqlite for hermeticity — these are remote-store
+// tests, not local indexing tests, so PGLite WASM init only adds flakiness.
+const originalBackend = process.env.PLUR_BACKEND
+process.env.PLUR_BACKEND = 'sqlite'
+
 /**
  * Issue #89 — write-then-read consistency. After append() succeeds,
  * the next load() must see the engram without waiting for a background

@@ -16,13 +16,23 @@ try {
 describe.skipIf(!hasSqlite)('SQLite indexed storage', () => {
   let dir: string
   let plur: Plur
+  // Iter-2 audit M-3 flipped the production default backend to 'pglite'. This
+  // legacy-path test predates that and depends on the IndexedStorage code
+  // path. Pin PLUR_BACKEND=sqlite so the test stays hermetic regardless of
+  // env leaks from other workers.
+  const originalBackend = process.env.PLUR_BACKEND
 
   beforeEach(() => {
+    process.env.PLUR_BACKEND = 'sqlite'
     dir = mkdtempSync(join(tmpdir(), 'plur-indexed-'))
     writeFileSync(join(dir, 'config.yaml'), 'index: true\n')
     plur = new Plur({ path: dir })
   })
-  afterEach(() => { rmSync(dir, { recursive: true }) })
+  afterEach(() => {
+    if (originalBackend === undefined) delete process.env.PLUR_BACKEND
+    else process.env.PLUR_BACKEND = originalBackend
+    rmSync(dir, { recursive: true })
+  })
 
   it('learn and recall work with index enabled', () => {
     const engram = plur.learn('API uses snake_case', { scope: 'project:myapp', type: 'behavioral' })
