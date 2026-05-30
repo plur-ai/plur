@@ -15,3 +15,12 @@ docs/architecture/vertical-extensions.md
 # Local Datacore installation state — references personal install paths
 # (e.g. 5-plur/, 0-personal/). Belongs to the user's machine, not this repo.
 .datacore/state/
+
+# LongMemEval-S corpus — 265 MB source JSON (xiaowu0162/longmemeval on HF) and
+# the converted full YAML (~similar size). Reproduce locally with:
+#   huggingface-cli download xiaowu0162/longmemeval --repo-type dataset \
+#     --local-dir benchmark/data/longmemeval-source/
+#   npx tsx benchmark/scripts/import-longmemeval.ts
+# A 30-scenario smoke subset (longmemeval-s-smoke.yaml) IS committed for tests.
+benchmark/data/longmemeval-source/
+benchmark/data/longmemeval-s.yaml
