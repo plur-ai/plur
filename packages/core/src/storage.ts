@@ -11,6 +11,8 @@ export interface PlurPaths {
   exchange: string
   config: string
   db: string
+  /** PGLite data directory (ADR-0001, opt-in via backend: pglite). */
+  pglite: string
 }
 
 export function detectPlurStorage(explicitPath?: string): PlurPaths {
@@ -31,5 +33,6 @@ export function detectPlurStorage(explicitPath?: string): PlurPaths {
     exchange: join(root, 'exchange'),
     config: join(root, 'config.yaml'),
     db: join(root, 'engrams.db'),
+    pglite: join(root, 'store.pglite'),
   }
 }
