@@ -8,8 +8,12 @@ import type { LlmFunction } from '../src/types.js'
 describe('expanded search (query expansion + hybrid + RRF)', () => {
   let dir: string
   let plur: Plur
+  // Iter-2 audit M-3: pin sqlite — this test exercises the JSON-cache hybrid
+  // search path, not PGLite.
+  const originalBackend = process.env.PLUR_BACKEND
 
   beforeEach(() => {
+    process.env.PLUR_BACKEND = 'sqlite'
     dir = mkdtempSync(join(tmpdir(), 'plur-expanded-'))
     plur = new Plur({ path: dir })
     plur.learn('The capital of France is Paris', { type: 'terminological' })
@@ -20,7 +24,11 @@ describe('expanded search (query expansion + hybrid + RRF)', () => {
     plur.learn('Deploy to production requires two approvals', { type: 'procedural' })
   })
 
-  afterEach(() => { rmSync(dir, { recursive: true }) })
+  afterEach(() => {
+    if (originalBackend === undefined) delete process.env.PLUR_BACKEND
+    else process.env.PLUR_BACKEND = originalBackend
+    rmSync(dir, { recursive: true })
+  })
 
   const mockLlm: LlmFunction = async (prompt) => {
     // Simulate query expansion — return 3 variants

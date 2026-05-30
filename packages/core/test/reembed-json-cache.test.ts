@@ -20,12 +20,18 @@ import { Plur } from '../src/index.js'
 
 describe('reembedAsync — JSON cache path (iter-2 audit B-3)', () => {
   let dir: string
+  // M-3 flipped the default to pglite; these tests are about the non-PGLite
+  // JSON cache path, so pin sqlite explicitly.
+  const originalBackend = process.env.PLUR_BACKEND
 
   beforeEach(() => {
+    process.env.PLUR_BACKEND = 'sqlite'
     dir = mkdtempSync(join(tmpdir(), 'plur-reembed-json-'))
   })
 
   afterEach(() => {
+    if (originalBackend === undefined) delete process.env.PLUR_BACKEND
+    else process.env.PLUR_BACKEND = originalBackend
     rmSync(dir, { recursive: true, force: true })
   })
 
