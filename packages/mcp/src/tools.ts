@@ -744,7 +744,7 @@ export function getToolDefinitions(): ToolDefinition[] {
 
     {
       name: 'plur_sync',
-      description: 'Sync engrams via git — initializes repo on first call, commits and pushes/pulls on subsequent calls. Provide a remote URL on first call to enable cross-device sync.',
+      description: 'Sync engrams via git AND refresh the derived index from YAML. Initializes repo on first call, commits and pushes/pulls on subsequent calls. Provide a remote URL on first call to enable cross-device sync. Pass full=true to drop-and-rebuild the index from YAML (recovery path; YAML stays untouched).',
       annotations: { title: 'Sync', openWorldHint: true, destructiveHint: false, idempotentHint: true },
       inputSchema: {
         type: 'object',
@@ -753,10 +753,14 @@ export function getToolDefinitions(): ToolDefinition[] {
             type: 'string',
             description: 'Git remote URL (e.g. git@github.com:user/plur-engrams.git). Only needed on first call to set up remote.',
           },
+          full: {
+            type: 'boolean',
+            description: 'Full reindex: drop the derived index (PGLite/SQLite) and rebuild from YAML. YAML is never modified. Use to recover from an out-of-sync index.',
+          },
         },
       },
       handler: async (args, plur) => {
-        const result = plur.sync(args.remote as string | undefined)
+        const result = plur.sync(args.remote as string | undefined, { full: args.full === true })
 
         // Flush outbox after git sync (issue #26)
         let outbox_result: { flushed: number; failed: number; expired_warnings: string[] } | undefined
