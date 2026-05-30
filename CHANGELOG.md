@@ -4,6 +4,25 @@
 
 Sprint 0: PGLite substrate wired into recall, benchmark harness, 4 ONNX embedder adapters, opt-in `text-embedding-3-large` via `PLUR_EMBEDDER=openai-3-large`. YAML-as-truth invariant enforced in CI across both backends. BGE-small remains the default embedder — the EmbeddingGemma default-flip is deferred to Phase C real LongMemEval-S evidence.
 
+### Intent-aware query rewriting (default ON) — #224
+
+Deterministic intent-aware query rewriting (entity / temporal / event / general routing). No LLM call. Default ON; opt-out via `PLUR_INTENT_ROUTING=off`.
+
+New surface:
+
+- `classifyQuery(query)` at `packages/core/src/intent/classifier.ts` — pure regex / keyword matching. Returns `{ intent, confidence, reason }`. No async, no I/O.
+- `routeForIntent(intent)` at `packages/core/src/intent/route.ts` — maps each intent to a modest ranking profile (multipliers in [1.0, 1.5]). The `general` profile is the neutral baseline (all multipliers = 1.0) so existing behavior is byte-equivalent when the classifier returns general.
+- `applyIntentRouting(candidates, profile)` at `packages/core/src/intent/apply.ts` — stable re-rank that combines position-derived base score with intent-aware boosts (recency, episode anchor, entity domain).
+- New `RecallOptions.intentOverride` / `InjectOptions.intentOverride`: force a specific intent (`entity` | `temporal` | `event` | `general`) for testing or unusual queries.
+
+Wired through `Plur.recall`, `Plur.recallHybrid` / `recallHybridWithMeta`, `Plur.recallSemantic`, and `Plur.injectHybrid`. The classifier runs once at the start of each recall; when it returns `general` (the common case for routine queries) the existing path runs unchanged. For `entity` / `temporal` / `event` the candidate list is over-fetched (2x limit) and re-ranked by the intent profile before truncation. Graceful degradation: wrong classification produces a small ranking perturbation, never silently drops results.
+
+For `injectHybrid`, intent multipliers are applied to the existing embedding-boost map (capped at 1.0 so the `selectAndSpread` 0.5 threshold keeps its meaning).
+
+Latency cost: ~0ms — pure regex classification plus an O(N log N) re-sort over the truncated candidate list.
+
+Tests: `packages/core/test/intent-classifier.test.ts` (42 table-driven cases across all four intents + edge cases) and `packages/core/test/intent-routing.test.ts` (profile contract + recall integration, 12 tests). 54 intent-specific tests total. Core suite stays green: 909 passed.
+
 ### Default embedder stays `bge-small` (iter-2 audit B-2)
 
 The PR 5 (#219) default flip to EmbeddingGemma was reverted in the iter-2 audit. The PR 4 bake-off ran on N=5 per category (30 scenarios total) — too small to justify the swap on the plan's gate rule ("≥2pp R@5 at or below CPU cost"). EmbeddingGemma ties BGE-small on R@5, loses on R@1 (43.3% vs 46.7%), and costs 2.4x peak RSS plus 11x p99 latency.
