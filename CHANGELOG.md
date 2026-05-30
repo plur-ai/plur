@@ -1,5 +1,41 @@
 # Changelog
 
+## Unreleased
+
+Sprint 0: PGLite substrate, benchmark harness, 4 ONNX embedder adapters, EmbeddingGemma as new default. Opt-in `text-embedding-3-large` via `PLUR_EMBEDDER=openai-3-large`. YAML-as-truth invariant enforced in CI.
+
+### EmbeddingGemma is the new default embedder (#219)
+
+The default embedder for `@plur-ai/core` is now `embedding-gemma` (Google EmbeddingGemma-300M, Apache-2.0, 768d, ~325 MB on disk q8). The previous default `bge-small` (BAAI/bge-small-en-v1.5, MIT, 384d, ~130 MB) is still available via `PLUR_EMBEDDER=bge-small`. The Sprint 0 bake-off (docs/benchmarks/embedder-bake-off-2026-05.md) showed EmbeddingGemma matching BGE-small on R@5 at the small-N fixture, winning on Accuracy (full-keyword coverage in the top 10), and shipping under a permissive license with the most upstream headroom of the four candidates.
+
+**First-run impact**: new installs incur a one-time ~325 MB model download. Existing users with `PLUR_BACKEND=pglite` who already have a 384d index must run `plur sync --reembed --full` to recreate the PGLite `vector(N)` column at 768d. The mismatch warning surfaces in `plur doctor`.
+
+### Opt-in API tier — `text-embedding-3-large`
+
+A new `openai-3-large` adapter exposes OpenAI's `text-embedding-3-large` (3072d) for users who want the higher retrieval ceiling and are happy to pay the API cost. Activated via `PLUR_EMBEDDER=openai-3-large`; requires `OPENAI_API_KEY`. The adapter throws a clear error pointing at the env var when the key is missing — no confusing 401 from the OpenAI SDK.
+
+### Migration: `plur sync --reembed [--full]`
+
+- `--reembed` alone: re-embeds engrams whose stored vector dim already matches the active embedder (no-op on a matched index, useful after upgrading the embedder family within the same dim).
+- `--reembed --full`: drops the PGLite embedding table, recreates it at the active embedder's dim, and re-embeds every engram from YAML. The recovery path when switching between 384d and 768d embedders.
+
+YAML is never touched in either mode (YAML-as-truth invariant). The same surface is available via the MCP `plur_sync` tool with `reembed: true`.
+
+### `plur doctor` surfaces the dim mismatch
+
+`plur doctor` now reports the active embedder name and, when the PGLite vector column dim differs from the embedder's dim, prints a prominent warning pointing at `plur sync --reembed --full`. Without the migration, hybrid recall silently degrades to BM25 — the warning makes the cause obvious.
+
+### Tests
+
+19 new tests across `packages/core/test/embedder-default.test.ts`, `packages/core/test/reembed-migration.test.ts`, and `packages/core/test/doctor-dim-mismatch.test.ts`. Full suite: 1224 passed, 24 skipped.
+
+The workspace test config pins `PLUR_EMBEDDER=bge-small` so the suite stays hermetic — only `embedder-default.test.ts` overrides it to verify the production default. Production code uses the embedding-gemma default.
+
+### Packages bumped
+
+- `@plur-ai/core`: 0.9.12 → 0.10.0
+- `@plur-ai/mcp`, `@plur-ai/cli`, `@plur-ai/claw`: unchanged this PR (the epic-to-main merge handles the coordinated release).
+
 ## 0.9.11 (2026-05-26)
 
 Bug sweep — three independent fixes bundled.

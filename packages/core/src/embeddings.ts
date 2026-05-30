@@ -8,12 +8,14 @@ import { atomicWrite } from './sync.js'
 /**
  * Embedding-based semantic search for engrams.
  *
- * Uses @huggingface/transformers (ONNX runtime) for local embeddings.
- * Model: BAAI/bge-small-en-v1.5 (~130MB, 384-dim, strong MTEB, fast)
+ * Uses @huggingface/transformers (ONNX runtime) for local embeddings, routed
+ * through the embedder factory at packages/core/src/embedders/index.ts.
  *
- * BGE models significantly outperform MiniLM on MTEB retrieval benchmarks
- * while keeping the same 384-dim footprint. bge-small-en-v1.5 scores ~62 on
- * MTEB vs ~42 for all-MiniLM-L6-v2.
+ * Default model (Sprint 0 PR 5 / #219): EmbeddingGemma-300M (Apache-2.0,
+ * 768d, ~325 MB on disk q8). Override via PLUR_EMBEDDER env var. The
+ * historical default (BGE-small-en-v1.5, 384d) is still available as
+ * `PLUR_EMBEDDER=bge-small`. The opt-in API tier is `openai-3-large`
+ * (text-embedding-3-large, 3072d) — requires OPENAI_API_KEY.
  *
  * Embeddings are cached per-engram using content hashing to avoid
  * re-computation on subsequent searches.

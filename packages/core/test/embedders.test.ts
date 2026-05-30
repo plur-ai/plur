@@ -39,12 +39,13 @@ const EXPECTED: Record<EmbedderName, { dim: number; modelId: string }> = {
   'bge-small': { dim: 384, modelId: 'Xenova/bge-small-en-v1.5' },
   'bge-base': { dim: 768, modelId: 'Xenova/bge-base-en-v1.5' },
   'embedding-gemma': { dim: 768, modelId: 'onnx-community/embeddinggemma-300m-ONNX' },
+  'openai-3-large': { dim: 3072, modelId: 'text-embedding-3-large' },
 }
 
 describe('EmbedderAdapter factory — metadata contract', () => {
-  it('exports the four expected names', () => {
+  it('exports the five expected names', () => {
     expect(EMBEDDER_NAMES.sort()).toEqual(
-      ['bge-base', 'bge-small', 'embedding-gemma', 'minilm'],
+      ['bge-base', 'bge-small', 'embedding-gemma', 'minilm', 'openai-3-large'],
     )
   })
 
@@ -86,7 +87,13 @@ describe.skipIf(!NETWORK)('EmbedderAdapter — live model loads (PLUR_EMBEDDER_N
     expect(Math.sqrt(norm)).toBeLessThan(1.5)
   }
 
-  for (const name of EMBEDDER_NAMES) {
+  // openai-3-large requires both NETWORK access and OPENAI_API_KEY. Skip it
+  // from the live-load matrix — the OPENAI key is not a CI default and we
+  // don't want to bill the OpenAI API on every PR. The bare-key error path
+  // is exercised in embedder-default.test.ts instead.
+  const LIVE_NAMES = EMBEDDER_NAMES.filter((n) => n !== 'openai-3-large')
+
+  for (const name of LIVE_NAMES) {
     it(`"${name}" embeds a single string`, async () => {
       const adapter = getEmbedder(name)
       const vec = await adapter.embed('the quick brown fox jumps over the lazy dog')

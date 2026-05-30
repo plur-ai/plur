@@ -712,7 +712,7 @@ export function getToolDefinitions(): ToolDefinition[] {
 
     {
       name: 'plur_sync',
-      description: 'Sync engrams via git AND refresh the derived index from YAML. Initializes repo on first call, commits and pushes/pulls on subsequent calls. Provide a remote URL on first call to enable cross-device sync. Pass full=true to drop-and-rebuild the index from YAML (recovery path; YAML stays untouched).',
+      description: 'Sync engrams via git AND refresh the derived index from YAML. Initializes repo on first call, commits and pushes/pulls on subsequent calls. Provide a remote URL on first call to enable cross-device sync. Pass full=true to drop-and-rebuild the index from YAML (recovery path; YAML stays untouched). Pass reembed=true to re-embed engrams when the active embedder changes (Sprint 0 PR 5 / #219); combine with full=true to also recreate the vector column at the new dim.',
       annotations: { title: 'Sync', openWorldHint: true, destructiveHint: false, idempotentHint: true },
       inputSchema: {
         type: 'object',
@@ -725,10 +725,22 @@ export function getToolDefinitions(): ToolDefinition[] {
             type: 'boolean',
             description: 'Full reindex: drop the derived index (PGLite/SQLite) and rebuild from YAML. YAML is never modified. Use to recover from an out-of-sync index.',
           },
+          reembed: {
+            type: 'boolean',
+            description: 'Re-embed engrams using the active embedder. Combine with full=true to also recreate the PGLite vector column at the new dim — the migration path when switching embedders (e.g. bge-small 384d to embedding-gemma 768d).',
+          },
         },
       },
       handler: async (args, plur) => {
-        const result = plur.sync(args.remote as string | undefined, { full: args.full === true })
+        const reembed = args.reembed === true
+        const full = args.full === true
+        const result = plur.sync(args.remote as string | undefined, { full, reembed })
+
+        // Wait for any background reembed/reindex work so the JSON result
+        // accurately reflects the post-sync state.
+        if (typeof (plur as { waitForIndex?: () => Promise<void> }).waitForIndex === 'function') {
+          await (plur as { waitForIndex: () => Promise<void> }).waitForIndex()
+        }
 
         // Flush outbox after git sync (issue #26)
         let outbox_result: { flushed: number; failed: number; expired_warnings: string[] } | undefined
@@ -738,6 +750,7 @@ export function getToolDefinitions(): ToolDefinition[] {
 
         return {
           ...result,
+          ...(reembed ? { reembed: true, full } : {}),
           ...(outbox_result && (outbox_result.flushed > 0 || outbox_result.failed > 0) ? {
             outbox: {
               flushed: outbox_result.flushed,
