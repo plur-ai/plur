@@ -37,6 +37,13 @@ const TOKEN = 'integration-test-token'
 let server: StubServer
 let baseUrl: string
 
+// Iter-2 audit M-3: production default backend flipped to 'pglite'. These
+// remote-integration tests are about HTTP/wire behavior, not local indexing,
+// so pin PLUR_BACKEND=sqlite to keep PGLite out of the way and avoid the
+// WASM startup races that make the test suite flaky under heavy parallelism.
+const originalBackend = process.env.PLUR_BACKEND
+process.env.PLUR_BACKEND = 'sqlite'
+
 beforeAll(async () => {
   server = new StubServer(TOKEN)
   const info = await server.start()
@@ -45,10 +52,14 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await server.stop()
+  if (originalBackend === undefined) delete process.env.PLUR_BACKEND
+  else process.env.PLUR_BACKEND = originalBackend
 })
 
 beforeEach(() => {
   server.reset()
+  // Defensive: re-pin sqlite in case another test polluted the env var.
+  process.env.PLUR_BACKEND = 'sqlite'
 })
 
 // ---------------------------------------------------------------------------

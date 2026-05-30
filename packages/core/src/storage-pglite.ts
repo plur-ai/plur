@@ -33,12 +33,14 @@ import type { EmbedderAdapter } from './embedders/types.js'
 
 /**
  * Default vector dimension when no PLUR_EMBEDDER is set. Matches the dim of
- * the default embedder (EmbeddingGemma, 768d, promoted in Sprint 0 PR 5 /
- * #219). Construction-time overrides via PGLiteAdapterOptions.vectorDim take
- * precedence — the integration path in index.ts always passes the active
- * adapter.dim so this default is only the bare-PGLite-adapter fallback.
+ * the default embedder (bge-small, 384d). EmbeddingGemma was briefly the
+ * default (PR 5 / #219 — 768d) but iter-2 audit B-2 reverted the default to
+ * bge-small pending Phase C evidence. Construction-time overrides via
+ * PGLiteAdapterOptions.vectorDim take precedence — the integration path in
+ * index.ts always passes the active adapter.dim so this default is only the
+ * bare-PGLite-adapter fallback.
  */
-const DEFAULT_VECTOR_DIM = 768
+const DEFAULT_VECTOR_DIM = 384
 
 /**
  * Test-only embedder override. Set via `_setEmbedderForTests()` so reembed
@@ -96,7 +98,12 @@ async function loadPgliteAge(): Promise<unknown | null> {
 }
 
 export interface PGLiteAdapterOptions {
-  /** Vector dimension for the embedding column (default: 384 — BGE-small). */
+  /**
+   * Vector dimension for the embedding column. Default: 384 (matches the
+   * v0.10 default embedder bge-small per iter-2 audit B-2 revert). The
+   * integration path in `Plur` always passes the active embedder's dim
+   * explicitly, so this default only applies to bare-adapter usage in tests.
+   */
   vectorDim?: number
 }
 
@@ -452,6 +459,20 @@ export class PGLiteAdapter implements StorageAdapter {
   }
 
   /**
+   * Cheap "do we already have an embedding for this engram" check. Used by
+   * the auto-embed path in `Plur._autoEmbedNewEngrams` (iter-2 audit B-1) to
+   * skip engrams whose vector is already indexed.
+   */
+  async hasEmbedding(engramId: string): Promise<boolean> {
+    const db = await this.getDb()
+    const res = await db.query(
+      'SELECT 1 FROM engram_embeddings WHERE engram_id = $1 LIMIT 1',
+      [engramId],
+    )
+    return res.rows.length > 0
+  }
+
+  /**
    * Drop the embedding table and recreate it with a new vector dim. Used by
    * the reembed migration (`plur sync --reembed --full`) when the active
    * embedder produces a different dim than the indexed column.
@@ -485,9 +506,13 @@ export class PGLiteAdapter implements StorageAdapter {
    * Re-embed every engram in YAML using the supplied embedder, replacing the
    * contents of `engram_embeddings`.
    *
-   * - `full=true`: recreates the embedding column at the embedder's dim first
-   *   (use this when the dim is changing — e.g. 384 → 768). This is the
-   *   `plur sync --reembed --full` recovery path.
+   * - `full=true`: builds a new table `engram_embeddings_new` at the
+   *   embedder's dim, populates it with every engram, then atomically swaps
+   *   it for the live `engram_embeddings` (DROP + RENAME). If the embed
+   *   loop fails partway through, the live table is untouched and the
+   *   partial scratch table is cleaned up — no half-built index, no
+   *   destructive failure mode. Iter-2 audit M-6 (CTO F-CTO-007,
+   *   Data F-DATA-001).
    * - `full=false`: only re-embeds when the column dim already matches the
    *   embedder. If dims differ, this is a no-op and the caller is expected
    *   to surface the mismatch as a doctor warning.
@@ -501,13 +526,8 @@ export class PGLiteAdapter implements StorageAdapter {
     if (!embedder) {
       return { reembedded: 0, skipped: true, reason: 'no embedder supplied' }
     }
-    // Ensure the column exists. getVectorColumnDim is null when there's no
-    // table yet (or the BYTEA fallback is in use — in that case we still
-    // re-embed but skip the dim guard).
     const currentDim = await this.getVectorColumnDim()
-    if (opts?.full) {
-      await this.recreateVectorColumn(embedder.dim)
-    } else if (currentDim !== null && currentDim !== embedder.dim) {
+    if (!opts?.full && currentDim !== null && currentDim !== embedder.dim) {
       return {
         reembedded: 0,
         skipped: true,
@@ -518,6 +538,14 @@ export class PGLiteAdapter implements StorageAdapter {
       return { reembedded: 0, skipped: true, reason: 'yaml not present' }
     }
     const engrams = loadEngrams(this.yamlPath)
+
+    if (opts?.full) {
+      // Build-new-then-swap path. Failure during embed leaves the live
+      // engram_embeddings untouched and the scratch table dropped.
+      return this._reembedFullAtomic(embedder, engrams)
+    }
+
+    // Incremental path: upsert into the existing column.
     let count = 0
     for (const e of engrams) {
       const vec = await embedder.embed(e.statement)
@@ -525,6 +553,89 @@ export class PGLiteAdapter implements StorageAdapter {
       count++
     }
     return { reembedded: count, skipped: false }
+  }
+
+  /**
+   * Build a scratch `engram_embeddings_new` table, populate it via the
+   * supplied embedder, then atomically swap it for the live table inside
+   * a transaction. If embedding fails partway through, the scratch table is
+   * dropped and the live table is untouched.
+   *
+   * Iter-2 audit M-6 — replaces the previous drop-then-populate flow that
+   * left a half-built index on any mid-loop failure.
+   */
+  private async _reembedFullAtomic(
+    embedder: EmbedderAdapter,
+    engrams: Engram[],
+  ): Promise<{ reembedded: number; skipped: boolean; reason?: string }> {
+    const newDim = embedder.dim
+    const db = await this.getDb()
+    // Mutex serialises with concurrent learn() / upsertEmbedding so we can
+    // perform the swap without racing the index mirror.
+    return this.mutex.run(async () => {
+      // 1. Prepare the scratch table. Always start clean.
+      await db.exec('DROP TABLE IF EXISTS engram_embeddings_new')
+      if (this.hasVector) {
+        await db.exec(`
+          CREATE TABLE engram_embeddings_new (
+            engram_id TEXT PRIMARY KEY,
+            embedding vector(${newDim}) NOT NULL
+          );
+        `)
+      } else {
+        await db.exec(`
+          CREATE TABLE engram_embeddings_new (
+            engram_id TEXT PRIMARY KEY,
+            embedding BYTEA NOT NULL
+          );
+        `)
+      }
+      // 2. Populate. On any error, drop the scratch and bubble up — the
+      //    live engram_embeddings is untouched.
+      let count = 0
+      try {
+        for (const e of engrams) {
+          const vec = await embedder.embed(e.statement)
+          if (!Number.isFinite(vec[0])) {
+            // vectorLiteral will throw anyway; surface it earlier with a
+            // clearer migration-context message.
+            for (let i = 0; i < vec.length; i++) {
+              if (!Number.isFinite(vec[i])) {
+                throw new Error(`reembedAll: embedder returned non-finite at index ${i} for engram ${e.id}`)
+              }
+            }
+          }
+          if (this.hasVector) {
+            const literal = vectorLiteral(vec)
+            await db.query(
+              `INSERT INTO engram_embeddings_new (engram_id, embedding) VALUES ($1, $2::vector)`,
+              [e.id, literal],
+            )
+          } else {
+            const buf = float32ToBytes(vec)
+            await db.query(
+              `INSERT INTO engram_embeddings_new (engram_id, embedding) VALUES ($1, $2)`,
+              [e.id, buf],
+            )
+          }
+          count++
+        }
+      } catch (err) {
+        await db.exec('DROP TABLE IF EXISTS engram_embeddings_new').catch(() => undefined)
+        throw err
+      }
+      // 3. Atomic swap. Inside a transaction so a concurrent reader never
+      //    sees an in-between state. PGLite supports DDL in transactions.
+      await db.exec(`
+        BEGIN;
+        DROP TABLE IF EXISTS engram_embeddings;
+        ALTER TABLE engram_embeddings_new RENAME TO engram_embeddings;
+        COMMIT;
+      `)
+      // 4. Update the adapter's cached dim so subsequent inserts size right.
+      this.vectorDim = newDim
+      return { reembedded: count, skipped: false }
+    })
   }
 
   async close(): Promise<void> {
@@ -543,12 +654,20 @@ export class PGLiteAdapter implements StorageAdapter {
 
 function vectorLiteral(v: Float32Array): string {
   // pgvector text format: "[0.1, 0.2, 0.3]"
-  // Numbers serialize at full precision; no NaN/Infinity allowed in pgvector
-  // so we substitute 0 to keep writes from throwing on malformed input.
+  //
+  // Iter-2 audit M-4 (Dijkstra F-DIJK-001, Data F-DATA-008): throw on
+  // NaN / Infinity instead of substituting 0. A vector containing non-finite
+  // floats is a bug upstream (usually a pooling/normalisation degenerate case
+  // on empty text). Substituting 0 produced a perfectly cosine-able vector
+  // that gave wrong recall results forever with no signal. The throw
+  // surfaces the bug at the storage layer where it's most actionable.
   const parts: string[] = []
   for (let i = 0; i < v.length; i++) {
     const n = v[i]
-    parts.push(Number.isFinite(n) ? String(n) : '0')
+    if (!Number.isFinite(n)) {
+      throw new Error(`vectorLiteral: non-finite value at index ${i} (value=${n}). Embedders must return finite Float32Array values.`)
+    }
+    parts.push(String(n))
   }
   return '[' + parts.join(',') + ']'
 }

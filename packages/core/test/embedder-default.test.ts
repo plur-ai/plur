@@ -2,8 +2,13 @@
  * Embedder default + OpenAI tier resolution — Sprint 0 PR 5
  * (feat/embedding-gemma-default), closes plur-ai/plur#219.
  *
+ * Sprint 0 iter-2 audit (B-2) reverted the default to "bge-small" pending
+ * Phase C LongMemEval-S evidence. EmbeddingGemma remains a first-class
+ * adapter; the default flip is deferred. See
+ * docs/audit/sprint-0/iter-1-gaps-consolidated.md.
+ *
  * Contract:
- *   - When PLUR_EMBEDDER is unset, the factory default is "embedding-gemma".
+ *   - When PLUR_EMBEDDER is unset, the factory default is "bge-small".
  *   - PLUR_EMBEDDER=openai-3-large resolves to an adapter named
  *     "openai-3-large" with dim 3072 and modelId "text-embedding-3-large".
  *   - Constructing the OpenAI adapter without OPENAI_API_KEY must NOT throw
@@ -37,18 +42,18 @@ describe('embedder default — PR 5 (#219)', () => {
     _resetResolveWarnings()
   })
 
-  it('DEFAULT_EMBEDDER is "embedding-gemma"', () => {
-    expect(DEFAULT_EMBEDDER).toBe('embedding-gemma')
+  it('DEFAULT_EMBEDDER is "bge-small" (iter-2 audit B-2 revert)', () => {
+    expect(DEFAULT_EMBEDDER).toBe('bge-small')
   })
 
-  it('resolveEmbedderName() returns "embedding-gemma" when PLUR_EMBEDDER is unset', () => {
+  it('resolveEmbedderName() returns "bge-small" when PLUR_EMBEDDER is unset', () => {
     delete process.env.PLUR_EMBEDDER
-    expect(resolveEmbedderName()).toBe('embedding-gemma')
+    expect(resolveEmbedderName()).toBe('bge-small')
   })
 
-  it('resolveEmbedderName() falls back to "embedding-gemma" on unknown values', () => {
+  it('resolveEmbedderName() falls back to "bge-small" on unknown values', () => {
     process.env.PLUR_EMBEDDER = 'gpt-banana'
-    expect(resolveEmbedderName()).toBe('embedding-gemma')
+    expect(resolveEmbedderName()).toBe('bge-small')
   })
 
   it('EMBEDDER_NAMES includes "openai-3-large"', () => {

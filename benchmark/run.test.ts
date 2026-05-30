@@ -17,7 +17,7 @@ import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
 import { fileURLToPath } from 'url'
-import { runBenchmark, sampleScenarios, loadScenarios } from './run.js'
+import { runBenchmark, sampleScenarios, loadScenarios, percentile } from './run.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -66,6 +66,40 @@ describe('sampleScenarios', () => {
       const got = sample.filter(s => s.category === cat).length
       expect(got).toBe(10)
     }
+  })
+})
+
+describe('percentile (iter-2 audit M-5 — Dijkstra F-DIJK-004)', () => {
+  it('p95 on 20 sorted observations returns the 19th smallest, not the max', () => {
+    // Iter-2 audit M-5: the old formula floor((p/100)*len) returned index 19
+    // (the maximum) on a 20-element array — wrong. The fixed formula
+    // floor((p/100)*(len-1)) returns index 18 (the 19th smallest).
+    const sorted = Array.from({ length: 20 }, (_, i) => i + 1)
+    // [1, 2, ..., 20]. p95 should be the 19th value = 19, NOT 20.
+    expect(percentile(sorted, 95)).toBe(19)
+    expect(percentile(sorted, 95)).not.toBe(20)
+  })
+
+  it('p50 on a 5-element array returns the median (index 2)', () => {
+    // [10, 20, 30, 40, 50] — median is 30 (index 2).
+    expect(percentile([10, 20, 30, 40, 50], 50)).toBe(30)
+  })
+
+  it('p100 returns the max', () => {
+    expect(percentile([1, 5, 10], 100)).toBe(10)
+  })
+
+  it('p0 returns the min', () => {
+    expect(percentile([1, 5, 10], 0)).toBe(1)
+  })
+
+  it('returns 0 for empty input', () => {
+    expect(percentile([], 95)).toBe(0)
+  })
+
+  it('handles single-element arrays without crashing', () => {
+    expect(percentile([42], 99)).toBe(42)
+    expect(percentile([42], 50)).toBe(42)
   })
 })
 

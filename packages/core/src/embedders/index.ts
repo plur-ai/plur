@@ -48,16 +48,22 @@ export const EMBEDDER_NAMES = [
 export type EmbedderName = typeof EMBEDDER_NAMES[number]
 
 /**
- * Default embedder when PLUR_EMBEDDER is unset. EmbeddingGemma was promoted
- * to default in Sprint 0 PR 5 (#219) on the back of the embedder bake-off:
- * matches BGE-small on R@5 at the small-N fixture, wins on Accuracy (full
- * keyword coverage), and is Apache-2.0 with the most upstream headroom.
+ * Default embedder when PLUR_EMBEDDER is unset.
  *
- * First-run users incur a ~325 MB model download. Existing PGLite users with
- * a 384d index must run `plur sync --reembed --full` to rebuild the vector
- * column at 768d — `plur doctor` surfaces a warning when that's needed.
+ * Sprint 0 iter-1 audit (docs/audit/sprint-0/iter-1-gaps-consolidated.md, B-2)
+ * reverted the default from `embedding-gemma` back to `bge-small`. The PR 4
+ * bake-off ran on N=5/category (30 scenarios) — too small to justify the
+ * decision rule "≥2pp R@5 at or below CPU cost." EmbeddingGemma tied BGE-small
+ * on R@5, lost on R@1 (43.3% vs 46.7%), and costs 2.4x peak RSS plus 11x p99
+ * latency. The default flip is deferred to Phase C (real LongMemEval-S, N=500
+ * per category) — see docs/benchmarks/embedder-bake-off-2026-05.md for the
+ * deferred decision. BGE-small remains the v0.9.x production default; this is
+ * a zero-risk revert until Phase C produces evidence.
+ *
+ * Flip to embedding-gemma via PLUR_EMBEDDER=embedding-gemma; the adapter is
+ * still bundled and tested.
  */
-export const DEFAULT_EMBEDDER: EmbedderName = 'embedding-gemma'
+export const DEFAULT_EMBEDDER: EmbedderName = 'bge-small'
 
 /** Singleton cache so two callers asking for the same name share metadata + the inner pipeline. */
 const adapterCache = new Map<EmbedderName, EmbedderAdapter>()
