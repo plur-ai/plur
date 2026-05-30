@@ -33,12 +33,14 @@ import type { EmbedderAdapter } from './embedders/types.js'
 
 /**
  * Default vector dimension when no PLUR_EMBEDDER is set. Matches the dim of
- * the default embedder (EmbeddingGemma, 768d, promoted in Sprint 0 PR 5 /
- * #219). Construction-time overrides via PGLiteAdapterOptions.vectorDim take
- * precedence — the integration path in index.ts always passes the active
- * adapter.dim so this default is only the bare-PGLite-adapter fallback.
+ * the default embedder (bge-small, 384d). EmbeddingGemma was briefly the
+ * default (PR 5 / #219 — 768d) but iter-2 audit B-2 reverted the default to
+ * bge-small pending Phase C evidence. Construction-time overrides via
+ * PGLiteAdapterOptions.vectorDim take precedence — the integration path in
+ * index.ts always passes the active adapter.dim so this default is only the
+ * bare-PGLite-adapter fallback.
  */
-const DEFAULT_VECTOR_DIM = 768
+const DEFAULT_VECTOR_DIM = 384
 
 /**
  * Test-only embedder override. Set via `_setEmbedderForTests()` so reembed
@@ -96,7 +98,12 @@ async function loadPgliteAge(): Promise<unknown | null> {
 }
 
 export interface PGLiteAdapterOptions {
-  /** Vector dimension for the embedding column (default: 384 — BGE-small). */
+  /**
+   * Vector dimension for the embedding column. Default: 384 (matches the
+   * v0.10 default embedder bge-small per iter-2 audit B-2 revert). The
+   * integration path in `Plur` always passes the active embedder's dim
+   * explicitly, so this default only applies to bare-adapter usage in tests.
+   */
   vectorDim?: number
 }
 

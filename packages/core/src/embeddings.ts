@@ -11,14 +11,18 @@ import { atomicWrite } from './sync.js'
  * Uses @huggingface/transformers (ONNX runtime) for local embeddings, routed
  * through the embedder factory at packages/core/src/embedders/index.ts.
  *
- * Default model (Sprint 0 PR 5 / #219): EmbeddingGemma-300M (Apache-2.0,
- * 768d, ~325 MB on disk q8). Override via PLUR_EMBEDDER env var. The
- * historical default (BGE-small-en-v1.5, 384d) is still available as
- * `PLUR_EMBEDDER=bge-small`. The opt-in API tier is `openai-3-large`
- * (text-embedding-3-large, 3072d) — requires OPENAI_API_KEY.
+ * Default model: BGE-small-en-v1.5 (MIT, 384d, ~130 MB on disk q8).
+ * EmbeddingGemma was briefly promoted to default in Sprint 0 PR 5 (#219) but
+ * the iter-1 audit (B-2) reverted the default pending Phase C LongMemEval-S
+ * evidence — see docs/audit/sprint-0/iter-1-gaps-consolidated.md and
+ * docs/benchmarks/embedder-bake-off-2026-05.md. EmbeddingGemma is still
+ * available via PLUR_EMBEDDER=embedding-gemma. Opt-in API tier:
+ * `openai-3-large` (text-embedding-3-large, 3072d) — requires OPENAI_API_KEY.
  *
  * Embeddings are cached per-engram using content hashing to avoid
- * re-computation on subsequent searches.
+ * re-computation on subsequent searches. The cache file is stamped with the
+ * active embedder name + dim; on mismatch the cache is invalidated and
+ * rebuilt (Sprint 0 iter-2 B-1, closes RC-3).
  */
 
 // Lazy-loaded pipeline — only initialized when first needed
@@ -112,8 +116,9 @@ async function getEmbedder() {
   // transient (network, sandbox restrictions on first download).
   try {
     // Sprint 0 PR 4: route through the embedder factory so PLUR_EMBEDDER
-    // controls which model is loaded. Default stays bge-small (the v0.9.x
-    // model) when the env var is unset, so existing installs are unchanged.
+    // controls which model is loaded. Default is bge-small (Sprint 0 iter-2
+    // B-2 revert) when the env var is unset, so existing installs are
+    // unchanged. EmbeddingGemma stays opt-in until Phase C produces evidence.
     const { getEmbedder: getAdapter, resolveEmbedderName } = await import('./embedders/index.js')
     const adapter = getAdapter(resolveEmbedderName())
     embedPipeline = adapter
