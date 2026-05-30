@@ -153,11 +153,15 @@ describe('runBenchmark', () => {
     expect(j).toHaveProperty('latency_p50_ms')
   }, 120000)
 
-  it('accepts the four embedder names; non-minilm fall back with a clear stub note', async () => {
+  it('accepts the four embedder names and runs the real adapter (PR 4)', async () => {
     const out = await runBenchmark({
       iterations: 1,
       embedder: 'embedding-gemma',
-      searchMode: 'hybrid',
+      // BM25 search mode keeps this test offline-safe: the harness still
+      // pre-warms the embedder adapter, but recall doesn't depend on a
+      // successful model load. With --search-mode=hybrid this test would
+      // require the EmbeddingGemma weights to download on the CI runner.
+      searchMode: 'bm25',
       outputDir: workDir,
       quiet: true,
       seed: 1,
@@ -166,7 +170,7 @@ describe('runBenchmark', () => {
     const j = JSON.parse(fs.readFileSync(out.jsonPath, 'utf-8'))
     // Requested embedder is recorded.
     expect(j.embedder).toBe('embedding-gemma')
-    // Stub flag indicates the adapter is not yet wired (PR 4).
-    expect(j.embedder_stub_fallback).toBe(true)
-  }, 60000)
+    // PR 4 wires real adapters for all four names — stub-fallback is gone.
+    expect(j.embedder_stub_fallback).toBe(false)
+  }, 120000)
 })
