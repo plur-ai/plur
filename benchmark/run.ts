@@ -14,6 +14,19 @@
  *   npx tsx benchmark/run.ts --category temporal_reasoning
  *   npx tsx benchmark/run.ts --seed 1337                    # reproducible sampling
  *   npx tsx benchmark/run.ts --output /tmp/results          # override output dir
+ *   npx tsx benchmark/run.ts --corpus fixture|longmemeval-s|longmemeval-s-smoke
+ *
+ * Corpus selection:
+ *   --corpus fixture            (default) the 30-scenario hand-curated set
+ *                               in benchmark/data/scenarios.yaml. Backward
+ *                               compatible — existing pipelines unaffected.
+ *   --corpus longmemeval-s      The full official LongMemEval-S (500 questions,
+ *                               Wu et al 2024). Loads longmemeval-s.yaml — must
+ *                               be generated first via:
+ *                                 huggingface-cli download xiaowu0162/longmemeval ...
+ *                                 npx tsx benchmark/scripts/import-longmemeval.ts
+ *   --corpus longmemeval-s-smoke   30-scenario subset of the real LongMemEval-S
+ *                                  (committed; for tests and quick smoke runs).
  *
  * Outputs:
  *   <output>/<sha>-<ts>.json    machine-readable summary + per-scenario results
@@ -40,6 +53,19 @@ const __dirname = path.dirname(__filename)
 // ─── Types ──────────────────────────────────────────────────────────
 
 export type EmbedderName = 'minilm' | 'bge-small' | 'bge-base' | 'embedding-gemma'
+
+/**
+ * Available corpora. The harness is corpus-agnostic — same scoring code runs
+ * over the hand-curated fixture and the real LongMemEval-S so we can compare
+ * apples-to-apples once the real corpus is generated.
+ */
+export type CorpusName = 'fixture' | 'longmemeval-s' | 'longmemeval-s-smoke'
+
+export const CORPUS_FILES: Record<CorpusName, string> = {
+  'fixture': 'scenarios.yaml',
+  'longmemeval-s': 'longmemeval-s.yaml',
+  'longmemeval-s-smoke': 'longmemeval-s-smoke.yaml',
+}
 
 export interface Scenario {
   id: string
@@ -78,6 +104,8 @@ export interface RunOptions {
   outputDir?: string
   /** Silence per-query log output. */
   quiet?: boolean
+  /** Which corpus to load (default 'fixture' for backward compat). */
+  corpus?: CorpusName
 }
 
 export interface RunOutput {
@@ -93,6 +121,7 @@ export interface BenchmarkSummary {
   embedder: EmbedderName
   embedder_stub_fallback: boolean
   search_mode: string
+  corpus: CorpusName
   scenario_count: number
   iterations_per_category: number | null
   seed: number
@@ -123,8 +152,29 @@ export interface BenchmarkSummary {
 
 // ─── Loaders ────────────────────────────────────────────────────────
 
-export function loadScenarios(filterCategory?: string): Scenario[] {
-  const raw = fs.readFileSync(path.join(__dirname, 'data', 'scenarios.yaml'), 'utf-8')
+export function loadScenarios(filterCategory?: string, corpus: CorpusName = 'fixture'): Scenario[] {
+  const file = CORPUS_FILES[corpus]
+  if (!file) {
+    throw new Error(`Unknown corpus "${corpus}". Use one of: ${Object.keys(CORPUS_FILES).join(', ')}`)
+  }
+  const fullPath = path.join(__dirname, 'data', file)
+  if (!fs.existsSync(fullPath)) {
+    // Special handling for the real LongMemEval-S — it is gitignored because
+    // of size; the user has to generate it first. Surface the exact command
+    // instead of a generic ENOENT.
+    if (corpus === 'longmemeval-s') {
+      throw new Error(
+        `LongMemEval-S corpus not found at ${fullPath}.\n\n` +
+        `Generate it locally with:\n` +
+        `  huggingface-cli download xiaowu0162/longmemeval --repo-type dataset \\\n` +
+        `    --local-dir benchmark/data/longmemeval-source/\n` +
+        `  npx tsx benchmark/scripts/import-longmemeval.ts\n\n` +
+        `Or use --corpus longmemeval-s-smoke for the committed 30-scenario subset.`
+      )
+    }
+    throw new Error(`Corpus file not found: ${fullPath}`)
+  }
+  const raw = fs.readFileSync(fullPath, 'utf-8')
   let scenarios = yaml.load(raw) as Scenario[]
   if (filterCategory) scenarios = scenarios.filter(s => s.category === filterCategory)
   return scenarios
@@ -277,10 +327,11 @@ export async function runBenchmark(opts: RunOptions = {}): Promise<RunOutput> {
   const searchMode = opts.searchMode ?? 'hybrid'
   const seed = opts.seed ?? 1337
   const outputDir = opts.outputDir ?? path.join(__dirname, 'results')
+  const corpus: CorpusName = opts.corpus ?? 'fixture'
 
   // Pick scenarios. With --iterations, sample N per category deterministically.
   // Without --iterations, use the full default scenario set (backward-compat).
-  const all = loadScenarios(opts.category)
+  const all = loadScenarios(opts.category, corpus)
   const scenarios = opts.iterations !== undefined
     ? sampleScenarios(all, opts.iterations, seed)
     : all
@@ -293,7 +344,14 @@ export async function runBenchmark(opts: RunOptions = {}): Promise<RunOutput> {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'plur-bench-'))
   fs.writeFileSync(path.join(tmpDir, 'engrams.yaml'), '[]')
   fs.writeFileSync(path.join(tmpDir, 'episodes.yaml'), '[]')
-  fs.writeFileSync(path.join(tmpDir, 'config.yaml'), 'auto_learn: true\nindex: false\n')
+  // allow_secrets: true — the LongMemEval-S corpus contains demo strings that
+  // trip the secret-detection guard ("password_assignment", "api_key_assigned",
+  // etc.). They are benchmark fixtures, not real secrets; the guard would
+  // otherwise abort ingestion partway through.
+  fs.writeFileSync(
+    path.join(tmpDir, 'config.yaml'),
+    'auto_learn: true\nindex: false\nallow_secrets: true\n',
+  )
 
   const plur = new Plur({ path: tmpDir })
 
@@ -411,6 +469,7 @@ export async function runBenchmark(opts: RunOptions = {}): Promise<RunOutput> {
     embedder,
     embedder_stub_fallback: embedderStubFallback,
     search_mode: searchMode,
+    corpus,
     scenario_count: results.length,
     iterations_per_category: opts.iterations ?? null,
     seed,
@@ -454,6 +513,7 @@ function printSummary(s: BenchmarkSummary) {
   console.log('===============\n')
   console.log(`Embedder:        ${s.embedder}${s.embedder_stub_fallback ? ' (stub fallback → minilm)' : ''}`)
   console.log(`Search mode:     ${s.search_mode}`)
+  console.log(`Corpus:          ${s.corpus}`)
   console.log(`Scenarios:       ${s.scenario_count}${s.iterations_per_category !== null ? ` (N=${s.iterations_per_category}/category, seed=${s.seed})` : ''}`)
   console.log(`Commit:          ${s.commit}`)
   console.log()
@@ -485,6 +545,7 @@ function renderMarkdown(s: BenchmarkSummary): string {
   lines.push('')
   lines.push(`Embedder: \`${s.embedder}\`${s.embedder_stub_fallback ? ' (stub fallback → minilm, real adapter lands in PR 4)' : ''}`)
   lines.push(`Search mode: \`${s.search_mode}\``)
+  lines.push(`Corpus: \`${s.corpus}\``)
   lines.push(`Scenarios: ${s.scenario_count}${s.iterations_per_category !== null ? ` (N=${s.iterations_per_category}/category, seed=${s.seed})` : ' (default fixture)'}`)
   lines.push('')
   lines.push('## Headline')
@@ -524,6 +585,13 @@ function parseArgs(argv: string[]): RunOptions {
     else if (a === '--seed' && argv[i + 1]) opts.seed = parseInt(argv[++i], 10)
     else if ((a === '--output' || a === '--output-dir') && argv[i + 1]) opts.outputDir = argv[++i]
     else if (a === '--quiet') opts.quiet = true
+    else if (a === '--corpus' && argv[i + 1]) {
+      const c = argv[++i] as CorpusName
+      if (!(c in CORPUS_FILES)) {
+        throw new Error(`Unknown corpus "${c}". Use one of: ${Object.keys(CORPUS_FILES).join(', ')}`)
+      }
+      opts.corpus = c
+    }
   }
   return opts
 }
