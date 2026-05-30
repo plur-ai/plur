@@ -80,6 +80,11 @@ export {
   type EmbedderAdapter,
   type EmbedderName,
 } from './embedders/index.js'
+export {
+  checkEmbedderDimMismatch,
+  type DimMismatchWarning,
+  type DimCheckInputs,
+} from './embedders/dim-check.js'
 export type { StorageAdapter, StorageFilter, VectorSearchHit } from './storage-adapter.js'
 export { YamlStore, SqliteStore, createStore, migrateStore, type EngramStore, type StorageBackend, type StorageConfig } from './store/index.js'
 export { withAsyncLock, asyncAtomicWrite } from './store/index.js'
@@ -2015,22 +2020,55 @@ export class Plur {
    * Behavior:
    *   - default: git push/pull + incremental syncFromYaml on the active index
    *   - { full: true }: git push/pull + drop-and-rebuild the index from YAML
+   *   - { reembed: true }: re-embed engrams whose stored vector dim differs
+   *     from the active embedder's dim. Cheap incremental migration.
+   *   - { reembed: true, full: true }: drop and recreate the PGLite vector
+   *     column at the active embedder's dim, then re-embed every engram
+   *     from YAML. The Sprint 0 PR 5 (#219) migration path.
    *
-   * The `--full` mode is the recovery path for "the index is wrong" — it
-   * deletes every row in the derived index and replays YAML. YAML is never
-   * touched in either mode.
+   * YAML is never touched in any mode. The reembed paths are async, so the
+   * function returns the immediate SyncResult and a promise tracking the
+   * background reembed work; tests can `await plur.waitForIndex()` to
+   * synchronize.
    */
-  sync(remote?: string, options?: { full?: boolean }): SyncResult {
+  sync(remote?: string, options?: { full?: boolean; reembed?: boolean }): SyncResult {
     const result = gitSync(this.paths.root, remote)
     // After git pull, YAML may have changed — refresh the index.
-    // PGLite path is the only backend that honors --full directly here; the
-    // legacy SQLite path also reindexes on full, otherwise calls syncFromYaml.
     if (options?.full) {
       this.reindex()
     } else {
       this._syncIndex()
     }
+    // Reembed migration. Only meaningful for PGLite — SQLite has no vector
+    // column and the in-memory embeddings cache handles dim changes by
+    // rebuilding entries on demand.
+    if (options?.reembed && this.pgliteAdapter) {
+      const adapter = this.pgliteAdapter
+      const full = options.full === true
+      // Use the test-overridable embedder lookup so reembed-migration tests
+      // can inject a fake adapter without loading a real ONNX model.
+      const activeEmbedder = getEmbedder(resolveEmbedderName())
+      this._pgliteInitPromise = adapter
+        .reembedAll({ full, embedder: activeEmbedder })
+        .then(() => undefined)
+        .catch((err: unknown) => {
+          logger.warning(`[plur] reembed migration failed: ${(err as Error).message}`)
+        })
+    }
     return result
+  }
+
+  /**
+   * Reembed all engrams from YAML using the active embedder. Awaitable
+   * variant of `sync({ reembed: true, full })` for callers that need the
+   * count back. YAML is never touched.
+   */
+  async reembedAsync(options?: { full?: boolean }): Promise<{ reembedded: number; skipped: boolean; reason?: string }> {
+    if (!this.pgliteAdapter) {
+      return { reembedded: 0, skipped: true, reason: 'reembed requires PLUR_BACKEND=pglite' }
+    }
+    const activeEmbedder = getEmbedder(resolveEmbedderName())
+    return this.pgliteAdapter.reembedAll({ full: options?.full, embedder: activeEmbedder })
   }
 
   /** Get git sync status without making changes. */

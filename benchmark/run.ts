@@ -222,15 +222,16 @@ function isoStamp(): string {
   return new Date().toISOString().replace(/[:.]/g, '-')
 }
 
-// Source of truth for embedder names lives in @plur-ai/core. We keep a local
-// constant for CLI parsing and assert it matches at module-load time so the
-// two lists never drift.
-const KNOWN_EMBEDDERS: EmbedderName[] = ['minilm', 'bge-small', 'bge-base', 'embedding-gemma']
-if ([...KNOWN_EMBEDDERS_FROM_CORE].sort().join(',') !== [...KNOWN_EMBEDDERS].sort().join(',')) {
-  throw new Error(
-    `Embedder name drift: harness=${KNOWN_EMBEDDERS.join(',')} core=${KNOWN_EMBEDDERS_FROM_CORE.join(',')}`,
-  )
-}
+// Source of truth for embedder names lives in @plur-ai/core. The harness
+// re-exports a filtered subset: ONNX/local adapters only. The opt-in API
+// tier (openai-3-large, added in Sprint 0 PR 5 / #219) is excluded from the
+// bake-off because (a) it costs real money per run and (b) it isn't a like-
+// for-like comparison against the local 768d ONNX models. Users who want
+// to benchmark it can run the harness with PLUR_EMBEDDER=openai-3-large.
+const HARNESS_EXCLUDED: ReadonlySet<EmbedderName> = new Set(['openai-3-large' as EmbedderName])
+const KNOWN_EMBEDDERS: EmbedderName[] = KNOWN_EMBEDDERS_FROM_CORE.filter(
+  (n) => !HARNESS_EXCLUDED.has(n),
+)
 
 // ─── Main harness ───────────────────────────────────────────────────
 
