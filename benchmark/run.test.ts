@@ -17,7 +17,8 @@ import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
 import { fileURLToPath } from 'url'
-import { runBenchmark, sampleScenarios, loadScenarios, percentile } from './run.js'
+import { runBenchmark, sampleScenarios, loadScenarios, percentile, CORPUS_FILES } from './run.js'
+import { extractKeywords } from './scripts/import-longmemeval.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -66,6 +67,102 @@ describe('sampleScenarios', () => {
       const got = sample.filter(s => s.category === cat).length
       expect(got).toBe(10)
     }
+  })
+})
+
+describe('corpus loader', () => {
+  it('loads the default fixture corpus (backward-compat)', () => {
+    const fixture = loadScenarios()
+    expect(fixture.length).toBe(30)
+    const explicit = loadScenarios(undefined, 'fixture')
+    expect(explicit.length).toBe(fixture.length)
+    expect(explicit.map(s => s.id)).toEqual(fixture.map(s => s.id))
+  })
+
+  it('loads the committed longmemeval-s-smoke corpus with the expected shape', () => {
+    const smoke = loadScenarios(undefined, 'longmemeval-s-smoke')
+    expect(smoke.length).toBe(30)
+    const cats = new Set(smoke.map(s => s.category))
+    expect(cats.has('single_session_user')).toBe(true)
+    expect(cats.has('single_session_preference')).toBe(true)
+    expect(cats.has('single_session_assistant')).toBe(true)
+    expect(cats.has('temporal_reasoning')).toBe(true)
+    expect(cats.has('knowledge_updates')).toBe(true)
+    expect(cats.has('multi_session_reasoning')).toBe(true)
+    for (const s of smoke) {
+      expect(s.id).toBeTruthy()
+      expect(s.category).toBeTruthy()
+      expect(typeof s.query).toBe('string')
+      expect(s.conversations.length).toBeGreaterThan(0)
+      expect(s.expected_keywords.length).toBeGreaterThan(0)
+    }
+  })
+
+  it('loads the full longmemeval-s corpus when it has been generated', () => {
+    // The full corpus is gitignored; skip if the contributor hasn't run the importer.
+    const fullPath = path.join(__dirname, 'data', CORPUS_FILES['longmemeval-s'])
+    if (!fs.existsSync(fullPath)) {
+      console.log(`[skip] ${fullPath} not present — run benchmark/scripts/import-longmemeval.ts to generate it.`)
+      return
+    }
+    const full = loadScenarios(undefined, 'longmemeval-s')
+    expect(full.length).toBeGreaterThanOrEqual(475)
+    expect(full.length).toBeLessThanOrEqual(525)
+    const cats = new Set(full.map(s => s.category))
+    expect(cats.size).toBe(6)
+    for (const s of full) {
+      expect(s.id).toBeTruthy()
+      expect(s.category).toBeTruthy()
+      expect(typeof s.query).toBe('string')
+      expect(s.conversations.length).toBeGreaterThan(0)
+    }
+  })
+
+  it('throws a helpful error for unknown corpus names', () => {
+    expect(() => loadScenarios(undefined, 'does-not-exist' as 'fixture')).toThrow(/Unknown corpus|not found/i)
+  })
+
+  it('throws a setup-hint error when longmemeval-s is missing', () => {
+    const fullPath = path.join(__dirname, 'data', CORPUS_FILES['longmemeval-s'])
+    if (fs.existsSync(fullPath)) {
+      return
+    }
+    expect(() => loadScenarios(undefined, 'longmemeval-s')).toThrow(/huggingface-cli download xiaowu0162\/longmemeval/)
+  })
+})
+
+describe('extractKeywords (LongMemEval converter)', () => {
+  it('pulls capitalised proper nouns out of the answer', () => {
+    const kw = extractKeywords('Business Administration')
+    expect(kw).toContain('Business Administration')
+  })
+
+  it('extracts numbers and units from numeric answers', () => {
+    const kw = extractKeywords('25 minutes and 50 seconds (or 25:50)')
+    expect(kw.some(k => /\d/.test(k))).toBe(true)
+  })
+
+  it('coerces bare numeric answers (LongMemEval ships some as ints)', () => {
+    expect(() => extractKeywords(3)).not.toThrow()
+    expect(extractKeywords(3)).toContain('3')
+    expect(extractKeywords(1300)).toContain('1300')
+  })
+
+  it('returns at most 5 keywords (cap is enforced)', () => {
+    const long = 'Alice Bob Carol Dave Eve Frank Greta Hannah Ian John'
+    const kw = extractKeywords(long)
+    expect(kw.length).toBeLessThanOrEqual(5)
+  })
+
+  it('falls back to long content words when no proper nouns are present', () => {
+    const kw = extractKeywords('the user prefers programming languages with garbage collection')
+    expect(kw.length).toBeGreaterThan(0)
+  })
+
+  it('returns an empty list for empty input', () => {
+    expect(extractKeywords('')).toEqual([])
+    expect(extractKeywords(null)).toEqual([])
+    expect(extractKeywords(undefined)).toEqual([])
   })
 })
 
@@ -185,6 +282,25 @@ describe('runBenchmark', () => {
     // Still emits the new headline keys (they are always present).
     expect(j).toHaveProperty('r5')
     expect(j).toHaveProperty('latency_p50_ms')
+  }, 120000)
+
+  it('runs over the longmemeval-s-smoke corpus end-to-end', async () => {
+    const out = await runBenchmark({
+      corpus: 'longmemeval-s-smoke',
+      iterations: 1,
+      embedder: 'minilm',
+      searchMode: 'bm25',
+      outputDir: workDir,
+      quiet: true,
+      seed: 7,
+    })
+
+    const j = JSON.parse(fs.readFileSync(out.jsonPath, 'utf-8'))
+    expect(j.corpus).toBe('longmemeval-s-smoke')
+    expect(j.scenario_count).toBe(6)
+    expect(j).toHaveProperty('r5')
+    expect(j).toHaveProperty('per_category')
+    expect(Object.keys(j.per_category).length).toBe(6)
   }, 120000)
 
   it('accepts the four embedder names and runs the real adapter (PR 4)', async () => {
