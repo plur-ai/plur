@@ -20,6 +20,7 @@ import { join } from 'path'
 import { tmpdir } from 'os'
 import { Plur, PGLiteAdapter } from '../src/index.js'
 import { loadEngrams } from '../src/engrams.js'
+import { embed } from '../src/embeddings.js'
 
 /**
  * Read every YAML file under `dir` recursively and return a set of all
@@ -167,9 +168,26 @@ describe(`yaml-as-truth: public API traceability (Test B) [backend=${backend}]`,
 // method surfaces it. The original Test B trivially passed because every
 // read path was YAML-rooted; this variant exercises the wired PGLite path
 // (B-1) and proves the intersect-with-filtered defense.
-describe('yaml-as-truth Test B — adversarial direct PGLite insert (iter-2 audit M-2)', () => {
+//
+// Iter-3 audit F-DATA-NEW-001 / F-DATA-004: the original M-2 test only
+// inserted into `engram_embeddings`, but `searchVector` does
+// `JOIN engrams e ON e.id = em.engram_id` and silently drops orphan rows
+// at SQL level — so the application-level intersect-with-filtered defense
+// (index.ts:1228, 1267) was never actually exercised. Iter-4 strengthens
+// the test to insert into BOTH `engrams` AND `engram_embeddings` via the
+// adapter's internal db handle, then:
+//   1. assert `adapter.searchVector` SEES the synthetic row at the storage
+//      layer (proves the SQL JOIN no longer drops it),
+//   2. assert the public methods STILL hide it (proves the
+//      application-level YAML-rooted intersect is the actual defense).
+// If the YAML intersect defense were removed (e.g. someone deletes the
+// `allowed.get(hit.engram.id)` filter in `_pgliteSemanticRecall` /
+// `_pgliteHybridRecall`), `recallHybrid` and `recallSemantic` would surface
+// the synthetic id and this test would fail — TDD-rigor for the invariant.
+describe('yaml-as-truth Test B — adversarial direct PGLite insert (iter-4 strengthened)', () => {
   let dir: string
   const originalBackend = process.env.PLUR_BACKEND
+  const syntheticId = 'ENG-9999-SYNTHETIC-001'
 
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), 'plur-yaml-truth-adv-'))
@@ -182,46 +200,123 @@ describe('yaml-as-truth Test B — adversarial direct PGLite insert (iter-2 audi
     rmSync(dir, { recursive: true, force: true })
   })
 
-  it('a synthetic engram inserted directly into PGLite never surfaces via public methods', async () => {
+  // Helper — build a valid Engram body for raw-insert into the engrams table.
+  function syntheticEngramRow(id: string) {
+    return {
+      id,
+      version: 2,
+      status: 'active' as const,
+      consolidated: false,
+      type: 'behavioral' as const,
+      scope: 'global',
+      visibility: 'private' as const,
+      statement: 'synthetic engram injected directly into PGLite (no YAML)',
+      derivation_count: 1,
+      pack: null,
+      abstract: null,
+      derived_from: null,
+      tags: [],
+      activation: {
+        retrieval_strength: 0.7,
+        storage_strength: 1.0,
+        frequency: 0,
+        last_accessed: new Date().toISOString().slice(0, 10),
+      },
+      associations: [],
+      knowledge_anchors: [],
+      feedback_signals: { positive: 0, negative: 0, neutral: 0 },
+      polarity: null,
+      reference_count: 1,
+      sources: [],
+      recurrence_count: 0,
+      engram_version: 1,
+      episode_ids: [],
+    }
+  }
+
+  it('a synthetic engram inserted into BOTH PGLite tables is visible at the storage layer but hidden by the YAML-rooted defense', async () => {
     const plur = new Plur({ path: dir })
     plur.learn('legitimate engram from YAML', { type: 'behavioral', scope: 'global' })
     await plur.waitForIndex()
 
-    // Open a second PGLite handle on the same DB and INSERT a synthetic
-    // engram row directly — bypassing YAML entirely. This is the exact
-    // failure mode Test B is supposed to defend against.
-    const adapter = new PGLiteAdapter(join(dir, 'engrams.yaml'), join(dir, 'store.pglite'))
-    // Force schema init by touching loadFiltered first.
-    await adapter.loadFiltered({})
-    // Use a raw INSERT via the adapter's internal db handle. We go through
-    // the syncFromYaml path? No — we use upsertEmbedding for the embedding
-    // side and ALSO push a row into engrams table via a manual sync. The
-    // simplest adversarial path is to use the internal db.query directly.
-    // The adapter doesn't expose db; instead we leverage the public
-    // syncFromYaml-bypass scenario: we just insert an embedding for an
-    // engram_id that doesn't exist in YAML. recall* now intersects vector
-    // hits with the filtered YAML-rooted set, so the synthetic row must
-    // not surface.
-    const syntheticId = 'ENG-9999-9999-001'
-    await adapter.upsertEmbedding(syntheticId, new Float32Array(384).fill(0.5))
-    await adapter.close()
+    // Reach into Plur's INTERNAL pgliteAdapter and raw-insert. PGLite is
+    // single-writer per process and two PGLiteAdapter instances on the same
+    // path don't share state — so to truly compromise the storage layer
+    // Plur reads from, we have to write through the same adapter instance
+    // Plur uses.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const internalAdapter: PGLiteAdapter = (plur as any).pgliteAdapter
+    expect(internalAdapter, 'plur instance must have a pgliteAdapter when PLUR_BACKEND=pglite').toBeTruthy()
+    // Force schema init.
+    await internalAdapter.loadFiltered({})
 
-    // Public methods must NOT include the synthetic id.
+    // Raw-insert into BOTH `engrams` and `engram_embeddings`, bypassing
+    // YAML entirely. This is the actual failure mode Test B should defend
+    // against — a future code path (materialized cache, reranker artifact,
+    // bulk-import shortcut) that writes to PGLite without going through
+    // YAML.
+    const row = syntheticEngramRow(syntheticId)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const db = (internalAdapter as any).db
+    await db.query(
+      `INSERT INTO engrams (id, status, scope, domain, last_accessed, data, source)
+       VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7)`,
+      [row.id, row.status, row.scope, null, row.activation.last_accessed, JSON.stringify(row), 'primary'],
+    )
+    // Use the actual embedder to embed the query terms we'll search for,
+    // and pin the synthetic's embedding to that vector. This guarantees
+    // searchVector ranks the synthetic at the top — so if the YAML-rooted
+    // intersect defense is removed, the synthetic WILL leak into
+    // recallHybrid/recallSemantic results.
+    const queryVec = await embed('synthetic engram injected')
+    expect(queryVec, 'embedder must produce a vector for this test to exercise the defense').not.toBeNull()
+    await internalAdapter.upsertEmbedding(syntheticId, queryVec!)
+
+    // === Storage-layer assertion ===
+    // The synthetic row IS visible to `searchVector` now that it lives in
+    // both tables — the SQL JOIN no longer drops it. This proves the
+    // adversarial insert successfully compromised the storage layer Plur
+    // reads from.
+    const storageHits = await internalAdapter.searchVector(queryVec!, 50)
+    const storageHitIds = storageHits.map(h => h.engram.id)
+    expect(storageHitIds, 'storage-layer searchVector must surface the synthetic row — otherwise the test is not actually exercising the YAML-defense').toContain(syntheticId)
+
+    // === Application-layer assertions ===
+    // Despite the storage layer being compromised, the public methods MUST
+    // NOT surface the synthetic id — because they intersect vector hits
+    // with the YAML-rooted `filtered` set (index.ts:1228, 1267) and the
+    // YAML ground truth has no record of this id.
     const truth = yamlGroundTruth(dir)
-    expect(truth.has(syntheticId)).toBe(false)
+    expect(truth.has(syntheticId), 'YAML ground truth must NOT contain the synthetic id').toBe(false)
+
+    // getById reads only from YAML — straightforward.
     expect(plur.getById(syntheticId)).toBeNull()
+
+    // list / recall read from YAML — straightforward.
     for (const e of plur.list()) {
       expect(e.id).not.toBe(syntheticId)
       expect(truth.has(e.id)).toBe(true)
     }
-    for (const e of plur.recall('legitimate')) {
+    for (const e of plur.recall('synthetic')) {
       expect(e.id).not.toBe(syntheticId)
     }
-    for (const e of await plur.recallHybrid('legitimate')) {
-      expect(e.id).not.toBe(syntheticId)
+
+    // recallHybrid / recallSemantic go through `_pgliteHybridRecall` /
+    // `_pgliteSemanticRecall` which call `pgliteAdapter.searchVector` (we
+    // just proved that returns the synthetic). The intersect-with-filtered
+    // defense at index.ts:1228, 1267 is what keeps the synthetic out. We
+    // search with the SAME query string we embedded into the synthetic, so
+    // searchVector returns the synthetic at rank 1 — if someone removes
+    // the YAML-rooted intersect, these assertions will fail.
+    for (const e of await plur.recallHybrid('synthetic engram injected')) {
+      expect(e.id, 'recallHybrid must NOT surface the synthetic id (YAML-rooted intersect defense)').not.toBe(syntheticId)
     }
-    for (const e of await plur.recallSemantic('legitimate')) {
-      expect(e.id).not.toBe(syntheticId)
+    for (const e of await plur.recallSemantic('synthetic engram injected')) {
+      expect(e.id, 'recallSemantic must NOT surface the synthetic id (YAML-rooted intersect defense)').not.toBe(syntheticId)
     }
+
+    // inject is the highest-level public surface — must also hide it.
+    const injectResult = plur.inject('synthetic engram injected')
+    expect(injectResult.injected_ids, 'inject must NOT surface the synthetic id').not.toContain(syntheticId)
   }, 30_000)
 })
