@@ -459,6 +459,20 @@ export class PGLiteAdapter implements StorageAdapter {
   }
 
   /**
+   * Cheap "do we already have an embedding for this engram" check. Used by
+   * the auto-embed path in `Plur._autoEmbedNewEngrams` (iter-2 audit B-1) to
+   * skip engrams whose vector is already indexed.
+   */
+  async hasEmbedding(engramId: string): Promise<boolean> {
+    const db = await this.getDb()
+    const res = await db.query(
+      'SELECT 1 FROM engram_embeddings WHERE engram_id = $1 LIMIT 1',
+      [engramId],
+    )
+    return res.rows.length > 0
+  }
+
+  /**
    * Drop the embedding table and recreate it with a new vector dim. Used by
    * the reembed migration (`plur sync --reembed --full`) when the active
    * embedder produces a different dim than the indexed column.
