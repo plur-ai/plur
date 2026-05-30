@@ -4,6 +4,7 @@ import { existsSync, readFileSync, mkdirSync } from 'fs'
 import { join } from 'path'
 import { createHash } from 'crypto'
 import { atomicWrite } from './sync.js'
+import { logger } from './logger.js'
 
 /**
  * Embedding-based semantic search for engrams.
@@ -153,6 +154,23 @@ export async function embed(text: string): Promise<Float32Array | null> {
   return new Float32Array(result.data)
 }
 
+/**
+ * Get the active embedder's name+dim for cache stamping. Returns null when
+ * embeddings are disabled or the embedder failed to load — callers should
+ * skip cache writes in that case.
+ */
+async function getActiveEmbedderMeta(): Promise<{ name: string; dim: number } | null> {
+  const embedder = await getEmbedder()
+  if (!embedder) return null
+  if (typeof embedder.name === 'string' && typeof embedder.dim === 'number') {
+    return { name: embedder.name, dim: embedder.dim }
+  }
+  // Legacy pipeline shape — pre-PR-4 raw transformers pipeline (only seen in
+  // older test stubs). Fall back to a sentinel that won't match any real
+  // adapter, so the cache invalidates conservatively.
+  return { name: 'legacy-pipeline', dim: 0 }
+}
+
 /** Cosine similarity between two vectors. */
 export function cosineSimilarity(a: Float32Array, b: Float32Array): number {
   let dot = 0
@@ -160,20 +178,72 @@ export function cosineSimilarity(a: Float32Array, b: Float32Array): number {
   return dot // vectors are already normalized, so dot product = cosine similarity
 }
 
-/** Cache file for embeddings. */
-interface EmbeddingCache {
+/** Cache entries indexed by engram ID. */
+interface EmbeddingCacheEntries {
   [engramId: string]: {
     hash: string
     embedding: number[]
   }
 }
 
-function loadCache(cachePath: string): EmbeddingCache {
-  if (!existsSync(cachePath)) return {}
+/**
+ * Cache file format (iter-2 audit B-1/B-3).
+ *
+ * v1 stamps the file with the active embedder's name + dim. On load, if the
+ * meta header differs from the active embedder, the cache is invalidated and
+ * rebuilt. Backward-compat: the pre-iter-2 flat-object format
+ * `{ [engramId]: { hash, embedding } }` is detected by the absence of `meta`
+ * and treated as a hard mismatch (no data loss — cache rebuilds from YAML on
+ * the same call).
+ */
+interface EmbeddingCache {
+  meta: {
+    embedder_name: string
+    embedder_dim: number
+    version: number
+  }
+  entries: EmbeddingCacheEntries
+}
+
+const CACHE_VERSION = 1
+
+/** Active-embedder cache state used by load/save invariants. */
+function emptyCache(meta: { name: string; dim: number }): EmbeddingCache {
+  return {
+    meta: {
+      embedder_name: meta.name,
+      embedder_dim: meta.dim,
+      version: CACHE_VERSION,
+    },
+    entries: {},
+  }
+}
+
+/**
+ * Load cache from disk. When the on-disk header doesn't match `active`, the
+ * cache is invalidated (returns an empty cache stamped with the active
+ * meta). Legacy flat-object files are also invalidated. Logs a one-line info
+ * message on invalidation so users see why their first recall after a
+ * config change takes longer.
+ */
+function loadCache(cachePath: string, active: { name: string; dim: number }): EmbeddingCache {
+  if (!existsSync(cachePath)) return emptyCache(active)
   try {
-    return JSON.parse(readFileSync(cachePath, 'utf8'))
+    const raw = JSON.parse(readFileSync(cachePath, 'utf8'))
+    // Detect the v1 format. Legacy format has no `meta` field — invalidate.
+    if (!raw || typeof raw !== 'object' || !raw.meta) {
+      logger.info(`[embeddings] cache at ${cachePath} is in legacy format (no embedder meta) — rebuilding for active embedder ${active.name} (${active.dim}d).`)
+      return emptyCache(active)
+    }
+    const meta = raw.meta as Partial<EmbeddingCache['meta']>
+    if (meta.embedder_name !== active.name || meta.embedder_dim !== active.dim) {
+      logger.info(`[embeddings] cache embedder mismatch — on-disk: ${meta.embedder_name} (${meta.embedder_dim}d), active: ${active.name} (${active.dim}d). Rebuilding cache.`)
+      return emptyCache(active)
+    }
+    const entries = (raw.entries && typeof raw.entries === 'object') ? raw.entries as EmbeddingCacheEntries : {}
+    return { meta: { embedder_name: meta.embedder_name!, embedder_dim: meta.embedder_dim!, version: meta.version ?? CACHE_VERSION }, entries }
   } catch {
-    return {}
+    return emptyCache(active)
   }
 }
 
@@ -200,11 +270,16 @@ export async function embeddingSearch(
 ): Promise<Engram[]> {
   if (engrams.length === 0) return []
 
-  // Load embedding cache
+  // Resolve the active embedder before touching the cache so the cache load
+  // can compare against the right meta header.
+  const activeMeta = await getActiveEmbedderMeta()
+  if (!activeMeta) return []
+
+  // Load embedding cache (invalidates if the on-disk header doesn't match).
   const cachePath = storagePath
     ? join(storagePath, '.embeddings-cache.json')
     : '.embeddings-cache.json'
-  const cache = loadCache(cachePath)
+  const cache = loadCache(cachePath, activeMeta)
 
   // Embed the query
   const queryEmbedding = await embed(query)
@@ -221,15 +296,15 @@ export async function embeddingSearch(
     const hash = hashStatement(searchText)
     let engramEmbedding: Float32Array
 
-    if (cache[engram.id]?.hash === hash) {
+    if (cache.entries[engram.id]?.hash === hash) {
       // Cache hit
-      engramEmbedding = new Float32Array(cache[engram.id].embedding)
+      engramEmbedding = new Float32Array(cache.entries[engram.id].embedding)
     } else {
       // Cache miss — compute embedding from enriched text
       const emb = await embed(searchText)
       if (!emb) return [] // model unloaded mid-search
       engramEmbedding = emb
-      cache[engram.id] = {
+      cache.entries[engram.id] = {
         hash,
         embedding: Array.from(engramEmbedding),
       }
@@ -265,11 +340,14 @@ export async function embeddingSearchWithScores(
 ): Promise<SimilarityResult[]> {
   if (engrams.length === 0) return []
 
-  // Load embedding cache
+  const activeMeta = await getActiveEmbedderMeta()
+  if (!activeMeta) return []
+
+  // Load embedding cache (invalidates if the on-disk header doesn't match).
   const cachePath = storagePath
     ? join(storagePath, '.embeddings-cache.json')
     : '.embeddings-cache.json'
-  const cache = loadCache(cachePath)
+  const cache = loadCache(cachePath, activeMeta)
 
   // Embed the query
   const queryEmbedding = await embed(query)
@@ -286,15 +364,15 @@ export async function embeddingSearchWithScores(
     const hash = hashStatement(searchText)
     let engramEmbedding: Float32Array
 
-    if (cache[engram.id]?.hash === hash) {
+    if (cache.entries[engram.id]?.hash === hash) {
       // Cache hit
-      engramEmbedding = new Float32Array(cache[engram.id].embedding)
+      engramEmbedding = new Float32Array(cache.entries[engram.id].embedding)
     } else {
       // Cache miss — compute embedding from enriched text
       const emb = await embed(searchText)
       if (!emb) return [] // model unloaded mid-search
       engramEmbedding = emb
-      cache[engram.id] = {
+      cache.entries[engram.id] = {
         hash,
         embedding: Array.from(engramEmbedding),
       }
@@ -314,4 +392,52 @@ export async function embeddingSearchWithScores(
   // Sort by similarity (descending) and return top N with scores
   similarities.sort((a, b) => b.score - a.score)
   return similarities.slice(0, limit)
+}
+
+/**
+ * Rebuild the JSON `.embeddings-cache.json` file under `storagePath` using
+ * the active embedder. Used by `plur sync --reembed` when PGLite is NOT the
+ * active backend so non-PGLite users have a real migration path on embedder
+ * switches.
+ *
+ * `full=true` deletes the existing cache file before rebuilding (forces every
+ * engram to be re-embedded from scratch). `full=false` invalidates the meta
+ * header but lets matching entries survive — useful when only the cache file
+ * format version bumped without an embedder change.
+ *
+ * Returns the count of engrams whose embedding was rewritten. Returns 0 and
+ * `skipped: true` when embeddings are disabled or the embedder failed to
+ * load. Closes RC-3 for the default (non-PGLite) user (Sprint 0 iter-2 B-3).
+ */
+export async function rebuildJsonCache(
+  engrams: Engram[],
+  storagePath: string,
+  opts?: { full?: boolean },
+): Promise<{ reembedded: number; skipped: boolean; reason?: string }> {
+  const activeMeta = await getActiveEmbedderMeta()
+  if (!activeMeta) {
+    return { reembedded: 0, skipped: true, reason: 'embedder unavailable' }
+  }
+  const cachePath = join(storagePath, '.embeddings-cache.json')
+  // Start fresh when --full was requested. Even without --full we want the
+  // cache header to track the active embedder, so loadCache's invalidation
+  // path already does the right thing for matched entries.
+  const cache: EmbeddingCache = opts?.full
+    ? emptyCache(activeMeta)
+    : loadCache(cachePath, activeMeta)
+
+  let count = 0
+  for (const engram of engrams) {
+    const searchText = engramSearchText(engram)
+    const hash = hashStatement(searchText)
+    if (cache.entries[engram.id]?.hash === hash && !opts?.full) continue
+    const vec = await embed(searchText)
+    if (!vec) {
+      return { reembedded: count, skipped: true, reason: 'embedder unavailable mid-rebuild' }
+    }
+    cache.entries[engram.id] = { hash, embedding: Array.from(vec) }
+    count++
+  }
+  saveCache(cachePath, cache)
+  return { reembedded: count, skipped: false }
 }
