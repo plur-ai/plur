@@ -2063,6 +2063,19 @@ export class Plur {
   private async _autoEmbedNewEngrams(adapter: PGLiteAdapter): Promise<void> {
     try {
       const { embed } = await import('./embeddings.js')
+      // Iter-2: defend against PLUR_EMBEDDER changes mid-process. The PGLite
+      // vector column was sized at construction time; if the active embedder
+      // produces a different dim now, upsert would throw and we'd write the
+      // same warning a thousand times. Skip the auto-embed cycle and let the
+      // user run `plur sync --reembed --full` to migrate intentionally.
+      const indexedDim = await adapter.getVectorColumnDim()
+      if (indexedDim !== null) {
+        const activeAdapter = getEmbedder(resolveEmbedderName())
+        if (activeAdapter.dim !== indexedDim) {
+          logger.debug(`[plur] auto-embed skip: active embedder dim (${activeAdapter.dim}) differs from indexed column (${indexedDim}). Run 'plur sync --reembed --full' to migrate.`)
+          return
+        }
+      }
       // Cheap path: only embed engrams that are active AND missing from the
       // embedding table. We load active engrams (already cached) and ask the
       // adapter which IDs are missing.
