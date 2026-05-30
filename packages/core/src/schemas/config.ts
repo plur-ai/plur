@@ -78,6 +78,15 @@ export const PlurConfigSchema = z.object({
   decay_baseline: z.string().optional(),
   allow_secrets: z.boolean().default(false),
   index: z.boolean().default(true),
+  /**
+   * Index backend selector. `sqlite` is the historical default
+   * (better-sqlite3, in-process WAL). `pglite` opts in to the ADR-0001
+   * substrate — PGLite WASM + pgvector + Apache AGE. PGLite is opt-in until
+   * the bake-off completes; defaults remain sqlite to keep the existing
+   * test surface stable.
+   * Env override: PLUR_BACKEND=pglite|sqlite.
+   */
+  backend: z.enum(['sqlite', 'pglite']).default('sqlite'),
   storage: StorageConfigSchema.default({}),
   embeddings: EmbeddingsConfigSchema.default({}),
   stores: z.array(StoreEntrySchema).default([]),

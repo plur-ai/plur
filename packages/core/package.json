@@ -12,6 +12,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@electric-sql/pglite": "^0.4.6",
     "js-yaml": "^4.1.0",
     "zod": "^3.23.0"
   },

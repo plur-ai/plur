@@ -4,6 +4,7 @@ import { join, dirname, basename } from 'path'
 import yaml from 'js-yaml'
 import { detectPlurStorage, type PlurPaths } from './storage.js'
 import { IndexedStorage } from './storage-indexed.js'
+import { PGLiteAdapter } from './storage-pglite.js'
 import { loadConfig } from './config.js'
 import { loadEngrams, saveEngrams, generateEngramId, loadAllPacks, storePrefix } from './engrams.js'
 import { logger } from './logger.js'
@@ -69,6 +70,8 @@ export { runMigrations, rollbackMigrations, getSchemaVersion, setSchemaVersion, 
 export { detectSecrets } from './secrets.js'
 export { detectPlurStorage, type PlurPaths } from './storage.js'
 export { IndexedStorage } from './storage-indexed.js'
+export { PGLiteAdapter, type PGLiteAdapterOptions } from './storage-pglite.js'
+export type { StorageAdapter, StorageFilter, VectorSearchHit } from './storage-adapter.js'
 export { YamlStore, SqliteStore, createStore, migrateStore, type EngramStore, type StorageBackend, type StorageConfig } from './store/index.js'
 export { withAsyncLock, asyncAtomicWrite } from './store/index.js'
 export type { SimilarityResult } from './embeddings.js'
@@ -158,6 +161,16 @@ export class Plur {
   private paths: PlurPaths
   private config: PlurConfig
   private indexedStorage: IndexedStorage | null = null
+  /**
+   * PGLite adapter (ADR-0001, Sprint 0 PR 2). Opt-in via
+   * PLUR_BACKEND=pglite env var or `backend: pglite` in config.yaml.
+   * When active, runs in parallel to the YAML write path: every YAML
+   * mutation triggers syncFromYaml on the PGLite index. The YAML file
+   * remains the source of truth — see yaml-truth-rebuild and
+   * yaml-truth-traceability tests for the invariant.
+   */
+  private pgliteAdapter: PGLiteAdapter | null = null
+  private _pgliteInitPromise: Promise<void> | null = null
   private _engramCache: Map<string, { mtime: bigint; engrams: Engram[] }> = new Map()
   private _llmFailureCount = 0
   private _llmDisabledUntil: number | null = null
@@ -172,7 +185,17 @@ export class Plur {
     if (this.config.stores?.length !== loadConfig(this.paths.config).stores?.length) {
       this.config = loadConfig(this.paths.config)
     }
-    if (this.config.index) {
+    const backend = this._resolveBackend()
+    if (backend === 'pglite') {
+      // PGLite path. Keep SQLite indexedStorage null so we don't double-index.
+      this.pgliteAdapter = new PGLiteAdapter(this.paths.engrams, this.paths.pglite)
+      // Initial sync runs in the background — YAML is already authoritative,
+      // so reads served from the YAML fallthrough remain correct while the
+      // index warms up.
+      this._pgliteInitPromise = this.pgliteAdapter.syncFromYaml().catch((err: unknown) => {
+        logger.warning(`[plur] PGLite initial sync failed: ${(err as Error).message}. Run 'plur sync --full' to rebuild.`)
+      })
+    } else if (this.config.index) {
       this.indexedStorage = new IndexedStorage(this.paths.engrams, this.paths.db, this.config.stores)
     }
     // Wire config-level embeddings opt-out into the embedder module. The env
@@ -186,6 +209,20 @@ export class Plur {
     // conflict creation from the dedup prompt, so any remaining conflicts are
     // false positives from the old system. Run once, mark with a sentinel file.
     this._autoPurgeLegacyTensions()
+  }
+
+  /**
+   * Resolve the active index backend. Order:
+   *   1. PLUR_BACKEND env var (pglite|sqlite)
+   *   2. config.yaml `backend` field
+   *   3. default: sqlite (historical)
+   */
+  private _resolveBackend(): 'sqlite' | 'pglite' {
+    const env = process.env.PLUR_BACKEND
+    if (env === 'pglite' || env === 'sqlite') return env
+    const fromConfig = (this.config as { backend?: string }).backend
+    if (fromConfig === 'pglite' || fromConfig === 'sqlite') return fromConfig
+    return 'sqlite'
   }
 
   private _autoPurgeLegacyTensions(): void {
@@ -1173,6 +1210,12 @@ export class Plur {
         domain: options?.domain,
       })
     } else {
+      // PGLite path (or no-index path): read from YAML so this code stays
+      // synchronous. PGLite is currently used for vector/Cypher queries
+      // and remains in sync via _syncIndex on every write — but the
+      // filtered relational path here goes through the YAML cache for
+      // sync semantics. _loadAllEngrams reads through a mtime-based cache,
+      // so the cost is comparable.
       engrams = this._loadAllEngrams()
       engrams = engrams.filter(e => e.status === 'active')
       if (options?.domain) {
@@ -1773,18 +1816,63 @@ export class Plur {
     })
   }
 
-  /** Rebuild SQLite index from YAML source of truth. Only works when index: true. */
+  /**
+   * Rebuild the derived index from YAML source of truth.
+   * Works for both backends: SQLite (legacy) and PGLite (ADR-0001).
+   * Sync-shaped to preserve the existing public API; PGLite work is fired off
+   * and the promise tracked on the instance so `await plur.reindexAsync()` is
+   * available for code paths that need to block.
+   */
   reindex(): void {
+    if (this.pgliteAdapter) {
+      // Fire-and-track. Callers that need to block use reindexAsync().
+      this._pgliteInitPromise = this.pgliteAdapter.reindex()
+        .catch((err: unknown) => {
+          logger.warning(`[plur] PGLite reindex failed: ${(err as Error).message}`)
+        })
+      return
+    }
     if (!this.indexedStorage) {
       this.indexedStorage = new IndexedStorage(this.paths.engrams, this.paths.db, this.config.stores)
     }
     this.indexedStorage.reindex()
   }
 
-  /** Sync SQLite index after YAML write (no-op if index disabled) */
+  /**
+   * Async reindex that resolves when the index is fully rebuilt.
+   * Equivalent to `plur sync --full`: drop the index and rebuild from YAML.
+   */
+  async reindexAsync(): Promise<void> {
+    if (this.pgliteAdapter) {
+      await this.pgliteAdapter.reindex()
+      return
+    }
+    if (!this.indexedStorage) {
+      this.indexedStorage = new IndexedStorage(this.paths.engrams, this.paths.db, this.config.stores)
+    }
+    this.indexedStorage.reindex()
+  }
+
+  /** Sync index after YAML write (no-op if no index is active). */
   private _syncIndex(): void {
+    if (this.pgliteAdapter) {
+      // Synchronous-shaped path: kick off the sync, track the promise.
+      // The YAML write already happened — this is the index catching up.
+      this._pgliteInitPromise = this.pgliteAdapter.syncFromYaml()
+        .catch((err: unknown) => {
+          logger.warning(`[plur] PGLite syncFromYaml failed (YAML is still source of truth): ${(err as Error).message}`)
+        })
+      return
+    }
     if (this.indexedStorage) {
       this.indexedStorage.syncFromYaml()
+    }
+  }
+
+  /** Block until any in-flight PGLite background sync completes. Useful in tests. */
+  async waitForIndex(): Promise<void> {
+    if (this._pgliteInitPromise) {
+      await this._pgliteInitPromise
     }
   }
 
@@ -1906,9 +1994,28 @@ export class Plur {
     return this.paths.root
   }
 
-  /** Sync engrams to git. Initializes repo on first call, commits + push/pull on subsequent calls. */
-  sync(remote?: string): SyncResult {
-    return gitSync(this.paths.root, remote)
+  /**
+   * Sync engrams to git AND refresh the derived index from YAML.
+   *
+   * Behavior:
+   *   - default: git push/pull + incremental syncFromYaml on the active index
+   *   - { full: true }: git push/pull + drop-and-rebuild the index from YAML
+   *
+   * The `--full` mode is the recovery path for "the index is wrong" — it
+   * deletes every row in the derived index and replays YAML. YAML is never
+   * touched in either mode.
+   */
+  sync(remote?: string, options?: { full?: boolean }): SyncResult {
+    const result = gitSync(this.paths.root, remote)
+    // After git pull, YAML may have changed — refresh the index.
+    // PGLite path is the only backend that honors --full directly here; the
+    // legacy SQLite path also reindexes on full, otherwise calls syncFromYaml.
+    if (options?.full) {
+      this.reindex()
+    } else {
+      this._syncIndex()
+    }
+    return result
   }
 
   /** Get git sync status without making changes. */
