@@ -11,43 +11,54 @@
  * deletes all derived state, rebuilds from YAML alone, and asserts the
  * results are identical.
  *
- * Today (pre-PGLite), "derived state" is just the in-memory cache, and
- * "rebuild from YAML" is constructing a fresh Plur instance from the same
- * path. After PR 2 (feat/pglite-adapter) lands, the helper below also wipes
- * the PGLite directory and forces `plur sync` to rebuild it from YAML. The
- * test contract does not change.
+ * Iter-2 audit M-1: parameterized over PLUR_BACKEND. Both the legacy SQLite
+ * (IndexedStorage) backend AND the PGLite (ADR-0001) backend must pass the
+ * invariant. This closes the "PR 1 doesn't actually run against PR 2"
+ * critique from iter-1 (Critic F-CRIT-009, Data F-DATA-004 spirit).
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, existsSync } from 'fs'
+import { mkdtempSync, rmSync, existsSync, readFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { Plur } from '../src/index.js'
 
 /**
- * Wipe all derived state under `dir`, leaving YAML untouched.
- *
- * Future-proofing: when PGLite lands, add `store.pglite` to the wiped paths.
+ * Wipe all derived state under `dir`, leaving YAML and config.yaml untouched.
  * The contract is "anything that is NOT the YAML source goes."
  */
 function nukeDerivedState(dir: string): void {
   const derivedPaths = [
-    join(dir, 'store.pglite'),     // PR 2 (#226) — PGLite index dir
-    join(dir, '.fts-cache'),       // potential future BM25 disk cache
-    join(dir, '.embeddings-cache'),// potential future embedding cache
+    join(dir, 'store.pglite'),         // PR 2 (#226) — PGLite index dir
+    join(dir, 'store.pglite.new'),     // M-6 scratch swap target
+    join(dir, '.fts-cache'),           // potential future BM25 disk cache
+    join(dir, '.embeddings-cache'),    // potential future embedding cache (dir form)
+    join(dir, '.embeddings-cache.json'),// JSON cache file
+    join(dir, 'engrams.db'),           // legacy SQLite IndexedStorage
+    join(dir, 'engrams.db-shm'),       // SQLite WAL helper
+    join(dir, 'engrams.db-wal'),       // SQLite WAL
   ]
   for (const p of derivedPaths) {
     if (existsSync(p)) rmSync(p, { recursive: true, force: true })
   }
 }
 
-describe('yaml-as-truth: nuke-the-db rebuild (Test A)', () => {
+// Iter-2 audit M-1: run the full Test A suite against both backends. PGLite
+// is the production default; SQLite stays as a one-version deprecation flag.
+const BACKENDS: Array<'sqlite' | 'pglite'> = ['sqlite', 'pglite']
+
+for (const backend of BACKENDS) {
+describe(`yaml-as-truth: nuke-the-db rebuild (Test A) [backend=${backend}]`, () => {
   let dir: string
+  const originalBackend = process.env.PLUR_BACKEND
 
   beforeEach(() => {
-    dir = mkdtempSync(join(tmpdir(), 'plur-yaml-truth-rebuild-'))
+    dir = mkdtempSync(join(tmpdir(), `plur-yaml-truth-rebuild-${backend}-`))
+    process.env.PLUR_BACKEND = backend
   })
 
   afterEach(() => {
+    if (originalBackend === undefined) delete process.env.PLUR_BACKEND
+    else process.env.PLUR_BACKEND = originalBackend
     rmSync(dir, { recursive: true, force: true })
   })
 
@@ -153,3 +164,4 @@ describe('yaml-as-truth: nuke-the-db rebuild (Test A)', () => {
     expect(after).toEqual(before)
   })
 })
+}
