@@ -1,0 +1,6 @@
+export { classifyQuery } from './classifier.js'
+export type { QueryIntent, IntentMatch } from './classifier.js'
+export { routeForIntent, isIntentRoutingDisabled, isEntityDomain } from './route.js'
+export type { IntentRoutingProfile } from './route.js'
+export { applyIntentRouting } from './apply.js'
+export type { ApplyIntentOptions } from './apply.js'

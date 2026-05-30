@@ -35,6 +35,24 @@ The accuracy lift is in line with gbrain's published ablation (cross-encoder rer
 Benchmark harness: `benchmark/run.ts` gains `--rerank on|off` (default off, backward-compatible with prior reports). The `BenchmarkSummary.rerank` field records the active state in JSON + Markdown outputs.
 
 Tests: `packages/core/test/reranker.test.ts` (factory + env contract, 16 tests) and `packages/core/test/hybrid-rerank.test.ts` (deterministic fake-reranker integration tests for `applyReranker` and `recallHybrid`, 11 tests). Live BGE model loads are gated behind `PLUR_RERANKER_NETWORK_TESTS=1` to keep CI offline-safe — same pattern as the embedder adapter tests.
+### Intent-aware query rewriting (default ON) — #224
+
+Deterministic intent-aware query rewriting (entity / temporal / event / general routing). No LLM call. Default ON; opt-out via `PLUR_INTENT_ROUTING=off`.
+
+New surface:
+
+- `classifyQuery(query)` at `packages/core/src/intent/classifier.ts` — pure regex / keyword matching. Returns `{ intent, confidence, reason }`. No async, no I/O.
+- `routeForIntent(intent)` at `packages/core/src/intent/route.ts` — maps each intent to a modest ranking profile (multipliers in [1.0, 1.5]). The `general` profile is the neutral baseline (all multipliers = 1.0) so existing behavior is byte-equivalent when the classifier returns general.
+- `applyIntentRouting(candidates, profile)` at `packages/core/src/intent/apply.ts` — stable re-rank that combines position-derived base score with intent-aware boosts (recency, episode anchor, entity domain).
+- New `RecallOptions.intentOverride` / `InjectOptions.intentOverride`: force a specific intent (`entity` | `temporal` | `event` | `general`) for testing or unusual queries.
+
+Wired through `Plur.recall`, `Plur.recallHybrid` / `recallHybridWithMeta`, `Plur.recallSemantic`, and `Plur.injectHybrid`. The classifier runs once at the start of each recall; when it returns `general` (the common case for routine queries) the existing path runs unchanged. For `entity` / `temporal` / `event` the candidate list is over-fetched (2x limit) and re-ranked by the intent profile before truncation. Graceful degradation: wrong classification produces a small ranking perturbation, never silently drops results.
+
+For `injectHybrid`, intent multipliers are applied to the existing embedding-boost map (capped at 1.0 so the `selectAndSpread` 0.5 threshold keeps its meaning).
+
+Latency cost: ~0ms — pure regex classification plus an O(N log N) re-sort over the truncated candidate list.
+
+Tests: `packages/core/test/intent-classifier.test.ts` (42 table-driven cases across all four intents + edge cases) and `packages/core/test/intent-routing.test.ts` (profile contract + recall integration, 12 tests). 54 intent-specific tests total. Core suite stays green: 909 passed.
 
 ### Default embedder stays `bge-small` (iter-2 audit B-2)
 
