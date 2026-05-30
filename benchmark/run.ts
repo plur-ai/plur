@@ -193,9 +193,15 @@ function findRank(results: Array<{ statement: string }>, keywords: string[]): nu
   return null
 }
 
-function percentile(sorted: number[], p: number): number {
+export function percentile(sorted: number[], p: number): number {
+  // Iter-2 audit M-5 (Dijkstra F-DIJK-004): fix off-by-one at the high end.
+  // The previous `floor((p/100) * len)` returned index 19 for p=95 on a
+  // 20-element array (the maximum), which equals max(). The simple-discrete
+  // formula `floor((p/100) * (len-1))` returns index 18 (the 19th smallest)
+  // — matching numpy.percentile(..., method='lower'). For N=500 this
+  // shifts p95 by exactly one observation.
   if (sorted.length === 0) return 0
-  const idx = Math.min(sorted.length - 1, Math.floor((p / 100) * sorted.length))
+  const idx = Math.min(sorted.length - 1, Math.floor((p / 100) * (sorted.length - 1)))
   return sorted[idx]
 }
 
