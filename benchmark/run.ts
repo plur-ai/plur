@@ -228,13 +228,12 @@ function isoStamp(): string {
   return new Date().toISOString().replace(/[:.]/g, '-')
 }
 
-// Source of truth for embedder names lives in @plur-ai/core. The harness
-// re-exports a filtered subset: ONNX/local adapters only. The opt-in API
-// tier (openai-3-large, added in Sprint 0 PR 5 / #219) is excluded from the
-// bake-off because (a) it costs real money per run and (b) it isn't a like-
-// for-like comparison against the local 768d ONNX models. Users who want
-// to benchmark it can run the harness with PLUR_EMBEDDER=openai-3-large.
-const HARNESS_EXCLUDED: ReadonlySet<EmbedderName> = new Set(['openai-3-large' as EmbedderName])
+// Source of truth for embedder names lives in @plur-ai/core. Post-Sprint-0
+// follow-up: openai-3-large is now runnable in the harness when
+// OPENAI_API_KEY is set, so we can produce gbrain-comparable numbers on
+// real LongMemEval-S. The wrapper costs real money per run — caller's
+// responsibility, not a CI default.
+const HARNESS_EXCLUDED: ReadonlySet<EmbedderName> = new Set()
 const KNOWN_EMBEDDERS: EmbedderName[] = KNOWN_EMBEDDERS_FROM_CORE.filter(
   (n) => !HARNESS_EXCLUDED.has(n),
 )
