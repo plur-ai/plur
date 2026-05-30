@@ -79,6 +79,13 @@ export interface RecallOptions {
   llm?: LlmFunction
   budget?: RecallBudget
   caller_session_id?: string
+  /**
+   * Force a specific query intent for intent-aware ranking (#224).
+   * Bypasses the deterministic classifier. Use for testing or when the
+   * caller knows the intent better than the classifier can infer.
+   * Default: classifier auto-detects from the query.
+   */
+  intentOverride?: 'entity' | 'temporal' | 'event' | 'general'
 }
 
 export interface BoundedRecallResult {
@@ -91,6 +98,12 @@ export interface InjectOptions {
   budget?: number
   scope?: string
   boost_recent?: boolean
+  /**
+   * Force a specific query intent for intent-aware ranking (#224).
+   * Bypasses the deterministic classifier. Use for testing or when the
+   * caller knows the intent better than the classifier can infer.
+   */
+  intentOverride?: 'entity' | 'temporal' | 'event' | 'general'
 }
 
 export interface InjectionResult {
