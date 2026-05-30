@@ -82,6 +82,7 @@ export {
 } from './embedders/index.js'
 export {
   checkEmbedderDimMismatch,
+  defaultJsonCachePath,
   type DimMismatchWarning,
   type DimCheckInputs,
 } from './embedders/dim-check.js'
@@ -89,6 +90,7 @@ export type { StorageAdapter, StorageFilter, VectorSearchHit } from './storage-a
 export { YamlStore, SqliteStore, createStore, migrateStore, type EngramStore, type StorageBackend, type StorageConfig } from './store/index.js'
 export { withAsyncLock, asyncAtomicWrite } from './store/index.js'
 export type { SimilarityResult } from './embeddings.js'
+export { rebuildJsonCache } from './embeddings.js'
 export type { SyncResult, SyncStatus } from './sync.js'
 export { checkForUpdate, getCachedUpdateCheck, clearVersionCache, minorVersionsBehind, type VersionCheckResult } from './version-check.js'
 export { scanForTensions, getCandidatePairs, scopesOverlap, domainSegmentsOverlap, subjectsOverlap, buildContradictionPrompt, parseContradictionResponse, type TensionPair, type TensionScanResult } from './tensions.js'
@@ -2039,21 +2041,36 @@ export class Plur {
     } else {
       this._syncIndex()
     }
-    // Reembed migration. Only meaningful for PGLite — SQLite has no vector
-    // column and the in-memory embeddings cache handles dim changes by
-    // rebuilding entries on demand.
-    if (options?.reembed && this.pgliteAdapter) {
-      const adapter = this.pgliteAdapter
+    // Reembed migration. PGLite path drops/recreates the vector column;
+    // non-PGLite path rebuilds the JSON `.embeddings-cache.json` file so
+    // the default user (~99% of installs) has a real migration story on
+    // embedder switches (iter-2 audit B-3 — closes RC-3 for default users).
+    if (options?.reembed) {
       const full = options.full === true
-      // Use the test-overridable embedder lookup so reembed-migration tests
-      // can inject a fake adapter without loading a real ONNX model.
       const activeEmbedder = getEmbedder(resolveEmbedderName())
-      this._pgliteInitPromise = adapter
-        .reembedAll({ full, embedder: activeEmbedder })
-        .then(() => undefined)
-        .catch((err: unknown) => {
-          logger.warning(`[plur] reembed migration failed: ${(err as Error).message}`)
-        })
+      if (this.pgliteAdapter) {
+        const adapter = this.pgliteAdapter
+        this._pgliteInitPromise = adapter
+          .reembedAll({ full, embedder: activeEmbedder })
+          .then(() => undefined)
+          .catch((err: unknown) => {
+            logger.warning(`[plur] reembed migration failed: ${(err as Error).message}`)
+          })
+      } else {
+        // JSON cache path. Rebuild from YAML using the active embedder.
+        // Fire-and-forget so sync() stays sync-shaped — callers that need
+        // the count back use reembedAsync() instead.
+        const engrams = this._loadAllEngrams().filter(e => e.status === 'active')
+        const root = this.paths.root
+        void (async () => {
+          try {
+            const { rebuildJsonCache } = await import('./embeddings.js')
+            await rebuildJsonCache(engrams, root, { full })
+          } catch (err) {
+            logger.warning(`[plur] JSON cache reembed failed: ${(err as Error).message}`)
+          }
+        })()
+      }
     }
     return result
   }
@@ -2062,13 +2079,20 @@ export class Plur {
    * Reembed all engrams from YAML using the active embedder. Awaitable
    * variant of `sync({ reembed: true, full })` for callers that need the
    * count back. YAML is never touched.
+   *
+   * Iter-2 audit B-3: now works for the default (non-PGLite) backend too —
+   * rebuilds the JSON `.embeddings-cache.json` file. Closes the silent-poison
+   * scenario for users who switch embedders without PGLite.
    */
   async reembedAsync(options?: { full?: boolean }): Promise<{ reembedded: number; skipped: boolean; reason?: string }> {
-    if (!this.pgliteAdapter) {
-      return { reembedded: 0, skipped: true, reason: 'reembed requires PLUR_BACKEND=pglite' }
-    }
     const activeEmbedder = getEmbedder(resolveEmbedderName())
-    return this.pgliteAdapter.reembedAll({ full: options?.full, embedder: activeEmbedder })
+    if (this.pgliteAdapter) {
+      return this.pgliteAdapter.reembedAll({ full: options?.full, embedder: activeEmbedder })
+    }
+    // JSON cache path — rebuild from YAML for the active embedder.
+    const engrams = this._loadAllEngrams().filter(e => e.status === 'active')
+    const { rebuildJsonCache } = await import('./embeddings.js')
+    return rebuildJsonCache(engrams, this.paths.root, { full: options?.full })
   }
 
   /** Get git sync status without making changes. */
