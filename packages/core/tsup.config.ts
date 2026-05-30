@@ -15,5 +15,13 @@ export default defineConfig({
     'onnxruntime-common',
     'sharp',
     '@huggingface/jinja',
+    // PGLite ships pre-bundled WASM + extension .tar.gz files alongside its
+    // ESM entry point. Bundling it copies the .js chunks into core's dist
+    // but leaves the extension archives behind, which then fail at runtime
+    // ("Extension bundle not found: vector.tar.gz"). Keep external so
+    // Node's resolver locates the full PGLite tree under node_modules.
+    '@electric-sql/pglite',
+    '@electric-sql/pglite/vector',
+    '@electric-sql/pglite/age',
   ],
 })
