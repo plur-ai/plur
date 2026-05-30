@@ -4,6 +4,37 @@
 
 Sprint 0: PGLite substrate wired into recall, benchmark harness, 4 ONNX embedder adapters, opt-in `text-embedding-3-large` via `PLUR_EMBEDDER=openai-3-large`. YAML-as-truth invariant enforced in CI across both backends. BGE-small remains the default embedder — the EmbeddingGemma default-flip is deferred to Phase C real LongMemEval-S evidence.
 
+### Cross-encoder reranker (opt-in) — #220
+
+Cross-encoder reranker (BAAI/bge-reranker-v2-m3, MIT, ~568M params) — opt-in via PLUR_RERANKER. Reranks top 50 of hybrid RRF results before truncating to limit.
+
+New surface:
+
+- `RerankerAdapter` interface at `packages/core/src/rerankers/types.ts` with `score(q, d)` and `scoreBatch(q, docs)`.
+- BGE reranker v2-m3 adapter via `@huggingface/transformers` (`AutoTokenizer` + `AutoModelForSequenceClassification`, `dtype: 'q8'`, model id `onnx-community/bge-reranker-v2-m3-ONNX`).
+- Factory at `packages/core/src/rerankers/index.ts` with `getReranker()`, the env var `PLUR_RERANKER=bge-reranker-v2-m3|off`, and an `off` sentinel detectable via `isRerankerOff()` so the recall hot path skips the stage at zero cost.
+- New `RecallOptions.rerank` / `InjectOptions.rerank` boolean. `true` opts in for the call (defaults to bge-reranker-v2-m3 if env is `off`), `false` skips even when env opts in, omitted respects the env.
+
+Wired through `Plur.recallHybrid`, `Plur.recallSemantic`, and `Plur.injectHybrid`. After BM25 + embedding RRF fusion (or PGLite hybrid), the top 50 candidates are rescored by the cross-encoder and reordered by joint relevance before truncating to the caller's `limit`. On reranker error (model unavailable, network) the recall path logs a warning and falls back to the RRF order — recall always returns something.
+
+For `injectHybrid`, the reranker's batch scores are min-max normalized into [0, 1] before being passed as the embedding boost map so the existing `selectAndSpread` 0.5 threshold remains meaningful.
+
+Latency cost: ~50-500ms per query depending on candidate count, scaled by model load — measured at p50 ~4s for the 30-scenario smoke harness once the model is warm. The reranker is OFF by default. PLUR's "no API key, no surprise latency" posture extends to model load cost: q8-quantized weights add ~577 MB on disk and ~1.3 GB peak RSS during inference.
+
+Benchmark: smoke run on the 30-scenario fixture, `bge-small` embedder, PGLite + hybrid:
+
+| Metric    | rerank off | rerank on | Δ      |
+|-----------|-----------:|----------:|-------:|
+| R@5       |       76.7 |      96.7 | +20.0  |
+| R@1       |       46.7 |      63.3 | +16.6  |
+| Accuracy  |       76.7 |      93.3 | +16.6  |
+| p50 (ms)  |         84 |      4148 | +4064  |
+
+The accuracy lift is in line with gbrain's published ablation (cross-encoder rerankers reshuffle ~60% of top-1 results). Real LongMemEval-S numbers will follow Phase C.
+
+Benchmark harness: `benchmark/run.ts` gains `--rerank on|off` (default off, backward-compatible with prior reports). The `BenchmarkSummary.rerank` field records the active state in JSON + Markdown outputs.
+
+Tests: `packages/core/test/reranker.test.ts` (factory + env contract, 16 tests) and `packages/core/test/hybrid-rerank.test.ts` (deterministic fake-reranker integration tests for `applyReranker` and `recallHybrid`, 11 tests). Live BGE model loads are gated behind `PLUR_RERANKER_NETWORK_TESTS=1` to keep CI offline-safe — same pattern as the embedder adapter tests.
 ### Intent-aware query rewriting (default ON) — #224
 
 Deterministic intent-aware query rewriting (entity / temporal / event / general routing). No LLM call. Default ON; opt-out via `PLUR_INTENT_ROUTING=off`.
