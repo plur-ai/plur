@@ -1411,10 +1411,25 @@ export class Plur {
       // Use the existing hybrid path so degraded-mode semantics stay consistent.
       return hybridSearchWithMeta(filtered, query, limit, this.paths.root, rerank)
     }
+    // Fetch sizing depends on whether the reranker stage runs after RRF:
+    //
+    // - No rerank: match hybridSearchWithMeta (BM25=limit*3, vec=limit*2).
+    //   The previous max(limit*3, 50) over-fetch diluted RRF — more BM25-only
+    //   noise items competed against deep-rank vector candidates for top-K
+    //   (specifically broke ms-4 aggregation query on the 30-Q fixture).
+    //
+    // - Rerank on: keep the wider over-fetch so the cross-encoder has more
+    //   candidates to reorder. Reranker accuracy scales with K.
+    //
+    // See Q1 investigation 2026-05-31.
+    const wantReranker = rerank?.reranker && !isRerankerOff(rerank.reranker)
+    const embLimit = Math.min(
+      filtered.length,
+      wantReranker ? Math.max(limit * 3, 50) : limit * 2,
+    )
     let pgHits: Engram[] = []
     try {
-      const overFetch = Math.max(limit * 3, 50)
-      const hits = await this.pgliteAdapter.searchVector(queryVec, overFetch)
+      const hits = await this.pgliteAdapter.searchVector(queryVec, embLimit)
       const allowed = new Map<string, Engram>(filtered.map(e => [e.id, e]))
       pgHits = hits
         .map(h => allowed.get(h.engram.id))
@@ -1428,8 +1443,12 @@ export class Plur {
       // Cold-start fallback: JSON cache likely has more populated entries.
       return hybridSearchWithMeta(filtered, query, limit, this.paths.root, rerank)
     }
-    // BM25 portion + RRF merge — share rrfMerge with the JSON path.
-    const bm25Limit = Math.min(filtered.length, Math.max(limit * 3, 50))
+    // BM25 portion + RRF merge — share rrfMerge with the JSON path. Wider
+    // BM25 set when rerank is on (same rationale as embLimit above).
+    const bm25Limit = Math.min(
+      filtered.length,
+      wantReranker ? Math.max(limit * 3, 50) : limit * 3,
+    )
     const bm25Results = searchEngrams(filtered, query, bm25Limit)
     const merged = pgliteRrfMerge([bm25Results, pgHits])
     const reranked = await applyReranker(merged, query, rerank)
