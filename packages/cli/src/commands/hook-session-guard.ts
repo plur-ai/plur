@@ -29,7 +29,14 @@ const EXEMPT_TOOLS = new Set([
   'ToolSearch',
 ])
 
-const MAX_BLOCKS_BEFORE_FALLBACK = 5
+// Nudge at most once per session, then fail open. A hard deny-everything
+// guard collapses the agent's action space to the single exempt call
+// (plur_session_start); under the deferred-tool flow that call can fail with
+// "task required" if its schema isn't loaded yet, and the agent then retries
+// it in a tight loop. Bounding the guard to one nudge makes that impossible:
+// session-start memory is best-effort (hook-inject already injects on
+// UserPromptSubmit), never worth trapping or pressuring a session.
+const MAX_BLOCKS_BEFORE_FALLBACK = 1
 
 function readStdinRaw(): string {
   try {
@@ -102,21 +109,26 @@ export async function run(_args: string[], _flags: GlobalFlags): Promise<void> {
   const blockCount = incrementBlockCount(sessionId)
   if (blockCount > MAX_BLOCKS_BEFORE_FALLBACK) {
     process.stderr.write(
-      `[plur] WARNING: session guard gave up after ${MAX_BLOCKS_BEFORE_FALLBACK} blocked calls. ` +
-      `The plur MCP server may not be running. Run \`plur doctor\` to diagnose.\n`,
+      `[plur] session guard: allowing tools after ${MAX_BLOCKS_BEFORE_FALLBACK} nudge(s) ` +
+      `without a session start. If plur_session_start never ran, the MCP server ` +
+      `may be down — run \`plur doctor\` to diagnose. Memory injection is best-effort.\n`,
     )
     return
   }
 
-  // Block
+  // Nudge once (calm, anti-batching), then fail open on the next call.
   const output = {
     hookSpecificOutput: {
       hookEventName: 'PreToolUse',
       permissionDecision: 'deny',
       permissionDecisionReason:
-        'BLOCKED: plur_session_start has not been called yet. ' +
-        'You MUST call mcp__plur__plur_session_start before using any other tool. ' +
-        'Use ToolSearch to load it first if needed.',
+        'Reminder: call mcp__plur__plur_session_start once before other tools ' +
+        'so this session has memory. It is a deferred tool — first run ' +
+        "ToolSearch 'select:mcp__plur__plur_session_start' as its own step, " +
+        'then call it a single time with a short task description. Do not batch ' +
+        'the ToolSearch with the call, and do not repeat it. This reminder fires ' +
+        'only once; your next tool call proceeds normally whether or not ' +
+        'session_start succeeded.',
     },
   }
   process.stdout.write(JSON.stringify(output))

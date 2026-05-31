@@ -20,12 +20,16 @@ export async function run(_args: string[], _flags: GlobalFlags): Promise<void> {
     hookSpecificOutput: {
       hookEventName: 'SessionStart',
       additionalContext:
-        'MANDATORY FIRST ACTION — DO THIS NOW BEFORE ANYTHING ELSE:\n' +
-        "1. Call ToolSearch with query 'select:mcp__plur__plur_session_start'\n" +
-        "2. Call mcp__plur__plur_session_start with the user's task description\n" +
-        '3. Only THEN proceed with any other work\n\n' +
-        'A PreToolUse guard will BLOCK all other tool calls until this is done. ' +
-        'This is not optional. This is not a suggestion. Do it now.',
+        "Before other work, start this session's memory with plur:\n" +
+        "1. Run ToolSearch 'select:mcp__plur__plur_session_start' on its own " +
+        'and wait for the result. It is a deferred tool — its schema must ' +
+        'load before it can be called.\n' +
+        '2. Then call mcp__plur__plur_session_start exactly once with a short ' +
+        'task description.\n' +
+        'Do not batch steps 1 and 2 in the same turn, and do not repeat the ' +
+        "call. A 'task required' error only means the schema wasn't loaded " +
+        'yet — run ToolSearch, then call it once. A guard nudges you once if ' +
+        'you start with another tool, but it never blocks your work.',
     },
   }
   process.stdout.write(JSON.stringify(output))
