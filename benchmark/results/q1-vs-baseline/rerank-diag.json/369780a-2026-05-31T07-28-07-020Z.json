@@ -1,0 +1,146 @@
+{
+  "commit": "369780a",
+  "timestamp": "2026-05-31T07:28:07.019Z",
+  "embedder": "minilm",
+  "embedder_stub_fallback": false,
+  "search_mode": "hybrid",
+  "rerank": "on",
+  "corpus": "fixture",
+  "scenario_count": 5,
+  "iterations_per_category": null,
+  "seed": 1337,
+  "r5": 100,
+  "r1": 100,
+  "accuracy": 100,
+  "latency_p50_ms": 13.041458,
+  "latency_p95_ms": 31.466333,
+  "latency_p99_ms": 31.466333,
+  "peak_rss_mb": 1418.98,
+  "store_size_bytes": 40576970,
+  "per_category": {
+    "single_session_user": {
+      "r5": 100,
+      "r1": 100,
+      "hit10": 100,
+      "mrr": 1,
+      "accuracy": 100,
+      "latency_p50_ms": 13.041458,
+      "latency_p95_ms": 31.466333,
+      "latency_p99_ms": 31.466333,
+      "count": 5
+    }
+  },
+  "results": [
+    {
+      "id": "ss-user-1",
+      "category": "single_session_user",
+      "query": "Where does the user work?",
+      "expected_keywords": [
+        "Nike"
+      ],
+      "retrieved_statements": [
+        "Yeah, I work as a data engineer at Nike now. Started last month.",
+        "Welcome to Portland! That's quite a climate shift from Austin's heat.",
+        "I just moved to Portland, Oregon from Austin. The rain is a big change.",
+        "I've been learning Rust for the past 3 months. Coming from Python, the borrow checker is brutal.",
+        "My cat Mochi keeps jumping on my keyboard while I code. She's a calico."
+      ],
+      "hit_at_1": true,
+      "hit_at_5": true,
+      "hit_at_10": true,
+      "mrr": 1,
+      "accuracy": true,
+      "rank": 1,
+      "latency_ms": 2141.587417
+    },
+    {
+      "id": "ss-user-2",
+      "category": "single_session_user",
+      "query": "How old is the user's daughter?",
+      "expected_keywords": [
+        "7"
+      ],
+      "retrieved_statements": [
+        "My daughter Emma just turned 7. We had a dinosaur-themed birthday party.",
+        "Happy birthday to Emma! Dinosaur parties are the best at that age.",
+        "My cat Mochi keeps jumping on my keyboard while I code. She's a calico.",
+        "Yeah, I work as a data engineer at Nike now. Started last month.",
+        "Calicos are known for being opinionated! Maybe a decoy keyboard would help."
+      ],
+      "hit_at_1": true,
+      "hit_at_5": true,
+      "hit_at_10": true,
+      "mrr": 1,
+      "accuracy": true,
+      "rank": 1,
+      "latency_ms": 31.466333
+    },
+    {
+      "id": "ss-user-3",
+      "category": "single_session_user",
+      "query": "What programming language is the user learning?",
+      "expected_keywords": [
+        "Rust"
+      ],
+      "retrieved_statements": [
+        "The borrow checker is definitely the steepest part of the Rust learning curve.",
+        "I've been learning Rust for the past 3 months. Coming from Python, the borrow checker is brutal.",
+        "Happy birthday to Emma! Dinosaur parties are the best at that age.",
+        "Calicos are known for being opinionated! Maybe a decoy keyboard would help.",
+        "Yeah, I work as a data engineer at Nike now. Started last month."
+      ],
+      "hit_at_1": true,
+      "hit_at_5": true,
+      "hit_at_10": true,
+      "mrr": 1,
+      "accuracy": true,
+      "rank": 1,
+      "latency_ms": 9.442375
+    },
+    {
+      "id": "ss-user-4",
+      "category": "single_session_user",
+      "query": "What car does the user drive?",
+      "expected_keywords": [
+        "Tesla",
+        "Model 3"
+      ],
+      "retrieved_statements": [
+        "I drive a 2022 Tesla Model 3. The autopilot is great for my commute on I-5.",
+        "My daughter Emma just turned 7. We had a dinosaur-themed birthday party.",
+        "Yeah, I work as a data engineer at Nike now. Started last month.",
+        "I just moved to Portland, Oregon from Austin. The rain is a big change.",
+        "Calicos are known for being opinionated! Maybe a decoy keyboard would help."
+      ],
+      "hit_at_1": true,
+      "hit_at_5": true,
+      "hit_at_10": true,
+      "mrr": 1,
+      "accuracy": true,
+      "rank": 1,
+      "latency_ms": 11.755125
+    },
+    {
+      "id": "ss-user-5",
+      "category": "single_session_user",
+      "query": "What is the name of the user's cat?",
+      "expected_keywords": [
+        "Mochi"
+      ],
+      "retrieved_statements": [
+        "My cat Mochi keeps jumping on my keyboard while I code. She's a calico.",
+        "My daughter Emma just turned 7. We had a dinosaur-themed birthday party.",
+        "Happy birthday to Emma! Dinosaur parties are the best at that age.",
+        "Calicos are known for being opinionated! Maybe a decoy keyboard would help.",
+        "Yeah, I work as a data engineer at Nike now. Started last month."
+      ],
+      "hit_at_1": true,
+      "hit_at_5": true,
+      "hit_at_10": true,
+      "mrr": 1,
+      "accuracy": true,
+      "rank": 1,
+      "latency_ms": 13.041458
+    }
+  ]
+}
