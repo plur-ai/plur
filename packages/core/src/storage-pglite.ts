@@ -194,6 +194,25 @@ export class PGLiteAdapter implements StorageAdapter {
           embedding vector(${this.vectorDim}) NOT NULL
         );
       `)
+      // HNSW approximate-cosine index. Without this, pgvector falls back
+      // to sequential scan (O(N) per query) which makes recall on a 30k+
+      // engram store catastrophically slow. Discovered during Q2 Run A
+      // — the unindexed scan on real LongMemEval-S (30k engrams + 500
+      // queries) ran for 28h without producing results.
+      //
+      // m=16, ef_construction=64 are pgvector defaults. Index build cost
+      // is one-time and amortised across many queries. ef_search (query
+      // time) stays at the default 40 — bump to 200 if recall regresses.
+      try {
+        await db.exec(`
+          CREATE INDEX IF NOT EXISTS engram_embeddings_hnsw_cosine
+          ON engram_embeddings
+          USING hnsw (embedding vector_cosine_ops)
+          WITH (m = 16, ef_construction = 64);
+        `)
+      } catch (err) {
+        logger.warning(`[pglite] HNSW index creation failed: ${(err as Error).message}. Falling back to sequential scan — vector recall will be slow on large stores.`)
+      }
     } else {
       await db.exec(`
         CREATE TABLE IF NOT EXISTS engram_embeddings (
