@@ -1576,6 +1576,14 @@ export class Plur {
   /** Reactivate accessed engrams and update co-access associations */
   private _reactivateResults(results: Engram[]): void {
     if (results.length === 0) return
+    // Benchmark-mode opt-out: each call to this method loads, mutates, and
+    // rewrites the entire engrams.yaml. With 30k engrams that's ~60 MB
+    // per call — enough to OOM V8 (ConsString growth) within a few hundred
+    // queries. Benchmarks don't care about activation tracking; set
+    // PLUR_DISABLE_REACTIVATION=1 to short-circuit.
+    if (process.env.PLUR_DISABLE_REACTIVATION === '1' || process.env.PLUR_DISABLE_REACTIVATION === 'true') {
+      return
+    }
     // Filter out store engrams — they're managed by their source.
     // Via YAML path: store engrams have _originalId. Via SQLite path: namespaced IDs (ENG-XX-...).
     const isStoreEngram = (e: Engram) =>
