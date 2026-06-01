@@ -112,6 +112,22 @@ export interface RunOptions {
   rerank?: 'on' | 'off'
   /** Which corpus to load (default 'fixture' for backward compat). */
   corpus?: CorpusName
+  /**
+   * Persistent PLUR store path. When set, the harness uses this directory
+   * instead of mktempdir, skips ingestion if the store already contains
+   * engrams, and DOES NOT delete it on exit. Use to reuse an ingested
+   * corpus across multiple config variants (rerank on/off, intent on/off,
+   * etc.) without re-ingesting ~30k engrams on every run.
+   *
+   * IMPORTANT: only safe to reuse across runs that share the same embedder
+   * and same corpus, since the stored vectors are embedder-specific.
+   */
+  plurPath?: string
+  /**
+   * When true and plurPath is set, force re-ingestion even if the store
+   * already has engrams. Useful when the corpus or scenario set changed.
+   */
+  forceIngest?: boolean
 }
 
 export interface RunOutput {
@@ -348,10 +364,25 @@ export async function runBenchmark(opts: RunOptions = {}): Promise<RunOutput> {
     throw new Error('No scenarios found.')
   }
 
-  // Create an isolated PLUR store for this run.
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'plur-bench-'))
-  fs.writeFileSync(path.join(tmpDir, 'engrams.yaml'), '[]')
-  fs.writeFileSync(path.join(tmpDir, 'episodes.yaml'), '[]')
+  // Per-run PLUR store. Either:
+  //   (a) auto-mkdtemp — fresh isolated store, deleted on exit (default)
+  //   (b) opts.plurPath — persistent reusable store, kept on exit
+  //
+  // Persistent mode lets follow-on runs reuse a corpus-ingested store
+  // (same embedder + same corpus) without re-ingesting ~30k engrams every
+  // time. Saves hours per run on real LongMemEval-S.
+  const useEphemeral = !opts.plurPath
+  let tmpDir: string
+  if (useEphemeral) {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'plur-bench-'))
+  } else {
+    tmpDir = opts.plurPath!
+    fs.mkdirSync(tmpDir, { recursive: true })
+  }
+  const engramsYamlPath = path.join(tmpDir, 'engrams.yaml')
+  if (!fs.existsSync(engramsYamlPath)) fs.writeFileSync(engramsYamlPath, '[]')
+  const episodesYamlPath = path.join(tmpDir, 'episodes.yaml')
+  if (!fs.existsSync(episodesYamlPath)) fs.writeFileSync(episodesYamlPath, '[]')
   // allow_secrets: true — the LongMemEval-S corpus contains demo strings that
   // trip the secret-detection guard ("password_assignment", "api_key_assigned",
   // etc.). They are benchmark fixtures, not real secrets; the guard would
@@ -364,28 +395,39 @@ export async function runBenchmark(opts: RunOptions = {}): Promise<RunOutput> {
   const plur = new Plur({ path: tmpDir })
 
   // ─── Ingest ──────────────────────────────────────────────────────
-  let engramCount = 0
+  // Skip ingestion when the persistent store already has engrams — unless
+  // --force-ingest is set. Detection: count entries in engrams.yaml at load.
+  const existingCount = plur.list().length
+  const shouldSkipIngest =
+    !useEphemeral && existingCount > 0 && !opts.forceIngest
+
+  let engramCount = existingCount
   // Use a Set on scenario ID to dedupe ingestion when N > pool.length (sampling
   // with replacement returns the same conversation more than once).
   const ingestedScenarios = new Set<string>()
-  for (const scenario of scenarios) {
-    if (ingestedScenarios.has(scenario.id)) continue
-    ingestedScenarios.add(scenario.id)
-    for (const session of scenario.conversations) {
-      for (const turn of session.turns) {
-        if (turn.role === 'user') {
-          plur.learn(turn.content, { type: 'behavioral', source: `benchmark:${scenario.id}:s${session.session}` })
-          engramCount++
-        } else if (turn.role === 'assistant') {
-          plur.learn(turn.content, { type: 'behavioral', source: `benchmark:${scenario.id}:s${session.session}:assistant` })
-          engramCount++
+  if (shouldSkipIngest) {
+    if (!opts.quiet) {
+      console.log(`Reusing persistent store at ${tmpDir} (${existingCount} engrams already present, skipping ingest).\n`)
+    }
+  } else {
+    for (const scenario of scenarios) {
+      if (ingestedScenarios.has(scenario.id)) continue
+      ingestedScenarios.add(scenario.id)
+      for (const session of scenario.conversations) {
+        for (const turn of session.turns) {
+          if (turn.role === 'user') {
+            plur.learn(turn.content, { type: 'behavioral', source: `benchmark:${scenario.id}:s${session.session}` })
+            engramCount++
+          } else if (turn.role === 'assistant') {
+            plur.learn(turn.content, { type: 'behavioral', source: `benchmark:${scenario.id}:s${session.session}:assistant` })
+            engramCount++
+          }
         }
       }
     }
-  }
-
-  if (!opts.quiet) {
-    console.log(`Ingested ${engramCount} engrams from ${ingestedScenarios.size} unique scenarios (${scenarios.length} query rounds).\n`)
+    if (!opts.quiet) {
+      console.log(`Ingested ${engramCount} engrams from ${ingestedScenarios.size} unique scenarios (${scenarios.length} query rounds).\n`)
+    }
   }
 
   // Track peak RSS continuously while we hammer recall().
@@ -515,8 +557,13 @@ export async function runBenchmark(opts: RunOptions = {}): Promise<RunOutput> {
     console.log(`Markdown saved to: ${mdPath}`)
   }
 
-  // Cleanup the per-run store.
-  fs.rmSync(tmpDir, { recursive: true, force: true })
+  // Cleanup the per-run store ONLY if it was ephemeral. Persistent stores
+  // (--plur-path) are kept for reuse by follow-on runs.
+  if (useEphemeral) {
+    fs.rmSync(tmpDir, { recursive: true, force: true })
+  } else if (!opts.quiet) {
+    console.log(`Persistent store retained at: ${tmpDir}`)
+  }
 
   return { jsonPath, mdPath, summary, results }
 }
@@ -614,6 +661,8 @@ function parseArgs(argv: string[]): RunOptions {
       }
       opts.corpus = c
     }
+    else if (a === '--plur-path' && argv[i + 1]) opts.plurPath = argv[++i]
+    else if (a === '--force-ingest') opts.forceIngest = true
   }
   return opts
 }
