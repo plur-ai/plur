@@ -2284,12 +2284,19 @@ Generate an improved version of the procedure that prevents this failure. Return
    *
    * Backwards compatible: existing call sites that pass a filesystem
    * path keep working.
+   *
+   * Stores are deduplicated by **endpoint + scope** (url+scope for remote,
+   * path+scope for local), so a single remote URL can host many scopes — one
+   * entry per team scope the user is authorized for (#291). Returns the outcome
+   * so callers can report honestly: `added` (new entry persisted),
+   * `already_registered` (exact url+scope/path+scope match — idempotent no-op),
+   * or `overwritten` (same scope reassigned to this endpoint via overwriteScope).
    */
   addStore(
     storePath: string,
     scope: string,
     options?: { shared?: boolean; readonly?: boolean; url?: string; token?: string; overwriteScope?: boolean },
-  ): void {
+  ): { status: 'added' | 'already_registered' | 'overwritten' } {
     const isRemote = Boolean(options?.url)
 
     // Validation gate (#93): catch malformed URLs and duplicate scopes at
@@ -2316,11 +2323,17 @@ Generate an improved version of the procedure that prevents this failure. Return
     }
 
     const config = loadConfig(this.paths.config)
-    const dedupKey = isRemote ? options!.url : storePath
 
-    // Same path/url → already registered, idempotent (existing behavior).
-    const sameEndpoint = config.stores?.find(s => (isRemote ? s.url === dedupKey : s.path === dedupKey))
-    if (sameEndpoint) return
+    // Dedup by endpoint + scope (#291): a single remote URL legitimately hosts
+    // many scopes, so the URL alone is NOT the identity. Only an exact
+    // url+scope (or path+scope) match is "already registered" — idempotent
+    // no-op. Keying on URL alone here used to drop every scope after the first
+    // for a shared enterprise URL while still returning success.
+    const sameEntry = config.stores?.find(s =>
+      isRemote ? (s.url === options!.url && s.scope === scope)
+               : (s.path === storePath && s.scope === scope),
+    )
+    if (sameEntry) return { status: 'already_registered' }
 
     // Different endpoint, same scope (#93): forbid by default to prevent
     // silent ambiguity ("which store does scope X belong to?"). Override
@@ -2363,6 +2376,7 @@ Generate an improved version of the procedure that prevents this failure. Return
     configData.stores = stores
     fs.writeFileSync(this.paths.config, yaml.dump(configData, { lineWidth: 120, noRefs: true }))
     this.config = loadConfig(this.paths.config)
+    return { status: scopeConflict ? 'overwritten' : 'added' }
   }
 
   /**

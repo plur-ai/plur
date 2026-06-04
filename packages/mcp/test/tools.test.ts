@@ -96,4 +96,37 @@ describe('MCP tools', () => {
     const result = await callTool('plur_status', {}) as any
     expect(result.version).toMatch(/^\d+\.\d+\.\d+/)
   })
+
+  // plur_stores_add must report an honest status, never an unconditional
+  // success:true that masks a dropped scope (#291).
+  describe('plur_stores_add status reporting (#291)', () => {
+    const url = 'https://plur.datafund.io/sse'
+
+    it('reports status:added for a second scope on the same remote URL', async () => {
+      const first = await callTool('plur_stores_add', { url, token: 'tok', scope: 'group:plur/plur-ai/engineering' }) as any
+      expect(first).toMatchObject({ success: true, status: 'added', kind: 'remote' })
+
+      // The bug: this used to return success:true while persisting nothing.
+      const second = await callTool('plur_stores_add', { url, token: 'tok', scope: 'group:plur/plur-ai/comms' }) as any
+      expect(second).toMatchObject({ success: true, status: 'added', scope: 'group:plur/plur-ai/comms' })
+
+      // Both scopes are now visible in the listing (alongside the default local
+      // store, so we assert on scopes present rather than total count).
+      const list = await callTool('plur_stores_list', {}) as any
+      const scopes = list.stores.map((s: any) => s.scope)
+      expect(scopes).toContain('group:plur/plur-ai/engineering')
+      expect(scopes).toContain('group:plur/plur-ai/comms')
+    })
+
+    it('reports status:already_registered on an exact url+scope repeat', async () => {
+      await callTool('plur_stores_add', { url, token: 'tok', scope: 'group:plur/plur-ai/engineering' })
+      const repeat = await callTool('plur_stores_add', { url, token: 'tok', scope: 'group:plur/plur-ai/engineering' }) as any
+      expect(repeat).toMatchObject({ success: true, status: 'already_registered' })
+
+      // The repeat must not have created a duplicate entry for that scope.
+      const list = await callTool('plur_stores_list', {}) as any
+      const engineering = list.stores.filter((s: any) => s.scope === 'group:plur/plur-ai/engineering')
+      expect(engineering).toHaveLength(1)
+    })
+  })
 })

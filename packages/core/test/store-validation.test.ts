@@ -125,6 +125,71 @@ describe('addStore validation (#93)', () => {
     })
   })
 
+  /**
+   * Multiple scopes per remote URL — closes plur-ai/plur#291.
+   *
+   * One enterprise instance hosts many team scopes a user is authorized for.
+   * Dedup keyed on URL alone dropped every scope after the first while still
+   * returning success. Identity is endpoint + scope, so each authorized scope
+   * must register and persist independently.
+   */
+  describe('multiple scopes per remote URL (#291)', () => {
+    const URL = 'https://plur.datafund.io/sse'
+
+    it('persists a second scope on an already-registered URL', () => {
+      plur.addStore('', 'group:plur/plur-ai/engineering', { url: URL, token: 'tok' })
+      plur.addStore('', 'group:plur/plur-ai/comms', { url: URL, token: 'tok' })
+
+      const config = yaml.load(readFileSync(join(dir, 'config.yaml'), 'utf8')) as any
+      expect(config.stores).toHaveLength(2)
+      const scopes = config.stores.map((s: any) => s.scope).sort()
+      expect(scopes).toEqual(['group:plur/plur-ai/comms', 'group:plur/plur-ai/engineering'])
+      // Both entries point at the same URL — the URL is not the identity.
+      expect(config.stores.every((s: any) => s.url === URL)).toBe(true)
+    })
+
+    it('registers every authorized scope on one enterprise URL (the live repro)', () => {
+      const scopes = [
+        'group:plur/plur-ai',
+        'group:plur/plur-ai/engineering',
+        'group:plur/plur-ai/comms',
+        'group:plur/plur-ai/research',
+        'group:plur/plur-ai/leadership',
+      ]
+      for (const scope of scopes) plur.addStore('', scope, { url: URL, token: 'tok' })
+
+      const config = yaml.load(readFileSync(join(dir, 'config.yaml'), 'utf8')) as any
+      expect(config.stores).toHaveLength(scopes.length)
+      expect(config.stores.map((s: any) => s.scope).sort()).toEqual([...scopes].sort())
+    })
+
+    it('returns added → already_registered → overwritten honestly', () => {
+      // First registration: a real add.
+      expect(plur.addStore('', 'group:plur/plur-ai/engineering', { url: URL, token: 'tok' }))
+        .toEqual({ status: 'added' })
+      // Second scope on the same URL: also a real add (the #291 bug).
+      expect(plur.addStore('', 'group:plur/plur-ai/comms', { url: URL, token: 'tok' }))
+        .toEqual({ status: 'added' })
+      // Exact url+scope repeat: idempotent no-op.
+      expect(plur.addStore('', 'group:plur/plur-ai/comms', { url: URL, token: 'tok' }))
+        .toEqual({ status: 'already_registered' })
+      // Same scope reassigned to a different URL with opt-in: overwritten.
+      expect(plur.addStore('', 'group:plur/plur-ai/comms', {
+        url: 'https://other.example.com', token: 'tok2', overwriteScope: true,
+      })).toEqual({ status: 'overwritten' })
+    })
+
+    it('same URL + same scope + different token stays an idempotent no-op (no silent token swap)', () => {
+      plur.addStore('', 'group:plur/plur-ai/engineering', { url: URL, token: 'original' })
+      const result = plur.addStore('', 'group:plur/plur-ai/engineering', { url: URL, token: 'rotated' })
+
+      expect(result).toEqual({ status: 'already_registered' })
+      const config = yaml.load(readFileSync(join(dir, 'config.yaml'), 'utf8')) as any
+      expect(config.stores).toHaveLength(1)
+      expect(config.stores[0].token).toBe('original')
+    })
+  })
+
   describe('readonly stores', () => {
     it('readonly remote store is registered and persists the flag', () => {
       plur.addStore('', 'group:ro', {

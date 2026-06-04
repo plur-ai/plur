@@ -1337,7 +1337,7 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
 
     {
       name: 'plur_stores_add',
-      description: 'Register an additional engram store. Either filesystem (path) or remote (url+token, e.g. PLUR Enterprise).',
+      description: 'Register an additional engram store. Either filesystem (path) or remote (url+token, e.g. PLUR Enterprise). One remote URL can host multiple scopes — call once per team scope you are authorized for; each registers independently. Returns status: "added" or "already_registered".',
       annotations: { title: 'Add store', destructiveHint: false, idempotentHint: true },
       inputSchema: {
         type: 'object',
@@ -1357,13 +1357,18 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
         const token = args.token as string | undefined
         if (!path && !url) return { error: 'Either path or url must be provided' }
         if (path && url) return { error: 'Provide path OR url, not both' }
-        plur.addStore(path ?? '', args.scope as string, {
+        // status distinguishes a real registration from an idempotent no-op so
+        // the caller is never told a scope was added when it already existed
+        // (#291). A second scope on an already-registered remote URL now
+        // genuinely persists, so success:true here is honest.
+        const result = plur.addStore(path ?? '', args.scope as string, {
           shared:   args.shared   as boolean | undefined,
           readonly: args.readonly as boolean | undefined,
           url, token,
         })
         return {
           success: true,
+          status: result.status,
           ...(path ? { path } : { url }),
           scope: args.scope,
           kind: url ? 'remote' : 'filesystem',
