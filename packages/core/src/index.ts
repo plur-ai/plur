@@ -71,6 +71,11 @@ export { detectPlurStorage, type PlurPaths } from './storage.js'
 export { IndexedStorage } from './storage-indexed.js'
 export { YamlStore, SqliteStore, createStore, migrateStore, type EngramStore, type StorageBackend, type StorageConfig } from './store/index.js'
 export { withAsyncLock, asyncAtomicWrite } from './store/index.js'
+// Embedding primitive — public so alternative store backends can compute
+// vectors identically to core's hybrid search (same model + EMBED_DIM). The
+// model identity and EMBED_DIM are a stable contract; changing them is breaking
+// for any consumer that persists vectors. See embeddings.ts.
+export { embed, EMBED_DIM, embedderStatus, cosineSimilarity, type EmbedderStatus } from './embeddings.js'
 export type { SimilarityResult } from './embeddings.js'
 export type { SyncResult, SyncStatus } from './sync.js'
 export { checkForUpdate, getCachedUpdateCheck, clearVersionCache, minorVersionsBehind, type VersionCheckResult } from './version-check.js'

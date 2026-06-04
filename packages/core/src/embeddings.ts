@@ -19,6 +19,23 @@ import { atomicWrite } from './sync.js'
  * re-computation on subsequent searches.
  */
 
+/**
+ * Embedding dimension produced by the model (BAAI/bge-small-en-v1.5 → 384).
+ *
+ * STABLE PUBLIC CONTRACT. Any backend that persists vectors must store them at
+ * this dimension and produced by this exact model — vectors of a different
+ * dimension or from a different model are incompatible and silently degrade
+ * recall. Changing the model or this value is therefore a BREAKING change:
+ * every consumer holding persisted vectors must re-embed. `embed()` asserts its
+ * first successful output against this constant so a model swap that changes the
+ * dimension fails loudly instead of drifting silently.
+ */
+export const EMBED_DIM = 384
+
+// Verifies the live model output matches EMBED_DIM exactly once per process —
+// see assertEmbedDim().
+let embedDimChecked = false
+
 // Lazy-loaded pipeline — only initialized when first needed
 let embedPipeline: any = null
 let lastLoadError: string | null = null
@@ -100,6 +117,7 @@ export function resetEmbedder(): void {
   transformersUnavailable = false
   lastLoadError = null
   embedPipeline = null
+  embedDimChecked = false
 }
 
 async function getEmbedder() {
@@ -123,12 +141,32 @@ async function getEmbedder() {
   }
 }
 
-/** Generate embedding for a text string. Returns Float32Array of 384 dims, or null if unavailable. */
+/** Generate embedding for a text string. Returns Float32Array of EMBED_DIM (384) dims, or null if unavailable. */
 export async function embed(text: string): Promise<Float32Array | null> {
   const embedder = await getEmbedder()
   if (!embedder) return null
   const result = await embedder(text, { pooling: 'cls', normalize: true })
-  return new Float32Array(result.data)
+  const vector = new Float32Array(result.data)
+  assertEmbedDim(vector)
+  return vector
+}
+
+/**
+ * Assert (once per process) that the live model's output dimension matches
+ * EMBED_DIM. A mismatch means the model changed without EMBED_DIM being updated
+ * (or vice versa) — a contract violation that would silently corrupt any
+ * persisted vectors, so we fail loudly here rather than let it drift.
+ */
+function assertEmbedDim(vector: Float32Array): void {
+  if (embedDimChecked) return
+  embedDimChecked = true
+  if (vector.length !== EMBED_DIM) {
+    throw new Error(
+      `Embedding dimension mismatch: model produced ${vector.length} dims but EMBED_DIM is ${EMBED_DIM}. ` +
+        `The embedding model and EMBED_DIM must agree — update EMBED_DIM and treat this as a breaking change ` +
+        `for any consumer that persists vectors (they must re-embed).`,
+    )
+  }
 }
 
 /** Cosine similarity between two vectors. */
