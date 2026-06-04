@@ -17,6 +17,7 @@
  *
  * | Method | Path | Behavior |
  * |--------|------|----------|
+ * | GET | /api/v1/me | Resolved identity + authorized scopes (override via setMe) |
  * | GET | /api/v1/engrams?scope=...&limit=...&offset=... | List engrams by scope, paginated |
  * | GET | /api/v1/engrams/:id | Get single engram or 404 |
  * | POST | /api/v1/engrams | Create engram, assigns server ID |
@@ -62,8 +63,18 @@ export class StubServer {
   private engrams = new Map<string, StoredEngram>()
   private idCounter = 0
   private port = 0
+  // Identity returned by GET /api/v1/me (#292). Defaults to a single-scope
+  // user; override per-test with setMe() to simulate multi-team authorization.
+  private me: { username: string; org_id: string; role: string; scopes: string[] } = {
+    username: 'testuser', org_id: 'test-org', role: 'developer', scopes: ['group:test'],
+  }
 
   constructor(private readonly validToken: string) {}
+
+  /** Override the GET /api/v1/me response (authorized scope set, identity). */
+  setMe(me: Partial<{ username: string; org_id: string; role: string; scopes: string[] }>): void {
+    this.me = { ...this.me, ...me }
+  }
 
   /** Start the server on a random available port. Returns the base URL and token. */
   async start(): Promise<{ url: string; token: string }> {
@@ -130,6 +141,12 @@ export class StubServer {
     const url = new URL(req.url ?? '/', `http://127.0.0.1:${this.port}`)
     const path = url.pathname
     const method = req.method ?? 'GET'
+
+    // GET /api/v1/me — resolved identity + authorized scopes (#292)
+    if (method === 'GET' && path === '/api/v1/me') {
+      this.json(res, 200, this.me)
+      return
+    }
 
     // POST /api/v1/engrams — create
     if (method === 'POST' && path === '/api/v1/engrams') {

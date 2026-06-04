@@ -45,6 +45,30 @@ export class RemoteStore implements EngramStore {
   }
 
   /**
+   * Resolve the identity behind this token — `GET /api/v1/me`. Returns the
+   * full authorized scope set the server resolved from group memberships, so
+   * the client can discover scopes a token can access without registering them
+   * out-of-band (#292). Scope-independent: `/me` is keyed on the token alone,
+   * so the driver's `scope` is irrelevant here.
+   *
+   * Throws on a non-2xx response (caller decides whether to swallow per URL).
+   */
+  async me(): Promise<{ username: string; org_id: string; role: string; scopes: string[] }> {
+    const r = await fetch(`${this.apiBase}/me`, { headers: this.headers() })
+    if (!r.ok) {
+      const text = await r.text().catch(() => '')
+      throw new Error(`Remote /me failed: ${r.status} ${text}`)
+    }
+    const body = await r.json().catch(() => ({})) as Partial<{ username: string; org_id: string; role: string; scopes: string[] }>
+    return {
+      username: body.username ?? '',
+      org_id:   body.org_id ?? '',
+      role:     body.role ?? '',
+      scopes:   Array.isArray(body.scopes) ? body.scopes : [],
+    }
+  }
+
+  /**
    * Load all engrams visible to this token at this scope. Cached up to
    * ttlMs; in-flight calls deduplicate to avoid thundering-herd on
    * the remote when 5 things ask for engrams at once.

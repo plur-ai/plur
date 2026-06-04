@@ -135,6 +135,37 @@ export interface StatusResult {
   outbox_count?: number
 }
 
+/**
+ * Per-URL result of scope discovery against an enterprise server's `/api/v1/me`
+ * (#292). `unregistered` is the actionable set: scopes the token is authorized
+ * for but that aren't yet in local config.
+ */
+export interface RemoteScopeDiscovery {
+  url: string
+  /** True when `/me` responded; false on network error, 401, etc. */
+  ok: boolean
+  username?: string
+  org_id?: string
+  role?: string
+  /** All scopes the token is authorized for (from `/me`). Empty when `ok` is false. */
+  authorized: string[]
+  /** Scopes already registered in local config for this URL. */
+  registered: string[]
+  /** Authorized minus registered — the scopes a user could still add. */
+  unregistered: string[]
+  /** Present when `ok` is false. */
+  error?: string
+}
+
+/** Outcome of registering discovered scopes for one URL (#292). */
+export interface RegisterDiscoveredResult {
+  url: string
+  ok: boolean
+  added: string[]
+  already_registered: string[]
+  error?: string
+}
+
 /** Commitment level scoring multipliers for injection priority (Idea 6). */
 export const COMMITMENT_MULTIPLIER: Record<string, number> = {
   locked: 1.0,
@@ -2579,6 +2610,95 @@ Generate an improved version of the procedure that prevents this failure. Return
     return (this.config.stores ?? [])
       .filter(s => s.url && !s.readonly)
       .map(s => ({ scope: s.scope, url: s.url! }))
+  }
+
+  /**
+   * Group configured remote stores by distinct URL, returning one entry per URL
+   * with the token to query it. Tokens should be identical across a URL's
+   * entries (same user, same instance); the first is used.
+   */
+  private _distinctRemoteEndpoints(): Array<{ url: string; token?: string }> {
+    const byUrl = new Map<string, { url: string; token?: string }>()
+    for (const s of this.config.stores ?? []) {
+      if (s.url && !byUrl.has(s.url)) byUrl.set(s.url, { url: s.url, token: s.token })
+    }
+    return [...byUrl.values()]
+  }
+
+  /**
+   * Discover which scopes each configured remote token is authorized for, via
+   * `GET /api/v1/me` (#292). For each distinct remote URL, reports the
+   * server-authorized scope set and which of those are not yet registered
+   * locally — the gap that lets a user authorized for N teams see only the
+   * one(s) they happened to register.
+   *
+   * Read-only: never mutates config. Each `/me` is raced against a timeout and
+   * failures are captured per URL (`ok:false`) so one unreachable endpoint
+   * never sinks discovery for the others. Restricted to a single URL via
+   * `opts.url`.
+   */
+  async discoverRemoteScopes(opts?: { url?: string; timeoutMs?: number }): Promise<RemoteScopeDiscovery[]> {
+    const timeoutMs = opts?.timeoutMs ?? 5000
+    const endpoints = this._distinctRemoteEndpoints().filter(e => !opts?.url || e.url === opts.url)
+
+    return Promise.all(endpoints.map(async ({ url, token }) => {
+      const registered = (this.config.stores ?? []).filter(s => s.url === url).map(s => s.scope)
+      try {
+        const driver = this._getRemoteDriver({ url, token, scope: registered[0] ?? '' })
+        let timeoutHandle: ReturnType<typeof setTimeout> | undefined
+        const me = await Promise.race([
+          driver.me().finally(() => { if (timeoutHandle) clearTimeout(timeoutHandle) }),
+          new Promise<never>((_, reject) => {
+            timeoutHandle = setTimeout(() => reject(new Error(`/me timeout (${timeoutMs}ms)`)), timeoutMs)
+          }),
+        ])
+        const registeredSet = new Set(registered)
+        return {
+          url,
+          ok: true,
+          username: me.username,
+          org_id: me.org_id,
+          role: me.role,
+          authorized: me.scopes,
+          registered,
+          unregistered: me.scopes.filter(s => !registeredSet.has(s)),
+        }
+      } catch (err) {
+        return {
+          url, ok: false,
+          authorized: [], registered, unregistered: [],
+          error: err instanceof Error ? err.message : String(err),
+        }
+      }
+    }))
+  }
+
+  /**
+   * Register every authorized-but-unregistered scope discovered for the
+   * configured remote URL(s) (#292). One token → all the user's team scopes in
+   * a single action. Relies on URL+scope dedup (#291) so multiple scopes coexist
+   * under one URL.
+   *
+   * Returns per-URL what was newly `added` vs `already_registered`. A URL whose
+   * `/me` failed yields `ok:false` and registers nothing.
+   */
+  async registerDiscoveredScopes(opts?: { url?: string; timeoutMs?: number }): Promise<RegisterDiscoveredResult[]> {
+    const discoveries = await this.discoverRemoteScopes(opts)
+    return discoveries.map(d => {
+      if (!d.ok) return { url: d.url, ok: false, added: [], already_registered: [], error: d.error }
+      const token = (this.config.stores ?? []).find(s => s.url === d.url)?.token
+      const added: string[] = []
+      const already: string[] = []
+      // Attempt every authorized scope (not just the pre-computed unregistered
+      // set) and let addStore's url+scope idempotency (#291) classify each — so
+      // the result is accurate even if config changed between discover and now.
+      for (const scope of d.authorized) {
+        const { status } = this.addStore('', scope, { url: d.url, token })
+        if (status === 'added') added.push(scope)
+        else already.push(scope)
+      }
+      return { url: d.url, ok: true, added, already_registered: already }
+    })
   }
 
   /** Set a session-level default scope. Used as fallback in learn/learnRouted when no explicit scope is provided. */

@@ -1202,6 +1202,20 @@ export function getToolDefinitions(): ToolDefinition[] {
               `(engineering patterns, architecture decisions, project conventions), set scope to the matching ` +
               `remote scope in plur_learn. Personal preferences, local project details, and corrections specific ` +
               `to your workflow should stay at default scope (local).`
+
+          // Surface authorized-but-unregistered scopes (#292). Best-effort:
+          // gated to enterprise users (remote stores configured), bounded by a
+          // short timeout, and fully swallowed on error — never blocks or fails
+          // session_start. Only hints when there's actually something to add.
+          try {
+            const discoveries = await plur.discoverRemoteScopes({ timeoutMs: 3000 })
+            const unregistered = [...new Set(discoveries.filter(d => d.ok).flatMap(d => d.unregistered))]
+            if (unregistered.length > 0) {
+              const list = unregistered.map(s => `"${s}"`).join(', ')
+              guide += `\n\n🔎 Your token is authorized for ${unregistered.length} more scope(s) not yet registered: ${list}. ` +
+                `Call plur_scopes_discover with register:true to add them all in one step.`
+            }
+          } catch { /* discovery is best-effort — never block session_start */ }
         }
 
         return {
@@ -1393,6 +1407,32 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
           count: stores.length,
           ...(outboxCount > 0 ? { outbox_pending: outboxCount } : {}),
         }
+      },
+    },
+
+    {
+      name: 'plur_scopes_discover',
+      description: 'Discover which scopes your remote token is authorized for via the enterprise server (GET /api/v1/me), and which of those are not yet registered locally. Read-only by default; pass register:true to register all authorized-but-unregistered scopes in one step. Use this when you have access to multiple team scopes on one server.',
+      annotations: { title: 'Discover scopes', readOnlyHint: false, idempotentHint: true },
+      inputSchema: {
+        type: 'object',
+        properties: {
+          url:      { type: 'string', description: 'Limit discovery to this remote URL (default: all configured remote stores)' },
+          register: { type: 'boolean', description: 'Register all authorized-but-unregistered scopes (default false — discovery is read-only)' },
+        },
+      },
+      handler: async (args, plur) => {
+        const url = args.url as string | undefined
+        const register = args.register === true
+        const discoveries = await plur.discoverRemoteScopes({ url })
+        if (discoveries.length === 0) {
+          return { discovered: [], note: 'No remote stores configured. Register one scope first with plur_stores_add, then discover the rest.' }
+        }
+        if (!register) {
+          return { discovered: discoveries }
+        }
+        const registered = await plur.registerDiscoveredScopes({ url })
+        return { discovered: discoveries, registered }
       },
     },
 

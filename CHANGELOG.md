@@ -25,6 +25,17 @@ A user authorized for several team scopes on one enterprise instance could only 
 
 Token rotation is intentionally out of scope: re-adding the same URL+scope with a different token stays an `already_registered` no-op rather than silently swapping the stored token.
 
+### Client scope discovery — find & register all authorized scopes (#292)
+
+The client never asked the enterprise server which scopes a token can access, so a user authorized for N teams had to discover scopes out-of-band and hand-register each. The server already exposes the full resolved scope set at `GET /api/v1/me`; this wires the client to it. (Builds on #291 — registering N scopes under one URL is what makes auto-register meaningful.)
+
+- **`packages/core/src/store/remote-store.ts`** — new `RemoteStore.me()` calls `GET /api/v1/me` and returns the resolved identity + authorized scopes.
+- **`packages/core/src/index.ts`** — `discoverRemoteScopes()` reports, per configured remote URL, the authorized scopes split into `registered` vs `unregistered` (read-only, per-URL timeout, failures captured not thrown). `registerDiscoveredScopes()` registers every authorized-but-unregistered scope in one step.
+- **`packages/mcp/src/tools.ts`** — new `plur_scopes_discover` tool (read-only by default; `register: true` registers all). `plur_session_start` now surfaces a best-effort hint when the token is authorized for scopes that aren't registered yet — bounded by a short timeout and fully swallowed on error, so it never blocks or slows session start.
+- **`packages/cli/src/commands/stores.ts`** — new `plur stores discover [--register]`.
+
+One token → discover all authorized team scopes → register them in one action.
+
 ## 0.9.11 (2026-05-26)
 
 Bug sweep — three independent fixes bundled.
