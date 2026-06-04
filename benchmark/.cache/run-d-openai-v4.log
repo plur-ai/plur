@@ -1,0 +1,15 @@
+[embedder] "openai-3-large" loaded (text-embedding-3-large, 1536d).
+Reusing persistent store at /Users/gregor/Data/5-plur/2-projects/plur/benchmark/.cache/lmeval-openai (30604 engrams already present, skipping ingest).
+
+  [o] e47becba: rank=3 lat=2031624.6ms mrr=0.333 matches=[Business Administration, Business, Administration]
+  [o] 118b2229: rank=1 lat=2262683.3ms mrr=1.000 matches=[45, minutes, each]
+RangeError: Invalid string length
+    at JSON.stringify (<anonymous>)
+    at saveCache (/Users/gregor/Data/5-plur/2-projects/plur/packages/core/src/embeddings.ts:412:23)
+    at embeddingSearch (/Users/gregor/Data/5-plur/2-projects/plur/packages/core/src/embeddings.ts:412:23)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async Promise.all (index 1)
+    at async hybridSearchWithMeta (/Users/gregor/Data/5-plur/2-projects/plur/packages/core/src/hybrid-search.ts:133:37)
+    at async Plur.recallHybridWithMeta (/Users/gregor/Data/5-plur/2-projects/plur/packages/core/src/index.ts:1306:16)
+    at async Plur.recallHybrid (/Users/gregor/Data/5-plur/2-projects/plur/packages/core/src/index.ts:1254:20)
+    at async runBenchmark (/Users/gregor/Data/5-plur/2-projects/plur/benchmark/run.ts:450:19)

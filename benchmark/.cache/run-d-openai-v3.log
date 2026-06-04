@@ -1,0 +1,12 @@
+[embedder] "openai-3-large" loaded (text-embedding-3-large, 1536d).
+Reusing persistent store at /Users/gregor/Data/5-plur/2-projects/plur/benchmark/.cache/lmeval-openai (30604 engrams already present, skipping ingest).
+
+  [o] e47becba: rank=3 lat=2742655.1ms mrr=0.333 matches=[Business Administration, Business, Administration]
+  [o] 118b2229: rank=1 lat=4417370.3ms mrr=1.000 matches=[45, minutes, each]
+  [o] 51a45a95: rank=4 lat=4191256.4ms mrr=0.250 matches=[Target]
+  [x] 58bf7951: rank=miss lat=1366087.9ms mrr=0.000 matches=[]
+  [o] 1e043500: rank=1 lat=1241427.4ms mrr=1.000 matches=[Summer Vibes, Summer, Vibes]
+  [o] c5e8278d: rank=6 lat=1448954.6ms mrr=0.167 matches=[Johnson]
+  [o] 6ade9755: rank=1 lat=3407948.7ms mrr=1.000 matches=[Yoga]
+  [o] 6f9b354f: rank=1 lat=508046.0ms mrr=1.000 matches=[lighter, shade, gray]
+  [o] 58ef2f1c: rank=1 lat=2799916.0ms mrr=1.000 matches=[February]

@@ -1,0 +1,771 @@
+{
+  "commit": "eced085",
+  "timestamp": "2026-06-03T13:14:03.235Z",
+  "embedder": "minilm",
+  "embedder_stub_fallback": false,
+  "search_mode": "hybrid",
+  "rerank": "on",
+  "corpus": "fixture",
+  "scenario_count": 30,
+  "iterations_per_category": null,
+  "seed": 1337,
+  "r5": 96.66666666666667,
+  "r1": 70,
+  "accuracy": 90,
+  "latency_p50_ms": 3441.620583,
+  "latency_p95_ms": 4575.450416,
+  "latency_p99_ms": 4583.801542,
+  "peak_rss_mb": 962.36,
+  "store_size_bytes": 46050800,
+  "per_category": {
+    "single_session_user": {
+      "r5": 100,
+      "r1": 100,
+      "hit10": 100,
+      "mrr": 1,
+      "accuracy": 100,
+      "latency_p50_ms": 3960.225917,
+      "latency_p95_ms": 4573.775417,
+      "latency_p99_ms": 4573.775417,
+      "count": 5
+    },
+    "single_session_preference": {
+      "r5": 100,
+      "r1": 100,
+      "hit10": 100,
+      "mrr": 1,
+      "accuracy": 100,
+      "latency_p50_ms": 3347.48675,
+      "latency_p95_ms": 3494.183958,
+      "latency_p99_ms": 3494.183958,
+      "count": 5
+    },
+    "single_session_assistant": {
+      "r5": 100,
+      "r1": 80,
+      "hit10": 100,
+      "mrr": 0.9,
+      "accuracy": 100,
+      "latency_p50_ms": 3722.097166,
+      "latency_p95_ms": 4370.096083,
+      "latency_p99_ms": 4370.096083,
+      "count": 5
+    },
+    "temporal_reasoning": {
+      "r5": 100,
+      "r1": 80,
+      "hit10": 100,
+      "mrr": 0.8666666666666666,
+      "accuracy": 60,
+      "latency_p50_ms": 2877.872458,
+      "latency_p95_ms": 2985.373666,
+      "latency_p99_ms": 2985.373666,
+      "count": 5
+    },
+    "knowledge_updates": {
+      "r5": 100,
+      "r1": 0,
+      "hit10": 100,
+      "mrr": 0.4666666666666666,
+      "accuracy": 100,
+      "latency_p50_ms": 3242.427459,
+      "latency_p95_ms": 3640.837625,
+      "latency_p99_ms": 3640.837625,
+      "count": 5
+    },
+    "multi_session_reasoning": {
+      "r5": 80,
+      "r1": 60,
+      "hit10": 80,
+      "mrr": 0.6666666666666667,
+      "accuracy": 80,
+      "latency_p50_ms": 3580.642041,
+      "latency_p95_ms": 3714.854833,
+      "latency_p99_ms": 3714.854833,
+      "count": 5
+    }
+  },
+  "results": [
+    {
+      "id": "ss-user-1",
+      "category": "single_session_user",
+      "query": "Where does the user work?",
+      "expected_keywords": [
+        "Nike"
+      ],
+      "retrieved_statements": [
+        "Yeah, I work as a data engineer at Nike now. Started last month.",
+        "Alice handles the frontend development. She's our React expert.",
+        "I have an office in New York where 3 engineers work.",
+        "Carol joined last month as our first dedicated QA engineer.",
+        "Our London office handles sales. 5 people there."
+      ],
+      "hit_at_1": true,
+      "hit_at_5": true,
+      "hit_at_10": true,
+      "mrr": 1,
+      "accuracy": true,
+      "rank": 1,
+      "latency_ms": 39443.686583
+    },
+    {
+      "id": "ss-user-2",
+      "category": "single_session_user",
+      "query": "How old is the user's daughter?",
+      "expected_keywords": [
+        "7"
+      ],
+      "retrieved_statements": [
+        "My daughter Emma just turned 7. We had a dinosaur-themed birthday party.",
+        "Happy birthday to Emma! Dinosaur parties are the best at that age.",
+        "Carol joined last month as our first dedicated QA engineer.",
+        "Alice handles the frontend development. She's our React expert.",
+        "I restructured the Dockerfile to use multi-stage builds. The key optimization was separating the dependency install layer from the source code copy. Now npm install only re-runs when package.json changes. Build time dropped to 2 minutes."
+      ],
+      "hit_at_1": true,
+      "hit_at_5": true,
+      "hit_at_10": true,
+      "mrr": 1,
+      "accuracy": true,
+      "rank": 1,
+      "latency_ms": 3774.030375
+    },
+    {
+      "id": "ss-user-3",
+      "category": "single_session_user",
+      "query": "What programming language is the user learning?",
+      "expected_keywords": [
+        "Rust"
+      ],
+      "retrieved_statements": [
+        "I've been learning Rust for the past 3 months. Coming from Python, the borrow checker is brutal.",
+        "The borrow checker is definitely the steepest part of the Rust learning curve.",
+        "The authentication service is written in Go for performance.",
+        "For our microservices, we use Python for the data pipeline service.",
+        "I've switched from VS Code to Neovim. Much faster for my workflow."
+      ],
+      "hit_at_1": true,
+      "hit_at_5": true,
+      "hit_at_10": true,
+      "mrr": 1,
+      "accuracy": true,
+      "rank": 1,
+      "latency_ms": 3347.417458
+    },
+    {
+      "id": "ss-user-4",
+      "category": "single_session_user",
+      "query": "What car does the user drive?",
+      "expected_keywords": [
+        "Tesla",
+        "Model 3"
+      ],
+      "retrieved_statements": [
+        "I drive a 2022 Tesla Model 3. The autopilot is great for my commute on I-5.",
+        "We launched the beta on March 1st with 50 users.",
+        "Noted — I'll keep dark mode in mind for any UI suggestions.",
+        "Calicos are known for being opinionated! Maybe a decoy keyboard would help.",
+        "The fix was adding the cors middleware before your routes, not after. The order matters because Express processes middleware sequentially. I also set the origin to your frontend URL instead of using wildcard."
+      ],
+      "hit_at_1": true,
+      "hit_at_5": true,
+      "hit_at_10": true,
+      "mrr": 1,
+      "accuracy": true,
+      "rank": 1,
+      "latency_ms": 3960.225917
+    },
+    {
+      "id": "ss-user-5",
+      "category": "single_session_user",
+      "query": "What is the name of the user's cat?",
+      "expected_keywords": [
+        "Mochi"
+      ],
+      "retrieved_statements": [
+        "My cat Mochi keeps jumping on my keyboard while I code. She's a calico.",
+        "Calicos are known for being opinionated! Maybe a decoy keyboard would help.",
+        "Happy birthday to Emma! Dinosaur parties are the best at that age.",
+        "Noted — I'll keep dark mode in mind for any UI suggestions.",
+        "The authentication service is written in Go for performance."
+      ],
+      "hit_at_1": true,
+      "hit_at_5": true,
+      "hit_at_10": true,
+      "mrr": 1,
+      "accuracy": true,
+      "rank": 1,
+      "latency_ms": 4573.775417
+    },
+    {
+      "id": "ss-pref-1",
+      "category": "single_session_preference",
+      "query": "Does the user prefer dark mode or light mode?",
+      "expected_keywords": [
+        "dark"
+      ],
+      "retrieved_statements": [
+        "I always use dark mode in my editors. Light themes hurt my eyes.",
+        "Noted — I'll keep dark mode in mind for any UI suggestions.",
+        "I recommend Vitest over Jest. It's faster, has native ESM support, and the API is nearly identical so migration is easy. The watch mode is particularly good.",
+        "I prefer functional programming style. Avoid classes and mutation when possible.",
+        "Help me pick a testing framework for my Node project."
+      ],
+      "hit_at_1": true,
+      "hit_at_5": true,
+      "hit_at_10": true,
+      "mrr": 1,
+      "accuracy": true,
+      "rank": 1,
+      "latency_ms": 3494.183958
+    },
+    {
+      "id": "ss-pref-2",
+      "category": "single_session_preference",
+      "query": "What indentation style does the user prefer?",
+      "expected_keywords": [
+        "tabs"
+      ],
+      "retrieved_statements": [
+        "Got it — tabs with 4-width indentation for all code.",
+        "Please use tabs for indentation, not spaces. 4-width tabs specifically.",
+        "I prefer functional programming style. Avoid classes and mutation when possible.",
+        "Noted — I'll keep dark mode in mind for any UI suggestions.",
+        "Calicos are known for being opinionated! Maybe a decoy keyboard would help."
+      ],
+      "hit_at_1": true,
+      "hit_at_5": true,
+      "hit_at_10": true,
+      "mrr": 1,
+      "accuracy": true,
+      "rank": 1,
+      "latency_ms": 3347.48675
+    },
+    {
+      "id": "ss-pref-3",
+      "category": "single_session_preference",
+      "query": "What programming style does the user prefer?",
+      "expected_keywords": [
+        "functional"
+      ],
+      "retrieved_statements": [
+        "I prefer functional programming style. Avoid classes and mutation when possible.",
+        "Noted — I'll keep dark mode in mind for any UI suggestions.",
+        "I've switched from VS Code to Neovim. Much faster for my workflow.",
+        "Calicos are known for being opinionated! Maybe a decoy keyboard would help.",
+        "I've been learning Rust for the past 3 months. Coming from Python, the borrow checker is brutal."
+      ],
+      "hit_at_1": true,
+      "hit_at_5": true,
+      "hit_at_10": true,
+      "mrr": 1,
+      "accuracy": true,
+      "rank": 1,
+      "latency_ms": 3955.311125
+    },
+    {
+      "id": "ss-pref-4",
+      "category": "single_session_preference",
+      "query": "What commit message format does the user use?",
+      "expected_keywords": [
+        "conventional"
+      ],
+      "retrieved_statements": [
+        "When writing commit messages, I follow conventional commits. feat:, fix:, chore: etc.",
+        "I use VS Code as my primary editor.",
+        "For our microservices, we use Python for the data pipeline service.",
+        "The fix was adding the cors middleware before your routes, not after. The order matters because Express processes middleware sequentially. I also set the origin to your frontend URL instead of using wildcard.",
+        "Use NEXT_PUBLIC_ prefix for client-side variables. Server-only secrets go in .env.local without the prefix. I created a src/env.ts validation file using zod to catch missing variables at build time."
+      ],
+      "hit_at_1": true,
+      "hit_at_5": true,
+      "hit_at_10": true,
+      "mrr": 1,
+      "accuracy": true,
+      "rank": 1,
+      "latency_ms": 3060.549875
+    },
+    {
+      "id": "ss-pref-5",
+      "category": "single_session_preference",
+      "query": "What database does the user prefer?",
+      "expected_keywords": [
+        "PostgreSQL"
+      ],
+      "retrieved_statements": [
+        "I like to use PostgreSQL for everything. Even when SQLite would be fine.",
+        "In January we migrated from MongoDB to PostgreSQL.",
+        "PostgreSQL it is — even for small projects!",
+        "I recommend Vitest over Jest. It's faster, has native ESM support, and the API is nearly identical so migration is easy. The watch mode is particularly good.",
+        "We just migrated our production database from AWS RDS to Google Cloud SQL."
+      ],
+      "hit_at_1": true,
+      "hit_at_5": true,
+      "hit_at_10": true,
+      "mrr": 1,
+      "accuracy": true,
+      "rank": 1,
+      "latency_ms": 2993.589292
+    },
+    {
+      "id": "ss-asst-1",
+      "category": "single_session_assistant",
+      "query": "What Redis client library did the assistant recommend?",
+      "expected_keywords": [
+        "ioredis"
+      ],
+      "retrieved_statements": [
+        "I'll set up Redis with a 5-minute TTL for API responses. Using ioredis as the client library since it has better cluster support than the default redis package.",
+        "I recommend Vitest over Jest. It's faster, has native ESM support, and the API is nearly identical so migration is easy. The watch mode is particularly good.",
+        "I like to use PostgreSQL for everything. Even when SQLite would be fine.",
+        "Can you help me set up a Redis cache for my API?",
+        "I've switched from VS Code to Neovim. Much faster for my workflow."
+      ],
+      "hit_at_1": true,
+      "hit_at_5": true,
+      "hit_at_10": true,
+      "mrr": 1,
+      "accuracy": true,
+      "rank": 1,
+      "latency_ms": 4370.096083
+    },
+    {
+      "id": "ss-asst-2",
+      "category": "single_session_assistant",
+      "query": "What testing framework did the assistant recommend?",
+      "expected_keywords": [
+        "Vitest"
+      ],
+      "retrieved_statements": [
+        "Help me pick a testing framework for my Node project.",
+        "I recommend Vitest over Jest. It's faster, has native ESM support, and the API is nearly identical so migration is easy. The watch mode is particularly good.",
+        "I like to use PostgreSQL for everything. Even when SQLite would be fine.",
+        "I've switched from VS Code to Neovim. Much faster for my workflow.",
+        "PostgreSQL it is — even for small projects!"
+      ],
+      "hit_at_1": false,
+      "hit_at_5": true,
+      "hit_at_10": true,
+      "mrr": 0.5,
+      "accuracy": true,
+      "rank": 2,
+      "latency_ms": 3722.097166
+    },
+    {
+      "id": "ss-asst-3",
+      "category": "single_session_assistant",
+      "query": "What was the fix for the CORS errors?",
+      "expected_keywords": [
+        "before",
+        "routes"
+      ],
+      "retrieved_statements": [
+        "The fix was adding the cors middleware before your routes, not after. The order matters because Express processes middleware sequentially. I also set the origin to your frontend URL instead of using wildcard.",
+        "I'm getting CORS errors in my Express app.",
+        "On Wednesday we found a critical bug in v2.1, so I rolled back to v2.0.",
+        "I restructured the Dockerfile to use multi-stage builds. The key optimization was separating the dependency install layer from the source code copy. Now npm install only re-runs when package.json changes. Build time dropped to 2 minutes.",
+        "The deadline was pushed back to January 31st because of the scope change."
+      ],
+      "hit_at_1": true,
+      "hit_at_5": true,
+      "hit_at_10": true,
+      "mrr": 1,
+      "accuracy": true,
+      "rank": 1,
+      "latency_ms": 4583.801542
+    },
+    {
+      "id": "ss-asst-4",
+      "category": "single_session_assistant",
+      "query": "How much did the Docker build time improve?",
+      "expected_keywords": [
+        "2 minutes"
+      ],
+      "retrieved_statements": [
+        "I restructured the Dockerfile to use multi-stage builds. The key optimization was separating the dependency install layer from the source code copy. Now npm install only re-runs when package.json changes. Build time dropped to 2 minutes.",
+        "My Docker build is taking 15 minutes.",
+        "We increased the API rate limit to 500 requests per minute after the infrastructure upgrade.",
+        "Use NEXT_PUBLIC_ prefix for client-side variables. Server-only secrets go in .env.local without the prefix. I created a src/env.ts validation file using zod to catch missing variables at build time.",
+        "The API rate limit is set to 100 requests per minute."
+      ],
+      "hit_at_1": true,
+      "hit_at_5": true,
+      "hit_at_10": true,
+      "mrr": 1,
+      "accuracy": true,
+      "rank": 1,
+      "latency_ms": 3266.107958
+    },
+    {
+      "id": "ss-asst-5",
+      "category": "single_session_assistant",
+      "query": "What tool did the assistant use to validate environment variables?",
+      "expected_keywords": [
+        "zod"
+      ],
+      "retrieved_statements": [
+        "Use NEXT_PUBLIC_ prefix for client-side variables. Server-only secrets go in .env.local without the prefix. I created a src/env.ts validation file using zod to catch missing variables at build time.",
+        "I've switched from VS Code to Neovim. Much faster for my workflow.",
+        "What's the best way to handle environment variables in Next.js?",
+        "Last Tuesday I started using Terraform for our infrastructure. Before that we were doing everything manually in the AWS console.",
+        "I've been learning Rust for the past 3 months. Coming from Python, the borrow checker is brutal."
+      ],
+      "hit_at_1": true,
+      "hit_at_5": true,
+      "hit_at_10": true,
+      "mrr": 1,
+      "accuracy": true,
+      "rank": 1,
+      "latency_ms": 3633.611667
+    },
+    {
+      "id": "temp-1",
+      "category": "temporal_reasoning",
+      "query": "What happened after the v2.1 deployment?",
+      "expected_keywords": [
+        "bug",
+        "rollback",
+        "2.0"
+      ],
+      "retrieved_statements": [
+        "Noted — v2.1 deployed to staging on Monday.",
+        "On Monday I deployed version 2.1 to staging.",
+        "On Wednesday we found a critical bug in v2.1, so I rolled back to v2.0.",
+        "We increased the API rate limit to 500 requests per minute after the infrastructure upgrade.",
+        "The fix was adding the cors middleware before your routes, not after. The order matters because Express processes middleware sequentially. I also set the origin to your frontend URL instead of using wildcard."
+      ],
+      "hit_at_1": false,
+      "hit_at_5": true,
+      "hit_at_10": true,
+      "mrr": 0.3333333333333333,
+      "accuracy": false,
+      "rank": 3,
+      "latency_ms": 1336.374417
+    },
+    {
+      "id": "temp-2",
+      "category": "temporal_reasoning",
+      "query": "What database changes happened and in what order?",
+      "expected_keywords": [
+        "MongoDB",
+        "PostgreSQL",
+        "replicas"
+      ],
+      "retrieved_statements": [
+        "In January we migrated from MongoDB to PostgreSQL.",
+        "We just migrated our production database from AWS RDS to Google Cloud SQL.",
+        "The fix was adding the cors middleware before your routes, not after. The order matters because Express processes middleware sequentially. I also set the origin to your frontend URL instead of using wildcard.",
+        "The deadline was pushed back to January 31st because of the scope change.",
+        "I like to use PostgreSQL for everything. Even when SQLite would be fine."
+      ],
+      "hit_at_1": true,
+      "hit_at_5": true,
+      "hit_at_10": true,
+      "mrr": 1,
+      "accuracy": false,
+      "rank": 1,
+      "latency_ms": 1734.3165
+    },
+    {
+      "id": "temp-3",
+      "category": "temporal_reasoning",
+      "query": "When did the user start using Terraform?",
+      "expected_keywords": [
+        "Tuesday",
+        "Terraform"
+      ],
+      "retrieved_statements": [
+        "Last Tuesday I started using Terraform for our infrastructure. Before that we were doing everything manually in the AWS console.",
+        "We launched the beta on March 1st with 50 users.",
+        "By March 15th we had 500 users. We hit 2000 by the end of March.",
+        "The first version of our API used REST. We switched to GraphQL in Q2 last year. Then in Q4 we added gRPC for internal services.",
+        "In January we migrated from MongoDB to PostgreSQL."
+      ],
+      "hit_at_1": true,
+      "hit_at_5": true,
+      "hit_at_10": true,
+      "mrr": 1,
+      "accuracy": true,
+      "rank": 1,
+      "latency_ms": 3062.423833
+    },
+    {
+      "id": "temp-4",
+      "category": "temporal_reasoning",
+      "query": "How did user growth progress during March?",
+      "expected_keywords": [
+        "50",
+        "500",
+        "2000"
+      ],
+      "retrieved_statements": [
+        "By March 15th we had 500 users. We hit 2000 by the end of March.",
+        "We launched the beta on March 1st with 50 users.",
+        "In March we added read replicas to handle the traffic spike.",
+        "Q3 was our best quarter yet at $200,000.",
+        "Q2 we hit $120,000 in revenue."
+      ],
+      "hit_at_1": true,
+      "hit_at_5": true,
+      "hit_at_10": true,
+      "mrr": 1,
+      "accuracy": true,
+      "rank": 1,
+      "latency_ms": 2877.872458
+    },
+    {
+      "id": "temp-5",
+      "category": "temporal_reasoning",
+      "query": "What was the progression of API technologies?",
+      "expected_keywords": [
+        "REST",
+        "GraphQL",
+        "gRPC"
+      ],
+      "retrieved_statements": [
+        "The first version of our API used REST. We switched to GraphQL in Q2 last year. Then in Q4 we added gRPC for internal services.",
+        "We increased the API rate limit to 500 requests per minute after the infrastructure upgrade.",
+        "The API rate limit is set to 100 requests per minute.",
+        "I recommend Vitest over Jest. It's faster, has native ESM support, and the API is nearly identical so migration is easy. The watch mode is particularly good.",
+        "For our microservices, we use Python for the data pipeline service."
+      ],
+      "hit_at_1": true,
+      "hit_at_5": true,
+      "hit_at_10": true,
+      "mrr": 1,
+      "accuracy": true,
+      "rank": 1,
+      "latency_ms": 2985.373666
+    },
+    {
+      "id": "ku-1",
+      "category": "knowledge_updates",
+      "query": "Where is the production database hosted?",
+      "expected_keywords": [
+        "Google Cloud SQL"
+      ],
+      "retrieved_statements": [
+        "Our production database is hosted on AWS RDS.",
+        "We just migrated our production database from AWS RDS to Google Cloud SQL.",
+        "In January we migrated from MongoDB to PostgreSQL.",
+        "PostgreSQL it is — even for small projects!",
+        "I like to use PostgreSQL for everything. Even when SQLite would be fine."
+      ],
+      "hit_at_1": false,
+      "hit_at_5": true,
+      "hit_at_10": true,
+      "mrr": 0.5,
+      "accuracy": true,
+      "rank": 2,
+      "latency_ms": 2914.402917
+    },
+    {
+      "id": "ku-2",
+      "category": "knowledge_updates",
+      "query": "What editor does the user currently use?",
+      "expected_keywords": [
+        "Neovim"
+      ],
+      "retrieved_statements": [
+        "I use VS Code as my primary editor.",
+        "I always use dark mode in my editors. Light themes hurt my eyes.",
+        "I've switched from VS Code to Neovim. Much faster for my workflow.",
+        "I like to use PostgreSQL for everything. Even when SQLite would be fine.",
+        "I recommend Vitest over Jest. It's faster, has native ESM support, and the API is nearly identical so migration is easy. The watch mode is particularly good."
+      ],
+      "hit_at_1": false,
+      "hit_at_5": true,
+      "hit_at_10": true,
+      "mrr": 0.3333333333333333,
+      "accuracy": true,
+      "rank": 3,
+      "latency_ms": 3640.837625
+    },
+    {
+      "id": "ku-3",
+      "category": "knowledge_updates",
+      "query": "What communication tool does the team use?",
+      "expected_keywords": [
+        "Discord"
+      ],
+      "retrieved_statements": [
+        "Our team uses Slack for communication.",
+        "We dropped Slack and moved to Discord. The threading in Slack was confusing everyone.",
+        "For our microservices, we use Python for the data pipeline service.",
+        "Our frontend BFF is a Node.js service that aggregates the others.",
+        "Last Tuesday I started using Terraform for our infrastructure. Before that we were doing everything manually in the AWS console."
+      ],
+      "hit_at_1": false,
+      "hit_at_5": true,
+      "hit_at_10": true,
+      "mrr": 0.5,
+      "accuracy": true,
+      "rank": 2,
+      "latency_ms": 4575.450416
+    },
+    {
+      "id": "ku-4",
+      "category": "knowledge_updates",
+      "query": "What is the current API rate limit?",
+      "expected_keywords": [
+        "500"
+      ],
+      "retrieved_statements": [
+        "The API rate limit is set to 100 requests per minute.",
+        "We increased the API rate limit to 500 requests per minute after the infrastructure upgrade.",
+        "I'll set up Redis with a 5-minute TTL for API responses. Using ioredis as the client library since it has better cluster support than the default redis package.",
+        "The first version of our API used REST. We switched to GraphQL in Q2 last year. Then in Q4 we added gRPC for internal services.",
+        "The project deadline is December 15th."
+      ],
+      "hit_at_1": false,
+      "hit_at_5": true,
+      "hit_at_10": true,
+      "mrr": 0.5,
+      "accuracy": true,
+      "rank": 2,
+      "latency_ms": 2647.039958
+    },
+    {
+      "id": "ku-5",
+      "category": "knowledge_updates",
+      "query": "When is the project deadline?",
+      "expected_keywords": [
+        "January 31"
+      ],
+      "retrieved_statements": [
+        "The project deadline is December 15th.",
+        "The deadline was pushed back to January 31st because of the scope change.",
+        "PostgreSQL it is — even for small projects!",
+        "We launched the beta on March 1st with 50 users.",
+        "In March we added read replicas to handle the traffic spike."
+      ],
+      "hit_at_1": false,
+      "hit_at_5": true,
+      "hit_at_10": true,
+      "mrr": 0.5,
+      "accuracy": true,
+      "rank": 2,
+      "latency_ms": 3242.427459
+    },
+    {
+      "id": "ms-1",
+      "category": "multi_session_reasoning",
+      "query": "What languages are used across the microservices?",
+      "expected_keywords": [
+        "Python",
+        "Go",
+        "Node"
+      ],
+      "retrieved_statements": [
+        "For our microservices, we use Python for the data pipeline service.",
+        "The authentication service is written in Go for performance.",
+        "The first version of our API used REST. We switched to GraphQL in Q2 last year. Then in Q4 we added gRPC for internal services.",
+        "Our frontend BFF is a Node.js service that aggregates the others.",
+        "I restructured the Dockerfile to use multi-stage builds. The key optimization was separating the dependency install layer from the source code copy. Now npm install only re-runs when package.json changes. Build time dropped to 2 minutes."
+      ],
+      "hit_at_1": true,
+      "hit_at_5": true,
+      "hit_at_10": true,
+      "mrr": 1,
+      "accuracy": true,
+      "rank": 1,
+      "latency_ms": 3714.854833
+    },
+    {
+      "id": "ms-2",
+      "category": "multi_session_reasoning",
+      "query": "Who are the team members and what do they do?",
+      "expected_keywords": [
+        "Alice",
+        "Bob",
+        "Carol"
+      ],
+      "retrieved_statements": [
+        "Alice handles the frontend development. She's our React expert.",
+        "We just opened a small office in Tokyo with 2 people for the APAC market. And our Singapore team has 4 engineers.",
+        "Carol joined last month as our first dedicated QA engineer.",
+        "Our London office handles sales. 5 people there.",
+        "Our frontend BFF is a Node.js service that aggregates the others."
+      ],
+      "hit_at_1": true,
+      "hit_at_5": true,
+      "hit_at_10": true,
+      "mrr": 1,
+      "accuracy": true,
+      "rank": 1,
+      "latency_ms": 1210.836583
+    },
+    {
+      "id": "ms-3",
+      "category": "multi_session_reasoning",
+      "query": "What is the total revenue across all reported quarters?",
+      "expected_keywords": [
+        "370"
+      ],
+      "retrieved_statements": [
+        "Q2 we hit $120,000 in revenue.",
+        "Q1 revenue was $50,000.",
+        "Q3 was our best quarter yet at $200,000.",
+        "The first version of our API used REST. We switched to GraphQL in Q2 last year. Then in Q4 we added gRPC for internal services.",
+        "Please use tabs for indentation, not spaces. 4-width tabs specifically."
+      ],
+      "hit_at_1": false,
+      "hit_at_5": false,
+      "hit_at_10": false,
+      "mrr": 0,
+      "accuracy": false,
+      "rank": null,
+      "latency_ms": 3580.642041
+    },
+    {
+      "id": "ms-4",
+      "category": "multi_session_reasoning",
+      "query": "What cryptocurrencies does the user hold?",
+      "expected_keywords": [
+        "ETH",
+        "BTC",
+        "SOL",
+        "DOGE"
+      ],
+      "retrieved_statements": [
+        "I also have 10,000 DOGE and 0.1 BTC.",
+        "I own 2.5 ETH that I bought at $1,800 each.",
+        "Last week I added 500 SOL to my portfolio.",
+        "Calicos are known for being opinionated! Maybe a decoy keyboard would help.",
+        "The borrow checker is definitely the steepest part of the Rust learning curve."
+      ],
+      "hit_at_1": true,
+      "hit_at_5": true,
+      "hit_at_10": true,
+      "mrr": 1,
+      "accuracy": true,
+      "rank": 1,
+      "latency_ms": 3441.620583
+    },
+    {
+      "id": "ms-5",
+      "category": "multi_session_reasoning",
+      "query": "How many offices does the user have and how many total employees?",
+      "expected_keywords": [
+        "New York",
+        "London",
+        "Tokyo",
+        "Singapore"
+      ],
+      "retrieved_statements": [
+        "By March 15th we had 500 users. We hit 2000 by the end of March.",
+        "We launched the beta on March 1st with 50 users.",
+        "Our London office handles sales. 5 people there.",
+        "We just opened a small office in Tokyo with 2 people for the APAC market. And our Singapore team has 4 engineers.",
+        "I have an office in New York where 3 engineers work."
+      ],
+      "hit_at_1": false,
+      "hit_at_5": true,
+      "hit_at_10": true,
+      "mrr": 0.3333333333333333,
+      "accuracy": true,
+      "rank": 3,
+      "latency_ms": 4042.640958
+    }
+  ]
+}

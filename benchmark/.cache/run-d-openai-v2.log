@@ -1,0 +1,6 @@
+[embedder] "openai-3-large" loaded (text-embedding-3-large, 3072d).
+Reusing persistent store at /Users/gregor/Data/5-plur/2-projects/plur/benchmark/.cache/lmeval-openai (30604 engrams already present, skipping ingest).
+
+[plur:warning] [pglite] HNSW index creation failed: column cannot have more than 2000 dimensions for hnsw index. Falling back to sequential scan — vector recall will be slow on large stores.
+  [o] e47becba: rank=3 lat=15711744.1ms mrr=0.333 matches=[Business Administration, Business, Administration]
+  [o] 118b2229: rank=1 lat=7847905.0ms mrr=1.000 matches=[45, minutes, each]

@@ -24,3 +24,7 @@ docs/architecture/vertical-extensions.md
 # A 30-scenario smoke subset (longmemeval-s-smoke.yaml) IS committed for tests.
 benchmark/data/longmemeval-source/
 benchmark/data/longmemeval-s.yaml
+
+# Runtime engram store — must not be published (contains infra/deployment context)
+# Scrubbed from history 2026-06-03 after Crt's leak review
+.plur/
