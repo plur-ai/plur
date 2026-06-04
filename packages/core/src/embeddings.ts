@@ -32,6 +32,14 @@ import { atomicWrite } from './sync.js'
  */
 export const EMBED_DIM = 384
 
+/**
+ * Model identity behind the embeddings, half of the stable contract above.
+ * The ONNX/transformers.js port of BAAI/bge-small-en-v1.5. Named so the
+ * dimension-mismatch error can name the model a consumer must match, and so a
+ * model swap is a one-line, greppable change.
+ */
+const EMBED_MODEL_ID = 'Xenova/bge-small-en-v1.5'
+
 // Verifies the live model output matches EMBED_DIM exactly once per process —
 // see assertEmbedDim().
 let embedDimChecked = false
@@ -128,7 +136,7 @@ async function getEmbedder() {
   // transient (network, sandbox restrictions on first download).
   try {
     const { pipeline } = await import('@huggingface/transformers')
-    embedPipeline = await pipeline('feature-extraction', 'Xenova/bge-small-en-v1.5', {
+    embedPipeline = await pipeline('feature-extraction', EMBED_MODEL_ID, {
       dtype: 'fp32',
     })
     transformersUnavailable = false
@@ -141,7 +149,21 @@ async function getEmbedder() {
   }
 }
 
-/** Generate embedding for a text string. Returns Float32Array of EMBED_DIM (384) dims, or null if unavailable. */
+/**
+ * Generate an embedding for a text string. Returns a Float32Array of EMBED_DIM
+ * (384) dims.
+ *
+ * Two distinct non-success outcomes — consumers MUST treat them differently:
+ *
+ * - Returns `null` → embeddings are unavailable (model not loaded, download
+ *   failed, or disabled via config/PLUR_DISABLE_EMBEDDINGS). This is an
+ *   environment condition; callers should degrade to keyword/BM25 search.
+ * - Throws → the live model's output dimension does not match EMBED_DIM, i.e. a
+ *   model/contract violation. This must NOT be swallowed into the degrade path:
+ *   a catch-all that falls back to BM25 here re-introduces the exact silent
+ *   drift this contract prevents and lets incompatible vectors get persisted.
+ *   Let it surface.
+ */
 export async function embed(text: string): Promise<Float32Array | null> {
   const embedder = await getEmbedder()
   if (!embedder) return null
@@ -162,9 +184,11 @@ function assertEmbedDim(vector: Float32Array): void {
   embedDimChecked = true
   if (vector.length !== EMBED_DIM) {
     throw new Error(
-      `Embedding dimension mismatch: model produced ${vector.length} dims but EMBED_DIM is ${EMBED_DIM}. ` +
-        `The embedding model and EMBED_DIM must agree — update EMBED_DIM and treat this as a breaking change ` +
-        `for any consumer that persists vectors (they must re-embed).`,
+      `Embedding dimension mismatch: model "${EMBED_MODEL_ID}" produced ${vector.length} dims ` +
+        `but EMBED_DIM is ${EMBED_DIM}. The embedding model and EMBED_DIM must agree. ` +
+        `Remediation: update EMBED_DIM to ${vector.length} or revert the model change. ` +
+        `Either way this is a BREAKING change for any consumer that persists vectors — ` +
+        `they must re-embed, since vectors at the old dimension are incompatible.`,
     )
   }
 }
