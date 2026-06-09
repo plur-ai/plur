@@ -27,6 +27,7 @@ import { sync as gitSync, getSyncStatus, withLock, type SyncResult, type SyncSta
 import { detectSecrets } from './secrets.js'
 import { appendHistory, readHistoryForEngram, generateEventId } from './history.js'
 import { computeContentHash } from './content-hash.js'
+import { decodeJwtExpiry } from './jwt.js'
 import { RemoteStore } from './store/remote-store.js'
 import type { Engram } from './schemas/engram.js'
 import type { Episode } from './schemas/episode.js'
@@ -175,6 +176,28 @@ export interface RemoteScopeDiscovery {
   unregistered: string[]
   /** Present when `ok` is false. */
   error?: string
+}
+
+/**
+ * Health of one configured remote endpoint (#295). Combines a live `/me`
+ * probe with a local JWT-expiry read so callers can distinguish "auth
+ * expired" (actionable: reauth) from "unreachable" (network), and warn
+ * before a token expires rather than after.
+ */
+export interface RemoteHealth {
+  url: string
+  /** Scopes registered locally for this URL (for the report). */
+  scopes: string[]
+  /** 'ok' = /me succeeded; 'auth_expired' = 401/403 or JWT exp passed; 'unreachable' = network/timeout/5xx. */
+  status: 'ok' | 'auth_expired' | 'unreachable'
+  /** True only for status 'ok'. */
+  ok: boolean
+  /** Human-readable reason when not ok. */
+  reason?: string
+  /** From the token's JWT `exp` claim, if decodable (opaque keys → null). */
+  tokenExpiresAt?: string
+  /** Whole days until token expiry (negative if past), or null if unknown. */
+  tokenExpiresInDays?: number | null
 }
 
 /** Outcome of registering discovered scopes for one URL (#292). */
@@ -993,6 +1016,10 @@ export class Plur {
               last_attempt: now,
               attempt_count: 1,
               last_error: (err as Error).message,
+              // #295: flag auth failures distinctly so the queue isn't read as a
+              // transient network blip — a 401/403 means the token needs reauth,
+              // and surfacing it (session_start/doctor) is the actionable signal.
+              auth_failed: /\b40[13]\b/.test((err as Error).message),
             },
           }
         } else {
@@ -2703,6 +2730,67 @@ Generate an improved version of the procedure that prevents this failure. Return
           authorized: [], registered, unregistered: [],
           error: err instanceof Error ? err.message : String(err),
         }
+      }
+    }))
+  }
+
+  /**
+   * Local-only read of each configured remote token's JWT expiry (#295). No
+   * network. Returns one entry per distinct remote URL; `expiresInDays`/`expired`
+   * are null/false for opaque (non-JWT) keys. Used by session_start to warn
+   * about imminent/past expiry without a round-trip.
+   */
+  remoteTokenExpiries(now: number = Date.now()): Array<{ url: string; scopes: string[]; expiresAt: string | null; expiresInDays: number | null; expired: boolean }> {
+    return this._distinctRemoteEndpoints().map(({ url, token }) => {
+      const scopes = (this.config.stores ?? []).filter(s => s.url === url).map(s => s.scope)
+      const exp = decodeJwtExpiry(token, now)
+      return {
+        url, scopes,
+        expiresAt: exp.expiresAt ? exp.expiresAt.toISOString() : null,
+        expiresInDays: exp.expiresInDays,
+        expired: exp.expired,
+      }
+    })
+  }
+
+  /**
+   * Probe each configured remote endpoint's auth/reachability (#295) by calling
+   * `GET /api/v1/me` (raced against a timeout), combined with a local JWT-expiry
+   * read. Distinguishes 'auth_expired' (token rejected or JWT exp passed →
+   * reauth) from 'unreachable' (network/timeout/5xx). Read-only; one bad
+   * endpoint never affects the others. Powers `plur_doctor`'s remote check so
+   * the doctor stops reporting "healthy" when the remote auth is dead.
+   */
+  async checkRemoteHealth(opts?: { timeoutMs?: number }): Promise<RemoteHealth[]> {
+    const timeoutMs = opts?.timeoutMs ?? 5000
+    const endpoints = this._distinctRemoteEndpoints()
+    return Promise.all(endpoints.map(async ({ url, token }) => {
+      const scopes = (this.config.stores ?? []).filter(s => s.url === url).map(s => s.scope)
+      const exp = decodeJwtExpiry(token)
+      const expiryFields = {
+        tokenExpiresAt: exp.expiresAt ? exp.expiresAt.toISOString() : undefined,
+        tokenExpiresInDays: exp.expiresInDays,
+      }
+      // A JWT we can already see is expired → don't bother probing; it's auth_expired.
+      if (exp.expired) {
+        return { url, scopes, status: 'auth_expired' as const, ok: false,
+          reason: `token expired ${exp.expiresAt?.toISOString() ?? ''}`.trim(), ...expiryFields }
+      }
+      try {
+        const driver = this._getRemoteDriver({ url, token, scope: scopes[0] ?? '' })
+        let timeoutHandle: ReturnType<typeof setTimeout> | undefined
+        await Promise.race([
+          driver.me().finally(() => { if (timeoutHandle) clearTimeout(timeoutHandle) }),
+          new Promise<never>((_, reject) => {
+            timeoutHandle = setTimeout(() => reject(new Error(`/me timeout (${timeoutMs}ms)`)), timeoutMs)
+          }),
+        ])
+        return { url, scopes, status: 'ok' as const, ok: true, ...expiryFields }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        const isAuth = /\b40[13]\b/.test(msg)
+        return { url, scopes, status: (isAuth ? 'auth_expired' : 'unreachable') as RemoteHealth['status'],
+          ok: false, reason: msg, ...expiryFields }
       }
     }))
   }

@@ -36,6 +36,16 @@ The client never asked the enterprise server which scopes a token can access, so
 
 One token → discover all authorized team scopes → register them in one action.
 
+### Surface remote-store auth failures instead of failing silently (#295)
+
+When an enterprise token expired, the client failed silently: team-scoped writes 401'd and queued to the local outbox, reads returned 0, and `plur_doctor` still reported "healthy". The only way the gap surfaced was a human noticing no new engrams. This makes the failure legible.
+
+- **`packages/core/src/jwt.ts`** (new) — `decodeJwtExpiry()` reads a token's `exp` claim (no signature verification) so the client can warn before/after expiry. Opaque (non-JWT) keys return all-null and callers fall back to the live probe.
+- **`packages/core/src/index.ts`** — `checkRemoteHealth()` probes `GET /api/v1/me` per configured remote (raced against a timeout) and combines it with the JWT-expiry read, classifying each endpoint as `ok` / `auth_expired` / `unreachable`. `remoteTokenExpiries()` is a local-only (no network) expiry read for the fast session-start path. `learnRouted()` now flags `_outbox.auth_failed` when a remote write fails with 401/403, so a queued engram is distinguishable from a transient network blip.
+- **`packages/mcp/src/tools.ts`** — `plur_doctor` adds a per-remote check (reachable / auth-expired / unreachable + "expires in N days"), so it no longer reports "healthy" when the remote auth is dead, with reauth remediation. `plur_session_start` surfaces a loud guide warning when discovery hits a 401/unreachable (reusing the discovery probe — no extra round-trip) and a proactive "token expires in N days" warning from the local JWT read.
+
+The reauth command itself (`plur login`) and longer-lived keys are tracked separately as a fast-follow.
+
 ## 0.9.11 (2026-05-26)
 
 Bug sweep — three independent fixes bundled.

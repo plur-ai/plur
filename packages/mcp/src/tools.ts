@@ -1054,6 +1054,34 @@ export function getToolDefinitions(): ToolDefinition[] {
             if (cs.warning) remediation.push(cs.warning)
           }
         }
+        // Remote store auth/reachability (#295) — without this, doctor reports
+        // "healthy" while the enterprise token is expired and writes silently
+        // queue. Probe /me per configured remote and decode token expiry.
+        try {
+          const remotes = await plur.checkRemoteHealth({ timeoutMs: 5000 })
+          for (const h of remotes) {
+            const expiresNote = typeof h.tokenExpiresInDays === 'number'
+              ? ` — token ${h.tokenExpiresInDays < 0 ? `expired ${-h.tokenExpiresInDays}d ago` : `expires in ${h.tokenExpiresInDays}d`}`
+              : ''
+            if (h.status === 'ok') {
+              const soon = typeof h.tokenExpiresInDays === 'number' && h.tokenExpiresInDays <= 7
+              checks.push({
+                check: `remote store: ${h.url}`,
+                ok: !soon,
+                detail: soon
+                  ? `Reachable, but token expires in ${h.tokenExpiresInDays}d — reauth soon`
+                  : `Reachable, auth valid${expiresNote}`,
+              })
+              if (soon) remediation.push(`Remote ${h.url}: token expires in ${h.tokenExpiresInDays}d — mint a new token (<host>/me/api-keys), update ~/.plur/config.yaml, restart.`)
+            } else if (h.status === 'auth_expired') {
+              checks.push({ check: `remote store: ${h.url}`, ok: false, detail: `AUTH FAILED${expiresNote} — team-scoped writes are queuing to the outbox, not syncing. (${h.reason ?? ''})` })
+              remediation.push(`Remote ${h.url}: re-authenticate — open <host>/auth/github (or <host>/me/api-keys) in a browser, paste the token into ~/.plur/config.yaml, then restart Claude/MCP so it reloads. Queued engrams flush on next session_start.`)
+            } else {
+              checks.push({ check: `remote store: ${h.url}`, ok: false, detail: `Unreachable (${h.reason ?? 'network error'}) — writes queue locally until it recovers.` })
+              remediation.push(`Remote ${h.url}: unreachable — check connectivity/VPN. Reads fall back to local; writes queue in the outbox.`)
+            }
+          }
+        } catch { /* best-effort — never let the remote probe break doctor */ }
         return {
           ok: checks.every(c => c.ok),
           checks,
@@ -1221,6 +1249,23 @@ export function getToolDefinitions(): ToolDefinition[] {
           // session_start. Only hints when there's actually something to add.
           try {
             const discoveries = await plur.discoverRemoteScopes({ timeoutMs: 3000 })
+            // #295: surface auth/reachability failures LOUDLY. discoverRemoteScopes
+            // already probed /me per URL — a failure here means team-scoped writes
+            // are silently queuing to the outbox. Don't swallow it.
+            const failures = discoveries.filter(d => !d.ok)
+            if (failures.length > 0) {
+              const authExpired = failures.some(f => /\b40[13]\b/.test(f.error ?? ''))
+              const pending = outbox_result?.failed ?? 0
+              const urls = [...new Set(failures.map(f => f.url))].join(', ')
+              guide += authExpired
+                ? `\n\n⚠️ ENTERPRISE STORE AUTH FAILED (token expired/invalid): ${urls}. ` +
+                  `Team-scoped engrams are NOT syncing` + (pending > 0 ? ` — ${pending} queued in the outbox` : '') +
+                  `. Reauth: open <host>/auth/github (or <host>/me/api-keys) in a browser, paste the token into ` +
+                  `~/.plur/config.yaml, then restart Claude/MCP. Queued engrams flush on the next session_start.`
+                : `\n\n⚠️ ENTERPRISE STORE UNREACHABLE: ${urls}. ` +
+                  `Reads fall back to local; team-scoped writes queue in the outbox` +
+                  (pending > 0 ? ` (${pending} pending)` : '') + ` until it recovers. Check connectivity/VPN.`
+            }
             const unregistered = [...new Set(discoveries.filter(d => d.ok).flatMap(d => d.unregistered))]
             if (unregistered.length > 0) {
               const list = unregistered.map(s => `"${s}"`).join(', ')
@@ -1228,6 +1273,18 @@ export function getToolDefinitions(): ToolDefinition[] {
                 `Call plur_scopes_discover with register:true to add them all in one step.`
             }
           } catch { /* discovery is best-effort — never block session_start */ }
+
+          // #295: proactive token-expiry warning — purely local JWT decode, no
+          // network round-trip. Catches the 30-day silent-expiry before it bites.
+          try {
+            for (const t of plur.remoteTokenExpiries()) {
+              if (t.expired) {
+                guide += `\n\n⚠️ Enterprise token for ${t.url} EXPIRED ${t.expiresAt ?? ''}. Reauth and restart to resume team sync.`
+              } else if (typeof t.expiresInDays === 'number' && t.expiresInDays <= 7) {
+                guide += `\n\n⏳ Enterprise token for ${t.url} expires in ${t.expiresInDays}d. Mint a fresh one (<host>/me/api-keys) before it lapses.`
+              }
+            }
+          } catch { /* best-effort */ }
         }
 
         return {
