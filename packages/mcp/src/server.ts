@@ -209,9 +209,17 @@ export async function createServer(plur?: Plur): Promise<Server> {
         }
         const parsed = z.object(shape).passthrough().safeParse(args)
         if (!parsed.success) {
-          const details = parsed.error.issues.map(i => `${i.path.join('.')}: ${i.message}`).join(', ')
+          const receivedFields = Object.keys(args)
+          const details = parsed.error.issues.map(i => `${i.path.join('.') || 'root'}: ${i.message}`).join(', ')
+          const receivedInfo = receivedFields.length > 0
+            ? `Received fields: [${receivedFields.join(', ')}].`
+            : 'No fields received.'
           return {
-            content: [{ type: 'text', text: JSON.stringify({ error: `Invalid arguments: ${details}`, success: false }) }],
+            content: [{ type: 'text', text: JSON.stringify({
+              error: `Invalid arguments: ${details}. ${receivedInfo}`,
+              success: false,
+              received_fields: receivedFields,
+            }) }],
             isError: true,
           }
         }
