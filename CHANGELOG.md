@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+### `@plur-ai/core` exports the embedding primitive (#289)
+
+`embed()`, `EMBED_DIM`, `embedderStatus()`, and `cosineSimilarity()` are now part of `@plur-ai/core`'s public API. Previously only the `SimilarityResult` type was re-exported, so the local BGE embedder (`BAAI/bge-small-en-v1.5`, 384-dim) was effectively internal. Alternative store backends that persist vectors and run similarity in a database can now compute embeddings identically to core's hybrid search instead of re-implementing the embedder and risking model/dimension drift.
+
+```ts
+import { embed, EMBED_DIM } from '@plur-ai/core'
+```
+
+- `EMBED_DIM` (384) is a new named constant. `embed()` asserts its first successful output against it once per process, so a model swap that changes the dimension fails loudly instead of silently corrupting persisted vectors.
+- **Breaking-change contract:** the embedding model identity and `EMBED_DIM` are a stable public contract. Changing either is a breaking change for any consumer that persists vectors — they must re-embed. Treat a model/dimension change accordingly.
+
+No new model and no external dependency — this only makes the existing capability reusable.
+
 ## 0.9.11 (2026-05-26)
 
 Bug sweep — three independent fixes bundled.
