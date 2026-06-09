@@ -1357,13 +1357,15 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
         const token = args.token as string | undefined
         if (!path && !url) return { error: 'Either path or url must be provided' }
         if (path && url) return { error: 'Provide path OR url, not both' }
-        plur.addStore(path ?? '', args.scope as string, {
+        const result = plur.addStore(path ?? '', args.scope as string, {
           shared:   args.shared   as boolean | undefined,
           readonly: args.readonly as boolean | undefined,
           url, token,
         })
+        const status = result?.status ?? 'added'
         return {
           success: true,
+          status, // 'added' or 'already_registered' (#291)
           ...(path ? { path } : { url }),
           scope: args.scope,
           kind: url ? 'remote' : 'filesystem',

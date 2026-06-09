@@ -2289,7 +2289,7 @@ Generate an improved version of the procedure that prevents this failure. Return
     storePath: string,
     scope: string,
     options?: { shared?: boolean; readonly?: boolean; url?: string; token?: string; overwriteScope?: boolean },
-  ): void {
+  ): { status: 'added' | 'already_registered'; scope: string } | void {
     const isRemote = Boolean(options?.url)
 
     // Validation gate (#93): catch malformed URLs and duplicate scopes at
@@ -2316,11 +2316,17 @@ Generate an improved version of the procedure that prevents this failure. Return
     }
 
     const config = loadConfig(this.paths.config)
-    const dedupKey = isRemote ? options!.url : storePath
 
-    // Same path/url → already registered, idempotent (existing behavior).
-    const sameEndpoint = config.stores?.find(s => (isRemote ? s.url === dedupKey : s.path === dedupKey))
-    if (sameEndpoint) return
+    // Fix #291: dedup by endpoint + scope (not just endpoint).
+    // Same URL with different scope is a valid new registration (multi-team users).
+    const sameEndpointAndScope = config.stores?.find(s =>
+      isRemote
+        ? (s.url === options!.url && s.scope === scope)
+        : (s.path === storePath && s.scope === scope)
+    )
+    if (sameEndpointAndScope) {
+      return { status: 'already_registered', scope }
+    }
 
     // Different endpoint, same scope (#93): forbid by default to prevent
     // silent ambiguity ("which store does scope X belong to?"). Override
@@ -2363,6 +2369,7 @@ Generate an improved version of the procedure that prevents this failure. Return
     configData.stores = stores
     fs.writeFileSync(this.paths.config, yaml.dump(configData, { lineWidth: 120, noRefs: true }))
     this.config = loadConfig(this.paths.config)
+    return { status: 'added', scope }
   }
 
   /**

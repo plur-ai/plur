@@ -123,6 +123,30 @@ describe('addStore validation (#93)', () => {
       const config = yaml.load(readFileSync(join(dir, 'config.yaml'), 'utf8')) as any
       expect(config.stores).toHaveLength(2)
     })
+
+    // Issue #291 — same URL with different scope must create separate entries
+    it('allows multiple scopes for the same URL (multi-team users) (#291)', () => {
+      plur.addStore('', 'group:plur/engineering', { url: 'https://plur.datafund.io', token: 'tok' })
+      const result = plur.addStore('', 'group:plur/comms', { url: 'https://plur.datafund.io', token: 'tok' })
+
+      // Second add should succeed and return 'added' status
+      expect(result?.status).toBe('added')
+
+      const config = yaml.load(readFileSync(join(dir, 'config.yaml'), 'utf8')) as any
+      expect(config.stores).toHaveLength(2)
+      expect(config.stores.map((s: any) => s.scope)).toContain('group:plur/engineering')
+      expect(config.stores.map((s: any) => s.scope)).toContain('group:plur/comms')
+    })
+
+    it('returns already_registered for duplicate URL + scope (#291)', () => {
+      plur.addStore('', 'group:test', { url: 'https://plur.datafund.io', token: 'tok' })
+      const result = plur.addStore('', 'group:test', { url: 'https://plur.datafund.io', token: 'tok' })
+
+      expect(result?.status).toBe('already_registered')
+
+      const config = yaml.load(readFileSync(join(dir, 'config.yaml'), 'utf8')) as any
+      expect(config.stores).toHaveLength(1)
+    })
   })
 
   describe('readonly stores', () => {
