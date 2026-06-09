@@ -972,7 +972,7 @@ export function getToolDefinitions(): ToolDefinition[] {
 
     {
       name: 'plur_doctor',
-      description: 'Diagnose the PLUR install. Reports whether the embedding model loaded, whether hybrid search is fully operational, and what to do if it is degraded. Run this first when recall feels off.',
+      description: 'Diagnose the PLUR install. Reports whether the embedding model loaded, whether hybrid search is fully operational, and — for any configured enterprise/remote store — whether its auth is valid (probes /api/v1/me and decodes token expiry), so a dead or soon-to-expire token surfaces instead of hiding behind a "healthy" report. Run this first when recall feels off or team engrams stop syncing.',
       annotations: { title: 'Doctor', readOnlyHint: false, idempotentHint: false },
       inputSchema: {
         type: 'object',

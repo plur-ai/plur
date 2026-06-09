@@ -108,3 +108,23 @@ describe('Plur.remoteTokenExpiries()', () => {
     expect(t.expired).toBe(false)
   })
 })
+
+describe('learnRouted outbox auth flag (#295)', () => {
+  it('flags _outbox.auth_failed when a remote write is rejected with 401', async () => {
+    const plur = writeConfig([{ url: baseUrl, token: 'wrong-token', scope: 'group:plur/plur-ai/engineering', shared: true, readonly: false }])
+    const e: any = await plur.learnRouted('Team convention: prefix feature branches with the issue number', { scope: 'group:plur/plur-ai/engineering' })
+    expect(e.structured_data?._outbox).toBeDefined()
+    expect(e.structured_data._outbox.auth_failed).toBe(true)
+    expect(e.structured_data._outbox.last_error).toMatch(/401/)
+  })
+
+  it('does NOT flag auth_failed for a non-auth (unreachable) failure', async () => {
+    const down = new StubServer(TOKEN)
+    const info = await down.start()
+    await down.stop() // port closed → network error, not 401
+    const plur = writeConfig([{ url: info.url, token: TOKEN, scope: 'group:plur/plur-ai/engineering', shared: true, readonly: false }])
+    const e: any = await plur.learnRouted('Team convention: rebase, do not merge-commit, onto main', { scope: 'group:plur/plur-ai/engineering' })
+    expect(e.structured_data?._outbox).toBeDefined()
+    expect(e.structured_data._outbox.auth_failed).toBe(false)
+  })
+})
