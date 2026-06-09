@@ -46,6 +46,15 @@ When an enterprise token expired, the client failed silently: team-scoped writes
 
 The reauth command itself (`plur login`) and longer-lived keys are tracked separately as a fast-follow.
 
+### Teach per-engram scope selection at install time (#296)
+
+Per-engram scoping was supported (every `plur_learn` takes a `scope`) but nothing taught agents to use it, so they routinely omitted `scope` → it fell back to `global` → team-relevant knowledge silently never reached the configured group store. This affects any install with a remote/group store. The capability worked; the guidance didn't.
+
+- **`packages/mcp/src/server.ts`** — the server `INSTRUCTIONS` block (advertised to every client on connect) gains a "SCOPE SELECTION" section: scope is content-driven and per-call; team/shared knowledge → the matching `group:<org>/<team>` scope; personal/local → default; never let team knowledge fall back to `global`. Exported for testing.
+- **`packages/cli/src/commands/init.ts`** — the CLAUDE.md section `plur init` generates replaces the thin "Multi-project scoping" note with a fuller "Scope selection (set scope PER engram, by content)" guide enumerating the team / project / personal routing and the global-fallback anti-pattern.
+
+`plur_session_start` already surfaces the live writable remote scopes prescriptively (#229), so this fills the always-on / install-time guidance gap. Relates to #291 (a comms/second scope can't be registered against the same URL until that lands) and #295 (silent auth-expiry).
+
 ## 0.9.11 (2026-05-26)
 
 Bug sweep — three independent fixes bundled.

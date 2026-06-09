@@ -16,7 +16,7 @@ import { registerFlushOnExit } from './telemetry.js'
 import { VERSION } from './version.js'
 import { z } from 'zod'
 
-const INSTRUCTIONS = `PLUR is your persistent memory. Corrections, preferences, and conventions persist across sessions as engrams.
+export const INSTRUCTIONS = `PLUR is your persistent memory. Corrections, preferences, and conventions persist across sessions as engrams.
 
 PLUR is a GLOBAL tool — one MCP server, one engram store (~/.plur/), available in every project. Multi-project scoping uses domain/scope fields on engrams, not separate installations.
 
@@ -32,6 +32,12 @@ DURING the session:
 OPTIONAL but improves quality:
 - Call plur_feedback to rate which injected engrams helped (positive/negative)
 - Call plur_recall_hybrid before answering factual questions — the answer may be in memory
+
+SCOPE SELECTION (set scope PER engram, by content — not once per session):
+- Every plur_learn call takes a "scope". Choose it from the engram's content; one session spans multiple scopes.
+- Team/shared knowledge (engineering patterns, architecture decisions, project conventions) → the matching team scope (e.g. group:<org>/<team>). session_start lists the scopes your token can write to.
+- Personal preferences, local workflow, project-specific details → leave at the default/local scope.
+- Do NOT let team-relevant knowledge fall back to "global" by omitting scope — global is the wrong default for shared knowledge and it never reaches the team store. If no scope fits, prefer the project/local default over global.
 
 Do not ask permission to use these tools — they are your memory system.
 
