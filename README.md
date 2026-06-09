@@ -37,6 +37,8 @@ npx @plur-ai/cli@0.9.4 init --domain myapp --scope project:my-app
 
 This creates a `.plur.yaml` in the project with defaults that hooks apply automatically. Engrams learned in that project are tagged; recall filters by scope but always includes global knowledge.
 
+**Set scope per engram, by content.** Scope is not a once-per-session setting — every `plur_learn` call takes its own `scope`, chosen from what the engram is about. Team/shared knowledge goes to a team scope (e.g. `group:<org>/<team>`, used by PLUR Enterprise); project details to `project:<name>`; personal preferences stay local. Don't let team-relevant knowledge fall back to `global` by omitting scope — `global` leaks into every project and (with a team store configured) never reaches the team. `plur_session_start` lists the remote scopes a token can write to.
+
 ### Global install (faster startup)
 
 ```bash
