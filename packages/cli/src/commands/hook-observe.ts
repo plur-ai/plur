@@ -2,6 +2,7 @@ import { mkdirSync, appendFileSync, readSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
 import { type GlobalFlags } from '../plur.js'
+import { isPlurConfigured } from '../lib/plur-configured.js'
 
 /**
  * plur hook-observe — capture tool calls for offline pattern extraction.
@@ -59,6 +60,10 @@ export async function run(args: string[], _flags: GlobalFlags): Promise<void> {
 
   // Always passthrough stdin to stdout (hook contract)
   process.stdout.write(raw)
+
+  // Silent no-op for projects without plur configured (#247).
+  // Lets hooks be installed globally without affecting non-plur projects.
+  if (!isPlurConfigured()) return
 
   let data: Record<string, unknown>
   try {

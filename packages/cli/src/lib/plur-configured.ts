@@ -6,7 +6,9 @@ import { homedir } from 'os'
  * Detect whether plur is registered as an MCP server for the current project.
  *
  * Walks up from `cwd` looking for `.mcp.json` or `.claude/settings.json` with
- * a `plur` server entry, then falls back to the global `~/.claude/settings.json`.
+ * a `plur` server entry. Does NOT fall back to global `~/.claude/settings.json`
+ * because `plur init --global` puts the server there, making the guard useless
+ * for distinguishing plur-enabled vs non-plur projects (#247).
  *
  * Used by the session enforcement hooks (`hook-session-guard`,
  * `hook-session-remind`, `hook-session-mark`) so they can be installed into
@@ -17,7 +19,7 @@ import { homedir } from 'os'
  */
 export function isPlurConfigured(
   cwd: string = process.cwd(),
-  home: string = homedir(),
+  _home: string = homedir(), // kept for signature compat, no longer used
 ): boolean {
   const start = resolve(cwd)
   let dir = start
@@ -29,7 +31,9 @@ export function isPlurConfigured(
     if (parent === dir) break
     dir = parent
   }
-  return configHasPlur(join(home, '.claude', 'settings.json'))
+  // Fix #247: Do NOT fall back to ~/.claude/settings.json — that would always
+  // return true after `plur init --global`, blocking all non-plur projects.
+  return false
 }
 
 function configHasPlur(path: string): boolean {
