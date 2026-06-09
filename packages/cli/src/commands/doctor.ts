@@ -281,10 +281,11 @@ function resolveCliJsEntry(): string | null {
  * Subprocess isolation contains the crash — if the probe dies, parent reports
  * embedder as degraded and continues with the rest of the doctor checks.
  *
- * Timeout: 10s default. BGE model cold-load on slow hardware takes ~3-5s; 10s
- * is enough for honest cases without making doctor feel unresponsive.
+ * Timeout: 60s default (#273). Cold model downloads (130MB for bge-small,
+ * 325MB for embedding-gemma) need 60-300s on slow connections. Override via
+ * PLUR_DOCTOR_TIMEOUT env var (in seconds) if 60s is still too short.
  */
-async function checkEmbedder(_flags: GlobalFlags, timeoutMs = 10000): Promise<{ available: boolean; loaded: boolean; lastError: string | null; modelLoaded: boolean; disabled: boolean; disabledReason: string | null }> {
+async function checkEmbedder(_flags: GlobalFlags, timeoutMs = parseInt(process.env.PLUR_DOCTOR_TIMEOUT ?? '60', 10) * 1000): Promise<{ available: boolean; loaded: boolean; lastError: string | null; modelLoaded: boolean; disabled: boolean; disabledReason: string | null }> {
   return new Promise((resolve) => {
     const fallback = (lastError: string) => ({
       available: false,
