@@ -19,3 +19,6 @@ docs/architecture/vertical-extensions.md
 # Runtime engram store — must not be published (contains infra/deployment context)
 # Scrubbed from history 2026-06-03 after Crt's leak review (67 engrams, 3 prod IPs, basic-auth creds)
 .plur/
+
+# Local gstack security reports — keep audit artifacts out of the repo
+.gstack/

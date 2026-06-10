@@ -1,0 +1,8 @@
+# Code owners — required reviewers for high-privilege automation.
+# Security audit 2026-06-10, finding #5: workflows and the release script
+# publish to npm + PyPI, deploy via SSH, and post to X. They must not be
+# changed without a second set of eyes.
+
+/.github/workflows/   @plur9
+/.github/CODEOWNERS    @plur9
+/scripts/release.sh    @plur9

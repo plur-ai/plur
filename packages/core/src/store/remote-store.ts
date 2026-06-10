@@ -1,5 +1,27 @@
+import { z } from 'zod'
 import type { Engram } from '../schemas/engram.js'
 import type { EngramStore } from './types.js'
+import { logger } from '../logger.js'
+
+/**
+ * Lenient validation for semi-trusted remote rows (security audit 2026-06-10,
+ * finding #3). The server may legitimately omit optional engram fields, so we
+ * don't demand the full Engram shape — but we DO type-check the security-relevant
+ * fields and reject structurally-broken rows. Without this, a compromised or
+ * malicious remote could spread arbitrary / type-confused data (and instruction-
+ * carrying `statement`s) into the local injection pool via `as unknown as Engram`.
+ * `.passthrough()` keeps unmodeled fields; the point is to gate the meaningful ones.
+ */
+const RemoteRowSchema = z.object({
+  id: z.string().regex(/^(ENG|ABS|META)-[A-Za-z0-9-]+$/),
+  scope: z.string().min(1),
+  status: z.enum(['active', 'dormant', 'retired', 'candidate']),
+  statement: z.string().min(1),
+  type: z.enum(['behavioral', 'terminological', 'procedural', 'architectural']).optional(),
+  pinned: z.boolean().optional(),
+  commitment: z.enum(['exploring', 'leaning', 'decided', 'locked']).optional(),
+  visibility: z.enum(['private', 'public', 'template']).optional(),
+}).passthrough()
 
 /**
  * Remote engram store — speaks to a PLUR Enterprise server over its
@@ -35,6 +57,23 @@ export class RemoteStore implements EngramStore {
   }
 
   private get ttlMs(): number { return this.opts.ttlMs ?? 60_000 }
+
+  /**
+   * Reshape a DB row {id, scope, status, data} into an Engram and validate it.
+   * Authoritative columns (id/scope/status) win over anything in `data`. Returns
+   * null (and logs) for malformed rows so callers can drop them. (finding #3)
+   */
+  private reshape(raw: { id?: unknown; scope?: unknown; status?: unknown; data?: unknown }): Engram | null {
+    const d = raw.data && typeof raw.data === 'object' ? raw.data as Record<string, unknown> : {}
+    const candidate = { ...d, id: raw.id, scope: raw.scope, status: raw.status }
+    const parsed = RemoteRowSchema.safeParse(candidate)
+    if (!parsed.success) {
+      const why = parsed.error.issues.map(i => `${i.path.join('.') || '(root)'}: ${i.message}`).join('; ')
+      logger.warning(`[plur:remote-store] ${this.url} returned a malformed engram (id=${String(raw.id)}) — dropped: ${why}`)
+      return null
+    }
+    return parsed.data as unknown as Engram
+  }
 
   private headers(extra: Record<string, string> = {}): Record<string, string> {
     return {
@@ -74,15 +113,10 @@ export class RemoteStore implements EngramStore {
           }
           const body = await r.json() as { rows: any[]; total_count: number }
           // Server returns DB rows shaped {id, scope, status, data, created_at, updated_at}
-          // — the engram contents live in row.data. Reshape to the Engram shape callers expect.
+          // — the engram contents live in row.data. Reshape + validate; drop malformed.
           for (const row of body.rows) {
-            const d = row.data ?? {}
-            all.push({
-              id: row.id,
-              scope: row.scope,
-              status: row.status,
-              ...d,
-            } as unknown as Engram)
+            const e = this.reshape(row)
+            if (e) all.push(e)
           }
           if (all.length >= body.total_count || body.rows.length < limit) break
           offset += limit
@@ -172,7 +206,7 @@ export class RemoteStore implements EngramStore {
       if (r.status === 404) return null
       if (!r.ok) return null
       const row = await r.json() as any
-      return { id: row.id, scope: row.scope, status: row.status, ...(row.data ?? {}) } as unknown as Engram
+      return this.reshape(row)
     } catch {
       return null
     }
@@ -245,8 +279,7 @@ export class RemoteStore implements EngramStore {
     // to top-level Engram (same as load() does for rows[]).
     const body = await r.json().catch(() => null) as { engram?: { id: string; scope: string; status: string; data?: any } } | null
     if (!body?.engram) return null
-    const e = body.engram
-    return { id: e.id, scope: e.scope, status: e.status, ...(e.data ?? {}) } as unknown as Engram
+    return this.reshape(body.engram)
   }
 
   async close(): Promise<void> {

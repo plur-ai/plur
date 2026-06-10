@@ -2,8 +2,8 @@ import * as fs from 'fs'
 import * as path from 'path'
 import * as crypto from 'crypto'
 import yaml from 'js-yaml'
-import { loadPack, loadEngrams } from './engrams.js'
-import { detectSecrets } from './secrets.js'
+import { loadPack, loadEngrams, saveEngrams } from './engrams.js'
+import { detectSecrets, detectPromptInjection } from './secrets.js'
 import type { Engram } from './schemas/engram.js'
 import type { PackManifest } from './schemas/pack.js'
 import { logger } from './logger.js'
@@ -71,6 +71,13 @@ export function previewPack(source: string): PreviewResult {
   const security = scanPrivacy(pack.engrams)
 
   const warnings: string[] = []
+  // Flag pinned engrams — they bypass the relevance gate (always injected).
+  // install strips these, but the preview should be honest about intent (finding #2).
+  const pinnedCount = pack.engrams.filter(e => (e as any).pinned === true).length
+  if (pinnedCount > 0) warnings.push(`${pinnedCount} engram(s) marked pinned — these bypass relevance filters; install will strip the flag`)
+  // Flag prompt-injection text surfaced by the privacy scan
+  const injectionCount = security.issues.filter(i => i.type === 'prompt_injection').length
+  if (injectionCount > 0) warnings.push(`${injectionCount} engram(s) contain prompt-injection / instruction-override text — install is blocked unless overridden`)
   // Flag engrams with global scope (could override user's own engrams)
   const globalCount = pack.engrams.filter(e => e.scope === 'global').length
   if (globalCount > 0) warnings.push(`${globalCount} engram(s) have global scope — may interact with your own engrams`)
@@ -162,7 +169,17 @@ function detectConflicts(newEngrams: Engram[], existingEngrams: Engram[]): Confl
   return conflicts
 }
 
-export function installPack(packsDir: string, source: string, existingEngrams?: Engram[]): InstallResult {
+export interface InstallOptions {
+  /** Override the prompt-injection block. Secrets are ALWAYS blocked regardless. */
+  allowInjection?: boolean
+}
+
+export function installPack(
+  packsDir: string,
+  source: string,
+  existingEngrams?: Engram[],
+  opts: InstallOptions = {},
+): InstallResult {
   if (!fs.existsSync(source)) throw new Error(`Pack source not found: ${source}`)
 
   // Security scan BEFORE copying — always runs, not opt-out
@@ -171,6 +188,15 @@ export function installPack(packsDir: string, source: string, existingEngrams?: 
   if (secretIssues.length > 0) {
     const details = secretIssues.map(i => `  ${i.engram_id}: ${i.detail}`).join('\n')
     throw new Error(`Pack contains secrets — install blocked:\n${details}`)
+  }
+  // Prompt-injection text is blocked unless explicitly overridden (finding #2).
+  const injectionIssues = preview.security.issues.filter(i => i.type === 'prompt_injection')
+  if (injectionIssues.length > 0 && !opts.allowInjection) {
+    const details = injectionIssues.map(i => `  ${i.engram_id}: ${i.detail}`).join('\n')
+    throw new Error(
+      `Pack contains prompt-injection / instruction-override text — install blocked:\n${details}\n` +
+      `Re-run with allowInjection if this is intentional (e.g. a security-knowledge pack).`,
+    )
   }
 
   const sourceName = path.basename(source)
@@ -188,14 +214,24 @@ export function installPack(packsDir: string, source: string, existingEngrams?: 
     }
   }
 
-  // Load and count engrams
+  // Load engrams, then clamp host-overriding fields (pinned / locked commitment)
+  // before they can reach injection. Re-save the sanitized copy so the on-disk
+  // pack AND the integrity hash reflect the clamped content.
   const engramsPath = path.join(destDir, 'engrams.yaml')
-  const newEngrams = fs.existsSync(engramsPath) ? loadEngrams(engramsPath) : []
+  let newEngrams = fs.existsSync(engramsPath) ? loadEngrams(engramsPath) : []
+  const sanitized = sanitizePackEngrams(newEngrams)
+  if (sanitized.changed) {
+    newEngrams = sanitized.engrams
+    saveEngrams(engramsPath, newEngrams)
+    if (sanitized.pinnedStripped > 0) {
+      logger.warning(`installPack: stripped 'pinned' from ${sanitized.pinnedStripped} engram(s) in pack '${preview.manifest.name}'`)
+    }
+  }
 
   // Detect conflicts with existing engrams
   const conflicts = existingEngrams ? detectConflicts(newEngrams, existingEngrams) : []
 
-  // Compute integrity and record in registry
+  // Compute integrity and record in registry (over the sanitized on-disk content)
   const integrity = `sha256:${computePackHash(destDir)}`
   const registryEntry: RegistryEntry = {
     name: preview.manifest.name,
@@ -323,8 +359,32 @@ export interface PrivacyScanResult {
 
 export interface PrivacyIssue {
   engram_id: string
-  type: 'secret' | 'private_visibility' | 'personal_path' | 'email' | 'ip_address'
+  type: 'secret' | 'private_visibility' | 'personal_path' | 'email' | 'ip_address' | 'prompt_injection'
   detail: string
+}
+
+/**
+ * Strip fields that let a third-party pack engram override the host's behavior:
+ * `pinned` (bypasses the relevance gate — always injected) and a `locked`
+ * commitment (resists dedup/correction). Returns sanitized engrams plus a count
+ * of how many were pinned. (Security audit 2026-06-10, finding #2.)
+ */
+export function sanitizePackEngrams(engrams: Engram[]): { engrams: Engram[]; pinnedStripped: number; changed: boolean } {
+  let pinnedStripped = 0
+  let changed = false
+  const out = engrams.map(e => {
+    const c = { ...e } as Record<string, unknown>
+    if (c.pinned === true) { pinnedStripped++; changed = true }
+    if ('pinned' in c) delete c.pinned
+    if (c.commitment === 'locked') {
+      c.commitment = 'decided'
+      delete c.locked_at
+      delete c.locked_reason
+      changed = true
+    }
+    return c as unknown as Engram
+  })
+  return { engrams: out, pinnedStripped, changed }
 }
 
 const PERSONAL_PATH_RE = /(?:\/Users\/\w+|\/home\/\w+|~\/|C:\\Users\\\w+)/
@@ -335,14 +395,16 @@ export function scanPrivacy(engrams: Engram[]): PrivacyScanResult {
   const issues: PrivacyIssue[] = []
 
   for (const e of engrams) {
-    // Check visibility — private engrams should never be exported
+    // Check visibility — private engrams should never be exported. Record the
+    // flag but DON'T skip the rest of the scan: on install, private engrams are
+    // still loaded and injected, so a pack can't use visibility:private to
+    // smuggle secrets or injection text past the gate (finding #2).
     if (e.visibility === 'private') {
       issues.push({
         engram_id: e.id,
         type: 'private_visibility',
         detail: `Engram marked as private — skipped from export`,
       })
-      continue
     }
 
     const text = `${e.statement} ${e.rationale ?? ''} ${e.source ?? ''}`
@@ -354,6 +416,17 @@ export function scanPrivacy(engrams: Engram[]): PrivacyScanResult {
         engram_id: e.id,
         type: 'secret',
         detail: `${s.pattern}: ${s.match}`,
+      })
+    }
+
+    // Prompt-injection / instruction-override text (scan statement only —
+    // rationale/source are metadata and far less likely to be re-injected)
+    const injections = detectPromptInjection(e.statement)
+    for (const inj of injections) {
+      issues.push({
+        engram_id: e.id,
+        type: 'prompt_injection',
+        detail: `${inj.pattern}: "${inj.match}"`,
       })
     }
 
@@ -500,6 +573,16 @@ export function exportPack(
     // Strip feedback_signals (recipient starts fresh)
     if (cleaned.feedback_signals) {
       cleaned.feedback_signals = { positive: 0, negative: 0, neutral: 0 }
+    }
+    // Strip host-overriding fields (finding #6): never export an always-load
+    // directive or a locked commitment into a shareable pack. Mirrors the
+    // clamp applied on install.
+    const c = cleaned as Record<string, unknown>
+    if ('pinned' in c) delete c.pinned
+    if (c.commitment === 'locked') {
+      c.commitment = 'decided'
+      delete c.locked_at
+      delete c.locked_reason
     }
     return cleaned
   })

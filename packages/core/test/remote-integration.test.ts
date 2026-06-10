@@ -146,6 +146,49 @@ describe('RemoteStore against stub server', () => {
     expect(all[0].id).toMatch(/^ENG-SRV-/)
     expect(all[1].id).toMatch(/^ENG-SRV-/)
   })
+
+  // Finding #3 (audit 2026-06-10): server responses were written to the engram
+  // pool with `as unknown as Engram` — no validation. A compromised server could
+  // inject type-confused / malformed engrams. load() must drop malformed rows.
+  it('load drops malformed rows but keeps valid ones', async () => {
+    server.seedEngram({
+      id: 'ENG-SRV-200',
+      scope: 'group:val',
+      status: 'active',
+      data: { statement: 'a perfectly valid engram', type: 'behavioral' },
+    })
+    // statement is a number, not a string — structurally broken
+    server.seedEngram({
+      id: 'ENG-SRV-201',
+      scope: 'group:val',
+      status: 'active',
+      data: { statement: 12345 as unknown as string },
+    })
+    // id has an illegal shape (path-traversal-ish) — must be rejected
+    server.seedEngram({
+      id: '../../etc/passwd',
+      scope: 'group:val',
+      status: 'active',
+      data: { statement: 'looks fine but the id is hostile' },
+    })
+
+    const store = new RemoteStore(baseUrl, TOKEN, 'group:val', { ttlMs: 0 })
+    const all = await store.load()
+
+    expect(all.length).toBe(1)
+    expect((all[0] as any).statement).toBe('a perfectly valid engram')
+  })
+
+  it('getById returns null for a malformed server row', async () => {
+    server.seedEngram({
+      id: 'ENG-SRV-202',
+      scope: 'group:val',
+      status: 'active',
+      data: { statement: { nested: 'object, not a string' } as unknown as string },
+    })
+    const store = new RemoteStore(baseUrl, TOKEN, 'group:val', { ttlMs: 0 })
+    expect(await store.getById('ENG-SRV-202')).toBeNull()
+  })
 })
 
 // ---------------------------------------------------------------------------
