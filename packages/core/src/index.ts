@@ -2289,7 +2289,7 @@ Generate an improved version of the procedure that prevents this failure. Return
     storePath: string,
     scope: string,
     options?: { shared?: boolean; readonly?: boolean; url?: string; token?: string; overwriteScope?: boolean },
-  ): { status: 'added' | 'already_registered'; scope: string } | void {
+  ): { status: 'added' | 'already_registered'; scope: string } {
     const isRemote = Boolean(options?.url)
 
     // Validation gate (#93): catch malformed URLs and duplicate scopes at
@@ -2317,15 +2317,21 @@ Generate an improved version of the procedure that prevents this failure. Return
 
     const config = loadConfig(this.paths.config)
 
-    // Fix #291: dedup by endpoint + scope (not just endpoint).
-    // Same URL with different scope is a valid new registration (multi-team users).
-    const sameEndpointAndScope = config.stores?.find(s =>
+    // Fix #291: for REMOTE stores, dedup by url + scope (not just url).
+    // Same URL with a different scope is a valid new registration — the server
+    // filters reads per entry (?scope=), so multi-team users need one entry
+    // per scope.
+    //
+    // LOCAL stores keep path-only dedup: one engrams.yaml is one store. The
+    // loader clones global-scoped engrams into each entry's scope, so two
+    // entries on the same file would load those engrams twice.
+    const duplicate = config.stores?.find(s =>
       isRemote
         ? (s.url === options!.url && s.scope === scope)
-        : (s.path === storePath && s.scope === scope)
+        : (s.path === storePath)
     )
-    if (sameEndpointAndScope) {
-      return { status: 'already_registered', scope }
+    if (duplicate) {
+      return { status: 'already_registered', scope: duplicate.scope }
     }
 
     // Different endpoint, same scope (#93): forbid by default to prevent

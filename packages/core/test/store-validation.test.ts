@@ -147,6 +147,33 @@ describe('addStore validation (#93)', () => {
       const config = yaml.load(readFileSync(join(dir, 'config.yaml'), 'utf8')) as any
       expect(config.stores).toHaveLength(1)
     })
+
+    // Local stores keep path-only dedup: one engrams.yaml is one store. The
+    // loader clones global engrams into each entry's scope, so two entries on
+    // the same file would load them twice.
+    it('local store: same path with different scope is already_registered, not a new entry', () => {
+      plur.addStore('/tmp/local-store/engrams.yaml', 'space:original')
+      const result = plur.addStore('/tmp/local-store/engrams.yaml', 'space:other')
+
+      expect(result.status).toBe('already_registered')
+      // Reports the scope of the EXISTING entry, not the requested one
+      expect(result.scope).toBe('space:original')
+
+      const config = yaml.load(readFileSync(join(dir, 'config.yaml'), 'utf8')) as any
+      expect(config.stores).toHaveLength(1)
+      expect(config.stores[0].scope).toBe('space:original')
+    })
+
+    it('local store: same path + same scope is already_registered (idempotent)', () => {
+      plur.addStore('/tmp/local-store/engrams.yaml', 'space:test')
+      const result = plur.addStore('/tmp/local-store/engrams.yaml', 'space:test')
+
+      expect(result.status).toBe('already_registered')
+      expect(result.scope).toBe('space:test')
+
+      const config = yaml.load(readFileSync(join(dir, 'config.yaml'), 'utf8')) as any
+      expect(config.stores).toHaveLength(1)
+    })
   })
 
   describe('readonly stores', () => {

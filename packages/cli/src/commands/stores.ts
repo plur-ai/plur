@@ -13,10 +13,12 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     }
     const shared = args.includes('--shared')
     const readonly = args.includes('--readonly')
-    plur.addStore(path, scope, { shared, readonly })
+    const result = plur.addStore(path, scope, { shared, readonly })
 
     if (shouldOutputJson(flags)) {
-      outputJson({ success: true, path, scope })
+      outputJson({ success: true, status: result.status, path, scope: result.scope })
+    } else if (result.status === 'already_registered') {
+      outputText(`Store already registered: ${path} (scope: ${result.scope})`)
     } else {
       outputText(`Added store: ${path} (scope: ${scope})`)
     }

@@ -1362,12 +1362,13 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
           readonly: args.readonly as boolean | undefined,
           url, token,
         })
-        const status = result?.status ?? 'added'
         return {
           success: true,
-          status, // 'added' or 'already_registered' (#291)
+          status: result.status, // 'added' or 'already_registered' (#291)
           ...(path ? { path } : { url }),
-          scope: args.scope,
+          // On already_registered this is the scope of the existing entry —
+          // for local stores it may differ from the requested scope.
+          scope: result.scope,
           kind: url ? 'remote' : 'filesystem',
         }
       },
