@@ -285,7 +285,20 @@ function resolveCliJsEntry(): string | null {
  * 325MB for embedding-gemma) need 60-300s on slow connections. Override via
  * PLUR_DOCTOR_TIMEOUT env var (in seconds) if 60s is still too short.
  */
-async function checkEmbedder(_flags: GlobalFlags, timeoutMs = parseInt(process.env.PLUR_DOCTOR_TIMEOUT ?? '60', 10) * 1000): Promise<{ available: boolean; loaded: boolean; lastError: string | null; modelLoaded: boolean; disabled: boolean; disabledReason: string | null }> {
+const DEFAULT_PROBE_TIMEOUT_MS = 60_000
+
+/**
+ * Resolve the probe timeout from PLUR_DOCTOR_TIMEOUT (seconds). Invalid values
+ * (garbage, empty string, zero, negative) fall back to the 60s default — a NaN
+ * delay would make setTimeout fire after 1ms, instantly failing the probe with
+ * the very "probe timeout" symptom #273 fixes. Exported for tests.
+ */
+export function resolveProbeTimeoutMs(envValue = process.env.PLUR_DOCTOR_TIMEOUT): number {
+  const parsed = Number.parseInt(envValue ?? '', 10)
+  return Number.isFinite(parsed) && parsed > 0 ? parsed * 1000 : DEFAULT_PROBE_TIMEOUT_MS
+}
+
+async function checkEmbedder(_flags: GlobalFlags, timeoutMs = resolveProbeTimeoutMs()): Promise<{ available: boolean; loaded: boolean; lastError: string | null; modelLoaded: boolean; disabled: boolean; disabledReason: string | null }> {
   return new Promise((resolve) => {
     const fallback = (lastError: string) => ({
       available: false,
