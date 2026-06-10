@@ -209,6 +209,9 @@ export async function createServer(plur?: Plur): Promise<Server> {
         }
         const parsed = z.object(shape).passthrough().safeParse(args)
         if (!parsed.success) {
+          // Echo field NAMES only, never values (#281). Values may contain
+          // engram content (statements, rationale) — echoing them would leak
+          // memory content into client error logs. Keep this names-only.
           const receivedFields = Object.keys(args)
           const details = parsed.error.issues.map(i => `${i.path.join('.') || 'root'}: ${i.message}`).join(', ')
           const receivedInfo = receivedFields.length > 0
