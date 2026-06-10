@@ -58,4 +58,32 @@ describe('isPlurConfigured', () => {
     writeFileSync(join(root, '.mcp.json'), '{ not valid json')
     expect(isPlurConfigured(root, root)).toBe(false)
   })
+
+  it('returns false when only global ~/.claude/settings.json has a plur server (#247)', () => {
+    // Regression: the global fallback made this return true for every
+    // project after `plur init --global`, blocking tools everywhere.
+    const home = mkdtempSync(join(tmpdir(), 'plur-configured-home-'))
+    try {
+      mkdirSync(join(home, '.claude'), { recursive: true })
+      writeFileSync(
+        join(home, '.claude', 'settings.json'),
+        JSON.stringify({ mcpServers: { plur: { command: 'plur-mcp' } } }),
+      )
+      expect(isPlurConfigured(root, home)).toBe(false)
+    } finally {
+      rmSync(home, { recursive: true, force: true })
+    }
+  })
+
+  it('returns true when .plur.yaml exists in cwd', () => {
+    writeFileSync(join(root, '.plur.yaml'), 'scope: "project:test"\n')
+    expect(isPlurConfigured(root, root)).toBe(true)
+  })
+
+  it('returns true when .plur.yaml exists in a parent', () => {
+    writeFileSync(join(root, '.plur.yaml'), 'scope: "project:test"\n')
+    const sub = join(root, 'a', 'b')
+    mkdirSync(sub, { recursive: true })
+    expect(isPlurConfigured(sub, sub)).toBe(true)
+  })
 })
