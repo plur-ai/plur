@@ -1370,7 +1370,9 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
           success: true,
           status: result.status,
           ...(path ? { path } : { url }),
-          scope: args.scope,
+          // On already_registered this is the EXISTING entry's scope — for
+          // local stores (path-only identity) it may differ from the request.
+          scope: result.scope,
           kind: url ? 'remote' : 'filesystem',
         }
       },

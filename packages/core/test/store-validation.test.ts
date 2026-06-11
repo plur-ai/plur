@@ -166,27 +166,55 @@ describe('addStore validation (#93)', () => {
     it('returns added → already_registered → overwritten honestly', () => {
       // First registration: a real add.
       expect(plur.addStore('', 'group:plur/plur-ai/engineering', { url: URL, token: 'tok' }))
-        .toEqual({ status: 'added' })
+        .toEqual({ status: 'added', scope: 'group:plur/plur-ai/engineering' })
       // Second scope on the same URL: also a real add (the #291 bug).
       expect(plur.addStore('', 'group:plur/plur-ai/comms', { url: URL, token: 'tok' }))
-        .toEqual({ status: 'added' })
+        .toEqual({ status: 'added', scope: 'group:plur/plur-ai/comms' })
       // Exact url+scope repeat: idempotent no-op.
       expect(plur.addStore('', 'group:plur/plur-ai/comms', { url: URL, token: 'tok' }))
-        .toEqual({ status: 'already_registered' })
+        .toEqual({ status: 'already_registered', scope: 'group:plur/plur-ai/comms' })
       // Same scope reassigned to a different URL with opt-in: overwritten.
       expect(plur.addStore('', 'group:plur/plur-ai/comms', {
         url: 'https://other.example.com', token: 'tok2', overwriteScope: true,
-      })).toEqual({ status: 'overwritten' })
+      })).toEqual({ status: 'overwritten', scope: 'group:plur/plur-ai/comms' })
     })
 
     it('same URL + same scope + different token stays an idempotent no-op (no silent token swap)', () => {
       plur.addStore('', 'group:plur/plur-ai/engineering', { url: URL, token: 'original' })
       const result = plur.addStore('', 'group:plur/plur-ai/engineering', { url: URL, token: 'rotated' })
 
-      expect(result).toEqual({ status: 'already_registered' })
+      expect(result).toEqual({ status: 'already_registered', scope: 'group:plur/plur-ai/engineering' })
       const config = yaml.load(readFileSync(join(dir, 'config.yaml'), 'utf8')) as any
       expect(config.stores).toHaveLength(1)
       expect(config.stores[0].token).toBe('original')
+    })
+  })
+
+  /**
+   * Local stores keep PATH-ONLY identity — deliberately different from the
+   * url+scope dedup above. One engrams.yaml is one store: the loader clones
+   * global-scoped engrams into each entry's scope, so two entries on the
+   * same file would load those engrams twice (once per scope).
+   */
+  describe('local stores: path-only identity (#291 boundary)', () => {
+    it('same path with a different scope is already_registered, reporting the EXISTING scope', () => {
+      plur.addStore('/tmp/local-store/engrams.yaml', 'space:original')
+      const result = plur.addStore('/tmp/local-store/engrams.yaml', 'space:other')
+
+      expect(result).toEqual({ status: 'already_registered', scope: 'space:original' })
+
+      const config = yaml.load(readFileSync(join(dir, 'config.yaml'), 'utf8')) as any
+      expect(config.stores).toHaveLength(1)
+      expect(config.stores[0].scope).toBe('space:original')
+    })
+
+    it('same path + same scope is an idempotent no-op', () => {
+      plur.addStore('/tmp/local-store/engrams.yaml', 'space:test')
+      const result = plur.addStore('/tmp/local-store/engrams.yaml', 'space:test')
+
+      expect(result).toEqual({ status: 'already_registered', scope: 'space:test' })
+      const config = yaml.load(readFileSync(join(dir, 'config.yaml'), 'utf8')) as any
+      expect(config.stores).toHaveLength(1)
     })
   })
 
