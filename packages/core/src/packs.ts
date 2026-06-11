@@ -403,7 +403,7 @@ export function scanPrivacy(engrams: Engram[]): PrivacyScanResult {
       issues.push({
         engram_id: e.id,
         type: 'private_visibility',
-        detail: `Engram marked as private — skipped from export`,
+        detail: `Engram marked as private — excluded from export, still scanned`,
       })
     }
 
@@ -419,9 +419,12 @@ export function scanPrivacy(engrams: Engram[]): PrivacyScanResult {
       })
     }
 
-    // Prompt-injection / instruction-override text (scan statement only —
-    // rationale/source are metadata and far less likely to be re-injected)
-    const injections = detectPromptInjection(e.statement)
+    // Prompt-injection / instruction-override text. Scan every field that is
+    // rendered into agent context: inject.ts formatLayer3 emits `rationale`
+    // verbatim and formatLayer1 emits `summary`, so scanning `statement` alone
+    // would leave a structural bypass (put the override text in rationale).
+    const injectionText = `${text} ${e.summary ?? ''}`
+    const injections = detectPromptInjection(injectionText)
     for (const inj of injections) {
       issues.push({
         engram_id: e.id,

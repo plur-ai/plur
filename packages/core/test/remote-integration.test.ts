@@ -189,6 +189,35 @@ describe('RemoteStore against stub server', () => {
     const store = new RemoteStore(baseUrl, TOKEN, 'group:val', { ttlMs: 0 })
     expect(await store.getById('ENG-SRV-202')).toBeNull()
   })
+
+  // Type confusion in rendered fields: formatLayer3 calls confidence_score
+  // .toFixed(2), so a string here would throw at injection time. The schema
+  // must reject it; explicit nulls must still pass (servers emit them).
+  it('load drops rows with type-confused rendered fields, accepts explicit nulls', async () => {
+    server.seedEngram({
+      id: 'ENG-SRV-210',
+      scope: 'group:val',
+      status: 'active',
+      data: { statement: 'confidence is a string', confidence_score: 'high' as unknown as number },
+    })
+    server.seedEngram({
+      id: 'ENG-SRV-211',
+      scope: 'group:val',
+      status: 'active',
+      data: { statement: 'rationale is an object', rationale: { hidden: 'payload' } as unknown as string },
+    })
+    server.seedEngram({
+      id: 'ENG-SRV-212',
+      scope: 'group:val',
+      status: 'active',
+      data: { statement: 'nulls are fine', confidence_score: null, rationale: null, summary: null, domain: null },
+    })
+
+    const store = new RemoteStore(baseUrl, TOKEN, 'group:val', { ttlMs: 0 })
+    const all = await store.load()
+
+    expect(all.map(e => e.id)).toEqual(['ENG-SRV-212'])
+  })
 })
 
 // ---------------------------------------------------------------------------

@@ -21,6 +21,14 @@ const RemoteRowSchema = z.object({
   pinned: z.boolean().optional(),
   commitment: z.enum(['exploring', 'leaning', 'decided', 'locked']).optional(),
   visibility: z.enum(['private', 'public', 'template']).optional(),
+  // Fields rendered into agent context or used in arithmetic — type confusion
+  // here either throws at injection time (confidence_score.toFixed in
+  // formatLayer3) or feeds non-string data into the context. nullish() because
+  // servers may emit explicit nulls for absent values.
+  confidence_score: z.number().nullish(),
+  rationale: z.string().nullish(),
+  summary: z.string().nullish(),
+  domain: z.string().nullish(),
 }).passthrough()
 
 /**

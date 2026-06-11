@@ -88,8 +88,8 @@ Five modes, from fastest to most accurate:
 | `capture(summary, context?)` | Record a session event to the episodic timeline |
 | `timeline(query?)` | Query past episodes by time, agent, or search |
 | `ingest(content, options?)` | Extract engram candidates from text via pattern matching |
-| `installPack(source)` | Install a shareable engram pack |
-| `exportPack(engrams, dir, manifest)` | Export engrams as a shareable pack |
+| `installPack(source, opts?)` | Install a shareable engram pack — scans for secrets (always blocked) and prompt-injection text (blocked unless `allowInjection`), strips `pinned`/locked fields |
+| `exportPack(engrams, dir, manifest)` | Export engrams as a shareable pack — strips private engrams, feedback signals, and `pinned`/locked fields |
 | `listPacks()` | List installed packs |
 | `status()` | System health — counts, storage root, config |
 
