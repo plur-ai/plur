@@ -22,3 +22,6 @@ docs/architecture/vertical-extensions.md
 
 # Benchmark data belongs in plur-bench, not the monorepo (DO NOT commit here)
 benchmark/data/
+
+# Local gstack security reports — keep audit artifacts out of the repo
+.gstack/
