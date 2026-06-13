@@ -1,6 +1,7 @@
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs'
-import { join } from 'path'
-import { homedir } from 'os'
+import { existsSync, readFileSync, writeFileSync, mkdirSync, cpSync, chmodSync } from 'fs'
+import { join, dirname } from 'path'
+import { homedir, platform } from 'os'
+import { fileURLToPath } from 'url'
 import { type GlobalFlags } from '../plur.js'
 import { outputText } from '../output.js'
 import {
@@ -55,8 +56,30 @@ interface HookEntry {
   }>
 }
 
-// Hook commands — all use npx for zero-install compatibility
-const CLI = 'npx @plur-ai/cli'
+/**
+ * Absolute path to the installed hook binary shim.
+ *
+ * During `plur init`, hook-runner.js is copied from the CLI package's dist
+ * to ~/.plur/cli/ and a thin sh wrapper is written to ~/.plur/bin/plur-hook.
+ * All hook commands reference this path — no npx, no npm, no network, no cache.
+ *
+ * The shim resolves in < 5ms (it's just `node file.js`) and has zero
+ * concurrent-access risk because there is no shared mutable cache state.
+ */
+const PLUR_HOME = join(homedir(), '.plur')
+const HOOK_SHIM = join(PLUR_HOME, 'bin', 'plur-hook')
+
+/**
+ * Build the hook command prefix. On Windows, node must be called directly
+ * because sh shebangs don't work. On Unix, the shim handles it.
+ */
+function hookCmd(): string {
+  return platform() === 'win32'
+    ? `node "${join(PLUR_HOME, 'cli', 'index.js')}"`
+    : `"${HOOK_SHIM}"`
+}
+
+const CLI = hookCmd()
 
 // Enforcement hooks ensure plur_session_start is always called first.
 // Installed into global ~/.claude/settings.json unconditionally (issue #95) so
@@ -309,7 +332,12 @@ function loadSettings(path: string): Settings {
 }
 
 function isPlurHook(entry: HookEntry): boolean {
-  return (entry.hooks ?? []).some((h) => h.command.includes('@plur-ai/cli'))
+  return (entry.hooks ?? []).some(
+    (h) =>
+      h.command.includes('@plur-ai/cli') ||   // legacy npx-style
+      h.command.includes('plur-hook') ||       // new local-shim style (Unix)
+      h.command.includes('.plur/cli/index.js') // new local-shim style (Windows)
+  )
 }
 
 function hasPlurHooks(settings: Settings): boolean {
@@ -344,6 +372,59 @@ function mergeHooks(settings: Settings, hooksMap: Record<string, HookEntry[]>): 
   }
 
   return { ...clean, hooks }
+}
+
+/**
+ * Install the local hook binary to ~/.plur/bin/plur-hook.
+ *
+ * Copies the CLI's dist/index.js (the built entrypoint) to
+ * ~/.plur/cli/index.js and writes a thin sh wrapper at ~/.plur/bin/plur-hook.
+ * Hook commands in settings.json reference this local path — no npx, no npm,
+ * no network, no cache, no concurrent-rename races.
+ *
+ * Re-running `plur init` on upgrade overwrites both files with the new build.
+ * Returns a status string for the init report.
+ */
+function installHookBinary(): string {
+  try {
+    // Locate this package's dist/index.js. __filename gives us the compiled
+    // path at ~/.../packages/cli/dist/commands/init.js, so we go up two levels.
+    const thisFile = fileURLToPath(import.meta.url)
+    const distDir = dirname(dirname(thisFile)) // dist/
+    const srcIndex = join(distDir, 'index.js')
+
+    if (!existsSync(srcIndex)) {
+      return `skipped (could not locate dist/index.js at ${srcIndex})`
+    }
+
+    // Copy dist/ to ~/.plur/cli/
+    const cliDest = join(PLUR_HOME, 'cli')
+    mkdirSync(cliDest, { recursive: true })
+    cpSync(distDir, cliDest, { recursive: true })
+
+    // Write the sh shim at ~/.plur/bin/plur-hook
+    const binDir = join(PLUR_HOME, 'bin')
+    mkdirSync(binDir, { recursive: true })
+
+    if (platform() !== 'win32') {
+      const shimPath = join(binDir, 'plur-hook')
+      const shimContent = [
+        '#!/bin/sh',
+        `exec node "${join(cliDest, 'index.js')}" "$@"`,
+        '',
+      ].join('\n')
+      writeFileSync(shimPath, shimContent, { mode: 0o755 })
+      // Ensure executable bit survives umask
+      chmodSync(shimPath, 0o755)
+      return `installed to ${shimPath}`
+    }
+
+    // Windows: no sh shim needed — hook commands use `node path\cli\index.js` directly
+    return `installed to ${cliDest}\\index.js (Windows — node invocation)`
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    return `failed (${msg}) — falling back to npx; run \`plur init\` again after fixing`
+  }
 }
 
 /**
@@ -438,6 +519,9 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     injectionHooksStatus = hooksStatusFor(projectBefore, projectAfter, projectHadHooks)
   }
 
+  // Install hook binary to ~/.plur/bin/plur-hook (eliminates npx from hot path)
+  const hookBinaryStatus = installHookBinary()
+
   // Install CLAUDE.md section
   const claudeMdStatus = installClaudeMd()
 
@@ -456,6 +540,8 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   outputText('')
   outputText(`MCP server (plur): ${mcpStatus}`)
   outputText(`  command: ${entry.command} ${entry.args.join(' ')}`)
+  outputText('')
+  outputText(`Hook binary (~/.plur/bin/plur-hook): ${hookBinaryStatus}`)
   outputText('')
   outputText(`Enforcement hooks (3, always global): ${enforcementHooksStatus}`)
   outputText('  SessionStart      — enforce plur_session_start before any work')

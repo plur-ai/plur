@@ -4,7 +4,7 @@ export {}
 import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, statSync } from 'fs'
 import { join } from 'path'
 import { fileURLToPath } from 'url'
-import { homedir } from 'os'
+import { homedir, platform } from 'os'
 
 const VERSION = '0.9.9'
 
@@ -92,8 +92,14 @@ export function extractManifestVersion(skillMdPath: string): string | null {
   }
 }
 
-// Hook commands — all use npx for zero-install compatibility
-const CLI = 'npx @plur-ai/cli'
+// Hook commands — reference the local hook binary installed by `plur init`.
+// Using a local path eliminates npx from the hot path: no npm cache, no network,
+// no concurrent ENOTEMPTY races on version bumps. Resolves in < 5ms vs 200-2000ms.
+// On Windows, node is invoked directly since sh shebangs are not available.
+const PLUR_HOME = join(homedir(), '.plur')
+const CLI = platform() === 'win32'
+  ? `node "${join(PLUR_HOME, 'cli', 'index.js')}"`
+  : `"${join(PLUR_HOME, 'bin', 'plur-hook')}"`
 
 const PLUR_HOOKS: Record<string, HookEntry[]> = {
   // --- Session lifecycle ---

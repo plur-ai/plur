@@ -30,6 +30,7 @@ interface ConfigFileReport {
   hasPlurMcp: boolean
   hasDatacoreMcp: boolean
   hasPlurHooks: boolean
+  hasStaleNpxHooks: boolean
 }
 
 interface DoctorReport {
@@ -47,7 +48,28 @@ function hasAnyPlurHook(config: Record<string, unknown>): boolean {
   for (const entries of Object.values(hooks)) {
     for (const entry of entries) {
       for (const h of entry.hooks ?? []) {
-        if (h.command && h.command.includes('@plur-ai/cli')) return true
+        if (!h.command) continue
+        if (
+          h.command.includes('@plur-ai/cli') ||   // legacy npx-style
+          h.command.includes('plur-hook') ||       // new local-shim (Unix)
+          h.command.includes('.plur/cli/index.js') // new local-shim (Windows)
+        ) return true
+      }
+    }
+  }
+  return false
+}
+
+/**
+ * Detect whether any hooks still use the deprecated `npx @plur-ai/cli` pattern.
+ * These are stale after upgrading and should be migrated via `plur init`.
+ */
+function hasStaleNpxHooks(config: Record<string, unknown>): boolean {
+  const hooks = (config.hooks ?? {}) as Record<string, Array<{ hooks?: Array<{ command?: string }> }>>
+  for (const entries of Object.values(hooks)) {
+    for (const entry of entries) {
+      for (const h of entry.hooks ?? []) {
+        if (h.command && h.command.includes('npx') && h.command.includes('@plur-ai/cli')) return true
       }
     }
   }
@@ -74,6 +96,7 @@ function inspectConfigs(): ConfigFileReport[] {
       hasPlurMcp: hasPlurMcp(config),
       hasDatacoreMcp: hasDatacoreMcp(config),
       hasPlurHooks: hasAnyPlurHook(config),
+      hasStaleNpxHooks: hasStaleNpxHooks(config),
     }
   })
 }
@@ -251,6 +274,16 @@ function printText(report: DoctorReport): void {
     outputText('   plur tools are prefixed plur_* (plur_learn, plur_recall_hybrid, etc.).')
     outputText('   datacore tools are prefixed datacore_*. They do NOT share memory.')
     outputText('   If your agent confuses them, this is the cause.')
+  }
+
+  const staleNpx = report.configs.some((c) => c.hasStaleNpxHooks)
+  if (staleNpx) {
+    outputText('')
+    outputText('⚠  Stale npx-style hooks detected (npx @plur-ai/cli hook-*).')
+    outputText('   These cause ENOTEMPTY cache corruption on version bumps — P0 bug.')
+    outputText('   Every hook invocation goes through npm\'s cache, which races on concurrent calls.')
+    outputText('   Fix: run `plur init` to migrate to local hook binary (~/.plur/bin/plur-hook).')
+    outputText('   The local binary resolves in < 5ms with zero npm cache involvement.')
   }
 
   outputText('')
