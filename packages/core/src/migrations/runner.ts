@@ -11,9 +11,10 @@ import { migration as m002 } from './20260406-002-add-content-hash.js'
 import { migration as m003 } from './20260406-003-populate-memory-class.js'
 import { migration as m004 } from './20260406-004-populate-cognitive-level.js'
 import { migration as m005 } from './20260406-005-add-version-field.js'
+import { migration as m006 } from './20260517-006-add-reference-count.js'
 
 /** All registered migrations, ordered by ID. */
-export const ALL_MIGRATIONS: Migration[] = [m001, m002, m003, m004, m005]
+export const ALL_MIGRATIONS: Migration[] = [m001, m002, m003, m004, m005, m006]
 
 /** Current schema version after all migrations have run. */
 export const CURRENT_SCHEMA_VERSION = ALL_MIGRATIONS.length

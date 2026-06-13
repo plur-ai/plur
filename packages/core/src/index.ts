@@ -410,9 +410,30 @@ export class Plur {
 
       const scope = context?.scope ?? 'global'
 
-      // Idea 29: Content hash fast-path dedup (scope-aware — issue #136)
+      // Idea 29: Content hash fast-path dedup (scope-aware — issue #136, #107)
+      // On a hit: increment reference_count, append source entry, mark _deduplicated.
       const hashMatch = this._hashDedup(statement, allEngrams, scope)
-      if (hashMatch) return hashMatch
+      if (hashMatch) {
+        // Update reference_count + sources in the primary store (not store copies or packs)
+        const primaryEngrams = loadEngrams(this.paths.engrams)
+        const idx = primaryEngrams.findIndex(e => e.id === hashMatch.id)
+        if (idx !== -1) {
+          const updated = { ...primaryEngrams[idx] } as any
+          updated.reference_count = ((updated.reference_count as number | undefined) ?? 1) + 1
+          const sourceEntry = { source: context?.source, learned_at: new Date().toISOString() }
+          updated.sources = [...((updated.sources as any[] | undefined) ?? []), sourceEntry]
+          primaryEngrams[idx] = updated
+          this._writeEngrams(this.paths.engrams, primaryEngrams)
+          this._syncIndex()
+          const result = { ...updated } as any
+          result._deduplicated = true
+          return result as Engram
+        }
+        // Not in primary (pack or remote store engram) — return as-is with marker
+        const result = { ...hashMatch } as any
+        result._deduplicated = true
+        return result as Engram
+      }
 
       const id = generateEngramId(allEngrams)
       const now = new Date().toISOString()
@@ -604,7 +625,10 @@ export class Plur {
     // local outbox for retry (issue #26).
     const allEngrams = this._loadAllEngrams()
     const hashMatch = this._hashDedup(statement, allEngrams, scope)
-    if (hashMatch) return hashMatch
+    if (hashMatch) {
+      // Delegate to learn() so reference_count + sources are updated and _deduplicated is set.
+      return this.learn(statement, context)
+    }
     const now = new Date().toISOString()
     const localPlaceholder = this._buildEngramShape(statement, scope, context, now)
     try {

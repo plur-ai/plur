@@ -191,6 +191,12 @@ export const EngramSchema = z.object({
   locked_at: z.string().optional(),
   locked_reason: z.string().optional(),
 
+  // === #107: Content-addressed deduplication ===
+  /** Number of times this engram was re-learned from distinct sources. Starts at 1; incremented on each hash-dedup hit. Deletion decrements — row removed at 0 during compaction (#109). */
+  reference_count: z.number().int().min(1).optional(),
+  /** List of source metadata entries appended on each dedup hit. Each entry records where the repeated learn came from. */
+  sources: z.array(z.object({ source: z.string().optional(), learned_at: z.string() })).optional(),
+
   // === SP2: History & Evolution fields ===
   engram_version: z.number().int().min(1).default(1),
   previous_version_ref: PreviousVersionRefSchema.optional(),

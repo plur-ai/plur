@@ -156,11 +156,13 @@ export function getToolDefinitions(): ToolDefinition[] {
         try {
 const engram = await plur.learnRouted(statement, context)
           const isOutbox = !!(engram as any).structured_data?._outbox
+          const isDuplicated = !!(engram as any)._deduplicated
           return {
             id: engram.id, statement: engram.statement,
             scope: engram.scope, type: engram.type,
             pinned: (engram as any).pinned === true,
-            decision: 'ADD',
+            decision: isDuplicated ? 'NOOP' : 'ADD',
+            ...(isDuplicated ? { deduplicated: true } : {}),
             ...(isOutbox ? { outbox: true, warning: 'Remote write failed; engram queued locally for retry on next session start or plur_sync.' } : {}),
           }
         } catch (err) {
@@ -168,9 +170,12 @@ const engram = await plur.learnRouted(statement, context)
           // path should rarely be reached. Keep as defense-in-depth.
           const engram = plur.learn(statement, context)
           const isOutbox = !!(engram as any).structured_data?._outbox
+          const isDuplicated = !!(engram as any)._deduplicated
           return {
             id: engram.id, statement: engram.statement,
-            scope: engram.scope, type: engram.type, decision: 'ADD',
+            scope: engram.scope, type: engram.type,
+            decision: isDuplicated ? 'NOOP' : 'ADD',
+            ...(isDuplicated ? { deduplicated: true } : {}),
             ...(isOutbox ? { outbox: true } : {}),
             warning: `Remote write failed (${(err as Error).message}); engram queued for retry.`,
           }
