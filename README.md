@@ -32,7 +32,7 @@ For **multi-project setups**, use domain/scope to separate knowledge:
 
 ```bash
 cd ~/projects/my-app
-npx @plur-ai/cli@0.9.4 init --domain myapp --scope project:my-app
+npx @plur-ai/cli@0.9.9 init --domain myapp --scope project:my-app
 ```
 
 This creates a `.plur.yaml` in the project with defaults that hooks apply automatically. Engrams learned in that project are tagged; recall filters by scope but always includes global knowledge.
@@ -57,10 +57,10 @@ That's it. PLUR works in the background from here. No workflow changes needed â€
 
 ```bash
 pip install plur-hermes
-npm install -g @plur-ai/cli@0.9.4
+npm install -g @plur-ai/cli@0.9.9
 ```
 
-The plugin registers automatically via Hermes' plugin system. It injects relevant memories before each LLM call, extracts learnings from agent responses, and exposes all PLUR tools to the agent. Hermes shells out to the PLUR CLI; current verified pairing is `plur-hermes==0.9.4` with `@plur-ai/cli@0.9.4`.
+The plugin registers automatically via Hermes' plugin system. It injects relevant memories before each LLM call, extracts learnings from agent responses, and exposes all PLUR tools to the agent. Hermes shells out to the PLUR CLI; current verified pairing is `plur-hermes==0.9.9` with `@plur-ai/cli@0.9.9`.
 
 ### Verify it works
 
