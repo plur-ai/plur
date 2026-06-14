@@ -1,10 +1,60 @@
-# Opt-in Engagement Telemetry — Design Proposal
+# Opt-in Engagement Telemetry — Design & Implementation
 
-**Status:** Proposal — open for community comment
+**Status:** Implemented (opt-in, default-off) — design preserved below
 **Target release:** v0.9.x
-**Comment window:** 7 days from the date this doc lands on `main`
 
-This document describes a proposed opt-in engagement telemetry mechanism for PLUR. No code has been written. We are publishing the design first, deliberately, to invite criticism before building. If blocking feedback surfaces during the comment window, the design will be revised or dropped.
+This document originally proposed an opt-in engagement telemetry mechanism for
+PLUR, published design-first to invite criticism before building. The design
+held up and the mechanism is now implemented. The design rationale below is kept
+verbatim as the record of intent; this section tracks what actually shipped.
+
+## Implementation status
+
+The gate, daily counters, flush/transport, and a failed-recall miss-signal are
+implemented and wired. All of it is **opt-in / default-off** and **content-free**
+— exactly as the design below specifies.
+
+| Piece | Where | What it does |
+|-------|-------|--------------|
+| Opt-in gate | `packages/core/src/telemetry.ts` | `isTelemetryEnabled()` — `PLUR_TELEMETRY=on\|off` env, then `~/.plur/telemetry.json`, default **off**. Every public telemetry function short-circuits on this before any FS or network call. |
+| Daily counters | `packages/core/src/telemetry-counters.ts` | `recordEvent('learn'\|'recall'\|'session')` persists per-day counts to `~/.plur/telemetry-counters.json`; day-rollover safety stashes yesterday's snapshot to a pending dir (#128). |
+| Flush / transport | `packages/core/src/telemetry-flush.ts` | `POST /v1/heartbeat` of the daily record; never throws; drains the pending dir on rollover or process exit. |
+| Miss-signal | `packages/core/src/telemetry-miss-signal.ts` | Failed-recall demand signal (see below). |
+
+**Call sites.** `@plur-ai/claw` records `learn`/`recall` in `context-engine.ts`
+and `index.ts` and registers flush-on-exit. `@plur-ai/mcp` — the widest install
+surface — records `learn`/`recall` in `tools.ts` and registers flush-on-exit in
+`server.ts`, reusing the same core implementation (no vendored copy). Both
+wrappers go through the same gate, so an opted-out install does nothing.
+
+### Failed-recall miss-signal (WS5 demand flywheel)
+
+Beyond the counters, `recallHybridWithMeta()` (core) emits a **miss-signal** when
+a hybrid recall returns **zero engrams** OR a **top RRF score below a configurable
+floor** (`PLUR_MISS_SCORE_THRESHOLD`). A miss means memory was asked something it
+could not answer — a demand signal. The emit is opt-in/default-off and carries
+**only** these fields, never raw query or engram text:
+
+```json
+{
+  "install_id": "opaque uuid",
+  "query_fingerprint": "sha256 of the normalized query (irreversible)",
+  "scope": "project:x | null",
+  "domain": "trading | null",
+  "reason": "no_results | low_score",
+  "result_count": 0,
+  "date": "2026-06-14"
+}
+```
+
+The fingerprint lets identical misses across installs cluster without disclosing
+content. Clustering and pack-bounty logic are deliberately downstream and out of
+scope here — this module only emits. Endpoint defaults to `/v1/miss-signal`,
+overridable via `PLUR_MISS_SIGNAL_ENDPOINT`.
+
+---
+
+The original design proposal follows, unchanged.
 
 ## Why this exists
 

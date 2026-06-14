@@ -26,7 +26,7 @@ pnpm build
 pnpm test
 ```
 
-~150 tests across 22 files. All must pass before committing.
+~1045 tests across ~120 files (117 Vitest + Python suites). All must pass before committing.
 
 ## Package dependency
 
@@ -126,16 +126,23 @@ Search modes: `fast` (BM25), `agentic` (LLM rerank), `hybrid` (BM25 + embeddings
 
 **A/B bench** (end-to-end): Same task given to an agent with and without PLUR memory, scored by LLM judge. Scenarios in `datacore-bench/scenarios/`.
 
-### Current numbers (v0.2.1)
+### Current numbers (v0.9.13)
+
+Latest in-repo hybrid run is `benchmark/results/2026-04-07-hybrid.json`
+(LongMemEval n=30 sanity subset). A/B figures are the README's published run.
 
 | Metric | Score |
 |--------|-------|
-| LongMemEval overall (Opus hybrid, n=30) | 86.7% |
-| Hit@10 | 93.3% |
+| LongMemEval Hit@10 (hybrid, n=30) | 96.7% |
+| LongMemEval Hit@5 (hybrid, n=30) | 80.0% |
+| LongMemEval accuracy (keywords in top 10) | 83.3% |
 | A/B win rate (31W/4L) | 89% |
 | House rules | 12–0 |
 
-If your PR improves any of these, mention it in the PR description.
+The earlier v0.2.1 baseline (86.7% overall / 93.3% Hit@10) is still cited in
+`docs/benchmarks/phase2-methodology.md` as the self-calibration target for the
+not-yet-built reproducible Phase 2 harness — that doc tracks methodology, not
+current scores. If your PR improves any of these, mention it in the PR description.
 
 ## Conventions
 
