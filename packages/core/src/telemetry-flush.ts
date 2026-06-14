@@ -63,17 +63,19 @@ let cachedPackageVersion: string | null = null
 
 function readPackageVersion(): string {
   if (cachedPackageVersion !== null) return cachedPackageVersion
+  let resolved: string
   try {
     const here = dirname(fileURLToPath(import.meta.url))
     // src → package root: ../package.json (when running tests against src)
     // dist → package root: ../package.json (when running built)
     const pkgPath = join(here, '..', 'package.json')
     const pkg = JSON.parse(readFileSync(pkgPath, 'utf8'))
-    cachedPackageVersion = typeof pkg.version === 'string' ? pkg.version : 'unknown'
+    resolved = typeof pkg.version === 'string' ? pkg.version : 'unknown'
   } catch {
-    cachedPackageVersion = 'unknown'
+    resolved = 'unknown'
   }
-  return cachedPackageVersion
+  cachedPackageVersion = resolved
+  return resolved
 }
 
 export function buildHeartbeatPayload(

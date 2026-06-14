@@ -14,6 +14,7 @@ import { captureEpisode, queryTimeline } from './episodes.js'
 import { agenticSearch } from './agentic-search.js'
 import { embeddingSearch, embeddingSearchWithScores, type SimilarityResult } from './embeddings.js'
 import { hybridSearch, hybridSearchWithMeta, type HybridSearchResult } from './hybrid-search.js'
+import { emitMissSignal } from './telemetry-miss-signal.js'
 import { embedderStatus, resetEmbedder, setEmbeddingsEnabled, type EmbedderStatus } from './embeddings.js'
 import { expandedSearch } from './query-expansion.js'
 import { recallAuto, type AutoSearchResult } from './search-orchestrator.js'
@@ -108,6 +109,25 @@ export {
 } from './schemas/capsule.js'
 export { writeCapsule, readCapsule, verifyCapsuleIntegrity } from './capsule.js'
 export type { WriteCapsuleOptions, ReadCapsuleResult } from './capsule.js'
+
+// Opt-in, content-free telemetry. Exported so wrappers (@plur-ai/mcp,
+// @plur-ai/claw) reuse one implementation instead of vendoring copies.
+export { resolveTelemetry, isTelemetryEnabled, type TelemetryState, type TelemetrySource, type TelemetryResolution } from './telemetry.js'
+export { recordEvent, getCounters, resetCounters, readOrCreateInstallId, type CounterEvent, type CounterSnapshot, type CountersOpts } from './telemetry-counters.js'
+export { flushIfNeeded, registerFlushOnExit, buildHeartbeatPayload, sendHeartbeat, type HeartbeatPayload, type FlushOpts } from './telemetry-flush.js'
+// Failed-recall miss-signal — feeds the WS5 demand flywheel (opt-in, content-free).
+export {
+  emitMissSignal,
+  classifyMiss,
+  fingerprintQuery,
+  buildMissSignalPayload,
+  DEFAULT_MISS_SCORE_THRESHOLD,
+  type MissReason,
+  type MissSignalInput,
+  type MissSignalOpts,
+  type MissSignalPayload,
+} from './telemetry-miss-signal.js'
+
 export * from './types.js'
 
 export interface IngestOptions {
@@ -1117,6 +1137,20 @@ export class Plur {
     const limit = options?.limit ?? 20
     const result = await hybridSearchWithMeta(filtered, query, limit, this.paths.root)
     this._reactivateResults(result.engrams)
+    // WS5 demand flywheel: a zero-result or low-top-score recall is a demand
+    // signal — the user asked memory something it could not answer. Emit an
+    // anonymized, content-free miss-signal (query fingerprint hash + scope/
+    // domain + timestamp; never the raw query). Opt-in/default-off and
+    // fire-and-forget: emitMissSignal self-gates on telemetry opt-in and never
+    // throws, so an opted-out install does nothing and the recall path is never
+    // disturbed.
+    void emitMissSignal({
+      query,
+      scope: options?.scope,
+      domain: options?.domain,
+      resultCount: result.engrams.length,
+      topScore: result.topScore,
+    }).catch(() => {})
     return result
   }
 

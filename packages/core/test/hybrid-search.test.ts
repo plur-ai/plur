@@ -62,4 +62,18 @@ describe('hybrid search (BM25 + embeddings via RRF)', () => {
     const unique = new Set(ids)
     expect(ids.length).toBe(unique.size) // No duplicates
   })
+
+  it('surfaces a numeric topScore on a hit (for the miss-signal threshold)', async () => {
+    const meta = await plur.recallHybridWithMeta('PostgreSQL database')
+    expect(meta.engrams.length).toBeGreaterThanOrEqual(1)
+    expect(typeof meta.topScore).toBe('number')
+    expect(meta.topScore as number).toBeGreaterThan(0)
+  })
+
+  it('topScore is null when no engrams exist at all', async () => {
+    const empty = new Plur({ path: mkdtempSync(join(tmpdir(), 'plur-empty-')) })
+    const meta = await empty.recallHybridWithMeta('anything')
+    expect(meta.engrams).toHaveLength(0)
+    expect(meta.topScore).toBeNull()
+  })
 })
