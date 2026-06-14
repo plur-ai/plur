@@ -3,6 +3,7 @@ import { join } from 'path'
 import { homedir } from 'os'
 import { Plur, extractMetaEngrams, validateMetaEngram, confidenceBand, generateProfile, getProfileForInjection, markProfileDirty, selectModelForOperation, readHistoryForEngram, getCachedUpdateCheck, minorVersionsBehind, scanForTensions, CapabilityCanary, readProjectConfig } from '@plur-ai/core'
 import type { LlmFunction, MetaField } from '@plur-ai/core'
+import { recordTelemetry } from './telemetry.js'
 import { VERSION } from './version.js'
 
 /** Create an OpenAI-compatible LLM function from a base URL + API key */
@@ -172,6 +173,8 @@ export function getToolDefinitions(): ToolDefinition[] {
           const engram = await plur.learnRouted(statement, context)
           const isOutbox = !!(engram as any).structured_data?._outbox
           mcpCanary.signal('learn_activity')
+          // Opt-in, content-free engagement counter (default-off; no statement text).
+          recordTelemetry('learn')
           return {
             id: engram.id, statement: engram.statement,
             scope: engram.scope, type: engram.type,
@@ -185,6 +188,8 @@ export function getToolDefinitions(): ToolDefinition[] {
           const engram = plur.learn(statement, context)
           const isOutbox = !!(engram as any).structured_data?._outbox
           mcpCanary.signal('learn_activity')
+          // Opt-in, content-free engagement counter (default-off; no statement text).
+          recordTelemetry('learn')
           return {
             id: engram.id, statement: engram.statement,
             scope: engram.scope, type: engram.type, decision: 'ADD',
@@ -256,6 +261,13 @@ export function getToolDefinitions(): ToolDefinition[] {
           domain: args.domain as string | undefined,
           limit: effectiveLimit,
         })
+        // Opt-in, content-free engagement counter (default-off; no query text).
+        recordTelemetry('recall')
+        // Failed-recall miss-signal (WS5 demand flywheel) is emitted from the
+        // core recallHybridWithMeta() this handler delegates to — it fires once
+        // there for ALL consumers (MCP, claw, CLI, direct API), so we do NOT
+        // re-emit here and double-count. It is opt-in/default-off and ships only
+        // a query fingerprint hash + scope/domain + timestamp, never raw text.
         const results = meta.engrams
         let truncated = false
         let boundedResults = results
