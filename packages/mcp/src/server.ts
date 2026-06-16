@@ -12,6 +12,7 @@ import {
 } from '@modelcontextprotocol/sdk/types.js'
 import { Plur, checkForUpdate } from '@plur-ai/core'
 import { getToolDefinitions } from './tools.js'
+import { registerFlushOnExit } from './telemetry.js'
 import { VERSION } from './version.js'
 import { z } from 'zod'
 
@@ -357,6 +358,12 @@ Please:
 
 export async function runStdio(): Promise<void> {
   const server = await createServer()
+  // Opt-in, content-free telemetry: ship any pending daily counter snapshot on
+  // process exit (best-effort). Self-gates on telemetry opt-in — an opted-out
+  // install registers the handler but flushes nothing. Registered in runStdio,
+  // not createServer, so the per-test servers in the suite don't each attach a
+  // beforeExit handler.
+  registerFlushOnExit({})
   const transport = new StdioServerTransport()
   await server.connect(transport)
 }

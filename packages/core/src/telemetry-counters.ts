@@ -95,7 +95,7 @@ function atomicWriteString(path: string, data: string): void {
   renameSync(tmp, path)
 }
 
-function readOrCreateInstallId(path: string): string {
+export function readOrCreateInstallId(path: string): string {
   if (existsSync(path)) {
     const raw = readFileSync(path, 'utf8').trim()
     if (raw.length > 0) return raw

@@ -14,6 +14,15 @@ export interface HybridSearchResult {
    */
   mode: 'hybrid' | 'hybrid-degraded' | 'bm25-only'
   embedderError: string | null
+  /**
+   * RRF fusion score of the top-ranked result, or null when no engrams
+   * matched. Surfaced (not computed anew) so callers can apply a relevance
+   * threshold — e.g. the WS5 failed-recall miss-signal treats a low top
+   * score as a miss even when ≥1 engram came back. Exposing this value does
+   * NOT change the retrieval algorithm; it only stops discarding a number
+   * rrfMerge already produced.
+   */
+  topScore: number | null
 }
 
 /**
@@ -25,7 +34,7 @@ export interface HybridSearchResult {
  * This gives high-ranked results from ANY method a boost, while naturally
  * handling the case where a result appears in multiple lists (scores add up).
  */
-function rrfMerge(resultSets: Engram[][], k = 60): Engram[] {
+function rrfMerge(resultSets: Engram[][], k = 60): Array<{ engram: Engram; score: number }> {
   const scores = new Map<string, { engram: Engram; score: number }>()
 
   for (const results of resultSets) {
@@ -41,9 +50,7 @@ function rrfMerge(resultSets: Engram[][], k = 60): Engram[] {
     }
   }
 
-  return Array.from(scores.values())
-    .sort((a, b) => b.score - a.score)
-    .map(s => s.engram)
+  return Array.from(scores.values()).sort((a, b) => b.score - a.score)
 }
 
 /** Detect aggregation queries that need exhaustive retrieval */
@@ -94,7 +101,7 @@ export async function hybridSearchWithMeta(
   storagePath?: string,
 ): Promise<HybridSearchResult> {
   if (engrams.length === 0) {
-    return { engrams: [], mode: 'hybrid', embedderError: null }
+    return { engrams: [], mode: 'hybrid', embedderError: null, topScore: null }
   }
 
   const exhaustive = isAggregationQuery(query)
@@ -126,9 +133,11 @@ export async function hybridSearchWithMeta(
   }
 
   const merged = rrfMerge([bm25Results, embResults])
+  const ranked = merged.slice(0, effectiveLimit)
   return {
-    engrams: merged.slice(0, effectiveLimit),
+    engrams: ranked.map(s => s.engram),
     mode,
     embedderError,
+    topScore: ranked.length > 0 ? ranked[0].score : null,
   }
 }
