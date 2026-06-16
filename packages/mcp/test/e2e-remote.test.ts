@@ -247,3 +247,56 @@ describe('MCP config loading', () => {
     expect(remote.url).toBe(baseUrl)
   })
 })
+
+// ---------------------------------------------------------------------------
+// Scope discovery (#292) — full MCP → core → RemoteStore.me() pipeline
+// ---------------------------------------------------------------------------
+
+describe('MCP plur_scopes_discover', () => {
+  it('discovers authorized-but-unregistered scopes (read-only by default)', async () => {
+    stub.setMe({ username: 'crtahlin', scopes: [REMOTE_SCOPE, 'team:e2e-other', 'team:e2e-third'] })
+    const { client } = await makeClient(dir)
+
+    const raw = await client.callTool({ name: 'plur_scopes_discover', arguments: {} })
+    const { discovered } = callResult(raw) as any
+
+    expect(discovered).toHaveLength(1)
+    expect(discovered[0].ok).toBe(true)
+    expect(discovered[0].registered).toEqual([REMOTE_SCOPE])
+    expect(discovered[0].unregistered.sort()).toEqual(['team:e2e-other', 'team:e2e-third'])
+
+    // Read-only: nothing new registered.
+    const listRaw = await client.callTool({ name: 'plur_stores_list', arguments: {} })
+    const remoteScopes = (callResult(listRaw) as any).stores.map((s: any) => s.scope)
+    expect(remoteScopes).not.toContain('team:e2e-other')
+  })
+
+  it('register:true registers every authorized scope under the one URL', async () => {
+    stub.setMe({ username: 'crtahlin', scopes: [REMOTE_SCOPE, 'team:e2e-other', 'team:e2e-third'] })
+    const { client } = await makeClient(dir)
+
+    const raw = await client.callTool({ name: 'plur_scopes_discover', arguments: { register: true } })
+    const { registered } = callResult(raw) as any
+    expect(registered[0].added.sort()).toEqual(['team:e2e-other', 'team:e2e-third'])
+
+    // Now all three scopes are visible in the listing.
+    const listRaw = await client.callTool({ name: 'plur_stores_list', arguments: {} })
+    const remoteScopes = (callResult(listRaw) as any).stores.map((s: any) => s.scope)
+    expect(remoteScopes).toContain(REMOTE_SCOPE)
+    expect(remoteScopes).toContain('team:e2e-other')
+    expect(remoteScopes).toContain('team:e2e-third')
+  })
+
+  it('returns a helpful note when no remote stores are configured', async () => {
+    const localOnlyDir = mkdtempSync(join(tmpdir(), 'plur-mcp-local-'))
+    try {
+      const { client } = await makeClient(localOnlyDir)
+      const raw = await client.callTool({ name: 'plur_scopes_discover', arguments: {} })
+      const result = callResult(raw) as any
+      expect(result.discovered).toEqual([])
+      expect(result.note).toMatch(/No remote stores configured/)
+    } finally {
+      rmSync(localOnlyDir, { recursive: true, force: true })
+    }
+  })
+})

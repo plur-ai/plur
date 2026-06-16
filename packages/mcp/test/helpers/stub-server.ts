@@ -22,8 +22,17 @@ export class StubServer {
   private engrams = new Map<string, StoredEngram>()
   private idCounter = 0
   private port = 0
+  // Identity returned by GET /api/v1/me (#292). Override per-test with setMe().
+  private me: { username: string; org_id: string; role: string; scopes: string[] } = {
+    username: 'testuser', org_id: 'test-org', role: 'developer', scopes: ['group:test'],
+  }
 
   constructor(private readonly validToken: string) {}
+
+  /** Override the GET /api/v1/me response (authorized scope set, identity). */
+  setMe(me: Partial<{ username: string; org_id: string; role: string; scopes: string[] }>): void {
+    this.me = { ...this.me, ...me }
+  }
 
   async start(): Promise<{ url: string; token: string }> {
     return new Promise((resolve, reject) => {
@@ -72,6 +81,12 @@ export class StubServer {
     const url = new URL(req.url ?? '/', `http://127.0.0.1:${this.port}`)
     const path = url.pathname
     const method = req.method ?? 'GET'
+
+    // GET /api/v1/me — resolved identity + authorized scopes (#292)
+    if (method === 'GET' && path === '/api/v1/me') {
+      this.json(res, 200, this.me)
+      return
+    }
 
     if (method === 'POST' && path === '/api/v1/engrams') {
       this.readBody(req, (body) => {
