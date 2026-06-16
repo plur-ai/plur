@@ -13,12 +13,15 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     }
     const shared = args.includes('--shared')
     const readonly = args.includes('--readonly')
-    plur.addStore(path, scope, { shared, readonly })
+    const result = plur.addStore(path, scope, { shared, readonly })
 
     if (shouldOutputJson(flags)) {
-      outputJson({ success: true, path, scope })
+      // result.scope is the EXISTING entry's scope on already_registered —
+      // local stores have path-only identity, so it may differ from the request.
+      outputJson({ success: true, status: result.status, path, scope: result.scope })
     } else {
-      outputText(`Added store: ${path} (scope: ${scope})`)
+      const verb = result.status === 'already_registered' ? 'Already registered' : result.status === 'overwritten' ? 'Reassigned' : 'Added'
+      outputText(`${verb} store: ${path} (scope: ${result.scope})`)
     }
     return
   }

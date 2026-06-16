@@ -15,6 +15,16 @@ import { embed, EMBED_DIM } from '@plur-ai/core'
 
 No new model and no external dependency — this only makes the existing capability reusable.
 
+### `plur_stores_add` no longer silently drops additional scopes for the same remote URL (#291)
+
+A user authorized for several team scopes on one enterprise instance could only ever register the **first** one. `addStore()` deduplicated remote stores by **URL only**, so a second scope for an already-registered URL hit an early `return` — persisting nothing — while the MCP tool still reported `success: true`. The misleading success masked the failure, and because reads are server-scope-filtered (`?scope=` per store), the user silently lost access to every team beyond the first.
+
+- **`packages/core/src/index.ts`** — remote stores now deduplicate by **url + scope**, so one URL can host N scopes. Local stores keep **path-only** identity: one `engrams.yaml` is one store — the loader clones global-scoped engrams into each entry's scope, so a second scope on the same file would double-load them. `addStore()` returns `{ status: 'added' | 'already_registered' | 'overwritten', scope }` instead of `void` (on `already_registered`, `scope` is the existing entry's — for local stores it may differ from the request). The existing scope-conflict guard — a *different* endpoint claiming the same scope — is unchanged.
+- **`packages/mcp/src/tools.ts`** — `plur_stores_add` surfaces `status` and only claims `success: true` when a scope genuinely persisted. Description notes that one remote URL can host multiple scopes.
+- **`packages/cli/src/commands/stores.ts`** — `plur stores add` prints the real outcome (added / already registered / reassigned).
+
+Token rotation is intentionally out of scope: re-adding the same URL+scope with a different token stays an `already_registered` no-op rather than silently swapping the stored token.
+
 ## 0.9.11 (2026-05-26)
 
 Bug sweep — three independent fixes bundled.
