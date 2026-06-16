@@ -112,6 +112,74 @@ export const ExchangeMetadataSchema = z.object({
   contradiction_rate: z.number().min(0).max(1).default(0),
 })
 
+// === NEW: Memory-stream insight engrams (metacognition Phase 1) ===
+//
+// An "insight engram" is a normal engram carrying an optional `insight` sub-object.
+// Following the #110 failure-engram pattern, this is ORTHOGONAL to `type`: `type`
+// stays the cognitive class (behavioral/terminological/procedural/architectural),
+// while `insight` records that the engram was synthesized by the metacognition
+// memory stream — its synthesis origin, source grounding, serendipity, and
+// downstream fate. The "episodic insight buffer" is simply the set of engrams
+// where `insight != null`. Source citations reuse `knowledge_anchors[]`; lifecycle
+// reuses `status`/`activation` decay; gist consolidation reuses the meta-engram
+// pipeline. Decisions: 5-plur/3-knowledge/pages/insight-engram-schema-2026-06-14.md
+
+/** Serendipity objective for connect/emerge/dream insights = unexpectedness × relevance
+ *  (Kotkov et al., JCST 2020). Scored on existing embeddings + buffer novelty —
+ *  NOT a learned link predictor. */
+export const SerendipitySchema = z.object({
+  unexpectedness: z.number().min(0).max(1),
+  relevance: z.number().min(0).max(1),
+  score: z.number().min(0).max(1),
+})
+
+/** Downstream fate of a surfaced insight — the substrate for the primary
+ *  evaluation metric "insight acted-upon rate" (NOT engagement). */
+export const InsightFateSchema = z.enum([
+  'surfaced',   // shown in a briefing; no downstream action yet
+  'promoted',   // became a durable engram / zettel
+  'cited',      // referenced in later journal/work
+  'tasked',     // converted to a GTD task
+  'dismissed',  // user/LLM rejected it
+  'expired',    // decayed out of the buffer unused
+])
+
+export const InsightFieldSchema = z.object({
+  /** Which memory-stream operation produced this insight. Nightly arc:
+   *  `distill` (episode→insight synthesis) → `consolidate` (convergent gist
+   *  abstraction over the buffer) → `dream` (divergent REM-style recombination —
+   *  speculative, never auto-promoted). `connect`/`emerge`/`drift` are on-demand lenses. */
+  operation: z.enum(['distill', 'consolidate', 'dream', 'connect', 'emerge', 'drift']),
+  synthesized_at: z.string(),
+
+  /** Anti-hallucination grounding. Cited source notes live in the parent engram's
+   *  `knowledge_anchors[]`; this flags whether the claim was verified against those
+   *  snippets. `ungrounded` = couldn't cite sources → quarantined (`candidate`, never
+   *  surfaced). `speculative` = a `dream`: its recombined INPUTS are cited but its
+   *  CONCLUSION is an explicit hypothesis — surfaced only as inspiration, and (per the
+   *  promote-requires-grounding refine below) it must be re-grounded to `verified`
+   *  before it can be promoted to a durable engram. */
+  grounding: z.enum(['verified', 'unverified', 'ungrounded', 'speculative']).default('unverified'),
+  /** The episode-log slice this insight was distilled from (evidence trail). */
+  source_episode_ids: z.array(z.string()).default([]),
+
+  /** Distinct objective for connect/emerge/dream insights. */
+  serendipity: SerendipitySchema.optional(),
+
+  fate: InsightFateSchema.default('surfaced'),
+  /** Engram id / zettel path / task id the insight became, if acted upon. */
+  fate_ref: z.string().optional(),
+  fate_at: z.string().optional(),
+  /** How many briefings have surfaced this insight (acted-upon-rate denominator). */
+  surfaced_count: z.number().int().min(0).default(0),
+}).refine(
+  // Promote-requires-grounding (user rule 2026-06-15): a dream is inspiration, not
+  // fact. A speculative/ungrounded insight can only become a durable promotion once
+  // it has been re-grounded in reality (grounding=verified).
+  i => i.fate !== 'promoted' || i.grounding === 'verified',
+  { message: 'A promoted insight must be grounded (grounding=verified); speculative dreams cannot be promoted until re-grounded.', path: ['grounding'] },
+)
+
 // === Main Engram Schema ===
 
 export const EngramSchema = z.object({
@@ -182,6 +250,11 @@ export const EngramSchema = z.object({
   /** Extensible key-value data for domain-specific fields. */
   structured_data: z.record(z.string(), z.unknown()).optional(),
 
+  /** Memory-stream insight provenance (metacognition Phase 1). Orthogonal to
+   *  `type`. Present iff this engram was synthesized by the metacognition memory
+   *  stream; the episodic insight buffer is the set of engrams where this is set. */
+  insight: InsightFieldSchema.optional(),
+
   /** Polarity classification: 'do' for directives, 'dont' for prohibitions, null for unclassified. */
   polarity: z.enum(['do', 'dont']).nullable().default(null),
 
@@ -249,3 +322,6 @@ export type UsageStats = z.infer<typeof UsageStatsSchema>
 export type EpisodicFields = z.infer<typeof EpisodicFieldsSchema>
 export type ExchangeMetadata = z.infer<typeof ExchangeMetadataSchema>
 export type PreviousVersionRef = z.infer<typeof PreviousVersionRefSchema>
+export type Serendipity = z.infer<typeof SerendipitySchema>
+export type InsightFate = z.infer<typeof InsightFateSchema>
+export type InsightField = z.infer<typeof InsightFieldSchema>
