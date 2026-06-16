@@ -20,6 +20,9 @@ jobs:
     permissions:
       contents: read
     strategy:
+      # Don't let one node's failure cancel the other — we want the full signal
+      # from both Node versions, not a fail-fast cancellation (#311).
+      fail-fast: false
       matrix:
         node-version: [20, 22]
     steps:
