@@ -2,10 +2,8 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://plur.ai/spec/v1/pack-manifest.schema.json",
   "title": "PackManifest",
-  "description": "Manifest for an engram pack in the Open Engram Standard v1. Derived from the Zod PackManifestSchema in @plur-ai/core (packages/core/src/schemas/pack.ts). In on-disk packs this object is carried as the YAML frontmatter of SKILL.md, or as a standalone manifest.yaml. STABLE. See ENGRAM-STANDARD-v1.md §5.",
+  "description": "Manifest for an engram pack in the Open Engram Standard v1. Generated from the Zod PackManifestSchema in @plur-ai/core (packages/core/src/schemas/pack.ts) by packages/core/scripts/gen-spec-schemas.ts — do not edit by hand. In on-disk packs this object is the YAML frontmatter of SKILL.md, or a standalone manifest.yaml. See ENGRAM-STANDARD-v1.md §5.",
   "type": "object",
-  "additionalProperties": true,
-  "required": ["name", "version"],
   "properties": {
     "name": {
       "type": "string",
@@ -15,8 +13,12 @@
       "type": "string",
       "description": "Pack version. SemVer string recommended (e.g. '1.1.0'); validated as an opaque string, not range-checked."
     },
-    "description": { "type": "string" },
-    "creator": { "type": "string" },
+    "description": {
+      "type": "string"
+    },
+    "creator": {
+      "type": "string"
+    },
     "license": {
       "type": "string",
       "default": "cc-by-sa-4.0",
@@ -24,56 +26,87 @@
     },
     "tags": {
       "type": "array",
-      "items": { "type": "string" },
+      "items": {
+        "type": "string"
+      },
       "default": []
     },
     "metadata": {
       "type": "object",
-      "additionalProperties": true,
-      "description": "Loader metadata. Preferred forward-looking location for injection policy and matching terms.",
       "properties": {
-        "id": { "type": "string", "description": "Stable machine identifier for the pack." },
+        "id": {
+          "type": "string",
+          "description": "Stable machine identifier for the pack."
+        },
         "injection_policy": {
           "type": "string",
-          "enum": ["on_match", "on_request", "always"],
+          "enum": [
+            "on_match",
+            "on_request",
+            "always"
+          ],
           "default": "on_match",
           "description": "When the loader is allowed to inject this pack's engrams."
         },
         "match_terms": {
           "type": "array",
-          "items": { "type": "string" },
+          "items": {
+            "type": "string"
+          },
           "default": [],
           "description": "Keywords that gate on_match injection."
         },
-        "domain": { "type": "string" },
+        "domain": {
+          "type": "string"
+        },
         "engram_count": {
           "type": "number",
           "description": "Declared number of engrams in the pack (advisory; loaders count the actual engrams.yaml)."
         }
-      }
+      },
+      "additionalProperties": false,
+      "description": "Loader metadata. Preferred forward-looking location for injection policy and matching terms."
     },
     "x-datacore": {
       "type": "object",
-      "additionalProperties": true,
-      "description": "LEGACY namespace, retained for backward compatibility with Datacore-era packs. New packs SHOULD use 'metadata'. Note: injection_policy here does NOT include 'always'.",
-      "required": ["id", "injection_policy"],
       "properties": {
-        "id": { "type": "string" },
+        "id": {
+          "type": "string"
+        },
         "injection_policy": {
           "type": "string",
-          "enum": ["on_match", "on_request"]
+          "enum": [
+            "on_match",
+            "on_request"
+          ]
         },
         "match_terms": {
           "type": "array",
-          "items": { "type": "string" },
+          "items": {
+            "type": "string"
+          },
           "default": []
         },
-        "domain": { "type": "string" },
+        "domain": {
+          "type": "string"
+        },
         "engram_count": {
           "type": "integer",
           "minimum": 0
         }
-      }
+      },
+      "required": [
+        "id",
+        "injection_policy",
+        "engram_count"
+      ],
+      "additionalProperties": false,
+      "description": "LEGACY namespace, retained for backward compatibility with Datacore-era packs. New packs SHOULD use 'metadata'. Note: injection_policy here does NOT include 'always'."
     }
-  }
+  },
+  "required": [
+    "name",
+    "version"
+  ],
+  "additionalProperties": true
 }
