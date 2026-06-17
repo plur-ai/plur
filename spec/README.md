@@ -43,37 +43,37 @@ The maturity index is Appendix B of the spec.
 
 ## How the JSON Schemas relate to the Zod source
 
-The schemas were **hand-authored** to faithfully mirror the Zod definitions in:
+The schemas are **generated from the Zod source of truth** (#315):
 
 - `packages/core/src/schemas/engram.ts` → `engram.schema.json`
 - `packages/core/src/schemas/pack.ts` → `pack-manifest.schema.json`
 
-**Why hand-authored, not generated:** `zod-to-json-schema` is not a dependency of
-this repo, and adding it (or building the package) would modify source/lockfiles
-— out of scope for a docs-only change. Each field, type, enum, range, default,
-and the `dual_coding` "at least one of example/analogy" refinement was
-transcribed directly from the Zod source.
+Regenerate with:
 
-**Divergence risk (read this).** Because the JSON Schema is not auto-generated,
-it can drift if the Zod schema changes and the JSON Schema is not updated. To
-keep them in lockstep:
+```bash
+pnpm --filter @plur-ai/core gen:schemas
+```
 
-1. Treat `packages/core/src/schemas/engram.ts` and `…/pack.ts` as the source of
-   truth; when they change, update the JSON Schema in the same PR.
-2. The proper fix is a **generation step** (the first fundable-remainder item
-   below): add `zod-to-json-schema`, emit these files in CI, and fail the build
-   if the committed schema differs from the generated one. That converts
-   "divergence risk" into "compile error."
+**Drift is a build error.** CI runs `gen:schemas` then `git diff --exit-code spec/`,
+and `spec-schema-drift.test.ts` asserts committed === generated in `pnpm test`. A
+field added to the Zod schema that isn't regenerated fails the build — the
+divergence risk that earlier hand-authored versions carried is gone. Field
+descriptions live as Zod `.describe()` calls, so the prose travels with the code.
 
-Intentional, documented differences from a naive Zod→JSON translation:
+Intentional, documented differences from a naive Zod→JSON dump (applied by the
+generator, see `packages/core/scripts/gen-spec-schemas.ts`):
 
 - `additionalProperties: true` on the engram object and manifest — encodes the
   Zod `.passthrough()` open-world rule (unknown fields preserved).
-- `activation.last_accessed` default is shown as `""`; the reference computes
+- `activation.last_accessed` default is emitted as `""`; the reference computes
   *today's date* at object-construction time, which a static schema cannot
-  express. Consumers materialize the runtime default per §2.3 of the spec.
-- `polarity` is `["string","null"]` with `enum: ["do","dont",null]` to model
-  Zod's nullable enum.
+  express (and would make generation non-deterministic). Consumers materialize
+  the runtime default per §2.3 of the spec.
+- `polarity` is modelled as a nullable enum (`anyOf` of the `["do","dont"]` enum
+  and `null`).
+- Zod `.refine()` rules (`dual_coding` "at least one of example/analogy", the
+  insight promote-requires-grounding rule) are not representable in JSON Schema
+  and are omitted; they remain enforced at runtime by Zod.
 
 ## Verifying the schemas
 
@@ -90,10 +90,10 @@ ajv validate -s spec/engram.schema.json -d my-engram.json --spec=draft2020
 v1 is a credible, implementable draft. Turning it into a ratified, interoperable
 standard is the NGI/NLnet-fundable scope:
 
-1. **Schema generation + drift CI.** Add `zod-to-json-schema`, generate
-   `engram.schema.json` / `pack-manifest.schema.json` from the Zod source in CI,
-   and gate the build on equality. Eliminates the divergence risk above.
-   *(small, do first)*
+1. ~~**Schema generation + drift CI.**~~ ✅ **Done (#315).** `engram.schema.json` /
+   `pack-manifest.schema.json` are generated from the Zod source via
+   `pnpm --filter @plur-ai/core gen:schemas`; CI gates the build on equality
+   (`git diff --exit-code spec/`). The divergence risk is eliminated.
 
 2. **Conformance test vectors.** A language-neutral corpus of canonical inputs +
    expected outcomes: valid/invalid engrams (one per invariant in §4.14), golden

@@ -38,4 +38,13 @@ jobs:
       - run: git config --global user.email "ci@plur.ai"
       - run: git config --global user.name "PLUR CI"
       - run: pnpm build
+      # Spec JSON Schemas are generated from the Zod source of truth (#315).
+      # Regenerate and fail if the committed spec/*.json drifted.
+      - name: Check spec schemas are in sync with Zod
+        run: |
+          pnpm --filter @plur-ai/core gen:schemas
+          git diff --exit-code spec/ || {
+            echo "::error::spec/*.json is out of sync with the Zod schemas. Run 'pnpm --filter @plur-ai/core gen:schemas' and commit."
+            exit 1
+          }
       - run: pnpm test

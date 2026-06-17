@@ -6,16 +6,17 @@ export const ActivationSchema = z.object({
   retrieval_strength: z.number().min(0).max(1),
   storage_strength: z.number().min(0).max(1),
   frequency: z.number().int().min(0),
-  last_accessed: z.string(),
-})
+  last_accessed: z.string().describe('Date or ISO 8601 timestamp of last access.'),
+}).describe('ACT-R activation parameters driving decay and ranking. STABLE.')
 
 export const KnowledgeTypeSchema = z.object({
   memory_class: z.enum(['semantic', 'episodic', 'procedural', 'metacognitive']),
-  cognitive_level: z.enum(['remember', 'understand', 'apply', 'analyze', 'evaluate', 'create']),
+  cognitive_level: z.enum(['remember', 'understand', 'apply', 'analyze', 'evaluate', 'create'])
+    .describe("Bloom's taxonomy level."),
 })
 
 export const KnowledgeAnchorSchema = z.object({
-  path: z.string(),
+  path: z.string().describe('Path to a grounding document/file.'),
   relevance: z.enum(['primary', 'supporting', 'example']).default('supporting'),
   snippet: z.string().max(200).optional(),
   snippet_extracted_at: z.string().optional(),
@@ -23,7 +24,7 @@ export const KnowledgeAnchorSchema = z.object({
 
 export const AssociationSchema = z.object({
   target_type: z.enum(['engram', 'document']),
-  target: z.string(),
+  target: z.string().describe('ID or path of the association target.'),
   strength: z.number().min(0).max(0.95),
   type: z.enum(['semantic', 'temporal', 'causal', 'co_accessed']),
   updated_at: z.string().optional(),
@@ -32,7 +33,7 @@ export const AssociationSchema = z.object({
 export const DualCodingSchema = z.object({
   example: z.string().optional(),
   analogy: z.string().optional(),
-}).refine(
+}).describe('Worked example and/or analogy (dual coding). At least one of example or analogy MUST be provided (enforced at runtime by the Zod .refine below).').refine(
   d => d.example || d.analogy,
   'At least one of example or analogy must be provided'
 )
@@ -42,14 +43,15 @@ export const RelationsSchema = z.object({
   narrower: z.array(z.string()).default([]),
   related: z.array(z.string()).default([]),
   conflicts: z.array(z.string()).default([]),
-})
+}).describe('Typed graph edges between engram IDs.')
 
 export const ProvenanceSchema = z.object({
   origin: z.string(),
   chain: z.array(z.string()).default([]),
-  signature: z.string().nullable().default(null),
+  signature: z.string().nullable().default(null)
+    .describe('RESERVED. Detached signature over the engram. Algorithm and canonicalization not yet specified — see ENGRAM-STANDARD-v1.md §7.'),
   license: z.string().default('cc-by-sa-4.0'),
-})
+}).describe('Origin and signing chain. STABLE for origin/chain/license; signature is RESERVED (see ENGRAM-STANDARD-v1.md §7).')
 
 export const FeedbackSignalsSchema = z.object({
   positive: z.number().int().default(0),
@@ -76,7 +78,7 @@ export const TemporalSchema = z.object({
   valid_from: z.string().optional(),
   valid_until: z.string().optional(),
   ingested_at: z.string().optional(),
-})
+}).describe('Bi-temporal anchoring (Zep-inspired). When is this knowledge true?')
 
 // === NEW: Usage tracking (Softmax Engram-inspired hit/miss) ===
 
@@ -184,31 +186,37 @@ export const InsightFieldSchema = z.object({
 
 export const EngramSchema = z.object({
   // Identity
-  id: z.string().regex(/^(ENG|ABS|META)-[A-Za-z0-9-]+$/),
-  version: z.number().int().min(1).default(2),
-  status: z.enum(['active', 'dormant', 'retired', 'candidate']),
-  consolidated: z.boolean().default(false),
-  type: z.enum(['behavioral', 'terminological', 'procedural', 'architectural']),
-  scope: z.string(),
-  visibility: z.enum(['private', 'public', 'template']).default('private'),
+  id: z.string().regex(/^(ENG|ABS|META)-[A-Za-z0-9-]+$/)
+    .describe('Unique identifier. Class prefix ENG (concrete engram), ABS (abstraction), or META (meta-engram). Canonical concrete form: ENG-YYYY-MMDD-NNN; store-namespaced form: ENG-{PREFIX}-YYYY-MMDD-NNN.'),
+  version: z.number().int().min(1).default(2)
+    .describe('Schema-shape generation of this engram object (currently 2). Distinct from engram_version, which tracks content evolution.'),
+  status: z.enum(['active', 'dormant', 'retired', 'candidate']).describe('Lifecycle state.'),
+  consolidated: z.boolean().default(false)
+    .describe('Whether this engram has been through consolidation (sleep-like batch reprocessing).'),
+  type: z.enum(['behavioral', 'terminological', 'procedural', 'architectural'])
+    .describe('Top-level classification of the knowledge.'),
+  scope: z.string()
+    .describe("Hierarchical namespace, e.g. 'global', 'project:my-app', 'group:plur/test'. Free-form string; ':' separates scope kind from path."),
+  visibility: z.enum(['private', 'public', 'template']).default('private')
+    .describe("Sharing posture. 'private' engrams MUST NOT be exported in packs."),
 
   // Content
-  statement: z.string().min(1),
-  rationale: z.string().optional(),
-  contraindications: z.array(z.string()).optional(),
+  statement: z.string().min(1).describe('The assertion itself — the load-bearing content of the engram.'),
+  rationale: z.string().optional().describe('Why this is true / why it matters.'),
+  contraindications: z.array(z.string()).optional().describe('Conditions under which the statement does NOT apply.'),
 
   // Lineage
-  source: z.string().optional(),
-  source_patterns: z.array(z.string()).optional(),
-  derivation_count: z.number().int().min(0).default(1),
-  pack: z.string().nullable().default(null),
-  abstract: z.string().nullable().default(null),
-  derived_from: z.string().nullable().default(null),
+  source: z.string().optional().describe('Free-text origin (session, document, conversation).'),
+  source_patterns: z.array(z.string()).optional().describe('Pattern IDs that contributed to this engram.'),
+  derivation_count: z.number().int().min(0).default(1).describe('How many derivation steps produced this engram.'),
+  pack: z.string().nullable().default(null).describe('Name of the pack this engram belongs to, or null.'),
+  abstract: z.string().nullable().default(null).describe('ID of an ABS- abstraction this engram instantiates, or null.'),
+  derived_from: z.string().nullable().default(null).describe('ID of the engram this was derived from, or null.'),
 
   // Classification
   knowledge_type: KnowledgeTypeSchema.optional(),
-  domain: z.string().optional(),
-  tags: z.array(z.string()).default([]),
+  domain: z.string().optional().describe("Dotted domain path, e.g. 'dev/testing' or 'plur.session'."),
+  tags: z.array(z.string()).default([]).describe('Free-form tags used for matching and retrieval.'),
 
   // Activation (ACT-R model)
   activation: ActivationSchema.default({
@@ -233,7 +241,8 @@ export const EngramSchema = z.object({
   // === NEW OPTIONAL FIELDS (v2.1) ===
 
   /** Typed entity references extracted from statement. Enables graph queries. */
-  entities: z.array(EntityRefSchema).optional(),
+  entities: z.array(EntityRefSchema).optional()
+    .describe('Typed entity references extracted from statement. Enables graph queries.'),
 
   /** Temporal validity window. When is this knowledge true? */
   temporal: TemporalSchema.optional(),
@@ -248,7 +257,8 @@ export const EngramSchema = z.object({
   exchange: ExchangeMetadataSchema.optional(),
 
   /** Extensible key-value data for domain-specific fields. */
-  structured_data: z.record(z.string(), z.unknown()).optional(),
+  structured_data: z.record(z.string(), z.unknown()).optional()
+    .describe('Extensible key-value data for domain-specific fields.'),
 
   /** Memory-stream insight provenance (metacognition Phase 1). Orthogonal to
    *  `type`. Present iff this engram was synthesized by the metacognition memory
@@ -256,26 +266,29 @@ export const EngramSchema = z.object({
   insight: InsightFieldSchema.optional(),
 
   /** Polarity classification: 'do' for directives, 'dont' for prohibitions, null for unclassified. */
-  polarity: z.enum(['do', 'dont']).nullable().default(null),
+  polarity: z.enum(['do', 'dont']).nullable().default(null)
+    .describe("'do' for directives, 'dont' for prohibitions, null for unclassified."),
 
   // === SP1: Memory Intelligence fields ===
-  content_hash: z.string().optional(),
-  commitment: z.enum(['exploring', 'leaning', 'decided', 'locked']).optional(),
-  locked_at: z.string().optional(),
-  locked_reason: z.string().optional(),
+  content_hash: z.string().optional().describe('Hash of normalized statement content, used for dedup.'),
+  commitment: z.enum(['exploring', 'leaning', 'decided', 'locked']).optional()
+    .describe('Commitment level of the asserted knowledge.'),
+  locked_at: z.string().optional().describe("Timestamp when commitment reached 'locked'."),
+  locked_reason: z.string().optional().describe('Why this engram was locked.'),
 
   // === SP1: Reference counting (issue #107) ===
   /** Number of write attempts that resolved to this engram.
    * Incremented on every hash-dedup hit; decremented by forget().
    * Engram physically retires only when this reaches 0. */
-  reference_count: z.number().int().min(0).default(1),
+  reference_count: z.number().int().min(0).default(1)
+    .describe('Number of write attempts that resolved to this engram (same-scope re-learns). Engram retires only when this reaches 0.'),
   /** Provenance of each write attempt. One entry per write (including the
    * first). Migrated old engrams without this field start with []. */
   sources: z.array(z.object({
     scope: z.string(),
     session_id: z.string().nullable().default(null),
-    stored_at: z.string(),  // ISO timestamp of this write
-  })).default([]),
+    stored_at: z.string().describe('ISO 8601 timestamp of this write.'),
+  })).default([]).describe('Provenance of each write attempt; one entry per write.'),
 
   // === SP1: Cross-scope recurrence (issue #176) ===
   /** Number of times this engram's content was re-learned at a DIFFERENT
@@ -283,15 +296,18 @@ export const EngramSchema = z.object({
    * escalation when threshold is crossed. Distinct from reference_count
    * (which counts re-learns in the SAME scope) — recurrence_count is
    * evidence of universal applicability, not just repetition. */
-  recurrence_count: z.number().int().min(0).default(0),
+  recurrence_count: z.number().int().min(0).default(0)
+    .describe('Number of times this content was re-learned at a DIFFERENT scope than the original. Evidence of universal applicability.'),
 
   // === SP2: History & Evolution fields ===
-  engram_version: z.number().int().min(1).default(1),
+  engram_version: z.number().int().min(1).default(1)
+    .describe('Content-evolution version (incremented when the statement materially changes).'),
   previous_version_ref: PreviousVersionRefSchema.optional(),
-  episode_ids: z.array(z.string()).default([]),
+  episode_ids: z.array(z.string()).default([])
+    .describe('IDs of episodes (raw conversational events) that produced or reinforced this engram.'),
 
   // === SP3: Retrieval & Injection fields ===
-  summary: z.string().max(80).optional(),
+  summary: z.string().max(80).optional().describe('Short (<=80 char) injection-friendly summary.'),
 
   /**
    * Always-load flag. Pinned engrams bypass the term-hits gate in scoreEngram
@@ -302,7 +318,8 @@ export const EngramSchema = z.object({
    * per-domain fairness caps in fillTokenBudget so always-load behavior is
    * honored even if a single pack contributes many.
    */
-  pinned: z.boolean().optional(),
+  pinned: z.boolean().optional()
+    .describe('Always-load flag. Pinned engrams bypass the keyword-relevance gate and are eligible for injection every session. Use sparingly.'),
 })
 
 /**
