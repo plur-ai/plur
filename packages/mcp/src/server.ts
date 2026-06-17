@@ -228,12 +228,14 @@ export async function createServer(plur?: Plur): Promise<Server> {
           // memory content into client error logs. Keep this names-only.
           const receivedFields = Object.keys(args)
           const details = parsed.error.issues.map(i => `${i.path.join('.') || 'root'}: ${i.message}`).join(', ')
-          const receivedInfo = receivedFields.length > 0
+          const receivedNote = receivedFields.length > 0
             ? `Received fields: [${receivedFields.join(', ')}].`
-            : 'No fields received.'
+            : 'Received no fields (the arguments object was empty).'
           return {
             content: [{ type: 'text', text: JSON.stringify({
-              error: `Invalid arguments: ${details}. ${receivedInfo}`,
+              error: `Invalid arguments: ${details}. ${receivedNote} ` +
+                'The call reached the server — this is a malformed-arguments error, not a transport failure. ' +
+                'Fix the field(s) named above and retry; do not abandon the call.',
               success: false,
               received_fields: receivedFields,
             }) }],

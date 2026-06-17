@@ -117,7 +117,11 @@ export function getToolDefinitions(): ToolDefinition[] {
   return [
     {
       name: 'plur_learn',
-      description: 'Create an engram — record a reusable learning, preference, or correction',
+      description:
+        'Create an engram — record a reusable learning, preference, or correction. ' +
+        'Multi-agent note: in an orchestration that spawns subagents, have the PARENT session own plur_learn writes — ' +
+        'spawned subagents should return their findings as text for the parent to persist, rather than each calling ' +
+        'plur_learn (tool availability is not guaranteed in every subagent context). See plur-ai/plur#281.',
       annotations: { title: 'Learn', destructiveHint: false, idempotentHint: false },
       inputSchema: {
         type: 'object',
