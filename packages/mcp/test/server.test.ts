@@ -62,6 +62,18 @@ describe('MCP server (wire protocol)', () => {
     expect(data.storage_root).toBe(dir)
   })
 
+  // Issue #297 — plur_learn with tags array should work
+  it('plur_learn accepts tags array (#297)', async () => {
+    const result = await client.callTool({
+      name: 'plur_learn',
+      arguments: { statement: 'Test with tags', tags: ['test', 'array'] },
+    })
+    expect(result.isError).toBeFalsy()
+    const parsed = JSON.parse((result.content as any)[0].text)
+    expect(parsed.id).toBeDefined()
+    expect(parsed.statement).toBe('Test with tags')
+  })
+
   it('learn → recall → feedback roundtrip', async () => {
     // Learn
     const learnResult = await client.callTool({
@@ -103,6 +115,23 @@ describe('MCP server (wire protocol)', () => {
     expect(parsed.success).toBe(false)
     expect(parsed.error).toBeDefined()
     expect(typeof parsed.error).toBe('string')
+  })
+
+  // Issue #281 — validation errors should echo received fields for debugging
+  it('validation errors include received_fields for self-correction (#281)', async () => {
+    // Call plur_learn with missing required 'statement' but other fields present
+    const result = await client.callTool({
+      name: 'plur_learn',
+      arguments: { scope: 'global', type: 'behavioral', tags: ['test'] },
+    })
+    expect(result.isError).toBe(true)
+    const parsed = JSON.parse((result.content as any)[0].text)
+    expect(parsed.success).toBe(false)
+    expect(parsed.received_fields).toBeDefined()
+    expect(parsed.received_fields).toContain('scope')
+    expect(parsed.received_fields).toContain('type')
+    expect(parsed.received_fields).toContain('tags')
+    expect(parsed.error).toContain('Received fields:')
   })
 
   // Issue #231 — plur_session_end used to crash with unhelpful
