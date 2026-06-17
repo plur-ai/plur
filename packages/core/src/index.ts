@@ -24,7 +24,7 @@ import { installPack, uninstallPack, listPacks, exportPack, scanPrivacy, compute
 // import { exportVault, type VaultExportOptions, type VaultExportResult } from './vault-export.js'
 // import { fetchRegistry, discoverPacks, verifyPackIntegrity, DEFAULT_REGISTRY_URL, type PackRegistry, type RegistryPack } from './registry.js'
 import { sync as gitSync, getSyncStatus, withLock, type SyncResult, type SyncStatus } from './sync.js'
-import { detectSecrets } from './secrets.js'
+import { detectSecrets, detectSensitive } from './secrets.js'
 import { appendHistory, readHistoryForEngram, generateEventId } from './history.js'
 import { computeContentHash } from './content-hash.js'
 import { decodeJwtExpiry } from './jwt.js'
@@ -68,7 +68,20 @@ export { applyBatchDecay, strengthToStatus, type BatchDecayResult, type DecayTra
 export { computeContentHash, normalizeStatement } from './content-hash.js'
 export { parseDedupResponse, buildDedupPrompt, buildBatchDedupPrompt } from './dedup.js'
 export { runMigrations, rollbackMigrations, getSchemaVersion, setSchemaVersion, ALL_MIGRATIONS, CURRENT_SCHEMA_VERSION, type Migration, type MigrationResult } from './migrations/index.js'
-export { detectSecrets } from './secrets.js'
+export { detectSecrets, detectSensitive } from './secrets.js'
+
+/**
+ * Scopes whose engrams are visible to people *other than* the author — the team
+ * store (`group:`), repo/project stores (`project:`), space stores (`space:`),
+ * and org/public scopes. Personal scopes (`local`, `global`, `user:*`, `agent:*`)
+ * are NOT shared: they live on the author's own machine or under their own remote
+ * namespace. Used by the write-time leak guard to decide whether to scan + demote.
+ */
+const SHARED_SCOPE_PREFIXES = ['group:', 'project:', 'space:', 'team:', 'org:', 'public'] as const
+
+export function isSharedScope(scope: string): boolean {
+  return SHARED_SCOPE_PREFIXES.some(p => scope.startsWith(p))
+}
 export { detectPlurStorage, type PlurPaths } from './storage.js'
 export { IndexedStorage } from './storage-indexed.js'
 export { YamlStore, SqliteStore, createStore, migrateStore, type EngramStore, type StorageBackend, type StorageConfig } from './store/index.js'
@@ -739,6 +752,33 @@ export class Plur {
   /** Create engram with content hash + commitment + cognitive level.
    * Fast-path hash dedup returns existing on exact match.
    */
+  /**
+   * Write-time leak guard. If the target scope is one others can read
+   * (`isSharedScope`: group:/project:/space:/team:/org:/public) AND the statement
+   * trips `detectSensitive` (IPs, internal hosts, basic-auth, host:port, secrets),
+   * DEMOTE to a private local scope — the engram is kept but never written to a
+   * shared store — and warn. Personal scopes (local/global/user:/agent:) are
+   * exempt: infra notes legitimately live there. Called at the top of both
+   * `learn()` and `learnRouted()`, so every client (CLI, MCP, hooks, OpenClaw,
+   * Hermes) is covered, since they all route through one of those two.
+   */
+  private _guardSensitiveScope(
+    statement: string,
+    context?: LearnContext,
+  ): { scope: string; context: LearnContext | undefined } {
+    const scope = context?.scope ?? this._sessionScope ?? 'global'
+    if (!isSharedScope(scope)) return { scope, context }
+    const hits = detectSensitive(statement)
+    if (hits.length === 0) return { scope, context }
+    const patterns = [...new Set(hits.map(h => h.pattern))].join(', ')
+    logger.warning(
+      `[plur] sensitive content (${patterns}) held back from shared scope "${scope}" — ` +
+      `demoted to local/private so it is not written to a shared store. ` +
+      `Re-scope deliberately if this is a false positive.`,
+    )
+    return { scope: 'local', context: { ...context, scope: 'local', visibility: 'private' } }
+  }
+
   learn(statement: string, context?: LearnContext): Engram {
     if (typeof statement !== 'string' || statement.length === 0) {
       throw new TypeError(`plur.learn: statement must be a non-empty string, got ${typeof statement}`)
@@ -749,11 +789,13 @@ export class Plur {
         throw new Error(`Secret detected in statement: ${secrets[0].pattern}. Use config.allow_secrets to override.`)
       }
     }
+    const guarded = this._guardSensitiveScope(statement, context)
+    context = guarded.context
     return withLock(this.paths.engrams, () => {
       const engrams = loadEngrams(this.paths.engrams)
       const allEngrams = this._loadAllEngrams()
 
-      const scope = context?.scope ?? this._sessionScope ?? 'global'
+      const scope = guarded.scope
 
       // Idea 29: Content hash fast-path dedup (scope-aware — issue #136).
       // On dedup hit, mutate: increment reference_count, append source (#107).
@@ -959,7 +1001,9 @@ export class Plur {
         throw new Error(`Secret detected in statement: ${secrets[0].pattern}. Use config.allow_secrets to override.`)
       }
     }
-    const scope = context?.scope ?? this._sessionScope ?? 'global'
+    const guarded = this._guardSensitiveScope(statement, context)
+    const scope = guarded.scope
+    context = guarded.context
     const remoteDriver = this._resolveRemoteStoreForScope(scope)
     if (!remoteDriver) {
       // Local route — sync learn() owns dedup, build, write, history.
