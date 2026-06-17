@@ -1,6 +1,6 @@
 # PLUR Roadmap
 
-_Last updated: 2026-05-20_
+_Last updated: 2026-06-17_
 
 PLUR is persistent, local-first memory for AI agents. This roadmap captures the major workstreams currently active. For day-to-day status, see [open issues](https://github.com/plur-ai/plur/issues).
 
@@ -15,6 +15,10 @@ PLUR is persistent, local-first memory for AI agents. This roadmap captures the 
 ### Benchmark and competitive position
 
 - **Phase 2 benchmarking harness** — [#46](https://github.com/plur-ai/plur/issues/46) — reproducible LongMemEval + latency + footprint comparison across local-first memory systems.
+
+### Ecosystem integrations
+
+- **OmniGent memory adapter** — make PLUR the memory layer for [OmniGent](https://github.com/omnigent-ai/omnigent), Databricks' open-source meta-harness (Apache-2.0, Python 3.12+, launched 2026-06-13). OmniGent ships policies, sandboxing, egress secret injection, and live session sharing but **no memory** — exactly PLUR's wedge. Two routes: **(1)** PLUR-as-MCP-tool works *today* with zero adapter code (just an agent-YAML `tools: {type: mcp}` block pointing at `@plur-ai/mcp` or `plur.datafund.io/sse`); **(2)** a native `omnigent-plur` Python package — auto-recall via `per_request_instructions`, auto-learn via a response/tool_result policy — wrapping the PLUR MCP/remote store (PLUR stays the engine; the adapter is orchestration, not a port). First-mover visibility while the ecosystem is new. Task + full codebase analysis: `5-plur/org/next_actions.org` → `org-20260617-plur-omnigent-adapter`. Engrams: ENG-2026-0616-021.
 
 ## Next: Relational Memory
 
