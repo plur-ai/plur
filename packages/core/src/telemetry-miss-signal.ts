@@ -12,11 +12,14 @@
 //   1. Opt-in, default-off. Every public function short-circuits on
 //      !isTelemetryEnabled() BEFORE any network call. A default-off install
 //      makes zero network calls and writes zero files for miss-signals.
-//   2. Content-free. The raw query NEVER leaves the process. We ship a
-//      SHA-256 fingerprint of the normalized query (irreversible), the scope
-//      and domain filters (coarse routing labels the user already chose), a
-//      reason code, and a UTC timestamp. No query text, no engram text, no
-//      result bodies, no paths, no identity beyond the opaque install id.
+//   2. Content-free AND identifier-free. The raw query NEVER leaves the process
+//      — we ship a SHA-256 fingerprint of the normalized query (irreversible).
+//      The scope is reduced to its KIND only (#312): 'project:acme-secret'
+//      becomes 'project', so a user's private project/client name in the scope
+//      path is never transmitted. The domain (a generic topic label such as
+//      'trading' — the actual demand signal) and a reason code and UTC date
+//      round out the payload. No query text, no engram text, no result bodies,
+//      no scope paths, no identity beyond the opaque install id.
 //   3. Never throws. On any failure (network, timeout, non-2xx) emit() resolves
 //      to false; the caller's recall path is never disturbed.
 //
@@ -62,11 +65,29 @@ export type MissSignalInput = {
 export type MissSignalPayload = {
   install_id: string
   query_fingerprint: string
-  scope: string | null
+  /** Scope KIND only (e.g. 'project', 'group', 'global') — never the user-defined
+   *  scope path, which can carry private project/client names (#312). */
+  scope_type: string | null
   domain: string | null
   reason: MissReason
   result_count: number
   date: string
+}
+
+/** Recognized scope kinds. Anything else collapses to 'other' so no free-text
+ *  label can ride along disguised as a kind. */
+const KNOWN_SCOPE_KINDS = ['global', 'local', 'project', 'group', 'space', 'user', 'org', 'team']
+
+/**
+ * Reduce a scope label to its KIND, dropping the user-defined path (#312).
+ * 'project:acme-secret' → 'project'; 'global' → 'global'. The scope path has no
+ * analytics value (only the kind matters for routing), but it can identify a
+ * user's private projects or clients, so only the kind is transmitted.
+ */
+export function scopeType(scope: string | undefined | null): string | null {
+  if (!scope) return null
+  const kind = (scope.includes(':') ? scope.slice(0, scope.indexOf(':')) : scope).trim().toLowerCase()
+  return KNOWN_SCOPE_KINDS.includes(kind) ? kind : 'other'
 }
 
 const DEFAULT_ENDPOINT = 'https://plur.ai/v1/miss-signal'
@@ -134,7 +155,7 @@ export function buildMissSignalPayload(
   return {
     install_id: installId,
     query_fingerprint: fingerprintQuery(input.query),
-    scope: input.scope ?? null,
+    scope_type: scopeType(input.scope),
     domain: input.domain ?? null,
     reason,
     result_count: input.resultCount,

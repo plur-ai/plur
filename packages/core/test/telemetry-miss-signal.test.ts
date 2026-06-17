@@ -8,6 +8,7 @@ import {
   emitMissSignal,
   fingerprintQuery,
   buildMissSignalPayload,
+  scopeType,
   DEFAULT_MISS_SCORE_THRESHOLD,
   type MissSignalOpts,
   type MissSignalInput,
@@ -82,11 +83,31 @@ describe('telemetry miss-signal (WS5 demand flywheel)', () => {
     })
   })
 
+  describe('scopeType (privacy: kind only, #312)', () => {
+    it('reduces a scope path to its kind, dropping the private name', () => {
+      expect(scopeType('project:acme-secret')).toBe('project')
+      expect(scopeType('group:plur/plur-ai/engineering')).toBe('group')
+      expect(scopeType('space:1-datafund')).toBe('space')
+    })
+    it('passes through bare kinds', () => {
+      expect(scopeType('global')).toBe('global')
+      expect(scopeType('local')).toBe('local')
+    })
+    it('collapses an unrecognized kind to "other" (no free text leaks)', () => {
+      expect(scopeType('acme-internal:topsecret')).toBe('other')
+      expect(scopeType('weirdbarescope')).toBe('other')
+    })
+    it('returns null for absent scope', () => {
+      expect(scopeType(undefined)).toBeNull()
+      expect(scopeType(null)).toBeNull()
+    })
+  })
+
   describe('buildMissSignalPayload (wire shape)', () => {
-    it('carries ONLY fingerprint + coarse labels + reason + count + date — never raw query', () => {
+    it('carries ONLY fingerprint + scope KIND + domain + reason + count + date — never raw query or scope path', () => {
       const now = new Date('2026-06-14T10:00:00Z')
       const payload = buildMissSignalPayload(
-        { query: 'secret query text', scope: 'project:x', domain: 'trading', resultCount: 0, topScore: null },
+        { query: 'secret query text', scope: 'project:acme-secret', domain: 'trading', resultCount: 0, topScore: null },
         'no_results',
         'install-abc',
         now,
@@ -94,18 +115,20 @@ describe('telemetry miss-signal (WS5 demand flywheel)', () => {
       expect(payload).toEqual({
         install_id: 'install-abc',
         query_fingerprint: fingerprintQuery('secret query text'),
-        scope: 'project:x',
+        scope_type: 'project',
         domain: 'trading',
         reason: 'no_results',
         result_count: 0,
         date: '2026-06-14',
       })
-      // No raw query anywhere in the serialized payload.
-      expect(JSON.stringify(payload)).not.toContain('secret query text')
+      // Neither the raw query nor the private scope name appears in the payload.
+      const wire = JSON.stringify(payload)
+      expect(wire).not.toContain('secret query text')
+      expect(wire).not.toContain('acme-secret')
     })
     it('nulls absent scope/domain', () => {
       const payload = buildMissSignalPayload(noResults, 'no_results', 'id', new Date())
-      expect(payload.scope).toBeNull()
+      expect(payload.scope_type).toBeNull()
       expect(payload.domain).toBeNull()
     })
   })

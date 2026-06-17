@@ -39,7 +39,7 @@ could not answer — a demand signal. The emit is opt-in/default-off and carries
 {
   "install_id": "opaque uuid",
   "query_fingerprint": "sha256 of the normalized query (irreversible)",
-  "scope": "project:x | null",
+  "scope_type": "project | group | space | global | local | other | null",
   "domain": "trading | null",
   "reason": "no_results | low_score",
   "result_count": 0,
@@ -48,8 +48,14 @@ could not answer — a demand signal. The emit is opt-in/default-off and carries
 ```
 
 The fingerprint lets identical misses across installs cluster without disclosing
-content. Clustering and pack-bounty logic are deliberately downstream and out of
-scope here — this module only emits. Endpoint defaults to `/v1/miss-signal`,
+content. `scope_type` is the scope KIND only — the user-defined scope *path*
+(e.g. `project:acme-secret`, which can name a private project or client) is never
+transmitted (#312); only the kind, which is all that has routing-analytics value.
+`domain` is a generic topic label (e.g. `trading`) and **is** sent in readable
+form, because the topic of a miss is the actual demand signal the flywheel needs
+to act on; opt-in consent text should state that the domain label is transmitted.
+Clustering and pack-bounty logic are deliberately downstream and out of scope
+here — this module only emits. Endpoint defaults to `/v1/miss-signal`,
 overridable via `PLUR_MISS_SIGNAL_ENDPOINT`.
 
 ---
