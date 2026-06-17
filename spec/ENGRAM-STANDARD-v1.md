@@ -43,8 +43,8 @@ inner item is labelled otherwise.
    invariants of a single unit of knowledge.
 2. **The ID grammar** (§3) — how engram identifiers are formed and what their
    prefixes mean.
-3. **The Pack format** (§5) — the on-disk directory layout (`SKILL.md` /
-   `manifest.yaml` + `engrams.yaml` + `INTEGRITY`) and the manifest fields.
+3. **The Pack format** (§5) — the on-disk directory layout (`SKILL.md` +
+   `engrams.yaml` + `INTEGRITY`) and the manifest fields.
 4. **The `.plur` capsule** (§6) — the binary single-file envelope: header,
    format version, flags, payload, checksum.
 5. **The integrity model** (§6, §8) — how a receiver verifies that a pack or
@@ -391,15 +391,16 @@ an integrity file.
 
 ```
 <pack-name>/
-├── SKILL.md          (manifest as YAML frontmatter) — OR — manifest.yaml
+├── SKILL.md          (REQUIRED — manifest as YAML frontmatter)
 ├── engrams.yaml      (the engrams, top-level `engrams:` sequence)
 └── INTEGRITY         (pack content hash; see §5.5)
 ```
 
-- The manifest MAY be carried as the **YAML frontmatter of `SKILL.md`**
-  (delimited by `---` … `---`, with human-readable prose after it) OR as a
-  standalone **`manifest.yaml`**. If both exist, `SKILL.md` takes precedence (the
-  reference loader prefers it).
+- A pack **MUST** ship a `SKILL.md`. The manifest is carried as its **YAML
+  frontmatter** (delimited by `---` … `---`, with human-readable prose after it).
+  A standalone `manifest.yaml` is **not** an accepted substitute: the reference
+  loader rejects a pack without a `SKILL.md`, and a `manifest.yaml` does not
+  contribute to the integrity hash (§5.5).
 - `engrams.yaml` is a §2.1 store document.
 - `INTEGRITY` is OPTIONAL on disk but RECOMMENDED for distribution; the
   authoritative integrity record at install time is the registry entry (§5.5).
@@ -471,15 +472,15 @@ the recipient builds their own usage history. (This mirrors the reference
 
 ### 5.5 Pack integrity — STABLE
 
-Pack integrity is a **SHA-256** over the pack's manifest file followed by its
+Pack integrity is a **SHA-256** over the pack's `SKILL.md` followed by its
 engrams file:
 
 ```
-H = SHA256( bytes(SKILL.md or manifest.yaml)  ||  bytes(engrams.yaml) )
+H = SHA256( bytes(SKILL.md)  ||  bytes(engrams.yaml) )
 ```
 
-- If `SKILL.md` exists it is hashed; else `manifest.yaml`; the two are not
-  combined. `engrams.yaml` bytes are appended if present.
+- `SKILL.md` is REQUIRED (§5.1) and is always hashed; `engrams.yaml` bytes are
+  appended if present. A `manifest.yaml`, if any, does **not** contribute to `H`.
 - The hash is recorded as the string `sha256:<64-lowercase-hex>` — in the
   `INTEGRITY` file (single line, trailing newline) and/or in the consumer's
   install registry.
@@ -487,14 +488,12 @@ H = SHA256( bytes(SKILL.md or manifest.yaml)  ||  bytes(engrams.yaml) )
   to the recorded `sha256:` value. Mismatch MUST be treated as a failed
   integrity check.
 
-> **Interop note.** The reference contains two hash helpers with the same SHA-256
-> construction over the same two logical files: `computePackHash` in `packs.ts`
-> (used for the registry/`INTEGRITY`, manifest-precedence as above) and
-> `computePackChecksum` in `trust.ts` (always `SKILL.md` then `engrams.yaml`).
-> They agree whenever the pack uses `SKILL.md`. A conformant v1 implementation
-> MUST use the §5.5 construction (manifest-file precedence: `SKILL.md`, else
-> `manifest.yaml`). Hashing is over **raw file bytes**, so producers and
-> consumers MUST NOT re-serialize before hashing.
+> **Implementation note.** The reference exposes a single §5.5 construction:
+> `computePackHash` (`packs.ts`, used for the registry/`INTEGRITY`) and
+> `computePackChecksum` (`trust.ts`, used for trust verification) compute the
+> identical hash — `computePackChecksum` delegates to `computePackHash` — so they
+> cannot diverge. Hashing is over **raw file bytes**, so producers and consumers
+> MUST NOT re-serialize before hashing.
 
 ---
 
@@ -558,7 +557,7 @@ The header is a JSON object (`schema: "plur.capsule/1"`):
 ### 6.5 Payload
 
 The payload is opaque bytes — typically a **gzip-compressed tar** of a pack
-directory (`SKILL.md`/`manifest.yaml` + `engrams.yaml`). The capsule format does
+directory (`SKILL.md` + `engrams.yaml`). The capsule format does
 not constrain the internal payload structure beyond what `product_type` implies;
 unpacking yields a §5 pack.
 
@@ -653,7 +652,7 @@ Integrity (the payload is intact and unmodified) is **separate** from
 authenticity (who produced it). v1 delivers integrity; authenticity is §7.
 
 - **Hash:** SHA-256.
-- **Pack integrity:** §5.5 — `sha256:` over manifest-file bytes ‖ `engrams.yaml`
+- **Pack integrity:** §5.5 — `sha256:` over `SKILL.md` bytes ‖ `engrams.yaml`
   bytes, recorded in `INTEGRITY` / registry.
 - **Capsule integrity:** §6.4/§6.7 step 10 — `header.payload.sha256` over the
   payload bytes, checked on every read; plus the structural checks (magic,

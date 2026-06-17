@@ -39,7 +39,8 @@ describe('plur packs', () => {
     // Create a minimal pack directory with valid engrams
     const packDir = mkdtempSync(join(tmpdir(), 'test-pack-'))
     try {
-      writeFileSync(join(packDir, 'manifest.yaml'), 'name: test-pack\nversion: 1.0.0\n')
+      // A knowledge pack must ship a SKILL.md (manifest as YAML frontmatter) — #316.
+      writeFileSync(join(packDir, 'SKILL.md'), '---\nname: test-pack\nversion: 1.0.0\n---\n\n# Test Pack\n')
       // Write a valid engram YAML — loadEngrams expects { engrams: [...] }
       const engramYaml = [
         'engrams:',

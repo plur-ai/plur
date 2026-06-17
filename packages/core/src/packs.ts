@@ -524,20 +524,23 @@ export function exportPack(
 // --- Integrity ---
 
 /**
- * Compute SHA256 hash of pack contents (SKILL.md + engrams.yaml).
- * Deterministic — same content always produces same hash.
- * Can be used as a content-addressable identifier (like Swarm hash).
+ * Compute SHA256 hash of pack contents per ENGRAM-STANDARD-v1.md §5.5:
+ *   H = SHA256( bytes(SKILL.md) || bytes(engrams.yaml) )
+ * Deterministic — same content always produces same hash. Can be used as a
+ * content-addressable identifier (like a Swarm hash).
+ *
+ * Knowledge packs MUST ship a SKILL.md; `manifest.yaml` is NOT a substitute and
+ * does not contribute to the hash (#316). loadPack/installPack reject a pack
+ * without a SKILL.md, so in practice the SKILL.md is always present here; an
+ * absent one simply contributes nothing rather than falling back to manifest.yaml.
  */
 export function computePackHash(packDir: string): string {
   const hash = crypto.createHash('sha256')
 
-  // Hash manifest
+  // Hash the SKILL.md (the mandatory manifest). No manifest.yaml fallback.
   const skillMd = path.join(packDir, 'SKILL.md')
-  const manifestYaml = path.join(packDir, 'manifest.yaml')
   if (fs.existsSync(skillMd)) {
     hash.update(fs.readFileSync(skillMd))
-  } else if (fs.existsSync(manifestYaml)) {
-    hash.update(fs.readFileSync(manifestYaml))
   }
 
   // Hash engrams

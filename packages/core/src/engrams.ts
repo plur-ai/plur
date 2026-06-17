@@ -44,17 +44,15 @@ function parseSkillMdFrontmatter(filePath: string): Record<string, any> {
 
 export function loadPack(packDir: string): LoadedPack {
   const skillMdPath = `${packDir}/SKILL.md`
-  const manifestYamlPath = `${packDir}/manifest.yaml`
   const engramsPath = `${packDir}/engrams.yaml`
 
-  let rawManifest: Record<string, any>
-  if (fs.existsSync(skillMdPath)) {
-    rawManifest = parseSkillMdFrontmatter(skillMdPath)
-  } else if (fs.existsSync(manifestYamlPath)) {
-    rawManifest = yaml.load(fs.readFileSync(manifestYamlPath, 'utf8')) as Record<string, any>
-  } else {
-    throw new Error(`No SKILL.md or manifest.yaml found in ${packDir}`)
+  // Knowledge packs MUST ship a SKILL.md; manifest.yaml is not a substitute (#316).
+  if (!fs.existsSync(skillMdPath)) {
+    throw new Error(
+      `No SKILL.md found in ${packDir} — a knowledge pack must ship a SKILL.md (manifest.yaml is not a substitute)`,
+    )
   }
+  const rawManifest = parseSkillMdFrontmatter(skillMdPath)
 
   const manifest = PackManifestSchema.parse(rawManifest)
   const engrams = loadEngrams(engramsPath)
@@ -67,7 +65,7 @@ export function loadAllPacks(packsDir: string): LoadedPack[] {
   for (const entry of fs.readdirSync(packsDir)) {
     const packDir = `${packsDir}/${entry}`
     if (!fs.statSync(packDir).isDirectory()) continue
-    if (!fs.existsSync(`${packDir}/SKILL.md`) && !fs.existsSync(`${packDir}/manifest.yaml`)) continue
+    if (!fs.existsSync(`${packDir}/SKILL.md`)) continue  // SKILL.md is mandatory (#316)
     try {
       packs.push(loadPack(packDir))
     } catch (err) {
