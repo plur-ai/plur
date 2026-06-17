@@ -3,6 +3,7 @@ import { dirname, join, resolve } from 'path'
 import { tmpdir, homedir } from 'os'
 import { randomUUID } from 'crypto'
 import { createPlur, type GlobalFlags } from '../plur.js'
+import { isPlurConfigured } from '../lib/plur-configured.js'
 
 // Hard cap on the prompt text sent to Enterprise. Engram retrieval only
 // needs enough signal to rank candidates; the rest is privacy bleed
@@ -344,6 +345,10 @@ function processDeferredWrapups(): string | null {
 }
 
 export async function run(args: string[], flags: GlobalFlags): Promise<void> {
+  // Silent pass-through for projects without plur configured (#247).
+  // Lets hooks be installed globally without affecting non-plur projects.
+  if (!isPlurConfigured()) return
+
   const isRehydrate = args.includes('--rehydrate')
   const eventIdx = args.indexOf('--event')
   const event = eventIdx >= 0 ? args[eventIdx + 1] : null

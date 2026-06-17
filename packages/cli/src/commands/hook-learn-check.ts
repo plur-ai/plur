@@ -2,6 +2,7 @@ import { readSync, readFileSync, writeFileSync, mkdirSync, existsSync } from 'fs
 import { join } from 'path'
 import { tmpdir, homedir } from 'os'
 import { type GlobalFlags } from '../plur.js'
+import { isPlurConfigured } from '../lib/plur-configured.js'
 
 /**
  * plur hook-learn-check — Stop hook that prompts learning reflection
@@ -95,6 +96,13 @@ const LEARN_PROMPT = `[PLUR] Did you discover, learn, or get corrected on someth
 
 export async function run(_args: string[], _flags: GlobalFlags): Promise<void> {
   const raw = readStdinRaw()
+
+  // Silent pass-through for projects without plur configured (#247).
+  // Lets hooks be installed globally without affecting non-plur projects.
+  if (!isPlurConfigured()) {
+    process.stdout.write(raw)
+    return
+  }
 
   // Parse stdin for cwd (provided by Claude Code hook payload)
   let cwd = process.cwd()
