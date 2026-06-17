@@ -241,6 +241,8 @@ export class Plur {
   private _llmFailureCount = 0
   private _llmDisabledUntil: number | null = null
   private _sessionScope: string | null = null
+  /** mtime (ms) of config.yaml at last load — drives reloadConfigIfChanged (#307). */
+  private configMtimeMs = 0
 
   constructor(options?: { path?: string }) {
     this.paths = detectPlurStorage(options?.path)
@@ -251,6 +253,7 @@ export class Plur {
     if (this.config.stores?.length !== loadConfig(this.paths.config).stores?.length) {
       this.config = loadConfig(this.paths.config)
     }
+    this.configMtimeMs = this.statConfigMtime()
     if (this.config.index) {
       this.indexedStorage = new IndexedStorage(this.paths.engrams, this.paths.db, this.config.stores)
     }
@@ -2391,11 +2394,54 @@ Generate an improved version of the procedure that prevents this failure. Return
    * requested one), or `overwritten` (same scope reassigned to this endpoint
    * via overwriteScope).
    */
+  /** mtime (ms) of config.yaml, or 0 if it cannot be stat'd. */
+  private statConfigMtime(): number {
+    try { return fs.statSync(this.paths.config).mtimeMs } catch { return 0 }
+  }
+
+  /**
+   * Reload this.config from disk if config.yaml changed since the last load (#307).
+   *
+   * The MCP server holds ONE long-lived Plur instance, so a store added by
+   * editing ~/.plur/config.yaml directly (or by another process) stays invisible
+   * until the server restarts — and nothing hints why. The stores operations call
+   * this first so a changed file is picked up on the next call instead of needing
+   * a restart. Cheap: one statSync, reload only on an actual mtime change.
+   *
+   * @returns true if the config was reloaded.
+   */
+  private reloadConfigIfChanged(): boolean {
+    const mtime = this.statConfigMtime()
+    if (mtime === 0 || mtime === this.configMtimeMs) return false
+    this.config = loadConfig(this.paths.config)
+    this.configMtimeMs = mtime
+    if (this.config.index) {
+      this.indexedStorage = new IndexedStorage(this.paths.engrams, this.paths.db, this.config.stores)
+    }
+    logger.info('[plur] Reloaded config.yaml (changed on disk since last load)')
+    return true
+  }
+
+  /** Persist a new stores list to config.yaml, preserving other keys, then
+   *  refresh the in-memory config + mtime. Shared by addStore's append and
+   *  token-rotation paths. */
+  private persistStores(stores: StoreEntry[]): void {
+    let configData: Record<string, unknown> = {}
+    try {
+      const raw = fs.readFileSync(this.paths.config, 'utf8')
+      if (raw) configData = (yaml.load(raw) as Record<string, unknown>) ?? {}
+    } catch {}
+    configData.stores = stores
+    fs.writeFileSync(this.paths.config, yaml.dump(configData, { lineWidth: 120, noRefs: true }))
+    this.config = loadConfig(this.paths.config)
+    this.configMtimeMs = this.statConfigMtime()
+  }
+
   addStore(
     storePath: string,
     scope: string,
     options?: { shared?: boolean; readonly?: boolean; url?: string; token?: string; overwriteScope?: boolean },
-  ): { status: 'added' | 'already_registered' | 'overwritten'; scope: string } {
+  ): { status: 'added' | 'already_registered' | 'overwritten' | 'token_rotated'; scope: string } {
     const isRemote = Boolean(options?.url)
 
     // Validation gate (#93): catch malformed URLs and duplicate scopes at
@@ -2421,6 +2467,8 @@ Generate an improved version of the procedure that prevents this failure. Return
       throw new Error(`addStore: scope must be a non-empty string, got ${typeof scope}`)
     }
 
+    // Pick up any out-of-process config edit before we dedup/write (#307).
+    this.reloadConfigIfChanged()
     const config = loadConfig(this.paths.config)
 
     // Dedup (#291): for REMOTE stores the URL alone is NOT the identity — a
@@ -2436,7 +2484,22 @@ Generate an improved version of the procedure that prevents this failure. Return
       isRemote ? (s.url === options!.url && s.scope === scope)
                : (s.path === storePath),
     )
-    if (sameEntry) return { status: 'already_registered', scope: sameEntry.scope }
+    if (sameEntry) {
+      // Token rotation (#305): a matched remote endpoint with a NEW token means
+      // the server-side token was rotated/expired and the caller is re-supplying
+      // it. The old short-circuit returned 'already_registered' and silently kept
+      // the stale token — the only workaround was hand-editing config.yaml. Update
+      // the token in place instead.
+      if (isRemote && options?.token !== undefined && options.token !== sameEntry.token) {
+        const rotated = (config.stores ?? []).map(s =>
+          s === sameEntry ? { ...s, token: options.token } : s,
+        )
+        this.persistStores(rotated)
+        logger.info(`[plur:addStore] rotated token for ${options.url} (scope "${sameEntry.scope}")`)
+        return { status: 'token_rotated', scope: sameEntry.scope }
+      }
+      return { status: 'already_registered', scope: sameEntry.scope }
+    }
 
     // Different endpoint, same scope (#93): forbid by default to prevent
     // silent ambiguity ("which store does scope X belong to?"). Override
@@ -2471,14 +2534,7 @@ Generate an improved version of the procedure that prevents this failure. Return
     const stores = scopeConflict
       ? [...(config.stores ?? []).filter(s => s.scope !== scope), newEntry]
       : [...(config.stores ?? []), newEntry]
-    let configData: Record<string, unknown> = {}
-    try {
-      const raw = fs.readFileSync(this.paths.config, 'utf8')
-      if (raw) configData = (yaml.load(raw) as Record<string, unknown>) ?? {}
-    } catch {}
-    configData.stores = stores
-    fs.writeFileSync(this.paths.config, yaml.dump(configData, { lineWidth: 120, noRefs: true }))
-    this.config = loadConfig(this.paths.config)
+    this.persistStores(stores)
     return { status: scopeConflict ? 'overwritten' : 'added', scope }
   }
 
@@ -2565,6 +2621,7 @@ Generate an improved version of the procedure that prevents this failure. Return
   listStores(): Array<{
     path?: string; url?: string; scope: string; shared: boolean; readonly: boolean; engram_count: number
   }> {
+    this.reloadConfigIfChanged()  // pick up out-of-process config edits (#307)
     const stores = this.config.stores ?? []
     const additional = stores.map(s => {
       let count = 0
@@ -2596,6 +2653,7 @@ Generate an improved version of the procedure that prevents this failure. Return
   async listStoresAsync(): Promise<Array<{
     path?: string; url?: string; scope: string; shared: boolean; readonly: boolean; engram_count: number
   }>> {
+    this.reloadConfigIfChanged()  // pick up out-of-process config edits (#307)
     const stores = this.config.stores ?? []
     const REMOTE_LOAD_TIMEOUT_MS = 5000
 

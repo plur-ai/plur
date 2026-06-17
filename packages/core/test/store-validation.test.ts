@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, readFileSync } from 'fs'
+import { mkdtempSync, rmSync, readFileSync, writeFileSync, utimesSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import yaml from 'js-yaml'
@@ -179,14 +179,39 @@ describe('addStore validation (#93)', () => {
       })).toEqual({ status: 'overwritten', scope: 'group:plur/plur-ai/comms' })
     })
 
-    it('same URL + same scope + different token stays an idempotent no-op (no silent token swap)', () => {
-      plur.addStore('', 'group:plur/plur-ai/engineering', { url: URL, token: 'original' })
-      const result = plur.addStore('', 'group:plur/plur-ai/engineering', { url: URL, token: 'rotated' })
+    it('same URL + same scope + same token is an idempotent no-op (no spurious rotation)', () => {
+      plur.addStore('', 'group:plur/plur-ai/engineering', { url: URL, token: 'tok' })
+      const result = plur.addStore('', 'group:plur/plur-ai/engineering', { url: URL, token: 'tok' })
 
       expect(result).toEqual({ status: 'already_registered', scope: 'group:plur/plur-ai/engineering' })
       const config = yaml.load(readFileSync(join(dir, 'config.yaml'), 'utf8')) as any
       expect(config.stores).toHaveLength(1)
-      expect(config.stores[0].token).toBe('original')
+      expect(config.stores[0].token).toBe('tok')
+    })
+
+    it('same URL + same scope + NEW token rotates the token in place (#305)', () => {
+      plur.addStore('', 'group:plur/plur-ai/engineering', { url: URL, token: 'original' })
+      const result = plur.addStore('', 'group:plur/plur-ai/engineering', { url: URL, token: 'rotated' })
+
+      // Reported as a rotation (not 'already_registered', not silent) so the
+      // caller can see the token actually changed.
+      expect(result).toEqual({ status: 'token_rotated', scope: 'group:plur/plur-ai/engineering' })
+      const config = yaml.load(readFileSync(join(dir, 'config.yaml'), 'utf8')) as any
+      expect(config.stores).toHaveLength(1)
+      expect(config.stores[0].token).toBe('rotated')
+    })
+
+    it('rotation leaves OTHER scopes on the same URL untouched (#305)', () => {
+      plur.addStore('', 'group:plur/plur-ai/engineering', { url: URL, token: 'eng-old' })
+      plur.addStore('', 'group:plur/plur-ai/comms', { url: URL, token: 'comms-tok' })
+
+      const result = plur.addStore('', 'group:plur/plur-ai/engineering', { url: URL, token: 'eng-new' })
+      expect(result.status).toBe('token_rotated')
+
+      const config = yaml.load(readFileSync(join(dir, 'config.yaml'), 'utf8')) as any
+      const byScope = Object.fromEntries(config.stores.map((s: any) => [s.scope, s.token]))
+      expect(byScope['group:plur/plur-ai/engineering']).toBe('eng-new')
+      expect(byScope['group:plur/plur-ai/comms']).toBe('comms-tok')
     })
   })
 
@@ -229,6 +254,59 @@ describe('addStore validation (#93)', () => {
       const config = yaml.load(readFileSync(join(dir, 'config.yaml'), 'utf8')) as any
       expect(config.stores).toHaveLength(1)
       expect(config.stores[0].readonly).toBe(true)
+    })
+  })
+
+  /**
+   * Out-of-process config reload — closes plur-ai/plur#307.
+   *
+   * The MCP server holds one long-lived Plur instance and read config.yaml once
+   * at startup, so a store added by editing the file directly (a documented
+   * onboarding step) stayed invisible until a server restart, with no hint why.
+   * The stores operations now reload when the file's mtime changed.
+   */
+  describe('out-of-process config reload (#307)', () => {
+    const cfgPath = () => join(dir, 'config.yaml')
+
+    /** Simulate another process editing config.yaml, forcing a newer mtime so
+     *  the change is detectable regardless of filesystem clock granularity. */
+    function externallyEdit(mutate: (cfg: any) => void): void {
+      const cfg = (yaml.load(readFileSync(cfgPath(), 'utf8')) as any) ?? {}
+      mutate(cfg)
+      writeFileSync(cfgPath(), yaml.dump(cfg))
+      const future = new Date(Date.now() + 2000)
+      utimesSync(cfgPath(), future, future)
+    }
+
+    it('listStores picks up a store added by an external config edit (no restart)', () => {
+      plur.addStore('', 'group:a', { url: 'https://a.example.com', token: 'tok' })
+      expect(plur.listStores().map(s => s.scope)).toContain('group:a')
+      expect(plur.listStores().map(s => s.scope)).not.toContain('group:b')
+
+      externallyEdit(cfg => {
+        cfg.stores.push({ url: 'https://b.example.com', token: 'tok', scope: 'group:b', shared: true, readonly: false })
+      })
+
+      // Same instance, no restart — the externally-added store is now visible.
+      expect(plur.listStores().map(s => s.scope)).toContain('group:b')
+    })
+
+    it('listStoresAsync also reloads on an external edit', async () => {
+      plur.addStore('', 'group:a', { url: 'https://a.example.com', token: 'tok' })
+      externallyEdit(cfg => {
+        cfg.stores.push({ url: 'https://b.example.com', token: 'tok', scope: 'group:b', shared: true, readonly: false })
+      })
+
+      const scopes = (await plur.listStoresAsync()).map(s => s.scope)
+      expect(scopes).toContain('group:b')
+    })
+
+    it('does not reload when the file is unchanged (mtime stable)', () => {
+      plur.addStore('', 'group:a', { url: 'https://a.example.com', token: 'tok' })
+      const before = plur.listStores().length
+      // No edit — repeated calls are stable, no spurious reload churn.
+      expect(plur.listStores().length).toBe(before)
+      expect(plur.listStores().map(s => s.scope)).toContain('group:a')
     })
   })
 })
