@@ -20,7 +20,12 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
       // local stores have path-only identity, so it may differ from the request.
       outputJson({ success: true, status: result.status, path, scope: result.scope })
     } else {
-      const verb = result.status === 'already_registered' ? 'Already registered' : result.status === 'overwritten' ? 'Reassigned' : 'Added'
+      const verb = {
+        already_registered: 'Already registered',
+        overwritten: 'Reassigned',
+        token_rotated: 'Rotated token for',
+        added: 'Added',
+      }[result.status] ?? 'Added'
       outputText(`${verb} store: ${path} (scope: ${result.scope})`)
     }
     return
