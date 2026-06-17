@@ -29,6 +29,19 @@ DURING the session:
 - When user states a preference ("always X", "never Y") → call plur_learn immediately
 - When you discover a codebase convention or pattern → call plur_learn
 
+SCOPE SELECTION (choose per engram, by content — not once per session):
+A single session can produce engrams that belong in different stores. Set the
+'scope' field on EACH plur_learn call based on what the engram is:
+- Team / engineering / architecture knowledge → the matching team store scope
+  (e.g. "group:<org>/<team>"). plur_session_start lists the scopes this install
+  can write to — use them.
+- Personal preferences, workflow, or details specific to one project → your
+  default/local or "project:<name>" scope.
+- "global" is for genuinely cross-project knowledge only (language gotchas, tool
+  quirks). Do NOT let team knowledge fall back to "global" — if a team store is
+  configured, team-relevant engrams must carry its scope or they never reach the
+  shared store.
+
 OPTIONAL but improves quality:
 - Call plur_feedback to rate which injected engrams helped (positive/negative)
 - Call plur_recall_hybrid before answering factual questions — the answer may be in memory
