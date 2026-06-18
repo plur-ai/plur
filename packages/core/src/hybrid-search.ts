@@ -78,6 +78,15 @@ function rrfMerge(resultSets: Engram[][], k = 60): Array<{ engram: Engram; score
   return Array.from(scores.values()).sort((a, b) => b.score - a.score)
 }
 
+/**
+ * RRF-merge result sets and return just the engrams (no scores). For callers
+ * that fuse externally-ranked lists and don't need topScore — e.g. the PGLite
+ * recall path fusing pgvector hits with BM25 before the rerank stage.
+ */
+export function rrfMergeEngrams(resultSets: Engram[][], k = 60): Engram[] {
+  return rrfMerge(resultSets, k).map(s => s.engram)
+}
+
 /** Detect aggregation queries that need exhaustive retrieval */
 const AGGREGATION_PATTERNS = [
   /how many/i,
