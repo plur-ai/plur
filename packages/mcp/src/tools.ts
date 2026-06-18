@@ -1490,7 +1490,7 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
 
     {
       name: 'plur_stores_list',
-      description: 'List all configured engram stores with their scope, path, and engram count',
+      description: 'List all configured engram stores with their scope, path, and engram count. When a store declares self-describing scope metadata, its description and covers (topics the scope is the home for) are included so you can pick the right scope.',
       annotations: { title: 'List stores', readOnlyHint: true, idempotentHint: true },
       inputSchema: { type: 'object', properties: {} },
       handler: async (_args, plur) => {

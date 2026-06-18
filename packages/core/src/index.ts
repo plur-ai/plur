@@ -28,7 +28,8 @@ import { installPack, uninstallPack, listPacks, exportPack, scanPrivacy, compute
 // import { exportVault, type VaultExportOptions, type VaultExportResult } from './vault-export.js'
 // import { fetchRegistry, discoverPacks, verifyPackIntegrity, DEFAULT_REGISTRY_URL, type PackRegistry, type RegistryPack } from './registry.js'
 import { sync as gitSync, getSyncStatus, withLock, type SyncResult, type SyncStatus } from './sync.js'
-import { detectSecrets, detectSensitive } from './secrets.js'
+import { detectSecrets, detectSensitive, sensitivityCategory } from './secrets.js'
+import type { ScopeMetadata, SensitivityCategory } from './schemas/scope-metadata.js'
 import { appendHistory, readHistoryForEngram, generateEventId } from './history.js'
 import { computeContentHash } from './content-hash.js'
 import { decodeJwtExpiry } from './jwt.js'
@@ -72,7 +73,8 @@ export { applyBatchDecay, strengthToStatus, type BatchDecayResult, type DecayTra
 export { computeContentHash, normalizeStatement } from './content-hash.js'
 export { parseDedupResponse, buildDedupPrompt, buildBatchDedupPrompt } from './dedup.js'
 export { runMigrations, rollbackMigrations, getSchemaVersion, setSchemaVersion, ALL_MIGRATIONS, CURRENT_SCHEMA_VERSION, type Migration, type MigrationResult } from './migrations/index.js'
-export { detectSecrets, detectSensitive } from './secrets.js'
+export { detectSecrets, detectSensitive, sensitivityCategory } from './secrets.js'
+export { ScopeMetadataSchema, ScopeSensitivitySchema, SENSITIVITY_CATEGORIES, type ScopeMetadata, type ScopeSensitivity, type SensitivityCategory } from './schemas/scope-metadata.js'
 
 /**
  * Scopes whose engrams are visible to people *other than* the author — the team
@@ -181,6 +183,26 @@ export interface StatusResult {
  * (#292). `unregistered` is the actionable set: scopes the token is authorized
  * for but that aren't yet in local config.
  */
+/**
+ * One row of `listStores` / `listStoresAsync`. The primary local store plus
+ * each configured `stores` entry. `description`/`covers` are present only when
+ * the entry declares self-describing scope metadata (#345) — additive, so
+ * existing consumers that read only path/url/scope/.../engram_count are
+ * unaffected.
+ */
+export interface StoreSummary {
+  path?: string
+  url?: string
+  scope: string
+  shared: boolean
+  readonly: boolean
+  engram_count: number
+  /** Self-describing scope description (#345), when the entry declares it. */
+  description?: string
+  /** Topics/domains this scope covers (#345), when the entry declares it. */
+  covers?: string[]
+}
+
 export interface RemoteScopeDiscovery {
   url: string
   /** True when `/me` responded; false on network error, 401, etc. */
@@ -800,6 +822,31 @@ export class Plur {
    * Fast-path hash dedup returns existing on exact match.
    */
   /**
+   * Resolve self-describing metadata for a scope from the loaded config (#345).
+   * Metadata is carried on a `stores` entry: the first entry whose `scope`
+   * matches and that declares any metadata field (`description`/`covers`/
+   * `sensitivity`) is materialized into a {@link ScopeMetadata}. Returns
+   * `undefined` when the scope is unknown or declares no metadata — callers
+   * (notably the leak guard) treat that as "fall back to default behavior".
+   *
+   * This is the Stage 2 local resolver. The enterprise `/api/v1/scopes` source
+   * is a separate track; when it lands it can back this same accessor.
+   */
+  getScopeMetadata(scope: string): ScopeMetadata | undefined {
+    const entry = (this.config.stores ?? []).find(
+      s => s.scope === scope &&
+        (s.description !== undefined || s.covers !== undefined || s.sensitivity !== undefined),
+    )
+    if (!entry) return undefined
+    return {
+      scope,
+      description: entry.description ?? '',
+      covers: entry.covers ?? [],
+      ...(entry.sensitivity ? { sensitivity: entry.sensitivity } : {}),
+    }
+  }
+
+  /**
    * Write-time leak guard. If the target scope is one others can read
    * (`isSharedScope`: group:/project:/space:/team:/org:/public) AND the statement
    * trips `detectSensitive` (IPs, internal hosts, basic-auth, host:port, secrets),
@@ -808,6 +855,16 @@ export class Plur {
    * exempt: infra notes legitimately live there. Called at the top of both
    * `learn()` and `learnRouted()`, so every client (CLI, MCP, hooks, OpenClaw,
    * Hermes) is covered, since they all route through one of those two.
+   *
+   * Per-scope policy (#345): when the target scope declares `sensitivity`
+   * metadata, that policy decides demotion. A matched category is tolerated when
+   * it is in `sensitivity.allow` (by category name OR by the specific detector
+   * pattern name) OR not in `sensitivity.forbid`. Only categories that are both
+   * forbidden and not allowed trigger demotion. When the scope has NO metadata,
+   * this falls back EXACTLY to the Stage 1 behavior: any `detectSensitive` hit on
+   * a shared scope demotes. The default policy (`forbid: ['secrets','infra']`,
+   * `allow: []`) reproduces that demote-on-sensitive behavior, so adding metadata
+   * is non-breaking.
    */
   private _guardSensitiveScope(
     statement: string,
@@ -821,7 +878,22 @@ export class Plur {
     const scanText = `${statement}\n${JSON.stringify(context ?? {})}`
     const hits = detectSensitive(scanText)
     if (hits.length === 0) return { scope, context, demotion: null }
-    const patterns = [...new Set(hits.map(h => h.pattern))].join(', ')
+
+    // Per-scope policy: keep only the hits this scope actually forbids. With no
+    // metadata, `sensitivity` is undefined and the default policy forbids
+    // secrets+infra with nothing allowed — i.e. every hit is offending, exactly
+    // the Stage 1 behavior.
+    const policy = this.getScopeMetadata(scope)?.sensitivity
+    const forbid = new Set<SensitivityCategory>(policy?.forbid ?? ['secrets', 'infra'])
+    const allow = new Set<string>(policy?.allow ?? [])
+    const offending = hits.filter(h => {
+      const category = sensitivityCategory(h.pattern)
+      if (allow.has(category) || allow.has(h.pattern)) return false
+      return forbid.has(category)
+    })
+    if (offending.length === 0) return { scope, context, demotion: null }
+
+    const patterns = [...new Set(offending.map(h => h.pattern))].join(', ')
     logger.warning(
       `[plur] sensitive content (${patterns}) held back from shared scope "${scope}" — ` +
       `demoted to local/private so it is not written to a shared store. ` +
@@ -3050,9 +3122,7 @@ Generate an improved version of the procedure that prevents this failure. Return
 
   /** Build the primary-store summary row. Shared by listStores +
    * listStoresAsync to keep them in lockstep. */
-  private _primaryStoreRow(): {
-    path?: string; url?: string; scope: string; shared: boolean; readonly: boolean; engram_count: number
-  } {
+  private _primaryStoreRow(): StoreSummary {
     return {
       path: this.paths.engrams,
       scope: 'global',
@@ -3068,9 +3138,7 @@ Generate an improved version of the procedure that prevents this failure. Return
    * call after server start because the remote cache hasn't populated yet
    * (issue #184). Retained for callers that cannot await.
    */
-  listStores(): Array<{
-    path?: string; url?: string; scope: string; shared: boolean; readonly: boolean; engram_count: number
-  }> {
+  listStores(): Array<StoreSummary> {
     this.reloadConfigIfChanged()  // pick up out-of-process config edits (#307)
     const stores = this.config.stores ?? []
     const additional = stores.map(s => {
@@ -3087,6 +3155,9 @@ Generate an improved version of the procedure that prevents this failure. Return
         shared:   s.shared,
         readonly: s.readonly,
         engram_count: count,
+        // #345: surface self-describing metadata in discovery when present.
+        ...(s.description !== undefined ? { description: s.description } : {}),
+        ...(s.covers !== undefined ? { covers: s.covers } : {}),
       }
     })
     return [this._primaryStoreRow(), ...additional]
@@ -3100,9 +3171,7 @@ Generate an improved version of the procedure that prevents this failure. Return
    * Use for `plur_stores_list` and CLI diagnostics where freshness matters
    * more than latency.
    */
-  async listStoresAsync(): Promise<Array<{
-    path?: string; url?: string; scope: string; shared: boolean; readonly: boolean; engram_count: number
-  }>> {
+  async listStoresAsync(): Promise<Array<StoreSummary>> {
     this.reloadConfigIfChanged()  // pick up out-of-process config edits (#307)
     const stores = this.config.stores ?? []
     const REMOTE_LOAD_TIMEOUT_MS = 5000
@@ -3139,6 +3208,9 @@ Generate an improved version of the procedure that prevents this failure. Return
         shared:   s.shared,
         readonly: s.readonly,
         engram_count: count,
+        // #345: surface self-describing metadata in discovery when present.
+        ...(s.description !== undefined ? { description: s.description } : {}),
+        ...(s.covers !== undefined ? { covers: s.covers } : {}),
       }
     }))
     return [this._primaryStoreRow(), ...additional]
