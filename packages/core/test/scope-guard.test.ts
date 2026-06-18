@@ -54,4 +54,17 @@ describe('write-time sensitivity demotion (learn)', () => {
     const e = freshPlur().learn('my droplet is 139.59.155.82', { scope: 'local' }) as { scope: string }
     expect(e.scope).toBe('local')
   })
+
+  it('scans CONTEXT fields too — sensitive content outside the statement still demotes (finding 1)', () => {
+    const e = freshPlur().learn('a totally clean statement', { scope: 'group:plur/engineering', source: 'pulled from 139.59.155.82' } as never) as { scope: string; visibility: string }
+    expect(e.scope).toBe('local')
+    expect(e.visibility).toBe('private')
+  })
+
+  it('stamps a demotion marker the agent can see (finding 2)', () => {
+    const e = freshPlur().learn('deploy at 139.59.155.82', { scope: 'group:plur/engineering' }) as { structured_data?: { _demoted?: { from: string; to: string; patterns: string } } }
+    expect(e.structured_data?._demoted?.from).toBe('group:plur/engineering')
+    expect(e.structured_data?._demoted?.to).toBe('local')
+    expect(e.structured_data?._demoted?.patterns).toMatch(/public_ipv4/)
+  })
 })
