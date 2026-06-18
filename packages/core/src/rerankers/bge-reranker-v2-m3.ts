@@ -54,6 +54,10 @@ let pending: Promise<LoadedPipeline> | null = null
 async function loadPipeline(modelId: string, dtype: 'q8' | 'fp32'): Promise<LoadedPipeline> {
   if (!pending) {
     pending = (async () => {
+      // Force the classic HF download path — the Xet transfer protocol truncates
+      // ONNX downloads in this stack, corrupting the model ("Protobuf parsing
+      // failed") so the reranker silently falls back to RRF order. Never use Xet. (#340)
+      process.env.HF_HUB_DISABLE_XET ??= '1'
       const { AutoTokenizer, AutoModelForSequenceClassification } = await import('@huggingface/transformers')
       const [tokenizer, model] = await Promise.all([
         AutoTokenizer.from_pretrained(modelId),

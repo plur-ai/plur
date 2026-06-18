@@ -143,8 +143,14 @@ export interface BenchmarkSummary {
   embedder: EmbedderName
   embedder_stub_fallback: boolean
   search_mode: string
-  /** Cross-encoder reranker state (#220). 'on' or 'off'. */
+  /** Cross-encoder reranker state (#220). 'on' or 'off' — what was REQUESTED. */
   rerank: 'on' | 'off'
+  /**
+   * How many queries the reranker ACTUALLY reordered. When `rerank: 'on'` but
+   * this is < scenario_count, the reranker fell back (model unavailable) on
+   * those queries and their numbers are RRF-only — do not read them as reranked.
+   */
+  reranked_queries: number
   corpus: CorpusName
   scenario_count: number
   iterations_per_category: number | null
@@ -439,6 +445,11 @@ export async function runBenchmark(opts: RunOptions = {}): Promise<RunOutput> {
   // top-K candidates and the report reflects rerank-on numbers.
   const rerankOn = opts.rerank === 'on'
   const results: ScenarioResult[] = []
+  // How many queries the cross-encoder actually reordered. When rerank is
+  // requested but this stays 0 (reranker unavailable / fell back), the run's
+  // numbers are RRF-only and the summary must say so — otherwise a silent
+  // fallback mislabels RRF results as rerank-on.
+  let rerankedQueries = 0
   for (const scenario of scenarios) {
     let retrieved: Array<{ id: string; statement: string }>
     const t0 = process.hrtime.bigint()
@@ -447,7 +458,11 @@ export async function runBenchmark(opts: RunOptions = {}): Promise<RunOutput> {
     } else if (searchMode === 'semantic') {
       retrieved = await plur.recallSemantic(scenario.query, { limit: 10, rerank: rerankOn })
     } else {
-      retrieved = await plur.recallHybrid(scenario.query, { limit: 10, rerank: rerankOn })
+      // Meta variant so we can observe whether the reranker ACTUALLY ran
+      // (reranked > 0) vs. silently fell back to RRF order.
+      const meta = await plur.recallHybridWithMeta(scenario.query, { limit: 10, rerank: rerankOn })
+      retrieved = meta.engrams
+      if ((meta.reranked ?? 0) > 0) rerankedQueries++
     }
     const t1 = process.hrtime.bigint()
     const latency_ms = Number(t1 - t0) / 1_000_000
@@ -524,6 +539,7 @@ export async function runBenchmark(opts: RunOptions = {}): Promise<RunOutput> {
     embedder_stub_fallback: embedderStubFallback,
     search_mode: searchMode,
     rerank: rerankOn ? 'on' : 'off',
+    reranked_queries: rerankedQueries,
     corpus,
     scenario_count: results.length,
     iterations_per_category: opts.iterations ?? null,
@@ -573,7 +589,13 @@ function printSummary(s: BenchmarkSummary) {
   console.log('===============\n')
   console.log(`Embedder:        ${s.embedder}${s.embedder_stub_fallback ? ' (stub fallback → minilm)' : ''}`)
   console.log(`Search mode:     ${s.search_mode}`)
-  console.log(`Reranker:        ${s.rerank}`)
+  console.log(`Reranker:        ${s.rerank}${s.rerank === 'on' ? ` (engaged ${s.reranked_queries}/${s.scenario_count} queries)` : ''}`)
+  if (s.rerank === 'on' && s.reranked_queries === 0) {
+    console.log(`  ⚠  rerank was REQUESTED but the reranker never ran (model unavailable / fell back) —`)
+    console.log(`     these numbers are RRF-only, NOT reranked. Warm the reranker model and re-run to measure rerank.`)
+  } else if (s.rerank === 'on' && s.reranked_queries < s.scenario_count) {
+    console.log(`  ⚠  rerank ran on only ${s.reranked_queries}/${s.scenario_count} queries — the rest are RRF-only.`)
+  }
   console.log(`Corpus:          ${s.corpus}`)
   console.log(`Scenarios:       ${s.scenario_count}${s.iterations_per_category !== null ? ` (N=${s.iterations_per_category}/category, seed=${s.seed})` : ''}`)
   console.log(`Commit:          ${s.commit}`)
@@ -606,7 +628,10 @@ function renderMarkdown(s: BenchmarkSummary): string {
   lines.push('')
   lines.push(`Embedder: \`${s.embedder}\`${s.embedder_stub_fallback ? ' (stub fallback → minilm, real adapter lands in PR 4)' : ''}`)
   lines.push(`Search mode: \`${s.search_mode}\``)
-  lines.push(`Reranker: \`${s.rerank}\``)
+  lines.push(`Reranker: \`${s.rerank}\`${s.rerank === 'on' ? ` (engaged ${s.reranked_queries}/${s.scenario_count})` : ''}`)
+  if (s.rerank === 'on' && s.reranked_queries < s.scenario_count) {
+    lines.push(`> ⚠ rerank requested but engaged ${s.reranked_queries}/${s.scenario_count} queries — ${s.reranked_queries === 0 ? 'numbers are RRF-only, not reranked' : 'remaining queries are RRF-only'}.`)
+  }
   lines.push(`Corpus: \`${s.corpus}\``)
   lines.push(`Scenarios: ${s.scenario_count}${s.iterations_per_category !== null ? ` (N=${s.iterations_per_category}/category, seed=${s.seed})` : ' (default fixture)'}`)
   lines.push('')
