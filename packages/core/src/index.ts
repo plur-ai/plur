@@ -765,18 +765,26 @@ export class Plur {
   private _guardSensitiveScope(
     statement: string,
     context?: LearnContext,
-  ): { scope: string; context: LearnContext | undefined } {
+  ): { scope: string; context: LearnContext | undefined; demotion: { from: string; to: string; patterns: string } | null } {
     const scope = context?.scope ?? this._sessionScope ?? 'global'
-    if (!isSharedScope(scope)) return { scope, context }
-    const hits = detectSensitive(statement)
-    if (hits.length === 0) return { scope, context }
+    if (!isSharedScope(scope)) return { scope, context, demotion: null }
+    // Scan the FULL content the engram will carry — the statement AND the
+    // context fields (rationale, key_files, source, …), not just the statement.
+    // Sensitive material hides in context too (#326 review, finding 1).
+    const scanText = `${statement}\n${JSON.stringify(context ?? {})}`
+    const hits = detectSensitive(scanText)
+    if (hits.length === 0) return { scope, context, demotion: null }
     const patterns = [...new Set(hits.map(h => h.pattern))].join(', ')
     logger.warning(
       `[plur] sensitive content (${patterns}) held back from shared scope "${scope}" — ` +
       `demoted to local/private so it is not written to a shared store. ` +
       `Re-scope deliberately if this is a false positive.`,
     )
-    return { scope: 'local', context: { ...context, scope: 'local', visibility: 'private' } }
+    return {
+      scope: 'local',
+      context: { ...context, scope: 'local', visibility: 'private' },
+      demotion: { from: scope, to: 'local', patterns },
+    }
   }
 
   learn(statement: string, context?: LearnContext): Engram {
@@ -883,6 +891,16 @@ export class Plur {
           conflicts: conflictIds,
         } : undefined,
         pinned: context?.pinned === true ? true : undefined,
+      }
+
+      // Stamp the demotion marker (#326 review, finding 2) so the plur_learn MCP
+      // response can tell the agent its engram was held back from the shared scope
+      // it asked for. Set only on a direct learn() whose own guard demoted.
+      if (guarded.demotion) {
+        ;(engram as any).structured_data = {
+          ...((engram as any).structured_data ?? {}),
+          _demoted: guarded.demotion,
+        }
       }
 
       // Multi-store routing (issue #26 outbox pattern): if the engram's
@@ -1006,8 +1024,17 @@ export class Plur {
     context = guarded.context
     const remoteDriver = this._resolveRemoteStoreForScope(scope)
     if (!remoteDriver) {
-      // Local route — sync learn() owns dedup, build, write, history.
-      return this.learn(statement, context)
+      // Local route — sync learn() owns dedup, build, write, history. learn()'s
+      // own guard sees the already-demoted (local) context and no-ops, so the
+      // demotion marker is stamped here for the learnRouted-demoted case (#326).
+      const engram = this.learn(statement, context)
+      if (guarded.demotion) {
+        ;(engram as any).structured_data = {
+          ...((engram as any).structured_data ?? {}),
+          _demoted: guarded.demotion,
+        }
+      }
+      return engram
     }
     // Remote route — dedup against the merged local+cached-remote view,
     // then POST and merge the server-assigned ID into the local engram

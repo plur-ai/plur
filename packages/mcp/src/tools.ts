@@ -190,6 +190,7 @@ export function getToolDefinitions(): ToolDefinition[] {
         try {
           const engram = await plur.learnRouted(statement, context)
           const isOutbox = !!(engram as any).structured_data?._outbox
+          const demoted = (engram as any).structured_data?._demoted as { from: string; to: string; patterns: string } | undefined
           mcpCanary.signal('learn_activity')
           // Opt-in, content-free engagement counter (default-off; no statement text).
           recordTelemetry('learn')
@@ -200,6 +201,7 @@ export function getToolDefinitions(): ToolDefinition[] {
             decision: 'ADD',
             ...scopeHint(engram.scope),
             ...(isOutbox ? { outbox: true, warning: 'Remote write failed; engram queued locally for retry on next session start or plur_sync.' } : {}),
+            ...(demoted ? { demoted: true, requested_scope: demoted.from, warning: `Sensitive content (${demoted.patterns}) detected — stored at "${demoted.to}"/private instead of the requested shared scope "${demoted.from}". If this is a false positive, re-scope deliberately.` } : {}),
           }
         } catch (err) {
 // learnRouted now saves to outbox on remote failure, so this
