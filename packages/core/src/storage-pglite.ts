@@ -401,6 +401,41 @@ export class PGLiteAdapter implements StorageAdapter {
     })
   }
 
+  /** True if `engram_id` already has a row in engram_embeddings. Used by the auto-embed path to skip already-indexed engrams (#226 B-1). */
+  async hasEmbedding(engramId: string): Promise<boolean> {
+    const db = await this.getDb()
+    const res = await db.query(
+      'SELECT 1 FROM engram_embeddings WHERE engram_id = $1 LIMIT 1',
+      [engramId],
+    )
+    return res.rows.length > 0
+  }
+
+  /** Dimension the embedding column was sized to (vector(N)), or null when not a pgvector column. Lets the auto-embed path skip when the active embedder dim differs from the indexed dim. */
+  async getVectorColumnDim(): Promise<number | null> {
+    const db = await this.getDb()
+    if (!this.hasVector) return null
+    // format_type(atttypid, atttypmod) on a `vector(N)` column returns the
+    // literal string "vector(N)" — parse the N back out.
+    const res = await db.query(
+      `SELECT format_type(a.atttypid, a.atttypmod) AS t
+       FROM pg_attribute a
+       JOIN pg_class c ON c.oid = a.attrelid
+       WHERE c.relname = 'engram_embeddings' AND a.attname = 'embedding' AND a.attnum > 0`,
+    )
+    if (res.rows.length === 0) return null
+    const t = String(res.rows[0].t)
+    const m = t.match(/vector\((\d+)\)/i)
+    return m ? Number(m[1]) : null
+  }
+
+  /** Number of rows in engram_embeddings. Used by tests + diagnostics to confirm the vector index is populated. */
+  async countEmbeddings(): Promise<number> {
+    const db = await this.getDb()
+    const res = await db.query('SELECT COUNT(*)::int AS c FROM engram_embeddings')
+    return Number(res.rows[0].c)
+  }
+
   async close(): Promise<void> {
     if (this.db) {
       try {

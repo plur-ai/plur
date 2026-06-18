@@ -17,6 +17,7 @@ import { embeddingSearch, embeddingSearchWithScores, type SimilarityResult } fro
 import { hybridSearch, hybridSearchWithMeta, applyReranker, rrfMergeEngrams as pgliteRrfMerge, type HybridSearchResult, type RerankOptions } from './hybrid-search.js'
 import { getReranker, resolveRerankerName, isRerankerOff, type RerankerAdapter } from './rerankers/index.js'
 import { classifyQuery, routeForIntent, applyIntentRouting, isIntentRoutingDisabled, type QueryIntent, type IntentRoutingProfile } from './intent/index.js'
+import { getEmbedder, resolveEmbedderName } from './embedders/index.js'
 import { emitMissSignal } from './telemetry-miss-signal.js'
 import { embedderStatus, resetEmbedder, setEmbeddingsEnabled, type EmbedderStatus } from './embeddings.js'
 import { expandedSearch } from './query-expansion.js'
@@ -2131,7 +2132,9 @@ export class Plur {
   reindex(): void {
     if (this.pgliteAdapter) {
       // Fire-and-track. Callers that need to block use reindexAsync().
-      this._pgliteInitPromise = this.pgliteAdapter.reindex()
+      const adapter = this.pgliteAdapter
+      this._pgliteInitPromise = adapter.reindex()
+        .then(() => this._autoEmbedNewEngrams(adapter))
         .catch((err: unknown) => {
           logger.warning(`[plur] PGLite reindex failed: ${(err as Error).message}`)
         })
@@ -2150,6 +2153,7 @@ export class Plur {
   async reindexAsync(): Promise<void> {
     if (this.pgliteAdapter) {
       await this.pgliteAdapter.reindex()
+      await this._autoEmbedNewEngrams(this.pgliteAdapter)
       return
     }
     if (!this.indexedStorage) {
@@ -2158,12 +2162,45 @@ export class Plur {
     this.indexedStorage.reindex()
   }
 
+  /**
+   * Embed any active engrams missing a row in engram_embeddings and upsert them
+   * (#226 B-1). Runs after every syncFromYaml/reindex so learn()/learnAsync()/
+   * sync() keep the PGLite vector index in step with YAML. Skips silently when
+   * the embedder is unavailable (recall on those engrams degrades to the JSON
+   * path until the next cycle) or when the active embedder dim differs from the
+   * indexed column (run `plur sync --reembed --full` to migrate intentionally).
+   */
+  private async _autoEmbedNewEngrams(adapter: PGLiteAdapter): Promise<void> {
+    try {
+      const { embed } = await import('./embeddings.js')
+      const indexedDim = await adapter.getVectorColumnDim()
+      if (indexedDim !== null && getEmbedder(resolveEmbedderName()).dim !== indexedDim) {
+        logger.debug(`[plur] auto-embed skip: active embedder dim differs from indexed column (${indexedDim}). Run 'plur sync --reembed --full' to migrate.`)
+        return
+      }
+      const active = this._loadAllEngrams().filter(e => e.status === 'active' && !(e as any)._originalId && !(e as any)._pack)
+      if (active.length === 0) return
+      const { engramSearchText } = await import('./fts.js')
+      for (const engram of active) {
+        if (await adapter.hasEmbedding(engram.id)) continue
+        const vec = await embed(engramSearchText(engram))
+        if (!vec) return // embedder unavailable — next cycle retries
+        await adapter.upsertEmbedding(engram.id, vec)
+      }
+    } catch (err) {
+      logger.warning(`[plur] auto-embed failed: ${(err as Error).message}`)
+    }
+  }
+
   /** Sync index after YAML write (no-op if no index is active). */
   private _syncIndex(): void {
     if (this.pgliteAdapter) {
       // Synchronous-shaped path: kick off the sync, track the promise.
-      // The YAML write already happened — this is the index catching up.
-      this._pgliteInitPromise = this.pgliteAdapter.syncFromYaml()
+      // The YAML write already happened — this is the index catching up, then
+      // auto-embed any new engrams so they're vector-searchable.
+      const adapter = this.pgliteAdapter
+      this._pgliteInitPromise = adapter.syncFromYaml()
+        .then(() => this._autoEmbedNewEngrams(adapter))
         .catch((err: unknown) => {
           logger.warning(`[plur] PGLite syncFromYaml failed (YAML is still source of truth): ${(err as Error).message}`)
         })
