@@ -47,16 +47,31 @@ export function loadPack(packDir: string): LoadedPack {
   const manifestYamlPath = `${packDir}/manifest.yaml`
   const engramsPath = `${packDir}/engrams.yaml`
 
+  // SKILL.md is the canonical manifest. manifest.yaml is DEPRECATED (#325): it
+  // still loads (with a warning) and installPack auto-upgrades the installed copy
+  // to SKILL.md — we don't hard-break existing manifest.yaml packs.
   let rawManifest: Record<string, any>
   if (fs.existsSync(skillMdPath)) {
     rawManifest = parseSkillMdFrontmatter(skillMdPath)
   } else if (fs.existsSync(manifestYamlPath)) {
+    logger.warning(
+      `[plur:packs] ${packDir} ships a manifest.yaml — deprecated; use SKILL.md frontmatter. ` +
+      `It is read for now and auto-upgraded to SKILL.md on install.`,
+    )
     rawManifest = yaml.load(fs.readFileSync(manifestYamlPath, 'utf8')) as Record<string, any>
   } else {
-    throw new Error(`No SKILL.md or manifest.yaml found in ${packDir}`)
+    throw new Error(`No SKILL.md found in ${packDir} — a knowledge pack must ship a SKILL.md (manifest.yaml is deprecated)`)
   }
 
-  const manifest = PackManifestSchema.parse(rawManifest)
+  // Validate the frontmatter, not just its presence (#325): a SKILL.md with no
+  // (or an invalid) manifest must fail with a clear error, not load empty.
+  const result = PackManifestSchema.safeParse(rawManifest)
+  if (!result.success) {
+    const why = result.error.issues.map(i => `${i.path.join('.') || '(root)'}: ${i.message}`).join('; ')
+    throw new Error(`Invalid pack manifest in ${packDir} — SKILL.md frontmatter failed validation: ${why}`)
+  }
+
+  const manifest = result.data
   const engrams = loadEngrams(engramsPath)
   return { manifest, engrams }
 }

@@ -174,6 +174,23 @@ export interface InstallOptions {
   allowInjection?: boolean
 }
 
+/**
+ * Serialize a parsed manifest back to SKILL.md content (frontmatter + body).
+ * Used to auto-upgrade a deprecated `manifest.yaml` pack to the canonical
+ * SKILL.md form on install (#325). 1:1 with PackManifestSchema, so it re-parses.
+ */
+function manifestToSkillMd(m: PackManifest): string {
+  const fm: Record<string, unknown> = { name: m.name, version: m.version }
+  if (m.description) fm.description = m.description
+  if (m.creator) fm.creator = m.creator
+  if (m.license) fm.license = m.license
+  if (m.tags && m.tags.length) fm.tags = m.tags
+  if (m.metadata) fm.metadata = m.metadata
+  const legacy = (m as Record<string, unknown>)['x-datacore']
+  if (legacy) fm['x-datacore'] = legacy
+  return `---\n${yaml.dump(fm)}---\n\n# ${m.name}\n\n${m.description ?? ''}\n`
+}
+
 export function installPack(
   packsDir: string,
   source: string,
@@ -212,6 +229,21 @@ export function installPack(
     if (fs.statSync(srcPath).isFile()) {
       fs.copyFileSync(srcPath, destPath)
     }
+  }
+
+  // Auto-upgrade a deprecated manifest.yaml pack to SKILL.md in the installed
+  // copy (#325). manifest.yaml still LOADS (loadPack reads it with a deprecation
+  // warning), but the managed copy is normalized to the canonical SKILL.md so
+  // the integrity hash below is computed over SKILL.md + engrams.yaml. Done
+  // before computePackHash so the recorded integrity reflects the upgrade.
+  const destSkillMd = path.join(destDir, 'SKILL.md')
+  const destManifestYaml = path.join(destDir, 'manifest.yaml')
+  if (!fs.existsSync(destSkillMd) && fs.existsSync(destManifestYaml)) {
+    fs.writeFileSync(destSkillMd, manifestToSkillMd(preview.manifest))
+    fs.rmSync(destManifestYaml)
+    logger.warning(
+      `installPack: pack '${preview.manifest.name}' shipped a deprecated manifest.yaml — upgraded to SKILL.md in the installed copy`,
+    )
   }
 
   // Load engrams, then clamp host-overriding fields (pinned / locked commitment)
@@ -610,20 +642,23 @@ export function exportPack(
 // --- Integrity ---
 
 /**
- * Compute SHA256 hash of pack contents (SKILL.md + engrams.yaml).
- * Deterministic — same content always produces same hash.
- * Can be used as a content-addressable identifier (like Swarm hash).
+ * Compute SHA256 hash of pack contents per ENGRAM-STANDARD-v1.md §5.5:
+ *   H = SHA256( bytes(SKILL.md) || bytes(engrams.yaml) )
+ * Deterministic — same content always produces same hash; usable as a
+ * content-addressable identifier (like a Swarm hash).
+ *
+ * SKILL.md is the canonical pack manifest. `manifest.yaml` is deprecated (#325)
+ * and does NOT contribute to the hash; installPack auto-upgrades a manifest.yaml
+ * pack to SKILL.md before this is computed over the installed copy, so the
+ * integrity hash always reflects SKILL.md + engrams.yaml.
  */
 export function computePackHash(packDir: string): string {
   const hash = crypto.createHash('sha256')
 
-  // Hash manifest
+  // Hash the SKILL.md manifest. No manifest.yaml fallback.
   const skillMd = path.join(packDir, 'SKILL.md')
-  const manifestYaml = path.join(packDir, 'manifest.yaml')
   if (fs.existsSync(skillMd)) {
     hash.update(fs.readFileSync(skillMd))
-  } else if (fs.existsSync(manifestYaml)) {
-    hash.update(fs.readFileSync(manifestYaml))
   }
 
   // Hash engrams
