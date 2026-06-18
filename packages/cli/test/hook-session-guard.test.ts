@@ -59,19 +59,23 @@ describe('hook-session-guard', () => {
     expect(result.stdout).not.toContain('deny')
   })
 
-  it('stops blocking after MAX_BLOCKS_BEFORE_FALLBACK calls (#199)', () => {
+  it('nudges once then fails open (#199, #283)', () => {
     mkdirSync(join(home, 'tmp'), { recursive: true })
 
-    // First 5 calls should block
-    for (let i = 0; i < 5; i++) {
-      const result = runGuard({ session_id: 'deadlock-test', tool_name: 'Bash' })
-      expect(result.stdout).toContain('deny')
-    }
+    // First call nudges (deny). Bounding to a single nudge prevents the
+    // deferred-tool retry spiral on the exempt session_start call.
+    const first = runGuard({ session_id: 'deadlock-test', tool_name: 'Bash' })
+    expect(first.stdout).toContain('deny')
 
-    // 6th call should allow through with warning
+    // Second call falls through with the fallback warning.
     const fallback = runGuard({ session_id: 'deadlock-test', tool_name: 'Bash' })
     expect(fallback.stdout).not.toContain('deny')
-    expect(fallback.stderr).toContain('gave up')
     expect(fallback.stderr).toContain('plur doctor')
+
+    // Every subsequent call also allows through — no spiral possible.
+    for (let i = 0; i < 4; i++) {
+      const result = runGuard({ session_id: 'deadlock-test', tool_name: 'Bash' })
+      expect(result.stdout).not.toContain('deny')
+    }
   })
 })
