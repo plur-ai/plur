@@ -109,6 +109,12 @@ async function getEmbedder() {
   // Loads are cheap once the model is cached; failures are rare and
   // transient (network, sandbox restrictions on first download).
   try {
+    // Disable HuggingFace Xet transfer protocol before any download attempt.
+    // Xet can silently truncate the BGE ONNX model (~75 MB of ~130 MB fp32),
+    // producing a corrupt cache that fails with "Protobuf parsing failed" and
+    // causes embed() to return null — silently degrading recall to BM25-only.
+    // The classic resolve path is reliable. (#340)
+    process.env.HF_HUB_DISABLE_XET = '1'
     const { pipeline } = await import('@huggingface/transformers')
     embedPipeline = await pipeline('feature-extraction', 'Xenova/bge-small-en-v1.5', {
       dtype: 'fp32',
