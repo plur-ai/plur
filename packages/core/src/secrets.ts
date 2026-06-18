@@ -121,3 +121,21 @@ export function detectSensitive(text: string): SecretMatch[] {
   }
   return matches
 }
+
+/**
+ * Sensitivity category a detector pattern belongs to. Lets per-scope policy
+ * (ScopeMetadata.sensitivity) reason about `detectSensitive` hits in terms of
+ * the broad families a scope forbids/allows — 'secrets' (credentials/tokens)
+ * vs 'infra' (topology: IPs, internal hosts, host:port) — rather than the
+ * fine-grained pattern names. The infra family is exactly the set introduced by
+ * `detectSensitive` over `detectSecrets` (SENSITIVE_PATTERNS + public_ipv4);
+ * everything else `detectSecrets` finds is a credential, i.e. 'secrets'.
+ */
+const INFRA_PATTERN_NAMES = new Set<string>([
+  ...SENSITIVE_PATTERNS.map(p => p.name),
+  'public_ipv4',
+])
+
+export function sensitivityCategory(patternName: string): 'secrets' | 'infra' {
+  return INFRA_PATTERN_NAMES.has(patternName) ? 'infra' : 'secrets'
+}

@@ -1,10 +1,17 @@
 import { z } from 'zod'
+import { ScopeSensitivitySchema } from './scope-metadata.js'
 
 /**
  * A store can be either:
  *   - filesystem (path) — historical default; YAML or SQLite
  *   - remote (url + token) — speaks to a PLUR Enterprise server over HTTP
  * Exactly one of path/url must be present.
+ *
+ * A store entry may also carry self-describing scope metadata (#345) —
+ * `description`, `covers`, `sensitivity` — so a registered scope declares
+ * locally what it is for and its sensitivity policy. All metadata fields are
+ * optional and non-breaking; absent metadata falls back to the default
+ * shared-scope leak-guard behavior.
  */
 export const StoreEntrySchema = z.object({
   path: z.string().optional(),
@@ -13,6 +20,12 @@ export const StoreEntrySchema = z.object({
   scope: z.string(),
   shared: z.boolean().default(false),
   readonly: z.boolean().default(false),
+  description: z.string().optional()
+    .describe('Human-readable explanation of what this scope is for (#345). Surfaced in store/scope discovery.'),
+  covers: z.array(z.string()).optional()
+    .describe('Topics/domains this scope is the home for (#345). Advisory; surfaced in discovery.'),
+  sensitivity: ScopeSensitivitySchema.optional()
+    .describe("Per-scope sensitivity policy (#345) consumed by the write-time leak guard. When present, overrides the default shared-scope demote-everything behavior for this scope."),
 }).refine(
   (s) => Boolean(s.path) !== Boolean(s.url),
   { message: 'StoreEntry requires exactly one of path or url' },
