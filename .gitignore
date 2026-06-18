@@ -23,6 +23,10 @@ docs/architecture/vertical-extensions.md
 # Local gstack security reports — keep audit artifacts out of the repo
 .gstack/
 
-# Benchmark data belongs in plur-bench, not the monorepo (DO NOT commit here)
+# Benchmark data + generated artifacts belong in plur-bench, not the monorepo.
+# The small hand-curated scenarios.yaml fixture is the one committed exception
+# (already tracked) — large corpora, result runs, and caches stay out (#336).
 benchmark/data/
+benchmark/results/
+benchmark/.cache/
 

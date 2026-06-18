@@ -33,6 +33,11 @@ async function loadPipeline(modelId: string, dtype: TransformersAdapterConfig['d
   let pending = pipelineCache.get(key)
   if (!pending) {
     pending = (async () => {
+      // Force the classic HF download path: the Xet transfer protocol truncates
+      // ONNX model files in this stack (@huggingface/transformers 3.8.1),
+      // producing corrupt models ("Protobuf parsing failed") that silently
+      // degrade recall to fallback. Never use Xet. (#340)
+      process.env.HF_HUB_DISABLE_XET ??= '1'
       const { pipeline } = await import('@huggingface/transformers')
       return pipeline('feature-extraction', modelId, dtype ? { dtype } : undefined)
     })()
