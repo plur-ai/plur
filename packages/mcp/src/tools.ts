@@ -955,10 +955,18 @@ const engram = await plur.learnRouted(statement, context)
         }
         const after = plur.embedderStatus()
         const checks: Record<string, unknown>[] = []
+        const corpusOk = status.engram_count <= 20_000
         checks.push({
           check: 'engram store',
           ok: status.engram_count > 0,
           detail: `${status.engram_count} engrams across ${status.pack_count} packs at ${status.storage_root}`,
+        })
+        checks.push({
+          check: 'corpus size',
+          ok: corpusOk,
+          detail: corpusOk
+            ? `${status.engram_count} engrams — well within linear-scan range`
+            : `${status.engram_count} engrams exceeds 20k warning threshold — recall latency may increase; consider HNSW ANN index`,
         })
         // When embeddings are explicitly disabled, mark the embedder check as
         // ok with a "disabled-on-purpose" detail. Hybrid search is then

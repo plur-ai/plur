@@ -245,6 +245,10 @@ export class Plur {
       }
     }
 
+    if (all.length > 20_000) {
+      logger.warn(`[plur] Corpus size ${all.length} exceeds 20k — consider HNSW ANN index for recall latency`)
+    }
+
     return all
   }
 
