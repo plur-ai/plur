@@ -79,6 +79,19 @@ export interface RecallOptions {
   llm?: LlmFunction
   budget?: RecallBudget
   caller_session_id?: string
+  /**
+   * Force a query intent for routing (#224) instead of letting the classifier
+   * decide. 'general' is the neutral baseline (no re-ranking perturbation).
+   */
+  intentOverride?: 'entity' | 'temporal' | 'event' | 'general'
+  /**
+   * Cross-encoder rerank stage (#220), applies to hybrid/semantic recall:
+   *   - `true`  → opt in for this call (loads the configured reranker, or
+   *     bge-reranker-v2-m3 if PLUR_RERANKER is unset/off).
+   *   - `false` → skip the rerank stage even if PLUR_RERANKER is set.
+   *   - omitted → respect PLUR_RERANKER (default off → zero cost).
+   */
+  rerank?: boolean
 }
 
 export interface BoundedRecallResult {
@@ -91,6 +104,10 @@ export interface InjectOptions {
   budget?: number
   scope?: string
   boost_recent?: boolean
+  /** Force a query intent for routing (#224); omitted → classifier decides. */
+  intentOverride?: 'entity' | 'temporal' | 'event' | 'general'
+  /** Cross-encoder rerank stage (#220): true=opt in, false=skip, omitted=respect PLUR_RERANKER. */
+  rerank?: boolean
 }
 
 export interface InjectionResult {

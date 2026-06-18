@@ -1,6 +1,9 @@
 import type { Engram } from './schemas/engram.js'
 import { searchEngrams } from './fts.js'
 import { embeddingSearch, embedderStatus } from './embeddings.js'
+import { logger } from './logger.js'
+import type { RerankerAdapter } from './rerankers/types.js'
+import { isRerankerOff } from './rerankers/index.js'
 
 /** Result of a hybrid search call with diagnostic metadata. */
 export interface HybridSearchResult {
@@ -21,8 +24,30 @@ export interface HybridSearchResult {
    * score as a miss even when ≥1 engram came back. Exposing this value does
    * NOT change the retrieval algorithm; it only stops discarding a number
    * rrfMerge already produced.
+   *
+   * NOTE: this is the **pre-rerank** RRF fusion score — the miss-signal reasons
+   * about fusion strength, not the cross-encoder's reordering. Reranking (#220)
+   * reorders the returned engrams but does not change topScore.
    */
   topScore: number | null
+  /**
+   * Number of candidates re-scored by the cross-encoder reranker (#220), or 0
+   * when the reranker was off (default), unavailable, or the candidate pool was
+   * empty. Useful for benchmark + diagnostic reporting.
+   */
+  reranked?: number
+}
+
+/** Options for the optional cross-encoder rerank stage (#220). */
+export interface RerankOptions {
+  /** Adapter to use. When omitted or `isRerankerOff(adapter)` is true, skips. */
+  reranker?: RerankerAdapter
+  /**
+   * How many top RRF candidates to feed into the cross-encoder. Larger K
+   * means more chances to surface a buried gem but more model passes. The
+   * cost is O(K) cross-encoder calls per query. Default 50.
+   */
+  topK?: number
 }
 
 /**
@@ -51,6 +76,15 @@ function rrfMerge(resultSets: Engram[][], k = 60): Array<{ engram: Engram; score
   }
 
   return Array.from(scores.values()).sort((a, b) => b.score - a.score)
+}
+
+/**
+ * RRF-merge result sets and return just the engrams (no scores). For callers
+ * that fuse externally-ranked lists and don't need topScore — e.g. the PGLite
+ * recall path fusing pgvector hits with BM25 before the rerank stage.
+ */
+export function rrfMergeEngrams(resultSets: Engram[][], k = 60): Engram[] {
+  return rrfMerge(resultSets, k).map(s => s.engram)
 }
 
 /** Detect aggregation queries that need exhaustive retrieval */
@@ -84,8 +118,9 @@ export async function hybridSearch(
   query: string,
   limit: number,
   storagePath?: string,
+  rerank?: RerankOptions,
 ): Promise<Engram[]> {
-  const result = await hybridSearchWithMeta(engrams, query, limit, storagePath)
+  const result = await hybridSearchWithMeta(engrams, query, limit, storagePath, rerank)
   return result.engrams
 }
 
@@ -99,9 +134,10 @@ export async function hybridSearchWithMeta(
   query: string,
   limit: number,
   storagePath?: string,
+  rerank?: RerankOptions,
 ): Promise<HybridSearchResult> {
   if (engrams.length === 0) {
-    return { engrams: [], mode: 'hybrid', embedderError: null, topScore: null }
+    return { engrams: [], mode: 'hybrid', embedderError: null, topScore: null, reranked: 0 }
   }
 
   const exhaustive = isAggregationQuery(query)
@@ -134,10 +170,64 @@ export async function hybridSearchWithMeta(
 
   const merged = rrfMerge([bm25Results, embResults])
   const ranked = merged.slice(0, effectiveLimit)
+  // topScore is the RRF fusion score of the top candidate, captured BEFORE the
+  // optional rerank stage — the miss-signal reasons about fusion strength, not
+  // the cross-encoder's reordering.
+  const topScore = ranked.length > 0 ? ranked[0].score : null
+  // Optional cross-encoder rerank (#220): reorders the top-K by joint relevance.
+  // Off by default; on failure applyReranker logs + falls back to RRF order, so
+  // recall always returns something.
+  const reranked = await applyReranker(ranked.map(s => s.engram), query, rerank)
   return {
-    engrams: ranked.map(s => s.engram),
+    engrams: reranked.engrams,
     mode,
     embedderError,
-    topScore: ranked.length > 0 ? ranked[0].score : null,
+    topScore,
+    reranked: reranked.count,
+  }
+}
+
+/**
+ * Internal: apply the cross-encoder reranker to the top-K of a fused list.
+ *
+ * - When no reranker is supplied (or the sentinel `off` adapter is supplied)
+ *   returns the input order unchanged with count=0.
+ * - When the reranker throws (model unavailable, network, etc.) logs a
+ *   warning and falls back to the RRF order — recall should always return
+ *   something, even when the optional rerank stage fails.
+ */
+export async function applyReranker(
+  candidates: Engram[],
+  query: string,
+  rerank?: RerankOptions,
+): Promise<{ engrams: Engram[]; count: number }> {
+  if (!rerank?.reranker || isRerankerOff(rerank.reranker)) {
+    return { engrams: candidates, count: 0 }
+  }
+  if (candidates.length === 0) {
+    return { engrams: candidates, count: 0 }
+  }
+  const topK = Math.max(1, Math.min(candidates.length, rerank.topK ?? 50))
+  const head = candidates.slice(0, topK)
+  const tail = candidates.slice(topK)
+  try {
+    const docs = head.map(e => e.statement)
+    const scores = await rerank.reranker.scoreBatch(query, docs)
+    if (scores.length !== head.length) {
+      logger.warning(
+        `[hybrid-search] reranker returned ${scores.length} scores for ${head.length} candidates; skipping rerank.`,
+      )
+      return { engrams: candidates, count: 0 }
+    }
+    const ranked = head
+      .map((engram, i) => ({ engram, score: scores[i] }))
+      .sort((a, b) => b.score - a.score)
+      .map(r => r.engram)
+    return { engrams: [...ranked, ...tail], count: head.length }
+  } catch (err) {
+    logger.warning(
+      `[hybrid-search] reranker "${rerank.reranker.name}" failed: ${(err as Error).message}. Falling back to RRF order.`,
+    )
+    return { engrams: candidates, count: 0 }
   }
 }
