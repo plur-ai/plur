@@ -168,6 +168,24 @@ export function getToolDefinitions(): ToolDefinition[] {
         // learnRouted defers to sync learn() so dedup behavior is
         // unchanged. We try learnAsync second only as a fallback for
         // the LLM-driven dedup pathway (local routes).
+        // Runtime scope nudge (#296): when the caller passes no scope and the
+        // engram lands at "global" while a team store IS configured, team
+        // knowledge silently never reaches the shared store. Surface that at the
+        // moment it happens — non-fatal, informational, and only when there is a
+        // team store to route to (stays silent on personal installs).
+        const explicitScope = typeof args.scope === 'string' && args.scope.length > 0
+        const scopeHint = (engramScope: string): { scope_hint?: string } => {
+          if (explicitScope || engramScope !== 'global') return {}
+          let remote: Array<{ scope: string }> = []
+          try { remote = plur.getWritableRemoteScopes() } catch { return {} }
+          if (remote.length === 0) return {}
+          const scopes = remote.map(s => `"${s.scope}"`).join(', ')
+          return { scope_hint:
+            `Stored at "global" because no scope was passed, but a team store is configured (${scopes}). ` +
+            `If this is team/engineering knowledge, re-learn it with an explicit scope so it reaches the shared ` +
+            `store; keep genuinely personal notes at the default scope.` }
+        }
+
         const statement = sanitizeStatement(args.statement as string)
         try {
           const engram = await plur.learnRouted(statement, context)
@@ -180,6 +198,7 @@ export function getToolDefinitions(): ToolDefinition[] {
             scope: engram.scope, type: engram.type,
             pinned: (engram as any).pinned === true,
             decision: 'ADD',
+            ...scopeHint(engram.scope),
             ...(isOutbox ? { outbox: true, warning: 'Remote write failed; engram queued locally for retry on next session start or plur_sync.' } : {}),
           }
         } catch (err) {
@@ -193,6 +212,7 @@ export function getToolDefinitions(): ToolDefinition[] {
           return {
             id: engram.id, statement: engram.statement,
             scope: engram.scope, type: engram.type, decision: 'ADD',
+            ...scopeHint(engram.scope),
             ...(isOutbox ? { outbox: true } : {}),
             warning: `Remote write failed (${(err as Error).message}); engram queued for retry.`,
           }
@@ -1238,10 +1258,11 @@ export function getToolDefinitions(): ToolDefinition[] {
           guide += default_scope
             ? `\n\nSession default scope is set to "${default_scope}". To route an engram to a remote ` +
               `enterprise store instead, pass scope explicitly to plur_learn (available remote scopes: ${scopeList}).`
-            : `\n\nRemote store scopes available: ${scopeList}. When an engram is relevant to the team ` +
-              `(engineering patterns, architecture decisions, project conventions), set scope to the matching ` +
-              `remote scope in plur_learn. Personal preferences, local project details, and corrections specific ` +
-              `to your workflow should stay at default scope (local).`
+            : `\n\nRemote store scopes available: ${scopeList}. Set scope PER ENGRAM by content: when an engram is ` +
+              `relevant to the team (engineering patterns, architecture decisions, project conventions), set scope to ` +
+              `the matching remote scope in plur_learn. Personal preferences, local project details, and corrections ` +
+              `specific to your workflow should stay at default scope (local). Do NOT let team knowledge fall back to ` +
+              `"global" — without an explicit scope it will, and it will never reach the shared store.`
 
           // Surface authorized-but-unregistered scopes (#292). Best-effort:
           // gated to enterprise users (remote stores configured), bounded by a

@@ -53,6 +53,16 @@ describe('plur init', () => {
     expect(settings.mcpServers?.plur).toBeDefined()
   })
 
+  it('writes per-engram scope-selection guidance into CLAUDE.md (#296)', () => {
+    runInit()
+    const claudeMd = readFileSync(join(home, 'CLAUDE.md'), 'utf-8')
+    expect(claudeMd).toContain('Scope selection')
+    expect(claudeMd).toMatch(/per engram/i)
+    expect(claudeMd).toContain('group:<org>/<team>')
+    // The key anti-pattern the issue is about: omitting scope → global → never reaches the team store.
+    expect(claudeMd).toMatch(/never reaches the team store/i)
+  })
+
   it('registers the MCP server with a platform-appropriate command', () => {
     runInit()
     const settings = readSettings()

@@ -341,9 +341,14 @@ A PreToolUse guard enforces that \`plur_session_start\` is called at the beginni
 
 Do not ask permission to use these tools — they are your memory system.
 
-### Multi-project scoping
+### Scope selection (set scope PER engram, by content)
 
-PLUR uses \`domain\` and \`scope\` fields on engrams to separate knowledge by project. When calling \`plur_learn\`, set \`scope\` (e.g. \`project:my-app\`) to namespace the engram. Scoped recall automatically includes global engrams.
+PLUR uses \`domain\` and \`scope\` fields to separate knowledge. **Set \`scope\` on every \`plur_learn\` call, chosen by the engram's content** — a single session legitimately spans multiple scopes. Scoped recall automatically includes global engrams.
+
+- **Team / shared knowledge** (engineering patterns, architecture decisions, project conventions) → the matching team scope (e.g. \`group:<org>/<team>\`). \`plur_session_start\` lists the remote scopes your token can write to.
+- **This project's details** → \`project:<name>\` (a \`.plur.yaml\` with \`scope:\` makes this the default).
+- **Personal preferences / your own workflow** → leave at the default / local scope.
+- **Do NOT omit \`scope\` for team-relevant knowledge** — it falls back to \`global\`, which appears in every project's future sessions AND never reaches the team store. Prefer the project/local default over \`global\`; reserve \`global\` for genuinely cross-project facts (language gotchas, tool quirks).
 
 ### When to check memory
 

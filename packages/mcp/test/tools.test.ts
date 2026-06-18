@@ -44,6 +44,39 @@ describe('MCP tools', () => {
     expect(result.statement).toBe('Test learning')
   })
 
+  // #296 — team knowledge silently defaulting to 'global'. When a team store is
+  // configured and no scope is passed, surface a hint at the moment of the write.
+  describe('scope hint when a team store is configured (#296)', () => {
+    beforeEach(() => {
+      plur.addStore('', 'group:acme/engineering', { url: 'https://plur.example.com', token: 'tok' })
+    })
+
+    it('hints to use the team scope when scope is omitted and engram lands at global', async () => {
+      const result = await callTool('plur_learn', { statement: 'We use trunk-based development' }) as any
+      expect(result.scope).toBe('global')
+      expect(result.scope_hint).toBeDefined()
+      expect(result.scope_hint).toContain('group:acme/engineering')
+    })
+
+    it('no hint when an explicit scope is passed', async () => {
+      const result = await callTool('plur_learn', {
+        statement: 'We use trunk-based development', scope: 'group:acme/engineering',
+      }) as any
+      expect(result.scope_hint).toBeUndefined()
+    })
+
+    it('no hint when the explicit scope is global on purpose', async () => {
+      const result = await callTool('plur_learn', { statement: 'TS enums are slow', scope: 'global' }) as any
+      expect(result.scope_hint).toBeUndefined()
+    })
+  })
+
+  it('plur_learn does NOT hint on a personal install (no team store configured)', async () => {
+    const result = await callTool('plur_learn', { statement: 'Personal note' }) as any
+    expect(result.scope).toBe('global')
+    expect(result.scope_hint).toBeUndefined()
+  })
+
   it('plur_learn strips XML envelope artifacts from statement (#145)', async () => {
     // Reproduce the corruption: LLM generates old XML tool-call format where the
     // statement value contains the closing tag + duplicated parameter body.
