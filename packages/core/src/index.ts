@@ -16,7 +16,7 @@ import { agenticSearch } from './agentic-search.js'
 import { embeddingSearch, embeddingSearchWithScores, type SimilarityResult } from './embeddings.js'
 import { hybridSearch, hybridSearchWithMeta, applyReranker, rrfMergeEngrams as pgliteRrfMerge, type HybridSearchResult, type RerankOptions } from './hybrid-search.js'
 import { getReranker, resolveRerankerName, isRerankerOff, type RerankerAdapter } from './rerankers/index.js'
-import { classifyQuery, routeForIntent, applyIntentRouting, isIntentRoutingDisabled, type QueryIntent, type IntentRoutingProfile } from './intent/index.js'
+import { classifyQuery, routeForIntent, applyIntentRouting, isIntentRoutingDisabled, isEntityDomain, type QueryIntent, type IntentRoutingProfile } from './intent/index.js'
 import { getEmbedder, resolveEmbedderName } from './embedders/index.js'
 import { emitMissSignal } from './telemetry-miss-signal.js'
 import { embedderStatus, resetEmbedder, setEmbeddingsEnabled, type EmbedderStatus } from './embeddings.js'
@@ -1631,16 +1631,86 @@ export class Plur {
     let embeddingBoosts: Map<string, number> | undefined
     try {
       const engrams = this._loadAllEngrams().filter(e => e.status === 'active')
-      const results: SimilarityResult[] = await embeddingSearchWithScores(
-        engrams,
-        task,
-        engrams.length,
-        this.paths.root,
-      )
+      // Route through PGLite/pgvector when active (#226 B-1), intersecting hits
+      // with the YAML-rooted `engrams` set; else the JSON cache path.
+      let results: SimilarityResult[] = []
+      if (this.pgliteAdapter) {
+        const { embed } = await import('./embeddings.js')
+        const queryVec = await embed(task)
+        if (queryVec) {
+          try {
+            const hits = await this.pgliteAdapter.searchVector(queryVec, engrams.length)
+            if (hits.length > 0) {
+              const allowed = new Map<string, Engram>(engrams.map(e => [e.id, e]))
+              for (const hit of hits) {
+                const e = allowed.get(hit.engram.id)
+                if (e) results.push({ engram: e, score: Math.max(0, Math.min(1, hit.score)) })
+              }
+            }
+          } catch (err) {
+            logger.warning(`[plur] PGLite searchVector failed in injectHybrid: ${(err as Error).message}.`)
+          }
+        }
+      }
+      if (results.length === 0) {
+        results = await embeddingSearchWithScores(engrams, task, engrams.length, this.paths.root)
+      }
+      // Cross-encoder rerank stage (#220): replace the cosine boosts for the
+      // top-K with the reranker's relevance, min-max normalized into [0,1] so
+      // the selectAndSpread 0.5 threshold stays meaningful. Off by default.
+      const rerank = this._resolveRerankOptions(options?.rerank)
+      if (rerank && results.length > 0) {
+        const topK = Math.max(1, Math.min(results.length, rerank.topK ?? 50))
+        const head = results.slice(0, topK)
+        try {
+          const scores = await rerank.reranker!.scoreBatch(task, head.map(r => r.engram.statement))
+          if (scores.length === head.length) {
+            const min = Math.min(...scores)
+            const max = Math.max(...scores)
+            const span = max - min
+            for (let i = 0; i < head.length; i++) {
+              const normalized = span > 0 ? (scores[i] - min) / span : 0.5
+              head[i] = { engram: head[i].engram, score: normalized }
+            }
+            head.sort((a, b) => b.score - a.score)
+            results = [...head, ...results.slice(topK)]
+          }
+        } catch (err) {
+          logger.warning(`[plur] injectHybrid reranker "${rerank.reranker!.name}" failed: ${(err as Error).message}. Falling back to cosine boosts.`)
+        }
+      }
       if (results.length > 0) {
         embeddingBoosts = new Map()
         for (const r of results) {
           embeddingBoosts.set(r.engram.id, r.score)
+        }
+      }
+      // Intent-aware boost (#224): modest (<=1.5x) upweight for engrams matching
+      // the query intent. Boost cap stays 1.0 so the 0.5 threshold keeps meaning.
+      const intent = this._resolveIntentProfile(task, options?.intentOverride)
+      if (intent && embeddingBoosts) {
+        for (const e of results.map(r => r.engram)) {
+          let mult = 1.0
+          if (intent.profile.entityBoost !== 1.0 && isEntityDomain(e.domain)) {
+            mult *= intent.profile.entityBoost
+          }
+          if (intent.profile.episodeBoost !== 1.0 && Array.isArray(e.episode_ids) && e.episode_ids.length > 0) {
+            mult *= intent.profile.episodeBoost
+          }
+          if (intent.profile.recencyBoost !== 1.0) {
+            const ts = e.activation?.last_accessed ?? e.temporal?.learned_at
+            if (ts) {
+              const days = (Date.now() - Date.parse(ts)) / (1000 * 60 * 60 * 24)
+              if (Number.isFinite(days) && days >= 0) {
+                const r = Math.exp(-days / 30) // half-life ~30 days
+                mult *= 1.0 + r * (intent.profile.recencyBoost - 1.0)
+              }
+            }
+          }
+          if (mult !== 1.0) {
+            const cur = embeddingBoosts.get(e.id) ?? 0
+            embeddingBoosts.set(e.id, Math.min(1.0, cur * mult))
+          }
         }
       }
     } catch {
