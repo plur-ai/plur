@@ -58,6 +58,16 @@ When an enterprise token expired, the client failed silently: team-scoped writes
 
 The reauth command itself (`plur login`) and longer-lived keys are tracked separately as a fast-follow.
 
+### Teach per-engram scope selection so team knowledge stops defaulting to global (#296)
+
+Per-engram scoping was supported (every `plur_learn` takes a `scope`) but nothing taught agents to use it, so they routinely omitted `scope` → it fell back to `global` → team-relevant knowledge silently never reached the configured group store. This affects any install with a remote/group store. The capability worked; the guidance and the defaults didn't. Fixed at three layers — always-on instructions, install-time guidance, and a runtime safety net:
+
+- **`packages/mcp/src/server.ts`** — the server `INSTRUCTIONS` block (advertised to every client on connect) gains a single "SCOPE SELECTION" section: scope is content-driven and per-call; team/shared knowledge → the matching `group:<org>/<team>` scope (`plur_session_start` lists the writable ones); personal/local → default; never let team knowledge fall back to `global`. Exported for testing.
+- **`packages/cli/src/commands/init.ts`** (+ repo `CLAUDE.md`, `README.md`) — the CLAUDE.md `plur init` generates replaces the thin "Multi-project scoping" note with a fuller "Scope selection (set scope PER engram, by content)" guide enumerating the team / project / personal routing and the global-fallback anti-pattern.
+- **`packages/mcp/src/tools.ts`** — runtime safety net: when a `plur_learn` call omits `scope`, lands at `global`, **and** a team store is configured, the response carries a non-fatal `scope_hint` naming the writable team scopes (silent on personal installs). `plur_session_start` guidance is also made prescriptive about per-engram routing.
+
+`plur_session_start` already surfaces the live writable remote scopes (#229); this adds the always-on, install-time, and at-write-time guidance around it. Relates to #291 (a comms/second scope can't be registered against the same URL until that lands) and #295 (silent auth-expiry). Consolidates #299 (install surfaces) and #324 (runtime).
+
 ## 0.9.11 (2026-05-26)
 
 Bug sweep — three independent fixes bundled.
