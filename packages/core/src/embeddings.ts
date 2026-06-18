@@ -4,45 +4,40 @@ import { existsSync, readFileSync, mkdirSync } from 'fs'
 import { join } from 'path'
 import { createHash } from 'crypto'
 import { atomicWrite } from './sync.js'
+import { logger } from './logger.js'
 
 /**
  * Embedding-based semantic search for engrams.
  *
- * Uses @huggingface/transformers (ONNX runtime) for local embeddings.
- * Model: BAAI/bge-small-en-v1.5 (~130MB, 384-dim, strong MTEB, fast)
+ * Uses @huggingface/transformers (ONNX runtime) for local embeddings, routed
+ * through the embedder factory at packages/core/src/embedders/index.ts.
  *
- * BGE models significantly outperform MiniLM on MTEB retrieval benchmarks
- * while keeping the same 384-dim footprint. bge-small-en-v1.5 scores ~62 on
- * MTEB vs ~42 for all-MiniLM-L6-v2.
+ * Default model: BGE-small-en-v1.5 (MIT, 384d, ~130 MB on disk q8).
+ * EmbeddingGemma was briefly promoted to default in Sprint 0 PR 5 (#219) but
+ * the iter-1 audit (B-2) reverted the default pending Phase C LongMemEval-S
+ * evidence — see docs/audit/sprint-0/iter-1-gaps-consolidated.md and
+ * docs/benchmarks/embedder-bake-off-2026-05.md. EmbeddingGemma is still
+ * available via PLUR_EMBEDDER=embedding-gemma. Opt-in API tier:
+ * `openai-3-large` (text-embedding-3-large, 3072d) — requires OPENAI_API_KEY.
  *
  * Embeddings are cached per-engram using content hashing to avoid
- * re-computation on subsequent searches.
+ * re-computation on subsequent searches. The cache file is stamped with the
+ * active embedder name + dim; on mismatch the cache is invalidated and
+ * rebuilt (Sprint 0 iter-2 B-1, closes RC-3).
  */
 
 /**
- * Embedding dimension produced by the model (BAAI/bge-small-en-v1.5 → 384).
+ * Dimension of the DEFAULT embedder (bge-small → 384). Exported for backward
+ * compatibility with #289/#290.
  *
- * STABLE PUBLIC CONTRACT. Any backend that persists vectors must store them at
- * this dimension and produced by this exact model — vectors of a different
- * dimension or from a different model are incompatible and silently degrade
- * recall. Changing the model or this value is therefore a BREAKING change:
- * every consumer holding persisted vectors must re-embed. `embed()` asserts its
- * first successful output against this constant so a model swap that changes the
- * dimension fails loudly instead of drifting silently.
+ * NOTE (#335): the embedder is pluggable via PLUR_EMBEDDER, so the dimension of
+ * vectors this install actually produces is NOT fixed at this value —
+ * bge-base / embedding-gemma are 768, openai-3-large is 3072. Any backend that
+ * persists vectors MUST size its column to the **active** embedder's dim,
+ * obtained from `activeEmbedderDim()` — NOT this constant. `EMBED_DIM` remains
+ * only as the documented default; `activeEmbedderDim()` is the source of truth.
  */
 export const EMBED_DIM = 384
-
-/**
- * Model identity behind the embeddings, half of the stable contract above.
- * The ONNX/transformers.js port of BAAI/bge-small-en-v1.5. Named so the
- * dimension-mismatch error can name the model a consumer must match, and so a
- * model swap is a one-line, greppable change.
- */
-const EMBED_MODEL_ID = 'Xenova/bge-small-en-v1.5'
-
-// Verifies the live model output matches EMBED_DIM exactly once per process —
-// see assertEmbedDim().
-let embedDimChecked = false
 
 // Lazy-loaded pipeline — only initialized when first needed
 let embedPipeline: any = null
@@ -125,7 +120,6 @@ export function resetEmbedder(): void {
   transformersUnavailable = false
   lastLoadError = null
   embedPipeline = null
-  embedDimChecked = false
 }
 
 async function getEmbedder() {
@@ -135,10 +129,13 @@ async function getEmbedder() {
   // Loads are cheap once the model is cached; failures are rare and
   // transient (network, sandbox restrictions on first download).
   try {
-    const { pipeline } = await import('@huggingface/transformers')
-    embedPipeline = await pipeline('feature-extraction', EMBED_MODEL_ID, {
-      dtype: 'fp32',
-    })
+    // Sprint 0 PR 4: route through the embedder factory so PLUR_EMBEDDER
+    // controls which model is loaded. Default is bge-small (Sprint 0 iter-2
+    // B-2 revert) when the env var is unset, so existing installs are
+    // unchanged. EmbeddingGemma stays opt-in until Phase C produces evidence.
+    const { getEmbedder: getAdapter, resolveEmbedderName } = await import('./embedders/index.js')
+    const adapter = getAdapter(resolveEmbedderName())
+    embedPipeline = adapter
     transformersUnavailable = false
     lastLoadError = null
     return embedPipeline
@@ -149,48 +146,68 @@ async function getEmbedder() {
   }
 }
 
-/**
- * Generate an embedding for a text string. Returns a Float32Array of EMBED_DIM
- * (384) dims.
- *
- * Two distinct non-success outcomes — consumers MUST treat them differently:
- *
- * - Returns `null` → embeddings are unavailable (model not loaded, download
- *   failed, or disabled via config/PLUR_DISABLE_EMBEDDINGS). This is an
- *   environment condition; callers should degrade to keyword/BM25 search.
- * - Throws → the live model's output dimension does not match EMBED_DIM, i.e. a
- *   model/contract violation. This must NOT be swallowed into the degrade path:
- *   a catch-all that falls back to BM25 here re-introduces the exact silent
- *   drift this contract prevents and lets incompatible vectors get persisted.
- *   Let it surface.
- */
+/** Generate embedding for a text string. Returns the active embedder's native dim, or null if unavailable. */
 export async function embed(text: string): Promise<Float32Array | null> {
   const embedder = await getEmbedder()
   if (!embedder) return null
+  // When the cached value is an EmbedderAdapter (PR 4 path) it has an .embed
+  // method; the legacy code path stored the raw transformers pipeline. Branch
+  // on shape so the swap is backward-compatible in tests that stub the cache.
+  if (typeof embedder.embed === 'function') {
+    let vector: Float32Array | null
+    try {
+      vector = await embedder.embed(text)
+    } catch (err) {
+      transformersUnavailable = true
+      lastLoadError = err instanceof Error ? err.message : String(err)
+      embedPipeline = null
+      return null
+    }
+    // Dimension-drift check (#290 generalized to the active embedder, #335):
+    // the adapter declares its dim; if the live model produces a different
+    // length, persisted vectors would silently corrupt. Throw OUTSIDE the catch
+    // so it surfaces — degrading this to null would re-introduce the exact
+    // silent drift the contract prevents.
+    if (vector && typeof embedder.dim === 'number' && vector.length !== embedder.dim) {
+      throw new Error(
+        `Embedding dimension mismatch: embedder "${embedder.name}" declares ${embedder.dim} dims ` +
+          `but produced ${vector.length}. The adapter's declared dim and its model must agree; ` +
+          `vectors at the wrong dimension are incompatible with any store that persisted them.`,
+      )
+    }
+    return vector
+  }
   const result = await embedder(text, { pooling: 'cls', normalize: true })
-  const vector = new Float32Array(result.data)
-  assertEmbedDim(vector)
-  return vector
+  return new Float32Array(result.data)
 }
 
 /**
- * Assert (once per process) that the live model's output dimension matches
- * EMBED_DIM. A mismatch means the model changed without EMBED_DIM being updated
- * (or vice versa) — a contract violation that would silently corrupt any
- * persisted vectors, so we fail loudly here rather than let it drift.
+ * Get the active embedder's name+dim for cache stamping. Returns null when
+ * embeddings are disabled or the embedder failed to load — callers should
+ * skip cache writes in that case.
  */
-function assertEmbedDim(vector: Float32Array): void {
-  if (embedDimChecked) return
-  embedDimChecked = true
-  if (vector.length !== EMBED_DIM) {
-    throw new Error(
-      `Embedding dimension mismatch: model "${EMBED_MODEL_ID}" produced ${vector.length} dims ` +
-        `but EMBED_DIM is ${EMBED_DIM}. The embedding model and EMBED_DIM must agree. ` +
-        `Remediation: update EMBED_DIM to ${vector.length} or revert the model change. ` +
-        `Either way this is a BREAKING change for any consumer that persists vectors — ` +
-        `they must re-embed, since vectors at the old dimension are incompatible.`,
-    )
+async function getActiveEmbedderMeta(): Promise<{ name: string; dim: number } | null> {
+  const embedder = await getEmbedder()
+  if (!embedder) return null
+  if (typeof embedder.name === 'string' && typeof embedder.dim === 'number') {
+    return { name: embedder.name, dim: embedder.dim }
   }
+  // Legacy pipeline shape — pre-PR-4 raw transformers pipeline (only seen in
+  // older test stubs). Fall back to a sentinel that won't match any real
+  // adapter, so the cache invalidates conservatively.
+  return { name: 'legacy-pipeline', dim: 0 }
+}
+
+/**
+ * The dimension of vectors the ACTIVE embedder produces (per PLUR_EMBEDDER).
+ * This — not the `EMBED_DIM` default constant — is the value an external store
+ * must size its vector column to, so it never drifts from what core writes
+ * (#335). Returns null when embeddings are disabled or the embedder failed to
+ * load (no vectors will be produced, so there is nothing to size to).
+ */
+export async function activeEmbedderDim(): Promise<number | null> {
+  const meta = await getActiveEmbedderMeta()
+  return meta && meta.dim > 0 ? meta.dim : null
 }
 
 /** Cosine similarity between two vectors. */
@@ -200,20 +217,72 @@ export function cosineSimilarity(a: Float32Array, b: Float32Array): number {
   return dot // vectors are already normalized, so dot product = cosine similarity
 }
 
-/** Cache file for embeddings. */
-interface EmbeddingCache {
+/** Cache entries indexed by engram ID. */
+interface EmbeddingCacheEntries {
   [engramId: string]: {
     hash: string
     embedding: number[]
   }
 }
 
-function loadCache(cachePath: string): EmbeddingCache {
-  if (!existsSync(cachePath)) return {}
+/**
+ * Cache file format (iter-2 audit B-1/B-3).
+ *
+ * v1 stamps the file with the active embedder's name + dim. On load, if the
+ * meta header differs from the active embedder, the cache is invalidated and
+ * rebuilt. Backward-compat: the pre-iter-2 flat-object format
+ * `{ [engramId]: { hash, embedding } }` is detected by the absence of `meta`
+ * and treated as a hard mismatch (no data loss — cache rebuilds from YAML on
+ * the same call).
+ */
+interface EmbeddingCache {
+  meta: {
+    embedder_name: string
+    embedder_dim: number
+    version: number
+  }
+  entries: EmbeddingCacheEntries
+}
+
+const CACHE_VERSION = 1
+
+/** Active-embedder cache state used by load/save invariants. */
+function emptyCache(meta: { name: string; dim: number }): EmbeddingCache {
+  return {
+    meta: {
+      embedder_name: meta.name,
+      embedder_dim: meta.dim,
+      version: CACHE_VERSION,
+    },
+    entries: {},
+  }
+}
+
+/**
+ * Load cache from disk. When the on-disk header doesn't match `active`, the
+ * cache is invalidated (returns an empty cache stamped with the active
+ * meta). Legacy flat-object files are also invalidated. Logs a one-line info
+ * message on invalidation so users see why their first recall after a
+ * config change takes longer.
+ */
+function loadCache(cachePath: string, active: { name: string; dim: number }): EmbeddingCache {
+  if (!existsSync(cachePath)) return emptyCache(active)
   try {
-    return JSON.parse(readFileSync(cachePath, 'utf8'))
+    const raw = JSON.parse(readFileSync(cachePath, 'utf8'))
+    // Detect the v1 format. Legacy format has no `meta` field — invalidate.
+    if (!raw || typeof raw !== 'object' || !raw.meta) {
+      logger.info(`[embeddings] cache at ${cachePath} is in legacy format (no embedder meta) — rebuilding for active embedder ${active.name} (${active.dim}d).`)
+      return emptyCache(active)
+    }
+    const meta = raw.meta as Partial<EmbeddingCache['meta']>
+    if (meta.embedder_name !== active.name || meta.embedder_dim !== active.dim) {
+      logger.info(`[embeddings] cache embedder mismatch — on-disk: ${meta.embedder_name} (${meta.embedder_dim}d), active: ${active.name} (${active.dim}d). Rebuilding cache.`)
+      return emptyCache(active)
+    }
+    const entries = (raw.entries && typeof raw.entries === 'object') ? raw.entries as EmbeddingCacheEntries : {}
+    return { meta: { embedder_name: meta.embedder_name!, embedder_dim: meta.embedder_dim!, version: meta.version ?? CACHE_VERSION }, entries }
   } catch {
-    return {}
+    return emptyCache(active)
   }
 }
 
@@ -240,11 +309,16 @@ export async function embeddingSearch(
 ): Promise<Engram[]> {
   if (engrams.length === 0) return []
 
-  // Load embedding cache
+  // Resolve the active embedder before touching the cache so the cache load
+  // can compare against the right meta header.
+  const activeMeta = await getActiveEmbedderMeta()
+  if (!activeMeta) return []
+
+  // Load embedding cache (invalidates if the on-disk header doesn't match).
   const cachePath = storagePath
     ? join(storagePath, '.embeddings-cache.json')
     : '.embeddings-cache.json'
-  const cache = loadCache(cachePath)
+  const cache = loadCache(cachePath, activeMeta)
 
   // Embed the query
   const queryEmbedding = await embed(query)
@@ -261,15 +335,15 @@ export async function embeddingSearch(
     const hash = hashStatement(searchText)
     let engramEmbedding: Float32Array
 
-    if (cache[engram.id]?.hash === hash) {
+    if (cache.entries[engram.id]?.hash === hash) {
       // Cache hit
-      engramEmbedding = new Float32Array(cache[engram.id].embedding)
+      engramEmbedding = new Float32Array(cache.entries[engram.id].embedding)
     } else {
       // Cache miss — compute embedding from enriched text
       const emb = await embed(searchText)
       if (!emb) return [] // model unloaded mid-search
       engramEmbedding = emb
-      cache[engram.id] = {
+      cache.entries[engram.id] = {
         hash,
         embedding: Array.from(engramEmbedding),
       }
@@ -305,11 +379,14 @@ export async function embeddingSearchWithScores(
 ): Promise<SimilarityResult[]> {
   if (engrams.length === 0) return []
 
-  // Load embedding cache
+  const activeMeta = await getActiveEmbedderMeta()
+  if (!activeMeta) return []
+
+  // Load embedding cache (invalidates if the on-disk header doesn't match).
   const cachePath = storagePath
     ? join(storagePath, '.embeddings-cache.json')
     : '.embeddings-cache.json'
-  const cache = loadCache(cachePath)
+  const cache = loadCache(cachePath, activeMeta)
 
   // Embed the query
   const queryEmbedding = await embed(query)
@@ -326,15 +403,15 @@ export async function embeddingSearchWithScores(
     const hash = hashStatement(searchText)
     let engramEmbedding: Float32Array
 
-    if (cache[engram.id]?.hash === hash) {
+    if (cache.entries[engram.id]?.hash === hash) {
       // Cache hit
-      engramEmbedding = new Float32Array(cache[engram.id].embedding)
+      engramEmbedding = new Float32Array(cache.entries[engram.id].embedding)
     } else {
       // Cache miss — compute embedding from enriched text
       const emb = await embed(searchText)
       if (!emb) return [] // model unloaded mid-search
       engramEmbedding = emb
-      cache[engram.id] = {
+      cache.entries[engram.id] = {
         hash,
         embedding: Array.from(engramEmbedding),
       }
@@ -354,4 +431,52 @@ export async function embeddingSearchWithScores(
   // Sort by similarity (descending) and return top N with scores
   similarities.sort((a, b) => b.score - a.score)
   return similarities.slice(0, limit)
+}
+
+/**
+ * Rebuild the JSON `.embeddings-cache.json` file under `storagePath` using
+ * the active embedder. Used by `plur sync --reembed` when PGLite is NOT the
+ * active backend so non-PGLite users have a real migration path on embedder
+ * switches.
+ *
+ * `full=true` deletes the existing cache file before rebuilding (forces every
+ * engram to be re-embedded from scratch). `full=false` invalidates the meta
+ * header but lets matching entries survive — useful when only the cache file
+ * format version bumped without an embedder change.
+ *
+ * Returns the count of engrams whose embedding was rewritten. Returns 0 and
+ * `skipped: true` when embeddings are disabled or the embedder failed to
+ * load. Closes RC-3 for the default (non-PGLite) user (Sprint 0 iter-2 B-3).
+ */
+export async function rebuildJsonCache(
+  engrams: Engram[],
+  storagePath: string,
+  opts?: { full?: boolean },
+): Promise<{ reembedded: number; skipped: boolean; reason?: string }> {
+  const activeMeta = await getActiveEmbedderMeta()
+  if (!activeMeta) {
+    return { reembedded: 0, skipped: true, reason: 'embedder unavailable' }
+  }
+  const cachePath = join(storagePath, '.embeddings-cache.json')
+  // Start fresh when --full was requested. Even without --full we want the
+  // cache header to track the active embedder, so loadCache's invalidation
+  // path already does the right thing for matched entries.
+  const cache: EmbeddingCache = opts?.full
+    ? emptyCache(activeMeta)
+    : loadCache(cachePath, activeMeta)
+
+  let count = 0
+  for (const engram of engrams) {
+    const searchText = engramSearchText(engram)
+    const hash = hashStatement(searchText)
+    if (cache.entries[engram.id]?.hash === hash && !opts?.full) continue
+    const vec = await embed(searchText)
+    if (!vec) {
+      return { reembedded: count, skipped: true, reason: 'embedder unavailable mid-rebuild' }
+    }
+    cache.entries[engram.id] = { hash, embedding: Array.from(vec) }
+    count++
+  }
+  saveCache(cachePath, cache)
+  return { reembedded: count, skipped: false }
 }

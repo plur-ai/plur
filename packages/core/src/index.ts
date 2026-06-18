@@ -90,7 +90,8 @@ export { withAsyncLock, asyncAtomicWrite } from './store/index.js'
 // vectors identically to core's hybrid search (same model + EMBED_DIM). The
 // model identity and EMBED_DIM are a stable contract; changing them is breaking
 // for any consumer that persists vectors. See embeddings.ts.
-export { embed, EMBED_DIM, embedderStatus, cosineSimilarity, type EmbedderStatus } from './embeddings.js'
+export { embed, EMBED_DIM, activeEmbedderDim, embedderStatus, cosineSimilarity, type EmbedderStatus } from './embeddings.js'
+export { EMBEDDER_NAMES, DEFAULT_EMBEDDER, resolveEmbedderName, type EmbedderName, type EmbedderAdapter } from './embedders/index.js'
 export type { SimilarityResult } from './embeddings.js'
 export type { SyncResult, SyncStatus } from './sync.js'
 export { checkForUpdate, getCachedUpdateCheck, clearVersionCache, minorVersionsBehind, type VersionCheckResult } from './version-check.js'
