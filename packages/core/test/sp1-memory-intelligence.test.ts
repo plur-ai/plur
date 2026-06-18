@@ -275,7 +275,7 @@ REASON: More specific port configuration
       expect(['ADD', 'UPDATE']).toContain(result.decision)
 
       rmSync(llmDir, { recursive: true, force: true })
-    })
+    }, 30_000)  // explicit: this constructs a fresh Plur + learnAsync, paying the BGE embedder cold-load, which exceeds the 5s default on loaded CI runners (#311)
 
     it('learnAsync with mock LLM detects tensions', async () => {
       plur.learn('Always use REST APIs', { type: 'behavioral', tags: ['api'] })
