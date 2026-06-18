@@ -4,13 +4,29 @@ Two benchmark suites for PLUR development.
 
 ## 1. LongMemEval (`run.ts`) — Retrieval Quality
 
-Tests PLUR's memory retrieval across 6 categories (30 questions total).
+Tests PLUR's memory retrieval across 6 categories. Two corpora ship with the harness:
+
+- **`fixture`** (default) — 30-scenario hand-curated set (`data/scenarios.yaml`).
+  Backward-compatible with everything written before Sprint 0.
+- **`longmemeval-s-smoke`** — 30-scenario subset (5/category) of the *real*
+  LongMemEval-S. Committed; sessions trimmed to keep YAML <3 MB.
+- **`longmemeval-s`** — the full official LongMemEval-S corpus (500 questions,
+  Wu et al, 2024 — [arxiv.org/abs/2410.10813](https://arxiv.org/abs/2410.10813)).
+  Gitignored because the converted YAML is ~260 MB; regenerate locally with:
+
+  ```bash
+  huggingface-cli download xiaowu0162/longmemeval --repo-type dataset \
+    --local-dir benchmark/data/longmemeval-source/
+  npx tsx benchmark/scripts/import-longmemeval.ts
+  ```
 
 ```bash
-npx tsx benchmark/run.ts                          # hybrid (default)
-npx tsx benchmark/run.ts --search-mode bm25       # BM25 only
-npx tsx benchmark/run.ts --search-mode semantic    # embeddings only
-npx tsx benchmark/run.ts --category temporal_reasoning  # single category
+npx tsx benchmark/run.ts                                          # fixture (default), hybrid
+npx tsx benchmark/run.ts --search-mode bm25                       # BM25 only
+npx tsx benchmark/run.ts --search-mode semantic                   # embeddings only
+npx tsx benchmark/run.ts --category temporal_reasoning            # single category
+npx tsx benchmark/run.ts --corpus longmemeval-s --iterations 5    # real corpus, 5/category
+npx tsx benchmark/run.ts --corpus longmemeval-s-smoke             # committed real subset
 ```
 
 ## 2. Micro-benchmark (`micro.ts`) — Per-Operation Latency
