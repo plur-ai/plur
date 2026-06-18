@@ -92,10 +92,10 @@ describe('sensitivityCategory — pattern → family mapping', () => {
 describe('metadata-driven leak guard (#345)', () => {
   const dirs: string[] = []
   /** Build a Plur whose config carries the given store entries (with metadata). */
-  const plurWithStores = (stores: unknown[]) => {
+  const plurWithStores = (stores: unknown[], extra: Record<string, unknown> = {}) => {
     const dir = mkdtempSync(join(tmpdir(), 'plur-scope-meta-'))
     dirs.push(dir)
-    writeFileSync(join(dir, 'config.yaml'), yaml.dump({ stores, index: false }, { noRefs: true }))
+    writeFileSync(join(dir, 'config.yaml'), yaml.dump({ stores, index: false, ...extra }, { noRefs: true }))
     return new Plur({ path: dir })
   }
   afterEach(() => { while (dirs.length) rmSync(dirs.pop()!, { recursive: true, force: true }) })
@@ -127,10 +127,13 @@ describe('metadata-driven leak guard (#345)', () => {
   })
 
   it('still demotes a forbidden category even when another is allowed', () => {
+    // allow_secrets:true bypasses the *hard* detectSecrets guard (which throws
+    // outright on credential patterns, before the scope logic runs) so we can
+    // exercise the *soft* per-scope policy: infra is allowed here, but secrets
+    // stays forbidden, so a bearer token must still demote off the shared scope.
     const plur = plurWithStores([
-      // infra allowed, but secrets still forbidden → a bearer token must demote
       { path: '/tmp/infra.yaml', scope: 'group:plur/infra', description: 'Infra home', sensitivity: { forbid: ['secrets', 'infra'], allow: ['infra'] } },
-    ])
+    ], { allow_secrets: true })
     const e = plur.learn('token is Bearer abcdefghijklmnopqrstuvwxyz0123456789', { scope: 'group:plur/infra' }) as { scope: string }
     expect(e.scope).toBe('local')
   })
