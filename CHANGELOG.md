@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### Security hardening: pack install, remote-store, learnBatch (#306)
+
+Addresses the 2026-06-10 security audit of `@plur-ai/core`:
+
+- **Pack install** now clamps host-overriding fields before pack engrams can reach injection: `pinned` is stripped and `commitment: locked` is downgraded to `decided` (the on-disk pack and its integrity hash reflect the sanitized content). `scanPrivacy` detects prompt-injection / instruction-override text across **every field rendered into agent context** — `statement`, `rationale`, `source`, and `summary` — and `installPack` blocks on it unless `allowInjection: true` is passed. `previewPack` surfaces pinned/injection counts. `visibility: private` engrams no longer skip the scan (they are still installed and injected, so they must be scanned).
+- **Pack export** strips `pinned` and locked `commitment` from exported engrams — never ship an always-load directive in a shareable pack.
+- **Remote store** validates every server row against `RemoteRowSchema` (lenient, `.passthrough()`) in `load`/`getById`/`patch`; malformed rows are dropped and logged instead of cast with `as unknown as Engram`. Authoritative `id`/`scope`/`status` columns win over `data`. Fields rendered into agent context or used in arithmetic (`confidence_score`, `rationale`, `summary`, `domain`) are type-checked; explicit nulls pass. Verified against all production rows on both enterprise servers (137/137 pass).
+- **`learnBatch`** caps LLM dedup calls per batch (default **50**, `maxLlmCalls` option, `Infinity` to opt out); once spent, remaining statements fall back to the hash/cosine path. Bounds bulk-import cost.
+- **CI governance**: `.github/CODEOWNERS` covers workflows and `release.sh`. Note: only enforced once branch protection enables "Require review from Code Owners".
+
+**Behavior changes:** `installPack` can now throw on injection-flagged packs (override with `allowInjection`); bulk imports of >50 novel statements use cheaper dedup for the remainder; remote rows failing validation are dropped (previously passed through unvalidated).
+
 ### `@plur-ai/core` exports the embedding primitive (#289)
 
 `embed()`, `EMBED_DIM`, `embedderStatus()`, and `cosineSimilarity()` are now part of `@plur-ai/core`'s public API. Previously only the `SimilarityResult` type was re-exported, so the local BGE embedder (`BAAI/bge-small-en-v1.5`, 384-dim) was effectively internal. Alternative store backends that persist vectors and run similarity in a database can now compute embeddings identically to core's hybrid search instead of re-implementing the embedder and risking model/dimension drift.

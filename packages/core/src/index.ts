@@ -1134,13 +1134,14 @@ export class Plur {
     return learnAsyncImpl(this._learnAsyncDeps(), statement, context)
   }
 
-  /** Batch learn with LLM dedup. */
+  /** Batch learn with LLM dedup. LLM calls are capped (default 50) to bound bulk-import cost. */
   async learnBatch(
     statements: Array<{ statement: string; context?: LearnAsyncContext }>,
     llm?: LlmFunction,
+    opts?: { maxLlmCalls?: number },
   ): Promise<LearnBatchResult> {
     const { learnBatch: learnBatchImpl } = await import('./learn-async.js')
-    return learnBatchImpl(this._learnAsyncDeps(), statements, llm)
+    return learnBatchImpl(this._learnAsyncDeps(), statements, llm, opts)
   }
 
   /**
@@ -1973,10 +1974,14 @@ export class Plur {
     return previewPack(source)
   }
 
-  /** Install a pack from a source path. Runs security scan (blocks on secrets), detects conflicts, records in registry. */
-  installPack(source: string): ReturnType<typeof installPack> {
+  /**
+   * Install a pack from a source path. Runs security scan (blocks on secrets
+   * and on prompt-injection text unless opts.allowInjection), clamps host-
+   * overriding fields (pinned / locked), detects conflicts, records in registry.
+   */
+  installPack(source: string, opts?: { allowInjection?: boolean }): ReturnType<typeof installPack> {
     const existing = this._loadAllEngrams()
-    return installPack(this.paths.packs, source, existing)
+    return installPack(this.paths.packs, source, existing, opts)
   }
 
   /** Uninstall a pack by name. */

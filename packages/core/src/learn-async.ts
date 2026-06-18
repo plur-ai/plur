@@ -190,19 +190,58 @@ export async function learnAsync(
   return executeDedupDecision(deps, statement, context, decision, targetId)
 }
 
+/** Options for learnBatch. */
+export interface LearnBatchOptions {
+  /**
+   * Maximum number of LLM dedup calls allowed across the whole batch.
+   * Once spent, remaining statements skip the (expensive) LLM dedup decision
+   * and fall back to the conservative hash/cosine path. Bounds the cost of
+   * bulk imports — a 1000-statement batch no longer triggers 1000 LLM calls.
+   * Defaults to 50. Pass Infinity to opt out. (Security audit 2026-06-10, finding #4.)
+   */
+  maxLlmCalls?: number
+}
+
 /**
  * Batch learn: process multiple statements sequentially with LLM dedup.
+ *
+ * LLM dedup calls are bounded by opts.maxLlmCalls (default 50). The cap only
+ * bites on large batches of novel-but-similar statements — exact-hash NOOPs
+ * and zero-candidate ADDs short-circuit before the LLM and don't consume budget.
  */
 export async function learnBatch(
   deps: LearnAsyncDeps,
   statements: Array<{ statement: string; context?: LearnAsyncContext }>,
   llm?: LlmFunction,
+  opts: LearnBatchOptions = {},
 ): Promise<LearnBatchResult> {
   const results: LearnAsyncResult[] = []
   const stats = { added: 0, updated: 0, merged: 0, noops: 0 }
 
+  const maxLlmCalls = opts.maxLlmCalls ?? 50
+  let llmCallsUsed = 0
+  let capWarned = false
+
   for (const { statement, context } of statements) {
-    const ctx: LearnAsyncContext = { ...context, llm: context?.llm ?? llm }
+    // Resolve the LLM for this statement (per-statement override wins), then
+    // gate it on the remaining budget. The wrapper increments the counter only
+    // when learnAsync actually invokes the LLM (Step 4), so cheap short-circuits
+    // don't burn budget. The loop is sequential, so the counter needs no lock.
+    const stmtLlm = context?.llm ?? llm
+    let effectiveLlm: LlmFunction | undefined = stmtLlm
+    if (stmtLlm) {
+      if (llmCallsUsed >= maxLlmCalls) {
+        effectiveLlm = undefined
+        if (!capWarned) {
+          logger.warning(`learnBatch: maxLlmCalls (${maxLlmCalls}) reached — remaining statements use cosine/ADD dedup`)
+          capWarned = true
+        }
+      } else {
+        effectiveLlm = async (prompt: string) => { llmCallsUsed++; return stmtLlm(prompt) }
+      }
+    }
+
+    const ctx: LearnAsyncContext = { ...context, llm: effectiveLlm }
     const result = await learnAsync(deps, statement, ctx)
     results.push(result)
     const key = result.decision.toLowerCase()
