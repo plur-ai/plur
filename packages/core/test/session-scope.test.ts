@@ -123,20 +123,20 @@ describe('session scope (#229)', () => {
     expect(engram.scope).toBe('project:override')
   })
 
-  it('learn() falls back to unscoped_default (local) when no session scope set (Stage 3b, #351)', () => {
-    const plur = new Plur({ path: primaryDir })
-    const engram = plur.learn('local fallback test')
-    expect(engram.scope).toBe('local')
-  })
-
-  it('learn() falls back to global when unscoped_default is configured "global" (back-compat)', () => {
-    writeFileSync(
-      join(primaryDir, 'config.yaml'),
-      yaml.dump({ unscoped_default: 'global', index: false }, { noRefs: true }),
-    )
+  it('learn() falls back to unscoped_default (global, reverted 0.10.0 #353) when no session scope set', () => {
     const plur = new Plur({ path: primaryDir })
     const engram = plur.learn('global fallback test')
     expect(engram.scope).toBe('global')
+  })
+
+  it('learn() falls back to local when unscoped_default is configured "local"', () => {
+    writeFileSync(
+      join(primaryDir, 'config.yaml'),
+      yaml.dump({ unscoped_default: 'local', index: false }, { noRefs: true }),
+    )
+    const plur = new Plur({ path: primaryDir })
+    const engram = plur.learn('local fallback test')
+    expect(engram.scope).toBe('local')
   })
 
   // --- learnRouted() uses session scope for remote routing ---

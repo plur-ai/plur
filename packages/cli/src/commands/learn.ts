@@ -5,7 +5,12 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   const plur = createPlur(flags)
 
   let statement = ''
-  let scope = 'global'
+  // No hardcoded scope (#353): when --scope is absent the scope key is OMITTED
+  // from the LearnContext entirely so it flows through the unscoped-routing logic
+  // (_guardSensitiveScope → _resolveUnscopedScope → auto-route or unscoped_default,
+  // default global). Passing scope:'global' here would bypass that.
+  let scope: string | undefined = undefined
+  let scopeProvided = false
   let type: 'behavioral' | 'terminological' | 'procedural' | 'architectural' = 'behavioral'
   let domain: string | undefined
   let source: string | undefined
@@ -13,7 +18,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   let i = 0
   while (i < args.length) {
     const arg = args[i]
-    if (arg === '--scope' && i + 1 < args.length) { scope = args[++i]; i++ }
+    if (arg === '--scope' && i + 1 < args.length) { scope = args[++i]; scopeProvided = true; i++ }
     else if (arg === '--type' && i + 1 < args.length) { type = args[++i] as typeof type; i++ }
     else if (arg === '--domain' && i + 1 < args.length) { domain = args[++i]; i++ }
     else if (arg === '--source' && i + 1 < args.length) { source = args[++i]; i++ }
@@ -32,7 +37,50 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     exit(1, 'Usage: plur learn <statement> [--scope <scope>] [--type <type>] [--domain <domain>]')
   }
 
-  const engram = plur.learn(statement, { scope, type, domain, source })
+  // Build the context conditionally: when --scope is absent, OMIT the scope key
+  // (not scope:'global', not scope:undefined) — _guardSensitiveScope checks
+  // `context?.scope == null`, which is true for an absent key, reaching the
+  // unscoped routing path. When --scope is present it is honored as-is.
+  const ctx = { type, domain, source, ...(scopeProvided ? { scope } : {}) }
+
+  // ALWAYS use learnRouted (not learn): learn() stamps _demoted but does NOT do
+  // remote-outbox routing for shared scopes; only learnRouted() does — so an
+  // explicit `--scope group:engineering` on learn() would silently drop the
+  // remote push.
+  //
+  // learnRouted BLOCKS on the network for remote-scoped engrams (it awaits the
+  // POST to the remote store); the unscoped no-covers path falls to
+  // local/global (personal) and does NOT touch a remote, so it returns
+  // promptly. A 5s timeout guards against a dead/slow remote hanging the CLI.
+  let engram
+  // Hold the timer handle so it can be cleared on success — an un-cleared 5s
+  // setTimeout would keep Node's event loop alive and hang the CLI for 5s after
+  // learnRouted resolves (the unscoped/personal path returns immediately).
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined
+  try {
+    engram = await Promise.race([
+      plur.learnRouted(statement, ctx),
+      new Promise<never>((_, rej) => {
+        timeoutHandle = setTimeout(
+          () => rej(new Error('learnRouted timed out after 5s — remote store slow/unreachable; engram not confirmed remotely')),
+          5000,
+        )
+      }),
+    ])
+  } catch (err) {
+    if (timeoutHandle) clearTimeout(timeoutHandle)
+    const msg = err instanceof Error ? err.message : String(err)
+    // The local write may still have completed on the remote-failure outbox
+    // path; this only reports that the engram was NOT confirmed remotely.
+    if (shouldOutputJson(flags)) {
+      outputJson({ error: msg })
+      exit(1)
+    } else {
+      exit(1, `Error: ${msg}`)
+    }
+    return
+  }
+  if (timeoutHandle) clearTimeout(timeoutHandle)
 
   if (shouldOutputJson(flags)) {
     outputJson({

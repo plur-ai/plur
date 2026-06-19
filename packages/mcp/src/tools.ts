@@ -1,7 +1,7 @@
 import { existsSync, unlinkSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
-import { Plur, extractMetaEngrams, validateMetaEngram, confidenceBand, generateProfile, getProfileForInjection, markProfileDirty, selectModelForOperation, readHistoryForEngram, getCachedUpdateCheck, minorVersionsBehind, scanForTensions, CapabilityCanary, readProjectConfig } from '@plur-ai/core'
+import { Plur, extractMetaEngrams, validateMetaEngram, confidenceBand, generateProfile, getProfileForInjection, markProfileDirty, selectModelForOperation, readHistoryForEngram, getCachedUpdateCheck, minorVersionsBehind, scanForTensions, CapabilityCanary, readProjectConfig, isSharedScope } from '@plur-ai/core'
 import type { LlmFunction, MetaField } from '@plur-ai/core'
 import { recordTelemetry } from './telemetry.js'
 import { VERSION } from './version.js'
@@ -177,14 +177,18 @@ export function getToolDefinitions(): ToolDefinition[] {
         // auto-routed, while a team store IS configured, team knowledge silently
         // never reaches the shared store. Surface that at the moment it happens —
         // non-fatal, informational, and only when there is a team store to route
-        // to (stays silent on personal installs). Stage 3b made un-scoped writes
-        // default to "local" (was "global") and auto-route on a confident covers
-        // match (stamping structured_data._routed); the hint must fire on either
-        // personal landing scope and stay silent when the write was auto-routed.
+        // to (stays silent on personal installs). Un-scoped writes default to
+        // "global" (the historical default, restored in 0.10.0, #353) and
+        // auto-route on a confident covers match (stamping structured_data._routed).
+        // The hint fires on ANY non-shared (personal-family) landing scope —
+        // "local", "global", "user:*", "agent:*" — and stays silent when the
+        // write was auto-routed or an explicit scope was passed.
         const explicitScope = typeof args.scope === 'string' && args.scope.length > 0
-        const PERSONAL_SCOPES = new Set(['local', 'global'])
         const scopeHint = (engramScope: string, wasRouted: boolean): { scope_hint?: string } => {
-          if (explicitScope || wasRouted || !PERSONAL_SCOPES.has(engramScope)) return {}
+          // isSharedScope swap (#353): fire on any non-shared landing scope, not
+          // just the hardcoded {local,global} set, so a user:alice personal scope
+          // also nudges when a team store is configured.
+          if (explicitScope || wasRouted || isSharedScope(engramScope)) return {}
           let remote: Array<{ scope: string }> = []
           try { remote = plur.getWritableRemoteScopes() } catch { return {} }
           if (remote.length === 0) return {}
@@ -236,7 +240,7 @@ export function getToolDefinitions(): ToolDefinition[] {
 
     {
       name: 'plur_recall',
-      description: 'Query engrams by BM25 keyword matching — use plur_recall_hybrid for semantic similarity',
+      description: 'Query engrams by BM25 keyword matching — use plur_recall_hybrid for semantic similarity. Note: a project-scope filter also returns personal-family engrams (local, global, user:*, agent:*); an explicit scope=global recall returns ALL personal-family engrams — wider than scope=global INJECT, which is targeted to the global namespace only.',
       annotations: { title: 'Recall (BM25)', readOnlyHint: true, idempotentHint: true },
       inputSchema: {
         type: 'object',
@@ -1279,8 +1283,12 @@ export function getToolDefinitions(): ToolDefinition[] {
           // (this is the #177 failure mode: agents that don't pass scope get
           // 'global', and global pollutes every future session).
           guide += `\n\n⚠️ No project scope detected. plur_learn calls without explicit scope will be tagged ` +
-            `"global" and will appear in EVERY project's future sessions. To avoid context bleed across ` +
-            `projects, create a .plur.yaml in this project's root with: scope: "project:<your-project-name>"`
+            `"global" and will appear in EVERY project's future sessions. Create a .plur.yaml NOW to prevent this: ` +
+            `scope: "project:<your-project-name>". (This is every project's PERSONAL recall context, NOT team ` +
+            `shared stores — use an explicit shared scope like project:/group: to reach a team store.) ` +
+            `Note: an explicit scope=global RECALL surfaces all your personal engrams, but scope=global INJECT is ` +
+            `targeted to the global namespace only — don't be surprised if a local engram a global recall finds is ` +
+            `absent from a global inject.`
         }
 
         // Append remote scope guidance to guide text (#229)

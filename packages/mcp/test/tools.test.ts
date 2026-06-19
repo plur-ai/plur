@@ -53,11 +53,28 @@ describe('MCP tools', () => {
 
     it('hints to use the team scope when scope is omitted and engram lands at a personal scope', async () => {
       const result = await callTool('plur_learn', { statement: 'We use trunk-based development' }) as any
-      // Stage 3b: un-scoped writes default to "local" (was "global"). The hint
-      // must still fire on a personal landing scope when a team store exists.
-      expect(result.scope).toBe('local')
+      // 0.10.0 (#353): un-scoped writes default to "global" (reverted). The hint
+      // must still fire on a personal landing scope (global is personal-family)
+      // when a team store exists — the scope_hint now keys off isSharedScope.
+      expect(result.scope).toBe('global')
       expect(result.scope_hint).toBeDefined()
       expect(result.scope_hint).toContain('group:acme/engineering')
+    })
+
+    it('hints on a user:* personal landing scope (proves isSharedScope swap, #353)', async () => {
+      // A user:alice scope is personal-family (not shared). Drive the engram to
+      // land there WITHOUT an explicit args.scope by setting a session default,
+      // so explicitScope is false and the hint must fire (the old hardcoded
+      // {local,global} set would have stayed silent on user:alice).
+      plur.setSessionScope('user:alice')
+      try {
+        const result = await callTool('plur_learn', { statement: 'team prefers tabs over spaces' }) as any
+        expect(result.scope).toBe('user:alice')
+        expect(result.scope_hint).toBeDefined()
+        expect(result.scope_hint).toContain('group:acme/engineering')
+      } finally {
+        plur.setSessionScope(null)
+      }
     })
 
     it('no hint when an explicit scope is passed', async () => {
@@ -75,9 +92,9 @@ describe('MCP tools', () => {
 
   it('plur_learn does NOT hint on a personal install (no team store configured)', async () => {
     const result = await callTool('plur_learn', { statement: 'Personal note' }) as any
-    // Stage 3b: un-scoped writes default to "local"; with no team store there is
-    // nowhere to route to, so the hint stays silent.
-    expect(result.scope).toBe('local')
+    // 0.10.0 (#353): un-scoped writes default to "global"; with no team store
+    // there is nowhere to route to, so the hint stays silent.
+    expect(result.scope).toBe('global')
     expect(result.scope_hint).toBeUndefined()
   })
 

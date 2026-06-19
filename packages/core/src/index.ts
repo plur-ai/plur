@@ -36,6 +36,7 @@ import { appendHistory, readHistoryForEngram, generateEventId } from './history.
 import { computeContentHash } from './content-hash.js'
 import { decodeJwtExpiry } from './jwt.js'
 import { RemoteStore } from './store/remote-store.js'
+import { isSharedScope, isPersonalScope } from './scope-util.js'
 import type { Engram } from './schemas/engram.js'
 import type { Episode } from './schemas/episode.js'
 import type { PackManifest } from './schemas/pack.js'
@@ -79,18 +80,12 @@ export { detectSecrets, detectSensitive, sensitivityCategory } from './secrets.j
 export { ScopeMetadataSchema, ScopeSensitivitySchema, SENSITIVITY_CATEGORIES, type ScopeMetadata, type ScopeSensitivity, type SensitivityCategory } from './schemas/scope-metadata.js'
 export { rankScopes, SCOPE_MATCH_THRESHOLD, type ScopeSignals, type ScopeCandidate } from './scope-routing.js'
 
-/**
- * Scopes whose engrams are visible to people *other than* the author — the team
- * store (`group:`), repo/project stores (`project:`), space stores (`space:`),
- * and org/public scopes. Personal scopes (`local`, `global`, `user:*`, `agent:*`)
- * are NOT shared: they live on the author's own machine or under their own remote
- * namespace. Used by the write-time leak guard to decide whether to scan + demote.
- */
-const SHARED_SCOPE_PREFIXES = ['group:', 'project:', 'space:', 'team:', 'org:', 'public'] as const
-
-export function isSharedScope(scope: string): boolean {
-  return SHARED_SCOPE_PREFIXES.some(p => scope.startsWith(p))
-}
+// Scope-family predicates live in the leaf module `scope-util.ts` to break a
+// module cycle: `inject.ts` (imported by index.ts) needs `isPersonalScope`, and
+// importing it from here would form index → inject → index. They are imported
+// above for internal use and re-exported here so the public `@plur-ai/core` API
+// (`isSharedScope`, `isPersonalScope`, `SHARED_SCOPE_PREFIXES`) is unchanged.
+export { isSharedScope, isPersonalScope, SHARED_SCOPE_PREFIXES } from './scope-util.js'
 export { detectPlurStorage, type PlurPaths } from './storage.js'
 export { IndexedStorage } from './storage-indexed.js'
 export { PGLiteAdapter, type PGLiteAdapterOptions } from './storage-pglite.js'
@@ -1000,7 +995,9 @@ export class Plur {
     statement: string,
     context?: LearnContext,
   ): { scope: string; routed: { scope: string; confidence: number; reason: string } | null } {
-    const fallback = this.config.unscoped_default ?? 'local'
+    // Match the schema default (config.ts `unscoped_default.default('global')`)
+    // so the two cannot drift; reverted local→global in 0.10.0 (#353).
+    const fallback = this.config.unscoped_default ?? 'global'
     if (this.config.auto_route_scope === false) {
       return { scope: fallback, routed: null }
     }
@@ -1029,7 +1026,10 @@ export class Plur {
       scope = resolved.scope
       routed = resolved.routed
     } else {
-      scope = context?.scope ?? this._sessionScope ?? 'global'
+      // Terminal fallback respects unscoped_default so a `unscoped_default:'local'`
+      // user with a null _sessionScope and no context scope is not silently forced
+      // to global (#353). No behavior change for the default-global user.
+      scope = context?.scope ?? this._sessionScope ?? (this.config.unscoped_default ?? 'global')
     }
     if (!isSharedScope(scope)) return { scope, context, demotion: null, routed }
     // Scan the FULL content the engram will carry — the statement AND the
@@ -1808,8 +1808,16 @@ export class Plur {
       }
       if (options?.scope) {
         const scope = options.scope
+        // Read-side scope filter (#353). Keep the `startsWith` arm so an explicit
+        // personal scope like `user:alice` still catches sub-scopes (e.g.
+        // `user:alice:notes`). `isPersonalScope` passes ALL personal-family
+        // scopes (local, global, user:*, agent:*), not just global — so a
+        // project-scope recall sees personal engrams. D1-ASYMMETRY: an explicit
+        // `global` recall therefore includes all personal-family engrams — wider
+        // than `global` inject, which is targeted to global-only (see inject.ts
+        // INJECT_GLOBAL_IS_TARGETED).
         engrams = engrams.filter(e =>
-          e.scope === 'global' || e.scope === scope || e.scope.startsWith(scope)
+          e.scope === scope || e.scope.startsWith(scope) || isPersonalScope(e.scope)
         )
       }
     }

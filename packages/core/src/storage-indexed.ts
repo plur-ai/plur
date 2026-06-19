@@ -1,6 +1,7 @@
 import { existsSync } from 'fs'
 import { createRequire } from 'module'
 import { loadEngrams, storePrefix } from './engrams.js'
+import { isPersonalScope } from './scope-util.js'
 import type { Engram } from './schemas/engram.js'
 import type { StoreEntry } from './schemas/config.js'
 
@@ -45,7 +46,8 @@ export class IndexedStorage {
           scope TEXT NOT NULL,
           domain TEXT,
           last_accessed TEXT,
-          data TEXT NOT NULL
+          data TEXT NOT NULL,
+          personal INTEGER NOT NULL DEFAULT 0
         );
         CREATE INDEX IF NOT EXISTS idx_status ON engrams(status);
         CREATE INDEX IF NOT EXISTS idx_scope ON engrams(scope);
@@ -58,6 +60,23 @@ export class IndexedStorage {
         // Column already exists — expected on subsequent opens
       }
       this.db.exec('CREATE INDEX IF NOT EXISTS idx_source ON engrams(source)')
+      // Add `personal` column to pre-0.10.0 DBs (#353 read-side fix). The new
+      // DEFAULT 0 leaves existing rows wrong until repopulated, so a successful
+      // ADD COLUMN (i.e. an old DB that lacked it) triggers a one-time reindex
+      // that rewrites every row's `personal` flag from its scope. New DBs (column
+      // already present from CREATE TABLE) throw here and skip the reindex.
+      let addedPersonalColumn = false
+      try {
+        this.db.exec('ALTER TABLE engrams ADD COLUMN personal INTEGER NOT NULL DEFAULT 0')
+        addedPersonalColumn = true
+      } catch {
+        // Column already exists — expected on subsequent opens / fresh DBs.
+      }
+      this.db.exec('CREATE INDEX IF NOT EXISTS idx_personal ON engrams(personal)')
+      if (addedPersonalColumn) {
+        // One-time backfill: rebuild from YAML so every row gets `personal` set.
+        this.syncFromYaml()
+      }
     }
     return this.db
   }
@@ -86,7 +105,11 @@ export class IndexedStorage {
       params.push(filter.status)
     }
     if (filter.scope) {
-      conditions.push("(scope = 'global' OR scope = ? OR scope LIKE ? || '%')")
+      // Read-side scope filter (#353). `personal = 1` passes ALL personal-family
+      // scopes (local, global, user:*, agent:*) — set at index time from
+      // isPersonalScope — not just global, so a project-scope recall sees personal
+      // engrams. The two `scope` params (exact + LIKE prefix) are unchanged.
+      conditions.push("(personal = 1 OR scope = ? OR scope LIKE ? || '%')")
       params.push(filter.scope, filter.scope)
     }
     if (filter.domain) {
@@ -115,8 +138,8 @@ export class IndexedStorage {
   syncFromYaml(): void {
     const db = this.getDb()
     const upsert = db.prepare(`
-      INSERT OR REPLACE INTO engrams (id, status, scope, domain, last_accessed, data, source)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
+      INSERT OR REPLACE INTO engrams (id, status, scope, domain, last_accessed, data, source, personal)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `)
 
     const allSyncedIds = new Set<string>()
@@ -126,7 +149,9 @@ export class IndexedStorage {
       // Sync primary store
       const primaryEngrams = loadEngrams(this.engramsPath)
       for (const e of primaryEngrams) {
-        upsert.run(e.id, e.status, e.scope, e.domain ?? null, e.activation.last_accessed, JSON.stringify(e), 'primary')
+        // `personal` mirrors isPersonalScope of the stored scope so loadFiltered
+        // can pass personal-family scopes under any project-scope filter (#353).
+        upsert.run(e.id, e.status, e.scope, e.domain ?? null, e.activation.last_accessed, JSON.stringify(e), 'primary', isPersonalScope(e.scope) ? 1 : 0)
         allSyncedIds.add(e.id)
       }
 
@@ -145,8 +170,13 @@ export class IndexedStorage {
             continue
           }
           const nsId = e.id.replace(/^(ENG|ABS|META)-/, `$1-${prefix}-`)
+          // Cross-store narrowing (UNCHANGED, intentional): a global-scoped
+          // secondary-store engram is renamed to the store's scope on load (#353
+          // documents this as preserved behavior). `personal` reflects the FINAL
+          // written scope — a global engram renamed to a shared store scope is
+          // correctly indexed as non-personal.
           const scope = e.scope === 'global' ? store.scope : e.scope
-          upsert.run(nsId, e.status, scope, e.domain ?? null, e.activation.last_accessed, JSON.stringify({ ...e, id: nsId, scope }), store.path)
+          upsert.run(nsId, e.status, scope, e.domain ?? null, e.activation.last_accessed, JSON.stringify({ ...e, id: nsId, scope }), store.path, isPersonalScope(scope) ? 1 : 0)
           allSyncedIds.add(nsId)
         }
       }

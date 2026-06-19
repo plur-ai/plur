@@ -168,11 +168,12 @@ describe('plur.suggestScope — reads scope metadata from config stores', () => 
     expect(ranked[0].scope).toBe('group:plur/infra')
     // …but its confidence is only a keyword match (deployment + servers), which
     // sits BELOW SCOPE_MATCH_THRESHOLD, so Stage 3b auto-routing does NOT fire —
-    // the unscoped write falls to unscoped_default ('local' by default). The
-    // confident (domain-prefix) auto-route path is covered in route-unscoped.test.ts.
+    // the unscoped write falls to unscoped_default ('global' by default, reverted
+    // in 0.10.0 #353). The confident (domain-prefix) auto-route path is covered
+    // in route-unscoped.test.ts.
     expect(ranked[0].confidence).toBeLessThan(SCOPE_MATCH_THRESHOLD)
     const e = plur.learn('restart the deployment on the servers') as { scope: string }
-    expect(e.scope).toBe('local')
+    expect(e.scope).toBe('global')
   })
 
   it('feeds tags through to the ranker', () => {

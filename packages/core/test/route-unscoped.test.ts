@@ -54,7 +54,7 @@ describe('Stage 3b — auto-route un-scoped writes (#351)', () => {
     expect(e.structured_data?._routed?.reason).toBeTruthy()
   })
 
-  it('falls to local (the default) when no covers match', () => {
+  it('falls to global (the default, reverted in 0.10.0 #353) when no covers match', () => {
     const plur = makePlur({
       stores: [
         { path: '/tmp/r-core.yaml', scope: 'group:plur/core', description: 'Core', covers: ['plur.*', 'embeddings'] },
@@ -63,11 +63,11 @@ describe('Stage 3b — auto-route un-scoped writes (#351)', () => {
     const e = plur.learn('completely unrelated note about lunch preferences') as {
       scope: string; structured_data?: { _routed?: unknown }
     }
-    expect(e.scope).toBe('local')
+    expect(e.scope).toBe('global')
     expect(e.structured_data?._routed).toBeUndefined()
   })
 
-  it('unscoped_default: "global" sends an unmatched write to global (back-compat)', () => {
+  it('unscoped_default: "global" sends an unmatched write to global (explicit; also the default)', () => {
     const plur = makePlur({
       unscoped_default: 'global',
       stores: [
@@ -78,6 +78,20 @@ describe('Stage 3b — auto-route un-scoped writes (#351)', () => {
       scope: string; structured_data?: { _routed?: unknown }
     }
     expect(e.scope).toBe('global')
+    expect(e.structured_data?._routed).toBeUndefined()
+  })
+
+  it('unscoped_default: "local" sends an unmatched write to local (opt-out of global)', () => {
+    const plur = makePlur({
+      unscoped_default: 'local',
+      stores: [
+        { path: '/tmp/r-core.yaml', scope: 'group:plur/core', description: 'Core', covers: ['plur.*'] },
+      ],
+    })
+    const e = plur.learn('unrelated note that matches no covers') as {
+      scope: string; structured_data?: { _routed?: unknown }
+    }
+    expect(e.scope).toBe('local')
     expect(e.structured_data?._routed).toBeUndefined()
   })
 
@@ -112,7 +126,7 @@ describe('Stage 3b — auto-route un-scoped writes (#351)', () => {
     expect(e.structured_data?._routed).toBeUndefined()
   })
 
-  it('auto_route_scope:false disables routing — unscoped falls straight to default', () => {
+  it('auto_route_scope:false disables routing — unscoped falls straight to default (global)', () => {
     const plur = makePlur({
       auto_route_scope: false,
       stores: [
@@ -123,7 +137,7 @@ describe('Stage 3b — auto-route un-scoped writes (#351)', () => {
       domain: 'plur.core.embeddings',
       tags: ['embeddings'],
     }) as { scope: string; structured_data?: { _routed?: unknown } }
-    expect(e.scope).toBe('local')
+    expect(e.scope).toBe('global')
     expect(e.structured_data?._routed).toBeUndefined()
   })
 
