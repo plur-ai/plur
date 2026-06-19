@@ -209,17 +209,24 @@ function isPublicIpv6(addr: string): boolean {
 // undefined on a non-global `.match()`); the prior code kept only the first
 // match, so a single candidate is sufficient.
 const INTERNAL_HOST = new RegExp(
-  // a. internal-suffix label (.local/.internal/.corp/.lan/.intranet)
-  "(?:^|[\\s/@'\"(])(?<host>(?:[a-z0-9-]+\\.)+(?:local|internal|corp|lan|intranet))(?=$|[\\s:/?#)'\"])" +
+  // ONE `(?<host>...)` group wrapping the four host-SHAPE alternatives (a-d). JS
+  // forbids duplicate named groups in a single regex (CI Node 20/22 throw
+  // "Duplicate capture group name" on reuse), so the leading delimiter and the
+  // trailing lookahead are factored out and SHARED; only the host shapes alternate
+  // INSIDE the group, so `match.groups.host` is always set on a match.
+  "(?:^|[\\s/@'\"(])(?<host>" +
+    // a. internal-suffix label (.local/.internal/.corp/.lan/.intranet)
+    '(?:[a-z0-9-]+\\.)+(?:local|internal|corp|lan|intranet)' +
     '|' +
     // b. k8s svc / svc.cluster.local
-    "(?:^|[\\s/@'\"(])(?<host>(?:[a-z0-9-]+\\.)+svc(?:\\.cluster\\.local)?)(?=$|[\\s:/?#)'\"])" +
+    '(?:[a-z0-9-]+\\.)+svc(?:\\.cluster\\.local)?' +
     '|' +
     // c. staging as a label fragment (hub-staging.plur.ai, staging-build.example.com)
-    "(?:^|[\\s/@'\"(])(?<host>[a-z0-9-]*staging[a-z0-9-]*(?:\\.[a-z0-9-]+)+)(?=$|[\\s:/?#)'\"])" +
+    '[a-z0-9-]*staging[a-z0-9-]*(?:\\.[a-z0-9-]+)+' +
     '|' +
     // d. staging as an inner label (api.staging.example.com)
-    "(?:^|[\\s/@'\"(])(?<host>(?:[a-z0-9-]+\\.)+staging(?:\\.[a-z0-9-]+)+)(?=$|[\\s:/?#)'\"])",
+    '(?:[a-z0-9-]+\\.)+staging(?:\\.[a-z0-9-]+)+' +
+    ")(?=$|[\\s:/?#)'\"])",
   'i',
 )
 
