@@ -102,6 +102,36 @@ describe('MCP server (wire protocol)', () => {
     expect(fb.success).toBe(true)
   })
 
+  // Issue #281 — a missing required field used to return a bare
+  // "Invalid arguments: statement: Required", which agents misread as "my
+  // parameters aren't reaching the server" and abandoned persistence (silent
+  // memory loss). The error now echoes the received fields and states the call
+  // arrived, so the caller self-corrects instead of giving up.
+  it('missing required field error echoes received fields and is self-correcting (#281)', async () => {
+    const result = await client.callTool({
+      name: 'plur_learn',
+      // statement (required) omitted; other named fields present.
+      arguments: { scope: 'global', domain: 'software', type: 'behavioral' },
+    })
+    expect(result.isError).toBe(true)
+    const parsed = JSON.parse((result.content as any)[0].text)
+    expect(parsed.success).toBe(false)
+    expect(parsed.error).toContain('statement')
+    // Echoes the fields that DID arrive — proof the call was transmitted.
+    expect(parsed.error).toContain('Received fields:')
+    expect(parsed.error).toContain('scope')
+    expect(parsed.error).toContain('domain')
+    // Explicitly disambiguates malformed-args from a transport failure.
+    expect(parsed.error).toMatch(/not a transport failure/i)
+  })
+
+  it('empty arguments error says no fields were received (#281)', async () => {
+    const result = await client.callTool({ name: 'plur_learn', arguments: {} })
+    expect(result.isError).toBe(true)
+    const parsed = JSON.parse((result.content as any)[0].text)
+    expect(parsed.error).toContain('arguments object was empty')
+  })
+
   it('returns isError for unknown tools', async () => {
     const result = await client.callTool({ name: 'plur_nonexistent', arguments: {} })
     expect(result.isError).toBe(true)
