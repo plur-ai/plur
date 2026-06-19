@@ -290,7 +290,10 @@ describe('Session & store tools', () => {
         expect(plur.getSessionScope()).toBeNull()  // not "project:a"!
 
         const bEngram = plur.learn('B-side engram')
-        expect(bEngram.scope).toBe('global')  // not "project:a"
+        // Stage 3b: un-scoped writes default to "local" (was "global"). The
+        // property under test is "no cross-project leak" — "local" satisfies
+        // that even better than "global". The key assertion is NOT "project:a".
+        expect(bEngram.scope).toBe('local')  // not "project:a"
       } finally {
         rmSync(projectB, { recursive: true, force: true })
       }

@@ -51,9 +51,11 @@ describe('MCP tools', () => {
       plur.addStore('', 'group:acme/engineering', { url: 'https://plur.example.com', token: 'tok' })
     })
 
-    it('hints to use the team scope when scope is omitted and engram lands at global', async () => {
+    it('hints to use the team scope when scope is omitted and engram lands at a personal scope', async () => {
       const result = await callTool('plur_learn', { statement: 'We use trunk-based development' }) as any
-      expect(result.scope).toBe('global')
+      // Stage 3b: un-scoped writes default to "local" (was "global"). The hint
+      // must still fire on a personal landing scope when a team store exists.
+      expect(result.scope).toBe('local')
       expect(result.scope_hint).toBeDefined()
       expect(result.scope_hint).toContain('group:acme/engineering')
     })
@@ -73,7 +75,9 @@ describe('MCP tools', () => {
 
   it('plur_learn does NOT hint on a personal install (no team store configured)', async () => {
     const result = await callTool('plur_learn', { statement: 'Personal note' }) as any
-    expect(result.scope).toBe('global')
+    // Stage 3b: un-scoped writes default to "local"; with no team store there is
+    // nowhere to route to, so the hint stays silent.
+    expect(result.scope).toBe('local')
     expect(result.scope_hint).toBeUndefined()
   })
 
