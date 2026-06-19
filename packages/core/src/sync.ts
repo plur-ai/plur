@@ -86,8 +86,14 @@ export function getSyncStatus(root: string): SyncStatus {
   }
 }
 
+function neutralizeGlobalExcludes(root: string): void {
+  // Prevent the developer's global gitignore from silently excluding engram files.
+  git(['config', '--local', 'core.excludesFile', '/dev/null'], root)
+}
+
 function initRepo(root: string): void {
   git(['init'], root)
+  neutralizeGlobalExcludes(root)
   atomicWrite(join(root, '.gitignore'), GITIGNORE)
   git(['add', '-A'], root)
   git(['commit', '-m', 'Initial PLUR engram store'], root)
@@ -151,6 +157,9 @@ export function sync(root: string, remote?: string): SyncResult {
       files_changed: 0,
     }
   }
+
+  // Ensure existing repos are also immune to global gitignore (heal pre-fix installs)
+  neutralizeGlobalExcludes(root)
 
   // Add remote if provided and not yet set
   const existingRemote = getRemote(root)

@@ -11,8 +11,20 @@ function git(args: string, cwd: string): string {
 
 describe('sync', () => {
   let dir: string
+  let savedEnv: Record<string, string | undefined>
 
   beforeEach(() => {
+    // Neutralize global/system git config so developer gitignore rules can't
+    // silently drop engram files and so CI and local runs behave identically.
+    const keys = ['GIT_CONFIG_GLOBAL', 'GIT_CONFIG_SYSTEM', 'GIT_AUTHOR_NAME', 'GIT_AUTHOR_EMAIL', 'GIT_COMMITTER_NAME', 'GIT_COMMITTER_EMAIL']
+    savedEnv = Object.fromEntries(keys.map(k => [k, process.env[k]]))
+    process.env.GIT_CONFIG_GLOBAL = '/dev/null'
+    process.env.GIT_CONFIG_SYSTEM = '/dev/null'
+    process.env.GIT_AUTHOR_NAME = 'PLUR Test'
+    process.env.GIT_AUTHOR_EMAIL = 'test@plur.ai'
+    process.env.GIT_COMMITTER_NAME = 'PLUR Test'
+    process.env.GIT_COMMITTER_EMAIL = 'test@plur.ai'
+
     dir = mkdtempSync(join(tmpdir(), 'plur-sync-'))
     // Create a minimal PLUR directory with an engrams file
     writeFileSync(join(dir, 'engrams.yaml'), '- id: ENG-001\n  statement: test\n')
@@ -20,6 +32,10 @@ describe('sync', () => {
 
   afterEach(() => {
     rmSync(dir, { recursive: true, force: true })
+    for (const [k, v] of Object.entries(savedEnv)) {
+      if (v === undefined) delete process.env[k]
+      else process.env[k] = v
+    }
   })
 
   describe('getSyncStatus', () => {
