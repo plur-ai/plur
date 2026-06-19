@@ -97,12 +97,100 @@ function isPublicIpv4(ip: string): boolean {
   return !NON_PUBLIC_IPV4.test(ip)
 }
 
+// IPv6 — mirror isPublicIpv4's "public only" stance. We FLAG only a globally
+// routable address (global unicast, 2000::/3) and exclude everything that is
+// not internet-reachable: loopback (::1), link-local (fe80::/10), unique-local
+// /ULA (fc00::/7, treated as private like 10.x), and the documentation prefix
+// (2001:db8::/32). The candidate matcher is loose on purpose — `parseIpv6`
+// then VALIDATES structurally (correct hextet count, at most one `::`), so a
+// MAC address (00:11:22:33:44:55 — exactly six 2-hex groups, no `::`) or a
+// generic colon-string fails to parse and is never flagged. Integer- or
+// hex-encoded IPv4 (e.g. 2338339922) is deliberately NOT handled — too
+// false-positive-prone — and is an accepted risk.
+const IPV6_CANDIDATE = /\b(?:[0-9a-f]{0,4}:){2,7}[0-9a-f]{0,4}\b|\b(?:[0-9a-f]{1,4}:){1,7}:/gi
+
 /**
- * Scan text for secrets AND infrastructure-sensitive content (public IPs,
- * basic-auth URLs, host:port topology). Superset of `detectSecrets` — this is
- * the gate used before an engram is allowed into a public/shipped set, because
- * the visibility tag alone is not trustworthy (in the 2026-06 leak, several of
- * the worst engrams were mistagged `public`). Returns [] only when clean.
+ * Parse an IPv6 string into its 8 16-bit hextets, or return null if it is not
+ * a structurally valid IPv6 address. Strictly validates `::` (at most one) and
+ * the resulting hextet count (exactly 8), so non-IPv6 colon strings — MAC
+ * addresses, `time:like:strings`, etc. — are rejected. A trailing embedded
+ * IPv4 (e.g. `::ffff:192.0.2.1`) is intentionally NOT supported; such inputs
+ * return null (accepted false negative, keeps the parser simple and strict).
+ */
+function parseIpv6(addr: string): number[] | null {
+  if (addr.includes('.')) return null // no embedded-IPv4 form; keep it strict
+  const dbl = addr.indexOf('::')
+  if (dbl !== addr.lastIndexOf('::')) return null // more than one '::' is invalid
+
+  const parseGroups = (s: string): number[] | null => {
+    if (s === '') return []
+    const out: number[] = []
+    for (const g of s.split(':')) {
+      if (!/^[0-9a-f]{1,4}$/i.test(g)) return null
+      out.push(parseInt(g, 16))
+    }
+    return out
+  }
+
+  if (dbl === -1) {
+    const groups = parseGroups(addr)
+    if (groups === null || groups.length !== 8) return null
+    return groups
+  }
+  // One '::' — it expands to fill the missing hextets (at least one).
+  const head = parseGroups(addr.slice(0, dbl))
+  const tail = parseGroups(addr.slice(dbl + 2))
+  if (head === null || tail === null) return null
+  const fill = 8 - head.length - tail.length
+  if (fill < 1) return null // '::' must stand in for >=1 omitted hextet
+  return [...head, ...new Array(fill).fill(0), ...tail]
+}
+
+function isPublicIpv6(addr: string): boolean {
+  const h = parseIpv6(addr)
+  if (h === null) return false
+  const [h0] = h
+  // Loopback ::1  and unspecified ::  — not public.
+  if (h.every(x => x === 0)) return false
+  if (h.slice(0, 7).every(x => x === 0) && h[7] === 1) return false
+  // Link-local fe80::/10  — top 10 bits = 1111111010.
+  if ((h0 & 0xffc0) === 0xfe80) return false
+  // Unique-local / ULA fc00::/7 (fc00::–fdff::) — treat as private like 10.x.
+  if ((h0 & 0xfe00) === 0xfc00) return false
+  // Documentation prefix 2001:db8::/32.
+  if (h0 === 0x2001 && h[1] === 0x0db8) return false
+  // Global unicast 2000::/3 (top 3 bits = 001) — the only range we flag.
+  return (h0 & 0xe000) === 0x2000
+}
+
+// Targeted internal/infra hostname detection (portless variant — the ported
+// form is already caught by `fqdn_port`). CONSERVATIVE by design: only
+// high-signal forms, because a false match silently demotes a legitimate
+// engram. We flag a multi-label hostname that EITHER ends in an unambiguous
+// internal suffix label (.local/.internal/.corp/.lan/.intranet, or k8s
+// .svc / .svc.cluster.local) OR contains a `staging` label. We do NOT flag
+// standalone words (db/prod/redis alone) or ordinary public FQDNs
+// (example.com, api.github.com). The leading `[a-z0-9-]+\.` requires at least
+// two labels so a bare `internal` or `localhost` never trips it.
+const INTERNAL_HOST = new RegExp(
+  '\\b[a-z0-9-]+(?:\\.[a-z0-9-]+)*\\.' +
+    '(?:local|internal|corp|lan|intranet|svc)\\b' + // unambiguous internal suffix label
+    '|' +
+    '\\b[a-z0-9-]+(?:\\.[a-z0-9-]+)*\\.svc\\.cluster\\.local\\b' + // k8s fully-qualified
+    '|' +
+    '\\b[a-z0-9-]*staging[a-z0-9-]*(?:\\.[a-z0-9-]+)+\\b' + // hostname with a staging label
+    '|' +
+    '\\b[a-z0-9-]+(?:\\.[a-z0-9-]+)*\\.staging(?:\\.[a-z0-9-]+)+\\b', // ...or staging as inner label
+  'i',
+)
+
+/**
+ * Scan text for secrets AND infrastructure-sensitive content (public IPv4/IPv6,
+ * basic-auth URLs, host:port topology, internal/infra hostnames). Superset of
+ * `detectSecrets` — this is the gate used before an engram is allowed into a
+ * public/shipped set, because the visibility tag alone is not trustworthy (in
+ * the 2026-06 leak, several of the worst engrams were mistagged `public`).
+ * Returns [] only when clean.
  */
 export function detectSensitive(text: string): SecretMatch[] {
   if (typeof text !== 'string') {
@@ -119,6 +207,16 @@ export function detectSensitive(text: string): SecretMatch[] {
       break
     }
   }
+  for (const candidate of text.match(IPV6_CANDIDATE) ?? []) {
+    if (isPublicIpv6(candidate)) {
+      matches.push({ pattern: 'public_ipv6', match: candidate })
+      break
+    }
+  }
+  const internalHost = text.match(INTERNAL_HOST)
+  if (internalHost) {
+    matches.push({ pattern: 'internal_host', match: internalHost[0].slice(0, 30) })
+  }
   return matches
 }
 
@@ -128,12 +226,15 @@ export function detectSensitive(text: string): SecretMatch[] {
  * the broad families a scope forbids/allows — 'secrets' (credentials/tokens)
  * vs 'infra' (topology: IPs, internal hosts, host:port) — rather than the
  * fine-grained pattern names. The infra family is exactly the set introduced by
- * `detectSensitive` over `detectSecrets` (SENSITIVE_PATTERNS + public_ipv4);
- * everything else `detectSecrets` finds is a credential, i.e. 'secrets'.
+ * `detectSensitive` over `detectSecrets` (SENSITIVE_PATTERNS + public_ipv4 +
+ * public_ipv6 + internal_host); everything else `detectSecrets` finds is a
+ * credential, i.e. 'secrets'.
  */
 const INFRA_PATTERN_NAMES = new Set<string>([
   ...SENSITIVE_PATTERNS.map(p => p.name),
   'public_ipv4',
+  'public_ipv6',
+  'internal_host',
 ])
 
 export function sensitivityCategory(patternName: string): 'secrets' | 'infra' {
