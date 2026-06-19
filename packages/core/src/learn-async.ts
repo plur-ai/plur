@@ -9,6 +9,7 @@ import { appendHistory } from './history.js'
 import { logger } from './logger.js'
 import { withLock } from './sync.js'
 import type { Engram } from './schemas/engram.js'
+import type { SecretMatch } from './secrets.js'
 import type { LearnContext, LearnAsyncContext, LearnAsyncResult, LearnBatchResult, DedupDecision, LlmFunction } from './types.js'
 
 export interface LearnAsyncDeps {
@@ -35,6 +36,38 @@ export interface LearnAsyncDeps {
   recordLlmFailure: () => void
   /** Sync index after write. */
   syncIndex: () => void
+  /**
+   * Leak guard predicate (#353). Returns the offending sensitivity hits when
+   * `statement` carries content the SHARED `scope` forbids, else `[]` (always
+   * `[]` for personal/local scopes). Single source of truth lives on the Plur
+   * class as `_offendingHitsForScope`; injected here so the UPDATE/MERGE paths
+   * can demote a mutated engram before it is written back to a shared store.
+   */
+  offendingHitsForScope: (statement: string, scope: string) => SecretMatch[]
+}
+
+/**
+ * Demote an engram in place when its (post-mutation) statement carries content
+ * the engram's shared scope forbids. Local write, so demotion is coherent:
+ * scope→'local', visibility→'private'. Warns naming the offending patterns,
+ * mirroring `_guardSensitiveScope`'s warning style. No-op (returns the engram
+ * unchanged) when there are no offending hits. (#353)
+ */
+function demoteIfSensitive(
+  deps: LearnAsyncDeps,
+  engram: any,
+  newStatement: string,
+): void {
+  const offending = deps.offendingHitsForScope(newStatement, engram.scope ?? 'global')
+  if (offending.length === 0) return
+  const patterns = [...new Set(offending.map(h => h.pattern))].join(', ')
+  logger.warning(
+    `[plur] sensitive content (${patterns}) held back from shared scope "${engram.scope}" — ` +
+    `demoted to local/private so it is not written to a shared store. ` +
+    `Re-scope deliberately if this is a false positive.`,
+  )
+  engram.scope = 'local'
+  engram.visibility = 'private'
 }
 
 /**
@@ -70,6 +103,9 @@ function executeDedupDecision(
             updated.version = (updated.version ?? 1) + 1
             updated.activation.last_accessed = new Date().toISOString().slice(0, 10)
             if (context?.tags) updated.tags = [...new Set([...updated.tags, ...context.tags])]
+            // Leak guard (#353): a dedup UPDATE can introduce sensitive content
+            // into an engram living at a shared scope. Demote before persisting.
+            demoteIfSensitive(deps, updated, updated.statement)
             engrams[idx] = updated
             saveEngrams(deps.engramsPath, engrams)
             deps.syncIndex()
@@ -101,6 +137,10 @@ function executeDedupDecision(
             merged.activation.last_accessed = new Date().toISOString().slice(0, 10)
             if (context?.tags) merged.tags = [...new Set([...merged.tags, ...context.tags])]
             if (0.7 > merged.activation.retrieval_strength) merged.activation.retrieval_strength = 0.7
+            // Leak guard (#353): a dedup MERGE concatenates the incoming
+            // statement, which can introduce sensitive content into an engram at
+            // a shared scope. Demote before persisting.
+            demoteIfSensitive(deps, merged, merged.statement)
             engrams[idx] = merged
             saveEngrams(deps.engramsPath, engrams)
             deps.syncIndex()

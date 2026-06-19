@@ -29,6 +29,7 @@ import { installPack, uninstallPack, listPacks, exportPack, scanPrivacy, compute
 // import { fetchRegistry, discoverPacks, verifyPackIntegrity, DEFAULT_REGISTRY_URL, type PackRegistry, type RegistryPack } from './registry.js'
 import { sync as gitSync, getSyncStatus, withLock, type SyncResult, type SyncStatus } from './sync.js'
 import { detectSecrets, detectSensitive, sensitivityCategory } from './secrets.js'
+import type { SecretMatch } from './secrets.js'
 import type { ScopeMetadata, SensitivityCategory } from './schemas/scope-metadata.js'
 import { appendHistory, readHistoryForEngram, generateEventId } from './history.js'
 import { computeContentHash } from './content-hash.js'
@@ -866,6 +867,78 @@ export class Plur {
    * `allow: []`) reproduces that demote-on-sensitive behavior, so adding metadata
    * is non-breaking.
    */
+  /**
+   * Single source of truth for "does this content carry sensitivity that scope
+   * `scope` forbids?". Returns the offending {@link SecretMatch} hits, or `[]`
+   * when there are none.
+   *
+   * Scope discipline: only SHARED scopes (`isSharedScope`) can leak, so for
+   * personal/local scopes (`local`/`global`/`user:`/`agent:`) this returns `[]`
+   * unconditionally — infra notes legitimately live in local storage, and the
+   * demotion target is local anyway, so a local write is always coherent.
+   *
+   * Policy: scan `text` with `detectSensitive`, then keep only the hits the
+   * scope's per-scope `sensitivity` policy forbids. With no scope metadata the
+   * default policy is `forbid:['secrets','infra'], allow:[]` — i.e. every hit is
+   * offending (the Stage 1 behavior). A hit is tolerated when its category is in
+   * `allow` (by category name OR by the specific detector pattern name) or when
+   * its category is not in `forbid`.
+   *
+   * Used by `_guardSensitiveScope` (the learn/learnRouted guard) AND by the
+   * mutation-path guards (learnAsync UPDATE/MERGE, reportFailure, updateEngram)
+   * so there is exactly one definition of "offending".
+   */
+  private _offendingHitsForScope(statement: string, scope: string): SecretMatch[] {
+    // Local/personal scopes never leak — demotion target is local anyway.
+    if (!isSharedScope(scope)) return []
+    const hits = detectSensitive(statement)
+    if (hits.length === 0) return []
+    const policy = this.getScopeMetadata(scope)?.sensitivity
+    const forbid = new Set<SensitivityCategory>(policy?.forbid ?? ['secrets', 'infra'])
+    const allow = new Set<string>(policy?.allow ?? [])
+    return hits.filter(h => {
+      const category = sensitivityCategory(h.pattern)
+      if (allow.has(category) || allow.has(h.pattern)) return false
+      return forbid.has(category)
+    })
+  }
+
+  /**
+   * Leak guard for the EXPLICIT-update mutation path (`updateEngram` /
+   * `updateEngramAsync`). Unlike learn/learnAsync, the caller hands us a fully
+   * formed engram and chose its scope deliberately, so the response differs by
+   * residence (#353):
+   *
+   * - REMOTE-resident (`isRemote: true`): there is no coherent demotion (we
+   *   can't silently re-scope an engram living on someone else's server), so a
+   *   forbidden hit THROWS — mirroring the hard `detectSecrets` guard. The
+   *   caller must re-scope locally or set `config.allow_secrets`.
+   * - LOCAL-resident: a forbidden hit DEMOTES in place (scope→'local',
+   *   visibility→'private') and warns. Returns the override the caller applies
+   *   before persisting; returns `null` when the statement is clean.
+   */
+  private _guardExplicitUpdate(
+    statement: string,
+    scope: string,
+    isRemote: boolean,
+  ): { scope: string; visibility: 'private' } | null {
+    const offending = this._offendingHitsForScope(statement, scope)
+    if (offending.length === 0) return null
+    const patterns = [...new Set(offending.map(h => h.pattern))].join(', ')
+    if (isRemote) {
+      throw new Error(
+        `Cannot update a shared/remote engram with sensitive content: ${patterns}. ` +
+        `Use a local scope or config.allow_secrets.`,
+      )
+    }
+    logger.warning(
+      `[plur] sensitive content (${patterns}) held back from shared scope "${scope}" — ` +
+      `demoted to local/private so it is not written to a shared store. ` +
+      `Re-scope deliberately if this is a false positive.`,
+    )
+    return { scope: 'local', visibility: 'private' }
+  }
+
   private _guardSensitiveScope(
     statement: string,
     context?: LearnContext,
@@ -876,21 +949,8 @@ export class Plur {
     // context fields (rationale, key_files, source, …), not just the statement.
     // Sensitive material hides in context too (#326 review, finding 1).
     const scanText = `${statement}\n${JSON.stringify(context ?? {})}`
-    const hits = detectSensitive(scanText)
-    if (hits.length === 0) return { scope, context, demotion: null }
-
-    // Per-scope policy: keep only the hits this scope actually forbids. With no
-    // metadata, `sensitivity` is undefined and the default policy forbids
-    // secrets+infra with nothing allowed — i.e. every hit is offending, exactly
-    // the Stage 1 behavior.
-    const policy = this.getScopeMetadata(scope)?.sensitivity
-    const forbid = new Set<SensitivityCategory>(policy?.forbid ?? ['secrets', 'infra'])
-    const allow = new Set<string>(policy?.allow ?? [])
-    const offending = hits.filter(h => {
-      const category = sensitivityCategory(h.pattern)
-      if (allow.has(category) || allow.has(h.pattern)) return false
-      return forbid.has(category)
-    })
+    // Single source of truth for the offending-hit policy (#353).
+    const offending = this._offendingHitsForScope(scanText, scope)
     if (offending.length === 0) return { scope, context, demotion: null }
 
     const patterns = [...new Set(offending.map(h => h.pattern))].join(', ')
@@ -1315,6 +1375,7 @@ export class Plur {
       recordLlmSuccess: () => this._recordLlmSuccess(),
       recordLlmFailure: () => this._recordLlmFailure(),
       syncIndex: () => this._syncIndex(),
+      offendingHitsForScope: (statement: string, scope: string) => this._offendingHitsForScope(statement, scope),
     }
   }
 
@@ -1987,7 +2048,10 @@ export class Plur {
       const engrams = loadEngrams(this.paths.engrams)
       const idx = engrams.findIndex(e => e.id === updated.id)
       if (idx === -1) return false
-      engrams[idx] = updated
+      // Leak guard (#353): local-resident → demote a sensitive update in place.
+      const demote = this._guardExplicitUpdate(updated.statement, updated.scope, false)
+      const toWrite = demote ? { ...updated, ...demote } : updated
+      engrams[idx] = toWrite
       this._writeEngrams(this.paths.engrams, engrams)
       this._syncIndex()
       return true
@@ -1998,6 +2062,9 @@ export class Plur {
     // strict ordering should use updateEngramAsync().
     for (const entry of (this.config.stores ?? [])) {
       if (!entry.url || entry.readonly === true) continue
+      // Leak guard (#353): remote-resident, explicit update → THROW on a
+      // forbidden hit (no coherent demotion for a remote engram).
+      this._guardExplicitUpdate(updated.statement, entry.scope, true)
       const serverId = this._stripRemotePrefix(updated.id, entry.scope)
       const driver = this._getRemoteDriver({ url: entry.url, token: entry.token, scope: entry.scope })
       // PATCH a focused subset — full-engram PATCH would require strict
@@ -2025,15 +2092,21 @@ export class Plur {
       const engrams = loadEngrams(this.paths.engrams)
       const idx = engrams.findIndex(e => e.id === updated.id)
       if (idx === -1) return null
-      engrams[idx] = updated
+      // Leak guard (#353): local-resident → demote a sensitive update in place.
+      const demote = this._guardExplicitUpdate(updated.statement, updated.scope, false)
+      const toWrite = demote ? { ...updated, ...demote } : updated
+      engrams[idx] = toWrite
       this._writeEngrams(this.paths.engrams, engrams)
       this._syncIndex()
-      return updated
+      return toWrite
     })
     if (localResult) return localResult
 
     for (const entry of (this.config.stores ?? [])) {
       if (!entry.url || entry.readonly === true) continue
+      // Leak guard (#353): remote-resident, explicit update → THROW on a
+      // forbidden hit (no coherent demotion for a remote engram).
+      this._guardExplicitUpdate(updated.statement, entry.scope, true)
       const serverId = this._stripRemotePrefix(updated.id, entry.scope)
       const driver = this._getRemoteDriver({ url: entry.url, token: entry.token, scope: entry.scope })
       const patched = await driver.patch(serverId, {
@@ -2673,7 +2746,7 @@ export class Plur {
     engramId: string,
     failureContext: string,
     llm?: LlmFunction,
-  ): Promise<{ engram: Engram; episode: Episode; evolved: boolean }> {
+  ): Promise<{ engram: Engram; episode: Episode; evolved: boolean; blocked?: boolean }> {
     const engram = this.getById(engramId)
     if (!engram) throw new Error(`Engram not found: ${engramId}`)
 
@@ -2735,6 +2808,20 @@ Generate an improved version of the procedure that prevents this failure. Return
             const oldVersion = raw.engram_version ?? 1
 
             raw.statement = improved.trim()
+            // Leak guard (#353): the LLM-improved statement can introduce
+            // sensitive content. This is a local write, so demotion is coherent:
+            // hold it back from the shared scope by demoting to local/private.
+            const localOffending = this._offendingHitsForScope(raw.statement, raw.scope ?? 'global')
+            if (localOffending.length > 0) {
+              const patterns = [...new Set(localOffending.map(h => h.pattern))].join(', ')
+              logger.warning(
+                `[plur] sensitive content (${patterns}) held back from shared scope "${raw.scope}" — ` +
+                `demoted to local/private so it is not written to a shared store. ` +
+                `Re-scope deliberately if this is a false positive.`,
+              )
+              raw.scope = 'local'
+              raw.visibility = 'private'
+            }
             raw.engram_version = oldVersion + 1
             raw.previous_version_ref = { event_id: eventId, changed_at: now }
             if (!raw.episode_ids) raw.episode_ids = []
@@ -2765,8 +2852,24 @@ Generate an improved version of the procedure that prevents this failure. Return
 
           // Remote routing (#86 reportFailure remainder): the engram lives
           // on a remote store. PATCH the new statement; history stays local.
+          let blockedRemote = false
           for (const entry of (this.config.stores ?? [])) {
             if (!entry.url || entry.readonly === true) continue
+            // Leak guard (#353): this is an AUTONOMOUS push to a shared/remote
+            // store — there is no coherent demotion (we can't silently re-scope
+            // someone else's remote engram). If the improved statement carries
+            // content this scope forbids, SKIP the push entirely and warn. Never
+            // throw: reportFailure is a background flow and must not crash.
+            const remoteOffending = this._offendingHitsForScope(improved.trim(), entry.scope)
+            if (remoteOffending.length > 0) {
+              const patterns = [...new Set(remoteOffending.map(h => h.pattern))].join(', ')
+              logger.warning(
+                `[plur] sensitive content (${patterns}) blocked from remote shared scope "${entry.scope}" — ` +
+                `procedure evolution NOT pushed. The remote engram is unchanged.`,
+              )
+              blockedRemote = true
+              continue
+            }
             const serverId = this._stripRemotePrefix(engramId, entry.scope)
             const driver = this._getRemoteDriver({ url: entry.url, token: entry.token, scope: entry.scope })
             const patched = await driver.patch(serverId, { statement: improved.trim() })
@@ -2789,6 +2892,24 @@ Generate an improved version of the procedure that prevents this failure. Return
               evolved = true
               return { engram: patched, episode, evolved }
             }
+          }
+          // Leak guard (#353): every candidate remote was skipped because the
+          // improved statement was sensitive for its scope. The remote engram is
+          // intentionally left unchanged — report a not-evolved/blocked outcome
+          // (the failure episode is still linked below) instead of throwing.
+          if (blockedRemote) {
+            withLock(this.paths.engrams, () => {
+              const engrams = loadEngrams(this.paths.engrams)
+              const idx = engrams.findIndex(e => e.id === engramId)
+              if (idx !== -1) {
+                const raw = engrams[idx] as any
+                if (!raw.episode_ids) raw.episode_ids = []
+                raw.episode_ids.push(episode.id)
+                this._writeEngrams(this.paths.engrams, engrams)
+                this._syncIndex()
+              }
+            })
+            return { engram, episode, evolved: false, blocked: true }
           }
           // Neither local nor remote had it — defensive fallback (should not
           // happen since getById succeeded at top of function).
