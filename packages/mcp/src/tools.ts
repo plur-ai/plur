@@ -173,19 +173,24 @@ export function getToolDefinitions(): ToolDefinition[] {
         // unchanged. We try learnAsync second only as a fallback for
         // the LLM-driven dedup pathway (local routes).
         // Runtime scope nudge (#296): when the caller passes no scope and the
-        // engram lands at "global" while a team store IS configured, team
-        // knowledge silently never reaches the shared store. Surface that at the
-        // moment it happens — non-fatal, informational, and only when there is a
-        // team store to route to (stays silent on personal installs).
+        // engram lands at a PERSONAL scope ("local" or "global") WITHOUT being
+        // auto-routed, while a team store IS configured, team knowledge silently
+        // never reaches the shared store. Surface that at the moment it happens —
+        // non-fatal, informational, and only when there is a team store to route
+        // to (stays silent on personal installs). Stage 3b made un-scoped writes
+        // default to "local" (was "global") and auto-route on a confident covers
+        // match (stamping structured_data._routed); the hint must fire on either
+        // personal landing scope and stay silent when the write was auto-routed.
         const explicitScope = typeof args.scope === 'string' && args.scope.length > 0
-        const scopeHint = (engramScope: string): { scope_hint?: string } => {
-          if (explicitScope || engramScope !== 'global') return {}
+        const PERSONAL_SCOPES = new Set(['local', 'global'])
+        const scopeHint = (engramScope: string, wasRouted: boolean): { scope_hint?: string } => {
+          if (explicitScope || wasRouted || !PERSONAL_SCOPES.has(engramScope)) return {}
           let remote: Array<{ scope: string }> = []
           try { remote = plur.getWritableRemoteScopes() } catch { return {} }
           if (remote.length === 0) return {}
           const scopes = remote.map(s => `"${s.scope}"`).join(', ')
           return { scope_hint:
-            `Stored at "global" because no scope was passed, but a team store is configured (${scopes}). ` +
+            `Stored at "${engramScope}" because no scope was passed, but a team store is configured (${scopes}). ` +
             `If this is team/engineering knowledge, re-learn it with an explicit scope so it reaches the shared ` +
             `store; keep genuinely personal notes at the default scope.` }
         }
@@ -204,7 +209,7 @@ export function getToolDefinitions(): ToolDefinition[] {
             scope: engram.scope, type: engram.type,
             pinned: (engram as any).pinned === true,
             decision: 'ADD',
-            ...scopeHint(engram.scope),
+            ...scopeHint(engram.scope, !!routed),
             ...(isOutbox ? { outbox: true, warning: 'Remote write failed; engram queued locally for retry on next session start or plur_sync.' } : {}),
             ...(demoted ? { demoted: true, requested_scope: demoted.from, warning: `Sensitive content (${demoted.patterns}) detected — stored at "${demoted.to}"/private instead of the requested shared scope "${demoted.from}". If this is a false positive, re-scope deliberately.` } : {}),
             ...(routed ? { routed: { scope: routed.scope, confidence: routed.confidence, reason: routed.reason }, info: `No scope was provided; auto-routed to "${routed.scope}" (confidence ${routed.confidence}) because its content matched that scope's covers. Pass an explicit scope to override.` } : {}),
@@ -214,13 +219,14 @@ export function getToolDefinitions(): ToolDefinition[] {
           // path should rarely be reached. Keep as defense-in-depth.
           const engram = plur.learn(statement, context)
           const isOutbox = !!(engram as any).structured_data?._outbox
+          const routedFallback = (engram as any).structured_data?._routed as { scope: string; confidence: number; reason: string } | undefined
           mcpCanary.signal('learn_activity')
           // Opt-in, content-free engagement counter (default-off; no statement text).
           recordTelemetry('learn')
           return {
             id: engram.id, statement: engram.statement,
             scope: engram.scope, type: engram.type, decision: 'ADD',
-            ...scopeHint(engram.scope),
+            ...scopeHint(engram.scope, !!routedFallback),
             ...(isOutbox ? { outbox: true } : {}),
             warning: `Remote write failed (${(err as Error).message}); engram queued for retry.`,
           }
