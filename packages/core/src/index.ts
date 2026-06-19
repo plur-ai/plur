@@ -31,6 +31,7 @@ import { sync as gitSync, getSyncStatus, withLock, type SyncResult, type SyncSta
 import { detectSecrets, detectSensitive, sensitivityCategory } from './secrets.js'
 import type { SecretMatch } from './secrets.js'
 import type { ScopeMetadata, SensitivityCategory } from './schemas/scope-metadata.js'
+import { rankScopes, type ScopeSignals, type ScopeCandidate } from './scope-routing.js'
 import { appendHistory, readHistoryForEngram, generateEventId } from './history.js'
 import { computeContentHash } from './content-hash.js'
 import { decodeJwtExpiry } from './jwt.js'
@@ -76,6 +77,7 @@ export { parseDedupResponse, buildDedupPrompt, buildBatchDedupPrompt } from './d
 export { runMigrations, rollbackMigrations, getSchemaVersion, setSchemaVersion, ALL_MIGRATIONS, CURRENT_SCHEMA_VERSION, type Migration, type MigrationResult } from './migrations/index.js'
 export { detectSecrets, detectSensitive, sensitivityCategory } from './secrets.js'
 export { ScopeMetadataSchema, ScopeSensitivitySchema, SENSITIVITY_CATEGORIES, type ScopeMetadata, type ScopeSensitivity, type SensitivityCategory } from './schemas/scope-metadata.js'
+export { rankScopes, SCOPE_MATCH_THRESHOLD, type ScopeSignals, type ScopeCandidate } from './scope-routing.js'
 
 /**
  * Scopes whose engrams are visible to people *other than* the author — the team
@@ -845,6 +847,40 @@ export class Plur {
       covers: entry.covers ?? [],
       ...(entry.sensitivity ? { sensitivity: entry.sensitivity } : {}),
     }
+  }
+
+  /**
+   * All registered scopes that declare self-describing metadata, materialized
+   * via {@link getScopeMetadata}. Deduplicated on scope (first declaration
+   * wins, matching getScopeMetadata's find-first semantics). Drives discovery
+   * surfacing and the {@link suggestScope} ranker. Additive — does not touch
+   * routing.
+   */
+  listScopeMetadata(): ScopeMetadata[] {
+    const seen = new Set<string>()
+    const out: ScopeMetadata[] = []
+    for (const s of this.config.stores ?? []) {
+      if (seen.has(s.scope)) continue
+      const md = this.getScopeMetadata(s.scope)
+      if (md) { out.push(md); seen.add(s.scope) }
+    }
+    return out
+  }
+
+  /**
+   * Suggest which registered scope(s) an engram belongs in, ranked by fit
+   * (#345/#346, Stage 3a). Deterministic — NO LLM, NO network. Scores the
+   * engram's signals (statement keywords, `domain` namespace, `tags`) against
+   * the `covers[]` each scope declares (see {@link rankScopes} for the weights).
+   *
+   * ADVISORY ONLY. This does NOT route or store anything — `learn()` /
+   * `learnRouted()` ignore it. The auto-route behavior flip is the gated Stage
+   * 3b PR; this method just answers "where would this fit?". Returns candidates
+   * sorted by confidence descending (empty array when nothing matches).
+   */
+  suggestScope(input: ScopeSignals): ScopeCandidate[] {
+    this.reloadConfigIfChanged()  // pick up out-of-process config edits (#307)
+    return rankScopes(input, this.listScopeMetadata())
   }
 
   /**

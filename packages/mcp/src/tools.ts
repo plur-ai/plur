@@ -1155,7 +1155,20 @@ export function getToolDefinitions(): ToolDefinition[] {
         // caller must judge per-engram whether it belongs on the enterprise
         // store or stays local. Auto-setting all engrams to remote would
         // route personal/project-local knowledge to the team store.
-        const remote_scopes = plur.getWritableRemoteScopes()
+        //
+        // #345/#346 (Stage 3a): enrich each writable scope with its
+        // self-describing metadata (description + covers) so the AI caller can
+        // see what each scope is FOR when deciding routing. Additive — the
+        // existing { scope, url } shape is preserved; description/covers appear
+        // only when the scope declares them.
+        const remote_scopes = plur.getWritableRemoteScopes().map(s => {
+          const md = plur.getScopeMetadata(s.scope)
+          return {
+            ...s,
+            ...(md?.description ? { description: md.description } : {}),
+            ...(md?.covers && md.covers.length > 0 ? { covers: md.covers } : {}),
+          }
+        })
 
         // Project scope detection (#177) — read .plur.yaml from the MCP
         // server's cwd. Walking stops at .git boundary and refuses
@@ -1260,7 +1273,16 @@ export function getToolDefinitions(): ToolDefinition[] {
 
         // Append remote scope guidance to guide text (#229)
         if (remote_scopes.length > 0) {
-          const scopeList = remote_scopes.map(s => `"${s.scope}"`).join(', ')
+          // #345/#346: when a scope declares self-describing metadata, show what
+          // it's FOR (description + covers) inline so the agent can route by
+          // purpose, not just by name. Falls back to the bare "scope" name.
+          const scopeList = remote_scopes.map(s => {
+            const detail = [
+              s.description ? `— ${s.description}` : '',
+              s.covers && s.covers.length > 0 ? `(covers: ${s.covers.join(', ')})` : '',
+            ].filter(Boolean).join(' ')
+            return detail ? `"${s.scope}" ${detail}` : `"${s.scope}"`
+          }).join('; ')
           guide += default_scope
             ? `\n\nSession default scope is set to "${default_scope}". To route an engram to a remote ` +
               `enterprise store instead, pass scope explicitly to plur_learn (available remote scopes: ${scopeList}).`
@@ -1503,6 +1525,29 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
           count: stores.length,
           ...(outboxCount > 0 ? { outbox_pending: outboxCount } : {}),
         }
+      },
+    },
+
+    {
+      name: 'plur_suggest_scope',
+      description: 'Suggest which registered scope(s) an engram belongs in, ranked by fit. Deterministic — no LLM, no network. Scores the statement keywords, optional domain (a dotted namespace like "plur.core.security"), and tags against the covers[] each scope declares. ADVISORY ONLY: this does not route or store anything; pass the chosen scope to plur_learn yourself. Returns candidates sorted by confidence (empty when nothing matches).',
+      annotations: { title: 'Suggest scope', readOnlyHint: true, idempotentHint: true },
+      inputSchema: {
+        type: 'object',
+        properties: {
+          statement: { type: 'string', description: 'The engram statement to route' },
+          domain:    { type: 'string', description: 'Optional dotted namespace for the engram (e.g. "plur.core.security") — strongest routing signal' },
+          tags:      { type: 'array', items: { type: 'string' }, description: 'Optional tags on the engram' },
+        },
+        required: ['statement'],
+      },
+      handler: async (args, plur) => {
+        const candidates = plur.suggestScope({
+          statement: args.statement as string,
+          domain: args.domain as string | undefined,
+          tags: args.tags as string[] | undefined,
+        })
+        return { candidates, count: candidates.length }
       },
     },
 
