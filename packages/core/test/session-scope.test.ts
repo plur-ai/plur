@@ -123,7 +123,17 @@ describe('session scope (#229)', () => {
     expect(engram.scope).toBe('project:override')
   })
 
-  it('learn() falls back to global when no session scope set', () => {
+  it('learn() falls back to unscoped_default (local) when no session scope set (Stage 3b, #351)', () => {
+    const plur = new Plur({ path: primaryDir })
+    const engram = plur.learn('local fallback test')
+    expect(engram.scope).toBe('local')
+  })
+
+  it('learn() falls back to global when unscoped_default is configured "global" (back-compat)', () => {
+    writeFileSync(
+      join(primaryDir, 'config.yaml'),
+      yaml.dump({ unscoped_default: 'global', index: false }, { noRefs: true }),
+    )
     const plur = new Plur({ path: primaryDir })
     const engram = plur.learn('global fallback test')
     expect(engram.scope).toBe('global')
@@ -236,6 +246,12 @@ describe('session scope (#229)', () => {
   // A would leak into every subsequent session B that didn't pass its own.
 
   it('setSessionScope(null) clears a previously-set scope (cross-session safety)', () => {
+    // Scope value is incidental here — the subject is leakage, not the default.
+    // Pin unscoped_default:'global' to keep the original assertion (Stage 3b, #351).
+    writeFileSync(
+      join(primaryDir, 'config.yaml'),
+      yaml.dump({ unscoped_default: 'global', index: false }, { noRefs: true }),
+    )
     const plur = new Plur({ path: primaryDir })
     plur.setSessionScope('group:session-a')
     expect(plur.getSessionScope()).toBe('group:session-a')

@@ -159,17 +159,20 @@ describe('plur.suggestScope — reads scope metadata from config stores', () => 
     expect(plur.suggestScope({ statement: 'whatever', tags: ['infra'] })).toEqual([])
   })
 
-  it('is advisory: suggestScope does NOT route or store the engram', () => {
+  it('Stage 3b: a weak (sub-threshold) match falls to unscoped_default, NOT the top suggestion', () => {
     const plur = plurWithStores([
       { path: '/tmp/infra.yaml', scope: 'group:plur/infra', description: 'Infra', covers: ['servers', 'deployment'] },
     ])
-    // suggestScope points at the infra scope…
+    // suggestScope still points at the infra scope (advisory ranking unchanged)…
     const ranked = plur.suggestScope({ statement: 'restart the deployment on the servers' })
     expect(ranked[0].scope).toBe('group:plur/infra')
-    // …but a plain learn() with no scope still routes to the default (global),
-    // NOT to the suggested scope. The behavior flip is the gated Stage 3b PR.
+    // …but its confidence is only a keyword match (deployment + servers), which
+    // sits BELOW SCOPE_MATCH_THRESHOLD, so Stage 3b auto-routing does NOT fire —
+    // the unscoped write falls to unscoped_default ('local' by default). The
+    // confident (domain-prefix) auto-route path is covered in route-unscoped.test.ts.
+    expect(ranked[0].confidence).toBeLessThan(SCOPE_MATCH_THRESHOLD)
     const e = plur.learn('restart the deployment on the servers') as { scope: string }
-    expect(e.scope).toBe('global')
+    expect(e.scope).toBe('local')
   })
 
   it('feeds tags through to the ranker', () => {

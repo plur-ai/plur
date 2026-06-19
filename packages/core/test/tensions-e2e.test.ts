@@ -140,6 +140,9 @@ describe('tension detection e2e', () => {
     plur.learn('Default timeout for API requests is 30 seconds', {
       type: 'architectural',
       domain: 'plur.api',
+      // Explicit 'global' — this test is about global-vs-project overlap, not the
+      // unscoped default (which is now 'local' as of Stage 3b, #351).
+      scope: 'global',
     })
     plur.learn('Default timeout for API requests is 60 seconds', {
       type: 'architectural',

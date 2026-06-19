@@ -31,7 +31,7 @@ import { sync as gitSync, getSyncStatus, withLock, type SyncResult, type SyncSta
 import { detectSecrets, detectSensitive, sensitivityCategory } from './secrets.js'
 import type { SecretMatch } from './secrets.js'
 import type { ScopeMetadata, SensitivityCategory } from './schemas/scope-metadata.js'
-import { rankScopes, type ScopeSignals, type ScopeCandidate } from './scope-routing.js'
+import { rankScopes, SCOPE_MATCH_THRESHOLD, type ScopeSignals, type ScopeCandidate } from './scope-routing.js'
 import { appendHistory, readHistoryForEngram, generateEventId } from './history.js'
 import { computeContentHash } from './content-hash.js'
 import { decodeJwtExpiry } from './jwt.js'
@@ -975,19 +975,70 @@ export class Plur {
     return { scope: 'local', visibility: 'private' }
   }
 
+  /**
+   * Resolve the scope for a write whose caller supplied NO explicit scope and
+   * for which no session/`.plur.yaml` default is in effect — the genuinely
+   * UNSCOPED case (Stage 3b, #351). Two non-explicit signals decide it:
+   *
+   *  - `config.auto_route_scope` (default true): run the deterministic
+   *    {@link suggestScope} ranker over the registered scopes' `covers[]`. If the
+   *    top candidate's confidence clears {@link SCOPE_MATCH_THRESHOLD}, route the
+   *    engram there and return the routing decision so it can be stamped.
+   *  - otherwise: fall to `config.unscoped_default` (default `local`).
+   *
+   * INERT until scopes declare `covers` (Stage 5): with no `covers` the ranker
+   * returns `[]` and every unscoped write falls to `unscoped_default`. Both
+   * `local` and `global` are PERSONAL scopes, so this is an organizational
+   * default, not a leak-safety control — the sensitivity guard runs AFTER this
+   * and still demotes an auto-routed SHARED scope carrying sensitive content.
+   *
+   * Returns the resolved scope and, when auto-routing fired, a `routed` marker
+   * `{ scope, confidence, reason }`; `routed` is null on the `unscoped_default`
+   * fall-through (so an explicit/default `global` is never mislabeled as routed).
+   */
+  private _resolveUnscopedScope(
+    statement: string,
+    context?: LearnContext,
+  ): { scope: string; routed: { scope: string; confidence: number; reason: string } | null } {
+    const fallback = this.config.unscoped_default ?? 'local'
+    if (this.config.auto_route_scope === false) {
+      return { scope: fallback, routed: null }
+    }
+    const candidates = rankScopes(
+      { statement, domain: context?.domain, tags: context?.tags },
+      this.listScopeMetadata(),
+    )
+    const top = candidates[0]
+    if (top && top.confidence >= SCOPE_MATCH_THRESHOLD) {
+      return { scope: top.scope, routed: { scope: top.scope, confidence: top.confidence, reason: top.reason } }
+    }
+    return { scope: fallback, routed: null }
+  }
+
   private _guardSensitiveScope(
     statement: string,
     context?: LearnContext,
-  ): { scope: string; context: LearnContext | undefined; demotion: { from: string; to: string; patterns: string } | null } {
-    const scope = context?.scope ?? this._sessionScope ?? 'global'
-    if (!isSharedScope(scope)) return { scope, context, demotion: null }
+  ): { scope: string; context: LearnContext | undefined; demotion: { from: string; to: string; patterns: string } | null; routed: { scope: string; confidence: number; reason: string } | null } {
+    // "Truly unscoped" = caller passed no scope AND no session/`.plur.yaml`
+    // default is in effect (both land in _sessionScope). Only this path
+    // auto-routes / applies unscoped_default; everything else is honored as-is.
+    let routed: { scope: string; confidence: number; reason: string } | null = null
+    let scope: string
+    if (context?.scope == null && this._sessionScope == null) {
+      const resolved = this._resolveUnscopedScope(statement, context)
+      scope = resolved.scope
+      routed = resolved.routed
+    } else {
+      scope = context?.scope ?? this._sessionScope ?? 'global'
+    }
+    if (!isSharedScope(scope)) return { scope, context, demotion: null, routed }
     // Scan the FULL content the engram will carry — the statement AND the
     // context fields (rationale, key_files, source, …), not just the statement.
     // Sensitive material hides in context too (#326 review, finding 1).
     const scanText = `${statement}\n${JSON.stringify(context ?? {})}`
     // Single source of truth for the offending-hit policy (#353).
     const offending = this._offendingHitsForScope(scanText, scope)
-    if (offending.length === 0) return { scope, context, demotion: null }
+    if (offending.length === 0) return { scope, context, demotion: null, routed }
 
     const patterns = [...new Set(offending.map(h => h.pattern))].join(', ')
     logger.warning(
@@ -995,10 +1046,13 @@ export class Plur {
       `demoted to local/private so it is not written to a shared store. ` +
       `Re-scope deliberately if this is a false positive.`,
     )
+    // Preserve `routed` through demotion: an auto-routed SHARED scope carrying
+    // sensitive content is both routed AND demoted — surfacing both is correct.
     return {
       scope: 'local',
       context: { ...context, scope: 'local', visibility: 'private' },
       demotion: { from: scope, to: 'local', patterns },
+      routed,
     }
   }
 
@@ -1115,6 +1169,18 @@ export class Plur {
         ;(engram as any).structured_data = {
           ...((engram as any).structured_data ?? {}),
           _demoted: guarded.demotion,
+        }
+      }
+
+      // Stamp the auto-route marker (Stage 3b, #351) so the plur_learn MCP
+      // response can tell the agent its genuinely-unscoped write was routed to a
+      // covers-matched scope by suggestScope (not chosen by the caller).
+      // Mirrors _demoted; both can be present when an auto-routed shared scope
+      // was then demoted for sensitive content.
+      if (guarded.routed) {
+        ;(engram as any).structured_data = {
+          ...((engram as any).structured_data ?? {}),
+          _routed: guarded.routed,
         }
       }
 
@@ -1249,6 +1315,15 @@ export class Plur {
           _demoted: guarded.demotion,
         }
       }
+      // Mirror the demotion re-stamp for the auto-route marker (Stage 3b, #351),
+      // so an unscoped local-routed write surfaces its routing decision even if
+      // the inner learn() took a dedup/recurrence path that didn't stamp it.
+      if (guarded.routed) {
+        ;(engram as any).structured_data = {
+          ...((engram as any).structured_data ?? {}),
+          _routed: guarded.routed,
+        }
+      }
       return engram
     }
     // Remote route — dedup against the merged local+cached-remote view,
@@ -1274,6 +1349,14 @@ export class Plur {
     }
     const now = new Date().toISOString()
     const localPlaceholder = this._buildEngramShape(statement, scope, context, now)
+    // Stamp the auto-route marker on the remote-routed shape (Stage 3b, #351) so
+    // the decision survives onto the server engram and into the MCP response.
+    if (guarded.routed) {
+      ;(localPlaceholder as any).structured_data = {
+        ...((localPlaceholder as any).structured_data ?? {}),
+        _routed: guarded.routed,
+      }
+    }
     try {
       const { id: serverId } = await remoteDriver.appendAndGetServerId(localPlaceholder)
       const serverEngram: Engram = { ...localPlaceholder, id: serverId }

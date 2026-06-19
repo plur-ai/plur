@@ -106,6 +106,26 @@ export const PlurConfigSchema = z.object({
   llm: LlmTierConfigSchema.default({}),
   profile: ProfileConfigSchema.default({}),
   registry_url: z.string().url().optional(),
+  /**
+   * Where a genuinely-unscoped write lands when nothing else decides its scope
+   * (Stage 3b, #351). Both `local` and `global` are PERSONAL, non-shared scopes
+   * — the enterprise "global" was renamed to `org` on 2026-05-11 — so this is an
+   * organizational default, NOT a leak-safety control. Defaults to `local` so
+   * unscoped writes stay in this machine's local store instead of the
+   * cross-project `global` namespace. Set to `global` to restore the historical
+   * pre-3b default.
+   */
+  unscoped_default: z.enum(['local', 'global']).default('local'),
+  /**
+   * When true (default), a genuinely-unscoped write (no explicit scope, no
+   * session/`.plur.yaml` default) is run through the deterministic
+   * {@link suggestScope} ranker; if the top candidate clears
+   * SCOPE_MATCH_THRESHOLD the engram is auto-routed to that scope, otherwise it
+   * falls to `unscoped_default`. INERT until scopes declare `covers` (Stage 5):
+   * with no `covers` the ranker returns nothing and everything falls to
+   * `unscoped_default`. Set false to disable auto-routing entirely.
+   */
+  auto_route_scope: z.boolean().default(true),
 }).partial()
 
 export type PlurConfig = z.infer<typeof PlurConfigSchema>
