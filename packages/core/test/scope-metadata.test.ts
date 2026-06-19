@@ -16,7 +16,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import yaml from 'js-yaml'
-import { Plur, ScopeMetadataSchema, sensitivityCategory } from '../src/index.js'
+import { Plur, ScopeMetadataSchema, SENSITIVITY_CATEGORIES, sensitivityCategory } from '../src/index.js'
 
 describe('ScopeMetadataSchema', () => {
   it('accepts a minimal valid record and applies defaults', () => {
@@ -30,6 +30,21 @@ describe('ScopeMetadataSchema', () => {
     expect(parsed.sensitivity).toBeUndefined() // optional, no default
     expect(parsed.injection_policy).toBeUndefined()
     expect(parsed.owner).toBeUndefined()
+  })
+
+  // Detector hardening — Stage 1.5b (#353). 'pii' was a no-op category: no
+  // detector maps to it, so `forbid: ['pii']` silently protected nothing. It
+  // was removed to kill the false protection; the enum must reject it now.
+  it('no longer accepts the removed "pii" category', () => {
+    expect(SENSITIVITY_CATEGORIES).toEqual(['secrets', 'infra'])
+    expect(SENSITIVITY_CATEGORIES as readonly string[]).not.toContain('pii')
+    expect(() =>
+      ScopeMetadataSchema.parse({
+        scope: 'group:plur/engineering',
+        description: 'has a pii forbid',
+        sensitivity: { forbid: ['pii'] },
+      }),
+    ).toThrow()
   })
 
   it('applies the sensitivity defaults (forbid secrets+infra, allow none)', () => {

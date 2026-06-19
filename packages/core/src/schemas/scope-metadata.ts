@@ -19,12 +19,18 @@ import { z } from 'zod'
  */
 
 /** Categories of sensitive content a scope can forbid or explicitly allow.
- *  These map to the detector families in secrets.ts:
+ *  These map 1:1 to the detector families in secrets.ts:
  *    - 'secrets' → detectSecrets() families (api keys, tokens, passwords, …)
- *    - 'infra'   → infra topology (public IPs, basic-auth URLs, host:port)
- *    - 'pii'     → personally identifying information (forward-looking; no
- *                   detector ships yet, but a scope may declare it now). */
-export const SENSITIVITY_CATEGORIES = ['secrets', 'infra', 'pii'] as const
+ *    - 'infra'   → infra topology (public IPv4/IPv6, basic-auth URLs,
+ *                   host:port, internal/infra hostnames)
+ *
+ *  PII detection is deliberately OUT OF SCOPE: no detector maps to a 'pii'
+ *  category, so a scope declaring `forbid: ['pii']` would silently protect
+ *  nothing (false protection). The category is therefore omitted entirely
+ *  rather than shipped as a no-op. It can be reintroduced — added back here AND
+ *  to sensitivityCategory()'s return type in secrets.ts — once a real,
+ *  low-false-positive PII detector exists. */
+export const SENSITIVITY_CATEGORIES = ['secrets', 'infra'] as const
 export type SensitivityCategory = (typeof SENSITIVITY_CATEGORIES)[number]
 
 export const ScopeSensitivitySchema = z.object({
