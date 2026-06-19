@@ -77,8 +77,28 @@ export function detectPromptInjection(text: string): InjectionMatch[] {
 // the public engram set in the publish filter. Patterns are deliberately
 // low-false-positive (an IP or a host:port in a *public* engram is the red flag).
 const SENSITIVE_PATTERNS: { name: string; regex: RegExp }[] = [
-  // user:pass@host inside a URL — e.g. https://team:secret@hub-staging.plur.ai
-  { name: 'basic_auth_url', regex: /[a-z][a-z0-9+.-]*:\/\/[^/\s:@]+:[^/\s@]+@/i },
+  // user:pass@host credential URL. Catches the full form
+  // (https://team:secret@hub-staging.plur.ai), the scheme-less form
+  // (user:pass@host:5432/db), and the empty-username form (https://:token@host).
+  // The scheme is optional; the username may be empty; a password and an `@host`
+  // are required so a bare `key:value` or a `time:12:30` (no `@host`) is NOT a
+  // match. (#353 LOW-16.)
+  //
+  // SPEC-DEVIATION (bounded quantifiers): the plan's literal form used unbounded
+  // `*`/`+` (`(?:[a-z][a-z0-9+.-]*:\/\/)?[^/\s:@]*:[^/\s@]+@`). Making the scheme
+  // optional re-introduced O(n^2) backtracking — on 64KB of a `:`-free run the
+  // userinfo class scans for a `:` that never comes at every start position
+  // (~5.8s on a truncated 64KB input; the old `://`-anchored form was linear).
+  // D3 keeps the 64KB length cap as defense-in-depth but 64KB is still far too
+  // slow, so we bound each unbounded quantifier (the CHARACTER CLASSES are
+  // unchanged from the plan — only `*`/`+` became bounded `{0,N}`/`{1,N}`). Real
+  // basic-auth userinfo and passwords are short, so the bounds preserve every
+  // functional case (full / scheme-less / empty-username) while restoring linear
+  // time (~0.3ms on 64KB instead of ~5.8s).
+  {
+    name: 'basic_auth_url',
+    regex: /(?:[a-z][a-z0-9+.-]{0,31}:\/\/)?[^/\s:@]{0,64}:[^/\s@]{1,128}@[a-z0-9.-]/i,
+  },
   // FQDN:port — e.g. hub-staging.plur.ai:443, db.internal:5432 (infra topology)
   { name: 'fqdn_port', regex: /\b(?:[a-z0-9-]+\.)+[a-z]{2,}:\d{2,5}\b/i },
   // IPv4:port — e.g. 139.59.155.82:8877
@@ -170,19 +190,102 @@ function isPublicIpv6(addr: string): boolean {
 // internal suffix label (.local/.internal/.corp/.lan/.intranet, or k8s
 // .svc / .svc.cluster.local) OR contains a `staging` label. We do NOT flag
 // standalone words (db/prod/redis alone) or ordinary public FQDNs
-// (example.com, api.github.com). The leading `[a-z0-9-]+\.` requires at least
-// two labels so a bare `internal` or `localhost` never trips it.
+// (example.com, api.github.com).
+//
+// TWO-PASS DESIGN (#353): the prior single-regex form silently demoted real,
+// shareable content — `config.local`, `data-staging.csv`, `staging-build.yml`,
+// `vite.config.local`, `app.config.yml`, `tsconfig.json` all matched as "infra".
+// We now split the work:
+//   PASS 1 (INTERNAL_HOST below): find host-SHAPED candidate tokens. Every
+//     alternative wraps ONLY the host token in a `(?<host>...)` named group; the
+//     leading delimiter lives in a NON-capturing `(?:^|[\s/@'"(])` prefix OUTSIDE
+//     the group. PASS 2 then runs on `match.groups.host` — so each alternative
+//     MUST have the named group, or PASS 2 silently no-ops for that branch.
+//   PASS 2 (isInternalHostFalsePositive): the SOLE false-positive gate. Exactly
+//     two rules (known-extension tail; curated config-stem before internal
+//     suffix). No other heuristic. Host-shaped tokens that survive both rules are
+//     flagged.
+// Invoked via `INTERNAL_HOST.exec(text)` (NOT `text.match()` — named groups are
+// undefined on a non-global `.match()`); the prior code kept only the first
+// match, so a single candidate is sufficient.
 const INTERNAL_HOST = new RegExp(
-  '\\b[a-z0-9-]+(?:\\.[a-z0-9-]+)*\\.' +
-    '(?:local|internal|corp|lan|intranet|svc)\\b' + // unambiguous internal suffix label
+  // a. internal-suffix label (.local/.internal/.corp/.lan/.intranet)
+  "(?:^|[\\s/@'\"(])(?<host>(?:[a-z0-9-]+\\.)+(?:local|internal|corp|lan|intranet))(?=$|[\\s:/?#)'\"])" +
     '|' +
-    '\\b[a-z0-9-]+(?:\\.[a-z0-9-]+)*\\.svc\\.cluster\\.local\\b' + // k8s fully-qualified
+    // b. k8s svc / svc.cluster.local
+    "(?:^|[\\s/@'\"(])(?<host>(?:[a-z0-9-]+\\.)+svc(?:\\.cluster\\.local)?)(?=$|[\\s:/?#)'\"])" +
     '|' +
-    '\\b[a-z0-9-]*staging[a-z0-9-]*(?:\\.[a-z0-9-]+)+\\b' + // hostname with a staging label
+    // c. staging as a label fragment (hub-staging.plur.ai, staging-build.example.com)
+    "(?:^|[\\s/@'\"(])(?<host>[a-z0-9-]*staging[a-z0-9-]*(?:\\.[a-z0-9-]+)+)(?=$|[\\s:/?#)'\"])" +
     '|' +
-    '\\b[a-z0-9-]+(?:\\.[a-z0-9-]+)*\\.staging(?:\\.[a-z0-9-]+)+\\b', // ...or staging as inner label
+    // d. staging as an inner label (api.staging.example.com)
+    "(?:^|[\\s/@'\"(])(?<host>(?:[a-z0-9-]+\\.)+staging(?:\\.[a-z0-9-]+)+)(?=$|[\\s:/?#)'\"])",
   'i',
 )
+
+// PASS 2 — the SOLE false-positive gate over a PASS-1 host candidate. Returns
+// true when the host-shaped token is actually a config/data file path or a
+// known config-tool stem (so it should NOT be flagged as an internal host).
+//
+// RULE 1 (known-extension tail): a host ending in a config/data FILE extension
+// is a filename, not a host — kills data-staging.csv, staging-build.yml,
+// app.config.yml, tsconfig.json.
+// RULE 2 (curated config-stem before an internal suffix): `.local`/`.internal`/
+// etc. is NOT a file extension, so RULE 1 cannot catch config.local /
+// vite.config.local. We reject when the host is a known config-tool stem
+// immediately before an internal suffix.
+const FILE_EXTENSION_TAIL =
+  /\.(?:ya?ml|csv|md|mdx|js|jsx|ts|tsx|json|jsonc|toml|ini|conf|cfg|lock|txt|env|xml|html?|sh|py|rb|go|rs)$/i
+// RULE 2 IS A KNOWN-INCOMPLETE ALLOWLIST. A config tool NOT listed here (e.g.
+// myapp.config.local) WILL be falsely flagged and silently demoted. To add a
+// tool: extend this alternation. This is the sole curated FP gate; there is no
+// general "looks like a config file" heuristic by design (over-broad heuristics
+// re-open the silent-demotion problem this rewrite exists to fix).
+const CONFIG_STEM_BEFORE_INTERNAL_SUFFIX =
+  /(?:^|\.)(?:vite\.config|jest\.config|eslint\.config|webpack\.config|rollup\.config|babel\.config|next\.config|tailwind\.config|postcss\.config|svelte\.config|astro\.config|vitest\.config|playwright\.config|tsconfig(?:\.[a-z0-9-]+)?|config)\.(?:local|internal|corp|lan|intranet)$/i
+
+function isInternalHostFalsePositive(host: string): boolean {
+  if (FILE_EXTENSION_TAIL.test(host)) return true // RULE 1
+  if (CONFIG_STEM_BEFORE_INTERNAL_SUFFIX.test(host)) return true // RULE 2
+  return false
+}
+
+/**
+ * Run the two-pass internal-host detector over `text`. Returns the flagged host
+ * token, or null if no host-shaped candidate survives the FP gate.
+ *
+ * PASS 1 finds host-shaped tokens (INTERNAL_HOST, named `host` group); PASS 2 is
+ * the sole FP gate with exactly two rules (known-extension tail; curated
+ * config-stem before internal suffix). DELIBERATELY accepts that real
+ * internal-host shapes — app.corp, dataset.internal, db.internal — stay flagged.
+ */
+function matchInternalHost(text: string): string | null {
+  const m = INTERNAL_HOST.exec(text)
+  // Named-group invariant: every PASS-1 alternative wraps the host token in
+  // `(?<host>...)`, so a match always yields `m.groups.host`. If a future engine
+  // path returns no named group, fail safe (treat as no match) rather than throw.
+  const host = m?.groups?.host
+  if (!host) return null
+  if (isInternalHostFalsePositive(host)) return null
+  return host
+}
+
+// Defense-in-depth length cap (#353). The publish loop scans whole serialized
+// engrams and `_guardSensitiveScope` scans statement + JSON.stringify(context),
+// so an unbounded input is an unbounded scan. We cap the SCAN INPUT at 64KB
+// (byte-aware). The "ReDoS" this once guarded against was empirically ~2.6ms
+// under V8 Irregexp (mandatory dot separators keep each alternative linear), so
+// this cap is cheap insurance, not a DoS fix. A leading credential is still
+// caught; callers must NOT assume full-input scanning.
+const MAX_SCAN_BYTES = 65536
+
+function truncateToScanLimit(text: string): string {
+  // Buffer.byteLength avoids materializing a Buffer for the common (small) case.
+  if (Buffer.byteLength(text, 'utf8') <= MAX_SCAN_BYTES) return text
+  // Replace-mode decode (default) — a multi-byte char split at the boundary
+  // becomes U+FFFD; no exception, no silent corruption, always valid UTF-8.
+  return Buffer.from(text, 'utf8').subarray(0, MAX_SCAN_BYTES).toString('utf8')
+}
 
 /**
  * Scan text for secrets AND infrastructure-sensitive content (public IPv4/IPv6,
@@ -191,11 +294,18 @@ const INTERNAL_HOST = new RegExp(
  * public/shipped set, because the visibility tag alone is not trustworthy (in
  * the 2026-06 leak, several of the worst engrams were mistagged `public`).
  * Returns [] only when clean.
+ *
+ * Scans at most the first 64KB of input. Inputs over the cap are truncated (a
+ * leading credential is still caught); callers must NOT assume full-input
+ * scanning. The cap is applied here, so all three call sites — `detectSensitive`
+ * itself, the publish loop (publish.ts), and `_guardSensitiveScope`'s scanText
+ * (index.ts) — inherit the bound.
  */
 export function detectSensitive(text: string): SecretMatch[] {
   if (typeof text !== 'string') {
     throw new TypeError(`detectSensitive: expected string, got ${typeof text}`)
   }
+  text = truncateToScanLimit(text)
   const matches = detectSecrets(text)
   for (const { name, regex } of SENSITIVE_PATTERNS) {
     const m = text.match(regex)
@@ -213,9 +323,9 @@ export function detectSensitive(text: string): SecretMatch[] {
       break
     }
   }
-  const internalHost = text.match(INTERNAL_HOST)
+  const internalHost = matchInternalHost(text)
   if (internalHost) {
-    matches.push({ pattern: 'internal_host', match: internalHost[0].slice(0, 30) })
+    matches.push({ pattern: 'internal_host', match: internalHost.slice(0, 30) })
   }
   return matches
 }
@@ -230,8 +340,13 @@ export function detectSensitive(text: string): SecretMatch[] {
  * public_ipv6 + internal_host); everything else `detectSecrets` finds is a
  * credential, i.e. 'secrets'.
  */
+// `basic_auth_url` is a credential-in-a-URL (a password), so it belongs to the
+// 'secrets' family, NOT 'infra' — a custom `forbid:['secrets']` policy must catch
+// a password-in-URL. It lives in SENSITIVE_PATTERNS (it surfaces only via
+// `detectSensitive`), so we spread the rest of SENSITIVE_PATTERNS as infra but
+// explicitly exclude it here. (#353 LOW-19.)
 const INFRA_PATTERN_NAMES = new Set<string>([
-  ...SENSITIVE_PATTERNS.map(p => p.name),
+  ...SENSITIVE_PATTERNS.map(p => p.name).filter(n => n !== 'basic_auth_url'),
   'public_ipv4',
   'public_ipv6',
   'internal_host',
