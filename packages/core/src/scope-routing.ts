@@ -30,18 +30,52 @@ import type { ScopeMetadata } from './schemas/scope-metadata.js'
 
 /** Below this confidence a scope is not a confident home for an engram. Exported
  * for Stage 3b to gate auto-routing on; NOT applied to ranking here — the ranker
- * returns every scope that scores above zero and lets the caller decide. */
+ * returns every scope that scores above zero and lets the caller decide. The
+ * auto-route gate in index.ts (`_resolveUnscopedScope`) is `>=`, so a confidence
+ * that lands EXACTLY on this value clears it — see THRESHOLD_SINGLE_DOMAIN. */
 export const SCOPE_MATCH_THRESHOLD = 0.5
 
-/** Per-channel weights. domain ≫ tag > keyword by design (see module doc). */
-const WEIGHT_DOMAIN = 1.0
+/** Per-channel weights. domain ≫ tag > keyword by design (see module doc).
+ *
+ * WEIGHT_DOMAIN is 1.5 (raised from 1.0 in 0.10.0, #353/finding-11) so that a
+ * LONE domain-prefix match — the strongest, most deliberate routing signal —
+ * clears SCOPE_MATCH_THRESHOLD on its own: squash(1.5) = 1.5/(1.5+1.5) = 0.5000,
+ * which the `>=` gate accepts (see THRESHOLD_SINGLE_DOMAIN). At the old 1.0,
+ * squash(1.0) = 1.0/2.5 = 0.40 < 0.5, so a domain-only match never auto-routed —
+ * the bug. domain-alone and three-tag-alone (3*0.5 = 1.5) now BOTH reach the
+ * threshold by design; the `>=` gate is deliberate (not `>`). Changing
+ * WEIGHT_TAG/SATURATION shifts these boundaries — see the routing tests and
+ * THRESHOLD_SINGLE_DOMAIN. */
+const WEIGHT_DOMAIN = 1.5
 const WEIGHT_TAG = 0.5
 const WEIGHT_KEYWORD = 0.2
 
 /** Raw score at which confidence saturates to ~1.0. A single domain-prefix hit
- * (WEIGHT_DOMAIN = 1.0) already lands near the top of the curve; stacking tag +
- * keyword hits pushes it the rest of the way. */
+ * (WEIGHT_DOMAIN = 1.5) lands EXACTLY on SCOPE_MATCH_THRESHOLD via squash; the
+ * `>=` gate then auto-routes it. This boundary is intentionally exact — any
+ * INCREASE to SATURATION or DECREASE to WEIGHT_DOMAIN breaks the lone-domain
+ * auto-route (e.g. SATURATION=2.0 → single-domain confidence 1.5/3.5 = 0.43 <
+ * 0.5; WEIGHT_DOMAIN=1.0 → 1.0/2.5 = 0.40 < 0.5). Stacking tag + keyword hits
+ * pushes a domain match the rest of the way up the curve. */
 const SATURATION = 1.5
+
+/**
+ * The confidence a LONE domain-prefix match produces, derived from the squash
+ * function squash(x) = x / (x + SATURATION) with x = WEIGHT_DOMAIN:
+ *
+ *     THRESHOLD_SINGLE_DOMAIN = WEIGHT_DOMAIN / (WEIGHT_DOMAIN + SATURATION)
+ *                             = 1.5 / (1.5 + 1.5)  =  1.5 / 3.0  =  0.5
+ *
+ * 0.5 is exactly representable in IEEE-754, and 1.5/3.0 evaluates to it exactly,
+ * so this equals {@link SCOPE_MATCH_THRESHOLD} and the `>=` auto-route gate
+ * accepts a lone-domain match. A unit test pins
+ * `THRESHOLD_SINGLE_DOMAIN === SCOPE_MATCH_THRESHOLD` so a future weight/
+ * saturation tweak that silently re-breaks finding #11 fails CI.
+ *
+ * VALID ONLY for squash(x) = x/(x+SATURATION); if the squash function changes,
+ * recompute this constant against the new function.
+ */
+export const THRESHOLD_SINGLE_DOMAIN = WEIGHT_DOMAIN / (WEIGHT_DOMAIN + SATURATION)
 
 /** Signals carried by an engram, used to score scope fit. */
 export interface ScopeSignals {
