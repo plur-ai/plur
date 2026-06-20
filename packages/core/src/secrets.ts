@@ -95,9 +95,23 @@ const SENSITIVE_PATTERNS: { name: string; regex: RegExp }[] = [
   // basic-auth userinfo and passwords are short, so the bounds preserve every
   // functional case (full / scheme-less / empty-username) while restoring linear
   // time (~0.3ms on 64KB instead of ~5.8s).
+  // SCHEME-LESS FP FIX (reaudit #6): the prior form required only a single
+  // `[a-z0-9.-]` char after `@`, so benign `word:word@word` prose (`5:30@cafe`,
+  // `3:1@ratio`, `name:value@scope`, `meet:me@noon`) false-matched and demoted
+  // engrams as 'secrets'. We now split into two alternatives:
+  //   A) SCHEME-PRESENT (`scheme://user:pass@<any host char>`) — unchanged from
+  //      the prior form; a real `://` URL is unambiguous, so the host stays loose.
+  //   B) SCHEME-LESS (`user:pass@<host>`) — the `@host` must LOOK like a host:
+  //      a dotted domain with a TLD (covers `db.internal`, `hub.example.com`),
+  //      `localhost`, a dotted-quad IPv4 (`10.0.0.5`), or a `host:port`
+  //      (covers the PR-2 `user:pass@host:5432/db` form where the host has no
+  //      dot). Benign `digit:digit@word` / `name:value@scope` no longer match.
+  // The bounded quantifiers on userinfo/password are preserved (linear time on
+  // the 64KB-capped scan input; verified <35ms on adversarial 64KB inputs).
   {
     name: 'basic_auth_url',
-    regex: /(?:[a-z][a-z0-9+.-]{0,31}:\/\/)?[^/\s:@]{0,64}:[^/\s@]{1,128}@[a-z0-9.-]/i,
+    regex:
+      /(?:[a-z][a-z0-9+.-]{0,31}:\/\/[^/\s:@]{0,64}:[^/\s@]{1,128}@[a-z0-9.-]|[^/\s:@]{0,64}:[^/\s@]{1,128}@(?:[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,}|localhost|\d{1,3}(?:\.\d{1,3}){3}|[a-z0-9-]+:\d{2,5}))/i,
   },
   // FQDN:port — e.g. hub-staging.plur.ai:443, db.internal:5432 (infra topology)
   { name: 'fqdn_port', regex: /\b(?:[a-z0-9-]+\.)+[a-z]{2,}:\d{2,5}\b/i },
@@ -205,16 +219,29 @@ function isPublicIpv6(addr: string): boolean {
 //     two rules (known-extension tail; curated config-stem before internal
 //     suffix). No other heuristic. Host-shaped tokens that survive both rules are
 //     flagged.
-// Invoked via `INTERNAL_HOST.exec(text)` (NOT `text.match()` — named groups are
-// undefined on a non-global `.match()`); the prior code kept only the first
-// match, so a single candidate is sufficient.
+// Invoked via `matchInternalHost` which iterates ALL matches with the global
+// flag (NOT `text.match()` — named groups are undefined on a non-global
+// `.match()`); see that function for why a single candidate is NOT sufficient
+// (reaudit #3: an FP-gated leading candidate must not hide a real host later).
 const INTERNAL_HOST = new RegExp(
   // ONE `(?<host>...)` group wrapping the four host-SHAPE alternatives (a-d). JS
   // forbids duplicate named groups in a single regex (CI Node 20/22 throw
   // "Duplicate capture group name" on reuse), so the leading delimiter and the
   // trailing lookahead are factored out and SHARED; only the host shapes alternate
-  // INSIDE the group, so `match.groups.host` is always set on a match.
-  "(?:^|[\\s/@'\"(])(?<host>" +
+  // INSIDE the group, so `match.groups.host` is always set on a match. The single
+  // named group is preserved with the `g` flag (no duplicate-name compile error).
+  //
+  // TRAILING-PUNCT FN FIX (reaudit #2): the prior trailing lookahead
+  // `(?=$|[\s:/?#)'"])` was far narrower than the original `\b` boundary — it
+  // OMITTED `.` `,` `;` `]` `=` and backtick, so a real internal host at the end
+  // of a sentence or before punctuation (`db.internal.`, `app.corp,`,
+  // `host=db.internal` reversed, `` `db.internal` ``) escaped the guard entirely.
+  // We add those terminators to BOTH the trailing lookahead and the leading
+  // delimiter. Internal dots are consumed by the host SHAPE (the greedy
+  // `(?:[a-z0-9-]+\.)+` prefers the longest host), so adding `.` to the lookahead
+  // does NOT truncate `db.internal.corp` — the engine still matches the full host
+  // and only consults the lookahead at the genuine trailing boundary.
+  "(?:^|[\\s/@'\"(`\\[])(?<host>" +
     // a. internal-suffix label (.local/.internal/.corp/.lan/.intranet)
     '(?:[a-z0-9-]+\\.)+(?:local|internal|corp|lan|intranet)' +
     '|' +
@@ -226,8 +253,8 @@ const INTERNAL_HOST = new RegExp(
     '|' +
     // d. staging as an inner label (api.staging.example.com)
     '(?:[a-z0-9-]+\\.)+staging(?:\\.[a-z0-9-]+)+' +
-    ")(?=$|[\\s:/?#)'\"])",
-  'i',
+    ")(?=$|[\\s:/?#)\\]'\"`,;.=])",
+  'gi',
 )
 
 // PASS 2 — the SOLE false-positive gate over a PASS-1 host candidate. Returns
@@ -258,23 +285,37 @@ function isInternalHostFalsePositive(host: string): boolean {
 }
 
 /**
- * Run the two-pass internal-host detector over `text`. Returns the flagged host
- * token, or null if no host-shaped candidate survives the FP gate.
+ * Run the two-pass internal-host detector over `text`. Returns the FIRST flagged
+ * host token that survives the FP gate, or null if no host-shaped candidate does.
  *
  * PASS 1 finds host-shaped tokens (INTERNAL_HOST, named `host` group); PASS 2 is
  * the sole FP gate with exactly two rules (known-extension tail; curated
  * config-stem before internal suffix). DELIBERATELY accepts that real
  * internal-host shapes — app.corp, dataset.internal, db.internal — stay flagged.
+ *
+ * SCAN-ALL-MATCHES FN FIX (reaudit #3): the prior code did a single
+ * non-global `INTERNAL_HOST.exec(text)` and bailed if that LEFTMOST candidate was
+ * FP-gated — so a real internal host appearing AFTER an FP-gated config token
+ * (e.g. `see config.local then ssh db.internal.corp`) was never seen. We now
+ * iterate EVERY match with the global flag and return the first host the FP gate
+ * lets through. INTERNAL_HOST is global, so we reset `lastIndex` before the loop
+ * (the regex is module-level state) and guard zero-width matches to avoid an
+ * infinite loop.
  */
 function matchInternalHost(text: string): string | null {
-  const m = INTERNAL_HOST.exec(text)
-  // Named-group invariant: every PASS-1 alternative wraps the host token in
-  // `(?<host>...)`, so a match always yields `m.groups.host`. If a future engine
-  // path returns no named group, fail safe (treat as no match) rather than throw.
-  const host = m?.groups?.host
-  if (!host) return null
-  if (isInternalHostFalsePositive(host)) return null
-  return host
+  INTERNAL_HOST.lastIndex = 0
+  for (let m: RegExpExecArray | null; (m = INTERNAL_HOST.exec(text)); ) {
+    // Advance past zero-width matches so the loop always makes progress.
+    if (m.index === INTERNAL_HOST.lastIndex) INTERNAL_HOST.lastIndex++
+    // Named-group invariant: every PASS-1 alternative wraps the host token in
+    // `(?<host>...)`, so a match always yields `m.groups.host`. If a future
+    // engine path returns no named group, skip it (fail safe) rather than throw.
+    const host = m.groups?.host
+    if (!host) continue
+    if (isInternalHostFalsePositive(host)) continue
+    return host
+  }
+  return null
 }
 
 // Defense-in-depth length cap (#353). The publish loop scans whole serialized
