@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { logger } from '../logger.js'
 
 /**
  * Self-describing scope metadata (#345, Stage 2). A scope can declare what it is
@@ -34,11 +35,43 @@ export const SENSITIVITY_CATEGORIES = ['secrets', 'infra'] as const
 export type SensitivityCategory = (typeof SENSITIVITY_CATEGORIES)[number]
 
 export const ScopeSensitivitySchema = z.object({
-  forbid: z.array(z.enum(SENSITIVITY_CATEGORIES)).default(['secrets', 'infra'])
-    .describe('Sensitive categories that must NOT be written to this scope. A write that trips one of these is demoted to local/private. Default reproduces Stage 1: secrets + infra are forbidden on shared scopes.'),
+  /**
+   * Sensitive categories that must NOT be written to this scope (PR-3, #353
+   * HIGH-17/18). A bare `z.enum(...)` array used to be FATAL on an unknown
+   * category: a single hand-edited / forward-compat `forbid: ['pii']` failed the
+   * whole StoreEntry safeParse, so loadConfig dropped the entry — including its
+   * `url`/`token`. We now preprocess element-wise: unknown categories are
+   * dropped (named in a warning), valid ones survive, and only an empty result
+   * falls to the safe default. The whole StoreEntry NO LONGER fails on a bad
+   * category, so url/token always survive a malformed `sensitivity`.
+   *   `['secrets','pii']` → `['secrets']` (warn: pii)
+   *   `['pii']`           → `['secrets','infra']` (warn: pii)
+   *   scalar `'secrets'`  → `['secrets','infra']` (non-array → safe default, no Zod throw)
+   * The preprocess can't name the scope (it runs inside the field schema), so
+   * loadConfig adds a post-parse pass that diffs raw vs parsed `forbid` per entry
+   * and logs `scope=<s>` for the naming.
+   */
+  forbid: z.preprocess((val) => {
+    if (Array.isArray(val)) {
+      const bad = val.filter((c) => !SENSITIVITY_CATEGORIES.includes(c as SensitivityCategory))
+      if (bad.length) {
+        logger.warning(`[plur:config] dropping unknown sensitivity categor${bad.length > 1 ? 'ies' : 'y'} ${JSON.stringify(bad)} from a scope forbid list — keeping valid entries`)
+      }
+      const kept = val.filter((c) => SENSITIVITY_CATEGORIES.includes(c as SensitivityCategory))
+      return kept.length ? kept : ['secrets', 'infra']
+    }
+    return ['secrets', 'infra'] // non-array (e.g. hand-edited scalar) → safe default, NOT a re-thrown Zod error
+  }, z.array(z.enum(SENSITIVITY_CATEGORIES)).default(['secrets', 'infra']))
+    .describe('Sensitive categories that must NOT be written to this scope. A write that trips one of these is demoted to local/private. Default reproduces Stage 1: secrets + infra are forbidden on shared scopes. Unknown categories are dropped (not fatal) so a forward/hand-edited category never drops the whole store entry.'),
   allow: z.array(z.string()).default([])
     .describe('Detector pattern names or category names explicitly permitted on this scope, overriding `forbid`. A match whose categories are ALL allowed is not demoted (e.g. a scope that legitimately holds infra topology can allow "infra").'),
-}).describe('Per-scope sensitivity policy consumed by the write-time leak guard.')
+})
+  // PR-3 (#353): preserve unknown NESTED fields inside `sensitivity` on a
+  // successful parse, so a future sub-schema field survives the persistStores
+  // writeback (which merges parsed deltas onto the raw entry). Without this the
+  // typed parse would strip nested unknowns and the merge could never see them.
+  .passthrough()
+  .describe('Per-scope sensitivity policy consumed by the write-time leak guard.')
 
 export type ScopeSensitivity = z.infer<typeof ScopeSensitivitySchema>
 
