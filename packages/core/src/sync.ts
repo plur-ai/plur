@@ -86,11 +86,14 @@ export function getSyncStatus(root: string): SyncStatus {
   }
 }
 
+function neutraliseGlobalExcludes(root: string): void {
+  // Prevent a developer's global gitignore from silently dropping engram files
+  gitSafe(['config', 'core.excludesFile', '/dev/null'], root)
+}
+
 function initRepo(root: string): void {
   git(['init'], root)
-  // Neutralize any global/system gitignore so engram files (engrams.yaml, episodes.yaml)
-  // are always stageable regardless of the user's personal excludes file.
-  git(['config', '--local', 'core.excludesFile', '/dev/null'], root)
+  neutraliseGlobalExcludes(root)
   atomicWrite(join(root, '.gitignore'), GITIGNORE)
   git(['add', '-A'], root)
   git(['commit', '-m', 'Initial PLUR engram store'], root)
@@ -154,6 +157,9 @@ export function sync(root: string, remote?: string): SyncResult {
       files_changed: 0,
     }
   }
+
+  // Ensure global excludes are neutralised for this store (idempotent; migrates existing repos)
+  neutraliseGlobalExcludes(root)
 
   // Add remote if provided and not yet set
   const existingRemote = getRemote(root)

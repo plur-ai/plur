@@ -265,6 +265,23 @@ describe('cross-scope recurrence (#176)', () => {
       const second = plur.learn('always use   semicolons', { scope: 'project:b' })
       expect(second.recurrence_count).toBe(1)
     })
+
+    it('personal-scope engrams (local) are NOT promoted to global on cross-scope recurrence (#362 item ii)', () => {
+      // A local engram recurring across scopes should stay in the personal family.
+      // Only shared scopes (project:*, space:*, etc.) get promoted to global.
+      const first = plur.learn('personal rule', { scope: 'local' })
+      expect(first.scope).toBe('local')
+
+      plur.learn('personal rule', { scope: 'project:a' })  // 1st cross-scope, recurrence=1
+      const third = plur.learn('personal rule', { scope: 'project:b' })  // 2nd cross-scope
+
+      // recurrence_count increments as normal
+      expect(third.recurrence_count).toBe(2)
+      // Commitment escalates (that behavior is unchanged)
+      expect(third.commitment).toBe('decided')
+      // But scope stays local — personal-family ceiling prevents global promotion
+      expect(third.scope).toBe('local')
+    })
   })
 
   describe('persistence + observability', () => {
