@@ -499,6 +499,22 @@ export class Plur {
     return null
   }
 
+  /**
+   * True when `scope` is backed by a REMOTE store — i.e. a `stores` entry with a
+   * `url` (data leaves this machine) whose scope exactly matches. The leak guard
+   * uses this alongside `isSharedScope`: a scope like `user:plur:gregor` is NOT
+   * `isSharedScope` (personal prefix) yet routes to plur.datafund.io, so sensitive
+   * content written there would cross the machine boundary unguarded.
+   *
+   * Pure CONFIG lookup — NO driver instantiation, NO network, NO side effects —
+   * because this runs on every learn(). It mirrors `_resolveRemoteStoreForScope`'s
+   * exact-scope-match rule (no prefix matching) so the guard and the router agree
+   * on which writes reach the remote.
+   */
+  private _isRemoteBackedScope(scope: string): boolean {
+    return (this.config.stores ?? []).some(s => !!s.url && s.scope === scope)
+  }
+
   /** Find which store owns an engram by ID. For namespaced IDs, strips prefix to find in store. */
   private _findEngramStore(id: string): { path: string; readonly: boolean; originalId: string } | null {
     // Check primary first (uses mtime cache)
@@ -879,12 +895,15 @@ export class Plur {
   }
 
   /**
-   * Write-time leak guard. If the target scope is one others can read
-   * (`isSharedScope`: group:/project:/space:/team:/org:/public) AND the statement
-   * trips `detectSensitive` (IPs, internal hosts, basic-auth, host:port, secrets),
-   * DEMOTE to a private local scope — the engram is kept but never written to a
-   * shared store — and warn. Personal scopes (local/global/user:/agent:) are
-   * exempt: infra notes legitimately live there. Called at the top of both
+   * Write-time leak guard. If the target scope can let data leave the machine —
+   * either SHARED (`isSharedScope`: group:/project:/space:/team:/org:/public, so
+   * others can read it) OR REMOTE-backed (`_isRemoteBackedScope`: routes to a
+   * remote store, e.g. a personal `user:` scope on plur.datafund.io) — AND the
+   * statement trips `detectSensitive` (IPs, internal hosts, basic-auth, host:port,
+   * secrets), DEMOTE to a private local scope — the engram is kept but never
+   * written to a shared/remote store — and warn. Purely-local scopes
+   * (`global`/`local`/local-file stores) are exempt: infra notes legitimately
+   * live there and never leave the machine. Called at the top of both
    * `learn()` and `learnRouted()`, so every client (CLI, MCP, hooks, OpenClaw,
    * Hermes) is covered, since they all route through one of those two.
    *
@@ -903,10 +922,13 @@ export class Plur {
    * `scope` forbids?". Returns the offending {@link SecretMatch} hits, or `[]`
    * when there are none.
    *
-   * Scope discipline: only SHARED scopes (`isSharedScope`) can leak, so for
-   * personal/local scopes (`local`/`global`/`user:`/`agent:`) this returns `[]`
-   * unconditionally — infra notes legitimately live in local storage, and the
-   * demotion target is local anyway, so a local write is always coherent.
+   * Scope discipline: data can leak when the scope is SHARED (`isSharedScope`,
+   * others can read it) OR REMOTE-backed (`_isRemoteBackedScope`, it routes off
+   * this machine — e.g. a `user:` scope on plur.datafund.io). For a scope that is
+   * neither — `global`/`local`/a local-file store — this returns `[]`
+   * unconditionally: infra notes legitimately live in local storage, the content
+   * never leaves the machine, and the demotion target is local anyway, so a local
+   * write is always coherent.
    *
    * Policy: scan `text` with `detectSensitive`, then keep only the hits the
    * scope's per-scope `sensitivity` policy forbids. With no scope metadata the
@@ -920,8 +942,11 @@ export class Plur {
    * so there is exactly one definition of "offending".
    */
   private _offendingHitsForScope(statement: string, scope: string): SecretMatch[] {
-    // Local/personal scopes never leak — demotion target is local anyway.
-    if (!isSharedScope(scope)) return []
+    // Guard runs when data can leave the machine: a SHARED scope (others read it)
+    // OR a REMOTE-backed scope (routes to a remote store). A scope that is neither
+    // — `global`/`local`/a local-file store — stays on this machine, so there is
+    // nothing to leak and the demotion target (local) is where it lives anyway.
+    if (!isSharedScope(scope) && !this._isRemoteBackedScope(scope)) return []
     const hits = detectSensitive(statement)
     if (hits.length === 0) return []
     const policy = this.getScopeMetadata(scope)?.sensitivity
@@ -1114,7 +1139,14 @@ export class Plur {
       // to global (#353). No behavior change for the default-global user.
       scope = context?.scope ?? this._sessionScope ?? (this.config.unscoped_default ?? 'global')
     }
-    if (!isSharedScope(scope)) return { scope, context, demotion: null, routed }
+    // Guard fires when the write can leave the machine: shared scope (others can
+    // read it) OR remote-backed scope (routes to a remote store, e.g. a personal
+    // `user:` scope on plur.datafund.io). Purely-local scopes (`global`/`local`/
+    // local-file stores) stay on this machine and are exempt — same gate as
+    // _offendingHitsForScope, kept in sync because this short-circuits before it.
+    if (!isSharedScope(scope) && !this._isRemoteBackedScope(scope)) {
+      return { scope, context, demotion: null, routed }
+    }
     // Scan the FULL content the engram will carry — the statement AND the
     // context fields (rationale, key_files, source, …), not just the statement.
     // Sensitive material hides in context too (#326 review, finding 1).
