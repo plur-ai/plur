@@ -52,6 +52,12 @@ export interface LearnAsyncDeps {
  * scope→'local', visibility→'private'. Warns naming the offending patterns,
  * mirroring `_guardSensitiveScope`'s warning style. No-op (returns the engram
  * unchanged) when there are no offending hits. (#353)
+ *
+ * Stamps `structured_data._demoted = { from, to, patterns }` (LOW-9, #353)
+ * mirroring the sync learnRouted demotion (index.ts `guarded.demotion`) and the
+ * explicit-update / saveMetaEngrams demotion sites, so the MCP plur_learn
+ * response (tools.ts) and the CLI can surface that the requested shared scope
+ * was demoted. Captures `from` BEFORE the scope reassignment.
  */
 function demoteIfSensitive(
   deps: LearnAsyncDeps,
@@ -66,8 +72,13 @@ function demoteIfSensitive(
     `demoted to local/private so it is not written to a shared store. ` +
     `Re-scope deliberately if this is a false positive.`,
   )
+  const from = engram.scope ?? 'global'
   engram.scope = 'local'
   engram.visibility = 'private'
+  engram.structured_data = {
+    ...(engram.structured_data ?? {}),
+    _demoted: { from, to: 'local', patterns },
+  }
 }
 
 /**

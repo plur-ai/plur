@@ -935,6 +935,39 @@ export class Plur {
   }
 
   /**
+   * Collect the context-ish fields of an engram (rationale, source, snippet,
+   * dual_coding, structured_data) into a plain object for the explicit-update
+   * leak scan (LOW-2, #353). Mirrors the field set a LearnContext carries into
+   * `_guardSensitiveScope`. Returns undefined when none are present so the scan
+   * text stays statement-only.
+   *
+   * PLUR-internal bookkeeping keys in `structured_data` (underscore-prefixed:
+   * `_outbox`, `_routed`, `_demoted`, …) are STRIPPED before scanning — they are
+   * system-generated, never user content, and legitimately carry the very host
+   * topology the infra detector flags (e.g. `_outbox.target_url` =
+   * `http://127.0.0.1:<port>`). Scanning them would falsely demote every
+   * remote-origin or auto-routed engram on update.
+   */
+  private _engramContextFields(engram: Engram): Record<string, unknown> | undefined {
+    const e = engram as Record<string, unknown>
+    const fields: Record<string, unknown> = {}
+    for (const k of ['rationale', 'source', 'snippet', 'dual_coding'] as const) {
+      if (e[k] != null) fields[k] = e[k]
+    }
+    const sd = e.structured_data
+    if (sd != null && typeof sd === 'object' && !Array.isArray(sd)) {
+      const userSd: Record<string, unknown> = {}
+      for (const [k, v] of Object.entries(sd as Record<string, unknown>)) {
+        if (!k.startsWith('_')) userSd[k] = v
+      }
+      if (Object.keys(userSd).length > 0) fields.structured_data = userSd
+    } else if (sd != null) {
+      fields.structured_data = sd
+    }
+    return Object.keys(fields).length > 0 ? fields : undefined
+  }
+
+  /**
    * Leak guard for the EXPLICIT-update mutation path (`updateEngram` /
    * `updateEngramAsync`). Unlike learn/learnAsync, the caller hands us a fully
    * formed engram and chose its scope deliberately, so the response differs by
@@ -947,13 +980,28 @@ export class Plur {
    * - LOCAL-resident: a forbidden hit DEMOTES in place (scope→'local',
    *   visibility→'private') and warns. Returns the override the caller applies
    *   before persisting; returns `null` when the statement is clean.
+   *
+   * LOW-2 (#353): scan the FULL content like `_guardSensitiveScope`, not just
+   * `statement`. Callers pass the engram's context-ish fields (rationale,
+   * source, snippet, dual_coding, structured_data) via `contextFields`; we
+   * serialize them onto the scan text so a credential hiding in a context field
+   * is caught. The 64KB byte-aware truncation (PR-2) is applied inside
+   * `detectSensitive` (reached via `_offendingHitsForScope`), so the scan is
+   * bounded here too.
    */
   private _guardExplicitUpdate(
     statement: string,
     scope: string,
     isRemote: boolean,
+    contextFields?: Record<string, unknown>,
   ): { scope: string; visibility: 'private' } | null {
-    const offending = this._offendingHitsForScope(statement, scope)
+    // Scan statement + context fields (mirrors _guardSensitiveScope scanText at
+    // index.ts:1052). Omit the context join entirely when there are no fields so
+    // the clean-statement scan is byte-identical to the old behavior.
+    const scanText = contextFields
+      ? `${statement}\n${JSON.stringify(contextFields)}`
+      : statement
+    const offending = this._offendingHitsForScope(scanText, scope)
     if (offending.length === 0) return null
     const patterns = [...new Set(offending.map(h => h.pattern))].join(', ')
     if (isRemote) {
@@ -2154,7 +2202,27 @@ export class Plur {
     this._feedbackPack(id, signal)
   }
 
-  /** Save extracted meta-engrams to the engram store. Skips IDs that already exist. */
+  /**
+   * Save extracted meta-engrams to the engram store. Skips IDs that already
+   * exist.
+   *
+   * LOW-1 (#353): this is the one public persist method that runs NO part of the
+   * scope-security stack (learn/learnRouted/learnAsync/updateEngram all guard;
+   * saveMetaEngrams did not). Run the same guard before persisting each meta:
+   *  - HARD `detectSecrets` check (mirrors learn/learnRouted) — a raw secret
+   *    (API key, token, …) in a meta at a shared scope THROWS unless
+   *    `config.allow_secrets`.
+   *  - SOFT `_offendingHitsForScope` demotion (mirrors the explicit-update /
+   *    learnAsync demotion paths) — infra-sensitive content (public IP, internal
+   *    host, …) at a shared scope is DEMOTED in place to local/private and
+   *    stamped with `_demoted{from,to,patterns}` rather than written at the
+   *    requested shared scope. Local write, so demotion is coherent.
+   *
+   * No-op for all known in-tree callers: in-tree metas use personal scopes
+   * (global/local), and `_offendingHitsForScope` returns [] for non-shared
+   * scopes (the index.ts personal fast-path). Defense-in-depth: activates only
+   * if a future caller passes a shared-scope meta.
+   */
   saveMetaEngrams(metas: Engram[]): { saved: number; skipped: number } {
     return withLock(this.paths.engrams, () => {
       const engrams = loadEngrams(this.paths.engrams)
@@ -2164,10 +2232,45 @@ export class Plur {
       for (const meta of metas) {
         if (existingIds.has(meta.id)) {
           skipped++
-        } else {
-          engrams.push(meta)
-          saved++
+          continue
         }
+        // LOW-1: guard each meta on the FULL content (statement + context
+        // fields) at its scope before persist. Do NOT call _guardExplicitUpdate
+        // (its warning text is the EXPLICIT-update path); inline the demotion
+        // shape here so the message is meta-specific.
+        const scope = meta.scope ?? 'global'
+        const contextFields = this._engramContextFields(meta)
+        const scanText = contextFields
+          ? `${meta.statement}\n${JSON.stringify(contextFields)}`
+          : meta.statement
+        // HARD secret check — mirror learn()/learnRouted.
+        if (!this.config.allow_secrets) {
+          const secrets = detectSecrets(scanText)
+          if (secrets.length > 0) {
+            throw new Error(
+              `Secret detected in meta-engram ${meta.id}: ${secrets[0].pattern}. ` +
+              `Use config.allow_secrets to override.`,
+            )
+          }
+        }
+        // SOFT infra demotion — mirror the explicit-update / learnAsync paths.
+        const hits = this._offendingHitsForScope(scanText, scope)
+        if (hits.length > 0) {
+          const patterns = [...new Set(hits.map(h => h.pattern))].join(', ')
+          logger.warning(
+            `[plur] sensitive content (${patterns}) held back from shared scope "${scope}" ` +
+            `in meta-engram ${meta.id} — demoted to local/private so it is not written to a ` +
+            `shared store. Re-scope deliberately if this is a false positive.`,
+          )
+          ;(meta as any).scope = 'local'
+          ;(meta as any).visibility = 'private'
+          ;(meta as any).structured_data = {
+            ...((meta as any).structured_data ?? {}),
+            _demoted: { from: scope, to: 'local', patterns },
+          }
+        }
+        engrams.push(meta)
+        saved++
       }
       if (saved > 0) {
         this._writeEngrams(this.paths.engrams, engrams)
@@ -2190,7 +2293,8 @@ export class Plur {
       const idx = engrams.findIndex(e => e.id === updated.id)
       if (idx === -1) return false
       // Leak guard (#353): local-resident → demote a sensitive update in place.
-      const demote = this._guardExplicitUpdate(updated.statement, updated.scope, false)
+      // LOW-2: scan context fields too, not just the statement.
+      const demote = this._guardExplicitUpdate(updated.statement, updated.scope, false, this._engramContextFields(updated))
       const toWrite = demote ? { ...updated, ...demote } : updated
       engrams[idx] = toWrite
       this._writeEngrams(this.paths.engrams, engrams)
@@ -2205,7 +2309,8 @@ export class Plur {
       if (!entry.url || entry.readonly === true) continue
       // Leak guard (#353): remote-resident, explicit update → THROW on a
       // forbidden hit (no coherent demotion for a remote engram).
-      this._guardExplicitUpdate(updated.statement, entry.scope, true)
+      // LOW-2: scan context fields too, not just the statement.
+      this._guardExplicitUpdate(updated.statement, entry.scope, true, this._engramContextFields(updated))
       const serverId = this._stripRemotePrefix(updated.id, entry.scope)
       const driver = this._getRemoteDriver({ url: entry.url, token: entry.token, scope: entry.scope })
       // PATCH a focused subset — full-engram PATCH would require strict
@@ -2234,7 +2339,8 @@ export class Plur {
       const idx = engrams.findIndex(e => e.id === updated.id)
       if (idx === -1) return null
       // Leak guard (#353): local-resident → demote a sensitive update in place.
-      const demote = this._guardExplicitUpdate(updated.statement, updated.scope, false)
+      // LOW-2: scan context fields too, not just the statement.
+      const demote = this._guardExplicitUpdate(updated.statement, updated.scope, false, this._engramContextFields(updated))
       const toWrite = demote ? { ...updated, ...demote } : updated
       engrams[idx] = toWrite
       this._writeEngrams(this.paths.engrams, engrams)
@@ -2247,7 +2353,8 @@ export class Plur {
       if (!entry.url || entry.readonly === true) continue
       // Leak guard (#353): remote-resident, explicit update → THROW on a
       // forbidden hit (no coherent demotion for a remote engram).
-      this._guardExplicitUpdate(updated.statement, entry.scope, true)
+      // LOW-2: scan context fields too, not just the statement.
+      this._guardExplicitUpdate(updated.statement, entry.scope, true, this._engramContextFields(updated))
       const serverId = this._stripRemotePrefix(updated.id, entry.scope)
       const driver = this._getRemoteDriver({ url: entry.url, token: entry.token, scope: entry.scope })
       const patched = await driver.patch(serverId, {

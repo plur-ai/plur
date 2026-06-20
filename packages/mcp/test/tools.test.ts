@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync } from 'fs'
+import { mkdtempSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { Plur } from '@plur-ai/core'
@@ -87,6 +87,74 @@ describe('MCP tools', () => {
     it('no hint when the explicit scope is global on purpose', async () => {
       const result = await callTool('plur_learn', { statement: 'TS enums are slow', scope: 'global' }) as any
       expect(result.scope_hint).toBeUndefined()
+    })
+  })
+
+  // LOW-22 (#353): the ONLY combo where wasRouted suppresses the hint — an
+  // un-scoped write that AUTO-ROUTES (Stage 3b) to a PERSONAL landing scope while
+  // a writable team store IS configured. Without the wasRouted-silence branch the
+  // hint would fire (personal landing + team store); with it, the routing decision
+  // already explained the scope, so the hint must stay silent.
+  describe('scope hint is suppressed after a Stage-3b auto-route to a personal scope (LOW-22)', () => {
+    let routedDir: string
+    let routedPlur: Plur
+    const routedCall = async (name: string, args: Record<string, unknown> = {}) => {
+      const tool = tools.find(t => t.name === name)!
+      return tool.handler(args, routedPlur)
+    }
+
+    beforeEach(() => {
+      routedDir = mkdtempSync(join(tmpdir(), 'plur-mcp-routed-'))
+      // Two stores:
+      //  (1) a writable LOCAL store at scope:"global" (PERSONAL family) whose
+      //      covers confidently match the statement → auto-route lands at global
+      //      and stamps _routed, so wasRouted=true.
+      //  (2) a writable REMOTE team store so getWritableRemoteScopes() is non-empty
+      //      — i.e. the hint WOULD fire if wasRouted were not honored.
+      const globalPath = join(routedDir, 'global.yaml')
+      writeFileSync(join(routedDir, 'config.yaml'),
+        `index: false\n` +
+        `stores:\n` +
+        `  - path: ${globalPath}\n` +
+        `    scope: global\n` +
+        `    description: Personal global\n` +
+        `    covers: ['plur.*', 'embeddings', 'core']\n` +
+        `  - url: https://plur.example.com\n` +
+        `    token: tok\n` +
+        `    scope: group:acme/engineering\n` +
+        `    shared: true\n` +
+        `    readonly: false\n`,
+      )
+      routedPlur = new Plur({ path: routedDir })
+    })
+    afterEach(() => { rmSync(routedDir, { recursive: true, force: true }) })
+
+    it('auto-routes to global, stamps routed, and SUPPRESSES the scope_hint', async () => {
+      // No scope passed; domain-prefix + tag + keyword hits clear the threshold.
+      const result = await routedCall('plur_learn', {
+        statement: 'the embeddings index for the core engine',
+        domain: 'plur.core.embeddings',
+        tags: ['embeddings'],
+      }) as any
+      // Landed at the personal (global) scope via auto-route...
+      expect(result.scope).toBe('global')
+      expect(result.routed).toBeDefined()
+      expect(result.routed.scope).toBe('global')
+      // ...and the hint is SILENT even though a team store is configured
+      // (wasRouted-silence — the only combo that suppresses).
+      expect(result.scope_hint).toBeUndefined()
+    })
+
+    it('control: the SAME personal landing WITHOUT a route DOES fire the hint', async () => {
+      // No covers match → no auto-route → wasRouted=false → hint fires (proves the
+      // suppression above is the wasRouted branch, not the team store being absent).
+      const result = await routedCall('plur_learn', {
+        statement: 'an unrelated note that matches no covers at all',
+      }) as any
+      expect(result.scope).toBe('global')
+      expect(result.routed).toBeUndefined()
+      expect(result.scope_hint).toBeDefined()
+      expect(result.scope_hint).toContain('group:acme/engineering')
     })
   })
 
