@@ -95,11 +95,21 @@ describe('ScopeMetadataSchema', () => {
 
 describe('sensitivityCategory — pattern → family mapping', () => {
   it('maps infra topology patterns to infra', () => {
-    for (const p of ['public_ipv4', 'basic_auth_url', 'fqdn_port', 'ipv4_port'])
+    // PR-2 (#353 LOW-19): basic_auth_url moved OUT of infra — it is a credential
+    // in a URL (a password), so it belongs to the 'secrets' family and is asserted
+    // there below. A custom `forbid:['secrets']` policy must catch a password-in-URL.
+    for (const p of ['public_ipv4', 'public_ipv6', 'internal_host', 'fqdn_port', 'ipv4_port'])
       expect(sensitivityCategory(p)).toBe('infra')
   })
   it('maps credential patterns to secrets', () => {
-    for (const p of ['aws_access_key', 'generic_api_key', 'jwt', 'private_key', 'bearer_token'])
+    for (const p of [
+      'aws_access_key',
+      'generic_api_key',
+      'jwt',
+      'private_key',
+      'bearer_token',
+      'basic_auth_url', // PR-2 (#353 LOW-19): password-in-URL is a secret, not infra
+    ])
       expect(sensitivityCategory(p)).toBe('secrets')
   })
 })
