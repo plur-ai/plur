@@ -27,12 +27,17 @@
  * reads as high-confidence. Ties break deterministically: equal confidence
  * prefers a domain-prefix match, then scope name ascending.
  *
- * Each candidate also carries `domainMatch` (see {@link ScopeCandidate}): a
- * boolean exposing whether the match came through the domain-prefix channel.
- * The write-path router (`_resolveUnscopedScope` in index.ts, #353 PR-6) routes
- * a clean domain match DETERMINISTICALLY, bypassing the squash/threshold so it
- * no longer has to land EXACTLY on SCOPE_MATCH_THRESHOLD; weak signals stay
- * gated by the threshold. The weights/threshold/squash are unchanged — the
+ * Each candidate carries two domain-channel booleans (see {@link ScopeCandidate}):
+ * `domainMatch` (true for EITHER prefix direction — used for scoring/ordering)
+ * and `coverContainsDomain` (true ONLY when the cover is a prefix of, or equals,
+ * the engram domain — the FORWARD direction). The write-path router
+ * (`_resolveUnscopedScope` in index.ts, #353 PR-6) routes a clean FORWARD domain
+ * match DETERMINISTICALLY, bypassing the squash/threshold so it no longer has to
+ * land EXACTLY on SCOPE_MATCH_THRESHOLD. The REVERSE direction (engram broader
+ * than the cover) and weak signals (tag-only, keyword-only) stay gated by the
+ * threshold — keying the bypass on `coverContainsDomain` rather than `domainMatch`
+ * stops a broad/generic engram from over-routing into a narrow shared scope
+ * (reaudit finding 4). The weights/threshold/squash are unchanged — the
  * deterministic bypass lives in the caller, not in this ranker.
  */
 import type { ScopeMetadata } from './schemas/scope-metadata.js'
@@ -58,6 +63,18 @@ export const SCOPE_MATCH_THRESHOLD = 0.5
 const WEIGHT_DOMAIN = 1.5
 const WEIGHT_TAG = 0.5
 const WEIGHT_KEYWORD = 0.2
+
+/** Weight for a REVERSE-direction domain hit — the engram's `domain` is BROADER
+ * than the cover (`domain ⊃ cover`, e.g. domain `plur` against cover `plur.core`).
+ * The engram is NOT specific to the scope, so the reverse match is a weak signal:
+ * it contributes WEIGHT_DOMAIN_REVERSE (NOT the full WEIGHT_DOMAIN) to the score
+ * and never sets `coverContainsDomain`. A LONE reverse hit therefore squashes to
+ * squash(0.5)=0.5/2.0=0.25 < SCOPE_MATCH_THRESHOLD, so a broad/generic engram
+ * does NOT land in a narrow shared scope on the reverse match alone (reaudit
+ * finding 4) — it must accumulate additional tag/keyword evidence to clear the
+ * threshold. The FORWARD direction is unchanged at full WEIGHT_DOMAIN, so
+ * THRESHOLD_SINGLE_DOMAIN and every forward routing test are untouched. */
+const WEIGHT_DOMAIN_REVERSE = WEIGHT_TAG
 
 /** Raw score at which confidence saturates to ~1.0. A single domain-prefix hit
  * (WEIGHT_DOMAIN = 1.5) lands EXACTLY on SCOPE_MATCH_THRESHOLD via squash; the
@@ -101,17 +118,34 @@ export interface ScopeCandidate {
   /** Human-readable matched signals, e.g. "domain plur.core.security ⊂ covers plur.*". */
   reason: string
   /**
-   * True when this candidate matched via a FULL domain-prefix hit — the engram's
-   * `domain` is namespace-covered by (or namespace-covers) one of the scope's
-   * `covers` entries. This is the strongest, most deliberate routing signal.
+   * True when this candidate matched via the domain-prefix channel — in EITHER
+   * direction: the engram's `domain` is namespace-covered by one of the scope's
+   * `covers` entries (`cover ⊃ domain`, forward), OR the engram's `domain` is
+   * BROADER than the cover (`domain ⊃ cover`, reverse). Both directions add the
+   * full WEIGHT_DOMAIN to the squashed `confidence`, so this flag exists for
+   * scoring/ordering (the domain-preferring tie-break) — NOT as the bypass key.
    *
-   * The caller (`_resolveUnscopedScope` in index.ts) uses this to route a clean
-   * domain match DETERMINISTICALLY, bypassing the squash/threshold edge — a lone
-   * domain match no longer has to land EXACTLY on SCOPE_MATCH_THRESHOLD to route.
-   * Weak signals (tag-only, keyword-only) leave this `false` and stay gated by
-   * the threshold. Additive: `confidence`/`reason` are unchanged.
+   * Do NOT use `domainMatch` for the deterministic auto-route bypass: the reverse
+   * direction would over-route a broad/generic engram into a NARROW shared scope
+   * (reaudit finding 4). Key the bypass on {@link coverContainsDomain} instead.
    */
   domainMatch: boolean
+  /**
+   * True ONLY for the FORWARD direction of the domain match — the scope's
+   * declared coverage CONTAINS the engram's topic: a `covers` entry is a
+   * namespace-prefix of, or equals, the engram's `domain` (`cover ⊃ domain` or
+   * `cover === domain`). The engram is at least as specific as the scope, so it
+   * genuinely belongs there.
+   *
+   * The caller (`_resolveUnscopedScope` in index.ts) routes a clean FORWARD
+   * domain match DETERMINISTICALLY, bypassing the squash/threshold edge. The
+   * REVERSE direction (`domain ⊃ cover`, engram broader than the cover) leaves
+   * this `false`: it still contributes to `confidence` (so it can route via the
+   * normal `>=` threshold gate) but never gets the deterministic bypass, so a
+   * broad engram never deterministically lands in a narrow shared scope.
+   * Weak signals (tag-only, keyword-only) also leave this `false`.
+   */
+  coverContainsDomain: boolean
 }
 
 const STOPWORDS = new Set([
@@ -161,29 +195,41 @@ function scoreScope(
   signals: ScopeSignals,
   scope: string,
   covers: string[],
-): { raw: number; reasons: string[]; domainMatch: boolean } | null {
+): { raw: number; reasons: string[]; domainMatch: boolean; coverContainsDomain: boolean } | null {
   const normalizedCovers = covers.map(c => ({ raw: c, norm: normalizeCover(c) })).filter(c => c.norm.length > 0)
   if (normalizedCovers.length === 0) return null
 
   let raw = 0
   let domainMatch = false
+  let coverContainsDomain = false
   const reasons: string[] = []
 
   // --- domain-prefix channel (highest weight) ---
   const domain = signals.domain?.toLowerCase().trim()
   if (domain) {
     for (const cover of normalizedCovers) {
-      // Match either direction: the cover is a prefix of the domain
-      // (`plur.*` ⊃ `plur.core.security`), or the domain is a prefix of the
-      // cover (`plur` engram fits a `plur.core` scope, weaker but still a hit).
+      // FORWARD: the cover is a prefix of (or equals) the domain
+      // (`plur.*` ⊃ `plur.core.security`). The scope's declared coverage CONTAINS
+      // the engram's topic, so the engram genuinely belongs here. Only this
+      // direction sets `coverContainsDomain` — the signal the deterministic
+      // auto-route bypass keys on (reaudit finding 4).
       if (isNamespacePrefix(cover.norm, domain)) {
         raw += WEIGHT_DOMAIN
         domainMatch = true
+        coverContainsDomain = true
         reasons.push(`domain ${domain} ⊂ covers ${cover.raw}`)
         break // one domain hit per scope — domain is single-valued
       }
+      // REVERSE: the domain is a STRICT prefix of the cover (`plur` engram, scope
+      // covering `plur.core`). The engram is BROADER than the scope. Still a
+      // domain-channel hit for scoring, but DOWN-WEIGHTED (WEIGHT_DOMAIN_REVERSE,
+      // not the full WEIGHT_DOMAIN) and it must NOT get the deterministic bypass —
+      // `coverContainsDomain` stays false. So a lone reverse hit squashes below the
+      // threshold and a broad/generic engram never lands in a narrow shared scope
+      // (reaudit finding 4); it can still route only if additional tag/keyword
+      // evidence pushes its squashed score to `>= SCOPE_MATCH_THRESHOLD` as normal.
       if (isNamespacePrefix(domain, cover.norm)) {
-        raw += WEIGHT_DOMAIN
+        raw += WEIGHT_DOMAIN_REVERSE
         domainMatch = true
         reasons.push(`domain ${domain} ⊃ covers ${cover.raw}`)
         break
@@ -220,7 +266,7 @@ function scoreScope(
   }
 
   if (raw <= 0) return null
-  return { raw, reasons, domainMatch }
+  return { raw, reasons, domainMatch, coverContainsDomain }
 }
 
 /**
@@ -245,6 +291,7 @@ export function rankScopes(
       confidence: Number(squash(scored.raw).toFixed(4)),
       reason: scored.reasons.join('; '),
       domainMatch: scored.domainMatch,
+      coverContainsDomain: scored.coverContainsDomain,
     })
   }
   // Sort by confidence desc; on equal confidence prefer a domain-prefix match
