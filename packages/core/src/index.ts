@@ -1024,10 +1024,19 @@ export class Plur {
    * UNSCOPED case (Stage 3b, #351). Two non-explicit signals decide it:
    *
    *  - `config.auto_route_scope` (default true): run the deterministic
-   *    {@link suggestScope} ranker over the registered scopes' `covers[]`. If the
-   *    top candidate's confidence clears {@link SCOPE_MATCH_THRESHOLD}, route the
-   *    engram there and return the routing decision so it can be stamped.
-   *  - otherwise: fall to `config.unscoped_default` (default `local`).
+   *    {@link suggestScope} ranker over the registered scopes' `covers[]`.
+   *      - If the top writable candidate matched via a FULL domain-prefix
+   *        (`domainMatch`), route to it DETERMINISTICALLY — bypass the
+   *        squash/threshold. A full domain match is the strongest, most
+   *        deliberate routing signal; under the current weights a LONE domain
+   *        match squashes to EXACTLY {@link SCOPE_MATCH_THRESHOLD} (0.5) and
+   *        would route only via the edge-of-threshold `>=` gate (#353 PR-6).
+   *        The deterministic bypass removes that fragility with headroom and is
+   *        independent of the weight curve.
+   *      - Otherwise (tag-only / keyword-only — NO domain match): apply the
+   *        threshold to the squashed confidence exactly as before. Weak signals
+   *        stay gated — only a genuine domain-prefix match gets the bypass.
+   *  - otherwise (auto_route_scope false): fall to `config.unscoped_default`.
    *
    * INERT until scopes declare `covers` (Stage 5): with no `covers` the ranker
    * returns `[]` and every unscoped write falls to `unscoped_default`. Both
@@ -1068,6 +1077,18 @@ export class Plur {
       writableScopeMetadata,
     )
     const top = candidates[0]
+    // PR-6 (#353): a FULL domain-prefix match is the strongest, most deliberate
+    // routing signal. Route to it DETERMINISTICALLY — bypass the squash/threshold
+    // gate entirely — so a clean domain match routes with headroom instead of
+    // landing at exactly SCOPE_MATCH_THRESHOLD (0.5) and clearing only via the
+    // edge-of-threshold `>=`. rankScopes already prefers a domain-match candidate
+    // at the top on equal confidence, so `top` is the right scope to route to.
+    // The weights/threshold/squash are UNCHANGED — only the decision is bypassed.
+    if (top && top.domainMatch) {
+      return { scope: top.scope, routed: { scope: top.scope, confidence: top.confidence, reason: top.reason } }
+    }
+    // No domain match: a tag-only or keyword-only candidate is a WEAK signal and
+    // stays gated by the threshold exactly as before — conservative by design.
     if (top && top.confidence >= SCOPE_MATCH_THRESHOLD) {
       return { scope: top.scope, routed: { scope: top.scope, confidence: top.confidence, reason: top.reason } }
     }
