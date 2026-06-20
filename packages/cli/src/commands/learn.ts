@@ -82,6 +82,13 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   }
   if (timeoutHandle) clearTimeout(timeoutHandle)
 
+  // LOW-10 (#353): surface a scope demotion instead of swallowing it silently.
+  // When learnRouted demotes a sensitive shared-scope write to local/private it
+  // stamps structured_data._demoted; mirror the MCP display contract (tools.ts)
+  // so the CLI user sees why the engram did not land at the requested scope.
+  const demoted = (engram as { structured_data?: { _demoted?: { from: string; to: string; patterns: string } } })
+    .structured_data?._demoted
+
   if (shouldOutputJson(flags)) {
     outputJson({
       id: engram.id,
@@ -89,9 +96,21 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
       scope: engram.scope,
       type: engram.type,
       domain: engram.domain ?? null,
+      // Include the demotion only when it happened; include requested_scope ONLY
+      // when --scope was passed, to avoid a confusing requested_scope on an
+      // unscoped write that demoted from the resolved default.
+      ...(demoted
+        ? { demoted: { from: demoted.from, to: demoted.to, patterns: demoted.patterns }, ...(scopeProvided ? { requested_scope: demoted.from } : {}) }
+        : {}),
     })
   } else {
     outputText(`Learned: "${engram.statement}"`)
     outputText(`  ID: ${engram.id} | Scope: ${engram.scope} | Type: ${engram.type}${engram.domain ? ` | Domain: ${engram.domain}` : ''}`)
+    if (demoted) {
+      outputText(
+        `  Warning: Sensitive content (${demoted.patterns}) detected — stored at ` +
+        `${demoted.to}/private instead of ${demoted.from}; re-scope deliberately if false positive.`,
+      )
+    }
   }
 }

@@ -88,4 +88,31 @@ describe('plur learn', () => {
     const output = JSON.parse(run('learn "explicit scope statement" --scope project:foo'))
     expect(output.scope).toBe('project:foo')
   })
+
+  // --- LOW-10 (#353): surface a scope demotion instead of swallowing it ---
+
+  it('LOW-10 JSON: a demoted shared-scope write reports demoted{from,to,patterns}', () => {
+    // Explicit shared scope + a public IP → core demotes to local/private and
+    // stamps _demoted. The CLI must surface it (was silent before PR-5).
+    const output = JSON.parse(run('learn "deploy target is 139.59.155.82" --scope group:plur/core'))
+    expect(output.scope).toBe('local')
+    expect(output.demoted).toBeDefined()
+    expect(output.demoted.from).toBe('group:plur/core')
+    expect(output.demoted.to).toBe('local')
+    expect(output.demoted.patterns).toMatch(/public_ipv4/)
+    // requested_scope is present only because --scope was passed.
+    expect(output.requested_scope).toBe('group:plur/core')
+  })
+
+  // Note: text-mode output cannot be exercised through execSync (stdout is
+  // piped, so the CLI auto-selects JSON via shouldOutputJson). The text-mode
+  // warning mirrors the JSON `demoted` field and the MCP display contract; the
+  // JSON tests above/below pin the behavioral contract.
+
+  it('LOW-10 JSON: a clean write has no demoted field (no false warning)', () => {
+    const output = JSON.parse(run('learn "a perfectly clean note" --scope group:plur/core'))
+    expect(output.scope).toBe('group:plur/core')
+    expect(output.demoted).toBeUndefined()
+    expect(output.requested_scope).toBeUndefined()
+  })
 })
