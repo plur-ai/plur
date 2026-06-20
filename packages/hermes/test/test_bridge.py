@@ -137,6 +137,70 @@ class TestPlurBridge:
             assert "agent:x" in call_args
             assert "--domain" in call_args
 
+    def test_learn_omits_scope_when_none(self):
+        """#9: with no scope, --scope is OMITTED so core's unscoped routing
+        (auto-route / unscoped_default) applies — the bridge no longer forces
+        --scope global and opts out of the 0.10.0 routing behavior."""
+        bridge = PlurBridge()
+        bridge._binary = "/usr/local/bin/plur"
+
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = json.dumps({"id": "ENG-001"})
+
+        with patch("subprocess.run", return_value=mock_result) as mock_run:
+            bridge.learn("an unscoped fact")
+            call_args = mock_run.call_args[0][0]
+            assert "learn" in call_args
+            assert "--scope" not in call_args
+            assert "global" not in call_args
+
+    def test_learn_preserves_explicit_scope(self):
+        """#9: an explicitly passed scope is still honored as-is."""
+        bridge = PlurBridge()
+        bridge._binary = "/usr/local/bin/plur"
+
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = json.dumps({"id": "ENG-001"})
+
+        with patch("subprocess.run", return_value=mock_result) as mock_run:
+            bridge.learn("a team fact", scope="group:plur/core")
+            call_args = mock_run.call_args[0][0]
+            assert "--scope" in call_args
+            assert "group:plur/core" in call_args
+
+    def test_learn_forwards_context_fields(self):
+        """#8: the bridge forwards every context flag the CLI now consumes
+        (rationale/tags/visibility/knowledge-anchors/dual-coding/abstract/
+        derived-from), so Hermes-built context is no longer dropped."""
+        bridge = PlurBridge()
+        bridge._binary = "/usr/local/bin/plur"
+
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = json.dumps({"id": "ENG-001"})
+
+        with patch("subprocess.run", return_value=mock_result) as mock_run:
+            bridge.learn(
+                "rich fact",
+                rationale="why it matters",
+                tags=["a", "b"],
+                visibility="public",
+                knowledge_anchors=[{"path": "p.ts"}],
+                dual_coding={"example": "e", "analogy": "a"},
+                abstract="ABS-1",
+                derived_from="ENG-9",
+            )
+            call_args = mock_run.call_args[0][0]
+            for flag in (
+                "--rationale", "--tags", "--visibility",
+                "--knowledge-anchors", "--dual-coding",
+                "--abstract", "--derived-from",
+            ):
+                assert flag in call_args, f"{flag} missing from CLI args"
+            assert "a,b" in call_args  # tags comma-joined
+
     def test_inject_uses_fast_by_default(self):
         bridge = PlurBridge()
         bridge._binary = "/usr/local/bin/plur"
