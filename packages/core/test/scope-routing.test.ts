@@ -125,6 +125,65 @@ describe('rankScopes — pure ranker', () => {
     expect(SCOPE_MATCH_THRESHOLD).toBeGreaterThan(0)
     expect(SCOPE_MATCH_THRESHOLD).toBeLessThan(1)
   })
+
+  // --- PR-6 (#353): expose `domainMatch` on each candidate so the write-path
+  // router can route a FULL domain-prefix match deterministically. Additive —
+  // `confidence`/`reason` are unchanged; only the new boolean is asserted here.
+  it('flags `domainMatch:true` on a full domain-prefix candidate (cover ⊃ domain)', () => {
+    const ranked = rankScopes(
+      { statement: 'xyzzy nonoverlapping tokens', domain: 'plur.core.security' },
+      [{ scope: 'group:plur/core', covers: ['plur.*'] }],
+    )
+    expect(ranked).toHaveLength(1)
+    expect(ranked[0].domainMatch).toBe(true)
+  })
+
+  it('flags `domainMatch:true` in the reverse direction (domain ⊃ cover)', () => {
+    // domain `plur` is a prefix of cover `plur.core` — still a domain-channel hit.
+    const ranked = rankScopes(
+      { statement: 'zzz no overlap', domain: 'plur' },
+      [{ scope: 'group:plur/core', covers: ['plur.core'] }],
+    )
+    expect(ranked).toHaveLength(1)
+    expect(ranked[0].domainMatch).toBe(true)
+  })
+
+  it('leaves `domainMatch:false` on a tag-only candidate', () => {
+    const ranked = rankScopes(
+      { statement: 'no overlap zzz', tags: ['servers', 'deploy', 'infra'] },
+      [{ scope: 'group:plur/infra', covers: ['servers', 'deploy', 'infra'] }],
+    )
+    expect(ranked).toHaveLength(1)
+    expect(ranked[0].domainMatch).toBe(false)
+  })
+
+  it('leaves `domainMatch:false` on a keyword-only candidate', () => {
+    const ranked = rankScopes(
+      { statement: 'updating the deployment runbook for servers' },
+      [{ scope: 'group:plur/infra', covers: ['deployment', 'servers'] }],
+    )
+    expect(ranked).toHaveLength(1)
+    expect(ranked[0].domainMatch).toBe(false)
+  })
+
+  it('on an EQUAL-confidence tie, ranks the domain-match candidate first', () => {
+    // A lone domain hit (group:zzz-core: domain ⊂ covers) and a three-tag hit
+    // (group:aaa-tags) BOTH squash to exactly 0.5. The domain candidate has the
+    // alphabetically-later scope name, so the old name-only tie-break would have
+    // put the tag candidate first; PR-6's domain-preferring tie-break must put
+    // the genuine domain match at the top so the deterministic router picks it.
+    const ranked = rankScopes(
+      { statement: 'no overlap zzz', domain: 'plur.core.x', tags: ['servers', 'deploy', 'infra'] },
+      [
+        { scope: 'group:aaa-tags', covers: ['servers', 'deploy', 'infra'] }, // 3 tags → 0.5
+        { scope: 'group:zzz-core', covers: ['plur.*'] },                     // domain → 0.5
+      ],
+    )
+    expect(ranked[0].confidence).toBe(ranked[1].confidence) // genuinely tied at 0.5
+    expect(ranked[0].scope).toBe('group:zzz-core')          // domain wins the tie
+    expect(ranked[0].domainMatch).toBe(true)
+    expect(ranked[1].domainMatch).toBe(false)
+  })
 })
 
 describe('squash math — auto-route boundaries (#353 finding-11)', () => {

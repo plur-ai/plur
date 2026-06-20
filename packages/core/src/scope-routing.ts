@@ -24,7 +24,16 @@
  *
  * Confidence is normalized into [0,1] by squashing the raw weighted score, so a
  * single weak keyword hit reads as low-confidence and a domain-prefix match
- * reads as high-confidence. Ties break deterministically on scope name.
+ * reads as high-confidence. Ties break deterministically: equal confidence
+ * prefers a domain-prefix match, then scope name ascending.
+ *
+ * Each candidate also carries `domainMatch` (see {@link ScopeCandidate}): a
+ * boolean exposing whether the match came through the domain-prefix channel.
+ * The write-path router (`_resolveUnscopedScope` in index.ts, #353 PR-6) routes
+ * a clean domain match DETERMINISTICALLY, bypassing the squash/threshold so it
+ * no longer has to land EXACTLY on SCOPE_MATCH_THRESHOLD; weak signals stay
+ * gated by the threshold. The weights/threshold/squash are unchanged — the
+ * deterministic bypass lives in the caller, not in this ranker.
  */
 import type { ScopeMetadata } from './schemas/scope-metadata.js'
 
@@ -91,6 +100,18 @@ export interface ScopeCandidate {
   confidence: number
   /** Human-readable matched signals, e.g. "domain plur.core.security ⊂ covers plur.*". */
   reason: string
+  /**
+   * True when this candidate matched via a FULL domain-prefix hit — the engram's
+   * `domain` is namespace-covered by (or namespace-covers) one of the scope's
+   * `covers` entries. This is the strongest, most deliberate routing signal.
+   *
+   * The caller (`_resolveUnscopedScope` in index.ts) uses this to route a clean
+   * domain match DETERMINISTICALLY, bypassing the squash/threshold edge — a lone
+   * domain match no longer has to land EXACTLY on SCOPE_MATCH_THRESHOLD to route.
+   * Weak signals (tag-only, keyword-only) leave this `false` and stay gated by
+   * the threshold. Additive: `confidence`/`reason` are unchanged.
+   */
+  domainMatch: boolean
 }
 
 const STOPWORDS = new Set([
@@ -140,11 +161,12 @@ function scoreScope(
   signals: ScopeSignals,
   scope: string,
   covers: string[],
-): { raw: number; reasons: string[] } | null {
+): { raw: number; reasons: string[]; domainMatch: boolean } | null {
   const normalizedCovers = covers.map(c => ({ raw: c, norm: normalizeCover(c) })).filter(c => c.norm.length > 0)
   if (normalizedCovers.length === 0) return null
 
   let raw = 0
+  let domainMatch = false
   const reasons: string[] = []
 
   // --- domain-prefix channel (highest weight) ---
@@ -156,11 +178,13 @@ function scoreScope(
       // cover (`plur` engram fits a `plur.core` scope, weaker but still a hit).
       if (isNamespacePrefix(cover.norm, domain)) {
         raw += WEIGHT_DOMAIN
+        domainMatch = true
         reasons.push(`domain ${domain} ⊂ covers ${cover.raw}`)
         break // one domain hit per scope — domain is single-valued
       }
       if (isNamespacePrefix(domain, cover.norm)) {
         raw += WEIGHT_DOMAIN
+        domainMatch = true
         reasons.push(`domain ${domain} ⊃ covers ${cover.raw}`)
         break
       }
@@ -196,7 +220,7 @@ function scoreScope(
   }
 
   if (raw <= 0) return null
-  return { raw, reasons }
+  return { raw, reasons, domainMatch }
 }
 
 /**
@@ -220,10 +244,18 @@ export function rankScopes(
       scope: meta.scope,
       confidence: Number(squash(scored.raw).toFixed(4)),
       reason: scored.reasons.join('; '),
+      domainMatch: scored.domainMatch,
     })
   }
+  // Sort by confidence desc; on equal confidence prefer a domain-prefix match
+  // (so the deterministic-bypass caller picks the genuine domain candidate over
+  // a coincidentally-equal weak-signal one — e.g. a lone domain hit and a
+  // three-tag hit both squash to exactly 0.5); finally break remaining ties on
+  // scope name ascending for full determinism.
   candidates.sort((a, b) =>
-    b.confidence - a.confidence || a.scope.localeCompare(b.scope),
+    b.confidence - a.confidence ||
+    (b.domainMatch ? 1 : 0) - (a.domainMatch ? 1 : 0) ||
+    a.scope.localeCompare(b.scope),
   )
   return candidates
 }

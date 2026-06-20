@@ -17,12 +17,25 @@
  * the "lone domain-prefix match auto-routes" case below; the stores here stack
  * domain + tag (+ keyword) so they sit comfortably above the boundary.
  */
-import { describe, it, expect, afterEach } from 'vitest'
+import { describe, it, expect, afterEach, vi } from 'vitest'
 import { mkdtempSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import yaml from 'js-yaml'
-import { Plur, SCOPE_MATCH_THRESHOLD } from '../src/index.js'
+
+// PR-6: wrap rankScopes so individual tests can inject a hand-built ranked list
+// (e.g. a sub-threshold domain candidate) to prove the deterministic bypass is
+// decoupled from SCOPE_MATCH_THRESHOLD. By DEFAULT it delegates to the real
+// implementation, so every other test in this file uses genuine ranking.
+const { rankScopes: realRankScopes } =
+  await vi.importActual<typeof import('../src/scope-routing.js')>('../src/scope-routing.js')
+const routeMock = vi.fn(realRankScopes)
+vi.mock('../src/scope-routing.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/scope-routing.js')>()
+  return { ...actual, rankScopes: (...args: Parameters<typeof actual.rankScopes>) => routeMock(...args) }
+})
+
+const { Plur, SCOPE_MATCH_THRESHOLD } = await import('../src/index.js')
 
 const dirs: string[] = []
 
@@ -34,7 +47,11 @@ function makePlur(config: Record<string, unknown>): Plur {
   return new Plur({ path: dir })
 }
 
-afterEach(() => { while (dirs.length) rmSync(dirs.pop()!, { recursive: true, force: true }) })
+afterEach(() => {
+  while (dirs.length) rmSync(dirs.pop()!, { recursive: true, force: true })
+  routeMock.mockReset()
+  routeMock.mockImplementation(realRankScopes) // restore real ranking after any mockReturnValueOnce
+})
 
 describe('Stage 3b — auto-route un-scoped writes (#351)', () => {
   it('routes an un-scoped write to a covers-matched scope (confident), stamps _routed', () => {
@@ -250,6 +267,167 @@ describe('Stage 3b — auto-route un-scoped writes (#351)', () => {
     // must still show readonly scopes so a human can find them.
     const ranked = plur.suggestScope({ statement: 'embeddings core', domain: 'plur.core.embeddings', tags: ['embeddings'] })
     expect(ranked.map(c => c.scope)).toContain('group:plur/core')
+  })
+
+  // --- PR-6 (#353): a FULL domain-prefix match routes DETERMINISTICALLY,
+  // bypassing the squash/threshold edge. Weak signals (tag-only / keyword-only)
+  // stay gated by the threshold; readonly scopes stay excluded; weights/threshold
+  // are unchanged. ---
+
+  it('PR-6: a full domain-prefix match routes deterministically (via the bypass, not the >= edge)', () => {
+    const plur = makePlur({
+      stores: [
+        { path: '/tmp/r-core.yaml', scope: 'group:plur/core', description: 'Core', covers: ['plur.*'] },
+      ],
+    })
+    // Domain-only hit, zero token overlap. Under the weight curve this squashes
+    // to EXACTLY 0.50 = SCOPE_MATCH_THRESHOLD — pre-PR-6 it routed only by landing
+    // on the `>=` edge. PR-6 routes it via the deterministic domainMatch bypass
+    // instead (taken BEFORE the threshold check), so the route no longer depends
+    // on the confidence sitting precisely on the threshold.
+    const e = plur.learn('xyzzy nonoverlapping content tokens', {
+      domain: 'plur.core.security',
+    }) as { scope: string; structured_data?: { _routed?: { scope: string; confidence: number; reason: string } } }
+    expect(e.scope).toBe('group:plur/core')
+    expect(e.structured_data?._routed?.scope).toBe('group:plur/core')
+    // The route is for a domain reason (proves it came through the domain channel,
+    // i.e. the deterministic branch, not a coincidental tag/keyword pile-up).
+    expect(e.structured_data?._routed?.reason).toContain('domain plur.core.security')
+  })
+
+  it('PR-6: the bypass is taken BEFORE the threshold gate — a sub-threshold domain candidate STILL routes', () => {
+    // Rigorously decouples the bypass from SCOPE_MATCH_THRESHOLD. We feed the
+    // private resolver a hand-built ranked list (via a mocked rankScopes) whose
+    // top candidate has `domainMatch:true` but a confidence WELL BELOW threshold
+    // (0.2). Threshold-only logic would refuse to route it; PR-6 routes it because
+    // the deterministic domain branch is taken first. A second list (same low
+    // confidence but `domainMatch:false`) must NOT route — proving the bypass is
+    // gated on domainMatch, not just on having a candidate.
+    const plur = makePlur({
+      stores: [{ path: '/tmp/r.yaml', scope: 'group:plur/core', covers: ['plur.*'], description: 'Core' }],
+    }) as unknown as {
+      _resolveUnscopedScope: (s: string, c?: { domain?: string }) => { scope: string; routed: { scope: string } | null }
+    }
+
+    // domainMatch:true, confidence 0.2 (< 0.5) → must route via the bypass.
+    routeMock.mockReturnValueOnce([
+      { scope: 'group:plur/core', confidence: 0.2, reason: 'domain x ⊂ covers plur.*', domainMatch: true },
+    ])
+    const routedLow = plur._resolveUnscopedScope('anything', { domain: 'plur.core.x' })
+    expect(routedLow.scope).toBe('group:plur/core')
+    expect(routedLow.routed?.scope).toBe('group:plur/core')
+
+    // domainMatch:false, same confidence 0.2 (< 0.5) → must NOT route (gated).
+    routeMock.mockReturnValueOnce([
+      { scope: 'group:plur/core', confidence: 0.2, reason: 'keywords [...]', domainMatch: false },
+    ])
+    const gatedLow = plur._resolveUnscopedScope('anything')
+    expect(gatedLow.scope).toBe('global')
+    expect(gatedLow.routed).toBeNull()
+  })
+
+  it('PR-6: a tag-only match (no domain) is STILL gated by threshold — two tags fall to default', () => {
+    const plur = makePlur({
+      stores: [
+        // Two cover tokens, hit by two tags → raw 1.0 → squash 0.40 < 0.5, and
+        // NO domain match. The bypass must not fire; the write stays gated.
+        { path: '/tmp/r-infra.yaml', scope: 'group:plur/infra', description: 'Infra', covers: ['servers', 'deploy'] },
+      ],
+    })
+    const e = plur.learn('no overlap words zzz', {
+      tags: ['servers', 'deploy'],
+    }) as { scope: string; structured_data?: { _routed?: unknown } }
+    expect(e.scope).toBe('global')
+    expect(e.structured_data?._routed).toBeUndefined()
+  })
+
+  it('PR-6: a tag-only match that DOES clear threshold (three tags) still routes (threshold path intact)', () => {
+    const plur = makePlur({
+      stores: [
+        // Three tags → raw 1.5 → squash 0.50, NO domain. The threshold path (not
+        // the bypass) routes it — proves PR-6 left the weak-signal gate working.
+        { path: '/tmp/r-infra.yaml', scope: 'group:plur/infra', description: 'Infra', covers: ['servers', 'deploy', 'infra'] },
+      ],
+    })
+    const e = plur.learn('no overlap words zzz', {
+      tags: ['servers', 'deploy', 'infra'],
+    }) as { scope: string; structured_data?: { _routed?: { scope: string } } }
+    expect(e.scope).toBe('group:plur/infra')
+    expect(e.structured_data?._routed?.scope).toBe('group:plur/infra')
+  })
+
+  it('PR-6: a keyword-only match (no domain) is STILL gated by threshold — falls to default', () => {
+    const plur = makePlur({
+      stores: [
+        { path: '/tmp/r-infra.yaml', scope: 'group:plur/infra', description: 'Infra', covers: ['servers'] },
+      ],
+    })
+    const e = plur.learn('restart the servers now') as {
+      scope: string; structured_data?: { _routed?: unknown }
+    }
+    expect(e.scope).toBe('global')
+    expect(e.structured_data?._routed).toBeUndefined()
+  })
+
+  it('PR-6: a readonly scope with a domain match is STILL excluded (not chosen, falls to default)', () => {
+    const plur = makePlur({
+      stores: [
+        // Readonly store whose covers domain-match. PR-4's readonly exclusion runs
+        // BEFORE ranking, so the domain candidate never enters the set — the
+        // deterministic bypass has nothing to route to.
+        { url: 'https://ro.example.com', token: 't', readonly: true, scope: 'group:plur/core', description: 'Core (RO)', covers: ['plur.*'] },
+      ],
+    })
+    const e = plur.learn('zzz no overlap', {
+      domain: 'plur.core.security',
+    }) as { scope: string; structured_data?: { _routed?: unknown } }
+    expect(e.scope).toBe('global')
+    expect(e.structured_data?._routed).toBeUndefined()
+  })
+
+  it('PR-6: multiple domain-match candidates → deterministic winner (domain-preferring, then scope-name)', () => {
+    const plur = makePlur({
+      stores: [
+        // Both scopes domain-match `plur.core.security` (plur.* and plur.core.*),
+        // both score 0.5. Tie-break is deterministic: both are domain matches, so
+        // it falls to scope name ascending → group:plur/a wins, every run.
+        { path: '/tmp/r-b.yaml', scope: 'group:plur/b', description: 'B', covers: ['plur.*'] },
+        { path: '/tmp/r-a.yaml', scope: 'group:plur/a', description: 'A', covers: ['plur.core.*'] },
+      ],
+    })
+    const e = plur.learn('zzz no overlap', {
+      domain: 'plur.core.security',
+    }) as { scope: string; structured_data?: { _routed?: { scope: string } } }
+    expect(e.scope).toBe('group:plur/a')
+    expect(e.structured_data?._routed?.scope).toBe('group:plur/a')
+  })
+
+  it('PR-6: explicit scope still bypasses auto-route entirely (domain match ignored)', () => {
+    const plur = makePlur({
+      stores: [
+        { path: '/tmp/r-core.yaml', scope: 'group:plur/core', description: 'Core', covers: ['plur.*'] },
+      ],
+    })
+    const e = plur.learn('zzz no overlap', {
+      domain: 'plur.core.security',
+      scope: 'local',
+    }) as { scope: string; structured_data?: { _routed?: unknown } }
+    expect(e.scope).toBe('local')
+    expect(e.structured_data?._routed).toBeUndefined()
+  })
+
+  it('PR-6: a session default still bypasses auto-route entirely (domain match ignored)', () => {
+    const plur = makePlur({
+      stores: [
+        { path: '/tmp/r-core.yaml', scope: 'group:plur/core', description: 'Core', covers: ['plur.*'] },
+      ],
+    })
+    plur.setSessionScope('project:my-app')
+    const e = plur.learn('zzz no overlap', {
+      domain: 'plur.core.security',
+    }) as { scope: string; structured_data?: { _routed?: unknown } }
+    expect(e.scope).toBe('project:my-app')
+    expect(e.structured_data?._routed).toBeUndefined()
   })
 
   it('auto-routed SHARED scope with sensitive content is still DEMOTED to local (3b + guard)', () => {
