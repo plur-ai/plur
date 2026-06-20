@@ -38,6 +38,18 @@ jobs:
       - run: git config --global user.email "ci@plur.ai"
       - run: git config --global user.name "PLUR CI"
       - run: pnpm build
+      # D1-MODULE-CYCLE gate (#353): scope-family predicates were moved to the
+      # leaf module scope-util.ts so inject.ts can import isPersonalScope without
+      # forming an index → inject → index cycle. madge isn't a repo dep, so we use
+      # a tsc --noEmit gate: a reintroduced cycle (or any type error) fails here
+      # before the test step.
+      - name: Type-check core (module-cycle gate)
+        run: pnpm --filter @plur-ai/core exec tsc --noEmit
+      # D1-followup gate (#177): the KNOWN_ISSUES Stage 3b v2 tracking sentinel
+      # must be present and point at a GitHub issue. macOS grep lacks -P, so this
+      # is a portable Node check (mirrors release.sh).
+      - name: KNOWN_ISSUES Stage 3b v2 tracking sentinel
+        run: node -e "const s=require('fs').readFileSync('docs/KNOWN_ISSUES.md','utf8'); if(!/STAGE3B_V2_TRACKING:https:\/\/github\.com\//.test(s)){console.error('KNOWN_ISSUES sentinel missing'); process.exit(1)}"
       # Spec JSON Schemas are generated from the Zod source of truth (#315).
       # Regenerate and fail if the committed spec/*.json drifted.
       - name: Check spec schemas are in sync with Zod

@@ -108,14 +108,21 @@ export const PlurConfigSchema = z.object({
   registry_url: z.string().url().optional(),
   /**
    * Where a genuinely-unscoped write lands when nothing else decides its scope
-   * (Stage 3b, #351). Both `local` and `global` are PERSONAL, non-shared scopes
-   * — the enterprise "global" was renamed to `org` on 2026-05-11 — so this is an
-   * organizational default, NOT a leak-safety control. Defaults to `local` so
-   * unscoped writes stay in this machine's local store instead of the
-   * cross-project `global` namespace. Set to `global` to restore the historical
-   * pre-3b default.
+   * (Stage 3b, #351; reverted to `global` in 0.10.0, #353). Both `local` and
+   * `global` are PERSONAL, non-shared scopes — the enterprise "global" was
+   * renamed to `org` on 2026-05-11 — so this is an organizational default, NOT a
+   * leak-safety control (the sensitivity guard runs after this and still demotes
+   * an auto-routed SHARED scope carrying sensitive content).
+   *
+   * Defaults to `global` (the historical pre-3b default): the cross-project
+   * personal namespace, read-visible under any scoped recall/inject. With the
+   * 0.10.0 read-side fix, personal-family scopes — `local`, `global`, `user:*`,
+   * `agent:*` — are ALL visible under a project-scope recall/inject, so setting
+   * this to `local` keeps unscoped writes machine-local WITHOUT making them
+   * invisible to scoped sessions. `local` is a fully supported option, not a
+   * silent regression.
    */
-  unscoped_default: z.enum(['local', 'global']).default('local'),
+  unscoped_default: z.enum(['local', 'global']).default('global'),
   /**
    * When true (default), a genuinely-unscoped write (no explicit scope, no
    * session/`.plur.yaml` default) is run through the deterministic

@@ -1,0 +1,41 @@
+/**
+ * Scope-family predicates — extracted to a leaf module to break a module cycle.
+ *
+ * `inject.ts` needs `isPersonalScope` for its read-side scope filter, but
+ * `index.ts` imports from `inject.ts`. If these predicates lived in `index.ts`,
+ * `inject.ts` importing them would create an `index.ts → inject.ts → index.ts`
+ * cycle. Keeping them here (a dependency-free leaf) lets `inject.ts`, `index.ts`,
+ * `storage-indexed.ts`, and `mcp/tools.ts` all import them without any cycle.
+ *
+ * `index.ts` re-exports `isSharedScope`/`isPersonalScope` so the public
+ * `@plur-ai/core` API surface is unchanged.
+ */
+
+/**
+ * Scopes whose engrams are visible to people *other than* the author — the team
+ * store (`group:`), repo/project stores (`project:`), space stores (`space:`),
+ * and org/public scopes. Personal scopes (`local`, `global`, `user:*`, `agent:*`)
+ * are NOT shared: they live on the author's own machine or under their own remote
+ * namespace. Used by the write-time leak guard to decide whether to scan + demote,
+ * and (via the negation below) by the read-side scope filters to decide which
+ * scopes always pass a project-scope recall/inject.
+ */
+export const SHARED_SCOPE_PREFIXES = ['group:', 'project:', 'space:', 'team:', 'org:', 'public'] as const
+
+export function isSharedScope(scope: string): boolean {
+  return SHARED_SCOPE_PREFIXES.some(p => scope.startsWith(p))
+}
+
+/**
+ * Personal-family scope test — the read-side authoritative predicate (#353).
+ *
+ * A scope is personal iff it is NOT a shared scope. This deliberately covers
+ * MORE than the historical hardcoded `{local, global}` set: `user:alice`,
+ * `agent:bot`, and any non-shared-prefixed scope are ALSO personal-family and
+ * must pass a project-scope recall/inject filter. Use this everywhere a read
+ * filter decides "always visible under any scoped recall" — never a hardcoded
+ * {local,global} set.
+ */
+export function isPersonalScope(scope: string): boolean {
+  return !isSharedScope(scope)
+}

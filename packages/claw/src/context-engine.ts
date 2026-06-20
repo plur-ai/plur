@@ -119,13 +119,17 @@ export class PlurContextEngine implements ContextEngine {
         const learnings = extractLearnings([params.message])
         for (const candidate of learnings) {
           if (candidate.confidence >= 0.7) {
-            this._learnIfNew(key, candidate.statement, {
+            // Fire-and-forget: learnRouted may touch a remote for shared scopes;
+            // don't stall the ingest hook on it. Scope `|| undefined` (not
+            // `|| 'global'`) so an unscoped session reaches the core unscoped
+            // routing path (_guardSensitiveScope sees scope == null) (#353).
+            void this._learnIfNew(key, candidate.statement, {
               type: candidate.type,
-              scope: this.sessionScopes.get(params.sessionKey || '') || 'global',
+              scope: this.sessionScopes.get(params.sessionKey || '') || undefined,
               source: 'openclaw:ingest',
               rationale: 'user correction detected in real-time',
               tags: [candidate.type],
-            })
+            }).catch(err => console.error('[plur-claw] _learnIfNew error:', err))
           }
         }
       }
@@ -199,13 +203,13 @@ export class PlurContextEngine implements ContextEngine {
         const learnings = extractLearnings(messages)
         for (const candidate of learnings) {
           if (candidate.confidence >= 0.7) {
-            this._learnIfNew(key, candidate.statement, {
+            void this._learnIfNew(key, candidate.statement, {
               type: candidate.type,
-              scope: this.sessionScopes.get(params.sessionKey || '') || 'global',
+              scope: this.sessionScopes.get(params.sessionKey || '') || undefined,
               source: 'openclaw:compact',
               rationale: 'extracted during context compaction',
               tags: [candidate.type],
-            })
+            }).catch(err => console.error('[plur-claw] _learnIfNew error:', err))
           }
         }
       }
@@ -237,7 +241,9 @@ export class PlurContextEngine implements ContextEngine {
     try {
       const newMessages = params.messages.slice(params.prePromptMessageCount)
       const key = params.sessionKey || params.sessionId
-      const scope = this.sessionScopes.get(params.sessionKey || '') || 'global'
+      // `|| undefined` (not `|| 'global'`) so an unscoped session reaches core's
+      // unscoped routing path (_guardSensitiveScope sees scope == null) (#353).
+      const scope = this.sessionScopes.get(params.sessionKey || '') || undefined
 
       if (this.options.auto_learn && newMessages.length > 0) {
         // Primary: LLM self-reported learnings from 🧠 section in assistant response
@@ -245,13 +251,13 @@ export class PlurContextEngine implements ContextEngine {
         if (lastAssistant) {
           const selfReported = extractSelfReportedLearnings(lastAssistant)
           for (const statement of selfReported) {
-            this._learnIfNew(key, statement, {
+            void this._learnIfNew(key, statement, {
               type: 'behavioral',
               scope,
               source: 'openclaw:self-report',
               rationale: 'self-reported by agent via learning section',
               tags: ['self-report'],
-            })
+            }).catch(err => console.error('[plur-claw] _learnIfNew error:', err))
           }
         }
 
@@ -259,13 +265,13 @@ export class PlurContextEngine implements ContextEngine {
         const learnings = extractLearnings(newMessages)
         for (const candidate of learnings) {
           if (candidate.confidence >= 0.7) {
-            this._learnIfNew(key, candidate.statement, {
+            void this._learnIfNew(key, candidate.statement, {
               type: candidate.type,
               scope,
               source: 'openclaw:afterTurn',
               rationale: 'extracted from conversation via pattern matching',
               tags: [candidate.type],
-            })
+            }).catch(err => console.error('[plur-claw] _learnIfNew error:', err))
           }
         }
       }
@@ -332,8 +338,14 @@ export class PlurContextEngine implements ContextEngine {
     return this.sessionScopes.get(sessionKey)
   }
 
-  /** Learn a statement only if it hasn't been learned in this session already (prevents triple-learning). */
-  private _learnIfNew(sessionKey: string, statement: string, context: LearnContext): void {
+  /**
+   * Learn a statement only if it hasn't been learned in this session already
+   * (prevents triple-learning). Uses learnRouted (not learn) so a shared-scope
+   * engram is pushed to its remote store / outbox — learn() does no remote
+   * routing (#353, MED-4). Callers fire-and-forget this in async-friendly hooks;
+   * a slow remote does not stall the agent turn.
+   */
+  private async _learnIfNew(sessionKey: string, statement: string, context: LearnContext): Promise<void> {
     if (!this.sessionLearned.has(sessionKey)) {
       this.sessionLearned.set(sessionKey, new Set())
     }
@@ -341,7 +353,7 @@ export class PlurContextEngine implements ContextEngine {
     const key = statement.toLowerCase()
     if (seen.has(key)) return
     seen.add(key)
-    this.plur.learn(statement, context)
+    await this.plur.learnRouted(statement, context)
     maybeFlushAfter(recordEvent('learn'))
   }
 }

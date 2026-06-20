@@ -5,6 +5,24 @@ import { decayedStrength, decayedCoAccessStrength, daysSince, confidenceDecay } 
 import { classifyPolarity } from './polarity.js'
 import { computeConfidence } from './confidence.js'
 import { freshTailBoost } from './fresh-tail.js'
+import { isPersonalScope } from './scope-util.js'
+
+/**
+ * D1-RECALL/INJECT-ASYMMETRY (#353). When an inject is given an EXPLICIT
+ * `scopeFilter === 'global'`, the first branch of scoreEngram returns ONLY
+ * `global`-scoped engrams — it is TARGETED global-namespace injection, NOT a
+ * personal-family catch-all. This is intentionally narrower than a PROJECT-scope
+ * filter, whose branch passes ALL personal-family scopes (`local`, `global`,
+ * `user:*`, `agent:*`).
+ *
+ * This is an asymmetry with RECALL: an explicit `scope=global` RECALL returns
+ * all personal-family engrams (because `isPersonalScope('global')` is true),
+ * whereas an explicit `scope=global` INJECT returns only `global`. The asymmetry
+ * is pre-existing for recall and DELIBERATELY kept for inject. A future change
+ * that "fixes" this (makes global inject a personal-family catch-all) MUST rename
+ * this constant so the intent is unmistakable. See the D1-ASYMMETRY tests.
+ */
+export const INJECT_GLOBAL_IS_TARGETED = true
 
 export interface InjectionContext {
   prompt: string
@@ -139,8 +157,17 @@ export function scoreEngram(
   // Scope filtering: if scope is specified, only include matching engrams
   if (scopeFilter) {
     if (scopeFilter === 'global') {
+      // INJECT_GLOBAL_IS_TARGETED: explicit scope=global inject returns ONLY
+      // global-scoped engrams — targeted global-namespace injection. The
+      // personal-family pass-through below applies to PROJECT-scope filters
+      // only; this branch predates D1 and is intentionally narrower than the
+      // project branch (see INJECT_GLOBAL_IS_TARGETED JSDoc + D1-ASYMMETRY tests).
+      void INJECT_GLOBAL_IS_TARGETED
       if (engram.scope !== 'global') return 0
-    } else if (!engram.scope.startsWith(scopeFilter) && engram.scope !== 'global') {
+    } else if (!engram.scope.startsWith(scopeFilter) && !isPersonalScope(engram.scope)) {
+      // Personal-family scopes (local, global, user:*, agent:*, anything not
+      // isSharedScope) always pass a project-scope filter; only SHARED scopes
+      // that don't match the filter are excluded (#353 read-side fix).
       return 0
     }
   }

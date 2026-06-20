@@ -260,8 +260,11 @@ describe('Session & store tools', () => {
       const result = await callTool('plur_session_start', { task: 'work' }) as any
 
       expect(result.guide).toContain('No project scope detected')
-      expect(result.guide).toContain('context bleed')
+      // 0.10.0 (#353): the guidance is now IMPERATIVE — "Create a .plur.yaml NOW"
+      // — and clarifies the personal-recall vs team-store distinction.
+      expect(result.guide).toContain('Create a .plur.yaml NOW')
       expect(result.guide).toContain('.plur.yaml')
+      expect(result.guide).toContain('PERSONAL recall context')
     })
 
     it('guide includes confirmation when project scope is auto-detected', async () => {
@@ -273,6 +276,9 @@ describe('Session & store tools', () => {
       expect(result.guide).toContain('Auto-detected project scope')
       expect(result.guide).toContain('project:detected')
       expect(result.guide).toContain('.plur.yaml')
+      // The project-config branch references the EXISTING .plur.yaml but must NOT
+      // imperatively tell the user to CREATE one (that's the no-scope branch).
+      expect(result.guide).not.toContain('Create a .plur.yaml NOW')
     })
 
     it('cross-session: project A scope does not leak into project B', async () => {
@@ -290,10 +296,11 @@ describe('Session & store tools', () => {
         expect(plur.getSessionScope()).toBeNull()  // not "project:a"!
 
         const bEngram = plur.learn('B-side engram')
-        // Stage 3b: un-scoped writes default to "local" (was "global"). The
-        // property under test is "no cross-project leak" — "local" satisfies
-        // that even better than "global". The key assertion is NOT "project:a".
-        expect(bEngram.scope).toBe('local')  // not "project:a"
+        // 0.10.0 (#353): un-scoped writes default to "global" (reverted from the
+        // Stage 3b "local"). The property under test is "no cross-project leak"
+        // into project:a — "global" satisfies that (it is the personal namespace,
+        // not project A's scope). The key assertion is NOT "project:a".
+        expect(bEngram.scope).toBe('global')  // not "project:a"
       } finally {
         rmSync(projectB, { recursive: true, force: true })
       }

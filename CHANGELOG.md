@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### Un-scoped write default reverted to `global` + read-side personal-scope visibility on all 3 paths (#353)
+
+The Stage 3b un-scoped WRITE default (`local`) is reverted to `global` (the historical default). The revert alone was insufficient: the read-side scope filters hardcoded a `global`-only personal pass-through and DROPPED other personal-family scopes (`local`, `user:*`, `agent:*`) under a project-scoped recall/inject. This PR fixes the read side on **all three read paths** — inject `scoreEngram`, the non-indexed recall filter, and the DEFAULT indexed SQLite path (`storage-indexed.ts`, via a new `personal` column) — using the authoritative predicate `isPersonalScope(scope) = !isSharedScope(scope)`, not a hardcoded `{local,global}` set.
+
+**Intended read-visibility surface change (not a leak):** Engrams at `scope=local` (including those written during the Stage 3b period) and any `scope=local` / `user:*` engrams now appear in project-scoped sessions after this fix, consistent with non-shared scopes being personal-family. Personal scopes never reach team shared stores; only an explicit shared scope (`group:`/`project:`/`space:`/`team:`/`org:`/`public`) does.
+
+**RECALL/INJECT asymmetry (intentional, kept):** an explicit `scope=global` RECALL returns ALL personal-family engrams, but an explicit `scope=global` INJECT returns ONLY global-scoped engrams (targeted global-namespace injection, encoded by `INJECT_GLOBAL_IS_TARGETED`). The `plur_recall` tool description and `plur_session_start` guidance note this.
+
+**Note:** Users with `unscoped_default: local` should be aware that cross-scope recurrence promotion currently ignores `unscoped_default` and promotes to `global` on the 2nd cross-scope hit (tracked as Stage 3b v2, see `docs/KNOWN_ISSUES.md`).
+
+**Cross-surface consistency:** the CLI `plur learn` now omits the scope key when `--scope` is absent (flowing through unscoped routing via `learnRouted`) and the OpenClaw `_learnIfNew` routes via `learnRouted` (so shared-scope auto-learns reach their remote store); both pass `undefined` rather than a hardcoded `global` for unscoped sessions. The MCP `scope_hint` now fires on any non-shared landing scope (`isSharedScope` swap).
+
+The module cycle that this required (inject.ts needing `isPersonalScope` from index.ts) is broken by moving the scope-family predicates to a new leaf module `scope-util.ts`; `@plur-ai/core` re-exports `isSharedScope`/`isPersonalScope` unchanged.
+
 ### Security hardening: pack install, remote-store, learnBatch (#306)
 
 Addresses the 2026-06-10 security audit of `@plur-ai/core`:

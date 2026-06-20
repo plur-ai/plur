@@ -253,6 +253,13 @@ echo "--- Step 2: Build ---"
 pnpm build 2>&1 | grep -E "success|error"
 echo ""
 
+# D1-followup gate (#177): the Stage 3b v2 tracking sentinel must be present and
+# point at a GitHub issue before any release. Portable Node check (macOS grep
+# lacks -P); mirrored in CI lint so it runs even when release.sh does not.
+node -e "const s=require('fs').readFileSync('docs/KNOWN_ISSUES.md','utf8'); if(!/STAGE3B_V2_TRACKING:https:\/\/github\.com\//.test(s)){console.error('KNOWN_ISSUES sentinel missing'); process.exit(1)}"
+echo "✓ KNOWN_ISSUES Stage 3b v2 tracking sentinel present"
+echo ""
+
 # --- 3. Test ---
 echo "--- Step 3: Test ---"
 TEST_OUTPUT=$(pnpm test 2>&1 || true)
