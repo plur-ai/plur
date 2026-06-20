@@ -3201,10 +3201,63 @@ Generate an improved version of the procedure that prevents this failure. Return
       const raw = fs.readFileSync(this.paths.config, 'utf8')
       if (raw) configData = (yaml.load(raw) as Record<string, unknown>) ?? {}
     } catch {}
-    configData.stores = stores
+    configData.stores = this.mergeStoresForWriteback(configData.stores, stores)
     fs.writeFileSync(this.paths.config, yaml.dump(configData, { lineWidth: 120, noRefs: true }))
     this.config = loadConfig(this.paths.config)
     this.configMtimeMs = this.statConfigMtime()
+  }
+
+  /**
+   * MERGE the typed `stores` array onto the RAW (freshly-read YAML) entries so a
+   * writeback never strips fields the typed schema doesn't know about (PR-3,
+   * #353 HIGH-17/18). `stores` is `StoreEntry[]` — the typed parse output —
+   * which (without this) would clobber `configData.stores` and lose:
+   *   - unknown/future TOP-LEVEL keys (recovered here; also kept by
+   *     StoreEntrySchema.passthrough so the typed value already carries them)
+   *   - unknown NESTED keys inside `sensitivity` (recovered by the explicit
+   *     one-level deep-merge below; a shallow spread would replace `sensitivity`
+   *     wholesale and lose them even with ScopeSensitivitySchema.passthrough)
+   * Parsed deltas (e.g. a corrected `forbid`) land ON TOP of the raw values.
+   */
+  private mergeStoresForWriteback(rawStores: unknown, stores: StoreEntry[]): StoreEntry[] {
+    if (!Array.isArray(rawStores)) return stores
+    // Key on url+scope (remote) or path+scope (local); never url alone — one
+    // enterprise URL hosts many scopes (addStore dedup identity is url+scope).
+    const keyOf = (e: { url?: unknown; path?: unknown; scope?: unknown }): string | null => {
+      const scope = typeof e?.scope === 'string' ? e.scope : ''
+      if (typeof e?.url === 'string') return `${e.url}\0${scope}`
+      if (typeof e?.path === 'string') return `${e.path}\0${scope}`
+      return null
+    }
+    const rawMap = new Map<string, Record<string, unknown>>()
+    for (const r of rawStores as unknown[]) {
+      const k = keyOf(r as Record<string, unknown>)
+      if (k) rawMap.set(k, r as Record<string, unknown>)
+    }
+    return stores.map((typed) => {
+      const k = keyOf(typed)
+      const raw = k ? rawMap.get(k) : undefined
+      if (!raw) {
+        // No raw match (genuinely new entry, e.g. an addStore append) — or an
+        // entry with neither url nor path (hand-edited; refine prevents at write
+        // time). Use the typed entry as-is rather than dropping it.
+        if (!k) logger.warning(`[plur:persistStores] store entry for scope "${typed.scope}" has neither url nor path — writing typed entry as-is`)
+        return typed
+      }
+      const rawSensitivity = (raw as { sensitivity?: Record<string, unknown> }).sensitivity
+      const merged: Record<string, unknown> = {
+        ...raw,
+        ...typed,
+        // One-level deep-merge of `sensitivity`: parsed deltas over raw nested
+        // unknowns. Without this explicit merge a shallow `...typed` would
+        // replace `sensitivity` wholesale and lose nested unknowns.
+        sensitivity: typed.sensitivity
+          ? { ...(rawSensitivity ?? {}), ...typed.sensitivity }
+          : rawSensitivity,
+      }
+      if (merged.sensitivity === undefined) delete merged.sensitivity
+      return merged as StoreEntry
+    })
   }
 
   addStore(

@@ -26,10 +26,18 @@ export const StoreEntrySchema = z.object({
     .describe('Topics/domains this scope is the home for (#345). Advisory; surfaced in discovery.'),
   sensitivity: ScopeSensitivitySchema.optional()
     .describe("Per-scope sensitivity policy (#345) consumed by the write-time leak guard. When present, overrides the default shared-scope demote-everything behavior for this scope."),
-}).refine(
-  (s) => Boolean(s.path) !== Boolean(s.url),
-  { message: 'StoreEntry requires exactly one of path or url' },
-)
+})
+  // PR-3 (#353): preserve unknown/future TOP-LEVEL store fields on a successful
+  // parse, so a config written by a NEWER PLUR (extra top-level keys) is not
+  // silently stripped when an OLDER PLUR re-parses and writes it back. The
+  // `.passthrough()` is placed BEFORE `.refine()` (refine yields a ZodEffects
+  // with no `.passthrough`); the path-xor-url predicate only touches known
+  // fields, so passthrough does not relax it.
+  .passthrough()
+  .refine(
+    (s) => Boolean(s.path) !== Boolean(s.url),
+    { message: 'StoreEntry requires exactly one of path or url' },
+  )
 
 export type StoreEntry = z.infer<typeof StoreEntrySchema>
 

@@ -32,19 +32,28 @@ describe('ScopeMetadataSchema', () => {
     expect(parsed.owner).toBeUndefined()
   })
 
-  // Detector hardening — Stage 1.5b (#353). 'pii' was a no-op category: no
-  // detector maps to it, so `forbid: ['pii']` silently protected nothing. It
-  // was removed to kill the false protection; the enum must reject it now.
-  it('no longer accepts the removed "pii" category', () => {
+  // Detector hardening — Stage 1.5b (#353): 'pii' is not a real category (no
+  // detector maps to it). PR-3 (#353 HIGH-17/18) changes the FAILURE MODE from
+  // fatal to non-fatal: an unknown category in `forbid` is now DROPPED (so it
+  // can never drop the whole store entry incl. url/token), keeping the valid
+  // subset or falling to the safe default — it no longer throws.
+  it('drops the removed "pii" category instead of throwing (PR-3 non-fatal)', () => {
     expect(SENSITIVITY_CATEGORIES).toEqual(['secrets', 'infra'])
     expect(SENSITIVITY_CATEGORIES as readonly string[]).not.toContain('pii')
-    expect(() =>
-      ScopeMetadataSchema.parse({
-        scope: 'group:plur/engineering',
-        description: 'has a pii forbid',
-        sensitivity: { forbid: ['pii'] },
-      }),
-    ).toThrow()
+    // pii alone → falls to the safe default, no throw.
+    const onlyBad = ScopeMetadataSchema.parse({
+      scope: 'group:plur/engineering',
+      description: 'has a pii forbid',
+      sensitivity: { forbid: ['pii'] },
+    })
+    expect(onlyBad.sensitivity?.forbid).toEqual(['secrets', 'infra'])
+    // valid + bad → keep only the valid subset.
+    const mixed = ScopeMetadataSchema.parse({
+      scope: 'group:plur/engineering',
+      description: 'has a mixed forbid',
+      sensitivity: { forbid: ['secrets', 'pii'] },
+    })
+    expect(mixed.sensitivity?.forbid).toEqual(['secrets'])
   })
 
   it('applies the sensitivity defaults (forbid secrets+infra, allow none)', () => {
@@ -78,11 +87,12 @@ describe('ScopeMetadataSchema', () => {
     expect(ScopeMetadataSchema.safeParse({ scope: 'group:x' }).success).toBe(false) // no description
   })
 
-  it('rejects an unknown sensitivity category in forbid', () => {
+  it('drops an unknown sensitivity category in forbid (PR-3: non-fatal, falls to default)', () => {
     const res = ScopeMetadataSchema.safeParse({
       scope: 'group:x', description: 'd', sensitivity: { forbid: ['malware'] },
     })
-    expect(res.success).toBe(false)
+    expect(res.success).toBe(true)
+    if (res.success) expect(res.data.sensitivity?.forbid).toEqual(['secrets', 'infra'])
   })
 
   it('rejects an invalid injection_policy', () => {
