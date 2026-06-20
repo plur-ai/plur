@@ -1001,9 +1001,23 @@ export class Plur {
     if (this.config.auto_route_scope === false) {
       return { scope: fallback, routed: null }
     }
+    // MED-12 (#353, COSMETIC/REPORTING per D3): exclude readonly / non-writable
+    // scopes from the AUTO-ROUTE candidate set so a clean unscoped write is never
+    // LABELED as routed to a scope a write can't land on. This is not a
+    // write-safety fix — `_resolveRemoteStoreForScope` already `continue`s on
+    // readonly (line ~495), so a write to a readonly remote already falls to
+    // local; the only defect is that the ranker could RANK/LABEL a readonly scope
+    // as the target. `readonly` is one boolean on StoreEntry and applies to both
+    // path- and url-based stores, so this view covers both. `listScopeMetadata()`
+    // and `suggestScope()` are left UNCHANGED — advisory discovery still surfaces
+    // readonly scopes.
+    const writableScopeMetadata = this.listScopeMetadata().filter(md => {
+      const entry = (this.config.stores ?? []).find(s => s.scope === md.scope)
+      return entry?.readonly !== true
+    })
     const candidates = rankScopes(
       { statement, domain: context?.domain, tags: context?.tags },
-      this.listScopeMetadata(),
+      writableScopeMetadata,
     )
     const top = candidates[0]
     if (top && top.confidence >= SCOPE_MATCH_THRESHOLD) {

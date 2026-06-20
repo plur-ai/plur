@@ -17,6 +17,7 @@ import { join } from 'path'
 import { tmpdir } from 'os'
 import yaml from 'js-yaml'
 import { Plur, rankScopes, SCOPE_MATCH_THRESHOLD } from '../src/index.js'
+import { THRESHOLD_SINGLE_DOMAIN } from '../src/scope-routing.js'
 
 describe('rankScopes — pure ranker', () => {
   const SCOPES = [
@@ -123,6 +124,104 @@ describe('rankScopes — pure ranker', () => {
   it('exports a routing threshold constant for Stage 3b (not applied here)', () => {
     expect(SCOPE_MATCH_THRESHOLD).toBeGreaterThan(0)
     expect(SCOPE_MATCH_THRESHOLD).toBeLessThan(1)
+  })
+})
+
+describe('squash math — auto-route boundaries (#353 finding-11)', () => {
+  // squash(raw) = raw / (raw + SATURATION), SATURATION = 1.5.
+  // WEIGHT_DOMAIN = 1.5, WEIGHT_TAG = 0.5, WEIGHT_KEYWORD = 0.2.
+  // The auto-route gate (index.ts `_resolveUnscopedScope`) is `>=`, so a
+  // confidence landing EXACTLY on SCOPE_MATCH_THRESHOLD (0.5) clears it.
+
+  it('THRESHOLD_SINGLE_DOMAIN === SCOPE_MATCH_THRESHOLD (exact in IEEE-754)', () => {
+    // THRESHOLD_SINGLE_DOMAIN = WEIGHT_DOMAIN/(WEIGHT_DOMAIN+SATURATION)
+    //                         = 1.5/3.0 = 0.5 — exactly representable, so the
+    // derived constant equals the threshold by `===`, not by epsilon. If a future
+    // weight/saturation tweak shifts it off 0.5 this assertion fails CI, flagging
+    // a silent re-break of finding #11.
+    expect(THRESHOLD_SINGLE_DOMAIN).toBe(SCOPE_MATCH_THRESHOLD)
+    expect(THRESHOLD_SINGLE_DOMAIN).toBe(0.5)
+  })
+
+  it('a LONE domain-prefix match scores exactly 0.5 (clears the >= gate)', () => {
+    // Only a domain hit, no tag, no keyword overlap → raw = WEIGHT_DOMAIN = 1.5.
+    // squash(1.5) = 1.5/(1.5+1.5) = 0.5000.
+    const ranked = rankScopes(
+      { statement: 'xyzzy nonoverlapping tokens', domain: 'plur.core.security' },
+      [{ scope: 'group:plur/core', covers: ['plur.*'] }],
+    )
+    expect(ranked).toHaveLength(1)
+    expect(ranked[0].confidence).toBe(0.5)
+    expect(ranked[0].confidence).toBeGreaterThanOrEqual(SCOPE_MATCH_THRESHOLD)
+  })
+
+  it('a LONE weak keyword match stays well below threshold', () => {
+    // One keyword hit → raw = WEIGHT_KEYWORD = 0.2. squash(0.2)=0.2/1.7=0.1176.
+    const ranked = rankScopes(
+      { statement: 'embeddings' },
+      [{ scope: 'group:plur/core', covers: ['embeddings'] }],
+    )
+    expect(ranked).toHaveLength(1)
+    expect(ranked[0].confidence).toBeCloseTo(0.1176, 4)
+    expect(ranked[0].confidence).toBeLessThan(SCOPE_MATCH_THRESHOLD)
+  })
+
+  it('FIVE keyword-only hits still do NOT auto-route', () => {
+    // 5 keyword hits → raw = 5*0.2 = 1.0. squash(1.0)=1.0/2.5=0.40 < 0.5.
+    // Preserves "domain >> keyword": no pile of weak keywords out-routes one domain.
+    const ranked = rankScopes(
+      { statement: 'alpha beta gamma delta epsilon' },
+      [{ scope: 'group:plur/x', covers: ['alpha', 'beta', 'gamma', 'delta', 'epsilon'] }],
+    )
+    expect(ranked).toHaveLength(1)
+    expect(ranked[0].confidence).toBeCloseTo(0.4, 4)
+    expect(ranked[0].confidence).toBeLessThan(SCOPE_MATCH_THRESHOLD)
+  })
+
+  it('ONE tag-only hit does NOT auto-route', () => {
+    // 1 tag hit → raw = WEIGHT_TAG = 0.5. squash(0.5)=0.5/2.0=0.25 < 0.5.
+    const ranked = rankScopes(
+      { statement: 'no overlap zzz', tags: ['servers'] },
+      [{ scope: 'group:plur/infra', covers: ['servers'] }],
+    )
+    expect(ranked).toHaveLength(1)
+    expect(ranked[0].confidence).toBeCloseTo(0.25, 4)
+    expect(ranked[0].confidence).toBeLessThan(SCOPE_MATCH_THRESHOLD)
+  })
+
+  it('TWO matching tags do NOT auto-route (0.40 < 0.5)', () => {
+    // 2 tag hits → raw = 2*0.5 = 1.0. squash(1.0)=0.40 < 0.5.
+    const ranked = rankScopes(
+      { statement: 'no overlap zzz', tags: ['servers', 'deploy'] },
+      [{ scope: 'group:plur/infra', covers: ['servers', 'deploy'] }],
+    )
+    expect(ranked).toHaveLength(1)
+    expect(ranked[0].confidence).toBeCloseTo(0.4, 4)
+    expect(ranked[0].confidence).toBeLessThan(SCOPE_MATCH_THRESHOLD)
+  })
+
+  it('THREE matching tags DO auto-route (0.50 — documented side effect)', () => {
+    // 3 tag hits → raw = 3*0.5 = 1.5. squash(1.5)=0.50 exactly clears `>=`.
+    // INTENT: three deliberate tag matches reaching threshold is acceptable and
+    // intended (mirrors lone-domain). See WEIGHT_TAG comment in scope-routing.ts.
+    const ranked = rankScopes(
+      { statement: 'no overlap zzz', tags: ['servers', 'deploy', 'infra'] },
+      [{ scope: 'group:plur/infra', covers: ['servers', 'deploy', 'infra'] }],
+    )
+    expect(ranked).toHaveLength(1)
+    expect(ranked[0].confidence).toBe(0.5)
+    expect(ranked[0].confidence).toBeGreaterThanOrEqual(SCOPE_MATCH_THRESHOLD)
+  })
+
+  it('FOUR matching tags auto-route (forward-proof, 0.571 > 0.5)', () => {
+    // 4 tag hits → raw = 4*0.5 = 2.0. squash(2.0)=2.0/3.5=0.5714 > 0.5.
+    const ranked = rankScopes(
+      { statement: 'no overlap zzz', tags: ['servers', 'deploy', 'infra', 'ops'] },
+      [{ scope: 'group:plur/infra', covers: ['servers', 'deploy', 'infra', 'ops'] }],
+    )
+    expect(ranked).toHaveLength(1)
+    expect(ranked[0].confidence).toBeCloseTo(0.5714, 4)
+    expect(ranked[0].confidence).toBeGreaterThan(SCOPE_MATCH_THRESHOLD)
   })
 })
 
