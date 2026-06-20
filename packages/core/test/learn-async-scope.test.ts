@@ -54,6 +54,7 @@ function makeDeps(candidates: Engram[]): LearnAsyncDeps {
     recordLlmSuccess: () => {},
     recordLlmFailure: () => {},
     syncIndex: () => {},
+    offendingHitsForScope: () => [],
   }
 }
 
@@ -77,7 +78,7 @@ describe('learnAsync scope-aware LLM dedup (issue #359)', () => {
 
   it('still deduplicates same-scope candidates', async () => {
     const sameScope = { ...globalCandidate, id: 'ENG-2026-0101-002', scope: 'group:datafund/datafund' }
-    const llm = vi.fn().mockResolvedValue('NOOP')
+    const llm = vi.fn().mockResolvedValue('DECISION: NOOP\nTARGET: ENG-2026-0101-002\nREASON: identical content')
     const deps = makeDeps([sameScope as unknown as Engram])
 
     const result = await learnAsync(
@@ -93,7 +94,7 @@ describe('learnAsync scope-aware LLM dedup (issue #359)', () => {
   })
 
   it('does not filter candidates when no scope is requested', async () => {
-    const llm = vi.fn().mockResolvedValue('NOOP')
+    const llm = vi.fn().mockResolvedValue('DECISION: NOOP\nTARGET: ENG-2026-0101-001\nREASON: identical content')
     const deps = makeDeps([globalCandidate])
 
     const result = await learnAsync(

@@ -1,9 +1,9 @@
 /**
  * PR-1 (#353) write-side interactions documented alongside the read-side fix:
  *  - auto-route still fires on a confident covers match (revert didn't break it),
- *  - RECURRENCE-INTERACTION: cross-scope recurrence still promotes a local engram
- *    to global on the 2nd hit even under unscoped_default:'local' (index.ts:670
- *    ignores unscoped_default — documented as v2 checklist item (ii)),
+ *  - RECURRENCE-INTERACTION: personal-scope (local) engrams are NOT promoted to
+ *    global by cross-scope recurrence — fixed in #362/#366 (personal-scope ceiling).
+ *    Only shared-family scopes (project:*, space:*, group:*, org:*, public) escalate.
  *  - SECONDARY-STORE rename: a global engram in a secondary store is renamed to
  *    the store's scope on load (UNCHANGED, intentional cross-store narrowing).
  */
@@ -43,8 +43,8 @@ describe('PR-1 — auto-route still fires after the default revert (#353)', () =
   })
 })
 
-describe('PR-1 — RECURRENCE-INTERACTION under unscoped_default:local (#353, v2 item ii)', () => {
-  it('a local engram promoted to global by _recordCrossScopeRecurrence on the 2nd cross-scope hit', () => {
+describe('PR-1 — RECURRENCE-INTERACTION under unscoped_default:local (#353, v2 item ii — fixed #362/#366)', () => {
+  it('a local engram stays local on cross-scope recurrence (personal-scope ceiling)', () => {
     const dir = makeDir('plur-pr1-recur-')
     writeFileSync(join(dir, 'config.yaml'), yaml.dump({ index: false, unscoped_default: 'local' }, { noRefs: true }))
     const plur = new Plur({ path: dir })
@@ -55,11 +55,11 @@ describe('PR-1 — RECURRENCE-INTERACTION under unscoped_default:local (#353, v2
 
     // 1st cross-scope hit: recurrence=1, scope unchanged
     plur.learn('recurrence-interaction probe statement', { scope: 'project:a' })
-    // 2nd cross-scope hit: recurrence=2 → promotion to global regardless of unscoped_default
-    const promoted = plur.learn('recurrence-interaction probe statement', { scope: 'project:b' }) as { scope: string; id: string }
-    expect(promoted.id).toBe(first.id)
-    // index.ts:670 hardcodes global on the 2nd cross-scope hit (ignores unscoped_default).
-    expect(promoted.scope).toBe('global')
+    // 2nd cross-scope hit: recurrence=2, but personal-scope ceiling prevents global promotion
+    const after = plur.learn('recurrence-interaction probe statement', { scope: 'project:b' }) as { scope: string; id: string }
+    expect(after.id).toBe(first.id)
+    // Personal-family scopes stay within their family — local does NOT escalate to global.
+    expect(after.scope).toBe('local')
   })
 })
 
