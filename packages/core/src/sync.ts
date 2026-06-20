@@ -88,6 +88,9 @@ export function getSyncStatus(root: string): SyncStatus {
 
 function initRepo(root: string): void {
   git(['init'], root)
+  // Neutralize any global/system gitignore so engram files (engrams.yaml, episodes.yaml)
+  // are always stageable regardless of the user's personal excludes file.
+  git(['config', '--local', 'core.excludesFile', '/dev/null'], root)
   atomicWrite(join(root, '.gitignore'), GITIGNORE)
   git(['add', '-A'], root)
   git(['commit', '-m', 'Initial PLUR engram store'], root)
