@@ -114,7 +114,33 @@ const SENSITIVE_PATTERNS: { name: string; regex: RegExp }[] = [
       /(?:[a-z][a-z0-9+.-]{0,31}:\/\/[^/\s:@]{0,64}:[^/\s@]{1,128}@[a-z0-9.-]|[^/\s:@]{0,64}:[^/\s@]{1,128}@(?:[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,}|localhost|\d{1,3}(?:\.\d{1,3}){3}|[a-z0-9-]+:\d{2,5}))/i,
   },
   // FQDN:port — e.g. hub-staging.plur.ai:443, db.internal:5432 (infra topology)
-  { name: 'fqdn_port', regex: /\b(?:[a-z0-9-]+\.)+[a-z]{2,}:\d{2,5}\b/i },
+  //
+  // BOUNDED QUANTIFIERS (reaudit #3, ReDoS fix): the prior form
+  // `(?:[a-z0-9-]+\.)+[a-z]{2,}:\d{2,5}` had a `+`-over-`+` ambiguity — when the
+  // trailing `:port` failed to match, the engine explored every partition of a
+  // dotted run, giving catastrophic O(n^2) backtracking (~4s on a 64KB `a.a.a…`
+  // run at the scan cap; the 64KB cap does NOT help because 64KB IS the worst
+  // case). We rewrite the host as a single leading label followed by bounded
+  // `\.label` groups — every `.` is a hard anchor, so there is no cross-label
+  // backtracking — and bound each quantifier (label len {1,63}, up to 7 inner
+  // `.label` groups, TLD {2,24}, port {2,5}), mirroring the basic_auth_url fix.
+  // Now linear: the same 64KB inputs scan in <7ms.
+  //
+  // CODE-REF FP GATE (reaudit #3, FP fix): a code location of the form
+  // `file.ext:line` (inject.ts:49, app.py:100, scope-util.ts:12, main.rs:55,
+  // file.go:42, a.b.ts:10) previously matched as host:port — the extension looks
+  // like a TLD and the line number like a port — silently demoting shareable
+  // code-citing engrams out of shared scopes. We exclude a curated set of source/
+  // file extensions in the TLD position via a negative lookahead anchored to the
+  // `:port` boundary (`(?!(?:ts|py|rs|…):)`), so `file.ts:49` is NOT flagged while
+  // a real `host.tld:port` (db.internal:5432, hub.example.com:443,
+  // redis.prod.svc:6379) still is. The lookahead inherits the `i` flag, so
+  // `Main.RS:55` and `Config.YAML:33` are excluded too.
+  {
+    name: 'fqdn_port',
+    regex:
+      /\b[a-z0-9-]{1,63}(?:\.[a-z0-9-]{1,63}){0,7}\.(?!(?:ts|tsx|js|jsx|mjs|cjs|py|rs|go|rb|java|kt|c|cc|cpp|cxx|h|hpp|cs|php|swift|scala|clj|ex|exs|erl|hs|ml|md|mdx|json|jsonc|toml|ini|conf|cfg|lock|txt|csv|tsv|xml|html|htm|css|scss|sass|less|sh|bash|zsh|sql|vue|svelte|dart|lua|r|pl|pm|yaml|yml):)[a-z]{2,24}:\d{2,5}\b/i,
+  },
   // IPv4:port — e.g. 139.59.155.82:8877
   { name: 'ipv4_port', regex: /\b\d{1,3}(?:\.\d{1,3}){3}:\d{2,5}\b/ },
 ]
@@ -231,28 +257,44 @@ const INTERNAL_HOST = new RegExp(
   // INSIDE the group, so `match.groups.host` is always set on a match. The single
   // named group is preserved with the `g` flag (no duplicate-name compile error).
   //
-  // TRAILING-PUNCT FN FIX (reaudit #2): the prior trailing lookahead
+  // PUNCT FN FIX (reaudit #2, completed reaudit #3): the prior trailing lookahead
   // `(?=$|[\s:/?#)'"])` was far narrower than the original `\b` boundary — it
   // OMITTED `.` `,` `;` `]` `=` and backtick, so a real internal host at the end
   // of a sentence or before punctuation (`db.internal.`, `app.corp,`,
-  // `host=db.internal` reversed, `` `db.internal` ``) escaped the guard entirely.
-  // We add those terminators to BOTH the trailing lookahead and the leading
-  // delimiter. Internal dots are consumed by the host SHAPE (the greedy
-  // `(?:[a-z0-9-]+\.)+` prefers the longest host), so adding `.` to the lookahead
-  // does NOT truncate `db.internal.corp` — the engine still matches the full host
-  // and only consults the lookahead at the genuine trailing boundary.
-  "(?:^|[\\s/@'\"(`\\[])(?<host>" +
+  // `` `db.internal` ``) escaped the guard entirely. The trailing lookahead gained
+  // those terminators in reaudit #2. The LEADING delimiter, however, was left as
+  // `(?:^|[\s/@'"(`\[])` — missing `=` `,` `;` — so the env-var assignment form
+  // `host=db.internal` / `DATABASE_HOST=app.corp` and a comma-separated host list
+  // `a,db.internal` still escaped PASS-1 (the host FOLLOWS the `=`/`,`, and the
+  // engine never started a match). reaudit #3 adds `=` `,` `;` (and `.` `]` for
+  // symmetry with the trailing class) to the leading delimiter, so both sides now
+  // accept the same terminators and the assignment form is caught. The host SHAPE
+  // consumes internal dots greedily (it prefers the longest host), so `.` in the
+  // leading class only matches a separator BEFORE the host and does NOT truncate
+  // `db.internal.corp`.
+  //
+  // BOUNDED QUANTIFIERS (reaudit #3, ReDoS fix): the prior host alternatives used
+  // `(?:[a-z0-9-]+\.)+SUFFIX` — a `+`-over-`+` ambiguity identical to the old
+  // fqdn_port. On a long dotted run that never ends in an internal suffix
+  // (`ab.ab.ab…`, 64KB) the engine backtracked over every partition at every start
+  // position (~8s at the scan cap — a write/publish DoS, since matchInternalHost
+  // runs on every guarded write). We rewrite each alternative as a single leading
+  // label `[a-z0-9-]{1,63}` followed by bounded `(?:\.[a-z0-9-]{1,63}){0,N}` inner
+  // groups and a hard `\.` before the suffix — every `.` is an anchor, so there is
+  // no cross-label backtracking. Linear now: the same 64KB run scans in <8ms.
+  // Bounds (up to ~9 labels) cover every realistic internal hostname.
+  "(?:^|[\\s/@'\"(`\\[=,;.\\]])(?<host>" +
     // a. internal-suffix label (.local/.internal/.corp/.lan/.intranet)
-    '(?:[a-z0-9-]+\\.)+(?:local|internal|corp|lan|intranet)' +
+    '[a-z0-9-]{1,63}(?:\\.[a-z0-9-]{1,63}){0,7}\\.(?:local|internal|corp|lan|intranet)' +
     '|' +
     // b. k8s svc / svc.cluster.local
-    '(?:[a-z0-9-]+\\.)+svc(?:\\.cluster\\.local)?' +
+    '[a-z0-9-]{1,63}(?:\\.[a-z0-9-]{1,63}){0,7}\\.svc(?:\\.cluster\\.local)?' +
     '|' +
     // c. staging as a label fragment (hub-staging.plur.ai, staging-build.example.com)
-    '[a-z0-9-]*staging[a-z0-9-]*(?:\\.[a-z0-9-]+)+' +
+    '[a-z0-9-]{0,30}staging[a-z0-9-]{0,30}(?:\\.[a-z0-9-]{1,63}){1,8}' +
     '|' +
     // d. staging as an inner label (api.staging.example.com)
-    '(?:[a-z0-9-]+\\.)+staging(?:\\.[a-z0-9-]+)+' +
+    '[a-z0-9-]{1,63}(?:\\.[a-z0-9-]{1,63}){0,7}\\.staging(?:\\.[a-z0-9-]{1,63}){1,8}' +
     ")(?=$|[\\s:/?#)\\]'\"`,;.=])",
   'gi',
 )
@@ -321,10 +363,12 @@ function matchInternalHost(text: string): string | null {
 // Defense-in-depth length cap (#353). The publish loop scans whole serialized
 // engrams and `_guardSensitiveScope` scans statement + JSON.stringify(context),
 // so an unbounded input is an unbounded scan. We cap the SCAN INPUT at 64KB
-// (byte-aware). The "ReDoS" this once guarded against was empirically ~2.6ms
-// under V8 Irregexp (mandatory dot separators keep each alternative linear), so
-// this cap is cheap insurance, not a DoS fix. A leading credential is still
-// caught; callers must NOT assume full-input scanning.
+// (byte-aware). With every pattern now bounded (basic_auth_url reaudit #1,
+// fqdn_port reaudit #3 — both rewritten to linear-time forms with no `+`-over-`+`
+// ambiguity), a 64KB scan is empirically <7ms under V8 Irregexp, so this cap is
+// cheap insurance, not the DoS fix — the bounded quantifiers are. (Before the
+// fqdn_port bounding a 64KB dotted-label run took ~4s here.) A leading credential
+// is still caught; callers must NOT assume full-input scanning.
 const MAX_SCAN_BYTES = 65536
 
 function truncateToScanLimit(text: string): string {
