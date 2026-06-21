@@ -148,6 +148,59 @@ describe('rankScopes — pure ranker', () => {
     expect(ranked[0].domainMatch).toBe(true)
   })
 
+  // --- R2-C (reaudit finding 4): `coverContainsDomain` distinguishes the two
+  // domain-prefix directions. Only the FORWARD direction (cover ⊃ domain or
+  // cover === domain) sets it; the caller keys the deterministic auto-route
+  // bypass on it so a broad engram never lands in a narrow shared scope. ---
+  it('R2-C: FORWARD direction (cover ⊃ domain) sets coverContainsDomain:true', () => {
+    const ranked = rankScopes(
+      { statement: 'xyzzy nonoverlapping tokens', domain: 'plur.core.security' },
+      [{ scope: 'group:plur/core', covers: ['plur.*'] }],
+    )
+    expect(ranked).toHaveLength(1)
+    expect(ranked[0].domainMatch).toBe(true)
+    expect(ranked[0].coverContainsDomain).toBe(true)
+  })
+
+  it('R2-C: EXACT match (cover === domain) sets coverContainsDomain:true', () => {
+    const ranked = rankScopes(
+      { statement: 'zzz no overlap', domain: 'plur.core' },
+      [{ scope: 'group:plur/core', covers: ['plur.core'] }],
+    )
+    expect(ranked).toHaveLength(1)
+    expect(ranked[0].coverContainsDomain).toBe(true)
+  })
+
+  it('R2-C: REVERSE direction (domain ⊃ cover) leaves coverContainsDomain:false and is down-weighted below threshold', () => {
+    // domain `plur` is BROADER than cover `plur.core`. domainMatch is true (for
+    // scoring/ordering) but coverContainsDomain is false (no deterministic bypass),
+    // and the lone reverse hit squashes to squash(WEIGHT_DOMAIN_REVERSE=0.5)=0.25,
+    // BELOW SCOPE_MATCH_THRESHOLD — so a broad engram does not even clear the `>=`
+    // gate on the reverse match alone.
+    const ranked = rankScopes(
+      { statement: 'zzz no overlap', domain: 'plur' },
+      [{ scope: 'group:plur/core', covers: ['plur.core'] }],
+    )
+    expect(ranked).toHaveLength(1)
+    expect(ranked[0].domainMatch).toBe(true)
+    expect(ranked[0].coverContainsDomain).toBe(false)
+    expect(ranked[0].confidence).toBeCloseTo(0.25, 4)
+    expect(ranked[0].confidence).toBeLessThan(SCOPE_MATCH_THRESHOLD)
+  })
+
+  it('R2-C: tag-only and keyword-only candidates leave coverContainsDomain:false', () => {
+    const tagOnly = rankScopes(
+      { statement: 'no overlap zzz', tags: ['servers'] },
+      [{ scope: 'group:plur/infra', covers: ['servers'] }],
+    )
+    expect(tagOnly[0].coverContainsDomain).toBe(false)
+    const kwOnly = rankScopes(
+      { statement: 'updating the deployment runbook for servers' },
+      [{ scope: 'group:plur/infra', covers: ['deployment', 'servers'] }],
+    )
+    expect(kwOnly[0].coverContainsDomain).toBe(false)
+  })
+
   it('leaves `domainMatch:false` on a tag-only candidate', () => {
     const ranked = rankScopes(
       { statement: 'no overlap zzz', tags: ['servers', 'deploy', 'infra'] },

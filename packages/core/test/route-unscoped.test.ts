@@ -295,31 +295,43 @@ describe('Stage 3b — auto-route un-scoped writes (#351)', () => {
     expect(e.structured_data?._routed?.reason).toContain('domain plur.core.security')
   })
 
-  it('PR-6: the bypass is taken BEFORE the threshold gate — a sub-threshold domain candidate STILL routes', () => {
+  it('R2-C: the bypass is taken BEFORE the threshold gate — a sub-threshold FORWARD (coverContainsDomain) candidate STILL routes', () => {
     // Rigorously decouples the bypass from SCOPE_MATCH_THRESHOLD. We feed the
     // private resolver a hand-built ranked list (via a mocked rankScopes) whose
-    // top candidate has `domainMatch:true` but a confidence WELL BELOW threshold
-    // (0.2). Threshold-only logic would refuse to route it; PR-6 routes it because
-    // the deterministic domain branch is taken first. A second list (same low
-    // confidence but `domainMatch:false`) must NOT route — proving the bypass is
-    // gated on domainMatch, not just on having a candidate.
+    // top candidate has `coverContainsDomain:true` (FORWARD: cover ⊃ domain) but a
+    // confidence WELL BELOW threshold (0.2). Threshold-only logic would refuse to
+    // route it; the deterministic forward-domain branch is taken first so it
+    // routes. Subsequent lists prove the bypass is gated on `coverContainsDomain`
+    // — NOT on `domainMatch` (which is also true for the reverse direction) and
+    // NOT just on having a candidate (reaudit finding 4, R2-C).
     const plur = makePlur({
       stores: [{ path: '/tmp/r.yaml', scope: 'group:plur/core', covers: ['plur.*'], description: 'Core' }],
     }) as unknown as {
       _resolveUnscopedScope: (s: string, c?: { domain?: string }) => { scope: string; routed: { scope: string } | null }
     }
 
-    // domainMatch:true, confidence 0.2 (< 0.5) → must route via the bypass.
+    // FORWARD: coverContainsDomain:true, confidence 0.2 (< 0.5) → routes via bypass.
     routeMock.mockReturnValueOnce([
-      { scope: 'group:plur/core', confidence: 0.2, reason: 'domain x ⊂ covers plur.*', domainMatch: true },
+      { scope: 'group:plur/core', confidence: 0.2, reason: 'domain x ⊂ covers plur.*', domainMatch: true, coverContainsDomain: true },
     ])
     const routedLow = plur._resolveUnscopedScope('anything', { domain: 'plur.core.x' })
     expect(routedLow.scope).toBe('group:plur/core')
     expect(routedLow.routed?.scope).toBe('group:plur/core')
 
-    // domainMatch:false, same confidence 0.2 (< 0.5) → must NOT route (gated).
+    // REVERSE: domainMatch:true BUT coverContainsDomain:false, confidence 0.2
+    // (< 0.5) → must NOT route (the over-route case: broad engram, narrow scope).
+    // Keying on domainMatch (the old bug) would have routed this; keying on
+    // coverContainsDomain correctly gates it.
     routeMock.mockReturnValueOnce([
-      { scope: 'group:plur/core', confidence: 0.2, reason: 'keywords [...]', domainMatch: false },
+      { scope: 'group:plur/core', confidence: 0.2, reason: 'domain plur ⊃ covers plur.core', domainMatch: true, coverContainsDomain: false },
+    ])
+    const reverseLow = plur._resolveUnscopedScope('anything', { domain: 'plur' })
+    expect(reverseLow.scope).toBe('global')
+    expect(reverseLow.routed).toBeNull()
+
+    // WEAK: neither flag set, same low confidence 0.2 (< 0.5) → must NOT route.
+    routeMock.mockReturnValueOnce([
+      { scope: 'group:plur/core', confidence: 0.2, reason: 'keywords [...]', domainMatch: false, coverContainsDomain: false },
     ])
     const gatedLow = plur._resolveUnscopedScope('anything')
     expect(gatedLow.scope).toBe('global')
@@ -400,6 +412,88 @@ describe('Stage 3b — auto-route un-scoped writes (#351)', () => {
     }) as { scope: string; structured_data?: { _routed?: { scope: string } } }
     expect(e.scope).toBe('group:plur/a')
     expect(e.structured_data?._routed?.scope).toBe('group:plur/a')
+  })
+
+  it('R2-C: a FORWARD domain match (cover ⊃ domain) STILL routes deterministically (unchanged)', () => {
+    // The intended case, end-to-end via REAL ranking: a specific engram (domain
+    // `plur.core.security`) into a broad cover (`plur` / `plur.*`). Cover contains
+    // the engram's topic → coverContainsDomain → deterministic bypass routes it.
+    const plur = makePlur({
+      stores: [
+        { path: '/tmp/r-core.yaml', scope: 'group:plur/core', description: 'Core', covers: ['plur'] },
+      ],
+    })
+    const e = plur.learn('zzz no overlap tokens', {
+      domain: 'plur.core.security',
+    }) as { scope: string; structured_data?: { _routed?: { scope: string; reason: string } } }
+    expect(e.scope).toBe('group:plur/core')
+    expect(e.structured_data?._routed?.scope).toBe('group:plur/core')
+    expect(e.structured_data?._routed?.reason).toContain('domain plur.core.security ⊂ covers plur')
+  })
+
+  it('R2-C: an EXACT domain==cover match STILL routes deterministically', () => {
+    // Equality is the forward direction at the boundary (cover === domain) →
+    // coverContainsDomain → deterministic bypass.
+    const plur = makePlur({
+      stores: [
+        { path: '/tmp/r-core.yaml', scope: 'group:plur/core', description: 'Core', covers: ['plur.core'] },
+      ],
+    })
+    const e = plur.learn('zzz no overlap tokens', {
+      domain: 'plur.core',
+    }) as { scope: string; structured_data?: { _routed?: { scope: string } } }
+    expect(e.scope).toBe('group:plur/core')
+    expect(e.structured_data?._routed?.scope).toBe('group:plur/core')
+  })
+
+  it('R2-C OVER-ROUTE REGRESSION: a BROAD engram (domain ⊃ cover) does NOT deterministically route into a narrow shared scope', () => {
+    // The exact over-route scenario from reaudit finding 4: a genuinely-unscoped
+    // write whose context.domain is a generic top-level namespace (`plur`) against
+    // a NARROW shared sub-scope (cover `plur.core`). This is the REVERSE direction
+    // — the engram is BROADER than the scope, so it does NOT belong in the narrow
+    // scope. Under the old bug (bypass keyed on domainMatch, reverse at full
+    // WEIGHT_DOMAIN → conf 0.5) it deterministically landed in group:plur/core.
+    // Now: reverse is down-weighted (WEIGHT_DOMAIN_REVERSE → squash(0.5)=0.25 < 0.5)
+    // and never sets coverContainsDomain, so it falls to unscoped_default (global).
+    const plur = makePlur({
+      stores: [
+        { path: '/tmp/r-core.yaml', scope: 'group:plur/core', description: 'Core', covers: ['plur.core'] },
+      ],
+    })
+    const e = plur.learn('a broad personal preference about plur in general zzz', {
+      domain: 'plur',
+    }) as { scope: string; structured_data?: { _routed?: unknown } }
+    // Falls to the default — NOT into the narrow shared scope.
+    expect(e.scope).toBe('global')
+    expect(e.structured_data?._routed).toBeUndefined()
+    // Sanity: the advisory ranker still SURFACES the scope (reverse hit scores > 0)
+    // — only the deterministic auto-route is withheld. Confidence stays below
+    // threshold so even the `>=` path doesn't fire on the lone reverse match.
+    const ranked = plur.suggestScope({ statement: 'zzz', domain: 'plur' })
+    const core = ranked.find(c => c.scope === 'group:plur/core')!
+    expect(core).toBeDefined()
+    expect(core.domainMatch).toBe(true)            // it IS a domain-channel hit…
+    expect(core.coverContainsDomain).toBe(false)   // …but the REVERSE direction…
+    expect(core.confidence).toBeLessThan(SCOPE_MATCH_THRESHOLD) // …and sub-threshold.
+  })
+
+  it('R2-C: a reverse match that DOES clear threshold (reverse + tags) still routes via the >= path', () => {
+    // The reverse direction still CONTRIBUTES to the score: a broad-domain engram
+    // that ALSO carries enough tag evidence clears the threshold and routes via the
+    // normal `>=` gate (not the deterministic bypass). Proves the reverse signal is
+    // down-weighted, not discarded. reverse(0.5) + 3 tags(1.5) = raw 2.0 →
+    // squash(2.0)=0.5714 >= 0.5.
+    const plur = makePlur({
+      stores: [
+        { path: '/tmp/r-core.yaml', scope: 'group:plur/core', description: 'Core', covers: ['plur.core', 'alpha', 'beta', 'gamma'] },
+      ],
+    })
+    const e = plur.learn('zzz no overlap', {
+      domain: 'plur',
+      tags: ['alpha', 'beta', 'gamma'],
+    }) as { scope: string; structured_data?: { _routed?: { scope: string } } }
+    expect(e.scope).toBe('group:plur/core')
+    expect(e.structured_data?._routed?.scope).toBe('group:plur/core')
   })
 
   it('PR-6: explicit scope still bypasses auto-route entirely (domain match ignored)', () => {

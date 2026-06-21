@@ -1102,18 +1102,30 @@ export class Plur {
       writableScopeMetadata,
     )
     const top = candidates[0]
-    // PR-6 (#353): a FULL domain-prefix match is the strongest, most deliberate
-    // routing signal. Route to it DETERMINISTICALLY — bypass the squash/threshold
-    // gate entirely — so a clean domain match routes with headroom instead of
-    // landing at exactly SCOPE_MATCH_THRESHOLD (0.5) and clearing only via the
-    // edge-of-threshold `>=`. rankScopes already prefers a domain-match candidate
-    // at the top on equal confidence, so `top` is the right scope to route to.
-    // The weights/threshold/squash are UNCHANGED — only the decision is bypassed.
-    if (top && top.domainMatch) {
+    // PR-6 (#353) + reaudit finding 4: a FORWARD domain-prefix match — the scope's
+    // declared coverage CONTAINS the engram's topic (`cover ⊃ domain` or equal) —
+    // is the strongest, most deliberate routing signal. Route to it
+    // DETERMINISTICALLY — bypass the squash/threshold gate entirely — so a clean
+    // domain match routes with headroom instead of landing at exactly
+    // SCOPE_MATCH_THRESHOLD (0.5) and clearing only via the edge-of-threshold `>=`.
+    //
+    // Key the bypass on `coverContainsDomain`, NOT `domainMatch`: `domainMatch` is
+    // also true for the REVERSE direction (engram domain BROADER than the cover,
+    // `domain ⊃ cover`), and bypassing on that would over-route a broad/generic
+    // engram (domain `plur`) into a NARROW shared scope (cover `plur.core`) it
+    // doesn't belong in. The reverse match still adds WEIGHT_DOMAIN to the squashed
+    // confidence below, so a lone reverse hit (conf 0.5) can still route via the
+    // `>=` threshold path — it just doesn't get the deterministic bypass.
+    // rankScopes prefers a domain-match candidate at the top on equal confidence,
+    // so `top` is the right scope to route to. Weights/threshold/squash UNCHANGED.
+    if (top && top.coverContainsDomain) {
       return { scope: top.scope, routed: { scope: top.scope, confidence: top.confidence, reason: top.reason } }
     }
-    // No domain match: a tag-only or keyword-only candidate is a WEAK signal and
-    // stays gated by the threshold exactly as before — conservative by design.
+    // No forward domain match: a reverse domain hit, tag-only, or keyword-only
+    // candidate stays gated by the threshold exactly as before — conservative by
+    // design. A lone reverse-direction match squashes to exactly 0.5 and so still
+    // clears the `>=` gate; a future weight tweak can de-calibrate it safely
+    // without the deterministic bypass forcing it in.
     if (top && top.confidence >= SCOPE_MATCH_THRESHOLD) {
       return { scope: top.scope, routed: { scope: top.scope, confidence: top.confidence, reason: top.reason } }
     }
