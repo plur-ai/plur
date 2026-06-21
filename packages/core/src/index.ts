@@ -2984,6 +2984,42 @@ export class Plur {
         cleanEngram.structured_data = sd
       }
 
+      // R2-D (#12): re-run the leak guard against the TARGET scope's CURRENT
+      // policy before re-pushing. The _outbox marker is only stamped after the
+      // write-time guard ran at queue-time, but that verdict can go stale: if a
+      // user tightens the scope's `sensitivity.forbid` between queue-time and
+      // flush-time (up to the 7-day TTL later), a now-offending engram would
+      // otherwise be pushed to the shared store unguarded. Re-scan and, if it
+      // now offends, demote in place (scope→local/private, drop _outbox) and
+      // skip the push — honoring the current policy, matching the "single source
+      // of truth on every write" guarantee the other egress paths uphold.
+      const scanText = (() => {
+        const fields = this._engramContextFields(cleanEngram as Engram)
+        return fields ? `${cleanEngram.statement}\n${JSON.stringify(fields)}` : cleanEngram.statement
+      })()
+      const offending = this._offendingHitsForScope(scanText, outbox.target_scope)
+      if (offending.length > 0) {
+        const patterns = [...new Set(offending.map(h => h.pattern))].join(', ')
+        const localIdx = engrams.findIndex(e => e.id === engram.id)
+        if (localIdx !== -1) {
+          const local = engrams[localIdx] as any
+          const lsd = { ...(local.structured_data ?? {}) }
+          delete lsd._outbox
+          lsd._demoted = { from: outbox.target_scope, to: 'local', patterns }
+          local.structured_data = lsd
+          local.scope = 'local'
+          local.visibility = 'private'
+        }
+        expired_warnings.push(
+          `${engram.id}: sensitive content (${patterns}) now forbidden by scope ${outbox.target_scope}'s policy — demoted to local/private, not pushed`,
+        )
+        logger.warning(
+          `[plur:outbox] ${engram.id} held back from "${outbox.target_scope}" — policy tightened since queue-time; demoted to local/private (${patterns}).`,
+        )
+        failed++
+        continue
+      }
+
       try {
         await driver.appendAndGetServerId(cleanEngram)
         // Success: remove from local store
@@ -3431,15 +3467,28 @@ Generate an improved version of the procedure that prevents this failure. Return
         return typed
       }
       const rawSensitivity = (raw as { sensitivity?: Record<string, unknown> }).sensitivity
+      // R2-D (#14): `forbid` is a KNOWN field whose value is NORMALIZED at read
+      // time (loadConfig's preprocess rewrites a forward-compat `forbid:['pii']`
+      // to the safe default). A shallow `...typed.sensitivity` would then write
+      // the normalized value over the raw one, ERASING the forward-compat
+      // declaration on the first writeback. No code path intentionally mutates
+      // `forbid` via persistStores, so when raw carried a `forbid` we restore it
+      // verbatim — mirroring the nested-unknown preservation below. This is the
+      // same version-skew writeback-strip class PR-3 closed for nested unknowns.
+      const mergedSensitivity = typed.sensitivity
+        ? {
+            ...(rawSensitivity ?? {}),
+            ...typed.sensitivity,
+            ...(rawSensitivity && 'forbid' in rawSensitivity ? { forbid: rawSensitivity.forbid } : {}),
+          }
+        : rawSensitivity
       const merged: Record<string, unknown> = {
         ...raw,
         ...typed,
         // One-level deep-merge of `sensitivity`: parsed deltas over raw nested
         // unknowns. Without this explicit merge a shallow `...typed` would
         // replace `sensitivity` wholesale and lose nested unknowns.
-        sensitivity: typed.sensitivity
-          ? { ...(rawSensitivity ?? {}), ...typed.sensitivity }
-          : rawSensitivity,
+        sensitivity: mergedSensitivity,
       }
       if (merged.sensitivity === undefined) delete merged.sensitivity
       return merged as StoreEntry

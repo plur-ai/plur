@@ -275,6 +275,75 @@ describe('outbox pattern (issue #26)', () => {
     expect(plur.outboxCount()).toBe(first)
   })
 
+  // R2-D (#12): flushOutbox re-runs the leak guard against the target scope's
+  // CURRENT policy before re-pushing. An _outbox marker is only stamped after
+  // the write-time guard passed, but that verdict can go stale: if the scope's
+  // `sensitivity.forbid` is tightened between queue-time and flush-time, a
+  // now-offending engram must be demoted in place, NOT pushed to the shared
+  // remote unguarded.
+  it('flushOutbox() re-guards: a scope policy tightened after queue-time demotes instead of pushing', async () => {
+    // Queue-time policy: forbid infra BUT explicitly allow it, so an infra-
+    // bearing statement is clean-for-the-old-policy and queues on remote failure.
+    mockRemoteFailure('down at queue time')
+    const PUBLIC_IP = '139.59.155.82' // real droplet IPv4 → infra detector hit
+    writeStoresConfig(primaryDir, [{
+      url: REMOTE_URL, token: 'plur_sk_test', scope: REMOTE_SCOPE, shared: true, readonly: false,
+      sensitivity: { forbid: ['infra'], allow: ['infra'] }, // infra allowed at queue-time
+    }])
+    const plur = new Plur({ path: primaryDir })
+
+    await plur.learnRouted(`prod box is at ${PUBLIC_IP}`, { scope: REMOTE_SCOPE, type: 'procedural' })
+    expect(plur.outboxCount()).toBe(1) // queued (clean under the old policy)
+
+    // Tighten the policy: forbid infra, NO allow. Fresh Plur picks up the edit.
+    writeStoresConfig(primaryDir, [{
+      url: REMOTE_URL, token: 'plur_sk_test', scope: REMOTE_SCOPE, shared: true, readonly: false,
+      sensitivity: { forbid: ['infra'] }, // infra now forbidden
+    }])
+    const plur2 = new Plur({ path: primaryDir })
+
+    // Remote is UP now — but the re-guard must hold the engram back anyway.
+    mockRemoteSuccess()
+    const pushSpy = vi.fn()
+    fetchMock.mockImplementation((async (_url: string, init?: { method?: string }) => {
+      const method = init?.method ?? 'GET'
+      if (method === 'POST') { pushSpy(); return { ok: true, status: 201, json: async () => ({ id: 'X' }), text: async () => '' } as Response }
+      return { ok: true, status: 200, json: async () => ({ rows: [], total_count: 0 }), text: async () => '' } as Response
+    }) as any)
+
+    const result = await plur2.flushOutbox()
+    // NOT flushed (held back), counted as failed, and never POSTed to the remote.
+    expect(result.flushed).toBe(0)
+    expect(result.failed).toBe(1)
+    expect(pushSpy).not.toHaveBeenCalled()
+    expect(result.expired_warnings.some(w => /demoted to local\/private|now forbidden/.test(w))).toBe(true)
+
+    // Engram demoted in place: scope→local, _outbox dropped, _demoted stamped.
+    const local = readLocalEngrams(primaryDir)
+    const found = local.find((e: any) => e.statement.includes(PUBLIC_IP))
+    expect(found).toBeDefined()
+    expect(found.scope).toBe('local')
+    expect(found.visibility).toBe('private')
+    expect(found.structured_data?._outbox).toBeUndefined()
+    expect(found.structured_data?._demoted?.to).toBe('local')
+  })
+
+  // BOUNDARY: an engram that is STILL clean under the current policy flushes
+  // normally — the re-guard must not over-block.
+  it('flushOutbox() still pushes when the engram is clean under the current policy', async () => {
+    mockRemoteFailure()
+    writeStoresConfig(primaryDir, storeConfig())
+    const plur = new Plur({ path: primaryDir })
+    await plur.learnRouted('a perfectly clean team note', { scope: REMOTE_SCOPE, type: 'behavioral' })
+    expect(plur.outboxCount()).toBe(1)
+
+    mockRemoteSuccess()
+    const result = await plur.flushOutbox()
+    expect(result.flushed).toBe(1)
+    expect(result.failed).toBe(0)
+    expect(plur.outboxCount()).toBe(0)
+  })
+
   it('flushOutbox() warns when remote store no longer configured', async () => {
     mockRemoteFailure()
     writeStoresConfig(primaryDir, storeConfig())
