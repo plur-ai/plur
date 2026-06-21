@@ -204,8 +204,16 @@ echo "  ✓ packages/mcp/src/index.ts"
 sed -i '' "s/const VERSION = '.*'/const VERSION = '$VERSION'/" packages/cli/src/index.ts
 echo "  ✓ packages/cli/src/index.ts"
 
-# mcp test version assertion
-sed -i '' "s/toBe('[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*')/toBe('$VERSION')/g" packages/mcp/test/server.test.ts
+# mcp test version assertion.
+# TARGETED: replace only the literal CURRENT version ($OLD_CORE), never a generic
+# X.Y.Z. The old generic pattern + /g rewrote EVERY toBe('a.b.c') in the file,
+# including the deliberate '99.0.0' staleness fixture (server.test.ts, the
+# 'plur_status includes update_available' test) — flipping it to $VERSION while
+# the mocked fetch still returns 99.0.0, so the assertion failed and the release
+# aborted at step 3. Anchoring to $OLD_CORE leaves 99.0.0 (and the 1.5.0/0.9.8
+# fixtures) untouched. Both real assertions hold the current version, so they
+# match $OLD_CORE and get bumped; the fixture does not.
+sed -i '' "s/toBe('${OLD_CORE}')/toBe('$VERSION')/g" packages/mcp/test/server.test.ts
 echo "  ✓ packages/mcp/test/server.test.ts"
 
 # Claw is on an independent version track — only bump if --claw was provided
@@ -245,6 +253,26 @@ fi
 # Hermes pyproject.toml
 sed -i '' "s/^version = \".*\"/version = \"$VERSION\"/" packages/hermes/pyproject.toml
 echo "  ✓ packages/hermes/pyproject.toml"
+
+# Hermes SKILL.md frontmatter version (#16) — kept in lockstep with pyproject so
+# check_version_sync.py stays green and the published wheel doesn't advertise a
+# stale SKILL version. Without this the bundled plur-memory.SKILL.md keeps its
+# previous version on every release.
+sed -i '' "s/^version: .*/version: $VERSION/" packages/hermes/plur_hermes/skills/plur-memory.SKILL.md
+echo "  ✓ packages/hermes/plur_hermes/skills/plur-memory.SKILL.md"
+
+# Hermes npx-fallback CLI pin (#1) — the npx-fallback write path runs
+# @plur-ai/cli@$_NPX_CLI_VERSION; if it lags the release it runs a PRE-FIX CLI
+# that bypasses every scope/leak-guard fix. Bump it to $VERSION so the fallback
+# installs the current CLI. check_version_sync.py enforces pin >= published cli.
+sed -i '' "s/^_NPX_CLI_VERSION = \".*\"/_NPX_CLI_VERSION = \"$VERSION\"/" packages/hermes/plur_hermes/bridge.py
+echo "  ✓ packages/hermes/plur_hermes/bridge.py (_NPX_CLI_VERSION)"
+
+# Verify hermes version-sync invariant immediately after the bumps so a missed
+# bump aborts the release here (before commit/tag/publish) rather than shipping
+# an internally-inconsistent wheel.
+python3 packages/hermes/scripts/check_version_sync.py
+echo "  ✓ hermes version-sync check passed"
 
 echo ""
 

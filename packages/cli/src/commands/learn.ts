@@ -14,6 +14,33 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   let type: 'behavioral' | 'terminological' | 'procedural' | 'architectural' = 'behavioral'
   let domain: string | undefined
   let source: string | undefined
+  // #8: Hermes' write path is the CLI bridge, and it SENDS these fields
+  // (bridge.py learn() → --tags/--rationale/--visibility/--knowledge-anchors/
+  // --dual-coding/--abstract/--derived-from). Before this, the parser only knew
+  // --scope/--type/--domain/--source and silently dropped the rest, so
+  // Hermes-built rationale/dual-coding/tags never reached the engram — and the
+  // PR-5 context-field leak scan had nothing to scan on the CLI/Hermes path.
+  // Parse them here and forward them in the LearnContext so the CLI surface
+  // matches the MCP/Plur-class field set.
+  let rationale: string | undefined
+  let tags: string[] | undefined
+  let visibility: 'private' | 'public' | 'template' | undefined
+  let abstract: string | undefined
+  let derivedFrom: string | undefined
+  let knowledgeAnchors: Array<{ path: string; relevance?: string; snippet?: string }> | undefined
+  let dualCoding: { example?: string; analogy?: string } | undefined
+
+  // Parse a value as JSON, exiting 1 with a clear message on malformed input
+  // (a bad --dual-coding/--knowledge-anchors should fail loudly, not silently
+  // drop the field as before).
+  const parseJsonFlag = <T>(flag: string, raw: string): T => {
+    try {
+      return JSON.parse(raw) as T
+    } catch {
+      exit(1, `Error: ${flag} expects valid JSON, got: ${raw}`)
+      throw new Error('unreachable') // exit() terminates; satisfies the type
+    }
+  }
 
   let i = 0
   while (i < args.length) {
@@ -22,6 +49,19 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     else if (arg === '--type' && i + 1 < args.length) { type = args[++i] as typeof type; i++ }
     else if (arg === '--domain' && i + 1 < args.length) { domain = args[++i]; i++ }
     else if (arg === '--source' && i + 1 < args.length) { source = args[++i]; i++ }
+    else if (arg === '--rationale' && i + 1 < args.length) { rationale = args[++i]; i++ }
+    else if (arg === '--tags' && i + 1 < args.length) {
+      tags = args[++i].split(',').map(t => t.trim()).filter(Boolean); i++
+    }
+    else if (arg === '--visibility' && i + 1 < args.length) { visibility = args[++i] as typeof visibility; i++ }
+    else if (arg === '--abstract' && i + 1 < args.length) { abstract = args[++i]; i++ }
+    else if (arg === '--derived-from' && i + 1 < args.length) { derivedFrom = args[++i]; i++ }
+    else if (arg === '--knowledge-anchors' && i + 1 < args.length) {
+      knowledgeAnchors = parseJsonFlag('--knowledge-anchors', args[++i]); i++
+    }
+    else if (arg === '--dual-coding' && i + 1 < args.length) {
+      dualCoding = parseJsonFlag('--dual-coding', args[++i]); i++
+    }
     else if (!statement) { statement = arg; i++ }
     else { i++ }
   }
@@ -34,14 +74,32 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   }
 
   if (!statement) {
-    exit(1, 'Usage: plur learn <statement> [--scope <scope>] [--type <type>] [--domain <domain>]')
+    exit(1, 'Usage: plur learn <statement> [--scope <scope>] [--type <type>] [--domain <domain>] ' +
+      '[--source <s>] [--rationale <r>] [--tags a,b,c] [--visibility private|public|template] ' +
+      '[--abstract <id>] [--derived-from <id>] [--knowledge-anchors <json>] [--dual-coding <json>]')
   }
 
   // Build the context conditionally: when --scope is absent, OMIT the scope key
   // (not scope:'global', not scope:undefined) — _guardSensitiveScope checks
   // `context?.scope == null`, which is true for an absent key, reaching the
   // unscoped routing path. When --scope is present it is honored as-is.
-  const ctx = { type, domain, source, ...(scopeProvided ? { scope } : {}) }
+  // Forward the parsed context fields. Only include a key when it was actually
+  // provided so an absent flag stays absent in the LearnContext (matches the
+  // scope-omission contract above and avoids planting undefined keys that the
+  // core defaults would otherwise resolve).
+  const ctx = {
+    type,
+    domain,
+    source,
+    ...(scopeProvided ? { scope } : {}),
+    ...(rationale !== undefined ? { rationale } : {}),
+    ...(tags !== undefined ? { tags } : {}),
+    ...(visibility !== undefined ? { visibility } : {}),
+    ...(abstract !== undefined ? { abstract } : {}),
+    ...(derivedFrom !== undefined ? { derived_from: derivedFrom } : {}),
+    ...(knowledgeAnchors !== undefined ? { knowledge_anchors: knowledgeAnchors } : {}),
+    ...(dualCoding !== undefined ? { dual_coding: dualCoding } : {}),
+  }
 
   // ALWAYS use learnRouted (not learn): learn() stamps _demoted but does NOT do
   // remote-outbox routing for shared scopes; only learnRouted() does — so an

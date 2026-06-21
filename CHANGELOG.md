@@ -2,6 +2,38 @@
 
 ## Unreleased
 
+### Leak guard: write-time demotion now covers `saveMetaEngrams` and remote-backed scopes (#368, #370)
+
+The sensitivity leak guard — which detects secrets/infra patterns in an engram and demotes a shared-scope write to `local`/`private` before it can reach a shared store — now runs on more write paths:
+
+- **`saveMetaEngrams` is guarded (#368).** Meta-engrams (abstractions, summaries) created on the save path now pass through the same `_guardSensitiveScope` check and context-field scan (`rationale`/`source`/`snippet`/`dual_coding`) as ordinary learns. A meta-engram carrying a secret in its statement *or* its context fields is demoted, and the demotion is **surfaced** to the caller (no longer silent) — the CLI/MCP display a "held back from shared scope" warning.
+- **Remote-backed personal scopes are covered (#370).** The guard now demotes sensitive content destined for any **remote-backed** scope, including `user:*` family scopes that resolve to a remote store — not just `group:`/`project:`/`space:` team scopes. Closes the gap where a remote-backed personal scope could receive un-demoted sensitive content.
+
+**Behavior change:** writes (including meta-engram saves) whose statement or context fields match a secret/infra pattern are demoted to `local`/`private` and the demotion is reported. Re-scope deliberately if a match is a false positive.
+
+### Routing recalibration: unscoped default = `global`, deterministic domain-prefix routing, readonly scopes excluded (#367, #369)
+
+The unscoped-write routing introduced for per-engram scoping is recalibrated:
+
+- **`WEIGHT_DOMAIN` raised 1.0 → 1.5 and readonly scopes excluded from auto-route (#367).** Domain-channel matches carry more weight when scoring candidate scopes, and read-only stores are no longer eligible auto-route destinations (a write can't land where it can't be written).
+- **Deterministic routing on a full domain-prefix match (#369).** When a genuinely-unscoped write's `domain` is at least as specific as a writable scope's declared `covers` namespace, it auto-routes to that scope deterministically (no edge-of-threshold flakiness). The default for a write with no matching cover remains `global`.
+
+**Behavior change:** an unscoped `plur learn` (no `--scope`) defaults to `global` and may **auto-route to a writable team scope** when its `domain` matches that scope's `covers`. This is the same path the CLI, MCP, OpenClaw, and Hermes (as of this release) all reach — Hermes no longer forces `--scope global` and so participates in auto-routing.
+
+### Detector quality: INTERNAL_HOST two-pass detection, `basic_auth` recategorized infra → secrets, 64 KB scan cap (#364)
+
+- INTERNAL_HOST detection is a two-pass match (candidate match + false-positive gate) so benign config-file names (`config.local`, `data-staging.csv`) don't suppress a real internal host elsewhere in the same text, and host-shaped tokens in ordinary prose are detected.
+- `basic_auth_url` is recategorized from `infra` to `secrets` (a HARD family) so a credential-bearing URL triggers write-time demotion under the default `allow_secrets:false` policy.
+- The sensitivity scan is capped at 64 KB of input per engram to bound worst-case scan cost on pathologically large content.
+
+**Behavior change:** more internal-host and credential-URL content is now detected and demoted; very large engram bodies are scanned up to a 64 KB cap.
+
+### Config robustness: stores writeback passthrough preserves `url`/`token` across version skew (#365)
+
+`persistStores` / `mergeStoresForWriteback` now pass unknown nested `sensitivity` fields through on writeback, so an older PLUR writing back a config authored by a newer PLUR no longer strips a store entry's forward-compat metadata — the store's `url`/`token` survive a load → persist round-trip even when the `sensitivity` block carries fields this version doesn't recognize.
+
+**Behavior change:** remote-store `url`/`token` are preserved across a config round-trip under version skew (previously a malformed/forward-compat `sensitivity` block could drop the entry).
+
 ### Un-scoped write default reverted to `global` + read-side personal-scope visibility on all 3 paths (#353)
 
 The Stage 3b un-scoped WRITE default (`local`) is reverted to `global` (the historical default). The revert alone was insufficient: the read-side scope filters hardcoded a `global`-only personal pass-through and DROPPED other personal-family scopes (`local`, `user:*`, `agent:*`) under a project-scoped recall/inject. This PR fixes the read side on **all three read paths** — inject `scoreEngram`, the non-indexed recall filter, and the DEFAULT indexed SQLite path (`storage-indexed.ts`, via a new `personal` column) — using the authoritative predicate `isPersonalScope(scope) = !isSharedScope(scope)`, not a hardcoded `{local,global}` set.

@@ -18,7 +18,14 @@ from typing import Any
 
 logger = logging.getLogger("plur_hermes.bridge")
 
-_NPX_CLI_VERSION = "0.9.12"
+# npx-fallback CLI pin. The bridge's write path shells out to `plur`; when no
+# local binary is found it falls back to `npx @plur-ai/cli@{_NPX_CLI_VERSION}`.
+# This MUST point at a CLI that carries the current scope-routing / leak-guard
+# fixes — a stale pin (e.g. a pre-0.10.0 CLI) would silently bypass write
+# demotion and unscoped auto-routing on the npx-fallback path. release.sh
+# rewrites this to the release version on every release (mirroring the pyproject
+# bump), and check_version_sync.py enforces pin >= the published @plur-ai/cli.
+_NPX_CLI_VERSION = "0.10.0"
 
 _DEFAULT_DEDUP_CACHE_SIZE = 256
 _DEFAULT_TIMEOUT = 30
@@ -290,7 +297,7 @@ class PlurBridge:
         except json.JSONDecodeError:
             raise PlurBridgeError(f"Invalid JSON from CLI: {result.stdout[:200]}")
 
-    def learn(self, statement: str, scope: str = "global", type: str = "behavioral",
+    def learn(self, statement: str, scope: str | None = None, type: str = "behavioral",
               domain: str | None = None, source: str | None = None,
               tags: list[str] | None = None, rationale: str | None = None,
               visibility: str | None = None,
@@ -310,7 +317,16 @@ class PlurBridge:
                 self._cache_put(needle, existing)
                 return {**existing, "deduplicated": True}
 
-        args = [statement, "--scope", scope, "--type", type]
+        # Scope is OMITTED when the caller didn't specify one (#9): passing no
+        # --scope lets the CLI omit the scope key entirely, so core's unscoped
+        # routing (_resolveUnscopedScope → auto-route or unscoped_default,
+        # default global) applies — same contract as the CLI/MCP/claw paths.
+        # Hard-coding --scope global here would bypass auto-route-to-team and
+        # opt Hermes out of the 0.10.0 routing behavior. An explicit scope is
+        # honored as-is.
+        args = [statement, "--type", type]
+        if scope is not None:
+            args.extend(["--scope", scope])
         if domain:
             args.extend(["--domain", domain])
         if source:
