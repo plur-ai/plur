@@ -250,6 +250,55 @@ describe('detectSensitive — INTERNAL_HOST two-pass FP correctness (#353)', () 
     }
   })
 
+  // REAUDIT #2 — trailing-punctuation FN. A real internal host at end-of-sentence
+  // or before punctuation (`. , ; ] = ` backtick) must still be flagged; the prior
+  // trailing lookahead `(?=$|[\s:/?#)'"])` omitted these terminators, so a host
+  // followed by any of them escaped the guard. One positive per terminator.
+  describe('reaudit #2 — trailing-punctuation terminators still flag a real host', () => {
+    const terminators: [string, string][] = [
+      ['period', '.'],
+      ['comma', ','],
+      ['semicolon', ';'],
+      ['close-bracket', ']'],
+      ['equals', '='],
+      ['backtick', '`'],
+    ]
+    for (const host of ['db.internal', 'app.corp']) {
+      for (const [label, ch] of terminators) {
+        it(`flags ${host} followed by ${label} (${ch})`, () => {
+          expect(flagged(`reach ${host}${ch} then continue`)).toBe(true)
+        })
+      }
+    }
+    it('flags a backtick-delimited host `db.internal`', () => {
+      expect(flagged('the `db.internal` host is internal')).toBe(true)
+    })
+    it('still yields the FULL host token when followed by a period', () => {
+      const host = detectSensitive('connect to db.internal.corp. done').find(
+        m => m.pattern === 'internal_host',
+      )?.match
+      expect(host).toBe('db.internal.corp')
+    })
+  })
+
+  // REAUDIT #3 — scan-all-matches FN. An FP-gated leading candidate
+  // (config.local) must NOT hide a real internal host later in the same text; the
+  // detector iterates ALL matches and returns the first surviving the FP gate.
+  describe('reaudit #3 — an FP-gated leading token does not hide a real host', () => {
+    it('flags db.internal.corp after the FP-gated config.local', () => {
+      const host = detectSensitive('see config.local then ssh db.internal.corp').find(
+        m => m.pattern === 'internal_host',
+      )?.match
+      expect(host).toBe('db.internal.corp')
+    })
+    it('flags a real host after a data-staging.csv filename FP', () => {
+      expect(flagged('load data-staging.csv into redis.internal cache')).toBe(true)
+    })
+    it('stays clean when ALL candidates are FP-gated', () => {
+      expect(flagged('config.local and vite.config.local and tsconfig.json')).toBe(false)
+    })
+  })
+
   // NEGATIVES — the whole point of the rewrite. None of these legitimate,
   // shareable strings may produce an internal_host hit (each embedded in prose).
   describe('false positives eliminated (config/data files)', () => {
@@ -332,6 +381,31 @@ describe('detectSensitive — basic_auth_url (#353)', () => {
 
   it('does NOT flag a clock time:12:30 (no @)', () => {
     expect(flagged('meeting time:12:30 today')).toBe(false)
+  })
+
+  // REAUDIT #6 — scheme-less FP. The scheme-less `user:pass@host` form must only
+  // fire on a genuine credential-bearing URL shape (dotted domain / localhost /
+  // IPv4 / host:port), not benign `word:word@word` prose. The real DB-scheme and
+  // internal-host credential forms PR-2 added must still be caught.
+  describe('reaudit #6 — scheme-less form does not false-positive on benign prose', () => {
+    it('does NOT flag a time@place note (5:30@cafe)', () => {
+      expect(flagged('lunch at 5:30@cafe tomorrow')).toBe(false)
+    })
+    it('does NOT flag a ratio@place note (3:1@ratio)', () => {
+      expect(flagged('mix 3:1@ratio for the batch')).toBe(false)
+    })
+    it('does NOT flag a handle@scope note (meet:me@noon)', () => {
+      expect(flagged('lets meet:me@noon today')).toBe(false)
+    })
+    it('does NOT flag name:value@scope prose', () => {
+      expect(flagged('the name:value@scope binding')).toBe(false)
+    })
+    it('still flags a real scheme-less credential user:pass@db.internal', () => {
+      expect(flagged('creds are user:pass@db.internal for the box')).toBe(true)
+    })
+    it('still flags a real scheme-less credential admin:secret@10.0.0.5', () => {
+      expect(flagged('login admin:secret@10.0.0.5 to the host')).toBe(true)
+    })
   })
 })
 
