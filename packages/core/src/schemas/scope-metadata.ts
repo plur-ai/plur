@@ -43,7 +43,12 @@ export const ScopeSensitivitySchema = z.object({
    * `url`/`token`. We now preprocess element-wise: unknown categories are
    * dropped (named in a warning), valid ones survive, and only an empty result
    * falls to the safe default. The whole StoreEntry NO LONGER fails on a bad
-   * category, so url/token always survive a malformed `sensitivity`.
+   * `forbid` CATEGORY or a scalar `forbid`. (R2-D #7) Malformations of the
+   * ENCLOSING shape — a scalar `sensitivity`, a non-array `allow`, or a
+   * non-array `covers` — are tolerated separately: `allow` coerces non-arrays
+   * to `[]` here, and `sensitivity`/`covers` shape-coerce in config.ts's
+   * StoreEntrySchema. So url/token survive ANY metadata malformation, not just
+   * a bad `forbid` category.
    *   `['secrets','pii']` → `['secrets']` (warn: pii)
    *   `['pii']`           → `['secrets','infra']` (warn: pii)
    *   scalar `'secrets'`  → `['secrets','infra']` (non-array → safe default, no Zod throw)
@@ -63,8 +68,13 @@ export const ScopeSensitivitySchema = z.object({
     return ['secrets', 'infra'] // non-array (e.g. hand-edited scalar) → safe default, NOT a re-thrown Zod error
   }, z.array(z.enum(SENSITIVITY_CATEGORIES)).default(['secrets', 'infra']))
     .describe('Sensitive categories that must NOT be written to this scope. A write that trips one of these is demoted to local/private. Default reproduces Stage 1: secrets + infra are forbidden on shared scopes. Unknown categories are dropped (not fatal) so a forward/hand-edited category never drops the whole store entry.'),
-  allow: z.array(z.string()).default([])
-    .describe('Detector pattern names or category names explicitly permitted on this scope, overriding `forbid`. A match whose categories are ALL allowed is not demoted (e.g. a scope that legitimately holds infra topology can allow "infra").'),
+  // `allow` is shape-tolerant for the same reason `forbid` is (R2-D #7): a
+  // hand-edited / forward-compat scalar (`allow: 'infra'`) or any non-array
+  // shape must NOT fail the whole StoreEntry safeParse — otherwise loadConfig
+  // drops the entry incl. its url/token. A non-array coerces to the safe
+  // default `[]` (allow nothing) rather than throwing.
+  allow: z.preprocess((val) => (Array.isArray(val) ? val.filter((x) => typeof x === 'string') : []), z.array(z.string()).default([]))
+    .describe('Detector pattern names or category names explicitly permitted on this scope, overriding `forbid`. A match whose categories are ALL allowed is not demoted (e.g. a scope that legitimately holds infra topology can allow "infra"). A non-array shape coerces to [] (not fatal) so it never drops the whole store entry.'),
 })
   // PR-3 (#353): preserve unknown NESTED fields inside `sensitivity` on a
   // successful parse, so a future sub-schema field survives the persistStores

@@ -133,6 +133,59 @@ describe('LOW-2 — _guardExplicitUpdate scans context fields', () => {
   })
 })
 
+/**
+ * R2-D (#11) — `_engramContextFields` underscore-strip is LOAD-BEARING.
+ *
+ * The context-field scan strips underscore-prefixed structured_data keys
+ * (`_outbox`, `_routed`, `_demoted`) before scanning. This is not cosmetic:
+ * `_outbox.target_url` values like `http://127.0.0.1:8899` match the infra
+ * detector (ipv4_port), and remote targets like `plur.datafund.io:443` match
+ * fqdn_port. Without the strip, the FIRST update to ANY remote-routed / auto-
+ * routed engram (which all carry `_outbox` / `_routed`) would scan that internal
+ * bookkeeping, trip the infra detector, and FALSELY demote the engram to
+ * local/private — silently breaking remote sync. A regression removing the
+ * `if (!k.startsWith('_'))` guard must fail this test.
+ */
+describe('R2-D #11 — underscore-strip protects internal bookkeeping from the infra detector', () => {
+  it('a remote-routed engram carrying _outbox.target_url (ipv4_port-shaped) is NOT demoted on a clean update', () => {
+    const plur = freshPlur()
+    const seed = plur.learn('the release runbook lives in the team wiki', { scope: SHARED_SCOPE, type: 'procedural' }) as Engram
+    expect(seed.scope).toBe(SHARED_SCOPE)
+
+    // Simulate a remote-routed engram: internal bookkeeping carrying a loopback
+    // target_url whose host:port shape (127.0.0.1:8899) trips the infra detector.
+    const routed = {
+      ...seed,
+      structured_data: { _outbox: { target_url: 'http://127.0.0.1:8899', target_scope: SHARED_SCOPE, queued_at: new Date().toISOString() } },
+    } as unknown as Engram
+
+    // Clean update — the statement carries nothing sensitive.
+    const updated = { ...routed, statement: 'the release runbook now lives in CONTRIBUTING.md' } as Engram
+    const ok = plur.updateEngram(updated)
+    expect(ok).toBe(true)
+
+    const after = plur.list().find(e => e.id === seed.id) as (Engram & { visibility?: string }) | undefined
+    expect(after).toBeDefined()
+    // Scope UNCHANGED — the underscore-prefixed _outbox was stripped before the
+    // scan, so the loopback host:port never reached the infra detector.
+    expect(after!.scope).toBe(SHARED_SCOPE)
+    expect(after!.scope).not.toBe('local')
+  })
+
+  it('a remote target_scope-shaped fqdn:port in _outbox is also NOT scanned (no false demotion)', () => {
+    const plur = freshPlur()
+    const seed = plur.learn('the deploy checklist is canonical', { scope: SHARED_SCOPE, type: 'procedural' }) as Engram
+    const routed = {
+      ...seed,
+      structured_data: { _outbox: { target_url: 'https://plur.datafund.io:443', target_scope: SHARED_SCOPE, queued_at: new Date().toISOString() } },
+    } as unknown as Engram
+    const updated = { ...routed, statement: 'the deploy checklist moved to the handbook' } as Engram
+    plur.updateEngram(updated)
+    const after = plur.list().find(e => e.id === seed.id) as Engram | undefined
+    expect(after!.scope).toBe(SHARED_SCOPE)
+  })
+})
+
 describe('LOW-1 — saveMetaEngrams runs the leak guard before persist', () => {
   let metaSeq = 0
   /**

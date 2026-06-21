@@ -7,6 +7,14 @@ import type { StoreEntry } from './schemas/config.js'
 
 const require = createRequire(import.meta.url)
 
+/**
+ * Schema-migration sentinel stored in SQLite's `PRAGMA user_version` (R2-D #13).
+ * Bumped to 1 only AFTER the `personal`-column backfill completes successfully,
+ * so a crash between the ADD COLUMN and the backfill self-heals on the next open
+ * instead of being silently skipped by the old ALTER-success gate.
+ */
+const PERSONAL_BACKFILL_VERSION = 1
+
 let Database: any = null
 
 function getDatabase(): any {
@@ -61,10 +69,9 @@ export class IndexedStorage {
       }
       this.db.exec('CREATE INDEX IF NOT EXISTS idx_source ON engrams(source)')
       // Add `personal` column to pre-0.10.0 DBs (#353 read-side fix). The new
-      // DEFAULT 0 leaves existing rows wrong until repopulated, so a successful
-      // ADD COLUMN (i.e. an old DB that lacked it) triggers a one-time reindex
-      // that rewrites every row's `personal` flag from its scope. New DBs (column
-      // already present from CREATE TABLE) throw here and skip the reindex.
+      // DEFAULT 0 leaves existing rows wrong until repopulated, so the ADD COLUMN
+      // must be followed by a one-time backfill that rewrites every row's
+      // `personal` flag from its scope.
       let addedPersonalColumn = false
       try {
         this.db.exec('ALTER TABLE engrams ADD COLUMN personal INTEGER NOT NULL DEFAULT 0')
@@ -73,9 +80,36 @@ export class IndexedStorage {
         // Column already exists — expected on subsequent opens / fresh DBs.
       }
       this.db.exec('CREATE INDEX IF NOT EXISTS idx_personal ON engrams(personal)')
-      if (addedPersonalColumn) {
-        // One-time backfill: rebuild from YAML so every row gets `personal` set.
-        this.syncFromYaml()
+      // R2-D (#13): make the backfill atomic + self-healing. The ALTER is DDL
+      // that auto-commits immediately while syncFromYaml runs in its OWN
+      // transaction; a crash in the gap left the column present with EVERY row at
+      // DEFAULT 0, and the old `addedPersonalColumn` gate would NOT re-run the
+      // backfill on the next open (the ALTER now throws, so the flag stays
+      // false) — a silent, self-perpetuating read-side regression. We instead
+      // gate the backfill on a `PRAGMA user_version` sentinel set ONLY after a
+      // successful backfill: any open observing user_version < 1 (a fresh ADD, a
+      // crash-interrupted backfill, or a brand-new empty DB) re-runs it
+      // idempotently and stamps the sentinel, so the migration self-heals on the
+      // next open rather than only on the next write.
+      const userVersion = this.db.pragma('user_version', { simple: true }) as number
+      if (userVersion < PERSONAL_BACKFILL_VERSION) {
+        // A successful ADD COLUMN means an old DB whose existing rows are all at
+        // DEFAULT 0 and must be backfilled. Otherwise (column already present)
+        // only backfill when rows actually exist — an empty/fresh DB has nothing
+        // to fix and reindex()/the next write will populate it. This keeps the
+        // common fresh-open path from doing a redundant full sync while still
+        // re-healing a crash-interrupted backfill (column present, rows present,
+        // sentinel not yet stamped).
+        const rowCount = this.db.prepare('SELECT COUNT(*) AS n FROM engrams').get() as { n: number }
+        if (addedPersonalColumn || rowCount.n > 0) {
+          // syncFromYaml is a full upsert+prune from YAML, so it is idempotent —
+          // safe to re-run after a partial prior backfill.
+          this.syncFromYaml()
+        }
+        // Stamp the sentinel unconditionally: a fresh empty DB is "migrated" by
+        // construction (CREATE TABLE already has the column), so it should not
+        // re-enter this branch on every subsequent open.
+        this.db.pragma(`user_version = ${PERSONAL_BACKFILL_VERSION}`)
       }
     }
     return this.db

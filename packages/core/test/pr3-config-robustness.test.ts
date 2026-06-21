@@ -97,6 +97,62 @@ describe('PR-3 config robustness — bad forbid category (read-drop fix)', () =>
     expect(cfg.stores![0].sensitivity?.forbid).toEqual(['secrets', 'infra'])
   })
 
+  // R2-D (#7): PR-3 only rescued a bad `forbid` CATEGORY. A malformed ENCLOSING
+  // shape — a scalar `sensitivity`, a non-array `allow`, or a non-array `covers`
+  // — used to fail the whole StoreEntry safeParse and drop the entry incl.
+  // url/token, reproducing the exact credential-loss bug PR-3 claimed to close.
+  // These three cases must now survive the read with url/token intact.
+  it('a scalar `sensitivity` (not an object) survives — entry kept, url/token intact, field dropped', () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const dir = mkdir()
+    const p = writeConfig(dir, [
+      { url: 'https://e.example.com', token: 'tok-keep', scope: 'group:eng', shared: true, sensitivity: 'oops' },
+    ])
+    const cfg = loadConfig(p)
+    expect(cfg.stores).toHaveLength(1)              // NOT dropped
+    expect(cfg.stores![0].url).toBe('https://e.example.com')
+    expect(cfg.stores![0].token).toBe('tok-keep')  // the data-loss target — intact
+    expect(cfg.stores![0].scope).toBe('group:eng')
+    expect(cfg.stores![0].sensitivity).toBeUndefined() // malformed shape coerced away
+  })
+
+  it('a non-array `allow` survives — entry kept, url/token intact, allow → []', () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const dir = mkdir()
+    const p = writeConfig(dir, [
+      { url: 'https://e.example.com', token: 'tok-keep', scope: 'group:eng', sensitivity: { forbid: ['secrets'], allow: 'infra' } },
+    ])
+    const cfg = loadConfig(p)
+    expect(cfg.stores).toHaveLength(1)
+    expect(cfg.stores![0].token).toBe('tok-keep')
+    expect(cfg.stores![0].sensitivity?.forbid).toEqual(['secrets'])
+    expect(cfg.stores![0].sensitivity?.allow).toEqual([]) // scalar coerced to []
+  })
+
+  it('a non-array `covers` survives — entry kept, url/token intact, covers dropped', () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const dir = mkdir()
+    const p = writeConfig(dir, [
+      { url: 'https://e.example.com', token: 'tok-keep', scope: 'group:eng', covers: 5 },
+    ])
+    const cfg = loadConfig(p)
+    expect(cfg.stores).toHaveLength(1)
+    expect(cfg.stores![0].token).toBe('tok-keep')
+    expect(cfg.stores![0].covers).toBeUndefined() // non-array shape coerced away
+  })
+
+  it('ALL THREE malformed shapes at once on one entry still survive with url/token', () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const dir = mkdir()
+    const p = writeConfig(dir, [
+      { url: 'https://e.example.com', token: 'tok-keep', scope: 'group:eng', covers: 'broken', sensitivity: 'oops' },
+    ])
+    const cfg = loadConfig(p)
+    expect(cfg.stores).toHaveLength(1)
+    expect(cfg.stores![0].url).toBe('https://e.example.com')
+    expect(cfg.stores![0].token).toBe('tok-keep')
+  })
+
   it('StoreEntrySchema.passthrough + refine: an unknown field AND path-xor-url both hold', () => {
     // refine still rejects a both-path-and-url entry…
     expect(StoreEntrySchema.safeParse({ path: '/x', url: 'https://x.example.com', scope: 's' }).success).toBe(false)
@@ -194,6 +250,38 @@ describe('PR-3 config robustness — version-skew writeback (no field stripping)
     expect(stores[0].token).toBe('new-token')
     expect(sensitivity.forbid).toEqual(['secrets'])          // parsed value
     expect(sensitivity.future_policy).toEqual({ redact: true }) // NESTED unknown survives writeback
+  })
+
+  /**
+   * R2-D (#14): a forward/unknown `forbid` value is salvaged on READ (PR-3
+   * preprocess rewrites `['pii']` → the safe default in the TYPED config), but
+   * the first persistStores writeback used to land the typed (normalized) value
+   * on top of the raw one, ERASING the forward-compat declaration on disk.
+   * mergeStoresForWriteback now restores the raw `forbid` verbatim, so a
+   * load→persist round-trip preserves the future-version policy declaration.
+   */
+  it('preserves a forward-compat `forbid` value through a persistStores round-trip', () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const dir = mkdir()
+    const URL = 'https://enterprise.example.com'
+    writeFileSync(join(dir, 'config.yaml'), yaml.dump({
+      index: false,
+      stores: [
+        { url: URL, token: 'old-token', scope: 'group:eng', shared: true, sensitivity: { forbid: ['pii'] } },
+      ],
+    }, { noRefs: true }))
+
+    const plur = new Plur({ path: dir })
+    const res = plur.addStore('', 'group:eng', { url: URL, token: 'new-token' })
+    expect(res.status).toBe('token_rotated')
+
+    const stores = readStores(dir)
+    expect(stores).toHaveLength(1)
+    expect(stores[0].token).toBe('new-token')
+    const sensitivity = stores[0].sensitivity as Record<string, unknown>
+    // The forward-compat declaration survives the writeback (NOT overwritten to
+    // the read-time-normalized ['secrets','infra']).
+    expect(sensitivity.forbid).toEqual(['pii'])
   })
 
   /**

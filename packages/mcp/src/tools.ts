@@ -170,8 +170,9 @@ export function getToolDefinitions(): ToolDefinition[] {
         // against that placeholder fails — the engram only exists on
         // the server with the server's id. For local-scope writes,
         // learnRouted defers to sync learn() so dedup behavior is
-        // unchanged. We try learnAsync second only as a fallback for
-        // the LLM-driven dedup pathway (local routes).
+        // unchanged. The handler is two-step (R2-D #17): learnRouted is
+        // PRIMARY (try), and the synchronous learn() is a defense-in-depth
+        // FALLBACK (catch) — learnAsync is NOT used on this path.
         // Runtime scope nudge (#296): when the caller passes no scope and the
         // engram lands at a PERSONAL scope ("local" or "global") WITHOUT being
         // auto-routed, while a team store IS configured, team knowledge silently
@@ -1309,8 +1310,9 @@ export function getToolDefinitions(): ToolDefinition[] {
             : `\n\nRemote store scopes available: ${scopeList}. Set scope PER ENGRAM by content: when an engram is ` +
               `relevant to the team (engineering patterns, architecture decisions, project conventions), set scope to ` +
               `the matching remote scope in plur_learn. Personal preferences, local project details, and corrections ` +
-              `specific to your workflow should stay at default scope (local). Do NOT let team knowledge fall back to ` +
-              `"global" — without an explicit scope it will, and it will never reach the shared store.`
+              `specific to your workflow can be left unscoped (they land at the unscoped default, "global" — the ` +
+              `cross-project personal namespace). Do NOT let TEAM knowledge fall back to "global" — without an ` +
+              `explicit scope it will, and it will never reach the shared store.`
 
           // Surface authorized-but-unregistered scopes (#292). Best-effort:
           // gated to enterprise users (remote stores configured), bounded by a
