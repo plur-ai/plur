@@ -23,7 +23,7 @@
  * NON-VACUOUS — it proves the WRITEBACK path, not merely the read path.
  */
 import { describe, it, expect, afterEach, vi } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'fs'
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, chmodSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import yaml from 'js-yaml'
@@ -314,5 +314,150 @@ describe('PR-3 config robustness — version-skew writeback (no field stripping)
     expect(byScope['group:comms'].token).toBe('comms-tok')
     expect(byScope['group:comms'].url).toBe(URL)
     expect(byScope['group:comms'].comms_marker).toBe('C')
+  })
+})
+
+/**
+ * R3 (final-audit MEDIUM): the R2-D forbid-restore added an `'forbid' in
+ * rawSensitivity` membership check WITHOUT a runtime object check. loadConfig
+ * does not dedup `stores`, so a hand-edited config with two entries on the SAME
+ * url+scope key — one with a proper sensitivity OBJECT, one with a malformed
+ * truthy PRIMITIVE (`sensitivity: 'oops'`) — survives loading. rawMap keeps the
+ * LAST raw dup (the primitive), and merging the object-typed entry then runs the
+ * `in` operator against a string and throws a TypeError that propagates out of
+ * addStore. The guard now type-checks rawSensitivity is a plain object first.
+ */
+describe('R3 config robustness — mergeStoresForWriteback primitive-sensitivity crash', () => {
+  const dirs: string[] = []
+  const mkdir = (): string => { const d = mkdtempSync(join(tmpdir(), 'plur-r3-prim-')); dirs.push(d); return d }
+  afterEach(() => { while (dirs.length) rmSync(dirs.pop()!, { recursive: true, force: true }); vi.restoreAllMocks() })
+
+  const readStores = (dir: string): Array<Record<string, unknown>> => {
+    const cfg = yaml.load(readFileSync(join(dir, 'config.yaml'), 'utf8')) as { stores?: Array<Record<string, unknown>> }
+    return cfg.stores ?? []
+  }
+
+  it('a duplicate-keyed entry with a primitive `sensitivity` round-trips without throwing (string)', () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const dir = mkdir()
+    const URL = 'https://enterprise.example.com'
+    // Two entries on the SAME url+scope: a proper object-sensitivity one, then a
+    // malformed scalar one (last-wins in rawMap). loadConfig coerces the scalar
+    // entry's `sensitivity` away but keeps BOTH entries (no dedup), so the typed
+    // array still carries an object-sensitivity entry whose raw match is a string.
+    writeFileSync(join(dir, 'config.yaml'), yaml.dump({
+      index: false,
+      stores: [
+        { url: URL, token: 'old-token', scope: 'group:eng', shared: true, sensitivity: { forbid: ['secrets'] } },
+        { url: URL, token: 'old-token', scope: 'group:eng', shared: true, sensitivity: 'oops' },
+      ],
+    }, { noRefs: true }))
+
+    const plur = new Plur({ path: dir })
+    // Before the guard this threw: "Cannot use 'in' operator to search for 'forbid' in oops".
+    expect(() => plur.addStore('', 'group:eng', { url: URL, token: 'new-token' })).not.toThrow()
+    const stores = readStores(dir)
+    expect(stores.length).toBeGreaterThanOrEqual(1)
+    expect(stores.some(s => s.token === 'new-token')).toBe(true)
+  })
+
+  it.each([
+    ['number', 5],
+    ['boolean', true],
+  ])('a duplicate-keyed entry with a primitive `sensitivity` round-trips without throwing (%s)', (_label, prim) => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const dir = mkdir()
+    const URL = 'https://enterprise.example.com'
+    writeFileSync(join(dir, 'config.yaml'), yaml.dump({
+      index: false,
+      stores: [
+        { url: URL, token: 'old-token', scope: 'group:eng', shared: true, sensitivity: { forbid: ['secrets'] } },
+        { url: URL, token: 'old-token', scope: 'group:eng', shared: true, sensitivity: prim },
+      ],
+    }, { noRefs: true }))
+
+    const plur = new Plur({ path: dir })
+    expect(() => plur.addStore('', 'group:eng', { url: URL, token: 'new-token' })).not.toThrow()
+  })
+})
+
+/**
+ * R3 (final-audit LOW): persistStores reads the existing config to PRESERVE
+ * other top-level keys (auto_learn, packs, embeddings, routing defaults, …). It
+ * used to swallow ANY read error and proceed from `{}`, so a TRANSIENT read
+ * failure on an EXISTING file caused the write to emit only `{ stores }` —
+ * silently nuking every other top-level setting. The read now re-throws on any
+ * error that is NOT ENOENT, aborting the writeback so a live config is never
+ * truncated. (ENOENT — a genuinely-absent config — still starts safely from {}.)
+ */
+describe('R3 config robustness — persistStores transient read failure does not nuke top-level keys', () => {
+  const dirs: string[] = []
+  const mkdir = (): string => { const d = mkdtempSync(join(tmpdir(), 'plur-r3-read-')); dirs.push(d); return d }
+  afterEach(() => { while (dirs.length) rmSync(dirs.pop()!, { recursive: true, force: true }); vi.restoreAllMocks() })
+
+  // Skip when running as root: chmod 000 doesn't block root reads, so the EACCES
+  // we rely on never fires (CI sometimes runs as root in containers).
+  const asRoot = typeof process.getuid === 'function' && process.getuid() === 0
+  const itNotRoot = asRoot ? it.skip : it
+  itNotRoot('aborts the write (does not discard auto_learn/embeddings/etc) when the config read fails transiently', () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const dir = mkdir()
+    const URL = 'https://enterprise.example.com'
+    const cfgPath = join(dir, 'config.yaml')
+    // A config rich in non-store top-level keys — the data at risk.
+    const original = {
+      index: false,
+      auto_learn: true,
+      packs: ['team-core'],
+      embeddings: { model: 'bge-small' },
+      unscoped_default: 'local',
+      stores: [{ url: URL, token: 'old-token', scope: 'group:eng', shared: true }],
+    }
+    writeFileSync(cfgPath, yaml.dump(original, { noRefs: true }))
+
+    const plur = new Plur({ path: dir })
+
+    // Drive persistStores DIRECTLY so we isolate ONLY its read-then-merge step —
+    // addStore's own loadConfig calls swallow read errors and would obscure the
+    // guard under test. Simulate a TRANSIENT non-ENOENT read failure (EACCES — a
+    // permission glitch / a concurrent truncating writer) by making the EXISTING
+    // file unreadable. The file still EXISTS, so the guard must re-throw, not
+    // start from {}.
+    chmodSync(cfgPath, 0o000)
+    try {
+      // The writeback must ABORT (re-throw the non-ENOENT error) rather than
+      // silently truncate the config to a stores-only file.
+      expect(() => (plur as unknown as { persistStores(s: unknown[]): void }).persistStores([
+        { url: URL, token: 'new-token', scope: 'group:eng', shared: true },
+      ])).toThrow()
+    } finally {
+      chmodSync(cfgPath, 0o600)
+    }
+
+    // The on-disk config is INTACT — all the non-store top-level keys survive
+    // (the aborted write never overwrote the file with a stores-only document).
+    const after = yaml.load(readFileSync(cfgPath, 'utf8')) as Record<string, unknown>
+    expect(after.auto_learn).toBe(true)
+    expect(after.packs).toEqual(['team-core'])
+    expect(after.embeddings).toEqual({ model: 'bge-small' })
+    expect(after.unscoped_default).toBe('local')
+    expect(Array.isArray(after.stores)).toBe(true)
+    // and the token was NOT rotated — the write aborted before mutating anything.
+    expect((after.stores as Array<Record<string, unknown>>)[0].token).toBe('old-token')
+  })
+
+  it('ENOENT (config genuinely absent) still starts safely from {} and writes the stores', () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const dir = mkdir()
+    const URL = 'https://enterprise.example.com'
+    // No config.yaml on disk — a fresh install. persistStores must NOT throw on
+    // the ENOENT; it should write a brand-new config with just the stores.
+    const plur = new Plur({ path: dir })
+    expect(() => (plur as unknown as { persistStores(s: unknown[]): void }).persistStores([
+      { url: URL, token: 't', scope: 'group:eng', shared: true },
+    ])).not.toThrow()
+    const after = yaml.load(readFileSync(join(dir, 'config.yaml'), 'utf8')) as Record<string, unknown>
+    expect(Array.isArray(after.stores)).toBe(true)
+    expect((after.stores as Array<Record<string, unknown>>)[0].url).toBe(URL)
   })
 })
