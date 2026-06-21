@@ -121,9 +121,11 @@ export interface ScopeCandidate {
    * True when this candidate matched via the domain-prefix channel — in EITHER
    * direction: the engram's `domain` is namespace-covered by one of the scope's
    * `covers` entries (`cover ⊃ domain`, forward), OR the engram's `domain` is
-   * BROADER than the cover (`domain ⊃ cover`, reverse). Both directions add the
-   * full WEIGHT_DOMAIN to the squashed `confidence`, so this flag exists for
-   * scoring/ordering (the domain-preferring tie-break) — NOT as the bypass key.
+   * BROADER than the cover (`domain ⊃ cover`, reverse). The two directions are
+   * NOT weighted equally: forward adds the full WEIGHT_DOMAIN (1.5) while reverse
+   * adds only WEIGHT_DOMAIN_REVERSE (= WEIGHT_TAG = 0.5), so a lone reverse hit
+   * squashes to 0.25 and does NOT auto-route. This flag exists for scoring/ordering
+   * (the domain-preferring tie-break) — NOT as the bypass key.
    *
    * Do NOT use `domainMatch` for the deterministic auto-route bypass: the reverse
    * direction would over-route a broad/generic engram into a NARROW shared scope
@@ -140,9 +142,11 @@ export interface ScopeCandidate {
    * The caller (`_resolveUnscopedScope` in index.ts) routes a clean FORWARD
    * domain match DETERMINISTICALLY, bypassing the squash/threshold edge. The
    * REVERSE direction (`domain ⊃ cover`, engram broader than the cover) leaves
-   * this `false`: it still contributes to `confidence` (so it can route via the
-   * normal `>=` threshold gate) but never gets the deterministic bypass, so a
-   * broad engram never deterministically lands in a narrow shared scope.
+   * this `false`: it contributes only the down-weighted WEIGHT_DOMAIN_REVERSE
+   * (0.5), so a LONE reverse hit squashes to 0.25 — below the `>=` threshold —
+   * and never gets the deterministic bypass either. A broad engram therefore
+   * never lands in a narrow shared scope on the reverse match alone; it can only
+   * route if additional tag/keyword evidence pushes the squashed score to >= 0.5.
    * Weak signals (tag-only, keyword-only) also leave this `false`.
    */
   coverContainsDomain: boolean

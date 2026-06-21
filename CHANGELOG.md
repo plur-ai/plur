@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0 (2026-06-21)
+
 ### Leak guard: write-time demotion now covers `saveMetaEngrams` and remote-backed scopes (#368, #370)
 
 The sensitivity leak guard — which detects secrets/infra patterns in an engram and demotes a shared-scope write to `local`/`private` before it can reach a shared store — now runs on more write paths:

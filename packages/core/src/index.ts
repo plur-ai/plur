@@ -1113,19 +1113,23 @@ export class Plur {
     // also true for the REVERSE direction (engram domain BROADER than the cover,
     // `domain ⊃ cover`), and bypassing on that would over-route a broad/generic
     // engram (domain `plur`) into a NARROW shared scope (cover `plur.core`) it
-    // doesn't belong in. The reverse match still adds WEIGHT_DOMAIN to the squashed
-    // confidence below, so a lone reverse hit (conf 0.5) can still route via the
-    // `>=` threshold path — it just doesn't get the deterministic bypass.
-    // rankScopes prefers a domain-match candidate at the top on equal confidence,
-    // so `top` is the right scope to route to. Weights/threshold/squash UNCHANGED.
+    // doesn't belong in. The reverse match adds only the down-weighted
+    // WEIGHT_DOMAIN_REVERSE (0.5 raw, NOT the full WEIGHT_DOMAIN of 1.5), so a lone
+    // reverse hit squashes to 0.25 — BELOW SCOPE_MATCH_THRESHOLD (0.5) — and so
+    // does NOT route via the `>=` threshold path either (and never gets the
+    // deterministic bypass). rankScopes prefers a domain-match candidate at the top
+    // on equal confidence, so `top` is the right scope to route to. Weights/
+    // threshold/squash UNCHANGED.
     if (top && top.coverContainsDomain) {
       return { scope: top.scope, routed: { scope: top.scope, confidence: top.confidence, reason: top.reason } }
     }
     // No forward domain match: a reverse domain hit, tag-only, or keyword-only
     // candidate stays gated by the threshold exactly as before — conservative by
-    // design. A lone reverse-direction match squashes to exactly 0.5 and so still
-    // clears the `>=` gate; a future weight tweak can de-calibrate it safely
-    // without the deterministic bypass forcing it in.
+    // design. A LONE reverse-direction match squashes to 0.25 (WEIGHT_DOMAIN_REVERSE
+    // = 0.5 raw) and so does NOT clear the `>=` gate; it falls to the unscoped
+    // default unless additional tag/keyword evidence lifts the squashed score to
+    // >= SCOPE_MATCH_THRESHOLD. The deterministic bypass never forces a broad
+    // engram in.
     if (top && top.confidence >= SCOPE_MATCH_THRESHOLD) {
       return { scope: top.scope, routed: { scope: top.scope, confidence: top.confidence, reason: top.reason } }
     }
@@ -3419,10 +3423,19 @@ Generate an improved version of the procedure that prevents this failure. Return
    *  token-rotation paths. */
   private persistStores(stores: StoreEntry[]): void {
     let configData: Record<string, unknown> = {}
+    // Read the existing config to preserve other top-level keys (auto_learn,
+    // packs, embeddings, routing defaults, …). A TRANSIENT read failure on an
+    // EXISTING file (EACCES, a concurrent truncating writer, a momentary FS
+    // error) must NOT be swallowed: proceeding from `{}` would write a
+    // stores-only file and silently drop every other top-level setting. Only an
+    // ENOENT (the config genuinely doesn't exist yet) is safe to start from `{}`;
+    // any other error aborts the writeback so we never truncate a live config.
     try {
       const raw = fs.readFileSync(this.paths.config, 'utf8')
       if (raw) configData = (yaml.load(raw) as Record<string, unknown>) ?? {}
-    } catch {}
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') throw err
+    }
     configData.stores = this.mergeStoresForWriteback(configData.stores, stores)
     fs.writeFileSync(this.paths.config, yaml.dump(configData, { lineWidth: 120, noRefs: true }))
     this.config = loadConfig(this.paths.config)
@@ -3466,7 +3479,19 @@ Generate an improved version of the procedure that prevents this failure. Return
         if (!k) logger.warning(`[plur:persistStores] store entry for scope "${typed.scope}" has neither url nor path — writing typed entry as-is`)
         return typed
       }
-      const rawSensitivity = (raw as { sensitivity?: Record<string, unknown> }).sensitivity
+      const rawSensitivityValue = (raw as { sensitivity?: unknown }).sensitivity
+      // The raw config is un-validated, un-salvaged on-disk YAML (persistStores
+      // reads it via yaml.load, NOT loadConfig), so `sensitivity` can be ANYTHING
+      // a hand-edit put there — including a truthy primitive (`sensitivity: 'oops'`,
+      // `5`, `true`). loadConfig dedups nothing over `stores`, so a duplicate entry
+      // on the same url+scope key can leave a primitive in rawMap (last-wins) while
+      // the typed entry carries a proper object. Only treat raw sensitivity as a
+      // mergeable object when it actually IS a plain object — otherwise the spreads
+      // and the `in` operator below corrupt the merge or throw a TypeError.
+      const rawSensitivity =
+        rawSensitivityValue && typeof rawSensitivityValue === 'object' && !Array.isArray(rawSensitivityValue)
+          ? (rawSensitivityValue as Record<string, unknown>)
+          : undefined
       // R2-D (#14): `forbid` is a KNOWN field whose value is NORMALIZED at read
       // time (loadConfig's preprocess rewrites a forward-compat `forbid:['pii']`
       // to the safe default). A shallow `...typed.sensitivity` would then write
