@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { detectSecrets, detectSensitive, sensitivityCategory } from '../src/secrets.js'
+import { detectSecrets, detectSensitive, sensitivityCategory, SCAN_TRUNCATED } from '../src/secrets.js'
 
 describe('detectSecrets', () => {
   it('detects AWS access keys', () => {
@@ -409,30 +409,43 @@ describe('detectSensitive — basic_auth_url (#353)', () => {
   })
 })
 
-// PR-2 (#353) — length cap (defense-in-depth, byte-aware). detectSensitive scans
-// at most the first 64KB; the bound is asserted structurally (NOT by wall-clock).
-describe('detectSensitive — 64KB scan-input length cap (#353)', () => {
-  const CAP = 65536
+// #386 — scan-input ceiling raised 64KB → 1 MiB, and FAIL-CLOSED past it.
+// Previously detectSensitive truncated to 64KB and silently passed the tail, so
+// infra-family content past byte 64KB leaked to shared/remote stores. Now the
+// window is 1 MiB (far above any realistic engram) and anything larger emits a
+// `scan_truncated` signal so the guard demotes / publish excludes. Total scan
+// work is bounded at 1 MiB regardless of input size. Asserted structurally.
+describe('detectSensitive — 1 MiB scan ceiling, fail-closed (#386)', () => {
+  const CAP = 1024 * 1024
 
-  it('still detects a secret within the first 64KB of a 200KB input', () => {
+  it('detects a secret within the scanned window', () => {
     const head = 'AKIAIOSFODNN7EXAMPLE is the key. '
     const big = head + 'x'.repeat(200 * 1024)
+    expect(detectSensitive(big).some(m => m.pattern === 'aws_access_key')).toBe(true)
+  })
+
+  it('#386 detects infra content past the OLD 64KB cap (now inside the 1 MiB window)', () => {
+    const filler = 'x'.repeat(70 * 1024) // past 64KB, well under 1 MiB
+    expect(detectSensitive(`${filler} 139.59.155.82`).some(m => m.pattern === 'public_ipv4')).toBe(true)
+    expect(detectSensitive(`${filler} https://t:p@hub-staging.plur.ai`).some(m => m.pattern === 'basic_auth_url')).toBe(true)
+  })
+
+  it('#386 fail-closed: an input larger than the ceiling reports scan_truncated even when the scanned prefix is clean', () => {
+    const big = 'x'.repeat(CAP + 1024) // benign filler, but > ceiling
+    expect(detectSensitive(big).some(m => m.pattern === SCAN_TRUNCATED)).toBe(true)
+  })
+
+  it('a secret ENTIRELY past the ceiling is not directly detected, but the input is flagged truncated', () => {
+    const big = 'x'.repeat(CAP) + ' AKIAIOSFODNN7EXAMPLE'
     const matches = detectSensitive(big)
-    expect(matches.some(m => m.pattern === 'aws_access_key')).toBe(true)
+    expect(matches.some(m => m.pattern === 'aws_access_key')).toBe(false) // past the window
+    expect(matches.some(m => m.pattern === SCAN_TRUNCATED)).toBe(true)     // but fail-closed
   })
 
-  it('does NOT detect a secret that lands ENTIRELY past the 64KB cap (proves the bound, no wall-clock)', () => {
-    const padding = 'x'.repeat(CAP)
-    const big = padding + ' AKIAIOSFODNN7EXAMPLE'
-    expect(detectSensitive(big).some(m => m.pattern === 'aws_access_key')).toBe(false)
-  })
-
-  it('truncation produces valid UTF-8 even when the cap splits a multibyte char', () => {
-    // 'é' is 2 bytes; fill exactly to the cap boundary minus 1 so the cap splits it.
-    const big = 'a'.repeat(CAP - 1) + 'é' + 'b'.repeat(1024)
-    // Must not throw and must be a no-op detection-wise (clean prose).
+  it('truncation at the ceiling produces valid UTF-8 even when it splits a multibyte char (no throw)', () => {
+    const big = 'a'.repeat(CAP - 1) + 'é' + 'b'.repeat(1024) // 'é' is 2 bytes, split at the cap
     expect(() => detectSensitive(big)).not.toThrow()
-    expect(detectSensitive(big)).toHaveLength(0)
+    expect(detectSensitive(big).some(m => m.pattern === SCAN_TRUNCATED)).toBe(true)
   })
 })
 
@@ -468,5 +481,40 @@ describe('context-field credential demotion at shared scope (#353 #21)', () => {
       .structured_data?._demoted
     expect(demoted).toBeDefined()
     expect(demoted?.patterns).toContain('basic_auth_url')
+  })
+})
+
+// #386 end-to-end: infra content PAST the old 64KB cap must now be demoted on a
+// shared-scope write and excluded from a publishable set. Before the ceiling was
+// raised it was silently passed — the exact 2026-06-leak class.
+describe('infra content past 64KB is demoted / excluded (#386)', () => {
+  const FILLER = 'x'.repeat(70 * 1024) // past the old 64KB cap, inside the 1 MiB window
+
+  it('demotes a shared-scope learn whose infra payload sits past byte 64KB', async () => {
+    const { Plur } = await import('../src/index.js')
+    const { mkdtempSync } = await import('node:fs')
+    const { tmpdir } = await import('node:os')
+    const { join } = await import('node:path')
+
+    const dir = mkdtempSync(join(tmpdir(), 'plur-386-'))
+    const sharedPath = mkdtempSync(join(tmpdir(), 'plur-386-shared-'))
+    const plur = new Plur({ path: dir, stores: [{ scope: 'group:eng', shared: true, path: sharedPath }] })
+
+    const engram = plur.learn(`benign runbook ${FILLER} deploy droplet 139.59.155.82`, { scope: 'group:eng' })
+    expect(engram.scope).toBe('local')
+    expect((engram as { visibility?: string }).visibility).toBe('private')
+  })
+
+  it('filterPublishable excludes a public engram with infra past byte 64KB', async () => {
+    const { filterPublishable } = await import('../src/publish.js')
+    const { EngramSchema } = await import('../src/schemas/engram.js')
+    const e = EngramSchema.parse({
+      id: 'ENG-2026-0101-386',
+      statement: `notes ${FILLER} https://t:p@hub-staging.plur.ai`,
+      type: 'behavioral', scope: 'global', status: 'active', visibility: 'public',
+    })
+    const { publishable, rejected } = filterPublishable([e])
+    expect(publishable).toHaveLength(0)
+    expect(rejected).toHaveLength(1)
   })
 })

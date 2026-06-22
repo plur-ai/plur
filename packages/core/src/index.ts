@@ -28,7 +28,7 @@ import { installPack, uninstallPack, listPacks, exportPack, scanPrivacy, compute
 // import { exportVault, type VaultExportOptions, type VaultExportResult } from './vault-export.js'
 // import { fetchRegistry, discoverPacks, verifyPackIntegrity, DEFAULT_REGISTRY_URL, type PackRegistry, type RegistryPack } from './registry.js'
 import { sync as gitSync, getSyncStatus, withLock, type SyncResult, type SyncStatus } from './sync.js'
-import { detectSecrets, detectSensitive, sensitivityCategory } from './secrets.js'
+import { detectSecrets, detectSensitive, sensitivityCategory, SCAN_TRUNCATED } from './secrets.js'
 import type { SecretMatch } from './secrets.js'
 import type { ScopeMetadata, SensitivityCategory } from './schemas/scope-metadata.js'
 import { rankScopes, SCOPE_MATCH_THRESHOLD, type ScopeSignals, type ScopeCandidate } from './scope-routing.js'
@@ -956,6 +956,9 @@ export class Plur {
     const forbid = new Set<SensitivityCategory>(policy?.forbid ?? ['secrets', 'infra'])
     const allow = new Set<string>(policy?.allow ?? [])
     return hits.filter(h => {
+      // Fail-closed (#386): a truncated-scan signal is always offending — the
+      // unscanned tail can't be certified clean, and no scope policy may allow it.
+      if (h.pattern === SCAN_TRUNCATED) return true
       const category = sensitivityCategory(h.pattern)
       if (allow.has(category) || allow.has(h.pattern)) return false
       return forbid.has(category)

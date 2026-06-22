@@ -360,24 +360,25 @@ function matchInternalHost(text: string): string | null {
   return null
 }
 
-// Defense-in-depth length cap (#353). The publish loop scans whole serialized
+// Scan-input ceiling (#353, #386). The publish loop scans whole serialized
 // engrams and `_guardSensitiveScope` scans statement + JSON.stringify(context),
-// so an unbounded input is an unbounded scan. We cap the SCAN INPUT at 64KB
-// (byte-aware). With every pattern now bounded (basic_auth_url reaudit #1,
-// fqdn_port reaudit #3 — both rewritten to linear-time forms with no `+`-over-`+`
-// ambiguity), a 64KB scan is empirically <7ms under V8 Irregexp, so this cap is
-// cheap insurance, not the DoS fix — the bounded quantifiers are. (Before the
-// fqdn_port bounding a 64KB dotted-label run took ~4s here.) A leading credential
-// is still caught; callers must NOT assume full-input scanning.
-const MAX_SCAN_BYTES = 65536
+// so an unbounded input is an unbounded scan. Every pattern is now bounded
+// (basic_auth_url reaudit #1, fqdn_port reaudit #3 — both rewritten to linear-time
+// forms with no `+`-over-`+` ambiguity), so a single linear pass is ~7ms/64KB
+// under V8 Irregexp; a full 1 MiB pass is ~100ms worst case. We therefore scan a
+// generous 1 MiB window — far above any realistic engram — instead of the old
+// 64KB cap, which left infra-family content past byte 64KB UN-scanned and
+// silently passed to shared/remote stores (the #386 blind spot).
+//
+// Beyond the ceiling we do NOT silently truncate-and-pass: `detectSensitive`
+// emits a synthetic `scan_truncated` hit so the write guard demotes and
+// `filterPublishable` excludes — fail-closed, since the unscanned tail can't be
+// certified clean. Realistic engrams never approach 1 MiB, so this never falsely
+// demotes ordinary content.
+const MAX_SCAN_BYTES = 1024 * 1024
 
-function truncateToScanLimit(text: string): string {
-  // Buffer.byteLength avoids materializing a Buffer for the common (small) case.
-  if (Buffer.byteLength(text, 'utf8') <= MAX_SCAN_BYTES) return text
-  // Replace-mode decode (default) — a multi-byte char split at the boundary
-  // becomes U+FFFD; no exception, no silent corruption, always valid UTF-8.
-  return Buffer.from(text, 'utf8').subarray(0, MAX_SCAN_BYTES).toString('utf8')
-}
+/** Synthetic detector name emitted when input exceeded MAX_SCAN_BYTES (#386). */
+export const SCAN_TRUNCATED = 'scan_truncated'
 
 /**
  * Scan text for secrets AND infrastructure-sensitive content (public IPv4/IPv6,
@@ -397,7 +398,16 @@ export function detectSensitive(text: string): SecretMatch[] {
   if (typeof text !== 'string') {
     throw new TypeError(`detectSensitive: expected string, got ${typeof text}`)
   }
-  text = truncateToScanLimit(text)
+  // Byte-aware: cap the scanned region at MAX_SCAN_BYTES and remember whether the
+  // input was longer (so the tail goes UN-scanned). Buffer.byteLength avoids
+  // materializing a Buffer for the common (small) case.
+  const totalBytes = Buffer.byteLength(text, 'utf8')
+  const truncated = totalBytes > MAX_SCAN_BYTES
+  if (truncated) {
+    // Replace-mode decode (default) — a multi-byte char split at the boundary
+    // becomes U+FFFD; no exception, no silent corruption, always valid UTF-8.
+    text = Buffer.from(text, 'utf8').subarray(0, MAX_SCAN_BYTES).toString('utf8')
+  }
   const matches = detectSecrets(text)
   for (const { name, regex } of SENSITIVE_PATTERNS) {
     const m = text.match(regex)
@@ -418,6 +428,12 @@ export function detectSensitive(text: string): SecretMatch[] {
   const internalHost = matchInternalHost(text)
   if (internalHost) {
     matches.push({ pattern: 'internal_host', match: internalHost.slice(0, 30) })
+  }
+  if (truncated) {
+    // Fail-closed (#386): the region past MAX_SCAN_BYTES was not scanned, so we
+    // cannot certify it clean. Signal it so the write guard demotes and
+    // filterPublishable excludes — a sensitive payload can't hide in the tail.
+    matches.push({ pattern: SCAN_TRUNCATED, match: `${totalBytes} bytes (> ${MAX_SCAN_BYTES}B scan limit)` })
   }
   return matches
 }
