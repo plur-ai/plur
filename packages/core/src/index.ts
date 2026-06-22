@@ -1195,14 +1195,16 @@ export class Plur {
       throw new TypeError(`plur.learn: statement must be a non-empty string, got ${typeof statement}`)
     }
     if (!this.config.allow_secrets) {
-      // Scan statement AND caller-supplied `domain` — domain is exported verbatim
-      // and rendered into agent context (formatLayer3), so a secret there would
-      // otherwise reach a shared pack/store (#381). Other context fields are
-      // covered by _guardSensitiveScope on shared/remote writes.
-      const secretText = [statement, context?.domain].filter(Boolean).join(' ')
+      // Scan statement AND the caller-supplied fields that are exported verbatim /
+      // rendered into agent context — `domain`, `tags`, `abstract` (#381, #389).
+      // A secret in any of them would otherwise reach a shared pack/store. Other
+      // context fields are covered by _guardSensitiveScope on shared/remote writes.
+      const secretText = [statement, context?.domain, context?.abstract, ...(context?.tags ?? [])]
+        .filter(Boolean)
+        .join(' ')
       const secrets = detectSecrets(secretText)
       if (secrets.length > 0) {
-        throw new Error(`Secret detected in statement or domain: ${secrets[0].pattern}. Use config.allow_secrets to override.`)
+        throw new Error(`Secret detected in statement/domain/tags: ${secrets[0].pattern}. Use config.allow_secrets to override.`)
       }
     }
     const guarded = this._guardSensitiveScope(statement, context)
@@ -1434,14 +1436,16 @@ export class Plur {
    */
   async learnRouted(statement: string, context?: LearnContext): Promise<Engram> {
     if (!this.config.allow_secrets) {
-      // Scan statement AND caller-supplied `domain` — domain is exported verbatim
-      // and rendered into agent context (formatLayer3), so a secret there would
-      // otherwise reach a shared pack/store (#381). Other context fields are
-      // covered by _guardSensitiveScope on shared/remote writes.
-      const secretText = [statement, context?.domain].filter(Boolean).join(' ')
+      // Scan statement AND the caller-supplied fields that are exported verbatim /
+      // rendered into agent context — `domain`, `tags`, `abstract` (#381, #389).
+      // A secret in any of them would otherwise reach a shared pack/store. Other
+      // context fields are covered by _guardSensitiveScope on shared/remote writes.
+      const secretText = [statement, context?.domain, context?.abstract, ...(context?.tags ?? [])]
+        .filter(Boolean)
+        .join(' ')
       const secrets = detectSecrets(secretText)
       if (secrets.length > 0) {
-        throw new Error(`Secret detected in statement or domain: ${secrets[0].pattern}. Use config.allow_secrets to override.`)
+        throw new Error(`Secret detected in statement/domain/tags: ${secrets[0].pattern}. Use config.allow_secrets to override.`)
       }
     }
     const guarded = this._guardSensitiveScope(statement, context)

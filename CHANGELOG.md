@@ -2,14 +2,15 @@
 
 ## Unreleased
 
-### Security: pack secret/PII scan now covers `summary` and `domain` (#381)
+### Security: pack secret/PII scan covers the full serialized engram (#381)
 
-`scanPrivacy` ran `detectSecrets` over only `statement + rationale + source`. The `summary` field (rendered by `formatLayer1`) and the caller-supplied `domain` field (rendered by `formatLayer3`) were never secret-scanned, so a secret hidden in either exported with `clean: true` — defeating the "secrets are ALWAYS blocked" export invariant.
+`scanPrivacy` ran `detectSecrets` over only `statement + rationale + source`, while `exportPack` serializes the *whole* engram. Any exported-but-unscanned field was a leak: `summary` (formatLayer1), and the caller-supplied `domain`, `tags`, `structured_data`, and `contraindications` all exported with `clean: true`, defeating the "secrets are ALWAYS blocked" export invariant.
 
-- `scanPrivacy` now scans `statement + rationale + source + summary + domain` for secrets, personal paths, emails, and private IPs, and uses the same field set for the prompt-injection scan (the two can no longer drift). `installPack` blocks and `exportPack` filters an engram with a secret in `summary` or `domain`.
-- `learn()` / `learnRouted()` now secret-scan the caller-supplied `domain` (not just `statement`) when `allow_secrets` is false, so a secret in `domain` is rejected at write time before it can be exported.
+- **Secret/PII scan is now serialize-based.** `scanPrivacy` scans the *serialized engram payload* (every caller-settable field, including future additions) for secrets, personal paths, emails, and private IPs — not a hand-maintained field list, which is the same enumerate-vs-serialize drift that caused the bug. Fields `exportPack` strips (`relations`/`associations`/`knowledge_anchors`) and internal/numeric bookkeeping are excluded so they don't cause false rejections; PLUR-internal `_`-prefixed `structured_data` keys are dropped. `installPack` blocks and `exportPack` filters an engram with a secret in any scanned field.
+- **Prompt-injection scan stays field-based** (`statement + rationale + source + summary + domain`) — only fields rendered into agent context can carry an effective injection, and scanning arbitrary metadata would add false positives.
+- `learn()` / `learnRouted()` now secret-scan the caller-supplied `domain`, `tags`, and `abstract` (not just `statement`) when `allow_secrets` is false, rejecting a secret in any of them at write time.
 
-**Behavior change:** a pack engram carrying a secret in `summary` or `domain` is now blocked on install / filtered on export; a `learn` with a secret in `domain` throws unless `allow_secrets` is set.
+**Behavior change:** a pack engram carrying a secret in any exported field (`summary`/`domain`/`tags`/`structured_data`/`contraindications`/…) is now blocked on install / filtered on export; a `learn` with a secret in `domain`/`tags`/`abstract` throws unless `allow_secrets` is set.
 
 ## 0.10.0 (2026-06-21)
 

@@ -443,6 +443,50 @@ describe('pack management', () => {
     expect(r2.engram_count).toBe(0)
   })
 
+  // #389 review: exportPack serializes the WHOLE engram, so the secret scan must
+  // cover serialized fields too (tags/structured_data/contraindications), not
+  // just the 5 enumerated ones — else those caller-settable fields stay a bypass.
+  it('#389 install blocks a secret hidden in tags', () => {
+    const packDir = join(dir, 'secret-tags')
+    mkdirSync(packDir)
+    writeFileSync(join(packDir, 'SKILL.md'), '---\nname: secret-tags\nversion: "1.0"\n---\n')
+    writeFileSync(join(packDir, 'engrams.yaml'), `engrams:
+  - id: ENG-2026-0101-001
+    statement: "An innocent tip"
+    tags: ["deploy", "${SECRET}"]
+    type: behavioral
+    scope: global
+    status: active
+    version: 2
+    visibility: public
+    activation:
+      retrieval_strength: 0.7
+      storage_strength: 1.0
+      frequency: 0
+      last_accessed: "2026-01-01"
+`)
+    expect(previewPack(packDir).security.issues.some(i => i.type === 'secret')).toBe(true)
+    expect(() => installPack(join(dir, 'packs'), packDir)).toThrow(/secrets/)
+  })
+
+  it('#389 export filters a secret in tags / structured_data / contraindications', () => {
+    const inTags = EngramSchema.parse({
+      id: 'ENG-2026-0101-201', statement: 'innocent', tags: ['ok', SECRET],
+      type: 'behavioral', scope: 'global', status: 'active', visibility: 'public',
+    })
+    const inStructured = EngramSchema.parse({
+      id: 'ENG-2026-0101-202', statement: 'innocent', structured_data: { note: `key ${SECRET}` },
+      type: 'behavioral', scope: 'global', status: 'active', visibility: 'public',
+    })
+    const inContra = EngramSchema.parse({
+      id: 'ENG-2026-0101-203', statement: 'innocent', contraindications: [`avoid ${SECRET}`],
+      type: 'behavioral', scope: 'global', status: 'active', visibility: 'public',
+    })
+    expect(exportPack([inTags], join(dir, 'exp-tags'), { name: 'exp-tags', version: '1.0.0' }).engram_count).toBe(0)
+    expect(exportPack([inStructured], join(dir, 'exp-sd'), { name: 'exp-sd', version: '1.0.0' }).engram_count).toBe(0)
+    expect(exportPack([inContra], join(dir, 'exp-contra'), { name: 'exp-contra', version: '1.0.0' }).engram_count).toBe(0)
+  })
+
   it('install allows injection text when allowInjection override is set', () => {
     const packDir = join(dir, 'injection-pack-ok')
     mkdirSync(packDir)

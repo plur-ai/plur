@@ -423,6 +423,43 @@ const PERSONAL_PATH_RE = /(?:\/Users\/\w+|\/home\/\w+|~\/|C:\\Users\\\w+)/
 const EMAIL_RE = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/
 const IP_RE = /\b(?:10|172\.(?:1[6-9]|2\d|3[01])|192\.168)\.\d{1,3}\.\d{1,3}\b/
 
+// Fields excluded from the serialized secret/PII scan: exportPack strips these
+// (relations/associations/knowledge_anchors never reach a pack), or they are
+// internal/numeric bookkeeping that can't carry a meaningful credential and
+// would only cause false rejections (local paths inside knowledge_anchors, the
+// activation numbers, the id). EVERY other field — including future additions —
+// is scanned, so the export gap can't silently reopen the way an enumerated
+// field list does (#381 root cause, #389 review).
+const SECRET_SCAN_EXCLUDE = new Set<string>([
+  'relations', 'associations', 'knowledge_anchors', 'activation',
+  'embedding', 'id', 'created', 'updated', 'last_accessed',
+])
+
+/**
+ * Serialize the secret/PII-bearing content of an engram for scanning. Scans the
+ * SERIALIZED payload (not a hand-maintained field list) so a future caller-
+ * settable field (tags, structured_data, contraindications, …) can't silently
+ * reopen the export leak. PLUR-internal `_`-prefixed structured_data keys
+ * (_outbox/_demoted) are dropped — they carry system host topology, never user
+ * content, and would false-trip the scan.
+ */
+function serializeForSecretScan(e: Engram): string {
+  const scan: Record<string, unknown> = {}
+  for (const [k, v] of Object.entries(e as Record<string, unknown>)) {
+    if (SECRET_SCAN_EXCLUDE.has(k)) continue
+    if (k === 'structured_data' && v && typeof v === 'object' && !Array.isArray(v)) {
+      const userSd: Record<string, unknown> = {}
+      for (const [sk, sv] of Object.entries(v as Record<string, unknown>)) {
+        if (!sk.startsWith('_')) userSd[sk] = sv
+      }
+      scan[k] = userSd
+    } else {
+      scan[k] = v
+    }
+  }
+  return JSON.stringify(scan)
+}
+
 export function scanPrivacy(engrams: Engram[]): PrivacyScanResult {
   const issues: PrivacyIssue[] = []
 
@@ -439,19 +476,16 @@ export function scanPrivacy(engrams: Engram[]): PrivacyScanResult {
       })
     }
 
-    // Scan EVERY field rendered into agent context or persisted into a shared
-    // pack: statement + rationale + source, `summary` (inject.ts formatLayer1)
-    // and `domain` (formatLayer3, caller-supplied via learn). Omitting summary or
-    // domain leaves a structural bypass — a secret/PII/injection hidden in a
-    // non-statement field would export with `clean: true`, defeating the
-    // "secrets are ALWAYS blocked" export invariant (#381). The secret and
-    // injection scans MUST share this field set so they never drift apart.
-    const text = [e.statement, e.rationale, e.source, e.summary, e.domain]
-      .filter(Boolean)
-      .join(' ')
+    // SECRET / PII scan covers the SERIALIZED engram payload — every caller-
+    // settable, exported field — not a hand-picked list. exportPack serializes
+    // the whole engram, so enumerating a subset here is the same enumerate-vs-
+    // serialize drift that caused #381, one level out (#389 review): `tags`,
+    // `structured_data`, `contraindications` are all exported verbatim. Scanning
+    // the serialized payload means a future field can't silently reopen the gap.
+    const secretText = serializeForSecretScan(e)
 
     // Secret patterns (API keys, passwords, tokens)
-    const secrets = detectSecrets(text)
+    const secrets = detectSecrets(secretText)
     for (const s of secrets) {
       issues.push({
         engram_id: e.id,
@@ -460,8 +494,15 @@ export function scanPrivacy(engrams: Engram[]): PrivacyScanResult {
       })
     }
 
-    // Prompt-injection / instruction-override text — same rendered field set.
-    const injections = detectPromptInjection(text)
+    // Prompt-injection / instruction-override is FIELD-based: only fields
+    // rendered into agent context can carry an effective injection — statement +
+    // rationale + source (formatLayer3), summary (formatLayer1), domain
+    // (formatLayer3). Scanning arbitrary serialized metadata for injection would
+    // add false positives without a real attack surface.
+    const injectionText = [e.statement, e.rationale, e.source, e.summary, e.domain]
+      .filter(Boolean)
+      .join(' ')
+    const injections = detectPromptInjection(injectionText)
     for (const inj of injections) {
       issues.push({
         engram_id: e.id,
@@ -471,16 +512,16 @@ export function scanPrivacy(engrams: Engram[]): PrivacyScanResult {
     }
 
     // Personal paths
-    if (PERSONAL_PATH_RE.test(text)) {
+    if (PERSONAL_PATH_RE.test(secretText)) {
       issues.push({
         engram_id: e.id,
         type: 'personal_path',
-        detail: `Contains personal path: ${text.match(PERSONAL_PATH_RE)?.[0]}`,
+        detail: `Contains personal path: ${secretText.match(PERSONAL_PATH_RE)?.[0]}`,
       })
     }
 
     // Email addresses
-    const emailMatch = text.match(EMAIL_RE)
+    const emailMatch = secretText.match(EMAIL_RE)
     if (emailMatch) {
       issues.push({
         engram_id: e.id,
@@ -490,7 +531,7 @@ export function scanPrivacy(engrams: Engram[]): PrivacyScanResult {
     }
 
     // Private IP addresses
-    const ipMatch = text.match(IP_RE)
+    const ipMatch = secretText.match(IP_RE)
     if (ipMatch) {
       issues.push({
         engram_id: e.id,

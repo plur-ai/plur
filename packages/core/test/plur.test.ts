@@ -308,6 +308,11 @@ describe('Plur', () => {
       .toThrow('Secret detected')
   })
 
+  it('learn rejects a secret hidden in caller-supplied tags (#389)', () => {
+    expect(() => plur.learn('A clean statement', { tags: ['ok', 'sk-1234567890abcdefghijklmn'] }))
+      .toThrow('Secret detected')
+  })
+
   it('learn allows clean statements', () => {
     const engram = plur.learn('Store API keys in environment variables', { scope: 'global' })
     expect(engram.id).toMatch(/^ENG-/)
