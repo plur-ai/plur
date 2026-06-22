@@ -1195,9 +1195,14 @@ export class Plur {
       throw new TypeError(`plur.learn: statement must be a non-empty string, got ${typeof statement}`)
     }
     if (!this.config.allow_secrets) {
-      const secrets = detectSecrets(statement)
+      // Scan statement AND caller-supplied `domain` — domain is exported verbatim
+      // and rendered into agent context (formatLayer3), so a secret there would
+      // otherwise reach a shared pack/store (#381). Other context fields are
+      // covered by _guardSensitiveScope on shared/remote writes.
+      const secretText = [statement, context?.domain].filter(Boolean).join(' ')
+      const secrets = detectSecrets(secretText)
       if (secrets.length > 0) {
-        throw new Error(`Secret detected in statement: ${secrets[0].pattern}. Use config.allow_secrets to override.`)
+        throw new Error(`Secret detected in statement or domain: ${secrets[0].pattern}. Use config.allow_secrets to override.`)
       }
     }
     const guarded = this._guardSensitiveScope(statement, context)
@@ -1429,9 +1434,14 @@ export class Plur {
    */
   async learnRouted(statement: string, context?: LearnContext): Promise<Engram> {
     if (!this.config.allow_secrets) {
-      const secrets = detectSecrets(statement)
+      // Scan statement AND caller-supplied `domain` — domain is exported verbatim
+      // and rendered into agent context (formatLayer3), so a secret there would
+      // otherwise reach a shared pack/store (#381). Other context fields are
+      // covered by _guardSensitiveScope on shared/remote writes.
+      const secretText = [statement, context?.domain].filter(Boolean).join(' ')
+      const secrets = detectSecrets(secretText)
       if (secrets.length > 0) {
-        throw new Error(`Secret detected in statement: ${secrets[0].pattern}. Use config.allow_secrets to override.`)
+        throw new Error(`Secret detected in statement or domain: ${secrets[0].pattern}. Use config.allow_secrets to override.`)
       }
     }
     const guarded = this._guardSensitiveScope(statement, context)

@@ -303,6 +303,11 @@ describe('Plur', () => {
     expect(() => plur.learn('API key is sk-1234567890abcdefghijklmn')).toThrow('Secret detected')
   })
 
+  it('learn rejects a secret hidden in caller-supplied domain (#381)', () => {
+    expect(() => plur.learn('A clean statement', { domain: 'token sk-1234567890abcdefghijklmn' }))
+      .toThrow('Secret detected')
+  })
+
   it('learn allows clean statements', () => {
     const engram = plur.learn('Store API keys in environment variables', { scope: 'global' })
     expect(engram.id).toMatch(/^ENG-/)

@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Security: pack secret/PII scan now covers `summary` and `domain` (#381)
+
+`scanPrivacy` ran `detectSecrets` over only `statement + rationale + source`. The `summary` field (rendered by `formatLayer1`) and the caller-supplied `domain` field (rendered by `formatLayer3`) were never secret-scanned, so a secret hidden in either exported with `clean: true` — defeating the "secrets are ALWAYS blocked" export invariant.
+
+- `scanPrivacy` now scans `statement + rationale + source + summary + domain` for secrets, personal paths, emails, and private IPs, and uses the same field set for the prompt-injection scan (the two can no longer drift). `installPack` blocks and `exportPack` filters an engram with a secret in `summary` or `domain`.
+- `learn()` / `learnRouted()` now secret-scan the caller-supplied `domain` (not just `statement`) when `allow_secrets` is false, so a secret in `domain` is rejected at write time before it can be exported.
+
+**Behavior change:** a pack engram carrying a secret in `summary` or `domain` is now blocked on install / filtered on export; a `learn` with a secret in `domain` throws unless `allow_secrets` is set.
+
 ## 0.10.0 (2026-06-21)
 
 ### Leak guard: write-time demotion now covers `saveMetaEngrams` and remote-backed scopes (#368, #370)

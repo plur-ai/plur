@@ -439,7 +439,16 @@ export function scanPrivacy(engrams: Engram[]): PrivacyScanResult {
       })
     }
 
-    const text = `${e.statement} ${e.rationale ?? ''} ${e.source ?? ''}`
+    // Scan EVERY field rendered into agent context or persisted into a shared
+    // pack: statement + rationale + source, `summary` (inject.ts formatLayer1)
+    // and `domain` (formatLayer3, caller-supplied via learn). Omitting summary or
+    // domain leaves a structural bypass — a secret/PII/injection hidden in a
+    // non-statement field would export with `clean: true`, defeating the
+    // "secrets are ALWAYS blocked" export invariant (#381). The secret and
+    // injection scans MUST share this field set so they never drift apart.
+    const text = [e.statement, e.rationale, e.source, e.summary, e.domain]
+      .filter(Boolean)
+      .join(' ')
 
     // Secret patterns (API keys, passwords, tokens)
     const secrets = detectSecrets(text)
@@ -451,12 +460,8 @@ export function scanPrivacy(engrams: Engram[]): PrivacyScanResult {
       })
     }
 
-    // Prompt-injection / instruction-override text. Scan every field that is
-    // rendered into agent context: inject.ts formatLayer3 emits `rationale`
-    // verbatim and formatLayer1 emits `summary`, so scanning `statement` alone
-    // would leave a structural bypass (put the override text in rationale).
-    const injectionText = `${text} ${e.summary ?? ''}`
-    const injections = detectPromptInjection(injectionText)
+    // Prompt-injection / instruction-override text — same rendered field set.
+    const injections = detectPromptInjection(text)
     for (const inj of injections) {
       issues.push({
         engram_id: e.id,

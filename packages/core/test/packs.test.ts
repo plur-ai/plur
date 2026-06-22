@@ -374,6 +374,75 @@ describe('pack management', () => {
     expect(() => installPack(join(dir, 'packs'), packDir)).toThrow(/injection/i)
   })
 
+  // #381: the secret scan must cover every rendered/exported field, not just
+  // statement+rationale+source. A secret in `summary` (formatLayer1) or `domain`
+  // (formatLayer3) must be detected, blocked on install, and filtered on export.
+  const SECRET = 'AKIA1234567890ABCDEF'
+
+  it('#381 install blocks a secret hidden in summary', () => {
+    const packDir = join(dir, 'secret-summary')
+    mkdirSync(packDir)
+    writeFileSync(join(packDir, 'SKILL.md'), '---\nname: secret-summary\nversion: "1.0"\n---\n')
+    writeFileSync(join(packDir, 'engrams.yaml'), `engrams:
+  - id: ENG-2026-0101-001
+    statement: "A perfectly innocent coding tip"
+    summary: "set api_key = ${SECRET}"
+    type: behavioral
+    scope: global
+    status: active
+    version: 2
+    visibility: public
+    activation:
+      retrieval_strength: 0.7
+      storage_strength: 1.0
+      frequency: 0
+      last_accessed: "2026-01-01"
+`)
+    const preview = previewPack(packDir)
+    expect(preview.security.clean).toBe(false)
+    expect(preview.security.issues.some(i => i.type === 'secret')).toBe(true)
+    expect(() => installPack(join(dir, 'packs'), packDir)).toThrow(/secrets/)
+  })
+
+  it('#381 install blocks a secret hidden in domain', () => {
+    const packDir = join(dir, 'secret-domain')
+    mkdirSync(packDir)
+    writeFileSync(join(packDir, 'SKILL.md'), '---\nname: secret-domain\nversion: "1.0"\n---\n')
+    writeFileSync(join(packDir, 'engrams.yaml'), `engrams:
+  - id: ENG-2026-0101-001
+    statement: "Another innocent tip"
+    domain: "token ${SECRET}"
+    type: behavioral
+    scope: global
+    status: active
+    version: 2
+    visibility: public
+    activation:
+      retrieval_strength: 0.7
+      storage_strength: 1.0
+      frequency: 0
+      last_accessed: "2026-01-01"
+`)
+    const preview = previewPack(packDir)
+    expect(preview.security.issues.some(i => i.type === 'secret')).toBe(true)
+    expect(() => installPack(join(dir, 'packs'), packDir)).toThrow(/secrets/)
+  })
+
+  it('#381 export filters out an engram with a secret in summary or domain', () => {
+    const inSummary = EngramSchema.parse({
+      id: 'ENG-2026-0101-101', statement: 'innocent', summary: `key ${SECRET}`,
+      type: 'behavioral', scope: 'global', status: 'active', visibility: 'public',
+    })
+    const inDomain = EngramSchema.parse({
+      id: 'ENG-2026-0101-102', statement: 'innocent', domain: `d ${SECRET}`,
+      type: 'behavioral', scope: 'global', status: 'active', visibility: 'public',
+    })
+    const r1 = exportPack([inSummary], join(dir, 'exp-summary'), { name: 'exp-summary', version: '1.0.0' })
+    const r2 = exportPack([inDomain], join(dir, 'exp-domain'), { name: 'exp-domain', version: '1.0.0' })
+    expect(r1.engram_count).toBe(0)
+    expect(r2.engram_count).toBe(0)
+  })
+
   it('install allows injection text when allowInjection override is set', () => {
     const packDir = join(dir, 'injection-pack-ok')
     mkdirSync(packDir)
