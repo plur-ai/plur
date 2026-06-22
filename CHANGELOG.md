@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Security: segment-aware scope membership — no sibling-prefix bleed (#383)
+
+The read-side scope filters and store-load gates decided shared-scope membership with a bare string-prefix test (`scope.startsWith(query)` / `LIKE query || '%'`) and no delimiter boundary. A shared scope that is a string-prefix of a sibling leaked across the isolation boundary: a `project:app` recall/inject/list surfaced `project:application` and `project:app-secret`; a `group:plur/eng` query surfaced `group:plur/eng-private`.
+
+- New `isScopeWithin(scope, queryScope)` predicate in `scope-util.ts` matches a scope iff it is exactly equal or a descendant separated by a real delimiter (`:` or `/`) — so `project:app:sub` and `project:app/x` still match, but `project:application` does not.
+- Applied at all read paths and store-load gates: non-indexed recall (`index.ts`), indexed SQLite `loadFiltered` + reindex gate (`storage-indexed.ts`), PGLite `buildFilterClause` (`storage-pglite.ts`), inject `scoreEngram` (`inject.ts`), and the in-memory store gate (`index.ts`). SQL paths use `scope = ? OR scope LIKE ?||':%' OR scope LIKE ?||'/%'`.
+- The personal-family pass-through (`isPersonalScope`) is unchanged — personal scopes still surface under a project-scope recall.
+
+**Behavior change:** an engram in a shared scope that is merely a string-prefix of the query scope is no longer returned by recall/inject/list. True descendants (delimiter-separated) are unaffected.
+
 ## 0.10.0 (2026-06-21)
 
 ### Leak guard: write-time demotion now covers `saveMetaEngrams` and remote-backed scopes (#368, #370)
