@@ -678,7 +678,10 @@ export class Plur {
       ;(e as any).sources = [...((e as any).sources ?? []), source]
 
       if (newRecurrence >= 2) {
-        if (e.scope !== 'global') e.scope = 'global'
+        // Only promote SHARED scopes (project:*, space:*, etc.) to global —
+        // personal-family scopes (local, user:*) stay within their family.
+        // See issue #362 item (ii): personal-scope ceiling for cross-scope recurrence.
+        if (isSharedScope(e.scope)) e.scope = 'global'
         if (e.commitment !== 'locked') {
           // Forward-only ladder: exploring → leaning → decided → locked.
           e.commitment = e.commitment === 'exploring'

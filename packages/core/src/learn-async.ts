@@ -208,6 +208,12 @@ export async function learnAsync(
     candidates = deps.recall(statement, { limit: 5 })
   }
   candidates = candidates.filter(c => c.status === 'active')
+  // Mirror hashDedup scope-awareness (issue #359): only dedup against same-scope engrams.
+  // Without this, a global engram silently absorbs an explicitly-scoped write — the requested
+  // scope is dropped and the team store never receives the engram.
+  if (context?.scope) {
+    candidates = candidates.filter(c => c.scope === context.scope)
+  }
 
   if (candidates.length === 0) {
     return { engram: deps.learn(statement, context), decision: 'ADD' }
