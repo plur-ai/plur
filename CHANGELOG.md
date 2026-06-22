@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Security: scope auto-registration refuses personal-family scopes from `/me` (#382)
+
+`registerDiscoveredScopes()` registered **every** scope a server returned from `GET /api/v1/me` as a writable remote store, with no shared-scope check. A compromised or MITM'd endpoint could return `scopes: ['global', 'user:<victim>', 'local']`; registering `global` (the default unscoped routing fallback) as a writable remote store would route every later default/unscoped `learn` to the attacker's server.
+
+- `registerDiscoveredScopes()` now filters `/me`-advertised scopes through `isSharedScope()` before `addStore`: only shared-family scopes (`group:`/`project:`/`space:`/`team:`/`org:`/`public`) are auto-registered. Personal-family scopes (`global`/`local`/`user:*`/`agent:*`) are refused, logged, and returned in a new `skipped` field on `RegisterDiscoveredResult`. The CLI (`plur stores discover --register`) and MCP (`plur_scopes_discover`) surface the skipped scopes.
+- A genuine remote-backed personal scope (e.g. a `user:` scope on your own server) must be added deliberately via `plur stores add`; it is never auto-registered from untrusted server input.
+
+**Behavior change:** `plur_scopes_discover register:true` / `plur stores discover --register` no longer register personal-family scopes a server advertises — they are reported as `skipped`.
+
 ## 0.10.0 (2026-06-21)
 
 ### Leak guard: write-time demotion now covers `saveMetaEngrams` and remote-backed scopes (#368, #370)

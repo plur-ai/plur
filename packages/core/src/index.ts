@@ -246,6 +246,8 @@ export interface RegisterDiscoveredResult {
   ok: boolean
   added: string[]
   already_registered: string[]
+  /** Personal-family scopes a `/me` returned that were refused auto-registration (#382). */
+  skipped: string[]
   error?: string
 }
 
@@ -3951,19 +3953,36 @@ Generate an improved version of the procedure that prevents this failure. Return
   async registerDiscoveredScopes(opts?: { url?: string; timeoutMs?: number }): Promise<RegisterDiscoveredResult[]> {
     const discoveries = await this.discoverRemoteScopes(opts)
     return discoveries.map(d => {
-      if (!d.ok) return { url: d.url, ok: false, added: [], already_registered: [], error: d.error }
+      if (!d.ok) return { url: d.url, ok: false, added: [], already_registered: [], skipped: [], error: d.error }
       const token = (this.config.stores ?? []).find(s => s.url === d.url)?.token
       const added: string[] = []
       const already: string[] = []
+      const skipped: string[] = []
       // Attempt every authorized scope (not just the pre-computed unregistered
       // set) and let addStore's url+scope idempotency (#291) classify each — so
       // the result is accurate even if config changed between discover and now.
       for (const scope of d.authorized) {
+        // SECURITY (#382): never auto-register a PERSONAL-family scope returned
+        // by `/me` as a writable remote store. A compromised/MITM'd endpoint can
+        // claim `scopes:['global','user:<victim>','local']`; registering those
+        // makes the hostile server the routing target for the user's default and
+        // unscoped writes. Only shared-family scopes (group:/project:/space:/
+        // team:/org:/public) are auto-registered. A genuine remote-backed
+        // personal scope must be added deliberately via `plur stores add`.
+        if (!isSharedScope(scope)) {
+          skipped.push(scope)
+          logger.warning(
+            `[plur] refused to auto-register non-shared scope "${scope}" from ${d.url} — ` +
+            `a /me-advertised personal-family scope is not auto-registered (it would route ` +
+            `your default/unscoped writes to that endpoint). Add it explicitly if intended.`,
+          )
+          continue
+        }
         const { status } = this.addStore('', scope, { url: d.url, token })
         if (status === 'added') added.push(scope)
         else already.push(scope)
       }
-      return { url: d.url, ok: true, added, already_registered: already }
+      return { url: d.url, ok: true, added, already_registered: already, skipped }
     })
   }
 
