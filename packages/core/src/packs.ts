@@ -3,7 +3,7 @@ import * as path from 'path'
 import * as crypto from 'crypto'
 import yaml from 'js-yaml'
 import { loadPack, loadEngrams, saveEngrams } from './engrams.js'
-import { detectSecrets, detectPromptInjection } from './secrets.js'
+import { detectSensitive, detectPromptInjection, truncateToScanLimit } from './secrets.js'
 import type { Engram } from './schemas/engram.js'
 import type { PackManifest } from './schemas/pack.js'
 import { logger } from './logger.js'
@@ -420,7 +420,11 @@ export function sanitizePackEngrams(engrams: Engram[]): { engrams: Engram[]; pin
 }
 
 const PERSONAL_PATH_RE = /(?:\/Users\/\w+|\/home\/\w+|~\/|C:\\Users\\\w+)/
-const EMAIL_RE = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/
+// Bounded quantifiers ({1,64}/{1,255}/{2,24}, within RFC limits) so the domain
+// part can't backtrack catastrophically. Unbounded `+` made this quadratic on a
+// long dotted run after `@` (#389 review: 8-17s on a crafted engram); the cap in
+// scanPrivacy bounds the input length and these bounds bound the per-start work.
+const EMAIL_RE = /[a-zA-Z0-9._%+-]{1,64}@[a-zA-Z0-9.-]{1,255}\.[a-zA-Z]{2,24}/
 const IP_RE = /\b(?:10|172\.(?:1[6-9]|2\d|3[01])|192\.168)\.\d{1,3}\.\d{1,3}\b/
 
 // Fields excluded from the serialized secret/PII scan: exportPack strips these
@@ -482,10 +486,21 @@ export function scanPrivacy(engrams: Engram[]): PrivacyScanResult {
     // serialize drift that caused #381, one level out (#389 review): `tags`,
     // `structured_data`, `contraindications` are all exported verbatim. Scanning
     // the serialized payload means a future field can't silently reopen the gap.
-    const secretText = serializeForSecretScan(e)
+    // Cap the scan input BEFORE any regex touches it. serializeForSecretScan
+    // returns the whole-engram JSON (unbounded — a long statement or
+    // structured_data value), and EMAIL_RE / IP_RE / PERSONAL_PATH_RE below run
+    // on secretText directly. Uncapped, EMAIL_RE backtracks quadratically on a
+    // crafted pack (#389 review measured 8-17s), hanging preview/install/export.
+    // detectSensitive re-applies the same cap internally; this also bounds the
+    // privacy regexes that don't go through it.
+    const secretText = truncateToScanLimit(serializeForSecretScan(e))
 
-    // Secret patterns (API keys, passwords, tokens)
-    const secrets = detectSecrets(secretText)
+    // Secret AND infrastructure-sensitive patterns. detectSensitive is a superset
+    // of detectSecrets that also catches public IPv4/IPv6, internal hosts,
+    // basic-auth URLs and host:port — the infra family detectSecrets missed and
+    // the exact class of the 2026-06 leak. Without it, an infra leak in
+    // summary/tags/source was exported clean.
+    const secrets = detectSensitive(secretText)
     for (const s of secrets) {
       issues.push({
         engram_id: e.id,
@@ -499,9 +514,9 @@ export function scanPrivacy(engrams: Engram[]): PrivacyScanResult {
     // rationale + source (formatLayer3), summary (formatLayer1), domain
     // (formatLayer3). Scanning arbitrary serialized metadata for injection would
     // add false positives without a real attack surface.
-    const injectionText = [e.statement, e.rationale, e.source, e.summary, e.domain]
-      .filter(Boolean)
-      .join(' ')
+    const injectionText = truncateToScanLimit(
+      [e.statement, e.rationale, e.source, e.summary, e.domain].filter(Boolean).join(' '),
+    )
     const injections = detectPromptInjection(injectionText)
     for (const inj of injections) {
       issues.push({

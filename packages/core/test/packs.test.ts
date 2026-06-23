@@ -487,6 +487,37 @@ describe('pack management', () => {
     expect(exportPack([inContra], join(dir, 'exp-contra'), { name: 'exp-contra', version: '1.0.0' }).engram_count).toBe(0)
   })
 
+  // #389 review (blocker 1): the serialized scan must not be a ReDoS vector.
+  // serializeForSecretScan returns unbounded JSON and EMAIL_RE/IP_RE run on it;
+  // an attacker-authored engram with a long dotted run after `@` made EMAIL_RE
+  // backtrack for 8-17s, hanging preview/install/export. The scan-input cap +
+  // bounded EMAIL_RE must keep it well under the 2s test budget.
+  it('#389 adversarial-length engram does not hang the scan (ReDoS guard)', () => {
+    const evil = EngramSchema.parse({
+      id: 'ENG-2026-0101-301',
+      statement: 'x@' + 'a.'.repeat(80_000) + '!',
+      type: 'behavioral', scope: 'global', status: 'active', visibility: 'public',
+    })
+    expect(() =>
+      exportPack([evil], join(dir, 'exp-redos'), { name: 'exp-redos', version: '1.0.0' }),
+    ).not.toThrow()
+  }, 2000)
+
+  // #389 review (blocker 2) / systemic packs gap: the export gate used
+  // detectSecrets, which never scanned the infra family (public IPs, internal
+  // hosts) — the exact 2026-06 leak class. detectSensitive must now block them.
+  it('#389 export blocks an infra leak (public IP) the old detectSecrets missed', () => {
+    const infra = EngramSchema.parse({
+      id: 'ENG-2026-0101-302',
+      statement: 'deploy target',
+      summary: 'server at 8.8.8.8 handles prod',
+      type: 'behavioral', scope: 'global', status: 'active', visibility: 'public',
+    })
+    expect(
+      exportPack([infra], join(dir, 'exp-infra'), { name: 'exp-infra', version: '1.0.0' }).engram_count,
+    ).toBe(0)
+  })
+
   it('install allows injection text when allowInjection override is set', () => {
     const packDir = join(dir, 'injection-pack-ok')
     mkdirSync(packDir)
