@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Security: sensitivity scan window raised to 1 MiB and fail-closed past it (#386)
+
+`detectSensitive()` truncated its input to the first 64 KB before scanning, then silently passed the rest. The infra-topology detectors (`public_ipv4`, `public_ipv6`, `basic_auth_url`, `fqdn_port`, `ipv4_port`, `internal_host`) exist only in `detectSensitive`, so an engram whose first 64 KB was benign filler but which carried a public IP / basic-auth URL / internal host **after** byte 64 KB passed the write guard un-demoted and was written to a shared/remote store (and slipped past `filterPublishable`).
+
+- The scan window is raised from 64 KB to **1 MiB** — far above any realistic engram. The detector regexes are bounded/linear; a benign full-window pass is ~7ms/64KB but adversarial regex-dense input measured ~300–420 ms for a full 1 MiB pass (#386 review). Total scan work is capped at 1 MiB regardless of input size (bounded, linear — a per-write CPU cost on >64KB engrams, not a DoS).
+- Input larger than the ceiling is now **fail-closed**: `detectSensitive` appends a synthetic `scan_truncated` hit so `_guardSensitiveScope` demotes the write and `filterPublishable` excludes the engram — the unscanned tail can no longer be assumed clean. The `scan_truncated` signal is always offending regardless of a scope's `sensitivity` policy.
+- **Packs export inherits this** (via #389): `scanPrivacy` now routes through `detectSensitive` + `truncateToScanLimit`, so the raised window, the infra-family detectors, and the `scan_truncated` fail-closed all apply to `exportPack`/`installPack` too — the "...and packs" half of #386, delivered by the #389 packs-scan change rather than here.
+
+**Behavior change:** infra/secret content anywhere in the first 1 MiB is now detected and demoted; an engram larger than 1 MiB destined for a shared/remote scope is demoted to `local`/`private` (fail-closed) rather than silently passing.
+
 ### Security: `plur sync` never commits secrets or machine-local files (#380, #384)
 
 `plur sync` could commit and push `~/.plur/config.yaml` — which holds remote-store Bearer tokens — to any git remote, because the sync `.gitignore` excluded only derived/cache files and `git add -A` staged everything else. It also ran `git config core.excludesFile /dev/null`, defeating any protective ignore a security-conscious user had configured (#384).
