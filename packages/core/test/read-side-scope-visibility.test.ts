@@ -22,7 +22,7 @@ import { join } from 'path'
 import { tmpdir } from 'os'
 import yaml from 'js-yaml'
 import { Plur } from '../src/index.js'
-import { isPersonalScope, isSharedScope } from '../src/scope-util.js'
+import { isPersonalScope, isSharedScope, isScopeWithin } from '../src/scope-util.js'
 
 import { createRequire } from 'module'
 const require = createRequire(import.meta.url)
@@ -172,3 +172,61 @@ describe('PR-1 read-side scope visibility (NON-indexed path, #353)', () => {
     expect(ids).toContain(sub.id)
   })
 })
+
+// --- #383: segment-aware scope membership — no sibling-prefix bleed ---
+describe('#383 isScopeWithin predicate', () => {
+  it('matches a descendant only on a real delimiter (`:` / `/`), never a string-prefix sibling', () => {
+    // exact + true descendants
+    expect(isScopeWithin('project:app', 'project:app')).toBe(true)
+    expect(isScopeWithin('project:app:sub', 'project:app')).toBe(true)
+    expect(isScopeWithin('project:app/x', 'project:app')).toBe(true)
+    expect(isScopeWithin('group:plur/eng/team', 'group:plur/eng')).toBe(true)
+    // sibling string-prefixes must NOT match (the leak)
+    expect(isScopeWithin('project:application', 'project:app')).toBe(false)
+    expect(isScopeWithin('project:app-secret', 'project:app')).toBe(false)
+    expect(isScopeWithin('group:plur/eng-private', 'group:plur/eng')).toBe(false)
+  })
+})
+
+// End-to-end isolation across BOTH read paths (indexed SQL + non-indexed filter)
+// and BOTH directions, asserting true descendants stay visible. (#383)
+for (const indexed of [true, false]) {
+  const label = indexed ? 'indexed' : 'non-indexed'
+  const block = indexed ? describe.skipIf(!hasSqlite) : describe
+  block(`#383 sibling-prefix scope isolation (${label} path)`, () => {
+    let dir: string
+    let plur: Plur
+
+    beforeEach(() => {
+      dir = mkdtempSync(join(tmpdir(), 'plur-383-'))
+      writeFileSync(join(dir, 'config.yaml'), yaml.dump({ index: indexed }, { noRefs: true }))
+      plur = new Plur({ path: dir })
+    })
+    afterEach(() => { rmSync(dir, { recursive: true, force: true }) })
+
+    it('a string-prefix sibling is NOT visible under the shorter scope (recall + inject + list)', () => {
+      const collide = plur.learn(STMT('collide'), { scope: 'project:application' })
+      expect(recallSeesId(plur, 'project:app', collide.id)).toBe(false)
+      expect(injectSeesId(plur, 'project:app', collide.id)).toBe(false)
+      expect(plur.list({ scope: 'project:app' }).map(e => e.id)).not.toContain(collide.id)
+    })
+
+    it('the reverse direction is isolated too (group:plur/eng-private under group:plur/eng)', () => {
+      const priv = plur.learn(STMT('grppriv'), { scope: 'group:plur/eng-private' })
+      expect(recallSeesId(plur, 'group:plur/eng', priv.id)).toBe(false)
+      expect(injectSeesId(plur, 'group:plur/eng', priv.id)).toBe(false)
+    })
+
+    it('a true descendant (project:app:sub) IS still visible under the parent scope', () => {
+      const sub = plur.learn(STMT('appsub'), { scope: 'project:app:sub' })
+      expect(recallSeesId(plur, 'project:app', sub.id)).toBe(true)
+      expect(injectSeesId(plur, 'project:app', sub.id)).toBe(true)
+    })
+
+    it('an exact-scope engram remains visible (sanity)', () => {
+      const exact = plur.learn(STMT('exact'), { scope: 'project:app' })
+      expect(recallSeesId(plur, 'project:app', exact.id)).toBe(true)
+      expect(injectSeesId(plur, 'project:app', exact.id)).toBe(true)
+    })
+  })
+}
