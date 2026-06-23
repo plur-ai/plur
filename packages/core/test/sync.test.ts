@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, beforeAll, afterAll } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from 'fs'
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, mkdirSync } from 'fs'
 import { execSync } from 'child_process'
 import { join } from 'path'
 import { tmpdir } from 'os'
@@ -85,12 +85,90 @@ describe('sync', () => {
       expect(gitignore).toContain('embeddings/')
       expect(gitignore).toContain('*.db')
       expect(gitignore).toContain('exchange/')
+      // Secrets must be ignored so they never ride along into a synced repo (#380).
+      expect(gitignore).toContain('config.yaml')
+      expect(gitignore).toContain('secrets.yaml')
     })
 
     it('commits all existing files', () => {
       sync(dir)
       const log = git('log --oneline', dir)
       expect(log).toContain('Initial PLUR engram store')
+    })
+
+    it('does not neutralize the user global excludes with /dev/null (#384)', () => {
+      sync(dir)
+      let val = ''
+      try { val = git('config --local --get core.excludesFile', dir) } catch { val = '' }
+      expect(val).not.toBe('/dev/null')
+    })
+  })
+
+  describe('secret safety (#380, #384)', () => {
+    const TOKEN = 'eyJSECRETtokenABC123'
+    const configWithToken = `stores:\n  - url: https://plur.datafund.io\n    token: ${TOKEN}\n    scope: group:plur/plur-ai/engineering\n`
+
+    it('never commits config.yaml even when it holds a Bearer token', () => {
+      writeFileSync(join(dir, 'config.yaml'), configWithToken)
+      sync(dir)
+      // config.yaml must not be tracked...
+      expect(git('ls-files', dir).split('\n')).not.toContain('config.yaml')
+      // ...and no committed blob may contain the token.
+      const history = git('log -p --all', dir)
+      expect(history).not.toContain(TOKEN)
+    })
+
+    it('untracks a config.yaml committed by a vulnerable client on the next sync', () => {
+      // Reproduce the pre-fix state: a repo that already committed the secret.
+      git('init', dir)
+      writeFileSync(join(dir, 'config.yaml'), configWithToken)
+      git('add -A -f', dir)
+      git('commit -m "legacy commit with secret"', dir)
+      expect(git('ls-files', dir).split('\n')).toContain('config.yaml')
+      // The fixed sync untracks it (stops the bleeding; history purge is operational).
+      writeFileSync(join(dir, 'engrams.yaml'), '- id: ENG-002\n  statement: new\n')
+      sync(dir)
+      expect(git('ls-files', dir).split('\n')).not.toContain('config.yaml')
+    })
+
+    it('does not commit machine-local derived files (engrams.db, store.pglite/)', () => {
+      writeFileSync(join(dir, 'engrams.db'), 'binary-ish')
+      writeFileSync(join(dir, 'secrets.yaml'), 'token: nope\n')
+      sync(dir)
+      const tracked = git('ls-files', dir).split('\n')
+      expect(tracked).not.toContain('engrams.db')
+      expect(tracked).not.toContain('secrets.yaml')
+    })
+
+    it('force-stages a new engram file even when an excludes file would ignore it (#329)', () => {
+      // A user whose git excludes file ignores engram files must still get them synced.
+      git('init', dir)
+      const excludes = join(dir, '.git', 'plur-excludes')
+      writeFileSync(excludes, 'engrams.yaml\nepisodes.yaml\n')
+      git(`config --local core.excludesFile ${excludes}`, dir)
+      // engrams.yaml (from beforeEach) is untracked and matched by the excludes file.
+      sync(dir)
+      expect(git('ls-files', dir).split('\n')).toContain('engrams.yaml')
+    })
+
+    it('never commits a secret nested inside a pack dir (#387 review)', () => {
+      // `packs` is force-added (-f), so .gitignore can't stop a secret inside a
+      // pack — and packs come from untrusted sources. The exclude-pathspecs must.
+      const packDir = join(dir, 'packs', 'evil-pack')
+      mkdirSync(packDir, { recursive: true })
+      writeFileSync(join(packDir, 'SKILL.md'), '---\nname: evil-pack\n---\n')
+      writeFileSync(join(packDir, 'config.yaml'), configWithToken)
+      writeFileSync(join(packDir, 'secrets.yaml'), `token: ${TOKEN}\n`)
+      writeFileSync(join(packDir, 'creds.token'), TOKEN)
+      sync(dir)
+      const tracked = git('ls-files', dir).split('\n')
+      expect(tracked).not.toContain('packs/evil-pack/config.yaml')
+      expect(tracked).not.toContain('packs/evil-pack/secrets.yaml')
+      expect(tracked).not.toContain('packs/evil-pack/creds.token')
+      // the pack's non-secret content still rides along
+      expect(tracked).toContain('packs/evil-pack/SKILL.md')
+      // and no committed blob carries the token
+      expect(git('log -p --all', dir)).not.toContain(TOKEN)
     })
   })
 

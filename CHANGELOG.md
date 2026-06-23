@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### Security: `plur sync` never commits secrets or machine-local files (#380, #384)
+
+`plur sync` could commit and push `~/.plur/config.yaml` — which holds remote-store Bearer tokens — to any git remote, because the sync `.gitignore` excluded only derived/cache files and `git add -A` staged everything else. It also ran `git config core.excludesFile /dev/null`, defeating any protective ignore a security-conscious user had configured (#384).
+
+- **Allowlist staging.** Sync now stages *only* the engram-store files (`engrams.yaml`, `episodes.yaml`, `candidates.yaml`, `packs/`, `.gitignore`) via a force-add (`git add -A -f -- <allowlist>`). Secrets (`config.yaml`, `secrets.yaml`) and machine-local derived files (`engrams.db`, `store.pglite/`, `exchange/`) are no longer in the staging pathspec, so they **cannot** ride along regardless of how the user's gitignore is configured.
+- **Pack-nested secrets excluded.** Because `packs/` is force-added, a secret *inside* a pack (`packs/<name>/config.yaml`, `secrets.yaml`, `*.token`) would otherwise ride past `.gitignore` — and packs install from untrusted sources. The force-add now carries `:(exclude)packs/**/config.yaml` / `secrets.yaml` / `*.token` pathspecs so those never stage, while the pack's real content still syncs (#387 review).
+- **No more global-excludes neutralization.** The `core.excludesFile=/dev/null` call is removed. The force-add on the allowlist preserves the #329 guarantee (engram files stage even when a user's global excludes would ignore them) without stripping the user's protection for everything else.
+- **Self-healing.** Sync untracks `config.yaml`/`secrets.yaml` if a vulnerable pre-fix client already committed them, so the next sync stops carrying the secret forward. (Rotating the exposed token and purging git history remain manual operational steps.)
+- The sync `.gitignore` now also lists the secret files and `store.pglite/` as defense-in-depth.
+
+**Behavior change:** synced repos created before this fix that contain `config.yaml` will have it untracked on the next `plur sync`. If a token was already pushed to a shared/public remote, rotate it and purge it from history.
+
 ### Security: pack secret/PII scan covers the full serialized engram (#381)
 
 `scanPrivacy` ran `detectSecrets` over only `statement + rationale + source`, while `exportPack` serializes the *whole* engram. Any exported-but-unscanned field was a leak: `summary` (formatLayer1), and the caller-supplied `domain`, `tags`, `structured_data`, and `contraindications` all exported with `clean: true`, defeating the "secrets are ALWAYS blocked" export invariant.
