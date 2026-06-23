@@ -398,11 +398,13 @@ export function truncateToScanLimit(text: string): string {
  * the 2026-06 leak, several of the worst engrams were mistagged `public`).
  * Returns [] only when clean.
  *
- * Scans at most the first 64KB of input. Inputs over the cap are truncated (a
- * leading credential is still caught); callers must NOT assume full-input
- * scanning. The cap is applied here, so all three call sites — `detectSensitive`
- * itself, the publish loop (publish.ts), and `_guardSensitiveScope`'s scanText
- * (index.ts) — inherit the bound.
+ * Scans at most the first MAX_SCAN_BYTES (1 MiB) of input. Input OVER the cap is
+ * NOT silently truncated-and-passed: a synthetic `scan_truncated` hit is emitted
+ * so the unscanned tail is treated as offending (fail-closed, #386). The cap is
+ * applied here, so the real call sites — the write guard (`_guardSensitiveScope`
+ * / `_offendingHitsForScope` in index.ts) and the pack privacy scan (`scanPrivacy`
+ * in packs.ts) — inherit the bound. (The former engram-publish filter `publish.ts`
+ * was removed in #400; it is no longer a consumer.)
  */
 export function detectSensitive(text: string): SecretMatch[] {
   if (typeof text !== 'string') {

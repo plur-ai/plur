@@ -979,16 +979,17 @@ export class Plur {
 
   /**
    * Collect the context-ish fields of an engram (rationale, source, snippet,
-   * dual_coding, domain, structured_data) into a plain object for the
-   * explicit-update / meta / outbox-reguard leak scan (LOW-2, #353). Mirrors the
-   * field set a LearnContext carries into `_guardSensitiveScope` — which scans
-   * `JSON.stringify(context)`, and `context.domain` is part of LearnContext, so
-   * `domain` must be reconstructed here too or the reconstruct-from-engram guards
-   * (update/meta/outbox) scan a strictly smaller surface than learn-time. `domain`
-   * IS sent to the remote API, so a host:port / basic-auth value placed there would
-   * otherwise reach a shared/remote store unguarded on the outbox flush (#405).
-   * Classification domains (`software.architecture`, `plur.memory-model`) produce
-   * no detector hits, so scanning `domain` adds no false-positive demotions.
+   * dual_coding, domain, tags, knowledge_anchors, structured_data) into a plain
+   * object for the explicit-update / meta / outbox-reguard leak scan (LOW-2, #353).
+   * Must mirror the field set a LearnContext carries into `_guardSensitiveScope` —
+   * which scans `JSON.stringify(context)`. LearnContext carries `domain`, `tags`,
+   * and `knowledge_anchors`, so all three must be reconstructed here too, or the
+   * reconstruct-from-engram guards (update / meta / outbox-reguard) scan a strictly
+   * SMALLER surface than learn-time and than the learnAsync demote (which scans
+   * tags, #409) — letting a host:port / basic-auth value placed in a `tag` (or an
+   * anchor snippet/path, or `domain`) ride to a git-synced shared scope unguarded
+   * (pre-Crt audit, #405/#409 parity). Classification domains and ordinary tags
+   * produce no detector hits, so scanning them adds no false-positive demotions.
    * Returns undefined when none are present so the scan text stays statement-only.
    *
    * PLUR-internal bookkeeping keys in `structured_data` (underscore-prefixed:
@@ -1001,7 +1002,7 @@ export class Plur {
   private _engramContextFields(engram: Engram): Record<string, unknown> | undefined {
     const e = engram as Record<string, unknown>
     const fields: Record<string, unknown> = {}
-    for (const k of ['rationale', 'source', 'snippet', 'dual_coding', 'domain'] as const) {
+    for (const k of ['rationale', 'source', 'snippet', 'dual_coding', 'domain', 'tags', 'knowledge_anchors'] as const) {
       if (e[k] != null) fields[k] = e[k]
     }
     const sd = e.structured_data
@@ -1612,7 +1613,12 @@ export class Plur {
       consolidated: false,
       type,
       scope,
-      visibility: context?.visibility ?? (context?.domain ? 'public' : 'private'),
+      // #401: default visibility to 'private' here too. This is the learnRouted
+      // constructor — the PRIMARY production write path (plur_learn / CLI both go
+      // through learnRouted), where `visibility` is never supplied and `domain`
+      // usually is. The old `domain ? 'public'` default silently shipped real
+      // learns as public. Mirrors the learn() constructor's #401 fix above.
+      visibility: context?.visibility ?? 'private',
       statement,
       rationale: context?.rationale,
       source: context?.source,

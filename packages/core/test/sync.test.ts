@@ -174,11 +174,15 @@ describe('sync', () => {
       writeFileSync(join(packDir, 'config.yaml'), configWithToken)
       writeFileSync(join(packDir, 'secrets.yaml'), `token: ${TOKEN}\n`)
       writeFileSync(join(packDir, 'creds.token'), TOKEN)
+      // pre-Crt audit: the keystore had only ROOT protection; a copy nested in a
+      // pack rode into the pushed repo because it wasn't in PACK_SECRET_EXCLUDES.
+      writeFileSync(join(packDir, 'agent-keystore.json'), `{"crypto":{"ciphertext":"${TOKEN}"}}`)
       sync(dir)
       const tracked = git('ls-files', dir).split('\n')
       expect(tracked).not.toContain('packs/evil-pack/config.yaml')
       expect(tracked).not.toContain('packs/evil-pack/secrets.yaml')
       expect(tracked).not.toContain('packs/evil-pack/creds.token')
+      expect(tracked).not.toContain('packs/evil-pack/agent-keystore.json')
       // the pack's non-secret content still rides along
       expect(tracked).toContain('packs/evil-pack/SKILL.md')
       // and no committed blob carries the token

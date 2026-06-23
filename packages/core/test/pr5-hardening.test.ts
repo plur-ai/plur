@@ -230,6 +230,18 @@ describe('LOW-1 — saveMetaEngrams runs the leak guard before persist', () => {
     expect(saved!.visibility).toBe('private')
   })
 
+  it('demotes a SHARED-scope meta whose sensitive content is in a TAG (pre-Crt audit — tags parity with #409)', () => {
+    // Statement clean; the infra host:port rides ONLY in a tag. _engramContextFields
+    // previously omitted `tags`, so saveMetaEngrams scanned a smaller surface than
+    // learn-time and the tag reached the shared (git-synced) scope unguarded.
+    const plur = freshPlur()
+    const m = meta({ statement: 'a clean meta statement', tags: ['db.internal:5432'], scope: SHARED_SCOPE })
+    plur.saveMetaEngrams([m])
+    const saved = plur.list().find(e => e.id === m.id) as (Engram & { visibility?: string }) | undefined
+    expect(saved!.scope).toBe('local')
+    expect(saved!.visibility).toBe('private')
+  })
+
   it('THROWS on a raw secret in a SHARED-scope meta (HARD detectSecrets check)', () => {
     const plur = freshPlur()
     const m = meta({ statement: 'the api key is sk-aaaabbbbccccddddeeeeffffgggg', scope: SHARED_SCOPE })

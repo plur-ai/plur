@@ -279,14 +279,16 @@ describe('squash math — auto-route boundaries (#353 finding-11)', () => {
   })
 
   it('FIVE keyword-only hits still do NOT auto-route', () => {
-    // 5 keyword hits → raw = 5*0.2 = 1.0. squash(1.0)=1.0/2.5=0.40 < 0.5.
-    // Preserves "domain >> keyword": no pile of weak keywords out-routes one domain.
+    // 5 keyword hits → raw = 5*0.2 = 1.0, capped at MAX_KEYWORD_RAW (lowered to 0.8
+    // pre-Crt audit so keyword + 1 coincidental tag can't tip over). squash(0.8) =
+    // 0.8/2.3 ≈ 0.348 < 0.5. Preserves "domain >> keyword": no pile of weak
+    // keywords out-routes one domain.
     const ranked = rankScopes(
       { statement: 'alpha beta gamma delta epsilon' },
       [{ scope: 'group:plur/x', covers: ['alpha', 'beta', 'gamma', 'delta', 'epsilon'] }],
     )
     expect(ranked).toHaveLength(1)
-    expect(ranked[0].confidence).toBeCloseTo(0.4, 4)
+    expect(ranked[0].confidence).toBeCloseTo(0.3478, 3)
     expect(ranked[0].confidence).toBeLessThan(SCOPE_MATCH_THRESHOLD)
   })
 
@@ -415,6 +417,20 @@ describe('rankScopes — keyword-only cap (#395)', () => {
     const domainOnly = rankScopes({ statement: 'x', domain: 'acme.eng.api' }, [scope])[0]
     const domainPlusKeywords = rankScopes({ statement: 'alpha bravo charlie', domain: 'acme.eng.api' }, [scope])[0]
     expect(domainPlusKeywords.confidence).toBeGreaterThan(domainOnly.confidence)
+  })
+
+  it('keyword-coincidence + ONE coincidental tag still does NOT clear the threshold (pre-Crt audit)', () => {
+    // The original cap (1.0) let keyword(1.0)+1 tag(0.5)=1.5 squash to exactly 0.5
+    // and auto-route a generic, no-domain engram into a shared scope. The lowered
+    // cap keeps keyword + 1 tag below the gate.
+    const scope = { scope: 'group:acme/eng', covers: ['acme.platform.core.security.auth.tokens', 'alpha'] }
+    const ranked = rankScopes(
+      { statement: 'platform core security auth tokens notes', tags: ['alpha'] }, // tag 'alpha' coincidentally matches a cover
+      [scope],
+    )
+    expect(ranked).toHaveLength(1)
+    expect(ranked[0].domainMatch).toBe(false)               // genuinely no domain intent
+    expect(ranked[0].confidence).toBeLessThan(SCOPE_MATCH_THRESHOLD) // must not auto-route
   })
 })
 

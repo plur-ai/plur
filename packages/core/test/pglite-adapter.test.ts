@@ -21,6 +21,7 @@ import { join } from 'path'
 import { tmpdir } from 'os'
 import yaml from 'js-yaml'
 import { PGLiteAdapter } from '../src/storage-pglite.js'
+import { isSharedScope, isPersonalScope } from '../src/index.js'
 import type { Engram } from '../src/schemas/engram.js'
 
 function mkEngram(id: string, statement: string, opts: Partial<Engram> = {}): Engram {
@@ -199,6 +200,30 @@ describe('PGLiteAdapter — substrate', () => {
       // project:a + EVERY personal-family scope (global, local, user:*); project:b stays out.
       // Pre-#402 the hardcoded `scope = 'global'` dropped local + user:* here.
       expect(ids).toEqual(['ENG-2026-0530-101', 'ENG-2026-0530-103', 'ENG-2026-0530-104', 'ENG-2026-0530-105'])
+      await adapter.close()
+    }, PGLITE_TIMEOUT)
+
+    it('drift guard: pglite scope classification matches isSharedScope for every prefix + boundary (#402/#403)', async () => {
+      // The pglite filter re-encodes SHARED_SCOPE_PREFIXES as raw SQL. This pins it
+      // to the canonical isSharedScope: if a new prefix is added to the list but not
+      // the SQL, this fails. Oracle: a scope is visible under `project:probe` iff it
+      // is personal-family OR within the probe namespace on a real delimiter.
+      const probe = 'project:probe'
+      const within = (s: string) => s === probe || s.startsWith(probe + ':') || s.startsWith(probe + '/')
+      const battery = [
+        probe, 'project:probe/sub', 'project:probeextra',      // exact / descendant / sibling-prefix
+        'global', 'local', 'user:gregor', 'agent:bot',          // personal-family
+        'group:other', 'team:x', 'space:y', 'org:z',            // other shared
+        'public', 'public:roadmap', 'publicfoobar', 'public-roadmap', // #403 public edge cases
+      ]
+      seedYaml(yamlPath, battery.map((s, i) => mkEngram(`ENG-2026-0531-${String(i).padStart(3, '0')}`, s, { scope: s })))
+      const adapter = new PGLiteAdapter(yamlPath, dbPath)
+      await adapter.reindex()
+      const visible = new Set((await adapter.loadFiltered({ scope: probe })).map(e => (e as { scope: string }).scope))
+      for (const s of battery) {
+        const expected = isPersonalScope(s) || within(s)
+        expect(visible.has(s), `${s} (shared=${isSharedScope(s)}) expected visible=${expected}`).toBe(expected)
+      }
       await adapter.close()
     }, PGLITE_TIMEOUT)
 
