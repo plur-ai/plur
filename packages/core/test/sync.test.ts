@@ -88,6 +88,7 @@ describe('sync', () => {
       // Secrets must be ignored so they never ride along into a synced repo (#380).
       expect(gitignore).toContain('config.yaml')
       expect(gitignore).toContain('secrets.yaml')
+      expect(gitignore).toContain('agent-keystore.json')
     })
 
     it('commits all existing files', () => {
@@ -129,6 +130,19 @@ describe('sync', () => {
       writeFileSync(join(dir, 'engrams.yaml'), '- id: ENG-002\n  statement: new\n')
       sync(dir)
       expect(git('ls-files', dir).split('\n')).not.toContain('config.yaml')
+    })
+
+    it('untracks an agent-keystore.json committed by a vulnerable client on the next sync (#392)', () => {
+      // The 2026-06 incident exposed agent-keystore.json (an encrypted agent key)
+      // the same way as config.yaml — committed to the store repo and pushed.
+      git('init', dir)
+      writeFileSync(join(dir, 'agent-keystore.json'), '{"address":"x.eth","crypto":{"ciphertext":"deadbeef"}}')
+      git('add -A -f', dir)
+      git('commit -m "legacy commit with keystore"', dir)
+      expect(git('ls-files', dir).split('\n')).toContain('agent-keystore.json')
+      writeFileSync(join(dir, 'engrams.yaml'), '- id: ENG-003\n  statement: new\n')
+      sync(dir)
+      expect(git('ls-files', dir).split('\n')).not.toContain('agent-keystore.json')
     })
 
     it('does not commit machine-local derived files (engrams.db, store.pglite/)', () => {

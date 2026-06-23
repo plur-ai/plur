@@ -518,6 +518,36 @@ describe('pack management', () => {
     ).toBe(0)
   })
 
+  // #398: a SHARED pack must not carry PII either. exportPack previously excluded
+  // only secrets + private-tagged engrams; personal paths, emails, and private IPs
+  // rode along. Now ANY scanPrivacy issue is disqualifying for export.
+  it('#398 export excludes engrams with PII (personal path / private IP / email)', () => {
+    const personalPath = EngramSchema.parse({
+      id: 'ENG-2026-0101-398a', statement: 'notes live in /Users/gregor/secrets/plan.md',
+      type: 'behavioral', scope: 'global', status: 'active', visibility: 'public',
+    })
+    const privateIp = EngramSchema.parse({
+      id: 'ENG-2026-0101-398b', statement: 'the box is on the LAN', summary: 'reachable at 192.168.1.50',
+      type: 'behavioral', scope: 'global', status: 'active', visibility: 'public',
+    })
+    const email = EngramSchema.parse({
+      id: 'ENG-2026-0101-398c', statement: 'ping the owner', source: 'gregor.private@example.com',
+      type: 'behavioral', scope: 'global', status: 'active', visibility: 'public',
+    })
+    expect(exportPack([personalPath], join(dir, 'exp-pp'), { name: 'exp-pp', version: '1.0.0' }).engram_count).toBe(0)
+    expect(exportPack([privateIp], join(dir, 'exp-ip'), { name: 'exp-ip', version: '1.0.0' }).engram_count).toBe(0)
+    expect(exportPack([email], join(dir, 'exp-em'), { name: 'exp-em', version: '1.0.0' }).engram_count).toBe(0)
+  })
+
+  // BOUNDARY: a clean public engram must still export — the PII gate must not over-block.
+  it('#398 export still includes a clean public engram', () => {
+    const clean = EngramSchema.parse({
+      id: 'ENG-2026-0101-398ok', statement: 'prefer composition over inheritance',
+      type: 'behavioral', scope: 'global', status: 'active', visibility: 'public',
+    })
+    expect(exportPack([clean], join(dir, 'exp-clean'), { name: 'exp-clean', version: '1.0.0' }).engram_count).toBe(1)
+  })
+
   it('install allows injection text when allowInjection override is set', () => {
     const packDir = join(dir, 'injection-pack-ok')
     mkdirSync(packDir)
