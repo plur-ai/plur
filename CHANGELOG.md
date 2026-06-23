@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### Security: pack secret/PII scan covers the full serialized engram (#381)
+
+`scanPrivacy` ran `detectSecrets` over only `statement + rationale + source`, while `exportPack` serializes the *whole* engram. Any exported-but-unscanned field was a leak: `summary` (formatLayer1), and the caller-supplied `domain`, `tags`, `structured_data`, and `contraindications` all exported with `clean: true`, defeating the "secrets are ALWAYS blocked" export invariant.
+
+- **Secret/PII scan is now serialize-based.** `scanPrivacy` scans the *serialized engram payload* (every caller-settable field, including future additions) for secrets, personal paths, emails, and private IPs — not a hand-maintained field list, which is the same enumerate-vs-serialize drift that caused the bug. Fields `exportPack` strips (`relations`/`associations`/`knowledge_anchors`) and internal/numeric bookkeeping are excluded so they don't cause false rejections; PLUR-internal `_`-prefixed `structured_data` keys are dropped. `installPack` blocks and `exportPack` filters an engram with a secret in any scanned field.
+- **Infra family is now scanned (review fix).** The serialized scan uses `detectSensitive` (a superset of `detectSecrets`), so public IPv4/IPv6, internal hosts, basic-auth URLs and host:port topology — the 2026-06 infra-leak class — are blocked on pack export/install, not just API-key-shaped secrets. The previous `detectSecrets` gate missed all of these, so an infra leak in `summary`/`tags`/`source` exported clean.
+- **ReDoS guard (review fix).** The serialized scan input is capped (`truncateToScanLimit`, 64 KB) before any regex runs, and the email matcher now uses bounded quantifiers. Uncapped, an attacker-authored engram with a long dotted run after `@` made the email regex backtrack ~8–17s, hanging `previewPack`/`installPack`/`exportPack`.
+- **Prompt-injection scan stays field-based** (`statement + rationale + source + summary + domain`) — only fields rendered into agent context can carry an effective injection, and scanning arbitrary metadata would add false positives.
+- `learn()` / `learnRouted()` now secret-scan the caller-supplied `domain`, `tags`, and `abstract` (not just `statement`) when `allow_secrets` is false, rejecting a secret in any of them at write time.
+
+**Behavior change:** a pack engram carrying a secret in any exported field (`summary`/`domain`/`tags`/`structured_data`/`contraindications`/…) is now blocked on install / filtered on export; a `learn` with a secret in `domain`/`tags`/`abstract` throws unless `allow_secrets` is set.
+
 ### Security: scope auto-registration refuses personal-family scopes from `/me` (#382)
 
 `registerDiscoveredScopes()` registered **every** scope a server returned from `GET /api/v1/me` as a writable remote store, with no shared-scope check. A compromised or MITM'd endpoint could return `scopes: ['global', 'user:<victim>', 'local']`; registering `global` (the default unscoped routing fallback) as a writable remote store would route every later default/unscoped `learn` to the attacker's server.

@@ -371,7 +371,7 @@ function matchInternalHost(text: string): string | null {
 // is still caught; callers must NOT assume full-input scanning.
 const MAX_SCAN_BYTES = 65536
 
-function truncateToScanLimit(text: string): string {
+export function truncateToScanLimit(text: string): string {
   // Buffer.byteLength avoids materializing a Buffer for the common (small) case.
   if (Buffer.byteLength(text, 'utf8') <= MAX_SCAN_BYTES) return text
   // Replace-mode decode (default) — a multi-byte char split at the boundary
