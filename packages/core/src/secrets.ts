@@ -364,8 +364,10 @@ function matchInternalHost(text: string): string | null {
 // engrams and `_guardSensitiveScope` scans statement + JSON.stringify(context),
 // so an unbounded input is an unbounded scan. Every pattern is now bounded
 // (basic_auth_url reaudit #1, fqdn_port reaudit #3 — both rewritten to linear-time
-// forms with no `+`-over-`+` ambiguity), so a single linear pass is ~7ms/64KB
-// under V8 Irregexp; a full 1 MiB pass is ~100ms worst case. We therefore scan a
+// forms with no `+`-over-`+` ambiguity). Benign filler is ~7ms/64KB under V8
+// Irregexp, but adversarial regex-dense input is ~4x that: a full 1 MiB pass
+// measured ~300-420ms worst case (#386 review). Still bounded and linear — this
+// is a per-write CPU cost on >64KB engrams, not a DoS. We therefore scan a
 // generous 1 MiB window — far above any realistic engram — instead of the old
 // 64KB cap, which left infra-family content past byte 64KB UN-scanned and
 // silently passed to shared/remote stores (the #386 blind spot).
