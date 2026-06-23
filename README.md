@@ -1,8 +1,25 @@
 # PLUR — Your agents share the same memory
 
+[![npm version](https://img.shields.io/npm/v/@plur-ai/core?logo=npm&color=cb3837)](https://www.npmjs.com/package/@plur-ai/core)
+[![CI](https://img.shields.io/github/actions/workflow/status/plur-ai/plur/ci.yml?branch=main&logo=github&label=CI)](https://github.com/plur-ai/plur/actions/workflows/ci.yml)
+[![License: Apache-2.0](https://img.shields.io/github/license/plur-ai/plur?color=blue)](LICENSE)
+[![GitHub stars](https://img.shields.io/github/stars/plur-ai/plur?style=social)](https://github.com/plur-ai/plur/stargazers)
+
 Persistent memory for AI agents. Local-first, zero-cost, works across MCP tools.
 
 [plur.ai](https://plur.ai) · [Benchmark](https://plur.ai/benchmark.html) · [Engram Spec](https://plur.ai/spec.html) · [npm](https://www.npmjs.com/org/plur-ai)
+
+## Benchmarks
+
+Same task, same prompt — one agent with PLUR memory, one without. Across Haiku, Sonnet, and Opus:
+
+| Knowledge type | Without memory | With PLUR | What it tests |
+|----------------|----------------|-----------|---------------|
+| House rules | 10–38% | **12–0** | Tag conventions, file routing, structure |
+| Tool routing | 1.0× | **2.6×** | Finding the right tool among 100+ |
+| Discoverability | Opus 0.31 | **Haiku 0.80** | Local-knowledge recall |
+
+**31 wins, 4 losses (89% win rate).** Haiku + PLUR outperforms Opus without it — at roughly **10× less cost**. [Full methodology →](https://plur.ai/benchmark.html)
 
 ## The idea
 
@@ -150,7 +167,7 @@ plur.sync('git@github.com:you/plur-memory.git')
 | `plur_sync` | Sync across devices via git |
 | `plur_status` | Check system health and engram counts |
 
-## Benchmark
+## Benchmark details
 
 We ran 19 decisive contests across three Claude models (Haiku, Sonnet, Opus). Same task, same prompt — one agent with PLUR, one without. Ties removed.
 
