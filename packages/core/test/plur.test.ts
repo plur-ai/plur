@@ -484,6 +484,15 @@ describe('Plur', () => {
     expect(engram.derived_from).toBeNull()
   })
 
+  it('#401 having a domain does NOT default visibility to public', () => {
+    // A domain is a topic classification most engrams carry; it must not
+    // auto-publish. Visibility stays private unless set deliberately.
+    const withDomain = plur.learn('Categorized note', { scope: 'global', domain: 'software.architecture' })
+    expect(withDomain.visibility).toBe('private')
+    const explicitPublic = plur.learn('Deliberately shared', { scope: 'global', domain: 'software.architecture', visibility: 'public' })
+    expect(explicitPublic.visibility).toBe('public')
+  })
+
   it('inject returns injected_ids array', () => {
     plur.learn('Always use blue-green deploy strategies', { scope: 'global' })
     plur.learn('Database for myapp is PostgreSQL', { scope: 'project:myapp' })

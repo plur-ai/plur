@@ -1272,7 +1272,10 @@ export class Plur {
         consolidated: false,
         type,
         scope,
-        visibility: context?.visibility ?? (context?.domain ? 'public' : 'private'),
+        // #401: visibility defaults to 'private'. Having a `domain` (a topic
+        // classification most engrams carry) must NOT auto-publish an engram —
+        // public is opt-in, set it deliberately.
+        visibility: context?.visibility ?? 'private',
         statement,
         rationale: context?.rationale,
         source: context?.source,
