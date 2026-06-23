@@ -64,6 +64,15 @@ const WEIGHT_DOMAIN = 1.5
 const WEIGHT_TAG = 0.5
 const WEIGHT_KEYWORD = 0.2
 
+/** Cap on the statement-keyword channel's total raw contribution (#395). Keyword
+ * overlap is a weak, often-coincidental signal — statement words happening to match
+ * a cover's namespace tokens. On its OWN it must never clear the auto-route
+ * threshold and drop a generic engram into a shared team store (8 hits would
+ * otherwise reach 8*0.2 = 1.6 ⟹ squash ≈ 0.52 ≥ 0.5). The cap keeps keyword-only
+ * below the single-domain threshold (squash(1.0) = 0.4 < SCOPE_MATCH_THRESHOLD)
+ * while keywords still BOOST a real domain/tag match toward saturation. */
+const MAX_KEYWORD_RAW = 1.0
+
 /** Weight for a REVERSE-direction domain hit — the engram's `domain` is BROADER
  * than the cover (`domain ⊃ cover`, e.g. domain `plur` against cover `plur.core`).
  * The engram is NOT specific to the scope, so the reverse match is a weak signal:
@@ -150,6 +159,14 @@ export interface ScopeCandidate {
    * Weak signals (tag-only, keyword-only) also leave this `false`.
    */
   coverContainsDomain: boolean
+  /**
+   * Segment depth of the `covers` entry that FORWARD-matched the domain (#399),
+   * e.g. cover `plur.core` → 2, `plur` → 1; 0 when there was no forward match.
+   * Used as a tie-break: between two scopes that both forward-match the same
+   * domain with equal confidence, the MORE specific cover (deeper) is the better
+   * home, so it wins over an alphabetical-name fallback.
+   */
+  coverSpecificity: number
 }
 
 const STOPWORDS = new Set([
@@ -199,13 +216,17 @@ function scoreScope(
   signals: ScopeSignals,
   scope: string,
   covers: string[],
-): { raw: number; reasons: string[]; domainMatch: boolean; coverContainsDomain: boolean } | null {
+): { raw: number; reasons: string[]; domainMatch: boolean; coverContainsDomain: boolean; coverSpecificity: number } | null {
   const normalizedCovers = covers.map(c => ({ raw: c, norm: normalizeCover(c) })).filter(c => c.norm.length > 0)
   if (normalizedCovers.length === 0) return null
 
   let raw = 0
   let domainMatch = false
   let coverContainsDomain = false
+  // Depth (segment count) of the cover that FORWARD-matched the domain (#399).
+  // A deeper cover is a more specific home; used to break ties between two scopes
+  // that both forward-match the same domain with equal confidence.
+  let coverSpecificity = 0
   const reasons: string[] = []
 
   // --- domain-prefix channel (highest weight) ---
@@ -221,6 +242,7 @@ function scoreScope(
         raw += WEIGHT_DOMAIN
         domainMatch = true
         coverContainsDomain = true
+        coverSpecificity = cover.norm.split('.').filter(Boolean).length
         reasons.push(`domain ${domain} ⊂ covers ${cover.raw}`)
         break // one domain hit per scope — domain is single-valued
       }
@@ -255,22 +277,23 @@ function scoreScope(
   }
   reasons.push(...matchedTags)
 
-  // --- statement-keyword channel (low weight) ---
+  // --- statement-keyword channel (low weight, capped #395) ---
   const coverKeywords = new Set(normalizedCovers.flatMap(c => c.norm.split('.')).filter(t => t.length >= 3))
   const statementTokens = new Set(tokenizeStatement(signals.statement))
   const keywordHits: string[] = []
   for (const token of statementTokens) {
-    if (coverKeywords.has(token)) {
-      raw += WEIGHT_KEYWORD
-      keywordHits.push(token)
-    }
+    if (coverKeywords.has(token)) keywordHits.push(token)
   }
   if (keywordHits.length > 0) {
+    // #395: cap the keyword contribution so keyword-only overlap can't reach the
+    // auto-route threshold — a generic engram must not land in a shared scope on
+    // word-coincidence alone. Keywords still boost a real domain/tag match.
+    raw += Math.min(keywordHits.length * WEIGHT_KEYWORD, MAX_KEYWORD_RAW)
     reasons.push(`keywords [${keywordHits.sort().join(', ')}] ∈ covers`)
   }
 
   if (raw <= 0) return null
-  return { raw, reasons, domainMatch, coverContainsDomain }
+  return { raw, reasons, domainMatch, coverContainsDomain, coverSpecificity }
 }
 
 /**
@@ -296,16 +319,21 @@ export function rankScopes(
       reason: scored.reasons.join('; '),
       domainMatch: scored.domainMatch,
       coverContainsDomain: scored.coverContainsDomain,
+      coverSpecificity: scored.coverSpecificity,
     })
   }
   // Sort by confidence desc; on equal confidence prefer a domain-prefix match
   // (so the deterministic-bypass caller picks the genuine domain candidate over
   // a coincidentally-equal weak-signal one — e.g. a lone domain hit and a
-  // three-tag hit both squash to exactly 0.5); finally break remaining ties on
-  // scope name ascending for full determinism.
+  // three-tag hit both squash to exactly 0.5); then, between two scopes that BOTH
+  // forward-match the same domain at equal confidence, prefer the MORE SPECIFIC
+  // cover (#399) — the narrower team that more precisely contains the topic, not
+  // whichever scope name sorts first; finally break remaining ties on scope name
+  // ascending for full determinism.
   candidates.sort((a, b) =>
     b.confidence - a.confidence ||
     (b.domainMatch ? 1 : 0) - (a.domainMatch ? 1 : 0) ||
+    b.coverSpecificity - a.coverSpecificity ||
     a.scope.localeCompare(b.scope),
   )
   return candidates

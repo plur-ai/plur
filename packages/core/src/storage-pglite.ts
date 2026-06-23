@@ -200,9 +200,19 @@ export class PGLiteAdapter implements StorageAdapter {
       params.push(filter.status)
     }
     if (filter.scope) {
-      // Segment-aware membership (#383): match only on a real delimiter (`:`/`/`)
-      // so a sibling string-prefix scope does not leak. Mirrors isScopeWithin.
-      conditions.push(`(scope = 'global' OR scope = $${i++} OR scope LIKE $${i++} || ':%' OR scope LIKE $${i++} || '/%')`)
+      // Read-side scope filter, two parts OR'd:
+      //  (1) personal-family pass-through — ALL non-shared scopes (local, global,
+      //      user:*, agent:*, …), not just 'global'. The old `scope = 'global'`
+      //      dropped local/user:/agent: under a project-scope recall (#402, the
+      //      pre-#353 behavior storage-indexed already fixed via its `personal`
+      //      column). This is the SQL form of isPersonalScope = NOT isSharedScope,
+      //      kept in sync with SHARED_SCOPE_PREFIXES in scope-util.ts.
+      //  (2) segment-aware membership (#383): the requested scope, exactly or a
+      //      descendant on a REAL delimiter (`:`/`/`) — never a sibling prefix.
+      conditions.push(
+        `((NOT (scope LIKE 'group:%' OR scope LIKE 'project:%' OR scope LIKE 'space:%' OR scope LIKE 'team:%' OR scope LIKE 'org:%' OR scope = 'public' OR scope LIKE 'public:%' OR scope LIKE 'public/%'))`
+        + ` OR scope = $${i++} OR scope LIKE $${i++} || ':%' OR scope LIKE $${i++} || '/%')`,
+      )
       params.push(filter.scope, filter.scope, filter.scope)
     }
     if (filter.domain) {

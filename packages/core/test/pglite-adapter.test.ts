@@ -184,6 +184,24 @@ describe('PGLiteAdapter — substrate', () => {
       await adapter.close()
     }, PGLITE_TIMEOUT)
 
+    it('#402 personal-family scopes (local, user:*) pass a project recall — not just global', async () => {
+      seedYaml(yamlPath, [
+        mkEngram('ENG-2026-0530-101', 'project a', { scope: 'project:a' }),
+        mkEngram('ENG-2026-0530-102', 'project b', { scope: 'project:b' }),     // shared sibling → excluded
+        mkEngram('ENG-2026-0530-103', 'universal', { scope: 'global' }),
+        mkEngram('ENG-2026-0530-104', 'personal note', { scope: 'local' }),
+        mkEngram('ENG-2026-0530-105', 'my note', { scope: 'user:gregor' }),
+      ])
+      const adapter = new PGLiteAdapter(yamlPath, dbPath)
+      await adapter.reindex()
+      const underA = await adapter.loadFiltered({ scope: 'project:a' })
+      const ids = underA.map(e => e.id).sort()
+      // project:a + EVERY personal-family scope (global, local, user:*); project:b stays out.
+      // Pre-#402 the hardcoded `scope = 'global'` dropped local + user:* here.
+      expect(ids).toEqual(['ENG-2026-0530-101', 'ENG-2026-0530-103', 'ENG-2026-0530-104', 'ENG-2026-0530-105'])
+      await adapter.close()
+    }, PGLITE_TIMEOUT)
+
     it('filters by domain prefix', async () => {
       seedYaml(yamlPath, [
         mkEngram('ENG-2026-0530-001', 'one', { domain: 'plur.architecture' }),
