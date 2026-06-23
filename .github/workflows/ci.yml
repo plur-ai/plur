@@ -60,3 +60,6 @@ jobs:
             exit 1
           }
       - run: pnpm test
+      # Getting-started examples must stay runnable against the public API (#267).
+      - name: Run examples
+        run: pnpm --filter @plur-ai/examples run all
