@@ -1515,18 +1515,28 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
         // the caller is never told a scope was added when it already existed
         // (#291). A second scope on an already-registered remote URL now
         // genuinely persists, so success:true here is honest.
-        const result = plur.addStore(path ?? '', args.scope as string, {
+        const requestedScope = args.scope as string
+        const result = plur.addStore(path ?? '', requestedScope, {
           shared:   args.shared   as boolean | undefined,
           readonly: args.readonly as boolean | undefined,
           url, token,
         })
+        // #406: a local store is identified by its PATH, so registering a NEW
+        // scope on an already-registered path is a no-op for that scope — the
+        // existing entry's scope wins and the requested scope is dropped. Reporting
+        // success:true there is misleading; surface the drop honestly.
+        const scopeDropped = result.status === 'already_registered' && result.scope !== requestedScope
         return {
-          success: true,
+          success: !scopeDropped,
           status: result.status,
           ...(path ? { path } : { url }),
           // On already_registered this is the EXISTING entry's scope — for
           // local stores (path-only identity) it may differ from the request.
           scope: result.scope,
+          ...(scopeDropped ? {
+            requested_scope: requestedScope,
+            note: `This path is already registered under scope "${result.scope}". A local store is keyed by its path, so the requested scope "${requestedScope}" was NOT added. Use a separate store file for a different scope, or remove the existing entry first.`,
+          } : {}),
           kind: url ? 'remote' : 'filesystem',
         }
       },

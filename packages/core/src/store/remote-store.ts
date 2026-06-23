@@ -76,8 +76,13 @@ export class RemoteStore implements EngramStore {
     const candidate = { ...d, id: raw.id, scope: raw.scope, status: raw.status }
     const parsed = RemoteRowSchema.safeParse(candidate)
     if (!parsed.success) {
-      const why = parsed.error.issues.map(i => `${i.path.join('.') || '(root)'}: ${i.message}`).join('; ')
-      logger.warning(`[plur:remote-store] ${this.url} returned a malformed engram (id=${String(raw.id)}) — dropped: ${why}`)
+      // #408: do NOT echo server-controlled VALUES into the log. Zod messages can
+      // embed the received value, and a crafted id could carry newlines/control
+      // chars to forge log lines (log injection) or leak data. Log only the field
+      // PATHS + failure CODES, plus a sanitized, bounded id.
+      const why = parsed.error.issues.map(i => `${i.path.join('.') || '(root)'}: ${i.code}`).join('; ')
+      const safeId = String(raw.id ?? '').replace(/[^\w:./-]/g, '?').slice(0, 64)
+      logger.warning(`[plur:remote-store] ${this.url} returned a malformed engram (id="${safeId}") — dropped: ${why}`)
       return null
     }
     return parsed.data as unknown as Engram
@@ -203,15 +208,21 @@ export class RemoteStore implements EngramStore {
       const text = await r.text().catch(() => '')
       throw new Error(`Remote store append failed: ${r.status} ${text}`)
     }
-    const data = await r.json().catch(() => ({})) as { id?: string }
-    if (!data.id) {
-      throw new Error(`Remote store append succeeded but server returned no id`)
+    const data = await r.json().catch(() => ({})) as { id?: unknown }
+    // #404: validate the server-assigned id's SHAPE, not just truthiness. It
+    // becomes this engram's id (cached, rendered, used as a key), so a non-string,
+    // empty, over-long, or control-char-bearing id from a buggy/hostile endpoint
+    // must be rejected rather than trusted.
+    const id = data.id
+    if (typeof id !== 'string' || id.length === 0 || id.length > 128 || !/^[\w:./-]+$/.test(id)) {
+      const shown = typeof id === 'string' ? `"${id.slice(0, 64).replace(/[^\w:./-]/g, '?')}"` : typeof id
+      throw new Error(`Remote store append: server returned an invalid id (${shown})`)
     }
     // Optimistic cache insert (issue #89): the POST succeeded so the server
     // has the engram. Insert with the server-assigned id so the very next
     // recall sees it without waiting for a background refresh. If the server
     // transformed other fields, the next refresh corrects them.
-    const stored = { ...(engram as any), id: data.id } as Engram
+    const stored = { ...(engram as any), id } as Engram
     if (this.cache) {
       this.cache.engrams.push(stored)
     } else {
@@ -220,7 +231,7 @@ export class RemoteStore implements EngramStore {
       // from the server instead of treating the partial view as fresh.
       this.cache = { ts: 0, engrams: [stored] }
     }
-    return { id: data.id }
+    return { id }
   }
 
   /**

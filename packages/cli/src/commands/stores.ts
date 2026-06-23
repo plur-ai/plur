@@ -15,10 +15,25 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     const readonly = args.includes('--readonly')
     const result = plur.addStore(path, scope, { shared, readonly })
 
+    // #406: a local store is keyed by its PATH, so adding a NEW scope to an
+    // already-registered path is a no-op for that scope (the existing entry's
+    // scope wins). Don't report a plain success — say the requested scope was
+    // not added.
+    const scopeDropped = result.status === 'already_registered' && result.scope !== scope
+
     if (shouldOutputJson(flags)) {
-      // result.scope is the EXISTING entry's scope on already_registered —
-      // local stores have path-only identity, so it may differ from the request.
-      outputJson({ success: true, status: result.status, path, scope: result.scope })
+      outputJson({
+        success: !scopeDropped,
+        status: result.status,
+        path,
+        scope: result.scope,
+        ...(scopeDropped ? { requested_scope: scope } : {}),
+      })
+    } else if (scopeDropped) {
+      outputText(
+        `This path is already registered under scope "${result.scope}". A local store is keyed by its path, ` +
+        `so the requested scope "${scope}" was NOT added. Use a separate store file for a different scope.`,
+      )
     } else {
       const verb = {
         already_registered: 'Already registered',

@@ -251,4 +251,30 @@ describe('MCP tools', () => {
       expect(engineering).toHaveLength(1)
     })
   })
+
+  describe('plur_stores_add honest reporting for a re-registered local path (#406)', () => {
+    it('reports success:false and the dropped requested scope when a local path already exists', async () => {
+      const storePath = join(dir, 'extra', 'engrams.yaml')
+      const first = await callTool('plur_stores_add', { path: storePath, scope: 'space:original' }) as any
+      expect(first.success).toBe(true)
+      expect(first.status).toBe('added')
+
+      // Same path, NEW scope: a local store is path-keyed, so the scope is dropped.
+      const second = await callTool('plur_stores_add', { path: storePath, scope: 'space:other' }) as any
+      expect(second.success).toBe(false)               // not a silent success
+      expect(second.status).toBe('already_registered')
+      expect(second.scope).toBe('space:original')      // the existing scope wins
+      expect(second.requested_scope).toBe('space:other')
+      expect(second.note).toMatch(/was NOT added/)
+    })
+
+    it('still reports success when the same path + same scope is a true no-op', async () => {
+      const storePath = join(dir, 'extra2', 'engrams.yaml')
+      await callTool('plur_stores_add', { path: storePath, scope: 'space:same' })
+      const again = await callTool('plur_stores_add', { path: storePath, scope: 'space:same' }) as any
+      expect(again.success).toBe(true)                 // idempotent no-op, not a drop
+      expect(again.status).toBe('already_registered')
+      expect(again.requested_scope).toBeUndefined()
+    })
+  })
 })

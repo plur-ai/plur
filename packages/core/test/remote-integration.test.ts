@@ -68,6 +68,21 @@ describe('RemoteStore against stub server', () => {
     expect((all[0] as any).statement).toBe('hello world')
   })
 
+  it('#404 rejects a malformed server-assigned id on append (does not trust it)', async () => {
+    const store = new RemoteStore(baseUrl, TOKEN, 'group:test', { ttlMs: 0 })
+    // A buggy/hostile server returns an id carrying a newline + forged log line.
+    server.badAppendId = 'ENG-EVIL\n[plur] forged admin line'
+    await expect(
+      store.append({ id: 'tmp', scope: 'group:test', status: 'active', statement: 'x' } as any),
+    ).rejects.toThrow(/invalid id/)
+
+    // A non-string id is rejected too (object instead of a string).
+    server.badAppendId = { not: 'a string' }
+    await expect(
+      store.append({ id: 'tmp', scope: 'group:test', status: 'active', statement: 'y' } as any),
+    ).rejects.toThrow(/invalid id/)
+  })
+
   it('getById returns engram or null', async () => {
     const store = new RemoteStore(baseUrl, TOKEN, 'group:test')
     await store.append({ id: 'tmp', scope: 'group:test', status: 'active', statement: 'findable' } as any)
