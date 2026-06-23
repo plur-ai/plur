@@ -1,0 +1,36 @@
+name: Python SDK
+
+on:
+  push:
+    branches: [main]
+    paths: ['packages/python/**', '.github/workflows/python.yml']
+  pull_request:
+    branches: [main]
+    paths: ['packages/python/**', 'packages/cli/**', 'packages/core/**', '.github/workflows/python.yml']
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pnpm install --frozen-lockfile
+      # Build the CLI (and its core dep) the SDK shells out to.
+      - run: pnpm --filter "@plur-ai/cli..." build
+      - run: pip install -e packages/python pytest
+      - name: Run pytest (against the freshly built CLI)
+        env:
+          PLUR_CLI: node ${{ github.workspace }}/packages/cli/dist/index.js
+        run: pytest packages/python -q
