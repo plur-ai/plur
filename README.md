@@ -37,7 +37,13 @@ The interesting part: in our tool-routing and local-knowledge benchmark, **Haiku
 
 ### Tell your agent
 
-Go to [plur.ai](https://plur.ai) and tell your agent to install memory for your tool — Claude Code, Cursor, Windsurf, or OpenClaw. The site has the right config for your setup.
+Paste this to your coding agent (Claude Code, Cursor, Windsurf, OpenClaw):
+
+```text
+Set up PLUR memory for me: run `npx @plur-ai/mcp init`, then check my PLUR status to confirm it works.
+```
+
+Prefer a guided setup? [plur.ai](https://plur.ai) has the exact config for your tool — Claude Code, Cursor, Windsurf, or OpenClaw.
 
 ### Manual setup (Claude Code)
 
