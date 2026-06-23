@@ -373,10 +373,10 @@ function matchInternalHost(text: string): string | null {
 // silently passed to shared/remote stores (the #386 blind spot).
 //
 // Beyond the ceiling we do NOT silently truncate-and-pass: `detectSensitive`
-// emits a synthetic `scan_truncated` hit so the write guard demotes and
-// `filterPublishable` excludes — fail-closed, since the unscanned tail can't be
-// certified clean. Realistic engrams never approach 1 MiB, so this never falsely
-// demotes ordinary content.
+// emits a synthetic `scan_truncated` hit so the write guard demotes and the
+// pack privacy scan (`scanPrivacy`) blocks — fail-closed, since the unscanned
+// tail can't be certified clean. Realistic engrams never approach 1 MiB, so this
+// never falsely demotes ordinary content.
 const MAX_SCAN_BYTES = 1024 * 1024
 
 /** Synthetic detector name emitted when input exceeded MAX_SCAN_BYTES (#386). */
@@ -441,8 +441,8 @@ export function detectSensitive(text: string): SecretMatch[] {
   }
   if (truncated) {
     // Fail-closed (#386): the region past MAX_SCAN_BYTES was not scanned, so we
-    // cannot certify it clean. Signal it so the write guard demotes and
-    // filterPublishable excludes — a sensitive payload can't hide in the tail.
+    // cannot certify it clean. Signal it so the write guard demotes and the pack
+    // privacy scan blocks — a sensitive payload can't hide in the tail.
     matches.push({ pattern: SCAN_TRUNCATED, match: `${totalBytes} bytes (> ${MAX_SCAN_BYTES}B scan limit)` })
   }
   return matches
