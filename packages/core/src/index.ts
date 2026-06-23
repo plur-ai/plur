@@ -474,9 +474,17 @@ export class Plur {
 
   /** Get or create a RemoteStore driver for a store config entry. */
   private _getRemoteDriver(entry: { url: string; token?: string; scope: string }): RemoteStore {
-    const key = `${entry.url}::${entry.scope}`
+    // #394: include the token in the cache key so a ROTATED token produces a FRESH
+    // driver instead of one still holding the old (now-401) token + its stale cache.
+    // On rotation, drop any prior driver for the same url::scope so the old token
+    // can't keep serving and the map doesn't grow unbounded across rotations.
+    const baseKey = `${entry.url}::${entry.scope}`
+    const key = `${baseKey}::${entry.token ?? ''}`
     let driver = this._remoteStores.get(key)
     if (!driver) {
+      for (const k of this._remoteStores.keys()) {
+        if (k !== key && k.startsWith(baseKey + '::')) this._remoteStores.delete(k)
+      }
       driver = new RemoteStore(entry.url, entry.token ?? '', entry.scope)
       this._remoteStores.set(key, driver)
     }
@@ -4004,9 +4012,18 @@ Generate an improved version of the procedure that prevents this failure. Return
           )
           continue
         }
-        const { status } = this.addStore('', scope, { url: d.url, token })
-        if (status === 'added') added.push(scope)
-        else already.push(scope)
+        try {
+          const { status } = this.addStore('', scope, { url: d.url, token })
+          if (status === 'added') added.push(scope)
+          else already.push(scope)
+        } catch (err) {
+          // #397: a single bad/conflicting scope (e.g. one already bound to a
+          // DIFFERENT endpoint → addStore throws) must NOT abort the whole batch
+          // and leave a partial registration. Record it as skipped and continue
+          // with the remaining authorized scopes.
+          skipped.push(scope)
+          logger.warning(`[plur] could not auto-register scope "${scope}" from ${d.url}: ${err instanceof Error ? err.message : String(err)}`)
+        }
       }
       return { url: d.url, ok: true, added, already_registered: already, skipped }
     })

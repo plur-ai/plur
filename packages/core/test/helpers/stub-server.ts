@@ -68,6 +68,9 @@ export class StubServer {
   private me: { username: string; org_id: string; role: string; scopes: string[] } = {
     username: 'testuser', org_id: 'test-org', role: 'developer', scopes: ['group:test'],
   }
+  /** When set, POST /engrams returns this as the assigned id instead of a valid
+   *  one — to simulate a buggy/hostile server (e.g. for the #404 id-shape test). */
+  badAppendId: unknown = null
 
   constructor(private readonly validToken: string) {}
 
@@ -128,6 +131,7 @@ export class StubServer {
   reset(): void {
     this.engrams.clear()
     this.idCounter = 0
+    this.badAppendId = null
   }
 
   private handleRequest(req: IncomingMessage, res: ServerResponse): void {
@@ -163,7 +167,10 @@ export class StubServer {
           updated_at: now,
         }
         this.engrams.set(id, engram)
-        this.json(res, 201, { id, scope: engram.scope, status: engram.status, data: engram.data })
+        // Normally the server returns the real assigned id; badAppendId lets a
+        // test make it return a malformed one (#404).
+        const returnedId = this.badAppendId !== null ? this.badAppendId : id
+        this.json(res, 201, { id: returnedId, scope: engram.scope, status: engram.status, data: engram.data })
       })
       return
     }
