@@ -15,16 +15,15 @@ Persistent memory for AI agents. Local-first, zero-cost, works across MCP tools.
 
 ## Benchmarks
 
-Retrieval recall on **LongMemEval** at chunk granularity — the setting comparable to the published reference numbers:
+Retrieval recall (R@5) on **LongMemEval**, chunk granularity:
 
 | Stack | R@5 | Notes |
 |-------|-----|-------|
-| PLUR BM25 alone | 92.2% | airgapped — no embedder, no API |
-| **PLUR hybrid + reranker** | **97.6%** | local cross-encoder, no API |
-| PLUR hybrid (openai-3-large control) | 97.0% | matches the published embedder within 1 pp |
-| Published reference (gbrain) | 97.4–97.6% | the number to match |
+| **PLUR hybrid + reranker** | **97.6%** | fully local cross-encoder — no API |
+| PLUR hybrid (openai-3-large embeddings) | 97.0% | optional cloud embedder |
+| PLUR BM25 only | 92.2% | no embedder — fully airgapped |
 
-**PLUR matches the best published open retrieval result on LongMemEval — fully local, zero API calls.** [Full methodology →](https://plur.ai/benchmark.html)
+**97.6% R@5 on LongMemEval — fully local, zero API calls, data-sovereign.** [Full methodology →](https://plur.ai/benchmark.html)
 
 ## The idea
 
@@ -178,7 +177,7 @@ plur.sync('git@github.com:you/plur-memory.git')
 
 ## Benchmark details
 
-Per-category retrieval recall (PLUR hybrid + reranker, chunk granularity, LongMemEval):
+Per-category retrieval recall (hybrid + openai-3-large embeddings, chunk granularity, LongMemEval):
 
 | Category | R@5 | R@10 |
 |----------|-----|------|
