@@ -15,15 +15,16 @@ Persistent memory for AI agents. Local-first, zero-cost, works across MCP tools.
 
 ## Benchmarks
 
-Same task, same prompt — one agent with PLUR memory, one without. Across Haiku, Sonnet, and Opus:
+Retrieval recall on **LongMemEval** at chunk granularity — the setting comparable to the published reference numbers:
 
-| Knowledge type | Without memory | With PLUR | What it tests |
-|----------------|----------------|-----------|---------------|
-| House rules | 10–38% | **12–0** | Tag conventions, file routing, structure |
-| Tool routing | 1.0× | **2.6×** | Finding the right tool among 100+ |
-| Discoverability | Opus 0.31 | **Haiku 0.80** | Local-knowledge recall |
+| Stack | R@5 | Notes |
+|-------|-----|-------|
+| PLUR BM25 alone | 92.2% | airgapped — no embedder, no API |
+| **PLUR hybrid + reranker** | **97.6%** | local cross-encoder, no API |
+| PLUR hybrid (openai-3-large control) | 97.0% | matches the published embedder within 1 pp |
+| Published reference (gbrain) | 97.4–97.6% | the number to match |
 
-**31 wins, 4 losses (89% win rate).** Haiku + PLUR outperforms Opus without it — at roughly **10× less cost**. [Full methodology →](https://plur.ai/benchmark.html)
+**PLUR matches the best published open retrieval result on LongMemEval — fully local, zero API calls.** [Full methodology →](https://plur.ai/benchmark.html)
 
 ## The idea
 
@@ -117,6 +118,10 @@ Plugins (OpenClaw, Hermes) automatically capture learnings from agent conversati
 
 See the [full engram spec](https://plur.ai/spec.html) for schema details, activation model, and injection algorithm.
 
+## Open format
+
+The engram is an **open, versioned format** — not a black box. Every engram is plain YAML validated against a published [JSON Schema](https://plur.ai/spec.html), generated from the same Zod source the engine uses (the schemas live in [`spec/`](spec/)). Read it, diff it in git, write your own tooling against it, or build a different engine on the same format — your memory isn't locked to PLUR.
+
 ## Usage
 
 ```typescript
@@ -173,18 +178,18 @@ plur.sync('git@github.com:you/plur-memory.git')
 
 ## Benchmark details
 
-We ran 19 decisive contests across three Claude models (Haiku, Sonnet, Opus). Same task, same prompt — one agent with PLUR, one without. Ties removed.
+Per-category retrieval recall (PLUR hybrid + reranker, chunk granularity, LongMemEval):
 
-| Knowledge type | Record | What it tests |
-|---------------|--------|---------------|
-| House rules | 12–0 | Tag conventions, file routing, project structure |
-| Tool routing | 10–2 | Finding the right tool among 100+ options |
-| Past experience | 4–0 | API quirks, debugging insights, infrastructure |
-| Learned style | 5–2 | Communication tone, design preferences |
+| Category | R@5 | R@10 |
+|----------|-----|------|
+| single-session-assistant | 100.0% | 100.0% |
+| knowledge-update | 98.7% | 100.0% |
+| single-session-user | 98.6% | 100.0% |
+| multi-session | 97.7% | 99.2% |
+| temporal-reasoning | 94.0% | 97.0% |
+| single-session-preference | 93.3% | 96.7% |
 
-**31 wins, 4 losses (89% win rate).** Without memory, agents got house rules right 10–38% of the time depending on model — with PLUR, 12–0 across every model. Memory isn't a reasoning crutch — it's information the model literally cannot infer.
-
-The cost insight was unexpected: in the reported local-knowledge benchmark setup, Haiku + PLUR scored 0.80 on discoverability while Opus alone scored 0.31. A $0.25/MTok model with memory beat a $15/MTok model without it on this task set.
+Retrieval recall (finding the right memory) and end-to-end answer accuracy (the numbers mem0 / Zep / Letta / Mastra headline) are **different axes** — PLUR measures and reports them separately, never compared directly. On the agent-impact axis, an earlier A/B run found Haiku + PLUR outperformed Opus *without* memory at roughly 10× lower cost.
 
 [Full methodology →](https://plur.ai/benchmark.html)
 
