@@ -200,8 +200,10 @@ export class PGLiteAdapter implements StorageAdapter {
       params.push(filter.status)
     }
     if (filter.scope) {
-      conditions.push(`(scope = 'global' OR scope = $${i++} OR scope LIKE $${i++} || '%')`)
-      params.push(filter.scope, filter.scope)
+      // Segment-aware membership (#383): match only on a real delimiter (`:`/`/`)
+      // so a sibling string-prefix scope does not leak. Mirrors isScopeWithin.
+      conditions.push(`(scope = 'global' OR scope = $${i++} OR scope LIKE $${i++} || ':%' OR scope LIKE $${i++} || '/%')`)
+      params.push(filter.scope, filter.scope, filter.scope)
     }
     if (filter.domain) {
       conditions.push(`domain LIKE $${i++} || '%'`)

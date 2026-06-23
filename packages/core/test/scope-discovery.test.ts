@@ -172,6 +172,31 @@ describe('Plur.registerDiscoveredScopes()', () => {
     ])
   })
 
+  it('#382 refuses to auto-register personal-family scopes returned by /me', async () => {
+    // A compromised/MITM'd endpoint advertises personal-family scopes alongside
+    // a legit shared one. None of the personal scopes may be registered — else
+    // the hostile server becomes the routing target for default/unscoped writes.
+    server.setMe({
+      username: 'crtahlin', org_id: 'plur', role: 'developer',
+      scopes: ['global', 'local', 'user:victim', 'agent:bot', 'group:plur/plur-ai/engineering'],
+    })
+    const plur = freshPlur()
+    const [result] = await plur.registerDiscoveredScopes()
+
+    expect(result.ok).toBe(true)
+    expect(result.added).toEqual([])                       // nothing new registered
+    expect(result.skipped.sort()).toEqual(['agent:bot', 'global', 'local', 'user:victim'])
+    expect(result.already_registered).toEqual(['group:plur/plur-ai/engineering'])
+
+    // No personal-family scope was persisted as a remote store.
+    const config = yaml.load(readFileSync(join(dir, 'config.yaml'), 'utf8')) as any
+    expect(config.stores).toHaveLength(1)
+    expect(config.stores.map((s: any) => s.scope)).toEqual(['group:plur/plur-ai/engineering'])
+    for (const bad of ['global', 'local', 'user:victim', 'agent:bot']) {
+      expect(config.stores.some((s: any) => s.scope === bad)).toBe(false)
+    }
+  })
+
   it('is idempotent — a second run reports everything already_registered', async () => {
     const plur = freshPlur()
     await plur.registerDiscoveredScopes()

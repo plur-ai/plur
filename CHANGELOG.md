@@ -14,6 +14,25 @@
 
 **Behavior change:** a pack engram carrying a secret in any exported field (`summary`/`domain`/`tags`/`structured_data`/`contraindications`/…) is now blocked on install / filtered on export; a `learn` with a secret in `domain`/`tags`/`abstract` throws unless `allow_secrets` is set.
 
+### Security: scope auto-registration refuses personal-family scopes from `/me` (#382)
+
+`registerDiscoveredScopes()` registered **every** scope a server returned from `GET /api/v1/me` as a writable remote store, with no shared-scope check. A compromised or MITM'd endpoint could return `scopes: ['global', 'user:<victim>', 'local']`; registering `global` (the default unscoped routing fallback) as a writable remote store would route every later default/unscoped `learn` to the attacker's server.
+
+- `registerDiscoveredScopes()` now filters `/me`-advertised scopes through `isSharedScope()` before `addStore`: only shared-family scopes (`group:`/`project:`/`space:`/`team:`/`org:`/`public`) are auto-registered. Personal-family scopes (`global`/`local`/`user:*`/`agent:*`) are refused, logged, and returned in a new `skipped` field on `RegisterDiscoveredResult`. The CLI (`plur stores discover --register`) and MCP (`plur_scopes_discover`) surface the skipped scopes.
+- A genuine remote-backed personal scope (e.g. a `user:` scope on your own server) must be added deliberately via `plur stores add`; it is never auto-registered from untrusted server input.
+
+**Behavior change:** `plur_scopes_discover register:true` / `plur stores discover --register` no longer register personal-family scopes a server advertises — they are reported as `skipped`.
+
+### Security: segment-aware scope membership — no sibling-prefix bleed (#383)
+
+The read-side scope filters and store-load gates decided shared-scope membership with a bare string-prefix test (`scope.startsWith(query)` / `LIKE query || '%'`) and no delimiter boundary. A shared scope that is a string-prefix of a sibling leaked across the isolation boundary: a `project:app` recall/inject/list surfaced `project:application` and `project:app-secret`; a `group:plur/eng` query surfaced `group:plur/eng-private`.
+
+- New `isScopeWithin(scope, queryScope)` predicate in `scope-util.ts` matches a scope iff it is exactly equal or a descendant separated by a real delimiter (`:` or `/`) — so `project:app:sub` and `project:app/x` still match, but `project:application` does not.
+- Applied at all read paths and store-load gates: non-indexed recall (`index.ts`), indexed SQLite `loadFiltered` + reindex gate (`storage-indexed.ts`), PGLite `buildFilterClause` (`storage-pglite.ts`), inject `scoreEngram` (`inject.ts`), and the in-memory store gate (`index.ts`). SQL paths use `scope = ? OR scope LIKE ?||':%' OR scope LIKE ?||'/%'`.
+- The personal-family pass-through (`isPersonalScope`) is unchanged — personal scopes still surface under a project-scope recall.
+
+**Behavior change:** an engram in a shared scope that is merely a string-prefix of the query scope is no longer returned by recall/inject/list. True descendants (delimiter-separated) are unaffected.
+
 ## 0.10.0 (2026-06-21)
 
 ### Leak guard: write-time demotion now covers `saveMetaEngrams` and remote-backed scopes (#368, #370)

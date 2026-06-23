@@ -36,7 +36,7 @@ import { appendHistory, readHistoryForEngram, generateEventId } from './history.
 import { computeContentHash } from './content-hash.js'
 import { decodeJwtExpiry } from './jwt.js'
 import { RemoteStore } from './store/remote-store.js'
-import { isSharedScope, isPersonalScope } from './scope-util.js'
+import { isSharedScope, isPersonalScope, isScopeWithin } from './scope-util.js'
 import type { Engram } from './schemas/engram.js'
 import type { Episode } from './schemas/episode.js'
 import type { PackManifest } from './schemas/pack.js'
@@ -246,6 +246,8 @@ export interface RegisterDiscoveredResult {
   ok: boolean
   added: string[]
   already_registered: string[]
+  /** Personal-family scopes a `/me` returned that were refused auto-registration (#382). */
+  skipped: string[]
   error?: string
 }
 
@@ -380,8 +382,10 @@ export class Plur {
         : this._loadCached(store.path!)
       const prefix = storePrefix(store.scope)
       for (const e of storeEngrams) {
-        // Phase 4: Scope validation
-        if (e.scope !== 'global' && e.scope !== store.scope && !e.scope.startsWith(store.scope)) {
+        // Phase 4: Scope validation. Segment-aware (#383): a sibling that is a
+        // mere string-prefix of the store scope (group:plur/eng-private under a
+        // group:plur/eng store) must NOT load.
+        if (e.scope !== 'global' && !isScopeWithin(e.scope, store.scope)) {
           logger.debug(`Skipping engram ${e.id} from store ${store.scope}: scope mismatch (${e.scope})`)
           continue
         }
@@ -1965,7 +1969,7 @@ export class Plur {
         // than `global` inject, which is targeted to global-only (see inject.ts
         // INJECT_GLOBAL_IS_TARGETED).
         engrams = engrams.filter(e =>
-          e.scope === scope || e.scope.startsWith(scope) || isPersonalScope(e.scope)
+          isScopeWithin(e.scope, scope) || isPersonalScope(e.scope)
         )
       }
     }
@@ -3965,19 +3969,36 @@ Generate an improved version of the procedure that prevents this failure. Return
   async registerDiscoveredScopes(opts?: { url?: string; timeoutMs?: number }): Promise<RegisterDiscoveredResult[]> {
     const discoveries = await this.discoverRemoteScopes(opts)
     return discoveries.map(d => {
-      if (!d.ok) return { url: d.url, ok: false, added: [], already_registered: [], error: d.error }
+      if (!d.ok) return { url: d.url, ok: false, added: [], already_registered: [], skipped: [], error: d.error }
       const token = (this.config.stores ?? []).find(s => s.url === d.url)?.token
       const added: string[] = []
       const already: string[] = []
+      const skipped: string[] = []
       // Attempt every authorized scope (not just the pre-computed unregistered
       // set) and let addStore's url+scope idempotency (#291) classify each — so
       // the result is accurate even if config changed between discover and now.
       for (const scope of d.authorized) {
+        // SECURITY (#382): never auto-register a PERSONAL-family scope returned
+        // by `/me` as a writable remote store. A compromised/MITM'd endpoint can
+        // claim `scopes:['global','user:<victim>','local']`; registering those
+        // makes the hostile server the routing target for the user's default and
+        // unscoped writes. Only shared-family scopes (group:/project:/space:/
+        // team:/org:/public) are auto-registered. A genuine remote-backed
+        // personal scope must be added deliberately via `plur stores add`.
+        if (!isSharedScope(scope)) {
+          skipped.push(scope)
+          logger.warning(
+            `[plur] refused to auto-register non-shared scope "${scope}" from ${d.url} — ` +
+            `a /me-advertised personal-family scope is not auto-registered (it would route ` +
+            `your default/unscoped writes to that endpoint). Add it explicitly if intended.`,
+          )
+          continue
+        }
         const { status } = this.addStore('', scope, { url: d.url, token })
         if (status === 'added') added.push(scope)
         else already.push(scope)
       }
-      return { url: d.url, ok: true, added, already_registered: already }
+      return { url: d.url, ok: true, added, already_registered: already, skipped }
     })
   }
 
