@@ -55,13 +55,16 @@ const SECRET_PATHS = ['config.yaml', 'secrets.yaml', 'agent-keystore.json'] as c
  * Secret-bearing filenames that must never be staged even from WITHIN a pack
  * directory. `packs` is force-added (`-f`), so `.gitignore` can't stop them —
  * these exclude-pathspecs do. Packs are installed from external/untrusted
- * sources, so a `packs/<name>/config.yaml` / `secrets.yaml` / `*.token` is a real
- * ride-along path that the root-level SECRET_PATHS untrack does not cover. (#387 review)
+ * sources, so a `packs/<name>/config.yaml` / `secrets.yaml` / `*.token` /
+ * `agent-keystore.json` is a real ride-along path that the root-level SECRET_PATHS
+ * untrack does not cover. (#387 review; keystore added pre-Crt audit — #392 had
+ * given the keystore only root protection, leaving the nested-pack vector open.)
  */
 const PACK_SECRET_EXCLUDES = [
   ':(exclude)packs/**/config.yaml',
   ':(exclude)packs/**/secrets.yaml',
   ':(exclude)packs/**/*.token',
+  ':(exclude)packs/**/agent-keystore.json',
 ] as const
 
 function git(args: string[], cwd: string): string {

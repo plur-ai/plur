@@ -66,12 +66,16 @@ const WEIGHT_KEYWORD = 0.2
 
 /** Cap on the statement-keyword channel's total raw contribution (#395). Keyword
  * overlap is a weak, often-coincidental signal — statement words happening to match
- * a cover's namespace tokens. On its OWN it must never clear the auto-route
- * threshold and drop a generic engram into a shared team store (8 hits would
- * otherwise reach 8*0.2 = 1.6 ⟹ squash ≈ 0.52 ≥ 0.5). The cap keeps keyword-only
- * below the single-domain threshold (squash(1.0) = 0.4 < SCOPE_MATCH_THRESHOLD)
- * while keywords still BOOST a real domain/tag match toward saturation. */
-const MAX_KEYWORD_RAW = 1.0
+ * a cover's namespace tokens. It must never, on its own OR combined with a single
+ * coincidental tag, clear the auto-route threshold and drop a generic engram into a
+ * shared team store. Sizing: a lone tag hit is WEIGHT_TAG (0.5); to keep
+ * keyword + 1 tag under the single-domain threshold raw (1.5 ⟹ squash 0.5) the cap
+ * must be < 1.0. At 0.8: keyword-only squash(0.8)=0.348, keyword+1-tag
+ * squash(1.3)=0.464 — both below 0.5; keyword+2-tags (1.8 ⟹ 0.545) routes, but two
+ * matching tags is deliberate intent, not coincidence. Keywords still BOOST a real
+ * domain/tag match toward saturation. (Pre-Crt audit: at 1.0 keyword+1-tag hit
+ * exactly 0.5 and auto-routed — the cap was one weak signal too high.) */
+const MAX_KEYWORD_RAW = 0.8
 
 /** Weight for a REVERSE-direction domain hit — the engram's `domain` is BROADER
  * than the cover (`domain ⊃ cover`, e.g. domain `plur` against cover `plur.core`).

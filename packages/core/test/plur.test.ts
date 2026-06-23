@@ -493,6 +493,15 @@ describe('Plur', () => {
     expect(explicitPublic.visibility).toBe('public')
   })
 
+  it('#401 learnRouted (the production write path) also defaults visibility to private with a domain', async () => {
+    // _buildEngramShape is the constructor learnRouted uses — the path plur_learn
+    // and the CLI actually hit. The pre-Crt audit found it still defaulted public.
+    const routed = await plur.learnRouted('Team deploy note', { scope: 'global', domain: 'software.deploy' })
+    expect(routed.visibility).toBe('private')
+    const explicit = await plur.learnRouted('Deliberately shared', { scope: 'global', domain: 'software.deploy', visibility: 'public' })
+    expect(explicit.visibility).toBe('public')
+  })
+
   it('inject returns injected_ids array', () => {
     plur.learn('Always use blue-green deploy strategies', { scope: 'global' })
     plur.learn('Database for myapp is PostgreSQL', { scope: 'project:myapp' })
