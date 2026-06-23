@@ -36,7 +36,7 @@ import { appendHistory, readHistoryForEngram, generateEventId } from './history.
 import { computeContentHash } from './content-hash.js'
 import { decodeJwtExpiry } from './jwt.js'
 import { RemoteStore } from './store/remote-store.js'
-import { isSharedScope, isPersonalScope } from './scope-util.js'
+import { isSharedScope, isPersonalScope, isScopeWithin } from './scope-util.js'
 import type { Engram } from './schemas/engram.js'
 import type { Episode } from './schemas/episode.js'
 import type { PackManifest } from './schemas/pack.js'
@@ -382,8 +382,10 @@ export class Plur {
         : this._loadCached(store.path!)
       const prefix = storePrefix(store.scope)
       for (const e of storeEngrams) {
-        // Phase 4: Scope validation
-        if (e.scope !== 'global' && e.scope !== store.scope && !e.scope.startsWith(store.scope)) {
+        // Phase 4: Scope validation. Segment-aware (#383): a sibling that is a
+        // mere string-prefix of the store scope (group:plur/eng-private under a
+        // group:plur/eng store) must NOT load.
+        if (e.scope !== 'global' && !isScopeWithin(e.scope, store.scope)) {
           logger.debug(`Skipping engram ${e.id} from store ${store.scope}: scope mismatch (${e.scope})`)
           continue
         }
@@ -1953,7 +1955,7 @@ export class Plur {
         // than `global` inject, which is targeted to global-only (see inject.ts
         // INJECT_GLOBAL_IS_TARGETED).
         engrams = engrams.filter(e =>
-          e.scope === scope || e.scope.startsWith(scope) || isPersonalScope(e.scope)
+          isScopeWithin(e.scope, scope) || isPersonalScope(e.scope)
         )
       }
     }
