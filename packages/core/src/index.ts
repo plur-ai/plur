@@ -971,10 +971,17 @@ export class Plur {
 
   /**
    * Collect the context-ish fields of an engram (rationale, source, snippet,
-   * dual_coding, structured_data) into a plain object for the explicit-update
-   * leak scan (LOW-2, #353). Mirrors the field set a LearnContext carries into
-   * `_guardSensitiveScope`. Returns undefined when none are present so the scan
-   * text stays statement-only.
+   * dual_coding, domain, structured_data) into a plain object for the
+   * explicit-update / meta / outbox-reguard leak scan (LOW-2, #353). Mirrors the
+   * field set a LearnContext carries into `_guardSensitiveScope` — which scans
+   * `JSON.stringify(context)`, and `context.domain` is part of LearnContext, so
+   * `domain` must be reconstructed here too or the reconstruct-from-engram guards
+   * (update/meta/outbox) scan a strictly smaller surface than learn-time. `domain`
+   * IS sent to the remote API, so a host:port / basic-auth value placed there would
+   * otherwise reach a shared/remote store unguarded on the outbox flush (#405).
+   * Classification domains (`software.architecture`, `plur.memory-model`) produce
+   * no detector hits, so scanning `domain` adds no false-positive demotions.
+   * Returns undefined when none are present so the scan text stays statement-only.
    *
    * PLUR-internal bookkeeping keys in `structured_data` (underscore-prefixed:
    * `_outbox`, `_routed`, `_demoted`, …) are STRIPPED before scanning — they are
@@ -986,7 +993,7 @@ export class Plur {
   private _engramContextFields(engram: Engram): Record<string, unknown> | undefined {
     const e = engram as Record<string, unknown>
     const fields: Record<string, unknown> = {}
-    for (const k of ['rationale', 'source', 'snippet', 'dual_coding'] as const) {
+    for (const k of ['rationale', 'source', 'snippet', 'dual_coding', 'domain'] as const) {
       if (e[k] != null) fields[k] = e[k]
     }
     const sd = e.structured_data

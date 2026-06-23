@@ -328,6 +328,55 @@ describe('outbox pattern (issue #26)', () => {
     expect(found.structured_data?._demoted?.to).toBe('local')
   })
 
+  // #405: the flush re-guard must scan the `domain` field too. `domain` IS sent
+  // to the remote API, and at learn-time it is already scanned (it rides in the
+  // LearnContext); the reconstruct-from-engram path (`_engramContextFields`) used
+  // by the flush re-guard previously OMITTED it, so a host:port / IP placed in
+  // `domain` could ride to a shared store on flush. Statement is clean here — the
+  // infra lives ONLY in `domain`.
+  it('flushOutbox() re-guards the domain field: infra in `domain` is demoted, not pushed (#405)', async () => {
+    mockRemoteFailure('down at queue time')
+    const PUBLIC_IP = '139.59.155.82' // real droplet IPv4 → infra detector hit
+    // Queue-time policy allows infra, so the infra-bearing domain queues clean.
+    writeStoresConfig(primaryDir, [{
+      url: REMOTE_URL, token: 'plur_sk_test', scope: REMOTE_SCOPE, shared: true, readonly: false,
+      sensitivity: { forbid: ['infra'], allow: ['infra'] },
+    }])
+    const plur = new Plur({ path: primaryDir })
+
+    await plur.learnRouted('routine team note', { scope: REMOTE_SCOPE, type: 'procedural', domain: `prod ${PUBLIC_IP}` })
+    expect(plur.outboxCount()).toBe(1) // queued (clean under the old policy)
+
+    // Tighten: forbid infra, no allow. Fresh Plur picks up the edit.
+    writeStoresConfig(primaryDir, [{
+      url: REMOTE_URL, token: 'plur_sk_test', scope: REMOTE_SCOPE, shared: true, readonly: false,
+      sensitivity: { forbid: ['infra'] },
+    }])
+    const plur2 = new Plur({ path: primaryDir })
+
+    mockRemoteSuccess()
+    const pushSpy = vi.fn()
+    fetchMock.mockImplementation((async (_url: string, init?: { method?: string }) => {
+      const method = init?.method ?? 'GET'
+      if (method === 'POST') { pushSpy(); return { ok: true, status: 201, json: async () => ({ id: 'X' }), text: async () => '' } as Response }
+      return { ok: true, status: 200, json: async () => ({ rows: [], total_count: 0 }), text: async () => '' } as Response
+    }) as any)
+
+    const result = await plur2.flushOutbox()
+    // Held back via the domain scan: not flushed, counted failed, never POSTed.
+    expect(result.flushed).toBe(0)
+    expect(result.failed).toBe(1)
+    expect(pushSpy).not.toHaveBeenCalled()
+
+    // Demoted in place: scope→local, visibility→private, _outbox dropped.
+    const local = readLocalEngrams(primaryDir)
+    const found = local.find((e: any) => e.domain === `prod ${PUBLIC_IP}`)
+    expect(found).toBeDefined()
+    expect(found.scope).toBe('local')
+    expect(found.visibility).toBe('private')
+    expect(found.structured_data?._outbox).toBeUndefined()
+  })
+
   // BOUNDARY: an engram that is STILL clean under the current policy flushes
   // normally — the re-guard must not over-block.
   it('flushOutbox() still pushes when the engram is clean under the current policy', async () => {

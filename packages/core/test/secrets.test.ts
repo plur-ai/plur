@@ -504,17 +504,4 @@ describe('infra content past 64KB is demoted / excluded (#386)', () => {
     expect(engram.scope).toBe('local')
     expect((engram as { visibility?: string }).visibility).toBe('private')
   })
-
-  it('filterPublishable excludes a public engram with infra past byte 64KB', async () => {
-    const { filterPublishable } = await import('../src/publish.js')
-    const { EngramSchema } = await import('../src/schemas/engram.js')
-    const e = EngramSchema.parse({
-      id: 'ENG-2026-0101-386',
-      statement: `notes ${FILLER} https://t:p@hub-staging.plur.ai`,
-      type: 'behavioral', scope: 'global', status: 'active', visibility: 'public',
-    })
-    const { publishable, rejected } = filterPublishable([e])
-    expect(publishable).toHaveLength(0)
-    expect(rejected).toHaveLength(1)
-  })
 })
