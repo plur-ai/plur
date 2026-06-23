@@ -1575,7 +1575,7 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
 
     {
       name: 'plur_scopes_discover',
-      description: 'Discover which scopes your remote token is authorized for via the enterprise server (GET /api/v1/me), and which of those are not yet registered locally. Read-only by default; pass register:true to register all authorized-but-unregistered scopes in one step. Use this when you have access to multiple team scopes on one server.',
+      description: 'Discover which scopes your remote token is authorized for via the enterprise server (GET /api/v1/me), and which of those are not yet registered locally. Read-only by default; pass register:true to register all authorized-but-unregistered scopes in one step. Only shared-family scopes (group:/project:/space:/team:/org:/public) are auto-registered — personal-family scopes (global/local/user:*/agent:*) advertised by /me are skipped and surfaced in the result. Use this when you have access to multiple team scopes on one server.',
       annotations: { title: 'Discover scopes', readOnlyHint: false, idempotentHint: true },
       inputSchema: {
         type: 'object',
