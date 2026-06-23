@@ -1,7 +1,7 @@
 import { existsSync } from 'fs'
 import { createRequire } from 'module'
 import { loadEngrams, storePrefix } from './engrams.js'
-import { isPersonalScope } from './scope-util.js'
+import { isPersonalScope, isScopeWithin } from './scope-util.js'
 import type { Engram } from './schemas/engram.js'
 import type { StoreEntry } from './schemas/config.js'
 
@@ -142,9 +142,11 @@ export class IndexedStorage {
       // Read-side scope filter (#353). `personal = 1` passes ALL personal-family
       // scopes (local, global, user:*, agent:*) — set at index time from
       // isPersonalScope — not just global, so a project-scope recall sees personal
-      // engrams. The two `scope` params (exact + LIKE prefix) are unchanged.
-      conditions.push("(personal = 1 OR scope = ? OR scope LIKE ? || '%')")
-      params.push(filter.scope, filter.scope)
+      // engrams. Segment-aware membership (#383): a descendant matches only on a
+      // real delimiter (`:`/`/`), so a sibling string-prefix (project:application
+      // under a project:app query) does NOT leak. Mirrors isScopeWithin.
+      conditions.push("(personal = 1 OR scope = ? OR scope LIKE ? || ':%' OR scope LIKE ? || '/%')")
+      params.push(filter.scope, filter.scope, filter.scope)
     }
     if (filter.domain) {
       conditions.push("domain LIKE ? || '%'")
@@ -199,8 +201,9 @@ export class IndexedStorage {
         const storeEngrams = loadEngrams(store.path)
         const prefix = storePrefix(store.scope)
         for (const e of storeEngrams) {
-          // Scope validation: skip mismatched scopes
-          if (e.scope !== 'global' && e.scope !== store.scope && !e.scope.startsWith(store.scope)) {
+          // Scope validation: skip mismatched scopes. Segment-aware (#383) so a
+          // sibling string-prefix scope can't be indexed under this store.
+          if (e.scope !== 'global' && !isScopeWithin(e.scope, store.scope)) {
             continue
           }
           const nsId = e.id.replace(/^(ENG|ABS|META)-/, `$1-${prefix}-`)

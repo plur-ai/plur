@@ -374,6 +374,150 @@ describe('pack management', () => {
     expect(() => installPack(join(dir, 'packs'), packDir)).toThrow(/injection/i)
   })
 
+  // #381: the secret scan must cover every rendered/exported field, not just
+  // statement+rationale+source. A secret in `summary` (formatLayer1) or `domain`
+  // (formatLayer3) must be detected, blocked on install, and filtered on export.
+  const SECRET = 'AKIA1234567890ABCDEF'
+
+  it('#381 install blocks a secret hidden in summary', () => {
+    const packDir = join(dir, 'secret-summary')
+    mkdirSync(packDir)
+    writeFileSync(join(packDir, 'SKILL.md'), '---\nname: secret-summary\nversion: "1.0"\n---\n')
+    writeFileSync(join(packDir, 'engrams.yaml'), `engrams:
+  - id: ENG-2026-0101-001
+    statement: "A perfectly innocent coding tip"
+    summary: "set api_key = ${SECRET}"
+    type: behavioral
+    scope: global
+    status: active
+    version: 2
+    visibility: public
+    activation:
+      retrieval_strength: 0.7
+      storage_strength: 1.0
+      frequency: 0
+      last_accessed: "2026-01-01"
+`)
+    const preview = previewPack(packDir)
+    expect(preview.security.clean).toBe(false)
+    expect(preview.security.issues.some(i => i.type === 'secret')).toBe(true)
+    expect(() => installPack(join(dir, 'packs'), packDir)).toThrow(/secrets/)
+  })
+
+  it('#381 install blocks a secret hidden in domain', () => {
+    const packDir = join(dir, 'secret-domain')
+    mkdirSync(packDir)
+    writeFileSync(join(packDir, 'SKILL.md'), '---\nname: secret-domain\nversion: "1.0"\n---\n')
+    writeFileSync(join(packDir, 'engrams.yaml'), `engrams:
+  - id: ENG-2026-0101-001
+    statement: "Another innocent tip"
+    domain: "token ${SECRET}"
+    type: behavioral
+    scope: global
+    status: active
+    version: 2
+    visibility: public
+    activation:
+      retrieval_strength: 0.7
+      storage_strength: 1.0
+      frequency: 0
+      last_accessed: "2026-01-01"
+`)
+    const preview = previewPack(packDir)
+    expect(preview.security.issues.some(i => i.type === 'secret')).toBe(true)
+    expect(() => installPack(join(dir, 'packs'), packDir)).toThrow(/secrets/)
+  })
+
+  it('#381 export filters out an engram with a secret in summary or domain', () => {
+    const inSummary = EngramSchema.parse({
+      id: 'ENG-2026-0101-101', statement: 'innocent', summary: `key ${SECRET}`,
+      type: 'behavioral', scope: 'global', status: 'active', visibility: 'public',
+    })
+    const inDomain = EngramSchema.parse({
+      id: 'ENG-2026-0101-102', statement: 'innocent', domain: `d ${SECRET}`,
+      type: 'behavioral', scope: 'global', status: 'active', visibility: 'public',
+    })
+    const r1 = exportPack([inSummary], join(dir, 'exp-summary'), { name: 'exp-summary', version: '1.0.0' })
+    const r2 = exportPack([inDomain], join(dir, 'exp-domain'), { name: 'exp-domain', version: '1.0.0' })
+    expect(r1.engram_count).toBe(0)
+    expect(r2.engram_count).toBe(0)
+  })
+
+  // #389 review: exportPack serializes the WHOLE engram, so the secret scan must
+  // cover serialized fields too (tags/structured_data/contraindications), not
+  // just the 5 enumerated ones — else those caller-settable fields stay a bypass.
+  it('#389 install blocks a secret hidden in tags', () => {
+    const packDir = join(dir, 'secret-tags')
+    mkdirSync(packDir)
+    writeFileSync(join(packDir, 'SKILL.md'), '---\nname: secret-tags\nversion: "1.0"\n---\n')
+    writeFileSync(join(packDir, 'engrams.yaml'), `engrams:
+  - id: ENG-2026-0101-001
+    statement: "An innocent tip"
+    tags: ["deploy", "${SECRET}"]
+    type: behavioral
+    scope: global
+    status: active
+    version: 2
+    visibility: public
+    activation:
+      retrieval_strength: 0.7
+      storage_strength: 1.0
+      frequency: 0
+      last_accessed: "2026-01-01"
+`)
+    expect(previewPack(packDir).security.issues.some(i => i.type === 'secret')).toBe(true)
+    expect(() => installPack(join(dir, 'packs'), packDir)).toThrow(/secrets/)
+  })
+
+  it('#389 export filters a secret in tags / structured_data / contraindications', () => {
+    const inTags = EngramSchema.parse({
+      id: 'ENG-2026-0101-201', statement: 'innocent', tags: ['ok', SECRET],
+      type: 'behavioral', scope: 'global', status: 'active', visibility: 'public',
+    })
+    const inStructured = EngramSchema.parse({
+      id: 'ENG-2026-0101-202', statement: 'innocent', structured_data: { note: `key ${SECRET}` },
+      type: 'behavioral', scope: 'global', status: 'active', visibility: 'public',
+    })
+    const inContra = EngramSchema.parse({
+      id: 'ENG-2026-0101-203', statement: 'innocent', contraindications: [`avoid ${SECRET}`],
+      type: 'behavioral', scope: 'global', status: 'active', visibility: 'public',
+    })
+    expect(exportPack([inTags], join(dir, 'exp-tags'), { name: 'exp-tags', version: '1.0.0' }).engram_count).toBe(0)
+    expect(exportPack([inStructured], join(dir, 'exp-sd'), { name: 'exp-sd', version: '1.0.0' }).engram_count).toBe(0)
+    expect(exportPack([inContra], join(dir, 'exp-contra'), { name: 'exp-contra', version: '1.0.0' }).engram_count).toBe(0)
+  })
+
+  // #389 review (blocker 1): the serialized scan must not be a ReDoS vector.
+  // serializeForSecretScan returns unbounded JSON and EMAIL_RE/IP_RE run on it;
+  // an attacker-authored engram with a long dotted run after `@` made EMAIL_RE
+  // backtrack for 8-17s, hanging preview/install/export. The scan-input cap +
+  // bounded EMAIL_RE must keep it well under the 2s test budget.
+  it('#389 adversarial-length engram does not hang the scan (ReDoS guard)', () => {
+    const evil = EngramSchema.parse({
+      id: 'ENG-2026-0101-301',
+      statement: 'x@' + 'a.'.repeat(80_000) + '!',
+      type: 'behavioral', scope: 'global', status: 'active', visibility: 'public',
+    })
+    expect(() =>
+      exportPack([evil], join(dir, 'exp-redos'), { name: 'exp-redos', version: '1.0.0' }),
+    ).not.toThrow()
+  }, 2000)
+
+  // #389 review (blocker 2) / systemic packs gap: the export gate used
+  // detectSecrets, which never scanned the infra family (public IPs, internal
+  // hosts) — the exact 2026-06 leak class. detectSensitive must now block them.
+  it('#389 export blocks an infra leak (public IP) the old detectSecrets missed', () => {
+    const infra = EngramSchema.parse({
+      id: 'ENG-2026-0101-302',
+      statement: 'deploy target',
+      summary: 'server at 8.8.8.8 handles prod',
+      type: 'behavioral', scope: 'global', status: 'active', visibility: 'public',
+    })
+    expect(
+      exportPack([infra], join(dir, 'exp-infra'), { name: 'exp-infra', version: '1.0.0' }).engram_count,
+    ).toBe(0)
+  })
+
   it('install allows injection text when allowInjection override is set', () => {
     const packDir = join(dir, 'injection-pack-ok')
     mkdirSync(packDir)

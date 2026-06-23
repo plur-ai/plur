@@ -5,7 +5,7 @@ import { decayedStrength, decayedCoAccessStrength, daysSince, confidenceDecay } 
 import { classifyPolarity } from './polarity.js'
 import { computeConfidence } from './confidence.js'
 import { freshTailBoost } from './fresh-tail.js'
-import { isPersonalScope } from './scope-util.js'
+import { isPersonalScope, isScopeWithin } from './scope-util.js'
 
 /**
  * D1-RECALL/INJECT-ASYMMETRY (#353). When an inject is given an EXPLICIT
@@ -164,7 +164,7 @@ export function scoreEngram(
       // project branch (see INJECT_GLOBAL_IS_TARGETED JSDoc + D1-ASYMMETRY tests).
       void INJECT_GLOBAL_IS_TARGETED
       if (engram.scope !== 'global') return 0
-    } else if (!engram.scope.startsWith(scopeFilter) && !isPersonalScope(engram.scope)) {
+    } else if (!isScopeWithin(engram.scope, scopeFilter) && !isPersonalScope(engram.scope)) {
       // Personal-family scopes (local, global, user:*, agent:*, anything not
       // isSharedScope) always pass a project-scope filter; only SHARED scopes
       // that don't match the filter are excluded (#353 read-side fix).

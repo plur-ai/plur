@@ -39,3 +39,20 @@ export function isSharedScope(scope: string): boolean {
 export function isPersonalScope(scope: string): boolean {
   return !isSharedScope(scope)
 }
+
+/**
+ * Segment-aware scope membership (#383). Does `scope` fall within the `queryScope`
+ * namespace — exactly equal, or a descendant separated by a REAL delimiter
+ * (`:` or `/`)? A bare `startsWith` leaks a sibling that is merely a string-prefix:
+ * `project:app` would wrongly match `project:application`. This predicate matches
+ * `project:app`, `project:app:sub`, and `project:app/x` but NOT `project:application`.
+ *
+ * Use everywhere a read-side filter or store-load gate decides scope membership.
+ * The SQL paths (storage-indexed, storage-pglite) inline the equivalent:
+ *   `scope = ? OR scope LIKE ?||':%' OR scope LIKE ?||'/%'`.
+ */
+export function isScopeWithin(scope: string, queryScope: string): boolean {
+  return scope === queryScope
+    || scope.startsWith(queryScope + ':')
+    || scope.startsWith(queryScope + '/')
+}
