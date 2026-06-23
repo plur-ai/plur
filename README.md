@@ -1,3 +1,7 @@
+<p align="center">
+  <a href="https://plur.ai"><img src="assets/plur-banner.png" alt="PLUR — local-first shared memory for AI agents. Haiku + PLUR beats Opus without it, at ~10× less cost." width="100%"></a>
+</p>
+
 # PLUR — Your agents share the same memory
 
 [![npm version](https://img.shields.io/npm/v/@plur-ai/core?logo=npm&color=cb3837)](https://www.npmjs.com/package/@plur-ai/core)
