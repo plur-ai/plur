@@ -382,6 +382,14 @@ const MAX_SCAN_BYTES = 1024 * 1024
 /** Synthetic detector name emitted when input exceeded MAX_SCAN_BYTES (#386). */
 export const SCAN_TRUNCATED = 'scan_truncated'
 
+export function truncateToScanLimit(text: string): string {
+  // Buffer.byteLength avoids materializing a Buffer for the common (small) case.
+  if (Buffer.byteLength(text, 'utf8') <= MAX_SCAN_BYTES) return text
+  // Replace-mode decode (default) — a multi-byte char split at the boundary
+  // becomes U+FFFD; no exception, no silent corruption, always valid UTF-8.
+  return Buffer.from(text, 'utf8').subarray(0, MAX_SCAN_BYTES).toString('utf8')
+}
+
 /**
  * Scan text for secrets AND infrastructure-sensitive content (public IPv4/IPv6,
  * basic-auth URLs, host:port topology, internal/infra hostnames). Superset of
