@@ -608,12 +608,13 @@ export function exportPack(
   // Privacy scan — filter out problematic engrams
   const allPrivacy = scanPrivacy(engrams)
 
-  // Remove private and secret-containing engrams from export
-  const blockedIds = new Set(
-    allPrivacy.issues
-      .filter(i => i.type === 'secret' || i.type === 'private_visibility')
-      .map(i => i.engram_id)
-  )
+  // A pack is a SHARED artifact, so exclude EVERY engram scanPrivacy flagged —
+  // not only secrets and private-tagged ones, but also PII (personal paths,
+  // emails, private IPs) and prompt-injection (#398). scanPrivacy only flags
+  // content that has no place in a shared pack, so ANY issue is disqualifying.
+  // The full scan is still returned in `privacy`, so the caller sees exactly
+  // which engrams were held back and why.
+  const blockedIds = new Set(allPrivacy.issues.map(i => i.engram_id))
   const safeEngrams = engrams.filter(e => !blockedIds.has(e.id))
 
   // Derive match_terms from engram tags and domains

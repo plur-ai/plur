@@ -21,6 +21,7 @@ export interface SyncResult {
 const GITIGNORE = `# PLUR — secrets (machine-local, NEVER synced)
 config.yaml
 secrets.yaml
+agent-keystore.json
 *.token
 
 # PLUR — derived/cache files (regenerated automatically)
@@ -42,11 +43,13 @@ const SYNC_PATHS = ['engrams.yaml', 'episodes.yaml', 'candidates.yaml', 'packs',
 
 /**
  * Secret-bearing files that must never be tracked. Untracked on every sync, so a
- * repo created by a vulnerable pre-0.10.0 client that already committed config.yaml
- * stops carrying it forward. (Rotating the exposed token and purging git history
- * remain manual, operational steps — code can only stop the bleeding.)
+ * repo created by a vulnerable pre-0.10.0 client that already committed one stops
+ * carrying it forward. Includes `agent-keystore.json` (an encrypted agent key —
+ * exposed the same way as config.yaml in the 2026-06 incident; #392). (Rotating
+ * an exposed token/key and purging git history remain manual, operational steps —
+ * code can only stop the bleeding.)
  */
-const SECRET_PATHS = ['config.yaml', 'secrets.yaml'] as const
+const SECRET_PATHS = ['config.yaml', 'secrets.yaml', 'agent-keystore.json'] as const
 
 /**
  * Secret-bearing filenames that must never be staged even from WITHIN a pack
