@@ -1,0 +1,19 @@
+{
+  "name": "@plur-ai/examples",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Runnable getting-started examples for @plur-ai/core",
+  "scripts": {
+    "ex:basic": "tsx 01-basic-store-recall.ts",
+    "ex:mcp": "tsx 02-mcp-integration.ts",
+    "ex:scope": "tsx 03-scope-filtering.ts",
+    "all": "pnpm ex:basic && pnpm ex:mcp && pnpm ex:scope"
+  },
+  "dependencies": {
+    "@plur-ai/core": "workspace:*"
+  },
+  "devDependencies": {
+    "tsx": "^4.22.4"
+  }
+}
