@@ -56,7 +56,7 @@ plur forget ENG-2026-0329-001
 | `plur capture <summary>` | Record an episode to the timeline |
 | `plur timeline [query]` | Query the episodic timeline |
 | `plur status` | System health check |
-| `plur sync` | Cross-device sync via git |
+| `plur sync` | Cross-device sync via git (engram data only — secrets and derived files are never committed) |
 | `plur packs list` | List installed engram packs |
 | `plur packs install <source>` | Install an engram pack |
 | `plur init` | Install Claude Code hooks + local hook binary for automatic injection |

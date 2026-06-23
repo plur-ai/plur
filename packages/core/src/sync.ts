@@ -18,13 +18,48 @@ export interface SyncResult {
   files_changed: number
 }
 
-const GITIGNORE = `# PLUR — derived/cache files (regenerated automatically)
+const GITIGNORE = `# PLUR — secrets (machine-local, NEVER synced)
+config.yaml
+secrets.yaml
+*.token
+
+# PLUR — derived/cache files (regenerated automatically)
 embeddings/
 .embeddings-cache.json
 *.db
 *.sqlite
+store.pglite/
 exchange/
 `
+
+/**
+ * Files that constitute the syncable engram store. ONLY these are ever staged by
+ * plur sync — an explicit allowlist, so secrets (config.yaml) and machine-local
+ * derived files (engrams.db, store.pglite/, exchange/) can NEVER ride along into a
+ * synced repo, regardless of how the user's gitignore is (mis)configured. (#380, #384)
+ */
+const SYNC_PATHS = ['engrams.yaml', 'episodes.yaml', 'candidates.yaml', 'packs', '.gitignore'] as const
+
+/**
+ * Secret-bearing files that must never be tracked. Untracked on every sync, so a
+ * repo created by a vulnerable pre-0.10.0 client that already committed config.yaml
+ * stops carrying it forward. (Rotating the exposed token and purging git history
+ * remain manual, operational steps — code can only stop the bleeding.)
+ */
+const SECRET_PATHS = ['config.yaml', 'secrets.yaml'] as const
+
+/**
+ * Secret-bearing filenames that must never be staged even from WITHIN a pack
+ * directory. `packs` is force-added (`-f`), so `.gitignore` can't stop them —
+ * these exclude-pathspecs do. Packs are installed from external/untrusted
+ * sources, so a `packs/<name>/config.yaml` / `secrets.yaml` / `*.token` is a real
+ * ride-along path that the root-level SECRET_PATHS untrack does not cover. (#387 review)
+ */
+const PACK_SECRET_EXCLUDES = [
+  ':(exclude)packs/**/config.yaml',
+  ':(exclude)packs/**/secrets.yaml',
+  ':(exclude)packs/**/*.token',
+] as const
 
 function git(args: string[], cwd: string): string {
   return execFileSync('git', args, { cwd, encoding: 'utf8', timeout: 30_000 }).trim()
@@ -86,28 +121,46 @@ export function getSyncStatus(root: string): SyncStatus {
   }
 }
 
-function neutraliseGlobalExcludes(root: string): void {
-  // Prevent a developer's global gitignore from silently dropping engram files
-  gitSafe(['config', 'core.excludesFile', '/dev/null'], root)
+/**
+ * Stage exactly the engram-store files for commit. First untracks any secret a
+ * previous client may have committed, then force-adds the allowlisted store files.
+ * The `-f` overrides any user gitignore/excludes that would otherwise drop a real
+ * engram file — the data-staging guarantee that #329 needed — but now WITHOUT
+ * neutralizing the user's global excludes for everything else (closes #384, and
+ * replaces the #366 `neutraliseGlobalExcludes` helper), and config.yaml/secrets
+ * are never in the pathspec so they can never be staged (#380).
+ * Returns the number of files staged (added/modified/deleted).
+ */
+function stageStoreFiles(root: string): number {
+  for (const secret of SECRET_PATHS) {
+    gitSafe(['rm', '--cached', '--ignore-unmatch', '--quiet', '--', secret], root)
+  }
+  const present = SYNC_PATHS.filter((p) => existsSync(join(root, p)))
+  if (present.length > 0) {
+    // PACK_SECRET_EXCLUDES keep a secret nested inside a (force-added) pack dir
+    // from riding past .gitignore — the root SECRET_PATHS untrack only covers root.
+    git(['add', '-A', '-f', '--', ...present, ...PACK_SECRET_EXCLUDES], root)
+  }
+  const staged = gitSafe(['diff', '--cached', '--name-only'], root)
+  return staged ? staged.split('\n').filter(Boolean).length : 0
 }
 
 function initRepo(root: string): void {
   git(['init'], root)
-  neutraliseGlobalExcludes(root)
   atomicWrite(join(root, '.gitignore'), GITIGNORE)
-  git(['add', '-A'], root)
+  stageStoreFiles(root)
   git(['commit', '-m', 'Initial PLUR engram store'], root)
 }
 
 function commitChanges(root: string): number {
-  if (!isDirty(root)) return 0
-  git(['add', '-A'], root)
+  const filesChanged = stageStoreFiles(root)
+  if (filesChanged === 0) return 0
   const diff = gitSafe(['diff', '--cached', '--stat', '--shortstat'], root)
   const now = new Date().toISOString().slice(0, 19).replace('T', ' ')
   git(['commit', '-m', `plur sync ${now}`], root)
   // Parse "N files changed" from shortstat
   const match = diff?.match(/(\d+) file/)
-  return match ? parseInt(match[1], 10) : 1
+  return match ? parseInt(match[1], 10) : filesChanged
 }
 
 function hasConflictMarkers(root: string): boolean {
@@ -130,7 +183,7 @@ function pullRebase(root: string): boolean {
     gitSafe(['merge', '--abort'], root)
     throw new Error('Sync conflict: YAML files have merge conflicts that require manual resolution. Your local changes are preserved.')
   }
-  git(['add', '-A'], root)
+  stageStoreFiles(root)
   gitSafe(['commit', '-m', 'plur sync: merge conflict resolved (kept both)'], root)
   return true
 }
@@ -157,9 +210,6 @@ export function sync(root: string, remote?: string): SyncResult {
       files_changed: 0,
     }
   }
-
-  // Ensure global excludes are neutralised for this store (idempotent; migrates existing repos)
-  neutraliseGlobalExcludes(root)
 
   // Add remote if provided and not yet set
   const existingRemote = getRemote(root)
