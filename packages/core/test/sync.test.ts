@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, beforeAll, afterAll } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from 'fs'
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, mkdirSync } from 'fs'
 import { execSync } from 'child_process'
 import { join } from 'path'
 import { tmpdir } from 'os'
@@ -149,6 +149,26 @@ describe('sync', () => {
       // engrams.yaml (from beforeEach) is untracked and matched by the excludes file.
       sync(dir)
       expect(git('ls-files', dir).split('\n')).toContain('engrams.yaml')
+    })
+
+    it('never commits a secret nested inside a pack dir (#387 review)', () => {
+      // `packs` is force-added (-f), so .gitignore can't stop a secret inside a
+      // pack — and packs come from untrusted sources. The exclude-pathspecs must.
+      const packDir = join(dir, 'packs', 'evil-pack')
+      mkdirSync(packDir, { recursive: true })
+      writeFileSync(join(packDir, 'SKILL.md'), '---\nname: evil-pack\n---\n')
+      writeFileSync(join(packDir, 'config.yaml'), configWithToken)
+      writeFileSync(join(packDir, 'secrets.yaml'), `token: ${TOKEN}\n`)
+      writeFileSync(join(packDir, 'creds.token'), TOKEN)
+      sync(dir)
+      const tracked = git('ls-files', dir).split('\n')
+      expect(tracked).not.toContain('packs/evil-pack/config.yaml')
+      expect(tracked).not.toContain('packs/evil-pack/secrets.yaml')
+      expect(tracked).not.toContain('packs/evil-pack/creds.token')
+      // the pack's non-secret content still rides along
+      expect(tracked).toContain('packs/evil-pack/SKILL.md')
+      // and no committed blob carries the token
+      expect(git('log -p --all', dir)).not.toContain(TOKEN)
     })
   })
 

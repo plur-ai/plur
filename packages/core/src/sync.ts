@@ -48,6 +48,19 @@ const SYNC_PATHS = ['engrams.yaml', 'episodes.yaml', 'candidates.yaml', 'packs',
  */
 const SECRET_PATHS = ['config.yaml', 'secrets.yaml'] as const
 
+/**
+ * Secret-bearing filenames that must never be staged even from WITHIN a pack
+ * directory. `packs` is force-added (`-f`), so `.gitignore` can't stop them —
+ * these exclude-pathspecs do. Packs are installed from external/untrusted
+ * sources, so a `packs/<name>/config.yaml` / `secrets.yaml` / `*.token` is a real
+ * ride-along path that the root-level SECRET_PATHS untrack does not cover. (#387 review)
+ */
+const PACK_SECRET_EXCLUDES = [
+  ':(exclude)packs/**/config.yaml',
+  ':(exclude)packs/**/secrets.yaml',
+  ':(exclude)packs/**/*.token',
+] as const
+
 function git(args: string[], cwd: string): string {
   return execFileSync('git', args, { cwd, encoding: 'utf8', timeout: 30_000 }).trim()
 }
@@ -124,7 +137,9 @@ function stageStoreFiles(root: string): number {
   }
   const present = SYNC_PATHS.filter((p) => existsSync(join(root, p)))
   if (present.length > 0) {
-    git(['add', '-A', '-f', '--', ...present], root)
+    // PACK_SECRET_EXCLUDES keep a secret nested inside a (force-added) pack dir
+    // from riding past .gitignore — the root SECRET_PATHS untrack only covers root.
+    git(['add', '-A', '-f', '--', ...present, ...PACK_SECRET_EXCLUDES], root)
   }
   const staged = gitSafe(['diff', '--cached', '--name-only'], root)
   return staged ? staged.split('\n').filter(Boolean).length : 0
