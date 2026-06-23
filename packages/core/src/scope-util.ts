@@ -23,7 +23,16 @@
 export const SHARED_SCOPE_PREFIXES = ['group:', 'project:', 'space:', 'team:', 'org:', 'public'] as const
 
 export function isSharedScope(scope: string): boolean {
-  return SHARED_SCOPE_PREFIXES.some(p => scope.startsWith(p))
+  // The `group:`/`project:`/… entries carry their `:` delimiter, so `startsWith`
+  // already requires a real boundary. `'public'` is the odd one out — a complete
+  // scope name / namespace root, not a bare prefix — so it must match exactly or
+  // on a real delimiter. A plain `startsWith('public')` misclassifies personal
+  // scopes like `public-roadmap` / `publicfoobar` as shared (#403).
+  return SHARED_SCOPE_PREFIXES.some(p =>
+    p === 'public'
+      ? scope === 'public' || scope.startsWith('public:') || scope.startsWith('public/')
+      : scope.startsWith(p),
+  )
 }
 
 /**

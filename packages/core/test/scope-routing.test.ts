@@ -16,7 +16,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import yaml from 'js-yaml'
-import { Plur, rankScopes, SCOPE_MATCH_THRESHOLD } from '../src/index.js'
+import { Plur, rankScopes, SCOPE_MATCH_THRESHOLD, isSharedScope } from '../src/index.js'
 import { THRESHOLD_SINGLE_DOMAIN } from '../src/scope-routing.js'
 
 describe('rankScopes — pure ranker', () => {
@@ -393,5 +393,55 @@ describe('plur.suggestScope — reads scope metadata from config stores', () => 
     ])
     const ranked = plur.suggestScope({ statement: 'no overlap words zzz', tags: ['servers'] })
     expect(ranked.map(c => c.scope)).toContain('group:plur/infra')
+  })
+})
+
+describe('rankScopes — keyword-only cap (#395)', () => {
+  it('keyword-only overlap, however many tokens, does NOT clear the auto-route threshold', () => {
+    // A cover with many single-word namespaces; a statement that matches 9 of them
+    // but carries NO domain and NO tag — pure word-coincidence.
+    const scope = { scope: 'group:acme/eng', covers: ['alpha', 'bravo', 'charlie', 'delta', 'echo', 'foxtrot', 'golf', 'hotel', 'india'] }
+    const ranked = rankScopes(
+      { statement: 'alpha bravo charlie delta echo foxtrot golf hotel india miscellaneous notes' },
+      [scope],
+    )
+    expect(ranked).toHaveLength(1)
+    // Without the cap, 9*0.2 = 1.8 ⟹ squash ≈ 0.545 ≥ 0.5 would auto-route. Capped, it stays below.
+    expect(ranked[0].confidence).toBeLessThan(SCOPE_MATCH_THRESHOLD)
+  })
+
+  it('keywords still boost a real domain match (the cap does not suppress them entirely)', () => {
+    const scope = { scope: 'group:acme/eng', covers: ['acme.eng', 'alpha', 'bravo', 'charlie'] }
+    const domainOnly = rankScopes({ statement: 'x', domain: 'acme.eng.api' }, [scope])[0]
+    const domainPlusKeywords = rankScopes({ statement: 'alpha bravo charlie', domain: 'acme.eng.api' }, [scope])[0]
+    expect(domainPlusKeywords.confidence).toBeGreaterThan(domainOnly.confidence)
+  })
+})
+
+describe('rankScopes — specificity tie-break (#399)', () => {
+  it('between two equal-confidence forward domain matches, the more specific cover wins (not the name)', () => {
+    // domain forward-matches BOTH covers; both score WEIGHT_DOMAIN ⟹ equal confidence.
+    // The deeper cover (plur.core, depth 2) is the better home than plur (depth 1),
+    // even though its scope name sorts LAST alphabetically.
+    const broad = { scope: 'group:aaa-broad', covers: ['plur'] }
+    const specific = { scope: 'group:zzz-specific', covers: ['plur.core'] }
+    const ranked = rankScopes({ statement: 'x', domain: 'plur.core.security' }, [broad, specific])
+    expect(ranked[0].confidence).toBe(ranked[1].confidence) // genuinely a tie on confidence
+    expect(ranked[0].scope).toBe('group:zzz-specific')      // specificity beats alphabetical
+  })
+})
+
+describe('isSharedScope — public-prefix boundary (#403)', () => {
+  it('classifies the public namespace as shared but NOT string-prefix siblings', () => {
+    expect(isSharedScope('public')).toBe(true)
+    expect(isSharedScope('public:roadmap')).toBe(true)
+    expect(isSharedScope('public/x')).toBe(true)
+    // personal scopes that merely start with the letters "public"
+    expect(isSharedScope('publicfoobar')).toBe(false)
+    expect(isSharedScope('public-roadmap')).toBe(false)
+    // sanity: the colon-delimited prefixes and personal scopes are unchanged
+    expect(isSharedScope('group:plur/eng')).toBe(true)
+    expect(isSharedScope('local')).toBe(false)
+    expect(isSharedScope('user:gregor')).toBe(false)
   })
 })
