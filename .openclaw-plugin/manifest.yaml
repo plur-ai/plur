@@ -1,0 +1,16 @@
+# OpenClaw plugin manifest for PLUR.
+# Canonical source: packages/claw/openclaw.plugin.json (shipped inside @plur-ai/claw).
+# This top-level copy is a discovery pointer — install the published package below.
+id: plur-claw
+name: PLUR Memory Engine
+description: >-
+  Persistent, learnable memory for OpenClaw agents. Local-first, no cloud
+  required. Auto-injects relevant memories on session start and auto-extracts
+  learnings from conversations.
+version: 0.9.17
+kind: memory
+package: "@plur-ai/claw"
+homepage: https://plur.ai
+repository: https://github.com/plur-ai/plur
+license: Apache-2.0
+enabledByDefault: true
