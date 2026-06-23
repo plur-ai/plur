@@ -64,7 +64,13 @@ function demoteIfSensitive(
   engram: any,
   newStatement: string,
 ): void {
-  const offending = deps.offendingHitsForScope(newStatement, engram.scope ?? 'global')
+  // Scan the post-mutation statement AND the engram's (merged) tags. A dedup
+  // UPDATE/MERGE unions `context.tags` into the engram before this runs, so a
+  // secret/infra value in a merged tag would otherwise ride to a shared store
+  // unguarded — the statement-only scan missed it (#409).
+  const tags = Array.isArray(engram.tags) ? engram.tags.filter((t: unknown) => typeof t === 'string') : []
+  const scanText = tags.length ? `${newStatement}\n${tags.join(' ')}` : newStatement
+  const offending = deps.offendingHitsForScope(scanText, engram.scope ?? 'global')
   if (offending.length === 0) return
   const patterns = [...new Set(offending.map(h => h.pattern))].join(', ')
   logger.warning(

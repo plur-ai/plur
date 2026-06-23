@@ -1,6 +1,10 @@
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, afterEach } from 'vitest'
+import { mkdtempSync, rmSync } from 'fs'
+import { join } from 'path'
+import { tmpdir } from 'os'
 import { learnAsync } from '../src/learn-async.js'
 import type { LearnAsyncDeps } from '../src/learn-async.js'
+import { loadEngrams, saveEngrams } from '../src/engrams.js'
 import type { Engram } from '../src/schemas/engram.js'
 
 /**
@@ -106,5 +110,55 @@ describe('learnAsync scope-aware LLM dedup (issue #359)', () => {
     // Without a requested scope the filter is skipped; global candidate is a valid target.
     expect(llm).toHaveBeenCalled()
     expect(result.decision).toBe('NOOP')
+  })
+})
+
+// #409: a dedup UPDATE/MERGE unions context.tags into the engram, but the demote
+// scan only looked at the statement — a secret in a merged TAG reached the shared
+// store unguarded. The demote now scans statement + tags.
+describe('learnAsync demote scans merged tags (#409)', () => {
+  let dir: string
+  let engramsPath: string
+  afterEach(() => { if (dir) rmSync(dir, { recursive: true, force: true }) })
+
+  function depsWithFile(candidates: Engram[]): LearnAsyncDeps {
+    dir = mkdtempSync(join(tmpdir(), 'plur-409-'))
+    engramsPath = join(dir, 'engrams.yaml')
+    saveEngrams(engramsPath, candidates)
+    return {
+      ...makeDeps(candidates),
+      engramsPath,
+      rootPath: dir,
+      // Flag any scan text containing the sentinel — placed ONLY in a tag below,
+      // so a hit proves the scan now includes the merged tags.
+      offendingHitsForScope: (text: string) =>
+        text.includes('LEAKTAG') ? ([{ pattern: 'fake_infra', match: 'LEAKTAG' }] as any) : [],
+    }
+  }
+
+  it('UPDATE demotes to local when a merged tag carries sensitive content', async () => {
+    const shared = { ...globalCandidate, id: 'ENG-2026-0101-409', scope: 'group:datafund/datafund', statement: 'clean shared note' } as unknown as Engram
+    const deps = depsWithFile([shared])
+    const llm = vi.fn().mockResolvedValue('DECISION: UPDATE\nTARGET: ENG-2026-0101-409\nREASON: same topic')
+
+    // Statement is clean; the sensitive sentinel rides ONLY in a tag.
+    const result = await learnAsync(deps, 'clean shared note refined', { scope: 'group:datafund/datafund', tags: ['LEAKTAG'], llm })
+
+    expect(result.decision).toBe('UPDATE')
+    const persisted = loadEngrams(engramsPath).find(e => e.id === 'ENG-2026-0101-409') as any
+    expect(persisted.scope).toBe('local')        // demoted — the merged tag was scanned
+    expect(persisted.visibility).toBe('private')
+  })
+
+  it('UPDATE does NOT demote when statement and tags are clean (no over-block)', async () => {
+    const shared = { ...globalCandidate, id: 'ENG-2026-0101-409b', scope: 'group:datafund/datafund', statement: 'clean shared note' } as unknown as Engram
+    const deps = depsWithFile([shared])
+    const llm = vi.fn().mockResolvedValue('DECISION: UPDATE\nTARGET: ENG-2026-0101-409b\nREASON: same topic')
+
+    const result = await learnAsync(deps, 'clean shared note refined', { scope: 'group:datafund/datafund', tags: ['ordinary-tag'], llm })
+
+    expect(result.decision).toBe('UPDATE')
+    const persisted = loadEngrams(engramsPath).find(e => e.id === 'ENG-2026-0101-409b') as any
+    expect(persisted.scope).toBe('group:datafund/datafund') // untouched
   })
 })
