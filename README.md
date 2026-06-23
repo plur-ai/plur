@@ -1,3 +1,7 @@
+<p align="center">
+  <a href="https://plur.ai"><img src="assets/plur-banner.png" alt="PLUR — local-first shared memory for AI agents. Haiku + PLUR beats Opus without it, at ~10× less cost." width="100%"></a>
+</p>
+
 # PLUR — Your agents share the same memory
 
 Persistent memory for AI agents. Local-first, zero-cost, works across MCP tools.
