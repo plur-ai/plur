@@ -1,0 +1,19 @@
+{
+  "name": "plur",
+  "version": "0.9.13",
+  "description": "Persistent, local-first shared memory for AI agents. Corrections, preferences, and conventions persist across sessions, tools, and machines — stored as plain YAML on your disk, with zero-cost local search.",
+  "author": {
+    "name": "PLUR",
+    "url": "https://plur.ai"
+  },
+  "homepage": "https://plur.ai",
+  "repository": "https://github.com/plur-ai/plur",
+  "license": "Apache-2.0",
+  "keywords": [
+    "memory",
+    "agent-memory",
+    "mcp",
+    "local-first",
+    "context-engine"
+  ]
+}
