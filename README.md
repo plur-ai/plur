@@ -15,7 +15,9 @@ Persistent memory for AI agents. Local-first, zero-cost, works across MCP tools.
 
 ## Benchmarks
 
-Retrieval recall (R@5) on **LongMemEval**, chunk granularity:
+PLUR is memory, not just retrieval — so we measure it on more than one axis.
+
+**Retrieval recall** — LongMemEval (R@5, chunk granularity):
 
 | Stack | R@5 | Notes |
 |-------|-----|-------|
@@ -23,7 +25,11 @@ Retrieval recall (R@5) on **LongMemEval**, chunk granularity:
 | PLUR hybrid (openai-3-large embeddings) | 97.0% | optional cloud embedder |
 | PLUR BM25 only | 92.2% | no embedder — fully airgapped |
 
-**97.6% R@5 on LongMemEval — fully local, zero API calls, data-sovereign.** [Full methodology →](https://plur.ai/benchmark.html)
+**Agent task impact** — same task, with memory vs without: Haiku + PLUR outperforms Opus *without* it at roughly **10× less cost**; house rules **12–0** across Haiku, Sonnet, and Opus.
+
+**Operational** — local-first, zero-cost search, data-sovereign by design.
+
+*More benchmarks in progress: LoCoMo, end-to-end answer accuracy (N=500), agentic task suites, cross-tool portability, decay / contradiction correctness.* [Full methodology →](https://plur.ai/benchmark.html)
 
 ## The idea
 
@@ -194,7 +200,7 @@ Per-category retrieval recall (hybrid + openai-3-large embeddings, chunk granula
 | temporal-reasoning | 94.0% | 97.0% |
 | single-session-preference | 93.3% | 96.7% |
 
-Retrieval recall (finding the right memory) and end-to-end answer accuracy (the numbers mem0 / Zep / Letta / Mastra headline) are **different axes** — PLUR measures and reports them separately, never compared directly. On the agent-impact axis, an earlier A/B run found Haiku + PLUR outperformed Opus *without* memory at roughly 10× lower cost.
+Retrieval recall (finding the right memory) and end-to-end answer accuracy (whether the model then answers correctly) are **different axes** — PLUR measures and reports them separately, never conflated. The agent-impact figures above come from a same-task A/B run (memory vs none).
 
 [Full methodology →](https://plur.ai/benchmark.html)
 
