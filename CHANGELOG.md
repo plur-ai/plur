@@ -1,6 +1,15 @@
 # Changelog
 
-## Unreleased
+## 0.10.0 (2026-06-25)
+
+Security-hardening release, independently audited.
+
+- Engram leak guard hardened
+- Pack & sync locked down
+- Private-by-default scopes
+- Independently re-audited (Črt)
+
+PLUR's engram leak guard, scope isolation, pack/sync distribution, and remote-store trust boundaries were hardened across three internal audit rounds **and an independent adversarial re-audit by Črt** — the Blocker and the full High confidentiality cluster fixed and re-verified, plus every Medium/Low finding. Also lands per-engram scope routing, **private-by-default** visibility, and read-side personal-scope visibility on all three read paths. No breaking API changes; the behavior changes are noted per entry below.
 
 ### Security: sensitivity scan window raised to 1 MiB and fail-closed past it (#386)
 
@@ -55,7 +64,14 @@ The read-side scope filters and store-load gates decided shared-scope membership
 
 **Behavior change:** an engram in a shared scope that is merely a string-prefix of the query scope is no longer returned by recall/inject/list. True descendants (delimiter-separated) are unaffected.
 
-## 0.10.0 (2026-06-21)
+### Security: full audit remediation — Medium/Low cluster + independent re-audit (#387–#429)
+
+Beyond the Blocker/High items above, the complete audit set was remediated and independently re-verified:
+
+- **Scope routing & visibility:** keyword-only over-routing capped so a generic memory can't auto-file into a team store; equal-confidence domain ties resolve by coverage specificity; `public`-prefixed scopes no longer misclassified as shared; the pglite backend passes all personal-family scopes on a project recall; dedup demote now scans merged tags; the dead engram-publish filter removed.
+- **Distribution & packs:** `exportPack` excludes every privacy-flagged engram (PII/injection, not just secrets); the agent keystore plus a pack-content **allowlist** close the sync leak surface; the pack scan is fail-closed past 1 MiB.
+- **Remote-store trust:** driver cache invalidates on token rotation; server-assigned ids are shape-validated; `/me` scope names are validated at the trust boundary (non-string + injection-name); per-scope registration is isolated; malformed-row logs are sanitized; `stores add` reports honestly when a path drops a scope.
+- Verified by the full test suite (2000+ tests), a 287-case adversarial fuzzer suite, our own pre-handoff adversarial audit, and **Črt's independent re-audit (HOLD → cleared)**.
 
 ### Leak guard: write-time demotion now covers `saveMetaEngrams` and remote-backed scopes (#368, #370)
 
