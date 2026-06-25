@@ -518,6 +518,22 @@ describe('pack management', () => {
     ).toBe(0)
   })
 
+  it('#425 export fails closed on a >1 MiB engram (pack scan no longer double-truncates)', () => {
+    // Č re-audit: scanPrivacy pre-truncated the serialized engram BEFORE detectSensitive,
+    // so the #386 `scan_truncated` fail-closed signal never fired on the pack path and a
+    // >1 MiB engram with sensitive content past byte 1 MiB exported clean. Now the full
+    // text reaches detectSensitive, which emits scan_truncated past 1 MiB → held back.
+    const filler = 'x '.repeat(600 * 1024) // ~1.2 MB of serialized content (> 1 MiB cap)
+    const huge = EngramSchema.parse({
+      id: 'ENG-2026-0101-425',
+      statement: `${filler} 8.8.8.8`, // infra placed past the 1 MiB cap — must NOT be certified clean
+      type: 'behavioral', scope: 'global', status: 'active', visibility: 'public',
+    })
+    expect(
+      exportPack([huge], join(dir, 'exp-425'), { name: 'exp-425', version: '1.0.0' }).engram_count,
+    ).toBe(0)
+  })
+
   // #398: a SHARED pack must not carry PII either. exportPack previously excluded
   // only secrets + private-tagged engrams; personal paths, emails, and private IPs
   // rode along. Now ANY scanPrivacy issue is disqualifying for export.

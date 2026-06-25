@@ -1,6 +1,6 @@
 import { execFileSync } from 'child_process'
-import { existsSync, writeFileSync, renameSync, mkdirSync, unlinkSync, statSync } from 'fs'
-import { join, dirname } from 'path'
+import { existsSync, writeFileSync, renameSync, mkdirSync, unlinkSync, statSync, readdirSync } from 'fs'
+import { join, dirname, relative } from 'path'
 
 export interface SyncStatus {
   initialized: boolean
@@ -52,20 +52,17 @@ const SYNC_PATHS = ['engrams.yaml', 'episodes.yaml', 'candidates.yaml', 'packs',
 const SECRET_PATHS = ['config.yaml', 'secrets.yaml', 'agent-keystore.json'] as const
 
 /**
- * Secret-bearing filenames that must never be staged even from WITHIN a pack
- * directory. `packs` is force-added (`-f`), so `.gitignore` can't stop them —
- * these exclude-pathspecs do. Packs are installed from external/untrusted
- * sources, so a `packs/<name>/config.yaml` / `secrets.yaml` / `*.token` /
- * `agent-keystore.json` is a real ride-along path that the root-level SECRET_PATHS
- * untrack does not cover. (#387 review; keystore added pre-Crt audit — #392 had
- * given the keystore only root protection, leaving the nested-pack vector open.)
+ * Files inside a pack that are syncable — an explicit ALLOWLIST, mirroring the
+ * root-level SYNC_PATHS. `packs/` is force-added (`-f`) recursively, and packs come
+ * from external/untrusted sources, so a denylist of secret filenames is the wrong
+ * shape: it only blocks the names it enumerates, and anything it misses
+ * (`.env`, `*.pem`, `id_rsa`, `credentials.yml`, `.npmrc`, …) rides into the synced
+ * repo (#428). An allowlist inverts that — ONLY the files PLUR's own `exportPack`
+ * writes are staged; any other file in a pack dir (a secret, a stray asset) is
+ * never staged, by construction. (`**` matches the standard `packs/<name>/…` layout
+ * and any deeper nesting.)
  */
-const PACK_SECRET_EXCLUDES = [
-  ':(exclude)packs/**/config.yaml',
-  ':(exclude)packs/**/secrets.yaml',
-  ':(exclude)packs/**/*.token',
-  ':(exclude)packs/**/agent-keystore.json',
-] as const
+const PACK_ALLOW_NAMES = ['SKILL.md', 'engrams.yaml', 'INTEGRITY', 'metadata.json'] as const
 
 function git(args: string[], cwd: string): string {
   return execFileSync('git', args, { cwd, encoding: 'utf8', timeout: 30_000 }).trim()
@@ -141,14 +138,50 @@ function stageStoreFiles(root: string): number {
   for (const secret of SECRET_PATHS) {
     gitSafe(['rm', '--cached', '--ignore-unmatch', '--quiet', '--', secret], root)
   }
-  const present = SYNC_PATHS.filter((p) => existsSync(join(root, p)))
-  if (present.length > 0) {
-    // PACK_SECRET_EXCLUDES keep a secret nested inside a (force-added) pack dir
-    // from riding past .gitignore — the root SECRET_PATHS untrack only covers root.
-    git(['add', '-A', '-f', '--', ...present, ...PACK_SECRET_EXCLUDES], root)
+  // Root store files (allowlist), EXCEPT `packs` which is staged by its own
+  // file-level allowlist below — never as a whole force-added directory (#428).
+  const present = SYNC_PATHS.filter((p) => p !== 'packs' && existsSync(join(root, p)))
+  const pathspecs: string[] = [...present, ...packStorePaths(root)]
+  if (pathspecs.length > 0) {
+    // Only the allowlisted root files + the allowlisted pack files are staged, so
+    // no secret file (root or nested in a pack) can ever ride along.
+    git(['add', '-A', '-f', '--', ...pathspecs], root)
   }
   const staged = gitSafe(['diff', '--cached', '--name-only'], root)
   return staged ? staged.split('\n').filter(Boolean).length : 0
+}
+
+/**
+ * The EXACT allowlisted files inside `packs/` to stage (#428). Returns concrete
+ * paths, not globs, so a `git add` pathspec can never zero-match (which is fatal)
+ * — the bug a "packs/<glob>/metadata.json" pathspec hit when no pack had one.
+ * Unions on-disk files (adds/modifies) with currently-tracked ones (so a deletion
+ * still stages via `-A`). Only SKILL.md / engrams.yaml / INTEGRITY / metadata.json
+ * are eligible — any other file in a pack dir (a secret, a stray asset) is excluded
+ * by construction.
+ */
+function packStorePaths(root: string): string[] {
+  const packsDir = join(root, 'packs')
+  if (!existsSync(packsDir)) return []
+  const allow = new Set<string>(PACK_ALLOW_NAMES)
+  const paths = new Set<string>()
+  const stack: string[] = [packsDir]
+  while (stack.length > 0) {
+    const dir = stack.pop()!
+    for (const ent of readdirSync(dir, { withFileTypes: true })) {
+      const full = join(dir, ent.name)
+      if (ent.isDirectory()) stack.push(full)
+      else if (allow.has(ent.name)) paths.add(relative(root, full))
+    }
+  }
+  // Tracked allowlisted files (so a removed pack file's deletion stages via -A).
+  const tracked = gitSafe(['ls-files', '--', 'packs'], root)
+  if (tracked) {
+    for (const f of tracked.split('\n').filter(Boolean)) {
+      if (allow.has(f.split('/').pop() ?? '')) paths.add(f)
+    }
+  }
+  return [...paths]
 }
 
 function initRepo(root: string): void {

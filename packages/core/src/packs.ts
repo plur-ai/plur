@@ -493,14 +493,22 @@ export function scanPrivacy(engrams: Engram[]): PrivacyScanResult {
     // crafted pack (#389 review measured 8-17s), hanging preview/install/export.
     // detectSensitive re-applies the same cap internally; this also bounds the
     // privacy regexes that don't go through it.
-    const secretText = truncateToScanLimit(serializeForSecretScan(e))
+    const fullText = serializeForSecretScan(e)
+    const secretText = truncateToScanLimit(fullText)
 
     // Secret AND infrastructure-sensitive patterns. detectSensitive is a superset
     // of detectSecrets that also catches public IPv4/IPv6, internal hosts,
     // basic-auth URLs and host:port — the infra family detectSecrets missed and
     // the exact class of the 2026-06 leak. Without it, an infra leak in
     // summary/tags/source was exported clean.
-    const secrets = detectSensitive(secretText)
+    //
+    // #425: pass the FULL serialized text, NOT the pre-truncated `secretText`.
+    // detectSensitive caps its own regex work internally (ReDoS-safe) AND emits
+    // the #386 `scan_truncated` fail-closed hit when the input exceeds 1 MiB.
+    // Pre-truncating here hid the over-cap from it, so a >1 MiB engram with
+    // sensitive content past byte 1 MiB exported/installed CLEAN. The raw PII
+    // regexes below still run on the bounded `secretText`.
+    const secrets = detectSensitive(fullText)
     for (const s of secrets) {
       issues.push({
         engram_id: e.id,

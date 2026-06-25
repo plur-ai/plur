@@ -111,12 +111,21 @@ export class RemoteStore implements EngramStore {
       const text = await r.text().catch(() => '')
       throw new Error(`Remote /me failed: ${r.status} ${text}`)
     }
-    const body = await r.json().catch(() => ({})) as Partial<{ username: string; org_id: string; role: string; scopes: string[] }>
+    const body = await r.json().catch(() => ({})) as Partial<{ username: string; org_id: string; role: string; scopes: unknown[] }>
     return {
       username: body.username ?? '',
       org_id:   body.org_id ?? '',
       role:     body.role ?? '',
-      scopes:   Array.isArray(body.scopes) ? body.scopes : [],
+      // Validate every /me scope to a safe grammar at the trust boundary:
+      //  - #427: a non-string element would later throw in isSharedScope's
+      //    `scope.startsWith(...)` BEFORE the per-scope try/catch — drop non-strings.
+      //  - #426: scope names render verbatim into the session-start guide (the
+      //    agent's directive surface); a name carrying newlines/control chars is a
+      //    prompt-injection channel — require `[\w:./-]+` (allows group:org/team,
+      //    user:*, etc.) so nothing malformed enters from a hostile/MITM remote.
+      scopes:   Array.isArray(body.scopes)
+        ? body.scopes.filter((s): s is string => typeof s === 'string' && /^[\w:./-]+$/.test(s))
+        : [],
     }
   }
 
