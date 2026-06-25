@@ -343,6 +343,41 @@ if [ "$DRY_RUN" = true ]; then
   exit 0
 fi
 
+# --- 3.7. Pre-flight: every target version must be publishable ---
+# npm permanently reserves a version number once published — even after
+# `npm unpublish`. Catch a taken/burned version HERE, before the irreversible
+# git tag push + first publish. (0.10.0: @plur-ai/cli@0.10.0 had been published
+# then unpublished and was burned; the script discovered it only AFTER pushing
+# the tag and publishing core. See issue #430.)
+echo "--- Step 3.7: Pre-flight version availability ---"
+preflight_check() {
+  pf_pkg="$1"; pf_ver="$2"
+  if npm view "@plur-ai/$pf_pkg" versions --json 2>/dev/null | grep -q "\"$pf_ver\""; then
+    echo "  ✗ @plur-ai/$pf_pkg@$pf_ver is already published."
+    return 1
+  fi
+  if npm view "@plur-ai/$pf_pkg" time --json 2>/dev/null | grep -q "\"$pf_ver\""; then
+    echo "  ✗ @plur-ai/$pf_pkg@$pf_ver was published then unpublished — npm burns that number permanently. Bump that package to the next patch."
+    return 1
+  fi
+  echo "  ✓ @plur-ai/$pf_pkg@$pf_ver available"
+  return 0
+}
+PREFLIGHT_OK=true
+for pkg in core cli mcp; do
+  preflight_check "$pkg" "$VERSION" || PREFLIGHT_OK=false
+done
+if [ -n "$CLAW_VERSION" ]; then
+  preflight_check claw "$CLAW_VERSION" || PREFLIGHT_OK=false
+fi
+if [ "$PREFLIGHT_OK" != true ]; then
+  echo ""
+  echo "✗ Pre-flight failed — nothing committed, tagged, or published."
+  echo "  Fix the version(s) above and re-run. (Burned version → bump that package to its next patch.)"
+  exit 1
+fi
+echo ""
+
 # --- 4. Commit + tag + push ---
 echo "--- Step 4: Git ---"
 git add -A
@@ -468,7 +503,8 @@ else
   echo "  Deploying $WEBSITE_DIR → $DEPLOY_TARGET"
   rsync -avz -e "ssh -i $DEPLOY_KEY -o StrictHostKeyChecking=accept-new" \
     "$WEBSITE_DIR/" "$DEPLOY_TARGET" \
-    --exclude='.git' --exclude='node_modules' --exclude='.DS_Store' 2>&1 | tail -5
+    --exclude='.git' --exclude='node_modules' --exclude='.DS_Store' \
+    --exclude='.gstack' --exclude='CLAUDE.md' 2>&1 | tail -5
   # Verify the live softwareVersion matches. Caddy auto-serves; cache TTL
   # is short. A mismatch likely means we deployed to the wrong path
   # (engram ENG-2026-0402-048: must be /var/www/sites/plur.ai, not /var/www/plur.ai).
