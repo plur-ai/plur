@@ -493,12 +493,17 @@ describe('Plur', () => {
     expect(explicitPublic.visibility).toBe('public')
   })
 
-  it('#401 learnRouted (the production write path) also defaults visibility to private with a domain', async () => {
-    // _buildEngramShape is the constructor learnRouted uses — the path plur_learn
-    // and the CLI actually hit. The pre-Crt audit found it still defaulted public.
-    const routed = await plur.learnRouted('Team deploy note', { scope: 'global', domain: 'software.deploy' })
-    expect(routed.visibility).toBe('private')
-    const explicit = await plur.learnRouted('Deliberately shared', { scope: 'global', domain: 'software.deploy', visibility: 'public' })
+  it('#401/#415 _buildEngramShape (the learnRouted remote constructor) defaults visibility private with a domain', () => {
+    // Č re-audit (#377): the prior version of this test used scope:'global', which
+    // takes learnRouted's LOCAL branch → learn(), so it never exercised
+    // `_buildEngramShape` — the exact remote constructor the #415 fix patched. Test
+    // it directly so the remote path's visibility default is actually pinned.
+    const now = new Date().toISOString()
+    const shape = (plur as unknown as { _buildEngramShape: (s: string, sc: string, c: unknown, n: string) => { visibility: string } })
+      ._buildEngramShape('Team deploy note', 'group:acme/eng', { domain: 'software.deploy' }, now)
+    expect(shape.visibility).toBe('private')
+    const explicit = (plur as unknown as { _buildEngramShape: (s: string, sc: string, c: unknown, n: string) => { visibility: string } })
+      ._buildEngramShape('Deliberately shared', 'group:acme/eng', { domain: 'software.deploy', visibility: 'public' }, now)
     expect(explicit.visibility).toBe('public')
   })
 

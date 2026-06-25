@@ -1294,15 +1294,20 @@ export function getToolDefinitions(): ToolDefinition[] {
 
         // Append remote scope guidance to guide text (#229)
         if (remote_scopes.length > 0) {
+          // #426: scope names/descriptions render into the guide — the agent's
+          // directive surface. Strip control chars + bound length so a server- or
+          // config-supplied value can't inject instructions. (`me()` already
+          // validates /me scope grammar; this also covers config-sourced metadata.)
+          const safe = (x: unknown) => String(x ?? '').replace(/\s+/g, ' ').trim().slice(0, 200)
           // #345/#346: when a scope declares self-describing metadata, show what
           // it's FOR (description + covers) inline so the agent can route by
           // purpose, not just by name. Falls back to the bare "scope" name.
           const scopeList = remote_scopes.map(s => {
             const detail = [
-              s.description ? `— ${s.description}` : '',
-              s.covers && s.covers.length > 0 ? `(covers: ${s.covers.join(', ')})` : '',
+              s.description ? `— ${safe(s.description)}` : '',
+              s.covers && s.covers.length > 0 ? `(covers: ${s.covers.map(safe).join(', ')})` : '',
             ].filter(Boolean).join(' ')
-            return detail ? `"${s.scope}" ${detail}` : `"${s.scope}"`
+            return detail ? `"${safe(s.scope)}" ${detail}` : `"${safe(s.scope)}"`
           }).join('; ')
           guide += default_scope
             ? `\n\nSession default scope is set to "${default_scope}". To route an engram to a remote ` +
@@ -1339,7 +1344,7 @@ export function getToolDefinitions(): ToolDefinition[] {
             }
             const unregistered = [...new Set(discoveries.filter(d => d.ok).flatMap(d => d.unregistered))]
             if (unregistered.length > 0) {
-              const list = unregistered.map(s => `"${s}"`).join(', ')
+              const list = unregistered.map(s => `"${safe(s)}"`).join(', ')
               guide += `\n\n🔎 Your token is authorized for ${unregistered.length} more scope(s) not yet registered: ${list}. ` +
                 `Call plur_scopes_discover with register:true to add them all in one step.`
             }

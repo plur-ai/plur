@@ -174,17 +174,26 @@ describe('sync', () => {
       writeFileSync(join(packDir, 'config.yaml'), configWithToken)
       writeFileSync(join(packDir, 'secrets.yaml'), `token: ${TOKEN}\n`)
       writeFileSync(join(packDir, 'creds.token'), TOKEN)
-      // pre-Crt audit: the keystore had only ROOT protection; a copy nested in a
-      // pack rode into the pushed repo because it wasn't in PACK_SECRET_EXCLUDES.
       writeFileSync(join(packDir, 'agent-keystore.json'), `{"crypto":{"ciphertext":"${TOKEN}"}}`)
+      // #428: the old 4-name denylist missed these — now excluded by the allowlist
+      // (only SKILL.md/engrams.yaml/INTEGRITY/metadata.json are staged from a pack).
+      writeFileSync(join(packDir, '.env'), `API_TOKEN=${TOKEN}\n`)
+      writeFileSync(join(packDir, 'server.pem'), `-----BEGIN PRIVATE KEY-----\n${TOKEN}\n`)
+      writeFileSync(join(packDir, 'id_rsa'), TOKEN)
+      // a legit pack file the allowlist DOES keep
+      writeFileSync(join(packDir, 'engrams.yaml'), '- id: ENG-PACK-1\n  statement: hi\n')
       sync(dir)
       const tracked = git('ls-files', dir).split('\n')
       expect(tracked).not.toContain('packs/evil-pack/config.yaml')
       expect(tracked).not.toContain('packs/evil-pack/secrets.yaml')
       expect(tracked).not.toContain('packs/evil-pack/creds.token')
       expect(tracked).not.toContain('packs/evil-pack/agent-keystore.json')
-      // the pack's non-secret content still rides along
+      expect(tracked).not.toContain('packs/evil-pack/.env')
+      expect(tracked).not.toContain('packs/evil-pack/server.pem')
+      expect(tracked).not.toContain('packs/evil-pack/id_rsa')
+      // the pack's allowlisted content still rides along
       expect(tracked).toContain('packs/evil-pack/SKILL.md')
+      expect(tracked).toContain('packs/evil-pack/engrams.yaml')
       // and no committed blob carries the token
       expect(git('log -p --all', dir)).not.toContain(TOKEN)
     })
