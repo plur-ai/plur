@@ -1,0 +1,22 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-07-09/server.json",
+  "name": "io.github.plur-ai/plur",
+  "description": "Open, local-first engram memory for AI agents — read, correct, and delete what your agent remembers, shared across MCP tools (Claude Code, Cursor, Windsurf).",
+  "status": "active",
+  "repository": {
+    "url": "https://github.com/plur-ai/plur",
+    "source": "github"
+  },
+  "version": "0.10.0",
+  "packages": [
+    {
+      "registryType": "npm",
+      "registryBaseUrl": "https://registry.npmjs.org",
+      "identifier": "@plur-ai/mcp",
+      "version": "0.10.0",
+      "transport": {
+        "type": "stdio"
+      }
+    }
+  ]
+}
