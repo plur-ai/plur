@@ -1,0 +1,47 @@
+name: Publish to MCP Registry
+
+# Publishes server.json to the official MCP Registry (registry.modelcontextprotocol.io)
+# on every GitHub Release. Auth is GitHub OIDC — no secrets, no local install needed.
+# The registry listing propagates to directories that ingest it (PulseMCP, mcp.so, …).
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write          # required for GitHub OIDC auth to the registry
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Sync server.json version to the release tag
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          python3 - "$VERSION" <<'PY'
+          import json, re, sys
+          raw = sys.argv[1] if len(sys.argv) > 1 else ""
+          d = json.load(open("server.json"))
+          v = raw if re.match(r"^\d+\.\d+\.\d+", raw or "") else d["version"]
+          d["version"] = v
+          for p in d.get("packages", []):
+              p["version"] = v
+          json.dump(d, open("server.json", "w"), indent=2)
+          print("server.json version ->", v)
+          PY
+
+      - name: Install mcp-publisher
+        run: |
+          url=$(curl -s https://api.github.com/repos/modelcontextprotocol/registry/releases/latest \
+            | grep -o '"browser_download_url": *"[^"]*linux_amd64.tar.gz"' | head -1 | cut -d'"' -f4)
+          echo "Downloading $url"
+          curl -L "$url" | tar xz mcp-publisher
+          chmod +x mcp-publisher
+
+      - name: Login (GitHub OIDC) and publish
+        run: |
+          ./mcp-publisher login github-oidc
+          ./mcp-publisher publish
