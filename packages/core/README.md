@@ -42,7 +42,9 @@ const { directives, consider, tokens_used } = plur.inject('Write tests for the u
 // Rate what was useful — the system improves over time
 plur.feedback(results[0].id, 'positive')
 
-// Sync across machines via git
+// Sync across machines via git — use a PRIVATE remote: the push contains every
+// engram, including visibility:private ones. scope:local engrams are the exception —
+// they are machine-specific and stripped from every commit, so they never sync.
 plur.sync('git@github.com:you/plur-memory.git')
 ```
 
