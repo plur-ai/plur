@@ -115,29 +115,37 @@ Runs a full roundtrip (append → getById → load → remove) against the live 
 
 Two benchmark suites measure whether a change actually improves memory quality:
 
-**LongMemEval** (retrieval accuracy): Tests whether PLUR retrieves the correct engram for 30 questions across 6 categories (single-session, preferences, multi-session, temporal, updates, assistant facts).
+**LongMemEval** (retrieval accuracy): Tests whether PLUR retrieves the correct engram for 30 questions across 6 categories (single-session, preferences, multi-session, temporal, updates, assistant facts). The in-repo harness is `benchmark/run.ts`:
 
-```
-# From a memorybench checkout (not in this repo)
-PLUR_SEARCH_MODE=hybrid python run.py --provider plur
+```bash
+# Standard cadence run (hybrid + reranker — matches the current baseline)
+npx tsx benchmark/run.ts --rerank
+
+# Reranker-off comparison (faster, lower quality)
+npx tsx benchmark/run.ts
+
+# Single category drill-down
+npx tsx benchmark/run.ts --rerank --category temporal_reasoning
 ```
 
-Search modes: `fast` (BM25), `agentic` (LLM rerank), `hybrid` (BM25 + embeddings RRF), `expanded` (query expansion + hybrid). Compare your change against `hybrid` as baseline.
+Compare your change against `--rerank` (hybrid + cross-encoder) as baseline. See `benchmark/README.md` for corpus options and micro-benchmark instructions.
 
 **A/B bench** (end-to-end): Same task given to an agent with and without PLUR memory, scored by LLM judge. Scenarios in `datacore-bench/scenarios/`.
 
-### Current numbers (v0.9.13)
+### Current numbers (v0.9.13, ed98d52, 2026-06-27)
 
-Latest in-repo hybrid run is `benchmark/results/2026-04-07-hybrid.json`
-(LongMemEval n=30 sanity subset). A/B figures are the README's published run.
+Cadence standard: `npx tsx benchmark/run.ts --rerank` (fixture corpus, hybrid+reranker, n=30).
 
-| Metric | Score |
-|--------|-------|
-| LongMemEval Hit@10 (hybrid, n=30) | 96.7% |
-| LongMemEval Hit@5 (hybrid, n=30) | 80.0% |
-| LongMemEval accuracy (keywords in top 10) | 83.3% |
-| A/B win rate (31W/4L) | 89% |
-| House rules | 12–0 |
+| Metric | Score | Config |
+|--------|-------|--------|
+| LongMemEval Hit@5 (hybrid+rerank, n=30) | **90.0%** | reranker on |
+| LongMemEval Hit@5 (hybrid, n=30) | 76.7% | reranker off |
+| temporal_reasoning R@5 | **100%** | reranker on |
+| temporal_reasoning R@5 | 60% | reranker off |
+| A/B win rate (31W/4L) | 89% | |
+| House rules | 12–0 | |
+
+**Latency with reranker:** p50≈3s, p95≈10s, peak RSS≈2GB. Acceptable for agentic use; not suitable for latency-sensitive interactive paths.
 
 The earlier v0.2.1 baseline (86.7% overall / 93.3% Hit@10) is still cited in
 `docs/benchmarks/phase2-methodology.md` as the self-calibration target for the
