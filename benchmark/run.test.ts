@@ -12,13 +12,14 @@
  *     (bge-small, bge-base, embedding-gemma) fall back to the MiniLM path
  *     with a clear log line until PR 4 lands.
  */
-import { describe, it, expect, beforeAll, afterAll } from 'vitest'
+import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
 import { fileURLToPath } from 'url'
 import { runBenchmark, sampleScenarios, loadScenarios, percentile, CORPUS_FILES } from './run.js'
 import { extractKeywords } from './scripts/import-longmemeval.js'
+import * as rerankers from '../packages/core/src/rerankers/index.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -327,4 +328,24 @@ describe('runBenchmark', () => {
     // PR 4 wires real adapters for all four names — stub-fallback is gone.
     expect(j.embedder_stub_fallback).toBe(false)
   }, 120000)
+})
+
+describe('reranker pre-flight probe (#341)', () => {
+  it('aborts with a descriptive error when --rerank on and the reranker fails to load', async () => {
+    // Spy on getReranker and return a broken adapter (simulates corrupt model cache).
+    const spy = vi.spyOn(rerankers, 'getReranker').mockReturnValue({
+      name: 'bge-reranker-v2-m3',
+      modelId: 'mock-broken',
+      score: async () => { throw new Error('model load failed: corrupt cache') },
+      scoreBatch: async () => { throw new Error('model load failed: corrupt cache') },
+    })
+
+    try {
+      await expect(
+        runBenchmark({ iterations: 1, searchMode: 'bm25', rerank: 'on', outputDir: workDir, quiet: true }),
+      ).rejects.toThrow('Reranker pre-flight failed')
+    } finally {
+      spy.mockRestore()
+    }
+  }, 30000)
 })
