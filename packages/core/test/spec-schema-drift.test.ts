@@ -3,9 +3,11 @@ import { readFileSync } from 'fs'
 import {
   buildEngramSchema,
   buildPackManifestSchema,
+  buildScopeMetadataSchema,
   serialize,
   ENGRAM_SCHEMA_PATH,
   PACK_SCHEMA_PATH,
+  SCOPE_METADATA_SCHEMA_PATH,
 } from '../scripts/gen-spec-schemas.js'
 
 /**
@@ -27,6 +29,11 @@ describe('spec JSON Schema drift (#315)', () => {
   it('spec/pack-manifest.schema.json matches the generated output', () => {
     const committed = readFileSync(PACK_SCHEMA_PATH, 'utf8')
     expect(serialize(buildPackManifestSchema())).toBe(committed)
+  })
+
+  it('spec/scope-metadata.schema.json matches the generated output', () => {
+    const committed = readFileSync(SCOPE_METADATA_SCHEMA_PATH, 'utf8')
+    expect(serialize(buildScopeMetadataSchema())).toBe(committed)
   })
 
   it('generation is deterministic (no runtime-dependent values leak in)', () => {

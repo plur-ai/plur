@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://plur.ai/spec/v1/scope-metadata.schema.json",
+  "title": "ScopeMetadata",
+  "description": "Self-describing metadata for an engram scope (Open Engram Standard, scope layer).",
+  "type": "object",
+  "properties": {
+    "scope": {
+      "type": "string",
+      "description": "The scope this metadata describes (e.g. \"group:plur/engineering\", \"project:plur\")."
+    },
+    "description": {
+      "type": "string",
+      "description": "Human-readable explanation of what this scope is for. Surfaced in scope/store discovery."
+    },
+    "covers": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "default": [],
+      "description": "Topics, domains, or areas this scope is the home for. Advisory; helps an agent pick the right scope and is surfaced in discovery."
+    },
+    "sensitivity": {
+      "type": "object",
+      "properties": {
+        "forbid": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "secrets",
+              "infra"
+            ]
+          },
+          "default": [
+            "secrets",
+            "infra"
+          ],
+          "description": "Sensitive categories that must NOT be written to this scope. A write that trips one of these is demoted to local/private. Default reproduces Stage 1: secrets + infra are forbidden on shared scopes. Unknown categories are dropped (not fatal) so a forward/hand-edited category never drops the whole store entry."
+        },
+        "allow": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Detector pattern names or category names explicitly permitted on this scope, overriding `forbid`. A match whose categories are ALL allowed is not demoted (e.g. a scope that legitimately holds infra topology can allow \"infra\"). A non-array shape coerces to [] (not fatal) so it never drops the whole store entry."
+        }
+      },
+      "additionalProperties": true,
+      "description": "Per-scope sensitivity policy. When present, the leak guard uses it; when absent, the guard falls back to the default shared-scope behavior."
+    },
+    "injection_policy": {
+      "type": "string",
+      "enum": [
+        "on_match",
+        "on_request",
+        "always"
+      ],
+      "description": "When the loader may inject this scope's engrams. Mirrors pack injection_policy semantics."
+    },
+    "owner": {
+      "type": "string",
+      "description": "Owner of the scope (person or team). Advisory."
+    }
+  },
+  "required": [
+    "scope",
+    "description"
+  ],
+  "additionalProperties": true
+}
