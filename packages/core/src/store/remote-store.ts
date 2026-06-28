@@ -2,6 +2,7 @@ import { z } from 'zod'
 import type { Engram } from '../schemas/engram.js'
 import type { EngramStore } from './types.js'
 import { logger } from '../logger.js'
+import { ScopeMetadataSchema, type ScopeMetadata } from '../schemas/scope-metadata.js'
 
 /**
  * Lenient validation for semi-trusted remote rows (security audit 2026-06-10,
@@ -105,17 +106,14 @@ export class RemoteStore implements EngramStore {
    *
    * Throws on a non-2xx response (caller decides whether to swallow per URL).
    */
-  async me(): Promise<{ username: string; org_id: string; role: string; scopes: string[] }> {
+  async me(): Promise<{ username: string; org_id: string; role: string; scopes: string[]; scope_metadata: ScopeMetadata[] }> {
     const r = await fetch(`${this.apiBase}/me`, { headers: this.headers() })
     if (!r.ok) {
       const text = await r.text().catch(() => '')
       throw new Error(`Remote /me failed: ${r.status} ${text}`)
     }
-    const body = await r.json().catch(() => ({})) as Partial<{ username: string; org_id: string; role: string; scopes: unknown[] }>
-    return {
-      username: body.username ?? '',
-      org_id:   body.org_id ?? '',
-      role:     body.role ?? '',
+    const body = await r.json().catch(() => ({})) as Partial<{ username: string; org_id: string; role: string; scopes: unknown[]; scope_metadata: unknown[] }>
+    const scopes = Array.isArray(body.scopes)
       // Validate every /me scope to a safe grammar at the trust boundary:
       //  - #427: a non-string element would later throw in isSharedScope's
       //    `scope.startsWith(...)` BEFORE the per-scope try/catch — drop non-strings.
@@ -123,8 +121,26 @@ export class RemoteStore implements EngramStore {
       //    agent's directive surface); a name carrying newlines/control chars is a
       //    prompt-injection channel — require `[\w:./-]+` (allows group:org/team,
       //    user:*, etc.) so nothing malformed enters from a hostile/MITM remote.
-      scopes:   Array.isArray(body.scopes)
-        ? body.scopes.filter((s): s is string => typeof s === 'string' && /^[\w:./-]+$/.test(s))
+      ? body.scopes.filter((s): s is string => typeof s === 'string' && /^[\w:./-]+$/.test(s))
+      : []
+    return {
+      username: body.username ?? '',
+      org_id:   body.org_id ?? '',
+      role:     body.role ?? '',
+      scopes,
+      // #345 D2: self-describing scope metadata served by the enterprise
+      // `scopes` table. Validate each entry through the SAME ScopeMetadataSchema
+      // the local config path uses — a hostile/old remote can send anything, so
+      // drop entries that don't parse (and any whose `scope` isn't in the
+      // authorized set, so a remote can't smuggle metadata for an unrelated
+      // scope into discovery). Absent/empty → [] (older servers).
+      scope_metadata: Array.isArray(body.scope_metadata)
+        ? body.scope_metadata.flatMap((m) => {
+            const parsed = ScopeMetadataSchema.safeParse(m)
+            if (!parsed.success) return []
+            if (!scopes.includes(parsed.data.scope)) return []
+            return [parsed.data]
+          })
         : [],
     }
   }
