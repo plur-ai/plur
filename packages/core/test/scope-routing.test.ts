@@ -447,6 +447,79 @@ describe('rankScopes — specificity tie-break (#399)', () => {
   })
 })
 
+describe('scope_routing config overrides — rankScopes() options (#362)', () => {
+  it('weightTag override: lower weight reduces tag-only confidence', () => {
+    // Default weight_tag=0.5: 3 tags → raw=1.5 → squash(1.5)=0.5000
+    // Override weight_tag=0.1: 3 tags → raw=0.3 → squash(0.3)=0.3/1.8≈0.1667
+    const defaultRanked = rankScopes(
+      { statement: 'no overlap zzz', tags: ['servers', 'deploy', 'infra'] },
+      [{ scope: 'group:plur/infra', covers: ['servers', 'deploy', 'infra'] }],
+    )
+    const lowWeightRanked = rankScopes(
+      { statement: 'no overlap zzz', tags: ['servers', 'deploy', 'infra'] },
+      [{ scope: 'group:plur/infra', covers: ['servers', 'deploy', 'infra'] }],
+      { weightTag: 0.1 },
+    )
+    expect(defaultRanked[0].confidence).toBe(0.5)
+    expect(lowWeightRanked[0].confidence).toBeLessThan(SCOPE_MATCH_THRESHOLD)
+  })
+
+  it('weightTag override: higher weight boosts a single-tag match above threshold', () => {
+    // Default weight_tag=0.5: 1 tag → raw=0.5 → squash(0.5)=0.25 < threshold
+    // Override weight_tag=2.0: 1 tag → raw=2.0 → squash(2.0)=2.0/3.5≈0.571 >= threshold
+    const ranked = rankScopes(
+      { statement: 'no overlap zzz', tags: ['servers'] },
+      [{ scope: 'group:plur/infra', covers: ['servers'] }],
+      { weightTag: 2.0 },
+    )
+    expect(ranked).toHaveLength(1)
+    expect(ranked[0].confidence).toBeGreaterThanOrEqual(SCOPE_MATCH_THRESHOLD)
+  })
+
+  it('domain-prefix match is unaffected by weightTag override', () => {
+    // Domain hit uses WEIGHT_DOMAIN (hardcoded 1.5), not WEIGHT_TAG. Changing
+    // weightTag must not alter the domain match confidence.
+    const domainSignals = { statement: 'xyzzy nonoverlapping tokens', domain: 'plur.core.security' }
+    const scopes = [{ scope: 'group:plur/core', covers: ['plur.*'] }]
+    const defaultConf = rankScopes(domainSignals, scopes)[0].confidence
+    const overrideConf = rankScopes(domainSignals, scopes, { weightTag: 0.01 })[0].confidence
+    expect(defaultConf).toBe(overrideConf)
+  })
+})
+
+describe('scope_routing config — Plur integration (#362)', () => {
+  const dirs: string[] = []
+  const plurWithConfig = (stores: unknown[], scopeRouting: Record<string, unknown>) => {
+    const dir = mkdtempSync(join(tmpdir(), 'plur-sr-cfg-'))
+    dirs.push(dir)
+    writeFileSync(join(dir, 'config.yaml'), yaml.dump({ stores, index: false, scope_routing: scopeRouting }, { noRefs: true }))
+    return new Plur({ path: dir })
+  }
+  afterEach(() => { while (dirs.length) rmSync(dirs.pop()!, { recursive: true, force: true }) })
+
+  it('match_threshold:0.7 — three-tag match (confidence=0.5) no longer auto-routes', () => {
+    // Default threshold 0.5: three tags route. Raised to 0.7: same three tags fall through.
+    const plur = plurWithConfig(
+      [{ path: '/tmp/infra.yaml', scope: 'group:plur/infra', covers: ['servers', 'deploy', 'infra'] }],
+      { match_threshold: 0.7 },
+    )
+    const ranked = plur.suggestScope({ statement: 'no overlap zzz', tags: ['servers', 'deploy', 'infra'] })
+    expect(ranked[0].confidence).toBe(0.5)
+    const e = plur.learn('no overlap zzz', { tags: ['servers', 'deploy', 'infra'] }) as { scope: string }
+    expect(e.scope).toBe('global')
+  })
+
+  it('weight_tag:0.3 — three-tag match drops below 0.5 and no longer auto-routes', () => {
+    // Default weight_tag=0.5: 3 tags → 0.5000 routes. Override 0.3: 3*0.3=0.9 → squash(0.9)=0.375 < 0.5.
+    const plur = plurWithConfig(
+      [{ path: '/tmp/infra.yaml', scope: 'group:plur/infra', covers: ['servers', 'deploy', 'infra'] }],
+      { weight_tag: 0.3 },
+    )
+    const e = plur.learn('no overlap zzz', { tags: ['servers', 'deploy', 'infra'] }) as { scope: string }
+    expect(e.scope).toBe('global')
+  })
+})
+
 describe('isSharedScope — public-prefix boundary (#403)', () => {
   it('classifies the public namespace as shared but NOT string-prefix siblings', () => {
     expect(isSharedScope('public')).toBe(true)
