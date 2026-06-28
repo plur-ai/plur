@@ -78,7 +78,7 @@ export { parseDedupResponse, buildDedupPrompt, buildBatchDedupPrompt } from './d
 export { runMigrations, rollbackMigrations, getSchemaVersion, setSchemaVersion, ALL_MIGRATIONS, CURRENT_SCHEMA_VERSION, type Migration, type MigrationResult } from './migrations/index.js'
 export { detectSecrets, detectSensitive, sensitivityCategory } from './secrets.js'
 export { ScopeMetadataSchema, ScopeSensitivitySchema, SENSITIVITY_CATEGORIES, type ScopeMetadata, type ScopeSensitivity, type SensitivityCategory } from './schemas/scope-metadata.js'
-export { rankScopes, SCOPE_MATCH_THRESHOLD, type ScopeSignals, type ScopeCandidate } from './scope-routing.js'
+export { rankScopes, SCOPE_MATCH_THRESHOLD, WEIGHT_TAG, type ScopeSignals, type ScopeCandidate, type RankScopesOptions } from './scope-routing.js'
 
 // Scope-family predicates live in the leaf module `scope-util.ts` to break a
 // module cycle: `inject.ts` (imported by index.ts) needs `isPersonalScope`, and
@@ -107,7 +107,7 @@ export type { Engram, PreviousVersionRef } from './schemas/engram.js'
 export type { Episode } from './schemas/episode.js'
 export type { PackManifest } from './schemas/pack.js'
 export type { PreviewResult, RegistryEntry, PrivacyScanResult, PrivacyIssue } from './packs.js'
-export type { PlurConfig, StoreEntry } from './schemas/config.js'
+export type { PlurConfig, StoreEntry, ScopeRoutingConfig } from './schemas/config.js'
 export type { ManifestSummary, PayloadDescriptor, Producer, Signer, CapsuleHeader, CapsulePreamble } from './schemas/capsule.js'
 export {
   CAPSULE_MAGIC,
@@ -1123,9 +1123,19 @@ export class Plur {
       const entry = (this.config.stores ?? []).find(s => s.scope === md.scope)
       return entry?.readonly !== true
     })
+    // Scope-routing tuning (#362): enterprise installs with many narrow,
+    // covers-rich scopes can raise `match_threshold` to cut false-positive
+    // routing, or adjust `weight_tag` to re-weight tag-only signals. Both default
+    // to the module constants in scope-routing.ts; WEIGHT_DOMAIN stays hardcoded —
+    // the lone-domain-clears-threshold invariant (THRESHOLD_SINGLE_DOMAIN) is
+    // load-bearing and must not be tunable.
+    const scopeRoutingCfg = this.config.scope_routing ?? {}
+    const matchThreshold = scopeRoutingCfg.match_threshold ?? SCOPE_MATCH_THRESHOLD
+    const weightTagOverride = scopeRoutingCfg.weight_tag
     const candidates = rankScopes(
       { statement, domain: context?.domain, tags: context?.tags },
       writableScopeMetadata,
+      weightTagOverride !== undefined ? { weightTag: weightTagOverride } : undefined,
     )
     const top = candidates[0]
     // PR-6 (#353) + reaudit finding 4: a FORWARD domain-prefix match — the scope's
@@ -1150,13 +1160,14 @@ export class Plur {
       return { scope: top.scope, routed: { scope: top.scope, confidence: top.confidence, reason: top.reason } }
     }
     // No forward domain match: a reverse domain hit, tag-only, or keyword-only
-    // candidate stays gated by the threshold exactly as before — conservative by
-    // design. A LONE reverse-direction match squashes to 0.25 (WEIGHT_DOMAIN_REVERSE
-    // = 0.5 raw) and so does NOT clear the `>=` gate; it falls to the unscoped
-    // default unless additional tag/keyword evidence lifts the squashed score to
-    // >= SCOPE_MATCH_THRESHOLD. The deterministic bypass never forces a broad
-    // engram in.
-    if (top && top.confidence >= SCOPE_MATCH_THRESHOLD) {
+    // candidate stays gated by the threshold. A LONE reverse-direction match
+    // squashes to 0.25 (WEIGHT_DOMAIN_REVERSE = 0.5 raw) and so does NOT clear the
+    // `>=` gate at the default threshold (0.5); it falls to the unscoped default
+    // unless additional tag/keyword evidence lifts the squashed score to
+    // >= the threshold. The threshold is configurable (#362): a higher
+    // `match_threshold` makes routing more conservative, a lower one more
+    // permissive. The deterministic forward-domain bypass above is unaffected.
+    if (top && top.confidence >= matchThreshold) {
       return { scope: top.scope, routed: { scope: top.scope, confidence: top.confidence, reason: top.reason } }
     }
     return { scope: fallback, routed: null }
