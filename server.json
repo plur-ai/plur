@@ -1,5 +1,5 @@
 {
-  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-07-09/server.json",
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.plur-ai/plur",
   "description": "Open, local-first engram memory for AI agents: read, correct, delete; shared over MCP.",
   "status": "active",
