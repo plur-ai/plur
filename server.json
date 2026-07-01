@@ -7,13 +7,13 @@
     "url": "https://github.com/plur-ai/plur",
     "source": "github"
   },
-  "version": "0.10.0",
+  "version": "0.10.1",
   "packages": [
     {
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "@plur-ai/mcp",
-      "version": "0.10.0",
+      "version": "0.10.1",
       "transport": {
         "type": "stdio"
       }
