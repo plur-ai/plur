@@ -119,16 +119,16 @@ Two benchmark suites measure whether a change actually improves memory quality:
 
 ```bash
 # Standard cadence run (hybrid + reranker — matches the current baseline)
-npx tsx benchmark/run.ts --rerank
+npx tsx benchmark/run.ts --rerank on
 
 # Reranker-off comparison (faster, lower quality)
-npx tsx benchmark/run.ts
+npx tsx benchmark/run.ts --rerank off
 
 # Single category drill-down
-npx tsx benchmark/run.ts --rerank --category temporal_reasoning
+npx tsx benchmark/run.ts --rerank on --category temporal_reasoning
 ```
 
-Compare your change against `--rerank` (hybrid + cross-encoder) as baseline. See `benchmark/README.md` for corpus options and micro-benchmark instructions.
+Compare your change against `--rerank on` (hybrid + cross-encoder) as baseline. See `benchmark/README.md` for corpus options and micro-benchmark instructions.
 
 **A/B bench** (end-to-end): Same task given to an agent with and without PLUR memory, scored by LLM judge. Scenarios in `datacore-bench/scenarios/`.
 
@@ -140,7 +140,7 @@ result JSONs are no longer committed here (#336). Local benchmark runs still
 write to `benchmark/results/` (gitignored). A/B figures are the README's
 published run.
 
-Cadence standard: `npx tsx benchmark/run.ts --rerank` (fixture corpus, hybrid+reranker, n=30).
+Cadence standard: `npx tsx benchmark/run.ts --rerank on` (fixture corpus, hybrid+reranker, n=30).
 
 | Metric | Score | Config |
 |--------|-------|--------|
