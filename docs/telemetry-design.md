@@ -18,7 +18,7 @@ implemented and wired. All of it is **opt-in / default-off** and **content-free*
 |-------|-------|--------------|
 | Opt-in gate | `packages/core/src/telemetry.ts` | `isTelemetryEnabled()` — `PLUR_TELEMETRY=on\|off` env, then `~/.plur/telemetry.json`, default **off**. Every public telemetry function short-circuits on this before any FS or network call. |
 | Daily counters | `packages/core/src/telemetry-counters.ts` | `recordEvent('learn'\|'recall'\|'session')` persists per-day counts to `~/.plur/telemetry-counters.json`; day-rollover safety stashes yesterday's snapshot to a pending dir (#128). |
-| Flush / transport | `packages/core/src/telemetry-flush.ts` | `POST /v1/heartbeat` of the daily record; never throws; drains the pending dir on rollover or process exit. |
+| Flush / transport | `packages/core/src/telemetry-flush.ts` | `POST`s the daily record to `https://plur.ai/v1/heartbeat` (default, overridable via `PLUR_TELEMETRY_ENDPOINT`); never throws; drains the pending dir on rollover or process exit. |
 | Miss-signal | `packages/core/src/telemetry-miss-signal.ts` | Failed-recall demand signal (see below). |
 
 **Call sites.** `@plur-ai/claw` records `learn`/`recall` in `context-engine.ts`
@@ -26,6 +26,31 @@ and `index.ts` and registers flush-on-exit. `@plur-ai/mcp` — the widest instal
 surface — records `learn`/`recall` in `tools.ts` and registers flush-on-exit in
 `server.ts`, reusing the same core implementation (no vendored copy). Both
 wrappers go through the same gate, so an opted-out install does nothing.
+
+### Exit-flush is best-effort — unreliable for short-lived processes
+
+`registerFlushOnExit()` (`packages/core/src/telemetry-flush.ts`; `@plur-ai/claw`
+carries an identical copy in `packages/claw/src/telemetry-flush.ts`) registers a
+`process.once('beforeExit', …)` handler whose body fires `flushIfNeeded()` as a
+fire-and-forget `void` promise. Two consequences:
+
+- **The flush is not awaited.** `beforeExit` does not wait for async work the
+  handler kicks off, so the process may exit before the heartbeat `POST`
+  completes.
+- **`beforeExit` does not always fire.** Node skips it on explicit
+  `process.exit()`, uncaught exceptions, and terminating signals — common exit
+  paths for short-lived CLI invocations.
+
+So for a short-lived process (a one-shot CLI call), the exit flush frequently
+ships nothing. This is deliberate: telemetry must never delay or block process
+exit. Nothing is lost, only deferred — counters persist in
+`~/.plur/telemetry-counters.json`, unsent day-snapshots sit in the pending-flush
+directory, and the next day-rollover or the next flushing process (e.g. a
+long-lived MCP server) retries them: `flushIfNeeded()` drains the pending
+directory, and `sendHeartbeat()` never throws — on any failure the pending file
+stays on disk for the next attempt. Expect delivery latency from installs that
+only ever run short-lived processes; do not treat the exit flush as reliable
+there (#189).
 
 ### Failed-recall miss-signal (WS5 demand flywheel)
 
@@ -55,8 +80,8 @@ transmitted (#312); only the kind, which is all that has routing-analytics value
 form, because the topic of a miss is the actual demand signal the flywheel needs
 to act on; opt-in consent text should state that the domain label is transmitted.
 Clustering and pack-bounty logic are deliberately downstream and out of scope
-here — this module only emits. Endpoint defaults to `/v1/miss-signal`,
-overridable via `PLUR_MISS_SIGNAL_ENDPOINT`.
+here — this module only emits. Endpoint defaults to
+`https://plur.ai/v1/miss-signal`, overridable via `PLUR_MISS_SIGNAL_ENDPOINT`.
 
 ---
 
