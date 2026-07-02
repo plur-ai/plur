@@ -124,6 +124,25 @@ export const VectorConfigSchema = z.object({
 
 export type VectorConfigYaml = z.infer<typeof VectorConfigSchema>
 
+/**
+ * Scope-routing tuning — optional overrides for the deterministic ranker that
+ * auto-routes unscoped writes to a `covers`-matching scope (Stage 3b, #351/#362).
+ * Defaults match the module-level constants in scope-routing.ts.
+ *
+ * Enterprise installs with many narrow, covers-rich scopes may need to raise
+ * `match_threshold` to cut false-positive routing. Raising `weight_tag` boosts
+ * tag-only signals relative to keyword evidence. WEIGHT_DOMAIN (1.5) is NOT
+ * configurable: the lone-domain-clears-threshold invariant is load-bearing.
+ */
+export const ScopeRoutingConfigSchema = z.object({
+  /** Minimum confidence to auto-route an unscoped write. Default: 0.5. */
+  match_threshold: z.number().min(0).max(1).optional(),
+  /** Per-tag weight in the ranker. Default: 0.5. */
+  weight_tag: z.number().min(0).optional(),
+}).partial()
+
+export type ScopeRoutingConfig = z.infer<typeof ScopeRoutingConfigSchema>
+
 export const PlurConfigSchema = z.object({
   auto_learn: z.boolean().default(true),
   auto_capture: z.boolean().default(true),
@@ -195,6 +214,11 @@ export const PlurConfigSchema = z.object({
    * `unscoped_default`. Set false to disable auto-routing entirely.
    */
   auto_route_scope: z.boolean().default(true),
+  /**
+   * Scope-routing tuning — optional overrides for the deterministic ranker (#362).
+   * See {@link ScopeRoutingConfigSchema} for per-field semantics.
+   */
+  scope_routing: ScopeRoutingConfigSchema.default({}),
 }).partial()
 
 export type PlurConfig = z.infer<typeof PlurConfigSchema>
