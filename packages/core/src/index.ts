@@ -90,7 +90,7 @@ export { rankScopes, SCOPE_MATCH_THRESHOLD, type ScopeSignals, type ScopeCandida
 export { isSharedScope, isPersonalScope, SHARED_SCOPE_PREFIXES } from './scope-util.js'
 export { detectPlurStorage, type PlurPaths } from './storage.js'
 export { IndexedStorage } from './storage-indexed.js'
-export { PGLiteAdapter, type PGLiteAdapterOptions } from './storage-pglite.js'
+export { PGLiteAdapter, type PGLiteAdapterOptions, type VectorPrecision } from './storage-pglite.js'
 export type { StorageAdapter, StorageFilter, VectorSearchHit } from './storage-adapter.js'
 export { YamlStore, SqliteStore, createStore, migrateStore, type EngramStore, type StorageBackend, type StorageConfig } from './store/index.js'
 export { withAsyncLock, asyncAtomicWrite } from './store/index.js'
@@ -353,7 +353,11 @@ export class Plur {
     const backend = this._resolveBackend()
     if (backend === 'pglite') {
       // PGLite path. Keep SQLite indexedStorage null so we don't double-index.
-      this.pgliteAdapter = new PGLiteAdapter(this.paths.engrams, this.paths.pglite)
+      // vector.precision (#223): unset = keep the store's existing column
+      // type; 'halfvec' opts in to fp16 storage (lazy in-place migration).
+      this.pgliteAdapter = new PGLiteAdapter(this.paths.engrams, this.paths.pglite, {
+        precision: this.config.vector?.precision,
+      })
       // Initial sync runs in the background — YAML is already authoritative,
       // so reads served from the YAML fallthrough remain correct while the
       // index warms up.

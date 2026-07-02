@@ -10,9 +10,10 @@
  * If step 2 fails, YAML still wins on next `plur sync`.
  *
  * Vector storage: when pgvector loads cleanly, we use a `vector(N)` column
- * with a cosine-similarity ORDER BY. When pgvector isn't available (rare —
- * the extension ships in PGLite as of 0.4.x), we fall back to BYTEA storage
- * and compute cosine in TypeScript. Same external behavior either way.
+ * (or `halfvec(N)` at the fp16 precision tier, #223) with a cosine-similarity
+ * ORDER BY. When pgvector isn't available (rare — the extension ships in
+ * PGLite as of 0.4.x), we fall back to BYTEA storage and compute cosine in
+ * TypeScript. Same external behavior either way.
  *
  * Concurrency: PGLite is single-writer per process. We serialize through a
  * lightweight async mutex on this adapter so concurrent `reindex()` /
@@ -85,15 +86,57 @@ async function loadPgliteAge(): Promise<unknown | null> {
   }
 }
 
+/**
+ * Precision tier for the embedding column (#223).
+ *   - `float32` → pgvector `vector(N)`  (4 bytes/dim — historical layout)
+ *   - `halfvec` → pgvector `halfvec(N)` (2 bytes/dim — ~50% smaller,
+ *      -0.2 to -0.5pp recall; pgvector >= 0.7, bundled 0.8.1 in PGLite 0.4.x)
+ *
+ * Latency caveat (measured 2026-07-02, 1k engrams @ 384d): halfvec exact
+ * scans are ~3-10x slower than float32 in PGLite because the WASM build has
+ * no F16C — every fp16 element is software-converted per distance call
+ * (~3ms → ~11-33ms mean per search at 1k rows; both fine interactively).
+ * halfvec trades CPU for storage here; float32 stays the default.
+ */
+export type VectorPrecision = 'float32' | 'halfvec'
+
+/** Map precision tier → pgvector column type name. */
+const PRECISION_TYPE: Record<VectorPrecision, 'vector' | 'halfvec'> = {
+  float32: 'vector',
+  halfvec: 'halfvec',
+}
+
 export interface PGLiteAdapterOptions {
   /** Vector dimension for the embedding column (default: 384 — BGE-small). */
   vectorDim?: number
+  /**
+   * Desired precision for the embedding column (#223).
+   *
+   * UNSET means "keep whatever the store already uses" (float32 for new
+   * stores) — option-less constructors (dim-check, tests, older callers)
+   * must never silently migrate a store. When SET and the existing column
+   * differs, the column is migrated lazily on init via an atomic in-place
+   * `ALTER TABLE ... USING embedding::<type>(N)` cast: embeddings are
+   * preserved (cast, not re-embedded), and the existing column dim is kept
+   * so the #219 dim-mismatch check stays honest. YAML remains the source of
+   * truth either way — `plur sync --full` drops and rebuilds the index from
+   * YAML at the configured precision (ADR-0001 rebuildability invariant).
+   */
+  precision?: VectorPrecision
 }
 
 export class PGLiteAdapter implements StorageAdapter {
   private yamlPath: string
   private dbPath: string
   private vectorDim: number
+  /** Desired precision; undefined = keep whatever the store already has. */
+  private precision: VectorPrecision | undefined
+  /**
+   * ACTUAL type of the embedding column after init ('vector' | 'halfvec').
+   * All SQL casts use this — so even when a requested migration fails, reads
+   * and writes keep matching the on-disk column instead of erroring.
+   */
+  private activeVecType: 'vector' | 'halfvec' = 'vector'
   private db: any = null
   private initialized = false
   private hasVector = false
@@ -104,6 +147,7 @@ export class PGLiteAdapter implements StorageAdapter {
     this.yamlPath = yamlPath
     this.dbPath = dbPath
     this.vectorDim = opts?.vectorDim ?? DEFAULT_VECTOR_DIM
+    this.precision = opts?.precision
   }
 
   /** Open the PGLite DB and create schema if needed. */
@@ -171,12 +215,16 @@ export class PGLiteAdapter implements StorageAdapter {
     // Embedding table: separate so adding/replacing embeddings is cheap and
     // doesn't churn engram rows. Use vector when available, BYTEA fallback.
     if (this.hasVector) {
+      // New stores are created at the requested precision (float32 when the
+      // knob is unset — the historical layout).
+      const wantType = PRECISION_TYPE[this.precision ?? 'float32']
       await db.exec(`
         CREATE TABLE IF NOT EXISTS engram_embeddings (
           engram_id TEXT PRIMARY KEY,
-          embedding vector(${this.vectorDim}) NOT NULL
+          embedding ${wantType}(${this.vectorDim}) NOT NULL
         );
       `)
+      await this.ensureColumnPrecision(db)
     } else {
       await db.exec(`
         CREATE TABLE IF NOT EXISTS engram_embeddings (
@@ -196,6 +244,95 @@ export class PGLiteAdapter implements StorageAdapter {
       } catch (err) {
         logger.debug(`[pglite] AGE graph init skipped: ${(err as Error).message}`)
       }
+    }
+  }
+
+  /**
+   * Read the actual type + dim of engram_embeddings.embedding from the
+   * catalog: format_type() returns "vector(N)" or "halfvec(N)".
+   */
+  private async readEmbeddingColumnInfo(db: any): Promise<{ type: 'vector' | 'halfvec'; dim: number } | null> {
+    const res = await db.query(
+      `SELECT format_type(a.atttypid, a.atttypmod) AS t
+       FROM pg_attribute a
+       JOIN pg_class c ON c.oid = a.attrelid
+       WHERE c.relname = 'engram_embeddings' AND a.attname = 'embedding' AND a.attnum > 0`,
+    )
+    if (res.rows.length === 0) return null
+    const m = String(res.rows[0].t).match(/^(vector|halfvec)\((\d+)\)$/i)
+    if (!m) return null
+    return { type: m[1].toLowerCase() as 'vector' | 'halfvec', dim: Number(m[2]) }
+  }
+
+  /**
+   * Lazy precision migration (#223). Runs once per init, inside initSchema.
+   *
+   * - `precision` unset → adopt the existing column type, migrate nothing.
+   * - `precision` set and column differs → atomic in-place
+   *   `ALTER TABLE ... TYPE <type>(dim) USING embedding::<type>(dim)`.
+   *   The cast preserves every stored embedding (float32→float16 rounds,
+   *   float16→float32 widens) — no re-embedding, no seq-scan window: DDL in
+   *   Postgres is transactional, so readers see the old or the new column,
+   *   never neither. The EXISTING dim is kept (not this.vectorDim) so a
+   *   precision migration can't mask a #219 dim mismatch.
+   * - Any dependent hnsw/ivfflat index is dropped first (its opclass is
+   *   type-specific and would abort the ALTER) and recreated with the
+   *   matching opclass inside the same transaction — the gbrain pattern.
+   *   (This adapter itself creates no vector index yet; exact scan at
+   *   current corpus sizes. The recreation is for stores where one was
+   *   added out-of-band.)
+   * - Failure is non-fatal: activeVecType keeps tracking the on-disk
+   *   column, so reads/writes continue at the old precision.
+   */
+  private async ensureColumnPrecision(db: any): Promise<void> {
+    const info = await this.readEmbeddingColumnInfo(db)
+    if (!info) return // BYTEA fallback or exotic column — nothing to manage
+    this.activeVecType = info.type
+    if (this.precision === undefined) return // keep-existing semantics
+    const wantType = PRECISION_TYPE[this.precision]
+    if (info.type === wantType) return
+    const opclassFor = (t: 'vector' | 'halfvec', old: string): string => {
+      // vector_cosine_ops → halfvec_cosine_ops (and back) — same suffix,
+      // target type's prefix.
+      const suffix = old.replace(/^(vector|halfvec)_/, '')
+      return `${t}_${suffix}`
+    }
+    try {
+      await db.exec('BEGIN')
+      // Collect vector-opclass indexes on the embedding column; they block
+      // the ALTER and need their opclass swapped to the target type's.
+      const idxRes = await db.query(
+        `SELECT i.relname AS name, am.amname AS method, opc.opcname AS opclass
+         FROM pg_index x
+         JOIN pg_class i ON i.oid = x.indexrelid
+         JOIN pg_class t ON t.oid = x.indrelid
+         JOIN pg_am am ON am.oid = i.relam
+         JOIN pg_opclass opc ON opc.oid = x.indclass[0]
+         WHERE t.relname = 'engram_embeddings'
+           AND am.amname IN ('hnsw', 'ivfflat')`,
+      )
+      for (const row of idxRes.rows) {
+        await db.exec(`DROP INDEX "${row.name}"`)
+      }
+      await db.exec(
+        `ALTER TABLE engram_embeddings
+         ALTER COLUMN embedding TYPE ${wantType}(${info.dim})
+         USING embedding::${wantType}(${info.dim})`,
+      )
+      for (const row of idxRes.rows) {
+        const opclass = opclassFor(wantType, String(row.opclass))
+        await db.exec(
+          `CREATE INDEX "${row.name}" ON engram_embeddings USING ${row.method} (embedding ${opclass})`,
+        )
+      }
+      await db.exec('COMMIT')
+      this.activeVecType = wantType
+      logger.info(`[pglite] migrated embedding column ${info.type}(${info.dim}) -> ${wantType}(${info.dim})`)
+    } catch (err) {
+      await db.exec('ROLLBACK').catch(() => {})
+      logger.warning(
+        `[pglite] precision migration to ${wantType} failed (staying on ${info.type}): ${(err as Error).message}`,
+      )
     }
   }
 
@@ -368,14 +505,17 @@ export class PGLiteAdapter implements StorageAdapter {
     const totalRes = await db.query('SELECT COUNT(*)::int AS c FROM engram_embeddings')
     if (Number(totalRes.rows[0].c) === 0) return []
     if (this.hasVector) {
-      // pgvector path. Cosine distance = 1 - cosine similarity.
+      // pgvector path. Cosine distance = 1 - cosine similarity. The query
+      // param is cast to the column's ACTUAL type (#223) — pgvector's <=>
+      // operators are per-type, so a halfvec column needs a halfvec operand.
+      const t = this.activeVecType
       const literal = vectorLiteral(query)
       const res = await db.query(
-        `SELECT e.data, 1 - (em.embedding <=> $1::vector) AS score
+        `SELECT e.data, 1 - (em.embedding <=> $1::${t}) AS score
          FROM engram_embeddings em
          JOIN engrams e ON e.id = em.engram_id
          WHERE e.status = 'active'
-         ORDER BY em.embedding <=> $1::vector
+         ORDER BY em.embedding <=> $1::${t}
          LIMIT $2`,
         [literal, limit],
       )
@@ -403,10 +543,12 @@ export class PGLiteAdapter implements StorageAdapter {
     return this.mutex.run(async () => {
       const db = await this.getDb()
       if (this.hasVector) {
+        // Cast to the column's actual type (#223): halfvec parses the same
+        // "[...]" literal and rounds to fp16 on write.
         const literal = vectorLiteral(vector)
         await db.query(
           `INSERT INTO engram_embeddings (engram_id, embedding)
-           VALUES ($1, $2::vector)
+           VALUES ($1, $2::${this.activeVecType})
            ON CONFLICT (engram_id) DO UPDATE SET embedding = EXCLUDED.embedding`,
           [engramId, literal],
         )
@@ -432,22 +574,20 @@ export class PGLiteAdapter implements StorageAdapter {
     return res.rows.length > 0
   }
 
-  /** Dimension the embedding column was sized to (vector(N)), or null when not a pgvector column. Lets the auto-embed path skip when the active embedder dim differs from the indexed dim. */
+  /** Dimension the embedding column was sized to (vector(N) or halfvec(N)), or null when not a pgvector column. Lets the auto-embed path skip when the active embedder dim differs from the indexed dim. */
   async getVectorColumnDim(): Promise<number | null> {
     const db = await this.getDb()
     if (!this.hasVector) return null
-    // format_type(atttypid, atttypmod) on a `vector(N)` column returns the
-    // literal string "vector(N)" — parse the N back out.
-    const res = await db.query(
-      `SELECT format_type(a.atttypid, a.atttypmod) AS t
-       FROM pg_attribute a
-       JOIN pg_class c ON c.oid = a.attrelid
-       WHERE c.relname = 'engram_embeddings' AND a.attname = 'embedding' AND a.attnum > 0`,
-    )
-    if (res.rows.length === 0) return null
-    const t = String(res.rows[0].t)
-    const m = t.match(/vector\((\d+)\)/i)
-    return m ? Number(m[1]) : null
+    const info = await this.readEmbeddingColumnInfo(db)
+    return info?.dim ?? null
+  }
+
+  /** Actual pgvector type of the embedding column ('vector' | 'halfvec'), or null on the BYTEA fallback. Used by tests + diagnostics for the #223 precision tiers. */
+  async getVectorColumnType(): Promise<'vector' | 'halfvec' | null> {
+    const db = await this.getDb()
+    if (!this.hasVector) return null
+    const info = await this.readEmbeddingColumnInfo(db)
+    return info?.type ?? null
   }
 
   /** Number of rows in engram_embeddings. Used by tests + diagnostics to confirm the vector index is populated. */
