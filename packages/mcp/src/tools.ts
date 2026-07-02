@@ -101,7 +101,8 @@ function sanitizeStatement(raw: string): string {
   return raw.slice(0, cut).trimEnd()
 }
 
-const mcpCanary = new CapabilityCanary({ threshold: 10 })
+// Exported so the server dispatch loop can tick it once per tool call (#192).
+export const mcpCanary = new CapabilityCanary({ threshold: 10 })
 mcpCanary.expect({
   id: 'session_start_hook',
   description: 'Automatic memory injection via hooks',
@@ -1152,7 +1153,12 @@ export function getToolDefinitions(): ToolDefinition[] {
         required: ['task'],
       },
       handler: async (args, plur) => {
-        mcpCanary.tick()
+        // #192: fresh canary window per session — health detection is
+        // per-session, not per-process. Without this, a single learn_activity
+        // signal kept the canary healthy for the whole server lifetime, and
+        // ticks accumulated across sessions. Ticking now happens once per
+        // tool call in the server dispatch loop.
+        mcpCanary.reset()
         mcpCanary.signal('session_start_hook')
         const crypto = await import('crypto')
         const session_id = crypto.randomUUID()
