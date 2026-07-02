@@ -61,7 +61,7 @@ export const SCOPE_MATCH_THRESHOLD = 0.5
  * WEIGHT_TAG/SATURATION shifts these boundaries — see the routing tests and
  * THRESHOLD_SINGLE_DOMAIN. */
 const WEIGHT_DOMAIN = 1.5
-const WEIGHT_TAG = 0.5
+export const WEIGHT_TAG = 0.5
 const WEIGHT_KEYWORD = 0.2
 
 /** Cap on the statement-keyword channel's total raw contribution (#395). Keyword
@@ -220,7 +220,9 @@ function scoreScope(
   signals: ScopeSignals,
   scope: string,
   covers: string[],
+  weightTagOverride?: number,
 ): { raw: number; reasons: string[]; domainMatch: boolean; coverContainsDomain: boolean; coverSpecificity: number } | null {
+  const effectiveWeightTag = weightTagOverride ?? WEIGHT_TAG
   const normalizedCovers = covers.map(c => ({ raw: c, norm: normalizeCover(c) })).filter(c => c.norm.length > 0)
   if (normalizedCovers.length === 0) return null
 
@@ -275,7 +277,7 @@ function scoreScope(
       c => c.norm === tag || isNamespacePrefix(c.norm, tag) || isNamespacePrefix(tag, c.norm),
     )
     if (hit) {
-      raw += WEIGHT_TAG
+      raw += effectiveWeightTag
       matchedTags.push(`tag ${tag} ~ covers ${hit.raw}`)
     }
   }
@@ -300,6 +302,12 @@ function scoreScope(
   return { raw, reasons, domainMatch, coverContainsDomain, coverSpecificity }
 }
 
+/** Options for {@link rankScopes} — all optional; defaults match the module constants. */
+export interface RankScopesOptions {
+  /** Override {@link WEIGHT_TAG} for this call. Default: 0.5. */
+  weightTag?: number
+}
+
 /**
  * Rank the supplied scopes by how well each is the home for an engram carrying
  * `signals`. Pure: same inputs → same output. Returns candidates sorted by
@@ -310,12 +318,13 @@ function scoreScope(
 export function rankScopes(
   signals: ScopeSignals,
   scopes: Array<Pick<ScopeMetadata, 'scope' | 'covers'>>,
+  options?: RankScopesOptions,
 ): ScopeCandidate[] {
   const candidates: ScopeCandidate[] = []
   for (const meta of scopes) {
     const covers = meta.covers ?? []
     if (covers.length === 0) continue
-    const scored = scoreScope(signals, meta.scope, covers)
+    const scored = scoreScope(signals, meta.scope, covers, options?.weightTag)
     if (!scored) continue
     candidates.push({
       scope: meta.scope,
