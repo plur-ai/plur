@@ -33,14 +33,23 @@ import type { StorageAdapter, StorageFilter, VectorSearchHit } from './storage-a
 /** Vector dimension used by the default BGE-small-en-v1.5 model. */
 const DEFAULT_VECTOR_DIM = 384
 
-/** Minimal async mutex — serializes writes inside the adapter. */
-class AsyncMutex {
+/**
+ * Minimal async mutex — serializes writes inside the adapter.
+ *
+ * Exported for direct testing only (#271); not part of the public API.
+ */
+export class AsyncMutex {
   private queue: Promise<void> = Promise.resolve()
   async run<T>(fn: () => Promise<T>): Promise<T> {
     let release: () => void
     const wait = new Promise<void>((res) => { release = res })
+    // Chain, don't replace (#271, F-DIJK-002): the next caller queues after
+    // both `prev` AND this run. `wait` only resolves when release() fires in
+    // the finally below, so `prev.then(() => wait)` reads in execution order.
+    // (The read-then-write of `this.queue` is safe from interleaving — this
+    // method body runs synchronously up to the first await.)
     const prev = this.queue
-    this.queue = wait
+    this.queue = prev.then(() => wait)
     await prev
     try {
       return await fn()
