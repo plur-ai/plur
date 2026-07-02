@@ -1,11 +1,15 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import {
   scopesOverlap,
   domainSegmentsOverlap,
   subjectsOverlap,
+  statementOverlap,
   getCandidatePairs,
   buildContradictionPrompt,
   parseContradictionResponse,
+  buildBatchContradictionPrompt,
+  parseBatchContradictionResponse,
+  scanForTensions,
 } from '../src/tensions.js'
 import type { Engram } from '../src/schemas/engram.js'
 
@@ -215,6 +219,66 @@ describe('getCandidatePairs', () => {
 })
 
 // ---------------------------------------------------------------------------
+// statementOverlap (#180 ranking score)
+// ---------------------------------------------------------------------------
+
+describe('statementOverlap', () => {
+  it('counts unique shared content tokens', () => {
+    // shared: plur, cli, uses, search
+    expect(statementOverlap(
+      'plur cli uses bm25 search',
+      'plur cli uses embedding search',
+    )).toBe(4)
+  })
+
+  it('ignores stopwords and short tokens', () => {
+    expect(statementOverlap('the and for was it', 'the and for was it')).toBe(0)
+  })
+
+  it('counts duplicate tokens once', () => {
+    expect(statementOverlap('plur plur plur search', 'plur search')).toBe(2)
+  })
+
+  it('is symmetric', () => {
+    const a = 'plur storage format uses json files'
+    const b = 'plur storage uses yaml'
+    expect(statementOverlap(a, b)).toBe(statementOverlap(b, a))
+  })
+
+  it('returns zero for disjoint statements', () => {
+    expect(statementOverlap('bitcoin price dropped', 'plur uses yaml')).toBe(0)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// getCandidatePairs ranking (#180)
+// ---------------------------------------------------------------------------
+
+describe('getCandidatePairs ranking (#180)', () => {
+  it('ranks high-overlap pairs before low-overlap pairs regardless of insertion order', () => {
+    // E1/E3 are near-identical (high overlap) but E2 is inserted between them,
+    // so insertion order would yield (E1,E2) first. Ranking must put (E1,E3) first.
+    const e1 = makeEngram({ id: 'E1', statement: 'plur cli config parser reads yaml files from home directory' })
+    const e2 = makeEngram({ id: 'E2', statement: 'plur system settings menu' })
+    const e3 = makeEngram({ id: 'E3', statement: 'plur cli config parser reads json files from home directory' })
+
+    const pairs = getCandidatePairs([e1, e2, e3])
+    expect(pairs.length).toBe(3)
+    expect(pairs[0].map(e => e.id).sort()).toEqual(['E1', 'E3'])
+  })
+
+  it('keeps insertion order for pairs with equal overlap (stable sort)', () => {
+    const a = makeEngram({ id: 'E1', statement: 'plur uses yaml' })
+    const b = makeEngram({ id: 'E2', statement: 'plur uses json' })
+    const c = makeEngram({ id: 'E3', statement: 'plur uses toml' })
+
+    const pairs = getCandidatePairs([a, b, c])
+    const ids = pairs.map(p => p.map(e => e.id).join(':'))
+    expect(ids).toEqual(['E1:E2', 'E1:E3', 'E2:E3'])
+  })
+})
+
+// ---------------------------------------------------------------------------
 // buildContradictionPrompt
 // ---------------------------------------------------------------------------
 
@@ -287,5 +351,294 @@ REASON: These describe different aspects of the system.`)
       'CONTRADICTS: yes\nCONFIDENCE: 0.85\nREASON: One says always, the other says never.',
     )
     expect(result.reason).toBe('One says always, the other says never.')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// buildBatchContradictionPrompt (#180)
+// ---------------------------------------------------------------------------
+
+describe('buildBatchContradictionPrompt', () => {
+  const pairs: Array<[{ id: string; statement: string }, { id: string; statement: string }]> = [
+    [{ id: 'E1', statement: 'X is true.' }, { id: 'E2', statement: 'X is false.' }],
+    [{ id: 'E3', statement: 'Y is red.' }, { id: 'E4', statement: 'Y is blue.' }],
+  ]
+
+  it('numbers each pair and includes ids and statements', () => {
+    const prompt = buildBatchContradictionPrompt(pairs)
+    expect(prompt).toContain('PAIR 1')
+    expect(prompt).toContain('PAIR 2')
+    for (const id of ['E1', 'E2', 'E3', 'E4']) expect(prompt).toContain(id)
+    expect(prompt).toContain('X is true.')
+    expect(prompt).toContain('Y is blue.')
+  })
+
+  it('instructs the model to answer one line per pair in the exact format', () => {
+    const prompt = buildBatchContradictionPrompt(pairs)
+    expect(prompt).toContain('PAIR_1:')
+    expect(prompt).toContain('PAIR_2:')
+    expect(prompt).toContain('CONTRADICTS: yes|no')
+    expect(prompt).toContain('CONFIDENCE: 0.0-1.0')
+    expect(prompt).toContain('REASON:')
+  })
+
+  it('keeps the same contradiction definition and guardrails as the single prompt', () => {
+    const prompt = buildBatchContradictionPrompt(pairs)
+    expect(prompt).toContain('mutually exclusive')
+    expect(prompt).toContain('Do NOT flag as contradictions')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// parseBatchContradictionResponse (#180)
+// ---------------------------------------------------------------------------
+
+describe('parseBatchContradictionResponse', () => {
+  it('parses a well-formed multi-pair response in order', () => {
+    const verdicts = parseBatchContradictionResponse(
+      `PAIR_1: CONTRADICTS: yes | CONFIDENCE: 0.9 | REASON: Opposite claims.
+PAIR_2: CONTRADICTS: no | CONFIDENCE: 0.1 | REASON: Different topics.`,
+      2,
+    )
+    expect(verdicts).toHaveLength(2)
+    expect(verdicts[0]).toMatchObject({ is_contradiction: true })
+    expect(verdicts[0]!.confidence).toBeCloseTo(0.9)
+    expect(verdicts[0]!.reason).toContain('Opposite')
+    expect(verdicts[1]).toMatchObject({ is_contradiction: false })
+  })
+
+  it('returns null for a pair with no verdict line (never a false positive)', () => {
+    const verdicts = parseBatchContradictionResponse(
+      'PAIR_1: CONTRADICTS: no | CONFIDENCE: 0.2 | REASON: Unrelated.',
+      3,
+    )
+    expect(verdicts[0]).not.toBeNull()
+    expect(verdicts[1]).toBeNull()
+    expect(verdicts[2]).toBeNull()
+  })
+
+  it('returns null for a pair marker without a parseable CONTRADICTS verdict', () => {
+    const verdicts = parseBatchContradictionResponse(
+      `PAIR_1: I am not sure about this one.
+PAIR_2: CONTRADICTS: yes | CONFIDENCE: 0.8 | REASON: Conflict.`,
+      2,
+    )
+    expect(verdicts[0]).toBeNull()
+    expect(verdicts[1]).toMatchObject({ is_contradiction: true })
+  })
+
+  it('ignores out-of-range pair indices', () => {
+    const verdicts = parseBatchContradictionResponse(
+      `PAIR_7: CONTRADICTS: yes | CONFIDENCE: 0.9 | REASON: Ghost pair.
+PAIR_0: CONTRADICTS: yes | CONFIDENCE: 0.9 | REASON: Ghost pair.`,
+      2,
+    )
+    expect(verdicts).toEqual([null, null])
+  })
+
+  it('tolerates marker variants like "PAIR 2:" and lowercase', () => {
+    const verdicts = parseBatchContradictionResponse(
+      `PAIR 1: CONTRADICTS: no | CONFIDENCE: 0.1 | REASON: Fine.
+pair_2: CONTRADICTS: yes | CONFIDENCE: 0.85 | REASON: Conflict.`,
+      2,
+    )
+    expect(verdicts[0]).toMatchObject({ is_contradiction: false })
+    expect(verdicts[1]).toMatchObject({ is_contradiction: true })
+  })
+
+  it('handles multiline sections per pair', () => {
+    const verdicts = parseBatchContradictionResponse(
+      `PAIR_1:
+CONTRADICTS: yes
+CONFIDENCE: 0.95
+REASON: Direct opposite.
+PAIR_2:
+CONTRADICTS: no
+CONFIDENCE: 0.05
+REASON: Complementary.`,
+      2,
+    )
+    expect(verdicts[0]).toMatchObject({ is_contradiction: true })
+    expect(verdicts[1]).toMatchObject({ is_contradiction: false })
+  })
+
+  it('clamps confidence to [0, 1]', () => {
+    const verdicts = parseBatchContradictionResponse(
+      'PAIR_1: CONTRADICTS: yes | CONFIDENCE: 1.7 | REASON: x',
+      1,
+    )
+    expect(verdicts[0]!.confidence).toBe(1)
+  })
+
+  it('returns all nulls for an empty or off-format response', () => {
+    expect(parseBatchContradictionResponse('', 2)).toEqual([null, null])
+    expect(parseBatchContradictionResponse('Sorry, I cannot help with that.', 2)).toEqual([null, null])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// scanForTensions batching (#180)
+// ---------------------------------------------------------------------------
+
+describe('scanForTensions batching (#180)', () => {
+  /** Three engrams with identical pairwise overlap → deterministic candidate
+   *  order (E1,E2), (E1,E3), (E2,E3) via stable sort. */
+  function makeTriple(): Engram[] {
+    return [
+      makeEngram({ id: 'E1', statement: 'plur uses yaml' }),
+      makeEngram({ id: 'E2', statement: 'plur uses json' }),
+      makeEngram({ id: 'E3', statement: 'plur uses toml' }),
+    ]
+  }
+
+  const NO_VERDICT = 'CONTRADICTS: no | CONFIDENCE: 0.1 | REASON: Fine.'
+
+  it('groups pairs into batches of batch_size (default 5)', async () => {
+    // 5 engrams, all sharing a subject → C(5,2) = 10 candidate pairs → 2 calls
+    const engrams = ['yaml', 'json', 'toml', 'xml', 'csv'].map((fmt, i) =>
+      makeEngram({ id: `E${i + 1}`, statement: `plur uses ${fmt}` }),
+    )
+    const llm = vi.fn(async (prompt: string) => {
+      const n = (prompt.match(/PAIR \d+/g) ?? []).length
+      return Array.from({ length: n }, (_, i) => `PAIR_${i + 1}: ${NO_VERDICT}`).join('\n')
+    })
+
+    const result = await scanForTensions(engrams, llm)
+    expect(result.pairs_checked).toBe(10)
+    expect(llm).toHaveBeenCalledTimes(2)
+    expect(result.new_tensions).toBe(0)
+  })
+
+  it('maps batch verdicts to the correct pairs', async () => {
+    const engrams = makeTriple()
+    const llm = vi.fn(async () =>
+      [
+        `PAIR_1: ${NO_VERDICT}`,
+        'PAIR_2: CONTRADICTS: yes | CONFIDENCE: 0.9 | REASON: Conflict.',
+        `PAIR_3: ${NO_VERDICT}`,
+      ].join('\n'),
+    )
+
+    const result = await scanForTensions(engrams, llm, { batch_size: 3 })
+    expect(llm).toHaveBeenCalledTimes(1)
+    expect(result.new_tensions).toBe(1)
+    // PAIR_2 is the second-ranked candidate: (E1, E3)
+    expect([result.tensions[0].id_a, result.tensions[0].id_b].sort()).toEqual(['E1', 'E3'])
+  })
+
+  it('applies min_confidence per pair in batch mode', async () => {
+    const engrams = makeTriple()
+    const llm = vi.fn(async () =>
+      [
+        'PAIR_1: CONTRADICTS: yes | CONFIDENCE: 0.5 | REASON: Weak.',
+        'PAIR_2: CONTRADICTS: yes | CONFIDENCE: 0.95 | REASON: Strong.',
+        `PAIR_3: ${NO_VERDICT}`,
+      ].join('\n'),
+    )
+
+    const result = await scanForTensions(engrams, llm, { batch_size: 3 })
+    expect(result.new_tensions).toBe(1)
+    expect(result.tensions[0].confidence).toBeCloseTo(0.95)
+  })
+
+  it('batch_size 1 preserves the sequential single-pair prompt', async () => {
+    const engrams = makeTriple()
+    const prompts: string[] = []
+    const llm = vi.fn(async (prompt: string) => {
+      prompts.push(prompt)
+      return 'CONTRADICTS: no\nCONFIDENCE: 0.1\nREASON: Fine.'
+    })
+
+    const result = await scanForTensions(engrams, llm, { batch_size: 1 })
+    expect(llm).toHaveBeenCalledTimes(3)
+    expect(result.pairs_checked).toBe(3)
+    for (const p of prompts) {
+      expect(p).toContain('STATEMENT A')
+      expect(p).not.toContain('PAIR 1')
+    }
+  })
+
+  it('falls back to a single-pair call when a batch verdict is missing', async () => {
+    const engrams = makeTriple()
+    const llm = vi.fn(async (prompt: string) => {
+      if (prompt.includes('PAIR 1')) {
+        // Batch response omits PAIR_2
+        return [`PAIR_1: ${NO_VERDICT}`, `PAIR_3: ${NO_VERDICT}`].join('\n')
+      }
+      // Individual fallback call for the missing pair
+      return 'CONTRADICTS: yes\nCONFIDENCE: 0.92\nREASON: Recovered by fallback.'
+    })
+
+    const result = await scanForTensions(engrams, llm, { batch_size: 3 })
+    expect(llm).toHaveBeenCalledTimes(2)
+    expect(result.new_tensions).toBe(1)
+    expect(result.tensions[0].reason).toContain('fallback')
+    // The missing verdict was PAIR_2 → candidate (E1, E3)
+    expect([result.tensions[0].id_a, result.tensions[0].id_b].sort()).toEqual(['E1', 'E3'])
+  })
+
+  it('falls back to single-pair calls when the whole batch call throws', async () => {
+    const engrams = makeTriple()
+    const llm = vi.fn(async (prompt: string) => {
+      if (prompt.includes('PAIR 1')) throw new Error('batch prompt rejected')
+      return 'CONTRADICTS: no\nCONFIDENCE: 0.1\nREASON: Fine.'
+    })
+
+    const result = await scanForTensions(engrams, llm, { batch_size: 3 })
+    // 1 failed batch call + 3 individual fallback calls
+    expect(llm).toHaveBeenCalledTimes(4)
+    expect(result.pairs_checked).toBe(3)
+    expect(result.new_tensions).toBe(0)
+  })
+
+  it('skips pairs silently when individual fallback also fails', async () => {
+    const engrams = makeTriple()
+    const llm = vi.fn(async () => {
+      throw new Error('LLM down')
+    })
+
+    const result = await scanForTensions(engrams, llm, { batch_size: 3 })
+    expect(result.pairs_checked).toBe(3)
+    expect(result.new_tensions).toBe(0)
+  })
+
+  it('falls back to the default batch size for NaN or non-finite batch_size', async () => {
+    const engrams = makeTriple()
+    const llm = vi.fn(async (prompt: string) => {
+      const n = (prompt.match(/PAIR \d+/g) ?? []).length
+      return Array.from({ length: n }, (_, i) => `PAIR_${i + 1}: ${NO_VERDICT}`).join('\n')
+    })
+
+    // e.g. CLI parseInt('abc') → NaN must not poison the batching loop
+    const result = await scanForTensions(engrams, llm, { batch_size: NaN })
+    expect(result.pairs_checked).toBe(3)
+    expect(llm).toHaveBeenCalledTimes(1)
+  })
+
+  it('applies max_pairs cap before batching', async () => {
+    const engrams = makeTriple()
+    const llm = vi.fn(async (prompt: string) => {
+      const n = (prompt.match(/PAIR \d+/g) ?? []).length
+      return Array.from({ length: n }, (_, i) => `PAIR_${i + 1}: ${NO_VERDICT}`).join('\n')
+    })
+
+    const result = await scanForTensions(engrams, llm, { max_pairs: 2, batch_size: 5 })
+    expect(result.pairs_checked).toBe(2)
+    expect(llm).toHaveBeenCalledTimes(1)
+    expect(llm.mock.calls[0][0]).toContain('PAIR 2')
+    expect(llm.mock.calls[0][0]).not.toContain('PAIR 3')
+  })
+
+  it('checks the highest-overlap pairs first when max_pairs truncates', async () => {
+    // Low-overlap pair (E1,E2) inserted first; high-overlap pair (E1,E3) must
+    // survive a max_pairs: 1 cap thanks to ranking.
+    const e1 = makeEngram({ id: 'E1', statement: 'plur cli config parser reads yaml files from home directory' })
+    const e2 = makeEngram({ id: 'E2', statement: 'plur system settings menu' })
+    const e3 = makeEngram({ id: 'E3', statement: 'plur cli config parser reads json files from home directory' })
+
+    const llm = vi.fn(async () => 'CONTRADICTS: yes\nCONFIDENCE: 0.9\nREASON: Same subject, different format.')
+    const result = await scanForTensions([e1, e2, e3], llm, { max_pairs: 1, batch_size: 1 })
+    expect(result.pairs_checked).toBe(1)
+    expect([result.tensions[0].id_a, result.tensions[0].id_b].sort()).toEqual(['E1', 'E3'])
   })
 })

@@ -42,6 +42,7 @@ function getLlmFunction(): LlmFunction | undefined {
  *   plur tensions --scan --domain plur.core    # narrow to one domain
  *   plur tensions --scan --min-confidence 0.8  # stricter threshold
  *   plur tensions --scan --max-pairs 100       # check more pairs
+ *   plur tensions --scan --batch-size 1        # sequential single-pair judging (no batching)
  *   plur tensions --scan --model claude-haiku-... --llm-base-url ... --llm-api-key ...
  *   plur tensions                              # list legacy stored conflicts (usually empty)
  *   plur tensions --json                       # machine-readable output
@@ -52,6 +53,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   let domain: string | undefined
   let minConfidence = 0.7
   let maxPairs = 50
+  let batchSize = 5
   let llmBaseUrl: string | undefined
   let llmApiKey: string | undefined
   let llmModel: string | undefined
@@ -64,6 +66,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     else if (arg === '--domain' && i + 1 < args.length) { domain = args[++i]; i++ }
     else if (arg === '--min-confidence' && i + 1 < args.length) { minConfidence = parseFloat(args[++i]); i++ }
     else if (arg === '--max-pairs' && i + 1 < args.length) { maxPairs = parseInt(args[++i], 10); i++ }
+    else if (arg === '--batch-size' && i + 1 < args.length) { batchSize = parseInt(args[++i], 10); i++ }
     else if (arg === '--llm-base-url' && i + 1 < args.length) { llmBaseUrl = args[++i]; i++ }
     else if (arg === '--llm-api-key' && i + 1 < args.length) { llmApiKey = args[++i]; i++ }
     else if (arg === '--model' && i + 1 < args.length) { llmModel = args[++i]; i++ }
@@ -92,12 +95,12 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
       outputText(`Scanning ${engrams.length} engrams for contradictions…`)
       if (scope) outputText(`  scope: ${scope}`)
       if (domain) outputText(`  domain: ${domain}`)
-      outputText(`  min-confidence: ${minConfidence}  max-pairs: ${maxPairs}`)
+      outputText(`  min-confidence: ${minConfidence}  max-pairs: ${maxPairs}  batch-size: ${batchSize}`)
       outputText('')
     }
 
     const { scanForTensions } = await import('@plur-ai/core')
-    const result = await scanForTensions(engrams, llm, { min_confidence: minConfidence, max_pairs: maxPairs })
+    const result = await scanForTensions(engrams, llm, { min_confidence: minConfidence, max_pairs: maxPairs, batch_size: batchSize })
 
     if (shouldOutputJson(flags)) {
       outputJson({
