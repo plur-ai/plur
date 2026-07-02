@@ -128,8 +128,11 @@ Search modes: `fast` (BM25), `agentic` (LLM rerank), `hybrid` (BM25 + embeddings
 
 ### Current numbers (v0.9.13)
 
-Latest in-repo hybrid run is `benchmark/results/2026-04-07-hybrid.json`
-(LongMemEval n=30 sanity subset). A/B figures are the README's published run.
+Latest hybrid run is archived in plur-ai/plur-bench at
+`results/monorepo/2026-04-07-hybrid.json` (LongMemEval n=30 sanity subset) —
+result JSONs are no longer committed here (#336). Local benchmark runs still
+write to `benchmark/results/` (gitignored). A/B figures are the README's
+published run.
 
 | Metric | Score |
 |--------|-------|
