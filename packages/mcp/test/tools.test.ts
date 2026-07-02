@@ -262,6 +262,29 @@ describe('MCP tools', () => {
     expect(result.version).toMatch(/^\d+\.\d+\.\d+/)
   })
 
+  // #452 — injection-provenance event/label counts feed #202's volume gate.
+  it('plur_status surfaces injection event and label counts', async () => {
+    const empty = await callTool('plur_status', {}) as any
+    expect(empty.history_events).toEqual({
+      co_injection: 0,
+      injection_outcome: 0,
+      outcome_positive: 0,
+      outcome_negative: 0,
+    })
+
+    const learned = await callTool('plur_learn', { statement: 'Always use pnpm for package installation', scope: 'global' }) as any
+    await callTool('plur_inject', { task: 'how do I run pnpm installation for a package' })
+    await callTool('plur_feedback', { id: learned.id, signal: 'positive' })
+
+    const result = await callTool('plur_status', {}) as any
+    expect(result.history_events).toEqual({
+      co_injection: 1,
+      injection_outcome: 1,
+      outcome_positive: 1,
+      outcome_negative: 0,
+    })
+  })
+
   // plur_stores_add must report an honest status, never an unconditional
   // success:true that masks a dropped scope (#291).
   describe('plur_stores_add status reporting (#291)', () => {

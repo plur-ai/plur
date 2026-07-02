@@ -121,6 +121,8 @@ export interface InjectOptions {
   intentOverride?: 'entity' | 'temporal' | 'event' | 'general'
   /** Cross-encoder rerank stage (#220): true=opt in, false=skip, omitted=respect PLUR_RERANKER. */
   rerank?: boolean
+  /** Session ID (from plur_session_start) recorded on the co_injection provenance event (#452). */
+  session_id?: string
 }
 
 export interface InjectionResult {

@@ -1046,6 +1046,13 @@ export function getToolDefinitions(): ToolDefinition[] {
           tension_count: status.tension_count,
           versioned_engram_count: status.versioned_engram_count ?? 0,
           outbox_count: status.outbox_count ?? 0,
+          // Injection-provenance event/label counts (#452) — #202's volume gate.
+          history_events: status.history_events ?? {
+            co_injection: 0,
+            injection_outcome: 0,
+            outcome_positive: 0,
+            outcome_negative: 0,
+          },
           // Last background index/reembed failure (#272) — absent when healthy.
           ...(status.index_error ? { index_error: status.index_error } : {}),
           // Version check (issue #151)
@@ -1315,6 +1322,7 @@ export function getToolDefinitions(): ToolDefinition[] {
         try {
           const result = await plur.injectHybrid(task, {
             scope: tags?.length ? `tags:${tags.join(',')}` : undefined,
+            session_id, // stamped on the co_injection provenance event (#452)
           })
           if (result.count > 0) {
             const lines: string[] = []
@@ -1327,6 +1335,7 @@ export function getToolDefinitions(): ToolDefinition[] {
           // Fall back to BM25 if hybrid unavailable
           const result = plur.inject(task, {
             scope: tags?.length ? `tags:${tags.join(',')}` : undefined,
+            session_id,
           })
           if (result.count > 0) {
             const lines: string[] = []

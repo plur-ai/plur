@@ -13,6 +13,11 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
     outputText(`  Engrams:      ${result.engram_count}`)
     outputText(`  Episodes:     ${result.episode_count}`)
     outputText(`  Packs:        ${result.pack_count}`)
+    // Injection-provenance event/label counts (#452) — #202's volume gate.
+    const ev = result.history_events
+    if (ev) {
+      outputText(`  Events:       co_injection ${ev.co_injection} · outcomes ${ev.injection_outcome} (+${ev.outcome_positive}/-${ev.outcome_negative})`)
+    }
     outputText(`  Storage root: ${result.storage_root}`)
   }
 }

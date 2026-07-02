@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { mkdtempSync, rmSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
@@ -41,6 +41,36 @@ describe('plur status', () => {
     })
     const output = JSON.parse(run('status'))
     expect(output.engram_count).toBe(1)
+  })
+
+  // #452 — injection-provenance event/label counts feed #202's volume gate.
+  it('surfaces injection event/label counts in JSON output', () => {
+    const output = JSON.parse(run('status'))
+    expect(output.history_events).toEqual({
+      co_injection: 0,
+      injection_outcome: 0,
+      outcome_positive: 0,
+      outcome_negative: 0,
+    })
+  })
+
+  it('surfaces event/label counts in text output', async () => {
+    // Text mode requires a TTY or an explicit json:false — run in-process.
+    const writes: string[] = []
+    const spy = vi.spyOn(process.stdout, 'write').mockImplementation(((chunk: unknown) => {
+      writes.push(String(chunk))
+      return true
+    }) as never)
+    try {
+      const { run: runStatus } = await import('../src/commands/status.js')
+      await runStatus([], { path: dir, json: false })
+    } finally {
+      spy.mockRestore()
+    }
+    const out = writes.join('')
+    expect(out).toContain('Events:')
+    expect(out).toContain('co_injection 0')
+    expect(out).toContain('outcomes 0 (+0/-0)')
   })
 
   it('reflects episode count after capture', () => {
