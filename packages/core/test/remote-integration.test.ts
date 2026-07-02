@@ -162,6 +162,64 @@ describe('RemoteStore against stub server', () => {
     expect(all[1].id).toMatch(/^ENG-SRV-/)
   })
 
+  // #327: a 2xx PATCH whose echoed row fails RemoteRowSchema must NOT return
+  // null — that's indistinguishable from the 404 "not found" return, so a
+  // successful write would be misreported as a failure (or retried).
+  describe('patch() — 2xx with malformed echoed row (#327)', () => {
+    it('returns the optimistically-merged engram when the echo fails validation (warm cache)', async () => {
+      const store = new RemoteStore(baseUrl, TOKEN, 'group:test')
+      server.seedEngram({
+        id: 'ENG-SRV-327', scope: 'group:test', status: 'active',
+        data: { statement: 'patch me', type: 'behavioral' },
+      })
+      await store.load() // warm the cache with the pre-write row
+
+      server.badPatchEcho = { id: 42, garbage: true } // fails RemoteRowSchema
+      const result = await store.patch('ENG-SRV-327', { pinned: true } as any)
+
+      expect(result).not.toBeNull()
+      expect(result!.id).toBe('ENG-SRV-327')
+      expect((result as any).pinned).toBe(true)
+      expect((result as any).statement).toBe('patch me') // merged from cached pre-write row
+      // The write really did land server-side.
+      expect((server.getEngram('ENG-SRV-327')?.data as any)?.pinned).toBe(true)
+    })
+
+    it('returns an id+updates view when the echo fails and there is no cached row (cold cache)', async () => {
+      const store = new RemoteStore(baseUrl, TOKEN, 'group:test')
+      server.seedEngram({
+        id: 'ENG-SRV-328', scope: 'group:test', status: 'active',
+        data: { statement: 'cold cache', type: 'behavioral' },
+      })
+
+      server.badPatchEcho = { nope: 'not an engram' }
+      const result = await store.patch('ENG-SRV-328', { statement: 'rewritten' } as any)
+
+      expect(result).not.toBeNull()
+      expect(result!.id).toBe('ENG-SRV-328')
+      expect((result as any).statement).toBe('rewritten')
+      expect((server.getEngram('ENG-SRV-328')?.data as any)?.statement).toBe('rewritten')
+    })
+
+    it('a genuine 404 still returns null', async () => {
+      const store = new RemoteStore(baseUrl, TOKEN, 'group:test')
+      const result = await store.patch('ENG-SRV-MISSING', { pinned: true } as any)
+      expect(result).toBeNull()
+    })
+
+    it('a valid echo still returns the reshaped server row (no behavior change)', async () => {
+      const store = new RemoteStore(baseUrl, TOKEN, 'group:test')
+      server.seedEngram({
+        id: 'ENG-SRV-329', scope: 'group:test', status: 'active',
+        data: { statement: 'valid echo', type: 'behavioral' },
+      })
+      const result = await store.patch('ENG-SRV-329', { pinned: true } as any)
+      expect(result).not.toBeNull()
+      expect((result as any).statement).toBe('valid echo')
+      expect((result as any).pinned).toBe(true)
+    })
+  })
+
   // Finding #3 (audit 2026-06-10): server responses were written to the engram
   // pool with `as unknown as Engram` — no validation. A compromised server could
   // inject type-confused / malformed engrams. load() must drop malformed rows.
