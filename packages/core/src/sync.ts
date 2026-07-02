@@ -1,6 +1,7 @@
 import { execFileSync } from 'child_process'
-import { existsSync, writeFileSync, renameSync, mkdirSync, unlinkSync, statSync, readdirSync } from 'fs'
+import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync, unlinkSync, statSync, readdirSync } from 'fs'
 import { join, dirname, relative } from 'path'
+import * as yaml from 'js-yaml'
 
 export interface SyncStatus {
   initialized: boolean
@@ -16,6 +17,8 @@ export interface SyncResult {
   message: string
   remote: string | null
   files_changed: number
+  /** Present when syncing to a remote — all engrams (including private) are pushed to that remote. */
+  warning?: string
 }
 
 const GITIGNORE = `# PLUR — secrets (machine-local, NEVER synced)
@@ -184,21 +187,94 @@ function packStorePaths(root: string): string[] {
   return [...paths]
 }
 
+const YAML_DUMP_OPTS = { lineWidth: 120, noRefs: true, quotingType: '"' as const }
+
+interface EngramRecord { id?: string; scope?: string; visibility?: string; [k: string]: unknown }
+
+/**
+ * Read engrams.yaml and return the engram list, tolerating both the canonical
+ * `{ engrams: [...] }` shape and a bare top-level array. Returns null when the
+ * file is absent, unparseable, or not in a recognized engram shape.
+ */
+function readEngramList(root: string): { raw: unknown; list: EngramRecord[] } | null {
+  const path = join(root, 'engrams.yaml')
+  if (!existsSync(path)) return null
+  let raw: unknown
+  try {
+    raw = yaml.load(readFileSync(path, 'utf8'))
+  } catch {
+    return null
+  }
+  if (Array.isArray(raw)) return { raw, list: raw as EngramRecord[] }
+  if (raw && typeof raw === 'object' && Array.isArray((raw as any).engrams)) {
+    return { raw, list: (raw as any).engrams as EngramRecord[] }
+  }
+  return null
+}
+
+/**
+ * Warning shown when a remote is involved: the sync remote receives every engram
+ * that is pushed, including private-visibility ones. Counts private engrams that
+ * would actually be pushed (scope:local engrams are excluded from the remote).
+ * Returns undefined when nothing private would be pushed.
+ */
+function privateWarning(root: string): string | undefined {
+  const parsed = readEngramList(root)
+  if (!parsed) return undefined
+  const count = parsed.list.filter(
+    e => e?.scope !== 'local' && (e?.visibility ?? 'private') === 'private',
+  ).length
+  if (count === 0) return undefined
+  return `Note: sync remote receives all engrams including ${count} private-visibility one(s) — use a private git remote.`
+}
+
+/**
+ * Replace the *staged* engrams.yaml blob with one that omits scope:local engrams,
+ * using git plumbing (hash-object + update-index) so the working tree keeps the
+ * local engrams while the commit (and therefore the remote) never sees them.
+ *
+ * Must be called after staging. Re-serializes with the same YAML options PLUR
+ * uses everywhere, so the stripped blob is deterministic across runs — this is what
+ * prevents an infinite-dirty-state loop (issue #396): a sync whose only change is to
+ * a local engram produces the identical stripped blob and therefore no new commit.
+ */
+function stageLocalStripped(root: string): void {
+  const parsed = readEngramList(root)
+  if (!parsed) return
+  const { raw, list } = parsed
+  if (!list.some(e => e?.scope === 'local')) return
+  const filtered = list.filter(e => e?.scope !== 'local')
+  const out = Array.isArray(raw)
+    ? yaml.dump(filtered, YAML_DUMP_OPTS)
+    : yaml.dump({ ...(raw as object), engrams: filtered }, YAML_DUMP_OPTS)
+  const hash = execFileSync('git', ['hash-object', '-w', '--stdin'], {
+    cwd: root, input: out, encoding: 'utf8', timeout: 30_000,
+  }).trim()
+  git(['update-index', '--cacheinfo', `100644,${hash},engrams.yaml`], root)
+}
+
 function initRepo(root: string): void {
   git(['init'], root)
   atomicWrite(join(root, '.gitignore'), GITIGNORE)
   stageStoreFiles(root)
+  stageLocalStripped(root)
   git(['commit', '-m', 'Initial PLUR engram store'], root)
 }
 
 function commitChanges(root: string): number {
   const filesChanged = stageStoreFiles(root)
   if (filesChanged === 0) return 0
-  const diff = gitSafe(['diff', '--cached', '--stat', '--shortstat'], root)
+  stageLocalStripped(root)
+  // Count changes from the STAGED tree (after stripping) vs HEAD. When the only
+  // change is to a scope:local engram, the stripped blob is identical to HEAD, so
+  // nothing is staged and we must NOT commit — otherwise every sync would loop
+  // forever, since the working tree always differs from the stripped HEAD blob.
+  const diff = gitSafe(['diff', '--cached', '--shortstat'], root)
+  if (!diff || diff.length === 0) return 0
   const now = new Date().toISOString().slice(0, 19).replace('T', ' ')
   git(['commit', '-m', `plur sync ${now}`], root)
   // Parse "N files changed" from shortstat
-  const match = diff?.match(/(\d+) file/)
+  const match = diff.match(/(\d+) file/)
   return match ? parseInt(match[1], 10) : filesChanged
 }
 
@@ -240,7 +316,7 @@ export function sync(root: string, remote?: string): SyncResult {
       // Detect default branch name
       const branch = git(['rev-parse', '--abbrev-ref', 'HEAD'], root)
       git(['push', '-u', 'origin', branch], root)
-      return { action: 'initialized', message: `Initialized and pushed to ${remote}`, remote, files_changed: 0 }
+      return { action: 'initialized', message: `Initialized and pushed to ${remote}`, remote, files_changed: 0, warning: privateWarning(root) }
     }
     return {
       action: 'initialized',
@@ -257,7 +333,7 @@ export function sync(root: string, remote?: string): SyncResult {
     const filesChanged = commitChanges(root)
     const branch = git(['rev-parse', '--abbrev-ref', 'HEAD'], root)
     git(['push', '-u', 'origin', branch], root)
-    return { action: 'synced', message: `Remote added and pushed to ${remote}`, remote, files_changed: filesChanged }
+    return { action: 'synced', message: `Remote added and pushed to ${remote}`, remote, files_changed: filesChanged, warning: privateWarning(root) }
   }
 
   // State 2: Git repo, no remote
@@ -288,7 +364,7 @@ export function sync(root: string, remote?: string): SyncResult {
   }
 
   if (filesChanged === 0 && behind === 0 && aheadBefore === 0) {
-    return { action: 'up-to-date', message: 'Already in sync.', remote: existingRemote, files_changed: 0 }
+    return { action: 'up-to-date', message: 'Already in sync.', remote: existingRemote, files_changed: 0, warning: privateWarning(root) }
   }
 
   const parts: string[] = []
@@ -301,6 +377,7 @@ export function sync(root: string, remote?: string): SyncResult {
     message: `Synced. ${parts.join(', ')}.`,
     remote: existingRemote,
     files_changed: filesChanged,
+    warning: privateWarning(root),
   }
 }
 

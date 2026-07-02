@@ -292,4 +292,117 @@ describe('sync', () => {
       rmSync(dir2, { recursive: true, force: true })
     })
   })
+
+  describe('scope:local exclusion (issue #396)', () => {
+    let bareRemote: string
+
+    // Canonical engrams.yaml shape: { engrams: [...] }
+    const CANONICAL = [
+      'engrams:',
+      '  - id: ENG-001',
+      '    scope: "project:app"',
+      '    visibility: private',
+      '    statement: shared across my devices',
+      '  - id: ENG-002',
+      '    scope: local',
+      '    visibility: private',
+      '    statement: machine-specific note',
+      '',
+    ].join('\n')
+
+    beforeEach(() => {
+      writeFileSync(join(dir, 'engrams.yaml'), CANONICAL)
+      bareRemote = mkdtempSync(join(tmpdir(), 'plur-remote-'))
+      execSync('git init --bare', { cwd: bareRemote })
+    })
+
+    afterEach(() => {
+      rmSync(bareRemote, { recursive: true, force: true })
+    })
+
+    it('strips scope:local engrams from the committed (remote) engrams.yaml', () => {
+      sync(dir, bareRemote)
+      // The committed blob (== what the remote received) must not contain the local engram.
+      const committed = git('show HEAD:engrams.yaml', dir)
+      expect(committed).toContain('ENG-001')
+      expect(committed).not.toContain('ENG-002')
+      expect(committed).not.toContain('machine-specific note')
+    })
+
+    it('keeps scope:local engrams in the local working tree (no data loss)', () => {
+      sync(dir, bareRemote)
+      const onDisk = readFileSync(join(dir, 'engrams.yaml'), 'utf8')
+      expect(onDisk).toContain('ENG-002')
+      expect(onDisk).toContain('machine-specific note')
+    })
+
+    it('also strips local engrams committed during init (no remote)', () => {
+      sync(dir) // init only, no remote
+      const committed = git('show HEAD:engrams.yaml', dir)
+      expect(committed).toContain('ENG-001')
+      expect(committed).not.toContain('ENG-002')
+    })
+
+    it('does not create empty commits when only local engrams change (no infinite-dirty trap)', () => {
+      sync(dir, bareRemote)
+      const countAfterFirst = parseInt(git('rev-list --count HEAD', dir), 10)
+
+      // Mutate ONLY a local-scoped engram — this must not produce a new commit.
+      writeFileSync(
+        join(dir, 'engrams.yaml'),
+        CANONICAL.replace('machine-specific note', 'machine-specific note EDITED'),
+      )
+      const result = sync(dir)
+      expect(result.files_changed).toBe(0)
+      expect(result.action).toBe('up-to-date')
+
+      const countAfterSecond = parseInt(git('rev-list --count HEAD', dir), 10)
+      expect(countAfterSecond).toBe(countAfterFirst)
+    })
+
+    it('still commits when a non-local engram changes', () => {
+      sync(dir, bareRemote)
+      writeFileSync(
+        join(dir, 'engrams.yaml'),
+        CANONICAL.replace('shared across my devices', 'shared across my devices UPDATED'),
+      )
+      const result = sync(dir)
+      expect(result.files_changed).toBeGreaterThan(0)
+      const committed = git('show HEAD:engrams.yaml', dir)
+      expect(committed).toContain('UPDATED')
+      expect(committed).not.toContain('ENG-002')
+    })
+  })
+
+  describe('private-engram warning (issue #396)', () => {
+    let bareRemote: string
+
+    beforeEach(() => {
+      bareRemote = mkdtempSync(join(tmpdir(), 'plur-remote-'))
+      execSync('git init --bare', { cwd: bareRemote })
+    })
+
+    afterEach(() => {
+      rmSync(bareRemote, { recursive: true, force: true })
+    })
+
+    it('warns that the remote receives private engrams', () => {
+      writeFileSync(
+        join(dir, 'engrams.yaml'),
+        'engrams:\n  - id: ENG-001\n    scope: "project:app"\n    visibility: private\n    statement: secret\n',
+      )
+      const result = sync(dir, bareRemote)
+      expect(result.warning).toBeDefined()
+      expect(result.warning).toMatch(/private/i)
+    })
+
+    it('omits the warning when there are no private engrams', () => {
+      writeFileSync(
+        join(dir, 'engrams.yaml'),
+        'engrams:\n  - id: ENG-001\n    scope: "project:app"\n    visibility: public\n    statement: shareable\n',
+      )
+      const result = sync(dir, bareRemote)
+      expect(result.warning).toBeUndefined()
+    })
+  })
 })

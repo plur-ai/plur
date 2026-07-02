@@ -168,7 +168,7 @@ plur.capture('Fixed CrashLoopBackOff on bee-3-4 by increasing memory limits', {
 // Query timeline
 const incidents = plur.timeline({ agent: 'claude-code' })
 
-// Sync across machines
+// Sync across machines (use a private git remote — all engrams including private-visibility ones are pushed)
 plur.sync('git@github.com:you/plur-memory.git')
 ```
 
@@ -184,8 +184,16 @@ plur.sync('git@github.com:you/plur-memory.git')
 | `plur_capture` | Record an event — incident, resolution, session milestone |
 | `plur_timeline` | Query episode history by time, agent, or channel |
 | `plur_ingest` | Extract engrams from text automatically |
-| `plur_sync` | Sync across devices via git |
+| `plur_sync` | Sync across devices via git (remote receives all engrams — use a private repo) |
 | `plur_status` | Check system health and engram counts |
+
+### Syncing across devices
+
+`plur.sync(remote)` is git underneath: it commits your engram store and pushes it to the remote you give it. **The remote receives everything that is pushed — including `visibility: private` engrams.** Private visibility means "don't share this in a pack", not "don't mirror it to my own devices", so private engrams are intentionally synced so your memory follows you from machine to machine.
+
+Because the push contains private engrams, **always use a private git remote** (a private GitHub/GitLab repo, or your own server). PLUR surfaces a `warning` in the sync result reminding you of this whenever private engrams are present. Never point sync at a public repository.
+
+The one exception is **`scope: local` engrams**: these are machine-specific by design (paths, local ports, per-host quirks), so they are stripped from every commit and never reach the remote. They stay in your local working copy only — other devices won't see them, and they won't pollute a shared store.
 
 ## Benchmark details
 
