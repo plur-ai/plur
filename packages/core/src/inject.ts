@@ -67,6 +67,54 @@ const PINNED_TOKEN_BUDGET_RATIO = 0.5
 const DIP19_CONSIDER_MAX = 5
 const DIP19_CONSIDER_BUDGET = 200
 
+// --- Expiry handling (#347) ---
+
+/**
+ * Injection-time expiry policy (#347). `hard` (default) skips any engram
+ * whose `temporal.valid_until` is in the past. `soft` keeps injecting a
+ * recently-expired engram for `grace_days` days after expiry, rendered with
+ * a loud "⚠ EXPIRED <date> — verify before use" marker.
+ */
+export interface ExpiryConfig {
+  mode?: 'hard' | 'soft'
+  grace_days?: number
+}
+
+const DEFAULT_GRACE_DAYS = 30
+
+/**
+ * True when the engram must be skipped for temporal validity. Not-yet-valid
+ * engrams (`valid_from` in the future) are always skipped; expired engrams
+ * are skipped in hard mode, and in soft mode once past the grace cutoff.
+ */
+function skipForValidity(
+  engram: Engram,
+  today: string,
+  mode: 'hard' | 'soft',
+  graceCutoff: string,
+): boolean {
+  const t = engram.temporal
+  if (t?.valid_from && t.valid_from > today) return true
+  if (t?.valid_until && t.valid_until < today) {
+    if (mode !== 'soft') return true
+    if (t.valid_until < graceCutoff) return true
+  }
+  return false
+}
+
+/**
+ * "⚠ EXPIRED <date> — verify before use: " prefix for an engram whose
+ * `valid_until` is in the past. Only soft-expiry mode lets expired engrams
+ * reach the formatters, so in hard mode this never fires.
+ */
+function expiredMarker(engram: WireEngram): string {
+  const until = engram.temporal?.valid_until
+  if (until && until < new Date().toISOString().slice(0, 10)) {
+    return `⚠ EXPIRED ${until} — verify before use: `
+  }
+  return ''
+}
+
 // --- Pack metadata helper ---
 
 function getPackMetadata(manifest: PackManifest) {
@@ -301,7 +349,7 @@ export function selectAndSpread(
   ctx: InjectionContext,
   personalEngrams: Engram[],
   packs: LoadedPack[],
-  config?: { spread_cap?: number; spread_budget?: number },
+  config?: { spread_cap?: number; spread_budget?: number; expiry?: ExpiryConfig },
   embeddingBoosts?: Map<string, number>,
 ): InternalInjectionResult {
   const spreadCap = config?.spread_cap ?? 3
@@ -312,6 +360,9 @@ export function selectAndSpread(
   const maxTokens = ctx.maxTokens ?? DEFAULT_MAX_TOKENS
   const minRelevance = ctx.minRelevance ?? DEFAULT_MIN_RELEVANCE
   const today = new Date().toISOString().slice(0, 10)
+  const expiryMode = config?.expiry?.mode ?? 'hard'
+  const graceDays = config?.expiry?.grace_days ?? DEFAULT_GRACE_DAYS
+  const graceCutoff = new Date(Date.now() - graceDays * 86400000).toISOString().slice(0, 10)
 
   // Step 0: Build engram map for spreading activation
   const engramMap = new Map<string, Engram>()
@@ -321,8 +372,7 @@ export function selectAndSpread(
 
   for (const engram of personalEngrams) {
     if (engram.status !== 'active') continue
-    if (engram.temporal?.valid_until && engram.temporal.valid_until < today) continue
-    if (engram.temporal?.valid_from && engram.temporal.valid_from > today) continue
+    if (skipForValidity(engram, today, expiryMode, graceCutoff)) continue
     engramMap.set(engram.id, engram)
     let raw = scoreEngram(engram, promptLower, promptWords, [], ctx.scope, false)
     // Embedding boost: semantically similar engrams with zero keyword hits still get scored.
@@ -353,8 +403,7 @@ export function selectAndSpread(
     const matchTerms = packMeta.match_terms
     for (const engram of pack.engrams) {
       if (engram.status !== 'active') continue
-      if (engram.temporal?.valid_until && engram.temporal.valid_until < today) continue
-      if (engram.temporal?.valid_from && engram.temporal.valid_from > today) continue
+      if (skipForValidity(engram, today, expiryMode, graceCutoff)) continue
       engramMap.set(engram.id, engram)
       let raw = scoreEngram(engram, promptLower, promptWords, matchTerms, ctx.scope, true)
       const embBoost = embeddingBoosts?.get(engram.id) ?? 0
@@ -527,15 +576,15 @@ export function selectAndSpread(
 
 export function formatLayer1(engram: WireEngram): string {
   const display = (engram as any).summary ?? engram.statement.slice(0, 60)
-  return `[${engram.id}] ${display}`
+  return `[${engram.id}] ${expiredMarker(engram)}${display}`
 }
 
 export function formatLayer2(engram: WireEngram): string {
-  return `[${engram.id}] ${engram.statement}`
+  return `[${engram.id}] ${expiredMarker(engram)}${engram.statement}`
 }
 
 export function formatLayer3(engram: WireEngram): string {
-  const lines = [`[${engram.id}] ${engram.statement}`]
+  const lines = [`[${engram.id}] ${expiredMarker(engram)}${engram.statement}`]
   if (engram.rationale) lines.push(`  Rationale: ${engram.rationale}`)
   const meta: string[] = []
   if (engram.domain) meta.push(`Domain: ${engram.domain}`)

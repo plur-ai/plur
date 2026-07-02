@@ -34,6 +34,7 @@ import type { ScopeMetadata, SensitivityCategory } from './schemas/scope-metadat
 import { rankScopes, SCOPE_MATCH_THRESHOLD, type ScopeSignals, type ScopeCandidate } from './scope-routing.js'
 import { appendHistory, readHistoryForEngram, generateEventId } from './history.js'
 import { computeContentHash } from './content-hash.js'
+import { resolveValidity, buildTemporal } from './expiry.js'
 import { decodeJwtExpiry } from './jwt.js'
 import { RemoteStore } from './store/remote-store.js'
 import { isSharedScope, isPersonalScope, isScopeWithin } from './scope-util.js'
@@ -1232,6 +1233,10 @@ export class Plur {
     }
     const guarded = this._guardSensitiveScope(statement, context)
     context = guarded.context
+    // #347: resolve the validity window up-front (pure) so malformed
+    // valid_from/valid_until fail fast — even when the write would dedup
+    // into an existing engram below.
+    const validity = resolveValidity(statement, context)
     return withLock(this.paths.engrams, () => {
       const engrams = loadEngrams(this.paths.engrams)
       const allEngrams = this._loadAllEngrams()
@@ -1289,6 +1294,10 @@ export class Plur {
         rationale: context?.rationale,
         source: context?.source,
         domain: context?.domain,
+        // #347: validity window — explicit valid_from/valid_until params, or
+        // an explicit expiry phrase lifted from the statement. Unset for
+        // ordinary engrams.
+        temporal: buildTemporal(validity, now),
         activation: {
           retrieval_strength: 0.7,
           storage_strength: 1.0,
@@ -1327,6 +1336,16 @@ export class Plur {
           conflicts: conflictIds,
         } : undefined,
         pinned: context?.pinned === true ? true : undefined,
+      }
+
+      // Stamp the extraction marker (#347) so the plur_learn MCP response can
+      // echo the parsed expiry date back for confirmation — extraction must
+      // never silently guess.
+      if (validity.extracted) {
+        ;(engram as any).structured_data = {
+          ...((engram as any).structured_data ?? {}),
+          _expiry_extracted: { valid_until: validity.extracted.valid_until, phrase: validity.extracted.phrase },
+        }
       }
 
       // Stamp the demotion marker (#326 review, finding 2) so the plur_learn MCP
@@ -1477,6 +1496,9 @@ export class Plur {
     const guarded = this._guardSensitiveScope(statement, context)
     const scope = guarded.scope
     context = guarded.context
+    // #347: fail fast on malformed valid_from/valid_until (pure validation),
+    // mirroring learn() — before dedup can short-circuit the write.
+    resolveValidity(statement, context)
     const remoteDriver = this._resolveRemoteStoreForScope(scope)
     if (!remoteDriver) {
       // Local route — sync learn() owns dedup, build, write, history. learn()'s
@@ -1603,7 +1625,9 @@ export class Plur {
     }
     const memoryClass = context?.memory_class ?? TYPE_TO_MEMORY_CLASS[type] ?? 'semantic'
     const commitment = context?.commitment ?? 'leaning'
-    return {
+    // #347: validity window — same resolution as the sync learn() constructor.
+    const validity = resolveValidity(statement, context)
+    const shape: Engram = {
       // Placeholder id — overwritten by the server's assigned id before return.
       // Any consumer that observes this id directly (rather than via learnRouted's
       // return value) is doing it wrong — log says so.
@@ -1623,6 +1647,7 @@ export class Plur {
       rationale: context?.rationale,
       source: context?.source,
       domain: context?.domain,
+      temporal: buildTemporal(validity, now),
       activation: {
         retrieval_strength: 0.7,
         storage_strength: 1.0,
@@ -1656,6 +1681,14 @@ export class Plur {
       episode_ids: context?.session_episode_id ? [context.session_episode_id] : [],
       pinned: context?.pinned === true ? true : undefined,
     }
+    // Echo marker for extracted expiry (#347) — mirrors the learn() stamping
+    // so the remote-routed MCP response can confirm the parse too.
+    if (validity.extracted) {
+      ;(shape as any).structured_data = {
+        _expiry_extracted: { valid_until: validity.extracted.valid_until, phrase: validity.extracted.phrase },
+      }
+    }
+    return shape
   }
 
   /** Build deps for learn-async module. */
@@ -2201,6 +2234,7 @@ export class Plur {
       {
         spread_cap: this.config.injection?.spread_cap,
         spread_budget: this.config.injection?.spread_budget,
+        expiry: this.config.expiry,
       },
       embeddingBoosts,
     )
