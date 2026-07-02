@@ -1,7 +1,7 @@
 ---
 name: plur-memory
 description: "Persistent learning for AI agents. Open engram format. Your agent learns from corrections, remembers across sessions, and transfers knowledge across domains."
-version: 0.1.0
+version: 0.10.0
 ---
 
 # PLUR Memory
