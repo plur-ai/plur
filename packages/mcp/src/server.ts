@@ -11,7 +11,7 @@ import {
   McpError,
 } from '@modelcontextprotocol/sdk/types.js'
 import { Plur, checkForUpdate } from '@plur-ai/core'
-import { getToolDefinitions } from './tools.js'
+import { getToolDefinitions, mcpCanary } from './tools.js'
 import { registerFlushOnExit } from './telemetry.js'
 import { VERSION } from './version.js'
 import { z } from 'zod'
@@ -211,6 +211,10 @@ export async function createServer(plur?: Plur): Promise<Server> {
         isError: true,
       }
     }
+    // #192: one tick per tool call = one "turn" for capability health.
+    // plur_session_start resets the canary, giving a per-session window:
+    // `threshold` turns without an expected signal flags the capability.
+    mcpCanary.tick()
     try {
       // Validate arguments against input schema
       const args = request.params.arguments ?? {}
