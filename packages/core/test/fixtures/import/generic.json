@@ -1,0 +1,19 @@
+[
+  {
+    "statement": "Use pnpm for all installs in the monorepo",
+    "type": "procedural",
+    "domain": "dev.tooling",
+    "tags": ["pnpm", "monorepo"],
+    "confidence": 0.9,
+    "created_at": "2025-11-02T10:00:00Z",
+    "source": "notes/dev.md"
+  },
+  {
+    "statement": "The staging API base URL is https://staging.example.test",
+    "domain": "infra.endpoints",
+    "valid_until": "2026-12-31"
+  },
+  {
+    "statement": "Use pnpm for all installs in the monorepo"
+  }
+]

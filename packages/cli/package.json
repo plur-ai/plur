@@ -17,7 +17,8 @@
     "@plur-ai/core": "workspace:*"
   },
   "devDependencies": {
-    "@types/node": "^25.5.0"
+    "@types/node": "^25.5.0",
+    "better-sqlite3": "^11.0.0"
   },
   "peerDependencies": {
     "@plur-ai/core": ">=0.3.0"

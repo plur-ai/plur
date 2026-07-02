@@ -1,0 +1,3 @@
+statement,domain,tags,confidence,created_at
+"Standups happen at 09:30 CET, daily",team.rituals,standup|team,0.7,2025-06-01T08:00:00Z
+Feature flags live in flags.yaml,dev.config,flags,,2025-06-02T08:00:00Z
