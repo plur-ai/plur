@@ -1,3 +1,4 @@
+import type { IndexSyncError } from '@plur-ai/core'
 import { createPlur, type GlobalFlags } from '../plur.js'
 import { shouldOutputJson, outputJson, outputText } from '../output.js'
 
@@ -31,13 +32,24 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   if (typeof (plur as { waitForIndex?: () => Promise<void> }).waitForIndex === 'function') {
     await (plur as { waitForIndex: () => Promise<void> }).waitForIndex()
   }
+  // #272: the background index/reembed chain swallows its own rejection
+  // (waitForIndex resolves either way) — read the recorded failure so a
+  // broken index doesn't report "Sync: ok".
+  const indexError =
+    typeof (plur as { lastIndexError?: () => IndexSyncError | null }).lastIndexError === 'function'
+      ? (plur as { lastIndexError: () => IndexSyncError | null }).lastIndexError()
+      : null
 
   if (shouldOutputJson(flags)) {
-    outputJson({ ...result, full })
+    outputJson({ ...result, full, ...(indexError ? { index_error: indexError } : {}) })
   } else {
     outputText(`Sync: ${result.action}${full ? ' (full reindex)' : ''}`)
     if (result.message) outputText(`  ${result.message}`)
     if (result.files_changed > 0) outputText(`  Files changed: ${result.files_changed}`)
     if (full) outputText('  Index rebuilt from YAML.')
+    if (indexError) {
+      outputText(`  Warning: index ${indexError.op} failed — ${indexError.message}`)
+      outputText("  YAML is still the source of truth. Run 'plur sync --full' to rebuild the index.")
+    }
   }
 }

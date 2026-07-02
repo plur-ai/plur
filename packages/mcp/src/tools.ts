@@ -781,6 +781,12 @@ export function getToolDefinitions(): ToolDefinition[] {
       handler: async (args, plur) => {
         const result = plur.sync(args.remote as string | undefined, { full: args.full === true })
 
+        // #272: block on the background index/reembed chain and surface its
+        // failure — the chain's .catch swallows the rejection, so without
+        // this a failed index pass reported plain success.
+        await plur.waitForIndex()
+        const indexError = plur.lastIndexError()
+
         // Flush outbox after git sync (issue #26)
         let outbox_result: { flushed: number; failed: number; expired_warnings: string[] } | undefined
         try {
@@ -789,6 +795,10 @@ export function getToolDefinitions(): ToolDefinition[] {
 
         return {
           ...result,
+          ...(indexError ? {
+            index_error: indexError,
+            warning: `Index ${indexError.op} failed — ${indexError.message}. YAML is still the source of truth; run plur_sync with full=true to rebuild the index.`,
+          } : {}),
           ...(outbox_result && (outbox_result.flushed > 0 || outbox_result.failed > 0) ? {
             outbox: {
               flushed: outbox_result.flushed,
@@ -1000,6 +1010,8 @@ export function getToolDefinitions(): ToolDefinition[] {
           tension_count: status.tension_count,
           versioned_engram_count: status.versioned_engram_count ?? 0,
           outbox_count: status.outbox_count ?? 0,
+          // Last background index/reembed failure (#272) — absent when healthy.
+          ...(status.index_error ? { index_error: status.index_error } : {}),
           // Version check (issue #151)
           ...(versionCheck?.updateAvailable && versionCheck.latest ? {
             update_available: {

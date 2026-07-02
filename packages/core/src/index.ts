@@ -164,6 +164,22 @@ export interface IngestCandidate {
   source?: string
 }
 
+/**
+ * Last failure of a background index operation (#272). The PGLite index
+ * refresh (and the auto-embed/reembed pass that rides on it) runs in a
+ * fire-and-forget promise whose .catch used to swallow the error entirely —
+ * a failed refresh reported "Sync: ok". Recorded and exposed via
+ * `lastIndexError()` / `status().index_error` so CLI and MCP callers can
+ * surface it. Cleared when the next background pass succeeds.
+ */
+export interface IndexSyncError {
+  /** Which background operation failed. */
+  op: 'initial-sync' | 'sync-from-yaml' | 'reindex' | 'auto-embed'
+  message: string
+  /** ISO timestamp of when the failure was recorded. */
+  at: string
+}
+
 export interface StatusResult {
   engram_count: number
   episode_count: number
@@ -174,6 +190,8 @@ export interface StatusResult {
   tension_count?: number
   versioned_engram_count?: number
   outbox_count?: number
+  /** Present when the most recent background index pass failed (#272). */
+  index_error?: IndexSyncError
 }
 
 /**
@@ -289,6 +307,13 @@ export class Plur {
    */
   private pgliteAdapter: PGLiteAdapter | null = null
   private _pgliteInitPromise: Promise<void> | null = null
+  /**
+   * Last background index failure (#272). Set by the .catch of the
+   * fire-and-forget index chains (initial sync, syncFromYaml, reindex,
+   * auto-embed); reset when a new chain is kicked off so a completed
+   * successful pass leaves it null. Read via lastIndexError()/status().
+   */
+  private _lastIndexError: IndexSyncError | null = null
   private _engramCache: Map<string, { mtime: bigint; engrams: Engram[] }> = new Map()
   private _llmFailureCount = 0
   private _llmDisabledUntil: number | null = null
@@ -320,6 +345,7 @@ export class Plur {
       // so reads served from the YAML fallthrough remain correct while the
       // index warms up.
       this._pgliteInitPromise = this.pgliteAdapter.syncFromYaml().catch((err: unknown) => {
+        this._recordIndexError('initial-sync', err)
         logger.warning(`[plur] PGLite initial sync failed: ${(err as Error).message}. Run 'plur sync --full' to rebuild.`)
       })
     } else if (this.config.index) {
@@ -2740,9 +2766,11 @@ export class Plur {
     if (this.pgliteAdapter) {
       // Fire-and-track. Callers that need to block use reindexAsync().
       const adapter = this.pgliteAdapter
+      this._lastIndexError = null // new pass — stale failures cleared on success
       this._pgliteInitPromise = adapter.reindex()
         .then(() => this._autoEmbedNewEngrams(adapter))
         .catch((err: unknown) => {
+          this._recordIndexError('reindex', err)
           logger.warning(`[plur] PGLite reindex failed: ${(err as Error).message}`)
         })
       return
@@ -2795,8 +2823,29 @@ export class Plur {
         await adapter.upsertEmbedding(engram.id, vec)
       }
     } catch (err) {
+      this._recordIndexError('auto-embed', err)
       logger.warning(`[plur] auto-embed failed: ${(err as Error).message}`)
     }
+  }
+
+  /** Record a background index failure for later surfacing (#272). */
+  private _recordIndexError(op: IndexSyncError['op'], err: unknown): void {
+    this._lastIndexError = {
+      op,
+      message: (err as Error)?.message ?? String(err),
+      at: new Date().toISOString(),
+    }
+  }
+
+  /**
+   * Last background index failure, or null when the most recent pass
+   * succeeded (#272). The background chains (initial sync, syncFromYaml,
+   * reindex, auto-embed) swallow rejections so waitForIndex() never throws;
+   * this is the state-based surface for CLI/MCP callers. Also included in
+   * status().index_error.
+   */
+  lastIndexError(): IndexSyncError | null {
+    return this._lastIndexError
   }
 
   /** Sync index after YAML write (no-op if no index is active). */
@@ -2806,9 +2855,11 @@ export class Plur {
       // The YAML write already happened — this is the index catching up, then
       // auto-embed any new engrams so they're vector-searchable.
       const adapter = this.pgliteAdapter
+      this._lastIndexError = null // new pass — stale failures cleared on success
       this._pgliteInitPromise = adapter.syncFromYaml()
         .then(() => this._autoEmbedNewEngrams(adapter))
         .catch((err: unknown) => {
+          this._recordIndexError('sync-from-yaml', err)
           logger.warning(`[plur] PGLite syncFromYaml failed (YAML is still source of truth): ${(err as Error).message}`)
         })
       return
@@ -3370,6 +3421,7 @@ Generate an improved version of the procedure that prevents this failure. Return
       tension_count: tensionPairs.size,
       versioned_engram_count: versionedCount,
       outbox_count: this.outboxCount(),
+      ...(this._lastIndexError ? { index_error: this._lastIndexError } : {}),
     }
   }
 
