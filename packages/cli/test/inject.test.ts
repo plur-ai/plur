@@ -63,4 +63,32 @@ describe('plur inject', () => {
     }
     expect(threw).toBe(true)
   })
+
+  describe('default learning protocol', () => {
+    it('includes the default protocol in directives by default', () => {
+      const output = JSON.parse(run('inject "write unit tests"'))
+      expect(output.directives).toContain('## Learning Protocol')
+      expect(output.directives).toContain('🧠 I learned')
+    })
+
+    it('suppresses the protocol with --no-with-default-protocol', () => {
+      const output = JSON.parse(run('inject "write unit tests" --no-with-default-protocol'))
+      expect(output.directives).not.toContain('## Learning Protocol')
+    })
+
+    it('appends the protocol to existing directives instead of replacing them', () => {
+      // architectural → cognitive_level 'evaluate' → lands in the directives bucket
+      execSync(`node ${CLI} learn "the project deploys to the staging server via rsync" --type architectural --path ${dir} --json`, {
+        encoding: 'utf-8',
+        timeout: 10000,
+      })
+      const output = JSON.parse(run('inject "how do we deploy the project"'))
+      // Injected engram is still present...
+      expect(output.directives).toContain('deploys to the staging server')
+      // ...with the protocol appended after it
+      expect(output.directives).toContain('## Learning Protocol')
+      expect(output.directives.indexOf('deploys to the staging server'))
+        .toBeLessThan(output.directives.indexOf('## Learning Protocol'))
+    })
+  })
 })
