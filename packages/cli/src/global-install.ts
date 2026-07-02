@@ -6,7 +6,18 @@ export interface GlobalInstallResult {
   plurBinaryPath: string | null
 }
 
-const GLOBAL_PATH_PATTERNS = ['/homebrew/', '/usr/local/', '/usr/bin/', '/usr/share/']
+const GLOBAL_PATH_PATTERNS = [
+  '/homebrew/',
+  '/usr/local/',
+  '/usr/bin/',
+  '/usr/share/',
+  // Node version managers (issue #190) — `npm install -g` inside a managed
+  // node lands under these prefixes, not the system paths above.
+  '/.nvm/', // nvm: ~/.nvm/versions/node/vX.Y.Z/bin/plur
+  '/.volta/', // volta: ~/.volta/bin/plur
+  '/fnm/', // fnm data dir: .../fnm/node-versions/vX.Y.Z/installation/bin/plur
+  '/fnm_multishells/', // fnm shell shims: .../fnm_multishells/<pid>_<ts>/bin/plur
+]
 
 /**
  * Detect globally installed plur packages that shadow `npx @latest` resolution.

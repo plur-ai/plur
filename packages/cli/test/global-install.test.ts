@@ -74,6 +74,24 @@ describe('checkGlobalInstall', () => {
     expect(result.found).toBe(false)
     expect(result.plurBinaryPath).toBeNull()
   })
+
+  // Issue #190 — version-manager global installs (nvm/fnm/volta) must be detected
+  it.each([
+    ['nvm', '/Users/dev/.nvm/versions/node/v20.11.1/bin/plur'],
+    ['volta', '/Users/dev/.volta/bin/plur'],
+    ['fnm (macOS data dir)', '/Users/dev/Library/Application Support/fnm/node-versions/v20.12.2/installation/bin/plur'],
+    ['fnm (Linux data dir)', '/home/dev/.local/share/fnm/node-versions/v20.12.2/installation/bin/plur'],
+    ['fnm (multishell symlink)', '/run/user/1000/fnm_multishells/12345_1700000000000/bin/plur'],
+  ])('detects global binary installed via %s', (_manager, path) => {
+    mockExecSync.mockImplementation((cmd: unknown) => {
+      const c = cmd as string
+      if (c.startsWith('which')) return path
+      throw new Error('not found')
+    })
+    const result = checkGlobalInstall()
+    expect(result.found).toBe(true)
+    expect(result.plurBinaryPath).toBe(path)
+  })
 })
 
 describe('formatGlobalInstallWarning', () => {
