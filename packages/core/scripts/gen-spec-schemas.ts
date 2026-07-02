@@ -30,6 +30,7 @@ import { fileURLToPath } from 'url'
 import { zodToJsonSchema } from 'zod-to-json-schema'
 import { EngramSchema } from '../src/schemas/engram.js'
 import { PackManifestSchema } from '../src/schemas/pack.js'
+import { ScopeMetadataSchema } from '../src/schemas/scope-metadata.js'
 
 const DRAFT = 'https://json-schema.org/draft/2020-12/schema'
 
@@ -38,6 +39,7 @@ const HERE = path.dirname(fileURLToPath(import.meta.url))
 const REPO_ROOT = path.resolve(HERE, '..', '..', '..')
 export const ENGRAM_SCHEMA_PATH = path.join(REPO_ROOT, 'spec', 'engram.schema.json')
 export const PACK_SCHEMA_PATH = path.join(REPO_ROOT, 'spec', 'pack-manifest.schema.json')
+export const SCOPE_METADATA_SCHEMA_PATH = path.join(REPO_ROOT, 'spec', 'scope-metadata.schema.json')
 
 type JsonObject = Record<string, unknown>
 
@@ -99,6 +101,18 @@ export function buildPackManifestSchema(): JsonObject {
   })
 }
 
+export function buildScopeMetadataSchema(): JsonObject {
+  return generate(ScopeMetadataSchema, {
+    $id: 'https://plur.ai/spec/v1/scope-metadata.schema.json',
+    title: 'ScopeMetadata',
+    description:
+      'Self-describing metadata for an engram scope (Open Engram Standard, Stage 2, #345). ' +
+      'Generated from the Zod ScopeMetadataSchema in @plur-ai/core (packages/core/src/schemas/scope-metadata.ts) ' +
+      'by packages/core/scripts/gen-spec-schemas.ts — do not edit by hand. ' +
+      'A scope with no metadata falls back to Stage 1 behavior (isSharedScope + detectSensitive).',
+  })
+}
+
 /** Canonical serialization: 2-space indent, trailing newline. */
 export function serialize(schema: JsonObject): string {
   return JSON.stringify(schema, null, 2) + '\n'
@@ -107,7 +121,12 @@ export function serialize(schema: JsonObject): string {
 function main(): void {
   fs.writeFileSync(ENGRAM_SCHEMA_PATH, serialize(buildEngramSchema()))
   fs.writeFileSync(PACK_SCHEMA_PATH, serialize(buildPackManifestSchema()))
-  console.log(`Wrote ${path.relative(REPO_ROOT, ENGRAM_SCHEMA_PATH)} and ${path.relative(REPO_ROOT, PACK_SCHEMA_PATH)}`)
+  fs.writeFileSync(SCOPE_METADATA_SCHEMA_PATH, serialize(buildScopeMetadataSchema()))
+  console.log(
+    `Wrote ${path.relative(REPO_ROOT, ENGRAM_SCHEMA_PATH)}, ` +
+    `${path.relative(REPO_ROOT, PACK_SCHEMA_PATH)}, and ` +
+    `${path.relative(REPO_ROOT, SCOPE_METADATA_SCHEMA_PATH)}`,
+  )
 }
 
 // Only write when run as a CLI, not when imported by the drift test.
