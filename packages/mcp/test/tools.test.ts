@@ -394,6 +394,24 @@ describe('MCP tools', () => {
       expect(check.detail).toContain('seconds')
     })
 
+    it('plur_doctor healthy detail is tier-aware for the tiny reranker (#451)', async () => {
+      // The tiny tier's whole point is ms-scale on the hot path — the healthy
+      // detail must not repeat the bge "seconds-scale is expected" framing.
+      const TINY = 'ms-marco-minilm-l6' as const
+      process.env.PLUR_RERANKER = TINY
+      _setCachedReranker(TINY, {
+        name: TINY,
+        modelId: 'Xenova/ms-marco-MiniLM-L-6-v2',
+        async score(): Promise<number> { return 0.5 },
+        async scoreBatch(_q: string, docs: string[]): Promise<number[]> { return docs.map(() => 0.5) },
+      })
+      const result = await callTool('plur_doctor') as any
+      const check = result.checks.find((c: any) => c.check === 'reranker available')
+      expect(check.ok).toBe(true)
+      expect(check.detail).not.toContain('seconds-scale')
+      expect(check.detail).toContain('ms-scale')
+    })
+
     it('plur_doctor skips the reranker check when PLUR_RERANKER is off', async () => {
       delete process.env.PLUR_RERANKER
       const result = await callTool('plur_doctor') as any
