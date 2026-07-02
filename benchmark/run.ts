@@ -45,6 +45,7 @@ import {
   type EmbedderAdapter,
 } from '../packages/core/src/embedders/index.js'
 import { resetEmbedder } from '../packages/core/src/embeddings.js'
+import { getReranker } from '../packages/core/src/rerankers/index.js'
 
 // ─── ESM-safe __dirname ─────────────────────────────────────────────
 const __filename = fileURLToPath(import.meta.url)
@@ -450,6 +451,32 @@ export async function runBenchmark(opts: RunOptions = {}): Promise<RunOutput> {
   // numbers are RRF-only and the summary must say so — otherwise a silent
   // fallback mislabels RRF results as rerank-on.
   let rerankedQueries = 0
+
+  // ─── Reranker pre-flight (#341) ──────────────────────────────────
+  // Probe the cross-encoder BEFORE the query loop. applyReranker catches
+  // load errors and falls back silently — without this check a broken model
+  // produces a full run labeled "rerank-on" that is actually RRF-only, the
+  // exact mislabeling seen in the Sprint-0 temporal_reasoning investigation
+  // (#434). Throw early with a clear message instead of wasting a full run
+  // on misleading numbers.
+  if (rerankOn) {
+    if (!opts.quiet) process.stdout.write('[reranker] pre-flight probe … ')
+    try {
+      const probeAdapter = getReranker('bge-reranker-v2-m3')
+      await probeAdapter.score('probe', 'probe')
+      if (!opts.quiet) console.log('ready.')
+    } catch (err) {
+      const cause = err instanceof Error ? err.message : String(err)
+      throw new Error(
+        'Reranker pre-flight failed (#341). A --rerank on run with an unavailable\n' +
+        'reranker silently falls back to RRF order and labels results "reranked" —\n' +
+        'misleading benchmark output. Fix the model first, then re-run.\n' +
+        'Or re-run without --rerank to get valid (RRF-only) numbers.\n' +
+        `Cause: ${cause}`,
+      )
+    }
+  }
+
   for (const scenario of scenarios) {
     let retrieved: Array<{ id: string; statement: string }>
     const t0 = process.hrtime.bigint()
