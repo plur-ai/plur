@@ -326,12 +326,28 @@ export class RemoteStore implements EngramStore {
       const text = await r.text().catch(() => '')
       throw new Error(`Remote patch failed: ${r.status} ${text}`)
     }
+    // #327: the server confirmed the write (2xx). Capture the pre-write row
+    // from the cache BEFORE invalidating so the fallback below can merge it.
+    const prev = this.cache?.engrams.find(e => e.id === id) ?? null
     this.cache = null
     // Server returns {engram: {id, scope, status, data: {...}, ...}}; reshape
     // to top-level Engram (same as load() does for rows[]).
     const body = await r.json().catch(() => null) as { engram?: { id: string; scope: string; status: string; data?: any } } | null
-    if (!body?.engram) return null
-    return this.reshape(body.engram)
+    const reshaped = body?.engram ? this.reshape(body.engram) : null
+    if (reshaped) return reshaped
+    // #327: 2xx but the echoed row was missing or failed validation. Returning
+    // null here would be indistinguishable from the 404 above — callers would
+    // misreport a successful write as not-found, or retry it. Return the
+    // optimistically-merged engram (pre-write cached row + the acknowledged
+    // updates); the next load() observes the server's authoritative state.
+    // Only defined update values are applied, mirroring what JSON.stringify
+    // actually sent to the server. Same #408 id sanitization as reshape().
+    const safeId = id.replace(/[^\w:./-]/g, '?').slice(0, 64)
+    logger.warning(`[plur:remote-store] ${this.url} PATCH ${safeId} succeeded but the echoed row was unusable — returning optimistic merge`)
+    const merged: Record<string, unknown> = prev ? { ...(prev as unknown as Record<string, unknown>) } : {}
+    for (const [k, v] of Object.entries(updates)) if (v !== undefined) merged[k] = v
+    merged.id = id
+    return merged as unknown as Engram
   }
 
   async close(): Promise<void> {

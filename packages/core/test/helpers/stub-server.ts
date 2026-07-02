@@ -71,6 +71,10 @@ export class StubServer {
   /** When set, POST /engrams returns this as the assigned id instead of a valid
    *  one — to simulate a buggy/hostile server (e.g. for the #404 id-shape test). */
   badAppendId: unknown = null
+  /** When set, PATCH /engrams/:id still applies the update server-side but
+   *  echoes this value as the {engram: ...} body — to simulate a server whose
+   *  echoed row fails RemoteRowSchema validation (#327). */
+  badPatchEcho: unknown = null
 
   constructor(private readonly validToken: string) {}
 
@@ -132,6 +136,7 @@ export class StubServer {
     this.engrams.clear()
     this.idCounter = 0
     this.badAppendId = null
+    this.badPatchEcho = null
   }
 
   private handleRequest(req: IncomingMessage, res: ServerResponse): void {
@@ -222,6 +227,12 @@ export class StubServer {
           data[k] = v
         }
         engram.updated_at = new Date().toISOString()
+        // #327: optionally echo a malformed row AFTER applying the write, to
+        // simulate "PATCH succeeded but the response fails validation".
+        if (this.badPatchEcho !== null) {
+          this.json(res, 200, { engram: this.badPatchEcho })
+          return
+        }
         // Server returns the patched engram in {engram: ...} envelope so the
         // client can observe the post-write authoritative state.
         this.json(res, 200, { engram: { id: engram.id, scope: engram.scope, status: engram.status, data } })
