@@ -2,7 +2,8 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { mkdtempSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
-import { Plur } from '@plur-ai/core'
+import { Plur, _setCachedReranker, _resetRerankerCache, resetRerankerStatus, rerankerStatus } from '@plur-ai/core'
+import type { RerankerAdapter } from '@plur-ai/core'
 import { getToolDefinitions } from '../src/tools.js'
 
 describe('MCP tools', () => {
@@ -249,6 +250,124 @@ describe('MCP tools', () => {
       const list = await callTool('plur_stores_list', {}) as any
       const engineering = list.stores.filter((s: any) => s.scope === 'group:plur/plur-ai/engineering')
       expect(engineering).toHaveLength(1)
+    })
+  })
+
+  // #341 — reranker non-engagement is silent at runtime. When PLUR_RERANKER
+  // requests reranking but the cross-encoder can't engage (corrupt download,
+  // model unavailable), recall silently degrades to RRF order. These tests
+  // pin the surfacing: a warning on the recall response and a plur_doctor
+  // check with corrupt-vs-unavailable remediation. Fakes are seeded into the
+  // adapter cache so no test touches the real ~300 MB model.
+  describe('reranker non-engagement surfacing (#341)', () => {
+    const BGE = 'bge-reranker-v2-m3' as const
+    const BGE_MODEL_ID = 'onnx-community/bge-reranker-v2-m3-ONNX'
+
+    const failing = (message: string): RerankerAdapter => ({
+      name: BGE,
+      modelId: BGE_MODEL_ID,
+      async score(): Promise<number> { throw new Error(message) },
+      async scoreBatch(): Promise<number[]> { throw new Error(message) },
+    })
+
+    const working = (): RerankerAdapter => ({
+      name: BGE,
+      modelId: BGE_MODEL_ID,
+      async score(): Promise<number> { return 0.5 },
+      async scoreBatch(_q: string, docs: string[]): Promise<number[]> { return docs.map(() => 0.5) },
+    })
+
+    beforeEach(() => {
+      process.env.PLUR_RERANKER = BGE
+      _resetRerankerCache()
+      resetRerankerStatus()
+      plur.learn('The deploy target for staging is cluster-2', { scope: 'global' })
+    })
+    afterEach(() => {
+      delete process.env.PLUR_RERANKER
+      _resetRerankerCache()
+      resetRerankerStatus()
+    })
+
+    it('plur_recall_hybrid warns when reranking is requested but never engages', async () => {
+      _setCachedReranker(BGE, failing('fetch failed: getaddrinfo ENOTFOUND huggingface.co'))
+      const result = await callTool('plur_recall_hybrid', { query: 'deploy target staging' }) as any
+      expect(result.count).toBeGreaterThan(0)   // recall still returns results
+      expect(result.reranked).toBe(0)
+      expect(result.reranker_warning).toContain('RRF-only')
+      expect(result.reranker_warning).toContain('plur_doctor')
+    })
+
+    it('the recall warning flags a corrupt model cache distinctly', async () => {
+      _setCachedReranker(BGE, failing('Protobuf parsing failed.'))
+      const result = await callTool('plur_recall_hybrid', { query: 'deploy target staging' }) as any
+      expect(result.reranker_warning).toContain('corrupt')
+      expect(result.reranker_warning).toContain('Protobuf parsing failed.')
+    })
+
+    it('does not warn when the reranker engages', async () => {
+      _setCachedReranker(BGE, working())
+      const result = await callTool('plur_recall_hybrid', { query: 'deploy target staging' }) as any
+      expect(result.reranked).toBeGreaterThan(0)
+      expect(result.reranker_warning).toBeUndefined()
+    })
+
+    it('omits the reranked field and never warns when PLUR_RERANKER is off', async () => {
+      delete process.env.PLUR_RERANKER
+      const result = await callTool('plur_recall_hybrid', { query: 'deploy target staging' }) as any
+      expect(result.count).toBeGreaterThan(0)
+      expect(result.reranked).toBeUndefined()
+      expect(result.reranker_warning).toBeUndefined()
+    })
+
+    it('plur_doctor reports a corrupt reranker cache with purge remediation', async () => {
+      _setCachedReranker(BGE, failing('Protobuf parsing failed.'))
+      const result = await callTool('plur_doctor') as any
+      const check = result.checks.find((c: any) => c.check === 'reranker available')
+      expect(check).toBeDefined()
+      expect(check.ok).toBe(false)
+      expect(check.detail).toContain('corrupt')
+      expect(check.detail).toContain('RRF-only')
+      const remediation = result.remediation.join('\n')
+      expect(remediation).toContain('models--onnx-community--bge-reranker-v2-m3-ONNX')
+      expect(result.ok).toBe(false)
+    })
+
+    it('plur_doctor reports an unavailable reranker with connectivity remediation', async () => {
+      _setCachedReranker(BGE, failing('fetch failed: getaddrinfo ENOTFOUND huggingface.co'))
+      const result = await callTool('plur_doctor') as any
+      const check = result.checks.find((c: any) => c.check === 'reranker available')
+      expect(check.ok).toBe(false)
+      expect(check.detail).toContain('Failed to load')
+      expect(result.remediation.join('\n')).toContain('huggingface.co')
+    })
+
+    it('plur_doctor reports a healthy reranker when the probe scores', async () => {
+      _setCachedReranker(BGE, working())
+      const result = await callTool('plur_doctor') as any
+      const check = result.checks.find((c: any) => c.check === 'reranker available')
+      expect(check.ok).toBe(true)
+      // #220: seconds-scale per recall on CPU is expected, not a fault — the
+      // healthy detail says so instead of letting users misread the latency.
+      expect(check.detail).toContain('seconds')
+    })
+
+    it('plur_doctor skips the reranker check when PLUR_RERANKER is off', async () => {
+      delete process.env.PLUR_RERANKER
+      const result = await callTool('plur_doctor') as any
+      expect(result.checks.find((c: any) => c.check === 'reranker available')).toBeUndefined()
+    })
+
+    it('plur_doctor retry:true clears recorded reranker failures', async () => {
+      _setCachedReranker(BGE, failing('Protobuf parsing failed.'))
+      await callTool('plur_recall_hybrid', { query: 'deploy target staging' })
+      expect(rerankerStatus().failure_count).toBeGreaterThan(0)
+      // Turn the env off so the doctor probe does not attempt a real model
+      // load after the cache reset — we only assert the state reset here.
+      delete process.env.PLUR_RERANKER
+      await callTool('plur_doctor', { retry: true })
+      expect(rerankerStatus().failure_count).toBe(0)
+      expect(rerankerStatus().lastError).toBeNull()
     })
   })
 

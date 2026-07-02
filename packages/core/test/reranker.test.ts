@@ -31,6 +31,12 @@ import {
   DEFAULT_RERANKER,
   _resetRerankerCache,
   _resetResolveWarnings,
+  classifyRerankerFailure,
+  rerankerStatus,
+  recordRerankerFailure,
+  recordRerankerEngaged,
+  resetRerankerStatus,
+  hfCacheDirName,
   type RerankerAdapter,
   type RerankerName,
 } from '../src/rerankers/index.js'
@@ -131,6 +137,82 @@ describe('resolveRerankerName — env var handling', () => {
   it('trims whitespace', () => {
     const name = resolveRerankerName({ PLUR_RERANKER: '  bge-reranker-v2-m3  ' } as NodeJS.ProcessEnv)
     expect(name).toBe('bge-reranker-v2-m3')
+  })
+})
+
+// #341 — reranker non-engagement must be observable at runtime, not just a
+// per-call logger.warning. The module tracks engaged/failed counts and
+// classifies the last failure (corrupt-cache vs unavailable) so plur_doctor
+// and the MCP recall path can surface it.
+describe('reranker runtime status + failure classification (#341)', () => {
+  beforeEach(() => {
+    resetRerankerStatus()
+  })
+
+  it('classifies corrupt-model failures as corrupt-cache', () => {
+    // The observed #340 shape: a truncated Xet download fails protobuf parsing.
+    expect(classifyRerankerFailure('Protobuf parsing failed.')).toBe('corrupt-cache')
+    expect(classifyRerankerFailure('unexpected end of file while reading model.onnx')).toBe('corrupt-cache')
+    expect(classifyRerankerFailure('model file appears corrupt')).toBe('corrupt-cache')
+    expect(classifyRerankerFailure('Download truncated at 12MB of 300MB')).toBe('corrupt-cache')
+  })
+
+  it('classifies everything else as unavailable', () => {
+    expect(classifyRerankerFailure('fetch failed: getaddrinfo ENOTFOUND huggingface.co')).toBe('unavailable')
+    expect(classifyRerankerFailure('404 Not Found')).toBe('unavailable')
+    expect(classifyRerankerFailure('some novel error')).toBe('unavailable')
+  })
+
+  it('starts clean and records failures with classification', () => {
+    expect(rerankerStatus()).toMatchObject({
+      engaged_count: 0,
+      failure_count: 0,
+      lastError: null,
+      lastErrorKind: null,
+      lastFailedReranker: null,
+    })
+    const rec = recordRerankerFailure('bge-reranker-v2-m3', 'Protobuf parsing failed.')
+    expect(rec.kind).toBe('corrupt-cache')
+    expect(rec.firstFailure).toBe(true)
+    expect(rerankerStatus()).toMatchObject({
+      failure_count: 1,
+      lastError: 'Protobuf parsing failed.',
+      lastErrorKind: 'corrupt-cache',
+      lastFailedReranker: 'bge-reranker-v2-m3',
+    })
+  })
+
+  it('flags repeats of the same message as not-first (loud-once, no per-query flood)', () => {
+    expect(recordRerankerFailure('x', 'same error').firstFailure).toBe(true)
+    expect(recordRerankerFailure('x', 'same error').firstFailure).toBe(false)
+    expect(recordRerankerFailure('x', 'same error').firstFailure).toBe(false)
+    // A different message is news again.
+    expect(recordRerankerFailure('x', 'different error').firstFailure).toBe(true)
+    expect(rerankerStatus().failure_count).toBe(4)
+  })
+
+  it('records engagements', () => {
+    recordRerankerEngaged()
+    recordRerankerEngaged()
+    expect(rerankerStatus().engaged_count).toBe(2)
+  })
+
+  it('resetRerankerStatus clears everything', () => {
+    recordRerankerEngaged()
+    recordRerankerFailure('x', 'boom')
+    resetRerankerStatus()
+    expect(rerankerStatus()).toMatchObject({
+      engaged_count: 0,
+      failure_count: 0,
+      lastError: null,
+      lastErrorKind: null,
+      lastFailedReranker: null,
+    })
+  })
+
+  it('hfCacheDirName maps a model id to its HF hub cache directory (purge target)', () => {
+    expect(hfCacheDirName('onnx-community/bge-reranker-v2-m3-ONNX'))
+      .toBe('models--onnx-community--bge-reranker-v2-m3-ONNX')
   })
 })
 

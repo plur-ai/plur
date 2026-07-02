@@ -1,7 +1,7 @@
 import { existsSync, unlinkSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
-import { Plur, extractMetaEngrams, validateMetaEngram, confidenceBand, generateProfile, getProfileForInjection, markProfileDirty, selectModelForOperation, readHistoryForEngram, getCachedUpdateCheck, minorVersionsBehind, scanForTensions, CapabilityCanary, readProjectConfig, isSharedScope } from '@plur-ai/core'
+import { Plur, extractMetaEngrams, validateMetaEngram, confidenceBand, generateProfile, getProfileForInjection, markProfileDirty, selectModelForOperation, readHistoryForEngram, getCachedUpdateCheck, minorVersionsBehind, scanForTensions, CapabilityCanary, readProjectConfig, isSharedScope, resolveRerankerName, getReranker, classifyRerankerFailure, hfCacheDirName } from '@plur-ai/core'
 import type { LlmFunction, MetaField } from '@plur-ai/core'
 import { recordTelemetry } from './telemetry.js'
 import { VERSION } from './version.js'
@@ -351,6 +351,22 @@ export function getToolDefinitions(): ToolDefinition[] {
         }
         if (meta.mode === 'hybrid-degraded') {
           response.warning = `Embedding layer unavailable — results are BM25-only. Run plur_doctor for diagnosis. Last error: ${meta.embedderError ?? 'unknown'}`
+        }
+        // #341: reranker non-engagement surfacing. When PLUR_RERANKER requests
+        // reranking, report how many candidates the cross-encoder actually
+        // re-scored — and if it never engaged on a non-empty result set, say
+        // so in the response instead of a per-call stderr warning nobody
+        // reads. The caller believes reranking is on; RRF-only results must
+        // not be silently mislabeled.
+        if (resolveRerankerName() !== 'off') {
+          response.reranked = meta.reranked ?? 0
+          const rr = plur.rerankerStatus()
+          if (boundedResults.length > 0 && (meta.reranked ?? 0) === 0 && rr.lastError) {
+            const corruptNote = rr.lastErrorKind === 'corrupt-cache'
+              ? ' The model cache looks corrupt (truncated download) — purge and re-download, see plur_doctor.'
+              : ''
+            response.reranker_warning = `PLUR_RERANKER is set but the reranker did not engage — results are RRF-only (fusion order, no cross-encoder rerank).${corruptNote} Last error: ${rr.lastError}. Run plur_doctor for diagnosis.`
+          }
         }
         return response
       },
@@ -1026,6 +1042,9 @@ export function getToolDefinitions(): ToolDefinition[] {
       handler: async (args, plur) => {
         if (args.retry === true) {
           plur.resetEmbedder()
+          // #341: also reset reranker caches + failure tracker so a purged
+          // corrupt model cache can be re-probed without a process restart.
+          plur.resetReranker()
         }
         const status = plur.status()
         const before = plur.embedderStatus()
@@ -1089,6 +1108,41 @@ export function getToolDefinitions(): ToolDefinition[] {
             '  • Manual fix: from the @plur-ai/core package directory, run a script that imports @huggingface/transformers and calls pipeline() to trigger the download',
             '  • Or opt out: set PLUR_DISABLE_EMBEDDINGS=1, or write `embeddings: { enabled: false }` to ~/.plur/config.yaml — hybrid search will run BM25-only',
           )
+        }
+        // Reranker health (#341) — only when PLUR_RERANKER opts in; off (the
+        // default) is healthy silence, not a check. The probe scores one pair
+        // through the real adapter: per #220 that is seconds-scale on CPU
+        // (plus a one-time model download on first run), which is acceptable
+        // for an explicit doctor run and the only way to catch a corrupt
+        // cache before recall silently degrades to RRF order.
+        const rerankerName = resolveRerankerName()
+        if (rerankerName !== 'off') {
+          const adapter = getReranker(rerankerName)
+          let rerankerOk = false
+          let rerankerDetail: string
+          const probeStart = Date.now()
+          try {
+            const scores = await adapter.scoreBatch('plur doctor probe', ['probe document'])
+            rerankerOk = scores.length === 1 && Number.isFinite(scores[0])
+            rerankerDetail = rerankerOk
+              ? `${rerankerName} loaded and scoring (probe ${Date.now() - probeStart}ms; seconds-scale per recall on CPU is expected — #220)`
+              : `Probe returned malformed scores (${JSON.stringify(scores)}) — recall silently falls back to RRF-only`
+          } catch (err) {
+            const message = (err as Error).message
+            const kind = classifyRerankerFailure(message)
+            if (kind === 'corrupt-cache') {
+              rerankerDetail = `Model cache looks corrupt (${message}) — recall silently falls back to RRF-only`
+              remediation.push(
+                `Reranker model cache is corrupt — the classic symptom of a truncated download (#340). Delete ~/.cache/huggingface/hub/${hfCacheDirName(adapter.modelId)}/ and run plur_doctor with retry:true — the model will redownload via the classic (non-Xet) path.`,
+              )
+            } else {
+              rerankerDetail = `Failed to load: ${message} — recall silently falls back to RRF-only`
+              remediation.push(
+                `Reranker "${rerankerName}" is unavailable while PLUR_RERANKER requests it — recall degrades to RRF order without it. Check connectivity to huggingface.co (first-run download), or unset PLUR_RERANKER to opt out deliberately.`,
+              )
+            }
+          }
+          checks.push({ check: 'reranker available', ok: rerankerOk, detail: rerankerDetail })
         }
         const canaryStatuses = mcpCanary.status()
         for (const cs of canaryStatuses) {

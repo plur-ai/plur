@@ -15,7 +15,8 @@ import { captureEpisode, queryTimeline } from './episodes.js'
 import { agenticSearch } from './agentic-search.js'
 import { embeddingSearch, embeddingSearchWithScores, type SimilarityResult } from './embeddings.js'
 import { hybridSearch, hybridSearchWithMeta, applyReranker, rrfMergeEngrams as pgliteRrfMerge, type HybridSearchResult, type RerankOptions } from './hybrid-search.js'
-import { getReranker, resolveRerankerName, isRerankerOff, type RerankerAdapter } from './rerankers/index.js'
+import { getReranker, resolveRerankerName, isRerankerOff, rerankerStatus, resetRerankerStatus, _resetRerankerCache, type RerankerAdapter, type RerankerRuntimeStatus } from './rerankers/index.js'
+import { _resetBgeRerankerCache } from './rerankers/bge-reranker-v2-m3.js'
 import { classifyQuery, routeForIntent, applyIntentRouting, isIntentRoutingDisabled, isEntityDomain, type QueryIntent, type IntentRoutingProfile } from './intent/index.js'
 import { getEmbedder, resolveEmbedderName } from './embedders/index.js'
 import { emitMissSignal } from './telemetry-miss-signal.js'
@@ -98,6 +99,17 @@ export { withAsyncLock, asyncAtomicWrite } from './store/index.js'
 // for any consumer that persists vectors. See embeddings.ts.
 export { embed, EMBED_DIM, activeEmbedderDim, embedderStatus, cosineSimilarity, type EmbedderStatus } from './embeddings.js'
 export { EMBEDDER_NAMES, DEFAULT_EMBEDDER, resolveEmbedderName, type EmbedderName, type EmbedderAdapter } from './embedders/index.js'
+// Reranker surface (#220/#341) — factory + runtime status so MCP/CLI can
+// probe reranker health (plur_doctor) and surface non-engagement on recall.
+// _setCachedReranker/_resetRerankerCache are test seams for exercising
+// failure paths without downloading the real ~300 MB model.
+export {
+  getReranker, isRerankerOff, resolveRerankerName, RERANKER_NAMES, DEFAULT_RERANKER,
+  rerankerStatus, resetRerankerStatus, classifyRerankerFailure, hfCacheDirName,
+  _resetRerankerCache, _setCachedReranker,
+  type RerankerName, type RerankerRuntimeStatus, type RerankerFailureKind,
+} from './rerankers/index.js'
+export type { RerankerAdapter } from './rerankers/types.js'
 export type { SimilarityResult } from './embeddings.js'
 export type { SyncResult, SyncStatus } from './sync.js'
 export { checkForUpdate, getCachedUpdateCheck, clearVersionCache, minorVersionsBehind, type VersionCheckResult } from './version-check.js'
@@ -1924,6 +1936,27 @@ export class Plur {
   /** Reset cached embedder failure state — next call will retry the model load. */
   resetEmbedder(): void {
     resetEmbedder()
+  }
+
+  /**
+   * Inspect reranker runtime state (#341) — engaged/failed counters and the
+   * last failure with its classification (corrupt-cache vs unavailable).
+   * Lets doctor/recall surface "reranking requested but not happening".
+   */
+  rerankerStatus(): RerankerRuntimeStatus {
+    return rerankerStatus()
+  }
+
+  /**
+   * Reset cached reranker state (#341) — adapter cache, load-pipeline cache,
+   * and the runtime failure tracker. The next rerank call retries the model
+   * load from scratch (e.g. after purging a corrupt HF cache).
+   */
+  resetReranker(): void {
+    _resetRerankerCache()
+    _resetBgeRerankerCache()
+    resetRerankerStatus()
+    this._reranker = null
   }
 
   /** Embedding search returning {engram, score}[] with cosine similarity scores. Async, no API calls. */
