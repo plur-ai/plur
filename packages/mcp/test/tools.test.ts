@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeAll, beforeEach, afterEach } from 'vitest'
 import { mkdtempSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
@@ -10,6 +10,23 @@ describe('MCP tools', () => {
   let plur: Plur
   let dir: string
   let tools: ReturnType<typeof getToolDefinitions>
+
+  // #469: the first hybrid recall in a fresh process pays the cold ONNX
+  // embedder load synchronously (learn() embeds in the background, so it
+  // doesn't count as a warm-up) — on CI runners that alone can blow vitest's
+  // 5s default and fail whichever recall-shaped test runs first. Warm the
+  // query-embedding path once, with a hook timeout sized for a cold cache,
+  // so individual tests measure logic, not model load.
+  beforeAll(async () => {
+    const warmDir = mkdtempSync(join(tmpdir(), 'plur-mcp-warm-'))
+    try {
+      const warm = new Plur({ path: warmDir })
+      warm.learn('embedder warm-up', { scope: 'global' })
+      await warm.recallHybrid('embedder warm-up')
+    } finally {
+      rmSync(warmDir, { recursive: true, force: true })
+    }
+  }, 120_000)
 
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), 'plur-mcp-'))
