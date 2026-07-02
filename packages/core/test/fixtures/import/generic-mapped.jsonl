@@ -1,0 +1,2 @@
+{"text":"Deploy target is fly.io","kind":"decision","meta":{"area":"infra.deploy","when":"2025-08-15T09:30:00Z"},"labels":["deploy"],"score":0.8}
+{"text":"Never commit .env files to the repository","kind":"policy","meta":{"area":"security"},"labels":["git","hygiene"]}

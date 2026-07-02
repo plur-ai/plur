@@ -26,6 +26,10 @@ Commands:
   list                    List all engrams
   forget <id>             Retire an engram
   ingest <content>        Extract and save engrams from content
+  import                  Import memories from another system (issue #441)
+                          --from <generic|gp-engram|mem0> --path <input-file>
+                          [--dry-run] [--scope <s>] [--mapping <f>] [--store <dir>]
+                          (for import, --path is the INPUT file; --store overrides storage)
   feedback <id> <signal>  Rate an engram (positive|negative|neutral)
   capture <summary>       Record an episode
   timeline [query]        Query episode timeline
@@ -81,6 +85,7 @@ const COMMANDS: Record<string, string> = {
   sync: './commands/sync.js',
   packs: './commands/packs.js',
   ingest: './commands/ingest.js',
+  import: './commands/import.js',
   promote: './commands/promote.js',
   'similarity-search': './commands/similarity-search.js',
   'batch-decay': './commands/batch-decay.js',

@@ -59,8 +59,43 @@ plur forget ENG-2026-0329-001
 | `plur sync` | Cross-device sync via git (engram data only — secrets and derived files are never committed) |
 | `plur packs list` | List installed engram packs |
 | `plur packs install <source>` | Install an engram pack |
+| `plur import --from <source> --path <file>` | Import memories from another system (see below) |
 | `plur init` | Install Claude Code hooks + local hook binary for automatic injection |
 | `plur doctor` | Diagnose installation health (hooks, MCP, shim, embedder) |
+
+## Importing from other memory systems
+
+Bring existing memory with you — `plur import` migrates competitor exports
+into engrams, routed through the same dedup gates as `plur learn` (duplicates
+are skipped, never re-added), and prints a migration report: N imported,
+M skipped (dedup), K conflicts.
+
+```bash
+# Gentleman-Programming/engram (Go + SQLite memory tool)
+plur import --from gp-engram --path ~/.engram/engram.db
+
+# mem0 JSON export (Memory.get_all() shape)
+plur import --from mem0 --path ./memories.json
+
+# Any JSON / JSONL / CSV export, optionally with a field-mapping config
+plur import --from generic --path ./export.csv
+plur import --from generic --path ./export.json --mapping ./mapping.json
+
+# Preview without writing
+plur import --from mem0 --path ./memories.json --dry-run
+```
+
+Flags: `--dry-run` (report only), `--scope <scope>` (force a scope for all
+imported engrams), `--mapping <file>` (generic only: `{"fields": {"statement":
+"text", "domain": "meta.area"}, "defaults": {...}}` with dot-path support).
+
+> Note: for `import`, `--path` is the **input file** (per the issue spec);
+> use `--store <dir>` to override the storage directory instead.
+
+Temporal metadata is preserved where the source has it (`created_at` →
+`temporal.learned_at`, last access → `activation.last_accessed`, expiry →
+`temporal.valid_until`). Zep and Letta adapters are registered but stubbed —
+export to JSON and use `--from generic` in the meantime.
 
 ## Global Flags
 

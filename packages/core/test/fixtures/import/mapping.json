@@ -1,0 +1,13 @@
+{
+  "fields": {
+    "statement": "text",
+    "type": "kind",
+    "domain": "meta.area",
+    "created_at": "meta.when",
+    "tags": "labels",
+    "confidence": "score"
+  },
+  "defaults": {
+    "scope": "project:demo"
+  }
+}

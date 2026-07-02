@@ -1,0 +1,28 @@
+{
+  "results": [
+    {
+      "id": "a1b2c3d4-0001",
+      "memory": "User prefers dark mode in all editors",
+      "hash": "d41d8cd98f00b204",
+      "created_at": "2025-09-14T12:00:00.000000-07:00",
+      "updated_at": "2025-10-01T08:30:00.000000-07:00",
+      "user_id": "alice",
+      "metadata": { "surface": "settings" },
+      "categories": ["preferences", "ui"]
+    },
+    {
+      "id": "a1b2c3d4-0002",
+      "memory": "The team ships releases on Fridays",
+      "created_at": "2025-09-20T12:00:00Z",
+      "agent_id": "scheduler",
+      "expiration_date": "2026-06-30"
+    },
+    {
+      "id": "a1b2c3d4-0003",
+      "memory": "Vegetarian, avoids peanuts",
+      "user_id": "alice",
+      "run_id": "trip-planning-042"
+    }
+  ],
+  "relations": []
+}

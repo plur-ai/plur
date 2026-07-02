@@ -116,6 +116,15 @@ export type { SimilarityResult } from './embeddings.js'
 export type { SyncResult, SyncStatus } from './sync.js'
 export { checkForUpdate, getCachedUpdateCheck, clearVersionCache, minorVersionsBehind, type VersionCheckResult } from './version-check.js'
 export { scanForTensions, getCandidatePairs, scopesOverlap, domainSegmentsOverlap, subjectsOverlap, statementOverlap, buildContradictionPrompt, parseContradictionResponse, buildBatchContradictionPrompt, parseBatchContradictionResponse, type ContradictionVerdict, type TensionPair, type TensionScanResult } from './tensions.js'
+// Migration importers (issue #441) — `plur import --from <source> --path <file>`.
+export {
+  importFrom, runImport, getImportSource, listImportSources, IMPORT_SOURCES,
+  parseGenericContent, parseCsv, parseMem0Content, parseGpEngramDb,
+  normalizeImportType, normalizeTimestamp, normalizeConfidence, normalizeTags,
+  type ImportRecord, type ImportSource, type ImportInput, type ImportEngramType,
+  type FieldMapping, type MappableField, type ImportRecordResult, type MigrationReport,
+  type RunImportOptions, type ImportFromOptions,
+} from './importers/index.js'
 export { CapabilityCanary, type Capability, type CanaryStatus } from './capability-canary.js'
 export type { Engram, PreviousVersionRef } from './schemas/engram.js'
 export type { Episode } from './schemas/episode.js'
@@ -2066,12 +2075,12 @@ export class Plur {
   }
 
   /** List all active engrams, optionally filtered by scope/domain. No search — returns all matches. */
-  list(options?: { scope?: string; domain?: string; min_strength?: number }): Engram[] {
+  list(options?: { scope?: string; domain?: string; min_strength?: number; include_expired?: boolean }): Engram[] {
     return this._filterEngrams(options)
   }
 
   /** Filter engrams by scope/domain/strength (shared by both modes) */
-  private _filterEngrams(options?: RecallOptions): Engram[] {
+  private _filterEngrams(options?: RecallOptions & { include_expired?: boolean }): Engram[] {
     let engrams: Engram[]
     if (this.indexedStorage) {
       engrams = this.indexedStorage.loadFiltered({
@@ -2106,13 +2115,18 @@ export class Plur {
         )
       }
     }
-    // Temporal validity: exclude expired or not-yet-valid engrams
-    const today = new Date().toISOString().slice(0, 10)
-    engrams = engrams.filter(e => {
-      if (e.temporal?.valid_until && e.temporal.valid_until < today) return false
-      if (e.temporal?.valid_from && e.temporal.valid_from > today) return false
-      return true
-    })
+    // Temporal validity: exclude expired or not-yet-valid engrams.
+    // `include_expired` opts out — callers that need dedup-identity parity
+    // with learn()'s content-hash gate (which ignores temporal validity,
+    // e.g. the migration import engine, #441) must see the full active set.
+    if (!options?.include_expired) {
+      const today = new Date().toISOString().slice(0, 10)
+      engrams = engrams.filter(e => {
+        if (e.temporal?.valid_until && e.temporal.valid_until < today) return false
+        if (e.temporal?.valid_from && e.temporal.valid_from > today) return false
+        return true
+      })
+    }
     if (options?.min_strength !== undefined) {
       engrams = engrams.filter(e => e.activation.retrieval_strength >= options.min_strength!)
     }
