@@ -155,7 +155,32 @@ function jsonSchemaPropToZod(prop: any): z.ZodTypeAny {
   if (prop.type === 'boolean') return z.boolean()
   if (prop.type === 'array') {
     const itemSchema = prop.items ? jsonSchemaPropToZod(prop.items) : z.unknown()
-    return z.array(itemSchema)
+    // #297 defense: some MCP clients mis-serialize array-typed arguments (in
+    // the worst case dropping the ENTIRE arguments payload). The documented
+    // workarounds pass arrays as strings — coerce those back into real arrays
+    // so the workaround round-trips instead of failing validation:
+    //   '["a","b"]'  → JSON parse → ['a','b']   (any item type)
+    //   'a, b'       → comma split → ['a','b']  (string items only)
+    //   'solo'       → wrap        → ['solo']   (string items only)
+    // A string that LOOKS like JSON ('[...') but fails to parse is passed
+    // through unchanged so z.array rejects it loudly, naming the field —
+    // never silently reinterpreted as a single tag.
+    return z.preprocess((val) => {
+      if (typeof val !== 'string') return val
+      const trimmed = val.trim()
+      if (trimmed.startsWith('[')) {
+        try {
+          const parsed = JSON.parse(trimmed)
+          return Array.isArray(parsed) ? parsed : val
+        } catch {
+          return val
+        }
+      }
+      if (prop.items?.type === 'string') {
+        return trimmed.length === 0 ? [] : trimmed.split(',').map(s => s.trim()).filter(s => s.length > 0)
+      }
+      return val
+    }, z.array(itemSchema))
   }
   if (prop.type === 'object' && prop.properties) {
     const shape: Record<string, z.ZodTypeAny> = {}
@@ -217,7 +242,7 @@ export async function createServer(plur?: Plur): Promise<Server> {
     mcpCanary.tick()
     try {
       // Validate arguments against input schema
-      const args = request.params.arguments ?? {}
+      let args = request.params.arguments ?? {}
       const schema = tool.inputSchema as any
       if (schema?.properties) {
         const shape: Record<string, z.ZodTypeAny> = {}
@@ -235,17 +260,35 @@ export async function createServer(plur?: Plur): Promise<Server> {
           const receivedNote = receivedFields.length > 0
             ? `Received fields: [${receivedFields.join(', ')}].`
             : 'Received no fields (the arguments object was empty).'
+          // #297: an empty payload on a tool that declares array-typed params is
+          // the signature of a known client-side serialization bug — the client
+          // drops the ENTIRE arguments object when an array value is present.
+          // Name the bug and the coercible retry shapes so the caller can
+          // self-correct instead of abandoning the write.
+          const hasArrayParam = Object.values(schema.properties as Record<string, any>)
+            .some(p => p?.type === 'array')
+          const arrayBugHint = receivedFields.length === 0 && hasArrayParam
+            ? ' Known client-side bug (plur-ai/plur#297): some MCP clients drop the entire arguments payload ' +
+              'when an array-typed parameter is included. Retry passing array parameters as a JSON string ' +
+              '(e.g. tags: "[\\"a\\",\\"b\\"]") or a comma-separated string (tags: "a, b") — the server coerces ' +
+              'both back into arrays.'
+            : ''
           return {
             content: [{ type: 'text', text: JSON.stringify({
               error: `Invalid arguments: ${details}. ${receivedNote} ` +
                 'The call reached the server — this is a malformed-arguments error, not a transport failure. ' +
-                'Fix the field(s) named above and retry; do not abandon the call.',
+                'Fix the field(s) named above and retry; do not abandon the call.' + arrayBugHint,
               success: false,
               received_fields: receivedFields,
             }) }],
             isError: true,
           }
         }
+        // Hand the handler the VALIDATED data, not the raw payload — this is
+        // what applies the #297 string→array coercion (and any future
+        // preprocessing) to the values handlers actually see. .passthrough()
+        // above keeps fields outside the declared schema intact.
+        args = parsed.data as Record<string, unknown>
       }
       const result = await tool.handler(args, instance)
       return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] }
