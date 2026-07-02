@@ -95,6 +95,35 @@ export const EmbeddingsConfigSchema = z.object({
 
 export type EmbeddingsConfigYaml = z.infer<typeof EmbeddingsConfigSchema>
 
+/**
+ * Vector-column configuration for the PGLite/pgvector index (#223).
+ *
+ * `precision` selects the pgvector storage type for the embedding column:
+ *   - `float32` — pgvector `vector(N)`, 4 bytes/dim (the historical layout)
+ *   - `halfvec` — pgvector `halfvec(N)`, 2 bytes/dim (~50% smaller,
+ *     -0.2 to -0.5pp recall). Requires pgvector >= 0.7; PGLite 0.4.x bundles
+ *     0.8.1, verified working in the WASM build. Note: in PGLite (WASM, no
+ *     F16C) halfvec exact scans cost ~3-10x more CPU than float32 — pick it
+ *     for storage-constrained stores, not for speed.
+ *
+ * When UNSET, the adapter keeps whatever the existing store already uses
+ * (float32 for new stores) — omitting the knob never migrates a store.
+ * Setting it migrates lazily on next init via an atomic in-place
+ * `ALTER TABLE ... USING embedding::<type>(N)` cast (no re-embed needed);
+ * `plur sync --full` drops and rebuilds the derived index from YAML at the
+ * configured precision per ADR-0001's rebuildability invariant.
+ *
+ * int8 scalar and binary quantization are deferred: pgvector has no int8
+ * vector column type (its types are vector/halfvec/sparsevec/bit), and
+ * binary-quantized retrieval only makes sense paired with the #220
+ * cross-encoder rerank pass.
+ */
+export const VectorConfigSchema = z.object({
+  precision: z.enum(['float32', 'halfvec']),
+}).partial()
+
+export type VectorConfigYaml = z.infer<typeof VectorConfigSchema>
+
 export const PlurConfigSchema = z.object({
   auto_learn: z.boolean().default(true),
   auto_capture: z.boolean().default(true),
@@ -134,6 +163,7 @@ export const PlurConfigSchema = z.object({
   backend: z.enum(['sqlite', 'pglite']).default('sqlite'),
   storage: StorageConfigSchema.default({}),
   embeddings: EmbeddingsConfigSchema.default({}),
+  vector: VectorConfigSchema.default({}),
   stores: z.array(StoreEntrySchema).default([]),
   llm: LlmTierConfigSchema.default({}),
   profile: ProfileConfigSchema.default({}),
