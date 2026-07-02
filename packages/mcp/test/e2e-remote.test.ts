@@ -13,7 +13,7 @@
  * See: https://github.com/plur-ai/plur/issues/82
  */
 
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest'
 import { mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
@@ -21,7 +21,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
 import { Plur } from '@plur-ai/core'
 import { createServer } from '../src/server.js'
-import { StubServer } from './helpers/stub-server.js'
+import { StubServer } from '../../core/test/helpers/stub-server.js'
 
 async function waitForStubEngrams(stub: StubServer, count: number, timeoutMs = 2000): Promise<void> {
   const deadline = Date.now() + timeoutMs
@@ -88,6 +88,10 @@ beforeEach(() => {
   )
 })
 
+afterEach(() => {
+  rmSync(dir, { recursive: true, force: true })
+})
+
 // ---------------------------------------------------------------------------
 // plur_learn routing
 // ---------------------------------------------------------------------------
@@ -143,6 +147,10 @@ describe('MCP plur_learn routing', () => {
 
 // ---------------------------------------------------------------------------
 // plur_forget routing
+//
+// forget() originally didn't route to remote stores (#84, fixed in PR #97;
+// same class as feedback #85). These assert the fixed behavior — if remote
+// routing regresses, they fail.
 // ---------------------------------------------------------------------------
 
 describe('MCP plur_forget routing', () => {
