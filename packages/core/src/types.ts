@@ -103,6 +103,10 @@ export interface RecallOptions {
    *     bge-reranker-v2-m3 if PLUR_RERANKER is unset/off).
    *   - `false` → skip the rerank stage even if PLUR_RERANKER is set.
    *   - omitted → respect PLUR_RERANKER (default off → zero cost).
+   *
+   * Two reranker tiers exist (#451): `ms-marco-minilm-l6` (tiny, ~ms-scale
+   * on CPU — hot-path candidate) and `bge-reranker-v2-m3` (quality,
+   * seconds-scale on CPU — offline/batch). Select via PLUR_RERANKER.
    */
   rerank?: boolean
 }

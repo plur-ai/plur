@@ -17,6 +17,7 @@ import { embeddingSearch, embeddingSearchWithScores, type SimilarityResult } fro
 import { hybridSearch, hybridSearchWithMeta, applyReranker, rrfMergeEngrams as pgliteRrfMerge, type HybridSearchResult, type RerankOptions } from './hybrid-search.js'
 import { getReranker, resolveRerankerName, isRerankerOff, rerankerStatus, resetRerankerStatus, _resetRerankerCache, type RerankerAdapter, type RerankerRuntimeStatus } from './rerankers/index.js'
 import { _resetBgeRerankerCache } from './rerankers/bge-reranker-v2-m3.js'
+import { _resetMsMarcoMiniLmCache } from './rerankers/ms-marco-minilm-l6.js'
 import { classifyQuery, routeForIntent, applyIntentRouting, isIntentRoutingDisabled, isEntityDomain, type QueryIntent, type IntentRoutingProfile } from './intent/index.js'
 import { getEmbedder, resolveEmbedderName } from './embedders/index.js'
 import { emitMissSignal } from './telemetry-miss-signal.js'
@@ -2018,6 +2019,7 @@ export class Plur {
   resetReranker(): void {
     _resetRerankerCache()
     _resetBgeRerankerCache()
+    _resetMsMarcoMiniLmCache()
     resetRerankerStatus()
     this._reranker = null
   }

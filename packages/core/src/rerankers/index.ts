@@ -21,12 +21,21 @@
  */
 import { logger } from '../logger.js'
 import { makeBgeRerankerV2M3Adapter } from './bge-reranker-v2-m3.js'
+import { makeMsMarcoMiniLmL6Adapter } from './ms-marco-minilm-l6.js'
 import type { RerankerAdapter } from './types.js'
 
 export type { RerankerAdapter } from './types.js'
 
-/** All reranker names supported by the factory. */
-export const RERANKER_NAMES = ['bge-reranker-v2-m3', 'off'] as const
+/**
+ * All reranker names supported by the factory.
+ *
+ * Two tiers (#451):
+ *   - bge-reranker-v2-m3  quality tier — 568M multilingual, seconds/query on
+ *     CPU. For offline/batch pipelines where quality dominates.
+ *   - ms-marco-minilm-l6  tiny tier — 22.7M English cross-encoder, tens of
+ *     ms/query on CPU. The hot-path candidate.
+ */
+export const RERANKER_NAMES = ['bge-reranker-v2-m3', 'ms-marco-minilm-l6', 'off'] as const
 export type RerankerName = typeof RERANKER_NAMES[number]
 
 /**
@@ -188,8 +197,9 @@ export function getReranker(name?: RerankerName): RerankerAdapter {
 
 function build(name: RerankerName): RerankerAdapter {
   switch (name) {
-    case 'bge-reranker-v2-m3': return makeBgeRerankerV2M3Adapter()
-    case 'off':                return OFF_ADAPTER
+    case 'bge-reranker-v2-m3':  return makeBgeRerankerV2M3Adapter()
+    case 'ms-marco-minilm-l6':  return makeMsMarcoMiniLmL6Adapter()
+    case 'off':                 return OFF_ADAPTER
     default: {
       const _exhaustive: never = name
       throw new Error(`Unhandled reranker name: ${String(_exhaustive)}`)

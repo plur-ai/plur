@@ -41,13 +41,15 @@ import {
   type RerankerName,
 } from '../src/rerankers/index.js'
 import { BGE_RERANKER_V2_M3_MODEL_ID } from '../src/rerankers/bge-reranker-v2-m3.js'
+import { MS_MARCO_MINILM_L6_MODEL_ID } from '../src/rerankers/ms-marco-minilm-l6.js'
 
 const NETWORK = process.env.PLUR_RERANKER_NETWORK_TESTS === '1'
 
 /** Expected metadata per adapter — checked even when the network is offline. */
 const EXPECTED: Record<RerankerName, { modelId: string }> = {
-  'bge-reranker-v2-m3': { modelId: BGE_RERANKER_V2_M3_MODEL_ID },
-  'off':                { modelId: '<off>' },
+  'bge-reranker-v2-m3':  { modelId: BGE_RERANKER_V2_M3_MODEL_ID },
+  'ms-marco-minilm-l6':  { modelId: MS_MARCO_MINILM_L6_MODEL_ID },
+  'off':                 { modelId: '<off>' },
 }
 
 describe('RerankerAdapter factory — metadata contract', () => {
@@ -56,8 +58,8 @@ describe('RerankerAdapter factory — metadata contract', () => {
     _resetResolveWarnings()
   })
 
-  it('exports the two expected names', () => {
-    expect([...RERANKER_NAMES].sort()).toEqual(['bge-reranker-v2-m3', 'off'])
+  it('exports the three expected names', () => {
+    expect([...RERANKER_NAMES].sort()).toEqual(['bge-reranker-v2-m3', 'ms-marco-minilm-l6', 'off'])
   })
 
   it('defaults to off — opt-in posture', () => {
@@ -96,6 +98,11 @@ describe('the "off" sentinel', () => {
     expect(isRerankerOff(real)).toBe(false)
   })
 
+  it('isRerankerOff returns false for the ms-marco tiny-tier adapter', () => {
+    const real = getReranker('ms-marco-minilm-l6')
+    expect(isRerankerOff(real)).toBe(false)
+  })
+
   it('off.scoreBatch returns one zero per document, preserving order semantics', async () => {
     const off = getReranker('off')
     const out = await off.scoreBatch('q', ['a', 'b', 'c'])
@@ -122,6 +129,11 @@ describe('resolveRerankerName — env var handling', () => {
   it('respects a recognised PLUR_RERANKER value', () => {
     const name = resolveRerankerName({ PLUR_RERANKER: 'bge-reranker-v2-m3' } as NodeJS.ProcessEnv)
     expect(name).toBe('bge-reranker-v2-m3')
+  })
+
+  it('respects the tiny-tier name (#451)', () => {
+    const name = resolveRerankerName({ PLUR_RERANKER: 'ms-marco-minilm-l6' } as NodeJS.ProcessEnv)
+    expect(name).toBe('ms-marco-minilm-l6')
   })
 
   it('respects "off" explicitly', () => {
@@ -243,6 +255,43 @@ describe.skipIf(!NETWORK)(
       // The matching document should score highest.
       const top = scores.indexOf(Math.max(...scores))
       expect(top).toBe(0)
+    }, LIVE_TIMEOUT)
+  },
+)
+
+describe.skipIf(!NETWORK)(
+  'ms-marco tiny-tier reranker — live model (PLUR_RERANKER_NETWORK_TESTS=1)',
+  () => {
+    // The tiny tier is ~23 MB quantized — loads far faster than bge, but the
+    // first call may still download, so keep a generous timeout.
+    const LIVE_TIMEOUT = 180_000
+    let adapter: RerankerAdapter
+
+    beforeEach(() => {
+      adapter = getReranker('ms-marco-minilm-l6')
+    })
+
+    it('score returns a finite number', async () => {
+      const s = await adapter.score('what is the capital of France?', 'Paris is the capital of France.')
+      expect(Number.isFinite(s)).toBe(true)
+    }, LIVE_TIMEOUT)
+
+    it('scoreBatch returns one score per document, in input order', async () => {
+      const docs = [
+        'Paris is the capital of France.',
+        'Tokyo is the capital of Japan.',
+        'My cat is named Whiskers.',
+      ]
+      const scores = await adapter.scoreBatch('what is the capital of France?', docs)
+      expect(scores.length).toBe(docs.length)
+      // The matching document should score highest.
+      const top = scores.indexOf(Math.max(...scores))
+      expect(top).toBe(0)
+    }, LIVE_TIMEOUT)
+
+    it('scoreBatch on empty array returns empty array without loading trouble', async () => {
+      const out = await adapter.scoreBatch('q', [])
+      expect(out).toEqual([])
     }, LIVE_TIMEOUT)
   },
 )

@@ -1156,8 +1156,15 @@ export function getToolDefinitions(): ToolDefinition[] {
           try {
             const scores = await adapter.scoreBatch('plur doctor probe', ['probe document'])
             rerankerOk = scores.length === 1 && Number.isFinite(scores[0])
+            // Tier-aware latency framing (#451): the bge quality tier is
+            // seconds-scale per recall on CPU (#220); the ms-marco tiny tier
+            // is ms-scale — telling tiny-tier users to expect seconds would
+            // mask a real fault.
+            const latencyNote = rerankerName === 'bge-reranker-v2-m3'
+              ? 'seconds-scale per recall on CPU is expected — #220'
+              : 'ms-scale per recall on CPU is expected — #451'
             rerankerDetail = rerankerOk
-              ? `${rerankerName} loaded and scoring (probe ${Date.now() - probeStart}ms; seconds-scale per recall on CPU is expected — #220)`
+              ? `${rerankerName} loaded and scoring (probe ${Date.now() - probeStart}ms; ${latencyNote})`
               : `Probe returned malformed scores (${JSON.stringify(scores)}) — recall silently falls back to RRF-only`
           } catch (err) {
             const message = (err as Error).message
