@@ -15,11 +15,23 @@
  *   npx tsx benchmark/run.ts --seed 1337                    # reproducible sampling
  *   npx tsx benchmark/run.ts --output /tmp/results          # override output dir
  *   npx tsx benchmark/run.ts --corpus fixture|longmemeval-s|longmemeval-s-smoke
+ *   npx tsx benchmark/run.ts --data-dir /path/to/fixtures   # override corpus dir
+ *
+ * Data & results locations (#336 — fixtures/results live in plur-bench, not here):
+ *   Corpus files resolve in this order (first hit wins):
+ *     1. --data-dir flag / RunOptions.dataDir
+ *     2. PLUR_BENCH_DATA_DIR env var
+ *     3. repo-local benchmark/data/<file> (gitignored; dev convenience)
+ *     4. a plur-bench checkout: $PLUR_BENCH_REPO/corpus/monorepo/<file>, then
+ *        $PLUR_BENCH_REPO/corpus/<file>. PLUR_BENCH_REPO defaults to the
+ *        sibling checkout ../plur-bench.
+ *   Results go to --output / RunOptions.outputDir, else PLUR_BENCH_RESULTS_DIR,
+ *   else repo-local benchmark/results/ (gitignored).
  *
  * Corpus selection:
  *   --corpus fixture            (default) the 30-scenario hand-curated set
- *                               in benchmark/data/scenarios.yaml. Backward
- *                               compatible — existing pipelines unaffected.
+ *                               (scenarios.yaml — see resolution order above).
+ *                               Backward compatible — existing pipelines unaffected.
  *   --corpus longmemeval-s      The full official LongMemEval-S (500 questions,
  *                               Wu et al 2024). Loads longmemeval-s.yaml — must
  *                               be generated first via:
@@ -129,6 +141,13 @@ export interface RunOptions {
    * already has engrams. Useful when the corpus or scenario set changed.
    */
   forceIngest?: boolean
+  /**
+   * Directory containing the corpus YAML files (#336). When set, corpus files
+   * are read from here exclusively — no fallback. When unset, resolution is:
+   * PLUR_BENCH_DATA_DIR env var → repo-local benchmark/data/ → a plur-bench
+   * checkout ($PLUR_BENCH_REPO, default ../plur-bench sibling).
+   */
+  dataDir?: string
 }
 
 export interface RunOutput {
@@ -183,12 +202,48 @@ export interface BenchmarkSummary {
 
 // ─── Loaders ────────────────────────────────────────────────────────
 
-export function loadScenarios(filterCategory?: string, corpus: CorpusName = 'fixture'): Scenario[] {
+/**
+ * Resolve a corpus file to an absolute path (#336).
+ *
+ * Since #336 the benchmark fixtures live in the plur-bench repo, not this
+ * code repo — benchmark/data/ is gitignored and empty in a fresh clone.
+ * Resolution order (first existing hit wins):
+ *   1. `dataDir` argument (--data-dir / RunOptions.dataDir) — exclusive: when
+ *      set, the file must be there (no fallback), so misconfigurations fail
+ *      loudly instead of silently reading a different corpus.
+ *   2. PLUR_BENCH_DATA_DIR env var — exclusive, same reasoning.
+ *   3. Repo-local benchmark/data/<file> — dev convenience for generated or
+ *      hand-copied fixtures.
+ *   4. A plur-bench checkout: $PLUR_BENCH_REPO/corpus/monorepo/<file>, then
+ *      $PLUR_BENCH_REPO/corpus/<file> (where plur-bench keeps its generated
+ *      corpora). PLUR_BENCH_REPO defaults to the sibling ../plur-bench.
+ *
+ * When nothing exists, returns the repo-local path so the caller's error
+ * message points at the canonical location.
+ */
+export function resolveCorpusPath(file: string, dataDir?: string): string {
+  const explicit = dataDir ?? process.env.PLUR_BENCH_DATA_DIR
+  if (explicit) return path.join(explicit, file)
+
+  const repoLocal = path.join(__dirname, 'data', file)
+  if (fs.existsSync(repoLocal)) return repoLocal
+
+  const benchRepo = process.env.PLUR_BENCH_REPO ?? path.join(__dirname, '..', '..', 'plur-bench')
+  for (const candidate of [
+    path.join(benchRepo, 'corpus', 'monorepo', file),
+    path.join(benchRepo, 'corpus', file),
+  ]) {
+    if (fs.existsSync(candidate)) return candidate
+  }
+  return repoLocal
+}
+
+export function loadScenarios(filterCategory?: string, corpus: CorpusName = 'fixture', dataDir?: string): Scenario[] {
   const file = CORPUS_FILES[corpus]
   if (!file) {
     throw new Error(`Unknown corpus "${corpus}". Use one of: ${Object.keys(CORPUS_FILES).join(', ')}`)
   }
-  const fullPath = path.join(__dirname, 'data', file)
+  const fullPath = resolveCorpusPath(file, dataDir)
   if (!fs.existsSync(fullPath)) {
     // Special handling for the real LongMemEval-S — it is gitignored because
     // of size; the user has to generate it first. Surface the exact command
@@ -203,7 +258,15 @@ export function loadScenarios(filterCategory?: string, corpus: CorpusName = 'fix
         `Or use --corpus longmemeval-s-smoke for the committed 30-scenario subset.`
       )
     }
-    throw new Error(`Corpus file not found: ${fullPath}`)
+    throw new Error(
+      `Corpus file not found: ${fullPath}\n\n` +
+      `Benchmark fixtures live in the plur-bench repo, not this code repo (#336).\n` +
+      `Point the harness at them with one of:\n` +
+      `  --data-dir <dir>                 directory containing ${file}\n` +
+      `  PLUR_BENCH_DATA_DIR=<dir>        same, via env var\n` +
+      `  PLUR_BENCH_REPO=<checkout>       plur-bench checkout (reads corpus/monorepo/,\n` +
+      `                                   then corpus/; default: ../plur-bench sibling)`
+    )
   }
   const raw = fs.readFileSync(fullPath, 'utf-8')
   let scenarios = yaml.load(raw) as Scenario[]
@@ -357,12 +420,15 @@ export async function runBenchmark(opts: RunOptions = {}): Promise<RunOutput> {
 
   const searchMode = opts.searchMode ?? 'hybrid'
   const seed = opts.seed ?? 1337
-  const outputDir = opts.outputDir ?? path.join(__dirname, 'results')
+  // Results are per-run machine output — they belong in plur-bench, not this
+  // repo (#336). Default stays repo-local benchmark/results/ (gitignored);
+  // PLUR_BENCH_RESULTS_DIR redirects archival runs into a plur-bench checkout.
+  const outputDir = opts.outputDir ?? process.env.PLUR_BENCH_RESULTS_DIR ?? path.join(__dirname, 'results')
   const corpus: CorpusName = opts.corpus ?? 'fixture'
 
   // Pick scenarios. With --iterations, sample N per category deterministically.
   // Without --iterations, use the full default scenario set (backward-compat).
-  const all = loadScenarios(opts.category, corpus)
+  const all = loadScenarios(opts.category, corpus, opts.dataDir)
   const scenarios = opts.iterations !== undefined
     ? sampleScenarios(all, opts.iterations, seed)
     : all
@@ -715,6 +781,7 @@ function parseArgs(argv: string[]): RunOptions {
     }
     else if (a === '--plur-path' && argv[i + 1]) opts.plurPath = argv[++i]
     else if (a === '--force-ingest') opts.forceIngest = true
+    else if (a === '--data-dir' && argv[i + 1]) opts.dataDir = argv[++i]
   }
   return opts
 }

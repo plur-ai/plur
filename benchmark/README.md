@@ -4,15 +4,15 @@ Two benchmark suites for PLUR development.
 
 ## 1. LongMemEval (`run.ts`) — Retrieval Quality
 
-Tests PLUR's memory retrieval across 6 categories. Two corpora ship with the harness:
+Tests PLUR's memory retrieval across 6 categories. Three corpora:
 
-- **`fixture`** (default) — 30-scenario hand-curated set (`data/scenarios.yaml`).
+- **`fixture`** (default) — 30-scenario hand-curated set (`scenarios.yaml`).
   Backward-compatible with everything written before Sprint 0.
 - **`longmemeval-s-smoke`** — 30-scenario subset (5/category) of the *real*
-  LongMemEval-S. Committed; sessions trimmed to keep YAML <3 MB.
+  LongMemEval-S. Sessions trimmed to keep YAML <3 MB.
 - **`longmemeval-s`** — the full official LongMemEval-S corpus (500 questions,
   Wu et al, 2024 — [arxiv.org/abs/2410.10813](https://arxiv.org/abs/2410.10813)).
-  Gitignored because the converted YAML is ~260 MB; regenerate locally with:
+  ~260 MB converted; regenerate locally with:
 
   ```bash
   huggingface-cli download xiaowu0162/longmemeval --repo-type dataset \
@@ -20,13 +20,36 @@ Tests PLUR's memory retrieval across 6 categories. Two corpora ship with the har
   npx tsx benchmark/scripts/import-longmemeval.ts
   ```
 
+### Where the data lives (#336)
+
+Corpus files and result runs are **not** committed to this repo — the code repo
+is code-only. Canonical home is the private
+[`plur-ai/plur-bench`](https://github.com/plur-ai/plur-bench) repo:
+fixtures under `corpus/monorepo/`, archived monorepo result runs under
+`results/monorepo/`. `benchmark/data/` and `benchmark/results/` here are
+gitignored working directories.
+
+The harness resolves a corpus file in this order (first hit wins):
+
+1. `--data-dir <dir>` flag (exclusive — no fallback when set)
+2. `PLUR_BENCH_DATA_DIR=<dir>` env var (exclusive)
+3. repo-local `benchmark/data/<file>` (dev convenience)
+4. a plur-bench checkout: `$PLUR_BENCH_REPO/corpus/monorepo/<file>`, then
+   `$PLUR_BENCH_REPO/corpus/<file>`. `PLUR_BENCH_REPO` defaults to the sibling
+   checkout `../plur-bench`.
+
+Results go to `--output <dir>`, else `PLUR_BENCH_RESULTS_DIR`, else the
+gitignored `benchmark/results/`. Tests do not depend on any of this: they run
+against a tiny fixture vendored inline in `run.test.ts`.
+
 ```bash
 npx tsx benchmark/run.ts                                          # fixture (default), hybrid
 npx tsx benchmark/run.ts --search-mode bm25                       # BM25 only
 npx tsx benchmark/run.ts --search-mode semantic                   # embeddings only
 npx tsx benchmark/run.ts --category temporal_reasoning            # single category
 npx tsx benchmark/run.ts --corpus longmemeval-s --iterations 5    # real corpus, 5/category
-npx tsx benchmark/run.ts --corpus longmemeval-s-smoke             # committed real subset
+npx tsx benchmark/run.ts --corpus longmemeval-s-smoke             # real subset (from plur-bench)
+npx tsx benchmark/run.ts --data-dir ~/plur-bench/corpus/monorepo  # explicit fixture dir
 ```
 
 ## 2. Micro-benchmark (`micro.ts`) — Per-Operation Latency
@@ -73,6 +96,8 @@ Outputs mean, p95, p99, min, max for each operation. Tests:
 
 ## Results
 
-Saved to `benchmark/results/YYYY-MM-DD-{mode}.json`.
+Saved to `--output <dir>`, else `PLUR_BENCH_RESULTS_DIR`, else the gitignored
+`benchmark/results/`. Archival runs referenced by published numbers live in
+plur-bench under `results/monorepo/`.
 
 Compare runs: check the per-category breakdown for regressions.

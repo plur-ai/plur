@@ -227,8 +227,9 @@ async function runBench(label: string, iterations: number) {
     },
   }
 
-  // Save
-  const resultsDir = path.join(__dirname, 'results')
+  // Save. Results are per-run output — PLUR_BENCH_RESULTS_DIR redirects them
+  // into a plur-bench checkout (#336); default stays gitignored benchmark/results/.
+  const resultsDir = process.env.PLUR_BENCH_RESULTS_DIR ?? path.join(__dirname, 'results')
   fs.mkdirSync(resultsDir, { recursive: true })
   const outPath = path.join(resultsDir, `micro-${label}.json`)
   fs.writeFileSync(outPath, JSON.stringify(result, null, 2))
@@ -239,7 +240,7 @@ async function runBench(label: string, iterations: number) {
 }
 
 function compare(labelA: string, labelB: string) {
-  const dir = path.join(__dirname, 'results')
+  const dir = process.env.PLUR_BENCH_RESULTS_DIR ?? path.join(__dirname, 'results')
   const a = JSON.parse(fs.readFileSync(path.join(dir, `micro-${labelA}.json`), 'utf-8'))
   const b = JSON.parse(fs.readFileSync(path.join(dir, `micro-${labelB}.json`), 'utf-8'))
 
