@@ -79,9 +79,9 @@ This document fixes v0.2.1 as the reference point. Subsequent versions have adde
 
 ## Open questions
 
-- **LongMemEval subset composition.** The 30-Q subset used for v0.2.1 was constructed for fast iteration; its question-ID list should be archived alongside the raw result JSON so Phase 2 can use the same instance. Current subset is implicitly defined by `benchmark/data/scenarios.yaml`; that file should be referenced as the canonical subset pinned for v0.2.1.
+- **LongMemEval subset composition.** The 30-Q subset used for v0.2.1 was constructed for fast iteration; its question-ID list should be archived alongside the raw result JSON so Phase 2 can use the same instance. Current subset is implicitly defined by the `scenarios.yaml` fixture (moved to plur-bench `corpus/monorepo/scenarios.yaml` per #336; `benchmark/data/` here is gitignored); that file should be referenced as the canonical subset pinned for v0.2.1.
 - **Embedding model pin.** `BGE-small-en-v1.5` is the current default; the v0.2.1 run predates any change here. If the local embedding model is swapped, this reference must be re-run.
-- **LongMemEval licensing.** LongMemEval's corpus is CC-BY-NC-4.0. We redistribute a *processed derivative* (our `benchmark/data/scenarios.yaml`) under the same non-commercial terms with attribution. The full-set Phase 2 run will carry the same licensing note. A separate TBD item in [`phase2-methodology.md`](../benchmarks/phase2-methodology.md#open-questions--tbd) tracks the full licensing write-up.
+- **LongMemEval licensing.** LongMemEval's corpus is CC-BY-NC-4.0. We redistribute a *processed derivative* (the `scenarios.yaml` fixture, held in the private plur-bench repo per #336) under the same non-commercial terms with attribution. The full-set Phase 2 run will carry the same licensing note. A separate TBD item in [`phase2-methodology.md`](../benchmarks/phase2-methodology.md#open-questions--tbd) tracks the full licensing write-up.
 
 ## Honest framing (summary)
 
