@@ -16,7 +16,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
 import { Plur } from '@plur-ai/core'
 import { createServer } from '../src/server.js'
-import { StubServer } from './helpers/stub-server.js'
+import { StubServer } from '../../core/test/helpers/stub-server.js'
 
 const TOKEN = 'health-mcp-token'
 const SCOPE = 'group:plur/plur-ai/engineering'
