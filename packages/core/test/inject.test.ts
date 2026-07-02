@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { scoreEngram, selectAndSpread, estimateTokens, fillTokenBudget } from '../src/inject.js'
+import { scoreEngram, selectAndSpread, estimateTokens, fillTokenBudget, formatWithLayer } from '../src/inject.js'
 import { EngramSchema } from '../src/schemas/engram.js'
 import { daysSince } from '../src/decay.js'
 
@@ -111,6 +111,99 @@ describe('injection engine', () => {
       ...result.consider.map(c => c.id),
     ]
     expect(allIds).not.toContain('ENG-2026-0330-001')
+  })
+
+  // #347 — soft-expiry mode: recently-expired engrams inject with a loud
+  // marker for a grace window instead of being hard-skipped. Hard remains
+  // the default.
+  describe('soft-expiry mode (#347)', () => {
+    const isoDaysAgo = (days: number) => new Date(Date.now() - days * 86400000).toISOString().slice(0, 10)
+
+    const recentlyExpired = () => makeEngram({
+      id: 'ENG-2026-0347-001',
+      statement: 'Deploy to staging server first',
+      temporal: { learned_at: '2026-01-01', valid_until: isoDaysAgo(5) },
+    })
+
+    it('hard mode (default) skips recently-expired engrams', () => {
+      const result = selectAndSpread(
+        { prompt: 'deploy the app', maxTokens: 5000 },
+        [recentlyExpired()], [],
+      )
+      const allIds = [...result.directives, ...result.constraints, ...result.consider].map(e => e.id)
+      expect(allIds).not.toContain('ENG-2026-0347-001')
+    })
+
+    it('soft mode injects a recently-expired engram (within grace window)', () => {
+      const result = selectAndSpread(
+        { prompt: 'deploy the app', maxTokens: 5000 },
+        [recentlyExpired()], [],
+        { expiry: { mode: 'soft', grace_days: 30 } },
+      )
+      const allIds = [...result.directives, ...result.constraints, ...result.consider].map(e => e.id)
+      expect(allIds).toContain('ENG-2026-0347-001')
+    })
+
+    it('soft mode still skips engrams expired beyond the grace window', () => {
+      const longExpired = makeEngram({
+        id: 'ENG-2026-0347-002',
+        statement: 'Deploy to staging server first',
+        temporal: { learned_at: '2026-01-01', valid_until: isoDaysAgo(60) },
+      })
+      const result = selectAndSpread(
+        { prompt: 'deploy the app', maxTokens: 5000 },
+        [longExpired], [],
+        { expiry: { mode: 'soft', grace_days: 30 } },
+      )
+      const allIds = [...result.directives, ...result.constraints, ...result.consider].map(e => e.id)
+      expect(allIds).not.toContain('ENG-2026-0347-002')
+    })
+
+    it('soft mode still skips not-yet-valid engrams (valid_from in the future)', () => {
+      const notYet = makeEngram({
+        id: 'ENG-2026-0347-003',
+        statement: 'Deploy to staging server first',
+        temporal: { learned_at: '2026-01-01', valid_from: '2099-01-01' },
+      })
+      const result = selectAndSpread(
+        { prompt: 'deploy the app', maxTokens: 5000 },
+        [notYet], [],
+        { expiry: { mode: 'soft', grace_days: 30 } },
+      )
+      const allIds = [...result.directives, ...result.constraints, ...result.consider].map(e => e.id)
+      expect(allIds).not.toContain('ENG-2026-0347-003')
+    })
+
+    it('formats an expired engram with the ⚠ EXPIRED marker at every layer', () => {
+      const until = isoDaysAgo(5)
+      const result = selectAndSpread(
+        { prompt: 'deploy the app', maxTokens: 5000 },
+        [recentlyExpired()], [],
+        { expiry: { mode: 'soft', grace_days: 30 } },
+      )
+      const wire = [...result.directives, ...result.constraints, ...result.consider]
+        .find(e => e.id === 'ENG-2026-0347-001')!
+      for (const layer of [1, 2, 3] as const) {
+        const text = formatWithLayer([wire], layer)
+        expect(text).toContain(`⚠ EXPIRED ${until} — verify before use`)
+      }
+    })
+
+    it('does not mark non-expired engrams', () => {
+      const valid = makeEngram({
+        id: 'ENG-2026-0347-004',
+        statement: 'Deploy using blue-green strategy',
+        temporal: { learned_at: '2026-01-01', valid_until: '2099-12-31' },
+      })
+      const result = selectAndSpread(
+        { prompt: 'deploy the app', maxTokens: 5000 },
+        [valid], [],
+        { expiry: { mode: 'soft', grace_days: 30 } },
+      )
+      const wire = [...result.directives, ...result.constraints, ...result.consider]
+        .find(e => e.id === 'ENG-2026-0347-004')!
+      expect(formatWithLayer([wire], 3)).not.toContain('EXPIRED')
+    })
   })
 
   it('emotional weight boosts scoring for high-weight engrams', () => {

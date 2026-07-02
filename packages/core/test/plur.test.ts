@@ -299,6 +299,101 @@ describe('Plur', () => {
     expect(results.length).toBeGreaterThan(0)
   })
 
+  // #347 — populate temporal.valid_until on the write path.
+  describe('temporal validity on the write path (#347)', () => {
+    it('learn stores explicit valid_until in temporal', () => {
+      const engram = plur.learn('Conference discount code is CONF20', {
+        scope: 'global',
+        valid_until: '2099-12-31',
+      })
+      expect(engram.temporal?.valid_until).toBe('2099-12-31')
+      expect(engram.temporal?.learned_at).toBeDefined()
+    })
+
+    it('learn stores explicit valid_from in temporal', () => {
+      const engram = plur.learn('New pricing takes effect next quarter', {
+        scope: 'global',
+        valid_from: '2099-01-01',
+      })
+      expect(engram.temporal?.valid_from).toBe('2099-01-01')
+    })
+
+    it('learn leaves temporal unset when no validity is provided or detected', () => {
+      const engram = plur.learn('API uses snake_case everywhere', { scope: 'global' })
+      expect(engram.temporal).toBeUndefined()
+    })
+
+    it('learn rejects malformed valid_until', () => {
+      expect(() => plur.learn('Something', { valid_until: 'end of Q2' })).toThrow(/valid_until/)
+      expect(() => plur.learn('Something', { valid_until: '2026-02-30' })).toThrow(/valid_until/)
+    })
+
+    it('learn rejects malformed valid_from', () => {
+      expect(() => plur.learn('Something', { valid_from: 'someday' })).toThrow(/valid_from/)
+    })
+
+    it('learn rejects an inverted validity window (valid_from after valid_until)', () => {
+      expect(() => plur.learn('Something', { valid_from: '2026-06-01', valid_until: '2026-05-01' }))
+        .toThrow(/valid_from/)
+    })
+
+    it('extraction round-trip: expiry phrase in statement → structured valid_until → hard-skipped after expiry', () => {
+      // The observed #347 failure shape: statement says "valid 31 May 2026",
+      // engram kept injecting past expiry because temporal.valid_until was empty.
+      const engram = plur.learn('IGEA Enterprise offer REV.002, valid 31 May 2026', { scope: 'global' })
+      expect(engram.temporal?.valid_until).toBe('2026-05-31')
+      // Echo marker so the caller can confirm the parse (never silently guess).
+      expect((engram as any).structured_data?._expiry_extracted).toMatchObject({ valid_until: '2026-05-31' })
+      // 2026-05-31 is in the past relative to the test run → recall hard-skips it.
+      const results = plur.recall('IGEA Enterprise offer')
+      expect(results).toHaveLength(0)
+    })
+
+    it('explicit valid_until wins over an extracted phrase', () => {
+      const engram = plur.learn('Offer valid until 31 May 2026, extended', {
+        scope: 'global',
+        valid_until: '2099-12-31',
+      })
+      expect(engram.temporal?.valid_until).toBe('2099-12-31')
+      expect((engram as any).structured_data?._expiry_extracted).toBeUndefined()
+    })
+
+    it('learn with future valid_from is skipped by inject (not-yet-valid)', () => {
+      plur.learn('Next-gen deploy pipeline goes live for everyone', {
+        scope: 'global',
+        valid_from: '2099-01-01',
+      })
+      const result = plur.inject('deploy pipeline live')
+      expect(result.injected_ids).toHaveLength(0)
+    })
+
+    it('config expiry.mode=soft injects recently-expired engrams with the EXPIRED marker', () => {
+      const softDir = mkdtempSync(join(tmpdir(), 'plur-soft-expiry-'))
+      try {
+        writeFileSync(join(softDir, 'config.yaml'), yaml.dump({ expiry: { mode: 'soft', grace_days: 30 } }))
+        const soft = new Plur({ path: softDir })
+        const until = new Date(Date.now() - 5 * 86400000).toISOString().slice(0, 10)
+        const engram = soft.learn('Deploy target for the beta is staging-2', { scope: 'global' })
+        engram.temporal = { learned_at: '2026-01-01', valid_until: until }
+        soft.updateEngram(engram)
+        const result = soft.inject('deploy beta staging')
+        expect(result.injected_ids).toContain(engram.id)
+        const rendered = [result.directives, result.constraints, result.consider].join('\n')
+        expect(rendered).toContain(`⚠ EXPIRED ${until} — verify before use`)
+      } finally {
+        rmSync(softDir, { recursive: true })
+      }
+    })
+
+    it('default (hard) config keeps skipping expired engrams from inject', () => {
+      const engram = plur.learn('Deploy target for the beta is staging-2', { scope: 'global' })
+      engram.temporal = { learned_at: '2026-01-01', valid_until: '2026-01-31' }
+      plur.updateEngram(engram)
+      const result = plur.inject('deploy beta staging')
+      expect(result.injected_ids).not.toContain(engram.id)
+    })
+  })
+
   it('learn rejects statements containing secrets', () => {
     expect(() => plur.learn('API key is sk-1234567890abcdefghijklmn')).toThrow('Secret detected')
   })

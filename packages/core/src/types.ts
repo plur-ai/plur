@@ -26,6 +26,19 @@ export interface LearnContext {
   session_episode_id?: string
   /** Always-load flag — bypass keyword-relevance gate during injection. */
   pinned?: boolean
+  /**
+   * Start of the knowledge's validity window (ISO YYYY-MM-DD, #347). Stored in
+   * `temporal.valid_from`; inject/recall skip the engram before this date.
+   */
+  valid_from?: string
+  /**
+   * Expiry of the knowledge (ISO YYYY-MM-DD, #347). Stored in
+   * `temporal.valid_until`; inject/recall skip the engram after this date.
+   * When omitted, an explicit expiry phrase in the statement ("valid until
+   * 31 May 2026", "expires 2026-12-01") is auto-extracted — the parsed date
+   * is echoed back via `structured_data._expiry_extracted`, never guessed.
+   */
+  valid_until?: string
 }
 
 /** Extended context for async learn with LLM dedup. */

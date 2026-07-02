@@ -140,6 +140,8 @@ export function getToolDefinitions(): ToolDefinition[] {
           pinned: { type: 'boolean', description: 'Always-load flag. If true, this engram bypasses the keyword-relevance gate at injection time. Use sparingly: meta-rules, safety conventions, core operating principles only.' },
           commitment: { type: 'string', enum: ['exploring', 'leaning', 'decided', 'locked'], description: 'How firmly the user has committed to this belief (default: leaning)' },
           locked_reason: { type: 'string', description: 'Why this engram is locked (only meaningful when commitment=locked)' },
+          valid_from: { type: 'string', description: 'ISO date (YYYY-MM-DD) the knowledge becomes valid — inject/recall skip the engram before this date (#347)' },
+          valid_until: { type: 'string', description: 'ISO date (YYYY-MM-DD) the knowledge expires — inject/recall skip the engram after this date. Set this for any time-bound fact (offers, deadlines, temporary endpoints). When omitted, an explicit expiry phrase in the statement ("valid until 31 May 2026") is auto-parsed and echoed back (#347)' },
         },
         required: ['statement'],
       },
@@ -161,6 +163,8 @@ export function getToolDefinitions(): ToolDefinition[] {
           commitment: args.commitment as any,
           locked_reason: args.locked_reason as string | undefined,
           pinned: args.pinned as boolean | undefined,
+          valid_from: args.valid_from as string | undefined,
+          valid_until: args.valid_until as string | undefined,
           llm,
         }
         // Route through learnRouted FIRST so remote-scope writes get
@@ -200,6 +204,19 @@ export function getToolDefinitions(): ToolDefinition[] {
             `store; keep genuinely personal notes at the default scope.` }
         }
 
+        // Temporal validity echo (#347): report the stored window back, and
+        // when valid_until was auto-extracted from the statement (not passed
+        // by the caller), confirm the parse loudly — extraction must never
+        // silently guess.
+        const temporalEcho = (engram: { temporal?: { valid_from?: string; valid_until?: string } }) => {
+          const extracted = (engram as any).structured_data?._expiry_extracted as { valid_until: string; phrase: string } | undefined
+          return {
+            ...(engram.temporal?.valid_from ? { valid_from: engram.temporal.valid_from } : {}),
+            ...(engram.temporal?.valid_until ? { valid_until: engram.temporal.valid_until } : {}),
+            ...(extracted ? { expiry_note: `Parsed expiry phrase "${extracted.phrase}" from the statement → temporal.valid_until=${extracted.valid_until}. The engram stops injecting/recalling after that date. If this is wrong, re-learn with an explicit valid_until.` } : {}),
+          }
+        }
+
         const statement = sanitizeStatement(args.statement as string)
         try {
           const engram = await plur.learnRouted(statement, context)
@@ -214,6 +231,7 @@ export function getToolDefinitions(): ToolDefinition[] {
             scope: engram.scope, type: engram.type,
             pinned: (engram as any).pinned === true,
             decision: 'ADD',
+            ...temporalEcho(engram),
             ...scopeHint(engram.scope, !!routed),
             ...(isOutbox ? { outbox: true, warning: 'Remote write failed; engram queued locally for retry on next session start or plur_sync.' } : {}),
             ...(demoted ? { demoted: true, requested_scope: demoted.from, warning: `Sensitive content (${demoted.patterns}) detected — stored at "${demoted.to}"/private instead of the requested shared scope "${demoted.from}". If this is a false positive, re-scope deliberately.` } : {}),
@@ -231,6 +249,7 @@ export function getToolDefinitions(): ToolDefinition[] {
           return {
             id: engram.id, statement: engram.statement,
             scope: engram.scope, type: engram.type, decision: 'ADD',
+            ...temporalEcho(engram),
             ...scopeHint(engram.scope, !!routedFallback),
             ...(isOutbox ? { outbox: true } : {}),
             warning: `Remote write failed (${(err as Error).message}); engram queued for retry.`,

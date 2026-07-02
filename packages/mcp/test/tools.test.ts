@@ -44,6 +44,48 @@ describe('MCP tools', () => {
     expect(result.statement).toBe('Test learning')
   })
 
+  // #347 — temporal validity params on the write path.
+  describe('plur_learn temporal validity (#347)', () => {
+    it('accepts explicit valid_until and echoes it back', async () => {
+      const result = await callTool('plur_learn', {
+        statement: 'Conference discount code is CONF20',
+        scope: 'global',
+        valid_until: '2099-12-31',
+      }) as any
+      expect(result.valid_until).toBe('2099-12-31')
+      const stored = plur.getById(result.id)
+      expect(stored?.temporal?.valid_until).toBe('2099-12-31')
+    })
+
+    it('accepts explicit valid_from and echoes it back', async () => {
+      const result = await callTool('plur_learn', {
+        statement: 'New pricing takes effect next fiscal year',
+        scope: 'global',
+        valid_from: '2099-01-01',
+      }) as any
+      expect(result.valid_from).toBe('2099-01-01')
+    })
+
+    it('echoes an auto-extracted expiry date with a confirmation note', async () => {
+      const result = await callTool('plur_learn', {
+        statement: 'Enterprise offer REV.002, valid until 31 May 2026',
+        scope: 'global',
+      }) as any
+      expect(result.valid_until).toBe('2026-05-31')
+      expect(result.expiry_note).toContain('2026-05-31')
+      expect(result.expiry_note).toContain('valid_until')
+    })
+
+    it('does not add an expiry note for explicit params', async () => {
+      const result = await callTool('plur_learn', {
+        statement: 'Plain fact with no dates',
+        scope: 'global',
+        valid_until: '2099-12-31',
+      }) as any
+      expect(result.expiry_note).toBeUndefined()
+    })
+  })
+
   // #296 — team knowledge silently defaulting to 'global'. When a team store is
   // configured and no scope is passed, surface a hint at the moment of the write.
   describe('scope hint when a team store is configured (#296)', () => {

@@ -108,6 +108,18 @@ export const PlurConfigSchema = z.object({
     co_access: z.boolean().default(true),
   }).default({}),
   dedup: DedupConfigSchema.default({}),
+  /**
+   * Expiry handling at injection time (#347). `hard` (default) skips any
+   * engram whose `temporal.valid_until` is in the past. `soft` keeps
+   * injecting a recently-expired engram for `grace_days` days after expiry,
+   * rendered with a loud "⚠ EXPIRED <date> — verify before use" marker —
+   * some facts stay useful as history. Recall filtering is unaffected
+   * (always hard).
+   */
+  expiry: z.object({
+    mode: z.enum(['hard', 'soft']).default('hard'),
+    grace_days: z.number().default(30),
+  }).default({}),
   decay_baseline: z.string().optional(),
   allow_secrets: z.boolean().default(false),
   index: z.boolean().default(true),
