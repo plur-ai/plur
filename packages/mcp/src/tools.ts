@@ -1756,6 +1756,7 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
           llm_model: { type: 'string', description: 'Model name for scan mode (default: gpt-4o-mini)' },
           min_confidence: { type: 'number', description: 'Minimum confidence threshold for scan mode (0–1, default: 0.7)' },
           max_pairs: { type: 'number', description: 'Maximum candidate pairs to evaluate in scan mode (default: 50)' },
+          batch_size: { type: 'number', description: 'Pairs judged per LLM call in scan mode (default: 5). Set to 1 for sequential single-pair judging.' },
         },
       },
       handler: async (args, plur) => {
@@ -1780,6 +1781,7 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
           const result = await scanForTensions(engrams, llm, {
             min_confidence: args.min_confidence as number | undefined,
             max_pairs: args.max_pairs as number | undefined,
+            batch_size: args.batch_size as number | undefined,
           })
 
           return {

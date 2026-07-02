@@ -160,10 +160,10 @@ describe('tension detection e2e', () => {
     expect(result.new_tensions).toBe(1)
   })
 
-  // Documents current limitation: pairs are returned in insertion order, not ranked by overlap.
-  // Phase 2 (#180) will add overlap-based ranking.
-  it('returns candidate pairs in insertion order (known limitation)', () => {
-    // Learn 3 engrams: A and C contradict, B is unrelated but inserted between them
+  // Phase 2 (#180): candidate pairs are ranked by shared-token overlap so the
+  // most likely contradictions are checked first even when max_pairs truncates.
+  it('ranks candidate pairs by overlap score, not insertion order (#180)', () => {
+    // Learn 3 engrams: A and C contradict (high overlap), B is unrelated but inserted between them
     plur.learn('PLUR storage format uses JSON files', { domain: 'plur.storage' })
     plur.learn('PLUR search uses hybrid BM25 plus embeddings', { domain: 'plur.search' })
     plur.learn('PLUR storage format uses YAML not JSON', { domain: 'plur.storage' })
@@ -171,15 +171,13 @@ describe('tension detection e2e', () => {
     const engrams = plur.list()
     const pairs = getCandidatePairs(engrams)
 
-    // All pairs that pass filtering are returned — the contradictory pair (A,C) may not be first
-    // because insertion order determines position, not overlap score
     const pairIds = pairs.map(([a, b]) => [a.id, b.id].sort().join(':'))
     expect(pairIds.length).toBeGreaterThanOrEqual(1)
-    // The important assertion: the contradictory pair IS in the list somewhere
+
+    // The contradictory storage pair has the highest token overlap → must be first
     const storageEngrams = engrams.filter(e => e.domain === 'plur.storage')
-    if (storageEngrams.length === 2) {
-      const targetPair = storageEngrams.map(e => e.id).sort().join(':')
-      expect(pairIds).toContain(targetPair)
-    }
+    expect(storageEngrams).toHaveLength(2)
+    const targetPair = storageEngrams.map(e => e.id).sort().join(':')
+    expect(pairIds[0]).toBe(targetPair)
   })
 })

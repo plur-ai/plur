@@ -199,6 +199,60 @@ describe('plur_tensions scan mode', () => {
     expect(result.count).toBeGreaterThan(0)
   })
 
+  it('batches multiple candidate pairs into a single LLM call by default (#180)', async () => {
+    plur.learn('plur uses yaml')
+    plur.learn('plur uses json')
+    plur.learn('plur uses toml')
+
+    const fetchMock = vi.fn().mockImplementation(async (_url: any, init: any) => {
+      const prompt: string = JSON.parse(init.body).messages[0].content
+      const n = (prompt.match(/PAIR \d+/g) ?? []).length
+      const content = n > 0
+        ? Array.from({ length: n }, (_, i) => `PAIR_${i + 1}: CONTRADICTS: no | CONFIDENCE: 0.1 | REASON: Fine.`).join('\n')
+        : 'CONTRADICTS: no\nCONFIDENCE: 0.1\nREASON: Fine.'
+      return { ok: true, json: async () => ({ choices: [{ message: { content } }] }) }
+    })
+    globalThis.fetch = fetchMock as any
+
+    const result = await tensionsTool.handler({
+      scan: true,
+      llm_base_url: 'https://api.openai.com/v1',
+      llm_api_key: 'test-key',
+    }, plur) as any
+
+    expect(result.pairs_checked).toBe(3)
+    // 3 pairs, default batch_size 5 → one LLM call
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(result.count).toBe(0)
+  })
+
+  it('batch_size 1 forces sequential single-pair calls (#180)', async () => {
+    plur.learn('plur uses yaml')
+    plur.learn('plur uses json')
+    plur.learn('plur uses toml')
+
+    const prompts: string[] = []
+    const fetchMock = vi.fn().mockImplementation(async (_url: any, init: any) => {
+      prompts.push(JSON.parse(init.body).messages[0].content)
+      return {
+        ok: true,
+        json: async () => ({ choices: [{ message: { content: 'CONTRADICTS: no\nCONFIDENCE: 0.1\nREASON: Fine.' } }] }),
+      }
+    })
+    globalThis.fetch = fetchMock as any
+
+    const result = await tensionsTool.handler({
+      scan: true,
+      llm_base_url: 'https://api.openai.com/v1',
+      llm_api_key: 'test-key',
+      batch_size: 1,
+    }, plur) as any
+
+    expect(result.pairs_checked).toBe(3)
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+    for (const p of prompts) expect(p).toContain('STATEMENT A')
+  })
+
   it('uses OPENAI_API_KEY from env when no explicit LLM args', async () => {
     process.env.OPENAI_API_KEY = 'env-test-key'
     plur.learn('plur search uses only BM25 for ranking')

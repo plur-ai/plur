@@ -38,11 +38,13 @@ CONFIDENCE: 0.0-1.0
 REASON: <one sentence>`
 }
 
-export function parseContradictionResponse(response: string): {
+export interface ContradictionVerdict {
   is_contradiction: boolean
   confidence: number
   reason: string
-} {
+}
+
+export function parseContradictionResponse(response: string): ContradictionVerdict {
   const contradictsMatch = response.match(/CONTRADICTS:\s*(yes|no)/i)
   const confidenceMatch = response.match(/CONFIDENCE:\s*([\d.]+)/i)
   const reasonMatch = response.match(/REASON:\s*([^\n]+)/i)
@@ -52,6 +54,75 @@ export function parseContradictionResponse(response: string): {
   const reason = reasonMatch?.[1]?.trim() ?? ''
 
   return { is_contradiction, confidence, reason }
+}
+
+/**
+ * Batched contradiction prompt (#180): judge several pairs in one LLM call.
+ *
+ * Keeps the same contradiction definition and guardrails as the single-pair
+ * prompt; each pair is numbered and the model answers one line per pair.
+ */
+export function buildBatchContradictionPrompt(
+  pairs: Array<[{ id: string; statement: string }, { id: string; statement: string }]>,
+): string {
+  const blocks = pairs
+    .map(
+      ([a, b], i) => `PAIR ${i + 1}:
+A [${a.id}]: "${a.statement}"
+B [${b.id}]: "${b.statement}"`,
+    )
+    .join('\n\n')
+
+  const formatLines = pairs
+    .map((_, i) => `PAIR_${i + 1}: CONTRADICTS: yes|no | CONFIDENCE: 0.0-1.0 | REASON: <one sentence>`)
+    .join('\n')
+
+  return `You are a memory consistency checker. For each numbered pair of statements below, determine whether the two statements CONTRADICT each other.
+
+Two statements CONTRADICT when one asserts X is true and the other asserts X is false, different, or mutually exclusive.
+Do NOT flag as contradictions: different topics in the same domain, complementary facts, or unrelated statements that happen to share keywords.
+Judge each pair independently.
+
+${blocks}
+
+Respond with EXACTLY one line per pair, in this EXACT format:
+${formatLines}`
+}
+
+/**
+ * Parse a batched contradiction response into per-pair verdicts.
+ *
+ * Returns an array of length `pairCount`, positionally aligned with the pairs
+ * sent in the prompt. A pair whose verdict is missing or unparseable maps to
+ * `null` — never to a contradiction — so format failures cannot create false
+ * positives. Callers should re-judge `null` pairs individually.
+ */
+export function parseBatchContradictionResponse(
+  response: string,
+  pairCount: number,
+): Array<ContradictionVerdict | null> {
+  const verdicts: Array<ContradictionVerdict | null> = new Array(pairCount).fill(null)
+
+  // Locate PAIR_N / PAIR N markers, then parse each marker-to-marker section
+  // with the single-pair parser.
+  const markerRe = /PAIR[_\s]*(\d+)\s*:/gi
+  const markers: Array<{ index: number; end: number; start: number }> = []
+  let m: RegExpExecArray | null
+  while ((m = markerRe.exec(response)) !== null) {
+    markers.push({ index: parseInt(m[1], 10), start: m.index, end: m.index + m[0].length })
+  }
+
+  for (let k = 0; k < markers.length; k++) {
+    const { index, end } = markers[k]
+    if (index < 1 || index > pairCount) continue
+    const sectionEnd = k + 1 < markers.length ? markers[k + 1].start : response.length
+    const section = response.slice(end, sectionEnd)
+    // Require an explicit verdict — a bare marker is not a "no".
+    if (!/CONTRADICTS:\s*(yes|no)/i.test(section)) continue
+    verdicts[index - 1] = parseContradictionResponse(section)
+  }
+
+  return verdicts
 }
 
 /**
@@ -97,20 +168,39 @@ export function domainSegmentsOverlap(a?: string, b?: string): boolean {
  * is a competitor" share no subject tokens and are skipped.
  */
 export function subjectsOverlap(a: string, b: string): boolean {
-  const extractSubjectTokens = (s: string): Set<string> => {
-    // Take the first clause: split at first comma, semicolon, or after ~60 chars
-    const clause = s.split(/[,;]|(?<=\w{3,})\s+(?:is|are|was|were|has|have|can|will|should|must|does|do)\s/)[0]
-      .slice(0, 80)
-    return new Set(ftsTokenize(clause).filter(t => t.length > 3).slice(0, 10))
-  }
+  return setsIntersect(extractSubjectTokens(a), extractSubjectTokens(b))
+}
 
-  const tokA = extractSubjectTokens(a)
-  const tokB = extractSubjectTokens(b)
+function extractSubjectTokens(s: string): Set<string> {
+  // Take the first clause: split at first comma, semicolon, or after ~60 chars
+  const clause = s.split(/[,;]|(?<=\w{3,})\s+(?:is|are|was|were|has|have|can|will|should|must|does|do)\s/)[0]
+    .slice(0, 80)
+  return new Set(ftsTokenize(clause).filter(t => t.length > 3).slice(0, 10))
+}
 
-  for (const t of tokA) {
-    if (tokB.has(t)) return true
+function setsIntersect(a: Set<string>, b: Set<string>): boolean {
+  for (const t of a) {
+    if (b.has(t)) return true
   }
   return false
+}
+
+function intersectionSize(a: Set<string>, b: Set<string>): number {
+  const [small, large] = a.size <= b.size ? [a, b] : [b, a]
+  let n = 0
+  for (const t of small) {
+    if (large.has(t)) n++
+  }
+  return n
+}
+
+/**
+ * Overlap score between two statements: number of unique shared content
+ * tokens (after FTS tokenization). Used to rank candidate pairs so the most
+ * likely contradictions are LLM-judged first (#180).
+ */
+export function statementOverlap(a: string, b: string): number {
+  return intersectionSize(new Set(ftsTokenize(a)), new Set(ftsTokenize(b)))
 }
 
 /**
@@ -123,10 +213,20 @@ export function subjectsOverlap(a: string, b: string): boolean {
  *
  * Already-known conflicts (relations.conflicts) are skipped to avoid
  * re-evaluating the same pair.
+ *
+ * Surviving pairs are ranked by descending shared-token overlap (#180) so
+ * that the pairs most likely to be genuine contradictions are judged first
+ * when the caller applies a max_pairs cap. Ties keep insertion order
+ * (stable sort).
  */
 export function getCandidatePairs(engrams: Engram[]): Array<[Engram, Engram]> {
   const active = engrams.filter(e => e.status === 'active')
-  const pairs: Array<[Engram, Engram]> = []
+
+  // Tokenize each engram once instead of once per pair (O(n) vs O(n²) passes).
+  const subjectTokens = active.map(e => extractSubjectTokens(e.statement))
+  const statementTokens = active.map(e => new Set(ftsTokenize(e.statement)))
+
+  const scored: Array<{ pair: [Engram, Engram]; overlap: number }> = []
 
   for (let i = 0; i < active.length; i++) {
     for (let j = i + 1; j < active.length; j++) {
@@ -143,46 +243,99 @@ export function getCandidatePairs(engrams: Engram[]): Array<[Engram, Engram]> {
       if (a.relations?.conflicts?.includes(b.id)) continue
 
       // Stage 3: subject-predicate pre-filter
-      if (!subjectsOverlap(a.statement, b.statement)) continue
+      if (!setsIntersect(subjectTokens[i], subjectTokens[j])) continue
 
-      pairs.push([a, b])
+      scored.push({
+        pair: [a, b],
+        overlap: intersectionSize(statementTokens[i], statementTokens[j]),
+      })
     }
   }
 
-  return pairs
+  // Rank: highest shared-token count first (#180).
+  scored.sort((x, y) => y.overlap - x.overlap)
+  return scored.map(s => s.pair)
 }
 
+/**
+ * Scan engrams for contradictions with an LLM judge.
+ *
+ * Candidates come pre-ranked by overlap score from getCandidatePairs, so the
+ * max_pairs cap keeps the most likely contradictions (#180).
+ *
+ * Pairs are judged in batches of `batch_size` (default 5) — one LLM call per
+ * batch instead of one per pair (#180). Any pair whose batch verdict is
+ * missing or unparseable falls back to an individual single-pair call;
+ * a pair is never counted as a contradiction without an explicit verdict.
+ * Set batch_size to 1 for the original sequential single-pair behavior.
+ */
 export async function scanForTensions(
   engrams: Engram[],
   llm: LlmFunction,
-  options?: { min_confidence?: number; max_pairs?: number },
+  options?: { min_confidence?: number; max_pairs?: number; batch_size?: number },
 ): Promise<TensionScanResult> {
   const minConfidence = options?.min_confidence ?? 0.7
   const maxPairs = options?.max_pairs ?? 50
+  const rawBatchSize = options?.batch_size ?? 5
+  const batchSize = Number.isFinite(rawBatchSize) ? Math.max(1, Math.floor(rawBatchSize)) : 5
 
   const candidates = getCandidatePairs(engrams).slice(0, maxPairs)
   const tensions: TensionPair[] = []
 
-  for (const [a, b] of candidates) {
+  const judgeSingle = async (a: Engram, b: Engram): Promise<ContradictionVerdict | null> => {
     const prompt = buildContradictionPrompt(
       { id: a.id, statement: a.statement },
       { id: b.id, statement: b.statement },
     )
     try {
-      const response = await llm(prompt)
-      const { is_contradiction, confidence, reason } = parseContradictionResponse(response)
-      if (is_contradiction && confidence >= minConfidence) {
+      return parseContradictionResponse(await llm(prompt))
+    } catch {
+      // Skip pair on LLM error — non-fatal
+      return null
+    }
+  }
+
+  for (let start = 0; start < candidates.length; start += batchSize) {
+    const batch = candidates.slice(start, start + batchSize)
+
+    let verdicts: Array<ContradictionVerdict | null>
+    if (batch.length === 1) {
+      verdicts = [await judgeSingle(batch[0][0], batch[0][1])]
+    } else {
+      const prompt = buildBatchContradictionPrompt(
+        batch.map(([a, b]) => [
+          { id: a.id, statement: a.statement },
+          { id: b.id, statement: b.statement },
+        ]),
+      )
+      try {
+        verdicts = parseBatchContradictionResponse(await llm(prompt), batch.length)
+      } catch {
+        verdicts = batch.map(() => null)
+      }
+      // Fallback: re-judge pairs with missing/unparseable batch verdicts
+      // individually so a malformed batch response costs recall, not precision.
+      for (let i = 0; i < verdicts.length; i++) {
+        if (verdicts[i] === null) {
+          verdicts[i] = await judgeSingle(batch[i][0], batch[i][1])
+        }
+      }
+    }
+
+    for (let i = 0; i < batch.length; i++) {
+      const verdict = verdicts[i]
+      if (!verdict) continue
+      const [a, b] = batch[i]
+      if (verdict.is_contradiction && verdict.confidence >= minConfidence) {
         tensions.push({
           id_a: a.id,
           id_b: b.id,
           statement_a: a.statement,
           statement_b: b.statement,
-          confidence,
-          reason,
+          confidence: verdict.confidence,
+          reason: verdict.reason,
         })
       }
-    } catch {
-      // Skip pair on LLM error — non-fatal
     }
   }
 
