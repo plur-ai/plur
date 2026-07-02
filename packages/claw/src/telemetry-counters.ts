@@ -81,16 +81,23 @@ function ensureParentDir(path: string): void {
   }
 }
 
+// Unique per call, not just per process (#188): pid-only tmp names collide
+// when two writes to the same path interleave in async contexts — the second
+// write clobbers the first tmp file before its rename.
+function tmpPath(path: string): string {
+  return `${path}.tmp.${process.pid}.${randomUUID()}`
+}
+
 function atomicWriteJson(path: string, data: unknown): void {
   ensureParentDir(path)
-  const tmp = `${path}.tmp.${process.pid}`
+  const tmp = tmpPath(path)
   writeFileSync(tmp, JSON.stringify(data), { encoding: 'utf8', mode: 0o600 })
   renameSync(tmp, path)
 }
 
 function atomicWriteString(path: string, data: string): void {
   ensureParentDir(path)
-  const tmp = `${path}.tmp.${process.pid}`
+  const tmp = tmpPath(path)
   writeFileSync(tmp, data, { encoding: 'utf8', mode: 0o600 })
   renameSync(tmp, path)
 }
