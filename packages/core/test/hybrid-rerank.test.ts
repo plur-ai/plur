@@ -13,6 +13,7 @@ import { join } from 'path'
 import { tmpdir } from 'os'
 import { Plur } from '../src/index.js'
 import { applyReranker } from '../src/hybrid-search.js'
+import { rerankerStatus, resetRerankerStatus, recordRerankerFailure } from '../src/rerankers/index.js'
 import type { RerankerAdapter } from '../src/rerankers/types.js'
 
 /**
@@ -133,6 +134,93 @@ describe('hybrid search reranker stage — applyReranker (unit)', () => {
   })
 })
 
+// #341 — applyReranker must leave an observable trace when it engages or
+// silently falls back, and the per-query warning flood must collapse to a
+// loud-once pattern (first failure at warning, repeats at debug).
+describe('applyReranker runtime surfacing (#341)', () => {
+  beforeEach(() => {
+    resetRerankerStatus()
+  })
+  afterEach(() => {
+    resetRerankerStatus()
+  })
+
+  const broken = (message: string): RerankerAdapter => ({
+    name: 'bge-reranker-v2-m3',
+    modelId: 'onnx-community/bge-reranker-v2-m3-ONNX',
+    async score() { throw new Error(message) },
+    async scoreBatch() { throw new Error(message) },
+  })
+
+  it('records an engagement on success', async () => {
+    const engrams = [makeEngram('a', 'apple pie'), makeEngram('b', 'banana bread')]
+    const out = await applyReranker(engrams, 'apple', { reranker: makeFakeReranker() })
+    expect(out.count).toBe(2)
+    expect(rerankerStatus().engaged_count).toBe(1)
+    expect(rerankerStatus().failure_count).toBe(0)
+  })
+
+  it('records the failure with classification when the reranker throws', async () => {
+    const engrams = [makeEngram('a', 'foo'), makeEngram('b', 'bar')]
+    const out = await applyReranker(engrams, 'foo', { reranker: broken('Protobuf parsing failed.') })
+    expect(out.count).toBe(0)
+    const status = rerankerStatus()
+    expect(status.failure_count).toBe(1)
+    expect(status.engaged_count).toBe(0)
+    expect(status.lastError).toBe('Protobuf parsing failed.')
+    expect(status.lastErrorKind).toBe('corrupt-cache')
+    expect(status.lastFailedReranker).toBe('bge-reranker-v2-m3')
+  })
+
+  it('records a failure when scoreBatch returns wrong-length output', async () => {
+    const engrams = [makeEngram('a', 'foo'), makeEngram('b', 'bar')]
+    const buggy: RerankerAdapter = {
+      name: 'buggy',
+      modelId: 'buggy://test',
+      async score() { return 1 },
+      async scoreBatch() { return [1] }, // wrong length
+    }
+    const out = await applyReranker(engrams, 'foo', { reranker: buggy })
+    expect(out.count).toBe(0)
+    expect(rerankerStatus().failure_count).toBe(1)
+    expect(rerankerStatus().lastError).toContain('1 scores for 2 candidates')
+  })
+
+  it('warns loudly on the first failure only; repeats are demoted to debug', async () => {
+    const engrams = [makeEngram('a', 'foo'), makeEngram('b', 'bar')]
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      await applyReranker(engrams, 'foo', { reranker: broken('Protobuf parsing failed.') })
+      const firstWarnings = spy.mock.calls.filter(c => String(c[0]).includes('plur:warning')).length
+      expect(firstWarnings).toBe(1)
+      // Same failure again — default log level suppresses the debug repeat.
+      await applyReranker(engrams, 'foo', { reranker: broken('Protobuf parsing failed.') })
+      await applyReranker(engrams, 'foo', { reranker: broken('Protobuf parsing failed.') })
+      const totalWarnings = spy.mock.calls.filter(c => String(c[0]).includes('plur:warning')).length
+      expect(totalWarnings).toBe(1)
+    } finally {
+      spy.mockRestore()
+    }
+  })
+
+  it('the first-failure warning names the corrupt cache and points at plur_doctor', async () => {
+    const engrams = [makeEngram('a', 'foo')]
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      await applyReranker(engrams, 'foo', { reranker: broken('Protobuf parsing failed.') })
+      const warning = spy.mock.calls.find(c => String(c[0]).includes('plur:warning'))
+      expect(warning).toBeDefined()
+      const text = warning!.map(String).join(' ')
+      expect(text).toContain('RRF')
+      expect(text).toContain('corrupt')
+      expect(text).toContain('models--onnx-community--bge-reranker-v2-m3-ONNX')
+      expect(text).toContain('plur_doctor')
+    } finally {
+      spy.mockRestore()
+    }
+  })
+})
+
 describe('Plur.recallHybrid with rerank=true (integration)', () => {
   let dir: string
   let plur: Plur
@@ -196,6 +284,18 @@ describe('Plur.recallHybrid with rerank=true (integration)', () => {
   // Belt-and-suspenders: silence unused-import warnings from vi.
   it('vi mock surface stays available for future opt-in test rigs', () => {
     expect(typeof vi.fn).toBe('function')
+  })
+
+  // #341 — the tracker is reachable from the Plur instance (MCP consumes it
+  // there) and resetReranker clears recorded failures for a doctor retry.
+  it('Plur.rerankerStatus exposes the tracker; resetReranker clears it', () => {
+    resetRerankerStatus()
+    recordRerankerFailure('bge-reranker-v2-m3', 'Protobuf parsing failed.')
+    expect(plur.rerankerStatus().failure_count).toBe(1)
+    expect(plur.rerankerStatus().lastErrorKind).toBe('corrupt-cache')
+    plur.resetReranker()
+    expect(plur.rerankerStatus().failure_count).toBe(0)
+    expect(plur.rerankerStatus().lastError).toBeNull()
   })
 })
 

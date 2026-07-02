@@ -3,7 +3,7 @@ import { searchEngrams } from './fts.js'
 import { embeddingSearch, embedderStatus } from './embeddings.js'
 import { logger } from './logger.js'
 import type { RerankerAdapter } from './rerankers/types.js'
-import { isRerankerOff } from './rerankers/index.js'
+import { isRerankerOff, recordRerankerEngaged, recordRerankerFailure, hfCacheDirName } from './rerankers/index.js'
 
 /** Result of a hybrid search call with diagnostic metadata. */
 export interface HybridSearchResult {
@@ -214,20 +214,42 @@ export async function applyReranker(
     const docs = head.map(e => e.statement)
     const scores = await rerank.reranker.scoreBatch(query, docs)
     if (scores.length !== head.length) {
-      logger.warning(
-        `[hybrid-search] reranker returned ${scores.length} scores for ${head.length} candidates; skipping rerank.`,
-      )
+      const message = `returned ${scores.length} scores for ${head.length} candidates`
+      // #341: a mismatch is a non-engagement too — record it so doctor/recall
+      // can surface that results are RRF-only despite reranking being on.
+      logRerankerFailure(rerank.reranker, message)
       return { engrams: candidates, count: 0 }
     }
     const ranked = head
       .map((engram, i) => ({ engram, score: scores[i] }))
       .sort((a, b) => b.score - a.score)
       .map(r => r.engram)
+    recordRerankerEngaged()
     return { engrams: [...ranked, ...tail], count: head.length }
   } catch (err) {
-    logger.warning(
-      `[hybrid-search] reranker "${rerank.reranker.name}" failed: ${(err as Error).message}. Falling back to RRF order.`,
-    )
+    logRerankerFailure(rerank.reranker, (err as Error).message)
     return { engrams: candidates, count: 0 }
   }
+}
+
+/**
+ * Record a rerank failure and log it loud-once (#341): the first occurrence
+ * of a message logs at warning with the classification + remediation pointer;
+ * repeats of the same message are demoted to debug so a broken model doesn't
+ * flood one warning per query. The runtime tracker keeps the state that
+ * plur_doctor and the MCP recall path surface.
+ */
+function logRerankerFailure(reranker: RerankerAdapter, message: string): void {
+  const rec = recordRerankerFailure(reranker.name, message)
+  const base =
+    `[hybrid-search] reranker "${reranker.name}" failed: ${message}. ` +
+    `Falling back to RRF order — results are NOT cross-encoder reranked.`
+  if (!rec.firstFailure) {
+    logger.debug(base)
+    return
+  }
+  const hint = rec.kind === 'corrupt-cache'
+    ? ` Model cache looks corrupt (truncated download, see #340) — delete ~/.cache/huggingface/hub/${hfCacheDirName(reranker.modelId)}/ to force a clean re-download.`
+    : ''
+  logger.warning(`${base}${hint} Run plur_doctor for diagnosis. Repeats of this failure log at debug level.`)
 }

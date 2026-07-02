@@ -51,6 +51,108 @@ export function _resetRerankerCache(): void {
 }
 
 /**
+ * Seed the adapter cache with a stub. Test-only — lets MCP/CLI tests exercise
+ * reranker failure paths without loading (or downloading) the real model.
+ */
+export function _setCachedReranker(name: RerankerName, adapter: RerankerAdapter): void {
+  adapterCache.set(name, adapter)
+}
+
+// --- Runtime status tracking (#341) ---
+//
+// applyReranker catches load/score errors and falls back to RRF order so
+// recall always returns something — but that made non-engagement invisible
+// beyond a per-call logger.warning. This module-level tracker records what
+// the rerank stage actually did, so plur_doctor and the MCP recall path can
+// say "you asked for reranking and it is NOT happening" loudly, once.
+
+/**
+ * Classification of a reranker failure (#341, ties into #340):
+ *   - `corrupt-cache`: the model downloaded but cannot be parsed (the classic
+ *     symptom of a truncated/corrupt download, e.g. "Protobuf parsing
+ *     failed"). Remediation is purge + re-download.
+ *   - `unavailable`: everything else — network unreachable, model id not
+ *     found, dependency resolution failure. Remediation is connectivity/setup.
+ */
+export type RerankerFailureKind = 'corrupt-cache' | 'unavailable'
+
+/** Snapshot of what the rerank stage did in this process (#341). */
+export interface RerankerRuntimeStatus {
+  /** Rerank calls that engaged (cross-encoder actually scored) this process. */
+  engaged_count: number
+  /** Rerank calls that failed and fell back to RRF order this process. */
+  failure_count: number
+  lastError: string | null
+  lastErrorKind: RerankerFailureKind | null
+  /** Adapter name of the last failure. */
+  lastFailedReranker: string | null
+}
+
+const cleanStatus = (): RerankerRuntimeStatus => ({
+  engaged_count: 0,
+  failure_count: 0,
+  lastError: null,
+  lastErrorKind: null,
+  lastFailedReranker: null,
+})
+
+let runtimeStatus = cleanStatus()
+
+/** Inspect reranker runtime state without forcing a load. Used by plur_doctor and the MCP recall path. */
+export function rerankerStatus(): RerankerRuntimeStatus {
+  return { ...runtimeStatus }
+}
+
+/** Record a successful cross-encoder engagement. */
+export function recordRerankerEngaged(): void {
+  runtimeStatus.engaged_count += 1
+}
+
+/**
+ * Record a rerank failure. Returns the classification plus whether this
+ * message is news (`firstFailure`) — callers log the first occurrence loudly
+ * and demote repeats to debug, so a broken model warns once instead of
+ * flooding one warning per query.
+ */
+export function recordRerankerFailure(
+  name: string,
+  message: string,
+): { kind: RerankerFailureKind; firstFailure: boolean } {
+  const firstFailure = runtimeStatus.lastError !== message
+  const kind = classifyRerankerFailure(message)
+  runtimeStatus.failure_count += 1
+  runtimeStatus.lastError = message
+  runtimeStatus.lastErrorKind = kind
+  runtimeStatus.lastFailedReranker = name
+  return { kind, firstFailure }
+}
+
+/** Reset the runtime tracker — doctor retry and tests. */
+export function resetRerankerStatus(): void {
+  runtimeStatus = cleanStatus()
+}
+
+/**
+ * Corrupt-model indicators. "Protobuf parsing failed" is the observed #340
+ * shape (truncated Xet download); the rest are conservative synonyms for a
+ * damaged on-disk artifact. Anything else is treated as `unavailable`.
+ */
+const CORRUPT_RE = /protobuf parsing failed|corrupt|truncat|unexpected end of (?:file|data|input)|invalid model/i
+
+/** Classify a reranker failure message: corrupt-cache vs unavailable (#341). */
+export function classifyRerankerFailure(message: string): RerankerFailureKind {
+  return CORRUPT_RE.test(message) ? 'corrupt-cache' : 'unavailable'
+}
+
+/**
+ * HF hub cache directory name for a model id — the purge target when the
+ * cache is corrupt: `~/.cache/huggingface/hub/<this>/`.
+ */
+export function hfCacheDirName(modelId: string): string {
+  return `models--${modelId.replace(/\//g, '--')}`
+}
+
+/**
  * The "off" adapter. Returns zero for every pair — the recall path treats
  * this as "no reranking happened" and falls back to the RRF order.
  *
