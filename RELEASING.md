@@ -11,6 +11,9 @@ This repo publishes four npm packages from `packages/`:
 
 `hermes` (Python) ships through a separate PyPI pipeline and is out of scope for this guide.
 
+Publishing credentials (npm auth as `plur9`, the pending `NPM_TOKEN` repo secret, ClawHub OAuth)
+are documented in [`docs/runbooks/credentials.md`](docs/runbooks/credentials.md).
+
 ## Manual publish (one package)
 
 When `main` has a version bump that hasn't reached npm yet — e.g. `@plur-ai/claw@0.9.10` is on
