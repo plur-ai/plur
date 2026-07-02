@@ -34,7 +34,7 @@ import { detectSecrets, detectSensitive, sensitivityCategory, SCAN_TRUNCATED } f
 import type { SecretMatch } from './secrets.js'
 import type { ScopeMetadata, SensitivityCategory } from './schemas/scope-metadata.js'
 import { rankScopes, SCOPE_MATCH_THRESHOLD, type ScopeSignals, type ScopeCandidate } from './scope-routing.js'
-import { appendHistory, readHistoryForEngram, generateEventId } from './history.js'
+import { appendHistory, readHistoryForEngram, generateEventId, generateInjectionId, computeQueryHash, findLatestInjectionFor, countInjectionEvents, type InjectionEventCounts } from './history.js'
 import { computeContentHash } from './content-hash.js'
 import { resolveValidity, buildTemporal } from './expiry.js'
 import { decodeJwtExpiry } from './jwt.js'
@@ -74,7 +74,7 @@ export { selectModel, selectModelForOperation, resolveOperationTier, type ModelT
 export { recallAuto, type AutoSearchResult, type SearchStrategy } from './search-orchestrator.js'
 export { generateProfile, getProfileForInjection, loadProfileCache, saveProfileCache, markProfileDirty, profileNeedsRegeneration, type ProfileCache } from './profile.js'
 export { formatLayer1, formatLayer2, formatLayer3, formatWithLayer, assignLayer, type InjectionLayer } from './inject.js'
-export { appendHistory, readHistory, listHistoryMonths, readHistoryForEngram, generateEventId, type HistoryEvent } from './history.js'
+export { appendHistory, readHistory, listHistoryMonths, readHistoryForEngram, generateEventId, generateInjectionId, computeQueryHash, findLatestInjectionFor, countInjectionEvents, type HistoryEvent, type InjectionEventCounts } from './history.js'
 export { applyBatchDecay, strengthToStatus, type BatchDecayResult, type DecayTransition, type BatchDecayOptions } from './decay.js'
 export { computeContentHash, normalizeStatement } from './content-hash.js'
 export { parseDedupResponse, buildDedupPrompt, buildBatchDedupPrompt } from './dedup.js'
@@ -206,6 +206,8 @@ export interface StatusResult {
   outbox_count?: number
   /** Present when the most recent background index pass failed (#272). */
   index_error?: IndexSyncError
+  /** Injection-provenance event/label counts (#452) — feeds #202's volume gate. */
+  history_events?: InjectionEventCounts
 }
 
 /**
@@ -329,6 +331,12 @@ export class Plur {
    */
   private _lastIndexError: IndexSyncError | null = null
   private _engramCache: Map<string, { mtime: bigint; engrams: Engram[] }> = new Map()
+  /**
+   * engram_id → injection_id of the most recent co_injection that included it
+   * (#452). Fast path for linking plur_feedback verdicts to their injection
+   * event; findLatestInjectionFor covers the cross-process case.
+   */
+  private _lastInjectionByEngram: Map<string, string> = new Map()
   private _llmFailureCount = 0
   private _llmDisabledUntil: number | null = null
   private _sessionScope: string | null = null
@@ -2316,6 +2324,29 @@ export class Plur {
       ...result.consider.map(e => e.id),
     ]
 
+    // #452: log a co_injection provenance event — which engrams fired
+    // together for which query context. Data source for the co-fires-with
+    // edges (#200/#201) and temporal-replay self-labeling (#202). Compact by
+    // design (IDs + query hash, never statements); best-effort — a history
+    // write failure must never break injection.
+    if (injected_ids.length > 0) {
+      const injection_id = generateInjectionId()
+      try {
+        appendHistory(this.paths.root, {
+          event: 'co_injection',
+          engram_id: injection_id,
+          timestamp: new Date().toISOString(),
+          data: {
+            ids: injected_ids,
+            query_hash: computeQueryHash(task),
+            ...(options?.scope ? { scope: options.scope } : {}),
+            ...(options?.session_id ? { session_id: options.session_id } : {}),
+          },
+        })
+        for (const id of injected_ids) this._lastInjectionByEngram.set(id, injection_id)
+      } catch { /* best-effort */ }
+    }
+
     return {
       directives: directivesStr,
       constraints: constraintsStr,
@@ -2360,7 +2391,10 @@ export class Plur {
       return true
     })
 
-    if (found) return
+    if (found) {
+      this._logInjectionOutcome(id, signal)
+      return
+    }
 
     // Try configured stores (namespaced IDs)
     const storeInfo = this._findEngramStore(id)
@@ -2383,6 +2417,7 @@ export class Plur {
         }
         this._writeEngrams(storeInfo.path, storeEngrams)
         this._syncIndex()
+        this._logInjectionOutcome(id, signal)
         return
       }
     }
@@ -2410,12 +2445,37 @@ export class Plur {
           timestamp: new Date().toISOString(),
           data: { signal, routed_to: 'remote' },
         })
+        this._logInjectionOutcome(id, signal)
         return
       }
     }
 
     // Search pack engrams by scanning pack directories
     this._feedbackPack(id, signal)
+    this._logInjectionOutcome(id, signal)
+  }
+
+  /**
+   * Log an injection_outcome event linking a feedback verdict to the
+   * co_injection event the engram came from (#452). Only positive/negative
+   * verdicts are outcomes — "ignored" is the absence of an outcome, so
+   * neutral signals and feedback on never-injected engrams write nothing.
+   * Link resolution: in-process map first, then a bounded history scan for
+   * injections logged by another process (hook-inject, CLI).
+   */
+  private _logInjectionOutcome(engramId: string, signal: 'positive' | 'negative' | 'neutral'): void {
+    if (signal === 'neutral') return
+    try {
+      const injectionId = this._lastInjectionByEngram.get(engramId)
+        ?? findLatestInjectionFor(this.paths.root, engramId)?.injection_id
+      if (!injectionId) return
+      appendHistory(this.paths.root, {
+        event: 'injection_outcome',
+        engram_id: engramId,
+        timestamp: new Date().toISOString(),
+        data: { injection_id: injectionId, signal },
+      })
+    } catch { /* best-effort — outcome logging must never break feedback */ }
   }
 
   /**
@@ -3494,6 +3554,7 @@ Generate an improved version of the procedure that prevents this failure. Return
       tension_count: tensionPairs.size,
       versioned_engram_count: versionedCount,
       outbox_count: this.outboxCount(),
+      history_events: countInjectionEvents(this.paths.root),
       ...(this._lastIndexError ? { index_error: this._lastIndexError } : {}),
     }
   }
