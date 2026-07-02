@@ -65,7 +65,7 @@ For **multi-project setups**, use domain/scope to separate knowledge:
 
 ```bash
 cd ~/projects/my-app
-npx @plur-ai/cli@0.9.4 init --domain myapp --scope project:my-app
+npx @plur-ai/cli@0.10.1 init --domain myapp --scope project:my-app
 ```
 
 This creates a `.plur.yaml` in the project with defaults that hooks apply automatically. Engrams learned in that project are tagged; recall filters by scope but always includes global knowledge.
@@ -92,10 +92,30 @@ That's it. PLUR works in the background from here. No workflow changes needed �
 
 ```bash
 pip install plur-hermes
-npm install -g @plur-ai/cli@0.9.4
+npm install -g @plur-ai/cli@0.10.1
 ```
 
-The plugin registers automatically via Hermes' plugin system. It injects relevant memories before each LLM call, extracts learnings from agent responses, and exposes all PLUR tools to the agent. Hermes shells out to the PLUR CLI; current verified pairing is `plur-hermes==0.9.4` with `@plur-ai/cli@0.9.4`.
+The plugin registers automatically via Hermes' plugin system. It injects relevant memories before each LLM call, extracts learnings from agent responses, and exposes all PLUR tools to the agent. Hermes shells out to the PLUR CLI; current verified pairing is `plur-hermes==0.10.0` with `@plur-ai/cli@0.10.1`.
+
+### Python SDK (LangChain, llama.cpp, scripts)
+
+For Python environments that aren't Hermes:
+
+```bash
+pip install plur-ai
+npm install -g @plur-ai/cli@0.10.1   # bridge (required)
+```
+
+```python
+from plur_ai import Plur
+
+plur = Plur()
+plur.learn("always use async generators for streaming LLM output")
+results = plur.recall("streaming patterns")
+context = plur.inject("write a streaming endpoint", limit=10)
+```
+
+`plur-ai` bridges to the same on-disk store as Claude Code and OpenClaw — memory written from Python is immediately visible across all your tools. See [`packages/python/examples/`](packages/python/examples/) for LangChain and llama.cpp integration examples.
 
 ### Verify it works
 
@@ -240,6 +260,7 @@ While search is a core part of PLUR (finding the right engram to inject), the se
 | [`@plur-ai/mcp`](packages/mcp) | MCP server for Claude Code, Cursor, Windsurf |
 | [`@plur-ai/claw`](packages/claw) | OpenClaw ContextEngine plugin |
 | [`plur-hermes`](packages/hermes) | Hermes Agent plugin (Python, via CLI bridge) |
+| [`plur-ai`](packages/python) | Python SDK — learn/recall/inject for LangChain, llama.cpp, scripts |
 
 ## Architecture
 
@@ -259,7 +280,8 @@ While search is a core part of PLUR (finding the right engram to inject), the se
 
 @plur-ai/mcp          Wraps core as MCP tools
 @plur-ai/claw          OpenClaw ContextEngine hooks (assemble/compact/afterTurn)
-plur-hermes            Python plugin for Hermes Agent (CLI subprocess bridge)
+plur-hermes            Python plugin for Hermes Agent (auto inject/learn)
+plur-ai                Python SDK — direct learn/recall/inject for scripts and frameworks
 ```
 
 ### Storage
