@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeAll, beforeEach, afterEach } from 'vitest'
 import { mkdtempSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
@@ -9,6 +9,22 @@ describe('MCP tools', () => {
   let plur: Plur
   let dir: string
   let tools: ReturnType<typeof getToolDefinitions>
+
+  // Warm the BGE text-embedder pipeline once before any test runs (#469).
+  // The pipeline is a module-level singleton (transformers-base.ts pipelineCache)
+  // so one load covers the whole suite. Without this, the first test that calls
+  // learn/recall/inject bears the cold-load cost (~5s on a fresh CI runner) against
+  // its per-test timeout. Charging it to hookTimeout (30s) here eliminates the flake.
+  beforeAll(async () => {
+    const warmDir = mkdtempSync(join(tmpdir(), 'plur-mcp-warm-'))
+    const warmPlur = new Plur({ path: warmDir })
+    try {
+      await warmPlur.learn('embedder warmup', { scope: 'global' })
+      await warmPlur.recall('embedder warmup')
+    } finally {
+      rmSync(warmDir, { recursive: true })
+    }
+  })
 
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), 'plur-mcp-'))
