@@ -1,6 +1,7 @@
 import type { Engram } from './schemas/engram.js'
 import { searchEngrams } from './fts.js'
 import { embeddingSearch, embedderStatus } from './embeddings.js'
+import { rewriteLexicalQuery, isQueryRewriteDisabled } from './intent/rewrite.js'
 import { logger } from './logger.js'
 import type { RerankerAdapter } from './rerankers/types.js'
 import { isRerankerOff, recordRerankerEngaged, recordRerankerFailure, hfCacheDirName } from './rerankers/index.js'
@@ -145,8 +146,14 @@ export async function hybridSearchWithMeta(
   const bm25Limit = Math.min(engrams.length, exhaustive ? effectiveLimit * 5 : effectiveLimit * 3)
   const embLimit = Math.min(engrams.length, exhaustive ? effectiveLimit * 3 : effectiveLimit * 2)
 
+  // #224 remainder: the LEXICAL leg gets the deterministically rewritten
+  // query (interrogative scaffolding + relative-temporal anchors stripped).
+  // The embedding leg and the reranker keep the original natural-language
+  // query — those models are trained on questions; BM25 is not.
+  const lexicalQuery = isQueryRewriteDisabled() ? query : rewriteLexicalQuery(query)
+
   const [bm25Results, embResults] = await Promise.all([
-    Promise.resolve(searchEngrams(engrams, query, bm25Limit)),
+    Promise.resolve(searchEngrams(engrams, lexicalQuery, bm25Limit)),
     embeddingSearch(engrams, query, embLimit, storagePath),
   ])
 

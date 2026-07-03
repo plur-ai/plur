@@ -4,3 +4,4 @@ export { routeForIntent, isIntentRoutingDisabled, isEntityDomain } from './route
 export type { IntentRoutingProfile } from './route.js'
 export { applyIntentRouting } from './apply.js'
 export type { ApplyIntentOptions } from './apply.js'
+export { rewriteLexicalQuery, isQueryRewriteDisabled } from './rewrite.js'
