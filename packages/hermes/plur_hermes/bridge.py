@@ -28,6 +28,24 @@ logger = logging.getLogger("plur_hermes.bridge")
 _NPX_CLI_VERSION = "0.10.0"
 
 _DEFAULT_DEDUP_CACHE_SIZE = 256
+# TTL (seconds) on dedup-cache entries — the in-process half of #120.
+#
+# The #119 LRU cache made repeat learn() calls skip the CLI subprocess
+# (sub-ms vs ~4s), but entries lived for the whole process lifetime. In a
+# long-lived Hermes process spanning many logical sessions that means a
+# `forget` (or edit) from another session is never observed: the bridge keeps
+# serving `deduplicated: true` with a dangling engram id forever. The TTL
+# bounds that staleness — every entry is revalidated against the store via the
+# recall path once its deadline passes. Deadlines are anchored at WRITE time
+# (reads never extend them), so even a continuously-hit statement revalidates
+# every _DEFAULT_DEDUP_CACHE_TTL seconds.
+#
+# 300s balances subprocess amortization (~4s per revalidation, so amortized
+# overhead is well under the 50ms/call AC at any realistic call rate) against
+# cross-session visibility lag. ttl <= 0 disables expiry (pre-#120 behavior).
+# The true cross-session COLD path (< 50ms with no in-process hit) needs the
+# `plur serve` daemon and remains open on #120.
+_DEFAULT_DEDUP_CACHE_TTL = 300.0
 _DEFAULT_TIMEOUT = 30
 _DEFAULT_INJECT_TIMEOUT = 5
 _DEFAULT_RETRIES = 3
@@ -138,11 +156,23 @@ class PlurBridge:
     """Manages subprocess calls to the plur CLI."""
 
     def __init__(self, plur_path: str | None = None,
-                 dedup_cache_size: int = _DEFAULT_DEDUP_CACHE_SIZE):
+                 dedup_cache_size: int = _DEFAULT_DEDUP_CACHE_SIZE,
+                 dedup_cache_ttl: float | None = None):
         self._binary: str | None = None
         self._plur_path = plur_path or os.environ.get("PLUR_PATH")
         self._dedup_cache_size = max(0, dedup_cache_size)
-        self._dedup_cache: "OrderedDict[str, dict]" = OrderedDict()
+        # TTL resolution: explicit arg > PLUR_BRIDGE_DEDUP_TTL env > default.
+        # ttl <= 0 means entries never expire (pre-#120 infinite lifetime).
+        if dedup_cache_ttl is None:
+            try:
+                dedup_cache_ttl = float(
+                    os.environ.get("PLUR_BRIDGE_DEDUP_TTL", str(_DEFAULT_DEDUP_CACHE_TTL)))
+            except ValueError:
+                dedup_cache_ttl = _DEFAULT_DEDUP_CACHE_TTL
+        self._dedup_cache_ttl = dedup_cache_ttl
+        # Values are (entry, expires_at) pairs; expires_at is a time.monotonic()
+        # deadline, or None when TTL is disabled.
+        self._dedup_cache: "OrderedDict[str, tuple[dict, float | None]]" = OrderedDict()
         self._timeout = int(os.environ.get("PLUR_BRIDGE_TIMEOUT", str(_DEFAULT_TIMEOUT)))
         self._inject_timeout = int(os.environ.get("PLUR_BRIDGE_INJECT_TIMEOUT", str(_DEFAULT_INJECT_TIMEOUT)))
         self._retry_enabled = os.environ.get("PLUR_BRIDGE_RETRY", "true").lower() != "false"
@@ -152,17 +182,27 @@ class PlurBridge:
             return None
         if normalized not in self._dedup_cache:
             return None
+        entry, expires_at = self._dedup_cache[normalized]
+        # Reads never refresh the deadline — the staleness bound is anchored
+        # at write time so hot statements still revalidate every TTL seconds.
+        if expires_at is not None and time.monotonic() >= expires_at:
+            del self._dedup_cache[normalized]
+            return None
         self._dedup_cache.move_to_end(normalized)
-        return self._dedup_cache[normalized]
+        return entry
 
     def _cache_put(self, normalized: str, value: dict) -> None:
         if self._dedup_cache_size == 0 or not normalized:
             return
+        expires_at = (
+            time.monotonic() + self._dedup_cache_ttl
+            if self._dedup_cache_ttl > 0 else None
+        )
         if normalized in self._dedup_cache:
             self._dedup_cache.move_to_end(normalized)
-            self._dedup_cache[normalized] = value
+            self._dedup_cache[normalized] = (value, expires_at)
             return
-        self._dedup_cache[normalized] = value
+        self._dedup_cache[normalized] = (value, expires_at)
         while len(self._dedup_cache) > self._dedup_cache_size:
             self._dedup_cache.popitem(last=False)
 
