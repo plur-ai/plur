@@ -2,6 +2,7 @@
 
 import json
 import subprocess
+import time
 import pytest
 from unittest.mock import patch, MagicMock
 from plur_hermes.bridge import PlurBridge, PlurBridgeError, PlurLockError, PlurNotFoundError
@@ -919,3 +920,184 @@ class TestLockRetry:
         from plur_hermes.bridge import _extract_cli_error_message
         result = _extract_cli_error_message("stderr msg", '[{"error": "bad"}]')
         assert result == "stderr msg"
+
+
+class TestDedupTtlCache:
+    """Issue #120 (in-process half) — TTL on the dedup cache.
+
+    The #119 v2 LRU cache made in-session repeat learn() calls skip the
+    subprocess entirely, but entries lived for the whole process lifetime.
+    In a long-lived Hermes process spanning many logical sessions that means
+    a `forget` (or edit) from another session is never observed: the bridge
+    keeps serving `deduplicated: true` with a dangling engram id forever.
+
+    The TTL bounds that staleness: cache hits stay sub-millisecond (repeat
+    statements << the 50 ms AC), and every entry is revalidated against the
+    store via the recall path after `dedup_cache_ttl` seconds. The deadline
+    is anchored at WRITE time — reads never extend it — so even a hot
+    statement revalidates every TTL seconds.
+
+    The true cross-session cold path (< 50 ms with NO in-process cache hit)
+    needs the `plur serve` daemon and stays open on #120.
+    """
+
+    @staticmethod
+    def _mock_json(payload: dict) -> MagicMock:
+        m = MagicMock()
+        m.returncode = 0
+        m.stdout = json.dumps(payload)
+        m.stderr = ""
+        return m
+
+    def _learned_bridge(self, ttl: float, statement: str = "Prefer pnpm over npm",
+                        engram_id: str = "ENG-120") -> PlurBridge:
+        """Bridge with `statement` already learned (cache warm), subprocess mocked."""
+        bridge = PlurBridge(dedup_cache_ttl=ttl)
+        bridge._binary = "/usr/local/bin/plur"
+        empty_recall = self._mock_json({"results": [], "count": 0})
+        learn_ok = self._mock_json({"id": engram_id, "statement": statement})
+        with patch("subprocess.run", side_effect=[empty_recall, learn_ok]):
+            r = bridge.learn(statement)
+            assert r["id"] == engram_id
+        return bridge
+
+    def test_cache_hit_within_ttl_skips_subprocess(self):
+        bridge = self._learned_bridge(ttl=60.0)
+        with patch("subprocess.run") as mock_run:
+            r = bridge.learn("Prefer pnpm over npm")
+            assert r == {"id": "ENG-120", "statement": "Prefer pnpm over npm",
+                         "deduplicated": True}
+            assert mock_run.call_count == 0
+
+    def test_cache_entry_expires_after_ttl_and_revalidates(self):
+        bridge = self._learned_bridge(ttl=0.05)
+        time.sleep(0.15)
+        # Entry expired → bridge must revalidate via recall. Store still has
+        # the engram, so the result is a dedup hit sourced from the store.
+        recall_hit = self._mock_json({
+            "results": [{"id": "ENG-120", "statement": "Prefer pnpm over npm"}],
+        })
+        with patch("subprocess.run", side_effect=[recall_hit]) as mock_run:
+            r = bridge.learn("Prefer pnpm over npm")
+            assert r == {"id": "ENG-120", "statement": "Prefer pnpm over npm",
+                         "deduplicated": True}
+            assert mock_run.call_count == 1  # exactly one recall, no insert
+
+    def test_revalidation_rearms_ttl(self):
+        bridge = self._learned_bridge(ttl=0.05)
+        time.sleep(0.15)
+        recall_hit = self._mock_json({
+            "results": [{"id": "ENG-120", "statement": "Prefer pnpm over npm"}],
+        })
+        with patch("subprocess.run", side_effect=[recall_hit]):
+            bridge.learn("Prefer pnpm over npm")
+        # Revalidation re-armed the entry — next call is a pure cache hit.
+        with patch("subprocess.run") as mock_run:
+            r = bridge.learn("Prefer pnpm over npm")
+            assert r["deduplicated"] is True
+            assert mock_run.call_count == 0
+
+    def test_stale_entry_dropped_when_store_changed(self):
+        """Cross-session correctness: engram forgotten elsewhere → after TTL
+        the bridge must NOT serve the dangling id; it re-learns."""
+        bridge = self._learned_bridge(ttl=0.05)
+        time.sleep(0.15)
+        empty_recall = self._mock_json({"results": [], "count": 0})
+        relearn = self._mock_json({"id": "ENG-121", "statement": "Prefer pnpm over npm"})
+        with patch("subprocess.run", side_effect=[empty_recall, relearn]) as mock_run:
+            r = bridge.learn("Prefer pnpm over npm")
+            assert r["id"] == "ENG-121"
+            assert "deduplicated" not in r
+            assert mock_run.call_count == 2  # recall miss + insert
+
+    def test_read_does_not_extend_deadline(self):
+        """Staleness bound is write-anchored: hot statements still revalidate
+        every TTL seconds even when hit continuously."""
+        bridge = self._learned_bridge(ttl=0.3)
+        time.sleep(0.15)
+        with patch("subprocess.run") as mock_run:
+            assert bridge.learn("Prefer pnpm over npm")["deduplicated"] is True
+            assert mock_run.call_count == 0  # mid-TTL hit
+        time.sleep(0.25)  # now past the original write deadline
+        recall_hit = self._mock_json({
+            "results": [{"id": "ENG-120", "statement": "Prefer pnpm over npm"}],
+        })
+        with patch("subprocess.run", side_effect=[recall_hit]) as mock_run:
+            assert bridge.learn("Prefer pnpm over npm")["deduplicated"] is True
+            assert mock_run.call_count == 1  # the mid-TTL hit did not re-arm
+
+    def test_ttl_zero_disables_expiry(self):
+        """ttl <= 0 restores the pre-TTL infinite-lifetime behavior."""
+        bridge = self._learned_bridge(ttl=0)
+        time.sleep(0.1)
+        with patch("subprocess.run") as mock_run:
+            r = bridge.learn("Prefer pnpm over npm")
+            assert r["deduplicated"] is True
+            assert mock_run.call_count == 0
+
+    def test_ttl_env_override(self, monkeypatch):
+        monkeypatch.setenv("PLUR_BRIDGE_DEDUP_TTL", "123.5")
+        bridge = PlurBridge()
+        assert bridge._dedup_cache_ttl == 123.5
+
+    def test_ttl_constructor_beats_env(self, monkeypatch):
+        monkeypatch.setenv("PLUR_BRIDGE_DEDUP_TTL", "123.5")
+        bridge = PlurBridge(dedup_cache_ttl=7.0)
+        assert bridge._dedup_cache_ttl == 7.0
+
+    def test_force_learn_rearms_expired_entry(self):
+        """force=True bypasses cache reads but its result re-populates the
+        cache with a fresh deadline (same contract as #119, now with TTL)."""
+        bridge = self._learned_bridge(ttl=0.05)
+        time.sleep(0.15)
+        forced = self._mock_json({"id": "ENG-122", "statement": "Prefer pnpm over npm"})
+        with patch("subprocess.run", side_effect=[forced]) as mock_run:
+            r = bridge.learn("Prefer pnpm over npm", force=True)
+            assert r["id"] == "ENG-122"
+            assert mock_run.call_count == 1  # no recall on force
+        with patch("subprocess.run") as mock_run:
+            r = bridge.learn("Prefer pnpm over npm")
+            assert r == {"id": "ENG-122", "statement": "Prefer pnpm over npm",
+                         "deduplicated": True}
+            assert mock_run.call_count == 0
+
+    def test_lru_eviction_still_works_with_ttl(self):
+        bridge = PlurBridge(dedup_cache_size=2, dedup_cache_ttl=60.0)
+        bridge._binary = "/usr/local/bin/plur"
+        empty = self._mock_json({"results": [], "count": 0})
+        for i, stmt in enumerate(("eng-a", "eng-b", "eng-c")):
+            learn_ok = self._mock_json({"id": f"ENG-{i}", "statement": stmt})
+            with patch("subprocess.run", side_effect=[empty, learn_ok]):
+                bridge.learn(stmt)
+        assert "eng-a" not in bridge._dedup_cache
+        assert "eng-b" in bridge._dedup_cache
+        assert "eng-c" in bridge._dedup_cache
+
+    def test_benchmark_repeat_learn_median_under_50ms(self, capsys):
+        """Micro-benchmark for the #120 in-process AC reading: repeat learn()
+        of a statement already in cache must complete in < 50 ms median.
+
+        subprocess.run is patched to fail loudly, so the timed loop measures
+        the true production cache-hit path — which by construction performs
+        zero subprocess work. Numbers are printed for the PR body.
+        """
+        bridge = self._learned_bridge(ttl=300.0)
+        n = 1000
+        samples: list[float] = []
+        with patch("subprocess.run",
+                   side_effect=AssertionError("subprocess on cache-hit path")):
+            for _ in range(n):
+                t0 = time.perf_counter()
+                r = bridge.learn("Prefer pnpm over npm")
+                samples.append(time.perf_counter() - t0)
+                assert r["deduplicated"] is True
+        samples.sort()
+        median = samples[n // 2]
+        p95 = samples[int(n * 0.95)]
+        worst = samples[-1]
+        with capsys.disabled():
+            print(f"\n[bench #120] repeat learn() cache hit, n={n}: "
+                  f"median={median * 1000:.4f}ms p95={p95 * 1000:.4f}ms "
+                  f"max={worst * 1000:.4f}ms")
+        assert median < 0.050, f"median {median * 1000:.3f}ms >= 50ms"
+        assert p95 < 0.050, f"p95 {p95 * 1000:.3f}ms >= 50ms"
