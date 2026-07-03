@@ -10,10 +10,12 @@ import { createServer } from '../src/server.js'
 describe('MCP server (wire protocol)', () => {
   let client: Client
   let dir: string
+  let plurInstance: Plur
 
   beforeEach(async () => {
     dir = mkdtempSync(join(tmpdir(), 'plur-mcp-server-'))
     const plur = new Plur({ path: dir })
+    plurInstance = plur
     const server = await createServer(plur)
 
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
@@ -72,6 +74,90 @@ describe('MCP server (wire protocol)', () => {
     const parsed = JSON.parse((result.content as any)[0].text)
     expect(parsed.id).toBeDefined()
     expect(parsed.statement).toBe('Test with tags')
+  })
+
+  // Issue #297 hardening — array params must either work or fail loudly with a
+  // useful message. The empty-payload symptom is a CLIENT-side serialization bug
+  // (the server provably handles real arrays — test above), but the server can
+  // (a) coerce the natural string workarounds back into arrays, and (b) name the
+  // known client bug when the payload arrives empty, so the caller can retry
+  // with a coercible shape instead of abandoning the write.
+  describe('array argument hardening (#297)', () => {
+    it('coerces a JSON-stringified array into a real array', async () => {
+      const result = await client.callTool({
+        name: 'plur_learn',
+        arguments: { statement: 'Coerce JSON string tags', tags: '["alpha","beta"]' },
+      })
+      expect(result.isError).toBeFalsy()
+      const parsed = JSON.parse((result.content as any)[0].text)
+      expect(parsed.id).toBeDefined()
+      const stored = plurInstance.getById(parsed.id)
+      expect(stored?.tags).toEqual(['alpha', 'beta'])
+    })
+
+    it('coerces a comma-separated string into a string array', async () => {
+      const result = await client.callTool({
+        name: 'plur_learn',
+        arguments: { statement: 'Coerce comma-separated tags', tags: 'alpha, beta' },
+      })
+      expect(result.isError).toBeFalsy()
+      const parsed = JSON.parse((result.content as any)[0].text)
+      const stored = plurInstance.getById(parsed.id)
+      expect(stored?.tags).toEqual(['alpha', 'beta'])
+    })
+
+    it('coerces a single bare string into a one-element array', async () => {
+      const result = await client.callTool({
+        name: 'plur_learn',
+        arguments: { statement: 'Coerce bare string tag', tags: 'solo' },
+      })
+      expect(result.isError).toBeFalsy()
+      const parsed = JSON.parse((result.content as any)[0].text)
+      const stored = plurInstance.getById(parsed.id)
+      expect(stored?.tags).toEqual(['solo'])
+    })
+
+    it('malformed JSON array string fails loudly naming the field', async () => {
+      const result = await client.callTool({
+        name: 'plur_learn',
+        arguments: { statement: 'Malformed tags', tags: '["unterminated' },
+      })
+      expect(result.isError).toBe(true)
+      const parsed = JSON.parse((result.content as any)[0].text)
+      expect(parsed.success).toBe(false)
+      expect(parsed.error).toContain('tags')
+    })
+
+    it('non-string non-array value still fails loudly naming the field', async () => {
+      const result = await client.callTool({
+        name: 'plur_learn',
+        arguments: { statement: 'Numeric tags', tags: 42 },
+      })
+      expect(result.isError).toBe(true)
+      const parsed = JSON.parse((result.content as any)[0].text)
+      expect(parsed.success).toBe(false)
+      expect(parsed.error).toContain('tags')
+    })
+
+    it('empty arguments on a tool with array params names the client bug (#297)', async () => {
+      const result = await client.callTool({ name: 'plur_learn', arguments: {} })
+      expect(result.isError).toBe(true)
+      const parsed = JSON.parse((result.content as any)[0].text)
+      expect(parsed.error).toContain('arguments object was empty')
+      // The targeted hint: names the known client-side array serialization bug
+      // and the coercible retry shapes, so the agent self-corrects.
+      expect(parsed.error).toContain('plur-ai/plur#297')
+      expect(parsed.error).toMatch(/JSON string|comma-separated/)
+    })
+
+    it('empty arguments on a tool WITHOUT array params does not mention #297', async () => {
+      // plur_recall has no array-typed params — the hint would be noise.
+      const result = await client.callTool({ name: 'plur_recall', arguments: {} })
+      expect(result.isError).toBe(true)
+      const parsed = JSON.parse((result.content as any)[0].text)
+      expect(parsed.error).toContain('arguments object was empty')
+      expect(parsed.error).not.toContain('plur-ai/plur#297')
+    })
   })
 
   it('learn → recall → feedback roundtrip', async () => {
