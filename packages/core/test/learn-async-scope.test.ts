@@ -113,6 +113,47 @@ describe('learnAsync scope-aware LLM dedup (issue #359)', () => {
   })
 })
 
+// #484: async UPDATE/MERGE must increment `engram_version` (content-evolution
+// counter used by previous_version chains), not `version` (schema-shape field).
+describe('learnAsync UPDATE/MERGE increment engram_version not version (#484)', () => {
+  let dir: string
+  let engramsPath: string
+  afterEach(() => { if (dir) rmSync(dir, { recursive: true, force: true }) })
+
+  function depsWithFile(candidates: Engram[]): LearnAsyncDeps {
+    dir = mkdtempSync(join(tmpdir(), 'plur-484-'))
+    engramsPath = join(dir, 'engrams.yaml')
+    saveEngrams(engramsPath, candidates)
+    return { ...makeDeps(candidates), engramsPath, rootPath: dir }
+  }
+
+  it('UPDATE increments engram_version and leaves version untouched', async () => {
+    const seed = { ...globalCandidate, id: 'ENG-2026-0101-484a', scope: 'global', engram_version: 3, version: 2 } as unknown as Engram
+    const deps = depsWithFile([seed])
+    const llm = vi.fn().mockResolvedValue('DECISION: UPDATE\nTARGET: ENG-2026-0101-484a\nREASON: same topic')
+
+    const result = await learnAsync(deps, 'updated statement', { llm })
+
+    expect(result.decision).toBe('UPDATE')
+    const persisted = loadEngrams(engramsPath).find(e => e.id === 'ENG-2026-0101-484a') as any
+    expect(persisted.engram_version).toBe(4)   // incremented
+    expect(persisted.version).toBe(2)           // schema-shape, untouched
+  })
+
+  it('MERGE increments engram_version and leaves version untouched', async () => {
+    const seed = { ...globalCandidate, id: 'ENG-2026-0101-484b', scope: 'global', engram_version: 2, version: 2 } as unknown as Engram
+    const deps = depsWithFile([seed])
+    const llm = vi.fn().mockResolvedValue('DECISION: MERGE\nTARGET: ENG-2026-0101-484b\nREASON: complementary')
+
+    const result = await learnAsync(deps, 'extra clause', { llm })
+
+    expect(result.decision).toBe('MERGE')
+    const persisted = loadEngrams(engramsPath).find(e => e.id === 'ENG-2026-0101-484b') as any
+    expect(persisted.engram_version).toBe(3)   // incremented
+    expect(persisted.version).toBe(2)           // schema-shape, untouched
+  })
+})
+
 // #409: a dedup UPDATE/MERGE unions context.tags into the engram, but the demote
 // scan only looked at the statement — a secret in a merged TAG reached the shared
 // store unguarded. The demote now scans statement + tags.
