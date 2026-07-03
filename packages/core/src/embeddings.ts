@@ -122,6 +122,24 @@ export function resetEmbedder(): void {
   embedPipeline = null
 }
 
+/**
+ * Test-only: install a stub adapter as the active embedder so tests can
+ * exercise the embed()/activeEmbedderDim() contracts (#335) without a
+ * model load. Mirrors rerankers' `_setCachedReranker`. Production code
+ * never calls this; pair with `resetEmbedder()` in afterEach.
+ */
+export function _setCachedEmbedder(adapter: {
+  name: string
+  dim: number
+  modelId: string
+  embed(text: string): Promise<Float32Array>
+  embedBatch(texts: string[]): Promise<Float32Array[]>
+}): void {
+  embedPipeline = adapter
+  transformersUnavailable = false
+  lastLoadError = null
+}
+
 async function getEmbedder() {
   if (embeddingsDisabled) return null
   if (embedPipeline) return embedPipeline
