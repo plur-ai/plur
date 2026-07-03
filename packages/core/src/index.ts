@@ -1981,7 +1981,7 @@ export class Plur {
       return { engrams: [], mode: 'hybrid', embedderError: null, topScore: null, reranked: 0 }
     }
     const { embed } = await import('./embeddings.js')
-    const queryVec = await embed(query)
+    const queryVec = await embed(query, 'query')
     const status = embedderStatus()
     if (!queryVec) {
       return hybridSearchWithMeta(filtered, query, limit, this.paths.root, rerank)
@@ -2016,7 +2016,7 @@ export class Plur {
   private async _pgliteSemanticRecall(query: string, limit: number, filtered: Engram[]): Promise<Engram[]> {
     if (!this.pgliteAdapter) return []
     const { embed } = await import('./embeddings.js')
-    const queryVec = await embed(query)
+    const queryVec = await embed(query, 'query')
     if (!queryVec) {
       return embeddingSearch(filtered, query, limit, this.paths.root)
     }
@@ -2252,7 +2252,7 @@ export class Plur {
       let results: SimilarityResult[] = []
       if (this.pgliteAdapter) {
         const { embed } = await import('./embeddings.js')
-        const queryVec = await embed(task)
+        const queryVec = await embed(task, 'query')
         if (queryVec) {
           try {
             const hits = await this.pgliteAdapter.searchVector(queryVec, engrams.length)

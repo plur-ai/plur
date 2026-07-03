@@ -35,7 +35,7 @@ import { makeEmbeddingGemmaAdapter } from './embedding-gemma.js'
 import { makeOpenAI3LargeAdapter } from './openai.js'
 import type { EmbedderAdapter } from './types.js'
 
-export type { EmbedderAdapter } from './types.js'
+export type { EmbedderAdapter, EmbedRole } from './types.js'
 
 /** All embedder names supported by the factory. Drives benchmark CLI parsing. */
 export const EMBEDDER_NAMES = [
