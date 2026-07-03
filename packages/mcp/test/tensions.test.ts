@@ -271,6 +271,175 @@ describe('plur_tensions scan mode', () => {
   })
 })
 
+describe('plur_tensions temporal config wiring (#240)', () => {
+  let dir: string
+  let originalFetch: typeof globalThis.fetch
+  const tools = getToolDefinitions()
+  const tensionsTool = tools.find(t => t.name === 'plur_tensions')!
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'plur-tensions-temporal-'))
+    originalFetch = globalThis.fetch
+    delete (process.env as any).OPENAI_API_KEY
+    delete (process.env as any).OPENROUTER_API_KEY
+  })
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch
+    fs.rmSync(dir, { recursive: true, force: true })
+  })
+
+  /** Learn two contradicting snapshot engrams recorded on different days. */
+  function seedSnapshotPair(plur: Plur): void {
+    const a = plur.learn('hormuz strait ceasefire holding, passage regulated', { domain: 'war-analysis' })
+    const b = plur.learn('hormuz strait ceasefire collapsed, passage closed', { domain: 'war-analysis' })
+    for (const [id, learnedAt] of [[a.id, '2026-04-07'], [b.id, '2026-05-05']] as const) {
+      const stored = plur.getById(id)!
+      plur.updateEngram({ ...stored, temporal: { ...stored.temporal, learned_at: learnedAt } })
+    }
+  }
+
+  const yesLlm = () => vi.fn().mockImplementation(async (_url: any, init: any) => {
+    const prompt: string = JSON.parse(init.body).messages[0].content
+    const n = (prompt.match(/PAIR \d+/g) ?? []).length
+    const content = n > 0
+      ? Array.from({ length: n }, (_, i) => `PAIR_${i + 1}: CONTRADICTS: yes | CONFIDENCE: 0.9 | REASON: Opposite.`).join('\n')
+      : 'CONTRADICTS: yes\nCONFIDENCE: 0.9\nREASON: Opposite.'
+    return { ok: true, json: async () => ({ choices: [{ message: { content } }] }) }
+  })
+
+  it('config tensions.temporal_domains skips snapshot pairs in scan mode', async () => {
+    fs.writeFileSync(path.join(dir, 'config.yaml'), 'tensions:\n  temporal_domains:\n    - war-analysis\n')
+    const plur = new Plur({ path: dir })
+    seedSnapshotPair(plur)
+
+    const fetchMock = yesLlm()
+    globalThis.fetch = fetchMock as any
+
+    const result = await tensionsTool.handler({
+      scan: true, llm_base_url: 'https://api.openai.com/v1', llm_api_key: 'k',
+    }, plur) as any
+
+    expect(result.pairs_checked).toBe(0)
+    expect(result.count).toBe(0)
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('without the config the same pair is judged (dates still reach the prompt)', async () => {
+    const plur = new Plur({ path: dir })
+    seedSnapshotPair(plur)
+
+    const prompts: string[] = []
+    const fetchMock = vi.fn().mockImplementation(async (_url: any, init: any) => {
+      const prompt: string = JSON.parse(init.body).messages[0].content
+      prompts.push(prompt)
+      const n = (prompt.match(/PAIR \d+/g) ?? []).length
+      const content = Array.from({ length: Math.max(n, 1) }, (_, i) => `PAIR_${i + 1}: CONTRADICTS: yes | CONFIDENCE: 0.9 | REASON: Opposite.`).join('\n')
+      return { ok: true, json: async () => ({ choices: [{ message: { content } }] }) }
+    })
+    globalThis.fetch = fetchMock as any
+
+    const result = await tensionsTool.handler({
+      scan: true, llm_base_url: 'https://api.openai.com/v1', llm_api_key: 'k',
+    }, plur) as any
+
+    expect(result.pairs_checked).toBe(1)
+    expect(result.count).toBe(1)
+    expect(prompts.join('\n')).toContain('2026-04-07')
+    expect(prompts.join('\n')).toContain('2026-05-05')
+    expect(result.tensions[0].days_apart).toBe(28)
+  })
+
+  it('temporal_discount arg discounts confidence and reports raw_confidence', async () => {
+    const plur = new Plur({ path: dir })
+    seedSnapshotPair(plur)
+
+    globalThis.fetch = yesLlm() as any
+
+    const result = await tensionsTool.handler({
+      scan: true, llm_base_url: 'https://api.openai.com/v1', llm_api_key: 'k',
+      temporal_discount: true, min_confidence: 0.2,
+    }, plur) as any
+
+    expect(result.count).toBe(1)
+    // 28 days apart → 0.3 factor → 0.27
+    expect(result.tensions[0].confidence).toBeCloseTo(0.27)
+    expect(result.tensions[0].raw_confidence).toBeCloseTo(0.9)
+  })
+
+  it('config tensions.temporal_discount=true applies without an explicit arg', async () => {
+    fs.writeFileSync(path.join(dir, 'config.yaml'), 'tensions:\n  temporal_discount: true\n')
+    const plur = new Plur({ path: dir })
+    seedSnapshotPair(plur)
+
+    globalThis.fetch = yesLlm() as any
+
+    const result = await tensionsTool.handler({
+      scan: true, llm_base_url: 'https://api.openai.com/v1', llm_api_key: 'k',
+      min_confidence: 0.2,
+    }, plur) as any
+
+    expect(result.count).toBe(1)
+    expect(result.tensions[0].confidence).toBeCloseTo(0.27)
+  })
+})
+
+describe('plur_learn supersedes (#240)', () => {
+  let dir: string
+  let plur: Plur
+  const tools = getToolDefinitions()
+  const learnTool = tools.find(t => t.name === 'plur_learn')!
+  const tensionsTool = tools.find(t => t.name === 'plur_tensions')!
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'plur-learn-supersedes-'))
+    plur = new Plur({ path: dir })
+  })
+
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('declares supersedes as an array param', () => {
+    const schema = learnTool.inputSchema as any
+    expect(schema.properties.supersedes).toBeDefined()
+    expect(schema.properties.supersedes.type).toBe('array')
+  })
+
+  it('writes the forward edge on the new engram and the reverse edge on the target', async () => {
+    const oldE = await learnTool.handler({ statement: 'plur cli version is 0.3.0', scope: 'global' }, plur) as any
+    const newE = await learnTool.handler({
+      statement: 'plur cli version is 0.8.2', scope: 'global', supersedes: [oldE.id],
+    }, plur) as any
+
+    expect(plur.getById(newE.id)?.relations?.supersedes).toEqual([oldE.id])
+    expect(plur.getById(oldE.id)?.relations?.superseded_by).toEqual([newE.id])
+  })
+
+  it('supersedes-linked pair no longer surfaces as a scan candidate', async () => {
+    const oldE = await learnTool.handler({ statement: 'plur cli version is 0.3.0', scope: 'global' }, plur) as any
+    await learnTool.handler({
+      statement: 'plur cli version is 0.8.2', scope: 'global', supersedes: [oldE.id],
+    }, plur) as any
+
+    const originalFetch = globalThis.fetch
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ choices: [{ message: { content: 'CONTRADICTS: yes\nCONFIDENCE: 1.0\nREASON: Versions differ.' } }] }),
+    })
+    globalThis.fetch = fetchMock as any
+    try {
+      const result = await tensionsTool.handler({
+        scan: true, llm_base_url: 'https://api.openai.com/v1', llm_api_key: 'k',
+      }, plur) as any
+      expect(result.pairs_checked).toBe(0)
+      expect(fetchMock).not.toHaveBeenCalled()
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+})
+
 describe('plur_tensions_purge tool', () => {
   let dir: string
   let plur: Plur

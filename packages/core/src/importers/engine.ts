@@ -210,6 +210,9 @@ function applyImportMetadata(engram: Engram, record: ImportRecord, conflictIds: 
       narrower: engram.relations?.narrower ?? [],
       related: engram.relations?.related ?? [],
       conflicts: [...new Set([...(engram.relations?.conflicts ?? []), ...conflictIds])],
+      // #240: preserve intentional-update edges when merging conflict ids
+      supersedes: engram.relations?.supersedes ?? [],
+      superseded_by: engram.relations?.superseded_by ?? [],
     }
     changed = true
   }

@@ -115,7 +115,7 @@ export type { RerankerAdapter } from './rerankers/types.js'
 export type { SimilarityResult } from './embeddings.js'
 export type { SyncResult, SyncStatus } from './sync.js'
 export { checkForUpdate, getCachedUpdateCheck, clearVersionCache, minorVersionsBehind, type VersionCheckResult } from './version-check.js'
-export { scanForTensions, getCandidatePairs, scopesOverlap, domainSegmentsOverlap, subjectsOverlap, statementOverlap, buildContradictionPrompt, parseContradictionResponse, buildBatchContradictionPrompt, parseBatchContradictionResponse, type ContradictionVerdict, type TensionPair, type TensionScanResult } from './tensions.js'
+export { scanForTensions, getCandidatePairs, scopesOverlap, domainSegmentsOverlap, subjectsOverlap, statementOverlap, buildContradictionPrompt, parseContradictionResponse, buildBatchContradictionPrompt, parseBatchContradictionResponse, engramDate, daysApart, inTemporalDomain, temporalDiscountFactor, SNAPSHOT_CONFIDENCE_CAP, type ContradictionVerdict, type TensionPair, type TensionScanResult, type TensionScanOptions, type TemporalGateOptions, type JudgeStatement } from './tensions.js'
 // Migration importers (issue #441) — `plur import --from <source> --path <file>`.
 export {
   importFrom, runImport, getImportSource, listImportSources, IMPORT_SOURCES,
@@ -1401,13 +1401,24 @@ export class Plur {
         summary: autoSummary(statement, undefined),
         engram_version: 1,
         episode_ids: episodeIds ?? [],
-        relations: conflictIds.length > 0 ? {
+        relations: (conflictIds.length > 0 || (context?.supersedes?.length ?? 0) > 0) ? {
           broader: [],
           narrower: [],
           related: [],
           conflicts: conflictIds,
+          supersedes: context?.supersedes ?? [],
+          superseded_by: [],
         } : undefined,
         pinned: context?.pinned === true ? true : undefined,
+      }
+
+      // #240: supersedes is a graph edge, not a temporality enum — write the
+      // reverse superseded_by edge on each target found in the local primary
+      // store (best-effort; targets living in other stores are not patched).
+      // The tension scanner skips supersedes-linked pairs: an intentional
+      // update is not a contradiction.
+      if (context?.supersedes?.length) {
+        this._writeSupersededByEdges(engrams, context.supersedes, id)
       }
 
       // Stamp the extraction marker (#347) so the plur_learn MCP response can
@@ -1751,6 +1762,13 @@ export class Plur {
       summary: autoSummary(statement, undefined),
       engram_version: 1,
       episode_ids: context?.session_episode_id ? [context.session_episode_id] : [],
+      // #240: forward supersedes edge travels with the remote-routed shape.
+      // The reverse superseded_by edge on remote targets is NOT patched
+      // (best-effort — see LearnContext.supersedes docs).
+      relations: (context?.supersedes?.length ?? 0) > 0 ? {
+        broader: [], narrower: [], related: [], conflicts: [],
+        supersedes: context!.supersedes!, superseded_by: [],
+      } : undefined,
       pinned: context?.pinned === true ? true : undefined,
     }
     // Echo marker for extracted expiry (#347) — mirrors the learn() stamping
@@ -3582,6 +3600,40 @@ Generate an improved version of the procedure that prevents this failure. Return
       outbox_count: this.outboxCount(),
       history_events: countInjectionEvents(this.paths.root),
       ...(this._lastIndexError ? { index_error: this._lastIndexError } : {}),
+    }
+  }
+
+  /**
+   * Resolved tension-scan defaults from config (#240). Consumers (MCP
+   * plur_tensions, CLI) merge explicit args over these.
+   */
+  getTensionsConfig(): { temporal_domains: string[]; snapshot_pairs: 'skip' | 'floor'; temporal_discount: boolean } {
+    const t = this.config.tensions ?? {}
+    return {
+      temporal_domains: t.temporal_domains ?? [],
+      snapshot_pairs: t.snapshot_pairs ?? 'skip',
+      temporal_discount: t.temporal_discount ?? false,
+    }
+  }
+
+  /**
+   * Write the reverse `relations.superseded_by` edge on each supersede
+   * target present in the (already-loaded, lock-held) local engram list
+   * (#240). Unknown targets are skipped silently — the forward edge on the
+   * new engram still records the intent. Mutates in place; the caller's
+   * subsequent _writeEngrams persists the change.
+   */
+  private _writeSupersededByEdges(engrams: Engram[], targetIds: string[], newId: string): void {
+    for (const targetId of targetIds) {
+      const target = engrams.find(e => e.id === targetId)
+      if (!target) continue
+      target.relations = target.relations ?? {
+        broader: [], narrower: [], related: [], conflicts: [], supersedes: [], superseded_by: [],
+      }
+      target.relations.superseded_by = target.relations.superseded_by ?? []
+      if (!target.relations.superseded_by.includes(newId)) {
+        target.relations.superseded_by.push(newId)
+      }
     }
   }
 

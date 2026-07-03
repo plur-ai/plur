@@ -657,6 +657,11 @@ export function exportPack(
         ...cleaned.relations,
         conflicts: [],
         related: [],
+        // #240: supersedes edges are store-internal cross-refs too — a stale
+        // edge in a foreign store could falsely suppress tension detection
+        // between unrelated engrams on ID collision.
+        supersedes: [],
+        superseded_by: [],
       }
     }
     // Strip associations (co-access edges are store-specific)

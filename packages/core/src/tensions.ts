@@ -9,6 +9,10 @@ export interface TensionPair {
   statement_b: string
   confidence: number
   reason: string
+  /** Calendar days between the two engrams' recorded dates, when derivable (#240). */
+  days_apart?: number
+  /** Judge confidence before the temporal discount / snapshot floor (#240). Present only when adjusted. */
+  raw_confidence?: number
 }
 
 export interface TensionScanResult {
@@ -17,21 +21,102 @@ export interface TensionScanResult {
   tensions: TensionPair[]
 }
 
+/** A statement handed to the judge — `date` is its recorded date (#240). */
+export interface JudgeStatement {
+  id: string
+  statement: string
+  /** ISO date (YYYY-MM-DD) the statement was recorded. Optional — prompts stay unchanged without it. */
+  date?: string
+}
+
+/**
+ * Resolve the recorded date of an engram (#240 Layer 3 prompt half).
+ *
+ * Prefers `temporal.learned_at`; falls back to the date embedded in the
+ * canonical id forms `ENG-YYYY-MMDD-NNN`, `ENG-{PREFIX}-YYYY-MMDD-NNN`, and
+ * the server-assigned `ENG-YYYY-MM-DD-NNN`. Returns undefined when no date
+ * is derivable — callers must degrade gracefully.
+ */
+export function engramDate(e: Engram): string | undefined {
+  const learned = e.temporal?.learned_at
+  if (learned && /^\d{4}-\d{2}-\d{2}/.test(learned)) return learned.slice(0, 10)
+  const m = e.id.match(/(\d{4})-(\d{2})-?(\d{2})(?=-|$)/)
+  if (m) return `${m[1]}-${m[2]}-${m[3]}`
+  return undefined
+}
+
+/** Absolute whole-day distance between two ISO dates (UTC, calendar days). */
+export function daysApart(a: string, b: string): number {
+  const ms = Math.abs(Date.parse(`${a}T00:00:00Z`) - Date.parse(`${b}T00:00:00Z`))
+  return Math.round(ms / 86_400_000)
+}
+
+/**
+ * Does a dotted domain fall under any configured temporal (snapshot) domain
+ * (#240 Layer 2)? Matches the exact domain or a dotted sub-domain —
+ * `war-analysis.hormuz` matches config entry `war-analysis`, but
+ * `war-analysis-2` does not.
+ */
+export function inTemporalDomain(domain: string | undefined, temporalDomains: readonly string[]): boolean {
+  if (!domain || temporalDomains.length === 0) return false
+  return temporalDomains.some(td => domain === td || domain.startsWith(`${td}.`))
+}
+
+/**
+ * Timestamp-aware confidence multiplier (#240 Layer 3 — OPT-IN, off by
+ * default). The ladder follows the issue: pairs recorded further apart are
+ * more likely temporal evolution than contradiction. Kept opt-in because a
+ * blanket multiplier can bury genuine standing-fact corrections that happen
+ * weeks apart — the dated judge prompt is the default mechanism.
+ */
+export function temporalDiscountFactor(days: number): number {
+  if (days <= 0) return 1.0
+  if (days <= 3) return 0.8
+  if (days <= 14) return 0.5
+  return 0.3
+}
+
+/** Confidence cap for snapshot-vs-snapshot pairs in `snapshot_pairs: 'floor'` mode (#240). */
+export const SNAPSHOT_CONFIDENCE_CAP = 0.1
+
+/** Temporal gating options shared by getCandidatePairs and scanForTensions (#240). */
+export interface TemporalGateOptions {
+  /** Domains whose engrams are point-in-time snapshots by default (Layer 2). */
+  temporal_domains?: string[]
+  /**
+   * Handling of snapshot-vs-snapshot pairs recorded on different days:
+   * 'skip' (default) drops them before the judge; 'floor' judges them but
+   * caps confidence at SNAPSHOT_CONFIDENCE_CAP.
+   */
+  snapshot_pairs?: 'skip' | 'floor'
+  /** ISO date treated as "today" for expired-validity gating. Defaults to the current date. */
+  now?: string
+}
+
+function temporalGuidance(dateA: string, dateB: string): string {
+  const days = daysApart(dateA, dateB)
+  const apart = days === 0 ? 'on the same day' : `${days} day${days === 1 ? '' : 's'} apart`
+  return `The statements were recorded ${apart} (A: ${dateA}, B: ${dateB}). Consider whether the difference reflects a genuine contradiction about the same claim, or temporal evolution of a changing situation — statements that were each true when recorded, describing how events unfolded over time, do NOT contradict.`
+}
+
 export function buildContradictionPrompt(
-  a: { id: string; statement: string },
-  b: { id: string; statement: string },
+  a: JudgeStatement,
+  b: JudgeStatement,
 ): string {
+  const bothDated = Boolean(a.date && b.date)
+  const label = (s: JudgeStatement, name: string) =>
+    `STATEMENT ${name} [${s.id}]${bothDated ? ` (recorded ${s.date})` : ''}:`
   return `You are a memory consistency checker. Determine whether these two statements CONTRADICT each other.
 
-STATEMENT A [${a.id}]:
+${label(a, 'A')}
 "${a.statement}"
 
-STATEMENT B [${b.id}]:
+${label(b, 'B')}
 "${b.statement}"
 
 Two statements CONTRADICT when one asserts X is true and the other asserts X is false, different, or mutually exclusive.
 Do NOT flag as contradictions: different topics in the same domain, complementary facts, or unrelated statements that happen to share keywords.
-
+${bothDated ? `${temporalGuidance(a.date!, b.date!)}\n` : ''}
 Respond in this EXACT format:
 CONTRADICTS: yes|no
 CONFIDENCE: 0.0-1.0
@@ -61,27 +146,40 @@ export function parseContradictionResponse(response: string): ContradictionVerdi
  *
  * Keeps the same contradiction definition and guardrails as the single-pair
  * prompt; each pair is numbered and the model answers one line per pair.
+ * Dated pairs (#240) are annotated with their recorded dates and days-apart
+ * distance so the judge can distinguish contradiction from evolution.
  */
 export function buildBatchContradictionPrompt(
-  pairs: Array<[{ id: string; statement: string }, { id: string; statement: string }]>,
+  pairs: Array<[JudgeStatement, JudgeStatement]>,
 ): string {
+  const anyDated = pairs.some(([a, b]) => a.date && b.date)
   const blocks = pairs
-    .map(
-      ([a, b], i) => `PAIR ${i + 1}:
-A [${a.id}]: "${a.statement}"
-B [${b.id}]: "${b.statement}"`,
-    )
+    .map(([a, b], i) => {
+      const bothDated = Boolean(a.date && b.date)
+      const apart = bothDated ? daysApart(a.date!, b.date!) : undefined
+      const header = bothDated
+        ? `PAIR ${i + 1} (recorded ${apart === 0 ? 'on the same day' : `${apart} day${apart === 1 ? '' : 's'} apart`}):`
+        : `PAIR ${i + 1}:`
+      const dateTag = (s: JudgeStatement) => (bothDated ? ` (${s.date})` : '')
+      return `${header}
+A [${a.id}]${dateTag(a)}: "${a.statement}"
+B [${b.id}]${dateTag(b)}: "${b.statement}"`
+    })
     .join('\n\n')
 
   const formatLines = pairs
     .map((_, i) => `PAIR_${i + 1}: CONTRADICTS: yes|no | CONFIDENCE: 0.0-1.0 | REASON: <one sentence>`)
     .join('\n')
 
+  const temporalNote = anyDated
+    ? '\nFor dated pairs, consider whether the difference reflects a genuine contradiction about the same claim, or temporal evolution of a changing situation — statements that were each true when recorded, describing how events unfolded over time, do NOT contradict.'
+    : ''
+
   return `You are a memory consistency checker. For each numbered pair of statements below, determine whether the two statements CONTRADICT each other.
 
 Two statements CONTRADICT when one asserts X is true and the other asserts X is false, different, or mutually exclusive.
 Do NOT flag as contradictions: different topics in the same domain, complementary facts, or unrelated statements that happen to share keywords.
-Judge each pair independently.
+Judge each pair independently.${temporalNote}
 
 ${blocks}
 
@@ -204,6 +302,42 @@ export function statementOverlap(a: string, b: string): number {
 }
 
 /**
+ * True when the pair is linked by an intentional-update edge (#240):
+ * `relations.supersedes` / `relations.superseded_by` in either direction.
+ * An intentional update is not a tension — the newer engram is MEANT to
+ * replace the older one.
+ */
+function supersedesLinked(a: Engram, b: Engram): boolean {
+  return Boolean(
+    a.relations?.supersedes?.includes(b.id) ||
+    a.relations?.superseded_by?.includes(b.id) ||
+    b.relations?.supersedes?.includes(a.id) ||
+    b.relations?.superseded_by?.includes(a.id),
+  )
+}
+
+/** True when the engram's validity window has closed (`temporal.valid_until` before `now`). */
+function validityExpired(e: Engram, now: string): boolean {
+  const until = e.temporal?.valid_until
+  return Boolean(until && until < now)
+}
+
+/**
+ * True when BOTH engrams are point-in-time snapshots (their domains fall in
+ * a configured temporal domain) recorded on different days — an event log,
+ * not a contradiction (#240 Layer 2). Same-day snapshot pairs stay in: two
+ * reports of the same day ARE a likely correction. Pairs whose dates cannot
+ * be derived also stay in (conservative — let the judge see them).
+ */
+function isSnapshotPair(a: Engram, b: Engram, temporalDomains: readonly string[]): boolean {
+  if (!inTemporalDomain(a.domain, temporalDomains) || !inTemporalDomain(b.domain, temporalDomains)) return false
+  const dateA = engramDate(a)
+  const dateB = engramDate(b)
+  if (!dateA || !dateB) return false
+  return dateA !== dateB
+}
+
+/**
  * Build candidate pairs for the LLM contradiction scan.
  *
  * Three-stage pipeline (cheapest first):
@@ -214,17 +348,36 @@ export function statementOverlap(a: string, b: string): number {
  * Already-known conflicts (relations.conflicts) are skipped to avoid
  * re-evaluating the same pair.
  *
+ * Temporal gates (#240):
+ *   - Supersedes-linked pairs are skipped in both directions — an
+ *     intentional update is not a tension.
+ *   - Pairs where either side's validity window has closed
+ *     (`temporal.valid_until` in the past) are skipped — an expired engram
+ *     is no longer a peer claim about CURRENT truth, so lining it up
+ *     against a newer claim manufactures a false tension.
+ *   - Snapshot-vs-snapshot pairs (both domains in `temporal_domains`)
+ *     recorded on different days are skipped by default — they are an
+ *     event log, not a contradiction. `snapshot_pairs: 'floor'` keeps them
+ *     for the judge (scanForTensions caps their confidence instead).
+ *
  * Surviving pairs are ranked by descending shared-token overlap (#180) so
  * that the pairs most likely to be genuine contradictions are judged first
  * when the caller applies a max_pairs cap. Ties keep insertion order
  * (stable sort).
  */
-export function getCandidatePairs(engrams: Engram[]): Array<[Engram, Engram]> {
+export function getCandidatePairs(
+  engrams: Engram[],
+  options?: TemporalGateOptions,
+): Array<[Engram, Engram]> {
   const active = engrams.filter(e => e.status === 'active')
+  const temporalDomains = options?.temporal_domains ?? []
+  const snapshotMode = options?.snapshot_pairs ?? 'skip'
+  const now = options?.now ?? new Date().toISOString().slice(0, 10)
 
   // Tokenize each engram once instead of once per pair (O(n) vs O(n²) passes).
   const subjectTokens = active.map(e => extractSubjectTokens(e.statement))
   const statementTokens = active.map(e => new Set(ftsTokenize(e.statement)))
+  const expired = active.map(e => validityExpired(e, now))
 
   const scored: Array<{ pair: [Engram, Engram]; overlap: number }> = []
 
@@ -242,6 +395,17 @@ export function getCandidatePairs(engrams: Engram[]): Array<[Engram, Engram]> {
       // Skip already-known conflict pairs
       if (a.relations?.conflicts?.includes(b.id)) continue
 
+      // #240: intentional updates are not tensions
+      if (supersedesLinked(a, b)) continue
+
+      // #240: an engram whose validity window has closed is not a peer
+      // claim about current truth — don't line it up against anything.
+      if (expired[i] || expired[j]) continue
+
+      // #240 Layer 2: snapshot-vs-snapshot at different timestamps is an
+      // event log, not a contradiction.
+      if (snapshotMode === 'skip' && isSnapshotPair(a, b, temporalDomains)) continue
+
       // Stage 3: subject-predicate pre-filter
       if (!setsIntersect(subjectTokens[i], subjectTokens[j])) continue
 
@@ -257,6 +421,19 @@ export function getCandidatePairs(engrams: Engram[]): Array<[Engram, Engram]> {
   return scored.map(s => s.pair)
 }
 
+/** Options for scanForTensions. Temporal gates/adjustments are #240. */
+export interface TensionScanOptions extends TemporalGateOptions {
+  min_confidence?: number
+  max_pairs?: number
+  batch_size?: number
+  /**
+   * Timestamp-aware confidence discount (#240 Layer 3 multiplier).
+   * OFF by default — the dated judge prompt is the default mechanism; the
+   * blanket multiplier can bury genuine corrections that happen weeks apart.
+   */
+  temporal_discount?: boolean
+}
+
 /**
  * Scan engrams for contradictions with an LLM judge.
  *
@@ -268,25 +445,37 @@ export function getCandidatePairs(engrams: Engram[]): Array<[Engram, Engram]> {
  * missing or unparseable falls back to an individual single-pair call;
  * a pair is never counted as a contradiction without an explicit verdict.
  * Set batch_size to 1 for the original sequential single-pair behavior.
+ *
+ * Temporal behavior (#240): each judged statement carries its recorded date
+ * (engramDate) so the judge can tell evolution from contradiction. With
+ * `temporal_discount: true`, verdict confidence is additionally multiplied
+ * by temporalDiscountFactor(days_apart). Snapshot-vs-snapshot pairs are
+ * skipped by getCandidatePairs (default) or confidence-capped at
+ * SNAPSHOT_CONFIDENCE_CAP in `snapshot_pairs: 'floor'` mode.
  */
 export async function scanForTensions(
   engrams: Engram[],
   llm: LlmFunction,
-  options?: { min_confidence?: number; max_pairs?: number; batch_size?: number },
+  options?: TensionScanOptions,
 ): Promise<TensionScanResult> {
   const minConfidence = options?.min_confidence ?? 0.7
   const maxPairs = options?.max_pairs ?? 50
   const rawBatchSize = options?.batch_size ?? 5
   const batchSize = Number.isFinite(rawBatchSize) ? Math.max(1, Math.floor(rawBatchSize)) : 5
+  const temporalDomains = options?.temporal_domains ?? []
+  const discountEnabled = options?.temporal_discount === true
 
-  const candidates = getCandidatePairs(engrams).slice(0, maxPairs)
+  const candidates = getCandidatePairs(engrams, options).slice(0, maxPairs)
   const tensions: TensionPair[] = []
 
+  const toJudgeStatement = (e: Engram): JudgeStatement => ({
+    id: e.id,
+    statement: e.statement,
+    date: engramDate(e),
+  })
+
   const judgeSingle = async (a: Engram, b: Engram): Promise<ContradictionVerdict | null> => {
-    const prompt = buildContradictionPrompt(
-      { id: a.id, statement: a.statement },
-      { id: b.id, statement: b.statement },
-    )
+    const prompt = buildContradictionPrompt(toJudgeStatement(a), toJudgeStatement(b))
     try {
       return parseContradictionResponse(await llm(prompt))
     } catch {
@@ -303,10 +492,7 @@ export async function scanForTensions(
       verdicts = [await judgeSingle(batch[0][0], batch[0][1])]
     } else {
       const prompt = buildBatchContradictionPrompt(
-        batch.map(([a, b]) => [
-          { id: a.id, statement: a.statement },
-          { id: b.id, statement: b.statement },
-        ]),
+        batch.map(([a, b]) => [toJudgeStatement(a), toJudgeStatement(b)]),
       )
       try {
         verdicts = parseBatchContradictionResponse(await llm(prompt), batch.length)
@@ -326,14 +512,31 @@ export async function scanForTensions(
       const verdict = verdicts[i]
       if (!verdict) continue
       const [a, b] = batch[i]
-      if (verdict.is_contradiction && verdict.confidence >= minConfidence) {
+
+      const dateA = engramDate(a)
+      const dateB = engramDate(b)
+      const days = dateA && dateB ? daysApart(dateA, dateB) : undefined
+
+      // #240: temporal adjustments — snapshot floor first, then the
+      // opt-in days-apart discount.
+      let confidence = verdict.confidence
+      if (isSnapshotPair(a, b, temporalDomains)) {
+        // Only reachable in 'floor' mode ('skip' drops these at candidate stage)
+        confidence = Math.min(confidence, SNAPSHOT_CONFIDENCE_CAP)
+      } else if (discountEnabled && days !== undefined) {
+        confidence = confidence * temporalDiscountFactor(days)
+      }
+
+      if (verdict.is_contradiction && confidence >= minConfidence) {
         tensions.push({
           id_a: a.id,
           id_b: b.id,
           statement_a: a.statement,
           statement_b: b.statement,
-          confidence: verdict.confidence,
+          confidence,
           reason: verdict.reason,
+          ...(days !== undefined ? { days_apart: days } : {}),
+          ...(confidence !== verdict.confidence ? { raw_confidence: verdict.confidence } : {}),
         })
       }
     }

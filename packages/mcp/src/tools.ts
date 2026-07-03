@@ -143,6 +143,7 @@ export function getToolDefinitions(): ToolDefinition[] {
           locked_reason: { type: 'string', description: 'Why this engram is locked (only meaningful when commitment=locked)' },
           valid_from: { type: 'string', description: 'ISO date (YYYY-MM-DD) the knowledge becomes valid — inject/recall skip the engram before this date (#347)' },
           valid_until: { type: 'string', description: 'ISO date (YYYY-MM-DD) the knowledge expires — inject/recall skip the engram after this date. Set this for any time-bound fact (offers, deadlines, temporary endpoints). When omitted, an explicit expiry phrase in the statement ("valid until 31 May 2026") is auto-parsed and echoed back (#347)' },
+          supersedes: { type: 'array', items: { type: 'string' }, description: 'Engram IDs this statement intentionally replaces (#240). Writes relations.supersedes on the new engram and the reverse superseded_by edge on each local target. Supersedes-linked pairs are skipped by tension scans — an intentional update is not a contradiction. Use when updating a standing fact (new version, changed rule) rather than contradicting it.' },
         },
         required: ['statement'],
       },
@@ -166,6 +167,7 @@ export function getToolDefinitions(): ToolDefinition[] {
           pinned: args.pinned as boolean | undefined,
           valid_from: args.valid_from as string | undefined,
           valid_until: args.valid_until as string | undefined,
+          supersedes: args.supersedes as string[] | undefined,
           llm,
         }
         // Route through learnRouted FIRST so remote-scope writes get
@@ -1773,6 +1775,7 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
           min_confidence: { type: 'number', description: 'Minimum confidence threshold for scan mode (0–1, default: 0.7)' },
           max_pairs: { type: 'number', description: 'Maximum candidate pairs to evaluate in scan mode (default: 50)' },
           batch_size: { type: 'number', description: 'Pairs judged per LLM call in scan mode (default: 5). Set to 1 for sequential single-pair judging.' },
+          temporal_discount: { type: 'boolean', description: 'Multiply judge confidence by a days-apart ladder (same day x1.0 ... 15+ days x0.3) in scan mode (#240). Overrides the config default (tensions.temporal_discount, off by default). The judge prompt already carries recorded dates; enable this only when date-aware judging alone leaves too many temporal-evolution false positives.' },
         },
       },
       handler: async (args, plur) => {
@@ -1794,10 +1797,16 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
             }
           }
 
+          // #240: config supplies the temporal defaults (tensions: block in
+          // config.yaml); an explicit temporal_discount arg overrides.
+          const tensionsConfig = plur.getTensionsConfig()
           const result = await scanForTensions(engrams, llm, {
             min_confidence: args.min_confidence as number | undefined,
             max_pairs: args.max_pairs as number | undefined,
             batch_size: args.batch_size as number | undefined,
+            temporal_domains: tensionsConfig.temporal_domains,
+            snapshot_pairs: tensionsConfig.snapshot_pairs,
+            temporal_discount: (args.temporal_discount as boolean | undefined) ?? tensionsConfig.temporal_discount,
           })
 
           return {
@@ -1808,6 +1817,8 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
               engram_b: { id: t.id_b, statement: t.statement_b },
               confidence: t.confidence,
               reason: t.reason,
+              ...(t.days_apart !== undefined ? { days_apart: t.days_apart } : {}),
+              ...(t.raw_confidence !== undefined ? { raw_confidence: t.raw_confidence } : {}),
             })),
           }
         }
