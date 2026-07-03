@@ -198,6 +198,14 @@ function buildEnforcementHooks(cmd: string): Record<string, HookEntry[]> {
       },
     ],
 
+    SessionEnd: [
+      {
+        hooks: [
+          { type: 'command', command: `${cmd} hook-session-end-auto`, timeout: 10 },
+        ],
+      },
+    ],
+
     PreToolUse: [
       // Session guard — blocks all tools until plur_session_start is called.
       // Must be first so it runs before any other PreToolUse hook.

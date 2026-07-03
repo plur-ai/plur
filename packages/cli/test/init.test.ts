@@ -174,8 +174,13 @@ describe('plur init', () => {
         readFileSync(join(project, '.claude', 'settings.json'), 'utf-8'),
       )
 
-      // Enforcement hooks (SessionStart, session-guard PreToolUse, session-mark PostToolUse) live globally
+      // Enforcement hooks (SessionStart, SessionEnd, session-guard PreToolUse, session-mark PostToolUse) live globally
       expect(globalSettings.hooks?.SessionStart).toBeDefined()
+      expect(globalSettings.hooks?.SessionEnd).toBeDefined()
+      const globalEnd = globalSettings.hooks?.SessionEnd?.find((h) =>
+        h.hooks.some((c) => c.command.includes('hook-session-end-auto')),
+      )
+      expect(globalEnd).toBeDefined()
       const globalGuard = globalSettings.hooks?.PreToolUse?.find((h) =>
         h.hooks.some((c) => c.command.includes('hook-session-guard')),
       )
@@ -191,6 +196,7 @@ describe('plur init', () => {
 
       // Enforcement hooks NOT duplicated at project
       expect(projectSettings.hooks?.SessionStart).toBeUndefined()
+      expect(projectSettings.hooks?.SessionEnd).toBeUndefined()
 
       // MCP server registered at project (the path that does work in this project)
       expect(projectSettings.mcpServers?.plur).toBeDefined()
