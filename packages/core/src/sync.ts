@@ -42,7 +42,7 @@ exchange/
  * derived files (engrams.db, store.pglite/, exchange/) can NEVER ride along into a
  * synced repo, regardless of how the user's gitignore is (mis)configured. (#380, #384)
  */
-const SYNC_PATHS = ['engrams.yaml', 'episodes.yaml', 'candidates.yaml', 'packs', '.gitignore'] as const
+const SYNC_PATHS = ['engrams.yaml', 'episodes.yaml', 'candidates.yaml', 'tensions.yaml', 'packs', '.gitignore'] as const
 
 /**
  * Secret-bearing files that must never be tracked. Untracked on every sync, so a

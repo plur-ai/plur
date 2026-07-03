@@ -82,13 +82,15 @@ describe('plur_tensions tool', () => {
     }
   })
 
-  it('includes purge_hint when legacy conflict relations exist', async () => {
+  it('surfaces legacy conflict relations separately with a purge hint (#181)', async () => {
     const e1 = plur.learn('Always use PostgreSQL')
     const e2 = plur.learn('Always use MySQL')
     injectLegacyConflict(plur, e1.id, e2.id)
 
     const result = await tensionsTool.handler({}, plur) as any
-    expect(result.count).toBe(1)
+    // legacy relations.conflicts refs are NOT persisted tension records
+    expect(result.count).toBe(0)
+    expect(result.legacy_conflicts).toHaveLength(1)
     expect(result.purge_hint).toBeDefined()
     expect(result.purge_hint).toContain('plur_tensions_purge')
   })
@@ -462,7 +464,7 @@ describe('plur_tensions_purge tool', () => {
     injectLegacyConflict(plur, e1.id, e2.id)
 
     const before = await tensionsTool.handler({}, plur) as any
-    expect(before.count).toBe(1)
+    expect(before.legacy_conflicts).toHaveLength(1)
 
     const purgeResult = await purgeTool.handler({}, plur) as any
     expect(purgeResult.purged_conflict_refs).toBe(1)
@@ -470,7 +472,7 @@ describe('plur_tensions_purge tool', () => {
     expect(purgeResult.message).toContain('1')
 
     const after = await tensionsTool.handler({}, plur) as any
-    expect(after.count).toBe(0)
+    expect(after.legacy_conflicts).toBeUndefined()
     expect(after.purge_hint).toBeUndefined()
   })
 

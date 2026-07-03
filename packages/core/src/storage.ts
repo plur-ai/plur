@@ -6,6 +6,8 @@ export interface PlurPaths {
   root: string
   engrams: string
   episodes: string
+  /** Persisted tension records (#181). */
+  tensions: string
   candidates: string
   packs: string
   exchange: string
@@ -28,6 +30,7 @@ export function detectPlurStorage(explicitPath?: string): PlurPaths {
     root,
     engrams: join(root, 'engrams.yaml'),
     episodes: join(root, 'episodes.yaml'),
+    tensions: join(root, 'tensions.yaml'),
     candidates: join(root, 'candidates.yaml'),
     packs: packsDir,
     exchange: join(root, 'exchange'),

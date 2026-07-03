@@ -145,6 +145,12 @@ export interface InjectionResult {
   count: number
   tokens_used: number
   injected_ids: string[]
+  /**
+   * Persisted-tension warnings (#181): present when an injected engram
+   * participates in an unresolved tension (confirmed → either side injected;
+   * detected → both sides injected together). Surface, don't adjudicate.
+   */
+  warnings?: string[]
 }
 
 export interface CaptureContext {

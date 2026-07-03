@@ -189,7 +189,7 @@ describe('getCandidatePairs', () => {
     expect(pairs).toHaveLength(0)
   })
 
-  it('skips already-known conflict pairs', () => {
+  it('relations.conflicts does NOT exempt a pair — importer suspects must be judged (#181, audit C1)', () => {
     const a = makeEngram({
       id: 'E1',
       statement: 'plur search uses BM25.',
@@ -198,6 +198,13 @@ describe('getCandidatePairs', () => {
     })
     const b = makeEngram({ id: 'E2', statement: 'plur search uses embeddings.', scope: 'global' })
     const pairs = getCandidatePairs([a, b])
+    expect(pairs).toHaveLength(1)
+  })
+
+  it('skips pairs recorded in the tension store (exclude_pairs, #181)', () => {
+    const a = makeEngram({ id: 'E1', statement: 'plur search uses BM25.', scope: 'global' })
+    const b = makeEngram({ id: 'E2', statement: 'plur search uses embeddings.', scope: 'global' })
+    const pairs = getCandidatePairs([a, b], { exclude_pairs: new Set(['E1:E2']) })
     expect(pairs).toHaveLength(0)
   })
 
