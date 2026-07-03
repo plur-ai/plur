@@ -18,7 +18,7 @@ import { hybridSearch, hybridSearchWithMeta, applyReranker, rrfMergeEngrams as p
 import { getReranker, resolveRerankerName, isRerankerOff, rerankerStatus, resetRerankerStatus, _resetRerankerCache, type RerankerAdapter, type RerankerRuntimeStatus } from './rerankers/index.js'
 import { _resetBgeRerankerCache } from './rerankers/bge-reranker-v2-m3.js'
 import { _resetMsMarcoMiniLmCache } from './rerankers/ms-marco-minilm-l6.js'
-import { classifyQuery, routeForIntent, applyIntentRouting, isIntentRoutingDisabled, isEntityDomain, type QueryIntent, type IntentRoutingProfile } from './intent/index.js'
+import { classifyQuery, routeForIntent, applyIntentRouting, isIntentRoutingDisabled, isEntityDomain, rewriteLexicalQuery, isQueryRewriteDisabled, type QueryIntent, type IntentRoutingProfile } from './intent/index.js'
 import { getEmbedder, resolveEmbedderName } from './embedders/index.js'
 import { emitMissSignal } from './telemetry-miss-signal.js'
 import { embedderStatus, resetEmbedder, setEmbeddingsEnabled, type EmbedderStatus } from './embeddings.js'
@@ -2022,7 +2022,11 @@ export class Plur {
       return hybridSearchWithMeta(filtered, query, limit, this.paths.root, rerank)
     }
     const bm25Limit = Math.min(filtered.length, wantReranker ? Math.max(limit * 3, 50) : limit * 3)
-    const bm25Results = searchEngrams(filtered, query, bm25Limit)
+    // #224 remainder: the lexical leg gets the deterministic rewrite, same
+    // as the YAML-path hybridSearchWithMeta. Vector leg + reranker keep the
+    // original query.
+    const lexicalQuery = isQueryRewriteDisabled() ? query : rewriteLexicalQuery(query)
+    const bm25Results = searchEngrams(filtered, lexicalQuery, bm25Limit)
     const merged = pgliteRrfMerge([bm25Results, pgHits])
     const reranked = await applyReranker(merged, query, rerank)
     const mode: HybridSearchResult['mode'] = status.disabled ? 'bm25-only' : 'hybrid'
