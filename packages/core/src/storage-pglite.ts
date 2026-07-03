@@ -137,6 +137,14 @@ export class PGLiteAdapter implements StorageAdapter {
    * and writes keep matching the on-disk column instead of erroring.
    */
   private activeVecType: 'vector' | 'halfvec' = 'vector'
+  /**
+   * ACTUAL dim of the embedding column after init (#335). For existing
+   * stores this is the on-disk column's dim, which may differ from the
+   * requested `vectorDim` — writes are enforced against reality, not the
+   * request. Null on the BYTEA fallback (no column constraint), where
+   * `vectorDim` is the enforcement contract instead.
+   */
+  private activeVecDim: number | null = null
   private db: any = null
   private initialized = false
   private hasVector = false
@@ -288,6 +296,9 @@ export class PGLiteAdapter implements StorageAdapter {
     const info = await this.readEmbeddingColumnInfo(db)
     if (!info) return // BYTEA fallback or exotic column — nothing to manage
     this.activeVecType = info.type
+    // #335: track the on-disk dim so writes are enforced against reality
+    // (existing stores keep their column; see upsertEmbedding).
+    this.activeVecDim = info.dim
     if (this.precision === undefined) return // keep-existing semantics
     const wantType = PRECISION_TYPE[this.precision]
     if (info.type === wantType) return
@@ -542,6 +553,20 @@ export class PGLiteAdapter implements StorageAdapter {
   async upsertEmbedding(engramId: string, vector: Float32Array): Promise<void> {
     return this.mutex.run(async () => {
       const db = await this.getDb()
+      // #335 storage-boundary contract: a wrong-shape vector must never be
+      // persisted. On the pgvector path this turns a cryptic pgvector error
+      // into a targeted one; on the BYTEA fallback (no column constraint)
+      // this is the ONLY guard — previously any length was silently stored
+      // and cosineSimilarity later returned garbage over min(a, b).
+      const expectedDim = this.activeVecDim ?? this.vectorDim
+      if (vector.length !== expectedDim) {
+        throw new Error(
+          `[pglite] Refusing to persist a ${vector.length}-dim embedding for "${engramId}": ` +
+          `this store's embedding ${this.hasVector ? 'column' : 'table'} is ${expectedDim}-dim (#335). ` +
+          `The active embedder (PLUR_EMBEDDER) and the indexed store must agree — ` +
+          `run 'plur sync --reembed --full' to rebuild the index at the active embedder's dim.`,
+        )
+      }
       if (this.hasVector) {
         // Cast to the column's actual type (#223): halfvec parses the same
         // "[...]" literal and rounds to fp16 on write.

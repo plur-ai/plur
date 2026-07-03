@@ -381,6 +381,13 @@ export class Plur {
       // vector.precision (#223): unset = keep the store's existing column
       // type; 'halfvec' opts in to fp16 storage (lazy in-place migration).
       this.pgliteAdapter = new PGLiteAdapter(this.paths.engrams, this.paths.pglite, {
+        // #335: size the vector column from the ACTIVE embedder (PLUR_EMBEDDER),
+        // not the 384 default constant — bge-base/embedding-gemma are 768,
+        // openai-3-large is 3072. Metadata-only: adapters construct lazily,
+        // no model load happens here. Existing stores keep their on-disk
+        // column (ensureColumnPrecision reads reality); mismatches surface
+        // via the doctor dim-check + the upsert-time guard.
+        vectorDim: getEmbedder(resolveEmbedderName()).dim,
         precision: this.config.vector?.precision,
       })
       // Initial sync runs in the background — YAML is already authoritative,
