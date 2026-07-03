@@ -117,7 +117,7 @@ function executeDedupDecision(
             const updated = { ...engrams[idx] } as any
             updated.statement = statement
             updated.content_hash = computeContentHash(statement)
-            updated.version = (updated.version ?? 1) + 1
+            updated.engram_version = (updated.engram_version ?? 1) + 1
             updated.activation.last_accessed = new Date().toISOString().slice(0, 10)
             if (context?.tags) updated.tags = [...new Set([...updated.tags, ...context.tags])]
             // Leak guard (#353): a dedup UPDATE can introduce sensitive content
@@ -150,7 +150,7 @@ function executeDedupDecision(
             const merged = { ...engrams[idx] } as any
             merged.statement = `${merged.statement} ${statement}`
             merged.content_hash = computeContentHash(merged.statement)
-            merged.version = (merged.version ?? 1) + 1
+            merged.engram_version = (merged.engram_version ?? 1) + 1
             merged.activation.last_accessed = new Date().toISOString().slice(0, 10)
             if (context?.tags) merged.tags = [...new Set([...merged.tags, ...context.tags])]
             if (0.7 > merged.activation.retrieval_strength) merged.activation.retrieval_strength = 0.7
