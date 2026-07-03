@@ -39,6 +39,15 @@ export interface LearnContext {
    * is echoed back via `structured_data._expiry_extracted`, never guessed.
    */
   valid_until?: string
+  /**
+   * IDs of engrams this one intentionally replaces (#240). Writes
+   * `relations.supersedes` on the new engram and the reverse
+   * `relations.superseded_by` edge on each target found in the local
+   * primary store (best-effort -- remote-store targets are not patched).
+   * Supersedes-linked pairs are skipped by the tension scanner: an
+   * intentional update is not a contradiction.
+   */
+  supersedes?: string[]
 }
 
 /** Extended context for async learn with LLM dedup. */

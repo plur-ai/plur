@@ -29,6 +29,8 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   let derivedFrom: string | undefined
   let knowledgeAnchors: Array<{ path: string; relevance?: string; snippet?: string }> | undefined
   let dualCoding: { example?: string; analogy?: string } | undefined
+  // #240: engram IDs this statement intentionally replaces (comma-separated).
+  let supersedes: string[] | undefined
 
   // Parse a value as JSON, exiting 1 with a clear message on malformed input
   // (a bad --dual-coding/--knowledge-anchors should fail loudly, not silently
@@ -62,6 +64,9 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     else if (arg === '--dual-coding' && i + 1 < args.length) {
       dualCoding = parseJsonFlag('--dual-coding', args[++i]); i++
     }
+    else if (arg === '--supersedes' && i + 1 < args.length) {
+      supersedes = args[++i].split(',').map(t => t.trim()).filter(Boolean); i++
+    }
     else if (!statement) { statement = arg; i++ }
     else { i++ }
   }
@@ -76,7 +81,8 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   if (!statement) {
     exit(1, 'Usage: plur learn <statement> [--scope <scope>] [--type <type>] [--domain <domain>] ' +
       '[--source <s>] [--rationale <r>] [--tags a,b,c] [--visibility private|public|template] ' +
-      '[--abstract <id>] [--derived-from <id>] [--knowledge-anchors <json>] [--dual-coding <json>]')
+      '[--abstract <id>] [--derived-from <id>] [--knowledge-anchors <json>] [--dual-coding <json>] ' +
+      '[--supersedes id1,id2]')
   }
 
   // Build the context conditionally: when --scope is absent, OMIT the scope key
@@ -99,6 +105,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     ...(derivedFrom !== undefined ? { derived_from: derivedFrom } : {}),
     ...(knowledgeAnchors !== undefined ? { knowledge_anchors: knowledgeAnchors } : {}),
     ...(dualCoding !== undefined ? { dual_coding: dualCoding } : {}),
+    ...(supersedes !== undefined ? { supersedes } : {}),
   }
 
   // ALWAYS use learnRouted (not learn): learn() stamps _demoted but does NOT do

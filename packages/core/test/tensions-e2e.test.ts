@@ -19,9 +19,10 @@ function newDir(): string {
 /** Mock LLM that detects contradictions when both statements mention the same subject. */
 function makeMockLlm(): LlmFunction {
   return async (prompt: string): Promise<string> => {
-    // Extract the two statements from the prompt
-    const stmtA = prompt.match(/STATEMENT A \[.*?\]:\s*"([^"]+)"/)?.[1] ?? ''
-    const stmtB = prompt.match(/STATEMENT B \[.*?\]:\s*"([^"]+)"/)?.[1] ?? ''
+    // Extract the two statements from the prompt. The label may carry a
+    // "(recorded YYYY-MM-DD)" annotation when dates are derivable (#240).
+    const stmtA = prompt.match(/STATEMENT A \[.*?\][^:]*:\s*"([^"]+)"/)?.[1] ?? ''
+    const stmtB = prompt.match(/STATEMENT B \[.*?\][^:]*:\s*"([^"]+)"/)?.[1] ?? ''
 
     // Simple heuristic: if both mention a shared keyword and make different assertions, flag it
     const wordsA = new Set(stmtA.toLowerCase().split(/\W+/).filter(w => w.length > 4))

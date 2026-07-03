@@ -43,6 +43,7 @@ function getLlmFunction(): LlmFunction | undefined {
  *   plur tensions --scan --min-confidence 0.8  # stricter threshold
  *   plur tensions --scan --max-pairs 100       # check more pairs
  *   plur tensions --scan --batch-size 1        # sequential single-pair judging (no batching)
+ *   plur tensions --scan --temporal-discount   # days-apart confidence discount (#240, default off)
  *   plur tensions --scan --model claude-haiku-... --llm-base-url ... --llm-api-key ...
  *   plur tensions                              # list legacy stored conflicts (usually empty)
  *   plur tensions --json                       # machine-readable output
@@ -54,6 +55,8 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   let minConfidence = 0.7
   let maxPairs = 50
   let batchSize = 5
+  // #240: undefined → fall back to config (tensions.temporal_discount)
+  let temporalDiscount: boolean | undefined
   let llmBaseUrl: string | undefined
   let llmApiKey: string | undefined
   let llmModel: string | undefined
@@ -67,6 +70,8 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     else if (arg === '--min-confidence' && i + 1 < args.length) { minConfidence = parseFloat(args[++i]); i++ }
     else if (arg === '--max-pairs' && i + 1 < args.length) { maxPairs = parseInt(args[++i], 10); i++ }
     else if (arg === '--batch-size' && i + 1 < args.length) { batchSize = parseInt(args[++i], 10); i++ }
+    else if (arg === '--temporal-discount') { temporalDiscount = true; i++ }
+    else if (arg === '--no-temporal-discount') { temporalDiscount = false; i++ }
     else if (arg === '--llm-base-url' && i + 1 < args.length) { llmBaseUrl = args[++i]; i++ }
     else if (arg === '--llm-api-key' && i + 1 < args.length) { llmApiKey = args[++i]; i++ }
     else if (arg === '--model' && i + 1 < args.length) { llmModel = args[++i]; i++ }
@@ -100,7 +105,18 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     }
 
     const { scanForTensions } = await import('@plur-ai/core')
-    const result = await scanForTensions(engrams, llm, { min_confidence: minConfidence, max_pairs: maxPairs, batch_size: batchSize })
+    // #240: config.yaml `tensions:` block supplies temporal defaults
+    // (temporal_domains, snapshot_pairs, temporal_discount); an explicit
+    // --temporal-discount / --no-temporal-discount flag overrides.
+    const tensionsConfig = plur.getTensionsConfig()
+    const result = await scanForTensions(engrams, llm, {
+      min_confidence: minConfidence,
+      max_pairs: maxPairs,
+      batch_size: batchSize,
+      temporal_domains: tensionsConfig.temporal_domains,
+      snapshot_pairs: tensionsConfig.snapshot_pairs,
+      temporal_discount: temporalDiscount ?? tensionsConfig.temporal_discount,
+    })
 
     if (shouldOutputJson(flags)) {
       outputJson({
@@ -111,6 +127,8 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
           engram_b: { id: t.id_b, statement: t.statement_b },
           confidence: t.confidence,
           reason: t.reason,
+          ...(t.days_apart !== undefined ? { days_apart: t.days_apart } : {}),
+          ...(t.raw_confidence !== undefined ? { raw_confidence: t.raw_confidence } : {}),
         })),
       })
       return
@@ -126,7 +144,9 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     }
 
     for (const t of result.tensions) {
-      outputText(`── TENSION (confidence: ${t.confidence.toFixed(2)}) ──`)
+      const tempNote = t.days_apart !== undefined ? `, ${t.days_apart} day${t.days_apart === 1 ? '' : 's'} apart` : ''
+      const rawNote = t.raw_confidence !== undefined ? `, raw: ${t.raw_confidence.toFixed(2)}` : ''
+      outputText(`── TENSION (confidence: ${t.confidence.toFixed(2)}${rawNote}${tempNote}) ──`)
       outputText(`  A [${t.id_a}]: ${t.statement_a}`)
       outputText(`  B [${t.id_b}]: ${t.statement_b}`)
       outputText(`  Reason: ${t.reason}`)

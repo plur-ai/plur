@@ -143,6 +143,29 @@ export const ScopeRoutingConfigSchema = z.object({
 
 export type ScopeRoutingConfig = z.infer<typeof ScopeRoutingConfigSchema>
 
+/**
+ * Tension-scan configuration (#240) — temporal-aware contradiction detection.
+ *
+ * `temporal_domains` (Layer 2) declares domains whose engrams are
+ * point-in-time snapshots by default (e.g. war-analysis, markets). A
+ * snapshot-vs-snapshot pair recorded on different days is an event log, not
+ * a contradiction — the scanner skips it (`snapshot_pairs: 'skip'`, default)
+ * or judges it with confidence capped at 0.1 (`'floor'`). Retroactive: no
+ * engram re-tagging needed.
+ *
+ * `temporal_discount` (Layer 3 multiplier) additionally multiplies judge
+ * confidence by a days-apart ladder (same day ×1.0 … 15+ days ×0.3).
+ * OFF by default: the dated judge prompt is the default mechanism, and a
+ * blanket multiplier can bury genuine corrections made weeks apart.
+ */
+export const TensionsConfigSchema = z.object({
+  temporal_domains: z.array(z.string()).default([]),
+  snapshot_pairs: z.enum(['skip', 'floor']).default('skip'),
+  temporal_discount: z.boolean().default(false),
+}).partial()
+
+export type TensionsConfigYaml = z.infer<typeof TensionsConfigSchema>
+
 export const PlurConfigSchema = z.object({
   auto_learn: z.boolean().default(true),
   auto_capture: z.boolean().default(true),
@@ -156,6 +179,8 @@ export const PlurConfigSchema = z.object({
     co_access: z.boolean().default(true),
   }).default({}),
   dedup: DedupConfigSchema.default({}),
+  /** Temporal-aware tension scan tuning (#240). See {@link TensionsConfigSchema}. */
+  tensions: TensionsConfigSchema.default({}),
   /**
    * Expiry handling at injection time (#347). `hard` (default) skips any
    * engram whose `temporal.valid_until` is in the past. `soft` keeps

@@ -43,6 +43,11 @@ export const RelationsSchema = z.object({
   narrower: z.array(z.string()).default([]),
   related: z.array(z.string()).default([]),
   conflicts: z.array(z.string()).default([]),
+  /** IDs of engrams this one intentionally replaces (#240). An intentional
+   *  update is not a tension — the scanner skips supersedes-linked pairs. */
+  supersedes: z.array(z.string()).default([]),
+  /** Reverse edge of `supersedes` (#240) — IDs of engrams that replace this one. */
+  superseded_by: z.array(z.string()).default([]),
 }).describe('Typed graph edges between engram IDs.')
 
 export const ProvenanceSchema = z.object({
