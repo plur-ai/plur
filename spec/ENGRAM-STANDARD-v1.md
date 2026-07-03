@@ -316,6 +316,37 @@ required when `knowledge_type` is present.
 | `structured_data` | object | arbitrary key→value | Domain-specific extension bag. |
 | `polarity` | string \| null | `do` \| `dont` \| null, default `null` | Directive vs prohibition classification. |
 
+#### 4.10.1 Convention: ETL extraction provenance (`structured_data.extraction`)
+
+ETL extractors (e.g. the enterprise ETL CLI, enterprise#409) SHOULD carry
+classifier-time provenance in `structured_data.extraction` (plur#463):
+
+| Key | Type | Range | Semantics |
+|---|---|---|---|
+| `extraction.confidence` | number? | `[0,1]` | Classifier confidence at extraction time, frozen at write. |
+| `extraction.source_commit` | string? | git SHA | Source repository commit at extraction time (reproducibility). |
+| `extraction.extractor_version` | string? | semver | Version of the extracting tool (schema-migration handle). Complementary to the pack-level capsule `producer` field (plur#61), which carries tool+version at the envelope level. |
+
+This is a **convention**, not a schema field: `structured_data` is already an
+arbitrary extension bag, so no engram-schema change is involved. Reference
+validation lives in `@plur-ai/core` as `ExtractionProvenanceSchema` /
+`getExtractionProvenance(engram)` (returns `null` when absent or malformed;
+unknown keys inside `extraction` are preserved for forward compatibility).
+Promote to a first-class optional sub-object only when a consumer needs to
+query/filter on it.
+
+**Three distinct `confidence` semantics — implementers MUST NOT conflate them:**
+
+1. `structured_data.extraction.confidence` — `[0,1]` **classifier** score,
+   frozen at extraction time; never updated after write.
+2. `computeConfidence()` — `[0,1]` score **derived from `feedback_signals`** at
+   read time (+ consolidation bonus); changes as feedback accumulates.
+3. `episodic.confidence` — `[1,10]` integer **subjective certainty** of an
+   episodic memory (§4.10, DIP-0019).
+
+Seeding one from another (e.g. initializing feedback-derived scores from
+extraction confidence) corrupts the feedback loop.
+
 ### 4.11 Exchange metadata — PROPOSED
 
 | Field | Type | Range | Semantics |

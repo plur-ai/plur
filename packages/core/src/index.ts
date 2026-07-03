@@ -127,6 +127,7 @@ export {
 } from './importers/index.js'
 export { CapabilityCanary, type Capability, type CanaryStatus } from './capability-canary.js'
 export type { Engram, PreviousVersionRef } from './schemas/engram.js'
+export { ExtractionProvenanceSchema, getExtractionProvenance, type ExtractionProvenance } from './schemas/engram.js'
 export type { Episode } from './schemas/episode.js'
 export type { PackManifest } from './schemas/pack.js'
 export type { PreviewResult, RegistryEntry, PrivacyScanResult, PrivacyIssue } from './packs.js'
