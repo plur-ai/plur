@@ -25,6 +25,7 @@ import { makeMsMarcoMiniLmL6Adapter } from './ms-marco-minilm-l6.js'
 import type { RerankerAdapter } from './types.js'
 
 export type { RerankerAdapter } from './types.js'
+export { checkRerankerFit, type FitCheckResult, type FitCheckEngram } from './fit-check.js'
 
 /**
  * All reranker names supported by the factory.

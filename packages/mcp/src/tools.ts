@@ -1189,6 +1189,29 @@ export function getToolDefinitions(): ToolDefinition[] {
             }
           }
           checks.push({ check: 'reranker available', ok: rerankerOk, detail: rerankerDetail })
+          // Per-store fit check (#451): run only when the reranker loaded successfully.
+          // Cross-encoders can be net-negative out-of-domain — surface the result in
+          // doctor so users know whether to keep it enabled.
+          if (rerankerOk) {
+            try {
+              const fitResult = await plur.checkRerankerFit({ rerankerName: rerankerName })
+              const sep = fitResult.separability.toFixed(3)
+              checks.push({
+                check: 'reranker domain fit',
+                ok: fitResult.fit,
+                detail: fitResult.n_pairs === 0
+                  ? 'Not enough engrams to evaluate fit (< 2) — assuming fit'
+                  : fitResult.fit
+                  ? `Good fit — separability ${sep} on ${fitResult.n_pairs} pairs (threshold ≥ 0.05)`
+                  : `Poor fit — separability ${sep} on ${fitResult.n_pairs} pairs (threshold ≥ 0.05). Reranker may be net-negative on this store's domain mix.`,
+              })
+              if (!fitResult.fit && fitResult.n_pairs > 0) {
+                remediation.push(
+                  `Reranker "${rerankerName}" shows poor separability (${sep}) on this store's engrams — it may be scoring irrelevant pairs higher than relevant ones. Consider unsetting PLUR_RERANKER or switching to a different tier. The fit check compares same-domain vs cross-domain pair scores; low separability means the model lacks signal on your content.`,
+                )
+              }
+            } catch { /* best-effort — don't let fit check break doctor */ }
+          }
         }
         const canaryStatuses = mcpCanary.status()
         for (const cs of canaryStatuses) {
