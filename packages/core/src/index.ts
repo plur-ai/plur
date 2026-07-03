@@ -15,7 +15,8 @@ import { captureEpisode, queryTimeline } from './episodes.js'
 import { agenticSearch } from './agentic-search.js'
 import { embeddingSearch, embeddingSearchWithScores, type SimilarityResult } from './embeddings.js'
 import { hybridSearch, hybridSearchWithMeta, applyReranker, rrfMergeEngrams as pgliteRrfMerge, type HybridSearchResult, type RerankOptions } from './hybrid-search.js'
-import { getReranker, resolveRerankerName, isRerankerOff, rerankerStatus, resetRerankerStatus, _resetRerankerCache, type RerankerAdapter, type RerankerRuntimeStatus } from './rerankers/index.js'
+import { getReranker, resolveRerankerName, isRerankerOff, rerankerStatus, resetRerankerStatus, _resetRerankerCache, type RerankerAdapter, type RerankerRuntimeStatus, type RerankerName } from './rerankers/index.js'
+import { runRerankerSelfEval, loadRerankerEvalCache, saveRerankerEvalResult, isRerankerEvalStale, logRerankerEvalAdvisory, type RerankerEvalResult } from './reranker-eval.js'
 import { _resetBgeRerankerCache } from './rerankers/bge-reranker-v2-m3.js'
 import { _resetMsMarcoMiniLmCache } from './rerankers/ms-marco-minilm-l6.js'
 import { classifyQuery, routeForIntent, applyIntentRouting, isIntentRoutingDisabled, isEntityDomain, rewriteLexicalQuery, isQueryRewriteDisabled, type QueryIntent, type IntentRoutingProfile } from './intent/index.js'
@@ -115,6 +116,16 @@ export {
   type RerankerName, type RerankerRuntimeStatus, type RerankerFailureKind,
 } from './rerankers/index.js'
 export type { RerankerAdapter } from './rerankers/types.js'
+// Per-store reranker eval gate (#451) — the self-check that must pass before
+// anyone flips reranking on by default for a store. Advisory only.
+export {
+  synthesizeProbeQuery, runRerankerSelfEval,
+  rerankerEvalCachePath, loadRerankerEvalCache, saveRerankerEvalResult,
+  isRerankerEvalStale, rerankerEvalAdvisory,
+  RERANKER_EVAL_STALENESS_MS, RERANKER_EVAL_COUNT_DRIFT, RERANKER_EVAL_MIN_PROBES,
+  RERANKER_EVAL_HARM_THRESHOLD, RERANKER_EVAL_BENEFIT_THRESHOLD,
+  type RerankerEvalResult, type RerankerEvalVerdict, type RerankerEvalOptions,
+} from './reranker-eval.js'
 export type { SimilarityResult } from './embeddings.js'
 export type { SyncResult, SyncStatus } from './sync.js'
 export { checkForUpdate, getCachedUpdateCheck, clearVersionCache, minorVersionsBehind, type VersionCheckResult } from './version-check.js'
@@ -362,6 +373,12 @@ export class Plur {
    * so existing call sites pay zero cost until they opt in.
    */
   private _reranker: RerankerAdapter | null = null
+  /**
+   * Per-store reranker eval gate advisory (#451) — logged at most once per
+   * instance when the enable path resolves a reranker whose cached self-eval
+   * verdict is 'harmful'. Advisory only: reranking is never auto-disabled.
+   */
+  private _rerankerEvalAdvisoryDone = false
   /** mtime (ms) of config.yaml at last load — drives reloadConfigIfChanged (#307). */
   private configMtimeMs = 0
 
@@ -1960,6 +1977,7 @@ export class Plur {
       const envName = resolveRerankerName()
       const name = envName === 'off' ? 'bge-reranker-v2-m3' : envName
       this._reranker = getReranker(name)
+      this._maybeLogRerankerEvalAdvisory(name)
       return { reranker: this._reranker }
     }
     // Implicit: follow the env. Off → undefined so the stage is skipped.
@@ -1968,7 +1986,75 @@ export class Plur {
     if (!this._reranker || isRerankerOff(this._reranker)) {
       this._reranker = getReranker(envName)
     }
+    this._maybeLogRerankerEvalAdvisory(envName)
     return { reranker: this._reranker }
+  }
+
+  /**
+   * Reranker-enable path advisory (#451): when this store's cached self-eval
+   * says the resolved reranker is net-negative HERE, warn once per instance.
+   * Never disables anything — the loud-once log is the whole intervention.
+   */
+  private _maybeLogRerankerEvalAdvisory(rerankerName: string): void {
+    if (this._rerankerEvalAdvisoryDone) return
+    this._rerankerEvalAdvisoryDone = true
+    try {
+      logRerankerEvalAdvisory(this.paths.root, rerankerName, this._filterEngrams().length)
+    } catch { /* advisory must never break recall */ }
+  }
+
+  /**
+   * Run the per-store reranker self-eval gate (#451): sample this store's own
+   * engrams, synthesize probe queries from their statements, and compare the
+   * cross-encoder's ordering against RRF-only. Returns the cached verdict when
+   * fresh (same reranker, within the staleness bound, store size stable)
+   * unless `force` is set. The result is persisted to `.reranker-eval.json`
+   * in the store root and surfaced by plur_doctor + the enable-path advisory.
+   */
+  async rerankerSelfEval(options?: {
+    /** Reranker to evaluate. Default: the PLUR_RERANKER-resolved adapter. */
+    reranker?: RerankerName
+    /** Max probes to sample (default 20). */
+    sample?: number
+    /** PRNG seed (default 1337). */
+    seed?: number
+    /** Re-run even when a fresh cached verdict exists. */
+    force?: boolean
+  }): Promise<{ result: RerankerEvalResult; cached: boolean }> {
+    const name = options?.reranker ?? resolveRerankerName()
+    if (name === 'off') {
+      throw new Error(
+        'No reranker configured — set PLUR_RERANKER (or pass { reranker }) to run the per-store self-eval.',
+      )
+    }
+    const engrams = this._filterEngrams()
+    if (!options?.force) {
+      const cached = loadRerankerEvalCache(this.paths.root)[name]
+      if (cached && !isRerankerEvalStale(cached, engrams.length)) {
+        return { result: cached, cached: true }
+      }
+    }
+    const adapter = getReranker(name)
+    const result = await runRerankerSelfEval(engrams, adapter, {
+      sample: options?.sample,
+      seed: options?.seed,
+      storagePath: this.paths.root,
+    })
+    saveRerankerEvalResult(this.paths.root, result)
+    return { result, cached: false }
+  }
+
+  /**
+   * Read this store's cached reranker self-eval verdict (#451) without
+   * running anything. Returns null when the store has never been evaluated
+   * for the given (or env-resolved) reranker.
+   */
+  rerankerEvalStatus(rerankerName?: string): { result: RerankerEvalResult; stale: boolean } | null {
+    const name = rerankerName ?? resolveRerankerName()
+    if (name === 'off') return null
+    const cached = loadRerankerEvalCache(this.paths.root)[name]
+    if (!cached) return null
+    return { result: cached, stale: isRerankerEvalStale(cached, this._filterEngrams().length) }
   }
 
   /** Resolve the query-intent routing profile for a call (#224). undefined = no routing (general). */

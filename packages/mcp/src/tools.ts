@@ -2,7 +2,7 @@ import { existsSync, unlinkSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
 import { Plur, extractMetaEngrams, validateMetaEngram, confidenceBand, generateProfile, getProfileForInjection, markProfileDirty, selectModelForOperation, readHistoryForEngram, getCachedUpdateCheck, minorVersionsBehind, scanForTensions, CapabilityCanary, readProjectConfig, isSharedScope, resolveRerankerName, getReranker, classifyRerankerFailure, hfCacheDirName } from '@plur-ai/core'
-import type { LlmFunction, MetaField, TensionStatus } from '@plur-ai/core'
+import type { LlmFunction, MetaField, TensionStatus, RerankerEvalResult } from '@plur-ai/core'
 import { recordTelemetry } from './telemetry.js'
 import { VERSION } from './version.js'
 
@@ -1082,6 +1082,7 @@ export function getToolDefinitions(): ToolDefinition[] {
         type: 'object',
         properties: {
           retry: { type: 'boolean', description: 'If true, reset cached embedder failure state and retry the model load before reporting' },
+          rerank_eval: { type: 'boolean', description: 'If true and a reranker is configured (PLUR_RERANKER), run the per-store self-eval gate (#451): probes synthesized from this store\'s own engrams compare rerank-on vs RRF-only ordering. Verdict is cached in the store and advisory — it never auto-disables reranking. Costs one cross-encoder pass per probe (~20 probes).' },
         },
       },
       handler: async (args, plur) => {
@@ -1195,6 +1196,61 @@ export function getToolDefinitions(): ToolDefinition[] {
             }
           }
           checks.push({ check: 'reranker available', ok: rerankerOk, detail: rerankerDetail })
+
+          // Per-store eval gate (#451, final task) — ADVISORY. Compares
+          // rerank-on vs RRF-only ordering on probes synthesized from this
+          // store's own engrams. A 'harmful' verdict fails this check and
+          // adds remediation, but never auto-disables reranking — the
+          // shipping-default decision stays with a human.
+          try {
+            let evalStatus: { result: RerankerEvalResult; stale: boolean } | null
+            let freshlyRun = false
+            if (args.rerank_eval === true) {
+              const run = await plur.rerankerSelfEval()
+              evalStatus = { result: run.result, stale: false }
+              freshlyRun = !run.cached
+            } else {
+              evalStatus = plur.rerankerEvalStatus(rerankerName)
+            }
+            if (!evalStatus) {
+              checks.push({
+                check: 'reranker per-store eval',
+                ok: true,
+                detail:
+                  'Not yet evaluated on this store — cross-encoders can be net-negative out-of-domain (#451). ' +
+                  'Run plur_doctor with rerank_eval:true for the advisory self-check before trusting reranked order.',
+              })
+            } else {
+              const r = evalStatus.result
+              const harmful = r.verdict === 'harmful'
+              const sign = r.delta_mrr >= 0 ? '+' : ''
+              const provenance = freshlyRun ? 'measured now' : `cached ${r.evaluated_at}`
+              const staleNote = evalStatus.stale ? ' [STALE — store changed since; re-run with rerank_eval:true]' : ''
+              checks.push({
+                check: 'reranker per-store eval',
+                ok: !harmful,
+                detail:
+                  `${r.verdict} on this store (${provenance}${staleNote}): ` +
+                  `ΔMRR ${sign}${r.delta_mrr.toFixed(3)} vs RRF-only over ${r.scored_probes} probes ` +
+                  `(hit@1 ${(r.rrf_hit1 * 100).toFixed(0)}%→${(r.rerank_hit1 * 100).toFixed(0)}%, ` +
+                  `${r.promotions} promoted / ${r.demotions} demoted, ~${r.mean_rerank_ms.toFixed(0)}ms/probe)`,
+              })
+              if (harmful) {
+                remediation.push(
+                  `Per-store self-eval measured reranker "${rerankerName}" as net-negative on THIS store ` +
+                  `(ΔMRR ${r.delta_mrr.toFixed(3)}; it demoted known-relevant engrams in ${r.demotions}/${r.scored_probes} probes). ` +
+                  `This gate is advisory — reranking remains enabled. Unset PLUR_RERANKER to opt out for this store, ` +
+                  `or re-run plur_doctor with rerank_eval:true after the store grows/changes.`,
+                )
+              }
+            }
+          } catch (err) {
+            checks.push({
+              check: 'reranker per-store eval',
+              ok: false,
+              detail: `self-eval failed: ${(err as Error).message}`,
+            })
+          }
         }
         const canaryStatuses = mcpCanary.status()
         for (const cs of canaryStatuses) {
