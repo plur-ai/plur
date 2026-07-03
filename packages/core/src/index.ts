@@ -36,6 +36,9 @@ import type { ScopeMetadata, SensitivityCategory } from './schemas/scope-metadat
 import { rankScopes, SCOPE_MATCH_THRESHOLD, type ScopeSignals, type ScopeCandidate } from './scope-routing.js'
 import { appendHistory, readHistoryForEngram, generateEventId, generateInjectionId, computeQueryHash, findLatestInjectionFor, countInjectionEvents, type InjectionEventCounts } from './history.js'
 import { computeContentHash } from './content-hash.js'
+import { loadTensions, saveTensions, generateTensionId, tensionPairKey, categorizeTension } from './tension-store.js'
+import type { TensionRecord, TensionStatus } from './schemas/tension.js'
+import type { TensionPair } from './tensions.js'
 import { resolveValidity, buildTemporal } from './expiry.js'
 import { decodeJwtExpiry } from './jwt.js'
 import { RemoteStore } from './store/remote-store.js'
@@ -115,7 +118,10 @@ export type { RerankerAdapter } from './rerankers/types.js'
 export type { SimilarityResult } from './embeddings.js'
 export type { SyncResult, SyncStatus } from './sync.js'
 export { checkForUpdate, getCachedUpdateCheck, clearVersionCache, minorVersionsBehind, type VersionCheckResult } from './version-check.js'
-export { scanForTensions, getCandidatePairs, scopesOverlap, domainSegmentsOverlap, subjectsOverlap, statementOverlap, buildContradictionPrompt, parseContradictionResponse, buildBatchContradictionPrompt, parseBatchContradictionResponse, engramDate, daysApart, inTemporalDomain, temporalDiscountFactor, SNAPSHOT_CONFIDENCE_CAP, type ContradictionVerdict, type TensionPair, type TensionScanResult, type TensionScanOptions, type TemporalGateOptions, type JudgeStatement } from './tensions.js'
+export { scanForTensions, getCandidatePairs, scopesOverlap, domainSegmentsOverlap, subjectsOverlap, statementOverlap, buildContradictionPrompt, parseContradictionResponse, buildBatchContradictionPrompt, parseBatchContradictionResponse, engramDate, daysApart, inTemporalDomain, temporalDiscountFactor, SNAPSHOT_CONFIDENCE_CAP, type ContradictionVerdict, type TensionPair, type TensionScanResult, type TensionScanOptions, type TemporalGateOptions, type CandidatePairOptions, type JudgeStatement } from './tensions.js'
+// Tension lifecycle persistence (#181)
+export { loadTensions, saveTensions, generateTensionId, tensionPairKey, categorizeTension } from './tension-store.js'
+export { TensionRecordSchema, TensionStatusSchema, TensionCategorySchema, type TensionRecord, type TensionStatus, type TensionCategory } from './schemas/tension.js'
 // Migration importers (issue #441) — `plur import --from <source> --path <file>`.
 export {
   importFrom, runImport, getImportSource, listImportSources, IMPORT_SOURCES,
@@ -745,6 +751,11 @@ export class Plur {
     // unsafe cast.
     const sourceEntry = this._buildSourceEntry(scope, context)
     const lockTimestamp = new Date().toISOString()
+    // #181 (audit #213 item 3): an engram in an unresolved persisted tension
+    // must not escalate INTO 'locked' — contradicted knowledge freezing at
+    // the top of the commitment ladder is exactly the failure #213 feared.
+    // Escalation caps at 'decided' until the tension is resolved/dismissed.
+    const lockBlockedByTension = this.hasUnresolvedTension(hit.id)
     const applyMutation = (e: Engram, source: typeof sourceEntry, lockedAt: string): number => {
       const newRecurrence = ((e as any).recurrence_count ?? 0) + 1
       ;(e as any).recurrence_count = newRecurrence
@@ -763,8 +774,11 @@ export class Plur {
             : e.commitment === 'leaning'
               ? 'decided'
               : e.commitment === 'decided'
-                ? 'locked'
+                ? (lockBlockedByTension ? 'decided' : 'locked')
                 : (e.commitment ?? 'leaning')
+          if (lockBlockedByTension && e.commitment === 'decided') {
+            logger.info(`[plur:tensions] lock escalation blocked for ${e.id} — unresolved tension (#181)`)
+          }
           if (e.commitment === 'locked' && !e.locked_at) {
             e.locked_at = lockedAt
             e.locked_reason = `Auto-locked: cross-scope recurrence detected (${newRecurrence}x)`
@@ -2391,6 +2405,10 @@ export class Plur {
       } catch { /* best-effort */ }
     }
 
+    // #181: surface persisted tensions touching this injection — flag,
+    // don't adjudicate (audit #213 item 4).
+    const warnings = this._tensionWarningsFor(injected_ids)
+
     return {
       directives: directivesStr,
       constraints: constraintsStr,
@@ -2398,6 +2416,7 @@ export class Plur {
       count,
       tokens_used: tokensUsed,
       injected_ids,
+      ...(warnings.length > 0 ? { warnings } : {}),
     }
   }
 
@@ -3574,13 +3593,11 @@ Generate an improved version of the procedure that prevents this failure. Return
 
     const active = engrams.filter(e => e.status !== 'retired')
     const lockedCount = active.filter(e => (e as any).commitment === 'locked').length
-    const tensionPairs = new Set<string>()
-    for (const e of active) {
-      if (!e.relations?.conflicts?.length) continue
-      for (const cid of e.relations.conflicts) {
-        tensionPairs.add([e.id, cid].sort().join(':'))
-      }
-    }
+    // #181 (audit #213 C2): tension_count counts UNRESOLVED persisted
+    // tension records — the LLM-validated detector's output — instead of
+    // relations.conflicts, which post-#138 holds only unvalidated importer
+    // heuristics (or nothing, post-purge).
+    const unresolvedTensions = this.listTensions({ status: ['detected', 'confirmed'] }).length
 
     // Count engrams with version > 1 (SP2 Idea 8)
     const versionedCount = engrams.filter(e => {
@@ -3595,11 +3612,256 @@ Generate an improved version of the procedure that prevents this failure. Return
       storage_root: this.paths.root,
       config: this.config,
       locked_count: lockedCount,
-      tension_count: tensionPairs.size,
+      tension_count: unresolvedTensions,
       versioned_engram_count: versionedCount,
       outbox_count: this.outboxCount(),
       history_events: countInjectionEvents(this.paths.root),
       ...(this._lastIndexError ? { index_error: this._lastIndexError } : {}),
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // Tension lifecycle (#181) — persistence, confirm/dismiss/resolve.
+  // ------------------------------------------------------------------
+
+  /** List persisted tension records, optionally filtered by status. */
+  listTensions(filter?: { status?: TensionStatus[] }): TensionRecord[] {
+    const records = loadTensions(this.paths.tensions)
+    if (!filter?.status?.length) return records
+    const wanted = new Set(filter.status)
+    return records.filter(r => wanted.has(r.status))
+  }
+
+  /**
+   * Canonical pair keys of every recorded tension — the scan exclusion set
+   * (#181). Any recorded pair is excluded from future scans regardless of
+   * status: dismissed/resolved pairs are suppressed, detected/confirmed
+   * pairs are already adjudicated and must not re-pay the LLM judge.
+   */
+  suppressedTensionPairKeys(): string[] {
+    return loadTensions(this.paths.tensions).map(r => tensionPairKey(r.engram_a, r.engram_b))
+  }
+
+  /**
+   * Persist fresh scan detections as tension records (#181). Pairs already
+   * recorded (any status) are returned as-is and counted in existing_count —
+   * a scan can never duplicate or resurrect a record. New records get a
+   * T-YYYY-MMDD-NNN id, a v1 category (categorizeTension), status
+   * 'detected', and emit the `contradiction_detected` history event (the
+   * event type existed since SP2 with zero emitters — audit #213 C5).
+   */
+  recordTensions(pairs: TensionPair[]): { records: TensionRecord[]; new_count: number; existing_count: number } {
+    if (pairs.length === 0) return { records: [], new_count: 0, existing_count: 0 }
+    const engramById = new Map(this._loadAllEngrams().map(e => [e.id, e]))
+    return withLock(this.paths.tensions, () => {
+      const all = loadTensions(this.paths.tensions)
+      const byKey = new Map(all.map(r => [tensionPairKey(r.engram_a, r.engram_b), r]))
+      const out: TensionRecord[] = []
+      let newCount = 0
+      let existingCount = 0
+      const nowIso = new Date().toISOString()
+      for (const pair of pairs) {
+        const key = tensionPairKey(pair.id_a, pair.id_b)
+        const prior = byKey.get(key)
+        if (prior) {
+          existingCount++
+          out.push(prior)
+          continue
+        }
+        const record: TensionRecord = {
+          id: generateTensionId(all),
+          engram_a: pair.id_a,
+          engram_b: pair.id_b,
+          statement_a: pair.statement_a,
+          statement_b: pair.statement_b,
+          confidence: pair.confidence,
+          reason: pair.reason,
+          detected_at: nowIso,
+          status: 'detected',
+          resolved_by: null,
+          resolved_at: null,
+          category: categorizeTension(
+            pair.statement_a, pair.statement_b,
+            engramById.get(pair.id_a), engramById.get(pair.id_b),
+          ),
+        }
+        all.push(record)
+        byKey.set(key, record)
+        out.push(record)
+        newCount++
+        try {
+          appendHistory(this.paths.root, {
+            event: 'contradiction_detected',
+            engram_id: pair.id_a,
+            timestamp: nowIso,
+            data: {
+              tension_id: record.id,
+              engram_b: pair.id_b,
+              confidence: pair.confidence,
+              reason: pair.reason,
+              category: record.category,
+            },
+          })
+        } catch { /* best-effort — history failure must not lose the record */ }
+      }
+      if (newCount > 0) saveTensions(this.paths.tensions, all)
+      return { records: out, new_count: newCount, existing_count: existingCount }
+    })
+  }
+
+  /** Locked mutation of a single tension record by id. */
+  private _mutateTension(id: string, mutate: (r: TensionRecord) => void): TensionRecord {
+    return withLock(this.paths.tensions, () => {
+      const all = loadTensions(this.paths.tensions)
+      const record = all.find(r => r.id === id)
+      if (!record) throw new Error(`Tension ${id} not found`)
+      mutate(record)
+      saveTensions(this.paths.tensions, all)
+      return record
+    })
+  }
+
+  /** Mark a detected tension as a real conflict (detected → confirmed). */
+  confirmTension(id: string): TensionRecord {
+    return this._mutateTension(id, r => {
+      if (r.status === 'resolved') throw new Error(`Tension ${id} is already resolved`)
+      if (r.status === 'dismissed') throw new Error(`Tension ${id} is dismissed — re-scan cannot resurrect it; delete tensions.yaml entry manually if truly needed`)
+      r.status = 'confirmed'
+    })
+  }
+
+  /**
+   * Dismiss a tension as a false positive (detected|confirmed → dismissed).
+   * The pair stays in the scan exclusion set, so it is never re-flagged.
+   */
+  dismissTension(id: string): TensionRecord {
+    return this._mutateTension(id, r => {
+      if (r.status === 'resolved') throw new Error(`Tension ${id} is already resolved`)
+      r.status = 'dismissed'
+    })
+  }
+
+  /**
+   * Resolve a tension by picking the winning engram: the loser is retired
+   * outright (decisive — NOT reference-count-decremented like forget(), see
+   * audit #213 §2), the record becomes status 'resolved' with resolved_by /
+   * resolved_at set.
+   */
+  resolveTension(id: string, winnerId: string): { record: TensionRecord; retired_id: string } {
+    const existing = this.listTensions().find(r => r.id === id)
+    if (!existing) throw new Error(`Tension ${id} not found`)
+    if (existing.status === 'resolved') throw new Error(`Tension ${id} is already resolved`)
+    if (existing.status === 'dismissed') throw new Error(`Tension ${id} is dismissed`)
+    if (winnerId !== existing.engram_a && winnerId !== existing.engram_b) {
+      throw new Error(`Winner ${winnerId} is not part of tension ${id} (${existing.engram_a} vs ${existing.engram_b})`)
+    }
+    const loserId = winnerId === existing.engram_a ? existing.engram_b : existing.engram_a
+    // Retire the loser FIRST — if retirement fails, the record stays
+    // unresolved and the operation can be retried.
+    const retired = this._retireEngramForResolution(loserId, `tension ${id} resolved in favor of ${winnerId}`)
+    if (!retired) throw new Error(`Cannot retire losing engram ${loserId} (not found in a writable local store)`)
+    const record = this._mutateTension(id, r => {
+      r.status = 'resolved'
+      r.resolved_by = winnerId
+      r.resolved_at = new Date().toISOString()
+    })
+    return { record, retired_id: loserId }
+  }
+
+  /**
+   * Unconditional retirement for tension resolution. Unlike forget(), does
+   * NOT decrement reference_count — the user explicitly adjudicated this
+   * engram as the losing side, so a multiply-learned loser must still die
+   * (audit #213 §2: "a user who resolved a tension by forgetting the loser
+   * may find it still active").
+   */
+  private _retireEngramForResolution(id: string, reason: string): boolean {
+    const stamp = (engram: Engram): void => {
+      engram.status = 'retired'
+      if (!engram.rationale) engram.rationale = `Retired: ${reason}`
+    }
+    const foundInPrimary = withLock(this.paths.engrams, () => {
+      const engrams = loadEngrams(this.paths.engrams)
+      const engram = engrams.find(e => e.id === id)
+      if (!engram) return false
+      stamp(engram)
+      this._writeEngrams(this.paths.engrams, engrams)
+      this._syncIndex()
+      appendHistory(this.paths.root, {
+        event: 'engram_retired',
+        engram_id: id,
+        timestamp: new Date().toISOString(),
+        data: { reason },
+      })
+      return true
+    })
+    if (foundInPrimary) return true
+
+    // Secondary local stores (namespaced ids) — mirrors forget()'s branch.
+    const storeInfo = this._findEngramStore(id)
+    if (storeInfo && storeInfo.path !== this.paths.engrams) {
+      if (storeInfo.readonly) throw new Error('Cannot retire engram from readonly store')
+      const storeEngrams = loadEngrams(storeInfo.path)
+      const engram = storeEngrams.find(e => e.id === storeInfo.originalId)
+      if (engram) {
+        stamp(engram)
+        this._writeEngrams(storeInfo.path, storeEngrams)
+        this._syncIndex()
+        appendHistory(this.paths.root, {
+          event: 'engram_retired',
+          engram_id: id,
+          timestamp: new Date().toISOString(),
+          data: { reason },
+        })
+        return true
+      }
+    }
+    return false
+  }
+
+  /**
+   * True when the engram participates in an unresolved (detected|confirmed)
+   * persisted tension. Gates commitment escalation into 'locked' (#181,
+   * audit #213 item 3): contradicted knowledge must not lock.
+   */
+  hasUnresolvedTension(engramId: string): boolean {
+    try {
+      return loadTensions(this.paths.tensions).some(r =>
+        (r.status === 'detected' || r.status === 'confirmed')
+        && (r.engram_a === engramId || r.engram_b === engramId))
+    } catch {
+      return false
+    }
+  }
+
+  /**
+   * Injection warnings for persisted tensions (#181, audit #213 item 4 —
+   * surface, don't adjudicate):
+   * - confirmed tension: warn when EITHER side injects (the user vouched
+   *   for the conflict being real; relying on one side blind is a hazard);
+   * - detected tension: warn only when BOTH sides inject together.
+   */
+  private _tensionWarningsFor(injectedIds: string[]): string[] {
+    if (injectedIds.length === 0) return []
+    try {
+      const unresolved = loadTensions(this.paths.tensions)
+        .filter(r => r.status === 'detected' || r.status === 'confirmed')
+      if (unresolved.length === 0) return []
+      const injected = new Set(injectedIds)
+      const clip = (t: string) => (t.length > 80 ? `${t.slice(0, 77)}...` : t)
+      const warnings: string[] = []
+      for (const r of unresolved) {
+        const aIn = injected.has(r.engram_a)
+        const bIn = injected.has(r.engram_b)
+        const fires = r.status === 'confirmed' ? (aIn || bIn) : (aIn && bIn)
+        if (!fires) continue
+        warnings.push(
+          `Tension ${r.id} (${r.status}, ${r.category}): "${clip(r.statement_a)}" [${r.engram_a}] contradicts "${clip(r.statement_b)}" [${r.engram_b}]. Consider resolving before relying on either.`,
+        )
+      }
+      return warnings
+    } catch {
+      return [] // best-effort — a tension-store problem must never break injection
     }
   }
 

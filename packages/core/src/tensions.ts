@@ -345,8 +345,10 @@ function isSnapshotPair(a: Engram, b: Engram, temporalDomains: readonly string[]
  *   2. Domain filter    — skip pairs whose domain hierarchies don't touch
  *   3. Subject overlap  — skip pairs whose subject noun phrases don't overlap
  *
- * Already-known conflicts (relations.conflicts) are skipped to avoid
- * re-evaluating the same pair.
+ * Pairs already adjudicated in the tension store are skipped via
+ * options.exclude_pairs (#181). relations.conflicts does NOT exempt a pair:
+ * importer-written conflict edges are heuristic suspects awaiting an LLM
+ * verdict (audit #213 C1).
  *
  * Temporal gates (#240):
  *   - Supersedes-linked pairs are skipped in both directions — an
@@ -365,14 +367,25 @@ function isSnapshotPair(a: Engram, b: Engram, temporalDomains: readonly string[]
  * when the caller applies a max_pairs cap. Ties keep insertion order
  * (stable sort).
  */
+export interface CandidatePairOptions {
+  /**
+   * Canonical pair keys (sorted ids joined by ':') to exclude — the persisted
+   * tension records (#181). Any recorded pair, whatever its status, is
+   * skipped: dismissed records act as a suppress-list, detected/confirmed
+   * records are already adjudicated and must not re-pay the judge.
+   */
+  exclude_pairs?: ReadonlySet<string>
+}
+
 export function getCandidatePairs(
   engrams: Engram[],
-  options?: TemporalGateOptions,
+  options?: TemporalGateOptions & CandidatePairOptions,
 ): Array<[Engram, Engram]> {
   const active = engrams.filter(e => e.status === 'active')
   const temporalDomains = options?.temporal_domains ?? []
   const snapshotMode = options?.snapshot_pairs ?? 'skip'
   const now = options?.now ?? new Date().toISOString().slice(0, 10)
+  const excludePairs = options?.exclude_pairs
 
   // Tokenize each engram once instead of once per pair (O(n) vs O(n²) passes).
   const subjectTokens = active.map(e => extractSubjectTokens(e.statement))
@@ -392,8 +405,12 @@ export function getCandidatePairs(
       // Stage 2: domain segment filter
       if (!domainSegmentsOverlap(a.domain, b.domain)) continue
 
-      // Skip already-known conflict pairs
-      if (a.relations?.conflicts?.includes(b.id)) continue
+      // Skip pairs already adjudicated in the tension store (#181). This
+      // REPLACES the old relations.conflicts skip (audit #213 C1): the
+      // importer writes heuristic conflict suspects precisely so the scan
+      // can confirm them with an LLM, so a conflicts edge must not exempt
+      // a pair from judging — only a persisted record does.
+      if (excludePairs && excludePairs.has([a.id, b.id].sort().join(':'))) continue
 
       // #240: intentional updates are not tensions
       if (supersedesLinked(a, b)) continue
@@ -421,8 +438,8 @@ export function getCandidatePairs(
   return scored.map(s => s.pair)
 }
 
-/** Options for scanForTensions. Temporal gates/adjustments are #240. */
-export interface TensionScanOptions extends TemporalGateOptions {
+/** Options for scanForTensions. Temporal gates/adjustments are #240; pair exclusion is #181. */
+export interface TensionScanOptions extends TemporalGateOptions, CandidatePairOptions {
   min_confidence?: number
   max_pairs?: number
   batch_size?: number

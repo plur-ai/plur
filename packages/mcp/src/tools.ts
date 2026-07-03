@@ -2,7 +2,7 @@ import { existsSync, unlinkSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
 import { Plur, extractMetaEngrams, validateMetaEngram, confidenceBand, generateProfile, getProfileForInjection, markProfileDirty, selectModelForOperation, readHistoryForEngram, getCachedUpdateCheck, minorVersionsBehind, scanForTensions, CapabilityCanary, readProjectConfig, isSharedScope, resolveRerankerName, getReranker, classifyRerankerFailure, hfCacheDirName } from '@plur-ai/core'
-import type { LlmFunction, MetaField } from '@plur-ai/core'
+import type { LlmFunction, MetaField, TensionStatus } from '@plur-ai/core'
 import { recordTelemetry } from './telemetry.js'
 import { VERSION } from './version.js'
 
@@ -418,6 +418,8 @@ export function getToolDefinitions(): ToolDefinition[] {
           count: result.count,
           tokens_used: result.tokens_used,
           injected_ids: result.injected_ids,
+          // #181: unresolved-tension warnings — flag contradicted context
+          ...(result.warnings ? { warnings: result.warnings } : {}),
         }
       },
     },
@@ -447,6 +449,8 @@ export function getToolDefinitions(): ToolDefinition[] {
           tokens_used: result.tokens_used,
           injected_ids: result.injected_ids,
           mode: 'hybrid',
+          // #181: unresolved-tension warnings — flag contradicted context
+          ...(result.warnings ? { warnings: result.warnings } : {}),
         }
       },
     },
@@ -1761,14 +1765,19 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
 
     {
       name: 'plur_tensions',
-      description: 'List or scan for engram pairs that have conflicting knowledge. Without scan mode, shows previously detected conflicts. With scan:true, runs an active LLM-powered contradiction scan and returns only high-confidence tensions.',
-      annotations: { title: 'Tensions', readOnlyHint: true, idempotentHint: true },
+      description: 'Tension lifecycle (#181). Default: list persisted tension records (unresolved first). scan:true runs an LLM contradiction scan, persists NEW detections as records, and skips already-recorded pairs. Lifecycle actions: action:"confirm" (real conflict), action:"dismiss" (false positive — pair suppressed from future scans), action:"resolve" + winner:<engram_id> (loser engram retired). Scan requires OPENAI_API_KEY or OPENROUTER_API_KEY env var, or explicit llm_base_url + llm_api_key args.',
+      annotations: { title: 'Tensions', readOnlyHint: false, idempotentHint: true },
       inputSchema: {
         type: 'object',
         properties: {
           scope: { type: 'string', description: 'Filter by scope' },
           domain: { type: 'string', description: 'Filter by domain prefix' },
-          scan: { type: 'boolean', description: 'Run an active contradiction scan using an LLM judge. Requires OPENAI_API_KEY or OPENROUTER_API_KEY env var, or explicit llm_base_url + llm_api_key args.' },
+          scan: { type: 'boolean', description: 'Run an active contradiction scan using an LLM judge. New detections are persisted as tension records; recorded pairs (any status) are skipped. Requires OPENAI_API_KEY or OPENROUTER_API_KEY env var, or explicit llm_base_url + llm_api_key args.' },
+          persist: { type: 'boolean', description: 'Persist scan detections as tension records (default true). Set false for a dry-run scan that also ignores the recorded-pair suppress list.' },
+          action: { type: 'string', enum: ['confirm', 'dismiss', 'resolve'], description: 'Lifecycle action on a persisted tension record (requires id). confirm: mark real. dismiss: false positive, suppress the pair. resolve: pick winner (requires winner), the losing engram is retired.' },
+          id: { type: 'string', description: 'Tension record id (T-YYYY-MMDD-NNN) for action mode' },
+          winner: { type: 'string', description: 'Engram id that wins the tension (action:"resolve" only). The other engram is retired.' },
+          status: { type: 'string', enum: ['detected', 'confirmed', 'dismissed', 'resolved', 'all'], description: 'List-mode status filter. Default: unresolved records (detected + confirmed).' },
           llm_base_url: { type: 'string', description: 'OpenAI-compatible API base URL for scan mode (e.g. https://api.openai.com/v1)' },
           llm_api_key: { type: 'string', description: 'API key for the LLM (scan mode)' },
           llm_model: { type: 'string', description: 'Model name for scan mode (default: gpt-4o-mini)' },
@@ -1779,6 +1788,27 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
         },
       },
       handler: async (args, plur) => {
+        // --- Lifecycle actions (#181) ---
+        if (args.action) {
+          const id = args.id as string | undefined
+          if (!id) throw new Error(`action:"${args.action}" requires id (tension record id, e.g. T-2026-0703-001)`)
+          if (args.action === 'confirm') {
+            const record = plur.confirmTension(id)
+            return { record, message: `Tension ${id} confirmed as a real conflict. Resolve it with action:"resolve" + winner:<engram_id>.` }
+          }
+          if (args.action === 'dismiss') {
+            const record = plur.dismissTension(id)
+            return { record, message: `Tension ${id} dismissed — the pair is suppressed from future scans.` }
+          }
+          if (args.action === 'resolve') {
+            const winner = args.winner as string | undefined
+            if (!winner) throw new Error('action:"resolve" requires winner (the engram id to keep)')
+            const { record, retired_id } = plur.resolveTension(id, winner)
+            return { record, retired: retired_id, message: `Tension ${id} resolved: ${winner} wins, ${retired_id} retired.` }
+          }
+          throw new Error(`Unknown action: ${args.action}. Use confirm, dismiss, or resolve.`)
+        }
+
         const engrams = plur.list({
           scope: args.scope as string | undefined,
           domain: args.domain as string | undefined,
@@ -1800,6 +1830,10 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
           // #240: config supplies the temporal defaults (tensions: block in
           // config.yaml); an explicit temporal_discount arg overrides.
           const tensionsConfig = plur.getTensionsConfig()
+          // #181: recorded pairs (any status) are excluded — dismissals are
+          // suppressed, prior detections are not re-judged. persist:false is
+          // a dry run: no records written AND no suppress-list applied.
+          const persist = args.persist !== false
           const result = await scanForTensions(engrams, llm, {
             min_confidence: args.min_confidence as number | undefined,
             max_pairs: args.max_pairs as number | undefined,
@@ -1807,12 +1841,18 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
             temporal_domains: tensionsConfig.temporal_domains,
             snapshot_pairs: tensionsConfig.snapshot_pairs,
             temporal_discount: (args.temporal_discount as boolean | undefined) ?? tensionsConfig.temporal_discount,
+            ...(persist ? { exclude_pairs: new Set(plur.suppressedTensionPairKeys()) } : {}),
           })
+          const persisted = persist && result.tensions.length > 0
+            ? plur.recordTensions(result.tensions)
+            : undefined
 
           return {
             pairs_checked: result.pairs_checked,
             count: result.new_tensions,
-            tensions: result.tensions.map(t => ({
+            ...(persisted ? { persisted_new: persisted.new_count } : {}),
+            tensions: result.tensions.map((t, i) => ({
+              ...(persisted ? { tension_id: persisted.records[i].id, category: persisted.records[i].category, status: persisted.records[i].status } : {}),
               engram_a: { id: t.id_a, statement: t.statement_a },
               engram_b: { id: t.id_b, statement: t.statement_b },
               confidence: t.confidence,
@@ -1820,44 +1860,53 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
               ...(t.days_apart !== undefined ? { days_apart: t.days_apart } : {}),
               ...(t.raw_confidence !== undefined ? { raw_confidence: t.raw_confidence } : {}),
             })),
+            ...(persisted && persisted.new_count > 0
+              ? { next_steps: 'Review each tension: action:"confirm" (real), action:"dismiss" (false positive), or action:"resolve" + winner:<engram_id> (retire the loser).' }
+              : {}),
           }
         }
 
-        // Legacy mode: read from relations.conflicts (kept for backward compat;
-        // returns empty for stores that have been through purgeTensions).
-        const tensions: Array<{
+        // --- List mode (#181): persisted tension records ---
+        const statusArg = args.status as TensionStatus | 'all' | undefined
+        const records = statusArg === 'all'
+          ? plur.listTensions()
+          : plur.listTensions({ status: statusArg ? [statusArg] : ['detected', 'confirmed'] })
+
+        // Legacy relations.conflicts pairs (unvalidated importer heuristics or
+        // pre-#138 residue) are surfaced separately with the purge hint.
+        const legacy: Array<{
           engram_a: { id: string; statement: string; type: string }
           engram_b: { id: string; statement: string; type: string }
           detected_at: string
-          purge_hint?: string
         }> = []
-
         const seen = new Set<string>()
-
         for (const engram of engrams) {
           if (!engram.relations?.conflicts?.length) continue
           for (const conflictId of engram.relations.conflicts) {
             const pairKey = [engram.id, conflictId].sort().join(':')
             if (seen.has(pairKey)) continue
             seen.add(pairKey)
-
             const other = engrams.find(e => e.id === conflictId)
             if (!other) continue
-
-            tensions.push({
+            legacy.push({
               engram_a: { id: engram.id, statement: engram.statement, type: engram.type },
               engram_b: { id: other.id, statement: other.statement, type: other.type },
               detected_at: engram.activation.last_accessed,
-              purge_hint: 'These conflicts are from the legacy detection system. Run plur_tensions_purge to clear them, then use scan:true for active contradiction detection.',
             })
           }
         }
 
-        const purge_hint = tensions.length > 0
-          ? 'These are legacy conflict relations. Run plur_tensions_purge to clear them.'
-          : undefined
-
-        return { tensions, count: tensions.length, ...(purge_hint ? { purge_hint } : {}) }
+        return {
+          tensions: records,
+          count: records.length,
+          ...(legacy.length > 0 ? {
+            legacy_conflicts: legacy,
+            purge_hint: 'legacy_conflicts are unvalidated relations.conflicts refs (importer heuristics or pre-#138 residue) — run scan:true to judge them, or plur_tensions_purge to clear them.',
+          } : {}),
+          ...(records.length === 0 && legacy.length === 0
+            ? { hint: 'No persisted tensions. Run scan:true to detect contradictions.' }
+            : {}),
+        }
       },
     },
 
