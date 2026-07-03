@@ -182,6 +182,65 @@ export const InsightFieldSchema = z.object({
   { message: 'A promoted insight must be grounded (grounding=verified); speculative dreams cannot be promoted until re-grounded.', path: ['grounding'] },
 )
 
+// === Convention: ETL extraction provenance (issue #463) ===
+//
+// The enterprise ETL CLI (enterprise#409) emits engrams carrying classifier-time
+// provenance in `structured_data.extraction`:
+//
+//   structured_data:
+//     extraction:
+//       confidence: 0.85        # 0-1 classifier score, frozen at extraction
+//       source_commit: "abc123" # git SHA at extraction time (reproducibility)
+//       extractor_version: "0.1.0"  # CLI version (schema-migration handle)
+//
+// This is a CONVENTION riding in the existing `structured_data` extension bag —
+// deliberately NOT wired into EngramSchema (zero schema change; promote to a
+// first-class sub-object only when a consumer needs to query/filter on it).
+// The schema below is a validation helper for producers/consumers of the
+// convention. `.passthrough()` keeps unknown keys so newer extractors can add
+// fields without invalidating older consumers.
+//
+// THREE DISTINCT "confidence" SEMANTICS — do not conflate:
+//   1. `structured_data.extraction.confidence` (here) — 0-1 CLASSIFIER score,
+//      frozen at extraction time. Never updated after write.
+//   2. `computeConfidence()` (src/confidence.ts) — 0-1 score DERIVED at read
+//      time from feedback_signals (+ consolidation bonus). Changes as feedback
+//      accumulates.
+//   3. `episodic.confidence` — 1-10 integer SUBJECTIVE certainty of an episodic
+//      memory (DIP-0019).
+// Mixing them (e.g. seeding feedback-derived scores from extraction confidence)
+// would corrupt the feedback loop.
+export const ExtractionProvenanceSchema = z.object({
+  confidence: z.number().min(0).max(1).optional()
+    .describe('0-1 classifier confidence at extraction time. Frozen at write; distinct from feedback-derived computeConfidence() and from episodic.confidence.'),
+  source_commit: z.string().optional()
+    .describe('Git SHA of the source repository at extraction time (reproducibility).'),
+  extractor_version: z.string().optional()
+    .describe('Version of the extracting CLI/tool (schema-migration handle). Complementary to the pack-level capsule producer field (#61).'),
+}).passthrough()
+  .describe('ETL extraction provenance convention carried in structured_data.extraction (#463). Not wired into EngramSchema.')
+
+export type ExtractionProvenance = z.infer<typeof ExtractionProvenanceSchema>
+
+/**
+ * Read and validate the #463 extraction-provenance convention from an engram.
+ *
+ * Returns the validated `structured_data.extraction` object, or `null` when it
+ * is absent or malformed (wrong container type, wrong field types, confidence
+ * out of [0,1]) — malformed provenance is ignored gracefully, never thrown.
+ *
+ * Accepts any object with an optional `structured_data` field so it works with
+ * Engram, WireEngram, or plain parsed YAML (same pattern as computeConfidence).
+ */
+export function getExtractionProvenance(
+  engram: { structured_data?: Record<string, unknown> | null },
+): ExtractionProvenance | null {
+  const extraction = engram.structured_data?.['extraction']
+  if (extraction === undefined || extraction === null) return null
+  const parsed = ExtractionProvenanceSchema.safeParse(extraction)
+  return parsed.success ? parsed.data : null
+}
+
 // === Main Engram Schema ===
 
 export const EngramSchema = z.object({
