@@ -231,3 +231,6 @@ export function resolveRerankerName(env: NodeJS.ProcessEnv = process.env): Reran
 export function _resetResolveWarnings(): void {
   warnedUnknown = false
 }
+
+// Fit-check (#451): score-distribution domain-fit check for cross-encoder rerankers.
+export { checkRerankerFit, type FitCheckResult, type FitCheckEngram } from './fit-check.js'

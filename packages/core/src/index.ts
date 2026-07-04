@@ -15,7 +15,7 @@ import { captureEpisode, queryTimeline } from './episodes.js'
 import { agenticSearch } from './agentic-search.js'
 import { embeddingSearch, embeddingSearchWithScores, type SimilarityResult } from './embeddings.js'
 import { hybridSearch, hybridSearchWithMeta, applyReranker, rrfMergeEngrams as pgliteRrfMerge, type HybridSearchResult, type RerankOptions } from './hybrid-search.js'
-import { getReranker, resolveRerankerName, isRerankerOff, rerankerStatus, resetRerankerStatus, _resetRerankerCache, type RerankerAdapter, type RerankerRuntimeStatus, type RerankerName } from './rerankers/index.js'
+import { getReranker, resolveRerankerName, isRerankerOff, rerankerStatus, resetRerankerStatus, _resetRerankerCache, checkRerankerFit, type RerankerAdapter, type RerankerRuntimeStatus, type RerankerName, type FitCheckResult } from './rerankers/index.js'
 import { runRerankerSelfEval, loadRerankerEvalCache, saveRerankerEvalResult, isRerankerEvalStale, logRerankerEvalAdvisory, type RerankerEvalResult } from './reranker-eval.js'
 import { _resetBgeRerankerCache } from './rerankers/bge-reranker-v2-m3.js'
 import { _resetMsMarcoMiniLmCache } from './rerankers/ms-marco-minilm-l6.js'
@@ -113,7 +113,8 @@ export {
   getReranker, isRerankerOff, resolveRerankerName, RERANKER_NAMES, DEFAULT_RERANKER,
   rerankerStatus, resetRerankerStatus, classifyRerankerFailure, hfCacheDirName,
   _resetRerankerCache, _setCachedReranker,
-  type RerankerName, type RerankerRuntimeStatus, type RerankerFailureKind,
+  checkRerankerFit,
+  type RerankerName, type RerankerRuntimeStatus, type RerankerFailureKind, type FitCheckResult, type FitCheckEngram,
 } from './rerankers/index.js'
 export type { RerankerAdapter } from './rerankers/types.js'
 // Per-store reranker eval gate (#451) — the self-check that must pass before
@@ -2055,6 +2056,22 @@ export class Plur {
     const cached = loadRerankerEvalCache(this.paths.root)[name]
     if (!cached) return null
     return { result: cached, stale: isRerankerEvalStale(cached, this._filterEngrams().length) }
+  }
+
+  /**
+   * Probe whether the configured reranker produces useful signal on this
+   * store's engrams (#451). Scores same-domain vs cross-domain pairs and
+   * returns a separability measure — callers use it to decide whether to
+   * enable the reranker by default.
+   *
+   * @param opts.sampleSize  Max engrams to sample (default 100).
+   * @param opts.rerankerName  Which reranker to probe (default: PLUR_RERANKER).
+   */
+  async checkRerankerFit(opts?: { sampleSize?: number; rerankerName?: string }): Promise<FitCheckResult> {
+    const name = (opts?.rerankerName as RerankerName | undefined) ?? resolveRerankerName()
+    const adapter = getReranker(name === 'off' ? undefined : name)
+    const engrams = this.list().map(e => ({ statement: e.statement, domain: e.domain }))
+    return checkRerankerFit(engrams, adapter, { sampleSize: opts?.sampleSize })
   }
 
   /** Resolve the query-intent routing profile for a call (#224). undefined = no routing (general). */
