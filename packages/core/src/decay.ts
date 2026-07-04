@@ -162,8 +162,12 @@ export function applyBatchDecay(
     const emotionalWeight = (engram as any).episodic?.emotional_weight ?? 5
     const effectiveLambda = lambda * (1 - emotionalWeight / 20)
 
+    const recallCount = engram.activation.frequency ?? 0
+    const isSuperseded = (engram.relations?.superseded_by?.length ?? 0) > 0
+    const finalLambda = isSuperseded && recallCount < 5 ? effectiveLambda * 2.0 : effectiveLambda
+
     const oldStrength = engram.activation.retrieval_strength
-    const newStrength = decayedStrength(oldStrength, days, effectiveLambda)
+    const newStrength = decayedStrength(oldStrength, days, finalLambda)
 
     // Only count as decayed if strength actually changed
     if (Math.abs(newStrength - oldStrength) < 1e-10) continue

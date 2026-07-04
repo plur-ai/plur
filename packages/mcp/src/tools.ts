@@ -284,14 +284,18 @@ export function getToolDefinitions(): ToolDefinition[] {
           limit: args.limit as number | undefined,
         })
         return {
-          results: results.map(e => ({
-            id: e.id,
-            statement: e.statement,
-            type: e.type,
-            scope: e.scope,
-            domain: e.domain,
-            retrieval_strength: e.activation.retrieval_strength,
-          })),
+          results: results.map(e => {
+            const supersededBy = e.relations?.superseded_by
+            const annotation = supersededBy?.length ? ` [superseded by ${supersededBy.join(', ')}]` : ''
+            return {
+              id: e.id,
+              statement: e.statement + annotation,
+              type: e.type,
+              scope: e.scope,
+              domain: e.domain,
+              retrieval_strength: e.activation.retrieval_strength,
+            }
+          }),
           count: results.length,
         }
       },
@@ -351,9 +355,11 @@ export function getToolDefinitions(): ToolDefinition[] {
         const response: Record<string, unknown> = {
           results: boundedResults.map(e => {
             const raw = e as any
+            const supersededBy = (e as any).relations?.superseded_by
+            const annotation = supersededBy?.length ? ` [superseded by ${supersededBy.join(', ')}]` : ''
             const base: Record<string, unknown> = {
               id: e.id,
-              statement: e.statement,
+              statement: e.statement + annotation,
               type: e.type,
               scope: e.scope,
               domain: e.domain,
