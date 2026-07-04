@@ -588,7 +588,12 @@ export function formatLayer3(engram: WireEngram): string {
   if (engram.rationale) lines.push(`  Rationale: ${engram.rationale}`)
   const meta: string[] = []
   if (engram.domain) meta.push(`Domain: ${engram.domain}`)
-  if (engram.confidence_score != null) meta.push(`Confidence: ${engram.confidence_score.toFixed(2)}`)
+  const commitment = (engram as any).commitment as string | undefined
+  if (commitment) {
+    meta.push(`Confidence: ${commitment}`)
+  } else if (engram.confidence_score != null) {
+    meta.push(`Confidence: ${engram.confidence_score.toFixed(2)}`)
+  }
   if (engram.activation?.last_accessed) meta.push(`Last verified: ${engram.activation.last_accessed}`)
   if (meta.length > 0) lines.push(`  ${meta.join(' | ')}`)
   return lines.join('\n')
