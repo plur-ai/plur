@@ -180,6 +180,19 @@ export function flattenRelations(engram: Engram): Association[] {
   return associations
 }
 
+// --- Supersedes chain helpers ---
+
+const HISTORICAL_KEYWORDS = ['before', 'was', 'prior', 'used to', 'previously', 'old', 'earlier', 'history', 'historical', 'legacy']
+
+function hasHistoricalIntent(prompt: string): boolean {
+  const lower = prompt.toLowerCase()
+  return HISTORICAL_KEYWORDS.some(kw => lower.includes(kw))
+}
+
+function isSupersededEngram(engram: ScoredEngram): boolean {
+  return (engram.relations?.superseded_by?.length ?? 0) > 0
+}
+
 // --- Strip pipeline ---
 
 function stripAssociations(engram: ScoredEngram): AgentEngram {
@@ -442,6 +455,16 @@ export function selectAndSpread(
 
   // Sort by score descending
   filtered.sort((a, b) => b.score - a.score)
+
+  // Supersedes chain preference: under budget pressure, tip beats older members
+  if (!hasHistoricalIntent(ctx.prompt)) {
+    for (const e of filtered) {
+      if (isSupersededEngram(e)) {
+        e.score *= 0.3
+      }
+    }
+    filtered.sort((a, b) => b.score - a.score)
+  }
 
   // Step 6: Fill directive token budget
   const { selected: directives, tokens_used: directiveTokens } = fillTokenBudget(filtered, maxTokens)
