@@ -8,6 +8,7 @@ Security-hardening release, independently audited.
 - Pack & sync locked down
 - Private-by-default scopes
 - Independently re-audited (Črt)
+- **Python SDK (`plur-ai`)**: bumped to 0.10.0 — adds `recall_hybrid()` (BM25 + embeddings + RRF), pins npx fallback to CLI 0.10.1
 
 PLUR's engram leak guard, scope isolation, pack/sync distribution, and remote-store trust boundaries were hardened across three internal audit rounds **and an independent adversarial re-audit by Črt** — the Blocker and the full High confidentiality cluster fixed and re-verified, plus every Medium/Low finding. Also lands per-engram scope routing, **private-by-default** visibility, and read-side personal-scope visibility on all three read paths. No breaking API changes; the behavior changes are noted per entry below.
 

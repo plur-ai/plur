@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "plur-ai"
-version = "0.9.13"
+version = "0.10.0"
 description = "Local-first shared memory for AI agents — Python SDK over the @plur-ai/cli"
 readme = "README.md"
 requires-python = ">=3.9"

@@ -62,6 +62,19 @@ def test_inject_returns_sections():
         shutil.rmtree(d, ignore_errors=True)
 
 
+@requires_cli
+def test_recall_hybrid_returns_results():
+    d = tempfile.mkdtemp(prefix="plur-pytest-")
+    try:
+        plur = Plur(path=d)
+        plur.learn("deploy with blue-green never in-place", type="architectural")
+        results = plur.recall_hybrid("deployment strategy", limit=5)
+        assert isinstance(results, list)
+        assert any("blue-green" in r["statement"] for r in results)
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
 def test_missing_cli_raises(monkeypatch):
     monkeypatch.delenv("PLUR_CLI", raising=False)
     monkeypatch.setattr("plur_ai.bridge.shutil.which", lambda _name: None)
