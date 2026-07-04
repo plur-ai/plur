@@ -55,6 +55,7 @@ Commands:
   hook-observe            (internal) Hook handler for observation capture
   hook-learn-check        (internal) Hook handler for learning reflection
   hook-session-guard      (internal) Hook handler for session enforcement
+  hook-session-end        (internal) SessionEnd hook — auto-close memory lifecycle
   hook-session-mark       (internal) Hook handler for session sentinel
   hook-session-remind     (internal) Hook handler for session start reminder
   hook-correction-detect  (internal) UserPromptSubmit hook — detect corrections
@@ -103,6 +104,7 @@ const COMMANDS: Record<string, string> = {
   'hook-observe': './commands/hook-observe.js',
   'hook-learn-check': './commands/hook-learn-check.js',
   'hook-session-guard': './commands/hook-session-guard.js',
+  'hook-session-end': './commands/hook-session-end.js',
   'hook-session-mark': './commands/hook-session-mark.js',
   'hook-session-remind': './commands/hook-session-remind.js',
   'hook-correction-detect': './commands/hook-correction-detect.js',

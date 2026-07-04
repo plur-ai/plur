@@ -174,12 +174,20 @@ describe('plur init', () => {
         readFileSync(join(project, '.claude', 'settings.json'), 'utf-8'),
       )
 
-      // Enforcement hooks (SessionStart, session-guard PreToolUse, session-mark PostToolUse) live globally
+      // Enforcement hooks (SessionStart, SessionEnd, session-guard PreToolUse, session-mark PostToolUse) live globally
       expect(globalSettings.hooks?.SessionStart).toBeDefined()
       const globalGuard = globalSettings.hooks?.PreToolUse?.find((h) =>
         h.hooks.some((c) => c.command.includes('hook-session-guard')),
       )
       expect(globalGuard).toBeDefined()
+
+      // SessionEnd hook auto-closes the memory lifecycle (#217)
+      const globalSessionEnd = globalSettings.hooks?.SessionEnd?.find((h) =>
+        h.hooks.some((c) => c.command.includes('hook-session-end')),
+      )
+      expect(globalSessionEnd).toBeDefined()
+      // ...and is NOT duplicated at project scope
+      expect(projectSettings.hooks?.SessionEnd).toBeUndefined()
       const globalMark = globalSettings.hooks?.PostToolUse?.find((h) =>
         h.hooks.some((c) => c.command.includes('hook-session-mark')),
       )

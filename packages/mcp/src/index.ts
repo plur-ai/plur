@@ -107,6 +107,12 @@ const PLUR_HOOKS: Record<string, HookEntry[]> = {
     matcher: 'auto|manual',
     hooks: [{ type: 'command', command: `${CLI} hook-inject --rehydrate`, timeout: 15 }],
   }],
+  // Auto-close the memory lifecycle at session end (Claude Code SessionEnd,
+  // shipped v1.0.85) — captures a closing episode and cleans up the session
+  // checkpoint even if the agent forgot to call plur_session_end (#217).
+  SessionEnd: [{
+    hooks: [{ type: 'command', command: `${CLI} hook-session-end`, timeout: 5 }],
+  }],
   // --- Contextual injection ---
   PreToolUse: [
     { matcher: 'EnterPlanMode', hooks: [{ type: 'command', command: `${CLI} hook-inject --event plan_mode`, timeout: 10 }] },
@@ -158,7 +164,7 @@ Hooks inject engrams automatically on every first message — you do not need to
 2. **Learn**: When corrected or discovering something new, call \`plur_learn\` immediately
 3. **Recall**: Before answering factual questions, call \`plur_recall_hybrid\` — check memory first
 4. **Feedback**: Rate injected engrams with \`plur_feedback\` (positive/negative) — trains relevance
-5. **End**: Call \`plur_session_end\` with summary + engram_suggestions
+5. **End**: Call \`plur_session_end\` with summary + engram_suggestions — a SessionEnd hook auto-closes the lifecycle if you forget, but calling it yourself captures higher-quality learnings
 
 Do not ask permission to use these tools — they are your memory system.
 
