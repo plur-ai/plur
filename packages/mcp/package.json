@@ -1,7 +1,7 @@
 {
   "name": "@plur-ai/mcp",
   "mcpName": "io.github.plur-ai/plur",
-  "version": "0.10.1",
+  "version": "0.11.0",
   "type": "module",
   "bin": {
     "plur-mcp": "dist/index.js"
@@ -24,7 +24,7 @@
     "@types/node": "^25.5.0"
   },
   "license": "Apache-2.0",
-  "description": "PLUR MCP server \u2014 persistent memory tools for any AI agent",
+  "description": "PLUR MCP server — persistent memory tools for any AI agent",
   "keywords": [
     "ai",
     "memory",
