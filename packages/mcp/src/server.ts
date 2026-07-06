@@ -11,10 +11,9 @@ import {
   McpError,
 } from '@modelcontextprotocol/sdk/types.js'
 import { Plur, checkForUpdate } from '@plur-ai/core'
-import { getToolDefinitions, mcpCanary } from './tools.js'
+import { getToolDefinitions, mcpCanary, validateToolArgs, type ToolProfile } from './tools.js'
 import { registerFlushOnExit } from './telemetry.js'
 import { VERSION } from './version.js'
-import { z } from 'zod'
 
 export const INSTRUCTIONS = `PLUR is your persistent memory. Corrections, preferences, and conventions persist across sessions as engrams.
 
@@ -135,67 +134,9 @@ Use \`scope\` to namespace engrams per project:
 Override with \`PLUR_PATH\` environment variable.
 `
 
-// Recursive JSON-Schema → Zod converter for tool input validation.
-// Handles nested array items + anyOf/oneOf so callers can't pass strings
-// where objects are expected (issue #231). When the schema allows multiple
-// item shapes via anyOf, the handler is expected to coerce — see tools.ts
-// session_end handler for an example.
-function jsonSchemaPropToZod(prop: any): z.ZodTypeAny {
-  if (!prop || typeof prop !== 'object') return z.unknown()
-  const variants = (prop.anyOf as any[] | undefined) ?? (prop.oneOf as any[] | undefined)
-  if (Array.isArray(variants) && variants.length > 0) {
-    const zodVariants = variants.map(jsonSchemaPropToZod)
-    if (zodVariants.length === 1) return zodVariants[0]
-    // z.union requires a 2+ tuple at the type level. We've guaranteed >= 2
-    // via the length check above, so the cast carries a real invariant.
-    return z.union(zodVariants as [z.ZodTypeAny, z.ZodTypeAny, ...z.ZodTypeAny[]])
-  }
-  if (prop.type === 'string') return prop.enum ? z.enum(prop.enum) : z.string()
-  if (prop.type === 'number' || prop.type === 'integer') return z.number()
-  if (prop.type === 'boolean') return z.boolean()
-  if (prop.type === 'array') {
-    const itemSchema = prop.items ? jsonSchemaPropToZod(prop.items) : z.unknown()
-    // #297 defense: some MCP clients mis-serialize array-typed arguments (in
-    // the worst case dropping the ENTIRE arguments payload). The documented
-    // workarounds pass arrays as strings — coerce those back into real arrays
-    // so the workaround round-trips instead of failing validation:
-    //   '["a","b"]'  → JSON parse → ['a','b']   (any item type)
-    //   'a, b'       → comma split → ['a','b']  (string items only)
-    //   'solo'       → wrap        → ['solo']   (string items only)
-    // A string that LOOKS like JSON ('[...') but fails to parse is passed
-    // through unchanged so z.array rejects it loudly, naming the field —
-    // never silently reinterpreted as a single tag.
-    return z.preprocess((val) => {
-      if (typeof val !== 'string') return val
-      const trimmed = val.trim()
-      if (trimmed.startsWith('[')) {
-        try {
-          const parsed = JSON.parse(trimmed)
-          return Array.isArray(parsed) ? parsed : val
-        } catch {
-          return val
-        }
-      }
-      if (prop.items?.type === 'string') {
-        return trimmed.length === 0 ? [] : trimmed.split(',').map(s => s.trim()).filter(s => s.length > 0)
-      }
-      return val
-    }, z.array(itemSchema))
-  }
-  if (prop.type === 'object' && prop.properties) {
-    const shape: Record<string, z.ZodTypeAny> = {}
-    for (const [k, p] of Object.entries(prop.properties) as [string, any][]) {
-      const field = jsonSchemaPropToZod(p)
-      shape[k] = prop.required?.includes(k) ? field : field.optional()
-    }
-    return z.object(shape).passthrough()
-  }
-  return z.unknown()
-}
-
-export async function createServer(plur?: Plur): Promise<Server> {
+export async function createServer(plur?: Plur, options?: { profile?: ToolProfile }): Promise<Server> {
   const instance = plur ?? new Plur()
-  const tools = getToolDefinitions()
+  const tools = getToolDefinitions(options?.profile ?? 'full')
 
   // Non-blocking version check — fire and forget
   checkForUpdate('@plur-ai/mcp', VERSION, (r) => {
@@ -241,57 +182,35 @@ export async function createServer(plur?: Plur): Promise<Server> {
     // `threshold` turns without an expected signal flags the capability.
     mcpCanary.tick()
     try {
-      // Validate arguments against input schema
       let args = request.params.arguments ?? {}
-      const schema = tool.inputSchema as any
-      if (schema?.properties) {
-        const shape: Record<string, z.ZodTypeAny> = {}
-        for (const [key, prop] of Object.entries(schema.properties) as [string, any][]) {
-          const field = jsonSchemaPropToZod(prop)
-          shape[key] = schema.required?.includes(key) ? field : field.optional()
+      const validated = validateToolArgs(tool, args)
+      if (!validated.ok) {
+        return {
+          content: [{ type: 'text', text: JSON.stringify(validated.errorPayload) }],
+          isError: true,
         }
-        const parsed = z.object(shape).passthrough().safeParse(args)
-        if (!parsed.success) {
-          // Echo field NAMES only, never values (#281). Values may contain
-          // engram content (statements, rationale) — echoing them would leak
-          // memory content into client error logs. Keep this names-only.
-          const receivedFields = Object.keys(args)
-          const details = parsed.error.issues.map(i => `${i.path.join('.') || 'root'}: ${i.message}`).join(', ')
-          const receivedNote = receivedFields.length > 0
-            ? `Received fields: [${receivedFields.join(', ')}].`
-            : 'Received no fields (the arguments object was empty).'
-          // #297: an empty payload on a tool that declares array-typed params is
-          // the signature of a known client-side serialization bug — the client
-          // drops the ENTIRE arguments object when an array value is present.
-          // Name the bug and the coercible retry shapes so the caller can
-          // self-correct instead of abandoning the write.
-          const hasArrayParam = Object.values(schema.properties as Record<string, any>)
-            .some(p => p?.type === 'array')
-          const arrayBugHint = receivedFields.length === 0 && hasArrayParam
-            ? ' Known client-side bug (plur-ai/plur#297): some MCP clients drop the entire arguments payload ' +
-              'when an array-typed parameter is included. Retry passing array parameters as a JSON string ' +
-              '(e.g. tags: "[\\"a\\",\\"b\\"]") or a comma-separated string (tags: "a, b") — the server coerces ' +
-              'both back into arrays.'
-            : ''
-          return {
-            content: [{ type: 'text', text: JSON.stringify({
-              error: `Invalid arguments: ${details}. ${receivedNote} ` +
-                'The call reached the server — this is a malformed-arguments error, not a transport failure. ' +
-                'Fix the field(s) named above and retry; do not abandon the call.' + arrayBugHint,
-              success: false,
-              received_fields: receivedFields,
-            }) }],
-            isError: true,
-          }
-        }
-        // Hand the handler the VALIDATED data, not the raw payload — this is
-        // what applies the #297 string→array coercion (and any future
-        // preprocessing) to the values handlers actually see. .passthrough()
-        // above keeps fields outside the declared schema intact.
-        args = parsed.data as Record<string, unknown>
       }
+      args = validated.data
       const result = await tool.handler(args, instance)
-      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] }
+
+      // Generic _isError propagation (audit fix): a tool handler — currently
+      // only plur_admin's, when the ACTION it dispatched to fails its own
+      // inner validateToolArgs check — can flag its return value with a
+      // private `_isError: true` marker to get the same protocol-level
+      // `isError: true` a top-level validation failure gets above. Strip the
+      // marker before it reaches the wire; it's a signal to this handler,
+      // not a field clients should see.
+      let payload: unknown = result
+      let resultIsError = false
+      if (result && typeof result === 'object' && (result as Record<string, unknown>)._isError === true) {
+        resultIsError = true
+        const { _isError, ...rest } = result as Record<string, unknown>
+        payload = rest
+      }
+      return {
+        content: [{ type: 'text', text: JSON.stringify(payload) }],
+        ...(resultIsError ? { isError: true } : {}),
+      }
     } catch (err: any) {
       const message = err?.message ?? String(err)
       server.sendLoggingMessage({ level: 'error', data: `Tool ${request.params.name} failed: ${message}` })
@@ -430,7 +349,8 @@ Please:
 }
 
 export async function runStdio(): Promise<void> {
-  const server = await createServer()
+  const profile = process.env.PLUR_TOOL_PROFILE === 'cursor' ? 'cursor' as const : 'full' as const
+  const server = await createServer(undefined, { profile })
   // Opt-in, content-free telemetry: ship any pending daily counter snapshot on
   // process exit (best-effort). Self-gates on telemetry opt-in — an opted-out
   // install registers the handler but flushes nothing. Registered in runStdio,

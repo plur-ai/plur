@@ -5,6 +5,7 @@ import { Plur, extractMetaEngrams, validateMetaEngram, confidenceBand, generateP
 import type { LlmFunction, MetaField, TensionStatus, RerankerEvalResult } from '@plur-ai/core'
 import { recordTelemetry } from './telemetry.js'
 import { VERSION } from './version.js'
+import { z } from 'zod'
 
 /** Create an OpenAI-compatible LLM function from a base URL + API key */
 function makeHttpLlm(baseUrl: string, apiKey: string, model: string = 'gpt-4o-mini'): LlmFunction {
@@ -43,6 +44,107 @@ export interface ToolDefinition {
   inputSchema: Record<string, unknown>
   annotations?: ToolAnnotations
   handler: (args: Record<string, unknown>, plur: Plur) => Promise<unknown>
+}
+
+// Recursive JSON-Schema → Zod converter for tool input validation. Moved here
+// (was previously private to server.ts) so plur_admin's dispatch handler can
+// validate inner-tool args the same way the top-level CallToolRequestSchema
+// handler does — one validator, not two copies that can drift (#231, #297).
+function jsonSchemaPropToZod(prop: any): z.ZodTypeAny {
+  if (!prop || typeof prop !== 'object') return z.unknown()
+  const variants = (prop.anyOf as any[] | undefined) ?? (prop.oneOf as any[] | undefined)
+  if (Array.isArray(variants) && variants.length > 0) {
+    const zodVariants = variants.map(jsonSchemaPropToZod)
+    if (zodVariants.length === 1) return zodVariants[0]
+    return z.union(zodVariants as [z.ZodTypeAny, z.ZodTypeAny, ...z.ZodTypeAny[]])
+  }
+  if (prop.type === 'string') return prop.enum ? z.enum(prop.enum) : z.string()
+  if (prop.type === 'number' || prop.type === 'integer') return z.number()
+  if (prop.type === 'boolean') return z.boolean()
+  if (prop.type === 'array') {
+    const itemSchema = prop.items ? jsonSchemaPropToZod(prop.items) : z.unknown()
+    return z.preprocess((val) => {
+      if (typeof val !== 'string') return val
+      const trimmed = val.trim()
+      if (trimmed.startsWith('[')) {
+        try {
+          const parsed = JSON.parse(trimmed)
+          return Array.isArray(parsed) ? parsed : val
+        } catch {
+          return val
+        }
+      }
+      if (prop.items?.type === 'string') {
+        return trimmed.length === 0 ? [] : trimmed.split(',').map((s: string) => s.trim()).filter((s: string) => s.length > 0)
+      }
+      return val
+    }, z.array(itemSchema))
+  }
+  if (prop.type === 'object' && prop.properties) {
+    const shape: Record<string, z.ZodTypeAny> = {}
+    for (const [k, p] of Object.entries(prop.properties) as [string, any][]) {
+      const field = jsonSchemaPropToZod(p)
+      shape[k] = prop.required?.includes(k) ? field : field.optional()
+    }
+    return z.object(shape).passthrough()
+  }
+  return z.unknown()
+}
+
+/**
+ * Validate raw tool-call arguments against a ToolDefinition's inputSchema.
+ * Shared by the top-level CallToolRequestSchema handler (server.ts) and the
+ * plur_admin dispatch handler below — one validation path AND one error-
+ * formatting path, not two that can drift. (An earlier draft of this plan
+ * only shared the Zod validation and left the #297 array-bug hint / isError
+ * flag duplicated in server.ts alone — audit review caught that plur_admin's
+ * ~30 dispatched tools would silently lose both. errorPayload below is the
+ * fix: the full formatted error, including the `_isError` marker server.ts
+ * checks generically after ANY tool handler returns, not just this one.)
+ */
+export function validateToolArgs(
+  tool: ToolDefinition,
+  rawArgs: Record<string, unknown>,
+): { ok: true; data: Record<string, unknown> } | {
+  ok: false
+  errorPayload: { error: string; success: false; received_fields: string[]; _isError: true }
+} {
+  const schema = tool.inputSchema as any
+  if (!schema?.properties) return { ok: true, data: rawArgs }
+
+  const shape: Record<string, z.ZodTypeAny> = {}
+  for (const [key, prop] of Object.entries(schema.properties) as [string, any][]) {
+    const field = jsonSchemaPropToZod(prop)
+    shape[key] = schema.required?.includes(key) ? field : field.optional()
+  }
+  const parsed = z.object(shape).passthrough().safeParse(rawArgs)
+  if (!parsed.success) {
+    const receivedFields = Object.keys(rawArgs)
+    const details = parsed.error.issues.map(i => `${i.path.join('.') || 'root'}: ${i.message}`).join(', ')
+    const hasArrayParam = Object.values((schema.properties ?? {}) as Record<string, any>)
+      .some((p: any) => p?.type === 'array')
+    const arrayBugHint = receivedFields.length === 0 && hasArrayParam
+      ? ' Known client-side bug (plur-ai/plur#297): some MCP clients drop the entire arguments payload ' +
+        'when an array-typed parameter is included. Retry passing array parameters as a JSON string ' +
+        '(e.g. tags: "[\\"a\\",\\"b\\"]") or a comma-separated string (tags: "a, b") — the server coerces ' +
+        'both back into arrays.'
+      : ''
+    const receivedNote = receivedFields.length > 0
+      ? `Received fields: [${receivedFields.join(', ')}].`
+      : 'Received no fields (the arguments object was empty).'
+    return {
+      ok: false,
+      errorPayload: {
+        error: `Invalid arguments: ${details}. ${receivedNote} ` +
+          'The call reached the server — this is a malformed-arguments error, not a transport failure. ' +
+          'Fix the field(s) named above and retry; do not abandon the call.' + arrayBugHint,
+        success: false,
+        received_fields: receivedFields,
+        _isError: true,
+      },
+    }
+  }
+  return { ok: true, data: parsed.data as Record<string, unknown> }
 }
 
 const PLUR_GUIDE_EMPTY = `## PLUR — Empty Store
@@ -114,7 +216,73 @@ mcpCanary.expect({
   fix: 'Call plur_learn when corrected. If using hooks, verify they are installed.',
 })
 
-export function getToolDefinitions(): ToolDefinition[] {
+export type ToolProfile = 'full' | 'cursor'
+
+// The 8 tools a Cursor user needs day-to-day. Everything else (packs, sync,
+// tensions, stores, timeline, meta-engrams, ingest, capture, ...) is reachable
+// through plur_admin instead of its own top-level tool slot — Cursor caps a
+// workspace at ~40 MCP tools total across every server, and PLUR's full 39-tool
+// surface alone would consume ~97.5% of that budget.
+const CURSOR_CORE_TOOL_NAMES: ReadonlySet<string> = new Set([
+  'plur_session_start',
+  'plur_session_end',
+  'plur_learn',
+  'plur_recall_hybrid',
+  'plur_feedback',
+  'plur_forget',
+  'plur_status',
+  'plur_doctor',
+])
+
+function buildAdminDispatchTool(all: ToolDefinition[]): ToolDefinition {
+  const byName = new Map(all.map(t => [t.name, t] as const))
+  const adminActions = all.map(t => t.name).sort()
+
+  return {
+    name: 'plur_admin',
+    description:
+      'Dispatch for less-common PLUR operations (packs, sync, tensions, stores, timeline, ' +
+      "ingest, and more), collapsed into one tool so Cursor's ~40-tool-per-workspace limit " +
+      'is not exhausted by PLUR alone. Set "action" to the underlying tool name and "args" ' +
+      `to that tool's normal arguments. Valid actions: ${adminActions.join(', ')}.`,
+    annotations: { title: 'Admin dispatch', readOnlyHint: false },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', description: 'Which underlying plur_* tool to invoke' },
+        args: { type: 'object', description: "Arguments for the chosen action, matching that tool's normal input schema", additionalProperties: true },
+      },
+      required: ['action'],
+    },
+    handler: async (args, plur) => {
+      const action = args.action as string
+      const target = byName.get(action)
+      if (!target) {
+        return { error: `Unknown action "${action}". Valid actions: ${adminActions.join(', ')}`, success: false, _isError: true }
+      }
+      const innerArgs = (args.args as Record<string, unknown>) ?? {}
+      const validated = validateToolArgs(target, innerArgs)
+      if (!validated.ok) {
+        // Reuse the exact same formatted error server.ts would produce for a
+        // direct call to `target` — prefix with the action name so it's clear
+        // which dispatched tool rejected the args, but keep the #297 hint,
+        // received_fields, and _isError marker intact (audit fix — see
+        // validateToolArgs's docstring).
+        return { ...validated.errorPayload, error: `${action}: ${validated.errorPayload.error}` }
+      }
+      return target.handler(validated.data, plur)
+    },
+  }
+}
+
+export function getToolDefinitions(profile: ToolProfile = 'full'): ToolDefinition[] {
+  const all = getAllToolDefinitions()
+  if (profile !== 'cursor') return all
+  const core = all.filter(t => CURSOR_CORE_TOOL_NAMES.has(t.name))
+  return [...core, buildAdminDispatchTool(all)]
+}
+
+function getAllToolDefinitions(): ToolDefinition[] {
   return [
     {
       name: 'plur_learn',
