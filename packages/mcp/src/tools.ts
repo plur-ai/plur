@@ -236,7 +236,7 @@ const CURSOR_CORE_TOOL_NAMES: ReadonlySet<string> = new Set([
 
 function buildAdminDispatchTool(all: ToolDefinition[]): ToolDefinition {
   const byName = new Map(all.map(t => [t.name, t] as const))
-  const adminActions = all.map(t => t.name).sort()
+  const adminActions = all.map(t => t.name).filter(n => !CURSOR_CORE_TOOL_NAMES.has(n)).sort()
 
   return {
     name: 'plur_admin',
@@ -249,6 +249,13 @@ function buildAdminDispatchTool(all: ToolDefinition[]): ToolDefinition {
     inputSchema: {
       type: 'object',
       properties: {
+        // No `enum` here — an invalid action must reach the handler's custom
+        // Unknown-action message with the full valid-actions list, not fail
+        // at top-level schema validation with a generic "Invalid arguments"
+        // error. If `enum: adminActions` were set, the top-level
+        // CallToolRequestSchema handler's Zod validation would reject
+        // unknown actions before this handler's `if (!target)` branch ever
+        // ran.
         action: { type: 'string', description: 'Which underlying plur_* tool to invoke' },
         args: { type: 'object', description: "Arguments for the chosen action, matching that tool's normal input schema", additionalProperties: true },
       },

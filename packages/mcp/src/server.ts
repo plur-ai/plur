@@ -208,7 +208,7 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
         payload = rest
       }
       return {
-        content: [{ type: 'text', text: JSON.stringify(payload) }],
+        content: [{ type: 'text', text: JSON.stringify(payload, null, 2) }],
         ...(resultIsError ? { isError: true } : {}),
       }
     } catch (err: any) {
