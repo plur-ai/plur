@@ -7,7 +7,7 @@ import { execSync } from 'child_process'
 const CLI = join(__dirname, '..', 'dist', 'index.js')
 
 interface Settings {
-  hooks?: Record<string, Array<{ matcher?: string; hooks: Array<{ command: string }> }>>
+  hooks?: Record<string, Array<{ matcher?: string; hooks: Array<{ command: string; timeout?: number; async?: boolean }> }>>
   mcpServers?: Record<string, { command: string; args: string[] }>
 }
 
@@ -51,6 +51,31 @@ describe('plur init', () => {
     // MCP server registered
     expect(settings.mcpServers).toBeDefined()
     expect(settings.mcpServers?.plur).toBeDefined()
+  })
+
+  it('installs injection hooks async with a 90s ceiling; event hooks stay sync', () => {
+    runInit()
+    const settings = readSettings()
+
+    // The cold-start embedder load (~20s on stores past a few thousand
+    // engrams) killed sync injection hooks at their old 15s timeout —
+    // users got a timeout error and no injection. Async + 90s is the fix.
+    const injectHook = settings.hooks?.UserPromptSubmit?.[0]?.hooks?.[0]
+    expect(injectHook?.command).toContain('hook-inject')
+    expect(injectHook?.async).toBe(true)
+    expect(injectHook?.timeout).toBe(90)
+
+    const rehydrateHook = settings.hooks?.PostCompact?.[0]?.hooks?.[0]
+    expect(rehydrateHook?.command).toContain('--rehydrate')
+    expect(rehydrateHook?.async).toBe(true)
+    expect(rehydrateHook?.timeout).toBe(90)
+
+    // Event hooks must deliver context BEFORE the tool runs — async would
+    // defeat them. They fit their sync 10s window because hook-inject uses
+    // BM25-only (no embedder load) for the --event path.
+    const planModeEntry = settings.hooks?.PreToolUse?.find((e) => e.matcher === 'EnterPlanMode')
+    expect(planModeEntry?.hooks?.[0]?.async).toBeUndefined()
+    expect(planModeEntry?.hooks?.[0]?.timeout).toBe(10)
   })
 
   it('writes per-engram scope-selection guidance into CLAUDE.md (#296)', () => {

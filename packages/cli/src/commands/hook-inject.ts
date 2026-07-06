@@ -367,29 +367,24 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     const plur = createPlur(flags)
     const label = `[PLUR Memory — ${event}]`
 
-    try {
-      const result = await plur.injectHybrid(task, { budget: 3000 })
-      if (result.count > 0) {
-        const parts: string[] = []
-        if (result.directives) parts.push(result.directives)
-        if (result.constraints) parts.push(result.constraints)
-        if (result.consider) parts.push(result.consider)
-        const output = { additionalContext: `${label} ${result.count} engrams\n\n${parts.join('\n')}` }
-        process.stdout.write(JSON.stringify(output))
-        return
-      }
-    } catch {
-      // Fall back to BM25
-      const result = plur.inject(task, { budget: 3000 })
-      if (result.count > 0) {
-        const parts: string[] = []
-        if (result.directives) parts.push(result.directives)
-        if (result.constraints) parts.push(result.constraints)
-        if (result.consider) parts.push(result.consider)
-        const output = { additionalContext: `${label} ${result.count} engrams\n\n${parts.join('\n')}` }
-        process.stdout.write(JSON.stringify(output))
-        return
-      }
+    // BM25-only, deliberately. Event hooks are SYNC — their whole point is
+    // context arriving BEFORE the tool runs — and they're installed with a
+    // 10s timeout. Hybrid search needs the BGE embedder, which costs ~20s
+    // to load in a cold CLI process once the store is a few thousand
+    // engrams: the hook got killed at the timeout on EVERY invocation,
+    // burning CPU and injecting nothing. BM25 completes in a few seconds,
+    // and event task strings ("skill: X", "agent: Y") are short keyword-ish
+    // queries where BM25 holds its own against embeddings anyway. The main
+    // first-message injection keeps full hybrid — it runs async with room
+    // to breathe.
+    const result = plur.inject(task, { budget: 3000 })
+    if (result.count > 0) {
+      const parts: string[] = []
+      if (result.directives) parts.push(result.directives)
+      if (result.constraints) parts.push(result.constraints)
+      if (result.consider) parts.push(result.consider)
+      const output = { additionalContext: `${label} ${result.count} engrams\n\n${parts.join('\n')}` }
+      process.stdout.write(JSON.stringify(output))
     }
     return
   }
