@@ -197,6 +197,7 @@ plur.sync('git@github.com:you/plur-memory.git')
 | Tool | What it does |
 |------|-------------|
 | `plur_learn` | Store a correction, preference, or convention |
+| `plur_learn_batch` | Store many engrams in one call (batch dedup + per-item failure isolation) |
 | `plur_recall_hybrid` | Retrieve relevant memories (BM25 + embeddings) |
 | `plur_inject_hybrid` | Select engrams for current task within token budget |
 | `plur_feedback` | Rate relevance (trains quality over time) |

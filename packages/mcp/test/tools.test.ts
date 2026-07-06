@@ -62,6 +62,50 @@ describe('MCP tools', () => {
     expect(result.statement).toBe('Test learning')
   })
 
+  describe('plur_learn_batch', () => {
+    it('is registered as a tool', () => {
+      expect(tools.map(t => t.name)).toContain('plur_learn_batch')
+    })
+
+    it('writes an array of engrams and returns an id per input', async () => {
+      // Distinct, unrelated facts. We assert on persistence rather than the
+      // exact ADD/NOOP split, since the dedup decision depends on whether an
+      // LLM/embeddings are available in the test environment.
+      const result = await callTool('plur_learn_batch', {
+        engrams: [
+          { statement: 'The office WiFi password rotates every quarter', scope: 'global' },
+          { statement: 'Invoices are sent on the first Monday of the month', scope: 'global' },
+          { statement: 'The staging database is wiped every Friday night', scope: 'global' },
+        ],
+      }) as any
+      expect(result.ids).toHaveLength(3)
+      expect(result.ids.every((id: string) => /^ENG-/.test(id))).toBe(true)
+      expect(result.stats.failed).toBe(0)
+      expect(result.failures).toBeUndefined() // omitted when there are none
+      // every returned id is actually persisted
+      for (const id of result.ids) expect(plur.getById(id)).toBeTruthy()
+    })
+
+    it('dedupes a duplicate within the same batch to NOOP', async () => {
+      const result = await callTool('plur_learn_batch', {
+        engrams: [
+          { statement: 'Deploy uses git pull then restart', scope: 'global' },
+          { statement: 'Deploy uses git pull then restart', scope: 'global' },
+        ],
+      }) as any
+      expect(result.stats.added).toBe(1)
+      expect(result.stats.noops).toBe(1)
+      const noop = result.results.find((r: any) => r.decision === 'NOOP')
+      expect(noop.id).toBe(result.results[0].id)
+    })
+
+    it('returns an empty result for an empty array without throwing', async () => {
+      const result = await callTool('plur_learn_batch', { engrams: [] }) as any
+      expect(result.ids).toEqual([])
+      expect(result.warning).toMatch(/No engrams/)
+    })
+  })
+
   // #347 — temporal validity params on the write path.
   describe('plur_learn temporal validity (#347)', () => {
     it('accepts explicit valid_until and echoes it back', async () => {
