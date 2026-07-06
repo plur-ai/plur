@@ -54,6 +54,7 @@ interface HookEntry {
     type: string
     command: string
     timeout?: number
+    async?: boolean
   }>
 }
 
@@ -228,10 +229,18 @@ function buildInjectionHooks(cmd: string): Record<string, HookEntry[]> {
   return {
     // First message: inject engrams based on the prompt.
     // Subsequent messages: periodic reminder to call plur_learn (~1ms skip).
+    //
+    // async: the cold-start CLI loads the BGE embedder for hybrid injection —
+    // ~20s+ once the store grows past a few thousand engrams. A sync hook
+    // would block every first prompt that long (or get killed at the timeout
+    // and inject nothing, which is how this was failing for real users).
+    // Async lets the prompt proceed immediately; the injected context arrives
+    // as soon as the search completes. 90s is a generous ceiling, not a
+    // target — typical completion is well under half that.
     UserPromptSubmit: [
       {
         hooks: [
-          { type: 'command', command: `${cmd} hook-inject`, timeout: 15 },
+          { type: 'command', command: `${cmd} hook-inject`, timeout: 90, async: true },
         ],
       },
     ],
@@ -241,7 +250,7 @@ function buildInjectionHooks(cmd: string): Record<string, HookEntry[]> {
       {
         matcher: 'auto|manual',
         hooks: [
-          { type: 'command', command: `${cmd} hook-inject --rehydrate`, timeout: 15 },
+          { type: 'command', command: `${cmd} hook-inject --rehydrate`, timeout: 90, async: true },
         ],
       },
     ],
