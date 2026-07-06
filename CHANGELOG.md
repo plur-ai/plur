@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.11.0 (2026-07-06)
+
+Hooks that actually finish, tension lifecycle, migration importers.
+
+- Injection hooks now install async — no more hook timeouts on large stores
+- Event hooks switch to BM25 and complete in <1s instead of dying at timeout
+- Tension lifecycle: confirm/dismiss/resolve + injection warnings
+- Migrate from mem0/gp-engram/generic JSON: `plur import --from`
+- Tiny-tier reranker (ms-marco-MiniLM-L6) + per-store rerank eval gate
+
+### Fixed: installed hook config timed out on every prompt for large stores (#502)
+
+Once a store grows past a few thousand engrams, the CLI cold-start pays ~20s to load the BGE embedder for hybrid injection. The hook config `plur init` installed (sync, `timeout: 15`) meant users eventually hit `UserPromptSubmit hook timed out — output discarded` on **every first prompt** — full cold-start cost paid, zero engrams injected.
+
+- `plur init` now installs `hook-inject` (UserPromptSubmit) and `hook-inject --rehydrate` (PostCompact) with `async: true` and a 90s ceiling. The prompt proceeds immediately; injected context arrives when search completes. **Run `plur init` again after upgrading to migrate an existing install** — init strips and reinstalls its hooks.
+- The `--event` hooks (plan_mode / skill / agent / subagent) drop hybrid search and go straight to BM25. They must stay sync — their context has to arrive *before* the tool runs — so they must actually fit their 10s window; hybrid never could on a cold start, so they were killed at timeout on every invocation, burning CPU and injecting nothing. BM25 completes in <1s against a 4k-engram store. First-message injection keeps full hybrid.
+
+### Added
+
+- **Tension lifecycle** (#181, #240): tensions persist with confirm/dismiss/resolve actions and surface as injection warnings; detection is temporal-aware — a genuine contradiction is distinguished from knowledge that merely evolved.
+- **Migration importers** (#441): `plur import --from generic|gp-engram|mem0` brings existing memory stores into the engram format.
+- **Tiny-tier reranker** (#451): ms-marco-MiniLM-L6 adapter for faster reranking, plus a per-store reranker eval gate that self-checks rerank vs plain RRF and disables reranking where it doesn't help.
+- **Lexical query rewriting** (#224): deterministic query expansion for hybrid recall.
+- **Injection provenance** (#452): `co_injection` and `injection_outcome` events logged for offline relevance analysis.
+- **Scope-routing tuning** (#362): `match_threshold` and `weight_tag` exposed as config.
+- **ETL extraction provenance** (#463): convention for `structured_data.extraction` metadata on imported engrams.
+
+### Fixed
+
+- EMBED_DIM contract completed — active-dim column sizing enforced at the storage boundary (#335).
+- Async UPDATE/MERGE increments `engram_version`, not `version` (#487).
+- MCP array-typed tool arguments hardened against client serialization bugs (#297).
+- Reranker pre-flight probe added to the benchmark harness (#341).
+
 ## 0.10.0 (2026-06-25)
 
 Security-hardening release, independently audited.
