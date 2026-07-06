@@ -344,10 +344,23 @@ function processDeferredWrapups(): string | null {
   return `[PLUR] ${notices.join(' ')}\nConsider running plur_session_end with engram_suggestions when this session ends.`
 }
 
+// Self-watchdog ceiling for hook-inject. Hooks are fail-open — a silent
+// exit after the ceiling is always better than an immortal orphan process
+// when a background RemoteStore.load() hangs on a degraded network (#504).
+// Defaults to 55 s (within the 90 s harness timeout); override via env.
+// The timer is unref()ed so a normal clean exit isn't delayed.
+const HOOK_CEILING_MS = parseInt(process.env.PLUR_HOOK_CEILING_MS ?? '', 10) || 55_000
+
 export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   // Silent pass-through for projects without plur configured (#247).
   // Lets hooks be installed globally without affecting non-plur projects.
   if (!isPlurConfigured()) return
+
+  // Watchdog: guarantee this process exits even if a background network call
+  // hangs (#504). Installed after isPlurConfigured() so it only fires for
+  // sessions that actually do work. unref() prevents it from delaying clean exit.
+  const watchdog = setTimeout(() => process.exit(0), HOOK_CEILING_MS)
+  watchdog.unref()
 
   const isRehydrate = args.includes('--rehydrate')
   const eventIdx = args.indexOf('--event')

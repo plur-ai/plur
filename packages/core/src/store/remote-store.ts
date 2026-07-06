@@ -46,6 +46,12 @@ const RemoteRowSchema = z.object({
  * — the upstream merge sees "no engrams from this store right now"
  * rather than blowing up. Callers learn about the problem via logs.
  */
+// Timeout for each page fetch inside load(). Background loads are not on
+// the hot path — a degraded network that never delivers headers must still
+// eventually unblock the caller (#504). 30 s is generous for a healthy
+// server while still keeping the process mortal on a blackholed route.
+const LOAD_FETCH_TIMEOUT_MS = 30_000
+
 export class RemoteStore implements EngramStore {
   private cache: { ts: number; engrams: Engram[] } | null = null
   private inFlight: Promise<Engram[]> | null = null
@@ -149,7 +155,9 @@ export class RemoteStore implements EngramStore {
         const maxPages = 50  // hard cap to avoid runaway loops
         for (let i = 0; i < maxPages; i++) {
           const u = `${this.apiBase}/engrams?scope=${encodeURIComponent(this.scope)}&limit=${limit}&offset=${offset}`
-          const r = await fetch(u, { headers: this.headers() })
+          const ctrl = new AbortController()
+          const t = setTimeout(() => ctrl.abort(), LOAD_FETCH_TIMEOUT_MS)
+          const r = await fetch(u, { headers: this.headers(), signal: ctrl.signal }).finally(() => clearTimeout(t))
           if (!r.ok) {
             // 403 (no read access) and 404 (scope doesn't exist) are
             // not errors at the store level — that store just contributes
