@@ -64,11 +64,27 @@ class Plur:
         return self._run(args) or {}
 
     def recall(self, query: str, *, limit: int | None = None) -> list[dict]:
-        """Search engrams. Returns the list of matching engrams (most relevant first)."""
-        args = ["recall", query]
+        """Fast lexical-only search. Returns engrams most relevant first.
+
+        Use :meth:`recall_hybrid` for better quality at the cost of a slightly
+        longer first call while the embedder model loads.
+        """
+        args = ["recall", "--fast", query]
         if limit is not None:
             args += ["--limit", str(limit)]
         res = self._run(args) or {}
+        return res.get("results", [])
+
+    def recall_hybrid(self, query: str, *, limit: int | None = None) -> list[dict]:
+        """Hybrid search (BM25 + embeddings + RRF). Returns engrams most relevant first.
+
+        Requires ``@plur-ai/cli`` >= 0.10.0. The first call may be slower while the
+        BGE embedder model loads; subsequent calls are fast.
+        """
+        args = ["recall", query]
+        if limit is not None:
+            args += ["--limit", str(limit)]
+        res = self._run(args, timeout=max(self.timeout, 30)) or {}
         return res.get("results", [])
 
     def inject(self, task: str, *, budget: int | None = None) -> dict:

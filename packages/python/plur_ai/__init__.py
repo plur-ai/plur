@@ -16,5 +16,5 @@ from __future__ import annotations
 from .bridge import PlurError, PlurNotInstalledError
 from .client import Plur
 
-__version__ = "0.9.13"
+__version__ = "0.10.0"
 __all__ = ["Plur", "PlurError", "PlurNotInstalledError", "__version__"]
