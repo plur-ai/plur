@@ -140,18 +140,19 @@ result JSONs are no longer committed here (#336). Local benchmark runs still
 write to `benchmark/results/` (gitignored). A/B figures are the README's
 published run.
 
-Cadence standard: `npx tsx benchmark/run.ts --rerank on` (fixture corpus, hybrid+reranker, n=30).
+Cadence standard: `npx tsx benchmark/run.ts --rerank on` (fixture corpus, hybrid+bge-reranker, n=30).
 
 | Metric | Score | Config |
 |--------|-------|--------|
-| LongMemEval Hit@5 (hybrid+rerank, n=30) | **90.0%** | reranker on |
-| LongMemEval Hit@5 (hybrid, n=30) | 76.7% | reranker off |
-| temporal_reasoning R@5 | **100%** | reranker on |
-| temporal_reasoning R@5 | 60% | reranker off |
+| LongMemEval Hit@5 (hybrid, n=30) | 76.7% | reranker off — **shipping default** |
+| LongMemEval Hit@5 (hybrid + ms-marco, n=30) | 83.3% | ms-marco-minilm-l6 — recommended opt-in |
+| LongMemEval Hit@5 (hybrid + bge-reranker, n=30) | **90.0%** | bge-reranker-v2-m3 — max quality |
+| temporal_reasoning R@5 | 60% / 80% / **100%** | off / ms-marco / bge |
+| multi_session_reasoning R@5 | 40% / 60% / 60% | off / ms-marco / bge |
 | A/B win rate (31W/4L) | 89% | |
 | House rules | 12–0 | |
 
-**Latency with reranker:** p50≈3s, p95≈10s, peak RSS≈2GB. Acceptable for agentic use; not suitable for latency-sensitive interactive paths.
+**Reranker latency (fixture, loaded machine — idle machine will be lower):** ms-marco p50≈245ms; bge-reranker p50≈5s, p95≈10s, peak RSS≈2GB. ms-marco is production-viable; bge is suitable for offline/batch only. Set via `PLUR_RERANKER=ms-marco-minilm-l6` or `PLUR_RERANKER=bge-reranker-v2-m3`.
 
 The earlier v0.2.1 baseline (86.7% overall / 93.3% Hit@10) is still cited in
 `docs/benchmarks/phase2-methodology.md` as the self-calibration target for the

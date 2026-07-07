@@ -19,9 +19,19 @@ PLUR is memory, not just retrieval — so we measure it on more than one axis.
 
 **Retrieval recall** — LongMemEval (R@5, chunk granularity):
 
+*Shipping config (BGE-small embeddings, n=30 fixture):*
+
 | Stack | R@5 | Notes |
 |-------|-----|-------|
-| **PLUR hybrid + reranker** | **97.6%** | fully local cross-encoder — no API |
+| PLUR default (hybrid, no reranker) | 76.7% | out-of-the-box — no model downloads |
+| **+ ms-marco-minilm-l6 reranker** | **83.3%** | recommended opt-in — `PLUR_RERANKER=ms-marco-minilm-l6`, p50≈245ms |
+| + bge-reranker-v2-m3 (max quality) | 90.0% | fully local cross-encoder — p50≈5s on CPU |
+
+*Full LongMemEval-S corpus (N=500, openai-3-large embeddings):*
+
+| Stack | R@5 | Notes |
+|-------|-----|-------|
+| PLUR hybrid + bge-reranker-v2-m3 | 97.6% | max quality — not production-suitable on CPU |
 | PLUR hybrid (openai-3-large embeddings) | 97.0% | optional cloud embedder |
 | PLUR BM25 only | 92.2% | no embedder — fully airgapped |
 
