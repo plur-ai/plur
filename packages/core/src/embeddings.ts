@@ -1,4 +1,5 @@
 import type { Engram } from './schemas/engram.js'
+import type { EmbedRole } from './embedders/types.js'
 import { engramSearchText } from './fts.js'
 import { existsSync, readFileSync, mkdirSync } from 'fs'
 import { join } from 'path'
@@ -164,8 +165,10 @@ async function getEmbedder() {
   }
 }
 
-/** Generate embedding for a text string. Returns the active embedder's native dim, or null if unavailable. */
-export async function embed(text: string): Promise<Float32Array | null> {
+/** Generate embedding for a text string. Returns the active embedder's native dim, or null if unavailable.
+ *  Pass role='query' when embedding search terms; omit or pass 'passage' for stored engram text.
+ *  Adapters that support asymmetric prefixes (EmbeddingGemma) use this to pick the correct space. */
+export async function embed(text: string, role?: EmbedRole): Promise<Float32Array | null> {
   const embedder = await getEmbedder()
   if (!embedder) return null
   // When the cached value is an EmbedderAdapter (PR 4 path) it has an .embed
@@ -174,7 +177,7 @@ export async function embed(text: string): Promise<Float32Array | null> {
   if (typeof embedder.embed === 'function') {
     let vector: Float32Array | null
     try {
-      vector = await embedder.embed(text)
+      vector = await embedder.embed(text, role)
     } catch (err) {
       transformersUnavailable = true
       lastLoadError = err instanceof Error ? err.message : String(err)
@@ -339,7 +342,7 @@ export async function embeddingSearch(
   const cache = loadCache(cachePath, activeMeta)
 
   // Embed the query
-  const queryEmbedding = await embed(query)
+  const queryEmbedding = await embed(query, 'query')
   if (!queryEmbedding) {
     // Embeddings unavailable — return empty (caller should fall back to BM25)
     return []
@@ -407,7 +410,7 @@ export async function embeddingSearchWithScores(
   const cache = loadCache(cachePath, activeMeta)
 
   // Embed the query
-  const queryEmbedding = await embed(query)
+  const queryEmbedding = await embed(query, 'query')
   if (!queryEmbedding) {
     // Embeddings unavailable — return empty (caller should fall back to BM25)
     return []

@@ -5,35 +5,84 @@
  * on disk with int8/q8 quantisation. Apache 2.0.
  *
  * Model id: onnx-community/embeddinggemma-300m-ONNX — the community ONNX
- * conversion that ships with text/embed pipeline metadata. Recent
- * @huggingface/transformers releases (3.x) handle the gemma3_text model_type
- * via the feature-extraction pipeline. Pooling for EmbeddingGemma is the
- * "last token" / mean of the prompt+content tokens; we use mean here as the
- * pipeline's `mean` pooling matches the encoder semantics for this model.
+ * conversion. The ONNX graph ships two outputs: last_hidden_state [B,T,768]
+ * and sentence_embedding [B,768]. The sentence_embedding output is the
+ * complete official stack: mean pooling + Dense(768→3072) + Dense(3072→768)
+ * + L2 normalisation (from the sentence-transformers modules.json). The old
+ * adapter fed last_hidden_state through a JS-side mean pooling, skipping the
+ * two Dense projection layers — the resulting vectors had cos ≈ −0.003 against
+ * sentence_embedding and were in a different space from all published figures.
  *
- * Disk cost (FYI): q8 weights ~ 300 MB, fp32 ~ 1.2 GB. We prefer q8 here so
- * the bake-off lines up with the published EmbeddingGemma benchmarks (which
- * report numbers at q8) and so first-time download stays within reach on
- * laptop bandwidth.
+ * Fix (#483): load the model via AutoModel (not the feature-extraction pipeline)
+ * and read sentence_embedding directly. The adapter name is 'embedding-gemma@graph'
+ * (not 'embedding-gemma') so any caches built with wrong-space vectors are
+ * automatically detected as a name mismatch and rebuilt by embeddings.ts.
  *
- * If a future @huggingface/transformers version drops gemma3_text support
- * the adapter still loads — the lazy import will throw a descriptive error
- * at first embed() call rather than at module import time.
+ * Role prefixes: EmbeddingGemma is trained with asymmetric prefixes per the
+ * model card — "query: " for search queries, "passage: " for stored text.
+ * Callers pass role='query' for search; omitting role defaults to 'passage'.
+ *
+ * Disk cost: q8 weights ~ 300 MB. We use q8 to match published EmbeddingGemma
+ * benchmark numbers and keep first-run download manageable.
  */
-import { makeTransformersAdapter } from './transformers-base.js'
-import type { EmbedderAdapter } from './types.js'
+import type { EmbedderAdapter, EmbedRole } from './types.js'
 
 export const EMBEDDING_GEMMA_MODEL_ID = 'onnx-community/embeddinggemma-300m-ONNX'
+const DIM = 768
+
+// Minimal callable shapes for the transformers.js tokenizer and model.
+// We extract `sentence_embedding` from the ONNX graph directly — the pipeline
+// API only surfaces `last_hidden_state` after JS-side pooling, which skips
+// the two Dense post-pooling layers that are part of EmbeddingGemma's stack.
+type Tok = (text: string, opts: { padding: boolean; truncation: boolean }) => Promise<unknown>
+type Mdl = (inputs: unknown) => Promise<{ sentence_embedding: { data: Float32Array | number[] } }>
+
+let loaded: Promise<{ tokenizer: Tok; model: Mdl }> | null = null
+
+async function load(): Promise<{ tokenizer: Tok; model: Mdl }> {
+  if (!loaded) {
+    loaded = (async () => {
+      // Xet transfer protocol silently truncates ONNX files (#340). Disable it.
+      process.env.HF_HUB_DISABLE_XET ??= '1'
+      const { AutoTokenizer, AutoModel } = await import('@huggingface/transformers')
+      const tokenizer = (await AutoTokenizer.from_pretrained(EMBEDDING_GEMMA_MODEL_ID)) as unknown as Tok
+      const model = (await AutoModel.from_pretrained(EMBEDDING_GEMMA_MODEL_ID, { dtype: 'q8' })) as unknown as Mdl
+      return { tokenizer, model }
+    })()
+  }
+  return loaded
+}
+
+/** Reset the model + tokenizer cache. Test-only. */
+export function _resetEmbeddingGemmaCache(): void {
+  loaded = null
+}
 
 export function makeEmbeddingGemmaAdapter(): EmbedderAdapter {
-  return makeTransformersAdapter({
-    name: 'embedding-gemma',
-    dim: 768,
+  async function embedOne(text: string, role?: EmbedRole): Promise<Float32Array> {
+    const prefix = role === 'query' ? 'query: ' : 'passage: '
+    const { tokenizer, model } = await load()
+    const inputs = await tokenizer(prefix + text, { padding: true, truncation: true })
+    const outputs = await model(inputs)
+    const raw = outputs.sentence_embedding.data
+    const arr = raw instanceof Float32Array ? raw : new Float32Array(raw)
+    if (arr.length !== DIM) {
+      throw new Error(`EmbeddingGemma: expected ${DIM}-dim sentence_embedding, got ${arr.length}`)
+    }
+    return arr
+  }
+
+  return {
+    // '@graph' suffix distinguishes from old JS-side pooled vectors — embeddings.ts
+    // detects the name change and auto-invalidates any cached wrong-space data.
+    name: 'embedding-gemma@graph',
+    dim: DIM,
     modelId: EMBEDDING_GEMMA_MODEL_ID,
-    pooling: 'mean',
-    normalize: true,
-    // q8 picked to match the published EmbeddingGemma benchmark numbers and
-    // keep the first-run download manageable (~300MB instead of ~1.2GB).
-    dtype: 'q8',
-  })
+    embed: embedOne,
+    async embedBatch(texts: string[]): Promise<Float32Array[]> {
+      const out: Float32Array[] = []
+      for (const t of texts) out.push(await embedOne(t))
+      return out
+    },
+  }
 }
