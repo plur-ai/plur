@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Feature: `plur_learn_batch` — persist many engrams in one MCP call (#281)
+
+Saving knowledge was one engram per `plur_learn` call. When an orchestration fans out across agents and wants to record consolidated findings, the N-call overhead adds up. `plur_learn_batch` accepts an array of engram objects and writes them in a single call.
+
+- Writes go through the **same dedup + policy pipeline** as `plur_learn` (content-hash NOOP → semantic recall → LLM ADD/UPDATE/MERGE). Dedup also applies **within** the batch: a statement duplicating an earlier item in the same array resolves to NOOP against it.
+- Returns the created/affected engram ids in input order, per-item decisions, aggregate stats, and any per-item `failures`.
+- **Partial-failure isolation:** a single failing statement no longer aborts the batch — the rest are persisted and the failure is reported with its input index. `learnBatch`'s result gains a `failed` stat and a `failures[]` array (additive; existing fields unchanged).
+- LLM dedup calls stay bounded by `max_llm_calls` (default 50) to cap bulk-import cost.
+- Note: unlike `plur_learn`, batch items take the local learn path — remote-scope auto-routing (`learnRouted`) is not applied per item. For shared/remote-store writes prefer `plur_learn` or pass an explicit local scope.
+
 ## 0.11.0 (2026-07-06)
 
 Hooks that actually finish, tension lifecycle, migration importers.

@@ -72,9 +72,23 @@ export interface LearnAsyncResult {
   tensions?: string[]
 }
 
+/**
+ * A single statement that threw while being processed by learnBatch. Carrying
+ * the original array index lets callers correlate the failure back to their
+ * input; `results` only holds the statements that succeeded.
+ */
+export interface LearnBatchFailure {
+  index: number
+  statement: string
+  error: string
+}
+
 export interface LearnBatchResult {
+  /** Successful outcomes, in input order (excludes failed statements). */
   results: LearnAsyncResult[]
-  stats: { added: number; updated: number; merged: number; noops: number }
+  stats: { added: number; updated: number; merged: number; noops: number; failed: number }
+  /** Per-statement failures — a bad item does not abort the whole batch. */
+  failures: LearnBatchFailure[]
 }
 
 /**

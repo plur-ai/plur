@@ -262,6 +262,96 @@ export function getToolDefinitions(): ToolDefinition[] {
     },
 
     {
+      name: 'plur_learn_batch',
+      description:
+        'Create many engrams in one call — the batch form of plur_learn. Accepts an array of engram objects and ' +
+        'writes them sequentially through the SAME dedup + policy pipeline as plur_learn (content-hash NOOP → semantic ' +
+        'recall → LLM ADD/UPDATE/MERGE decision). Dedup also applies WITHIN the batch: a statement duplicating an ' +
+        'earlier item in the same array resolves to NOOP against it. Returns the created/affected engram ids in input ' +
+        'order, the per-item decisions, aggregate stats, and any per-item failures — a single bad item does not abort ' +
+        'the batch. Use this when an orchestration fans out and wants to persist consolidated findings without N ' +
+        'separate calls. LLM dedup calls are capped (default 50, override with max_llm_calls) to bound bulk-import cost. ' +
+        'Note: unlike plur_learn, batch items take the LOCAL learn path — remote-scope auto-routing (learnRouted) is ' +
+        'not applied per item, so for shared/remote-store writes prefer plur_learn or pass an explicit local scope. ' +
+        'See plur-ai/plur#281.',
+      annotations: { title: 'Learn (batch)', destructiveHint: false, idempotentHint: false },
+      inputSchema: {
+        type: 'object',
+        properties: {
+          engrams: {
+            type: 'array',
+            description: 'Engram objects to persist. Each requires `statement`; the other fields mirror plur_learn.',
+            items: {
+              type: 'object',
+              properties: {
+                statement: { type: 'string', description: 'The knowledge assertion to store' },
+                type: { type: 'string', enum: ['behavioral', 'terminological', 'procedural', 'architectural'], description: 'Category of the engram' },
+                scope: { type: 'string', description: 'Namespace, e.g. global, project:myapp' },
+                domain: { type: 'string', description: 'Domain tag, e.g. software.deployment' },
+                tags: { type: 'array', items: { type: 'string' }, description: 'Searchable keyword tags — contribute to BM25/embedding recall' },
+                rationale: { type: 'string', description: 'Why this knowledge matters — also enters the search corpus' },
+                source: { type: 'string', description: 'Origin of this knowledge (URL, conversation ref, etc.)' },
+                pinned: { type: 'boolean', description: 'Always-load flag. Use sparingly: meta-rules, safety conventions, core principles.' },
+                commitment: { type: 'string', enum: ['exploring', 'leaning', 'decided', 'locked'], description: 'How firmly the user has committed (default: leaning)' },
+                valid_from: { type: 'string', description: 'ISO date (YYYY-MM-DD) the knowledge becomes valid' },
+                valid_until: { type: 'string', description: 'ISO date (YYYY-MM-DD) the knowledge expires' },
+              },
+              required: ['statement'],
+            },
+          },
+          max_llm_calls: { type: 'number', description: 'Max LLM dedup calls across the whole batch (default 50). Once spent, remaining items use the cheap hash/cosine path. Pass a large number to opt out.' },
+        },
+        required: ['engrams'],
+      },
+      handler: async (args, plur) => {
+        const llm = getLlmFunction()
+        const raw = Array.isArray(args.engrams) ? (args.engrams as Array<Record<string, any>>) : []
+        if (raw.length === 0) {
+          return { ids: [], results: [], stats: { added: 0, updated: 0, merged: 0, noops: 0, failed: 0 }, failures: [], warning: 'No engrams provided — pass a non-empty `engrams` array.' }
+        }
+        const items = raw.map((e) => ({
+          statement: sanitizeStatement(e.statement as string),
+          context: {
+            type: e.type,
+            scope: e.scope as string | undefined,
+            domain: e.domain as string | undefined,
+            source: e.source as string | undefined,
+            tags: e.tags as string[] | undefined,
+            rationale: e.rationale as string | undefined,
+            commitment: e.commitment,
+            pinned: e.pinned as boolean | undefined,
+            valid_from: e.valid_from as string | undefined,
+            valid_until: e.valid_until as string | undefined,
+          },
+        }))
+        const maxLlmCalls = typeof args.max_llm_calls === 'number' ? args.max_llm_calls : undefined
+        const { results, stats, failures } = await plur.learnBatch(
+          items,
+          llm,
+          maxLlmCalls !== undefined ? { maxLlmCalls } : undefined,
+        )
+        mcpCanary.signal('learn_activity')
+        // Opt-in, content-free engagement counter (default-off; no statement text).
+        recordTelemetry('learn')
+        return {
+          ids: results.map((r) => r.engram.id),
+          results: results.map((r) => ({
+            id: r.engram.id,
+            statement: r.engram.statement,
+            scope: r.engram.scope,
+            type: r.engram.type,
+            decision: r.decision,
+            ...(r.existing_id ? { existing_id: r.existing_id } : {}),
+          })),
+          stats,
+          ...(failures.length > 0
+            ? { failures, warning: `${failures.length} of ${raw.length} engram(s) failed to persist; the rest were written.` }
+            : {}),
+        }
+      },
+    },
+
+    {
       name: 'plur_recall',
       description: 'Query engrams by BM25 keyword matching — use plur_recall_hybrid for semantic similarity. Note: a project-scope filter also returns personal-family engrams (local, global, user:*, agent:*); an explicit scope=global recall returns ALL personal-family engrams — wider than scope=global INJECT, which is targeted to the global namespace only.',
       annotations: { title: 'Recall (BM25)', readOnlyHint: true, idempotentHint: true },

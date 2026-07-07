@@ -80,7 +80,7 @@ Tool families (~20 tools total):
 | Family | Tools |
 |---|---|
 | Lifecycle | `plur_session_start`, `plur_session_end` |
-| Learning | `plur_learn`, `plur_capture`, `plur_ingest`, `plur_extract_meta` |
+| Learning | `plur_learn`, `plur_learn_batch`, `plur_capture`, `plur_ingest`, `plur_extract_meta` |
 | Recall | `plur_recall`, `plur_recall_hybrid`, `plur_inject`, `plur_inject_hybrid`, `plur_similarity_search` |
 | Lifecycle (engram) | `plur_forget`, `plur_pin`, `plur_promote`, `plur_feedback`, `plur_history` |
 | Multi-store | `plur_stores_add`, `plur_stores_list` |
