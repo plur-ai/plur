@@ -59,7 +59,7 @@ One command sets up everything — storage, MCP config, and Claude Code hooks:
 npx @plur-ai/mcp init
 ```
 
-This creates `~/.plur/` for storage, adds PLUR to your `.mcp.json`, and installs Claude Code hooks for automatic engram injection. PLUR is installed **globally** — one MCP server, one store, available in every project. You only run init once.
+This creates `~/.plur/` for storage, adds PLUR to your `.mcp.json`, and installs Claude Code hooks for automatic engram injection. The hooks also **auto-close the memory lifecycle**: a `SessionEnd` hook captures a closing episode and cleans up session state when a conversation ends, so memory closes cleanly even if the agent forgets to call `plur_session_end`. PLUR is installed **globally** — one MCP server, one store, available in every project. You only run init once.
 
 For **multi-project setups**, use domain/scope to separate knowledge:
 

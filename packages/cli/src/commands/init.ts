@@ -199,6 +199,17 @@ function buildEnforcementHooks(cmd: string): Record<string, HookEntry[]> {
       },
     ],
 
+    // Auto-close the memory lifecycle when the session ends (Claude Code
+    // SessionEnd, shipped v1.0.85). Captures a closing episode and cleans up
+    // the checkpoint even if the agent forgot to call plur_session_end (#217).
+    SessionEnd: [
+      {
+        hooks: [
+          { type: 'command', command: `${cmd} hook-session-end`, timeout: 5 },
+        ],
+      },
+    ],
+
     PreToolUse: [
       // Session guard — blocks all tools until plur_session_start is called.
       // Must be first so it runs before any other PreToolUse hook.
@@ -346,7 +357,7 @@ A PreToolUse guard enforces that \`plur_session_start\` is called at the beginni
 2. **Learn**: When corrected or discovering something new, call \`plur_learn\` immediately
 3. **Recall**: Before answering factual questions, call \`plur_recall_hybrid\` — check memory first
 4. **Feedback**: Rate injected engrams with \`plur_feedback\` (positive/negative) — trains relevance
-5. **End**: Call \`plur_session_end\` with summary + engram_suggestions
+5. **End**: Call \`plur_session_end\` with summary + engram_suggestions — a SessionEnd hook auto-closes the lifecycle if you forget, but calling it yourself captures higher-quality learnings
 
 Do not ask permission to use these tools — they are your memory system.
 
@@ -616,8 +627,9 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   outputText(`MCP server (plur): ${mcpStatus}`)
   outputText(`  command: ${entry.command} ${entry.args.join(' ')}`)
   outputText('')
-  outputText(`Enforcement hooks (3, always global): ${enforcementHooksStatus}`)
+  outputText(`Enforcement hooks (4, always global): ${enforcementHooksStatus}`)
   outputText('  SessionStart      — enforce plur_session_start before any work')
+  outputText('  SessionEnd        — auto-close memory lifecycle (captures closing episode)')
   outputText('  PreToolUse        — session guard (blocks tools until session started)')
   outputText('  PostToolUse       — session sentinel (marks session as started)')
   outputText('')
