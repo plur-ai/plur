@@ -34,6 +34,7 @@ function canonicalBlock(): string {
           [PLUGIN_ID]: { enabled: true },
         },
         slots: { memory: PLUGIN_ID },
+        allow: [PLUGIN_ID],
       },
     },
     null,
@@ -64,14 +65,33 @@ type MergeResult = {
   slotAlready: boolean
 }
 
-function mergeEnable(cfg: OpenclawConfig): MergeResult {
+function mergeEnable(cfg: OpenclawConfig, openclawHome?: string): MergeResult {
   const plugins = (cfg.plugins && typeof cfg.plugins === 'object' && !Array.isArray(cfg.plugins)
     ? cfg.plugins
     : {}) as NonNullable<OpenclawConfig['plugins']>
-  const entries =
+  let entries =
     plugins.entries && typeof plugins.entries === 'object' && !Array.isArray(plugins.entries)
-      ? plugins.entries
+      ? { ...plugins.entries }
       : {}
+
+  // Item 1: Prune stale entries whose extension directory no longer exists.
+  // OpenClaw warns about manifest mismatches for entries that have no backing
+  // extension on disk. Remove them so the config stays in sync with reality.
+  // Only prune when the extensions directory itself exists — if it's absent the
+  // user hasn't installed any plugins yet and we should not strip the config.
+  const home = openclawHome ?? resolveOpenclawHome()
+  const extensionsDir = join(home, 'extensions')
+  if (existsSync(extensionsDir)) {
+    for (const id of Object.keys(entries)) {
+      if (id === PLUGIN_ID) continue
+      const extPath = join(extensionsDir, id)
+      if (!existsSync(extPath)) {
+        const { [id]: _removed, ...rest } = entries
+        entries = rest
+      }
+    }
+  }
+
   const existing = entries[PLUGIN_ID]
   const enableAlready = !!(existing && existing.enabled === true)
   const nextEntry = {
@@ -97,12 +117,24 @@ function mergeEnable(cfg: OpenclawConfig): MergeResult {
   }
   ;(plugins as any).slots = slots
 
-  // Append to plugins.allow only when the user is already gating via a non-empty
-  // allowlist — matching OpenClaw's buildPluginsAllowPatch semantics. Creating an
-  // allowlist where none existed would silently gate other plugins the user had.
+  // Item 2 (Option A): When plugins.allow is undefined (fresh install with no
+  // allowlist configured), initialize it with [PLUGIN_ID]. This is safe because
+  // an absent allowlist means OpenClaw allows all plugins — initializing it with
+  // only plur-claw would gate others, but the user hasn't set up any allowlist
+  // yet so this is the right moment to seed it.
+  //
+  // When plugins.allow is an empty array [], the user explicitly cleared it —
+  // honour that and surface a doctor warning instead (Option B).
+  //
+  // When plugins.allow is a non-empty array, append if missing (existing behavior).
   const allowCurrent = (plugins as any).allow
   let allowChanged = false
-  if (Array.isArray(allowCurrent) && allowCurrent.length > 0 && !allowCurrent.includes(PLUGIN_ID)) {
+  if (allowCurrent === undefined || allowCurrent === null) {
+    // Fresh install: seed the allowlist with plur-claw so OpenClaw recognises
+    // it as an active plugin and does not report "no active memory plugin".
+    ;(plugins as any).allow = [PLUGIN_ID]
+    allowChanged = true
+  } else if (Array.isArray(allowCurrent) && allowCurrent.length > 0 && !allowCurrent.includes(PLUGIN_ID)) {
     ;(plugins as any).allow = [...allowCurrent, PLUGIN_ID]
     allowChanged = true
   }
@@ -146,6 +178,7 @@ export type SetupStep =
   | 'plugin_discovered'
   | 'plugin_enabled'
   | 'slot_selected'
+  | 'allow_gated'
   | 'reload_required'
   | 'runtime_registered'
   | 'telemetry_optin'
@@ -215,7 +248,7 @@ export function runSetup(opts: { configPath?: string; openclawHome?: string } = 
     return report
   }
 
-  const merged = mergeEnable(readRes.data)
+  const merged = mergeEnable(readRes.data, opts.openclawHome)
   if (!merged.anyChanged) {
     report.steps.push({
       step: 'plugin_enabled',
@@ -356,6 +389,28 @@ export function runDoctor(
       status: 'fail',
       detail: `plugins.slots.memory is ${slots.memory}, expected ${PLUGIN_ID}`,
     })
+  }
+
+  // Item 2 (Option B) + Item 4: Check plugins.allow.
+  // An empty allow array means OpenClaw gates ALL plugins — including plur-claw —
+  // which causes the "no active memory plugin" false negative (#51 item 4).
+  // Surface this as a warning so users know to re-run setup or add plur-claw.
+  const allowList = (plugins as any).allow
+  if (Array.isArray(allowList) && allowList.length === 0) {
+    report.steps.push({
+      step: 'allow_gated',
+      status: 'fail',
+      detail: `plugins.allow is empty — all plugins are gated; run \`npx @plur-ai/claw setup\` to add ${PLUGIN_ID}`,
+    })
+  } else if (Array.isArray(allowList) && allowList.length > 0 && !allowList.includes(PLUGIN_ID)) {
+    report.steps.push({
+      step: 'allow_gated',
+      status: 'fail',
+      detail: `${PLUGIN_ID} is not in plugins.allow (${allowList.join(', ')}) — run \`npx @plur-ai/claw setup\` to add it`,
+    })
+  } else {
+    // allow is undefined (no gating) or plur-claw is already listed — ok.
+    report.steps.push({ step: 'allow_gated', status: 'ok' })
   }
 
   tailPending()
