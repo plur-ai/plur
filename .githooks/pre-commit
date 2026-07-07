@@ -1,0 +1,14 @@
+#!/usr/bin/env sh
+# PLUR pre-commit hook. Opt in with:  git config core.hooksPath .githooks
+#
+# Runs the same doc/script guards that CI enforces, but only against the files
+# staged for this commit — so drift is caught before it leaves your machine.
+
+set -e
+
+# Only scan staged docs & scripts; nothing staged in-scope -> nothing to do.
+staged=$(git diff --cached --name-only --diff-filter=ACMR | grep -E '\.(md|sh|ya?ml)$|(^|/)CLAUDE\.md$' || true)
+[ -z "$staged" ] && exit 0
+
+# shellcheck disable=SC2086
+node scripts/check-rerank-flag.mjs $staged
