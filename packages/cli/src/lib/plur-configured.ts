@@ -6,13 +6,13 @@ import { homedir } from 'os'
  * Detect whether plur is configured for the current project.
  *
  * Walks up from `cwd` looking for a project-level plur marker:
- *   - `.mcp.json`, `.claude/settings.json`, or `.claude/settings.local.json`
+ *   - `.mcp.json`, `.claude/settings.json`, `.claude/settings.local.json`, or `.cursor/mcp.json`
  *     with a `plur` server entry
  *   - `.plur.yaml` (project config — domain/scope defaults, remote config).
  *     This lets `plur init --global` users opt individual projects in even
  *     though their MCP server lives only in global settings.
  *
- * Does NOT fall back to global `~/.claude/settings.json` because
+ * Does NOT fall back to global `~/.claude/settings.json` or `~/.cursor/mcp.json` because
  * `plur init --global` puts the server there, making the guard useless for
  * distinguishing plur-enabled vs non-plur projects (#247).
  *
@@ -37,12 +37,13 @@ export function isPlurConfigured(
     if (configHasPlur(join(dir, '.mcp.json'))) return true
     if (configHasPlur(join(dir, '.claude', 'settings.json'))) return true
     if (configHasPlur(join(dir, '.claude', 'settings.local.json'))) return true
+    if (configHasPlur(join(dir, '.cursor', 'mcp.json'))) return true
     if (existsSync(join(dir, '.plur.yaml'))) return true
     const parent = dirname(dir)
     if (parent === dir) break
     dir = parent
   }
-  // Fix #247: Do NOT fall back to ~/.claude/settings.json — that would always
+  // Fix #247: Do NOT fall back to ~/.claude/settings.json or ~/.cursor/mcp.json — that would always
   // return true after `plur init --global`, blocking all non-plur projects.
   return false
 }

@@ -87,3 +87,27 @@ describe('isPlurConfigured', () => {
     expect(isPlurConfigured(sub, sub)).toBe(true)
   })
 })
+
+describe('isPlurConfigured — Cursor', () => {
+  it('detects .cursor/mcp.json with a plur server entry', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'plur-configured-cursor-'))
+    mkdirSync(join(dir, '.cursor'), { recursive: true })
+    writeFileSync(
+      join(dir, '.cursor', 'mcp.json'),
+      JSON.stringify({ mcpServers: { plur: { command: 'plur-mcp', args: [] } } }),
+    )
+    expect(isPlurConfigured(dir)).toBe(true)
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('does not falsely detect an unrelated .cursor/mcp.json', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'plur-configured-cursor-neg-'))
+    mkdirSync(join(dir, '.cursor'), { recursive: true })
+    writeFileSync(
+      join(dir, '.cursor', 'mcp.json'),
+      JSON.stringify({ mcpServers: { github: { command: 'gh-mcp', args: [] } } }),
+    )
+    expect(isPlurConfigured(dir)).toBe(false)
+    rmSync(dir, { recursive: true, force: true })
+  })
+})

@@ -22,8 +22,12 @@ export interface ConfigFile {
   path: string
   /** Whether this config exists on disk right now. */
   exists: boolean
-  /** Whether this is the Claude Desktop format (mcpServers only) vs Claude Code (mcpServers + hooks). */
-  kind: 'claude-code' | 'claude-desktop'
+  /**
+   * 'claude-code': mcpServers + hooks, Claude's nested {matcher, hooks:[]} shape.
+   * 'claude-desktop' / Cursor mcp.json: mcpServers only, no hooks section.
+   * 'cursor-hooks': Cursor's separate hooks.json, flat {event: [{command,...}]} shape.
+   */
+  kind: 'claude-code' | 'claude-desktop' | 'cursor-hooks'
 }
 
 /**
@@ -52,21 +56,23 @@ export function findMcpShim(): string | null {
  * "command not found". On Windows, uses `cmd.exe /c npx ...` which
  * inherits the system PATH.
  */
-export function buildMcpServerEntry(): McpServerEntry {
+export function buildMcpServerEntry(opts?: { env?: Record<string, string> }): McpServerEntry {
   // Prefer the local shim if `plur init` has installed it.
   const shim = findMcpShim()
   if (shim) {
-    return { command: shim, args: [] }
+    return { command: shim, args: [], ...(opts?.env ? { env: opts.env } : {}) }
   }
   if (platform() === 'win32') {
     return {
       command: 'cmd.exe',
       args: ['/c', 'npx', '-y', '@plur-ai/mcp@latest'],
+      ...(opts?.env ? { env: opts.env } : {}),
     }
   }
   return {
     command: '/bin/sh',
     args: ['-lc', 'exec npx -y @plur-ai/mcp@latest'],
+    ...(opts?.env ? { env: opts.env } : {}),
   }
 }
 
@@ -92,6 +98,37 @@ export function claudeCodeGlobalSettingsPath(): string {
   return join(homedir(), '.claude', 'settings.json')
 }
 
+/** Locate the project-level Cursor MCP config file. */
+export function cursorProjectMcpConfigPath(cwd: string = process.cwd()): string {
+  return join(cwd, '.cursor', 'mcp.json')
+}
+
+/** Locate the project-level Cursor hooks config file. */
+export function cursorProjectHooksConfigPath(cwd: string = process.cwd()): string {
+  return join(cwd, '.cursor', 'hooks.json')
+}
+
+/** Locate the static PLUR rules file `plur init --cursor` writes once, at install time. */
+export function cursorRulesPath(cwd: string = process.cwd()): string {
+  return join(cwd, '.cursor', 'rules', 'plur-memory.mdc')
+}
+
+/**
+ * Locate the DYNAMIC rules file the hook commands rewrite every session
+ * (audit fix, live-evidence version): Cursor's own team confirmed
+ * `additional_context` from `sessionStart` AND `postToolUse` is dropped by a
+ * race condition ("runs async before the composer handle is fully created")
+ * — see Global Constraints. The community-and-team-confirmed workaround is
+ * to write recalled content into a `.cursor/rules/*.mdc` file instead, since
+ * Cursor's rules engine (unlike the broken hook-output channel) reliably
+ * loads `alwaysApply: true` rules. Kept as a SEPARATE file from
+ * `cursorRulesPath()`'s static, install-time rule so the hooks rewriting
+ * this one every session never clobber the human-authored one.
+ */
+export function cursorContextRulePath(cwd: string = process.cwd()): string {
+  return join(cwd, '.cursor', 'rules', 'plur-context.mdc')
+}
+
 /**
  * List all known config files (existing or not) so the doctor command
  * can report on each.
@@ -101,32 +138,16 @@ export function knownConfigFiles(cwd: string = process.cwd()): ConfigFile[] {
   const projectMcp = join(cwd, '.mcp.json')
   const globalSettings = claudeCodeGlobalSettingsPath()
   const desktop = claudeDesktopConfigPath()
+  const cursorMcp = cursorProjectMcpConfigPath(cwd)
+  const cursorHooks = cursorProjectHooksConfigPath(cwd)
 
   return [
-    {
-      label: 'Claude Code (project)',
-      path: projectSettings,
-      exists: existsSync(projectSettings),
-      kind: 'claude-code',
-    },
-    {
-      label: 'Claude Code (.mcp.json)',
-      path: projectMcp,
-      exists: existsSync(projectMcp),
-      kind: 'claude-desktop', // same shape: just mcpServers
-    },
-    {
-      label: 'Claude Code (global)',
-      path: globalSettings,
-      exists: existsSync(globalSettings),
-      kind: 'claude-code',
-    },
-    {
-      label: 'Claude Desktop',
-      path: desktop,
-      exists: existsSync(desktop),
-      kind: 'claude-desktop',
-    },
+    { label: 'Claude Code (project)', path: projectSettings, exists: existsSync(projectSettings), kind: 'claude-code' },
+    { label: 'Claude Code (.mcp.json)', path: projectMcp, exists: existsSync(projectMcp), kind: 'claude-desktop' },
+    { label: 'Claude Code (global)', path: globalSettings, exists: existsSync(globalSettings), kind: 'claude-code' },
+    { label: 'Claude Desktop', path: desktop, exists: existsSync(desktop), kind: 'claude-desktop' },
+    { label: 'Cursor (.cursor/mcp.json)', path: cursorMcp, exists: existsSync(cursorMcp), kind: 'claude-desktop' },
+    { label: 'Cursor (.cursor/hooks.json)', path: cursorHooks, exists: existsSync(cursorHooks), kind: 'cursor-hooks' },
   ]
 }
 
@@ -171,10 +192,10 @@ export function hasDatacoreMcp(config: Record<string, unknown>): boolean {
  * Merge the `plur` MCP server entry into a config object. Idempotent.
  * Returns true if a change was made, false if `plur` was already present.
  */
-export function mergePlurMcp(config: Record<string, unknown>): boolean {
+export function mergePlurMcp(config: Record<string, unknown>, opts?: { env?: Record<string, string> }): boolean {
   const servers = (config.mcpServers ?? {}) as Record<string, McpServerEntry>
   if ('plur' in servers) return false
-  servers.plur = buildMcpServerEntry()
+  servers.plur = buildMcpServerEntry(opts)
   config.mcpServers = servers
   return true
 }
