@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest'
 import {
   scopesOverlap,
   domainSegmentsOverlap,
+  stemToken,
   subjectsOverlap,
   statementOverlap,
   getCandidatePairs,
@@ -10,6 +11,7 @@ import {
   buildBatchContradictionPrompt,
   parseBatchContradictionResponse,
   scanForTensions,
+  engramDate,
 } from '../src/tensions.js'
 import type { Engram } from '../src/schemas/engram.js'
 
@@ -145,6 +147,190 @@ describe('subjectsOverlap', () => {
       'Verity marketplace is built on Ethereum.',
       'Verity marketplace uses Polygon for transactions.',
     )).toBe(true)
+  })
+
+  it('plural/singular subject token → overlap via stemming', () => {
+    expect(subjectsOverlap(
+      'Deployment bots are rate-limited to 5 per hour.',
+      'Deployment bot is rate-limited to 10 per hour.',
+    )).toBe(true)
+  })
+
+  it('plural/singular with -ments suffix → overlap via stemming', () => {
+    expect(subjectsOverlap(
+      'Environment variables are sourced from .env file.',
+      'Environment variable sourcing is handled by dotenv.',
+    )).toBe(true)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// stemToken
+// ---------------------------------------------------------------------------
+
+describe('stemToken', () => {
+  it('strips -s suffix when stem >= 4 chars', () => {
+    expect(stemToken('errors')).toBe('error')
+    expect(stemToken('bots')).toBe('bots') // stem "bot" = 3 chars → NOT stripped
+  })
+
+  it('strips -es suffix', () => {
+    expect(stemToken('batches')).toBe('batch')
+  })
+
+  it('strips -ies suffix', () => {
+    expect(stemToken('deployies')).toBe('deploy')
+  })
+
+  it('strips -ment suffix', () => {
+    expect(stemToken('deployment')).toBe('deploy')
+  })
+
+  it('strips -ments suffix', () => {
+    expect(stemToken('deployments')).toBe('deploy')
+  })
+
+  it('strips -ing suffix', () => {
+    expect(stemToken('processing')).toBe('process')
+  })
+
+  it('strips -ings suffix', () => {
+    expect(stemToken('settings')).toBe('sett')  // 8-4=4 chars → stripped to 'sett'
+    expect(stemToken('greetings')).toBe('greet') // 9-4=5 chars → 'greet'
+  })
+
+  it('strips -ion suffix', () => {
+    expect(stemToken('validation')).toBe('validat')
+  })
+
+  it('strips -er suffix', () => {
+    expect(stemToken('builder')).toBe('build')
+  })
+
+  it('does not strip when stem would be < 4 chars', () => {
+    expect(stemToken('bees')).toBe('bees')  // stem "be" = 2 chars
+    expect(stemToken('ones')).toBe('ones')  // stem "on" = 2 chars
+    expect(stemToken('runs')).toBe('runs')  // stem "run" = 3 chars
+  })
+
+  it('returns unchanged for tokens with no matching suffix', () => {
+    expect(stemToken('plur')).toBe('plur')
+    expect(stemToken('search')).toBe('search')
+  })
+
+  it('strips longest matching suffix first', () => {
+    expect(stemToken('deployments')).toBe('deploy')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// subjectsOverlap — labeled 30-pair contradiction suite
+// Source: #489 measurement. Stemmed filter gets 27/30 (90% recall).
+// Any regression below 27 must be explained and explicitly accepted.
+// ---------------------------------------------------------------------------
+
+describe('subjectsOverlap — labeled 30-pair suite', () => {
+  const CONTRADICTIONS: [string, string, string][] = [
+    ['direct-value', 'The protocol fee is 1% of transaction volume.', 'The protocol fee is 2% of transaction volume.'],
+    ['direct-value', 'Rate limit is 100 requests per minute per user.', 'Rate limit is 50 requests per minute per user.'],
+    ['direct-value', 'Session tokens expire after 30 days.', 'Session tokens expire after 7 days.'],
+    ['direct-value', 'The default log level is INFO.', 'The default log level is DEBUG.'],
+    ['direct-value', 'Max file upload size is 10 MB.', 'Max file upload size is 50 MB.'],
+    ['boolean-flip', 'Plur uses local embeddings with no API calls.', 'Plur embeddings require an external API call.'],
+    ['boolean-flip', 'The CLI supports Windows.', 'The CLI does not support Windows.'],
+    ['boolean-flip', 'Sync is enabled by default.', 'Sync is disabled by default.'],
+    ['boolean-flip', 'Rate limiting is applied per IP.', 'Rate limiting is applied per user, not per IP.'],
+    ['boolean-flip', 'Engrams are stored in SQLite.', 'Engrams are stored in YAML files, not SQLite.'],
+    ['mutually-exclusive', 'Use pnpm for package management.', 'Use npm for package management.'],
+    ['mutually-exclusive', 'Plur search uses BM25 only.', 'Plur search uses embedding vectors only.'],
+    ['mutually-exclusive', 'Authentication uses JWT tokens.', 'Authentication uses session cookies.'],
+    ['mutually-exclusive', 'The database backend is PostgreSQL.', 'The database backend is MySQL.'],
+    ['mutually-exclusive', 'Errors are handled with Result types.', 'Errors are handled with exceptions.'],
+    ['preamble', 'In this codebase, error handling uses Result types.', 'In this codebase, error handling uses exceptions.'],
+    ['preamble', 'All API responses are in JSON format.', 'All API responses are in XML format.'],
+    ['preamble', 'Tests must pass before merging.', 'Tests are optional before merging.'],
+    ['preamble', 'The primary language is TypeScript.', 'The primary language is JavaScript.'],
+    ['preamble', 'Commits must include a JIRA ticket reference.', 'Commits do not require a JIRA ticket reference.'],
+    ['short-token', 'The CLI uses yaml for output.', 'The CLI uses json for output.'],
+    ['short-token', 'The bot API rate limit is 10 rps.', 'The bot API rate limit is 100 rps.'],
+    ['short-token', 'PRs need one approving review.', 'PRs need two approving reviews.'],
+    ['short-token', 'The app port is 3000 in dev.', 'The app port is 8080 in dev.'],
+    ['short-token', 'API keys expire after 90 days.', 'API keys expire after 180 days.'],
+    ['domain-generic', 'The project timezone is UTC everywhere.', 'The project timezone is Europe/Ljubljana everywhere.'],
+    ['domain-generic', 'User data is retained for 30 days.', 'User data is retained for 7 days.'],
+    ['domain-generic', 'System backups are encrypted at rest.', 'System backups are stored unencrypted.'],
+    ['domain-generic', 'Datacore modules load lazily on trigger match.', 'Datacore modules load eagerly at session start.'],
+    ['domain-generic', 'Always use pnpm for package management.', 'Always use npm for package management.'],
+  ]
+
+  it('passes at least 27/30 pairs (90% recall — stemmed baseline)', () => {
+    const hits = CONTRADICTIONS.filter(([, a, b]) => subjectsOverlap(a, b))
+    expect(hits.length).toBeGreaterThanOrEqual(27)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// engramDate
+// ---------------------------------------------------------------------------
+
+describe('engramDate', () => {
+  it('returns date from temporal.learned_at (ISO timestamp)', () => {
+    const e = makeEngram({ id: 'E1', statement: 'x', temporal: { learned_at: '2026-06-15T12:00:00Z' } })
+    expect(engramDate(e)).toBe('2026-06-15')
+  })
+
+  it('returns date from temporal.learned_at (date-only string)', () => {
+    const e = makeEngram({ id: 'E1', statement: 'x', temporal: { learned_at: '2026-01-03' } })
+    expect(engramDate(e)).toBe('2026-01-03')
+  })
+
+  it('falls back to ID pattern ENG-YYYY-MM-DD-NNN', () => {
+    const e = makeEngram({ id: 'ENG-2026-06-15-001', statement: 'x' })
+    expect(engramDate(e)).toBe('2026-06-15')
+  })
+
+  it('returns undefined for IDs with no date pattern', () => {
+    const e = makeEngram({ id: 'E1', statement: 'x' })
+    expect(engramDate(e)).toBeUndefined()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// buildContradictionPrompt — temporal date integration (#240)
+// ---------------------------------------------------------------------------
+
+describe('buildContradictionPrompt — temporal dates', () => {
+  it('omits date note when dates are missing', () => {
+    const prompt = buildContradictionPrompt(
+      { id: 'E1', statement: 'A' },
+      { id: 'E2', statement: 'B' },
+    )
+    expect(prompt).not.toContain('days apart')
+  })
+
+  it('includes temporal note when both dates are provided and different', () => {
+    const prompt = buildContradictionPrompt(
+      { id: 'E1', statement: 'X is true.', date: '2026-06-01' },
+      { id: 'E2', statement: 'X is false.', date: '2026-06-15' },
+    )
+    expect(prompt).toContain('14 days apart')
+  })
+
+  it('uses singular "day" for 1 day apart', () => {
+    const prompt = buildContradictionPrompt(
+      { id: 'E1', statement: 'A', date: '2026-01-01' },
+      { id: 'E2', statement: 'B', date: '2026-01-02' },
+    )
+    expect(prompt).toContain('1 day')
+    expect(prompt).not.toContain('1 days')
+  })
+
+  it('does NOT include temporal note when dates are the same', () => {
+    const prompt = buildContradictionPrompt(
+      { id: 'E1', statement: 'X is true.', date: '2026-06-01' },
+      { id: 'E2', statement: 'X is false.', date: '2026-06-01' },
+    )
+    expect(prompt).toContain('same day')
   })
 })
 
