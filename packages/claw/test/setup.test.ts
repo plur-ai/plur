@@ -34,6 +34,7 @@ describe('claw setup command', () => {
     expect(written.plugins.entries['plur-claw'].enabled).toBe(true)
     expect(written.plugins.entries['plur-claw'].config).toEqual({ auto_learn: true, auto_capture: true, injection_budget: 2000 })
     expect(written.plugins.slots.memory).toBe('plur-claw')
+    expect(written.plugins.allow).toEqual(['plur-claw'])
     expect(written.mcp.servers.plur).toBeDefined()
     expect(written.mcp.servers.plur.command).toBe('npx')
   })
@@ -95,6 +96,7 @@ describe('claw setup command', () => {
       plugins: {
         entries: { 'plur-claw': { enabled: true, config: { auto_learn: true, auto_capture: true, injection_budget: 2000 }, hooks: { allowConversationAccess: true } } },
         slots: { memory: 'plur-claw' },
+        allow: ['plur-claw'],
       },
       mcp: { servers: { plur: { command: 'npx', args: ['-y', '@plur-ai/mcp'] } } },
     }
@@ -146,14 +148,14 @@ describe('claw setup command', () => {
     expect(written.plugins.allow).toEqual(['other-plugin', 'plur-claw'])
   })
 
-  it('does not create plugins.allow when it is absent (avoid gating other plugins)', () => {
+  it('initializes plugins.allow to [plur-claw] on fresh install (allow is absent)', () => {
     writeFileSync(cfgPath, '{}', 'utf8')
     runSetup({ configPath: cfgPath })
     const written = JSON.parse(readFileSync(cfgPath, 'utf8'))
-    expect(written.plugins.allow).toBeUndefined()
+    expect(written.plugins.allow).toEqual(['plur-claw'])
   })
 
-  it('does not create plugins.allow when it is present but empty', () => {
+  it('does not modify plugins.allow when it is present but empty (honour explicit clear)', () => {
     const prior = { plugins: { allow: [] } }
     writeFileSync(cfgPath, JSON.stringify(prior), 'utf8')
     runSetup({ configPath: cfgPath })
@@ -217,6 +219,61 @@ describe('claw setup command', () => {
       'reload_required',
       'runtime_registered',
     ])
+  })
+
+  describe('stale entry pruning (item 1 — manifest mismatch fix)', () => {
+    it('removes stale entries whose extension directory no longer exists', () => {
+      const prior = {
+        plugins: {
+          entries: {
+            'plur-claw': { enabled: true },
+            'stale-plugin': { enabled: true },
+          },
+          slots: { memory: 'plur-claw' },
+          allow: ['plur-claw'],
+        },
+      }
+      writeFileSync(cfgPath, JSON.stringify(prior), 'utf8')
+      // extensions/ dir exists (user has plugins set up) but stale-plugin/ does not
+      mkdirSync(join(dir, 'extensions'), { recursive: true })
+      runSetup({ configPath: cfgPath, openclawHome: dir })
+      const written = JSON.parse(readFileSync(cfgPath, 'utf8'))
+      expect(written.plugins.entries['stale-plugin']).toBeUndefined()
+      expect(written.plugins.entries['plur-claw']).toBeDefined()
+    })
+
+    it('preserves entries whose extension directory exists', () => {
+      mkdirSync(join(dir, 'extensions', 'active-plugin'), { recursive: true })
+      const prior = {
+        plugins: {
+          entries: {
+            'plur-claw': { enabled: true },
+            'active-plugin': { enabled: true },
+          },
+          slots: { memory: 'plur-claw' },
+          allow: ['plur-claw'],
+        },
+      }
+      writeFileSync(cfgPath, JSON.stringify(prior), 'utf8')
+      runSetup({ configPath: cfgPath, openclawHome: dir })
+      const written = JSON.parse(readFileSync(cfgPath, 'utf8'))
+      expect(written.plugins.entries['active-plugin']).toBeDefined()
+    })
+
+    it('does not prune plur-claw entry even when extension dir is absent', () => {
+      const prior = {
+        plugins: {
+          entries: { 'plur-claw': { enabled: true } },
+          slots: { memory: 'plur-claw' },
+          allow: ['plur-claw'],
+        },
+      }
+      writeFileSync(cfgPath, JSON.stringify(prior), 'utf8')
+      runSetup({ configPath: cfgPath, openclawHome: dir })
+      const written = JSON.parse(readFileSync(cfgPath, 'utf8'))
+      expect(written.plugins.entries['plur-claw']).toBeDefined()
+      expect(written.plugins.entries['plur-claw'].enabled).toBe(true)
+    })
   })
 })
 
@@ -310,6 +367,7 @@ describe('claw doctor command', () => {
       'plugin_discovered',
       'plugin_enabled',
       'slot_selected',
+      'allow_gated',
       'reload_required',
       'runtime_registered',
       'telemetry_optin',
@@ -376,6 +434,67 @@ describe('claw doctor command', () => {
     expect(step.status).toBe('ok')
     expect(step.detail).toContain('on')
     expect(step.detail).toContain('PLUR_TELEMETRY')
+  })
+
+  describe('allow_gated step (item 2 Option B + item 4)', () => {
+    it('reports ok when plugins.allow is absent (no gating)', () => {
+      const prior = {
+        plugins: {
+          entries: { 'plur-claw': { enabled: true } },
+          slots: { memory: 'plur-claw' },
+        },
+      }
+      writeFileSync(cfgPath, JSON.stringify(prior), 'utf8')
+      const r = runDoctor({ configPath: cfgPath })
+      const step = r.steps.find((s) => s.step === 'allow_gated')!
+      expect(step.status).toBe('ok')
+    })
+
+    it('reports ok when plur-claw is in plugins.allow', () => {
+      const prior = {
+        plugins: {
+          entries: { 'plur-claw': { enabled: true } },
+          slots: { memory: 'plur-claw' },
+          allow: ['plur-claw'],
+        },
+      }
+      writeFileSync(cfgPath, JSON.stringify(prior), 'utf8')
+      const r = runDoctor({ configPath: cfgPath })
+      const step = r.steps.find((s) => s.step === 'allow_gated')!
+      expect(step.status).toBe('ok')
+    })
+
+    it('reports fail with guidance when plugins.allow is an empty array', () => {
+      const prior = {
+        plugins: {
+          entries: { 'plur-claw': { enabled: true } },
+          slots: { memory: 'plur-claw' },
+          allow: [],
+        },
+      }
+      writeFileSync(cfgPath, JSON.stringify(prior), 'utf8')
+      const r = runDoctor({ configPath: cfgPath })
+      const step = r.steps.find((s) => s.step === 'allow_gated')!
+      expect(step.status).toBe('fail')
+      expect(step.detail).toContain('empty')
+      expect(step.detail).toContain('npx @plur-ai/claw setup')
+    })
+
+    it('reports fail when plugins.allow is non-empty but does not include plur-claw', () => {
+      const prior = {
+        plugins: {
+          entries: { 'plur-claw': { enabled: true } },
+          slots: { memory: 'plur-claw' },
+          allow: ['some-other-plugin'],
+        },
+      }
+      writeFileSync(cfgPath, JSON.stringify(prior), 'utf8')
+      const r = runDoctor({ configPath: cfgPath })
+      const step = r.steps.find((s) => s.step === 'allow_gated')!
+      expect(step.status).toBe('fail')
+      expect(step.detail).toContain('plur-claw')
+      expect(step.detail).toContain('npx @plur-ai/claw setup')
+    })
   })
 })
 
