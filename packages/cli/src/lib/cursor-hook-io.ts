@@ -23,7 +23,9 @@ export function readStdinJson(): Record<string, unknown> {
       }
     }
     const raw = Buffer.concat(chunks).toString('utf8').trim()
-    return raw ? JSON.parse(raw) : {}
+    if (!raw) return {}
+    const parsed: unknown = JSON.parse(raw)
+    return (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) ? parsed as Record<string, unknown> : {}
   } catch {
     return {}
   }
