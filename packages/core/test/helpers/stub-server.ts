@@ -65,7 +65,9 @@ export class StubServer {
   private port = 0
   // Identity returned by GET /api/v1/me (#292). Defaults to a single-scope
   // user; override per-test with setMe() to simulate multi-team authorization.
-  private me: { username: string; org_id: string; role: string; scopes: string[] } = {
+  // #345 D2: scope_metadata is optional and defaults to absent so older-server
+  // behavior is the default; setMe({ scope_metadata }) opts a test into it.
+  private me: { username: string; org_id: string; role: string; scopes: string[]; scope_metadata?: unknown[] } = {
     username: 'testuser', org_id: 'test-org', role: 'developer', scopes: ['group:test'],
   }
   /** When set, POST /engrams returns this as the assigned id instead of a valid
@@ -78,8 +80,10 @@ export class StubServer {
 
   constructor(private readonly validToken: string) {}
 
-  /** Override the GET /api/v1/me response (authorized scope set, identity). */
-  setMe(me: Partial<{ username: string; org_id: string; role: string; scopes: string[] }>): void {
+  /** Override the GET /api/v1/me response (authorized scope set, identity).
+   *  #345 D2: pass `scope_metadata` to simulate a server that serves
+   *  self-describing scope metadata. */
+  setMe(me: Partial<{ username: string; org_id: string; role: string; scopes: string[]; scope_metadata: unknown[] }>): void {
     this.me = { ...this.me, ...me }
   }
 

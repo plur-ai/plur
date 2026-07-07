@@ -123,6 +123,63 @@ describe('Plur.discoverRemoteScopes()', () => {
     expect(discoveries[0].registered.sort()).toEqual(['group:plur/plur-ai/comms', 'group:plur/plur-ai/engineering'])
     expect(discoveries[0].unregistered.sort()).toEqual(['group:plur/plur-ai', 'group:plur/plur-ai/research'])
   })
+
+  // --- #345 D2: server-authoritative scope metadata ---
+
+  it('metadata is [] when the server serves none (backward-compat)', async () => {
+    const plur = writeConfig([
+      { url: baseUrl, token: TOKEN, scope: 'group:plur/plur-ai/engineering', shared: true, readonly: false },
+    ])
+    const [d] = await plur.discoverRemoteScopes()
+    expect(d.metadata).toEqual([])
+  })
+
+  it('surfaces validated scope_metadata for authorized scopes', async () => {
+    server.setMe({
+      scope_metadata: [
+        { scope: 'group:plur/plur-ai/engineering', description: 'Eng knowledge', covers: ['ci', 'deploy'] },
+        { scope: 'group:plur/plur-ai/comms', description: 'Comms', covers: [] },
+      ],
+    })
+    const plur = writeConfig([
+      { url: baseUrl, token: TOKEN, scope: 'group:plur/plur-ai/engineering', shared: true, readonly: false },
+    ])
+    const [d] = await plur.discoverRemoteScopes()
+    expect(d.metadata).toHaveLength(2)
+    const eng = d.metadata.find(m => m.scope === 'group:plur/plur-ai/engineering')
+    expect(eng?.description).toBe('Eng knowledge')
+    expect(eng?.covers).toEqual(['ci', 'deploy'])
+  })
+
+  it('drops metadata whose scope is not in the authorized set (anti-smuggle)', async () => {
+    server.setMe({
+      scope_metadata: [
+        { scope: 'group:plur/plur-ai/engineering', description: 'ok', covers: [] },
+        { scope: 'group:evil/unrelated', description: 'smuggled', covers: [] },
+      ],
+    })
+    const plur = writeConfig([
+      { url: baseUrl, token: TOKEN, scope: 'group:plur/plur-ai/engineering', shared: true, readonly: false },
+    ])
+    const [d] = await plur.discoverRemoteScopes()
+    expect(d.metadata.map(m => m.scope)).toEqual(['group:plur/plur-ai/engineering'])
+  })
+
+  it('drops structurally-invalid metadata entries without failing discovery', async () => {
+    server.setMe({
+      scope_metadata: [
+        { description: 'no scope field' },          // missing required `scope`
+        'not even an object',
+        { scope: 'group:plur/plur-ai/comms', description: 'valid', covers: [] },
+      ],
+    })
+    const plur = writeConfig([
+      { url: baseUrl, token: TOKEN, scope: 'group:plur/plur-ai/engineering', shared: true, readonly: false },
+    ])
+    const [d] = await plur.discoverRemoteScopes()
+    expect(d.ok).toBe(true)
+    expect(d.metadata.map(m => m.scope)).toEqual(['group:plur/plur-ai/comms'])
+  })
 })
 
 // ---------------------------------------------------------------------------

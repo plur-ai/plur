@@ -279,6 +279,34 @@ describe('MCP plur_scopes_discover', () => {
     expect(remoteScopes).not.toContain('team:e2e-other')
   })
 
+  it('surfaces per-scope description/covers from server metadata (#345 D2)', async () => {
+    stub.setMe({
+      username: 'crtahlin',
+      scopes: [REMOTE_SCOPE, 'team:e2e-other'],
+      scope_metadata: [
+        { scope: REMOTE_SCOPE, description: 'Primary team scope', covers: ['alpha', 'beta'] },
+        { scope: 'team:e2e-other', description: 'Other team', covers: [] },
+      ],
+    })
+    const { client } = await makeClient(dir)
+
+    const raw = await client.callTool({ name: 'plur_scopes_discover', arguments: {} })
+    const { discovered } = callResult(raw) as any
+    expect(discovered).toHaveLength(1)
+
+    const scopes = discovered[0].scopes as Array<any>
+    const primary = scopes.find(s => s.scope === REMOTE_SCOPE)
+    expect(primary.registered).toBe(true)
+    expect(primary.description).toBe('Primary team scope')
+    expect(primary.covers).toEqual(['alpha', 'beta'])
+
+    const other = scopes.find(s => s.scope === 'team:e2e-other')
+    expect(other.registered).toBe(false)
+    expect(other.description).toBe('Other team')
+    // covers omitted when empty
+    expect(other.covers).toBeUndefined()
+  })
+
   it('register:true registers every authorized scope under the one URL', async () => {
     stub.setMe({ username: 'crtahlin', scopes: [REMOTE_SCOPE, 'team:e2e-other', 'team:e2e-third'] })
     const { client } = await makeClient(dir)

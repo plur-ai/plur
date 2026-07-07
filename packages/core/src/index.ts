@@ -276,6 +276,13 @@ export interface RemoteScopeDiscovery {
   registered: string[]
   /** Authorized minus registered — the scopes a user could still add. */
   unregistered: string[]
+  /**
+   * Server-authoritative scope metadata (#345 D2) for the authorized scopes,
+   * when the remote serves it via `/api/v1/me` (`scope_metadata`). Each entry
+   * is a validated {@link ScopeMetadata}. Empty when the server is older /
+   * declares no metadata — discovery still works, just without descriptions.
+   */
+  metadata: ScopeMetadata[]
   /** Present when `ok` is false. */
   error?: string
 }
@@ -4552,11 +4559,14 @@ Generate an improved version of the procedure that prevents this failure. Return
           authorized: me.scopes,
           registered,
           unregistered: me.scopes.filter(s => !registeredSet.has(s)),
+          // #345 D2: server-authoritative metadata for the authorized scopes,
+          // already validated in RemoteStore.me(). Empty for older servers.
+          metadata: me.scope_metadata ?? [],
         }
       } catch (err) {
         return {
           url, ok: false,
-          authorized: [], registered, unregistered: [],
+          authorized: [], registered, unregistered: [], metadata: [],
           error: err instanceof Error ? err.message : String(err),
         }
       }

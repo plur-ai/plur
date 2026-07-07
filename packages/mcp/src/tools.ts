@@ -1895,11 +1895,32 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
         if (discoveries.length === 0) {
           return { discovered: [], note: 'No remote stores configured. Register one scope first with plur_stores_add, then discover the rest.' }
         }
+        // #345 D2: surface the server-authoritative description/covers per scope
+        // so an agent can pick the right scope from discovery alone (instead of
+        // guessing from the bare scope name). Each authorized scope is annotated
+        // with its metadata when the server returned any; `registered` flags
+        // whether it's already in local config.
+        const enrich = (d: typeof discoveries[number]) => {
+          if (!d.ok) return d
+          const byScope = new Map(d.metadata.map(m => [m.scope, m]))
+          const registeredSet = new Set(d.registered)
+          const scopes = d.authorized.map(scope => {
+            const m = byScope.get(scope)
+            return {
+              scope,
+              registered: registeredSet.has(scope),
+              ...(m?.description ? { description: m.description } : {}),
+              ...(m && m.covers.length ? { covers: m.covers } : {}),
+            }
+          })
+          return { ...d, scopes }
+        }
+        const discovered = discoveries.map(enrich)
         if (!register) {
-          return { discovered: discoveries }
+          return { discovered }
         }
         const registered = await plur.registerDiscoveredScopes({ url })
-        return { discovered: discoveries, registered }
+        return { discovered, registered }
       },
     },
 
