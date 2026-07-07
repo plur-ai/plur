@@ -156,8 +156,9 @@ export type SetupReport = {
   fallbackBlock?: string
 }
 
-function discoveryStep(): { step: SetupStep; status: SetupStatus; detail?: string } {
-  const extPath = resolveExtensionPath()
+function discoveryStep(openclawHome?: string): { step: SetupStep; status: SetupStatus; detail?: string } {
+  const home = openclawHome ?? resolveOpenclawHome()
+  const extPath = join(home, 'extensions', PLUGIN_ID)
   if (existsSync(extPath)) {
     return { step: 'plugin_discovered', status: 'ok', detail: extPath }
   }
@@ -168,11 +169,24 @@ function discoveryStep(): { step: SetupStep; status: SetupStatus; detail?: strin
   }
 }
 
-export function runSetup(opts: { configPath?: string } = {}): SetupReport {
+function runtimeRegistrationStep(openclawHome?: string): { step: SetupStep; status: SetupStatus; detail?: string } {
+  const home = openclawHome ?? resolveOpenclawHome()
+  const entrypoint = join(home, 'extensions', PLUGIN_ID, 'dist', 'index.js')
+  if (existsSync(entrypoint)) {
+    return { step: 'runtime_registered', status: 'ok', detail: 'plugin entrypoint verified' }
+  }
+  return {
+    step: 'runtime_registered',
+    status: 'pending',
+    detail: 'run `openclaw plugins install @plur-ai/claw` then restart OpenClaw',
+  }
+}
+
+export function runSetup(opts: { configPath?: string; openclawHome?: string } = {}): SetupReport {
   const path = opts.configPath ?? resolveConfigPath()
   const report: SetupReport = {
     path,
-    steps: [{ step: 'package_present', status: 'ok' }, discoveryStep()],
+    steps: [{ step: 'package_present', status: 'ok' }, discoveryStep(opts.openclawHome)],
   }
 
   const tailPending = () => {
@@ -181,11 +195,7 @@ export function runSetup(opts: { configPath?: string } = {}): SetupReport {
       status: 'pending',
       detail: 'restart the OpenClaw gateway so the plugin loader re-reads config',
     })
-    report.steps.push({
-      step: 'runtime_registered',
-      status: 'pending',
-      detail: 'automatic verification not yet implemented (tracked in #39)',
-    })
+    report.steps.push(runtimeRegistrationStep(opts.openclawHome))
   }
 
   if (!existsSync(path)) {
@@ -268,12 +278,12 @@ export function runSetupCli(): number {
 }
 
 export function runDoctor(
-  opts: { configPath?: string; env?: NodeJS.ProcessEnv; telemetryConfigPath?: string } = {},
+  opts: { configPath?: string; openclawHome?: string; env?: NodeJS.ProcessEnv; telemetryConfigPath?: string } = {},
 ): SetupReport {
   const path = opts.configPath ?? resolveConfigPath()
   const report: SetupReport = {
     path,
-    steps: [{ step: 'package_present', status: 'ok' }, discoveryStep()],
+    steps: [{ step: 'package_present', status: 'ok' }, discoveryStep(opts.openclawHome)],
   }
 
   const tailPending = () => {
@@ -282,11 +292,7 @@ export function runDoctor(
       status: 'pending',
       detail: 'cannot verify OpenClaw gateway reload state from here',
     })
-    report.steps.push({
-      step: 'runtime_registered',
-      status: 'pending',
-      detail: 'automatic verification not yet implemented (tracked in #39)',
-    })
+    report.steps.push(runtimeRegistrationStep(opts.openclawHome))
     report.steps.push(telemetryStep(opts))
   }
 
@@ -375,11 +381,11 @@ export function runDoctorCli(): number {
   return failed ? 1 : 0
 }
 
-export function runRepair(opts: { configPath?: string } = {}): SetupReport {
+export function runRepair(opts: { configPath?: string; openclawHome?: string } = {}): SetupReport {
   const path = opts.configPath ?? resolveConfigPath()
 
   // Diagnose first — repair only acts on steps doctor reports as failing.
-  const pre = runDoctor({ configPath: path })
+  const pre = runDoctor({ configPath: path, openclawHome: opts.openclawHome })
   const enableFailed = pre.steps.find((s) => s.step === 'plugin_enabled')!.status === 'fail'
   const slotFailed = pre.steps.find((s) => s.step === 'slot_selected')!.status === 'fail'
 
@@ -454,7 +460,7 @@ export function runRepair(opts: { configPath?: string } = {}): SetupReport {
     if (!w.ok) return pre
   }
 
-  return runDoctor({ configPath: path })
+  return runDoctor({ configPath: path, openclawHome: opts.openclawHome })
 }
 
 export function runRepairCli(): number {

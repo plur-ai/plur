@@ -116,11 +116,26 @@ describe('claw setup command', () => {
     expect(r.fallbackBlock).toBeDefined()
   })
 
-  it('always marks reload_required and runtime_registered as pending', () => {
+  it('always marks reload_required as pending', () => {
     writeFileSync(cfgPath, '{}', 'utf8')
-    const r = runSetup({ configPath: cfgPath })
+    const r = runSetup({ configPath: cfgPath, openclawHome: dir })
     expect(r.steps.find((s) => s.step === 'reload_required')!.status).toBe('pending')
+  })
+
+  it('marks runtime_registered pending when plugin entrypoint is absent', () => {
+    writeFileSync(cfgPath, '{}', 'utf8')
+    const r = runSetup({ configPath: cfgPath, openclawHome: dir })
     expect(r.steps.find((s) => s.step === 'runtime_registered')!.status).toBe('pending')
+  })
+
+  it('marks runtime_registered ok when plugin entrypoint exists', () => {
+    const distDir = join(dir, 'extensions', 'plur-claw', 'dist')
+    mkdirSync(distDir, { recursive: true })
+    writeFileSync(join(distDir, 'index.js'), '', 'utf8')
+    writeFileSync(cfgPath, '{}', 'utf8')
+    const r = runSetup({ configPath: cfgPath, openclawHome: dir })
+    expect(r.steps.find((s) => s.step === 'runtime_registered')!.status).toBe('ok')
+    expect(r.steps.find((s) => s.step === 'runtime_registered')!.detail).toContain('verified')
   })
 
   it('appends plur-claw to a non-empty plugins.allow allowlist', () => {
@@ -301,7 +316,7 @@ describe('claw doctor command', () => {
     ])
   })
 
-  it('always marks reload_required and runtime_registered as pending', () => {
+  it('always marks reload_required as pending', () => {
     const prior = {
       plugins: {
         entries: { 'plur-claw': { enabled: true } },
@@ -309,9 +324,36 @@ describe('claw doctor command', () => {
       },
     }
     writeFileSync(cfgPath, JSON.stringify(prior), 'utf8')
-    const r = runDoctor({ configPath: cfgPath })
+    const r = runDoctor({ configPath: cfgPath, openclawHome: dir })
     expect(r.steps.find((s) => s.step === 'reload_required')!.status).toBe('pending')
+  })
+
+  it('marks runtime_registered pending when plugin entrypoint is absent', () => {
+    const prior = {
+      plugins: {
+        entries: { 'plur-claw': { enabled: true } },
+        slots: { memory: 'plur-claw' },
+      },
+    }
+    writeFileSync(cfgPath, JSON.stringify(prior), 'utf8')
+    const r = runDoctor({ configPath: cfgPath, openclawHome: dir })
     expect(r.steps.find((s) => s.step === 'runtime_registered')!.status).toBe('pending')
+  })
+
+  it('marks runtime_registered ok when plugin entrypoint exists', () => {
+    const distDir = join(dir, 'extensions', 'plur-claw', 'dist')
+    mkdirSync(distDir, { recursive: true })
+    writeFileSync(join(distDir, 'index.js'), '', 'utf8')
+    const prior = {
+      plugins: {
+        entries: { 'plur-claw': { enabled: true } },
+        slots: { memory: 'plur-claw' },
+      },
+    }
+    writeFileSync(cfgPath, JSON.stringify(prior), 'utf8')
+    const r = runDoctor({ configPath: cfgPath, openclawHome: dir })
+    expect(r.steps.find((s) => s.step === 'runtime_registered')!.status).toBe('ok')
+    expect(r.steps.find((s) => s.step === 'runtime_registered')!.detail).toContain('verified')
   })
 
   it('surfaces telemetry as skip by default with no env or config', () => {
