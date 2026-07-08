@@ -5,6 +5,22 @@ import { tmpdir } from 'os'
 import { execSync } from 'child_process'
 
 const CLI = join(__dirname, '..', 'dist', 'index.js')
+const SESSIONS_DIR = join(tmpdir(), 'plur-cursor-sessions')
+
+// Every conversation_id this file's tests use. The shared sessions dir
+// (join(tmpdir(), 'plur-cursor-sessions')) is also used by the sibling
+// hook-cursor-{session-start,post-tool,stop} test files, which run in
+// parallel under vitest's default file concurrency — recursively deleting
+// the whole directory here would race-delete files a sibling file just wrote
+// and is about to assert on. Clean up only the files this file's own tests
+// created, by conversation_id.
+const CONVERSATION_IDS = ['conv-no-session', 'conv-started', 'conv-fresh', 'conv-fallback']
+
+function cleanupSessionFiles(conversationId: string): void {
+  for (const suffix of ['.marker', '.reminded', '.stopcount', '.marker.guard-count']) {
+    rmSync(join(SESSIONS_DIR, `${conversationId}${suffix}`), { force: true })
+  }
+}
 
 describe('hook-cursor-guard', () => {
   let projectDir: string
@@ -20,7 +36,7 @@ describe('hook-cursor-guard', () => {
 
   afterEach(() => {
     rmSync(projectDir, { recursive: true, force: true })
-    rmSync(join(tmpdir(), 'plur-cursor-sessions'), { recursive: true, force: true })
+    for (const id of CONVERSATION_IDS) cleanupSessionFiles(id)
   })
 
   it('denies a tool call when no sentinel exists for the conversation', () => {
