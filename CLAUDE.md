@@ -113,34 +113,24 @@ Runs a full roundtrip (append → getById → load → remove) against the live 
 
 ### Benchmarking a PR
 
-Two benchmark suites measure whether a change actually improves memory quality:
+All memory-quality benchmarks live in the consolidated repo **[plur-ai/plur-bench](https://github.com/plur-ai/plur-bench)**, which measures three axes and never conflates them: retrieval recall (LongMemEval-S R@K, MRR, nDCG), the editability dividend (does correcting or deleting a memory change outcomes), and agent-task A/B (does memory change what the agent does, with vs without PLUR, including token and cost economics). Its retrieval harness vendors this repo's production `searchEngrams` / `hybridSearchWithMeta` / `applyReranker`, so it exercises the code path users actually run. Offline smoke paths: `pnpm stats:test`, `pnpm editability:smoke`, `pnpm agent-bench:demo`. Add new retrieval or A/B benchmarks there, not here.
 
-**LongMemEval** (retrieval accuracy): Tests whether PLUR retrieves the correct engram for 30 questions across 6 categories (single-session, preferences, multi-session, temporal, updates, assistant facts). The in-repo harness is `benchmark/run.ts`:
+The one benchmark that stays in this repo is the core-operation latency micro-benchmark at `benchmark/micro.ts`, run via `pnpm bench:micro`. It measures `learn()` / `recall()` / `inject()` latency against the live core package across branches, which plur-bench's retrieval-only vendored core cannot do:
 
 ```bash
-# Standard cadence run (hybrid + reranker — matches the current baseline)
-npx tsx benchmark/run.ts --rerank on
-
-# Reranker-off comparison (faster, lower quality)
-npx tsx benchmark/run.ts --rerank off
-
-# Single category drill-down
-npx tsx benchmark/run.ts --rerank on --category temporal_reasoning
+pnpm bench:micro                                 # full suite
+npx tsx benchmark/micro.ts --label main          # tag a run
+npx tsx benchmark/micro.ts --compare main pr     # compare two labelled runs
 ```
 
-Compare your change against `--rerank on` (hybrid + cross-encoder) as baseline. See `benchmark/README.md` for corpus options and micro-benchmark instructions.
-
-**A/B bench** (end-to-end): Same task given to an agent with and without PLUR memory, scored by LLM judge. Scenarios in `datacore-bench/scenarios/`.
+Run it on any core change that could affect learn/recall/inject latency, and cite deltas in your PR description.
 
 ### Current numbers (v0.9.13, ed98d52, 2026-06-27)
 
-Latest hybrid run is archived in plur-ai/plur-bench at
-`results/monorepo/2026-04-07-hybrid.json` (LongMemEval n=30 sanity subset) —
-result JSONs are no longer committed here (#336). Local benchmark runs still
-write to `benchmark/results/` (gitignored). A/B figures are the README's
-published run.
-
-Cadence standard: `npx tsx benchmark/run.ts --rerank on` (fixture corpus, hybrid+bge-reranker, n=30).
+Historical in-repo numbers below are superseded by plur-bench; run the plur-bench
+suites for current figures. The last in-repo hybrid run is archived in
+plur-ai/plur-bench at `results/monorepo/2026-04-07-hybrid.json` (LongMemEval n=30
+sanity subset); result JSONs are no longer committed here (#336).
 
 | Metric | Score | Config |
 |--------|-------|--------|
@@ -155,8 +145,8 @@ Cadence standard: `npx tsx benchmark/run.ts --rerank on` (fixture corpus, hybrid
 **Reranker latency (fixture, loaded machine — idle machine will be lower):** ms-marco p50≈245ms; bge-reranker p50≈5s, p95≈10s, peak RSS≈2GB. ms-marco is production-viable; bge is suitable for offline/batch only. Set via `PLUR_RERANKER=ms-marco-minilm-l6` or `PLUR_RERANKER=bge-reranker-v2-m3`.
 
 The earlier v0.2.1 baseline (86.7% overall / 93.3% Hit@10) is still cited in
-`docs/benchmarks/phase2-methodology.md` as the self-calibration target for the
-not-yet-built reproducible Phase 2 harness — that doc tracks methodology, not
+`docs/benchmarks/phase2-methodology.md` as the self-calibration target; plur-bench
+is the reproducible harness that realises it. That doc tracks methodology, not
 current scores. If your PR improves any of these, mention it in the PR description.
 
 ## Conventions
