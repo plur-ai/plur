@@ -96,9 +96,11 @@ export interface ScenarioResult {
   expected_keywords: string[]
   retrieved_statements: string[]
   hit_at_1: boolean
+  hit_at_3: boolean
   hit_at_5: boolean
   hit_at_10: boolean
   mrr: number
+  ndcg5: number
   accuracy: boolean
   rank: number | null
   latency_ms: number
@@ -176,9 +178,14 @@ export interface BenchmarkSummary {
   iterations_per_category: number | null
   seed: number
   // Headline metrics (LongMemEval taxonomy):
-  r5: number          // % of queries with the right engram in the top 5 (a.k.a. Hit@5).
   r1: number          // % of queries with the right engram at rank 1 (a.k.a. Hit@1).
+  r3: number          // % of queries with the right engram in the top 3.
+  r5: number          // % of queries with the right engram in the top 5 (a.k.a. Hit@5).
+  r10: number         // % of queries with the right engram in the top 10.
+  mrr: number         // Mean Reciprocal Rank = mean(1/rank_of_first_hit).
+  ndcg5: number       // nDCG@5 with binary relevance (single relevant item; IDCG=1).
   accuracy: number    // % of queries where every expected_keyword is found in top 10.
+  cost_usd_per_1k: number  // Estimated cost in USD per 1 000 queries (0 for local models).
   // Latency over recall() / recallHybrid() / recallSemantic() per query, in ms:
   latency_p50_ms: number
   latency_p95_ms: number
@@ -188,10 +195,12 @@ export interface BenchmarkSummary {
   store_size_bytes: number
   // Per-category breakdown:
   per_category: Record<string, {
-    r5: number
     r1: number
-    hit10: number
+    r3: number
+    r5: number
+    r10: number
     mrr: number
+    ndcg5: number
     accuracy: number
     latency_p50_ms: number
     latency_p95_ms: number
@@ -335,6 +344,23 @@ function findRank(results: Array<{ statement: string }>, keywords: string[]): nu
     if (keywordMatch(results[i].statement, keywords)) return i + 1
   }
   return null
+}
+
+/** nDCG@5 for a single query with binary relevance and one relevant item. IDCG = 1. */
+function ndcg5ForQuery(rank: number | null): number {
+  if (rank === null || rank > 5) return 0
+  return 1 / Math.log2(rank + 1)
+}
+
+/** Estimate cost in USD per 1 000 queries. Returns 0 for all local embedders. */
+function estimateCostPer1k(embedder: string, _searchMode: string): number {
+  // All current embedders (minilm, bge-small, bge-base, embedding-gemma) run
+  // fully locally — zero API cost. Remote embedder billing would be tracked
+  // here once openai-3-large is a first-class option.
+  const remoteEmbedderRates: Record<string, number> = {
+    'openai-3-large': 0.13,  // $0.13/1M tokens ≈ $0.13 * avg_tokens / 1000 queries
+  }
+  return remoteEmbedderRates[embedder] ?? 0
 }
 
 export function percentile(sorted: number[], p: number): number {
@@ -575,9 +601,11 @@ export async function runBenchmark(opts: RunOptions = {}): Promise<RunOutput> {
       expected_keywords: scenario.expected_keywords,
       retrieved_statements: retrieved.map(r => r.statement).slice(0, 5),
       hit_at_1: rank === 1,
+      hit_at_3: rank !== null && rank <= 3,
       hit_at_5: rank !== null && rank <= 5,
       hit_at_10: rank !== null && rank <= 10,
       mrr: rank !== null ? 1 / rank : 0,
+      ndcg5: ndcg5ForQuery(rank),
       accuracy: allKeywordsFound,
       rank,
       latency_ms,
@@ -594,9 +622,14 @@ export async function runBenchmark(opts: RunOptions = {}): Promise<RunOutput> {
   }
 
   // ─── Aggregate ───────────────────────────────────────────────────
-  const r5 = results.filter(r => r.hit_at_5).length / results.length * 100
   const r1 = results.filter(r => r.hit_at_1).length / results.length * 100
+  const r3 = results.filter(r => r.hit_at_3).length / results.length * 100
+  const r5 = results.filter(r => r.hit_at_5).length / results.length * 100
+  const r10 = results.filter(r => r.hit_at_10).length / results.length * 100
+  const mrr = results.reduce((s, r) => s + r.mrr, 0) / results.length
+  const ndcg5 = results.reduce((s, r) => s + r.ndcg5, 0) / results.length
   const accuracy = results.filter(r => r.accuracy).length / results.length * 100
+  const cost_usd_per_1k = estimateCostPer1k(embedder, searchMode)
 
   const allLatencies = results.map(r => r.latency_ms).sort((a, b) => a - b)
   const latency_p50_ms = percentile(allLatencies, 50)
@@ -613,10 +646,12 @@ export async function runBenchmark(opts: RunOptions = {}): Promise<RunOutput> {
     const cr = results.filter(r => r.category === cat)
     const lat = cr.map(r => r.latency_ms).sort((a, b) => a - b)
     per_category[cat] = {
-      r5: cr.filter(r => r.hit_at_5).length / cr.length * 100,
       r1: cr.filter(r => r.hit_at_1).length / cr.length * 100,
-      hit10: cr.filter(r => r.hit_at_10).length / cr.length * 100,
+      r3: cr.filter(r => r.hit_at_3).length / cr.length * 100,
+      r5: cr.filter(r => r.hit_at_5).length / cr.length * 100,
+      r10: cr.filter(r => r.hit_at_10).length / cr.length * 100,
       mrr: cr.reduce((s, r) => s + r.mrr, 0) / cr.length,
+      ndcg5: cr.reduce((s, r) => s + r.ndcg5, 0) / cr.length,
       accuracy: cr.filter(r => r.accuracy).length / cr.length * 100,
       latency_p50_ms: percentile(lat, 50),
       latency_p95_ms: percentile(lat, 95),
@@ -637,9 +672,14 @@ export async function runBenchmark(opts: RunOptions = {}): Promise<RunOutput> {
     scenario_count: results.length,
     iterations_per_category: opts.iterations ?? null,
     seed,
-    r5,
     r1,
+    r3,
+    r5,
+    r10,
+    mrr,
+    ndcg5,
     accuracy,
+    cost_usd_per_1k,
     latency_p50_ms,
     latency_p95_ms,
     latency_p99_ms,
@@ -694,9 +734,14 @@ function printSummary(s: BenchmarkSummary) {
   console.log(`Commit:          ${s.commit}`)
   console.log()
   console.log('Overall:')
-  console.log(`  R@5:           ${s.r5.toFixed(1)}%`)
   console.log(`  R@1:           ${s.r1.toFixed(1)}%`)
+  console.log(`  R@3:           ${s.r3.toFixed(1)}%`)
+  console.log(`  R@5:           ${s.r5.toFixed(1)}%`)
+  console.log(`  R@10:          ${s.r10.toFixed(1)}%`)
+  console.log(`  MRR:           ${s.mrr.toFixed(4)}`)
+  console.log(`  nDCG@5:        ${s.ndcg5.toFixed(4)}`)
   console.log(`  Accuracy:      ${s.accuracy.toFixed(1)}% (all keywords found)`)
+  console.log(`  Cost/1k:       $${s.cost_usd_per_1k.toFixed(4)}`)
   console.log()
   console.log('Latency:')
   console.log(`  p50:           ${s.latency_p50_ms.toFixed(2)}ms`)
@@ -708,10 +753,10 @@ function printSummary(s: BenchmarkSummary) {
   console.log(`  Store size:    ${s.store_size_bytes} bytes`)
   console.log()
   console.log('Per Category:')
-  console.log(`${'Category'.padEnd(30)} ${'R@5'.padEnd(8)} ${'R@1'.padEnd(8)} ${'MRR'.padEnd(8)} ${'p95'.padEnd(8)}`)
-  console.log('-'.repeat(70))
+  console.log(`${'Category'.padEnd(30)} ${'R@1'.padEnd(8)} ${'R@5'.padEnd(8)} ${'MRR'.padEnd(8)} ${'nDCG@5'.padEnd(9)} ${'Acc'.padEnd(8)} ${'p50'.padEnd(8)}`)
+  console.log('-'.repeat(85))
   for (const [cat, m] of Object.entries(s.per_category)) {
-    console.log(`${cat.padEnd(30)} ${(m.r5.toFixed(0) + '%').padEnd(8)} ${(m.r1.toFixed(0) + '%').padEnd(8)} ${m.mrr.toFixed(3).padEnd(8)} ${(m.latency_p95_ms.toFixed(1) + 'ms').padEnd(8)}`)
+    console.log(`${cat.padEnd(30)} ${(m.r1.toFixed(0) + '%').padEnd(8)} ${(m.r5.toFixed(0) + '%').padEnd(8)} ${m.mrr.toFixed(3).padEnd(8)} ${m.ndcg5.toFixed(3).padEnd(9)} ${(m.accuracy.toFixed(0) + '%').padEnd(8)} ${(m.latency_p50_ms.toFixed(1) + 'ms').padEnd(8)}`)
   }
 }
 
@@ -732,9 +777,14 @@ function renderMarkdown(s: BenchmarkSummary): string {
   lines.push('')
   lines.push('| Metric | Value |')
   lines.push('|---|---|')
-  lines.push(`| R@5 | ${s.r5.toFixed(1)}% |`)
   lines.push(`| R@1 | ${s.r1.toFixed(1)}% |`)
+  lines.push(`| R@3 | ${s.r3.toFixed(1)}% |`)
+  lines.push(`| R@5 | ${s.r5.toFixed(1)}% |`)
+  lines.push(`| R@10 | ${s.r10.toFixed(1)}% |`)
+  lines.push(`| MRR | ${s.mrr.toFixed(4)} |`)
+  lines.push(`| nDCG@5 | ${s.ndcg5.toFixed(4)} |`)
   lines.push(`| Accuracy | ${s.accuracy.toFixed(1)}% |`)
+  lines.push(`| Cost / 1k queries | $${s.cost_usd_per_1k.toFixed(4)} |`)
   lines.push(`| Latency p50 | ${s.latency_p50_ms.toFixed(2)} ms |`)
   lines.push(`| Latency p95 | ${s.latency_p95_ms.toFixed(2)} ms |`)
   lines.push(`| Latency p99 | ${s.latency_p99_ms.toFixed(2)} ms |`)
@@ -743,10 +793,10 @@ function renderMarkdown(s: BenchmarkSummary): string {
   lines.push('')
   lines.push('## Per Category')
   lines.push('')
-  lines.push('| Category | N | R@5 | R@1 | Hit@10 | MRR | Accuracy | p50 ms | p95 ms | p99 ms |')
+  lines.push('| Category | N | R@1 | R@3 | R@5 | R@10 | MRR | nDCG@5 | Accuracy | p50 ms |')
   lines.push('|---|---|---|---|---|---|---|---|---|---|')
   for (const [cat, m] of Object.entries(s.per_category)) {
-    lines.push(`| ${cat} | ${m.count} | ${m.r5.toFixed(1)}% | ${m.r1.toFixed(1)}% | ${m.hit10.toFixed(1)}% | ${m.mrr.toFixed(3)} | ${m.accuracy.toFixed(1)}% | ${m.latency_p50_ms.toFixed(2)} | ${m.latency_p95_ms.toFixed(2)} | ${m.latency_p99_ms.toFixed(2)} |`)
+    lines.push(`| ${cat} | ${m.count} | ${m.r1.toFixed(1)}% | ${m.r3.toFixed(1)}% | ${m.r5.toFixed(1)}% | ${m.r10.toFixed(1)}% | ${m.mrr.toFixed(3)} | ${m.ndcg5.toFixed(3)} | ${m.accuracy.toFixed(1)}% | ${m.latency_p50_ms.toFixed(2)} |`)
   }
   lines.push('')
   return lines.join('\n')
