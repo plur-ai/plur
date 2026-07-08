@@ -48,8 +48,31 @@ export function buildCursorHooks(cmd: string): Record<string, CursorHookEntry[]>
   }
 }
 
+/** The exact set of subcommands `buildCursorHooks()` installs — see below. */
+const PLUR_CURSOR_SUBCOMMANDS = [
+  'hook-cursor-session-start',
+  'hook-cursor-guard',
+  'hook-cursor-post-tool',
+  'hook-cursor-stop',
+]
+
+/**
+ * A command is PLUR-owned only if it BOTH names the PLUR binary AND invokes
+ * one of PLUR's exact subcommands. Originally this matched on the bare
+ * substring `hook-cursor-` alone, which flagged ANY hook whose command
+ * happened to contain that string — e.g. a user's own
+ * `./scripts/hook-cursor-lint.sh` — as PLUR's, so the next `plur init
+ * --cursor` upgrade would silently delete it via `stripPlurCursorHooks()`
+ * (audit fix — Codex adversarial review, 2026-07-08: real config corruption,
+ * not just mis-detection). Requiring both the binary name (`plur-hook`, the
+ * shim `installHookBinary()` creates, or the `@plur-ai/cli` npx fallback —
+ * see init.ts's `cmd` resolution) and an exact known subcommand narrows this
+ * to commands PLUR itself could plausibly have written.
+ */
 function isPlurCursorHookEntry(entry: CursorHookEntry): boolean {
-  return entry.command.includes('@plur-ai/cli') || entry.command.includes('plur-hook') || entry.command.includes('hook-cursor-')
+  const isPlurBinary = entry.command.includes('@plur-ai/cli') || entry.command.includes('plur-hook')
+  if (!isPlurBinary) return false
+  return PLUR_CURSOR_SUBCOMMANDS.some((sub) => entry.command.includes(sub))
 }
 
 export function hasPlurCursorHooks(config: CursorHooksConfig): boolean {

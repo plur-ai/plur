@@ -66,6 +66,22 @@ interface DoctorReport {
    */
   cursorHandshake: { ok: boolean; serverName?: string; serverVersion?: string; toolCount?: number; error?: string } | null
   embedder: { available: boolean; loaded: boolean; lastError: string | null; modelLoaded: boolean; disabled: boolean; disabledReason: string | null }
+  /**
+   * Whether the current directory looks like a Cursor project (a `.cursor/`
+   * dir exists) and, if so, whether Cursor's OWN config files — not any
+   * Claude Code config elsewhere — actually have PLUR wired in. Audit fix
+   * (Codex adversarial review, 2026-07-08): `overall` used to be
+   * `hooksInstalled && mcpRegistered && handshake.ok`, where both booleans
+   * are `configs.some(...)` across ALL known config files. A machine with
+   * working Claude Code wiring but a missing or broken `.cursor/hooks.json`
+   * (or a `.cursor/mcp.json` without the cursor tool profile) still reported
+   * `overall: 'ok'` — a false green for the exact integration this field
+   * exists to check. `cursorWired` is only false when a `.cursor/` project
+   * IS detected and its own config is incomplete; it's true (irrelevant) for
+   * non-Cursor projects so `overall` isn't affected there.
+   */
+  cursorProjectDetected: boolean
+  cursorWired: boolean
   overall: 'ok' | 'fail'
 }
 
@@ -462,6 +478,19 @@ function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<Doctor
   const hookShim = validateHookShim()
   const mcpShim = validateMcpShim()
 
+  // Cursor-specific health, computed from Cursor's OWN two config files only
+  // — not folded into hooksInstalled/mcpRegistered's cross-config `.some()`,
+  // which a working Claude Code setup elsewhere would satisfy regardless of
+  // whether THIS project's `.cursor/` wiring is present at all (audit fix —
+  // Codex adversarial review, 2026-07-08).
+  const cursorMcpConfig = configs.find((c) => c.label === 'Cursor (.cursor/mcp.json)')
+  const cursorHooksConfigReport = configs.find((c) => c.label === 'Cursor (.cursor/hooks.json)')
+  const cursorProjectDetected = existsSync(join(process.cwd(), '.cursor'))
+  const cursorWired = Boolean(
+    cursorMcpConfig?.exists && cursorMcpConfig.hasPlurMcp &&
+    cursorHooksConfigReport?.exists && cursorHooksConfigReport.hasPlurHooks,
+  )
+
   const handshakePromise = skipHandshake
     ? Promise.resolve({ ok: false, error: 'skipped (--no-handshake)' })
     : mcpHandshake()
@@ -474,13 +503,19 @@ function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<Doctor
     // no point probing a profile variant of a server that doesn't start.
     const cursorHandshake = handshake.ok ? await mcpHandshake(20000, { PLUR_TOOL_PROFILE: 'cursor' }) : null
 
-    // Wiring overall: hooks + MCP + handshake. Embedder status is reported
-    // separately as a warning — a degraded embedder doesn't fail the overall
-    // doctor check (BM25 still works); it just signals semantic recall is
-    // disabled until the model loads.
+    // Wiring overall: hooks + MCP + handshake + (if a Cursor project is
+    // detected) Cursor's own config actually being wired. Embedder status is
+    // reported separately as a warning — a degraded embedder doesn't fail
+    // the overall doctor check (BM25 still works); it just signals semantic
+    // recall is disabled until the model loads.
     const overall: 'ok' | 'fail' =
-      hooksInstalled && mcpRegistered && (skipHandshake || handshake.ok) ? 'ok' : 'fail'
-    return { configs, hooksInstalled, mcpRegistered, datacoreCollision, staleNpxHooks, staleNpxMcp, hookShim, mcpShim, handshake, cursorHandshake, embedder, overall }
+      hooksInstalled && mcpRegistered && (skipHandshake || handshake.ok) && (!cursorProjectDetected || cursorWired)
+        ? 'ok' : 'fail'
+    return {
+      configs, hooksInstalled, mcpRegistered, datacoreCollision, staleNpxHooks, staleNpxMcp,
+      hookShim, mcpShim, handshake, cursorHandshake, embedder,
+      cursorProjectDetected, cursorWired, overall,
+    }
   })
 }
 
@@ -506,6 +541,15 @@ function printText(report: DoctorReport): void {
   outputText('')
   outputText(`${tick(report.hooksInstalled)} Hooks installed`)
   outputText(`${tick(report.mcpRegistered)} plur MCP server registered`)
+
+  if (report.cursorProjectDetected) {
+    outputText(`${tick(report.cursorWired)} Cursor: this project's .cursor/mcp.json + .cursor/hooks.json wired to plur`)
+    if (!report.cursorWired) {
+      outputText('  A Claude Code config being healthy elsewhere does NOT cover Cursor —')
+      outputText('  this project has a .cursor/ directory but its own config is incomplete.')
+      outputText('  Fix: run `plur init --cursor` from this project.')
+    }
+  }
 
   if (report.datacoreCollision) {
     outputText('')
@@ -609,6 +653,10 @@ function printText(report: DoctorReport): void {
       outputText('  Fix: ensure `npx` is reachable from Claude Desktop')
       outputText('       — try launching Claude from your terminal once,')
       outputText('       — or replace the plur entry command with an absolute path to your shell.')
+    }
+    if (report.cursorProjectDetected && !report.cursorWired) {
+      outputText('  Fix: run `plur init --cursor` from this project — this project\'s own')
+      outputText('       .cursor/ config is incomplete even though other checks above passed.')
     }
     if (!report.embedder.modelLoaded && !report.embedder.disabled) {
       outputText('  Fix: from the @plur-ai/core package directory, run a script that imports')

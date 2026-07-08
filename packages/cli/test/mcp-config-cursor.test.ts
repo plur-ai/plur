@@ -4,6 +4,7 @@ import {
   cursorProjectHooksConfigPath,
   cursorRulesPath,
   cursorContextRulePath,
+  cursorReminderRulePath,
   buildMcpServerEntry,
   mergePlurMcp,
 } from '../src/mcp-config.js'
@@ -25,6 +26,14 @@ describe('Cursor config paths', () => {
   it('resolves .cursor/rules/plur-context.mdc under the given cwd (distinct from the static rule)', () => {
     expect(cursorContextRulePath('/tmp/proj')).toBe(join('/tmp/proj', '.cursor', 'rules', 'plur-context.mdc'))
     expect(cursorContextRulePath('/tmp/proj')).not.toBe(cursorRulesPath('/tmp/proj'))
+  })
+
+  // Audit fix (Codex adversarial review, 2026-07-08): reminders and recalled
+  // session context must land in different files so one can't clobber the
+  // other — see writeContextRule()'s docstring.
+  it('resolves .cursor/rules/plur-reminder.mdc under the given cwd (distinct from the context rule)', () => {
+    expect(cursorReminderRulePath('/tmp/proj')).toBe(join('/tmp/proj', '.cursor', 'rules', 'plur-reminder.mdc'))
+    expect(cursorReminderRulePath('/tmp/proj')).not.toBe(cursorContextRulePath('/tmp/proj'))
   })
 })
 

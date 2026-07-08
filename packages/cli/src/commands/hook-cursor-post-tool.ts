@@ -10,6 +10,7 @@ import {
   markSessionStarted,
   writeContextRule,
 } from '../lib/cursor-hook-io.js'
+import { cursorReminderRulePath } from '../mcp-config.js'
 
 /**
  * plur hook-cursor-post-tool — Cursor `postToolUse` hook.
@@ -30,8 +31,12 @@ import {
  * Constraints): the reminder was originally `additional_context`-only. Cursor's
  * own team confirmed on their forum this is dropped for `postToolUse` too
  * (same race condition as `sessionStart`), so the reminder is now written to
- * the dynamic rules file via `writeContextRule()` as the PRIMARY channel,
- * with `additional_context` kept as a harmless secondary output.
+ * its own dynamic rules file via `writeContextRule()` as the PRIMARY channel,
+ * with `additional_context` kept as a harmless secondary output. This used to
+ * write to the SAME file hook-cursor-session-start.ts uses for recalled
+ * engram content, which meant the first reminder silently deleted that
+ * session's injected memory (audit fix — Codex adversarial review,
+ * 2026-07-08) — see `cursorReminderRulePath()`'s docstring.
  *
  * Tool-name matching uses the shared isPlurSessionStartTool() (audit fix —
  * this used to be a second, slightly different local implementation here;
@@ -44,7 +49,8 @@ import {
  *
  * Input: JSON on stdin — { tool_name, tool_input, tool_output, conversation_id | session_id }
  * Output: JSON on stdout — { additional_context } or nothing (secondary channel)
- * Side effect: overwrites `.cursor/rules/plur-context.mdc` when reminding (primary channel)
+ * Side effect: overwrites `.cursor/rules/plur-reminder.mdc` when reminding (primary channel) —
+ * NOT the session-context file hook-cursor-session-start.ts writes.
  */
 
 const REMINDER_INTERVAL_MS = 10 * 60 * 1000
@@ -81,6 +87,6 @@ export async function run(_args: string[], _flags: GlobalFlags): Promise<void> {
   if (!isReminderDue(conversationId)) return
 
   writeFileSync(lastReminderPath(conversationId), String(Date.now()))
-  writeContextRule(REMINDER_TEXT)
+  writeContextRule(REMINDER_TEXT, cursorReminderRulePath())
   process.stdout.write(JSON.stringify({ additional_context: REMINDER_TEXT }))
 }

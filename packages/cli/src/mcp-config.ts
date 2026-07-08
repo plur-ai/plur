@@ -130,6 +130,20 @@ export function cursorContextRulePath(cwd: string = process.cwd()): string {
 }
 
 /**
+ * Locate the separate reminder rule file `hook-cursor-post-tool.ts` rewrites
+ * on its periodic nudge (audit fix — Codex adversarial review, 2026-07-08:
+ * both hooks used to call `writeContextRule()` against
+ * `cursorContextRulePath()`, so the first reminder overwrote the recalled
+ * engram content `hook-cursor-session-start.ts` had written there, silently
+ * dropping the session's injected memory for the rest of the conversation).
+ * Kept as its own file, also `alwaysApply: true` and also loaded by Cursor's
+ * rules engine, so the two can never clobber each other again.
+ */
+export function cursorReminderRulePath(cwd: string = process.cwd()): string {
+  return join(cwd, '.cursor', 'rules', 'plur-reminder.mdc')
+}
+
+/**
  * List all known config files (existing or not) so the doctor command
  * can report on each.
  */

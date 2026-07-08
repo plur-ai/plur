@@ -57,6 +57,12 @@ describe('plur init --cursor', () => {
     const rule = readFileSync(join(project, '.cursor', 'rules', 'plur-memory.mdc'), 'utf-8')
     expect(rule).toContain('alwaysApply: true')
     expect(rule).toContain('plur_recall_hybrid')
+
+    // Both dynamic rule files (session context + reminder) are regenerated
+    // every session and must not get committed.
+    const gitignore = readFileSync(join(project, '.gitignore'), 'utf-8')
+    expect(gitignore).toContain('.cursor/rules/plur-context.mdc')
+    expect(gitignore).toContain('.cursor/rules/plur-reminder.mdc')
   })
 
   it('--no-cursor skips Cursor setup even with a .cursor/ dir present', () => {

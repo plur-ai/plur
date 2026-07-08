@@ -66,4 +66,32 @@ describe('cursor-hooks', () => {
     expect(hasPlurCursorHooks(config)).toBe(true)
     expect(hasPlurCursorHooks({ version: 1, hooks: {} })).toBe(false)
   })
+
+  // Audit fix (Codex adversarial review, 2026-07-08): the old detector
+  // matched on the bare substring `hook-cursor-`, so an unrelated hook whose
+  // command happened to contain that string looked PLUR-owned and got
+  // deleted by the next `plur init --cursor` upgrade.
+  it('does not classify an unrelated hook-cursor-* command as PLUR-owned', () => {
+    const existing = {
+      version: 1,
+      hooks: { afterFileEdit: [{ command: './scripts/hook-cursor-lint.sh' }] },
+    }
+    expect(hasPlurCursorHooks(existing)).toBe(false)
+    const merged = mergeCursorHooks(existing, buildCursorHooks('plur-hook'))
+    expect(merged.hooks.afterFileEdit).toEqual([{ command: './scripts/hook-cursor-lint.sh' }])
+  })
+
+  it('re-init does not delete an unrelated hook-cursor-* command sharing an event with a PLUR hook', () => {
+    const existing = {
+      version: 1,
+      hooks: { postToolUse: [{ command: './scripts/hook-cursor-lint.sh' }] },
+    }
+    const merged = mergeCursorHooks(existing, buildCursorHooks('plur-hook'))
+    expect(merged.hooks.postToolUse).toContainEqual({ command: './scripts/hook-cursor-lint.sh' })
+    expect(merged.hooks.postToolUse.some((e) => e.command.includes('hook-cursor-post-tool'))).toBe(true)
+
+    // Re-running (upgrade path) must still not drop the unrelated hook.
+    const reMerged = mergeCursorHooks(merged, buildCursorHooks('plur-hook'))
+    expect(reMerged.hooks.postToolUse).toContainEqual({ command: './scripts/hook-cursor-lint.sh' })
+  })
 })

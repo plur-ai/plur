@@ -69,7 +69,30 @@ describe('hook-cursor-post-tool', () => {
 
     // Primary channel (audit fix, live evidence): postToolUse's
     // additional_context is confirmed broken by Cursor's own team too.
-    const ruleContent = readFileSync(join(projectDir, '.cursor', 'rules', 'plur-context.mdc'), 'utf-8')
+    // Reminders write to their OWN rule file (audit fix — Codex adversarial
+    // review, 2026-07-08) — see the "does not clobber" test below for why.
+    const ruleContent = readFileSync(join(projectDir, '.cursor', 'rules', 'plur-reminder.mdc'), 'utf-8')
     expect(ruleContent).toContain('plur_learn')
+  })
+
+  it('does not clobber the session-context rule file when reminding', () => {
+    mkdirSync(join(projectDir, '.cursor', 'rules'), { recursive: true })
+    const contextRulePath = join(projectDir, '.cursor', 'rules', 'plur-context.mdc')
+    writeFileSync(contextRulePath, '---\nalwaysApply: true\n---\n\n[PLUR Memory — session started, 3 engrams injected]\nsome recalled directive\n')
+
+    mkdirSync(SESSIONS_DIR, { recursive: true })
+    writeFileSync(join(SESSIONS_DIR, 'conv-cloud-3.marker'), String(Date.now()))
+    execSync(`node ${CLI} hook-cursor-post-tool`, {
+      cwd: projectDir,
+      input: JSON.stringify({ conversation_id: 'conv-cloud-3', tool_name: 'some_other_tool' }),
+      encoding: 'utf-8',
+    })
+
+    // The reminder must land in its own file, not overwrite the recalled
+    // session context a prior hook-cursor-session-start call already wrote.
+    const contextContent = readFileSync(contextRulePath, 'utf-8')
+    expect(contextContent).toContain('some recalled directive')
+    const reminderContent = readFileSync(join(projectDir, '.cursor', 'rules', 'plur-reminder.mdc'), 'utf-8')
+    expect(reminderContent).toContain('plur_learn')
   })
 })

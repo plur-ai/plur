@@ -392,8 +392,10 @@ alwaysApply: true
 
 You have persistent memory via PLUR (tools prefixed \`plur_\`; less-common ones are behind \`plur_admin\` — pass { action, args }).
 
-- Session start and periodic reminders are injected automatically via hooks, delivered through
-  \`.cursor/rules/plur-context.mdc\` (auto-generated, changes there each session — don't hand-edit it).
+- Session start is injected automatically via hooks, delivered through
+  \`.cursor/rules/plur-context.mdc\`; periodic reminders arrive through
+  \`.cursor/rules/plur-reminder.mdc\` (both auto-generated, changes there each
+  session — don't hand-edit either).
 - When corrected or you learn a convention/preference: call **plur_learn** immediately.
 - Before answering factual questions about this project: call **plur_recall_hybrid** first.
 - Rate injected engrams with **plur_feedback** when you notice one helped or missed.
@@ -609,22 +611,29 @@ function installCursor(cmd: string): string {
   const ruleAlready = existsSync(rulesPath)
   if (!ruleAlready) writeFileSync(rulesPath, CURSOR_RULE_CONTENT)
 
-  // The dynamic context rule (plur-context.mdc) is rewritten every session by
-  // hook-cursor-session-start.ts/hook-cursor-post-tool.ts and may contain
-  // recalled engram content — project-specific, regenerated, not something
-  // to commit. gitignore it here so it doesn't show up as an untracked-file
-  // surprise in `git status` after the first session.
+  // The dynamic context and reminder rules (plur-context.mdc, plur-reminder.mdc)
+  // are rewritten every session by hook-cursor-session-start.ts/
+  // hook-cursor-post-tool.ts and may contain recalled engram content —
+  // project-specific, regenerated, not something to commit. gitignore both
+  // so they don't show up as untracked-file surprises in `git status` after
+  // the first session.
   const gitignorePath = join(process.cwd(), '.gitignore')
-  const gitignoreLine = '.cursor/rules/plur-context.mdc'
-  const gitignoreContent = existsSync(gitignorePath) ? readFileSync(gitignorePath, 'utf8') : ''
-  if (!gitignoreContent.includes(gitignoreLine)) {
-    writeFileSync(gitignorePath, gitignoreContent.trimEnd() + `\n${gitignoreLine}\n`)
+  const gitignoreLines = ['.cursor/rules/plur-context.mdc', '.cursor/rules/plur-reminder.mdc']
+  const originalGitignoreContent = existsSync(gitignorePath) ? readFileSync(gitignorePath, 'utf8') : ''
+  let gitignoreContent = originalGitignoreContent
+  for (const line of gitignoreLines) {
+    if (!gitignoreContent.includes(line)) {
+      gitignoreContent = gitignoreContent.trimEnd() + `\n${line}\n`
+    }
+  }
+  if (gitignoreContent !== originalGitignoreContent) {
+    writeFileSync(gitignorePath, gitignoreContent)
   }
 
   return `Cursor: MCP ${mcpStatus} (${mcpPath}); ` +
     `hooks ${hooksStatus} (${hooksPath}); ` +
     `rule ${ruleAlready ? 'already present' : 'created'} (${rulesPath}); ` +
-    `gitignored .cursor/rules/plur-context.mdc`
+    `gitignored .cursor/rules/plur-context.mdc, .cursor/rules/plur-reminder.mdc`
 }
 
 function writeSettings(path: string, settings: Settings): void {
