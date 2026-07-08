@@ -1,11 +1,13 @@
-# LongMemEval-S results — 2026-07-08
+# PLUR v0.9.x benchmark baseline — 2026-07-08
 
-**Commit:** `5a0ea11` | **Embedder:** `minilm` (local, all-MiniLM-L6-v2) | **Corpus:** LongMemEval-S fixture (n=30)
+**Commit:** `5a0ea11` | **Embedder:** `minilm` (local, all-MiniLM-L6-v2) | **Corpus:** PLUR fixture (hand-curated, n=30)
 
 > This is the PLUR v0.9.x baseline published in response to gbrain's 2026-05-07 benchmark.
 > The gbrain hero metric (R@5 = 97.60%) is a **retrieval-only** score using a commercial
-> cloud embedder on the full 500-question corpus. The numbers below are a like-for-like
-> retrieval comparison using an open-source local embedder on the same question taxonomy.
+> cloud embedder on the full 500-question LongMemEval-S corpus. The numbers below use the
+> same question taxonomy (six categories: single-session, preference, assistant, temporal,
+> updates, multi-session) on PLUR's 30-question hand-curated fixture. Full LongMemEval-S
+> corpus run (500 questions) is pending corpus import into plur-bench (#336).
 
 ---
 
