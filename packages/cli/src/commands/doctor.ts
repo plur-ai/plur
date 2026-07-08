@@ -12,16 +12,22 @@ import {
   knownConfigFiles,
   readConfig,
 } from '../mcp-config.js'
+import { hasPlurCursorHooks, readCursorHooksConfig } from '../cursor-hooks.js'
 
 /**
- * plur doctor — diagnose a Claude Code / Claude Desktop installation.
+ * plur doctor — diagnose a Claude Code / Claude Desktop / Cursor installation.
  *
  * Checks:
- *   1. Hooks installed in any settings.json (UserPromptSubmit etc.)
+ *   1. Hooks installed in any settings.json (UserPromptSubmit etc.) or, for
+ *      Cursor, its separate flat-shaped `.cursor/hooks.json`.
  *   2. `plur` MCP server registered in any of the known config files
  *   3. Whether `datacore` MCP server is also present (collision warning)
  *   4. Live MCP handshake — spawns the configured server command and
- *      sends an `initialize` JSON-RPC request to verify it actually starts.
+ *      sends an `initialize` JSON-RPC request to verify it actually starts,
+ *      then a `tools/list` request to report the live tool count. Probed
+ *      twice — once with the default env, once forcing
+ *      `PLUR_TOOL_PROFILE=cursor` — so a Cursor user can see whether their
+ *      setup is actually using the reduced tool profile.
  *
  * Exits 0 if everything is healthy, 1 if any check fails.
  */
@@ -50,7 +56,15 @@ interface DoctorReport {
   staleNpxMcp: boolean
   hookShim: HookShimReport
   mcpShim: HookShimReport
-  handshake: { ok: boolean; serverName?: string; serverVersion?: string; error?: string }
+  handshake: { ok: boolean; serverName?: string; serverVersion?: string; toolCount?: number; error?: string }
+  /**
+   * Second handshake, forcing `PLUR_TOOL_PROFILE=cursor`, so the report can show
+   * both tool counts side by side rather than guessing which profile a given
+   * config file's env is actually wired to. `null` when the default handshake
+   * itself failed or was skipped (--no-handshake) — no point probing a second
+   * profile if the server doesn't even come up once.
+   */
+  cursorHandshake: { ok: boolean; serverName?: string; serverVersion?: string; toolCount?: number; error?: string } | null
   embedder: { available: boolean; loaded: boolean; lastError: string | null; modelLoaded: boolean; disabled: boolean; disabledReason: string | null }
   overall: 'ok' | 'fail'
 }
@@ -150,6 +164,20 @@ function inspectConfigs(): ConfigFileReport[] {
         hasPlurHooks: false,
       }
     }
+    if (cf.kind === 'cursor-hooks') {
+      // Cursor's hooks.json is a flat { event: [{command, ...}] } shape, not
+      // Claude Code's nested { matcher, hooks: [...] } wrapper — hasAnyPlurHook
+      // would silently read it as "no hooks installed" even when they are.
+      const hooksConfig = readCursorHooksConfig(cf.path)
+      return {
+        label: cf.label,
+        path: cf.path,
+        exists: true,
+        hasPlurMcp: false,
+        hasDatacoreMcp: false,
+        hasPlurHooks: hasPlurCursorHooks(hooksConfig),
+      }
+    }
     const config = readConfig(cf.path)
     return {
       label: cf.label,
@@ -163,19 +191,30 @@ function inspectConfigs(): ConfigFileReport[] {
 }
 
 /**
- * Spawn the configured plur MCP server and send an `initialize` JSON-RPC
- * request. Resolves with the server's name and version on success, or an
- * error on timeout / crash / invalid response.
+ * Spawn the configured plur MCP server, send an `initialize` JSON-RPC
+ * request, then — once that succeeds — a `tools/list` request to count the
+ * live tool surface. Resolves with the server's name, version, and tool
+ * count on success, or an error on timeout / crash / invalid response.
+ *
+ * `envOverride` lets the caller force env vars (e.g. `PLUR_TOOL_PROFILE:
+ * 'cursor'`) onto the spawned process without touching `process.env` itself —
+ * used to probe the cursor tool profile alongside the default one, since
+ * parsing each config file's configured env to guess which profile is
+ * "active" would be fragile (a hand-edited config could have anything).
  *
  * Times out after 20 seconds — first-run npx fetches the @plur-ai/mcp package
  * (and its native deps), which can take 10-15s. Subsequent runs respond in ~1s.
  */
-async function mcpHandshake(timeoutMs = 20000): Promise<{ ok: boolean; serverName?: string; serverVersion?: string; error?: string }> {
+async function mcpHandshake(
+  timeoutMs = 20000,
+  envOverride?: Record<string, string>,
+): Promise<{ ok: boolean; serverName?: string; serverVersion?: string; toolCount?: number; error?: string }> {
   const entry = buildMcpServerEntry()
+  const spawnEnv = envOverride ? { ...process.env, ...envOverride } : undefined
 
   return new Promise((resolve) => {
     let resolved = false
-    const finish = (result: { ok: boolean; serverName?: string; serverVersion?: string; error?: string }) => {
+    const finish = (result: { ok: boolean; serverName?: string; serverVersion?: string; toolCount?: number; error?: string }) => {
       if (resolved) return
       resolved = true
       try { proc.kill() } catch { /* ignore */ }
@@ -184,7 +223,10 @@ async function mcpHandshake(timeoutMs = 20000): Promise<{ ok: boolean; serverNam
 
     let proc: ReturnType<typeof spawn>
     try {
-      proc = spawn(entry.command, entry.args, { stdio: ['pipe', 'pipe', 'pipe'] })
+      proc = spawn(entry.command, entry.args, {
+        stdio: ['pipe', 'pipe', 'pipe'],
+        ...(spawnEnv ? { env: spawnEnv } : {}),
+      })
     } catch (err: unknown) {
       finish({ ok: false, error: `spawn failed: ${(err as Error).message}` })
       return
@@ -195,6 +237,7 @@ async function mcpHandshake(timeoutMs = 20000): Promise<{ ok: boolean; serverNam
     }, timeoutMs)
 
     let buffer = ''
+    let serverInfo: { name?: string; version?: string } | null = null
     proc.stdout?.on('data', (chunk: Buffer) => {
       buffer += chunk.toString('utf8')
       let nl: number
@@ -205,14 +248,29 @@ async function mcpHandshake(timeoutMs = 20000): Promise<{ ok: boolean; serverNam
         try {
           const msg = JSON.parse(line)
           if (msg.id === 1 && msg.result) {
-            clearTimeout(timeout)
-            const info = msg.result.serverInfo ?? {}
-            finish({ ok: true, serverName: info.name, serverVersion: info.version })
-            return
+            serverInfo = msg.result.serverInfo ?? {}
+            proc.stdin?.write(JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} }) + '\n')
+            continue
           }
           if (msg.id === 1 && msg.error) {
             clearTimeout(timeout)
             finish({ ok: false, error: `server error: ${msg.error.message ?? JSON.stringify(msg.error)}` })
+            return
+          }
+          if (msg.id === 2 && msg.result) {
+            clearTimeout(timeout)
+            finish({
+              ok: true,
+              serverName: serverInfo?.name,
+              serverVersion: serverInfo?.version,
+              toolCount: Array.isArray(msg.result.tools) ? msg.result.tools.length : undefined,
+            })
+            return
+          }
+          if (msg.id === 2 && msg.error) {
+            // tools/list failed but initialize succeeded — still report as healthy, just without a count.
+            clearTimeout(timeout)
+            finish({ ok: true, serverName: serverInfo?.name, serverVersion: serverInfo?.version })
             return
           }
         } catch {
@@ -408,21 +466,28 @@ function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<Doctor
     ? Promise.resolve({ ok: false, error: 'skipped (--no-handshake)' })
     : mcpHandshake()
 
-  return Promise.all([handshakePromise, checkEmbedder(flags)]).then(([handshake, embedder]) => {
+  return Promise.all([handshakePromise, checkEmbedder(flags)]).then(async ([handshake, embedder]) => {
+    // Probe the cursor tool profile too, so the report shows both tool
+    // counts side by side instead of guessing which one a given config
+    // file's env is actually wired to (see mcpHandshake's doc comment).
+    // Only worth a second spawn if the default handshake actually came up —
+    // no point probing a profile variant of a server that doesn't start.
+    const cursorHandshake = handshake.ok ? await mcpHandshake(20000, { PLUR_TOOL_PROFILE: 'cursor' }) : null
+
     // Wiring overall: hooks + MCP + handshake. Embedder status is reported
     // separately as a warning — a degraded embedder doesn't fail the overall
     // doctor check (BM25 still works); it just signals semantic recall is
     // disabled until the model loads.
     const overall: 'ok' | 'fail' =
       hooksInstalled && mcpRegistered && (skipHandshake || handshake.ok) ? 'ok' : 'fail'
-    return { configs, hooksInstalled, mcpRegistered, datacoreCollision, staleNpxHooks, staleNpxMcp, hookShim, mcpShim, handshake, embedder, overall }
+    return { configs, hooksInstalled, mcpRegistered, datacoreCollision, staleNpxHooks, staleNpxMcp, hookShim, mcpShim, handshake, cursorHandshake, embedder, overall }
   })
 }
 
 function printText(report: DoctorReport): void {
   const tick = (b: boolean) => (b ? '✓' : '✗')
 
-  outputText('plur doctor — Claude Code / Claude Desktop diagnostic')
+  outputText('plur doctor — Claude Code / Claude Desktop / Cursor diagnostic')
   outputText('')
   outputText('Config files:')
   for (const c of report.configs) {
@@ -489,6 +554,26 @@ function printText(report: DoctorReport): void {
     outputText('    - npx not on PATH (Claude Desktop launches GUI without your shell PATH)')
     outputText('    - @plur-ai/mcp not yet downloaded — first run can take a few seconds')
     outputText('    - Network blocked — try `npx -y @plur-ai/mcp` manually')
+  }
+
+  // Live tool-budget report — both profiles side by side (Cursor caps a
+  // workspace at ~40 MCP tools total across every server). Printing both
+  // counts, rather than trying to infer which profile a config file's env
+  // actually activates, sidesteps guessing at hand-edited/partially-migrated
+  // configs: the user can just compare the two numbers themselves.
+  if (report.handshake.ok && report.handshake.toolCount !== undefined) {
+    outputText(`MCP tools exposed (default/full profile): ${report.handshake.toolCount}`)
+  }
+  if (report.cursorHandshake?.ok && report.cursorHandshake.toolCount !== undefined) {
+    outputText(`MCP tools exposed (PLUR_TOOL_PROFILE=cursor): ${report.cursorHandshake.toolCount}`)
+  }
+  if (report.handshake.ok && report.handshake.toolCount !== undefined && report.handshake.toolCount > 15) {
+    outputText(
+      `  Cursor caps a workspace at ~40 MCP tools total across every server. If .cursor/mcp.json's ` +
+      `plur entry doesn't set PLUR_TOOL_PROFILE=cursor in its env, Cursor is getting the full ` +
+      `${report.handshake.toolCount}-tool surface above, not the ~9-tool one. Run \`plur init --cursor\` to fix, ` +
+      `or set the env var directly if you registered the server by hand.`,
+    )
   }
 
   outputText('')
