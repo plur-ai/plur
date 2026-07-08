@@ -11,10 +11,13 @@ const VERSION = '0.11.0'
 const HELP = `plur-mcp v${VERSION} — persistent memory for AI agents
 
 Usage:
-  plur-mcp              Start the MCP server (stdio transport)
-  plur-mcp init         Set up PLUR: storage + MCP config + hooks + CLAUDE.md
-  plur-mcp --help       Show this help message
-  plur-mcp --version    Show version
+  plur-mcp                           Start the MCP server (stdio transport)
+  plur-mcp init                      Set up PLUR: storage + MCP config + hooks + CLAUDE.md
+  plur-mcp packs install <path>      Install a knowledge pack from a local directory
+  plur-mcp packs list                List installed knowledge packs
+  plur-mcp packs uninstall <name>    Uninstall a knowledge pack by name
+  plur-mcp --help                    Show this help message
+  plur-mcp --version                 Show version
 
 Environment:
   PLUR_PATH             Storage location (default: ~/.plur/)
@@ -364,6 +367,61 @@ async function runInit() {
   }
 }
 
+// --- Packs subcommands ---
+
+async function runPacks(): Promise<void> {
+  const sub = process.argv[3]
+  const plurPath = process.env.PLUR_PATH ?? join(homedir(), '.plur')
+  const { Plur } = await import('@plur-ai/core')
+  const plur = new Plur({ path: plurPath })
+
+  if (sub === 'install') {
+    const source = process.argv[4]
+    if (!source) {
+      process.stderr.write('Usage: plur-mcp packs install <path>\n')
+      process.exit(1)
+    }
+    try {
+      const result = plur.installPack(source)
+      process.stdout.write(`Installed pack '${result.name}' (${result.installed} engrams)\n`)
+    } catch (err) {
+      process.stderr.write(`Error: ${(err as Error).message}\n`)
+      process.exit(1)
+    }
+  } else if (sub === 'list') {
+    const packs = plur.listPacks()
+    if (packs.length === 0) {
+      process.stdout.write('No packs installed.\n')
+    } else {
+      for (const pack of packs) {
+        const version = pack.manifest?.version ? ` v${pack.manifest.version}` : ''
+        process.stdout.write(`${pack.name}${version} (${pack.engram_count} engrams)\n`)
+      }
+    }
+  } else if (sub === 'uninstall') {
+    const name = process.argv[4]
+    if (!name) {
+      process.stderr.write('Usage: plur-mcp packs uninstall <name>\n')
+      process.exit(1)
+    }
+    try {
+      const result = plur.uninstallPack(name)
+      if (result.removed) {
+        process.stdout.write(`Uninstalled pack '${result.name}' (${result.engram_count} engrams removed)\n`)
+      } else {
+        process.stderr.write(`Pack '${name}' not found.\n`)
+        process.exit(1)
+      }
+    } catch (err) {
+      process.stderr.write(`Error: ${(err as Error).message}\n`)
+      process.exit(1)
+    }
+  } else {
+    process.stderr.write(`Unknown packs subcommand: ${sub ?? '(none)'}\nAvailable: install, list, uninstall\n`)
+    process.exit(1)
+  }
+}
+
 // --- Main execution ---
 
 const arg = process.argv[2]
@@ -380,6 +438,11 @@ if (arg === '--version' || arg === '-v') {
 
 if (arg === 'init') {
   await runInit()
+  process.exit(0)
+}
+
+if (arg === 'packs') {
+  await runPacks()
   process.exit(0)
 }
 
