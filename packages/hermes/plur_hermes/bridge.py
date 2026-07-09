@@ -25,7 +25,7 @@ logger = logging.getLogger("plur_hermes.bridge")
 # demotion and unscoped auto-routing on the npx-fallback path. release.sh
 # rewrites this to the release version on every release (mirroring the pyproject
 # bump), and check_version_sync.py enforces pin >= the published @plur-ai/cli.
-_NPX_CLI_VERSION = "0.11.0"
+_NPX_CLI_VERSION = "0.12.0"
 
 _DEFAULT_DEDUP_CACHE_SIZE = 256
 # TTL (seconds) on dedup-cache entries — the in-process half of #120.
