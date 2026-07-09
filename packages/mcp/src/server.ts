@@ -11,7 +11,7 @@ import {
   McpError,
 } from '@modelcontextprotocol/sdk/types.js'
 import { Plur, checkForUpdate } from '@plur-ai/core'
-import { getToolDefinitions, mcpCanary, validateToolArgs, type ToolProfile } from './tools.js'
+import { getToolDefinitions, mcpCanary, validateToolArgs, CURSOR_CORE_TOOL_NAMES, type ToolProfile } from './tools.js'
 import { registerFlushOnExit } from './telemetry.js'
 import { VERSION } from './version.js'
 
@@ -253,10 +253,13 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
       // MCP resource"), so a Cursor agent following it verbatim would try
       // to call tools that return "Unknown tool". Append the redirect only
       // for the profile where it's actually needed.
+      // Built FROM CURSOR_CORE_TOOL_NAMES (audit fix — evaluator review,
+      // iteration 2, 2026-07-09), not a second hardcoded copy of it — a
+      // second copy drifts the moment the core set changes and nothing
+      // catches it, silently making this exact text wrong.
       const cursorNote = options?.profile === 'cursor'
         ? '\n\n## Cursor tool profile\n\nMost tools above are NOT directly callable in this session — only ' +
-          'plur_session_start, plur_session_end, plur_learn, plur_recall_hybrid, plur_feedback, plur_forget, ' +
-          'plur_status, plur_doctor, plur_packs_uninstall, and plur_tensions_purge are top-level tools here. ' +
+          `${[...CURSOR_CORE_TOOL_NAMES].join(', ')} are top-level tools here. ` +
           'Everything else in this guide is reachable through **plur_admin**: call it with ' +
           '`{ action: "<tool name above>", args: {...} }`.'
         : ''

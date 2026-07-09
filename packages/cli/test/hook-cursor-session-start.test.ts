@@ -5,6 +5,26 @@ import { tmpdir } from 'os'
 import { execSync } from 'child_process'
 
 const CLI = join(__dirname, '..', 'dist', 'index.js')
+const SESSIONS_DIR = join(tmpdir(), 'plur-cursor-sessions')
+
+// Every conversation_id this file's tests use. Cleaned up per-id (not via a
+// recursive rmSync of the shared SESSIONS_DIR) for the same reason commit
+// 862fa21 fixed the sibling hook-cursor-{guard,post-tool,stop} test files:
+// that directory is shared across all four hook-cursor-*.test.ts files,
+// which run in parallel under vitest's default file concurrency — a
+// recursive wipe here would race-delete a sibling's in-progress fixtures.
+// This file wasn't part of that fix (it doesn't do the destructive wipe, so
+// it never caused the race), but it also never cleaned up its OWN
+// markSessionStarted() output (audit fix — evaluator review, iteration 2,
+// 2026-07-09) — leaking .marker/.reminded files into the OS temp dir
+// indefinitely across test runs.
+const CONVERSATION_IDS = ['conv-abc-123']
+
+function cleanupSessionFiles(conversationId: string): void {
+  for (const suffix of ['.marker', '.reminded', '.stopcount', '.marker.guard-count']) {
+    rmSync(join(SESSIONS_DIR, `${conversationId}${suffix}`), { force: true })
+  }
+}
 
 describe('hook-cursor-session-start', () => {
   let projectDir: string
@@ -24,6 +44,7 @@ describe('hook-cursor-session-start', () => {
   afterEach(() => {
     rmSync(projectDir, { recursive: true, force: true })
     rmSync(plurHome, { recursive: true, force: true })
+    for (const id of CONVERSATION_IDS) cleanupSessionFiles(id)
   })
 
   it('writes a sentinel, the dynamic context rule, and prints additional_context', () => {

@@ -234,7 +234,13 @@ export type ToolProfile = 'full' | 'cursor'
 // (`{ title: 'Admin dispatch', readOnlyHint: false }`) can't carry a
 // per-action risk signal. Two more core tools (11 total) is still far under
 // the ~40-tool cap, so there's no budget reason to wrap them either.
-const CURSOR_CORE_TOOL_NAMES: ReadonlySet<string> = new Set([
+// Exported (audit fix — evaluator review, iteration 2, 2026-07-09) so
+// server.ts's plur://guide resource can build its cursor-profile redirect
+// note FROM this set instead of hardcoding a second, independent copy of
+// the same tool list — two copies drift the moment one changes and nothing
+// catches it, silently making the guide agents are told to read for the
+// full reference wrong.
+export const CURSOR_CORE_TOOL_NAMES: ReadonlySet<string> = new Set([
   'plur_session_start',
   'plur_session_end',
   'plur_learn',

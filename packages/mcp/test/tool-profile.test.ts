@@ -115,5 +115,23 @@ describe('tool profiles', () => {
       expect(data.error).toContain('plur_packs_export')
       expect(typeof data.received_fields).toBe('object')
     })
+
+    // Audit fix (evaluator review, iteration 2, 2026-07-09): the
+    // plur://guide resource's cursor-profile note used to hardcode a SECOND
+    // copy of the core tool list, independent of getToolDefinitions('cursor')
+    // — this proves the guide's redirect note actually lists every real
+    // top-level tool this profile exposes, not a stale hand-typed copy.
+    it('plur://guide names every actual cursor-profile top-level tool in its redirect note', async () => {
+      const { tools } = await client.listTools()
+      const coreNames = tools.map((t) => t.name).filter((n) => n !== 'plur_admin')
+
+      const { contents } = await client.readResource({ uri: 'plur://guide' })
+      const text = (contents as any)[0].text as string
+
+      expect(text).toContain('plur_admin')
+      for (const name of coreNames) {
+        expect(text).toContain(name)
+      }
+    })
   })
 })
