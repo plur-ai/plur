@@ -1,4 +1,4 @@
-import { readSync, readFileSync, writeFileSync, mkdirSync, existsSync } from 'fs'
+import { readSync, readFileSync, writeFileSync, mkdirSync, existsSync, appendFileSync, statSync } from 'fs'
 import { join } from 'path'
 import { tmpdir, homedir } from 'os'
 import { type GlobalFlags } from '../plur.js'
@@ -34,6 +34,29 @@ function counterPath(): string {
   const dir = join(tmpdir(), 'plur-sessions')
   mkdirSync(dir, { recursive: true })
   return join(dir, `${sessionKey()}.stop-count`)
+}
+
+/**
+ * Atomic counter via append-only file size, not read-int/increment/write
+ * (audit fix, 2026-07-09 — cross-referenced from the feat/cursor-integration
+ * branch's evaluator review: this file's own docstring at the top is what
+ * hook-cursor-stop.ts cited as "the same mechanism" it mirrors, and an
+ * identical audit there found and fixed this exact race — every Stop hook
+ * invocation is a fresh, independent process, so a plain
+ * read-then-write can lose an increment if two fire close together,
+ * silently shifting/skipping the LEARN_INTERVAL nudge and
+ * CHECKPOINT_INTERVAL gate below). Appending one byte is atomic on POSIX
+ * filesystems even under concurrent writers; counting file size instead of
+ * parsing decimal content can't lose an increment the way read-then-write
+ * can.
+ */
+function incrementCounter(path: string): number {
+  appendFileSync(path, '.')
+  try {
+    return statSync(path).size
+  } catch {
+    return 1
+  }
 }
 
 function plurPath(): string {
@@ -111,14 +134,9 @@ export async function run(_args: string[], _flags: GlobalFlags): Promise<void> {
     if (data.cwd) cwd = data.cwd
   } catch { /* use process.cwd fallback */ }
 
-  // Read and increment persistent counter
+  // Increment persistent counter (atomic append — see incrementCounter's docstring)
   const cPath = counterPath()
-  let count = 1
-  try {
-    const prev = parseInt(readFileSync(cPath, 'utf8').trim(), 10)
-    if (prev > 0 && prev < 100000) count = prev + 1
-  } catch {}
-  try { writeFileSync(cPath, String(count)) } catch {}
+  const count = incrementCounter(cPath)
 
   // Write session checkpoint periodically (#215)
   if (count % CHECKPOINT_INTERVAL === 0) {
