@@ -80,9 +80,18 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
 
     fullContext = context ? `${header}\n\n${context}` : header
   } catch (err: unknown) {
+    // Audit fix (evaluator review — user lens, iteration 4, 2026-07-09):
+    // `plur_doctor` (an MCP tool, in this session's own 11-tool surface)
+    // and `plur doctor` (the CLI command) share almost the same name but
+    // check different things — the tool only covers embedder/remote-store
+    // health, not .cursor/mcp.json or .cursor/hooks.json wiring, which is
+    // far more likely to be the actual cause of an injection failure here.
+    // Naming the wrong one first would send the agent to a tool that
+    // reports "healthy" while the real problem goes uninvestigated.
     fullContext = '[PLUR Memory — injection FAILED this session start] ' +
       `(${(err as Error).message ?? 'unknown error'}). Recalled memory is unavailable; run ` +
-      '`plur doctor` to diagnose.'
+      '`plur doctor` in a TERMINAL (the CLI command — checks .cursor/ wiring; ' +
+      'the plur_doctor MCP tool only checks the embedder/remote-store, not this) to diagnose.'
   }
 
   // Primary channel — always write, even at count 0 or on failure, so the

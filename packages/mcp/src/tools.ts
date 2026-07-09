@@ -1282,7 +1282,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
 
     {
       name: 'plur_doctor',
-      description: 'Diagnose the PLUR install. Reports whether the embedding model loaded, whether hybrid search is fully operational, and — for any configured enterprise/remote store — whether its auth is valid (probes /api/v1/me and decodes token expiry), so a dead or soon-to-expire token surfaces instead of hiding behind a "healthy" report. Run this first when recall feels off or team engrams stop syncing.',
+      description: 'Diagnose the PLUR ENGINE (embedder, hybrid search, remote-store auth) — not hook/MCP wiring. Reports whether the embedding model loaded, whether hybrid search is fully operational, and — for any configured enterprise/remote store — whether its auth is valid (probes /api/v1/me and decodes token expiry), so a dead or soon-to-expire token surfaces instead of hiding behind a "healthy" report. Run this first when recall feels off or team engrams stop syncing. Does NOT check .cursor/mcp.json, .cursor/hooks.json, or the live MCP tool count — for that, run the `plur doctor` CLI command in a terminal (a different, more thorough check with the same name).',
       annotations: { title: 'Doctor', readOnlyHint: false, idempotentHint: false },
       inputSchema: {
         type: 'object',
