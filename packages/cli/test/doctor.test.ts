@@ -272,4 +272,181 @@ describe('plur doctor', () => {
     expect(report.mcpShim.valid).toBe(false)
     expect(report.mcpShim.error).toMatch(/shim not found|plur init/)
   })
+
+  // ── Cursor-specific health, not covered by Claude Code config elsewhere ──
+  // Audit fix (Codex adversarial review, 2026-07-08): `overall` used to be
+  // computed purely from `configs.some(...)` across ALL config files, so a
+  // fully-working Claude Code setup made `overall: 'ok'` even when this
+  // project's own `.cursor/` wiring was missing or incomplete.
+
+  it('fails overall when a .cursor/ project has incomplete Cursor config, even with Claude Code fully wired', () => {
+    writeGlobalSettings({
+      hooks: {
+        UserPromptSubmit: [
+          { hooks: [{ type: 'command', command: 'npx @plur-ai/cli hook-inject' }] },
+        ],
+      },
+      mcpServers: {
+        plur: { command: '/bin/sh', args: ['-lc', 'exec npx -y @plur-ai/mcp@latest'] },
+      },
+    })
+    // .cursor/ exists (this IS a Cursor project) but neither config file
+    // inside it has been written yet — plur init --cursor was never run here.
+    mkdirSync(join(home, '.cursor'), { recursive: true })
+
+    const { stdout, status } = runDoctor()
+    const report = JSON.parse(stdout)
+
+    expect(report.hooksInstalled).toBe(true)
+    expect(report.mcpRegistered).toBe(true)
+    expect(report.cursorProjectDetected).toBe(true)
+    expect(report.cursorWired).toBe(false)
+    expect(report.overall).toBe('fail')
+    expect(status).toBe(1)
+  })
+
+  it('reports overall ok when a .cursor/ project has its own config fully wired', () => {
+    writeGlobalSettings({
+      hooks: {
+        UserPromptSubmit: [
+          { hooks: [{ type: 'command', command: 'npx @plur-ai/cli hook-inject' }] },
+        ],
+      },
+      mcpServers: {
+        plur: { command: '/bin/sh', args: ['-lc', 'exec npx -y @plur-ai/mcp@latest'] },
+      },
+    })
+    mkdirSync(join(home, '.cursor'), { recursive: true })
+    writeFileSync(
+      join(home, '.cursor', 'mcp.json'),
+      JSON.stringify({ mcpServers: { plur: { command: 'plur-mcp', args: [], env: { PLUR_TOOL_PROFILE: 'cursor' } } } }),
+    )
+    writeFileSync(
+      join(home, '.cursor', 'hooks.json'),
+      JSON.stringify({
+        version: 1,
+        hooks: { sessionStart: [{ command: 'plur-hook hook-cursor-session-start' }] },
+      }),
+    )
+
+    const { stdout } = runDoctor()
+    const report = JSON.parse(stdout)
+
+    expect(report.cursorProjectDetected).toBe(true)
+    expect(report.cursorWired).toBe(true)
+    expect(report.overall).toBe('ok')
+  })
+
+  // Audit fix (evaluator review, 2026-07-08): cursorWired used to only
+  // check that a `plur` entry existed, not that its env actually carried
+  // the cursor tool profile — an entry missing/wrong here silently gets
+  // the full 39-tool surface instead of the ~11-tool one.
+  it('reports cursorWired=false when .cursor/mcp.json has a plur entry missing PLUR_TOOL_PROFILE=cursor', () => {
+    writeGlobalSettings({
+      hooks: { UserPromptSubmit: [{ hooks: [{ type: 'command', command: 'npx @plur-ai/cli hook-inject' }] }] },
+      mcpServers: { plur: { command: '/bin/sh', args: ['-lc', 'exec npx -y @plur-ai/mcp@latest'] } },
+    })
+    mkdirSync(join(home, '.cursor'), { recursive: true })
+    writeFileSync(
+      join(home, '.cursor', 'mcp.json'),
+      JSON.stringify({ mcpServers: { plur: { command: 'plur-mcp', args: [] } } }), // no env at all
+    )
+    writeFileSync(
+      join(home, '.cursor', 'hooks.json'),
+      JSON.stringify({ version: 1, hooks: { sessionStart: [{ command: 'plur-hook hook-cursor-session-start' }] } }),
+    )
+
+    const { stdout } = runDoctor()
+    const report = JSON.parse(stdout)
+
+    expect(report.cursorWired).toBe(false)
+    expect(report.overall).toBe('fail')
+  })
+
+  // Audit fix (evaluator review, 2026-07-08): `.cursor/mcp.json` is meant to
+  // be committed so teammates/background agents inherit it, but the local
+  // shim path `plur init --cursor` bakes in is machine-specific — healthy
+  // on the machine that ran init, potentially nonexistent anywhere else.
+  // cursorWired must catch that instead of reporting healthy on a config
+  // that will ENOENT the moment Cursor actually tries to spawn it.
+  it('reports cursorWired=false when the absolute shim command does not exist on this machine', () => {
+    writeGlobalSettings({
+      hooks: { UserPromptSubmit: [{ hooks: [{ type: 'command', command: 'npx @plur-ai/cli hook-inject' }] }] },
+      mcpServers: { plur: { command: '/bin/sh', args: ['-lc', 'exec npx -y @plur-ai/mcp@latest'] } },
+    })
+    mkdirSync(join(home, '.cursor'), { recursive: true })
+    writeFileSync(
+      join(home, '.cursor', 'mcp.json'),
+      JSON.stringify({
+        mcpServers: {
+          plur: {
+            command: '/Users/someone-elses-machine/.plur/bin/plur-mcp',
+            args: [],
+            env: { PLUR_TOOL_PROFILE: 'cursor' },
+          },
+        },
+      }),
+    )
+    writeFileSync(
+      join(home, '.cursor', 'hooks.json'),
+      JSON.stringify({ version: 1, hooks: { sessionStart: [{ command: 'plur-hook hook-cursor-session-start' }] } }),
+    )
+
+    const { stdout } = runDoctor()
+    const report = JSON.parse(stdout)
+
+    expect(report.cursorWired).toBe(false)
+    expect(report.overall).toBe('fail')
+  })
+
+  // Audit fix (evaluator review, iteration 3, 2026-07-09): existsSync alone
+  // reports true for a file stripped of its execute bit (interrupted
+  // install, botched reinstall, AV quarantine placeholder) — the command
+  // would still fail to spawn. cursorWired must catch this too, not just
+  // "path missing entirely".
+  it('reports cursorWired=false when the shim command exists but is not executable', () => {
+    writeGlobalSettings({
+      hooks: { UserPromptSubmit: [{ hooks: [{ type: 'command', command: 'npx @plur-ai/cli hook-inject' }] }] },
+      mcpServers: { plur: { command: '/bin/sh', args: ['-lc', 'exec npx -y @plur-ai/mcp@latest'] } },
+    })
+    mkdirSync(join(home, '.cursor'), { recursive: true })
+    const binDir = join(home, '.plur', 'bin')
+    mkdirSync(binDir, { recursive: true })
+    const shimPath = join(binDir, 'plur-mcp')
+    writeFileSync(shimPath, '#!/bin/sh\necho not actually executable\n')
+    chmodSync(shimPath, 0o644) // no execute bit
+    writeFileSync(
+      join(home, '.cursor', 'mcp.json'),
+      JSON.stringify({ mcpServers: { plur: { command: shimPath, args: [], env: { PLUR_TOOL_PROFILE: 'cursor' } } } }),
+    )
+    writeFileSync(
+      join(home, '.cursor', 'hooks.json'),
+      JSON.stringify({ version: 1, hooks: { sessionStart: [{ command: 'plur-hook hook-cursor-session-start' }] } }),
+    )
+
+    const { stdout } = runDoctor()
+    const report = JSON.parse(stdout)
+
+    expect(report.cursorWired).toBe(false)
+    expect(report.overall).toBe('fail')
+  })
+
+  it('does not require Cursor wiring when no .cursor/ directory exists', () => {
+    writeGlobalSettings({
+      hooks: {
+        UserPromptSubmit: [
+          { hooks: [{ type: 'command', command: 'npx @plur-ai/cli hook-inject' }] },
+        ],
+      },
+      mcpServers: {
+        plur: { command: '/bin/sh', args: ['-lc', 'exec npx -y @plur-ai/mcp@latest'] },
+      },
+    })
+
+    const { stdout } = runDoctor()
+    const report = JSON.parse(stdout)
+
+    expect(report.cursorProjectDetected).toBe(false)
+    expect(report.overall).toBe('ok')
+  })
 })

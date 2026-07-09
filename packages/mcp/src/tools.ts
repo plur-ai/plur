@@ -5,6 +5,7 @@ import { Plur, extractMetaEngrams, validateMetaEngram, confidenceBand, generateP
 import type { LlmFunction, MetaField, TensionStatus, RerankerEvalResult } from '@plur-ai/core'
 import { recordTelemetry } from './telemetry.js'
 import { VERSION } from './version.js'
+import { z } from 'zod'
 
 /** Create an OpenAI-compatible LLM function from a base URL + API key */
 function makeHttpLlm(baseUrl: string, apiKey: string, model: string = 'gpt-4o-mini'): LlmFunction {
@@ -43,6 +44,107 @@ export interface ToolDefinition {
   inputSchema: Record<string, unknown>
   annotations?: ToolAnnotations
   handler: (args: Record<string, unknown>, plur: Plur) => Promise<unknown>
+}
+
+// Recursive JSON-Schema → Zod converter for tool input validation. Moved here
+// (was previously private to server.ts) so plur_admin's dispatch handler can
+// validate inner-tool args the same way the top-level CallToolRequestSchema
+// handler does — one validator, not two copies that can drift (#231, #297).
+function jsonSchemaPropToZod(prop: any): z.ZodTypeAny {
+  if (!prop || typeof prop !== 'object') return z.unknown()
+  const variants = (prop.anyOf as any[] | undefined) ?? (prop.oneOf as any[] | undefined)
+  if (Array.isArray(variants) && variants.length > 0) {
+    const zodVariants = variants.map(jsonSchemaPropToZod)
+    if (zodVariants.length === 1) return zodVariants[0]
+    return z.union(zodVariants as [z.ZodTypeAny, z.ZodTypeAny, ...z.ZodTypeAny[]])
+  }
+  if (prop.type === 'string') return prop.enum ? z.enum(prop.enum) : z.string()
+  if (prop.type === 'number' || prop.type === 'integer') return z.number()
+  if (prop.type === 'boolean') return z.boolean()
+  if (prop.type === 'array') {
+    const itemSchema = prop.items ? jsonSchemaPropToZod(prop.items) : z.unknown()
+    return z.preprocess((val) => {
+      if (typeof val !== 'string') return val
+      const trimmed = val.trim()
+      if (trimmed.startsWith('[')) {
+        try {
+          const parsed = JSON.parse(trimmed)
+          return Array.isArray(parsed) ? parsed : val
+        } catch {
+          return val
+        }
+      }
+      if (prop.items?.type === 'string') {
+        return trimmed.length === 0 ? [] : trimmed.split(',').map((s: string) => s.trim()).filter((s: string) => s.length > 0)
+      }
+      return val
+    }, z.array(itemSchema))
+  }
+  if (prop.type === 'object' && prop.properties) {
+    const shape: Record<string, z.ZodTypeAny> = {}
+    for (const [k, p] of Object.entries(prop.properties) as [string, any][]) {
+      const field = jsonSchemaPropToZod(p)
+      shape[k] = prop.required?.includes(k) ? field : field.optional()
+    }
+    return z.object(shape).passthrough()
+  }
+  return z.unknown()
+}
+
+/**
+ * Validate raw tool-call arguments against a ToolDefinition's inputSchema.
+ * Shared by the top-level CallToolRequestSchema handler (server.ts) and the
+ * plur_admin dispatch handler below — one validation path AND one error-
+ * formatting path, not two that can drift. (An earlier draft of this plan
+ * only shared the Zod validation and left the #297 array-bug hint / isError
+ * flag duplicated in server.ts alone — audit review caught that plur_admin's
+ * ~30 dispatched tools would silently lose both. errorPayload below is the
+ * fix: the full formatted error, including the `_isError` marker server.ts
+ * checks generically after ANY tool handler returns, not just this one.)
+ */
+export function validateToolArgs(
+  tool: ToolDefinition,
+  rawArgs: Record<string, unknown>,
+): { ok: true; data: Record<string, unknown> } | {
+  ok: false
+  errorPayload: { error: string; success: false; received_fields: string[]; _isError: true }
+} {
+  const schema = tool.inputSchema as any
+  if (!schema?.properties) return { ok: true, data: rawArgs }
+
+  const shape: Record<string, z.ZodTypeAny> = {}
+  for (const [key, prop] of Object.entries(schema.properties) as [string, any][]) {
+    const field = jsonSchemaPropToZod(prop)
+    shape[key] = schema.required?.includes(key) ? field : field.optional()
+  }
+  const parsed = z.object(shape).passthrough().safeParse(rawArgs)
+  if (!parsed.success) {
+    const receivedFields = Object.keys(rawArgs)
+    const details = parsed.error.issues.map(i => `${i.path.join('.') || 'root'}: ${i.message}`).join(', ')
+    const hasArrayParam = Object.values((schema.properties ?? {}) as Record<string, any>)
+      .some((p: any) => p?.type === 'array')
+    const arrayBugHint = receivedFields.length === 0 && hasArrayParam
+      ? ' Known client-side bug (plur-ai/plur#297): some MCP clients drop the entire arguments payload ' +
+        'when an array-typed parameter is included. Retry passing array parameters as a JSON string ' +
+        '(e.g. tags: "[\\"a\\",\\"b\\"]") or a comma-separated string (tags: "a, b") — the server coerces ' +
+        'both back into arrays.'
+      : ''
+    const receivedNote = receivedFields.length > 0
+      ? `Received fields: [${receivedFields.join(', ')}].`
+      : 'Received no fields (the arguments object was empty).'
+    return {
+      ok: false,
+      errorPayload: {
+        error: `Invalid arguments: ${details}. ${receivedNote} ` +
+          'The call reached the server — this is a malformed-arguments error, not a transport failure. ' +
+          'Fix the field(s) named above and retry; do not abandon the call.' + arrayBugHint,
+        success: false,
+        received_fields: receivedFields,
+        _isError: true,
+      },
+    }
+  }
+  return { ok: true, data: parsed.data as Record<string, unknown> }
 }
 
 const PLUR_GUIDE_EMPTY = `## PLUR — Empty Store
@@ -114,7 +216,111 @@ mcpCanary.expect({
   fix: 'Call plur_learn when corrected. If using hooks, verify they are installed.',
 })
 
-export function getToolDefinitions(): ToolDefinition[] {
+export type ToolProfile = 'full' | 'cursor'
+
+// The day-to-day tools a Cursor user needs, plus every tool marked
+// `destructiveHint: true` — everything else (packs install/list, sync,
+// timeline, meta-engrams, ingest, capture, ...) is reachable through
+// plur_admin instead of its own top-level tool slot. Cursor caps a workspace
+// at ~40 MCP tools total across every server, and PLUR's full 39-tool
+// surface alone would consume ~97.5% of that budget.
+//
+// Destructive tools are kept OUT of plur_admin's dispatch specifically
+// (audit fix — evaluator review, 2026-07-08): a client that gates
+// confirmation prompts or audit trails off MCP tool annotations — the whole
+// point of the annotations field — can no longer tell "delete a pack and
+// all its engrams" apart from "check status" once both are wrapped behind
+// the same generic dispatch tool, whose own single static annotation
+// (`{ title: 'Admin dispatch', readOnlyHint: false }`) can't carry a
+// per-action risk signal. Two more core tools (11 total) is still far under
+// the ~40-tool cap, so there's no budget reason to wrap them either.
+// Exported (audit fix — evaluator review, iteration 2, 2026-07-09) so
+// server.ts's plur://guide resource can build its cursor-profile redirect
+// note FROM this set instead of hardcoding a second, independent copy of
+// the same tool list — two copies drift the moment one changes and nothing
+// catches it, silently making the guide agents are told to read for the
+// full reference wrong.
+export const CURSOR_CORE_TOOL_NAMES: ReadonlySet<string> = new Set([
+  'plur_session_start',
+  'plur_session_end',
+  'plur_learn',
+  'plur_recall_hybrid',
+  'plur_feedback',
+  'plur_forget',
+  'plur_status',
+  'plur_doctor',
+  'plur_packs_uninstall',
+  'plur_tensions_purge',
+])
+
+function buildAdminDispatchTool(all: ToolDefinition[]): ToolDefinition {
+  const byName = new Map(all.map(t => [t.name, t] as const))
+  const adminActions = all.map(t => t.name).filter(n => !CURSOR_CORE_TOOL_NAMES.has(n)).sort()
+
+  return {
+    name: 'plur_admin',
+    description:
+      'Dispatch for less-common PLUR operations (packs, sync, tensions, stores, timeline, ' +
+      "ingest, and more), collapsed into one tool so Cursor's ~40-tool-per-workspace limit " +
+      'is not exhausted by PLUR alone. Set "action" to the underlying tool name and "args" ' +
+      `to that tool's normal arguments. Valid actions: ${adminActions.join(', ')}.`,
+    annotations: { title: 'Admin dispatch', readOnlyHint: false },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        // No `enum` here — an invalid action must reach the handler's custom
+        // Unknown-action message with the full valid-actions list, not fail
+        // at top-level schema validation with a generic "Invalid arguments"
+        // error. If `enum: adminActions` were set, the top-level
+        // CallToolRequestSchema handler's Zod validation would reject
+        // unknown actions before this handler's `if (!target)` branch ever
+        // ran.
+        action: { type: 'string', description: 'Which underlying plur_* tool to invoke' },
+        args: { type: 'object', description: "Arguments for the chosen action, matching that tool's normal input schema", additionalProperties: true },
+      },
+      required: ['action'],
+    },
+    handler: async (args, plur) => {
+      const action = args.action as string
+      const target = byName.get(action)
+      if (!target) {
+        return { error: `Unknown action "${action}". Valid actions: ${adminActions.join(', ')}`, success: false, _isError: true }
+      }
+      const innerArgs = (args.args as Record<string, unknown>) ?? {}
+      const validated = validateToolArgs(target, innerArgs)
+      if (!validated.ok) {
+        // Reuse the exact same formatted error server.ts would produce for a
+        // direct call to `target` — prefix with the action name so it's clear
+        // which dispatched tool rejected the args, but keep the #297 hint,
+        // received_fields, and _isError marker intact (audit fix — see
+        // validateToolArgs's docstring).
+        return { ...validated.errorPayload, error: `${action}: ${validated.errorPayload.error}` }
+      }
+      try {
+        return await target.handler(validated.data, plur)
+      } catch (err: unknown) {
+        // Audit fix (evaluator review, 2026-07-08): an uncaught throw from
+        // the wrapped handler propagates up to server.ts's top-level catch,
+        // which logs `Tool ${request.params.name} failed: ...` —
+        // request.params.name is always "plur_admin" at the protocol level,
+        // so without this the log can never say which of the ~31 wrapped
+        // operations actually broke. Prefixing the action name here means
+        // it survives into that log message even though the tool name doesn't.
+        const message = (err as Error)?.message ?? String(err)
+        throw new Error(`${action}: ${message}`)
+      }
+    },
+  }
+}
+
+export function getToolDefinitions(profile: ToolProfile = 'full'): ToolDefinition[] {
+  const all = getAllToolDefinitions()
+  if (profile !== 'cursor') return all
+  const core = all.filter(t => CURSOR_CORE_TOOL_NAMES.has(t.name))
+  return [...core, buildAdminDispatchTool(all)]
+}
+
+function getAllToolDefinitions(): ToolDefinition[] {
   return [
     {
       name: 'plur_learn',
@@ -1076,7 +1282,7 @@ export function getToolDefinitions(): ToolDefinition[] {
 
     {
       name: 'plur_doctor',
-      description: 'Diagnose the PLUR install. Reports whether the embedding model loaded, whether hybrid search is fully operational, and — for any configured enterprise/remote store — whether its auth is valid (probes /api/v1/me and decodes token expiry), so a dead or soon-to-expire token surfaces instead of hiding behind a "healthy" report. Run this first when recall feels off or team engrams stop syncing.',
+      description: 'Diagnose the PLUR ENGINE (embedder, hybrid search, remote-store auth) — not hook/MCP wiring. Reports whether the embedding model loaded, whether hybrid search is fully operational, and — for any configured enterprise/remote store — whether its auth is valid (probes /api/v1/me and decodes token expiry), so a dead or soon-to-expire token surfaces instead of hiding behind a "healthy" report. Run this first when recall feels off or team engrams stop syncing. Does NOT check .cursor/mcp.json, .cursor/hooks.json, or the live MCP tool count — for that, run the `plur doctor` CLI command in a terminal (a different, more thorough check with the same name).',
       annotations: { title: 'Doctor', readOnlyHint: false, idempotentHint: false },
       inputSchema: {
         type: 'object',

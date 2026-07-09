@@ -1,5 +1,5 @@
 import { spawn } from 'child_process'
-import { existsSync, readFileSync, realpathSync } from 'fs'
+import { existsSync, readFileSync, realpathSync, statSync, accessSync, constants } from 'fs'
 import { join, extname } from 'path'
 import { homedir, platform } from 'os'
 import { createPlur, type GlobalFlags } from '../plur.js'
@@ -7,21 +7,28 @@ import { outputText, outputJson, shouldOutputJson } from '../output.js'
 import {
   type ConfigFile,
   buildMcpServerEntry,
+  cursorProjectMcpConfigPath,
   hasDatacoreMcp,
   hasPlurMcp,
   knownConfigFiles,
   readConfig,
 } from '../mcp-config.js'
+import { hasPlurCursorHooks, readCursorHooksConfig } from '../cursor-hooks.js'
 
 /**
- * plur doctor — diagnose a Claude Code / Claude Desktop installation.
+ * plur doctor — diagnose a Claude Code / Claude Desktop / Cursor installation.
  *
  * Checks:
- *   1. Hooks installed in any settings.json (UserPromptSubmit etc.)
+ *   1. Hooks installed in any settings.json (UserPromptSubmit etc.) or, for
+ *      Cursor, its separate flat-shaped `.cursor/hooks.json`.
  *   2. `plur` MCP server registered in any of the known config files
  *   3. Whether `datacore` MCP server is also present (collision warning)
  *   4. Live MCP handshake — spawns the configured server command and
- *      sends an `initialize` JSON-RPC request to verify it actually starts.
+ *      sends an `initialize` JSON-RPC request to verify it actually starts,
+ *      then a `tools/list` request to report the live tool count. Probed
+ *      twice — once with the default env, once forcing
+ *      `PLUR_TOOL_PROFILE=cursor` — so a Cursor user can see whether their
+ *      setup is actually using the reduced tool profile.
  *
  * Exits 0 if everything is healthy, 1 if any check fails.
  */
@@ -50,8 +57,32 @@ interface DoctorReport {
   staleNpxMcp: boolean
   hookShim: HookShimReport
   mcpShim: HookShimReport
-  handshake: { ok: boolean; serverName?: string; serverVersion?: string; error?: string }
+  handshake: { ok: boolean; serverName?: string; serverVersion?: string; toolCount?: number; error?: string }
+  /**
+   * Second handshake, forcing `PLUR_TOOL_PROFILE=cursor`, so the report can show
+   * both tool counts side by side rather than guessing which profile a given
+   * config file's env is actually wired to. `null` when the default handshake
+   * itself failed or was skipped (--no-handshake) — no point probing a second
+   * profile if the server doesn't even come up once.
+   */
+  cursorHandshake: { ok: boolean; serverName?: string; serverVersion?: string; toolCount?: number; error?: string } | null
   embedder: { available: boolean; loaded: boolean; lastError: string | null; modelLoaded: boolean; disabled: boolean; disabledReason: string | null }
+  /**
+   * Whether the current directory looks like a Cursor project (a `.cursor/`
+   * dir exists) and, if so, whether Cursor's OWN config files — not any
+   * Claude Code config elsewhere — actually have PLUR wired in. Audit fix
+   * (Codex adversarial review, 2026-07-08): `overall` used to be
+   * `hooksInstalled && mcpRegistered && handshake.ok`, where both booleans
+   * are `configs.some(...)` across ALL known config files. A machine with
+   * working Claude Code wiring but a missing or broken `.cursor/hooks.json`
+   * (or a `.cursor/mcp.json` without the cursor tool profile) still reported
+   * `overall: 'ok'` — a false green for the exact integration this field
+   * exists to check. `cursorWired` is only false when a `.cursor/` project
+   * IS detected and its own config is incomplete; it's true (irrelevant) for
+   * non-Cursor projects so `overall` isn't affected there.
+   */
+  cursorProjectDetected: boolean
+  cursorWired: boolean
   overall: 'ok' | 'fail'
 }
 
@@ -138,6 +169,23 @@ function validateHookShim(): HookShimReport {
   return { valid: true, shimPath: path }
 }
 
+/**
+ * Is `path` a regular file that's actually executable? Used to validate a
+ * committed `.cursor/mcp.json`'s absolute-path command (audit fix —
+ * evaluator review, iteration 3, 2026-07-09): existsSync alone can't tell a
+ * runnable shim apart from a directory, a 0-byte file, or a file stripped
+ * of its execute bit — all of which would still spawn-fail.
+ */
+function commandIsExecutableFile(path: string): boolean {
+  try {
+    if (!statSync(path).isFile()) return false
+    accessSync(path, constants.X_OK)
+    return true
+  } catch {
+    return false
+  }
+}
+
 function inspectConfigs(): ConfigFileReport[] {
   return knownConfigFiles().map((cf: ConfigFile) => {
     if (!cf.exists) {
@@ -148,6 +196,20 @@ function inspectConfigs(): ConfigFileReport[] {
         hasPlurMcp: false,
         hasDatacoreMcp: false,
         hasPlurHooks: false,
+      }
+    }
+    if (cf.kind === 'cursor-hooks') {
+      // Cursor's hooks.json is a flat { event: [{command, ...}] } shape, not
+      // Claude Code's nested { matcher, hooks: [...] } wrapper — hasAnyPlurHook
+      // would silently read it as "no hooks installed" even when they are.
+      const hooksConfig = readCursorHooksConfig(cf.path)
+      return {
+        label: cf.label,
+        path: cf.path,
+        exists: true,
+        hasPlurMcp: false,
+        hasDatacoreMcp: false,
+        hasPlurHooks: hasPlurCursorHooks(hooksConfig),
       }
     }
     const config = readConfig(cf.path)
@@ -163,19 +225,30 @@ function inspectConfigs(): ConfigFileReport[] {
 }
 
 /**
- * Spawn the configured plur MCP server and send an `initialize` JSON-RPC
- * request. Resolves with the server's name and version on success, or an
- * error on timeout / crash / invalid response.
+ * Spawn the configured plur MCP server, send an `initialize` JSON-RPC
+ * request, then — once that succeeds — a `tools/list` request to count the
+ * live tool surface. Resolves with the server's name, version, and tool
+ * count on success, or an error on timeout / crash / invalid response.
+ *
+ * `envOverride` lets the caller force env vars (e.g. `PLUR_TOOL_PROFILE:
+ * 'cursor'`) onto the spawned process without touching `process.env` itself —
+ * used to probe the cursor tool profile alongside the default one, since
+ * parsing each config file's configured env to guess which profile is
+ * "active" would be fragile (a hand-edited config could have anything).
  *
  * Times out after 20 seconds — first-run npx fetches the @plur-ai/mcp package
  * (and its native deps), which can take 10-15s. Subsequent runs respond in ~1s.
  */
-async function mcpHandshake(timeoutMs = 20000): Promise<{ ok: boolean; serverName?: string; serverVersion?: string; error?: string }> {
+async function mcpHandshake(
+  timeoutMs = 20000,
+  envOverride?: Record<string, string>,
+): Promise<{ ok: boolean; serverName?: string; serverVersion?: string; toolCount?: number; error?: string }> {
   const entry = buildMcpServerEntry()
+  const spawnEnv = envOverride ? { ...process.env, ...envOverride } : undefined
 
   return new Promise((resolve) => {
     let resolved = false
-    const finish = (result: { ok: boolean; serverName?: string; serverVersion?: string; error?: string }) => {
+    const finish = (result: { ok: boolean; serverName?: string; serverVersion?: string; toolCount?: number; error?: string }) => {
       if (resolved) return
       resolved = true
       try { proc.kill() } catch { /* ignore */ }
@@ -184,7 +257,10 @@ async function mcpHandshake(timeoutMs = 20000): Promise<{ ok: boolean; serverNam
 
     let proc: ReturnType<typeof spawn>
     try {
-      proc = spawn(entry.command, entry.args, { stdio: ['pipe', 'pipe', 'pipe'] })
+      proc = spawn(entry.command, entry.args, {
+        stdio: ['pipe', 'pipe', 'pipe'],
+        ...(spawnEnv ? { env: spawnEnv } : {}),
+      })
     } catch (err: unknown) {
       finish({ ok: false, error: `spawn failed: ${(err as Error).message}` })
       return
@@ -195,6 +271,7 @@ async function mcpHandshake(timeoutMs = 20000): Promise<{ ok: boolean; serverNam
     }, timeoutMs)
 
     let buffer = ''
+    let serverInfo: { name?: string; version?: string } | null = null
     proc.stdout?.on('data', (chunk: Buffer) => {
       buffer += chunk.toString('utf8')
       let nl: number
@@ -205,14 +282,29 @@ async function mcpHandshake(timeoutMs = 20000): Promise<{ ok: boolean; serverNam
         try {
           const msg = JSON.parse(line)
           if (msg.id === 1 && msg.result) {
-            clearTimeout(timeout)
-            const info = msg.result.serverInfo ?? {}
-            finish({ ok: true, serverName: info.name, serverVersion: info.version })
-            return
+            serverInfo = msg.result.serverInfo ?? {}
+            proc.stdin?.write(JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} }) + '\n')
+            continue
           }
           if (msg.id === 1 && msg.error) {
             clearTimeout(timeout)
             finish({ ok: false, error: `server error: ${msg.error.message ?? JSON.stringify(msg.error)}` })
+            return
+          }
+          if (msg.id === 2 && msg.result) {
+            clearTimeout(timeout)
+            finish({
+              ok: true,
+              serverName: serverInfo?.name,
+              serverVersion: serverInfo?.version,
+              toolCount: Array.isArray(msg.result.tools) ? msg.result.tools.length : undefined,
+            })
+            return
+          }
+          if (msg.id === 2 && msg.error) {
+            // tools/list failed but initialize succeeded — still report as healthy, just without a count.
+            clearTimeout(timeout)
+            finish({ ok: true, serverName: serverInfo?.name, serverVersion: serverInfo?.version })
             return
           }
         } catch {
@@ -404,25 +496,91 @@ function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<Doctor
   const hookShim = validateHookShim()
   const mcpShim = validateMcpShim()
 
+  // Cursor-specific health, computed from Cursor's OWN two config files only
+  // — not folded into hooksInstalled/mcpRegistered's cross-config `.some()`,
+  // which a working Claude Code setup elsewhere would satisfy regardless of
+  // whether THIS project's `.cursor/` wiring is present at all (audit fix —
+  // Codex adversarial review, 2026-07-08).
+  const cursorMcpConfig = configs.find((c) => c.label === 'Cursor (.cursor/mcp.json)')
+  const cursorHooksConfigReport = configs.find((c) => c.label === 'Cursor (.cursor/hooks.json)')
+  const cursorProjectDetected = existsSync(join(process.cwd(), '.cursor'))
+
+  // Two further checks beyond bare "entry exists" (audit fix — evaluator
+  // review, 2026-07-08):
+  //   1. The entry's env actually carries PLUR_TOOL_PROFILE=cursor — an
+  //      entry that exists but is missing/wrong here silently gets the full
+  //      39-tool surface, not the ~11-tool one, which is exactly what this
+  //      wiring exists to prevent.
+  //   2. If the command is an absolute path (the local shim `plur init`
+  //      installs — see mcp-config.ts's buildMcpServerEntry), it must
+  //      actually exist ON THIS MACHINE. `.cursor/mcp.json` is meant to be
+  //      committed so teammates/background agents inherit it, but the shim
+  //      path it bakes in is machine-local — a config that's healthy on the
+  //      machine that ran `plur init --cursor` can point at a path that was
+  //      never installed on another machine or a fresh cloud-agent VM. This
+  //      is a cheap existsSync check, not a second live handshake spawn —
+  //      doctor already spawns the server twice (see cursorHandshake below).
+  let cursorEntryEnvCorrect = false
+  let cursorEntryCommandExists = true
+  if (cursorMcpConfig?.exists) {
+    const parsed = readConfig(cursorProjectMcpConfigPath())
+    const servers = (parsed.mcpServers ?? {}) as Record<string, { command?: string; env?: Record<string, string> }>
+    const plurEntry = servers.plur
+    cursorEntryEnvCorrect = plurEntry?.env?.PLUR_TOOL_PROFILE === 'cursor'
+    if (plurEntry?.command && (plurEntry.command.startsWith('/') || /^[A-Za-z]:\\/.test(plurEntry.command))) {
+      // Audit fix (evaluator review, iteration 3, 2026-07-09): existsSync
+      // alone reports true for a directory, a 0-byte file, or a file
+      // stripped of its execute bit (an interrupted `plur init --cursor`,
+      // a botched reinstall, an AV quarantine placeholder) — the exact
+      // "config looks healthy but the server can't actually start" failure
+      // this check exists to catch, just via a different corruption path.
+      // Also check it's a regular, executable file.
+      cursorEntryCommandExists = commandIsExecutableFile(plurEntry.command)
+    }
+  }
+  const cursorWired = Boolean(
+    cursorMcpConfig?.exists && cursorMcpConfig.hasPlurMcp && cursorEntryEnvCorrect && cursorEntryCommandExists &&
+    cursorHooksConfigReport?.exists && cursorHooksConfigReport.hasPlurHooks,
+  )
+
   const handshakePromise = skipHandshake
     ? Promise.resolve({ ok: false, error: 'skipped (--no-handshake)' })
     : mcpHandshake()
 
-  return Promise.all([handshakePromise, checkEmbedder(flags)]).then(([handshake, embedder]) => {
-    // Wiring overall: hooks + MCP + handshake. Embedder status is reported
-    // separately as a warning — a degraded embedder doesn't fail the overall
-    // doctor check (BM25 still works); it just signals semantic recall is
-    // disabled until the model loads.
+  return Promise.all([handshakePromise, checkEmbedder(flags)]).then(async ([handshake, embedder]) => {
+    // Probe the cursor tool profile too, so the report shows both tool
+    // counts side by side instead of guessing which one a given config
+    // file's env is actually wired to (see mcpHandshake's doc comment).
+    // Only worth a second spawn if the default handshake actually came up —
+    // no point probing a profile variant of a server that doesn't start —
+    // AND only if this is actually a Cursor project (audit fix — evaluator
+    // review, 2026-07-08: this used to spawn unconditionally, doubling
+    // handshake cost — up to +20s on a cold npx fetch — for the common
+    // Claude-Code-only case with no `.cursor/` at all).
+    const cursorHandshake = (handshake.ok && cursorProjectDetected)
+      ? await mcpHandshake(20000, { PLUR_TOOL_PROFILE: 'cursor' })
+      : null
+
+    // Wiring overall: hooks + MCP + handshake + (if a Cursor project is
+    // detected) Cursor's own config actually being wired. Embedder status is
+    // reported separately as a warning — a degraded embedder doesn't fail
+    // the overall doctor check (BM25 still works); it just signals semantic
+    // recall is disabled until the model loads.
     const overall: 'ok' | 'fail' =
-      hooksInstalled && mcpRegistered && (skipHandshake || handshake.ok) ? 'ok' : 'fail'
-    return { configs, hooksInstalled, mcpRegistered, datacoreCollision, staleNpxHooks, staleNpxMcp, hookShim, mcpShim, handshake, embedder, overall }
+      hooksInstalled && mcpRegistered && (skipHandshake || handshake.ok) && (!cursorProjectDetected || cursorWired)
+        ? 'ok' : 'fail'
+    return {
+      configs, hooksInstalled, mcpRegistered, datacoreCollision, staleNpxHooks, staleNpxMcp,
+      hookShim, mcpShim, handshake, cursorHandshake, embedder,
+      cursorProjectDetected, cursorWired, overall,
+    }
   })
 }
 
 function printText(report: DoctorReport): void {
   const tick = (b: boolean) => (b ? '✓' : '✗')
 
-  outputText('plur doctor — Claude Code / Claude Desktop diagnostic')
+  outputText('plur doctor — Claude Code / Claude Desktop / Cursor diagnostic')
   outputText('')
   outputText('Config files:')
   for (const c of report.configs) {
@@ -441,6 +599,15 @@ function printText(report: DoctorReport): void {
   outputText('')
   outputText(`${tick(report.hooksInstalled)} Hooks installed`)
   outputText(`${tick(report.mcpRegistered)} plur MCP server registered`)
+
+  if (report.cursorProjectDetected) {
+    outputText(`${tick(report.cursorWired)} Cursor: this project's .cursor/mcp.json + .cursor/hooks.json wired to plur`)
+    if (!report.cursorWired) {
+      outputText('  A Claude Code config being healthy elsewhere does NOT cover Cursor —')
+      outputText('  this project has a .cursor/ directory but its own config is incomplete.')
+      outputText('  Fix: run `plur init --cursor` from this project.')
+    }
+  }
 
   if (report.datacoreCollision) {
     outputText('')
@@ -491,6 +658,31 @@ function printText(report: DoctorReport): void {
     outputText('    - Network blocked — try `npx -y @plur-ai/mcp` manually')
   }
 
+  // Live tool-budget report — both profiles side by side (Cursor caps a
+  // workspace at ~40 MCP tools total across every server). Printing both
+  // counts, rather than trying to infer which profile a config file's env
+  // actually activates, sidesteps guessing at hand-edited/partially-migrated
+  // configs: the user can just compare the two numbers themselves.
+  if (report.handshake.ok && report.handshake.toolCount !== undefined) {
+    outputText(`MCP tools exposed (default/full profile): ${report.handshake.toolCount}`)
+  }
+  if (report.cursorHandshake?.ok && report.cursorHandshake.toolCount !== undefined) {
+    outputText(`MCP tools exposed (PLUR_TOOL_PROFILE=cursor): ${report.cursorHandshake.toolCount}`)
+  }
+  // Gated on cursorProjectDetected (audit fix — evaluator review,
+  // 2026-07-08): this used to fire for every user whose default handshake
+  // reports >15 tools, i.e. nearly every Claude-Code-only install — a
+  // Cursor-specific warning printed unconditionally in a report that mostly
+  // isn't about Cursor at all.
+  if (report.cursorProjectDetected && report.handshake.ok && report.handshake.toolCount !== undefined && report.handshake.toolCount > 15) {
+    outputText(
+      `  Cursor caps a workspace at ~40 MCP tools total across every server. If .cursor/mcp.json's ` +
+      `plur entry doesn't set PLUR_TOOL_PROFILE=cursor in its env, Cursor is getting the full ` +
+      `${report.handshake.toolCount}-tool surface above, not the ~11-tool one. Run \`plur init --cursor\` to fix, ` +
+      `or set the env var directly if you registered the server by hand.`,
+    )
+  }
+
   outputText('')
   if (report.embedder.disabled) {
     outputText(`○ Embedding layer DISABLED — ${report.embedder.disabledReason ?? 'embeddings disabled'}`)
@@ -524,6 +716,10 @@ function printText(report: DoctorReport): void {
       outputText('  Fix: ensure `npx` is reachable from Claude Desktop')
       outputText('       — try launching Claude from your terminal once,')
       outputText('       — or replace the plur entry command with an absolute path to your shell.')
+    }
+    if (report.cursorProjectDetected && !report.cursorWired) {
+      outputText('  Fix: run `plur init --cursor` from this project — this project\'s own')
+      outputText('       .cursor/ config is incomplete even though other checks above passed.')
     }
     if (!report.embedder.modelLoaded && !report.embedder.disabled) {
       outputText('  Fix: from the @plur-ai/core package directory, run a script that imports')
