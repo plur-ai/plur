@@ -1,16 +1,38 @@
 # Changelog
 
-## Unreleased
+## 0.12.0 (2026-07-09)
 
-### Feature: `plur_learn_batch` — persist many engrams in one MCP call (#281)
+Cursor IDE support (experimental/beta), plus a batch of queued core improvements: batch learning, supersedes chains, commitment tiers, reranker fit checks, session-end auto-close.
 
-Saving knowledge was one engram per `plur_learn` call. When an orchestration fans out across agents and wants to record consolidated findings, the N-call overhead adds up. `plur_learn_batch` accepts an array of engram objects and writes them in a single call.
+### Cursor IDE support (experimental/beta)
 
-- Writes go through the **same dedup + policy pipeline** as `plur_learn` (content-hash NOOP → semantic recall → LLM ADD/UPDATE/MERGE). Dedup also applies **within** the batch: a statement duplicating an earlier item in the same array resolves to NOOP against it.
-- Returns the created/affected engram ids in input order, per-item decisions, aggregate stats, and any per-item `failures`.
-- **Partial-failure isolation:** a single failing statement no longer aborts the batch — the rest are persisted and the failure is reported with its input index. `learnBatch`'s result gains a `failed` stat and a `failures[]` array (additive; existing fields unchanged).
-- LLM dedup calls stay bounded by `max_llm_calls` (default 50) to cap bulk-import cost.
-- Note: unlike `plur_learn`, batch items take the local learn path — remote-scope auto-routing (`learnRouted`) is not applied per item. For shared/remote-store writes prefer `plur_learn` or pass an explicit local scope.
+PLUR now works inside Cursor — its own hook system (`sessionStart`, `preToolUse`, `postToolUse`, `stop`), its own MCP config, and a reduced tool profile so PLUR doesn't blow Cursor's ~40-MCP-tool-per-workspace budget.
+
+- **Install**: `npx @plur-ai/cli@0.12.0 init --cursor` (auto-detected too, if a `.cursor/` dir already exists in your project). Writes `.cursor/mcp.json`, `.cursor/hooks.json`, and `.cursor/rules/plur-memory.mdc`.
+- **Reduced tool profile**: Cursor gets ~11 core tools (`plur_session_start`, `plur_learn`, `plur_recall_hybrid`, `plur_feedback`, `plur_forget`, `plur_session_end`, `plur_status`, `plur_doctor`, `plur_packs_uninstall`, `plur_tensions_purge`) plus **`plur_admin`**, a dispatch tool for everything else (`{ action, args }`) — instead of the full 39-tool surface, which alone would consume ~97.5% of Cursor's per-workspace MCP budget.
+- **Memory delivery workaround**: Cursor's hook-output `additional_context` field is dropped by a confirmed race condition (acknowledged by Cursor's own team, no fix ETA), so PLUR delivers recalled memory and reminders through dynamically-rewritten `.cursor/rules/*.mdc` files instead — Cursor's rules engine reliably loads these.
+- **`plur doctor`** now diagnoses Cursor-specific wiring (`.cursor/mcp.json` / `.cursor/hooks.json`, tool-profile env, live MCP tool count for both the full and Cursor profiles).
+- **Why "experimental/beta"**: this integration has been through a full implementation review, an adversarial Codex review, and a 5-round multi-evaluator audit — but has **not yet been verified against a live Cursor install** (Cursor's hooks API is itself documented as beta and may change). Field-name assumptions (`conversation_id` vs `session_id`) and a couple of behaviors are confirmed via Cursor's own documentation and community forum, not a live run. Report issues at github.com/plur-ai/plur/issues.
+
+### Added
+
+- **`plur_learn_batch`** (#281): persist many engrams in one MCP call — same dedup + policy pipeline as `plur_learn`, partial-failure isolation, bounded LLM dedup cost.
+- **Supersedes chain consumer behavior** (#481): inject prefers chain tips under budget pressure (unless the query is historical), recall annotates superseded engrams with their replacement, decay accelerates for low-recall superseded engrams.
+- **Commitment tier in injected text** (#348): `formatLayer3` shows the commitment label (`exploring`/`leaning`/`decided`/`locked`) instead of a raw confidence float when set.
+- **Per-store reranker fit check** (#451): `plur doctor` scores whether a cross-encoder reranker is actually helping on a given store's domain, since out-of-domain rerankers can produce inverted scores.
+- **`plur_session_end` wired to Claude Code's SessionEnd hook** (#217): memory lifecycle now auto-closes when a session ends, instead of depending on the agent remembering to call it.
+- Python SDK bumped to 0.10.0 (`recall_hybrid`, npx pin fix).
+
+### Fixed
+
+- **Orphaned hook processes on degraded networks** (#504): `hook-inject` had no process-level ceiling and `RemoteStore.load()` made unbounded fetch calls — together these could accumulate dozens of orphaned processes and gigabytes of swap on a flaky connection. Added a self-watchdog (55s default ceiling) and a 30s fetch timeout with fail-open (cached engrams or `[]`, no cache poisoning).
+- **Tension subject filter** (#489): suffix-stemming in the contradiction pre-filter raises recall 77%→90%.
+- **`hook-learn-check`'s Stop-hook counter** made atomic (append-only, not read-increment-write) — the same race class found and fixed in the new Cursor hooks during their audit.
+- Three OpenClaw (`@plur-ai/claw`) UX fixes: stale plugin-manifest pruning, `plugins.allow` seeding on fresh installs, `runtime_registered` verified via an actual filesystem check instead of a hardcoded placeholder.
+
+### Changed
+
+- Benchmarks consolidated into the standalone `plur-bench` repo; `benchmark/micro.ts` (core-operation latency) stays in-repo as `pnpm bench:micro`.
 
 ## 0.11.0 (2026-07-06)
 

@@ -60,6 +60,10 @@ Commands:
   hook-session-remind     (internal) Hook handler for session start reminder
   hook-correction-detect  (internal) UserPromptSubmit hook — detect corrections
   hook-revert-detect      (internal) PostToolUse hook — detect revert operations
+  hook-cursor-session-start (internal) Cursor sessionStart hook handler
+  hook-cursor-guard      (internal) Cursor preToolUse hook handler
+  hook-cursor-post-tool  (internal) Cursor postToolUse hook handler
+  hook-cursor-stop       (internal) Cursor stop hook handler
 
 Global flags:
   --json       Force JSON output (auto-detected when piped)
@@ -109,6 +113,10 @@ const COMMANDS: Record<string, string> = {
   'hook-session-remind': './commands/hook-session-remind.js',
   'hook-correction-detect': './commands/hook-correction-detect.js',
   'hook-revert-detect': './commands/hook-revert-detect.js',
+  'hook-cursor-session-start': './commands/hook-cursor-session-start.js',
+  'hook-cursor-guard': './commands/hook-cursor-guard.js',
+  'hook-cursor-post-tool': './commands/hook-cursor-post-tool.js',
+  'hook-cursor-stop': './commands/hook-cursor-stop.js',
   // Hidden internal subcommand — spawned by `plur doctor` to isolate the
   // ONNX embedder probe (issue #197). If the probe crashes with SIGABRT
   // on libc++ thread pool cleanup, only the subprocess dies; doctor stays alive.

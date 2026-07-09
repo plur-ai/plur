@@ -11,7 +11,17 @@ import {
   mergePlurMcp,
   readConfig,
   writeConfig,
+  cursorProjectMcpConfigPath,
+  cursorProjectHooksConfigPath,
+  cursorRulesPath,
 } from '../mcp-config.js'
+import {
+  buildCursorHooks,
+  readCursorHooksConfig,
+  writeCursorHooksConfig,
+  mergeCursorHooks,
+  hasPlurCursorHooks,
+} from '../cursor-hooks.js'
 
 /**
  * plur init — install Claude Code hooks AND register the plur MCP server.
@@ -386,6 +396,28 @@ When the user corrects you ("no, use X not Y", "that's wrong"):
 3. Then continue with the corrected approach
 `
 
+const CURSOR_RULE_CONTENT = `---
+description: PLUR persistent memory — session workflow and tool usage
+alwaysApply: true
+---
+
+You have persistent memory via PLUR (tools prefixed \`plur_\`; less-common ones are behind \`plur_admin\` — pass { action, args }).
+
+- Session start is injected automatically via hooks, delivered through
+  \`.cursor/rules/plur-context.mdc\`; periodic reminders are attempted
+  through \`.cursor/rules/plur-reminder.mdc\` (best-effort — both are
+  auto-generated, changes there each session, don't hand-edit either). If
+  reminders seem to stop arriving, don't wait for one: proactively call
+  **plur_learn** on anything worth remembering and **plur_session_end**
+  before wrapping up.
+- When corrected or you learn a convention/preference: call **plur_learn** immediately.
+- Before answering factual questions about this project: call **plur_recall_hybrid** first.
+- Rate injected engrams with **plur_feedback** when you notice one helped or missed.
+- Call **plur_session_end** before wrapping up, with a summary and engram suggestions.
+
+Full reference: read the \`plur://guide\` MCP resource.
+`
+
 /**
  * Write a .plur.yaml project config with default domain/scope.
  * This file is read by hooks to auto-apply scoping to learn/recall calls.
@@ -527,6 +559,97 @@ function installDesktopMcp(args: string[]): string {
   return `registered in ${desktopPath}`
 }
 
+function shouldSetupCursor(args: string[], cwd: string = process.cwd()): boolean {
+  if (args.includes('--no-cursor')) return false
+  if (args.includes('--cursor')) return true
+  return existsSync(join(cwd, '.cursor'))
+}
+
+function installCursor(cmd: string): string {
+  const mcpPath = cursorProjectMcpConfigPath()
+  const hooksPath = cursorProjectHooksConfigPath()
+  const rulesPath = cursorRulesPath()
+
+  const mcpConfig = readConfig(mcpPath)
+  const mcpAlready = hasPlurMcp(mcpConfig)
+  let mcpStatus: string
+  if (!mcpAlready) {
+    mergePlurMcp(mcpConfig, { env: { PLUR_TOOL_PROFILE: 'cursor' } })
+    writeConfig(mcpPath, mcpConfig)
+    mcpStatus = 'registered'
+  } else {
+    // Audit fix (data evaluator): a pre-existing "plur" entry — hand-added,
+    // or copied over from a .claude/settings.json config — used to be left
+    // completely untouched here, because hasPlurMcp only checks that the
+    // entry EXISTS, not that it carries the cursor tool-profile env. That
+    // silently defeated Task 1's entire tool-budget fix: Cursor would run
+    // PLUR in the full 39-tool profile while `plur init --cursor` reported
+    // "already registered" as if everything were correctly configured.
+    // Patch the env in when it's missing or wrong, rather than trusting
+    // "entry exists" as "entry is correctly configured for Cursor."
+    const servers = (mcpConfig.mcpServers ?? {}) as Record<string, { env?: Record<string, string> }>
+    const existing = servers.plur
+    if (existing?.env?.PLUR_TOOL_PROFILE !== 'cursor') {
+      servers.plur = { ...existing, env: { ...(existing?.env ?? {}), PLUR_TOOL_PROFILE: 'cursor' } }
+      mcpConfig.mcpServers = servers
+      writeConfig(mcpPath, mcpConfig)
+      mcpStatus = 'patched (added missing PLUR_TOOL_PROFILE=cursor to an existing entry)'
+    } else {
+      mcpStatus = 'already registered'
+    }
+  }
+
+  // Audit fix (dijkstra evaluator): readCursorHooksConfig silently treats
+  // unparseable JSON as an empty config — a safe default for READING, but
+  // writing that empty config back below would silently destroy a user's
+  // hand-edited-but-malformed hooks.json (including any non-plur entries in
+  // it) with no warning. Detect the malformed case here and refuse to touch
+  // the file instead of clobbering it.
+  let hooksStatus: string
+  const hooksFileExists = existsSync(hooksPath)
+  let hooksFileParses = true
+  if (hooksFileExists) {
+    try { JSON.parse(readFileSync(hooksPath, 'utf8')) } catch { hooksFileParses = false }
+  }
+  if (hooksFileExists && !hooksFileParses) {
+    hooksStatus = `skipped — ${hooksPath} exists but is not valid JSON; fix it by hand, then re-run \`plur init --cursor\``
+  } else {
+    const hooksConfig = readCursorHooksConfig(hooksPath)
+    const hadHooks = hasPlurCursorHooks(hooksConfig)
+    const merged = mergeCursorHooks(hooksConfig, buildCursorHooks(cmd))
+    writeCursorHooksConfig(hooksPath, merged)
+    hooksStatus = hadHooks ? 'upgraded' : 'installed'
+  }
+
+  mkdirSync(dirname(rulesPath), { recursive: true })
+  const ruleAlready = existsSync(rulesPath)
+  if (!ruleAlready) writeFileSync(rulesPath, CURSOR_RULE_CONTENT)
+
+  // The dynamic context and reminder rules (plur-context.mdc, plur-reminder.mdc)
+  // are rewritten every session by hook-cursor-session-start.ts/
+  // hook-cursor-post-tool.ts and may contain recalled engram content —
+  // project-specific, regenerated, not something to commit. gitignore both
+  // so they don't show up as untracked-file surprises in `git status` after
+  // the first session.
+  const gitignorePath = join(process.cwd(), '.gitignore')
+  const gitignoreLines = ['.cursor/rules/plur-context.mdc', '.cursor/rules/plur-reminder.mdc']
+  const originalGitignoreContent = existsSync(gitignorePath) ? readFileSync(gitignorePath, 'utf8') : ''
+  let gitignoreContent = originalGitignoreContent
+  for (const line of gitignoreLines) {
+    if (!gitignoreContent.includes(line)) {
+      gitignoreContent = gitignoreContent.trimEnd() + `\n${line}\n`
+    }
+  }
+  if (gitignoreContent !== originalGitignoreContent) {
+    writeFileSync(gitignorePath, gitignoreContent)
+  }
+
+  return `Cursor: MCP ${mcpStatus} (${mcpPath}); ` +
+    `hooks ${hooksStatus} (${hooksPath}); ` +
+    `rule ${ruleAlready ? 'already present' : 'created'} (${rulesPath}); ` +
+    `gitignored .cursor/rules/plur-context.mdc, .cursor/rules/plur-reminder.mdc`
+}
+
 function writeSettings(path: string, settings: Settings): void {
   mkdirSync(join(path, '..'), { recursive: true })
   writeFileSync(path, JSON.stringify(settings, null, 2) + '\n')
@@ -611,6 +734,10 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   // Register in Claude Desktop too
   const desktopStatus = installDesktopMcp(args)
 
+  const cursorStatus = shouldSetupCursor(args)
+    ? installCursor(cmd)
+    : 'skipped (no .cursor/ dir found — pass --cursor to force, --no-cursor to silence this)'
+
   // Write project config if --domain or --scope provided
   const projectConfigPath = installProjectConfig(args)
 
@@ -645,6 +772,37 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   outputText(`Enforcement file: ${enforcementPath}`)
   if (!samePath) outputText(`Injection file:   ${injectionPath}`)
   outputText(`Claude Desktop:   ${desktopStatus}`)
+  outputText(cursorStatus)
+  if (shouldSetupCursor(args)) {
+    // Audit fix (user evaluator): the 11-tools-instead-of-39 tradeoff and
+    // plur_admin indirection were previously only discoverable by reading
+    // tools.ts (invisible to users) or the rules file's fine print. Say it
+    // here, where a human actually reads the install output. Also note: this
+    // same `plur init` call always sets up the Claude Code hooks above too
+    // (there's no Cursor-only mode) — so if this project also opens in
+    // Claude Code, both integrations are now active, running independently
+    // (separate sentinel directories, separate config files); this plan
+    // doesn't test that combination, just documents that it exists.
+    outputText('  Cursor gets a reduced tool set (~11 tools + plur_admin dispatch for the rest) to stay')
+    outputText('  under Cursor\'s ~40-tool-per-workspace limit — call plur_admin with { action, args } for')
+    outputText('  packs/sync/tensions/stores/timeline/etc. Run `plur doctor` any time to see current counts.')
+    outputText('  Note: the Claude Code hooks above are also active in this project — the two integrations')
+    outputText('  run independently and haven\'t been tested together.')
+    // Audit fix (evaluator review, 2026-07-08): .cursor/mcp.json and
+    // .cursor/hooks.json are intentionally NOT gitignored (unlike the two
+    // dynamic .mdc rule files above) so committing .cursor/ lets teammates
+    // and Cursor Background Agents inherit this config. But `cmd` here is
+    // the LOCAL shim path (~/.plur/bin/plur-hook, ~/.plur/bin/plur-mcp) —
+    // machine-specific. On a different machine, or a fresh cloud-agent VM
+    // that only clones the repo, that path won't exist and PLUR silently
+    // won't start there. `plur doctor` now catches this after the fact
+    // (cursorWired checks the command exists); this warns before it bites.
+    if (cmd.startsWith('/') || /^[A-Za-z]:\\/.test(cmd)) {
+      outputText('  Committing .cursor/mcp.json / .cursor/hooks.json? Their command is this machine\'s local')
+      outputText(`  path (${cmd}) — it won't exist on a teammate's machine or a fresh Background Agent VM.`)
+      outputText('  Run `plur init --cursor` there too, or edit the command to `npx -y @plur-ai/mcp@latest`.')
+    }
+  }
   outputText(`CLAUDE.md:        ${claudeMdStatus}`)
   if (projectConfigPath) {
     outputText(`Project config:   ${projectConfigPath}`)
