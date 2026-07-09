@@ -416,6 +416,19 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     return
   }
 
+  // Per-session concurrency guard (#519): if another hook-inject is already
+  // running the BGE-loading injection for this session, exit immediately.
+  // Multiple rapid async firings (datacore#33) otherwise pile up at ~160 MB
+  // RSS each and trigger an OOM cascade. Lock is stale after HOOK_CEILING_MS
+  // so a crashed process never permanently blocks subsequent invocations.
+  const injectLock = join(sessionDir(), `${process.ppid || 'unknown'}.injecting`)
+  let injectLockAcquired = false
+  try {
+    const s = statSync(injectLock)
+    if (Date.now() - s.mtimeMs < HOOK_CEILING_MS) return
+  } catch { /* no lock file — proceed */ }
+  try { writeFileSync(injectLock, ''); injectLockAcquired = true } catch { /* fail-open */ }
+
   const input = readStdinSync()
   const projectConfig = readProjectConfig()
 
@@ -519,6 +532,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     parts.push(context)
   }
 
+  if (injectLockAcquired) try { unlinkSync(injectLock) } catch {}
   if (parts.length === 0) return
 
   const output = { additionalContext: parts.join('\n') }
