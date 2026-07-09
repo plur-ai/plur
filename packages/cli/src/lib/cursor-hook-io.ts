@@ -1,4 +1,4 @@
-import { readSync, mkdirSync, writeFileSync } from 'fs'
+import { readSync, mkdirSync, writeFileSync, appendFileSync, statSync } from 'fs'
 import { join, dirname } from 'path'
 import { tmpdir } from 'os'
 import { cursorContextRulePath } from '../mcp-config.js'
@@ -7,6 +7,30 @@ import { cursorContextRulePath } from '../mcp-config.js'
  * Shared stdin-reading and sentinel-path helpers for the four hook-cursor-*
  * commands. Split out from any single hook file because all four need the
  * exact same conversation-id resolution and directory layout.
+ *
+ * Known structural limitations (evaluator review, 2026-07-08 — tracked as
+ * follow-ups, not fixed here; see .superpowers/sdd/progress.md):
+ *
+ * 1. NO PER-CONVERSATION SCOPING of delivered content. Sentinel/reminder
+ *    state IS scoped per `conversation_id` (this file), but the actual
+ *    payload lands in `.cursor/rules/plur-context.mdc` /
+ *    `plur-reminder.mdc` — one file per WORKSPACE, loaded into every open
+ *    composer. Two simultaneous conversations in the same workspace will
+ *    each overwrite what the other sees. There is no clean fix within
+ *    Cursor's current rules-file mechanism (it has no per-conversation
+ *    context channel) — this is the same underlying gap that forced this
+ *    workaround in the first place (see writeContextRule's docstring).
+ * 2. conversation_id REUSE is not detected. A sentinel/reminder/stop-count
+ *    file is trusted purely by existence, with no age or identity check —
+ *    if Cursor ever reissues an id (a fork sharing its parent's id, or
+ *    recycling after a restart), the new conversation silently inherits
+ *    the old one's guard/reminder/stop-count state. Not fixed speculatively
+ *    because Cursor's actual fork/reuse behavior isn't confirmed (Task 11).
+ * 3. NO COORDINATION with the pre-existing Claude Code hook family if both
+ *    ever act on the same editor session (Cursor is reported to be able to
+ *    load Claude Code config too) — two independent sentinel schemes, two
+ *    independent plur.inject() calls, no shared "already handled this turn"
+ *    signal.
  */
 
 export function readStdinJson(): Record<string, unknown> {
@@ -41,7 +65,37 @@ export function readStdinJson(): Record<string, unknown> {
  * fallback then if only one shows up in practice.
  */
 export function cursorConversationId(input: Record<string, unknown>): string {
-  return String(input.conversation_id ?? input.session_id ?? '')
+  const id = String(input.conversation_id ?? input.session_id ?? '')
+  if (!id) {
+    // Audit fix (evaluator review, 2026-07-08): with neither guessed field
+    // name present, every hook silently no-ops for the rest of its run —
+    // previously with zero signal anywhere that this happened. This is the
+    // one place all four hooks funnel through to resolve the id, so one
+    // stderr line here covers all of them without duplicating it 4x.
+    process.stderr.write(
+      '[plur] cursor hook: no conversation_id or session_id in hook payload — ' +
+      'skipping (memory injection/enforcement inactive for this event). If this ' +
+      'persists, Cursor may be sending a different field name; run `plur doctor`.\n',
+    )
+  }
+  return id
+}
+
+/**
+ * Filesystem-safe token derived from a raw conversation id. Cursor's hook
+ * payload schema is documented as beta/unconfirmed (see cursorConversationId
+ * above) — nothing guarantees the value is safe to interpolate directly into
+ * a path. Replacing anything outside [A-Za-z0-9_-] closes both path
+ * traversal (`../`, `/`) and OS-invalid characters (`:`, `|`, null bytes)
+ * while leaving well-formed real ids (UUIDs, which are already in this safe
+ * set) untouched (audit fix — evaluator review, 2026-07-08: previously used
+ * unsanitized in every path below, so a malformed id could throw ENOENT/
+ * EINVAL and, combined with every hook's `failClosed: false`, silently and
+ * permanently disable that conversation's guard/injection/reminders).
+ */
+function safeSessionKey(conversationId: string): string {
+  const safe = conversationId.replace(/[^A-Za-z0-9_-]/g, '_')
+  return safe || 'unknown'
 }
 
 /**
@@ -65,15 +119,36 @@ export function sessionsDir(): string {
 }
 
 export function sentinelPath(conversationId: string): string {
-  return join(sessionsDir(), `${conversationId}.marker`)
+  return join(sessionsDir(), `${safeSessionKey(conversationId)}.marker`)
 }
 
 export function lastReminderPath(conversationId: string): string {
-  return join(sessionsDir(), `${conversationId}.reminded`)
+  return join(sessionsDir(), `${safeSessionKey(conversationId)}.reminded`)
 }
 
 export function stopCountPath(conversationId: string): string {
-  return join(sessionsDir(), `${conversationId}.stopcount`)
+  return join(sessionsDir(), `${safeSessionKey(conversationId)}.stopcount`)
+}
+
+/**
+ * Shared counter for hook-cursor-guard.ts (block count) and
+ * hook-cursor-stop.ts (stop count) — hoisted (audit fix, evaluator review,
+ * 2026-07-08) because both used to independently implement
+ * "read-int-default-0, increment, write", a read-then-write that isn't
+ * atomic across the fresh, independent process each hook invocation is: two
+ * events for the same conversation close enough together can both read the
+ * same stale count and one increment is lost. Appending one byte is atomic
+ * on POSIX filesystems even under concurrent writers — counting file size
+ * instead of parsing decimal content can't lose an increment the way
+ * read-then-write can.
+ */
+export function incrementCounter(path: string): number {
+  appendFileSync(path, '.')
+  try {
+    return statSync(path).size
+  } catch {
+    return 1
+  }
 }
 
 /**

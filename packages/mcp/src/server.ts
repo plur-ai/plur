@@ -244,11 +244,27 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
     const uri = request.params.uri
 
     if (uri === 'plur://guide') {
+      // Audit fix (evaluator review, 2026-07-08): GUIDE_RESOURCE names ~30
+      // tools (plur_capture, plur_packs_install, plur_ingest, plur_sync,
+      // ...) as if every one is directly callable. Under the `cursor`
+      // profile most of them aren't — they only exist behind plur_admin's
+      // dispatch — and this guide is the exact resource init.ts's Cursor
+      // rule file points agents at ("Full reference: read the plur://guide
+      // MCP resource"), so a Cursor agent following it verbatim would try
+      // to call tools that return "Unknown tool". Append the redirect only
+      // for the profile where it's actually needed.
+      const cursorNote = options?.profile === 'cursor'
+        ? '\n\n## Cursor tool profile\n\nMost tools above are NOT directly callable in this session — only ' +
+          'plur_session_start, plur_session_end, plur_learn, plur_recall_hybrid, plur_feedback, plur_forget, ' +
+          'plur_status, plur_doctor, plur_packs_uninstall, and plur_tensions_purge are top-level tools here. ' +
+          'Everything else in this guide is reachable through **plur_admin**: call it with ' +
+          '`{ action: "<tool name above>", args: {...} }`.'
+        : ''
       return {
         contents: [{
           uri: 'plur://guide',
           mimeType: 'text/markdown',
-          text: GUIDE_RESOURCE,
+          text: GUIDE_RESOURCE + cursorNote,
         }],
       }
     }

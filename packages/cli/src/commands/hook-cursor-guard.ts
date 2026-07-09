@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs'
+import { existsSync } from 'fs'
 import { type GlobalFlags } from '../plur.js'
 import { isPlurConfigured } from '../lib/plur-configured.js'
 import {
@@ -6,8 +6,8 @@ import {
   cursorConversationId,
   isPlurSessionStartTool,
   sentinelPath,
-  sessionsDir,
   markSessionStarted,
+  incrementCounter,
 } from '../lib/cursor-hook-io.js'
 
 /**
@@ -22,11 +22,17 @@ import {
  * never emits an explicit allow, only a deny or nothing.
  *
  * In normal interactive use this rarely fires a deny at all: sessionStart
- * already wrote the sentinel before the first tool call. Its real job is the
- * background/cloud-agent path, where sessionStart never runs — there this
- * denies until the agent calls plur_session_start itself, which
- * hook-cursor-post-tool then marks (postToolUse is one of the hooks that DOES
- * run for cloud agents).
+ * already wrote the sentinel before the first tool call. Its INTENDED job is
+ * the background/cloud-agent path, where sessionStart never runs — there
+ * this is meant to deny until the agent calls plur_session_start itself,
+ * which hook-cursor-post-tool then marks (postToolUse is confirmed to run
+ * for cloud agents). Whether Cursor actually fires preToolUse on that path
+ * at all is NOT independently confirmed (audit fix — evaluator review,
+ * 2026-07-08: this used to be stated as settled fact) — if it doesn't, this
+ * hook simply never runs there, the guard never denies anything, and
+ * nothing ever prompts the agent to call plur_session_start; the
+ * MAX_BLOCKS_BEFORE_FALLBACK path below never gets a chance to fire either.
+ * Task 11 (manual verification) is what actually settles this.
  *
  * Deadlock prevention, same rationale as Claude Code's hook-session-guard
  * (#199): stop blocking after one nudge so a broken MCP server can't wedge
@@ -53,16 +59,6 @@ function blockCountPath(conversationId: string): string {
   return `${sentinelPath(conversationId)}.guard-count`
 }
 
-function incrementBlockCount(conversationId: string): number {
-  mkdirSync(sessionsDir(), { recursive: true })
-  const path = blockCountPath(conversationId)
-  let count = 0
-  try { count = parseInt(readFileSync(path, 'utf8'), 10) || 0 } catch {}
-  count++
-  writeFileSync(path, String(count))
-  return count
-}
-
 export async function run(_args: string[], _flags: GlobalFlags): Promise<void> {
   if (!isPlurConfigured()) return
 
@@ -75,7 +71,7 @@ export async function run(_args: string[], _flags: GlobalFlags): Promise<void> {
 
   if (existsSync(sentinelPath(conversationId))) return // session already started
 
-  const blockCount = incrementBlockCount(conversationId)
+  const blockCount = incrementCounter(blockCountPath(conversationId))
   if (blockCount > MAX_BLOCKS_BEFORE_FALLBACK) {
     // Audit fix: mark the session started here too (not just log and return),
     // so hook-cursor-post-tool's reminder path isn't permanently starved —

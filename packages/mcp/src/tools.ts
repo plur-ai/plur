@@ -218,11 +218,22 @@ mcpCanary.expect({
 
 export type ToolProfile = 'full' | 'cursor'
 
-// The 8 tools a Cursor user needs day-to-day. Everything else (packs, sync,
-// tensions, stores, timeline, meta-engrams, ingest, capture, ...) is reachable
-// through plur_admin instead of its own top-level tool slot — Cursor caps a
-// workspace at ~40 MCP tools total across every server, and PLUR's full 39-tool
+// The day-to-day tools a Cursor user needs, plus every tool marked
+// `destructiveHint: true` — everything else (packs install/list, sync,
+// timeline, meta-engrams, ingest, capture, ...) is reachable through
+// plur_admin instead of its own top-level tool slot. Cursor caps a workspace
+// at ~40 MCP tools total across every server, and PLUR's full 39-tool
 // surface alone would consume ~97.5% of that budget.
+//
+// Destructive tools are kept OUT of plur_admin's dispatch specifically
+// (audit fix — evaluator review, 2026-07-08): a client that gates
+// confirmation prompts or audit trails off MCP tool annotations — the whole
+// point of the annotations field — can no longer tell "delete a pack and
+// all its engrams" apart from "check status" once both are wrapped behind
+// the same generic dispatch tool, whose own single static annotation
+// (`{ title: 'Admin dispatch', readOnlyHint: false }`) can't carry a
+// per-action risk signal. Two more core tools (11 total) is still far under
+// the ~40-tool cap, so there's no budget reason to wrap them either.
 const CURSOR_CORE_TOOL_NAMES: ReadonlySet<string> = new Set([
   'plur_session_start',
   'plur_session_end',
@@ -232,6 +243,8 @@ const CURSOR_CORE_TOOL_NAMES: ReadonlySet<string> = new Set([
   'plur_forget',
   'plur_status',
   'plur_doctor',
+  'plur_packs_uninstall',
+  'plur_tensions_purge',
 ])
 
 function buildAdminDispatchTool(all: ToolDefinition[]): ToolDefinition {
@@ -277,7 +290,19 @@ function buildAdminDispatchTool(all: ToolDefinition[]): ToolDefinition {
         // validateToolArgs's docstring).
         return { ...validated.errorPayload, error: `${action}: ${validated.errorPayload.error}` }
       }
-      return target.handler(validated.data, plur)
+      try {
+        return await target.handler(validated.data, plur)
+      } catch (err: unknown) {
+        // Audit fix (evaluator review, 2026-07-08): an uncaught throw from
+        // the wrapped handler propagates up to server.ts's top-level catch,
+        // which logs `Tool ${request.params.name} failed: ...` —
+        // request.params.name is always "plur_admin" at the protocol level,
+        // so without this the log can never say which of the ~31 wrapped
+        // operations actually broke. Prefixing the action name here means
+        // it survives into that log message even though the tool name doesn't.
+        const message = (err as Error)?.message ?? String(err)
+        throw new Error(`${action}: ${message}`)
+      }
     },
   }
 }

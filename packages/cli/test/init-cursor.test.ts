@@ -42,7 +42,7 @@ describe('plur init --cursor', () => {
   })
 
   it('--cursor forces setup even without a pre-existing .cursor/ dir', () => {
-    runInit('--cursor')
+    const output = runInit('--cursor')
 
     const mcpConfig = JSON.parse(readFileSync(join(project, '.cursor', 'mcp.json'), 'utf-8'))
     expect(mcpConfig.mcpServers.plur).toBeDefined()
@@ -63,6 +63,12 @@ describe('plur init --cursor', () => {
     const gitignore = readFileSync(join(project, '.gitignore'), 'utf-8')
     expect(gitignore).toContain('.cursor/rules/plur-context.mdc')
     expect(gitignore).toContain('.cursor/rules/plur-reminder.mdc')
+
+    // Audit fix (evaluator review, 2026-07-08): .cursor/mcp.json's command
+    // is this machine's local shim path — warn that committing it won't
+    // port to another machine or a Background Agent VM.
+    expect(mcpConfig.mcpServers.plur.command).toMatch(/^\//)
+    expect(output).toContain("won't exist on a teammate's machine")
   })
 
   it('--no-cursor skips Cursor setup even with a .cursor/ dir present', () => {

@@ -17,14 +17,21 @@ describe('tool profiles', () => {
     expect(full.some(t => t.name === 'plur_admin')).toBe(false)
   })
 
-  it('cursor profile stays at or under 10 tools and includes plur_admin', () => {
+  it('cursor profile stays at or under 12 tools and includes plur_admin', () => {
     const cursor = getToolDefinitions('cursor')
-    expect(cursor.length).toBeLessThanOrEqual(10)
+    // 8 day-to-day tools + plur_packs_uninstall/plur_tensions_purge (kept as
+    // direct top-level tools, not wrapped in plur_admin, so their
+    // destructiveHint annotation stays visible to clients — audit fix,
+    // evaluator review 2026-07-08) + plur_admin = 11, still far under
+    // Cursor's ~40-tool-per-workspace cap.
+    expect(cursor.length).toBeLessThanOrEqual(12)
     const names = cursor.map(t => t.name)
     expect(names).toContain('plur_session_start')
     expect(names).toContain('plur_learn')
     expect(names).toContain('plur_recall_hybrid')
     expect(names).toContain('plur_admin')
+    expect(names).toContain('plur_packs_uninstall')
+    expect(names).toContain('plur_tensions_purge')
     expect(names).not.toContain('plur_packs_install')
   })
 
@@ -46,9 +53,20 @@ describe('tool profiles', () => {
       rmSync(dir, { recursive: true })
     })
 
-    it('lists <=10 tools over the wire in cursor profile', async () => {
+    it('lists <=12 tools over the wire in cursor profile', async () => {
       const { tools } = await client.listTools()
-      expect(tools.length).toBeLessThanOrEqual(10)
+      expect(tools.length).toBeLessThanOrEqual(12)
+    })
+
+    // Audit fix (evaluator review, 2026-07-08): destructive tools must keep
+    // their real annotation once they're direct top-level tools again —
+    // this is the whole point of pulling them out of plur_admin's dispatch.
+    it('exposes destructiveHint on plur_packs_uninstall and plur_tensions_purge directly', async () => {
+      const { tools } = await client.listTools()
+      const uninstall = tools.find((t) => t.name === 'plur_packs_uninstall')
+      const purge = tools.find((t) => t.name === 'plur_tensions_purge')
+      expect(uninstall?.annotations?.destructiveHint).toBe(true)
+      expect(purge?.annotations?.destructiveHint).toBe(true)
     })
 
     it('dispatches plur_status through plur_admin', async () => {

@@ -759,7 +759,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   outputText(`Claude Desktop:   ${desktopStatus}`)
   outputText(cursorStatus)
   if (shouldSetupCursor(args)) {
-    // Audit fix (user evaluator): the 9-tools-instead-of-39 tradeoff and
+    // Audit fix (user evaluator): the 11-tools-instead-of-39 tradeoff and
     // plur_admin indirection were previously only discoverable by reading
     // tools.ts (invisible to users) or the rules file's fine print. Say it
     // here, where a human actually reads the install output. Also note: this
@@ -768,11 +768,25 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     // Claude Code, both integrations are now active, running independently
     // (separate sentinel directories, separate config files); this plan
     // doesn't test that combination, just documents that it exists.
-    outputText('  Cursor gets a reduced tool set (~9 tools + plur_admin dispatch for the rest) to stay')
+    outputText('  Cursor gets a reduced tool set (~11 tools + plur_admin dispatch for the rest) to stay')
     outputText('  under Cursor\'s ~40-tool-per-workspace limit — call plur_admin with { action, args } for')
     outputText('  packs/sync/tensions/stores/timeline/etc. Run `plur doctor` any time to see current counts.')
     outputText('  Note: the Claude Code hooks above are also active in this project — the two integrations')
     outputText('  run independently and haven\'t been tested together.')
+    // Audit fix (evaluator review, 2026-07-08): .cursor/mcp.json and
+    // .cursor/hooks.json are intentionally NOT gitignored (unlike the two
+    // dynamic .mdc rule files above) so committing .cursor/ lets teammates
+    // and Cursor Background Agents inherit this config. But `cmd` here is
+    // the LOCAL shim path (~/.plur/bin/plur-hook, ~/.plur/bin/plur-mcp) —
+    // machine-specific. On a different machine, or a fresh cloud-agent VM
+    // that only clones the repo, that path won't exist and PLUR silently
+    // won't start there. `plur doctor` now catches this after the fact
+    // (cursorWired checks the command exists); this warns before it bites.
+    if (cmd.startsWith('/') || /^[A-Za-z]:\\/.test(cmd)) {
+      outputText('  Committing .cursor/mcp.json / .cursor/hooks.json? Their command is this machine\'s local')
+      outputText(`  path (${cmd}) — it won't exist on a teammate's machine or a fresh Background Agent VM.`)
+      outputText('  Run `plur init --cursor` there too, or edit the command to `npx -y @plur-ai/mcp@latest`.')
+    }
   }
   outputText(`CLAUDE.md:        ${claudeMdStatus}`)
   if (projectConfigPath) {

@@ -1,7 +1,6 @@
-import { readFileSync, writeFileSync } from 'fs'
 import { type GlobalFlags } from '../plur.js'
 import { isPlurConfigured } from '../lib/plur-configured.js'
-import { readStdinJson, cursorConversationId, stopCountPath } from '../lib/cursor-hook-io.js'
+import { readStdinJson, cursorConversationId, stopCountPath, incrementCounter } from '../lib/cursor-hook-io.js'
 
 /**
  * plur hook-cursor-stop — Cursor `stop` hook.
@@ -19,15 +18,6 @@ import { readStdinJson, cursorConversationId, stopCountPath } from '../lib/curso
 
 const NUDGE_EVERY_N_STOPS = 3
 
-function incrementStopCount(conversationId: string): number {
-  const path = stopCountPath(conversationId)
-  let count = 0
-  try { count = parseInt(readFileSync(path, 'utf8'), 10) || 0 } catch {}
-  count++
-  writeFileSync(path, String(count))
-  return count
-}
-
 export async function run(_args: string[], _flags: GlobalFlags): Promise<void> {
   if (!isPlurConfigured()) return
 
@@ -38,7 +28,7 @@ export async function run(_args: string[], _flags: GlobalFlags): Promise<void> {
   const status = String(input.status ?? '')
   if (status !== 'completed') return // don't nudge on aborted/error turns
 
-  const count = incrementStopCount(conversationId)
+  const count = incrementCounter(stopCountPath(conversationId))
   if (count % NUDGE_EVERY_N_STOPS !== 0) return
 
   process.stdout.write(JSON.stringify({

@@ -55,22 +55,36 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
   // seconds after the session just started.
   markSessionStarted(conversationId)
 
-  const plur = createPlur(flags)
-  const projectConfig = readProjectConfig()
-  const injectOpts = { budget: 3000, ...(projectConfig.scope ? { scope: projectConfig.scope } : {}) }
+  // Audit fix (evaluator review, 2026-07-08): this used to call inject() and
+  // writeContextRule() unguarded, AFTER markSessionStarted() above already
+  // ran. If inject() threw, the sentinel would still exist (guard stops
+  // enforcing) but the rule file would silently keep a PREVIOUS session's
+  // content, with nothing distinguishing "this session's memory, 0 engrams"
+  // from "stale leftovers from last time, injection is broken." Wrapping
+  // this so a failure writes an explicit, honest notice instead.
+  let fullContext: string
+  try {
+    const plur = createPlur(flags)
+    const projectConfig = readProjectConfig()
+    const injectOpts = { budget: 3000, ...(projectConfig.scope ? { scope: projectConfig.scope } : {}) }
 
-  const result = plur.inject('general session start', injectOpts)
-  const count = result.count
-  const context = count > 0 ? [result.directives, result.constraints, result.consider].filter(Boolean).join('\n') : ''
+    const result = plur.inject('general session start', injectOpts)
+    const count = result.count
+    const context = count > 0 ? [result.directives, result.constraints, result.consider].filter(Boolean).join('\n') : ''
 
-  const header = `[PLUR Memory — session started, ${count} engrams injected]` +
-    (projectConfig.scope ? `\nProject scope: ${projectConfig.scope} — use this scope for plur_learn calls` : '')
+    const header = `[PLUR Memory — session started, ${count} engrams injected]` +
+      (projectConfig.scope ? `\nProject scope: ${projectConfig.scope} — use this scope for plur_learn calls` : '')
 
-  const fullContext = context ? `${header}\n\n${context}` : header
+    fullContext = context ? `${header}\n\n${context}` : header
+  } catch (err: unknown) {
+    fullContext = '[PLUR Memory — injection FAILED this session start] ' +
+      `(${(err as Error).message ?? 'unknown error'}). Recalled memory is unavailable; run ` +
+      '`plur doctor` to diagnose.'
+  }
 
-  // Primary channel — always write, even at count 0, so the rule file
-  // reflects "PLUR is active, 0 engrams yet" rather than going stale from a
-  // previous session's content.
+  // Primary channel — always write, even at count 0 or on failure, so the
+  // rule file reflects THIS session's real state rather than going stale
+  // from a previous session's content.
   writeContextRule(fullContext)
 
   // Secondary channel — harmless if broken, free upgrade if Cursor fixes it.

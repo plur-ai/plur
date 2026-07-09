@@ -7,6 +7,7 @@ import { outputText, outputJson, shouldOutputJson } from '../output.js'
 import {
   type ConfigFile,
   buildMcpServerEntry,
+  cursorProjectMcpConfigPath,
   hasDatacoreMcp,
   hasPlurMcp,
   knownConfigFiles,
@@ -486,8 +487,35 @@ function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<Doctor
   const cursorMcpConfig = configs.find((c) => c.label === 'Cursor (.cursor/mcp.json)')
   const cursorHooksConfigReport = configs.find((c) => c.label === 'Cursor (.cursor/hooks.json)')
   const cursorProjectDetected = existsSync(join(process.cwd(), '.cursor'))
+
+  // Two further checks beyond bare "entry exists" (audit fix — evaluator
+  // review, 2026-07-08):
+  //   1. The entry's env actually carries PLUR_TOOL_PROFILE=cursor — an
+  //      entry that exists but is missing/wrong here silently gets the full
+  //      39-tool surface, not the ~11-tool one, which is exactly what this
+  //      wiring exists to prevent.
+  //   2. If the command is an absolute path (the local shim `plur init`
+  //      installs — see mcp-config.ts's buildMcpServerEntry), it must
+  //      actually exist ON THIS MACHINE. `.cursor/mcp.json` is meant to be
+  //      committed so teammates/background agents inherit it, but the shim
+  //      path it bakes in is machine-local — a config that's healthy on the
+  //      machine that ran `plur init --cursor` can point at a path that was
+  //      never installed on another machine or a fresh cloud-agent VM. This
+  //      is a cheap existsSync check, not a second live handshake spawn —
+  //      doctor already spawns the server twice (see cursorHandshake below).
+  let cursorEntryEnvCorrect = false
+  let cursorEntryCommandExists = true
+  if (cursorMcpConfig?.exists) {
+    const parsed = readConfig(cursorProjectMcpConfigPath())
+    const servers = (parsed.mcpServers ?? {}) as Record<string, { command?: string; env?: Record<string, string> }>
+    const plurEntry = servers.plur
+    cursorEntryEnvCorrect = plurEntry?.env?.PLUR_TOOL_PROFILE === 'cursor'
+    if (plurEntry?.command && (plurEntry.command.startsWith('/') || /^[A-Za-z]:\\/.test(plurEntry.command))) {
+      cursorEntryCommandExists = existsSync(plurEntry.command)
+    }
+  }
   const cursorWired = Boolean(
-    cursorMcpConfig?.exists && cursorMcpConfig.hasPlurMcp &&
+    cursorMcpConfig?.exists && cursorMcpConfig.hasPlurMcp && cursorEntryEnvCorrect && cursorEntryCommandExists &&
     cursorHooksConfigReport?.exists && cursorHooksConfigReport.hasPlurHooks,
   )
 
@@ -500,8 +528,14 @@ function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<Doctor
     // counts side by side instead of guessing which one a given config
     // file's env is actually wired to (see mcpHandshake's doc comment).
     // Only worth a second spawn if the default handshake actually came up —
-    // no point probing a profile variant of a server that doesn't start.
-    const cursorHandshake = handshake.ok ? await mcpHandshake(20000, { PLUR_TOOL_PROFILE: 'cursor' }) : null
+    // no point probing a profile variant of a server that doesn't start —
+    // AND only if this is actually a Cursor project (audit fix — evaluator
+    // review, 2026-07-08: this used to spawn unconditionally, doubling
+    // handshake cost — up to +20s on a cold npx fetch — for the common
+    // Claude-Code-only case with no `.cursor/` at all).
+    const cursorHandshake = (handshake.ok && cursorProjectDetected)
+      ? await mcpHandshake(20000, { PLUR_TOOL_PROFILE: 'cursor' })
+      : null
 
     // Wiring overall: hooks + MCP + handshake + (if a Cursor project is
     // detected) Cursor's own config actually being wired. Embedder status is
@@ -611,11 +645,16 @@ function printText(report: DoctorReport): void {
   if (report.cursorHandshake?.ok && report.cursorHandshake.toolCount !== undefined) {
     outputText(`MCP tools exposed (PLUR_TOOL_PROFILE=cursor): ${report.cursorHandshake.toolCount}`)
   }
-  if (report.handshake.ok && report.handshake.toolCount !== undefined && report.handshake.toolCount > 15) {
+  // Gated on cursorProjectDetected (audit fix — evaluator review,
+  // 2026-07-08): this used to fire for every user whose default handshake
+  // reports >15 tools, i.e. nearly every Claude-Code-only install — a
+  // Cursor-specific warning printed unconditionally in a report that mostly
+  // isn't about Cursor at all.
+  if (report.cursorProjectDetected && report.handshake.ok && report.handshake.toolCount !== undefined && report.handshake.toolCount > 15) {
     outputText(
       `  Cursor caps a workspace at ~40 MCP tools total across every server. If .cursor/mcp.json's ` +
       `plur entry doesn't set PLUR_TOOL_PROFILE=cursor in its env, Cursor is getting the full ` +
-      `${report.handshake.toolCount}-tool surface above, not the ~9-tool one. Run \`plur init --cursor\` to fix, ` +
+      `${report.handshake.toolCount}-tool surface above, not the ~11-tool one. Run \`plur init --cursor\` to fix, ` +
       `or set the env var directly if you registered the server by hand.`,
     )
   }
