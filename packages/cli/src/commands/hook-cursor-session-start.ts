@@ -18,10 +18,13 @@ import { readProjectConfig } from '@plur-ai/core'
  * ("runs async before the composer handle is fully created") — filed,
  * acknowledged, no fix timeline. This hook writes recalled content into the
  * DYNAMIC rules file via `writeContextRule()` as the PRIMARY channel
- * (Cursor's rules engine reliably loads `alwaysApply: true` rules — this is
- * the community-and-team-confirmed workaround), and still ALSO emits
- * `additional_context` (harmless, and picks up automatically for free if
- * Cursor ships a fix later).
+ * (Cursor's rules engine reliably loads `alwaysApply: true` rules AT
+ * CONVERSATION CREATION — this is the community-and-team-confirmed
+ * workaround), and still ALSO emits `additional_context` (harmless, and
+ * picks up automatically for free if Cursor ships a fix later). Whether a
+ * later REWRITE of this same file is re-read before the conversation ends
+ * is not independently confirmed — see writeContextRule's docstring and
+ * cursor-hook-io.ts's "Known structural limitations" item 4.
  *
  * BM25-only, deliberately (PR #502's lesson, ported from hook-inject.ts's
  * --event branch — see Global Constraints). Cursor's hook schema has no

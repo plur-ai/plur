@@ -15,11 +15,22 @@ import {
  *
  * Cursor's `preToolUse` fires for every tool call, including MCP tools
  * ("generic hook that fires for all tool types: Shell, Read, Write, MCP,
- * Task"), and its `permission: "deny"` output is reliably enforced — the
- * direct analog of Claude Code's PreToolUse session guard. Cursor hooks can
- * only reliably DENY (an "allow" verdict does not override Cursor's separate
- * MCP approval/allowlist UI), so — same as the Claude Code guard — this hook
- * never emits an explicit allow, only a deny or nothing.
+ * Task"), and its `permission: "deny"` output is DOCUMENTED to be enforced —
+ * the direct analog of Claude Code's PreToolUse session guard. Unlike the
+ * "fires for every tool call" fact (a direct doc quote), "deny is enforced"
+ * is not independently verified against a live Cursor install — same
+ * evidentiary basis (docs text, no live run) as the background/cloud-agent
+ * uncertainty noted below, so it gets the same hedge (audit fix —
+ * Popper-lens evaluator review, iteration 4, 2026-07-09: this used to read
+ * as settled fact with no hedge, inconsistent with how this same file
+ * treats an adjacent claim resting on identical evidence). This codebase's
+ * test suite can only assert the HOOK PROCESS emits `{"permission":"deny"}`
+ * — it cannot test that Cursor's runtime actually blocks the tool call in
+ * response; Task 11 (manual verification) is what actually settles this.
+ * Cursor hooks can only reliably DENY (an "allow" verdict does not override
+ * Cursor's separate MCP approval/allowlist UI), so — same as the Claude
+ * Code guard — this hook never emits an explicit allow, only a deny or
+ * nothing.
  *
  * In normal interactive use this rarely fires a deny at all: sessionStart
  * already wrote the sentinel before the first tool call. Its INTENDED job is

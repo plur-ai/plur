@@ -31,6 +31,19 @@ import { cursorContextRulePath } from '../mcp-config.js'
  *    load Claude Code config too) — two independent sentinel schemes, two
  *    independent plur.inject() calls, no shared "already handled this turn"
  *    signal.
+ * 4. MID-CONVERSATION RULE-FILE REWRITES are not independently confirmed to
+ *    be re-read before a conversation ends (evaluator review — Popper
+ *    lens, iteration 4, 2026-07-09). The forum-confirmed fact is narrower
+ *    than the workaround's own docstring implies: `additional_context` is
+ *    dropped by a race at CONVERSATION-CREATION time. Cursor's rules
+ *    engine reliably loading `alwaysApply: true` rules AT THAT SAME MOMENT
+ *    is the actual confirmed fact; whether a REWRITE of that file later —
+ *    e.g. hook-cursor-post-tool.ts's reminder, or a second
+ *    hook-cursor-session-start.ts run — is picked up live rather than the
+ *    rules being snapshotted once, is not established anywhere in this
+ *    codebase or its cited evidence. If rules are snapshotted, this
+ *    workaround has the identical "loaded once, then frozen" failure shape
+ *    one layer down. Task 11 (manual verification) settles this.
  */
 
 export function readStdinJson(): Record<string, unknown> {
@@ -204,11 +217,21 @@ export function markSessionStarted(conversationId: string): void {
  * composer handle is fully created") — a filed, acknowledged bug with no fix
  * timeline as of this plan's writing. The community-and-team-confirmed
  * workaround is to write the same content into a `.cursor/rules/*.mdc` file
- * instead: Cursor's rules engine reliably loads `alwaysApply: true` rules,
- * unlike the broken hook-output channel. This is now the PRIMARY delivery
- * mechanism for hook-cursor-session-start.ts and hook-cursor-post-tool.ts —
- * not a fallback — both also still emit `additional_context` too (harmless,
- * and picks up automatically if/when Cursor fixes the underlying bug).
+ * instead: Cursor's rules engine reliably loads `alwaysApply: true` rules AT
+ * CONVERSATION CREATION, unlike the broken hook-output channel. This is now
+ * the PRIMARY delivery mechanism for hook-cursor-session-start.ts and
+ * hook-cursor-post-tool.ts — not a fallback — both also still emit
+ * `additional_context` too (harmless, and picks up automatically if/when
+ * Cursor fixes the underlying bug).
+ *
+ * Narrower than it may read (audit fix — Popper-lens evaluator review,
+ * iteration 4, 2026-07-09): the confirmed fact is specifically about the
+ * file being loaded once at conversation start. Whether a REWRITE of this
+ * file mid-conversation — which is exactly what every call after the first
+ * one is — gets re-read before the conversation ends, or whether rules are
+ * snapshotted once like the hook-output channel this replaces, is NOT
+ * independently confirmed. See this file's "Known structural limitations"
+ * item 4 above.
  *
  * Takes an explicit `path` (default `cursorContextRulePath()`) so callers can
  * target a DIFFERENT rule file instead — see `cursorReminderRulePath()`.
