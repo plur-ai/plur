@@ -421,8 +421,7 @@ for pkg_check in "cli:$VERSION"; do
   pkg_name="${pkg_check%%:*}"
   pkg_ver="${pkg_check##*:}"
   echo -n "  npx -y @plur-ai/$pkg_name@$pkg_ver --version → "
-  smoke_out=$(npx -y "@plur-ai/$pkg_name@$pkg_ver" --version 2>&1)
-  smoke_exit=$?
+  smoke_out=$(npx -y "@plur-ai/$pkg_name@$pkg_ver" --version 2>&1) && smoke_exit=0 || smoke_exit=$?
   if [ "$smoke_exit" -eq 0 ] && echo "$smoke_out" | grep -q "$pkg_ver"; then
     echo "✓ ($smoke_out)"
   else

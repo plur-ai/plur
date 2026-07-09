@@ -4,10 +4,9 @@
 
 Cursor IDE support (experimental/beta).
 
-- Cursor support: `npx @plur-ai/cli@0.13.0 init --cursor` wires hooks + MCP config
-- Reduced ~11-tool profile for Cursor plus `plur_admin` dispatch tool
-- Memory delivered via `.cursor/rules/*.mdc` (Cursor drops hook `additional_context`)
-- `plur doctor` now diagnoses Cursor-specific wiring
+- `npx @plur-ai/cli init --cursor`
+- Reduced tool profile for Cursor's tool-count limit
+- `plur doctor` diagnoses Cursor wiring
 
 Note: some features originally slated for this release were pulled back before shipping because they weren't sufficiently tested. They'll ship in a future release once ready.
 
