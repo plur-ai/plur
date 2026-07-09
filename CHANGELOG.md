@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.13.0 (2026-07-09)
+
+Cursor IDE support (experimental/beta).
+
+- Cursor support: `npx @plur-ai/cli@0.13.0 init --cursor` wires hooks + MCP config
+- Reduced ~11-tool profile for Cursor plus `plur_admin` dispatch tool
+- Memory delivered via `.cursor/rules/*.mdc` (Cursor drops hook `additional_context`)
+- `plur doctor` now diagnoses Cursor-specific wiring
+
+Note: some features originally slated for this release were pulled back before shipping because they weren't sufficiently tested. They'll ship in a future release once ready.
+
+### Details
+
+PLUR now works inside Cursor — its own hook system (`sessionStart`, `preToolUse`, `postToolUse`, `stop`), its own MCP config, and a reduced tool profile so PLUR doesn't blow Cursor's ~40-MCP-tool-per-workspace budget.
+
+**Install**: `npx @plur-ai/cli@0.13.0 init --cursor` (auto-detected too, if a `.cursor/` dir already exists in your project). Writes `.cursor/mcp.json`, `.cursor/hooks.json`, and `.cursor/rules/plur-memory.mdc`.
+
+**Reduced tool profile**: Cursor gets ~11 core tools (`plur_session_start`, `plur_learn`, `plur_recall_hybrid`, `plur_feedback`, `plur_forget`, `plur_session_end`, `plur_status`, `plur_doctor`, `plur_packs_uninstall`, `plur_tensions_purge`) plus `plur_admin`, a dispatch tool for everything else (`{ action, args }`) — instead of the full 39-tool surface.
+
+**Memory delivery**: Cursor's hook-output `additional_context` field is dropped by a confirmed race condition (acknowledged by Cursor's own team, no fix ETA), so PLUR delivers recalled memory and reminders through dynamically-rewritten `.cursor/rules/*.mdc` files instead.
+
+**`plur doctor`** now diagnoses Cursor-specific wiring (`.cursor/mcp.json` / `.cursor/hooks.json`, tool-profile env, live MCP tool count for both the full and Cursor profiles).
+
+**Why "experimental/beta"**: this integration has not yet been verified against a live Cursor install. Report issues at github.com/plur-ai/plur/issues.
+
 ## 0.11.0 (2026-07-06)
 
 Hooks that actually finish, tension lifecycle, migration importers.
