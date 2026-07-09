@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync, utimesSync } from 'fs'
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { spawnSync } from 'child_process'
@@ -67,19 +67,20 @@ describe('hook-inject concurrency guard (#519)', () => {
   })
 
   it('proceeds when the inject lock is stale', () => {
-    // A lock written 2 hours ago is beyond any reasonable HOOK_CEILING_MS.
-    // hook-inject should ignore it, proceed, and produce a session-start header.
+    // Pre-create a lock that belongs to this pid (same as ppid in the spawned
+    // subprocess). With PLUR_LOCK_STALE_MS=-1 the staleness condition
+    // (Date.now() - mtime < -1) is always false, so the lock is always treated
+    // as stale. This avoids relying on utimesSync mtime precision, which can be
+    // unreliable on CI runners (observed silent no-op on Linux tmpfs variants).
     const sessionDir = join(dir, 'tmp', 'plur-sessions')
     mkdirSync(sessionDir, { recursive: true })
     const lockPath = join(sessionDir, `${process.pid}.injecting`)
     writeFileSync(lockPath, '')
-    const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000)
-    utimesSync(lockPath, twoHoursAgo, twoHoursAgo)
 
-    const result = runHook({ prompt: 'hello world' })
+    const result = runHook({ prompt: 'hello world' }, { PLUR_LOCK_STALE_MS: '-1' })
     // With an empty store the output is still a session-start header (0 engrams).
     expect(result.status).toBe(0)
     const parsed = JSON.parse(result.stdout) as { additionalContext?: string }
     expect(parsed.additionalContext).toContain('session started')
-  })
+  }, 30_000)
 })
