@@ -4,9 +4,9 @@
 
 Cursor IDE support (experimental/beta).
 
-- `npx @plur-ai/cli init --cursor`
+- npx @plur-ai/cli init --cursor
 - Reduced tool profile for Cursor's tool-count limit
-- `plur doctor` diagnoses Cursor wiring
+- plur doctor diagnoses Cursor wiring
 
 Note: some features originally slated for this release were pulled back before shipping because they weren't sufficiently tested. They'll ship in a future release once ready.
 
