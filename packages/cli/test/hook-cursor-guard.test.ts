@@ -107,4 +107,26 @@ describe('hook-cursor-guard', () => {
 
     expect(existsSync(staleMarker)).toBe(false)
   })
+
+  // Audit fix (evaluator review, iteration 5, 2026-07-09): safeSessionKey's
+  // "closes path traversal" claim (cursor-hook-io.ts) had zero regression
+  // coverage — every fixture across all four hook-cursor-*.test.ts files
+  // used a plain conv-abc-123-style id. Prove a conversation_id containing
+  // `../` segments neither crashes the hook nor escapes SESSIONS_DIR.
+  it('sanitizes a conversation_id containing path-traversal characters', () => {
+    const conversationId = '../../../etc/evil'
+    const safeKey = conversationId.replace(/[^A-Za-z0-9_-]/g, '_')
+    const guardCountFile = join(SESSIONS_DIR, `${safeKey}.marker.guard-count`)
+
+    const output = execSync(`node ${CLI} hook-cursor-guard`, {
+      cwd: projectDir,
+      input: JSON.stringify({ conversation_id: conversationId, tool_name: 'some_tool' }),
+      encoding: 'utf-8',
+    })
+
+    expect(JSON.parse(output).permission).toBe('deny')
+    // Landed inside SESSIONS_DIR under the sanitized name, not escaped via `../`.
+    expect(existsSync(guardCountFile)).toBe(true)
+    rmSync(guardCountFile, { force: true })
+  })
 })

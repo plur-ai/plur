@@ -393,9 +393,12 @@ alwaysApply: true
 You have persistent memory via PLUR (tools prefixed \`plur_\`; less-common ones are behind \`plur_admin\` — pass { action, args }).
 
 - Session start is injected automatically via hooks, delivered through
-  \`.cursor/rules/plur-context.mdc\`; periodic reminders arrive through
-  \`.cursor/rules/plur-reminder.mdc\` (both auto-generated, changes there each
-  session — don't hand-edit either).
+  \`.cursor/rules/plur-context.mdc\`; periodic reminders are attempted
+  through \`.cursor/rules/plur-reminder.mdc\` (best-effort — both are
+  auto-generated, changes there each session, don't hand-edit either). If
+  reminders seem to stop arriving, don't wait for one: proactively call
+  **plur_learn** on anything worth remembering and **plur_session_end**
+  before wrapping up.
 - When corrected or you learn a convention/preference: call **plur_learn** immediately.
 - Before answering factual questions about this project: call **plur_recall_hybrid** first.
 - Rate injected engrams with **plur_feedback** when you notice one helped or missed.
