@@ -1,5 +1,5 @@
 import { spawn } from 'child_process'
-import { existsSync, readFileSync, realpathSync } from 'fs'
+import { existsSync, readFileSync, realpathSync, statSync, accessSync, constants } from 'fs'
 import { join, extname } from 'path'
 import { homedir, platform } from 'os'
 import { createPlur, type GlobalFlags } from '../plur.js'
@@ -167,6 +167,23 @@ function validateHookShim(): HookShimReport {
   }
 
   return { valid: true, shimPath: path }
+}
+
+/**
+ * Is `path` a regular file that's actually executable? Used to validate a
+ * committed `.cursor/mcp.json`'s absolute-path command (audit fix —
+ * evaluator review, iteration 3, 2026-07-09): existsSync alone can't tell a
+ * runnable shim apart from a directory, a 0-byte file, or a file stripped
+ * of its execute bit — all of which would still spawn-fail.
+ */
+function commandIsExecutableFile(path: string): boolean {
+  try {
+    if (!statSync(path).isFile()) return false
+    accessSync(path, constants.X_OK)
+    return true
+  } catch {
+    return false
+  }
 }
 
 function inspectConfigs(): ConfigFileReport[] {
@@ -511,7 +528,14 @@ function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<Doctor
     const plurEntry = servers.plur
     cursorEntryEnvCorrect = plurEntry?.env?.PLUR_TOOL_PROFILE === 'cursor'
     if (plurEntry?.command && (plurEntry.command.startsWith('/') || /^[A-Za-z]:\\/.test(plurEntry.command))) {
-      cursorEntryCommandExists = existsSync(plurEntry.command)
+      // Audit fix (evaluator review, iteration 3, 2026-07-09): existsSync
+      // alone reports true for a directory, a 0-byte file, or a file
+      // stripped of its execute bit (an interrupted `plur init --cursor`,
+      // a botched reinstall, an AV quarantine placeholder) — the exact
+      // "config looks healthy but the server can't actually start" failure
+      // this check exists to catch, just via a different corruption path.
+      // Also check it's a regular, executable file.
+      cursorEntryCommandExists = commandIsExecutableFile(plurEntry.command)
     }
   }
   const cursorWired = Boolean(

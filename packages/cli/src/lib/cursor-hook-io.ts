@@ -1,4 +1,4 @@
-import { readSync, mkdirSync, writeFileSync, appendFileSync, statSync } from 'fs'
+import { readSync, mkdirSync, writeFileSync, appendFileSync, statSync, readdirSync, unlinkSync } from 'fs'
 import { join, dirname } from 'path'
 import { tmpdir } from 'os'
 import { cursorContextRulePath } from '../mcp-config.js'
@@ -112,9 +112,40 @@ export function isPlurSessionStartTool(toolName: string): boolean {
   return toolName === 'plur_session_start' || toolName.endsWith('__plur_session_start')
 }
 
+const STALE_SESSION_FILE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000 // 7 days
+
+/**
+ * Delete session marker files older than STALE_SESSION_FILE_MAX_AGE_MS.
+ * Mirrors the equivalent cleanup already done for Claude Code's checkpoint
+ * files (hook-inject.ts unlinkSync's stale ~/.plur/sessions/*.checkpoint.json)
+ * — audit fix (evaluator review, iteration 3, 2026-07-09): this Cursor port
+ * never had an equivalent, so every unique conversation_id left orphaned
+ * .marker/.reminded/.stopcount/.guard-count files in this directory
+ * forever, unbounded — worst on exactly the long-lived background-agent
+ * VMs this hook family targets. Best-effort: a stat/unlink failure on one
+ * file (permissions, a race with another process) must not stop the rest
+ * or throw out of a hook that's expected to run in milliseconds.
+ */
+function pruneStaleSessions(dir: string): void {
+  let entries: string[]
+  try {
+    entries = readdirSync(dir)
+  } catch {
+    return
+  }
+  const cutoff = Date.now() - STALE_SESSION_FILE_MAX_AGE_MS
+  for (const entry of entries) {
+    const path = join(dir, entry)
+    try {
+      if (statSync(path).mtimeMs < cutoff) unlinkSync(path)
+    } catch { /* ignore — permissions, or another process already removed it */ }
+  }
+}
+
 export function sessionsDir(): string {
   const dir = join(tmpdir(), 'plur-cursor-sessions')
   mkdirSync(dir, { recursive: true })
+  pruneStaleSessions(dir)
   return dir
 }
 

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync } from 'fs'
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync, utimesSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { execSync } from 'child_process'
@@ -84,5 +84,27 @@ describe('hook-cursor-guard', () => {
     const second = execSync(`node ${CLI} hook-cursor-guard`, { cwd: projectDir, input: payload, encoding: 'utf-8' })
     expect(second.trim()).toBe('')
     expect(existsSync(join(tmpdir(), 'plur-cursor-sessions', `${conversationId}.marker`))).toBe(true)
+  })
+
+  // Audit fix (evaluator review, iteration 3, 2026-07-09): every hook
+  // invocation calls sessionsDir(), which now prunes marker files older
+  // than 7 days — without this, every unique conversation_id left orphaned
+  // files in $TMPDIR/plur-cursor-sessions/ forever.
+  it('prunes session files older than 7 days on any hook invocation', () => {
+    mkdirSync(SESSIONS_DIR, { recursive: true })
+    const staleMarker = join(SESSIONS_DIR, 'conv-ancient.marker')
+    writeFileSync(staleMarker, 'old')
+    const eightDaysAgo = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000)
+    utimesSync(staleMarker, eightDaysAgo, eightDaysAgo)
+
+    // NOT tool_name: 'plur_session_start' — that path returns before ever
+    // touching sentinelPath()/sessionsDir(), so pruning would never trigger.
+    execSync(`node ${CLI} hook-cursor-guard`, {
+      cwd: projectDir,
+      input: JSON.stringify({ conversation_id: 'conv-fresh', tool_name: 'some_other_tool' }),
+      encoding: 'utf-8',
+    })
+
+    expect(existsSync(staleMarker)).toBe(false)
   })
 })

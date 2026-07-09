@@ -399,6 +399,38 @@ describe('plur doctor', () => {
     expect(report.overall).toBe('fail')
   })
 
+  // Audit fix (evaluator review, iteration 3, 2026-07-09): existsSync alone
+  // reports true for a file stripped of its execute bit (interrupted
+  // install, botched reinstall, AV quarantine placeholder) — the command
+  // would still fail to spawn. cursorWired must catch this too, not just
+  // "path missing entirely".
+  it('reports cursorWired=false when the shim command exists but is not executable', () => {
+    writeGlobalSettings({
+      hooks: { UserPromptSubmit: [{ hooks: [{ type: 'command', command: 'npx @plur-ai/cli hook-inject' }] }] },
+      mcpServers: { plur: { command: '/bin/sh', args: ['-lc', 'exec npx -y @plur-ai/mcp@latest'] } },
+    })
+    mkdirSync(join(home, '.cursor'), { recursive: true })
+    const binDir = join(home, '.plur', 'bin')
+    mkdirSync(binDir, { recursive: true })
+    const shimPath = join(binDir, 'plur-mcp')
+    writeFileSync(shimPath, '#!/bin/sh\necho not actually executable\n')
+    chmodSync(shimPath, 0o644) // no execute bit
+    writeFileSync(
+      join(home, '.cursor', 'mcp.json'),
+      JSON.stringify({ mcpServers: { plur: { command: shimPath, args: [], env: { PLUR_TOOL_PROFILE: 'cursor' } } } }),
+    )
+    writeFileSync(
+      join(home, '.cursor', 'hooks.json'),
+      JSON.stringify({ version: 1, hooks: { sessionStart: [{ command: 'plur-hook hook-cursor-session-start' }] } }),
+    )
+
+    const { stdout } = runDoctor()
+    const report = JSON.parse(stdout)
+
+    expect(report.cursorWired).toBe(false)
+    expect(report.overall).toBe('fail')
+  })
+
   it('does not require Cursor wiring when no .cursor/ directory exists', () => {
     writeGlobalSettings({
       hooks: {
