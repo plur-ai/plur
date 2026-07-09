@@ -504,7 +504,8 @@ else
   rsync -avz -e "ssh -i $DEPLOY_KEY -o StrictHostKeyChecking=accept-new" \
     "$WEBSITE_DIR/" "$DEPLOY_TARGET" \
     --exclude='.git' --exclude='node_modules' --exclude='.DS_Store' \
-    --exclude='.gstack' --exclude='CLAUDE.md' 2>&1 | tail -5
+    --exclude='.gstack' --exclude='CLAUDE.md' --exclude='.github' \
+    --exclude='scripts' --exclude='blog-app' 2>&1 | tail -5
   # Verify the live softwareVersion matches. Caddy auto-serves; cache TTL
   # is short. A mismatch likely means we deployed to the wrong path
   # (engram ENG-2026-0402-048: must be /var/www/sites/plur.ai, not /var/www/plur.ai).
