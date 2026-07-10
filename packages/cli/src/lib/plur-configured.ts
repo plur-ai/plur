@@ -1,6 +1,13 @@
-import { existsSync, readFileSync } from 'fs'
+import { existsSync, readFileSync, realpathSync } from 'fs'
 import { dirname, join, resolve } from 'path'
 import { homedir } from 'os'
+
+// Resolves symlinks so that `process.cwd()` (which the OS resolves canonically
+// via getcwd()) and `homedir()` (which reads the `$HOME` env verbatim) agree
+// even when `/tmp` or another component is a bind-mount or symlink (#521).
+function canonicalize(p: string): string {
+  try { return realpathSync(p) } catch { return resolve(p) }
+}
 
 /**
  * Detect whether plur is configured for the current project.
@@ -16,16 +23,14 @@ import { homedir } from 'os'
  * `plur init --global` puts the server there, making the guard useless for
  * distinguishing plur-enabled vs non-plur projects (#247).
  *
- * The walk-up STOPS before reaching `home` (audit fix — evaluator review,
- * 2026-07-08): `home` used to be accepted but never actually consulted, so
- * for the overwhelmingly common case — any project nested under `$HOME`,
- * which is nearly all real projects — the walk-up reached `$HOME/.claude/
- * settings.json` anyway once it climbed that far, silently reintroducing
- * exactly the #247 false-positive the "no fallback" comment claims doesn't
- * happen. The existing #247 regression test used sibling temp dirs for
- * `root`/`home` (never nested), so it passed without ever exercising this.
- * Stopping the walk at `home` itself restores the documented invariant for
- * real project layouts, not just artificially-unrelated test directories.
+ * The walk-up STOPS at `home` (audit fix — evaluator review, 2026-07-08):
+ * without a home boundary, for any project nested under `$HOME` (nearly all
+ * real projects), the walk-up reaches `$HOME/.claude/settings.json` and
+ * silently reintroduces the #247 false-positive. The existing #247 regression
+ * test used sibling temp dirs for `root`/`home` (never nested), so it passed
+ * without exercising this. The home directory itself IS checked — the walk
+ * stops after checking `home`, not before. Directories above `home` are
+ * skipped to enforce the documented invariant.
  *
  * Used by the session enforcement hooks (`hook-session-guard`,
  * `hook-session-remind`, `hook-session-mark`) and the injection hooks
@@ -41,18 +46,18 @@ export function isPlurConfigured(
   cwd: string = process.cwd(),
   home: string = homedir(),
 ): boolean {
-  const start = resolve(cwd)
-  const homeResolved = resolve(home)
+  const start = canonicalize(cwd)
+  const homeResolved = canonicalize(home)
   let dir = start
   while (true) {
-    if (dir === homeResolved) break
     if (configHasPlur(join(dir, '.mcp.json'))) return true
     if (configHasPlur(join(dir, '.claude', 'settings.json'))) return true
     if (configHasPlur(join(dir, '.claude', 'settings.local.json'))) return true
     if (configHasPlur(join(dir, '.cursor', 'mcp.json'))) return true
     if (existsSync(join(dir, '.plur.yaml'))) return true
     const parent = dirname(dir)
-    if (parent === dir) break
+    if (parent === dir) break  // filesystem root
+    if (dir === homeResolved) break  // stop after checking home, not before
     dir = parent
   }
   // Fix #247: Do NOT fall back to ~/.claude/settings.json or ~/.cursor/mcp.json — that would always
