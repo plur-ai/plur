@@ -40,6 +40,7 @@ import { computeContentHash } from './content-hash.js'
 import { loadTensions, saveTensions, generateTensionId, tensionPairKey, categorizeTension } from './tension-store.js'
 import type { TensionRecord, TensionStatus } from './schemas/tension.js'
 import type { TensionPair } from './tensions.js'
+import { engramDate } from './tensions.js'
 import { resolveValidity, buildTemporal } from './expiry.js'
 import { decodeJwtExpiry } from './jwt.js'
 import { RemoteStore } from './store/remote-store.js'
@@ -3718,7 +3719,7 @@ Generate an improved version of the procedure that prevents this failure. Return
     }
     if (options?.created_after) {
       const cutoff = options.created_after
-      active = active.filter(e => e.temporal?.learned_at && e.temporal.learned_at >= cutoff)
+      active = active.filter(e => { const d = engramDate(e); return d !== undefined && d >= cutoff })
     }
     const lockedCount = active.filter(e => (e as any).commitment === 'locked').length
     // #181 (audit #213 C2): tension_count counts UNRESOLVED persisted
