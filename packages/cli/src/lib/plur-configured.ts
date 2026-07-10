@@ -23,14 +23,12 @@ function canonicalize(p: string): string {
  * `plur init --global` puts the server there, making the guard useless for
  * distinguishing plur-enabled vs non-plur projects (#247).
  *
- * The walk-up STOPS at `home` (audit fix — evaluator review, 2026-07-08):
- * without a home boundary, for any project nested under `$HOME` (nearly all
- * real projects), the walk-up reaches `$HOME/.claude/settings.json` and
- * silently reintroduces the #247 false-positive. The existing #247 regression
- * test used sibling temp dirs for `root`/`home` (never nested), so it passed
- * without exercising this. The home directory itself IS checked — the walk
- * stops after checking `home`, not before. Directories above `home` are
- * skipped to enforce the documented invariant.
+ * The walk-up boundary at `home` (#521 fix): config files AT home are global
+ * settings (`~/.claude/settings.json`, `~/.cursor/mcp.json`). Checking them
+ * during a walk-up from a nested project reintroduces the #247 false-positive.
+ * So home's configs are only consulted when the walk STARTED at home (cwd ===
+ * home) — i.e., the user's project root IS $HOME. For nested projects the walk
+ * stops without reading home's config files.
  *
  * Used by the session enforcement hooks (`hook-session-guard`,
  * `hook-session-remind`, `hook-session-mark`) and the injection hooks
@@ -50,14 +48,20 @@ export function isPlurConfigured(
   const homeResolved = canonicalize(home)
   let dir = start
   while (true) {
-    if (configHasPlur(join(dir, '.mcp.json'))) return true
-    if (configHasPlur(join(dir, '.claude', 'settings.json'))) return true
-    if (configHasPlur(join(dir, '.claude', 'settings.local.json'))) return true
-    if (configHasPlur(join(dir, '.cursor', 'mcp.json'))) return true
-    if (existsSync(join(dir, '.plur.yaml'))) return true
+    const atHome = dir === homeResolved
+    // At home, only check configs if the walk started here. Home's config files
+    // are global settings — reading them during a walk-up from a nested project
+    // would reintroduce the #247 false-positive for `plur init --global` users.
+    if (!atHome || start === homeResolved) {
+      if (configHasPlur(join(dir, '.mcp.json'))) return true
+      if (configHasPlur(join(dir, '.claude', 'settings.json'))) return true
+      if (configHasPlur(join(dir, '.claude', 'settings.local.json'))) return true
+      if (configHasPlur(join(dir, '.cursor', 'mcp.json'))) return true
+      if (existsSync(join(dir, '.plur.yaml'))) return true
+    }
+    if (atHome) break  // stop after (optionally) checking home
     const parent = dirname(dir)
     if (parent === dir) break  // filesystem root
-    if (dir === homeResolved) break  // stop after checking home, not before
     dir = parent
   }
   // Fix #247: Do NOT fall back to ~/.claude/settings.json or ~/.cursor/mcp.json — that would always
