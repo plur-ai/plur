@@ -323,6 +323,24 @@ describe('MCP tools', () => {
     expect(result.version).toMatch(/^\d+\.\d+\.\d+/)
   })
 
+  it('plur_status filters engram count by domain', async () => {
+    await callTool('plur_learn', { statement: 'Meridian thing', scope: 'global', domain: 'meridian' })
+    await callTool('plur_learn', { statement: 'Other thing', scope: 'global', domain: 'other' })
+    const all = await callTool('plur_status', {}) as any
+    expect(all.engram_count).toBe(2)
+    const filtered = await callTool('plur_status', { domain: 'meridian' }) as any
+    expect(filtered.engram_count).toBe(1)
+  })
+
+  it('plur_status filters engram count by created_after', async () => {
+    await callTool('plur_learn', { statement: 'Status date test', scope: 'global' })
+    const tomorrow = new Date(Date.now() + 86400000).toISOString().slice(0, 10)
+    const future = await callTool('plur_status', { created_after: tomorrow }) as any
+    expect(future.engram_count).toBe(0)
+    const past = await callTool('plur_status', { created_after: '2000-01-01' }) as any
+    expect(past.engram_count).toBe(1)
+  })
+
   // #452 — injection-provenance event/label counts feed #202's volume gate.
   it('plur_status surfaces injection event and label counts', async () => {
     const empty = await callTool('plur_status', {}) as any

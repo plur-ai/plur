@@ -3707,12 +3707,19 @@ Generate an improved version of the procedure that prevents this failure. Return
   }
 
   /** Return system health info. */
-  status(): StatusResult {
+  status(options?: { created_after?: string; domain?: string }): StatusResult {
     const engrams = this._loadAllEngrams()
     const episodes = queryTimeline(this.paths.episodes)
     const packs = listPacks(this.paths.packs)
 
-    const active = engrams.filter(e => e.status !== 'retired')
+    let active = engrams.filter(e => e.status !== 'retired')
+    if (options?.domain) {
+      active = active.filter(e => e.domain?.startsWith(options.domain!))
+    }
+    if (options?.created_after) {
+      const cutoff = options.created_after
+      active = active.filter(e => e.temporal?.learned_at && e.temporal.learned_at >= cutoff)
+    }
     const lockedCount = active.filter(e => (e as any).commitment === 'locked').length
     // #181 (audit #213 C2): tension_count counts UNRESOLVED persisted
     // tension records — the LLM-validated detector's output — instead of
