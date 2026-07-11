@@ -1,8 +1,23 @@
 # @plur-ai/claw
 
-Persistent memory for [OpenClaw](https://openclaw.com) agents — fully automatic. Your agents remember corrections, learn preferences, and build knowledge across sessions. No workflow changes needed.
+**Engram exchange layer for OpenClaw agents. Local-first data control. No cloud routing, no API key, data never leaves your machine.**
 
-Part of [PLUR](https://plur.ai) — where, in our tool-routing and local-knowledge benchmark, **Haiku with memory outperformed Opus without it** at 10x less cost.
+Your agents remember corrections, learn preferences, and build knowledge across sessions — stored as open YAML files in `~/.plur/`, not in a cloud.
+
+Part of [PLUR](https://plur.ai) — the engram exchange layer connecting agents across tools. Compatible with the MCP server ([`@plur-ai/mcp`](https://npmjs.com/package/@plur-ai/mcp)) for Claude Code, Cursor, and Windsurf. In our benchmark, **Haiku with PLUR memory outperformed Opus without it** at 10x less cost.
+
+## Why PLUR vs cloud memory plugins
+
+| | PLUR | Cloud alternatives |
+|---|---|---|
+| **Data location** | `~/.plur/` on your disk | Third-party cloud servers |
+| **API key required** | No | Yes |
+| **Latency** | Local, sub-ms recall | Network round-trip per turn |
+| **Privacy** | Your conversations never leave your machine | Routed through provider |
+| **Format** | Open YAML — readable by any tool | Proprietary |
+| **Pack ecosystem** | Installable knowledge packs | Not available |
+
+Memory is shared with every PLUR-compatible tool: Claude Code, Cursor, Windsurf. One store, all agents.
 
 ## Setup (30 seconds)
 

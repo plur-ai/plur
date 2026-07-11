@@ -1,7 +1,7 @@
 {
   "id": "plur-claw",
   "name": "PLUR Memory Engine",
-  "description": "Persistent, learnable memory for OpenClaw agents. Local-first, no cloud required.",
+  "description": "Engram exchange layer for OpenClaw. Local-first memory — no cloud routing, no API key, data stays on your machine. Open format, pack ecosystem.",
   "version": "0.10.0",
   "kind": "memory",
   "enabledByDefault": true,

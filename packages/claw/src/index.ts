@@ -32,7 +32,7 @@ function getEngine(path: string): PlurContextEngine {
  * When installed via `openclaw plugins install @plur-ai/claw`, OpenClaw
  * loads this as the plugin entry point. Registers:
  * - ContextEngine (memory injection, episode capture, learning extraction)
- * - Event hooks (before_agent_start for recall, agent_end for capture)
+ * - Event hooks (before_prompt_build for recall, agent_end for capture)
  * - SYSTEM.md auto-setup with memory instructions
  * - Service lifecycle
  *
@@ -89,7 +89,7 @@ const plugin = {
       fix: 'openclaw config set plugins.entries.plur-claw.hooks.allowConversationAccess true --strict-json && openclaw gateway restart',
     })
 
-    api.on('before_agent_start', (event: any, ctx: any) => {
+    api.on('before_prompt_build', (event: any, ctx: any) => {
       canary.tick()
       const e = getEngine(path)
       const task = typeof event?.prompt === 'string' ? event.prompt : ''
