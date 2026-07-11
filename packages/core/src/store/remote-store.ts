@@ -157,23 +157,30 @@ export class RemoteStore implements EngramStore {
           const u = `${this.apiBase}/engrams?scope=${encodeURIComponent(this.scope)}&limit=${limit}&offset=${offset}`
           const ctrl = new AbortController()
           const t = setTimeout(() => ctrl.abort(), LOAD_FETCH_TIMEOUT_MS)
-          const r = await fetch(u, { headers: this.headers(), signal: ctrl.signal }).finally(() => clearTimeout(t))
-          if (!r.ok) {
-            // 403 (no read access) and 404 (scope doesn't exist) are
-            // not errors at the store level — that store just contributes
-            // nothing. Bubble other 5xx as logs.
-            if (r.status >= 500) console.error(`[plur:remote-store] ${this.url} returned ${r.status} loading scope ${this.scope}`)
+          try {
+            const r = await fetch(u, { headers: this.headers(), signal: ctrl.signal })
+            if (!r.ok) {
+              // 403 (no read access) and 404 (scope doesn't exist) are
+              // not errors at the store level — that store just contributes
+              // nothing. Bubble other 5xx as logs.
+              if (r.status >= 500) console.error(`[plur:remote-store] ${this.url} returned ${r.status} loading scope ${this.scope}`)
+              break
+            }
+            const body = await r.json() as { rows: any[]; total_count: number }
+            // Server returns DB rows shaped {id, scope, status, data, created_at, updated_at}
+            // — the engram contents live in row.data. Reshape + validate; drop malformed.
+            for (const row of body.rows) {
+              const e = this.reshape(row)
+              if (e) all.push(e)
+            }
+            if (all.length >= body.total_count || body.rows.length < limit) break
+            offset += limit
+          } catch (err) {
+            console.error(`[plur:remote-store] ${this.url} load page failed: ${(err as Error).message}`)
             break
+          } finally {
+            clearTimeout(t)
           }
-          const body = await r.json() as { rows: any[]; total_count: number }
-          // Server returns DB rows shaped {id, scope, status, data, created_at, updated_at}
-          // — the engram contents live in row.data. Reshape + validate; drop malformed.
-          for (const row of body.rows) {
-            const e = this.reshape(row)
-            if (e) all.push(e)
-          }
-          if (all.length >= body.total_count || body.rows.length < limit) break
-          offset += limit
         }
         this.cache = { ts: Date.now(), engrams: all }
         return all
