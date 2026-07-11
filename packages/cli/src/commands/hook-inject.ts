@@ -351,6 +351,14 @@ function processDeferredWrapups(): string | null {
 // The timer is unref()ed so a normal clean exit isn't delayed.
 const HOOK_CEILING_MS = parseInt(process.env.PLUR_HOOK_CEILING_MS ?? '', 10) || 55_000
 
+// How long before an inject lock is considered stale (defaults to HOOK_CEILING_MS).
+// Separate from HOOK_CEILING_MS so tests can control lock staleness without
+// also shrinking the watchdog timeout to the point where it fires during the test.
+const LOCK_STALE_MS =
+  process.env.PLUR_LOCK_STALE_MS !== undefined
+    ? parseInt(process.env.PLUR_LOCK_STALE_MS, 10)
+    : HOOK_CEILING_MS
+
 export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   // Silent pass-through for projects without plur configured (#247).
   // Lets hooks be installed globally without affecting non-plur projects.
@@ -415,6 +423,19 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     }
     return
   }
+
+  // Per-session concurrency guard (#519): if another hook-inject is already
+  // running the BGE-loading injection for this session, exit immediately.
+  // Multiple rapid async firings (datacore#33) otherwise pile up at ~160 MB
+  // RSS each and trigger an OOM cascade. Lock is stale after HOOK_CEILING_MS
+  // so a crashed process never permanently blocks subsequent invocations.
+  const injectLock = join(sessionDir(), `${process.ppid || 'unknown'}.injecting`)
+  let injectLockAcquired = false
+  try {
+    const s = statSync(injectLock)
+    if (Date.now() - s.mtimeMs < LOCK_STALE_MS) return
+  } catch { /* no lock file — proceed */ }
+  try { writeFileSync(injectLock, ''); injectLockAcquired = true } catch { /* fail-open */ }
 
   const input = readStdinSync()
   const projectConfig = readProjectConfig()
@@ -519,6 +540,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     parts.push(context)
   }
 
+  if (injectLockAcquired) try { unlinkSync(injectLock) } catch {}
   if (parts.length === 0) return
 
   const output = { additionalContext: parts.join('\n') }

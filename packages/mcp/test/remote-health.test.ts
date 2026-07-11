@@ -8,7 +8,7 @@
  * against the in-process stub (real HTTP). Embeddings disabled to keep the
  * doctor probe fast and deterministic (no model download in CI).
  */
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest'
 import { mkdtempSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
@@ -24,6 +24,7 @@ const SCOPE = 'group:plur/plur-ai/engineering'
 let stub: StubServer
 let baseUrl: string
 const dirs: string[] = []
+let activeClients: Client[] = []
 
 const b64 = (o: object) => Buffer.from(JSON.stringify(o)).toString('base64url')
 const makeJwt = (expSecondsFromNow: number) =>
@@ -36,6 +37,7 @@ async function makeClient(plurPath: string): Promise<Client> {
   await server.connect(serverTransport)
   const client = new Client({ name: 'test-client', version: '1.0.0' })
   await client.connect(clientTransport)
+  activeClients.push(client)
   return client
 }
 
@@ -67,6 +69,11 @@ afterAll(async () => {
 beforeEach(() => {
   stub.reset()
   stub.setMe({ username: 'crtahlin', org_id: 'plur', role: 'developer', scopes: [SCOPE] })
+})
+
+afterEach(async () => {
+  await Promise.all(activeClients.map(c => c.close().catch(() => {})))
+  activeClients = []
 })
 
 describe('plur_doctor remote check (#295)', () => {

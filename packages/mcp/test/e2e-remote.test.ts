@@ -53,6 +53,7 @@ const REMOTE_SCOPE = 'team:e2e-test'
 let stub: StubServer
 let baseUrl: string
 let dir: string
+let activeClients: Client[] = []
 
 async function makeClient(plurPath: string): Promise<{ client: Client }> {
   const plur = new Plur({ path: plurPath })
@@ -61,6 +62,7 @@ async function makeClient(plurPath: string): Promise<{ client: Client }> {
   await server.connect(serverTransport)
   const client = new Client({ name: 'test-client', version: '1.0.0' })
   await client.connect(clientTransport)
+  activeClients.push(client)
   return { client }
 }
 
@@ -88,7 +90,9 @@ beforeEach(() => {
   )
 })
 
-afterEach(() => {
+afterEach(async () => {
+  await Promise.all(activeClients.map(c => c.close().catch(() => {})))
+  activeClients = []
   rmSync(dir, { recursive: true, force: true })
 })
 
