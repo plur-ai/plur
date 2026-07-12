@@ -15,7 +15,7 @@
  *   - The factory returns the right adapter for each known name.
  *   - Each adapter reports name + modelId matching the spec.
  *   - The "off" sentinel is detectable via isRerankerOff().
- *   - resolveRerankerName respects PLUR_RERANKER + falls back to "off".
+ *   - resolveRerankerName respects PLUR_RERANKER + falls back to the default (ms-marco-minilm-l6 since #451).
  *   - Unknown reranker names throw at the factory.
  *
  * Real model loads can hit the network and pull ~300 MB of weights for
@@ -62,8 +62,8 @@ describe('RerankerAdapter factory — metadata contract', () => {
     expect([...RERANKER_NAMES].sort()).toEqual(['bge-reranker-v2-m3', 'ms-marco-minilm-l6', 'off'])
   })
 
-  it('defaults to off — opt-in posture', () => {
-    expect(DEFAULT_RERANKER).toBe('off')
+  it('defaults to ms-marco-minilm-l6 — per-store eval gate shipped (#451)', () => {
+    expect(DEFAULT_RERANKER).toBe('ms-marco-minilm-l6')
   })
 
   it('throws on unknown reranker names', () => {

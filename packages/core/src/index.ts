@@ -1980,8 +1980,9 @@ export class Plur {
   private _resolveRerankOptions(rerank?: boolean): RerankOptions | undefined {
     if (rerank === false) return undefined
     if (rerank === true) {
-      // Explicit opt-in: if PLUR_RERANKER is off (the default), upgrade to
-      // bge-reranker-v2-m3 for this call only so opt-in actually does something.
+      // Explicit opt-in: if PLUR_RERANKER is 'off' (explicitly disabled), upgrade
+      // to bge-reranker-v2-m3 for this call so opt-in delivers max quality.
+      // When PLUR_RERANKER is the default (ms-marco), honour the env selection.
       const envName = resolveRerankerName()
       const name = envName === 'off' ? 'bge-reranker-v2-m3' : envName
       this._reranker = getReranker(name)
@@ -2503,6 +2504,25 @@ export class Plur {
       ...result.consider.map(e => e.id),
     ]
 
+    // Build per-pack injection counts for telemetry (session_end activation tracking).
+    // Uses the `pack` field that selectAndSpread stamps onto every WireEngram —
+    // null means the engram belongs to the user's personal store, not an installed pack.
+    const injected_packs: Record<string, number> | undefined = injected_ids.length > 0
+      ? (() => {
+          const allEngrams = [
+            ...result.directives,
+            ...result.constraints,
+            ...result.consider,
+          ]
+          const counts: Record<string, number> = {}
+          for (const e of allEngrams) {
+            const key = (e as any).pack ?? '__personal__'
+            counts[key] = (counts[key] ?? 0) + 1
+          }
+          return counts
+        })()
+      : undefined
+
     // #452: log a co_injection provenance event — which engrams fired
     // together for which query context. Data source for the co-fires-with
     // edges (#200/#201) and temporal-replay self-labeling (#202). Compact by
@@ -2537,6 +2557,7 @@ export class Plur {
       count,
       tokens_used: tokensUsed,
       injected_ids,
+      ...(injected_packs ? { injected_packs } : {}),
       ...(warnings.length > 0 ? { warnings } : {}),
     }
   }

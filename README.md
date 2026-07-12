@@ -23,8 +23,8 @@ PLUR is memory, not just retrieval — so we measure it on more than one axis.
 
 | Stack | R@5 | Notes |
 |-------|-----|-------|
-| PLUR default (hybrid, no reranker) | 76.7% | out-of-the-box — no model downloads |
-| **+ ms-marco-minilm-l6 reranker** | **83.3%** | recommended opt-in — `PLUR_RERANKER=ms-marco-minilm-l6`, p50≈245ms |
+| **PLUR default (hybrid + ms-marco reranker)** | **83.3%** | out-of-the-box — 22MB model, p50≈245ms (#451) |
+| hybrid, no reranker | 76.7% | opt out with `PLUR_RERANKER=off` |
 | + bge-reranker-v2-m3 (max quality) | 90.0% | fully local cross-encoder — p50≈5s on CPU |
 
 *Full LongMemEval-S corpus (N=500, openai-3-large embeddings):*

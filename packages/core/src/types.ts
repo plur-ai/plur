@@ -125,7 +125,7 @@ export interface RecallOptions {
    *   - `true`  → opt in for this call (loads the configured reranker, or
    *     bge-reranker-v2-m3 if PLUR_RERANKER is unset/off).
    *   - `false` → skip the rerank stage even if PLUR_RERANKER is set.
-   *   - omitted → respect PLUR_RERANKER (default off → zero cost).
+   *   - omitted → respect PLUR_RERANKER (default: ms-marco-minilm-l6, +6.7pp R@5).
    *
    * Two reranker tiers exist (#451): `ms-marco-minilm-l6` (tiny, ~ms-scale
    * on CPU — hot-path candidate) and `bge-reranker-v2-m3` (quality,
@@ -159,6 +159,16 @@ export interface InjectionResult {
   count: number
   tokens_used: number
   injected_ids: string[]
+  /**
+   * Per-pack injection counts for this call. Keys are pack names (e.g.
+   * "dips-v1"); the special key "__personal__" covers user-owned engrams
+   * that are not part of any installed pack. Present only when at least one
+   * engram was injected.
+   *
+   * Used by plur_session_end telemetry to report injection_count and pack_ids
+   * so Michelle can validate the 25-80 sessions/month activation assumption.
+   */
+  injected_packs?: Record<string, number>
   /**
    * Persisted-tension warnings (#181): present when an injected engram
    * participates in an unresolved tension (confirmed → either side injected;

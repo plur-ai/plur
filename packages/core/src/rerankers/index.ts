@@ -6,14 +6,14 @@
  * here so future API-backed rerankers (cohere, voyage, zeroentropy) drop in
  * without changing call sites.
  *
- *   PLUR_RERANKER=bge-reranker-v2-m3   # opt in to the local cross-encoder
- *   PLUR_RERANKER=off                  # explicit skip (default)
+ *   PLUR_RERANKER=ms-marco-minilm-l6   # default — +6.7pp R@5 vs no reranker
+ *   PLUR_RERANKER=bge-reranker-v2-m3   # max quality tier (seconds/query on CPU)
+ *   PLUR_RERANKER=off                  # explicit skip
  *
- * The reranker is OFF by default. PLUR's "no API key, no surprise latency"
- * posture extends to the model load cost: the BGE reranker adds ~50-500ms
- * per query (depending on K) and ~300 MB of resident weights once loaded.
- * Callers that want it set PLUR_RERANKER explicitly or pass
- * `rerank: true` to recallHybrid / injectHybrid.
+ * ms-marco-minilm-l6 is the shipping default (#451): +6.7pp R@5 at p50≈245ms
+ * on a loaded machine. The per-store eval gate (plur_doctor rerank_eval:true)
+ * confirms the reranker is beneficial for this store's domain mix before
+ * surfacing a warning if it is not.
  *
  * The "off" sentinel is a real adapter object whose scoreBatch is a no-op
  * — `isRerankerOff()` lets the recall path skip the rerank stage entirely
@@ -41,12 +41,12 @@ export type RerankerName = typeof RERANKER_NAMES[number]
 /**
  * Default reranker when PLUR_RERANKER is unset.
  *
- * Opt-in posture: the default is "off" until we have benchmark evidence that
- * the latency/memory cost is worth it on PLUR's typical recall workloads.
- * Issue #220 records the rollout plan — flip to bge-reranker-v2-m3 once the
- * LongMemEval-S ablation shows the expected R@1 lift.
+ * Flipped to ms-marco-minilm-l6 (#451): per-store eval gate is in place and
+ * the LongMemEval ablation shows +6.7pp R@5 (83.3% vs 76.7%) at p50≈245ms.
+ * The gate surfaces an advisory warning if the model is net-negative for a
+ * specific store — set PLUR_RERANKER=off to opt out explicitly.
  */
-export const DEFAULT_RERANKER: RerankerName = 'off'
+export const DEFAULT_RERANKER: RerankerName = 'ms-marco-minilm-l6'
 
 /** Sentinel name used by the off adapter. */
 const OFF_NAME = 'off'

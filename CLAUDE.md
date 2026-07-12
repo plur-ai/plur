@@ -134,15 +134,15 @@ sanity subset); result JSONs are no longer committed here (#336).
 
 | Metric | Score | Config |
 |--------|-------|--------|
-| LongMemEval Hit@5 (hybrid, n=30) | 76.7% | reranker off — **shipping default** |
-| LongMemEval Hit@5 (hybrid + ms-marco, n=30) | 83.3% | ms-marco-minilm-l6 — recommended opt-in |
+| LongMemEval Hit@5 (hybrid + ms-marco, n=30) | 83.3% | ms-marco-minilm-l6 — **shipping default** (#451) |
+| LongMemEval Hit@5 (hybrid, no reranker) | 76.7% | opt out: `PLUR_RERANKER=off` |
 | LongMemEval Hit@5 (hybrid + bge-reranker, n=30) | **90.0%** | bge-reranker-v2-m3 — max quality |
 | temporal_reasoning R@5 | 60% / 80% / **100%** | off / ms-marco / bge |
 | multi_session_reasoning R@5 | 40% / 60% / 60% | off / ms-marco / bge |
 | A/B win rate (31W/4L) | 89% | |
 | House rules | 12–0 | |
 
-**Reranker latency (fixture, loaded machine — idle machine will be lower):** ms-marco p50≈245ms; bge-reranker p50≈5s, p95≈10s, peak RSS≈2GB. ms-marco is production-viable; bge is suitable for offline/batch only. Set via `PLUR_RERANKER=ms-marco-minilm-l6` or `PLUR_RERANKER=bge-reranker-v2-m3`.
+**Reranker latency (fixture, loaded machine — idle machine will be lower):** ms-marco p50≈245ms (default since #451); bge-reranker p50≈5s, p95≈10s, peak RSS≈2GB. ms-marco is production-viable; bge is suitable for offline/batch only. Opt up: `PLUR_RERANKER=bge-reranker-v2-m3`. Opt out: `PLUR_RERANKER=off`.
 
 The earlier v0.2.1 baseline (86.7% overall / 93.3% Hit@10) is still cited in
 `docs/benchmarks/phase2-methodology.md` as the self-calibration target; plur-bench
