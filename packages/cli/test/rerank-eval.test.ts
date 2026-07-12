@@ -5,8 +5,10 @@
  * covered in core (reranker-eval.test.ts) and MCP (reranker-eval-gate.test.ts)
  * with stub adapters. The CLI subprocess can't seed adapter stubs, so these
  * tests pin the offline-safe surface: argument validation and the
- * no-reranker-configured error, which must fail fast without touching any
- * model download.
+ * reranker-explicitly-off error, which must fail fast without touching any
+ * model download. PLUR_RERANKER=off is the explicit opt-out since DEFAULT_RERANKER
+ * flipped to ms-marco-minilm-l6 (#451) — an empty/unset env var now resolves
+ * to the default rather than "no reranker".
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { mkdtempSync, rmSync } from 'fs'
@@ -26,7 +28,7 @@ describe('plur rerank-eval (CLI surface, #451)', () => {
       execSync(`node ${CLI} rerank-eval ${args} --path ${dir}`, {
         encoding: 'utf-8',
         timeout: 15000,
-        env: { ...process.env, PLUR_RERANKER: '' },
+        env: { ...process.env, PLUR_RERANKER: 'off' },
         stdio: ['ignore', 'pipe', 'pipe'],
       })
       return { status: 0, stderr: '' }
@@ -35,7 +37,7 @@ describe('plur rerank-eval (CLI surface, #451)', () => {
     }
   }
 
-  it('exits 1 with guidance when no reranker is configured', () => {
+  it('exits 1 with guidance when PLUR_RERANKER=off (off-sentinel cannot be eval\'d)', () => {
     const { status, stderr } = run('')
     expect(status).toBe(1)
     expect(stderr).toContain('PLUR_RERANKER')
