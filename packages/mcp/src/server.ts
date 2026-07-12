@@ -10,10 +10,48 @@ import {
   ErrorCode,
   McpError,
 } from '@modelcontextprotocol/sdk/types.js'
+import { existsSync, readFileSync, writeFileSync } from 'fs'
+import { join } from 'path'
+import { homedir } from 'os'
 import { Plur, checkForUpdate } from '@plur-ai/core'
 import { getToolDefinitions, mcpCanary, validateToolArgs, CURSOR_CORE_TOOL_NAMES, type ToolProfile } from './tools.js'
 import { registerFlushOnExit } from './telemetry.js'
 import { VERSION } from './version.js'
+
+// ── Enterprise login helpers ──────────────────────────────────────────────────
+
+export function serverPidPath(baseDir?: string): string {
+  return join(baseDir ?? join(homedir(), '.plur'), 'server.pid')
+}
+
+export interface EnterpriseToken {
+  url: string
+  token: string
+  username?: string
+}
+
+export function readEnterpriseToken(baseDir?: string): EnterpriseToken | undefined {
+  const configPath = join(baseDir ?? join(homedir(), '.plur'), 'config.json')
+  if (!existsSync(configPath)) return undefined
+  try {
+    const cfg = JSON.parse(readFileSync(configPath, 'utf8'))
+    const ent = cfg?.enterprise
+    if (!ent || typeof ent.url !== 'string' || typeof ent.token !== 'string') return undefined
+    return { url: ent.url, token: ent.token, username: ent.username }
+  } catch {
+    return undefined
+  }
+}
+
+let _pendingReload = false
+
+export function isPendingReload(): boolean {
+  return _pendingReload
+}
+
+export function clearPendingReload(): void {
+  _pendingReload = false
+}
 
 export const INSTRUCTIONS = `PLUR is your persistent memory. Corrections, preferences, and conventions persist across sessions as engrams.
 
@@ -376,6 +414,17 @@ export async function runStdio(): Promise<void> {
   // not createServer, so the per-test servers in the suite don't each attach a
   // beforeExit handler.
   registerFlushOnExit({})
+
+  // Write PID file so `plur login` can send SIGUSR1 for hot-reload.
+  try {
+    writeFileSync(serverPidPath(), String(process.pid))
+  } catch { /* non-fatal — server still runs without hot-reload */ }
+
+  // On POSIX: set _pendingReload so the next tool call can pick up new enterprise config.
+  if (process.platform !== 'win32') {
+    process.on('SIGUSR1', () => { _pendingReload = true })
+  }
+
   const transport = new StdioServerTransport()
   await server.connect(transport)
 }
