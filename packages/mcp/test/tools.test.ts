@@ -439,7 +439,7 @@ describe('MCP tools', () => {
     })
 
     it('omits the reranked field and never warns when PLUR_RERANKER is off', async () => {
-      delete process.env.PLUR_RERANKER
+      process.env.PLUR_RERANKER = 'off'
       const result = await callTool('plur_recall_hybrid', { query: 'deploy target staging' }) as any
       expect(result.count).toBeGreaterThan(0)
       expect(result.reranked).toBeUndefined()
@@ -497,7 +497,7 @@ describe('MCP tools', () => {
     })
 
     it('plur_doctor skips the reranker check when PLUR_RERANKER is off', async () => {
-      delete process.env.PLUR_RERANKER
+      process.env.PLUR_RERANKER = 'off'
       const result = await callTool('plur_doctor') as any
       expect(result.checks.find((c: any) => c.check === 'reranker available')).toBeUndefined()
     })
@@ -508,7 +508,7 @@ describe('MCP tools', () => {
       expect(rerankerStatus().failure_count).toBeGreaterThan(0)
       // Turn the env off so the doctor probe does not attempt a real model
       // load after the cache reset — we only assert the state reset here.
-      delete process.env.PLUR_RERANKER
+      process.env.PLUR_RERANKER = 'off'
       await callTool('plur_doctor', { retry: true })
       expect(rerankerStatus().failure_count).toBe(0)
       expect(rerankerStatus().lastError).toBeNull()

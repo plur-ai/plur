@@ -147,7 +147,7 @@ describe('plur_doctor per-store reranker eval gate (#451)', () => {
   }, 60_000)
 
   it('skips the gate check entirely when PLUR_RERANKER is off', async () => {
-    delete process.env.PLUR_RERANKER
+    process.env.PLUR_RERANKER = 'off'
     const result = await callTool('plur_doctor') as any
     expect(gateCheck(result)).toBeUndefined()
   })
