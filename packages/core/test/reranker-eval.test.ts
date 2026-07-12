@@ -415,8 +415,8 @@ describe('Plur.rerankerSelfEval + advisory on the enable path (#451)', () => {
     expect(forced.cached).toBe(false)
   })
 
-  it('throws when no reranker is configured and none is passed', async () => {
-    delete process.env.PLUR_RERANKER
+  it("throws when PLUR_RERANKER=off (off-sentinel cannot be eval'd)", async () => {
+    process.env.PLUR_RERANKER = 'off'
     await expect(plur.rerankerSelfEval()).rejects.toThrow(/PLUR_RERANKER|reranker/i)
   })
 
