@@ -1,0 +1,97 @@
+name: plur-hermes
+
+# packages/hermes had no CI at all — its tests only ever ran on a maintainer's
+# laptop, so a regression stayed invisible until it reached a production agent.
+# That is how the process-group orphan leak (#535) escaped: it took a host to
+# load 307 / swap 92% before anyone noticed.
+#
+# The matrix is not decoration. pyproject declares requires-python = ">=3.10"
+# and classifiers for 3.10-3.13, so every one of those versions needs a green
+# job behind it — we do not claim what we do not test. The package is
+# stdlib-only, so testing all four is nearly free.
+
+on:
+  push:
+    branches: [main]
+    paths: ['packages/hermes/**', '.github/workflows/hermes.yml']
+  pull_request:
+    paths: ['packages/hermes/**', '.github/workflows/hermes.yml']
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: pytest (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      # Report every failing version, not just the first — a 3.10-only break is
+      # the whole reason this matrix exists.
+      fail-fast: false
+      matrix:
+        # Must stay in lockstep with the classifiers in packages/hermes/pyproject.toml.
+        python-version: ['3.10', '3.11', '3.12', '3.13']
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      # No Node, no CLI build, no network: the tests are self-contained and
+      # pass with neither `plur` nor `npx` on PATH. Installing the package
+      # itself (with its test extra) is the whole setup.
+      - name: Install package + test extra
+        run: pip install -e "packages/hermes[test]"
+
+      - name: Run tests
+        run: pytest packages/hermes -q
+
+  # The package is stdlib-only by design — it reaches PLUR through the `plur`
+  # CLI so it never drags a dependency tree into the host agent's environment.
+  # That is a load-bearing property (declared as `dependencies = []` in #538),
+  # so assert it rather than trusting review to catch a stray import.
+  zero-deps:
+    name: no runtime dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - run: pip install build twine
+
+      - name: Build wheel
+        run: python -m build --wheel --outdir dist packages/hermes
+
+      - name: Metadata must be valid for PyPI
+        run: twine check dist/*
+
+      - name: Assert no runtime dependencies crept in
+        run: |
+          python - <<'PY'
+          import glob, sys, zipfile, email
+
+          whl = sorted(glob.glob("dist/plur_hermes-*.whl"))[-1]
+          with zipfile.ZipFile(whl) as z:
+              name = next(n for n in z.namelist() if n.endswith("METADATA"))
+              meta = email.message_from_bytes(z.read(name))
+
+          # Extras (e.g. `test`) are fine — they are opt-in. A bare Requires-Dist
+          # with no `extra ==` marker is a real runtime dependency and must fail.
+          runtime = [
+              r for r in (meta.get_all("Requires-Dist") or [])
+              if "extra ==" not in r
+          ]
+          if runtime:
+              print("FAIL: plur-hermes gained runtime dependencies:", file=sys.stderr)
+              for r in runtime:
+                  print(f"  {r}", file=sys.stderr)
+              print("\nThe plugin must stay stdlib-only so it never pulls a "
+                    "dependency tree into the host agent's environment.", file=sys.stderr)
+              sys.exit(1)
+
+          print("ok: zero runtime dependencies")
+          PY
