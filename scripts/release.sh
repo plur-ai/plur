@@ -268,9 +268,17 @@ echo "  ✓ packages/hermes/plur_hermes/skills/plur-memory.SKILL.md"
 sed -i '' "s/^_NPX_CLI_VERSION = \".*\"/_NPX_CLI_VERSION = \"$VERSION\"/" packages/hermes/plur_hermes/bridge.py
 echo "  ✓ packages/hermes/plur_hermes/bridge.py (_NPX_CLI_VERSION)"
 
-# Verify hermes version-sync invariant immediately after the bumps so a missed
-# bump aborts the release here (before commit/tag/publish) rather than shipping
-# an internally-inconsistent wheel.
+# Python SDK (packages/python) — same npx-fallback pin, same staleness hazard.
+# release.sh previously did NOT touch packages/python, so this pin silently
+# drifted to a pre-fix CLI. Bump the pin AND the pyproject version in lockstep.
+sed -i '' "s/^_NPX_CLI_VERSION = \".*\"/_NPX_CLI_VERSION = \"$VERSION\"/" packages/python/plur_ai/bridge.py
+echo "  ✓ packages/python/plur_ai/bridge.py (_NPX_CLI_VERSION)"
+sed -i '' "s/^version = \".*\"/version = \"$VERSION\"/" packages/python/pyproject.toml
+echo "  ✓ packages/python/pyproject.toml"
+
+# Verify version-sync invariants (hermes AND python) immediately after the bumps
+# so a missed bump aborts the release here (before commit/tag/publish) rather
+# than shipping an internally-inconsistent wheel or a stale npx-fallback pin.
 python3 packages/hermes/scripts/check_version_sync.py
 echo "  ✓ hermes version-sync check passed"
 
