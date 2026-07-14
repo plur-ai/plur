@@ -161,10 +161,13 @@ describe('SP2 MCP Tools', () => {
 
       expect(result.count).toBeGreaterThanOrEqual(1)
       const match = result.results.find((r: any) => r.statement?.includes('Port 3000'))
-      if (match?.episodes) {
-        expect(match.episodes.length).toBeGreaterThanOrEqual(1)
-        expect(match.episodes[0].id).toBe(episode.id)
-      }
+      // Unconditional: the old `if (match?.episodes)` guard let a regression
+      // (no matching result, or episodes silently dropped) pass. The engram was
+      // anchored to `episode`, so recall with include_episodes:true MUST surface it.
+      expect(match).toBeDefined()
+      expect(match.episodes).toBeDefined()
+      expect(match.episodes.length).toBeGreaterThanOrEqual(1)
+      expect(match.episodes[0].id).toBe(episode.id)
     })
   })
 })

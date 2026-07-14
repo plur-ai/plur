@@ -4,6 +4,8 @@ import * as os from 'os'
 import * as path from 'path'
 import { applyBatchDecay, strengthToStatus } from '../src/decay.js'
 import { readHistory } from '../src/history.js'
+import { Plur } from '../src/index.js'
+import { loadEngrams, saveEngrams } from '../src/engrams.js'
 import type { Engram } from '../src/schemas/engram.js'
 
 function tmpDir(): string {
@@ -257,5 +259,75 @@ describe('applyBatchDecay', () => {
     // 0 days since access = no decay applied (strength unchanged)
     expect(result.decayed).toBe(0)
     expect(modified.length).toBe(0)
+  })
+})
+
+describe('Plur.batchDecay() wrapper — data preservation (#dataloss)', () => {
+  let dir: string
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'plur-batchdecay-wrap-'))
+  })
+
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true })
+  })
+
+  // The wrapper (index.ts:3079-3094) writes back only `applyBatchDecay(...).modified`
+  // — the strength-CHANGED active engrams. Every other engram (accessed today,
+  // scope-skipped, sub-threshold, or retired) is absent from `modified`, so
+  // `_writeEngrams(paths.engrams, modified)` overwrites the whole store with that
+  // subset and DELETES them. Confirmed: 5 engrams in, 2 out. There is currently
+  // no test on the wrapper at all — applyBatchDecay's own unit tests never
+  // exercise the write-back. This asserts the CORRECT behaviour: batchDecay may
+  // change strengths but must never drop an engram.
+  // it.fails until the wrapper stops overwriting the store with `modified`;
+  // flip back to it() when it passes.
+  it.fails('preserves every engram; only decays strengths (#dataloss)', () => {
+    const engramsPath = path.join(dir, 'engrams.yaml')
+    const seed: Engram[] = [
+      // Stale AND crosses a status boundary → guarantees transitions > 0, so the
+      // wrapper's buggy write actually fires.
+      makeEngram({
+        id: 'ENG-2026-0101-001',
+        activation: { retrieval_strength: 0.55, storage_strength: 1.0, frequency: 5, last_accessed: '2024-01-01' },
+      }),
+      makeEngram({
+        id: 'ENG-2026-0101-002',
+        activation: { retrieval_strength: 0.7, storage_strength: 1.0, frequency: 5, last_accessed: '2025-06-01' },
+      }),
+      // Accessed today (days === 0) → never enters `modified`.
+      makeEngram({
+        id: 'ENG-2026-0101-003',
+        activation: { retrieval_strength: 0.7, storage_strength: 1.0, frequency: 5, last_accessed: '2026-04-22' },
+      }),
+      // Scope-skipped → never enters `modified`.
+      makeEngram({
+        id: 'ENG-2026-0101-004',
+        scope: 'project:myapp',
+        activation: { retrieval_strength: 0.7, storage_strength: 1.0, frequency: 5, last_accessed: '2025-06-01' },
+      }),
+      // Retired → excluded from `active` → never enters `modified`.
+      makeEngram({
+        id: 'ENG-2026-0101-005',
+        status: 'retired',
+        activation: { retrieval_strength: 0.3, storage_strength: 1.0, frequency: 0, last_accessed: '2025-01-01' },
+      }),
+    ]
+    saveEngrams(engramsPath, seed)
+
+    const plur = new Plur({ path: dir })
+    plur.batchDecay({ contextScope: 'project:myapp', now: new Date('2026-04-22') })
+
+    // Reload the raw store: no engram may be deleted.
+    const survivors = loadEngrams(engramsPath)
+    expect(survivors).toHaveLength(5)
+    const ids = new Set(survivors.map(e => e.id))
+    expect(ids.has('ENG-2026-0101-003')).toBe(true) // accessed-today survives
+    expect(ids.has('ENG-2026-0101-004')).toBe(true) // scope-skipped survives
+    expect(ids.has('ENG-2026-0101-005')).toBe(true) // retired survives
+
+    // status() counts non-retired engrams — 4 of the 5 (retired excluded).
+    expect(new Plur({ path: dir }).status().engram_count).toBe(4)
   })
 })

@@ -34,7 +34,10 @@ describe('claw setup command', () => {
     expect(written.plugins.entries['plur-claw'].enabled).toBe(true)
     expect(written.plugins.entries['plur-claw'].config).toEqual({ auto_learn: true, auto_capture: true, injection_budget: 2000 })
     expect(written.plugins.slots.memory).toBe('plur-claw')
-    expect(written.plugins.allow).toEqual(['plur-claw'])
+    // NB: the `allow` seeding this used to assert is the #51 gating bug — its
+    // dedicated (inverted, it.fails) test lives below. On a truly empty config
+    // there are no other plugins to gate, so we simply don't assert on `allow`
+    // here rather than re-encode the buggy value.
     expect(written.mcp.servers.plur).toBeDefined()
     expect(written.mcp.servers.plur.command).toBe('npx')
   })
@@ -75,6 +78,24 @@ describe('claw setup command', () => {
     runSetup({ configPath: cfgPath })
     const written = JSON.parse(readFileSync(cfgPath, 'utf8'))
     expect(written.plugins.entries['plur-claw'].hooks?.allowConversationAccess).toBe(true)
+  })
+
+  // MISSING coverage (#51 / D-4): setup.ts:103 force-sets allowConversationAccess
+  // true by spreading it AFTER the user's existing hooks, so it overrides a user
+  // who deliberately turned conversation access OFF. That's a plugin re-granting
+  // itself a privacy permission the user revoked. it.fails until setup honours an
+  // explicit false. (If the team decides force-true is intended, delete this.)
+  it.fails('does not re-grant allowConversationAccess when the user set it false (#51)', () => {
+    const prior = {
+      plugins: {
+        entries: { 'plur-claw': { enabled: true, hooks: { allowConversationAccess: false } } },
+        slots: { memory: 'plur-claw' },
+      },
+    }
+    writeFileSync(cfgPath, JSON.stringify(prior), 'utf8')
+    runSetup({ configPath: cfgPath })
+    const written = JSON.parse(readFileSync(cfgPath, 'utf8'))
+    expect(written.plugins.entries['plur-claw'].hooks.allowConversationAccess).toBe(false)
   })
 
   it('preserves existing hooks when adding allowConversationAccess', () => {
@@ -148,11 +169,27 @@ describe('claw setup command', () => {
     expect(written.plugins.allow).toEqual(['other-plugin', 'plur-claw'])
   })
 
-  it('initializes plugins.allow to [plur-claw] on fresh install (allow is absent)', () => {
-    writeFileSync(cfgPath, '{}', 'utf8')
+  // WAS a BUG-ENCODING test: it asserted setup writes `allow: ['plur-claw']`
+  // when `allow` was absent. In OpenClaw an ABSENT allow means "allow ALL
+  // plugins"; writing a one-element list silently GATES OFF every other plugin
+  // the user has. This also directly contradicts the doctor test below
+  // ("absent allow = no gating (ok)"). See #51.
+  //
+  // Inverted to the correct behaviour (a fresh install with other plugins
+  // present must not gate them off), marked it.fails until setup.ts:132-136 is
+  // fixed. Uses a config WITH another plugin so the harm is actually asserted.
+  it.fails('does not gate off other plugins on fresh install when allow is absent (#51)', () => {
+    const prior = { plugins: { entries: { 'weather-plugin': { enabled: true }, 'git-plugin': { enabled: true } } } }
+    writeFileSync(cfgPath, JSON.stringify(prior), 'utf8')
     runSetup({ configPath: cfgPath })
     const written = JSON.parse(readFileSync(cfgPath, 'utf8'))
-    expect(written.plugins.allow).toEqual(['plur-claw'])
+    const allow = written.plugins.allow
+    // Correct: either leave allow absent (allow-all), or include the plugins
+    // that were already enabled. Never a bare ['plur-claw'] that excludes them.
+    if (allow !== undefined) {
+      expect(allow).toContain('weather-plugin')
+      expect(allow).toContain('git-plugin')
+    }
   })
 
   it('does not modify plugins.allow when it is present but empty (honour explicit clear)', () => {
@@ -222,23 +259,34 @@ describe('claw setup command', () => {
   })
 
   describe('stale entry pruning (item 1 — manifest mismatch fix)', () => {
-    it('removes stale entries whose extension directory no longer exists', () => {
+    // WAS a BUG-ENCODING test: it asserted `entries['stale-plugin']` becomes
+    // undefined — i.e. it demanded that setup DELETE a third-party plugin's
+    // entire config entry (INCLUDING any API keys in its `config`) on the sole
+    // evidence that its extensions/<id> directory is absent. That directory is
+    // transiently absent during any install/upgrade, so this destroys a user's
+    // credentials for another vendor's plugin. See #51.
+    //
+    // Inverted to assert the CORRECT behaviour (foreign entry + its credentials
+    // survive) and marked it.fails because setup.ts:84-93 still prunes today.
+    // When #51 is fixed this test PASSES → it.fails fails → flip back to it().
+    it.fails('preserves a third-party entry (and its credentials) when its extension dir is absent (#51)', () => {
       const prior = {
         plugins: {
           entries: {
             'plur-claw': { enabled: true },
-            'stale-plugin': { enabled: true },
+            'weather-plugin': { enabled: true, config: { api_key: 'sk-SECRET-USER-KEY-123' } },
           },
           slots: { memory: 'plur-claw' },
           allow: ['plur-claw'],
         },
       }
       writeFileSync(cfgPath, JSON.stringify(prior), 'utf8')
-      // extensions/ dir exists (user has plugins set up) but stale-plugin/ does not
+      // extensions/ dir exists (user has plugins set up) but weather-plugin/ does not
       mkdirSync(join(dir, 'extensions'), { recursive: true })
       runSetup({ configPath: cfgPath, openclawHome: dir })
       const written = JSON.parse(readFileSync(cfgPath, 'utf8'))
-      expect(written.plugins.entries['stale-plugin']).toBeUndefined()
+      expect(written.plugins.entries['weather-plugin']).toBeDefined()
+      expect(written.plugins.entries['weather-plugin'].config.api_key).toBe('sk-SECRET-USER-KEY-123')
       expect(written.plugins.entries['plur-claw']).toBeDefined()
     })
 

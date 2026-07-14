@@ -12,7 +12,13 @@ describe('supersedes chain — inject scoring (#481)', () => {
     ...overrides,
   })
 
-  it('under budget pressure without historical keywords, superseded engram is penalized and tip wins', () => {
+  // Both tests below list the superseded `older` FIRST in the input. Because the
+  // sort is stable and both engrams score equally on the query, the ONLY thing
+  // that can move `tip` ahead of `older` is the ×0.3 demotion penalty
+  // (inject.ts:460-467). The previous versions listed `tip` first and/or used a
+  // 5000-token budget where both fit, so stable-sort/order carried the assertion
+  // and deleting the penalty left them green. Here the penalty is load-bearing.
+  const makePair = () => {
     const tip = makeEngram({
       id: 'ENG-2026-0101-002',
       statement: 'deploy using canary strategy version 2',
@@ -31,57 +37,48 @@ describe('supersedes chain — inject scoring (#481)', () => {
         superseded_by: ['ENG-2026-0101-002'],
       },
     })
+    return { tip, older }
+  }
 
-    // Very tight budget — only one fits
+  const idsOf = (result: ReturnType<typeof selectAndSpread>) => [
+    ...result.directives.map(e => e.id),
+    ...result.constraints.map(e => e.id),
+    ...result.consider.map(e => e.id),
+  ]
+
+  it('under budget pressure without historical keywords, the penalty drops the superseded engram (older-first)', () => {
+    const { tip, older } = makePair()
+
+    // Tight budget admits exactly one engram. Input order [older, tip]: without
+    // the demotion penalty a stable sort keeps `older` first and it would win.
     const result = selectAndSpread(
       { prompt: 'deploy canary strategy', maxTokens: 80 },
-      [tip, older], []
+      [older, tip], []
     )
 
-    const ids = [
-      ...result.directives.map(e => e.id),
-      ...result.constraints.map(e => e.id),
-      ...result.consider.map(e => e.id),
-    ]
-    // Tip should be selected, older should be demoted out under tight budget
+    const ids = idsOf(result)
+    // The penalty re-ranks `tip` above `older`, so `tip` survives and the
+    // superseded `older` is dropped. This assertion fails if the penalty block
+    // is removed.
     expect(ids).toContain(tip.id)
     expect(ids).not.toContain(older.id)
   })
 
-  it('with historical keywords in prompt, superseded engrams are NOT penalized', () => {
-    const tip = makeEngram({
-      id: 'ENG-2026-0101-002',
-      statement: 'deploy using canary strategy version 2',
-      relations: {
-        broader: [], narrower: [], related: [], conflicts: [],
-        supersedes: ['ENG-2026-0101-001'],
-        superseded_by: [],
-      },
-    })
-    const older = makeEngram({
-      id: 'ENG-2026-0101-001',
-      statement: 'deploy using canary strategy version 1',
-      relations: {
-        broader: [], narrower: [], related: [], conflicts: [],
-        supersedes: [],
-        superseded_by: ['ENG-2026-0101-002'],
-      },
-    })
+  it('with a historical keyword the penalty is suppressed, so the superseded engram is retained (older-first)', () => {
+    const { tip, older } = makePair()
 
-    // With a generous budget, both should appear regardless of historical intent
+    // Same tight one-engram budget and same [older, tip] order. "previously" is
+    // a clean historical keyword (no substring collision, cf. #481) that
+    // suppresses the penalty, so the stable sort keeps `older` first and it
+    // survives while `tip` is dropped — the inverse of the test above.
     const result = selectAndSpread(
-      { prompt: 'what was the old deploy canary strategy previously', maxTokens: 5000 },
-      [tip, older], []
+      { prompt: 'deploy canary strategy previously', maxTokens: 80 },
+      [older, tip], []
     )
 
-    const ids = [
-      ...result.directives.map(e => e.id),
-      ...result.constraints.map(e => e.id),
-      ...result.consider.map(e => e.id),
-    ]
-    // With historical keywords, older should NOT be penalized — both should appear
-    expect(ids).toContain(tip.id)
+    const ids = idsOf(result)
     expect(ids).toContain(older.id)
+    expect(ids).not.toContain(tip.id)
   })
 
   it('engram with empty superseded_by is treated as tip — no penalty', () => {

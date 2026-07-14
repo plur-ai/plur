@@ -57,29 +57,59 @@ describe('plur_tensions tool', () => {
     expect(result.purge_hint).toBeUndefined()
   })
 
-  it('detects tensions between conflicting engrams', async () => {
-    const e1 = plur.learn('Always use tabs for indentation in TypeScript files')
-    const e2 = plur.learn('Always use spaces for indentation in TypeScript files')
+  it('scan detects a contradiction between conflicting engrams', async () => {
+    // The old test called plur_tensions in LIST mode (no scan), which returns
+    // only PERSISTED records — so count was ALWAYS 0 and the `if (count>0)`
+    // guard meant the pair-field assertions never ran. Detection happens in
+    // SCAN mode; mock the LLM judge (as the sibling scan tests do) and assert
+    // the detected pair, unguarded.
+    plur.learn('Always use tabs for indentation in TypeScript files')
+    plur.learn('Always use spaces for indentation in TypeScript files')
 
-    const result = await tensionsTool.handler({}, plur) as any
-    if (result.count > 0) {
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        choices: [{ message: { content: 'CONTRADICTS: yes\nCONFIDENCE: 0.9\nREASON: Tabs and spaces are mutually exclusive.' } }],
+      }),
+    }) as any
+    try {
+      const result = await tensionsTool.handler({
+        scan: true, llm_base_url: 'https://api.openai.com/v1', llm_api_key: 'test-key',
+      }, plur) as any
+      expect(result.count).toBeGreaterThan(0)
+      expect(result.tensions[0].tension_id).toMatch(/^T-/)
       expect(result.tensions[0].engram_a.id).toBeDefined()
       expect(result.tensions[0].engram_b.id).toBeDefined()
-      expect(result.tensions[0].detected_at).toBeDefined()
+      expect(result.tensions[0].confidence).toBeGreaterThanOrEqual(0.7)
+      expect(result.tensions[0].reason).toBeTruthy()
+    } finally {
+      globalThis.fetch = originalFetch
     }
   })
 
-  it('deduplicates conflict pairs', async () => {
+  it('list mode returns de-duplicated tension records', async () => {
+    // The old test ran LIST mode behind an `if (count>0)` guard that was always
+    // false (nothing was ever persisted), so the uniqueness assertion never ran
+    // — and it read t.engram_a.id, but list records expose engram_a as a bare id
+    // string. Here we SEED persisted records (same pair thrice, including a
+    // swapped-id ordering) and assert the pair collapses to one record, unguarded.
     const e1 = plur.learn('Use PostgreSQL for the database')
     const e2 = plur.learn('Use MySQL for the database instead of PostgreSQL')
-
-    const result = await tensionsTool.handler({}, plur) as any
-    if (result.count > 0) {
-      const pairKeys = result.tensions.map((t: any) =>
-        [t.engram_a.id, t.engram_b.id].sort().join(':')
-      )
-      expect(new Set(pairKeys).size).toBe(pairKeys.length)
+    const pair = {
+      id_a: e1.id, id_b: e2.id,
+      statement_a: e1.statement, statement_b: e2.statement,
+      confidence: 0.9, reason: 'Mutually exclusive database choices.',
     }
+    plur.recordTensions([pair])
+    plur.recordTensions([pair])
+    plur.recordTensions([{ ...pair, id_a: e2.id, id_b: e1.id }])
+
+    const result = await tensionsTool.handler({ status: 'all' }, plur) as any
+    const pairKeys = result.tensions.map((t: any) => [t.engram_a, t.engram_b].sort().join(':'))
+    expect(pairKeys.length).toBeGreaterThan(0)               // records actually persisted
+    expect(new Set(pairKeys).size).toBe(pairKeys.length)     // no duplicate pair
+    expect(pairKeys.length).toBe(1)                          // 3 recordings collapsed to 1
   })
 
   it('surfaces legacy conflict relations separately with a purge hint (#181)', async () => {

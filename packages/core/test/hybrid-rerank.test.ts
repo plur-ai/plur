@@ -281,11 +281,6 @@ describe('Plur.recallHybrid with rerank=true (integration)', () => {
     expect(out.engrams[0].statement).toContain('Paris')
   })
 
-  // Belt-and-suspenders: silence unused-import warnings from vi.
-  it('vi mock surface stays available for future opt-in test rigs', () => {
-    expect(typeof vi.fn).toBe('function')
-  })
-
   // #341 — the tracker is reachable from the Plur instance (MCP consumes it
   // there) and resetReranker clears recorded failures for a doctor retry.
   it('Plur.rerankerStatus exposes the tracker; resetReranker clears it', () => {

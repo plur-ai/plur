@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync } from 'fs'
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync, chmodSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { spawnSync } from 'child_process'
@@ -82,6 +82,55 @@ describe('hook-session-guard', () => {
     for (let i = 0; i < 4; i++) {
       const result = runGuard({ session_id: 'deadlock-test', tool_name: 'Bash' })
       expect(result.stdout).not.toContain('deny')
+    }
+  })
+
+  // MISSING (security, PROVEN): the Cursor port sanitizes conversation_id via
+  // safeSessionKey and has a regression test (hook-cursor-guard.test.ts:116-131),
+  // but the Claude Code guard interpolates the RAW session_id straight into a
+  // filesystem path (hook-session-guard.ts:64-67, blockCountPath → writeFileSync).
+  // A `../`-laden session_id therefore writes the guard-count file OUTSIDE the
+  // sessions dir. Correct behaviour: a traversal id must NOT escape the state dir
+  // (and must not crash). it.fails until the CC guard sanitizes session_id like
+  // the Cursor port does; flip to it() when green.
+  it.fails('does not let a path-traversal session_id escape the sessions dir', () => {
+    mkdirSync(join(home, 'tmp'), { recursive: true })
+    // $TMPDIR is <home>/tmp, so the guard-count dir is <home>/tmp/plur-sessions.
+    // `../../PWNED` normalises out of both plur-sessions and tmp, landing the
+    // file directly in <home> — clean of the state dir entirely.
+    const escaped = join(home, 'PWNED.guard-count')
+    expect(existsSync(escaped)).toBe(false)
+
+    const result = runGuard({ session_id: '../../PWNED', tool_name: 'Bash' })
+    // The hook itself must survive a hostile id (no crash) — it still denies.
+    expect(result.stdout).toContain('deny')
+    // The sanitized id must keep the write inside the state dir, never in <home>.
+    expect(existsSync(escaped)).toBe(false)
+  })
+
+  // MISSING (fail-open contract, PROVEN): a PreToolUse guard MUST never throw.
+  // But incrementBlockCount's mkdir/write of $TMPDIR/plur-sessions is not wrapped
+  // in try/catch, so an unwritable $TMPDIR makes the guard EXIT 1 and print
+  // {"error":...} to stdout (index.ts's top-level catch) — which blocks the tool
+  // call it was meant to gate. Correct behaviour: exit 0 and emit valid/empty
+  // output (fail open). it.fails until the state-dir I/O is made fail-open; flip
+  // to it() when green.
+  it.fails('never crashes the tool call when the state dir is unwritable', () => {
+    const roTmp = mkdtempSync(join(tmpdir(), 'plur-ro-guard-'))
+    chmodSync(roTmp, 0o500) // r-x: owner cannot create plur-sessions inside
+    try {
+      const result = spawnSync('node', [CLI, 'hook-session-guard'], {
+        input: JSON.stringify({ session_id: 'ro-guard', tool_name: 'Bash' }),
+        encoding: 'utf-8',
+        timeout: 10000,
+        env: { ...process.env, HOME: home, USERPROFILE: home, TMPDIR: roTmp },
+        cwd: home,
+      })
+      expect(result.status ?? 1).toBe(0) // fail-open: never a non-zero exit
+      expect(result.stdout ?? '').not.toContain('"error"')
+    } finally {
+      chmodSync(roTmp, 0o700)
+      rmSync(roTmp, { recursive: true, force: true })
     }
   })
 

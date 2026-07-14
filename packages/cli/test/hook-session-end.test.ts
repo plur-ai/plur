@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, readFileSync, writeFileSync, mkdirSync, existsSync } from 'fs'
+import { mkdtempSync, rmSync, readFileSync, writeFileSync, mkdirSync, existsSync, chmodSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { spawnSync } from 'child_process'
@@ -116,7 +116,15 @@ describe('hook-session-end (#217 — SessionEnd auto-close)', () => {
     expect(readEpisodes()).not.toContain('auto-closed on SessionEnd')
   })
 
-  it('removes a corrupt checkpoint without crashing', () => {
+  // BUG-ENCODING (#217): the original test asserted that an unparseable
+  // checkpoint is DELETED (existsSync === false). That encodes a data-loss bug:
+  // writeCheckpoint (hook-learn-check.ts:96) is a plain, NON-atomic writeFileSync,
+  // so a concurrent reader that catches a mid-write PARTIAL read cannot tell it
+  // apart from genuine corruption — and this hook then permanently unlinks a LIVE
+  // session's checkpoint (hook-session-end.ts:97). Correct behaviour: unparseable
+  // content is RETAINED (or quarantined via rename), never silently destroyed.
+  // it.fails until the parse-failure branch stops unlinking; flip to it() when green.
+  it.fails('retains (does not delete) an unparseable checkpoint', () => {
     const sessionsDir = join(home, '.plur', 'sessions')
     mkdirSync(sessionsDir, { recursive: true })
     const cpPath = join(sessionsDir, 'end-test-session.checkpoint.json')
@@ -124,9 +132,36 @@ describe('hook-session-end (#217 — SessionEnd auto-close)', () => {
 
     const { status } = runSessionEnd({ session_id: 'end-test-session' })
     expect(status).toBe(0)
-    expect(existsSync(cpPath)).toBe(false)
-    // No episode from a corrupt checkpoint.
+    // A partial read of a live session's checkpoint is indistinguishable from
+    // corruption — it must not be destroyed on an unparse.
+    expect(existsSync(cpPath)).toBe(true)
+    // And nothing is captured from unparseable content.
     expect(readEpisodes()).not.toContain('auto-closed on SessionEnd')
+  })
+
+  // MISSING (data loss, #217): there was NO test where plur.capture() THROWS.
+  // hook-session-end.ts:128-142 swallows the throw with catch{} and then
+  // unlinkSync(checkpoint) UNCONDITIONALLY — so on a full disk (or any capture
+  // failure) the session's ONLY durable record is destroyed with nothing
+  // captured in its place. Correct behaviour: if capture fails, the checkpoint
+  // is RETAINED so the next session_start's deferred wrap-up (#216) can recover it.
+  // it.fails until the unlink is gated on capture success; flip to it() when green.
+  it.fails('retains the checkpoint when capture fails (#217)', () => {
+    const cpPath = writeCheckpoint('end-test-session')
+    const plurDir = join(home, '.plur')
+    // Make the plur root read-only so episode capture (atomicWrite → writeFileSync
+    // into this dir) fails, while the sessions/ subdir it contains stays writable
+    // so the unlink can still fire — this isolates "capture failed" from "couldn't
+    // unlink" and reproduces the full-disk data-loss path faithfully.
+    chmodSync(plurDir, 0o500)
+    try {
+      const { status } = runSessionEnd({ session_id: 'end-test-session', reason: 'clear' })
+      expect(status).toBe(0) // a SessionEnd hook must never fail the session
+      // The session's only durable record must survive a failed capture.
+      expect(existsSync(cpPath)).toBe(true)
+    } finally {
+      chmodSync(plurDir, 0o700)
+    }
   })
 
   it('silently passes through when plur is not configured', () => {

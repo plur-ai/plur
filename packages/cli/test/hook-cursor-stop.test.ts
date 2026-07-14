@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'fs'
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, statSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { execSync } from 'child_process'
@@ -53,9 +53,21 @@ describe('hook-cursor-stop', () => {
     expect(third.followup_message).toContain('plur_learn')
   })
 
-  it('does not count or nudge on aborted/error stops', () => {
-    expect(stop('conv-stop-2', 'aborted').trim()).toBe('')
-    expect(stop('conv-stop-2', 'error').trim()).toBe('')
-    expect(stop('conv-stop-2', 'aborted').trim()).toBe('')
+  // Was VACUOUS: only asserted the output was empty, which proves "no nudge" but
+  // never "no count" — the aborted stops could have advanced the counter and the
+  // test would still pass. Now assert the COUNTER itself: two aborted/error stops
+  // followed by one completed stop must leave the counter at exactly 1 (a single
+  // appended byte), not 3. Counting is correct today (the status guard in
+  // hook-cursor-stop.ts returns before incrementCounter), so this is a green it().
+  it('does not count aborted/error stops toward the nudge cadence', () => {
+    const id = 'conv-stop-2'
+    // Aborted/error turns: no output AND must not touch the counter.
+    expect(stop(id, 'aborted').trim()).toBe('')
+    expect(stop(id, 'error').trim()).toBe('')
+    // First COMPLETED stop is counted as #1 (1 % 3 !== 0) → still no nudge.
+    expect(stop(id, 'completed').trim()).toBe('')
+    // Prove it: the stop-count file has advanced by exactly one, not three.
+    const counterFile = join(SESSIONS_DIR, `${id}.stopcount`)
+    expect(statSync(counterFile).size).toBe(1)
   })
 })

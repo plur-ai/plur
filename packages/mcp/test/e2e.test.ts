@@ -57,25 +57,32 @@ describe('E2E: full learn-inject-feedback-recall lifecycle', () => {
     expect(resultB.directives).toContain('Vue')
   })
 
-  it('feedback loop improves injection', async () => {
-    const e1 = plur.learn('Use docker for deployment', { scope: 'global', type: 'procedural' })
-    const e2 = plur.learn('Use kubernetes for deployment', { scope: 'global', type: 'procedural' })
+  it('feedback loop improves injection ranking', async () => {
+    // Learn kubernetes FIRST so insertion order favours it. Positive feedback on
+    // docker + negative on kubernetes must then OVERCOME insertion order to rank
+    // docker ahead — proving feedback (not insertion order) drives ranking.
+    //
+    // The old test guarded on result.directives.indexOf('docker'/'kubernetes'),
+    // but these engrams land in the consider pool, so the directives STRING is
+    // empty and both indexOf calls returned -1 — the guard was always false and
+    // the ordering assertion never ran. Assert against injected_ids (the ordered
+    // id list inject() actually returns), unguarded.
+    const k8s = plur.learn('Use kubernetes for deployment', { scope: 'global', type: 'procedural' })
+    const docker = plur.learn('Use docker for deployment', { scope: 'global', type: 'procedural' })
 
-    // Positive feedback on e1
-    await plur.feedback(e1.id, 'positive')
-    await plur.feedback(e1.id, 'positive')
-    await plur.feedback(e1.id, 'positive')
-    // Negative feedback on e2
-    await plur.feedback(e2.id, 'negative')
-    await plur.feedback(e2.id, 'negative')
+    await plur.feedback(docker.id, 'positive')
+    await plur.feedback(docker.id, 'positive')
+    await plur.feedback(docker.id, 'positive')
+    await plur.feedback(k8s.id, 'negative')
+    await plur.feedback(k8s.id, 'negative')
 
-    // e1 should score higher and appear before e2 in formatted directives string
-    const result = plur.inject('deploy the application', { budget: 500 })
-    const dockerIdx = result.directives.indexOf('docker')
-    const k8sIdx = result.directives.indexOf('kubernetes')
-    if (dockerIdx >= 0 && k8sIdx >= 0) {
-      expect(dockerIdx).toBeLessThan(k8sIdx)
-    }
+    const result = plur.inject('deployment', { budget: 500 })
+    // Both engrams are injected for this task…
+    expect(result.injected_ids).toContain(docker.id)
+    expect(result.injected_ids).toContain(k8s.id)
+    // …and docker (positive feedback, learned SECOND) ranks ahead of kubernetes.
+    expect(result.injected_ids.indexOf(docker.id))
+      .toBeLessThan(result.injected_ids.indexOf(k8s.id))
   })
 
   it('ingest extracts and saves', () => {

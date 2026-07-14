@@ -100,21 +100,31 @@ describe('learnBatch: partial-failure isolation', () => {
     syncIndex: () => {},
   })
 
-  it('captures the failing statement and still processes the rest', async () => {
+  // #281 — a partial-failure batch must let a caller positionally map each INPUT
+  // to its engram. This test used to assert `res.results` has length 2, baking in
+  // the compaction that silently drops the failed slot: with [A, B(fails), C] the
+  // input-2 engram (C) collapses onto results[1], so `ids: results.map(...)`
+  // (mcp/src/tools.ts:596) emits C's id at position 1 — the #281 misalignment bug.
+  // Correct behaviour keeps C recoverable at input index 2.
+  // it.fails until the batch return aligns results to inputs; flip back to it() when it passes.
+  it.fails('a caller can positionally map each input to its engram even when a middle item fails (#281)', async () => {
     const res = await learnBatch(makeDeps(), [
-      { statement: 'good one' },
-      { statement: 'this will BOOM' },
-      { statement: 'good two' },
+      { statement: 'good one' },       // input 0
+      { statement: 'this will BOOM' }, // input 1 — fails
+      { statement: 'good two' },       // input 2
     ])
 
-    expect(res.results).toHaveLength(2)   // both good statements succeeded
+    // The failure side already carries the input index — that part works today.
     expect(res.stats.added).toBe(2)
     expect(res.stats.failed).toBe(1)
-
     expect(res.failures).toHaveLength(1)
-    expect(res.failures[0].index).toBe(1) // original array index preserved
+    expect(res.failures[0].index).toBe(1)
     expect(res.failures[0].statement).toBe('this will BOOM')
-    expect(res.failures[0].error).toContain('simulated write failure')
+
+    // The correct contract: C ('good two') stays at its input index (2), not
+    // shifted to 1 by compaction. Read index 2 directly so we don't assume the
+    // shape of whatever the fix puts in the failed slot at index 1.
+    expect(res.results[2]?.engram?.statement).toBe('good two')
   })
 
   it('reports an all-failed batch without throwing', async () => {
