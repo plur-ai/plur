@@ -1,4 +1,12 @@
-"""Tests for the PLUR CLI bridge."""
+"""Tests for the PLUR CLI bridge.
+
+Note on mocking: these patch `plur_hermes.bridge._run_in_process_group`, not
+`subprocess.run`. The bridge cannot use subprocess.run — its timeout path
+SIGKILLs only the direct child, which orphans the `node` grandchild that `npx`
+spawns. _run_in_process_group owns the process-group kill instead. Its return
+contract is unchanged (returncode/stdout/stderr, raises TimeoutExpired), so
+mocks translate one-for-one. See test_bridge_process_group.py.
+"""
 
 import json
 import subprocess
@@ -37,7 +45,7 @@ class TestPlurBridge:
         bridge = PlurBridge()
         bridge._binary = "/usr/local/bin/plur"
 
-        with patch("subprocess.run", return_value=mock_result):
+        with patch("plur_hermes.bridge._run_in_process_group", return_value=mock_result):
             result = bridge.call("learn", ["test statement"])
             assert result["id"] == "ENG-001"
 
@@ -50,7 +58,7 @@ class TestPlurBridge:
         bridge = PlurBridge()
         bridge._binary = "/usr/local/bin/plur"
 
-        with patch("subprocess.run", return_value=mock_result):
+        with patch("plur_hermes.bridge._run_in_process_group", return_value=mock_result):
             result = bridge.call("recall", ["nonexistent"])
             assert result["count"] == 0
 
@@ -63,13 +71,13 @@ class TestPlurBridge:
         bridge = PlurBridge()
         bridge._binary = "/usr/local/bin/plur"
 
-        with patch("subprocess.run", return_value=mock_result):
+        with patch("plur_hermes.bridge._run_in_process_group", return_value=mock_result):
             with pytest.raises(PlurBridgeError, match="Engram not found"):
                 bridge.call("forget", ["ENG-999"])
 
     # NOTE: the four timeout tests below (test_call_timeout_returns_safe_fallback,
     # test_call_timeout_retries_then_falls_back, test_inject_graceful_fallback_on_timeout,
-    # and test_timeout_triggers_outer_retry_not_lock_retry) MOCK subprocess.run.
+    # and test_timeout_triggers_outer_retry_not_lock_retry) MOCK _run_in_process_group.
     # They validate the return-value / retry-count contract on timeout, which is
     # valid and worth keeping — but a mock never spawns a real process, so they
     # CANNOT detect the process-group orphan/leak bug (grandchild reparented to
@@ -79,7 +87,7 @@ class TestPlurBridge:
         bridge = PlurBridge()
         bridge._binary = "/usr/local/bin/plur"
 
-        with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("plur", 30)), \
+        with patch("plur_hermes.bridge._run_in_process_group", side_effect=subprocess.TimeoutExpired("plur", 30)), \
              patch("time.sleep"):
             result = bridge.call("inject", ["test"], retries=0)
         assert result == {"results": [], "count": 0, "injected_ids": []}
@@ -88,7 +96,7 @@ class TestPlurBridge:
         bridge = PlurBridge()
         bridge._binary = "/usr/local/bin/plur"
 
-        with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("plur", 5)) as mock_run, \
+        with patch("plur_hermes.bridge._run_in_process_group", side_effect=subprocess.TimeoutExpired("plur", 5)) as mock_run, \
              patch("time.sleep") as mock_sleep:
             result = bridge.call("recall", ["query"], retries=2)
 
@@ -100,7 +108,7 @@ class TestPlurBridge:
         bridge = PlurBridge()
         bridge._binary = "/usr/local/bin/plur"
 
-        with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("plur", 5)), \
+        with patch("plur_hermes.bridge._run_in_process_group", side_effect=subprocess.TimeoutExpired("plur", 5)), \
              patch("time.sleep"):
             result = bridge.inject("some task")
         assert result["count"] == 0
@@ -121,7 +129,7 @@ class TestPlurBridge:
         bridge = PlurBridge()
         bridge._binary = "/usr/local/bin/plur"
 
-        with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("plur", 30)) as mock_run, \
+        with patch("plur_hermes.bridge._run_in_process_group", side_effect=subprocess.TimeoutExpired("plur", 30)) as mock_run, \
              patch("time.sleep") as mock_sleep:
             result = bridge.call("recall", ["test"], retries=3)
 
@@ -138,7 +146,7 @@ class TestPlurBridge:
         mock_result.returncode = 0
         mock_result.stdout = json.dumps({"id": "ENG-001"})
 
-        with patch("subprocess.run", return_value=mock_result) as mock_run:
+        with patch("plur_hermes.bridge._run_in_process_group", return_value=mock_result) as mock_run:
             bridge.learn("test", scope="agent:x", domain="software.testing")
             call_args = mock_run.call_args[0][0]
             assert "learn" in call_args
@@ -157,7 +165,7 @@ class TestPlurBridge:
         mock_result.returncode = 0
         mock_result.stdout = json.dumps({"id": "ENG-001"})
 
-        with patch("subprocess.run", return_value=mock_result) as mock_run:
+        with patch("plur_hermes.bridge._run_in_process_group", return_value=mock_result) as mock_run:
             bridge.learn("an unscoped fact")
             call_args = mock_run.call_args[0][0]
             assert "learn" in call_args
@@ -173,7 +181,7 @@ class TestPlurBridge:
         mock_result.returncode = 0
         mock_result.stdout = json.dumps({"id": "ENG-001"})
 
-        with patch("subprocess.run", return_value=mock_result) as mock_run:
+        with patch("plur_hermes.bridge._run_in_process_group", return_value=mock_result) as mock_run:
             bridge.learn("a team fact", scope="group:plur/core")
             call_args = mock_run.call_args[0][0]
             assert "--scope" in call_args
@@ -190,7 +198,7 @@ class TestPlurBridge:
         mock_result.returncode = 0
         mock_result.stdout = json.dumps({"id": "ENG-001"})
 
-        with patch("subprocess.run", return_value=mock_result) as mock_run:
+        with patch("plur_hermes.bridge._run_in_process_group", return_value=mock_result) as mock_run:
             bridge.learn(
                 "rich fact",
                 rationale="why it matters",
@@ -218,7 +226,7 @@ class TestPlurBridge:
         mock_result.returncode = 0
         mock_result.stdout = json.dumps({"count": 0, "directives": "", "constraints": "", "consider": "", "tokens_used": 0})
 
-        with patch("subprocess.run", return_value=mock_result) as mock_run:
+        with patch("plur_hermes.bridge._run_in_process_group", return_value=mock_result) as mock_run:
             bridge.inject("test task")
             call_args = mock_run.call_args[0][0]
             assert "--fast" in call_args
@@ -234,7 +242,7 @@ class TestPlurBridge:
             "count": 1,
         })
 
-        with patch("subprocess.run", return_value=recall_result) as mock_run:
+        with patch("plur_hermes.bridge._run_in_process_group", return_value=recall_result) as mock_run:
             result = bridge.learn("Use tabs not spaces")
             assert result["id"] == "ENG-042"
             assert result["deduplicated"] is True
@@ -251,7 +259,7 @@ class TestPlurBridge:
             "results": [{"id": "ENG-042", "statement": "Use tabs not spaces"}],
         })
 
-        with patch("subprocess.run", return_value=recall_result):
+        with patch("plur_hermes.bridge._run_in_process_group", return_value=recall_result):
             result = bridge.learn("  use TABS not SPACES  ")
             assert result["deduplicated"] is True
             assert result["id"] == "ENG-042"
@@ -264,7 +272,7 @@ class TestPlurBridge:
         learn_result.returncode = 0
         learn_result.stdout = json.dumps({"id": "ENG-099"})
 
-        with patch("subprocess.run", return_value=learn_result) as mock_run:
+        with patch("plur_hermes.bridge._run_in_process_group", return_value=learn_result) as mock_run:
             result = bridge.learn("Use tabs not spaces", force=True)
             assert result["id"] == "ENG-099"
             assert "deduplicated" not in result
@@ -282,7 +290,7 @@ class TestPlurBridge:
         learn_response.returncode = 0
         learn_response.stdout = json.dumps({"id": "ENG-100"})
 
-        with patch("subprocess.run", side_effect=[recall_response, learn_response]) as mock_run:
+        with patch("plur_hermes.bridge._run_in_process_group", side_effect=[recall_response, learn_response]) as mock_run:
             result = bridge.learn("A brand new fact")
             assert result["id"] == "ENG-100"
             assert "deduplicated" not in result
@@ -300,7 +308,7 @@ class TestPlurBridge:
         learn_response.returncode = 0
         learn_response.stdout = json.dumps({"id": "ENG-200"})
 
-        with patch("subprocess.run", side_effect=[failed_recall, learn_response]):
+        with patch("plur_hermes.bridge._run_in_process_group", side_effect=[failed_recall, learn_response]):
             result = bridge.learn("Something to remember")
             assert result["id"] == "ENG-200"
             assert "deduplicated" not in result
@@ -326,7 +334,7 @@ class TestPlurBridge:
             "results": [{"id": "ENG-501", "statement": "Prefer pnpm over npm"}],
         })
 
-        with patch("subprocess.run", side_effect=[first_recall, first_learn, second_recall, third_recall]):
+        with patch("plur_hermes.bridge._run_in_process_group", side_effect=[first_recall, first_learn, second_recall, third_recall]):
             r1 = bridge.learn("Prefer pnpm over npm")
             r2 = bridge.learn("Prefer pnpm over npm")
             r3 = bridge.learn("Prefer pnpm over npm")
@@ -347,12 +355,12 @@ class TestPlurBridge:
         first_learn.returncode = 0
         first_learn.stdout = json.dumps({"id": "ENG-700", "statement": "Cache me"})
 
-        with patch("subprocess.run", side_effect=[empty_recall, first_learn]) as mock_run:
+        with patch("plur_hermes.bridge._run_in_process_group", side_effect=[empty_recall, first_learn]) as mock_run:
             r1 = bridge.learn("Cache me")
             assert r1["id"] == "ENG-700"
             assert mock_run.call_count == 2
 
-        with patch("subprocess.run") as mock_run:
+        with patch("plur_hermes.bridge._run_in_process_group") as mock_run:
             r2 = bridge.learn("Cache me")
             assert r2 == {"id": "ENG-700", "statement": "Cache me", "deduplicated": True}
             assert mock_run.call_count == 0
@@ -368,10 +376,10 @@ class TestPlurBridge:
         first_learn.returncode = 0
         first_learn.stdout = json.dumps({"id": "ENG-701", "statement": "Use TabSize 4"})
 
-        with patch("subprocess.run", side_effect=[empty_recall, first_learn]):
+        with patch("plur_hermes.bridge._run_in_process_group", side_effect=[empty_recall, first_learn]):
             bridge.learn("Use TabSize 4")
 
-        with patch("subprocess.run") as mock_run:
+        with patch("plur_hermes.bridge._run_in_process_group") as mock_run:
             r = bridge.learn("  use tabsize 4  ")
             assert r["deduplicated"] is True
             assert r["id"] == "ENG-701"
@@ -387,12 +395,12 @@ class TestPlurBridge:
             "results": [{"id": "ENG-702", "statement": "Already known"}],
         })
 
-        with patch("subprocess.run", return_value=recall_hit) as mock_run:
+        with patch("plur_hermes.bridge._run_in_process_group", return_value=recall_hit) as mock_run:
             r1 = bridge.learn("Already known")
             assert r1["deduplicated"] is True
             assert mock_run.call_count == 1
 
-        with patch("subprocess.run") as mock_run:
+        with patch("plur_hermes.bridge._run_in_process_group") as mock_run:
             r2 = bridge.learn("Already known")
             assert r2["deduplicated"] is True
             assert r2["id"] == "ENG-702"
@@ -409,20 +417,20 @@ class TestPlurBridge:
         first_learn.returncode = 0
         first_learn.stdout = json.dumps({"id": "ENG-800", "statement": "Twin"})
 
-        with patch("subprocess.run", side_effect=[empty_recall, first_learn]):
+        with patch("plur_hermes.bridge._run_in_process_group", side_effect=[empty_recall, first_learn]):
             bridge.learn("Twin")
 
         forced_learn = MagicMock()
         forced_learn.returncode = 0
         forced_learn.stdout = json.dumps({"id": "ENG-801", "statement": "Twin"})
 
-        with patch("subprocess.run", return_value=forced_learn) as mock_run:
+        with patch("plur_hermes.bridge._run_in_process_group", return_value=forced_learn) as mock_run:
             r_forced = bridge.learn("Twin", force=True)
             assert r_forced["id"] == "ENG-801"
             assert "deduplicated" not in r_forced
             assert mock_run.call_count == 1
 
-        with patch("subprocess.run") as mock_run:
+        with patch("plur_hermes.bridge._run_in_process_group") as mock_run:
             r_after = bridge.learn("Twin")
             assert r_after["id"] == "ENG-801"
             assert r_after["deduplicated"] is True
@@ -444,7 +452,7 @@ class TestPlurBridge:
             "results": [{"id": "ENG-900", "statement": "no cache"}],
         })
 
-        with patch("subprocess.run", side_effect=[empty_recall, first_learn, second_recall]) as mock_run:
+        with patch("plur_hermes.bridge._run_in_process_group", side_effect=[empty_recall, first_learn, second_recall]) as mock_run:
             r1 = bridge.learn("no cache")
             assert r1["id"] == "ENG-900"
             r2 = bridge.learn("no cache")
@@ -465,7 +473,7 @@ class TestPlurBridge:
             return [recall, learn]
 
         seq = make_pair("ENG-A") + make_pair("ENG-B") + make_pair("ENG-C")
-        with patch("subprocess.run", side_effect=seq):
+        with patch("plur_hermes.bridge._run_in_process_group", side_effect=seq):
             bridge.learn("ENG-A")
             bridge.learn("ENG-B")
             bridge.learn("ENG-C")
@@ -482,7 +490,7 @@ class TestPlurBridge:
         mock_result.returncode = 0
         mock_result.stdout = json.dumps({})
 
-        with patch("subprocess.run", return_value=mock_result) as mock_run:
+        with patch("plur_hermes.bridge._run_in_process_group", return_value=mock_result) as mock_run:
             bridge.status()
             call_args = mock_run.call_args[0][0]
             assert "--path" in call_args
@@ -518,7 +526,7 @@ class TestLockRetry:
         bridge = PlurBridge()
         bridge._binary = "/usr/local/bin/plur"
 
-        with patch("subprocess.run", return_value=self._lock_failure_result()), \
+        with patch("plur_hermes.bridge._run_in_process_group", return_value=self._lock_failure_result()), \
              patch("plur_hermes.bridge.time.sleep"):
             with pytest.raises(PlurLockError, match="acquire engram-store lock"):
                 bridge.call("learn", ["test"])
@@ -528,7 +536,7 @@ class TestLockRetry:
         bridge = PlurBridge()
         bridge._binary = "/usr/local/bin/plur"
 
-        with patch("subprocess.run", return_value=self._lock_failure_result()), \
+        with patch("plur_hermes.bridge._run_in_process_group", return_value=self._lock_failure_result()), \
              patch("plur_hermes.bridge.time.sleep"):
             with pytest.raises(PlurBridgeError):  # subclass — must still match
                 bridge.call("learn", ["test"])
@@ -540,7 +548,7 @@ class TestLockRetry:
 
         seq = [self._lock_failure_result(), self._lock_failure_result(), self._success_result()]
         # Pin jitter to 0 so exact delay assertions are deterministic.
-        with patch("subprocess.run", side_effect=seq) as mock_run, \
+        with patch("plur_hermes.bridge._run_in_process_group", side_effect=seq) as mock_run, \
              patch("plur_hermes.bridge.time.sleep") as mock_sleep, \
              patch("plur_hermes.bridge.random.uniform", return_value=0.0):
             result = bridge.call("learn", ["test"])
@@ -557,7 +565,7 @@ class TestLockRetry:
         bridge._binary = "/usr/local/bin/plur"
 
         seq = [self._lock_failure_result()] * 4
-        with patch("subprocess.run", side_effect=seq) as mock_run, \
+        with patch("plur_hermes.bridge._run_in_process_group", side_effect=seq) as mock_run, \
              patch("plur_hermes.bridge.time.sleep"):
             with pytest.raises(PlurLockError):
                 bridge.call("learn", ["test"])
@@ -573,7 +581,7 @@ class TestLockRetry:
         err.stdout = ""
         err.stderr = "Error: Engram not found"
 
-        with patch("subprocess.run", return_value=err) as mock_run, \
+        with patch("plur_hermes.bridge._run_in_process_group", return_value=err) as mock_run, \
              patch("plur_hermes.bridge.time.sleep") as mock_sleep:
             with pytest.raises(PlurBridgeError, match="Engram not found"):
                 bridge.call("forget", ["ENG-999"])
@@ -591,7 +599,7 @@ class TestLockRetry:
         r.stderr = "Error: Failed to acquire lock on /tmp/plur/engrams.yaml after 5 retries"
         seq = [r, self._success_result()]
 
-        with patch("subprocess.run", side_effect=seq), \
+        with patch("plur_hermes.bridge._run_in_process_group", side_effect=seq), \
              patch("plur_hermes.bridge.time.sleep"):
             result = bridge.call("learn", ["test"])
             assert result["id"] == "ENG-001"
@@ -608,7 +616,7 @@ class TestLockRetry:
         r1.stdout = json.dumps({"error": "Could not acquire engram-store lock"})
         r1.stderr = ""
 
-        with patch("subprocess.run", side_effect=[r1, self._success_result()]), \
+        with patch("plur_hermes.bridge._run_in_process_group", side_effect=[r1, self._success_result()]), \
              patch("plur_hermes.bridge.time.sleep"):
             result = bridge.call("learn", ["test"])
             assert result["id"] == "ENG-001"
@@ -619,7 +627,7 @@ class TestLockRetry:
         r2.stdout = json.dumps({"error": "Lock acquisition timed out"})
         r2.stderr = ""
 
-        with patch("subprocess.run", side_effect=[r2, self._success_result()]), \
+        with patch("plur_hermes.bridge._run_in_process_group", side_effect=[r2, self._success_result()]), \
              patch("plur_hermes.bridge.time.sleep"):
             result = bridge.call("learn", ["test"])
             assert result["id"] == "ENG-001"
@@ -636,7 +644,7 @@ class TestLockRetry:
         non_lock_err.stdout = ""
         non_lock_err.stderr = "Error: Engram schema validation failed"
 
-        with patch("subprocess.run", side_effect=[self._lock_failure_result(), non_lock_err]) as mock_run, \
+        with patch("plur_hermes.bridge._run_in_process_group", side_effect=[self._lock_failure_result(), non_lock_err]) as mock_run, \
              patch("plur_hermes.bridge.time.sleep"):
             with pytest.raises(PlurBridgeError, match="schema validation"):
                 bridge.call("learn", ["test"])
@@ -644,7 +652,7 @@ class TestLockRetry:
             try:
                 bridge_again = PlurBridge()
                 bridge_again._binary = "/usr/local/bin/plur"
-                with patch("subprocess.run", side_effect=[self._lock_failure_result(), non_lock_err]):
+                with patch("plur_hermes.bridge._run_in_process_group", side_effect=[self._lock_failure_result(), non_lock_err]):
                     bridge_again.call("learn", ["test"])
             except PlurLockError:
                 pytest.fail("Real CLI error was incorrectly classified as PlurLockError")
@@ -659,7 +667,7 @@ class TestLockRetry:
         bridge._binary = "/usr/local/bin/plur"
 
         seq = [self._lock_failure_result()] * 3 + [self._success_result()]
-        with patch("subprocess.run", side_effect=seq) as mock_run, \
+        with patch("plur_hermes.bridge._run_in_process_group", side_effect=seq) as mock_run, \
              patch("plur_hermes.bridge.time.sleep") as mock_sleep, \
              patch("plur_hermes.bridge.random.uniform", return_value=0.0):
             result = bridge.call("learn", ["test"])
@@ -668,7 +676,7 @@ class TestLockRetry:
             # All three backoff delays consumed (jitter pinned to 0)
             assert [c[0][0] for c in mock_sleep.call_args_list] == [1.0, 2.0, 4.0]
 
-    # MOCKS subprocess.run: verifies retry routing/counts only, NOT the
+    # MOCKS _run_in_process_group: verifies retry routing/counts only, NOT the
     # process-group orphan on timeout (see test_bridge_process_group.py).
     def test_timeout_triggers_outer_retry_not_lock_retry(self):
         """subprocess.TimeoutExpired is handled by the OUTER timeout-retry
@@ -678,7 +686,7 @@ class TestLockRetry:
         bridge = PlurBridge()
         bridge._binary = "/usr/local/bin/plur"
 
-        with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("plur", 30)) as mock_run, \
+        with patch("plur_hermes.bridge._run_in_process_group", side_effect=subprocess.TimeoutExpired("plur", 30)) as mock_run, \
              patch("plur_hermes.bridge.time.sleep") as mock_sleep:
             # All timeouts → graceful safe fallback after outer retries exhaust
             result = bridge.call("learn", ["test"])
@@ -698,7 +706,7 @@ class TestLockRetry:
         bridge._binary = "/usr/local/bin/plur"
 
         seq = [self._lock_failure_result()] * 2 + [self._success_result()]
-        with patch("subprocess.run", side_effect=seq), \
+        with patch("plur_hermes.bridge._run_in_process_group", side_effect=seq), \
              patch("plur_hermes.bridge.time.sleep"), \
              patch("plur_hermes.bridge.random.uniform") as mock_uniform:
             mock_uniform.return_value = 0.0
@@ -731,7 +739,7 @@ class TestLockRetry:
         bridge._binary = "/usr/local/bin/plur"
 
         seq = [self._lock_failure_result(), self._success_result()]
-        with patch("subprocess.run", side_effect=seq), \
+        with patch("plur_hermes.bridge._run_in_process_group", side_effect=seq), \
              patch("plur_hermes.bridge.time.sleep"), \
              patch("plur_hermes.bridge.random.uniform", return_value=0.0):
             with caplog.at_level(logging.INFO, logger="plur_hermes.bridge"):
@@ -748,7 +756,7 @@ class TestLockRetry:
         bridge = PlurBridge()
         bridge._binary = "/usr/local/bin/plur"
 
-        with patch("subprocess.run", return_value=self._success_result()), \
+        with patch("plur_hermes.bridge._run_in_process_group", return_value=self._success_result()), \
              patch("plur_hermes.bridge.time.sleep"):
             with caplog.at_level(logging.INFO, logger="plur_hermes.bridge"):
                 bridge.call("learn", ["test"])
@@ -769,7 +777,7 @@ class TestLockRetry:
         non_lock_err.stdout = json.dumps({"error": "Engram schema validation failed: bad tag"})
         non_lock_err.stderr = ""
 
-        with patch("subprocess.run", return_value=non_lock_err):
+        with patch("plur_hermes.bridge._run_in_process_group", return_value=non_lock_err):
             with pytest.raises(PlurBridgeError) as exc_info:
                 bridge.call("learn", ["bad"])
 
@@ -785,7 +793,7 @@ class TestLockRetry:
         bridge = PlurBridge()
         bridge._binary = "/usr/local/bin/plur"
 
-        with patch("subprocess.run", return_value=self._lock_failure_result()), \
+        with patch("plur_hermes.bridge._run_in_process_group", return_value=self._lock_failure_result()), \
              patch("plur_hermes.bridge.time.sleep"), \
              patch("plur_hermes.bridge.random.uniform", return_value=0.0):
             with pytest.raises(PlurLockError) as exc_info:
@@ -819,7 +827,7 @@ class TestLockRetry:
         non_lock_err.stdout = json.dumps({"error": "Engram ENG-999 not found"})
         non_lock_err.stderr = ""
 
-        with patch("subprocess.run", side_effect=[self._lock_failure_result(), non_lock_err]), \
+        with patch("plur_hermes.bridge._run_in_process_group", side_effect=[self._lock_failure_result(), non_lock_err]), \
              patch("plur_hermes.bridge.time.sleep"), \
              patch("plur_hermes.bridge.random.uniform", return_value=0.0):
             with pytest.raises(PlurBridgeError, match="Engram ENG-999 not found") as exc_info:
@@ -839,7 +847,7 @@ class TestLockRetry:
         noisy.stderr = "npm warn deprecated some-pkg@1.0.0: use new-pkg instead\n"
         noisy.stdout = json.dumps({"error": "Engram validation failed: bad tag"})
 
-        with patch("subprocess.run", return_value=noisy):
+        with patch("plur_hermes.bridge._run_in_process_group", return_value=noisy):
             with pytest.raises(PlurBridgeError) as exc_info:
                 bridge.call("learn", ["test"])
 
@@ -860,7 +868,7 @@ class TestLockRetry:
         noisy.stderr = "npm warn config global is deprecated\n"
         noisy.stdout = json.dumps({"error": "Failed to acquire lock on /tmp/engrams.yaml after 5 retries"})
 
-        with patch("subprocess.run", return_value=noisy), \
+        with patch("plur_hermes.bridge._run_in_process_group", return_value=noisy), \
              patch("plur_hermes.bridge.time.sleep"), \
              patch("plur_hermes.bridge.random.uniform", return_value=0.0):
             with pytest.raises(PlurLockError) as exc_info:
@@ -966,14 +974,14 @@ class TestDedupTtlCache:
         bridge._binary = "/usr/local/bin/plur"
         empty_recall = self._mock_json({"results": [], "count": 0})
         learn_ok = self._mock_json({"id": engram_id, "statement": statement})
-        with patch("subprocess.run", side_effect=[empty_recall, learn_ok]):
+        with patch("plur_hermes.bridge._run_in_process_group", side_effect=[empty_recall, learn_ok]):
             r = bridge.learn(statement)
             assert r["id"] == engram_id
         return bridge
 
     def test_cache_hit_within_ttl_skips_subprocess(self):
         bridge = self._learned_bridge(ttl=60.0)
-        with patch("subprocess.run") as mock_run:
+        with patch("plur_hermes.bridge._run_in_process_group") as mock_run:
             r = bridge.learn("Prefer pnpm over npm")
             assert r == {"id": "ENG-120", "statement": "Prefer pnpm over npm",
                          "deduplicated": True}
@@ -987,7 +995,7 @@ class TestDedupTtlCache:
         recall_hit = self._mock_json({
             "results": [{"id": "ENG-120", "statement": "Prefer pnpm over npm"}],
         })
-        with patch("subprocess.run", side_effect=[recall_hit]) as mock_run:
+        with patch("plur_hermes.bridge._run_in_process_group", side_effect=[recall_hit]) as mock_run:
             r = bridge.learn("Prefer pnpm over npm")
             assert r == {"id": "ENG-120", "statement": "Prefer pnpm over npm",
                          "deduplicated": True}
@@ -999,10 +1007,10 @@ class TestDedupTtlCache:
         recall_hit = self._mock_json({
             "results": [{"id": "ENG-120", "statement": "Prefer pnpm over npm"}],
         })
-        with patch("subprocess.run", side_effect=[recall_hit]):
+        with patch("plur_hermes.bridge._run_in_process_group", side_effect=[recall_hit]):
             bridge.learn("Prefer pnpm over npm")
         # Revalidation re-armed the entry — next call is a pure cache hit.
-        with patch("subprocess.run") as mock_run:
+        with patch("plur_hermes.bridge._run_in_process_group") as mock_run:
             r = bridge.learn("Prefer pnpm over npm")
             assert r["deduplicated"] is True
             assert mock_run.call_count == 0
@@ -1014,7 +1022,7 @@ class TestDedupTtlCache:
         time.sleep(0.15)
         empty_recall = self._mock_json({"results": [], "count": 0})
         relearn = self._mock_json({"id": "ENG-121", "statement": "Prefer pnpm over npm"})
-        with patch("subprocess.run", side_effect=[empty_recall, relearn]) as mock_run:
+        with patch("plur_hermes.bridge._run_in_process_group", side_effect=[empty_recall, relearn]) as mock_run:
             r = bridge.learn("Prefer pnpm over npm")
             assert r["id"] == "ENG-121"
             assert "deduplicated" not in r
@@ -1025,14 +1033,14 @@ class TestDedupTtlCache:
         every TTL seconds even when hit continuously."""
         bridge = self._learned_bridge(ttl=0.3)
         time.sleep(0.15)
-        with patch("subprocess.run") as mock_run:
+        with patch("plur_hermes.bridge._run_in_process_group") as mock_run:
             assert bridge.learn("Prefer pnpm over npm")["deduplicated"] is True
             assert mock_run.call_count == 0  # mid-TTL hit
         time.sleep(0.25)  # now past the original write deadline
         recall_hit = self._mock_json({
             "results": [{"id": "ENG-120", "statement": "Prefer pnpm over npm"}],
         })
-        with patch("subprocess.run", side_effect=[recall_hit]) as mock_run:
+        with patch("plur_hermes.bridge._run_in_process_group", side_effect=[recall_hit]) as mock_run:
             assert bridge.learn("Prefer pnpm over npm")["deduplicated"] is True
             assert mock_run.call_count == 1  # the mid-TTL hit did not re-arm
 
@@ -1040,7 +1048,7 @@ class TestDedupTtlCache:
         """ttl <= 0 restores the pre-TTL infinite-lifetime behavior."""
         bridge = self._learned_bridge(ttl=0)
         time.sleep(0.1)
-        with patch("subprocess.run") as mock_run:
+        with patch("plur_hermes.bridge._run_in_process_group") as mock_run:
             r = bridge.learn("Prefer pnpm over npm")
             assert r["deduplicated"] is True
             assert mock_run.call_count == 0
@@ -1061,11 +1069,11 @@ class TestDedupTtlCache:
         bridge = self._learned_bridge(ttl=0.05)
         time.sleep(0.15)
         forced = self._mock_json({"id": "ENG-122", "statement": "Prefer pnpm over npm"})
-        with patch("subprocess.run", side_effect=[forced]) as mock_run:
+        with patch("plur_hermes.bridge._run_in_process_group", side_effect=[forced]) as mock_run:
             r = bridge.learn("Prefer pnpm over npm", force=True)
             assert r["id"] == "ENG-122"
             assert mock_run.call_count == 1  # no recall on force
-        with patch("subprocess.run") as mock_run:
+        with patch("plur_hermes.bridge._run_in_process_group") as mock_run:
             r = bridge.learn("Prefer pnpm over npm")
             assert r == {"id": "ENG-122", "statement": "Prefer pnpm over npm",
                          "deduplicated": True}
@@ -1077,7 +1085,7 @@ class TestDedupTtlCache:
         empty = self._mock_json({"results": [], "count": 0})
         for i, stmt in enumerate(("eng-a", "eng-b", "eng-c")):
             learn_ok = self._mock_json({"id": f"ENG-{i}", "statement": stmt})
-            with patch("subprocess.run", side_effect=[empty, learn_ok]):
+            with patch("plur_hermes.bridge._run_in_process_group", side_effect=[empty, learn_ok]):
                 bridge.learn(stmt)
         assert "eng-a" not in bridge._dedup_cache
         assert "eng-b" in bridge._dedup_cache
@@ -1094,7 +1102,7 @@ class TestDedupTtlCache:
         bridge = self._learned_bridge(ttl=300.0)
         n = 1000
         samples: list[float] = []
-        with patch("subprocess.run",
+        with patch("plur_hermes.bridge._run_in_process_group",
                    side_effect=AssertionError("subprocess on cache-hit path")):
             for _ in range(n):
                 t0 = time.perf_counter()

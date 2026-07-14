@@ -11,6 +11,7 @@ import os
 import random
 import re
 import shutil
+import signal
 import subprocess
 import time
 from collections import OrderedDict
@@ -150,6 +151,67 @@ class PlurLockError(PlurBridgeError):
     error have exhausted those retries and the contention is sustained.
     """
     pass
+
+
+def _run_in_process_group(cmd: list[str], timeout: int) -> subprocess.CompletedProcess:
+    """subprocess.run(timeout=), but killing the whole process group.
+
+    subprocess.run's timeout path calls Popen.kill() — SIGKILL to the DIRECT
+    CHILD ONLY. That is safe when the child is the CLI itself (the `plur`
+    binary is `#!/usr/bin/env node`, so node is exec'd in place), but the
+    npx fallback in _find_binary() is two levels deep:
+
+        npx -y @plur-ai/cli   <- direct child, gets SIGKILL
+        └── node .../plur     <- grandchild, SURVIVES and reparents to PID 1
+
+    The orphan is mid-BGE-embedder-load, so it spins at ~300% CPU and never
+    exits on its own (there is no self-watchdog in the CLI). Under a bridge
+    that injects on every turn these stack until the box dies — observed as
+    31 orphans / load 307 on a Datacore host (datacore-one/datacore#33).
+
+    start_new_session=True puts the child in its own process group; on timeout
+    we signal the whole group, so the node grandchild dies with its parent.
+    Raises subprocess.TimeoutExpired exactly as subprocess.run would, so the
+    retry layers above are unchanged.
+    """
+    with subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    ) as proc:
+        try:
+            stdout, stderr = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            _kill_process_group(proc)
+            # Reap, then re-raise so call()'s outer retry sees a normal timeout.
+            try:
+                proc.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
+            raise
+        return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
+
+
+def _kill_process_group(proc: subprocess.Popen) -> None:
+    """SIGTERM then SIGKILL the child's process group. Falls back to killing
+    just the child if the group is already gone (or on platforms without
+    killpg), so this can never raise out of a timeout handler."""
+    try:
+        pgid = os.getpgid(proc.pid)
+    except (ProcessLookupError, OSError):
+        return
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.killpg(pgid, sig)
+        except (ProcessLookupError, OSError):
+            return
+        try:
+            proc.wait(timeout=2)
+            return  # died on SIGTERM; no need to escalate
+        except subprocess.TimeoutExpired:
+            continue
 
 
 class PlurBridge:
@@ -315,7 +377,7 @@ class PlurBridge:
         Lets subprocess.TimeoutExpired and FileNotFoundError propagate (caught
         by call()'s outer layer). All other CLI failures raise PlurBridgeError.
         """
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        result = _run_in_process_group(cmd, timeout)
 
         if result.returncode == 2:
             return json.loads(result.stdout) if result.stdout.strip() else {"results": [], "count": 0}

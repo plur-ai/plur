@@ -16,10 +16,9 @@ so they verify the return-value / retry contract but CANNOT observe the orphan �
 a mock never spawns a real grandchild. This test spawns a genuine
 parent→grandchild tree and drives the real timeout path to detect the leak.
 
-The fix lands on branch ``fix-clean-0.11-base`` via PR #535 (process-group
-teardown); it is NOT on ``main``, so this is marked xfail(strict): it XPASSes
-(and forces the xfail to be removed) once the bridge kills the whole process
-group on timeout.
+The fix (process-group teardown, PR #535) is now ported to ``main``: the
+bridge kills the whole process group on timeout, so the grandchild is reaped
+with its parent and this test passes.
 """
 import os
 import signal
@@ -67,13 +66,6 @@ def _force_kill(pid: int) -> None:
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX process-group semantics")
-@pytest.mark.xfail(
-    strict=True,
-    reason="PlurBridge._invoke_cli uses subprocess.run(timeout=) without "
-    "start_new_session/os.killpg — on timeout the grandchild orphans to PID 1 "
-    "instead of being reaped with its process group. Fix is on "
-    "fix-clean-0.11-base (PR #535), not on main.",
-)
 def test_timeout_reaps_grandchild(tmp_path):
     script = tmp_path / "parent.py"
     pidfile = tmp_path / "gc.pid"
