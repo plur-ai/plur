@@ -364,16 +364,26 @@ else
 
   # PRs shipped since the last tag, EXCLUDING non-user-facing conventional-commit
   # types. Squash-merge subject format: "type(scope): subject (#N)".
+  #   Trailer regex '\(#N(, #M)*\)' matches BOTH the single form "(#571)" and the
+  #     multi-issue form "(#521, #247)" — the old '\(#[0-9]+\)' silently dropped
+  #     EVERY number in a comma trailer (it needs a ')' right after the digits),
+  #     so a PR declared only via a shared trailer slipped the gate. It still
+  #     ignores bare in-prose refs like "refs #535" (not paren-wrapped) so a
+  #     cross-repo issue mention is never mistaken for a shipped PR.
+  #   Skip list also curates out this repo's internal non-user-facing types
+  #     'ops' (release tooling) and 'cmo' (marketing copy) alongside the standard
+  #     conventional set — same "not in the user CHANGELOG" convention.
   #   sort -u (lexical): comm below compares lexically; numeric -n would disagree
   #     on mixed-digit PR numbers and silently misfire.
   #   || true: grep exits 1 on no match; under `set -euo pipefail` that would
   #     abort the release instead of taking the empty-set path below.
+  PR_TRAILER='\(#[0-9]+(,[[:space:]]*#[0-9]+)*\)'
   SHIPPED_PRS=$(git log --format='%s' "${MANIFEST_LAST_TAG}..HEAD" \
-    | grep -vE '^(chore|ci|docs|test|build|refactor|style)(\(|:|!)' \
-    | grep -oE '\(#[0-9]+\)' | grep -oE '[0-9]+' | sort -u || true)
+    | grep -vE '^(chore|ci|docs|test|build|refactor|style|ops|cmo)(\(|:|!)' \
+    | grep -oE "$PR_TRAILER" | grep -oE '[0-9]+' | sort -u || true)
 
   DECLARED_PRS=$(printf '%s\n' "$MANIFEST_CHANGELOG" \
-    | grep -oE '\(#[0-9]+\)' | grep -oE '[0-9]+' | sort -u || true)
+    | grep -oE "$PR_TRAILER" | grep -oE '[0-9]+' | sort -u || true)
 
   if [ -z "$SHIPPED_PRS" ]; then
     UNDECLARED_PRS=""
