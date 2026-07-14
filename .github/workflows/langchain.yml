@@ -1,0 +1,30 @@
+name: plur-langchain
+
+on:
+  push:
+    branches: [main]
+    paths: ['packages/langchain/**', 'packages/python/**', '.github/workflows/langchain.yml']
+  pull_request:
+    branches: [main]
+    paths: ['packages/langchain/**', 'packages/python/**', '.github/workflows/langchain.yml']
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.9', '3.10', '3.11', '3.12']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      # Install plur-ai from local source — avoids PyPI dependency before first publish.
+      # plur-langchain's pyproject.toml requires plur-ai>=0.10.0; pip finds it here.
+      - run: pip install -e packages/python
+      - run: pip install -e "packages/langchain[dev]"
+      - run: pytest packages/langchain -q
