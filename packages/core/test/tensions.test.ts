@@ -2,7 +2,6 @@ import { describe, it, expect, vi } from 'vitest'
 import {
   scopesOverlap,
   domainSegmentsOverlap,
-  stemToken,
   subjectsOverlap,
   statementOverlap,
   getCandidatePairs,
@@ -149,14 +148,18 @@ describe('subjectsOverlap', () => {
     )).toBe(true)
   })
 
-  it('plural/singular subject token → overlap via stemming', () => {
+  it('plural/singular statements → overlap via shared subject word', () => {
+    // Overlap comes from the shared raw token 'deployment', not from stemming
+    // 'bots'/'bot' together (stemming was removed in #489).
     expect(subjectsOverlap(
       'Deployment bots are rate-limited to 5 per hour.',
       'Deployment bot is rate-limited to 10 per hour.',
     )).toBe(true)
   })
 
-  it('plural/singular with -ments suffix → overlap via stemming', () => {
+  it('related statements → overlap via shared subject word', () => {
+    // Overlap comes from the shared raw token 'environment', not from stemming
+    // 'variables'/'variable' together (stemming was removed in #489).
     expect(subjectsOverlap(
       'Environment variables are sourced from .env file.',
       'Environment variable sourcing is handled by dotenv.',
@@ -165,68 +168,11 @@ describe('subjectsOverlap', () => {
 })
 
 // ---------------------------------------------------------------------------
-// stemToken
-// ---------------------------------------------------------------------------
-
-describe('stemToken', () => {
-  it('strips -s suffix when stem >= 4 chars', () => {
-    expect(stemToken('errors')).toBe('error')
-    expect(stemToken('bots')).toBe('bots') // stem "bot" = 3 chars → NOT stripped
-  })
-
-  it('strips -es suffix', () => {
-    expect(stemToken('batches')).toBe('batch')
-  })
-
-  it('strips -ies suffix', () => {
-    expect(stemToken('deployies')).toBe('deploy')
-  })
-
-  it('strips -ment suffix', () => {
-    expect(stemToken('deployment')).toBe('deploy')
-  })
-
-  it('strips -ments suffix', () => {
-    expect(stemToken('deployments')).toBe('deploy')
-  })
-
-  it('strips -ing suffix', () => {
-    expect(stemToken('processing')).toBe('process')
-  })
-
-  it('strips -ings suffix', () => {
-    expect(stemToken('settings')).toBe('sett')  // 8-4=4 chars → stripped to 'sett'
-    expect(stemToken('greetings')).toBe('greet') // 9-4=5 chars → 'greet'
-  })
-
-  it('strips -ion suffix', () => {
-    expect(stemToken('validation')).toBe('validat')
-  })
-
-  it('strips -er suffix', () => {
-    expect(stemToken('builder')).toBe('build')
-  })
-
-  it('does not strip when stem would be < 4 chars', () => {
-    expect(stemToken('bees')).toBe('bees')  // stem "be" = 2 chars
-    expect(stemToken('ones')).toBe('ones')  // stem "on" = 2 chars
-    expect(stemToken('runs')).toBe('runs')  // stem "run" = 3 chars
-  })
-
-  it('returns unchanged for tokens with no matching suffix', () => {
-    expect(stemToken('plur')).toBe('plur')
-    expect(stemToken('search')).toBe('search')
-  })
-
-  it('strips longest matching suffix first', () => {
-    expect(stemToken('deployments')).toBe('deploy')
-  })
-})
-
-// ---------------------------------------------------------------------------
 // subjectsOverlap — labeled 30-pair contradiction suite
-// Source: #489 measurement. Stemmed filter gets 27/30 (90% recall).
-// Any regression below 27 must be explained and explicitly accepted.
+// Source: #489 measurement. The raw (unstemmed) filter admits 29/30. The
+// earlier suffix-stemming step also scored 29/30 here — zero pairs changed —
+// so it was removed (#489). Any regression below the 27 floor must be
+// explained and explicitly accepted.
 // ---------------------------------------------------------------------------
 
 describe('subjectsOverlap — labeled 30-pair suite', () => {
@@ -263,11 +209,12 @@ describe('subjectsOverlap — labeled 30-pair suite', () => {
     ['domain-generic', 'Always use pnpm for package management.', 'Always use npm for package management.'],
   ]
 
-  // RECALL FLOOR ONLY. This asserts the stemmed pre-filter admits ≥27/30 known
-  // contradiction pairs — a recall measurement. It does NOT prove stemToken()
-  // helps: the assertion also passes with stemming deleted (the raw tokens of
-  // most pairs already overlap), and it is blind to false positives (precision).
-  // See the '#489' precision suite below for the complementary half.
+  // RECALL FLOOR ONLY. This asserts the (raw, unstemmed) pre-filter admits
+  // ≥27/30 known contradiction pairs — a recall measurement; it currently
+  // admits 29/30. This floor is why suffix-stemming was safe to remove (#489):
+  // the raw tokens of most pairs already overlap, so stemming scored the same
+  // 29/30 without helping. The floor is blind to false positives (precision) —
+  // see the '#489' precision suite below for the complementary half.
   it('recall floor: admits at least 27/30 labeled contradiction pairs', () => {
     const hits = CONTRADICTIONS.filter(([, a, b]) => subjectsOverlap(a, b))
     expect(hits.length).toBeGreaterThanOrEqual(27)
@@ -278,20 +225,23 @@ describe('subjectsOverlap — labeled 30-pair suite', () => {
 // subjectsOverlap — precision / false positives (#489)
 // The 30-pair suite above only measures recall. It cannot catch the inverse
 // failure: subject-DISJOINT statements wrongly flagged as overlapping. #489
-// proved stemToken() over-truncates — 'states' → 'stat' (via -es) and
-// 'station' → 'stat' (via -ion) collide on a meaningless 4-char stem, so two
-// unrelated statements pass the pre-filter and become a candidate contradiction
-// pair. That is a precision leak (wasted LLM judgements, phantom tensions).
+// proved the old stemToken() over-truncated — 'states' → 'stat' (via -es) and
+// 'station' → 'stat' (via -ion) collided on a meaningless 4-char stem, so two
+// unrelated statements passed the pre-filter and became a candidate
+// contradiction pair (a precision leak: wasted LLM judgements, phantom
+// tensions). Removing stemming closes that leak — these pairs now stay disjoint.
 // ---------------------------------------------------------------------------
 
 describe('subjectsOverlap — precision / over-stemming false positives (#489)', () => {
-  it.fails('does NOT flag subject-disjoint pairs that collide only on an over-stemmed token', () => {
-    // 'states' and 'station' both stem to 'stat' → currently a false positive.
+  it('does NOT flag subject-disjoint pairs that would have collided on an over-stemmed token', () => {
+    // Under the old suffix-stemming, 'states'→'stat' (via -es) and
+    // 'station'→'stat' (via -ion) collided on a meaningless 4-char stem, so
+    // these disjoint statements passed the pre-filter. #489 removed stemming;
+    // the raw tokens 'states' and 'station' no longer match → no overlap.
     expect(subjectsOverlap('United states border policy', 'Station platform layout')).toBe(false)
-    // 'corners' and 'corn' both stem to 'corn' → currently a false positive.
+    // Likewise 'corners'→'corn' and 'corn' both collapsed to 'corn' under
+    // stemming; raw 'corners' and 'corn' are distinct → no overlap.
     expect(subjectsOverlap('Corners of the room', 'Corn futures rally')).toBe(false)
-    // Correct expectation is no-overlap for both; it.fails until #489 tightens
-    // stemToken() (e.g. min stem length / suffix guards). Flip to it() when green.
   })
 })
 
