@@ -24,12 +24,11 @@ from typing import Any, Sequence
 # @plur-ai/cli pin for the npx fallback. Keep >= the published CLI that carries
 # the current scope-routing / leak-guard fixes.
 #
-# NOTE: nothing in this package auto-bumps this. release.sh only rewrites the
-# hermes pin (packages/hermes/plur_hermes/bridge.py) — it never touches
-# packages/python. Bump this BY HAND when cutting a Python SDK release. The one
-# guard is tests/test_client.py::test_npx_cli_version_pin_tracks_pyproject, which
-# fails if the pin drifts below the SDK's own major.minor.
-_NPX_CLI_VERSION = "0.10.1"
+# release.sh bumps this to the release version alongside the hermes pin, and
+# packages/hermes/scripts/check_version_sync.py enforces pin >= published
+# @plur-ai/cli. A stale pin silently runs a pre-release CLI on the npx-fallback
+# write path, bypassing that release's scope-routing / leak-guard fixes.
+_NPX_CLI_VERSION = "0.13.0"
 _DEFAULT_TIMEOUT = 30
 
 

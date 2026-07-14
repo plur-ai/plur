@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify version strings are in sync across plur-hermes source files.
+"""Verify version-sync invariants across the plur-hermes AND plur-ai (python) packages.
 
 Source of truth: pyproject.toml [project].version
 
@@ -138,13 +138,48 @@ def main() -> int:
                         f"than the one published to npm; bump _NPX_CLI_VERSION"
                     )
 
+    # --- Python SDK (packages/python) — same npx-fallback pin hazard ---
+    # release.sh bumps the python pin + pyproject in lockstep with hermes, so a
+    # stale python pin (which silently runs a pre-fix CLI on the npx fallback) is
+    # caught here too. The python package is on its own version track (it isn't
+    # published to PyPI yet), so we do NOT require python==hermes; we only enforce
+    # the pin is a valid SemVer, >= the python package's own version, and (best
+    # effort) >= the published CLI.
+    py_dir = ROOT.parent / "python"
+    try:
+        py_pyproject = tomllib.loads((py_dir / "pyproject.toml").read_text())["project"]["version"]
+        py_bridge = (py_dir / "plur_ai" / "bridge.py").read_text()
+        m = re.search(r'^_NPX_CLI_VERSION\s*=\s*"([^"]+)"', py_bridge, re.M)
+        py_pin = m.group(1) if m else None
+    except (FileNotFoundError, KeyError):
+        py_pyproject = py_pin = None
+
+    if py_pin is None:
+        errors.append("packages/python: could not read _NPX_CLI_VERSION")
+    elif not SEMVER.match(py_pin):
+        errors.append(f"packages/python _NPX_CLI_VERSION {py_pin!r} is not valid SemVer")
+    else:
+        if py_pyproject and _version_tuple(py_pin) < _version_tuple(py_pyproject):
+            errors.append(
+                f"packages/python _NPX_CLI_VERSION {py_pin!r} < its pyproject "
+                f"{py_pyproject!r} — bump the pin in packages/python/plur_ai/bridge.py"
+            )
+        published = _published_cli_version()
+        if published and SEMVER.match(published) and _version_tuple(py_pin) < _version_tuple(published):
+            errors.append(
+                f"packages/python _NPX_CLI_VERSION {py_pin!r} < published {CLI_PACKAGE} "
+                f"{published!r} — the npx-fallback would run an older CLI than npm's; "
+                f"bump the pin in packages/python/plur_ai/bridge.py"
+            )
+
     if errors:
         print("Version sync check FAILED:", file=sys.stderr)
         for e in errors:
             print(f"  - {e}", file=sys.stderr)
         return 1
 
-    print(f"OK: plur-hermes={canonical}, SKILL={skill}, NPX_CLI pin={npx_pin}")
+    print(f"OK: plur-hermes={canonical}, SKILL={skill}, NPX_CLI pin={npx_pin}; "
+          f"python pin={py_pin} (pyproject {py_pyproject})")
     return 0
 
 
