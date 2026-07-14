@@ -80,12 +80,12 @@ describe('claw setup command', () => {
     expect(written.plugins.entries['plur-claw'].hooks?.allowConversationAccess).toBe(true)
   })
 
-  // MISSING coverage (#51 / D-4): setup.ts:103 force-sets allowConversationAccess
-  // true by spreading it AFTER the user's existing hooks, so it overrides a user
-  // who deliberately turned conversation access OFF. That's a plugin re-granting
-  // itself a privacy permission the user revoked. it.fails until setup honours an
-  // explicit false. (If the team decides force-true is intended, delete this.)
-  it.fails('does not re-grant allowConversationAccess when the user set it false (#51)', () => {
+  // #51 / D-4 (FIXED): setup previously force-set allowConversationAccess true by
+  // spreading it AFTER the user's existing hooks, overriding a user who
+  // deliberately turned conversation access OFF — a plugin re-granting itself a
+  // privacy permission the user revoked. setup now only seeds it when absent and
+  // preserves an explicit false.
+  it('does not re-grant allowConversationAccess when the user set it false (#51)', () => {
     const prior = {
       plugins: {
         entries: { 'plur-claw': { enabled: true, hooks: { allowConversationAccess: false } } },
@@ -169,16 +169,13 @@ describe('claw setup command', () => {
     expect(written.plugins.allow).toEqual(['other-plugin', 'plur-claw'])
   })
 
-  // WAS a BUG-ENCODING test: it asserted setup writes `allow: ['plur-claw']`
-  // when `allow` was absent. In OpenClaw an ABSENT allow means "allow ALL
-  // plugins"; writing a one-element list silently GATES OFF every other plugin
-  // the user has. This also directly contradicts the doctor test below
-  // ("absent allow = no gating (ok)"). See #51.
-  //
-  // Inverted to the correct behaviour (a fresh install with other plugins
-  // present must not gate them off), marked it.fails until setup.ts:132-136 is
-  // fixed. Uses a config WITH another plugin so the harm is actually asserted.
-  it.fails('does not gate off other plugins on fresh install when allow is absent (#51)', () => {
+  // #51 / D-3 (FIXED): setup previously wrote `allow: ['plur-claw']` when `allow`
+  // was absent. In OpenClaw an ABSENT allow means "allow ALL plugins"; writing a
+  // one-element list silently GATES OFF every other plugin the user has (and
+  // contradicts the doctor test below, "absent allow = no gating (ok)"). setup
+  // now leaves an absent allow absent. Uses a config WITH other plugins so the
+  // harm would actually be asserted.
+  it('does not gate off other plugins on fresh install when allow is absent (#51)', () => {
     const prior = { plugins: { entries: { 'weather-plugin': { enabled: true }, 'git-plugin': { enabled: true } } } }
     writeFileSync(cfgPath, JSON.stringify(prior), 'utf8')
     runSetup({ configPath: cfgPath })
@@ -259,17 +256,13 @@ describe('claw setup command', () => {
   })
 
   describe('stale entry pruning (item 1 — manifest mismatch fix)', () => {
-    // WAS a BUG-ENCODING test: it asserted `entries['stale-plugin']` becomes
-    // undefined — i.e. it demanded that setup DELETE a third-party plugin's
-    // entire config entry (INCLUDING any API keys in its `config`) on the sole
-    // evidence that its extensions/<id> directory is absent. That directory is
-    // transiently absent during any install/upgrade, so this destroys a user's
-    // credentials for another vendor's plugin. See #51.
-    //
-    // Inverted to assert the CORRECT behaviour (foreign entry + its credentials
-    // survive) and marked it.fails because setup.ts:84-93 still prunes today.
-    // When #51 is fixed this test PASSES → it.fails fails → flip back to it().
-    it.fails('preserves a third-party entry (and its credentials) when its extension dir is absent (#51)', () => {
+    // #51 / D-2 (FIXED): setup previously DELETED a third-party plugin's entire
+    // config entry (INCLUDING any API keys in its `config`) on the sole evidence
+    // that its extensions/<id> directory was absent. That directory is transiently
+    // absent during any install/upgrade, so this destroyed a user's credentials
+    // for another vendor's plugin. setup no longer prunes foreign entries, so the
+    // foreign entry and its credentials survive.
+    it('preserves a third-party entry (and its credentials) when its extension dir is absent (#51)', () => {
       const prior = {
         plugins: {
           entries: {
