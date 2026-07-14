@@ -31,15 +31,14 @@ Correct something in OpenClaw — your Claude Code picks it up. Teach a pattern 
 - Learns from corrections and preferences as you work — no manual notes
 - Injects relevant context at session start — no re-explaining from scratch
 - Memory strengthens with use, fades when stale — modeled on human memory
-- Works across Claude Code, Cursor, Copilot, and any MCP-compatible tool
-- No cloud, no API key, no cost — ever
+- Works across Claude Code, Cursor (beta), and any MCP-compatible tool
+- No cloud, no API key, no cost — by default
 
-## Benchmarks (reported, v0.2.1 baseline)
+## Benchmarks
 
-- 86.7% overall on LongMemEval — beats Supermemory (81.6%) on the same benchmark
+- 97.6% R@5 on LongMemEval (N=500) — full methodology: https://plur.ai/benchmark.html
 - 89% agent task win rate — Haiku with PLUR outperformed Opus without it
-- 100% convention adherence
-- Full methodology: https://plur.ai/benchmark.html
+- 100% convention adherence (12–0 on house rules)
 
 ## Open source. Local-first. Private. Free.
 
