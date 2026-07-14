@@ -178,7 +178,7 @@ function normaliseHost(host: string): string {
     }
   }
   const parsed = new URL(origin)
-  const isLocal = parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1' || parsed.hostname === '::1'
+  const isLocal = parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1' || parsed.hostname === '[::1]'
   if (parsed.protocol !== 'https:' && !isLocal) {
     throw new Error(`Insecure host: ${host}. Use https:// (http:// is only permitted for localhost).`)
   }
@@ -323,7 +323,7 @@ async function openBrowser(url: string): Promise<boolean> {
   // spawn with an arg array: no shell interpolation, no injection vector.
   const [cmd, cmdArgs]: [string, string[]] =
     p === 'darwin' ? ['open', [url]] :
-    p === 'win32'  ? ['cmd', ['/c', 'start', '', url]] :
+    p === 'win32'  ? ['rundll32.exe', ['url.dll,FileProtocolHandler', url]] :
     ['xdg-open', [url]]
   return new Promise(resolve => {
     const child = spawn(cmd, cmdArgs, { detached: true, stdio: 'ignore' })
