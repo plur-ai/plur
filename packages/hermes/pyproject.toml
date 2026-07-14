@@ -5,13 +5,45 @@ description = "PLUR persistent memory plugin for Hermes Agent"
 readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.10"
-authors = [{name = "plur-ai"}]
+authors = [{name = "PLUR", email = "info@plur.ai"}]
 keywords = ["hermes", "agent", "memory", "plur", "engram"]
+
+# Zero runtime dependencies, declared explicitly rather than omitted: the
+# plugin is stdlib-only by design and reaches PLUR through the `plur` CLI, so
+# it never pulls a dependency tree into the host agent's environment. An empty
+# list states that as a contract; an absent key would just look like an
+# oversight.
+dependencies = []
+
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Operating System :: OS Independent",
 ]
+# No "License ::" classifier: `license` above is an SPDX expression (PEP 639),
+# and setting both is mutually exclusive. No "Typing :: Typed" either — there
+# is no py.typed marker in this package, so it would be a false claim.
+
+# Without these, the PyPI page has no link back to the source. That is not
+# cosmetic: the Hermes integration lives inside the monorepo (packages/hermes)
+# while the OmniGent one is a standalone repo, so "there is probably a
+# plur-hermes repo" is a natural and wrong guess. `directory` points pip and
+# PyPI at the right subtree.
+[project.urls]
+Homepage = "https://plur.ai"
+Repository = "https://github.com/plur-ai/plur"
+Issues = "https://github.com/plur-ai/plur/issues"
+Changelog = "https://github.com/plur-ai/plur/blob/main/CHANGELOG.md"
+Source = "https://github.com/plur-ai/plur/tree/main/packages/hermes"
+
+[project.optional-dependencies]
+test = ["pytest>=7.0"]
 
 [project.entry-points."hermes_agent.plugins"]
 plur = "plur_hermes"
