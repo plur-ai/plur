@@ -252,29 +252,21 @@ export function domainSegmentsOverlap(a?: string, b?: string): boolean {
 }
 
 /**
- * Light suffix-stemming: maps plural/derivational variants onto a shared stem.
- * "errors"→"error", "deployments"→"deploy" (4-char minimum on result stem).
- * "bots" stays "bots" (stem "bot" would be 3 chars). Looser direction only.
- */
-export function stemToken(t: string): string {
-  for (const suf of ['ments', 'ment', 'ings', 'ing', 'ions', 'ion', 'ers', 'er', 'ies', 'es', 's']) {
-    if (t.length - suf.length >= 4 && t.endsWith(suf)) {
-      return t.slice(0, -suf.length)
-    }
-  }
-  return t
-}
-
-/**
  * Subject-predicate pre-filter: skip pairs whose subject noun phrases don't
  * overlap.
  *
  * Extracts "subject tokens" from each statement — longer content words
  * (>3 chars) from the first clause (up to the first verb-like boundary or
- * 10 tokens), then applies light suffix-stemming so that "bots"/"bot" and
- * "deployments"/"deployment" share the same stem. Two statements pass the
- * filter when they share at least one stemmed subject token, indicating they
- * are making assertions about the same entity.
+ * 10 tokens). Two statements pass the filter when they share at least one
+ * raw subject token, indicating they are making assertions about the same
+ * entity.
+ *
+ * Subject tokens are compared as raw lowercased, tokenized, stopword-filtered
+ * words — no suffix-stemming. An earlier stemming step (#489) was measurably a
+ * no-op on the labeled recall suite (29/30 with and without it) while it
+ * over-stemmed unrelated words onto shared 4-char stems ('states'/'station'/
+ * 'stats' all → 'stat'), colliding disjoint statements into false-positive
+ * candidate pairs. It was removed.
  *
  * This is a heuristic, not a true NLP parse. It captures the most common
  * pattern: "The plur CLI uses X" vs "The plur CLI uses Y" share "plur"
@@ -289,7 +281,7 @@ function extractSubjectTokens(s: string): Set<string> {
   // Take the first clause: split at first comma, semicolon, or after ~60 chars
   const clause = s.split(/[,;]|(?<=\w{3,})\s+(?:is|are|was|were|has|have|can|will|should|must|does|do)\s/)[0]
     .slice(0, 80)
-  return new Set(ftsTokenize(clause).filter(t => t.length > 3).slice(0, 10).map(stemToken))
+  return new Set(ftsTokenize(clause).filter(t => t.length > 3).slice(0, 10))
 }
 
 function setsIntersect(a: Set<string>, b: Set<string>): boolean {
