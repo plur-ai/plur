@@ -17,11 +17,18 @@ import json
 import os
 import shlex
 import shutil
+import signal
 import subprocess
 from typing import Any, Sequence
 
 # @plur-ai/cli pin for the npx fallback. Keep >= the published CLI that carries
-# the current scope-routing / leak-guard fixes; release tooling bumps this.
+# the current scope-routing / leak-guard fixes.
+#
+# NOTE: nothing in this package auto-bumps this. release.sh only rewrites the
+# hermes pin (packages/hermes/plur_hermes/bridge.py) — it never touches
+# packages/python. Bump this BY HAND when cutting a Python SDK release. The one
+# guard is tests/test_client.py::test_npx_cli_version_pin_tracks_pyproject, which
+# fails if the pin drifts below the SDK's own major.minor.
 _NPX_CLI_VERSION = "0.10.1"
 _DEFAULT_TIMEOUT = 30
 
@@ -52,6 +59,87 @@ def _resolve_base_command(explicit_bin: str | None = None) -> list[str]:
     )
 
 
+def _parse_json_tail(out: str) -> Any:
+    """Return the last JSON object/array line in ``out``, or ``None`` if none.
+
+    The CLI may emit log lines before the JSON payload; take the last JSON line.
+    """
+    for line in reversed(out.splitlines()):
+        line = line.strip()
+        if line.startswith(("{", "[")):
+            try:
+                return json.loads(line)
+            except json.JSONDecodeError:
+                continue
+    return None
+
+
+def _kill_process_group(proc: "subprocess.Popen[str]") -> None:
+    """SIGTERM (then SIGKILL) the child's *entire* process group.
+
+    The child is started with ``start_new_session=True`` so it leads its own
+    process group; any grandchild it spawns (e.g. the ``node`` CLI under an
+    ``npx`` parent) inherits that group. Killing the group — not just the direct
+    child — is what stops the grandchild from orphaning to PID 1 and spinning.
+
+    POSIX only; on other platforms fall back to killing the direct child.
+    """
+    if os.name != "posix":
+        proc.kill()
+        return
+    try:
+        pgid = os.getpgid(proc.pid)
+    except ProcessLookupError:
+        return
+    try:
+        os.killpg(pgid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    try:
+        proc.wait(timeout=0.5)  # brief grace for SIGTERM before escalating
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    try:
+        os.killpg(pgid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+
+
+def _run_in_process_group(
+    cmd: list[str], *, env: dict[str, str], timeout: float
+) -> "subprocess.CompletedProcess[str]":
+    """``subprocess.run``-equivalent with process-group teardown on timeout.
+
+    ``subprocess.run(cmd, timeout=...)`` SIGKILLs only the *direct* child, so a
+    grandchild (the ``node`` CLI spawned by an ``npx`` parent) is orphaned to
+    PID 1 and keeps running — the leak this guards against. Here the child leads
+    its own session/process group and, on timeout, we kill the whole group, then
+    re-raise ``subprocess.TimeoutExpired`` so callers behave exactly as they did
+    under ``subprocess.run``.
+    """
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=env,
+        start_new_session=True,
+    )
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        _kill_process_group(proc)
+        # Drain pipes / reap the direct child so we don't leak fds or a zombie.
+        try:
+            stdout, stderr = proc.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            stdout, stderr = proc.communicate()
+        raise subprocess.TimeoutExpired(cmd, timeout, output=stdout, stderr=stderr)
+    return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
+
+
 def run_json(
     args: Sequence[str],
     *,
@@ -65,15 +153,22 @@ def run_json(
     if path:
         env["PLUR_PATH"] = path
     try:
-        proc = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=timeout, env=env
-        )
+        proc = _run_in_process_group(cmd, env=env, timeout=timeout)
     except FileNotFoundError as exc:  # binary vanished between resolve and run
         raise PlurNotInstalledError(str(exc)) from exc
     except subprocess.TimeoutExpired as exc:
         raise PlurError(
             f"PLUR CLI timed out after {timeout}s: plur {' '.join(args)}"
         ) from exc
+
+    # Exit 2 is the CLI's "empty result set" signal — a recall/search with no
+    # matches emits {"results": [], "count": 0} and exits 2 (recall.ts). That is
+    # a normal no-match, NOT an error; the plur-hermes bridge treats it the same
+    # way (plur_hermes/bridge.py). Return the empty payload so recall() yields []
+    # instead of raising. Any OTHER nonzero code is a real failure. (#495)
+    if proc.returncode == 2:
+        parsed = _parse_json_tail(proc.stdout.strip())
+        return parsed if parsed is not None else {"results": [], "count": 0}
 
     if proc.returncode != 0:
         raise PlurError(
@@ -83,12 +178,7 @@ def run_json(
     out = proc.stdout.strip()
     if not out:
         return None
-    # The CLI may emit log lines before the JSON payload; take the last JSON line.
-    for line in reversed(out.splitlines()):
-        line = line.strip()
-        if line.startswith(("{", "[")):
-            try:
-                return json.loads(line)
-            except json.JSONDecodeError:
-                continue
+    parsed = _parse_json_tail(out)
+    if parsed is not None:
+        return parsed
     raise PlurError(f"Could not parse JSON from CLI output: {out[:200]}")
