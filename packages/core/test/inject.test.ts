@@ -216,35 +216,20 @@ describe('injection engine', () => {
       ...overrides,
     })
 
-    it('renders "Confidence: exploring" when commitment is exploring', () => {
-      const wire = makeWire({ commitment: 'exploring' })
-      const text = formatWithLayer([wire], 3)
-      expect(text).toContain('Confidence: exploring')
-      expect(text).not.toMatch(/Confidence: 0\.\d{2}/)
-    })
+    // #348: commitment and confidence are distinct fields. These used to assert
+    // `Confidence: <commitment>` with the numeric score HIDDEN — encoding the bug
+    // where a low-confidence engram read as maximally certain. Now both show.
+    for (const level of ['exploring', 'leaning', 'decided', 'locked'] as const) {
+      it(`renders "Commitment: ${level}" ALONGSIDE the confidence float`, () => {
+        const wire = makeWire({ commitment: level })
+        const text = formatWithLayer([wire], 3)
+        expect(text).toContain(`Commitment: ${level}`)
+        expect(text).toContain('Confidence: 0.73') // the number is NOT discarded
+        expect(text).not.toContain(`Confidence: ${level}`) // commitment never masquerades as confidence
+      })
+    }
 
-    it('renders "Confidence: leaning" when commitment is leaning', () => {
-      const wire = makeWire({ commitment: 'leaning' })
-      const text = formatWithLayer([wire], 3)
-      expect(text).toContain('Confidence: leaning')
-      expect(text).not.toMatch(/Confidence: 0\.\d{2}/)
-    })
-
-    it('renders "Confidence: decided" when commitment is decided', () => {
-      const wire = makeWire({ commitment: 'decided' })
-      const text = formatWithLayer([wire], 3)
-      expect(text).toContain('Confidence: decided')
-      expect(text).not.toMatch(/Confidence: 0\.\d{2}/)
-    })
-
-    it('renders "Confidence: locked" when commitment is locked', () => {
-      const wire = makeWire({ commitment: 'locked' })
-      const text = formatWithLayer([wire], 3)
-      expect(text).toContain('Confidence: locked')
-      expect(text).not.toMatch(/Confidence: 0\.\d{2}/)
-    })
-
-    it('renders the raw float when commitment is not set', () => {
+    it('renders only the float when commitment is not set', () => {
       const wire = makeWire()
       const text = formatWithLayer([wire], 3)
       expect(text).toContain('Confidence: 0.73')
