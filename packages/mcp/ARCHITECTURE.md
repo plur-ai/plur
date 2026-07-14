@@ -86,7 +86,7 @@ Tool families (~20 tools total):
 | Multi-store | `plur_stores_add`, `plur_stores_list` |
 | Packs | `plur_packs_install`, `plur_packs_list`, `plur_packs_export`, `plur_packs_discover`, `plur_packs_preview`, `plur_packs_uninstall` |
 | Diagnostics | `plur_status`, `plur_doctor`, `plur_profile`, `plur_timeline`, `plur_tensions`, `plur_meta_engrams` |
-| Sync / maintenance | `plur_sync`, `plur_sync_status`, `plur_batch_decay`, `plur_validate_meta`, `plur_episode_to_engram`, `plur_report_failure` |
+| Sync / maintenance | `plur_sync`, `plur_sync_status`, `plur_validate_meta`, `plur_episode_to_engram`, `plur_report_failure` |
 
 When adding a new tool: define it in `tools.ts`, write the Zod schema
 (MCP clients use the schema to format args), add the test in

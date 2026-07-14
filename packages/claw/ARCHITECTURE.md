@@ -59,7 +59,7 @@ Claw's implementation in `context-engine.ts`:
 | `info()` | Returns `{ name: 'plur-claw', version, slot: 'memory' }` |
 | `onSessionStart` | Calls `plur.inject(task)` → builds system-prompt block via `assembler.ts` → returns `{ inject }` |
 | `onTurn` | Runs `learner.ts` over the user+assistant turn → if corrections detected, calls `plur.learn()` async (background) → optionally captures the turn as an episode |
-| `onSessionEnd` | Calls `plur.capture(summary)` → `plur.batchDecay()` if it's been a while |
+| `onSessionEnd` | Calls `plur.capture(summary)` |
 
 All operations are awaited from OpenClaw's perspective but the actual
 LLM-blocking work (learn, capture) is queued — `onTurn` returns fast.

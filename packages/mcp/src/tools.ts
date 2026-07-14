@@ -2628,24 +2628,6 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
     },
 
     {
-      name: 'plur_batch_decay',
-      description: 'Apply ACT-R decay to all local engrams. Run weekly. Only decays engrams in the local YAML store — remote-store engrams are not decayed client-side. Returns status transitions only.',
-      annotations: { title: 'Batch decay', destructiveHint: false, idempotentHint: false },
-      inputSchema: {
-        type: 'object',
-        properties: {
-          context_scope: { type: 'string', description: 'Scope to skip during decay (engrams in active scope are not decayed)' },
-        },
-      },
-      handler: async (args, plur) => {
-        const result = plur.batchDecay({
-          contextScope: args.context_scope as string | undefined,
-        })
-        return result
-      },
-    },
-
-    {
       name: 'plur_profile',
       description: 'Generate or retrieve a cognitive profile — a narrative summary synthesized from stored engrams. Cached for 24h.',
       annotations: { title: 'Cognitive profile', readOnlyHint: true, idempotentHint: true },

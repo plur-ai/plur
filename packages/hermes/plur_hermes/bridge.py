@@ -511,11 +511,5 @@ class PlurBridge:
             args.extend(["--scope", scope])
         return self.call("similarity-search", args)
 
-    def batch_decay(self, context_scope: str | None = None) -> dict:
-        args: list[str] = []
-        if context_scope:
-            args.extend(["--context-scope", context_scope])
-        return self.call("batch-decay", args)
-
     def packs_install(self, source: str) -> dict:
         return self.call("packs", ["install", source])

@@ -10,7 +10,7 @@ import { loadEngrams, saveEngrams, generateEngramId, loadAllPacks, storePrefix }
 import { logger } from './logger.js'
 import { searchEngrams } from './fts.js'
 import { selectAndSpread, scoreEngramsPublic, formatWithLayer, assignLayer } from './inject.js'
-import { reactivate, applyBatchDecay, type BatchDecayResult } from './decay.js'
+import { reactivate } from './decay.js'
 import { captureEpisode, queryTimeline } from './episodes.js'
 import { agenticSearch } from './agentic-search.js'
 import { embeddingSearch, embeddingSearchWithScores, type SimilarityResult } from './embeddings.js'
@@ -80,7 +80,7 @@ export { recallAuto, type AutoSearchResult, type SearchStrategy } from './search
 export { generateProfile, getProfileForInjection, loadProfileCache, saveProfileCache, markProfileDirty, profileNeedsRegeneration, type ProfileCache } from './profile.js'
 export { formatLayer1, formatLayer2, formatLayer3, formatWithLayer, assignLayer, type InjectionLayer } from './inject.js'
 export { appendHistory, readHistory, listHistoryMonths, readHistoryForEngram, generateEventId, generateInjectionId, computeQueryHash, findLatestInjectionFor, countInjectionEvents, type HistoryEvent, type InjectionEventCounts } from './history.js'
-export { applyBatchDecay, strengthToStatus, type BatchDecayResult, type DecayTransition, type BatchDecayOptions } from './decay.js'
+export { strengthToStatus } from './decay.js'
 export { computeContentHash, normalizeStatement } from './content-hash.js'
 export { parseDedupResponse, buildDedupPrompt, buildBatchDedupPrompt } from './dedup.js'
 export { runMigrations, rollbackMigrations, getSchemaVersion, setSchemaVersion, ALL_MIGRATIONS, CURRENT_SCHEMA_VERSION, type Migration, type MigrationResult } from './migrations/index.js'
@@ -3065,33 +3065,19 @@ export class Plur {
     })
   }
 
-  /**
-   * Apply ACT-R decay to all primary (local YAML) store engrams.
-   * Scope-matched engrams are skipped, status transitions logged to history.
-   * Modified engrams are saved back to the store.
-   *
-   * Decay ownership: the enterprise server does NOT run decay server-side
-   * (see plur-ai/enterprise ARCHITECTURE.md — decay belongs in @plur-ai/core).
-   * Remote-store engrams are intentionally excluded here because multiple
-   * clients decaying the same shared store would cause conflicts. A dedicated
-   * server-side decay endpoint is tracked separately.
-   */
-  batchDecay(options?: { contextScope?: string; lambda?: number; now?: Date }): BatchDecayResult {
-    return withLock(this.paths.engrams, () => {
-      const engrams = loadEngrams(this.paths.engrams)
-      const { result, modified } = applyBatchDecay(engrams, this.paths.root, options)
-
-      // Save modified engrams back (not the original unmodified list).
-      // Only primary store engrams are decayed — store/pack engrams are maintained
-      // by their respective store owners and are typically readonly.
-      if (result.transitions.length > 0) {
-        this._writeEngrams(this.paths.engrams, modified)
-        this._syncIndex()
-      }
-
-      return result
-    })
-  }
+  // batchDecay() was removed 2026-07-14. Decay is a pure function of
+  // last_accessed and is computed at READ time (see inject.ts — decayedStrength
+  // on every candidate); reinforcement re-anchors last_accessed on access
+  // (_reactivateResults). A scheduled batch that MATERIALIZED decay back into
+  // the store was redundant with that model AND wrong: it lowered stored
+  // strength without advancing last_accessed, so read-time decay then
+  // double-counted — an untouched engram decayed by (elapsed × how many times
+  // the cron fired), not by elapsed time. It also rewrote the whole YAML store
+  // on a schedule, which (a) produced the whole-store-overwrite data-loss bug,
+  // (b) turned every sync into churn on values that are a pure function of the
+  // data, and (c) buried real provenance in git history. PLUR does not need a
+  // decay cron. Physical archival of long-cold engrams, if ever wanted, should
+  // be an explicit, reversible, logged maintenance op — not this.
 
   /**
    * Rebuild the derived index from YAML source of truth.
