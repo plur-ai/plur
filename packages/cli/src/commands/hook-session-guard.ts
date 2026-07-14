@@ -112,7 +112,17 @@ export async function run(_args: string[], _flags: GlobalFlags): Promise<void> {
   // Deadlock prevention (#199): if we've blocked too many times without a
   // session starting, the MCP server likely failed to load. Stop blocking
   // to prevent permanent deadlock.
-  const blockCount = incrementBlockCount(sessionId)
+  //
+  // Fail-open: incrementBlockCount creates the state dir and writes the counter;
+  // on an unwritable $TMPDIR (read-only tmpfs, full disk) either can throw. A
+  // PreToolUse guard MUST NEVER crash the tool call it gates — allow through,
+  // the same outcome as the deadlock fallback below.
+  let blockCount: number
+  try {
+    blockCount = incrementBlockCount(sessionId)
+  } catch {
+    return
+  }
   if (blockCount > MAX_BLOCKS_BEFORE_FALLBACK) {
     process.stderr.write(
       `[plur] session guard: allowing tools after ${MAX_BLOCKS_BEFORE_FALLBACK} nudge(s) ` +

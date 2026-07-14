@@ -199,7 +199,10 @@ async function tryRemoteInject(
 
 function sessionDir(): string {
   const dir = join(tmpdir(), 'plur-sessions')
-  mkdirSync(dir, { recursive: true })
+  // Fail-open: an unwritable $TMPDIR (read-only tmpfs, full disk) must never
+  // crash the prompt. Swallow the mkdir error and return the path anyway —
+  // downstream state-dir writes are individually wrapped and degrade to no-ops.
+  try { mkdirSync(dir, { recursive: true }) } catch { /* fail-open */ }
   return dir
 }
 
@@ -245,7 +248,9 @@ function isReminderDue(): boolean {
 }
 
 function touchReminder(): void {
-  writeFileSync(lastReminderPath(), String(Date.now()))
+  // Fail-open: a state-dir write failing (unwritable $TMPDIR) must never crash
+  // the prompt. The reminder timer is best-effort bookkeeping.
+  try { writeFileSync(lastReminderPath(), String(Date.now())) } catch { /* fail-open */ }
 }
 
 function extractEventTask(input: Record<string, unknown>, event: string): string {
@@ -457,9 +462,11 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     if (!task) {
       task = 'general session'
     }
-    // Auto session start: generate session ID and save with task
+    // Auto session start: generate session ID and save with task.
+    // Fail-open: if the state dir is unwritable, skip the marker (the session
+    // header is read back defensively below) rather than crash the prompt.
     const sessionId = randomUUID()
-    writeFileSync(marker, JSON.stringify({ task, sessionId }))
+    try { writeFileSync(marker, JSON.stringify({ task, sessionId })) } catch { /* fail-open */ }
     touchReminder() // Reset reminder timer on first message
   }
 

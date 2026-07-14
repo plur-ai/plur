@@ -114,7 +114,7 @@ describe('hook-learn-check', () => {
   // makes the hook EXIT 1 and print {"error":...} to stdout (index.ts's top-level
   // catch). Correct behaviour: exit 0 and emit valid/empty output. it.fails until
   // the counter I/O is made fail-open; flip to it() when green.
-  it.fails('never crashes the response when the state dir is unwritable', () => {
+  it('never crashes the response when the state dir is unwritable', () => {
     const roTmp = mkdtempSync(join(tmpdir(), 'plur-ro-learn-'))
     chmodSync(roTmp, 0o500) // r-x: owner cannot create plur-sessions inside
     try {

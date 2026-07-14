@@ -115,7 +115,7 @@ describe('hook-session-guard', () => {
   // call it was meant to gate. Correct behaviour: exit 0 and emit valid/empty
   // output (fail open). it.fails until the state-dir I/O is made fail-open; flip
   // to it() when green.
-  it.fails('never crashes the tool call when the state dir is unwritable', () => {
+  it('never crashes the tool call when the state dir is unwritable', () => {
     const roTmp = mkdtempSync(join(tmpdir(), 'plur-ro-guard-'))
     chmodSync(roTmp, 0o500) // r-x: owner cannot create plur-sessions inside
     try {
