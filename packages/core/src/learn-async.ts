@@ -313,7 +313,9 @@ export async function learnBatch(
     // against its input index and continue; the caller inspects `failures`.
     try {
       const result = await learnAsync(deps, statement, ctx)
-      results.push(result)
+      // Tag with the input position so a caller can map this result back to its
+      // input even though `results` is compacted (failed statements absent). #281
+      results.push({ ...result, input_index: i })
       const key = result.decision.toLowerCase()
       if (key === 'noop') stats.noops++
       else if (key === 'update') stats.updated++
