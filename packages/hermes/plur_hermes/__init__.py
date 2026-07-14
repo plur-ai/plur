@@ -363,16 +363,6 @@ def register(ctx):
                 "required": ["query"],
             },
         },
-        "plur_batch_decay": {
-            "name": "plur_batch_decay",
-            "description": "Apply ACT-R decay to all engrams. Run weekly. Returns status transitions.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "context_scope": {"type": "string", "description": "Scope to skip during decay"},
-                },
-            },
-        },
     }
 
     def _make_handler(tool_name: str):
@@ -437,8 +427,6 @@ def register(ctx):
                     result = bridge.stores_list()
                 elif tool_name == "plur_similarity_search":
                     result = bridge.similarity_search(args["query"], limit=args.get("limit", 10), scope=args.get("scope"))
-                elif tool_name == "plur_batch_decay":
-                    result = bridge.batch_decay(context_scope=args.get("context_scope"))
                 else:
                     result = {"error": f"Unknown tool: {tool_name}"}
                 return json.dumps(result)

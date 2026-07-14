@@ -261,8 +261,15 @@ increments. Engrams that aren't read for a long time decay; those used
 often stay strong. `forget()` is graceful retirement (status → `retired`)
 not deletion — history is preserved.
 
-Decay runs lazily on read, not on a cron. `plur.batchDecay()` (a CLI/MCP
-op) is available for explicit cleanup runs.
+Decay runs lazily on read, not on a cron: effective strength is
+`decayedStrength(stored, daysSince(last_accessed))`, computed per candidate at
+inject time, and reinforcement re-anchors `last_accessed` on access. There is no
+scheduled decay job — a prior `batchDecay()` that materialized decay back into
+the store was removed (2026-07-14): it was redundant with the read-time model
+and double-counted (it lowered stored strength without advancing
+`last_accessed`), and rewriting the whole store on a schedule was a data-loss and
+provenance hazard. If physical archival of long-cold engrams is ever needed it
+should be an explicit, reversible, logged maintenance op — not a cron.
 
 ## Sync (sync.ts)
 
