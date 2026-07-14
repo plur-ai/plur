@@ -184,9 +184,20 @@ export function flattenRelations(engram: Engram): Association[] {
 
 const HISTORICAL_KEYWORDS = ['before', 'was', 'prior', 'used to', 'previously', 'old', 'earlier', 'history', 'historical', 'legacy']
 
+// Match keywords on WORD BOUNDARIES, not substrings (#481). Substring matching
+// false-positived on common words: 'prior' ⊂ "priority"/"prioritize",
+// 'old' ⊂ "hold"/"threshold"/"placeholder", 'was' ⊂ "wasm". A false positive
+// SUPPRESSES the ×0.3 penalty on superseded engrams, injecting stale memory
+// instead of the current tip. \b sits at every space↔word transition, so
+// multi-word phrases like "used to" match correctly with a boundary at each end.
+const escapeRegExp = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+const HISTORICAL_KEYWORD_PATTERNS = HISTORICAL_KEYWORDS.map(
+  kw => new RegExp(`\\b${escapeRegExp(kw)}\\b`),
+)
+
 function hasHistoricalIntent(prompt: string): boolean {
   const lower = prompt.toLowerCase()
-  return HISTORICAL_KEYWORDS.some(kw => lower.includes(kw))
+  return HISTORICAL_KEYWORD_PATTERNS.some(re => re.test(lower))
 }
 
 function isSupersededEngram(engram: ScoredEngram): boolean {

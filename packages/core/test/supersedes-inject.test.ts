@@ -104,4 +104,44 @@ describe('supersedes chain — inject scoring (#481)', () => {
     ]
     expect(ids).toContain(tip.id)
   })
+
+  // --- Word-boundary matching for historical intent (#481) ---
+  // hasHistoricalIntent used SUBSTRING matching, so common words false-positived
+  // as "historical" and suppressed the ×0.3 penalty, injecting the STALE
+  // superseded engram instead of the current tip. 'prior' ⊂ "priority",
+  // 'old' ⊂ "threshold", 'was' ⊂ "wasm". These must NOT count as historical.
+
+  it('a prompt containing "priority" (substring "prior") is NOT historical — penalty applies, tip wins (#481)', () => {
+    const { tip, older } = makePair()
+
+    // "priority" contains the substring "prior" but is not a historical keyword.
+    // Pre-fix: substring match treats this as historical, suppresses the penalty,
+    // and the stable [older, tip] sort keeps the STALE `older` — the bug.
+    // Post-fix: word-boundary match => non-historical => penalty demotes `tip`
+    // above `older`, so the current `tip` survives and `older` is dropped.
+    const result = selectAndSpread(
+      { prompt: 'deploy canary strategy priority', maxTokens: 80 },
+      [older, tip], []
+    )
+
+    const ids = idsOf(result)
+    expect(ids).toContain(tip.id)
+    expect(ids).not.toContain(older.id)
+  })
+
+  it('a genuinely historical prompt ("used to") IS historical — penalty suppressed, superseded retained (#481)', () => {
+    const { tip, older } = makePair()
+
+    // Multi-word keyword "used to" still matches as a phrase under word-boundary
+    // logic. Historical intent suppresses the penalty, so the stable [older, tip]
+    // sort keeps `older` and it survives while `tip` is dropped.
+    const result = selectAndSpread(
+      { prompt: 'the canary deploy strategy we used to prefer', maxTokens: 80 },
+      [older, tip], []
+    )
+
+    const ids = idsOf(result)
+    expect(ids).toContain(older.id)
+    expect(ids).not.toContain(tip.id)
+  })
 })
