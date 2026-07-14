@@ -3,6 +3,7 @@ import { join } from 'path'
 import { tmpdir } from 'os'
 import { type GlobalFlags } from '../plur.js'
 import { isPlurConfigured } from '../lib/plur-configured.js'
+import { safeSessionKey } from '../lib/session-key.js'
 
 /**
  * plur hook-session-guard — PreToolUse hook that blocks all tools until
@@ -57,14 +58,19 @@ function readStdinRaw(): string {
   }
 }
 
+// Both path builders sanitize session_id via safeSessionKey (shared with the
+// Cursor port) before interpolating it. A hostile id like `../../PWNED` would
+// otherwise escape the state dir and write the sentinel/guard-count file
+// wherever it points (path traversal). hook-session-mark sanitizes the same
+// way, so a well-formed session still matches its sentinel.
 function sentinelPath(sessionId: string): string {
-  return join(tmpdir(), `plur-session-${sessionId}`)
+  return join(tmpdir(), `plur-session-${safeSessionKey(sessionId)}`)
 }
 
 function blockCountPath(sessionId: string): string {
   const dir = join(tmpdir(), 'plur-sessions')
   mkdirSync(dir, { recursive: true })
-  return join(dir, `${sessionId}.guard-count`)
+  return join(dir, `${safeSessionKey(sessionId)}.guard-count`)
 }
 
 function incrementBlockCount(sessionId: string): number {

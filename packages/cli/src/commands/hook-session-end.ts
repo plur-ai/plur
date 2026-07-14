@@ -93,8 +93,15 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
         checkpointPath = cp
         break
       } catch {
-        // Corrupt checkpoint — remove it and stop.
-        try { unlinkSync(cp) } catch {}
+        // Unparseable checkpoint — RETAIN it, never destroy it (#217). With
+        // hook-learn-check's writeCheckpoint now atomic (temp-file + rename),
+        // a concurrent reader can no longer catch a mid-write PARTIAL read, so
+        // this branch is reached only on genuine on-disk corruption. Even then,
+        // a checkpoint is a session's only durable record: unlinking it (the
+        // old behaviour) was silent data loss, and a partial read of a LIVE
+        // session's checkpoint was indistinguishable from corruption. Leave it
+        // in place and stop — the next session_start's deferred wrap-up (#216)
+        // can still find it, and nothing is captured from unparseable content.
         return
       }
     }
@@ -125,6 +132,7 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
     `${durationStr ? `, ${durationStr}` : ''}` +
     `${project ? `, ${project}` : ''}.`
 
+  let captured = false
   try {
     const plur = createPlur(flags)
     plur.capture(summary, {
@@ -133,13 +141,28 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
       session_id: checkpoint.session_id || payload.session_id,
       tags: ['session-end', 'auto-close'],
     })
-  } catch {
+    captured = true
+  } catch (err) {
     // Capture is best-effort — never let a SessionEnd hook fail the session.
+    // But do NOT delete the checkpoint below when it fails: the checkpoint is
+    // the session's only durable record, and on a full disk (or any capture
+    // failure) unlinking it unconditionally was silent data loss (#217).
+    // Retaining it lets the next session_start's deferred wrap-up (#216)
+    // recover the session. Advisory stderr only — SessionEnd output is not
+    // surfaced to the user.
+    process.stderr.write(
+      `[plur] hook-session-end: capture failed, retaining checkpoint for recovery: ` +
+      `${(err as Error)?.message ?? String(err)}\n`,
+    )
   }
 
-  // Clean up the checkpoint so the next session_start's deferred wrap-up does
-  // not double-report this session (#216).
-  try { unlinkSync(checkpointPath) } catch {}
+  // Clean up the checkpoint ONLY after a successful capture, so the session's
+  // durable record survives a failed capture (#217). On success this also
+  // prevents the next session_start's deferred wrap-up from double-reporting
+  // this session (#216).
+  if (captured) {
+    try { unlinkSync(checkpointPath) } catch {}
+  }
 
   // Ensure the sessions dir still exists for subsequent sessions (defensive —
   // capture may create the plur root lazily).

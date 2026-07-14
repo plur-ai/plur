@@ -2,6 +2,7 @@ import { readSync, mkdirSync, writeFileSync, appendFileSync, statSync, readdirSy
 import { join, dirname } from 'path'
 import { tmpdir } from 'os'
 import { cursorContextRulePath } from '../mcp-config.js'
+import { safeSessionKey } from './session-key.js'
 
 /**
  * Shared stdin-reading and sentinel-path helpers for the four hook-cursor-*
@@ -92,23 +93,6 @@ export function cursorConversationId(input: Record<string, unknown>): string {
     )
   }
   return id
-}
-
-/**
- * Filesystem-safe token derived from a raw conversation id. Cursor's hook
- * payload schema is documented as beta/unconfirmed (see cursorConversationId
- * above) — nothing guarantees the value is safe to interpolate directly into
- * a path. Replacing anything outside [A-Za-z0-9_-] closes both path
- * traversal (`../`, `/`) and OS-invalid characters (`:`, `|`, null bytes)
- * while leaving well-formed real ids (UUIDs, which are already in this safe
- * set) untouched (audit fix — evaluator review, 2026-07-08: previously used
- * unsanitized in every path below, so a malformed id could throw ENOENT/
- * EINVAL and, combined with every hook's `failClosed: false`, silently and
- * permanently disable that conversation's guard/injection/reminders).
- */
-function safeSessionKey(conversationId: string): string {
-  const safe = conversationId.replace(/[^A-Za-z0-9_-]/g, '_')
-  return safe || 'unknown'
 }
 
 /**
