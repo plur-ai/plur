@@ -21,7 +21,7 @@ PLUR now works inside Cursor — its own hook system (`sessionStart`, `preToolUs
 - **Commitment tier in injected text** (#348): `formatLayer3` shows the commitment label (`exploring`/`leaning`/`decided`/`locked`) instead of a raw confidence float when set.
 - **Per-store reranker fit check** (#451): `plur doctor` scores whether a cross-encoder reranker is actually helping on a given store's domain, since out-of-domain rerankers can produce inverted scores.
 - **`plur_session_end` wired to Claude Code's SessionEnd hook** (#217): memory lifecycle now auto-closes when a session ends, instead of depending on the agent remembering to call it.
-- Python SDK bumped to 0.10.0: `recall_hybrid()` added (hybrid BM25+embeddings); `recall()` changed to lexical-only (`--fast`); npx CLI pin bumped to 0.12.0. **Breaking**: `recall()` no longer does hybrid search — call `recall_hybrid()` for the previous behaviour.
+- Python SDK bumped to 0.10.0: `recall_hybrid()` added (hybrid BM25+embeddings); `recall()` changed to lexical-only (`--fast`); npx CLI pin bumped to 0.13.0. **Breaking**: `recall()` no longer does hybrid search — call `recall_hybrid()` for the previous behaviour.
 
 ### Fixed
 

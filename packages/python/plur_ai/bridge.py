@@ -22,7 +22,7 @@ from typing import Any, Sequence
 
 # @plur-ai/cli pin for the npx fallback. Keep >= the published CLI that carries
 # the current scope-routing / leak-guard fixes; release tooling bumps this.
-_NPX_CLI_VERSION = "0.12.0"
+_NPX_CLI_VERSION = "0.13.0"
 _DEFAULT_TIMEOUT = 30
 
 
