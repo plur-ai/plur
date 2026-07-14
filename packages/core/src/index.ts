@@ -3079,13 +3079,24 @@ export class Plur {
   batchDecay(options?: { contextScope?: string; lambda?: number; now?: Date }): BatchDecayResult {
     return withLock(this.paths.engrams, () => {
       const engrams = loadEngrams(this.paths.engrams)
-      const { result, modified } = applyBatchDecay(engrams, this.paths.root, options)
+      const { result } = applyBatchDecay(engrams, this.paths.root, options)
 
-      // Save modified engrams back (not the original unmodified list).
-      // Only primary store engrams are decayed — store/pack engrams are maintained
-      // by their respective store owners and are typically readonly.
-      if (result.transitions.length > 0) {
-        this._writeEngrams(this.paths.engrams, modified)
+      // Persist the FULL list, not the `modified` subset. applyBatchDecay mutates
+      // the decayed engrams IN PLACE inside `engrams`, so `engrams` already holds
+      // the new strengths for the ones that changed AND the untouched originals
+      // for everything else. Writing `modified` instead (the prior behaviour)
+      // overwrote the whole store with only the changed subset — silently
+      // DELETING every engram that was accessed today, scope-skipped, retired, or
+      // whose strength moved less than the 1e-10 threshold. loadEngrams returns
+      // all statuses (not just active), so the full list is safe to write back.
+      //
+      // Guard on `decayed`, not `transitions`: a decay that lowers strength
+      // without crossing a status boundary produces no transition, and the old
+      // `transitions.length > 0` guard discarded that legitimate decay entirely.
+      // (Only primary-store engrams are decayed; store/pack engrams are owned and
+      // maintained by their respective stores and are not loaded here.)
+      if (result.decayed > 0) {
+        this._writeEngrams(this.paths.engrams, engrams)
         this._syncIndex()
       }
 
