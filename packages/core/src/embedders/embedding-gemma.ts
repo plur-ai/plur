@@ -14,13 +14,15 @@
  * sentence_embedding and were in a different space from all published figures.
  *
  * Fix (#483): load the model via AutoModel (not the feature-extraction pipeline)
- * and read sentence_embedding directly. The adapter name is 'embedding-gemma@graph'
+ * and read sentence_embedding directly. The adapter name is 'embedding-gemma@graph-mcprefix'
  * (not 'embedding-gemma') so any caches built with wrong-space vectors are
  * automatically detected as a name mismatch and rebuilt by embeddings.ts.
  *
- * Role prefixes: EmbeddingGemma is trained with asymmetric prefixes per the
- * model card — "query: " for search queries, "passage: " for stored text.
- * Callers pass role='query' for search; omitting role defaults to 'passage'.
+ * Role prefixes: EmbeddingGemma is trained with asymmetric prefixes per its
+ * model card — "task: search result | query: " for search queries and
+ * "title: none | text: " for stored documents. (The earlier "query: "/"passage: "
+ * pair was the E5 convention, NOT EmbeddingGemma's — #483.) Callers pass
+ * role='query' for search; omitting role defaults to the document prefix.
  *
  * Disk cost: q8 weights ~ 300 MB. We use q8 to match published EmbeddingGemma
  * benchmark numbers and keep first-run download manageable.
@@ -60,7 +62,7 @@ export function _resetEmbeddingGemmaCache(): void {
 
 export function makeEmbeddingGemmaAdapter(): EmbedderAdapter {
   async function embedOne(text: string, role?: EmbedRole): Promise<Float32Array> {
-    const prefix = role === 'query' ? 'query: ' : 'passage: '
+    const prefix = role === 'query' ? 'task: search result | query: ' : 'title: none | text: '
     const { tokenizer, model } = await load()
     const inputs = await tokenizer(prefix + text, { padding: true, truncation: true })
     const outputs = await model(inputs)
@@ -73,9 +75,12 @@ export function makeEmbeddingGemmaAdapter(): EmbedderAdapter {
   }
 
   return {
-    // '@graph' suffix distinguishes from old JS-side pooled vectors — embeddings.ts
-    // detects the name change and auto-invalidates any cached wrong-space data.
-    name: 'embedding-gemma@graph',
+    // Suffix is a cache-space marker: embeddings.ts detects a name change and
+    // auto-invalidates any cached vectors built in a different space. '@graph'
+    // marked the switch off JS-side pooling; '-mcprefix' marks the #483 switch to
+    // the model-card role prefixes (old "query:"/"passage:" vectors are a
+    // different space and must be rebuilt).
+    name: 'embedding-gemma@graph-mcprefix',
     dim: DIM,
     modelId: EMBEDDING_GEMMA_MODEL_ID,
     embed: embedOne,

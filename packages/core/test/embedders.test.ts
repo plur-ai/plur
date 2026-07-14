@@ -36,14 +36,14 @@ const NETWORK = process.env.PLUR_EMBEDDER_NETWORK_TESTS === '1'
 
 /** Expected metadata per adapter — checked even when the network is offline.
  *  adapterName overrides the expected `.name` when the adapter name differs from the factory key
- *  (e.g. 'embedding-gemma' factory key → 'embedding-gemma@graph' adapter name for cache busting). */
+ *  (e.g. 'embedding-gemma' factory key → 'embedding-gemma@graph-mcprefix' adapter name for cache busting). */
 const EXPECTED: Record<EmbedderName, { dim: number; modelId: string; adapterName?: string }> = {
   'minilm': { dim: 384, modelId: 'Xenova/all-MiniLM-L6-v2' },
   'bge-small': { dim: 384, modelId: 'Xenova/bge-small-en-v1.5' },
   'bge-base': { dim: 768, modelId: 'Xenova/bge-base-en-v1.5' },
-  // adapter.name is 'embedding-gemma@graph' — the @graph suffix busts caches
+  // adapter.name is 'embedding-gemma@graph-mcprefix' — the @graph suffix busts caches
   // that hold wrong-space vectors from the old JS-side mean pooling (#483).
-  'embedding-gemma': { dim: 768, modelId: 'onnx-community/embeddinggemma-300m-ONNX', adapterName: 'embedding-gemma@graph' },
+  'embedding-gemma': { dim: 768, modelId: 'onnx-community/embeddinggemma-300m-ONNX', adapterName: 'embedding-gemma@graph-mcprefix' },
   'openai-3-large': { dim: 3072, modelId: 'text-embedding-3-large' },
 }
 
@@ -107,7 +107,7 @@ describe('EmbeddingGemma — role-aware prefix contract', () => {
 
   it('adapter name includes @graph cache-bust suffix', () => {
     const adapter = makeEmbeddingGemmaAdapter()
-    expect(adapter.name).toBe('embedding-gemma@graph')
+    expect(adapter.name).toBe('embedding-gemma@graph-mcprefix')
   })
 
   it('prepends a DIFFERENT tokenizer input for query vs passage (role plumbing is live, not a no-op)', async () => {
@@ -126,7 +126,7 @@ describe('EmbeddingGemma — role-aware prefix contract', () => {
     expect(p).toContain('memory engram lifecycle')
   })
 
-  it.fails('uses the EmbeddingGemma model-card role prefixes, not the E5 convention (#483 E1)', async () => {
+  it('uses the EmbeddingGemma model-card role prefixes, not the E5 convention (#483 E1)', async () => {
     // The EmbeddingGemma model card requires 'task: search result | query: ' for
     // queries and 'title: none | text: ' for documents. The adapter
     // (embedding-gemma.ts:63) instead prepends the E5-convention 'query: ' /
