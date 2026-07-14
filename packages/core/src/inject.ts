@@ -611,12 +611,15 @@ export function formatLayer3(engram: WireEngram): string {
   if (engram.rationale) lines.push(`  Rationale: ${engram.rationale}`)
   const meta: string[] = []
   if (engram.domain) meta.push(`Domain: ${engram.domain}`)
+  // #348: commitment (a decision-state ladder: exploring→leaning→decided→locked)
+  // and confidence (epistemic certainty, a float) are ORTHOGONAL. Previously
+  // commitment was rendered under the `Confidence:` label and the numeric score
+  // was discarded, so a shaky fact (confidence 0.12) marked `locked` read as
+  // maximally certain in the highest-authority directives block. Show both as
+  // distinct fields; never overwrite one with the other.
   const commitment = (engram as any).commitment as string | undefined
-  if (commitment) {
-    meta.push(`Confidence: ${commitment}`)
-  } else if (engram.confidence_score != null) {
-    meta.push(`Confidence: ${engram.confidence_score.toFixed(2)}`)
-  }
+  if (commitment) meta.push(`Commitment: ${commitment}`)
+  if (engram.confidence_score != null) meta.push(`Confidence: ${engram.confidence_score.toFixed(2)}`)
   if (engram.activation?.last_accessed) meta.push(`Last verified: ${engram.activation.last_accessed}`)
   if (meta.length > 0) lines.push(`  ${meta.join(' | ')}`)
   return lines.join('\n')
