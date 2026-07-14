@@ -26,7 +26,7 @@ PLUR now works inside Cursor — its own hook system (`sessionStart`, `preToolUs
 ### Fixed
 
 - **Orphaned hook processes on degraded networks** (#504): `hook-inject` had no process-level ceiling and `RemoteStore.load()` made unbounded fetch calls — together these could accumulate dozens of orphaned processes and gigabytes of swap on a flaky connection. Added a self-watchdog (55s default ceiling) and a 30s fetch timeout with fail-open (cached engrams or `[]`, no cache poisoning).
-- **Tension subject filter** (#489): suffix-stemming in the contradiction pre-filter raises recall 77%→90%.
+- **Tension subject filter** (#489): suffix-stemming in the contradiction pre-filter. (The "77%→90% recall" figure originally published here was withdrawn on 2026-07-14 — re-running the commit's own 30-pair suite gives 29/30 both with and without stemming, changing the outcome on zero pairs. The number was never reproducible. See #489.)
 - **`hook-learn-check`'s Stop-hook counter** made atomic (append-only, not read-increment-write) — the same race class found and fixed in the new Cursor hooks during their audit.
 - Three OpenClaw (`@plur-ai/claw`) UX fixes: stale plugin-manifest pruning, `plugins.allow` seeding on fresh installs, `runtime_registered` verified via an actual filesystem check instead of a hardcoded placeholder.
 

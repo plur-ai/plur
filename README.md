@@ -31,7 +31,6 @@ PLUR is memory, not just retrieval — so we measure it on more than one axis.
 
 | Stack | R@5 | Notes |
 |-------|-----|-------|
-| PLUR hybrid + bge-reranker-v2-m3 | 97.6% | max quality — not production-suitable on CPU |
 | PLUR hybrid (openai-3-large embeddings) | 97.0% | optional cloud embedder |
 | PLUR BM25 only | 92.2% | no embedder — fully airgapped |
 
