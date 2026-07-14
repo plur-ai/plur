@@ -5,9 +5,9 @@
  * One uniform interface (`EmbedderAdapter`) across the candidate models:
  *
  *   - minilm            sentence-transformers/all-MiniLM-L6-v2     (384d, 22M)
- *   - bge-small         BAAI/bge-small-en-v1.5                     (384d, 33M)
+ *   - bge-small         BAAI/bge-small-en-v1.5                     (384d, 33M)  — DEFAULT
  *   - bge-base          BAAI/bge-base-en-v1.5                      (768d, 110M)
- *   - embedding-gemma   google/EmbeddingGemma-300M (ONNX community) (768d, 300M) — DEFAULT
+ *   - embedding-gemma   google/EmbeddingGemma-300M (ONNX community) (768d, 300M) — opt-in
  *   - openai-3-large    OpenAI text-embedding-3-large              (3072d, API)  — opt-in
  *
  * Pick one via PLUR_EMBEDDER env var or programmatically via `getEmbedder()`.
@@ -21,11 +21,11 @@
  *   - storage-pglite.ts reads adapter.dim to size its vector(N) column
  *   - embeddings.ts routes through the active adapter
  *
- * PR 5 default switch: bake-off (docs/benchmarks/embedder-bake-off-2026-05.md)
- * showed EmbeddingGemma matches BGE-small on R@5 with the best Accuracy at
- * N=5/category and Apache-2.0 license. The default flipped from bge-small to
- * embedding-gemma. If Phase C (N=500) inverts the ordering it's a one-line
- * revert here.
+ * Default embedder: bge-small. A PR-5 flip to embedding-gemma was REVERTED by
+ * the iter-1 audit (the bake-off was only N=5/category — too small to justify
+ * the switch), so embedding-gemma is opt-in pending a Phase C N=500 result. See
+ * DEFAULT_EMBEDDER below for the full rationale — that constant is authoritative;
+ * do not infer the default from this header.
  */
 import { logger } from '../logger.js'
 import { makeMiniLMAdapter } from './minilm.js'
