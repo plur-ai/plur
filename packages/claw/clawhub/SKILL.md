@@ -1,62 +1,59 @@
 ---
 name: plur-memory
-description: "Persistent learning for AI agents. Open engram format. Your agent learns from corrections, remembers across sessions, and transfers knowledge across domains."
+description: "Your memory stays on your machine. No cloud, no tracking, no API key. PLUR makes your OpenClaw remember — and shares that memory with every other tool you use."
 version: 0.10.0
 ---
 
 # PLUR Memory
 
-Your OpenClaw can now learn. Permanently.
+Most memory plugins send your context to a cloud server. PLUR doesn't.
 
-Install the plugin first: `openclaw plugins install @plur-ai/claw`
+Your memory lives on your disk — plain files you can read, edit, move, and back up. Zero cloud routing. Zero API keys. Zero cost.
+
+**Install in one command:**
+
+```
+openclaw plugins install @plur-ai/claw
+```
 
 Or tell your OpenClaw: `go to plur.ai and install memory`
 
-## How It Works
+## What happens next
 
-Corrections, preferences, and patterns are stored as **engrams** - small YAML files on your machine. An open format any tool can read. Engrams strengthen with use and decay when irrelevant, modeled on how human memory actually works.
+Every correction you make becomes a permanent engram. Every preference gets remembered. The next time you open a session, PLUR injects what's relevant — automatically, before you type a word.
 
-Every session, relevant engrams are injected automatically. Your agent remembers what you taught it yesterday, last week, last month.
+## One memory, every tool
 
-## Memory Lifecycle
+Correct something in OpenClaw — your Claude Code picks it up. Teach a pattern in Cursor — OpenClaw already knows. Memory moves with you across every MCP-compatible tool you use.
 
-- **Automatic injection** runs every session start - relevant engrams appear in your context
-- When you discover something worth remembering - call `plur_learn` with a clear statement
-- When corrected by the user - call `plur_learn` immediately with the correction
-- When an injected engram was helpful - call `plur_feedback` with signal "positive"
-- When an injected engram was wrong or stale - call `plur_feedback` with signal "negative"
-- When a memory is no longer true - call `plur_forget` with the engram ID
+## Features
 
-## What to Learn
+- Learns from corrections and preferences as you work — no manual notes
+- Injects relevant context at session start — no re-explaining from scratch
+- Memory strengthens with use, fades when stale — modeled on human memory
+- Works across Claude Code, Cursor (beta), and any MCP-compatible tool
+- No cloud, no API key, no cost — by default
 
-- Corrections: "The API returns snake_case, not camelCase"
-- Preferences: "User prefers TypeScript over JavaScript"
-- Patterns: "This codebase uses repository pattern for data access"
-- Decisions: "We chose PostgreSQL for ACID compliance"
-- Conventions: "Always run lint before committing"
+## Benchmarks
 
-## What NOT to Learn
+- 97.6% R@5 on LongMemEval (N=500) — full methodology: https://plur.ai/benchmark.html
+- 89% agent task win rate — Haiku with PLUR outperformed Opus without it
+- 100% convention adherence (12–0 on house rules)
 
-- Trivial facts ("the user said hello")
-- Things already in the codebase (file paths, function names - those change)
-- Session-specific state ("we're working on X right now")
+## Open source. Local-first. Private. Free.
 
-## Meta-Engrams (Experimental)
+Apache-2.0. Your data never leaves your machine.
 
-With enough engrams, PLUR extracts meta-engrams - patterns that transfer across domains. You teach coding conventions in one project, deployment rules in another - PLUR spots the shared principle. Transfer of knowledge.
+## Requirements
 
-Run `plur_extract_meta` periodically to distill cross-domain principles.
-
-## Shared Memory
-
-The memory is shared across tools. Same `~/.plur/` files - OpenClaw, Claude Code, Cursor, Hermes, CLI. What one agent learns, every agent knows.
-
-Across devices: `plur sync`
+- OpenClaw >= 2026.3.7
+- Node.js >= 18
 
 ## Links
 
 - Website: https://plur.ai
-- Engram Spec: https://plur.ai/spec
-- Benchmarks: https://plur.ai/benchmark
 - GitHub: https://github.com/plur-ai/plur
 - npm: https://npmjs.com/package/@plur-ai/claw
+- Benchmarks: https://plur.ai/benchmark.html
+
+**Author:** PLUR (info@plur.ai)
