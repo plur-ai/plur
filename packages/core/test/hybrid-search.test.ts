@@ -24,11 +24,13 @@ describe('hybrid search (BM25 + embeddings via RRF)', () => {
 
   afterEach(() => { rmSync(dir, { recursive: true }) })
 
-  it('returns results as a Promise', async () => {
-    const result = plur.recallHybrid('database')
-    expect(result).toBeInstanceOf(Promise)
-    const engrams = await result
-    expect(Array.isArray(engrams)).toBe(true)
+  it('resolves to relevance-ranked engrams — a keyword query top-ranks its match', async () => {
+    // Was a tautology (toBeInstanceOf(Promise) + Array.isArray, true for any
+    // async fn). The real contract: awaiting yields ranked engrams and the one
+    // strong keyword hit sorts to the top.
+    const results = await plur.recallHybrid('database')
+    expect(results.length).toBeGreaterThanOrEqual(1)
+    expect(results[0].statement).toContain('database')
   })
 
   it('finds engrams that match by keyword (BM25 strength)', async () => {
@@ -37,11 +39,19 @@ describe('hybrid search (BM25 + embeddings via RRF)', () => {
     expect(results[0].statement).toContain('PostgreSQL')
   })
 
-  it('returns empty for nonsense queries', async () => {
-    const results = await plur.recallHybrid('xyzzy plugh')
-    // May return results from embedding similarity (semantic match)
-    // but they should be low confidence — just check it doesn't crash
-    expect(Array.isArray(results)).toBe(true)
+  it('scores a genuine-nonsense query below a real keyword hit (miss signal)', async () => {
+    // "returns empty for nonsense" was never the contract — recallHybrid does
+    // not hard-filter, so a nonsense query still returns ranked engrams via
+    // embedding similarity. The real signal a caller thresholds on is topScore:
+    // a query with no keyword match cannot outscore a genuine keyword hit.
+    const hit = await plur.recallHybridWithMeta('PostgreSQL database')
+    const miss = await plur.recallHybridWithMeta('xyzzy plugh')
+    expect(hit.topScore).not.toBeNull()
+    if (miss.topScore === null) {
+      expect(miss.engrams).toHaveLength(0)
+    } else {
+      expect(miss.topScore as number).toBeLessThan(hit.topScore as number)
+    }
   })
 
   it('respects limit parameter', async () => {

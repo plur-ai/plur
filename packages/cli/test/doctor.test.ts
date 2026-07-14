@@ -139,6 +139,59 @@ describe('plur doctor', () => {
     expect(report.overall).toBe('ok')
   })
 
+  // Coverage gap: EVERY other test here runs `doctor --no-handshake`, so
+  // `overall` is computed with the live MCP handshake DISABLED and can never
+  // reflect a server that fails to start. Exercise the handshake ENABLED against
+  // a fake MCP shim that starts but never completes the JSON-RPC initialize — the
+  // handshake must fail and drive overall to 'fail'. Green today: overall gates on
+  // handshake.ok when not skipped (doctor.ts:569-570).
+  it('fails overall when the live handshake is enabled and the server never completes initialize', () => {
+    // buildMcpServerEntry() prefers the local shim at ~/.plur/bin/plur-mcp, so
+    // installing a fake one here makes doctor's handshake spawn OUR script.
+    const binDir = join(home, '.plur', 'bin')
+    mkdirSync(binDir, { recursive: true })
+    const shim = join(binDir, 'plur-mcp')
+    // Starts, waits long enough for doctor to write its init request (no EPIPE),
+    // then exits without ever responding → handshake resolves ok:false fast.
+    writeFileSync(shim, '#!/bin/sh\nsleep 0.5\nexit 0\n', { mode: 0o755 })
+    chmodSync(shim, 0o755)
+
+    writeGlobalSettings({
+      hooks: {
+        UserPromptSubmit: [
+          { hooks: [{ type: 'command', command: 'npx @plur-ai/cli hook-inject' }] },
+        ],
+      },
+      mcpServers: {
+        plur: { command: '/bin/sh', args: ['-lc', 'exec npx -y @plur-ai/mcp@latest'] },
+      },
+    })
+
+    let stdout = ''
+    let status = 0
+    try {
+      stdout = execSync(`node ${CLI} doctor --json`, {
+        encoding: 'utf-8',
+        timeout: 30000,
+        env: { ...process.env, HOME: home, USERPROFILE: home, PLUR_DISABLE_EMBEDDINGS: '1' },
+        cwd: home,
+      })
+    } catch (err: any) {
+      stdout = err.stdout?.toString() ?? ''
+      status = err.status ?? 1
+    }
+    const report = JSON.parse(stdout)
+
+    // hooks + MCP are both wired, so the handshake is the ONLY reason to fail.
+    expect(report.hooksInstalled).toBe(true)
+    expect(report.mcpRegistered).toBe(true)
+    expect(report.handshake.ok).toBe(false)
+    expect(report.handshake.error).toBeTruthy()
+    expect(report.handshake.error).not.toContain('skipped') // it actually ran
+    expect(report.overall).toBe('fail')
+    expect(status).toBe(1)
+  }, 40000)
+
   // ── Stale npx hook detection (#178) ─────────────────────────────────────
 
   it('detects stale npx hooks and recommends migration (#178)', () => {

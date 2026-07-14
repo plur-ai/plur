@@ -38,16 +38,32 @@ function makeAdapter(opts: {
   }
 }
 
-/** Return a mock adapter where pos and neg pairs get different scores. */
-function makeSeparatingAdapter(posScore: number, negScore: number): RerankerAdapter {
-  return {
-    name: 'mock-sep',
-    modelId: 'mock/sep',
-    async score() { return posScore },
-    async scoreBatch(_q: string, docs: string[]) {
-      return docs.map(() => posScore)
-    },
-  }
+/** Token overlap between a (query, document) pair — the signal a healthy
+ *  relevance reranker rewards (same mechanism as reranker-eval.test.ts's oracle). */
+function overlap(query: string, document: string): number {
+  const qs = new Set(query.toLowerCase().split(/\s+/).filter(Boolean))
+  let s = 0
+  for (const token of document.toLowerCase().split(/\s+/)) if (qs.has(token)) s += 1
+  return s
+}
+
+/** A genuinely separating reranker: scores each (query, doc) pair by token
+ *  overlap, ranking relevant docs above irrelevant ones. Proven to separate in
+ *  reranker-eval.test.ts when fed real probe queries. */
+const oracle: RerankerAdapter = {
+  name: 'oracle',
+  modelId: 'fake://oracle',
+  async score(q, d) { return overlap(q, d) },
+  async scoreBatch(q, docs) { return docs.map(d => overlap(q, d)) },
+}
+
+/** A harmful reranker: INVERTS relevance (higher score for LESS overlap), so
+ *  cross-domain distractors outrank same-domain neighbours. */
+const inverter: RerankerAdapter = {
+  name: 'inverter',
+  modelId: 'fake://inverter',
+  async score(q, d) { return 10 - overlap(q, d) },
+  async scoreBatch(q, docs) { return docs.map(d => 10 - overlap(q, d)) },
 }
 
 function engrams(domains: Record<string, string[]>): FitCheckEngram[] {
@@ -66,42 +82,54 @@ describe('checkRerankerFit', () => {
     expect(result.separability).toBe(0)
   })
 
-  it('returns fit=true when model scores positive pairs higher', async () => {
+  it.fails('a genuinely separating reranker yields fit=true on real same-domain data (#451)', async () => {
+    // A healthy relevance reranker (oracle: scores by query/doc token overlap)
+    // SHOULD be judged a fit. But #451's metric feeds two DIFFERENT same-domain
+    // engrams as a (query, doc) "positive" pair — and real engrams within one
+    // domain are distinct facts that share few tokens, so even a healthy
+    // reranker scores them no higher than cross-domain negatives →
+    // separability ≈ 0 → fit=false. The correct expectation is fit=true.
+    // it.fails until #451 fixes positive-pair construction (synthesize a probe
+    // query from the doc, as reranker-eval does); flip to it() when green.
     const data = engrams({
       'plur.architecture': [
         'Engrams are stored as YAML on disk',
-        'Recall uses BM25 + embedding RRF fusion',
+        'Recall uses BM25 and embedding RRF fusion',
         'The reranker rescores top-K candidates',
-        'Session lifecycle: start → learn → end',
+        'Session lifecycle runs start then learn then end',
       ],
       'personal.preferences': [
-        'Always use pnpm, not npm',
+        'Always use pnpm never npm',
         'Prefer concise code without excessive comments',
         'Tests must pass before committing',
-        'Vitest is the test runner',
+        'Vitest is the configured test runner',
       ],
     })
-
-    // Build a separating adapter that returns high scores for all pairs —
-    // the multi-domain path will create real cross-domain negatives with
-    // the same model, so separability tests the pair construction logic.
-    // Use a real-signal adapter instead: pos=2, neg=-1.
-    const adapter: RerankerAdapter = {
-      name: 'mock-good',
-      modelId: 'mock',
-      async score() { return 2 },
-      async scoreBatch(_q, docs) {
-        return docs.map(() => 2)
-      },
-    }
-    const result = await checkRerankerFit(data, adapter)
-    // All pairs get uniform score → separability = 0 → threshold determines fit.
-    // This is expected: the mock can't actually separate, but the test verifies
-    // the arithmetic and n_pairs count.
+    const result = await checkRerankerFit(data, oracle)
     expect(result.n_pairs).toBeGreaterThan(0)
-    expect(result.reranker).toBe('mock-good')
-    expect(typeof result.separability).toBe('number')
-    expect(typeof result.computed_at).toBe('number')
+    expect(result.reranker).toBe('oracle')
+    expect(result.fit).toBe(true)
+  })
+
+  it('a relevance-inverting reranker is NOT a fit (fit=false)', async () => {
+    // Same-domain statements here SHARE tokens, so overlap genuinely separates
+    // same-domain neighbours (high) from cross-domain pairs (low). The inverter
+    // flips that ranking — cross-domain negatives outscore same-domain
+    // positives → separability < 0 → correctly judged not a fit.
+    const data = engrams({
+      'plur': [
+        'plur memory engine stores engrams',
+        'plur memory engine recalls engrams',
+      ],
+      'trading': [
+        'trading bot executes market orders',
+        'trading bot cancels market orders',
+      ],
+    })
+    const result = await checkRerankerFit(data, inverter)
+    expect(result.n_pairs).toBeGreaterThan(0)
+    expect(result.separability).toBeLessThan(0)
+    expect(result.fit).toBe(false)
   })
 
   it('reports separability ≈ 0 when model gives uniform scores (useless)', async () => {

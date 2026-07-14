@@ -23,7 +23,7 @@
  * are gated behind PLUR_EMBEDDER_NETWORK_TESTS=1 so CI stays offline-safe.
  * Without the flag set, only metadata + factory routing are checked.
  */
-import { describe, it, expect, afterEach } from 'vitest'
+import { describe, it, expect, afterEach, vi } from 'vitest'
 import {
   getEmbedder,
   EMBEDDER_NAMES,
@@ -76,8 +76,32 @@ describe('EmbedderAdapter factory — metadata contract', () => {
   }
 })
 
+/**
+ * Run the EmbeddingGemma adapter against a MOCKED transformers stack and return
+ * the exact strings the adapter hands to the tokenizer (prefix + text) for each
+ * embed call. Fully offline — no model download. Scoped via doMock + a
+ * re-import so the network-gated live-load suite below stays on real
+ * transformers (afterEach unmocks + resets the module registry).
+ */
+async function captureTokenizerInputs(
+  calls: Array<[text: string, role?: 'query' | 'passage']>,
+): Promise<string[]> {
+  vi.resetModules()
+  const inputs: string[] = []
+  vi.doMock('@huggingface/transformers', () => ({
+    AutoTokenizer: { from_pretrained: async () => (text: string) => { inputs.push(text); return {} } },
+    AutoModel: { from_pretrained: async () => async () => ({ sentence_embedding: { data: new Float32Array(768) } }) },
+  }))
+  const { makeEmbeddingGemmaAdapter: mk } = await import('../src/embedders/embedding-gemma.js')
+  const adapter = mk()
+  for (const [text, role] of calls) await adapter.embed(text, role)
+  return inputs
+}
+
 describe('EmbeddingGemma — role-aware prefix contract', () => {
   afterEach(() => {
+    vi.doUnmock('@huggingface/transformers')
+    vi.resetModules()
     _resetEmbeddingGemmaCache()
   })
 
@@ -86,25 +110,35 @@ describe('EmbeddingGemma — role-aware prefix contract', () => {
     expect(adapter.name).toBe('embedding-gemma@graph')
   })
 
-  it('embed() accepts an optional role parameter (query / passage / omitted)', () => {
-    // Structural check — no network call. We verify the adapter function
-    // accepts all role variants without TypeScript errors or runtime exceptions
-    // before the model is loaded (rejection comes from the async load, not the
-    // role parameter itself).
-    const adapter = makeEmbeddingGemmaAdapter()
-    // All three call shapes must be accepted by the type system:
-    const p1 = adapter.embed('test')           // omitted role → passage
-    const p2 = adapter.embed('test', 'passage') // explicit passage
-    const p3 = adapter.embed('test', 'query')   // explicit query
-    // Without a model loaded the promises will reject — that's expected.
-    // We just need them to not throw synchronously.
-    expect(p1).toBeInstanceOf(Promise)
-    expect(p2).toBeInstanceOf(Promise)
-    expect(p3).toBeInstanceOf(Promise)
-    // Suppress unhandled-rejection noise — we don't await these.
-    p1.catch(() => {})
-    p2.catch(() => {})
-    p3.catch(() => {})
+  it('prepends a DIFFERENT tokenizer input for query vs passage (role plumbing is live, not a no-op)', async () => {
+    // De-tautologized: the old test only asserted embed() returns a Promise —
+    // true even if the role plumbing were deleted. Here we capture what actually
+    // reaches the tokenizer and assert the two roles differ and that omitting
+    // the role defaults to passage.
+    const [q, p, omitted] = await captureTokenizerInputs([
+      ['memory engram lifecycle', 'query'],
+      ['memory engram lifecycle', 'passage'],
+      ['memory engram lifecycle'],
+    ])
+    expect(q).not.toBe(p)          // deleting the role prefix would make these identical
+    expect(omitted).toBe(p)        // omitted role → passage (documented default)
+    expect(q).toContain('memory engram lifecycle')
+    expect(p).toContain('memory engram lifecycle')
+  })
+
+  it.fails('uses the EmbeddingGemma model-card role prefixes, not the E5 convention (#483 E1)', async () => {
+    // The EmbeddingGemma model card requires 'task: search result | query: ' for
+    // queries and 'title: none | text: ' for documents. The adapter
+    // (embedding-gemma.ts:63) instead prepends the E5-convention 'query: ' /
+    // 'passage: ' — the WRONG prefixes for this model, producing off-space
+    // vectors that don't match any published EmbeddingGemma figure.
+    // it.fails until #483 swaps in the model-card prefixes; flip to it() when green.
+    const [q, p] = await captureTokenizerInputs([
+      ['the raw text', 'query'],
+      ['the raw text', 'passage'],
+    ])
+    expect(q).toBe('task: search result | query: the raw text')
+    expect(p).toBe('title: none | text: the raw text')
   })
 })
 

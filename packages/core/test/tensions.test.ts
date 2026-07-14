@@ -263,9 +263,35 @@ describe('subjectsOverlap — labeled 30-pair suite', () => {
     ['domain-generic', 'Always use pnpm for package management.', 'Always use npm for package management.'],
   ]
 
-  it('passes at least 27/30 pairs (90% recall — stemmed baseline)', () => {
+  // RECALL FLOOR ONLY. This asserts the stemmed pre-filter admits ≥27/30 known
+  // contradiction pairs — a recall measurement. It does NOT prove stemToken()
+  // helps: the assertion also passes with stemming deleted (the raw tokens of
+  // most pairs already overlap), and it is blind to false positives (precision).
+  // See the '#489' precision suite below for the complementary half.
+  it('recall floor: admits at least 27/30 labeled contradiction pairs', () => {
     const hits = CONTRADICTIONS.filter(([, a, b]) => subjectsOverlap(a, b))
     expect(hits.length).toBeGreaterThanOrEqual(27)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// subjectsOverlap — precision / false positives (#489)
+// The 30-pair suite above only measures recall. It cannot catch the inverse
+// failure: subject-DISJOINT statements wrongly flagged as overlapping. #489
+// proved stemToken() over-truncates — 'states' → 'stat' (via -es) and
+// 'station' → 'stat' (via -ion) collide on a meaningless 4-char stem, so two
+// unrelated statements pass the pre-filter and become a candidate contradiction
+// pair. That is a precision leak (wasted LLM judgements, phantom tensions).
+// ---------------------------------------------------------------------------
+
+describe('subjectsOverlap — precision / over-stemming false positives (#489)', () => {
+  it.fails('does NOT flag subject-disjoint pairs that collide only on an over-stemmed token', () => {
+    // 'states' and 'station' both stem to 'stat' → currently a false positive.
+    expect(subjectsOverlap('United states border policy', 'Station platform layout')).toBe(false)
+    // 'corners' and 'corn' both stem to 'corn' → currently a false positive.
+    expect(subjectsOverlap('Corners of the room', 'Corn futures rally')).toBe(false)
+    // Correct expectation is no-overlap for both; it.fails until #489 tightens
+    // stemToken() (e.g. min stem length / suffix guards). Flip to it() when green.
   })
 })
 

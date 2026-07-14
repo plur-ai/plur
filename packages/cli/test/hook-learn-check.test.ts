@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync, readFileSync } from 'fs'
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync, readFileSync, chmodSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { spawnSync } from 'child_process'
@@ -106,5 +106,30 @@ describe('hook-learn-check', () => {
       false, false, true, // 7,8,9
       false, false, true, // 10,11,12
     ])
+  })
+
+  // MISSING (fail-open contract, PROVEN): a Stop hook MUST never throw — it is on
+  // the hot path of every response. But counterPath()'s mkdir/appendFileSync of
+  // $TMPDIR/plur-sessions is not wrapped in try/catch, so an unwritable $TMPDIR
+  // makes the hook EXIT 1 and print {"error":...} to stdout (index.ts's top-level
+  // catch). Correct behaviour: exit 0 and emit valid/empty output. it.fails until
+  // the counter I/O is made fail-open; flip to it() when green.
+  it.fails('never crashes the response when the state dir is unwritable', () => {
+    const roTmp = mkdtempSync(join(tmpdir(), 'plur-ro-learn-'))
+    chmodSync(roTmp, 0o500) // r-x: owner cannot create plur-sessions inside
+    try {
+      const result = spawnSync('node', [CLI, 'hook-learn-check'], {
+        input: JSON.stringify({ cwd: home }),
+        encoding: 'utf-8',
+        timeout: 10000,
+        env: { ...process.env, HOME: home, USERPROFILE: home, TMPDIR: roTmp, CLAUDE_SESSION_ID: 'ro-learn' },
+        cwd: home,
+      })
+      expect(result.status ?? 1).toBe(0) // fail-open: never a non-zero exit
+      expect(result.stdout ?? '').not.toContain('"error"')
+    } finally {
+      chmodSync(roTmp, 0o700)
+      rmSync(roTmp, { recursive: true, force: true })
+    }
   })
 })

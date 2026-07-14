@@ -67,6 +67,14 @@ class TestPlurBridge:
             with pytest.raises(PlurBridgeError, match="Engram not found"):
                 bridge.call("forget", ["ENG-999"])
 
+    # NOTE: the four timeout tests below (test_call_timeout_returns_safe_fallback,
+    # test_call_timeout_retries_then_falls_back, test_inject_graceful_fallback_on_timeout,
+    # and test_timeout_triggers_outer_retry_not_lock_retry) MOCK subprocess.run.
+    # They validate the return-value / retry-count contract on timeout, which is
+    # valid and worth keeping — but a mock never spawns a real process, so they
+    # CANNOT detect the process-group orphan/leak bug (grandchild reparented to
+    # PID 1 on timeout). That is covered by the real-process test in
+    # test_bridge_process_group.py, which must exist alongside these.
     def test_call_timeout_returns_safe_fallback(self):
         bridge = PlurBridge()
         bridge._binary = "/usr/local/bin/plur"
@@ -660,6 +668,8 @@ class TestLockRetry:
             # All three backoff delays consumed (jitter pinned to 0)
             assert [c[0][0] for c in mock_sleep.call_args_list] == [1.0, 2.0, 4.0]
 
+    # MOCKS subprocess.run: verifies retry routing/counts only, NOT the
+    # process-group orphan on timeout (see test_bridge_process_group.py).
     def test_timeout_triggers_outer_retry_not_lock_retry(self):
         """subprocess.TimeoutExpired is handled by the OUTER timeout-retry
         layer (Miles's, slow 5/15/30s, graceful degradation), NOT the INNER
