@@ -107,9 +107,9 @@ const MAX_COVER_LEN = 120
 const MAX_COVERS = 32
 // Forbid C0 control chars (U+0000–U+001F — includes \n, \r, \t), DEL (U+007F),
 // and C1 control chars (U+0080–U+009F): the newline / control-char channel a
-// prompt-injection payload needs to fake a new instruction block. Ordinary
+// prompt-injection payload needs to fake a new instruction block. ECMA-262 defines exactly four LineTerminators (LF, CR, U+2028 LS, U+2029 PS) and all four are excluded here, so a payload cannot break the directive onto a fake new line on any Unicode-aware renderer. Ordinary
 // printable text (incl. unicode punctuation and emoji) passes untouched.
-const NO_CONTROL_CHARS = /^[^\u0000-\u001F\u007F-\u009F]*$/
+const NO_CONTROL_CHARS = /^[^\u0000-\u001F\u007F-\u009F\u2028\u2029]*$/
 const NO_CONTROL_MSG = 'must not contain control characters or newlines (directive-surface hardening, #345)'
 
 export const ScopeMetadataSchema = z.object({
