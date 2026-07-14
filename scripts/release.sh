@@ -31,6 +31,7 @@
 #   2.  Build all packages
 #   3.  Run tests
 #   3.5 Validate tweet length (abort if > 270 chars)
+#   3.6 Manifest gate: abort if any PR on main since last tag is undeclared in CHANGELOG
 #   4.  Commit + tag + push
 #   5a. Publish npm to @next (canary)
 #   5b. Smoke test (npx by exact version, assert --version reports correctly)
@@ -336,6 +337,53 @@ if [ "$SKIP_TWEET" != true ]; then
   echo "$TWEET"
   echo ""
 fi
+
+# --- 3.6: Manifest gate (Part A — issue #544) ---
+# Detect PRs that would ship but are not declared in the CHANGELOG section for
+# this version. Runs before any irreversible action (commit/tag/push/publish).
+# A mismatch aborts with a clear choice: add the PRs to the CHANGELOG (they
+# ship), or adopt a release-PR model so only declared commits are tagged (Part B).
+# This gate would have stopped the 0.12.0/0.13.0 rollback incident.
+echo "--- Step 3.6: Manifest gate ---"
+MANIFEST_LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+if [ -z "$MANIFEST_LAST_TAG" ]; then
+  echo "  ⊘ No previous tag found — skipping (first release)"
+else
+  MANIFEST_CHANGELOG=$(awk -v v="$VERSION" '$0 ~ "^## "v{p=1; next} /^## [0-9]/{if(p)exit} p' CHANGELOG.md)
+
+  # PR numbers referenced in commit subjects since last tag — squash-merge format: "subject (#NNN)"
+  SHIPPED_PRS=$(git log --format='%s' "${MANIFEST_LAST_TAG}..HEAD" \
+    | grep -oE '\(#[0-9]+\)' | grep -oE '[0-9]+' | sort -un)
+
+  # PR numbers declared in the CHANGELOG section for this version
+  DECLARED_PRS=$(echo "$MANIFEST_CHANGELOG" | grep -oE '\(#[0-9]+\)' | grep -oE '[0-9]+' | sort -un)
+
+  if [ -z "$SHIPPED_PRS" ]; then
+    UNDECLARED_PRS=""
+  elif [ -z "$DECLARED_PRS" ]; then
+    UNDECLARED_PRS="$SHIPPED_PRS"
+  else
+    UNDECLARED_PRS=$(comm -23 <(echo "$SHIPPED_PRS") <(echo "$DECLARED_PRS"))
+  fi
+
+  if [ -n "$UNDECLARED_PRS" ]; then
+    echo ""
+    echo "✗ Manifest gate: the following PR(s) are on main since $MANIFEST_LAST_TAG but not declared in CHANGELOG $VERSION:"
+    echo "$UNDECLARED_PRS" | sed 's/^/    #/'
+    echo ""
+    echo "  To resolve — pick one:"
+    echo "    1. Add each PR above to the '## $VERSION' section of CHANGELOG.md (they will ship)"
+    echo "    2. Cut the release from a commit that excludes them (see issue #544 Part B)"
+    echo ""
+    echo "  This gate prevents silent unintended shipping (0.12.0/0.13.0 postmortem)."
+    echo "  See: https://github.com/plur-ai/plur/issues/544"
+    exit 1
+  fi
+
+  SHIPPED_COUNT=$(echo "$SHIPPED_PRS" | grep -c '[0-9]' 2>/dev/null || echo "0")
+  echo "  ✓ All ${SHIPPED_COUNT} PR(s) since $MANIFEST_LAST_TAG declared in CHANGELOG $VERSION"
+fi
+echo ""
 
 if [ "$DRY_RUN" = true ]; then
   echo "=== DRY RUN — stopping before publish ==="
