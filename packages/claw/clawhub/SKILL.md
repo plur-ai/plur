@@ -36,7 +36,7 @@ Correct something in OpenClaw — your Claude Code picks it up. Teach a pattern 
 
 ## Benchmarks
 
-- 97.6% R@5 on LongMemEval (N=500) — full methodology: https://plur.ai/benchmark.html
+- 97.0% R@5 on LongMemEval (N=500) — full methodology: https://plur.ai/benchmark.html
 - 89% agent task win rate — Haiku with PLUR outperformed Opus without it
 - 100% convention adherence (12–0 on house rules)
 
