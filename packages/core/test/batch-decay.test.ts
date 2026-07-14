@@ -277,13 +277,12 @@ describe('Plur.batchDecay() wrapper — data preservation (#dataloss)', () => {
   // — the strength-CHANGED active engrams. Every other engram (accessed today,
   // scope-skipped, sub-threshold, or retired) is absent from `modified`, so
   // `_writeEngrams(paths.engrams, modified)` overwrites the whole store with that
-  // subset and DELETES them. Confirmed: 5 engrams in, 2 out. There is currently
-  // no test on the wrapper at all — applyBatchDecay's own unit tests never
-  // exercise the write-back. This asserts the CORRECT behaviour: batchDecay may
-  // change strengths but must never drop an engram.
-  // it.fails until the wrapper stops overwriting the store with `modified`;
-  // flip back to it() when it passes.
-  it.fails('preserves every engram; only decays strengths (#dataloss)', () => {
+  // subset and DELETED them. Confirmed at the time: 5 engrams in, 2 out. There
+  // was no test on the wrapper at all — applyBatchDecay's own unit tests never
+  // exercised the write-back. FIXED: the wrapper now writes the full in-place-
+  // mutated list. This asserts the invariant: batchDecay may change strengths
+  // but must never drop an engram.
+  it('preserves every engram; only decays strengths (#dataloss)', () => {
     const engramsPath = path.join(dir, 'engrams.yaml')
     const seed: Engram[] = [
       // Stale AND crosses a status boundary → guarantees transitions > 0, so the
