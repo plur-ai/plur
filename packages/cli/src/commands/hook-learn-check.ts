@@ -147,9 +147,18 @@ export async function run(_args: string[], _flags: GlobalFlags): Promise<void> {
     if (data.cwd) cwd = data.cwd
   } catch { /* use process.cwd fallback */ }
 
-  // Increment persistent counter (atomic append — see incrementCounter's docstring)
-  const cPath = counterPath()
-  const count = incrementCounter(cPath)
+  // Increment persistent counter (atomic append — see incrementCounter's docstring).
+  // Fail-open: if the state dir is unwritable (read-only $TMPDIR, full disk),
+  // a Stop hook MUST NOT crash the response — pass the payload through untouched.
+  // counterPath() creates the dir and incrementCounter() appends; either can
+  // throw on an unwritable filesystem, so wrap both.
+  let count: number
+  try {
+    count = incrementCounter(counterPath())
+  } catch {
+    process.stdout.write(raw)
+    return
+  }
 
   // Write session checkpoint periodically (#215)
   if (count % CHECKPOINT_INTERVAL === 0) {

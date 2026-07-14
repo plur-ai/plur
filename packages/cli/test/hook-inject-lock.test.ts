@@ -101,7 +101,7 @@ describe('hook-inject concurrency guard (#519)', () => {
   // failure on the hot path of every prompt. Correct behaviour: exit 0 and emit
   // valid/empty output. it.fails until the state-dir I/O is made fail-open; flip
   // to it() when green.
-  it.fails('never crashes the prompt when the state dir is unwritable', () => {
+  it('never crashes the prompt when the state dir is unwritable', () => {
     const roTmp = mkdtempSync(join(tmpdir(), 'plur-ro-tmp-'))
     chmodSync(roTmp, 0o500) // r-x: owner cannot create plur-sessions inside
     try {
