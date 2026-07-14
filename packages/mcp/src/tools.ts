@@ -1335,14 +1335,20 @@ function getAllToolDefinitions(): ToolDefinition[] {
 
     {
       name: 'plur_status',
-      description: 'Return system health — running version, engram count, episode count, pack count, storage root',
+      description: 'Return system health — running version, engram count, episode count, pack count, storage root. Optionally filter engram counts by domain prefix and/or creation date.',
       annotations: { title: 'Status', readOnlyHint: true, idempotentHint: true },
       inputSchema: {
         type: 'object',
-        properties: {},
+        properties: {
+          domain: { type: 'string', description: 'Only count engrams whose domain starts with this prefix (e.g. "meridian")' },
+          created_after: { type: 'string', description: 'ISO-8601 date (YYYY-MM-DD). Only count engrams learned on or after this date.' },
+        },
       },
-      handler: async (_args, plur) => {
-        const status = plur.status()
+      handler: async (args, plur) => {
+        const status = plur.status({
+          domain: args.domain as string | undefined,
+          created_after: args.created_after as string | undefined,
+        })
         const versionCheck = getCachedUpdateCheck('@plur-ai/mcp')
         return {
           version: VERSION,

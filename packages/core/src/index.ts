@@ -40,6 +40,7 @@ import { computeContentHash } from './content-hash.js'
 import { loadTensions, saveTensions, generateTensionId, tensionPairKey, categorizeTension } from './tension-store.js'
 import type { TensionRecord, TensionStatus } from './schemas/tension.js'
 import type { TensionPair } from './tensions.js'
+import { engramDate } from './tensions.js'
 import { resolveValidity, buildTemporal } from './expiry.js'
 import { decodeJwtExpiry } from './jwt.js'
 import { RemoteStore } from './store/remote-store.js'
@@ -3707,12 +3708,19 @@ Generate an improved version of the procedure that prevents this failure. Return
   }
 
   /** Return system health info. */
-  status(): StatusResult {
+  status(options?: { created_after?: string; domain?: string }): StatusResult {
     const engrams = this._loadAllEngrams()
     const episodes = queryTimeline(this.paths.episodes)
     const packs = listPacks(this.paths.packs)
 
-    const active = engrams.filter(e => e.status !== 'retired')
+    let active = engrams.filter(e => e.status !== 'retired')
+    if (options?.domain) {
+      active = active.filter(e => e.domain?.startsWith(options.domain!))
+    }
+    if (options?.created_after) {
+      const cutoff = options.created_after
+      active = active.filter(e => { const d = engramDate(e); return d !== undefined && d >= cutoff })
+    }
     const lockedCount = active.filter(e => (e as any).commitment === 'locked').length
     // #181 (audit #213 C2): tension_count counts UNRESOLVED persisted
     // tension records — the LLM-validated detector's output — instead of
