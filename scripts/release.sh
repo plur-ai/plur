@@ -31,6 +31,8 @@
 #   2.  Build all packages
 #   3.  Run tests
 #   3.5 Validate tweet length (abort if > 270 chars)
+#   3.6 Manifest gate: abort if a user-facing PR merged since the last tag is
+#       undeclared in the CHANGELOG (issue #544; see RELEASING.md)
 #   4.  Commit + tag + push
 #   5a. Publish npm to @next (canary)
 #   5b. Smoke test (npx by exact version, assert --version reports correctly)
@@ -336,6 +338,62 @@ if [ "$SKIP_TWEET" != true ]; then
   echo "$TWEET"
   echo ""
 fi
+
+# --- Step 3.6: Manifest gate (Part A -- issue #544) ---
+# Abort if a PR shipped since the last tag is undeclared in this version's
+# CHANGELOG section. Catches unintended shipping -- this gate would have stopped
+# the 0.12.0/0.13.0 rollback incident. Only USER-FACING PRs (feat/fix/perf) must
+# be declared; chore/ci/docs/test/build/refactor/style PRs are curated out of
+# the CHANGELOG by convention and are skipped here (documented in RELEASING.md).
+echo "--- Step 3.6: Manifest gate ---"
+MANIFEST_LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+if [ -z "$MANIFEST_LAST_TAG" ]; then
+  echo "  - No previous tag found -- skipping (first release)"
+else
+  # Anchor the version so a '.' is not a regex any-char; match "## X.Y.Z" and
+  # "## X.Y.Z (date)".
+  MANIFEST_CHANGELOG=$(awk -v v="$VERSION" '$0 ~ "^## "v"[ (]" || $0 == "## "v {p=1; next} /^## [0-9]/{if(p)exit} p' CHANGELOG.md)
+
+  # PRs shipped since the last tag, EXCLUDING non-user-facing conventional-commit
+  # types. Squash-merge subject format: "type(scope): subject (#N)".
+  #   sort -u (lexical): comm below compares lexically; numeric -n would disagree
+  #     on mixed-digit PR numbers and silently misfire.
+  #   || true: grep exits 1 on no match; under `set -euo pipefail` that would
+  #     abort the release instead of taking the empty-set path below.
+  SHIPPED_PRS=$(git log --format='%s' "${MANIFEST_LAST_TAG}..HEAD" \
+    | grep -vE '^(chore|ci|docs|test|build|refactor|style)(\(|:|!)' \
+    | grep -oE '\(#[0-9]+\)' | grep -oE '[0-9]+' | sort -u || true)
+
+  DECLARED_PRS=$(printf '%s\n' "$MANIFEST_CHANGELOG" \
+    | grep -oE '\(#[0-9]+\)' | grep -oE '[0-9]+' | sort -u || true)
+
+  if [ -z "$SHIPPED_PRS" ]; then
+    UNDECLARED_PRS=""
+  elif [ -z "$DECLARED_PRS" ]; then
+    UNDECLARED_PRS="$SHIPPED_PRS"
+  else
+    UNDECLARED_PRS=$(comm -23 <(printf '%s\n' "$SHIPPED_PRS") <(printf '%s\n' "$DECLARED_PRS"))
+  fi
+
+  if [ -n "$UNDECLARED_PRS" ]; then
+    echo ""
+    echo "FAIL Manifest gate: user-facing PR(s) on main since $MANIFEST_LAST_TAG but not in CHANGELOG $VERSION:"
+    echo "$UNDECLARED_PRS" | sed 's/^/    #/'
+    echo ""
+    echo "  Resolve -- pick one:"
+    echo "    1. Add each PR above to the '## $VERSION' section of CHANGELOG.md (they will ship)"
+    echo "    2. Cut the release from a commit that excludes them (issue #544 Part B)"
+    echo "    3. If a listed PR is genuinely non-user-facing, retitle its squash commit"
+    echo "       with a chore/ci/docs/etc. type so it is curated out (see RELEASING.md)"
+    echo ""
+    echo "  Prevents silent unintended shipping (0.12.0/0.13.0 postmortem). See issue #544."
+    exit 1
+  fi
+
+  SHIPPED_COUNT=$(printf '%s\n' "$SHIPPED_PRS" | grep -c '[0-9]' || echo "0")
+  echo "  OK: all ${SHIPPED_COUNT} user-facing PR(s) since $MANIFEST_LAST_TAG declared in CHANGELOG $VERSION"
+fi
+echo ""
 
 if [ "$DRY_RUN" = true ]; then
   echo "=== DRY RUN — stopping before publish ==="
