@@ -12,9 +12,15 @@ name: plur-hermes
 
 on:
   push:
-    branches: [main]
+    # NOT `branches: [main]`. Releases are currently cut from
+    # fix-clean-0.11-base, not main, so a main-only trigger would skip CI on
+    # the branch that actually ships. The existing workflows do gate on main,
+    # which is why #535 and #538 merged with zero checks reported.
+    branches: [main, 'fix-clean-*', 'release/*']
     paths: ['packages/hermes/**', '.github/workflows/hermes.yml']
   pull_request:
+    # Deliberately no `branches:` filter — run on PRs into ANY base, so a PR
+    # targeting the release branch cannot merge unverified.
     paths: ['packages/hermes/**', '.github/workflows/hermes.yml']
 
 permissions:
