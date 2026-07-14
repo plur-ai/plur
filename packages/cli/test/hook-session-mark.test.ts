@@ -61,7 +61,7 @@ describe('hook-session-mark', () => {
   // behaviour: a traversal id must NOT write the sentinel outside the temp dir
   // (and must not crash). it.fails until the CC hooks sanitize session_id like the
   // Cursor port does; flip to it() when green.
-  it.fails('does not let a path-traversal session_id escape the temp dir', () => {
+  it('does not let a path-traversal session_id escape the temp dir', () => {
     // $TMPDIR is <home>/tmp; `plur-session-` + `../../../PWNED` normalises up out
     // of tmp, landing the sentinel directly in <home> — outside the temp dir.
     const escaped = join(home, 'PWNED')

@@ -93,7 +93,7 @@ describe('hook-session-guard', () => {
   // sessions dir. Correct behaviour: a traversal id must NOT escape the state dir
   // (and must not crash). it.fails until the CC guard sanitizes session_id like
   // the Cursor port does; flip to it() when green.
-  it.fails('does not let a path-traversal session_id escape the sessions dir', () => {
+  it('does not let a path-traversal session_id escape the sessions dir', () => {
     mkdirSync(join(home, 'tmp'), { recursive: true })
     // $TMPDIR is <home>/tmp, so the guard-count dir is <home>/tmp/plur-sessions.
     // `../../PWNED` normalises out of both plur-sessions and tmp, landing the

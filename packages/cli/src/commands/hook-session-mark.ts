@@ -3,6 +3,7 @@ import { join } from 'path'
 import { tmpdir } from 'os'
 import { type GlobalFlags } from '../plur.js'
 import { isPlurConfigured } from '../lib/plur-configured.js'
+import { safeSessionKey } from '../lib/session-key.js'
 
 /**
  * plur hook-session-mark — PostToolUse hook on mcp__plur__plur_session_start.
@@ -47,7 +48,10 @@ export async function run(_args: string[], _flags: GlobalFlags): Promise<void> {
   const sessionId = data.session_id ?? ''
   if (!sessionId) return
 
-  const sentinel = join(tmpdir(), `plur-session-${sessionId}`)
+  // Sanitize before interpolating into a path (shared with hook-session-guard,
+  // which reads this same sentinel): a `../`-laden session_id would otherwise
+  // escape $TMPDIR and write the sentinel wherever it points (path traversal).
+  const sentinel = join(tmpdir(), `plur-session-${safeSessionKey(sessionId)}`)
   try {
     writeFileSync(sentinel, '')
   } catch {

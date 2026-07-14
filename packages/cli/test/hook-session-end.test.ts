@@ -124,7 +124,7 @@ describe('hook-session-end (#217 — SessionEnd auto-close)', () => {
   // session's checkpoint (hook-session-end.ts:97). Correct behaviour: unparseable
   // content is RETAINED (or quarantined via rename), never silently destroyed.
   // it.fails until the parse-failure branch stops unlinking; flip to it() when green.
-  it.fails('retains (does not delete) an unparseable checkpoint', () => {
+  it('retains (does not delete) an unparseable checkpoint', () => {
     const sessionsDir = join(home, '.plur', 'sessions')
     mkdirSync(sessionsDir, { recursive: true })
     const cpPath = join(sessionsDir, 'end-test-session.checkpoint.json')
@@ -146,7 +146,7 @@ describe('hook-session-end (#217 — SessionEnd auto-close)', () => {
   // captured in its place. Correct behaviour: if capture fails, the checkpoint
   // is RETAINED so the next session_start's deferred wrap-up (#216) can recover it.
   // it.fails until the unlink is gated on capture success; flip to it() when green.
-  it.fails('retains the checkpoint when capture fails (#217)', () => {
+  it('retains the checkpoint when capture fails (#217)', () => {
     const cpPath = writeCheckpoint('end-test-session')
     const plurDir = join(home, '.plur')
     // Make the plur root read-only so episode capture (atomicWrite → writeFileSync
