@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, beforeAll } from 'vitest'
 import { detectSensitive, detectSecrets, sensitivityCategory } from '../../src/secrets.js'
 
 /**
@@ -221,12 +221,27 @@ describe('detector-fuzz: sensitivityCategory routing', () => {
   })
 })
 
-describe('detector-fuzz: ReDoS bait timing (64KB, must stay sub-second)', () => {
-  // The round-2 fix comment claims the detectors are linear on the 64KB-capped
-  // scan input ("~0.3ms on 64KB", "the 64KB cap is cheap insurance, not a DoS
-  // fix"). A second-plus runtime on a 64KB input means a stored prompt-injection
-  // / DoS vector: detectSensitive runs on serialized engrams at the publish gate
-  // AND inside _guardSensitiveScope, so a slow input stalls every guard call.
+describe('detector-fuzz: ReDoS bait timing (64KB, must stay linear)', () => {
+  // What this guards: detectSensitive runs on serialized engrams at the publish
+  // gate AND inside _guardSensitiveScope, so catastrophic backtracking on an
+  // attacker-authored engram stalls every guard call — a stored DoS vector.
+  //
+  // ASSERT RATIO, NOT WALL-CLOCK. This used to assert `dt < 1000ms`, which
+  // measures the machine, not the regex: under a full parallel `vitest run`
+  // (BGE embedders + WASM Postgres saturating every core) a perfectly linear
+  // scan was observed at 1019ms and failed the build. That made the release
+  // gate unreliable — release.sh hard-aborts on any test failure — and the
+  // tempting workaround is to bypass the gate, which is how unreviewed code has
+  // shipped before.
+  //
+  // The signal we actually care about is *shape*: catastrophic backtracking is
+  // superlinear, so an adversarial input runs orders of magnitude slower than a
+  // benign string of the same length. Measured on an idle machine, every bait
+  // here sits at 1.0-1.4x a benign 64KB baseline (~20ms). The original #389 bug
+  // was 8-17s against milliseconds — thousands of times over. A 20x ceiling is
+  // therefore enormous headroom for a healthy detector while still catching any
+  // real blowup, and it holds on a loaded machine because the baseline is
+  // measured on that same machine, under that same load.
   const N = 65536
   const BAITS: [string, string][] = [
     ['colon run (no @)', ':'.repeat(N)],
@@ -238,13 +253,41 @@ describe('detector-fuzz: ReDoS bait timing (64KB, must stay sub-second)', () => 
     ['scheme bait http://aaa', 'http://' + 'a'.repeat(N)],
     ['at-run', 'a@'.repeat(N / 2)],
   ]
-  const BUDGET_MS = 1000
-  for (const [label, input] of BAITS) {
-    it(`${label} scans in < ${BUDGET_MS}ms`, () => {
+
+  // A benign string of the SAME length. Anything the detector does to this is
+  // the irreducible cost of walking 64KB on this machine right now.
+  const BENIGN = 'x'.repeat(N)
+  const RATIO_LIMIT = 20
+
+  // Best-of-k: we want the floor (the cost when the scheduler let us run), not
+  // an average polluted by preemption. A ReDoS blowup is present in every run,
+  // so taking the minimum cannot hide one.
+  const fastest = (input: string, k: number): number => {
+    let best = Infinity
+    for (let i = 0; i < k; i++) {
       const t0 = performance.now()
       detectSensitive(input)
-      const dt = performance.now() - t0
-      expect(dt, `ReDoS — 64KB '${label}' took ${dt.toFixed(0)}ms (budget ${BUDGET_MS}ms)`).toBeLessThan(BUDGET_MS)
+      best = Math.min(best, performance.now() - t0)
+    }
+    return best
+  }
+
+  let benignMs = 0
+  beforeAll(() => {
+    detectSensitive(BENIGN) // warm: first call pays regex compile + JIT
+    benignMs = Math.max(fastest(BENIGN, 5), 0.01) // floor guards against divide-by-zero
+  })
+
+  for (const [label, input] of BAITS) {
+    it(`${label} stays within ${RATIO_LIMIT}x a benign 64KB scan`, () => {
+      const dt = fastest(input, 3)
+      const ratio = dt / benignMs
+      expect(
+        ratio,
+        `ReDoS — 64KB '${label}' took ${dt.toFixed(1)}ms = ${ratio.toFixed(1)}x a benign ` +
+          `64KB scan (${benignMs.toFixed(1)}ms) on this machine. Superlinear blowup means ` +
+          `catastrophic backtracking, not a slow CPU.`,
+      ).toBeLessThan(RATIO_LIMIT)
     })
   }
 })
