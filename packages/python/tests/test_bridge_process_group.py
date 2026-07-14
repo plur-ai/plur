@@ -11,9 +11,10 @@ This test spawns a genuine parent→grandchild process tree (a real Python paren
 that spawns a long-sleeping grandchild and records its PID) and drives the
 bridge's actual timeout path. A MOCKED subprocess CANNOT detect this bug — only
 a real process tree can — which is why this test exists alongside the mocked
-timeout tests. The Hermes fix (PR #535) adds process-group teardown; the Python
-SDK has none yet, so this is marked xfail(strict): it XPASSes (and forces the
-xfail to be removed) once the bridge kills the whole process group on timeout.
+timeout tests. The bridge now runs the CLI via ``_run_in_process_group``
+(``start_new_session=True`` + ``os.killpg`` on timeout), mirroring the Hermes
+fix, so the whole process group is reaped and the grandchild no longer orphans
+to PID 1 — this test is green (#495).
 """
 from __future__ import annotations
 
@@ -65,12 +66,6 @@ def _force_kill(pid: int) -> None:
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX process-group semantics")
-@pytest.mark.xfail(
-    strict=True,
-    reason="bridge.run_json uses subprocess.run(timeout=) without "
-    "start_new_session/os.killpg — on timeout the grandchild orphans to PID 1 "
-    "instead of being reaped with its process group; fix mirrors PR #535",
-)
 def test_timeout_reaps_grandchild(tmp_path, monkeypatch):
     script = tmp_path / "parent.py"
     pidfile = tmp_path / "gc.pid"

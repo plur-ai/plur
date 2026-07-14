@@ -54,47 +54,42 @@ def test_learn_status_roundtrip():
         shutil.rmtree(d, ignore_errors=True)
 
 
-# BUG-ENCODING (#495): recall() shells out with ``--fast`` (BM25-only) AND the
-# bridge raises PlurError on the CLI's exit-2 empty-result signal. Both faults
-# converge here: a purely-semantic query (no lexical/stem overlap with the
-# seeded engram) is unmatchable by BM25, so --fast returns zero results, the CLI
-# exits 2, and recall() raises instead of surfacing the semantically-relevant
-# engram. Verified live: `recall --fast "zero-downtime shipping approach"` on a
-# store holding the blue-green engram → {"results":[],"count":0} exit 2, whereas
-# hybrid returns the engram. This is the honest replacement for the old vacuous
-# lexical-overlap assertion. strict=True: when recall() is fixed to run hybrid
-# (and not raise on empty) this XPASSes and forces the xfail to be removed.
+# #495 fix: recall() is lexical-only (--fast) BY DESIGN — recall_hybrid() is the
+# hybrid method. That distinct-semantics split is the design the 0.10.0 audit
+# accepted (CHANGELOG documents recall() as lexical-only), so a test asserting
+# recall() itself makes a *semantic* match would be asserting against the design.
+# This test instead pins the real contract AND proves the exit-2 fix: a purely-
+# semantic query (no lexical/stem overlap with the seeded engram) is unmatchable
+# by BM25, so the CLI exits 2 — recall() must now surface that as [] (before #495
+# it RAISED PlurError), while recall_hybrid()'s embedding leg connects
+# "zero-downtime shipping approach" to the blue-green engram. The old xfailed
+# test_recall_finds_semantic_match asserted recall() itself would find the match
+# (i.e. that recall() should run hybrid) — that would revert the accepted design
+# and collide with test_recall_empty_returns_list, so it's replaced by this
+# honest contrast. Hybrid's own semantic hit is also covered by
+# test_recall_hybrid_returns_results.
 @requires_cli
-@pytest.mark.xfail(
-    strict=True,
-    reason="recall() uses --fast (BM25-only) and raises on the resulting "
-    "exit-2 empty result — it cannot make a purely-semantic match; see #495",
-)
-def test_recall_finds_semantic_match():
+def test_recall_lexical_miss_hybrid_hit():
     d = tempfile.mkdtemp(prefix="plur-pytest-")
     try:
         plur = Plur(path=d)
         plur.learn("deploy with blue-green never in-place", type="architectural")
-        # No lexical/stem overlap with the engram — only semantic/hybrid search
-        # can connect "zero-downtime shipping approach" to "blue-green deploy".
-        results = plur.recall("zero-downtime shipping approach", limit=5)
-        assert any("blue-green" in r["statement"] for r in results)
+        query = "zero-downtime shipping approach"
+        # recall() is lexical-only: no lexical/stem overlap → no match → [].
+        # (This is the exit-2 path — pre-#495 it raised PlurError.)
+        assert plur.recall(query, limit=5) == []
+        # recall_hybrid() adds the embedding leg, so it makes the semantic match.
+        hybrid = plur.recall_hybrid(query, limit=5)
+        assert any("blue-green" in r["statement"] for r in hybrid)
     finally:
         shutil.rmtree(d, ignore_errors=True)
 
 
-# BUG-ENCODING (#495): the CLI exits 2 on a zero-result recall (recall.ts:32)
-# and the bridge's run_json treats ANY nonzero exit as an error (bridge.py:78),
-# so a normal "no match" RAISES PlurError instead of returning []. Hermes already
-# handles exit 2 as an empty result (plur_hermes/bridge.py:320); the Python SDK
-# does not. strict=True: once bridge.py maps exit 2 → [] this XPASSes and forces
-# the xfail to be removed.
+# #495 fix: the CLI exits 2 on a zero-result recall (recall.ts) and run_json used
+# to treat ANY nonzero exit as an error, so a normal "no match" RAISED PlurError
+# instead of returning []. run_json now maps exit 2 → the empty payload (mirroring
+# plur_hermes/bridge.py), so recall() returns [] on a no-match instead of raising.
 @requires_cli
-@pytest.mark.xfail(
-    strict=True,
-    reason="recall() raises PlurError on the CLI's exit-2 empty-result signal "
-    "instead of returning []; see #495",
-)
 def test_recall_empty_returns_list():
     d = tempfile.mkdtemp(prefix="plur-pytest-")
     try:
