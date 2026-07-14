@@ -21,7 +21,7 @@ classifiers = [
   "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 dependencies = [
-  "langchain-core>=0.2",
+  "langchain-core>=0.2,<0.3",
   "plur-ai>=0.10.0",
 ]
 

@@ -5,12 +5,11 @@ import pytest
 
 
 def _make_memory(**kwargs):
-    with patch("plur_langchain._utils.make_bridge") as mock_make:
+    with patch("plur_langchain.memory.make_bridge") as mock_make:
         mock_bridge = MagicMock()
         mock_make.return_value = mock_bridge
         from plur_langchain.memory import PlurMemory
         memory = PlurMemory(**kwargs)
-        memory._bridge = mock_bridge
     return memory, mock_bridge
 
 

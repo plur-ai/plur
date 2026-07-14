@@ -6,12 +6,11 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 
 def _make_history(**kwargs):
-    with patch("plur_langchain._utils.make_bridge") as mock_make:
+    with patch("plur_langchain.chat_history.make_bridge") as mock_make:
         mock_bridge = MagicMock()
         mock_make.return_value = mock_bridge
         from plur_langchain.chat_history import PlurChatMessageHistory
         history = PlurChatMessageHistory(**kwargs)
-        history._bridge = mock_bridge
     return history, mock_bridge
 
 
