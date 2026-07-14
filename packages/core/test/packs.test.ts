@@ -491,17 +491,50 @@ describe('pack management', () => {
   // serializeForSecretScan returns unbounded JSON and EMAIL_RE/IP_RE run on it;
   // an attacker-authored engram with a long dotted run after `@` made EMAIL_RE
   // backtrack for 8-17s, hanging preview/install/export. The scan-input cap +
-  // bounded EMAIL_RE must keep it well under the 2s test budget.
+  // bounded EMAIL_RE must keep the adversarial export as cheap as a benign one.
+  //
+  // ASSERT RATIO, NOT WALL-CLOCK. This used to rely on a 2000ms vitest timeout,
+  // which measures the machine rather than the regex: under a full parallel run
+  // the *benign* path alone can exceed 2s, failing the build for a healthy
+  // detector and making the release gate unreliable (release.sh hard-aborts on
+  // any test failure). Comparing against a benign export of the same size on
+  // the same machine, under the same load, is load-independent — and the real
+  // bug was 8-17s versus milliseconds, so a 10x ceiling still catches it with
+  // room to spare.
   it('#389 adversarial-length engram does not hang the scan (ReDoS guard)', () => {
+    const payload = 'a.'.repeat(80_000)
     const evil = EngramSchema.parse({
       id: 'ENG-2026-0101-301',
-      statement: 'x@' + 'a.'.repeat(80_000) + '!',
+      statement: 'x@' + payload + '!', // the `@` is what made EMAIL_RE backtrack
       type: 'behavioral', scope: 'global', status: 'active', visibility: 'public',
     })
-    expect(() =>
-      exportPack([evil], join(dir, 'exp-redos'), { name: 'exp-redos', version: '1.0.0' }),
-    ).not.toThrow()
-  }, 2000)
+    // Same length, no `@` — so it cannot trigger the EMAIL_RE backtracking path.
+    const benign = EngramSchema.parse({
+      id: 'ENG-2026-0101-303',
+      statement: 'x_' + payload + '!',
+      type: 'behavioral', scope: 'global', status: 'active', visibility: 'public',
+    })
+
+    const timeExport = (e: typeof evil, name: string): number => {
+      const t0 = performance.now()
+      expect(() =>
+        exportPack([e], join(dir, name), { name, version: '1.0.0' }),
+      ).not.toThrow()
+      return performance.now() - t0
+    }
+
+    timeExport(benign, 'exp-warm') // warm: first export pays regex compile + JIT
+    const benignMs = Math.max(timeExport(benign, 'exp-benign'), 0.01)
+    const evilMs = timeExport(evil, 'exp-redos')
+
+    const ratio = evilMs / benignMs
+    expect(
+      ratio,
+      `ReDoS — adversarial export took ${evilMs.toFixed(1)}ms = ${ratio.toFixed(1)}x a ` +
+        `same-length benign export (${benignMs.toFixed(1)}ms). Superlinear blowup means ` +
+        `EMAIL_RE is backtracking again, not that the machine is slow.`,
+    ).toBeLessThan(10)
+  })
 
   // #389 review (blocker 2) / systemic packs gap: the export gate used
   // detectSecrets, which never scanned the infra family (public IPs, internal
