@@ -190,9 +190,12 @@ const HISTORICAL_KEYWORDS = ['before', 'was', 'prior', 'used to', 'previously', 
 // SUPPRESSES the ×0.3 penalty on superseded engrams, injecting stale memory
 // instead of the current tip. \b sits at every space↔word transition, so
 // multi-word phrases like "used to" match correctly with a boundary at each end.
+// The inter-word gap is matched as \s+ (not a literal space) so a phrase split
+// by a newline, tab, or doubled space — "used\nto", "used  to" — still matches;
+// hardcoding a single U+0020 there was a false-negative on multi-line prompts.
 const escapeRegExp = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 const HISTORICAL_KEYWORD_PATTERNS = HISTORICAL_KEYWORDS.map(
-  kw => new RegExp(`\\b${escapeRegExp(kw)}\\b`),
+  kw => new RegExp(`\\b${kw.split(/\s+/).map(escapeRegExp).join('\\s+')}\\b`),
 )
 
 function hasHistoricalIntent(prompt: string): boolean {
