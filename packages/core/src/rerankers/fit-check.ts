@@ -6,14 +6,26 @@
  * On out-of-domain stores the model can produce uninformative or
  * inverted scores — activating it by default could be net-negative.
  *
- * This module measures whether a reranker *separates* same-domain pairs from
- * cross-domain pairs on the user's actual engrams. The algorithm:
+ * This module measures whether a reranker *separates* relevant (query, doc)
+ * pairs from irrelevant ones on the user's actual engrams. The algorithm:
  *   1. Sample up to `sampleSize` engrams from the store.
- *   2. Group by domain. If only one domain (or none), use statement similarity
- *      as a proxy: consecutive pairs as "positive", cross-sample pairs as "negative".
- *   3. Score K positive and K negative (query, document) pairs.
+ *   2. Synthesize a probe query from each engram's own statement (the same
+ *      keyword-extraction reranker-eval uses).
+ *   3. POSITIVE pair = (probe, its OWN engram) — the document is exactly what
+ *      the probe asks about, so a healthy relevance reranker scores it high.
+ *      NEGATIVE pair = (probe, a DIFFERENT engram, cross-domain when possible) —
+ *      unrelated, so a healthy reranker scores it low.
  *   4. Compute separability = (mean_positive - mean_negative) / span.
  *   5. Gate: separability ≥ MIN_SEPARABILITY → fit.
+ *
+ * #451 fix: the previous version built "positive" pairs from two DIFFERENT
+ * same-domain engrams and fed them to the cross-encoder as (query, document).
+ * A cross-encoder scores query→document RELEVANCE, not topical co-membership;
+ * two distinct facts in one domain share few tokens, so even a HEALTHY reranker
+ * scored them no higher than cross-domain negatives → separability ≈ 0 → the
+ * tool reported "poor fit" for a working reranker and told users to disable it.
+ * A probe must be relevant to its paired document; that only holds when the
+ * document is the engram the probe was synthesized from.
  *
  * A fit score of 1.0 means the model perfectly separates relevant from
  * irrelevant. 0.0 means it gives the same scores to both — useless.
@@ -23,6 +35,7 @@
  */
 
 import type { RerankerAdapter } from './types.js'
+import { synthesizeProbeQuery } from '../reranker-eval.js'
 
 export interface FitCheckResult {
   /** Whether the reranker is a good fit for this store's engrams. */
@@ -125,67 +138,42 @@ export async function checkRerankerFit(
 type Pair = [string, string]
 
 /**
- * Build positive (same-domain) and negative (cross-domain) pairs.
- *
- * Strategy:
- *   - Group engrams by domain. Domains with ≥ 2 engrams contribute positive
- *     pairs (consecutive within the group). All engrams contribute negative
- *     pairs (first of one group vs first of another group).
- *   - If there is only one distinct domain (or no domain field), fall back to
- *     the positional proxy: consecutive engrams → positive, non-adjacent
- *     engrams → negative.
+ * Build (query, document) pairs whose RELEVANCE a cross-encoder can actually
+ * judge. For each engram we synthesize a probe query from its own statement:
+ *   - POSITIVE = (probe_i, statement_i)   — the doc answers its own probe.
+ *   - NEGATIVE = (probe_i, statement_j)   — j ≠ i, cross-domain when available.
+ * A healthy relevance reranker scores positives high and negatives low; an
+ * inverting/broken one does the opposite, driving separability negative.
  */
 function buildPairs(
   engrams: FitCheckEngram[],
   pairsPerPolarity: number,
 ): { posPairs: Pair[]; negPairs: Pair[] } {
-  // Group by domain (use '__none__' for undeclared domains).
-  const byDomain = new Map<string, FitCheckEngram[]>()
-  for (const e of engrams) {
-    const key = e.domain ?? '__none__'
-    const bucket = byDomain.get(key)
-    if (bucket) {
-      bucket.push(e)
-    } else {
-      byDomain.set(key, [e])
-    }
-  }
-
-  const multiDomain = byDomain.size >= 2
+  // A probe query built from each engram's own keywords. Statements too short to
+  // yield a content-bearing query are dropped (synthesizeProbeQuery → null).
+  const probed = engrams
+    .map((e, i) => ({ e, query: synthesizeProbeQuery(e.statement, i) }))
+    .filter((p): p is { e: FitCheckEngram; query: string } => p.query !== null)
 
   const posPairs: Pair[] = []
   const negPairs: Pair[] = []
 
-  if (multiDomain) {
-    // Same-domain positives: consecutive pairs within each domain bucket.
-    for (const bucket of byDomain.values()) {
-      for (let i = 0; i + 1 < bucket.length && posPairs.length < pairsPerPolarity; i++) {
-        posPairs.push([bucket[i].statement, bucket[i + 1].statement])
-      }
-    }
+  // Positive: each probe against the very engram it was derived from.
+  for (let i = 0; i < probed.length && posPairs.length < pairsPerPolarity; i++) {
+    posPairs.push([probed[i].query, probed[i].e.statement])
+  }
 
-    // Cross-domain negatives: first element of each domain vs first of another.
-    const domainReps = [...byDomain.values()].map(b => b[0])
-    for (let i = 0; i < domainReps.length && negPairs.length < pairsPerPolarity; i++) {
-      const j = (i + Math.floor(domainReps.length / 2)) % domainReps.length
-      if (i !== j) {
-        negPairs.push([domainReps[i].statement, domainReps[j].statement])
-      }
+  // Negative: each probe against a DIFFERENT engram — prefer a different domain
+  // so the pair is unambiguously irrelevant; fall back to the next index when no
+  // cross-domain partner exists (single-domain store).
+  for (let i = 0; i < probed.length && negPairs.length < pairsPerPolarity; i++) {
+    let j = -1
+    for (let k = 1; k < probed.length; k++) {
+      const cand = (i + k) % probed.length
+      if (probed[cand].e.domain !== probed[i].e.domain) { j = cand; break }
     }
-  } else {
-    // Single-domain fallback: positional proxy.
-    for (let i = 0; i + 1 < engrams.length && posPairs.length < pairsPerPolarity; i += 2) {
-      posPairs.push([engrams[i].statement, engrams[i + 1].statement])
-    }
-    // Negatives: first quarter vs last quarter.
-    const half = Math.floor(engrams.length / 2)
-    for (
-      let i = 0;
-      i < half && i + half < engrams.length && negPairs.length < pairsPerPolarity;
-      i++
-    ) {
-      negPairs.push([engrams[i].statement, engrams[i + half].statement])
-    }
+    if (j === -1) j = (i + 1) % probed.length
+    if (j !== i) negPairs.push([probed[i].query, probed[j].e.statement])
   }
 
   return { posPairs, negPairs }

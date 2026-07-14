@@ -82,7 +82,7 @@ describe('checkRerankerFit', () => {
     expect(result.separability).toBe(0)
   })
 
-  it.fails('a genuinely separating reranker yields fit=true on real same-domain data (#451)', async () => {
+  it('a genuinely separating reranker yields fit=true on real same-domain data (#451)', async () => {
     // A healthy relevance reranker (oracle: scores by query/doc token overlap)
     // SHOULD be judged a fit. But #451's metric feeds two DIFFERENT same-domain
     // engrams as a (query, doc) "positive" pair — and real engrams within one
@@ -169,8 +169,11 @@ describe('checkRerankerFit', () => {
   })
 
   it('respects sampleSize limit', async () => {
+    // Statements must carry enough content words to synthesize a probe query
+    // from (a one-word statement like "Engram 42" yields no probe). Use realistic
+    // multi-word statements so the sampleSize bound is actually exercised.
     const data = Array.from({ length: 200 }, (_, i) => ({
-      statement: `Engram ${i}`,
+      statement: `Deployment rule ${i} always prefer blue-green rollout over direct push`,
       domain: i < 100 ? 'domainA' : 'domainB',
     }))
     // Should not throw even though we have 200 engrams and sampleSize=10.
