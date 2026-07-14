@@ -53,20 +53,19 @@ describe('login helpers — config read/write', () => {
 
   it('plurConfigPath returns ~/.plur/config.json', async () => {
     const { plurConfigPath } = await import('../src/commands/login.js')
-    const p = plurConfigPath()
+    const p = plurConfigPath(tmpHome)
     expect(p).toMatch(/\.plur[/\\]config\.json$/)
   })
 
   it('readPlurConfig returns {} when file is absent', async () => {
     const { readPlurConfig } = await import('../src/commands/login.js')
-    const cfg = readPlurConfig()
+    const cfg = readPlurConfig(tmpHome)
     expect(cfg).toEqual({})
   })
 
   it('writePlurConfig creates parent directory and writes JSON', async () => {
-    const { plurConfigPath, readPlurConfig, writePlurConfig } = await import('../src/commands/login.js')
-    const configPath = plurConfigPath()
-    mkdirSync(join(configPath, '..'), { recursive: true })
+    const { plurConfigPath, writePlurConfig } = await import('../src/commands/login.js')
+    const configPath = plurConfigPath(tmpHome)
 
     const data = {
       enterprise: {
@@ -77,7 +76,7 @@ describe('login helpers — config read/write', () => {
         authed_at: '2026-01-01T00:00:00.000Z',
       },
     }
-    writePlurConfig(data)
+    writePlurConfig(data, tmpHome)
 
     expect(existsSync(configPath)).toBe(true)
     const written = JSON.parse(readFileSync(configPath, 'utf8'))
@@ -89,12 +88,11 @@ describe('login helpers — config read/write', () => {
 
   it('writePlurConfig is idempotent — overwriting preserves other top-level keys', async () => {
     const { plurConfigPath, writePlurConfig } = await import('../src/commands/login.js')
-    const configPath = plurConfigPath()
-    mkdirSync(join(configPath, '..'), { recursive: true })
+    const configPath = plurConfigPath(tmpHome)
 
     // Write initial config with extra top-level key
-    writePlurConfig({ enterprise: { url: 'https://a.example.com', token: 'tok1' }, custom_key: 'preserved' })
-    writePlurConfig({ enterprise: { url: 'https://b.example.com', token: 'tok2' }, custom_key: 'preserved' })
+    writePlurConfig({ enterprise: { url: 'https://a.example.com', token: 'tok1' }, custom_key: 'preserved' }, tmpHome)
+    writePlurConfig({ enterprise: { url: 'https://b.example.com', token: 'tok2' }, custom_key: 'preserved' }, tmpHome)
 
     const written = JSON.parse(readFileSync(configPath, 'utf8'))
     expect(written.enterprise.url).toBe('https://b.example.com')
@@ -115,28 +113,22 @@ describe('login helpers — signalReload', () => {
   })
 
   it('returns "no running server" message when PID file is absent', async () => {
-    const { serverPidPath, signalReload } = await import('../src/commands/login.js')
-    // serverPidPath reads from the real homedir; we can't easily override it
-    // without spawning a subprocess. Instead test the documented return string
-    // shape by checking the function exists and returns a string.
-    const result = signalReload()
+    const { signalReload } = await import('../src/commands/login.js')
+    const result = signalReload(tmpHome)
     expect(typeof result).toBe('string')
-    expect(result.length).toBeGreaterThan(0)
+    expect(result).toMatch(/no running server|no PID file/i)
   })
 
   it('returns stale-process message when PID file holds an unknown PID', async () => {
     const { serverPidPath, signalReload } = await import('../src/commands/login.js')
     // Write a PID file pointing to a process that definitely does not exist.
     // PID 2^30 is astronomically unlikely to be real.
-    const pidFile = serverPidPath()
+    const pidFile = serverPidPath(tmpHome)
     mkdirSync(join(pidFile, '..'), { recursive: true })
     writeFileSync(pidFile, '1073741824')  // 2^30
 
-    const result = signalReload()
+    const result = signalReload(tmpHome)
     expect(result).toMatch(/no longer running|not found|ESRCH|could not signal|invalid|no running server/i)
-
-    // Clean up
-    try { rmSync(pidFile) } catch {}
   })
 })
 

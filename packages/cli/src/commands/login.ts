@@ -91,12 +91,12 @@ interface PlurConfig {
 
 // ── Config helpers ────────────────────────────────────────────────────────────
 
-export function plurConfigPath(): string {
-  return join(homedir(), '.plur', 'config.json')
+export function plurConfigPath(baseDir?: string): string {
+  return join(baseDir ?? homedir(), '.plur', 'config.json')
 }
 
-export function readPlurConfig(): PlurConfig {
-  const path = plurConfigPath()
+export function readPlurConfig(baseDir?: string): PlurConfig {
+  const path = plurConfigPath(baseDir)
   if (!existsSync(path)) return {}
   try {
     return JSON.parse(readFileSync(path, 'utf8'))
@@ -105,20 +105,20 @@ export function readPlurConfig(): PlurConfig {
   }
 }
 
-export function writePlurConfig(config: PlurConfig): void {
-  const path = plurConfigPath()
+export function writePlurConfig(config: PlurConfig, baseDir?: string): void {
+  const path = plurConfigPath(baseDir)
   mkdirSync(join(path, '..'), { recursive: true })
   writeFileSync(path, JSON.stringify(config, null, 2) + '\n', { mode: 0o600 })
 }
 
 // ── Reload signal ─────────────────────────────────────────────────────────────
 
-export function serverPidPath(): string {
-  return join(homedir(), '.plur', 'server.pid')
+export function serverPidPath(baseDir?: string): string {
+  return join(baseDir ?? homedir(), '.plur', 'server.pid')
 }
 
-export function reloadMarkerPath(): string {
-  return join(homedir(), '.plur', '.reload')
+export function reloadMarkerPath(baseDir?: string): string {
+  return join(baseDir ?? homedir(), '.plur', '.reload')
 }
 
 /**
@@ -129,8 +129,8 @@ export function reloadMarkerPath(): string {
  * A missing or stale PID file is not an error — the token is already written
  * and will be picked up on next server start.
  */
-export function signalReload(): string {
-  const pidPath = serverPidPath()
+export function signalReload(baseDir?: string): string {
+  const pidPath = serverPidPath(baseDir)
   if (!existsSync(pidPath)) {
     return 'no running server detected (no PID file) — token saved, will be picked up on next start'
   }
@@ -143,7 +143,7 @@ export function signalReload(): string {
 
   // Windows: no SIGUSR1 — write a reload-marker instead.
   if (process.platform === 'win32') {
-    writeFileSync(reloadMarkerPath(), String(pid))
+    writeFileSync(reloadMarkerPath(baseDir), String(pid))
     return `reload marker written (PID ${pid}) — the server will reload on next tool call`
   }
 
@@ -163,18 +163,26 @@ export function signalReload(): string {
 
 /**
  * Normalise the host to an origin URL (strips trailing slashes and paths).
+ * Rejects http:// for non-localhost hosts — enterprise tokens must not travel over plaintext.
  */
 function normaliseHost(host: string): string {
+  let origin: string
   try {
-    return new URL(host).origin
+    origin = new URL(host).origin
   } catch {
     // If missing scheme, try prepending https://
     try {
-      return new URL(`https://${host}`).origin
+      origin = new URL(`https://${host}`).origin
     } catch {
       throw new Error(`Invalid host: ${host}. Provide a full URL, e.g. https://plur.datafund.io`)
     }
   }
+  const parsed = new URL(origin)
+  const isLocal = parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1' || parsed.hostname === '::1'
+  if (parsed.protocol !== 'https:' && !isLocal) {
+    throw new Error(`Insecure host: ${host}. Use https:// (http:// is only permitted for localhost).`)
+  }
+  return origin
 }
 
 /**
@@ -219,7 +227,7 @@ export async function pollForToken(
 ): Promise<TokenResponse> {
   const url = `${origin}/api/v1/auth/token`
   const deadline = Date.now() + timeoutSecs * 1_000
-  const pollMs = Math.max(intervalSecs, 1) * 1_000
+  let pollMs = Math.max(intervalSecs, 1) * 1_000
 
   while (Date.now() < deadline) {
     await sleep(pollMs)
@@ -249,8 +257,12 @@ export async function pollForToken(
     }
 
     const err = (data as TokenErrorResponse).error
-    if (err === 'authorization_pending' || err === 'slow_down') {
-      // Still waiting for the user — keep polling
+    if (err === 'authorization_pending') {
+      continue
+    }
+    if (err === 'slow_down') {
+      // RFC 8628 §3.5 — increase interval by 5s on slow_down
+      pollMs += 5_000
       continue
     }
     if (err === 'expired_token') {
@@ -297,16 +309,27 @@ async function fetchMe(origin: string, token: string): Promise<{ username: strin
 /**
  * Open a URL in the system default browser, best-effort.
  * Returns true if the open command was dispatched, false if unsupported.
+ * Uses spawn with an argument array (no shell) to prevent command injection
+ * via a server-controlled verification_uri.
  */
 async function openBrowser(url: string): Promise<boolean> {
-  const { exec } = await import('child_process')
+  // Validate scheme — only open http(s) URLs.
+  let scheme: string
+  try { scheme = new URL(url).protocol } catch { return false }
+  if (scheme !== 'http:' && scheme !== 'https:') return false
+
+  const { spawn } = await import('child_process')
   const p = process.platform
-  const cmd =
-    p === 'darwin' ? `open "${url}"` :
-    p === 'win32'  ? `start "" "${url}"` :
-    `xdg-open "${url}"`
+  // spawn with an arg array: no shell interpolation, no injection vector.
+  const [cmd, cmdArgs]: [string, string[]] =
+    p === 'darwin' ? ['open', [url]] :
+    p === 'win32'  ? ['cmd', ['/c', 'start', '', url]] :
+    ['xdg-open', [url]]
   return new Promise(resolve => {
-    exec(cmd, err => resolve(!err))
+    const child = spawn(cmd, cmdArgs, { detached: true, stdio: 'ignore' })
+    child.unref()
+    child.on('error', () => resolve(false))
+    child.on('spawn', () => resolve(true))
   })
 }
 
