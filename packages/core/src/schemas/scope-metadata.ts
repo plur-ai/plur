@@ -85,13 +85,40 @@ export const ScopeSensitivitySchema = z.object({
 
 export type ScopeSensitivity = z.infer<typeof ScopeSensitivitySchema>
 
+/**
+ * Prompt-injection hardening for the directive surface (#345). A scope's
+ * `description` and `covers[]` are surfaced VERBATIM to the agent via
+ * `plur_scopes_discover` — they are part of the agent's directive surface,
+ * exactly like scope NAMES, which were hardened in RemoteStore.me() for the
+ * same reason (#426/#427). A hostile or MITM'd store's `/api/v1/me` can return
+ * a 10KB, newline-laden, or control-char "IGNORE ALL PREVIOUS INSTRUCTIONS…"
+ * description to smuggle instructions into the agent.
+ *
+ * We bound these fields HERE in the schema rather than only at the trust
+ * boundary, because the remote `/me` path validates every `scope_metadata`
+ * entry through this schema and DROPS any entry that fails `safeParse`
+ * (remote-store.ts). So these bounds make the remote path reject hostile
+ * metadata — the same "drop the malformed entry" defense the sibling `scopes`
+ * array already applies. The local config path (getScopeMetadata) is
+ * user-authored and trusted, so it is unaffected.
+ */
+const MAX_DESCRIPTION_LEN = 500
+const MAX_COVER_LEN = 120
+const MAX_COVERS = 32
+// Forbid C0 control chars (U+0000–U+001F — includes \n, \r, \t), DEL (U+007F),
+// and C1 control chars (U+0080–U+009F): the newline / control-char channel a
+// prompt-injection payload needs to fake a new instruction block. Ordinary
+// printable text (incl. unicode punctuation and emoji) passes untouched.
+const NO_CONTROL_CHARS = /^[^\u0000-\u001F\u007F-\u009F]*$/
+const NO_CONTROL_MSG = 'must not contain control characters or newlines (directive-surface hardening, #345)'
+
 export const ScopeMetadataSchema = z.object({
   scope: z.string()
     .describe('The scope this metadata describes (e.g. "group:plur/engineering", "project:plur").'),
-  description: z.string()
-    .describe('Human-readable explanation of what this scope is for. Surfaced in scope/store discovery.'),
-  covers: z.array(z.string()).default([])
-    .describe('Topics, domains, or areas this scope is the home for. Advisory; helps an agent pick the right scope and is surfaced in discovery.'),
+  description: z.string().max(MAX_DESCRIPTION_LEN).regex(NO_CONTROL_CHARS, NO_CONTROL_MSG)
+    .describe('Human-readable explanation of what this scope is for. Surfaced VERBATIM in scope/store discovery — bounded in length and free of control chars/newlines so a hostile remote cannot inject instructions (#345).'),
+  covers: z.array(z.string().max(MAX_COVER_LEN).regex(NO_CONTROL_CHARS, NO_CONTROL_MSG)).max(MAX_COVERS).default([])
+    .describe('Topics, domains, or areas this scope is the home for. Advisory; helps an agent pick the right scope and is surfaced in discovery. Each entry is length-bounded and control-char-free, and the list is capped, for the same directive-surface reason as `description` (#345).'),
   sensitivity: ScopeSensitivitySchema.optional()
     .describe('Per-scope sensitivity policy. When present, the leak guard uses it; when absent, the guard falls back to the default shared-scope behavior.'),
   injection_policy: z.enum(['on_match', 'on_request', 'always']).optional()
