@@ -340,12 +340,12 @@ describe('Plur', () => {
     it('extraction round-trip: expiry phrase in statement → structured valid_until → hard-skipped after expiry', () => {
       // The observed #347 failure shape: statement says "valid 31 May 2026",
       // engram kept injecting past expiry because temporal.valid_until was empty.
-      const engram = plur.learn('IGEA Enterprise offer REV.002, valid 31 May 2026', { scope: 'global' })
+      const engram = plur.learn('Acme Enterprise offer REV.002, valid 31 May 2026', { scope: 'global' })
       expect(engram.temporal?.valid_until).toBe('2026-05-31')
       // Echo marker so the caller can confirm the parse (never silently guess).
       expect((engram as any).structured_data?._expiry_extracted).toMatchObject({ valid_until: '2026-05-31' })
       // 2026-05-31 is in the past relative to the test run → recall hard-skips it.
-      const results = plur.recall('IGEA Enterprise offer')
+      const results = plur.recall('Acme Enterprise offer')
       expect(results).toHaveLength(0)
     })
 

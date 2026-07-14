@@ -38,7 +38,7 @@ describe('extractExpiry', () => {
   })
 
   it('parses bare "valid <date>" (offer shorthand)', () => {
-    const hit = extractExpiry('IGEA Enterprise offer, valid 31 May 2026')
+    const hit = extractExpiry('Acme Enterprise offer, valid 31 May 2026')
     expect(hit).not.toBeNull()
     expect(hit!.valid_until).toBe('2026-05-31')
   })
