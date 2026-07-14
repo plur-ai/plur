@@ -14,6 +14,33 @@ This repo publishes four npm packages from `packages/`:
 Publishing credentials (npm auth as `plur9`, the pending `NPM_TOKEN` repo secret, ClawHub OAuth)
 are documented in [`docs/runbooks/credentials.md`](docs/runbooks/credentials.md).
 
+## Manifest gate — the CHANGELOG must declare what ships (issue #544)
+
+`scripts/release.sh` runs a **manifest gate** (Step 3.6) before any irreversible
+step. It **aborts the release** if a *user-facing* PR merged since the last tag
+is **not declared** in this version's CHANGELOG section as `(#N)`. This exists
+because the 0.12.0/0.13.0 incident shipped 11 unreviewed PRs that no one had
+declared; the gate would have caught it.
+
+**What you must do before releasing:** ensure every user-facing PR that will ship
+appears in the `## <version>` section of `CHANGELOG.md` with its `(#N)` ref. If
+the gate aborts, it lists the missing PRs and your options.
+
+**What the gate skips:** PRs whose squash-commit subject uses a **non-user-facing
+conventional-commit type** — `chore`, `ci`, `docs`, `test`, `build`, `refactor`,
+`style`. These are curated out of the CHANGELOG by convention and are **not**
+required to be declared. Only `feat` / `fix` / `perf` (and any other type) must
+appear. So a `ci(hermes): …` or `chore(deps): …` PR ships silently; a
+`feat(core): …` or `fix(mcp): …` PR must be in the CHANGELOG or the release stops.
+
+**If the gate flags a PR that is genuinely not user-facing**, retitle its squash
+commit with the appropriate `chore`/`ci`/`docs`/etc. type so it is curated out —
+don't add noise to the CHANGELOG just to satisfy the gate.
+
+The gate is offline and deterministic (no GitHub API calls): it reads shipped PRs
+from `git log <last-tag>..HEAD` subjects and declared PRs from the CHANGELOG
+section, and compares the sets.
+
 ## Manual publish (one package)
 
 When `main` has a version bump that hasn't reached npm yet — e.g. `@plur-ai/claw@0.9.10` is on
