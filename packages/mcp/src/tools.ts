@@ -216,6 +216,59 @@ mcpCanary.expect({
   fix: 'Call plur_learn when corrected. If using hooks, verify they are installed.',
 })
 
+/**
+ * Session injection telemetry — tracks pack-level engram injection counts per
+ * session. Keyed by session_id → map of pack_name → engram count.
+ *
+ * Data source for the 25-80 sessions/month activation-rate assumption. Surface
+ * at plur_session_end so Michelle can validate with real data.
+ *
+ * The Map is process-scoped (one MCP server = one long-running process serving
+ * sequential sessions). Entries are cleaned up when session_end runs, so memory
+ * does not accumulate across sessions. A TTL guard caps memory if session_end
+ * is never called (hook crash, forced kill, etc.).
+ *
+ * Structure: session_id → { pack_name → injection_count, __total_injections → N }
+ * The __total_injections key counts how many inject calls happened (not engrams).
+ */
+interface SessionTelemetry {
+  pack_counts: Record<string, number>
+  /** Number of distinct inject calls (plur_session_start + plur_inject/hybrid). */
+  injection_calls: number
+  /** ISO timestamp of session_start — used for TTL cleanup. */
+  started_at: string
+}
+const _sessionTelemetry = new Map<string, SessionTelemetry>()
+
+/** TTL for unclosed sessions: 8 hours. Prevents unbounded memory if session_end is never called. */
+const SESSION_TTL_MS = 8 * 60 * 60 * 1000
+
+function _cleanExpiredSessions(): void {
+  const cutoff = Date.now() - SESSION_TTL_MS
+  for (const [id, state] of _sessionTelemetry) {
+    if (new Date(state.started_at).getTime() < cutoff) _sessionTelemetry.delete(id)
+  }
+}
+
+/**
+ * The session_id of the currently active session. Set by session_start, cleared
+ * by session_end. MCP sessions are sequential within a process, so a single
+ * module-level variable is safe. Used by plur_inject / plur_inject_hybrid to
+ * record telemetry without requiring callers to pass a session_id.
+ */
+let _activeSessionId: string | undefined
+
+/** Record pack counts from an InjectionResult into the active session's telemetry. */
+function _recordInjectionTelemetry(session_id: string | undefined, injected_packs: Record<string, number> | undefined): void {
+  if (!session_id || !injected_packs) return
+  const state = _sessionTelemetry.get(session_id)
+  if (!state) return
+  state.injection_calls++
+  for (const [pack, count] of Object.entries(injected_packs)) {
+    state.pack_counts[pack] = (state.pack_counts[pack] ?? 0) + count
+  }
+}
+
 export type ToolProfile = 'full' | 'cursor'
 
 // The day-to-day tools a Cursor user needs, plus every tool marked
@@ -714,6 +767,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
           budget: args.budget as number | undefined,
           scope: args.scope as string | undefined,
         })
+        _recordInjectionTelemetry(_activeSessionId, result.injected_packs)
         return {
           directives: result.directives,
           consider: result.consider,
@@ -744,6 +798,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
           budget: args.budget as number | undefined,
           scope: args.scope as string | undefined,
         })
+        _recordInjectionTelemetry(_activeSessionId, result.injected_packs)
         return {
           directives: result.directives,
           consider: result.consider,
@@ -1658,6 +1713,17 @@ function getAllToolDefinitions(): ToolDefinition[] {
         const task = args.task as string
         const tags = args.tags as string[] | undefined
 
+        // Initialize session telemetry — tracks per-pack injection counts for
+        // activation-rate validation (target: 25-80 sessions/month per user).
+        // TTL cleanup runs here to evict any unclosed sessions from prior starts.
+        _cleanExpiredSessions()
+        _activeSessionId = session_id
+        _sessionTelemetry.set(session_id, {
+          pack_counts: {},
+          injection_calls: 0,
+          started_at: new Date().toISOString(),
+        })
+
         // Auto-discovery happens in Plur constructor — no manual call needed.
 
         // Flush outbox — retry pending remote writes (issue #26)
@@ -1725,6 +1791,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
             scope: tags?.length ? `tags:${tags.join(',')}` : undefined,
             session_id, // stamped on the co_injection provenance event (#452)
           })
+          _recordInjectionTelemetry(session_id, result.injected_packs)
           if (result.count > 0) {
             const lines: string[] = []
             if (result.directives) lines.push('## DIRECTIVES\n', result.directives)
@@ -1738,6 +1805,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
             scope: tags?.length ? `tags:${tags.join(',')}` : undefined,
             session_id,
           })
+          _recordInjectionTelemetry(session_id, result.injected_packs)
           if (result.count > 0) {
             const lines: string[] = []
             if (result.directives) lines.push('## DIRECTIVES\n', result.directives)
@@ -1968,6 +2036,22 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
           channel: 'mcp',
         })
 
+        // Collect injection telemetry before cleanup
+        const telemetry = session_id ? _sessionTelemetry.get(session_id) : undefined
+        const injection_summary = telemetry && telemetry.injection_calls > 0
+          ? {
+              pack_counts: { ...telemetry.pack_counts },
+              total_injections: telemetry.injection_calls,
+              session_duration_ms: Date.now() - new Date(telemetry.started_at).getTime(),
+            }
+          : undefined
+
+        // Clean up session telemetry
+        if (session_id) {
+          _sessionTelemetry.delete(session_id)
+          if (_activeSessionId === session_id) _activeSessionId = undefined
+        }
+
         // Clean up session checkpoint (#215) — session ended cleanly
         try {
           const plurDir = process.env.PLUR_PATH ?? join(homedir(), '.plur')
@@ -1988,6 +2072,7 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
           engrams_created,
           episode_id: episode.id,
           total_engrams: status.engram_count,
+          ...(injection_summary ? { injection_summary } : {}),
           hint: engrams_created === 0
             ? 'No engrams captured this session. If any corrections, preferences, or patterns came up, consider calling plur_learn before ending.'
             : undefined,

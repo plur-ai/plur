@@ -116,6 +116,122 @@ describe('Session & store tools', () => {
     })).rejects.toThrow(/must be a string or \{statement/)
   })
 
+  // ── Session injection telemetry ──────────────────────────────────────────────
+  //
+  // session_start records engram injections per-pack into an in-process Map so
+  // session_end can surface them as injection_summary. Validates the 25-80
+  // sessions/month activation-rate assumption in hypotheses.yaml (H003).
+
+  describe('session injection telemetry', () => {
+    it('session_end returns injection_summary when engrams were injected', async () => {
+      // Seed an engram so session_start injects something
+      plur.learn('Always use semicolons in TypeScript', { scope: 'global' })
+
+      const startResult = await callTool('plur_session_start', { task: 'write TypeScript code' }) as any
+      const session_id = startResult.session_id
+      expect(session_id).toBeDefined()
+
+      const endResult = await callTool('plur_session_end', {
+        summary: 'Wrote TypeScript',
+        session_id,
+        engram_suggestions: [],
+      }) as any
+
+      expect(endResult.injection_summary).toBeDefined()
+      expect(endResult.injection_summary.total_injections).toBeGreaterThan(0)
+      expect(endResult.injection_summary.pack_counts).toBeDefined()
+      // Personal engrams (no pack) show up as __personal__
+      expect(endResult.injection_summary.pack_counts.__personal__).toBeGreaterThan(0)
+      // session_duration_ms must be a non-negative number
+      expect(typeof endResult.injection_summary.session_duration_ms).toBe('number')
+      expect(endResult.injection_summary.session_duration_ms).toBeGreaterThanOrEqual(0)
+    })
+
+    it('injection_summary.session_duration_ms reflects elapsed wall-clock time', async () => {
+      plur.learn('Timing test engram', { scope: 'global' })
+
+      const before = Date.now()
+      const startResult = await callTool('plur_session_start', { task: 'timing test' }) as any
+      const session_id = startResult.session_id
+
+      const endResult = await callTool('plur_session_end', {
+        summary: 'Timing session done',
+        session_id,
+        engram_suggestions: [],
+      }) as any
+      const after = Date.now()
+
+      expect(endResult.injection_summary).toBeDefined()
+      const { session_duration_ms } = endResult.injection_summary
+      // Duration must be a non-negative number bounded by actual wall time
+      expect(session_duration_ms).toBeGreaterThanOrEqual(0)
+      expect(session_duration_ms).toBeLessThanOrEqual(after - before)
+    })
+
+    it('session_end returns no injection_summary when no engrams exist', async () => {
+      // No engrams → session_start injects nothing
+      const startResult = await callTool('plur_session_start', { task: 'fresh store task' }) as any
+      const session_id = startResult.session_id
+
+      const endResult = await callTool('plur_session_end', {
+        summary: 'Nothing injected',
+        session_id,
+        engram_suggestions: [],
+      }) as any
+
+      expect(endResult.injection_summary).toBeUndefined()
+    })
+
+    it('standalone plur_inject calls accumulate into the session telemetry', async () => {
+      plur.learn('Use pnpm for package management', { scope: 'global' })
+
+      const startResult = await callTool('plur_session_start', { task: 'tooling check' }) as any
+      const session_id = startResult.session_id
+
+      // Make an additional standalone inject call
+      await callTool('plur_inject', { task: 'pnpm install' })
+
+      const endResult = await callTool('plur_session_end', {
+        summary: 'Ran pnpm',
+        session_id,
+        engram_suggestions: [],
+      }) as any
+
+      // At least 2 injection calls: one from session_start, one from plur_inject
+      expect(endResult.injection_summary).toBeDefined()
+      expect(endResult.injection_summary.total_injections).toBeGreaterThanOrEqual(2)
+    })
+
+    it('session telemetry is cleared after session_end — no cross-session bleed', async () => {
+      plur.learn('Test engram', { scope: 'global' })
+
+      const startA = await callTool('plur_session_start', { task: 'task A' }) as any
+      const session_id_A = startA.session_id
+
+      const endA = await callTool('plur_session_end', {
+        summary: 'Session A done',
+        session_id: session_id_A,
+        engram_suggestions: [],
+      }) as any
+      const injectionsA = endA.injection_summary?.total_injections ?? 0
+
+      // Session B starts fresh — its total_injections should equal A's (same engram,
+      // same one inject call from session_start), NOT 2× A's.
+      const startB = await callTool('plur_session_start', { task: 'task B' }) as any
+      const session_id_B = startB.session_id
+      expect(session_id_B).not.toBe(session_id_A)
+
+      const endB = await callTool('plur_session_end', {
+        summary: 'Session B done',
+        session_id: session_id_B,
+        engram_suggestions: [],
+      }) as any
+      const injectionsB = endB.injection_summary?.total_injections ?? 0
+
+      expect(injectionsB).toBe(injectionsA)
+    })
+  })
+
   it('plur_stores_add registers a store in config', async () => {
     const storePath = join(dir, 'extra-store', 'engrams.yaml')
     const storeDir = join(dir, 'extra-store')

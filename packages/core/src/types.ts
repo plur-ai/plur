@@ -160,6 +160,12 @@ export interface InjectionResult {
   tokens_used: number
   injected_ids: string[]
   /**
+   * Per-pack engram counts for this injection. Key is pack name or '__personal__'
+   * for engrams from the user's personal store. Used for session activation-rate
+   * telemetry at plur_session_end. Only present when at least one engram was injected.
+   */
+  injected_packs?: Record<string, number>
+  /**
    * Persisted-tension warnings (#181): present when an injected engram
    * participates in an unresolved tension (confirmed → either side injected;
    * detected → both sides injected together). Surface, don't adjudicate.
