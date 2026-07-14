@@ -70,6 +70,14 @@ export interface LearnAsyncResult {
   decision: DedupDecision
   existing_id?: string
   tensions?: string[]
+  /**
+   * Position of this result's statement in the original learnBatch input array
+   * (#281). `results` is compacted (failed statements are absent), so callers
+   * must NOT assume `results[i]` corresponds to `inputs[i]` — read `input_index`
+   * to map a result back to its input. Undefined for a single (non-batch)
+   * learnAsync call, where there is no input array to index into.
+   */
+  input_index?: number
 }
 
 /**

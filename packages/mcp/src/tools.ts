@@ -526,9 +526,10 @@ function getAllToolDefinitions(): ToolDefinition[] {
         'Create many engrams in one call — the batch form of plur_learn. Accepts an array of engram objects and ' +
         'writes them sequentially through the SAME dedup + policy pipeline as plur_learn (content-hash NOOP → semantic ' +
         'recall → LLM ADD/UPDATE/MERGE decision). Dedup also applies WITHIN the batch: a statement duplicating an ' +
-        'earlier item in the same array resolves to NOOP against it. Returns the created/affected engram ids in input ' +
-        'order, the per-item decisions, aggregate stats, and any per-item failures — a single bad item does not abort ' +
-        'the batch. Use this when an orchestration fans out and wants to persist consolidated findings without N ' +
+        'earlier item in the same array resolves to NOOP against it. Returns `ids` aligned 1:1 with the input array ' +
+        '(ids[i] is the engram id for input i, or null if input i failed), the per-item decisions (each carrying its ' +
+        'input_index), aggregate stats, and any per-item failures (each with its input index) — a single bad item ' +
+        'does not abort the batch. Use this when an orchestration fans out and wants to persist consolidated findings without N ' +
         'separate calls. LLM dedup calls are capped (default 50, override with max_llm_calls) to bound bulk-import cost. ' +
         'Note: unlike plur_learn, batch items take the LOCAL learn path — remote-scope auto-routing (learnRouted) is ' +
         'not applied per item, so for shared/remote-store writes prefer plur_learn or pass an explicit local scope. ' +
@@ -592,9 +593,19 @@ function getAllToolDefinitions(): ToolDefinition[] {
         mcpCanary.signal('learn_activity')
         // Opt-in, content-free engagement counter (default-off; no statement text).
         recordTelemetry('learn')
+        // `ids` is aligned 1:1 with the INPUT array: ids[i] is the engram id for
+        // input i, or null if input i failed (see failures[]). Previously this
+        // was `results.map(r => r.engram.id)` — a COMPACTED array, so after a
+        // mid-batch failure every subsequent id shifted left and mis-attributed
+        // to the wrong input (#281). Build from input_index instead.
+        const ids: (string | null)[] = raw.map(() => null)
+        for (const r of results) {
+          if (r.input_index !== undefined) ids[r.input_index] = r.engram.id
+        }
         return {
-          ids: results.map((r) => r.engram.id),
+          ids,
           results: results.map((r) => ({
+            input_index: r.input_index,
             id: r.engram.id,
             statement: r.engram.statement,
             scope: r.engram.scope,
