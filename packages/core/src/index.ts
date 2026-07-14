@@ -2584,6 +2584,15 @@ export class Plur {
       } else if (signal === 'negative') {
         engram.activation.retrieval_strength = Math.max(0.0, engram.activation.retrieval_strength - 0.1)
       }
+      // Re-anchor last_accessed when feedback adjusts stored strength. Read-time
+      // decay (inject.ts decayedStrength) is computed against last_accessed, so
+      // bumping strength without advancing the anchor lets elapsed-time decay
+      // immediately swallow the adjustment — a >4x distortion on stale engrams,
+      // exactly the ones where a fade-vs-keep signal matters most. Mirrors the
+      // strength+anchor pairing in _reactivateResults.
+      if (signal !== 'neutral') {
+        engram.activation.last_accessed = new Date().toISOString().slice(0, 10)
+      }
 
       this._writeEngrams(this.paths.engrams, engrams)
       this._syncIndex()
@@ -2619,6 +2628,11 @@ export class Plur {
           engram.activation.retrieval_strength = Math.min(1.0, engram.activation.retrieval_strength + 0.05)
         } else if (signal === 'negative') {
           engram.activation.retrieval_strength = Math.max(0.0, engram.activation.retrieval_strength - 0.1)
+        }
+        // Re-anchor last_accessed so read-time decay doesn't swallow the bump
+        // (see the primary-path note above).
+        if (signal !== 'neutral') {
+          engram.activation.last_accessed = new Date().toISOString().slice(0, 10)
         }
         this._writeEngrams(storeInfo.path, storeEngrams)
         this._syncIndex()
@@ -3223,6 +3237,11 @@ export class Plur {
         engram.activation.retrieval_strength = Math.min(1.0, engram.activation.retrieval_strength + 0.05)
       } else if (signal === 'negative') {
         engram.activation.retrieval_strength = Math.max(0.0, engram.activation.retrieval_strength - 0.1)
+      }
+      // Re-anchor last_accessed so read-time decay doesn't swallow the bump
+      // (see the primary-path note in feedback()).
+      if (signal !== 'neutral') {
+        engram.activation.last_accessed = new Date().toISOString().slice(0, 10)
       }
 
       saveEngrams(engramsPath, engrams)

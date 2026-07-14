@@ -39,6 +39,28 @@ describe('Plur', () => {
     expect(recalled[0].feedback_signals?.positive).toBe(2)
   })
 
+  it('feedback re-anchors last_accessed so read-time decay does not swallow the bump', async () => {
+    const engram = plur.learn('Prefer structured logging over print debugging', { scope: 'global' })
+    const engramsPath = join(dir, 'engrams.yaml')
+
+    // Simulate a long-dormant engram: rewrite its stored last_accessed to a stale
+    // date. Read-time decay (inject's decayedStrength) is computed from
+    // last_accessed, so without a re-anchor on feedback the +0.05 bump is
+    // immediately decayed away — a >4x distortion on exactly the stale engrams a
+    // fade-vs-keep signal matters for.
+    const before = yaml.load(readFileSync(engramsPath, 'utf8')) as any
+    before.engrams.find((e: any) => e.id === engram.id).activation.last_accessed = '2020-01-01'
+    writeFileSync(engramsPath, yaml.dump(before))
+
+    await plur.feedback(engram.id, 'positive')
+
+    const after = yaml.load(readFileSync(engramsPath, 'utf8')) as any
+    const updated = after.engrams.find((e: any) => e.id === engram.id)
+    const today = new Date().toISOString().slice(0, 10)
+    expect(updated.activation.last_accessed).toBe(today)
+    expect(updated.activation.retrieval_strength).toBeCloseTo(0.75) // 0.7 + 0.05, not decayed away
+  })
+
   it('forget retires engrams', async () => {
     const engram = plur.learn('Wrong info about something specific', { scope: 'global' })
     await plur.forget(engram.id, 'incorrect')
