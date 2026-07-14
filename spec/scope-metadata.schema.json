@@ -11,15 +11,20 @@
     },
     "description": {
       "type": "string",
-      "description": "Human-readable explanation of what this scope is for. Surfaced in scope/store discovery."
+      "maxLength": 500,
+      "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$",
+      "description": "Human-readable explanation of what this scope is for. Surfaced VERBATIM in scope/store discovery — bounded in length and free of control chars/newlines so a hostile remote cannot inject instructions (#345)."
     },
     "covers": {
       "type": "array",
       "items": {
-        "type": "string"
+        "type": "string",
+        "maxLength": 120,
+        "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
       },
+      "maxItems": 32,
       "default": [],
-      "description": "Topics, domains, or areas this scope is the home for. Advisory; helps an agent pick the right scope and is surfaced in discovery."
+      "description": "Topics, domains, or areas this scope is the home for. Advisory; helps an agent pick the right scope and is surfaced in discovery. Each entry is length-bounded and control-char-free, and the list is capped, for the same directive-surface reason as `description` (#345)."
     },
     "sensitivity": {
       "type": "object",
