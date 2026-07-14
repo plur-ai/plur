@@ -1,6 +1,7 @@
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs'
+import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join, dirname } from 'node:path'
+import { randomUUID } from 'node:crypto'
 import { resolveTelemetry } from './telemetry.js'
 
 type OpenclawConfig = {
@@ -69,41 +70,39 @@ function mergeEnable(cfg: OpenclawConfig, openclawHome?: string): MergeResult {
   const plugins = (cfg.plugins && typeof cfg.plugins === 'object' && !Array.isArray(cfg.plugins)
     ? cfg.plugins
     : {}) as NonNullable<OpenclawConfig['plugins']>
-  let entries =
+  const entries =
     plugins.entries && typeof plugins.entries === 'object' && !Array.isArray(plugins.entries)
       ? { ...plugins.entries }
       : {}
 
-  // Item 1: Prune stale entries whose extension directory no longer exists.
-  // OpenClaw warns about manifest mismatches for entries that have no backing
-  // extension on disk. Remove them so the config stays in sync with reality.
-  // Only prune when the extensions directory itself exists — if it's absent the
-  // user hasn't installed any plugins yet and we should not strip the config.
-  const home = openclawHome ?? resolveOpenclawHome()
-  const extensionsDir = join(home, 'extensions')
-  if (existsSync(extensionsDir)) {
-    for (const id of Object.keys(entries)) {
-      if (id === PLUGIN_ID) continue
-      const extPath = join(extensionsDir, id)
-      if (!existsSync(extPath)) {
-        const { [id]: _removed, ...rest } = entries
-        entries = rest
-      }
-    }
-  }
+  // Item 1 (#51 / D-2): We intentionally do NOT prune foreign plugin entries.
+  // A previous version deleted any entry whose extensions/<id> directory was
+  // absent — but that directory is transiently absent during any install or
+  // upgrade, so pruning silently destroyed third-party plugins' config INCLUDING
+  // their API keys. The config is the user's source of truth, not a mirror of the
+  // extensions dir. setup only ever adds/updates its own (plur-claw) entry; it
+  // never removes anyone else's.
 
   const existing = entries[PLUGIN_ID]
   const enableAlready = !!(existing && existing.enabled === true)
+  // Item 4 (#51 / D-4): allowConversationAccess is required for the agent_end
+  // hook — without it OpenClaw silently blocks the learning hook and PLUR can
+  // inject but never learn. But only SEED it when the user hasn't expressed a
+  // value. Spreading `allowConversationAccess: true` after the user's hooks would
+  // override an explicit `false`, re-granting a privacy permission the user
+  // revoked. Preserve an explicit true OR false; add true only when absent.
+  const existingHooks = ((existing as any)?.hooks ?? {}) as Record<string, unknown>
+  const hooksChanged = existingHooks.allowConversationAccess === undefined
+  const nextHooks = hooksChanged
+    ? { ...existingHooks, allowConversationAccess: true }
+    : { ...existingHooks }
   const nextEntry = {
     ...(existing ?? {}),
     enabled: true,
     config: (existing as any)?.config ?? { auto_learn: true, auto_capture: true, injection_budget: 2000 },
-    // Required for agent_end hook — without this, OpenClaw silently blocks
-    // the learning hook and PLUR can inject but never learn from conversations.
-    hooks: { ...((existing as any)?.hooks ?? {}), allowConversationAccess: true },
+    hooks: nextHooks,
   }
   const enableChanged = !existing || existing.enabled !== true
-  const hooksChanged = !existing?.hooks?.allowConversationAccess
   entries[PLUGIN_ID] = nextEntry
   plugins.entries = entries
 
@@ -117,24 +116,19 @@ function mergeEnable(cfg: OpenclawConfig, openclawHome?: string): MergeResult {
   }
   ;(plugins as any).slots = slots
 
-  // Item 2 (Option A): When plugins.allow is undefined (fresh install with no
-  // allowlist configured), initialize it with [PLUGIN_ID]. This is safe because
-  // an absent allowlist means OpenClaw allows all plugins — initializing it with
-  // only plur-claw would gate others, but the user hasn't set up any allowlist
-  // yet so this is the right moment to seed it.
+  // Item 2 (#51 / D-3): In OpenClaw an ABSENT plugins.allow means "allow ALL
+  // plugins". Seeding it with a one-element ['plur-claw'] list would silently
+  // GATE OFF every other plugin the user has installed. So when allow is absent
+  // (or null), leave it absent — do not create it.
   //
   // When plugins.allow is an empty array [], the user explicitly cleared it —
-  // honour that and surface a doctor warning instead (Option B).
+  // honour that untouched (doctor surfaces a warning separately).
   //
-  // When plugins.allow is a non-empty array, append if missing (existing behavior).
+  // When plugins.allow is a non-empty array, the user is explicitly gating; append
+  // plur-claw if missing so it isn't excluded.
   const allowCurrent = (plugins as any).allow
   let allowChanged = false
-  if (allowCurrent === undefined || allowCurrent === null) {
-    // Fresh install: seed the allowlist with plur-claw so OpenClaw recognises
-    // it as an active plugin and does not report "no active memory plugin".
-    ;(plugins as any).allow = [PLUGIN_ID]
-    allowChanged = true
-  } else if (Array.isArray(allowCurrent) && allowCurrent.length > 0 && !allowCurrent.includes(PLUGIN_ID)) {
+  if (Array.isArray(allowCurrent) && allowCurrent.length > 0 && !allowCurrent.includes(PLUGIN_ID)) {
     ;(plugins as any).allow = [...allowCurrent, PLUGIN_ID]
     allowChanged = true
   }
@@ -166,7 +160,12 @@ function mergeEnable(cfg: OpenclawConfig, openclawHome?: string): MergeResult {
 function writeConfig(path: string, cfg: OpenclawConfig): { ok: true } | { ok: false; reason: string } {
   try {
     mkdirSync(dirname(path), { recursive: true })
-    writeFileSync(path, JSON.stringify(cfg, null, 2) + '\n', 'utf8')
+    // Atomic write: serialize to a unique temp file then rename over the target.
+    // A crash mid-write can never leave the user's openclaw.json truncated or
+    // corrupt (mirrors atomicWriteJson in telemetry-counters.ts).
+    const tmp = `${path}.tmp.${process.pid}.${randomUUID()}`
+    writeFileSync(tmp, JSON.stringify(cfg, null, 2) + '\n', 'utf8')
+    renameSync(tmp, path)
     return { ok: true }
   } catch (err) {
     return { ok: false, reason: (err as Error).message }
@@ -445,13 +444,15 @@ export function runRepair(opts: { configPath?: string; openclawHome?: string } =
   const slotFailed = pre.steps.find((s) => s.step === 'slot_selected')!.status === 'fail'
 
   // Also check if hooks.allowConversationAccess is missing — without it the
-  // learning hook is silently blocked by OpenClaw (issue #51).
+  // learning hook is silently blocked by OpenClaw (issue #51). Only "missing"
+  // means undefined: an explicit `false` is the user's choice and repair must
+  // preserve it (#51 / D-4), never re-grant it.
   let hooksMissing = false
   if (existsSync(path)) {
     const peek = readConfig(path)
     if (peek.ok) {
       const entry = peek.data.plugins?.entries?.[PLUGIN_ID]
-      hooksMissing = !entry?.hooks?.allowConversationAccess
+      hooksMissing = entry?.hooks?.allowConversationAccess === undefined
     }
   }
 
@@ -485,15 +486,22 @@ export function runRepair(opts: { configPath?: string; openclawHome?: string } =
       }
       changed = true
     } else if (existing.enabled !== true) {
-      entries[PLUGIN_ID] = { ...existing, enabled: true, hooks: { ...(existing as any)?.hooks, allowConversationAccess: true } }
+      const existingHooks = ((existing as any)?.hooks ?? {}) as Record<string, unknown>
+      const hooks =
+        existingHooks.allowConversationAccess === undefined
+          ? { ...existingHooks, allowConversationAccess: true }
+          : { ...existingHooks }
+      entries[PLUGIN_ID] = { ...existing, enabled: true, hooks }
       changed = true
     }
     plugins.entries = entries
   }
 
-  // Ensure hooks.allowConversationAccess is set even if plugin was already enabled
+  // Ensure hooks.allowConversationAccess is set even if plugin was already
+  // enabled — but only when it is ABSENT. An explicit `false` is preserved
+  // (#51 / D-4); repair must never re-grant a permission the user revoked.
   const currentEntry = entries[PLUGIN_ID]
-  if (currentEntry && !(currentEntry as any)?.hooks?.allowConversationAccess) {
+  if (currentEntry && (currentEntry as any)?.hooks?.allowConversationAccess === undefined) {
     ;(currentEntry as any).hooks = { ...((currentEntry as any)?.hooks ?? {}), allowConversationAccess: true }
     changed = true
   }
