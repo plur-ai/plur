@@ -487,8 +487,11 @@ for pkg_check in "cli:$VERSION"; do
   pkg_name="${pkg_check%%:*}"
   pkg_ver="${pkg_check##*:}"
   echo -n "  npx -y @plur-ai/$pkg_name@$pkg_ver --version → "
-  smoke_out=$(npx -y "@plur-ai/$pkg_name@$pkg_ver" --version 2>&1)
-  smoke_exit=$?
+  # Guard the command substitution under `set -euo pipefail`: a transient
+  # npm-propagation failure would otherwise abort the whole release here instead
+  # of falling through to the smoke-fail handling below. (bf00781 — hit on both
+  # the 0.12.0 and 0.13.0 release attempts.)
+  smoke_out=$(npx -y "@plur-ai/$pkg_name@$pkg_ver" --version 2>&1) && smoke_exit=0 || smoke_exit=$?
   if [ "$smoke_exit" -eq 0 ] && echo "$smoke_out" | grep -q "$pkg_ver"; then
     echo "✓ ($smoke_out)"
   else
