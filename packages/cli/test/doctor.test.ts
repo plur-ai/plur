@@ -47,6 +47,37 @@ describe('plur doctor', () => {
     expect(report.mcpRegistered).toBe(false)
   })
 
+  it('warns to re-embed only on PGLite + embedding-gemma (#581)', () => {
+    // Explicit non-triggering values in the negative cases so the assertion is
+    // robust against an ambient PLUR_BACKEND/PLUR_EMBEDDER in the test shell.
+    // doctor emits JSON in a non-TTY pipe (execSync), so assert on the report
+    // field, which the printText advisory is gated on 1:1. Explicit
+    // non-triggering values in the negatives keep the assertion robust against
+    // an ambient PLUR_BACKEND/PLUR_EMBEDDER in the test shell.
+    const flag = (over: Record<string, string>): boolean => {
+      let out = ''
+      try {
+        out = execSync(`node ${CLI} doctor --no-handshake --json`, {
+          encoding: 'utf-8', timeout: 15000, cwd: home,
+          // Skip the embedder model probe — this test only checks env-derived
+          // backend/embedder detection, and 4 spawns × a cold model load blows
+          // the vitest timeout.
+          env: { ...process.env, HOME: home, USERPROFILE: home, PLUR_DISABLE_EMBEDDINGS: '1', ...over },
+        })
+      } catch (err: any) { out = err.stdout?.toString() ?? '' } // doctor exits 1 on empty env
+      const report = JSON.parse(out)
+      // Advisory only: it must never flip the overall verdict on its own.
+      expect(report.overall).toBe('fail') // empty env fails regardless of this flag
+      return report.pgliteGemmaReembedNeeded
+    }
+
+    // Both opt-ins set → advisory fires; any other combination stays silent.
+    expect(flag({ PLUR_BACKEND: 'pglite', PLUR_EMBEDDER: 'embedding-gemma' })).toBe(true)
+    expect(flag({ PLUR_BACKEND: 'pglite', PLUR_EMBEDDER: 'bge-small' })).toBe(false)
+    expect(flag({ PLUR_BACKEND: 'sqlite', PLUR_EMBEDDER: 'embedding-gemma' })).toBe(false)
+    expect(flag({ PLUR_BACKEND: 'sqlite', PLUR_EMBEDDER: 'bge-small' })).toBe(false)
+  }, 30000)
+
   it('reports ok when both hooks and plur MCP are present', () => {
     writeGlobalSettings({
       hooks: {
