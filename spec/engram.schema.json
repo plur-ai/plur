@@ -24,7 +24,7 @@
         "retired",
         "candidate"
       ],
-      "description": "Lifecycle state."
+      "description": "Lifecycle state. Assigned values today are active/retired; dormant/candidate are legacy/reserved (see note above)."
     },
     "consolidated": {
       "type": "boolean",

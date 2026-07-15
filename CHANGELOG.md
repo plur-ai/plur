@@ -1,5 +1,49 @@
 # Changelog
 
+## 0.14.0 (2026-07-15)
+
+The clean re-release of the queued batch that 0.12.0 shipped unreviewed and 0.13.0 then pulled back. Every held-back feature was individually re-audited this cycle through a multi-evaluator review (correctness, risk, edge-case, and code-correctness passes), fixed where the audit found a real defect, and locked behind a test that fails if the bug comes back. The riskiest piece — batchDecay — was removed outright rather than patched. npm `latest` moves 0.13.0 → 0.14.0; 0.12.0 remains deprecated.
+
+### Changed
+
+- **batchDecay removed — decay is a read-time property, not a scheduled job** (#563). The weekly/cron decay pass materialized elapsed-time decay back into stored `retrieval_strength`, which both double-counted against the read-time decay already applied at injection and mutated provenance on a timer. Decay is now computed only at read time (`decayedStrength` over `last_accessed`), and reinforcement re-anchors `last_accessed` on access. The `plur batch-decay` CLI command and `plur_batch_decay` MCP tool are **removed** — any cron or client still invoking them will get an "unknown command/tool" error, so delete those schedules. There is no replacement scheduled job, by design. The superseded-engram "decays 2× faster" path lived only inside batchDecay and is gone with it; superseded engrams are still de-prioritized at injection time by the ×0.3 historical-intent penalty, which is unaffected.
+- **`plur_learn_batch` output contract** (#281, #572) — *breaking for direct MCP consumers*: on partial failure, `ids` is now a 1:1 input-aligned array with `null` in each failed slot, instead of a compacted array of only the successes. A client indexing `ids` positionally against its inputs was silently misattributing IDs on any partial failure; it now lines up. Update anything that assumed `ids.length === successCount`.
+
+### Fixed
+
+- **Reranker fit-check judges relevance, not co-membership** (#451, #565): the per-store `plur doctor` reranker gate built its pairs from same-domain co-membership, which a cross-encoder can't meaningfully score. It now synthesizes a probe query per engram and scores (probe, own-doc) as positive vs (probe, cross-domain-doc) as negative, so the gate measures whether a reranker actually helps a given store.
+- **Commitment and confidence render as distinct fields** (#348, #564): `formatLayer3` overloaded a single slot; the injected line now shows `Commitment: <tier> | Confidence: <float>`, so a decided/locked commitment is no longer misread as a confidence value.
+- **Historical-intent match is word-boundary, not substring** (#481, #567): substring matching false-positived ("prior" ⊂ "priority", "old" ⊂ "threshold", "was" ⊂ "wasm"), wrongly suppressing the superseded-engram penalty and injecting stale memory. Now anchored on word boundaries; multi-word keywords like "used to" match across any whitespace gap, including a newline or tab.
+- **SessionEnd no longer destroys checkpoints; session_id path traversal closed** (#217, #568): the SessionEnd hook deleted the learn checkpoint even when the capture had failed, losing the session's learnings. It now deletes only after a confirmed capture and retains an unparseable checkpoint in place. A crafted `session_id` could also escape the sessions dir — now sanitized on both the write and read sides.
+- **claw setup no longer destroys third-party OpenClaw config** (#51, #566): the stale-entry prune fired transiently during every install/upgrade and could delete other plugins' config entries, including their API keys. Removed; claw now seeds only what's absent and writes atomically.
+- **EmbeddingGemma uses its model-card role prefixes, not E5's** (#483, #573): the opt-in `embedding-gemma` embedder applied E5-style `query:`/`passage:` prefixes instead of Gemma's `task: search result | query:` / `title: none | text:`, degrading recall. Fixed, with the embedder cache name bumped so the JSON embedding cache rebuilds automatically. **PGLite-backed stores (`PLUR_BACKEND=pglite`) on `embedding-gemma` must reindex once** with `plur sync --reembed --full`: that path keys on vector dimension, which didn't change, so it can't auto-detect the prefix change.
+- **Scope metadata is length- and control-char-bounded on the remote path** (#345, #571): a hostile or MITM'd `/api/v1/me` could return an oversized or newline/control-char-laden scope `description`/`covers`, surfaced verbatim to the agent. These fields are now bounded (≤500 / ≤120 chars, ≤32 covers) and reject C0/C1 controls, DEL, and the U+2028/U+2029 line separators. This hardens against *structural* injection (faking a new instruction line); it does not, and cannot, filter a plain in-band instruction — treat scope metadata from an untrusted store as untrusted text. The local, user-authored config path is unaffected.
+- **Feedback re-anchors `last_accessed`**: `plur_feedback` adjusted stored `retrieval_strength` without advancing `last_accessed`, so read-time decay immediately swallowed the adjustment — a >4× distortion on dormant engrams, exactly where a fade-vs-keep signal matters most. Feedback now re-anchors `last_accessed`, mirroring the reinforcement path.
+- **Tension pre-filter stemming dropped** (#489, #570): the suffix-stemming step changed the labeled recall suite on zero pairs (29/30 with and without) while generating false positives ("states"/"station"/"stats" → "stat"); removed for precision.
+- **Python SDK bridge robustness** (#495, #569), with the SDK's npx-fallback CLI pin now auto-bumped and verified at release so it can't ship pointing at a pre-fix CLI (#577).
+- **Process-group orphan kill ported to the hermes bridge** (#575): the `plur-hermes` bridge now kills the whole process group on timeout (`start_new_session` + `killpg`), so a timed-out `npx @plur-ai/cli` can't orphan a runaway `node` grandchild.
+- **Hooks fail open on an unwritable state dir** (#574): the session-guard, learn-check, and inject-lock hooks now proceed instead of crashing the prompt or tool call when their state directory isn't writable.
+- **Assorted hook/remote robustness**: per-session concurrency lock for hook-inject (#519), AbortController coverage extended to the `RemoteStore.load()` body read (#531), and `isPlurConfigured` checks the home directory only when the working directory is under home (#521, #247).
+- **`plur doctor` flags stale PGLite + embedding-gemma vectors** (#581): the companion diagnostic to the #483 caveat above — when the PGLite backend runs the opt-in `embedding-gemma` (whose vectors that backend does not auto-rebuild), doctor advises a one-time `plur sync --reembed --full`. Advisory only; it never fails the overall check.
+- **claw warns non-destructively on orphaned OpenClaw config entries** (#583): #51 removed the destructive prune that deleted third-party plugin config — including embedded API keys — whenever a plugin dir was transiently absent during install. `plur doctor` now *warns* about genuinely-orphaned entries (PLUR's own and third-party) without ever deleting, restoring detection without the data-loss.
+
+### Changed (cleanup)
+
+- **Removed dead `strengthToStatus`** (#582): unused since batchDecay's removal, and its label vocabulary never matched the persisted `status` enum. The `dormant`/`candidate` enum values are retained (legacy/reserved) for backward-compatibility with stores written before #563 — removing them would reject existing data.
+
+### Added
+
+- **`plur compact` + `plur_compact`** (#580): explicitly reclaim disk space from retired engrams, exposed as both a CLI command and an MCP tool. With batchDecay gone (#563), this is the deliberate, logged maintenance op for shrinking the store — retired rows previously had no user-facing removal path.
+- **Session injection telemetry** (#536): per-pack activation tracking logged at `session_end` for offline relevance analysis.
+- **`plur_status` domain + `created_after` filters** (#522, #524).
+- **packs install/list/uninstall CLI subcommands** (#513), and the claw `before_prompt_build` migration with sharpened ClawHub positioning (#516).
+
+### Release tooling
+
+- The manifest gate (`release.sh`) now recognizes multi-issue commit trailers like `(#521, #247)` — the old extraction silently dropped every number in a comma trailer — and curates out this repo's internal `ops`/`cmo` commit types alongside the standard non-user-facing set. The canary smoke-test command substitution is also guarded under `set -e` (#578).
+- **Publish verification hardened** (#584): the `@next` smoke test now covers `core` (install + ESM import, catching the import-time crash class that bricked `cli@0.9.2`) and `mcp`, not just `cli` — the audited fixes live in `core`. PyPI publish now verifies the version is retrievable after upload and prints an explicit recovery path on failure (PyPI is immutable). The session-guard's unwritable-state-dir fail-open now leaves a stderr audit trail instead of a silent bypass.
+- The pre-release hardening pass for this release — the U+2028/U+2029 scope-metadata gap, multi-word historical-keyword matching, the `feedback()` `last_accessed` re-anchor, and the manifest-gate fix above — landed in (#579). The audit follow-ups (#580–#584) landed in (#585).
+
 ## 0.12.0 (2026-07-09)
 
 Cursor IDE support (experimental/beta), plus a batch of queued core improvements: batch learning, supersedes chains, commitment tiers, reranker fit checks, session-end auto-close.
@@ -17,7 +61,7 @@ PLUR now works inside Cursor — its own hook system (`sessionStart`, `preToolUs
 ### Added
 
 - **`plur_learn_batch`** (#281): persist many engrams in one MCP call — same dedup + policy pipeline as `plur_learn`, partial-failure isolation, bounded LLM dedup cost.
-- **Supersedes chain consumer behavior** (#481): inject prefers chain tips under budget pressure (unless the query is historical), recall annotates superseded engrams with their replacement, decay accelerates for low-recall superseded engrams.
+- **Supersedes chain consumer behavior** (#481): inject prefers chain tips under budget pressure (unless the query is historical), recall annotates superseded engrams with their replacement, decay accelerates for low-recall superseded engrams. (The "decay accelerates for low-recall superseded engrams" behavior was **removed in 0.14.0** (#563): it lived only inside the batchDecay pass, which was retired. Superseded engrams are still de-prioritized at read time by the ×0.3 injection penalty — that part is intact.)
 - **Commitment tier in injected text** (#348): `formatLayer3` shows the commitment label (`exploring`/`leaning`/`decided`/`locked`) instead of a raw confidence float when set.
 - **Per-store reranker fit check** (#451): `plur doctor` scores whether a cross-encoder reranker is actually helping on a given store's domain, since out-of-domain rerankers can produce inverted scores.
 - **`plur_session_end` wired to Claude Code's SessionEnd hook** (#217): memory lifecycle now auto-closes when a session ends, instead of depending on the agent remembering to call it.

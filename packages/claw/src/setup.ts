@@ -178,10 +178,11 @@ export type SetupStep =
   | 'plugin_enabled'
   | 'slot_selected'
   | 'allow_gated'
+  | 'orphaned_entries'
   | 'reload_required'
   | 'runtime_registered'
   | 'telemetry_optin'
-export type SetupStatus = 'ok' | 'skip' | 'fail' | 'pending'
+export type SetupStatus = 'ok' | 'skip' | 'fail' | 'pending' | 'warn'
 export type SetupReport = {
   path: string
   steps: { step: SetupStep; status: SetupStatus; detail?: string }[]
@@ -211,6 +212,72 @@ function runtimeRegistrationStep(openclawHome?: string): { step: SetupStep; stat
     step: 'runtime_registered',
     status: 'pending',
     detail: 'run `openclaw plugins install @plur-ai/claw` then restart OpenClaw',
+  }
+}
+
+// Non-destructive replacement for the removed #51 / D-2 prune. That prune
+// DELETED any plugins.entries[<id>] whose extensions/<id> directory was absent —
+// destroying third-party config INCLUDING embedded API keys. Its fatal flaw was
+// the false positive: extensions/<id> is transiently absent during any
+// install/upgrade, and the prune ran unattended from postinstall (via
+// mergeEnable), i.e. exactly in that window. #566 removed it entirely, leaving no
+// detection at all — genuinely-orphaned entries (and their credentials) now
+// linger forever (#583).
+//
+// This restores DETECTION without the danger, by inverting all three risk axes:
+//   1. NON-DESTRUCTIVE: it only warns. It never deletes or mutates config.
+//   2. USER-INVOKED, NOT AUTOMATIC: it runs only inside runDoctor (the `doctor`
+//      command a user runs deliberately), never from the postinstall setup path
+//      that fires mid-install. This structurally avoids the prune's timing bug.
+//   3. CONSERVATIVE GATE + HONEST MESSAGE: if the extensions/ dir itself is
+//      absent we cannot distinguish "no plugins installed" from "tree not yet
+//      populated mid-install", so we stay silent (skip). When we do warn, the
+//      message states plainly that it is advisory, may be a false positive during
+//      an in-progress upgrade, and that the user — not claw — must remove anything.
+// It intentionally includes plur-claw's OWN entry (unlike the old prune, which
+// skipped it): a lingering plur-claw entry with no extension is equally orphaned.
+function orphanedEntriesStep(
+  cfg: OpenclawConfig,
+  configPath: string,
+  openclawHome?: string,
+): { step: SetupStep; status: SetupStatus; detail?: string } {
+  const plugins = (cfg.plugins && typeof cfg.plugins === 'object' && !Array.isArray(cfg.plugins)
+    ? cfg.plugins
+    : {}) as NonNullable<OpenclawConfig['plugins']>
+  const entries =
+    plugins.entries && typeof plugins.entries === 'object' && !Array.isArray(plugins.entries)
+      ? plugins.entries
+      : {}
+
+  const home = openclawHome ?? resolveOpenclawHome()
+  const extensionsDir = join(home, 'extensions')
+
+  // Conservative gate: an absent extensions/ dir is ambiguous (fresh install with
+  // no plugins yet, OR a partially-populated tree mid-install). Either way we
+  // cannot reliably tell orphaned from transiently-absent, so say nothing.
+  if (!existsSync(extensionsDir)) {
+    return {
+      step: 'orphaned_entries',
+      status: 'skip',
+      detail: `extensions dir absent (${extensionsDir}) — cannot assess orphaned entries`,
+    }
+  }
+
+  const orphaned = Object.keys(entries).filter((id) => !existsSync(join(extensionsDir, id)))
+  if (orphaned.length === 0) {
+    return { step: 'orphaned_entries', status: 'ok', detail: 'every plugins.entries id has a backing extension' }
+  }
+
+  const noun = orphaned.length === 1 ? 'entry has' : 'entries have'
+  return {
+    step: 'orphaned_entries',
+    status: 'warn',
+    detail:
+      `${orphaned.length} plugins.entries ${noun} no backing extension: ${orphaned.join(', ')}. ` +
+      `ADVISORY ONLY — nothing was changed. This may be a genuinely-orphaned entry (the plugin was ` +
+      `uninstalled but its config, including any embedded API keys, still lingers), OR a false positive if ` +
+      `the extension is transiently absent during an in-progress install/upgrade. claw never deletes foreign ` +
+      `config; if you have confirmed the plugin is uninstalled, remove the entry by hand from ${configPath}.`,
   }
 }
 
@@ -288,7 +355,7 @@ export function runSetup(opts: { configPath?: string; openclawHome?: string } = 
 
 export function formatReport(r: SetupReport): string {
   const symbol = (s: SetupStatus) =>
-    s === 'ok' ? '✓' : s === 'skip' ? '·' : s === 'pending' ? '…' : '✗'
+    s === 'ok' ? '✓' : s === 'skip' ? '·' : s === 'pending' ? '…' : s === 'warn' ? '⚠' : '✗'
   const lines = [`PLUR setup → ${r.path}`]
   for (const s of r.steps) {
     const tag = s.step.replace(/_/g, ' ')
@@ -411,6 +478,9 @@ export function runDoctor(
     // allow is undefined (no gating) or plur-claw is already listed — ok.
     report.steps.push({ step: 'allow_gated', status: 'ok' })
   }
+
+  // #583: non-destructively flag config entries with no backing extension.
+  report.steps.push(orphanedEntriesStep(cfg, path, opts.openclawHome))
 
   tailPending()
   return report

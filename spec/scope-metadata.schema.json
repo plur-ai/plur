@@ -12,7 +12,7 @@
     "description": {
       "type": "string",
       "maxLength": 500,
-      "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$",
+      "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F\\u2028\\u2029]*$",
       "description": "Human-readable explanation of what this scope is for. Surfaced VERBATIM in scope/store discovery — bounded in length and free of control chars/newlines so a hostile remote cannot inject instructions (#345)."
     },
     "covers": {
@@ -20,7 +20,7 @@
       "items": {
         "type": "string",
         "maxLength": 120,
-        "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F\\u2028\\u2029]*$"
       },
       "maxItems": 32,
       "default": [],

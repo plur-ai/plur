@@ -144,4 +144,22 @@ describe('supersedes chain — inject scoring (#481)', () => {
     expect(ids).toContain(older.id)
     expect(ids).not.toContain(tip.id)
   })
+
+  it('"used to" split by a newline is STILL historical — inter-word gap is \\s+, not a literal space (#481)', () => {
+    const { tip, older } = makePair()
+
+    // A pasted / wrapped multi-line prompt can put a newline (or tab, or doubled
+    // space) between the words of a multi-word keyword. Matching the gap as a
+    // literal U+0020 was a false-negative: "used\nto" failed hasHistoricalIntent,
+    // the penalty was NOT suppressed, and the stale `older` was silently dropped.
+    // Post-fix the gap is \s+, so this reads as historical exactly like "used to".
+    const result = selectAndSpread(
+      { prompt: 'the canary deploy strategy we used\nto prefer', maxTokens: 80 },
+      [older, tip], []
+    )
+
+    const ids = idsOf(result)
+    expect(ids).toContain(older.id)
+    expect(ids).not.toContain(tip.id)
+  })
 })

@@ -83,6 +83,16 @@ interface DoctorReport {
    */
   cursorProjectDetected: boolean
   cursorWired: boolean
+  /**
+   * PGLite backend running the opt-in embedding-gemma embedder (#581). #483
+   * corrected embedding-gemma's role prefixes and bumped the JSON embedding
+   * cache name so the SQLite/flat-file path auto-rebuilds — but the PGLite
+   * backend keys its `engram_embeddings` table on vector DIMENSION only (768d,
+   * unchanged by #483), so it silently keeps serving vectors computed under the
+   * old prefix. Advisory only: it recommends a one-time `plur sync --reembed
+   * --full` and never fails the overall check.
+   */
+  pgliteGemmaReembedNeeded: boolean
   overall: 'ok' | 'fail'
 }
 
@@ -569,10 +579,17 @@ function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<Doctor
     const overall: 'ok' | 'fail' =
       hooksInstalled && mcpRegistered && (skipHandshake || handshake.ok) && (!cursorProjectDetected || cursorWired)
         ? 'ok' : 'fail'
+    // #581: PGLite + embedding-gemma both opt-in via env (PLUR_BACKEND=pglite,
+    // PLUR_EMBEDDER=embedding-gemma) — the documented activation for each. When
+    // both are set, #483's prefix fix did not auto-rebuild the PGLite vectors
+    // (dimension-keyed cache), so flag a one-time re-embed.
+    const pgliteGemmaReembedNeeded =
+      process.env.PLUR_BACKEND === 'pglite' && process.env.PLUR_EMBEDDER === 'embedding-gemma'
+
     return {
       configs, hooksInstalled, mcpRegistered, datacoreCollision, staleNpxHooks, staleNpxMcp,
       hookShim, mcpShim, handshake, cursorHandshake, embedder,
-      cursorProjectDetected, cursorWired, overall,
+      cursorProjectDetected, cursorWired, pgliteGemmaReembedNeeded, overall,
     }
   })
 }
@@ -645,6 +662,16 @@ function printText(report: DoctorReport): void {
     outputText('   This is the same bug class as #178 (which fixed hooks). Symptom: Claude Code')
     outputText('   sessions silently lose PLUR memory after a new @plur-ai/mcp publish.')
     outputText('   Fix: run `plur init` to migrate to the local MCP binary (no npx, no race).')
+  }
+
+  if (report.pgliteGemmaReembedNeeded) {
+    outputText('')
+    outputText('⚠  PGLite backend + embedding-gemma: stored vectors may be stale (#483).')
+    outputText('   embedding-gemma\'s role prefixes were corrected in 0.14.0 (#483), but the PGLite')
+    outputText('   backend keys its embedding cache on vector dimension (unchanged at 768d), so it')
+    outputText('   does NOT auto-rebuild — recall keeps serving the old (wrong-prefix) embedding')
+    outputText('   space silently. The SQLite/flat-file backend auto-rebuilds; PGLite cannot.')
+    outputText('   Fix: run `plur sync --reembed --full` once to rebuild the vectors.')
   }
 
   outputText('')
