@@ -132,7 +132,7 @@ Start a new session the next day and ask:
 ```
 You: How do I run the tests?
 
-🧠 injected 4 engrams  ·  scope: project:my-api
+<plur-memory> 1 engram · project:my-api </plur-memory>
 
 Agent: Use pnpm — you mentioned npm breaks the lockfile in CI:
 
