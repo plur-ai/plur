@@ -94,11 +94,3 @@ export function confidenceDecay(
   return Math.max(CONFIDENCE_DECAY_FLOOR, decayed)
 }
 
-/** Map retrieval strength to a human-readable status label. */
-export function strengthToStatus(strength: number): string {
-  if (strength > 0.5) return 'active'
-  if (strength > 0.3) return 'fading'
-  if (strength > 0.1) return 'dormant'
-  return 'retirement_candidate'
-}
-

@@ -1,24 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { decayedStrength, daysSince, shouldInject, reactivate, strengthToStatus } from '../src/decay.js'
-
-// Moved here from the deleted batch-decay.test.ts when batchDecay was removed
-// (2026-07-14). strengthToStatus is part of the read-time decay model and is
-// retained; the batch-decay materialization job that also lived here is gone.
-describe('strengthToStatus', () => {
-  it('maps strength ranges to correct statuses', () => {
-    expect(strengthToStatus(0.8)).toBe('active')
-    expect(strengthToStatus(0.51)).toBe('active')
-    expect(strengthToStatus(0.5)).toBe('fading')
-    expect(strengthToStatus(0.4)).toBe('fading')
-    expect(strengthToStatus(0.31)).toBe('fading')
-    expect(strengthToStatus(0.3)).toBe('dormant')
-    expect(strengthToStatus(0.2)).toBe('dormant')
-    expect(strengthToStatus(0.11)).toBe('dormant')
-    expect(strengthToStatus(0.1)).toBe('retirement_candidate')
-    expect(strengthToStatus(0.05)).toBe('retirement_candidate')
-    expect(strengthToStatus(0.0)).toBe('retirement_candidate')
-  })
-})
+import { decayedStrength, daysSince, shouldInject, reactivate } from '../src/decay.js'
 
 describe('decay as deprioritization', () => {
   it('decays retrieval strength over time', () => {
