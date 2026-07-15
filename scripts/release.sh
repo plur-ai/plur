@@ -33,9 +33,11 @@
 #   3.5 Validate tweet length (abort if > 270 chars)
 #   3.6 Manifest gate: abort if a user-facing PR merged since the last tag is
 #       undeclared in the CHANGELOG (issue #544; see RELEASING.md)
+#   3.7 Pre-flight: every target version must be publishable (not already taken)
+#   3.8 Website version pre-flight: index.html softwareVersion must == $VERSION
 #   4.  Commit + tag + push
 #   5a. Publish npm to @next (canary)
-#   5b. Smoke test (npx by exact version, assert --version reports correctly)
+#   5b. Smoke test (npx by exact version; retries on npm-propagation ETARGET)
 #   5c. Promote @next → @latest
 #   6.  Publish PyPI (hermes)
 #   7.  GitHub release
@@ -453,6 +455,27 @@ if [ "$PREFLIGHT_OK" != true ]; then
 fi
 echo ""
 
+# --- Step 3.8: Website version pre-flight (ENG-2026-0422-052) ---
+# The website CONTENT bump (softwareVersion + @plur-ai/cli install commands) is a
+# manual pre-step; Step 8 only DEPLOYS what's already in the repo. If the site
+# wasn't bumped to $VERSION, catch it HERE — before any irreversible publish —
+# rather than shipping a stale site and only warning post-deploy at Step 8.
+# Skipped when the website dir isn't present, same as Step 8.
+WEBSITE_PREFLIGHT_DIR="${WEBSITE_DIR:-$REPO_ROOT/../website}"
+if [ -f "$WEBSITE_PREFLIGHT_DIR/index.html" ]; then
+  echo "--- Step 3.8: Website version pre-flight ---"
+  SITE_VERSION=$(grep -Eo '"softwareVersion":[[:space:]]*"[0-9.]+"' "$WEBSITE_PREFLIGHT_DIR/index.html" | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || echo "")
+  if [ "$SITE_VERSION" != "$VERSION" ]; then
+    echo "✗ Website not bumped: $WEBSITE_PREFLIGHT_DIR/index.html softwareVersion=${SITE_VERSION:-none}, expected $VERSION"
+    echo "  Update the website to $VERSION (softwareVersion + @plur-ai/cli@$VERSION install"
+    echo "  commands, plus any spec.html feature changes) and commit it before releasing."
+    echo "  Aborts BEFORE publish so a stale site can't ship. See ENG-2026-0422-052."
+    exit 1
+  fi
+  echo "  ✓ website index.html at softwareVersion=$VERSION"
+  echo ""
+fi
+
 # --- 4. Commit + tag + push ---
 echo "--- Step 4: Git ---"
 git add -A
@@ -499,16 +522,32 @@ for pkg_check in "cli:$VERSION" "mcp:$VERSION"; do
   pkg_name="${pkg_check%%:*}"
   pkg_ver="${pkg_check##*:}"
   echo -n "  npx -y @plur-ai/$pkg_name@$pkg_ver --version → "
-  # Guard the command substitution under `set -euo pipefail`: a transient
-  # npm-propagation failure would otherwise abort the whole release here instead
-  # of falling through to the smoke-fail handling below. (bf00781 — hit on both
-  # the 0.12.0 and 0.13.0 release attempts.)
-  smoke_out=$(npx -y "@plur-ai/$pkg_name@$pkg_ver" --version 2>&1) && smoke_exit=0 || smoke_exit=$?
-  if [ "$smoke_exit" -eq 0 ] && echo "$smoke_out" | grep -q "$pkg_ver"; then
+  # Guard the command substitution under `set -euo pipefail` (bf00781), AND retry
+  # on transient npm-propagation lag: a package published to @next seconds ago may
+  # not be visible to npx yet (ETARGET "no matching version"), which is NOT a real
+  # failure. Retrying only that signature — and failing fast on anything else —
+  # stops a propagation race from aborting the whole release (0.14.0 hit exactly
+  # this and needed a manual promote/PyPI/GH/site/tweet recovery).
+  smoke_ok_pkg=false
+  for attempt in 1 2 3 4 5 6; do
+    smoke_out=$(npx -y "@plur-ai/$pkg_name@$pkg_ver" --version 2>&1) && smoke_exit=0 || smoke_exit=$?
+    if [ "$smoke_exit" -eq 0 ] && echo "$smoke_out" | grep -q "$pkg_ver"; then
+      smoke_ok_pkg=true
+      break
+    fi
+    # Retry ONLY the transient propagation signature; any other failure is a real
+    # defect (crash, wrong version) — stop retrying and report it below.
+    if echo "$smoke_out" | grep -qiE 'ETARGET|No matching version|notarget'; then
+      [ "$attempt" -lt 6 ] && { echo -n "(propagating, retry $attempt) "; sleep 8; }
+      continue
+    fi
+    break
+  done
+  if [ "$smoke_ok_pkg" = true ]; then
     echo "✓ ($smoke_out)"
   else
     echo "✗"
-    echo "      Expected exit 0 + version $pkg_ver in output (exit=$smoke_exit): $smoke_out"
+    echo "      Expected exit 0 + version $pkg_ver in output after retries (exit=$smoke_exit): $smoke_out"
     SMOKE_OK=false
   fi
 done
@@ -518,7 +557,17 @@ done
 # Plur class is actually exported at the promoted version, before @latest moves.
 echo -n "  @plur-ai/core@$VERSION install + import → "
 core_exit=0
-npm install --no-save --no-audit --no-fund "@plur-ai/core@$VERSION" > /dev/null 2>&1 || core_exit=$?
+# Same propagation-retry as the --version checks above: the install can ETARGET
+# while @next is still propagating.
+for attempt in 1 2 3 4 5 6; do
+  core_install_out=$(npm install --no-save --no-audit --no-fund "@plur-ai/core@$VERSION" 2>&1) && core_exit=0 || core_exit=$?
+  [ "$core_exit" -eq 0 ] && break
+  if echo "$core_install_out" | grep -qiE 'ETARGET|No matching version|notarget'; then
+    [ "$attempt" -lt 6 ] && { echo -n "(propagating, retry $attempt) "; sleep 8; }
+    continue
+  fi
+  break
+done
 if [ "$core_exit" -eq 0 ]; then
   core_out=$(node --input-type=module -e "import('@plur-ai/core').then(m => process.exit(typeof m.Plur === 'function' ? 0 : 3)).catch(e => { console.error(e && e.message); process.exit(4) })" 2>&1) && core_exit=0 || core_exit=$?
 fi

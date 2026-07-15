@@ -58,8 +58,22 @@ packages**, not just `cli`:
   import-time crash class that bricked `cli@0.9.2` (`Dynamic require of "os" is not supported`,
   #64) — the audited fixes live in `core`, so promoting it unchecked was a real gap (#584).
 
-If any smoke check fails, `@next` is published but `@latest` is untouched; the script prints
-the `npm dist-tag rm … next` revert commands and aborts before promotion.
+Each smoke check **retries on npm-propagation lag** (up to 6 attempts, 8s apart): a package
+published to `@next` seconds earlier may not be visible to `npx` yet, returning `ETARGET`
+("no matching version") — which is not a real failure. Only that signature is retried; any
+other failure (crash, wrong version) fails fast. Without this, a propagation race aborts the
+whole release after `@next` is published — 0.14.0 hit exactly that and needed a manual
+promote → PyPI → GH release → website → tweet recovery.
+
+If a smoke check still fails after retries, `@next` is published but `@latest` is untouched;
+the script prints the `npm dist-tag rm … next` revert commands and aborts before promotion.
+
+**Website version pre-flight (Step 3.8).** Step 8 only *deploys* the website (rsync); it does
+not update content. The content bump (`softwareVersion` + `@plur-ai/cli@<version>` install
+commands in `index.html`, plus any `spec.html` feature changes) is a **manual pre-step**. Step
+3.8 aborts *before any publish* if `../website/index.html`'s `softwareVersion` ≠ `$VERSION`, so
+a forgotten site bump fails fast instead of silently shipping a stale site (ENG-2026-0422-052).
+Skipped when the website dir isn't present.
 
 **PyPI (Step 6) is immutable and has no canary.** A dropped or partial `twine upload` cannot be
 overwritten — only superseded by a new version — and it runs *after* npm `@latest` already moved,
