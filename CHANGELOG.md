@@ -40,6 +40,7 @@ The clean re-release of the queued batch that 0.12.0 shipped unreviewed and 0.13
 
 ### Added
 
+- **`plur login` — enterprise OAuth device flow** (#532): authenticate against an enterprise server (`plur login https://plur.datafund.io`) via the RFC 8628 device-authorization grant, writing the token to `~/.plur/config.json` (mode `0600`) and hot-reloading a running MCP server over SIGUSR1 (reload-marker file on Windows). The command was fully implemented but never registered in the CLI dispatcher (closes #300); it now is. Hardened through a dedicated security review (#551): the browser launcher uses `spawn` with an argument array (no shell) and validates the URL scheme, closing a command-injection vector from a server-controlled `verification_uri`; `http://` is rejected for any non-localhost host so tokens never travel in plaintext.
 - **`plur compact` + `plur_compact`** (#580): explicitly reclaim disk space from retired engrams, exposed as both a CLI command and an MCP tool. With batchDecay gone (#563), this is the deliberate, logged maintenance op for shrinking the store — retired rows previously had no user-facing removal path.
 - **Session injection telemetry** (#536): per-pack activation tracking logged at `session_end` for offline relevance analysis.
 - **`plur_status` domain + `created_after` filters** (#522, #524).
