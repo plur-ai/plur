@@ -25,6 +25,7 @@ Commands:
   inject <task>           Get relevant engrams for a task
   list                    List all engrams
   forget <id>             Retire an engram
+  compact                 Remove retired engrams from storage (reclaim disk space)
   ingest <content>        Extract and save engrams from content
   import                  Import memories from another system (issue #441)
                           --from <generic|gp-engram|mem0> --path <input-file>
@@ -84,6 +85,7 @@ const COMMANDS: Record<string, string> = {
   inject: './commands/inject.js',
   list: './commands/list.js',
   forget: './commands/forget.js',
+  compact: './commands/compact.js',
   feedback: './commands/feedback.js',
   capture: './commands/capture.js',
   timeline: './commands/timeline.js',

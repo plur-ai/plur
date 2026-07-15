@@ -961,6 +961,16 @@ function getAllToolDefinitions(): ToolDefinition[] {
     },
 
     {
+      name: 'plur_compact',
+      description: 'Remove retired engrams from storage, reclaiming disk space. Safe to run at any time — only removes engrams already marked retired (via plur_forget or batch decay). Returns count of removed and remaining engrams.',
+      annotations: { title: 'Compact store', destructiveHint: false, idempotentHint: true },
+      inputSchema: { type: 'object', properties: {} },
+      handler: async (_args, plur) => {
+        return plur.compact()
+      },
+    },
+
+    {
       name: 'plur_capture',
       description: 'Append an episode to the episodic timeline — records what happened in a session',
       annotations: { title: 'Capture episode', destructiveHint: false, idempotentHint: false },
