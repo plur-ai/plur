@@ -304,6 +304,7 @@ export const CURSOR_CORE_TOOL_NAMES: ReadonlySet<string> = new Set([
   'plur_doctor',
   'plur_packs_uninstall',
   'plur_tensions_purge',
+  'plur_compact',
 ])
 
 function buildAdminDispatchTool(all: ToolDefinition[]): ToolDefinition {
@@ -2426,6 +2427,28 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
           purged_conflict_refs: result.purged_count,
           engrams_modified: result.engrams_modified,
           message: `Purged ${result.purged_count} conflict references from ${result.engrams_modified} engrams.`,
+        }
+      },
+    },
+
+    {
+      name: 'plur_compact',
+      description:
+        'Physically remove retired engrams from the local store and reclaim the YAML file space ' +
+        'they occupy. plur_forget only marks an engram status:retired — the row stays on disk, so ' +
+        'without an explicit compaction the store grows unbounded. This is the user-invoked, logged ' +
+        'maintenance op that shrinks it. Only retired engrams are removed; active engrams are never ' +
+        'touched. Irreversible.',
+      annotations: { title: 'Compact store', destructiveHint: true, idempotentHint: true },
+      inputSchema: { type: 'object', properties: {} },
+      handler: async (_args, plur) => {
+        const result = plur.compact()
+        return {
+          removed: result.removed,
+          remaining: result.remaining,
+          message: result.removed === 0
+            ? `No retired engrams to remove — store unchanged (${result.remaining} active).`
+            : `Removed ${result.removed} retired engram${result.removed === 1 ? '' : 's'}; ${result.remaining} remaining.`,
         }
       },
     },
