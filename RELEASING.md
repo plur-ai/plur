@@ -41,6 +41,34 @@ The gate is offline and deterministic (no GitHub API calls): it reads shipped PR
 from `git log <last-tag>..HEAD` subjects and declared PRs from the CHANGELOG
 section, and compares the sets.
 
+The gate parses PR numbers from the trailing `(#N)` on each squash-commit subject,
+including multi-issue trailers like `(#521, #247)`. Non-user-facing conventional
+types are curated out — the standard `chore`/`ci`/`docs`/`test`/`build`/`refactor`/
+`style` plus this repo's internal `ops` (release tooling) and `cmo` (marketing copy).
+
+## Publish verification (npm smoke + PyPI verify)
+
+`scripts/release.sh` publishes npm to the `@next` dist-tag first, smoke-tests, then
+promotes to `@latest` (Step 5). The smoke test (Step 5b) covers **all three promoted
+packages**, not just `cli`:
+
+- `cli` and `mcp` are checked via `npx -y @plur-ai/<pkg>@<version> --version` (both ship a bin).
+- `core` has no bin, so it is checked by installing the exact `@next` version and importing
+  the ESM entry, asserting the `Plur` export loads at the expected version. This catches the
+  import-time crash class that bricked `cli@0.9.2` (`Dynamic require of "os" is not supported`,
+  #64) — the audited fixes live in `core`, so promoting it unchecked was a real gap (#584).
+
+If any smoke check fails, `@next` is published but `@latest` is untouched; the script prints
+the `npm dist-tag rm … next` revert commands and aborts before promotion.
+
+**PyPI (Step 6) is immutable and has no canary.** A dropped or partial `twine upload` cannot be
+overwritten — only superseded by a new version — and it runs *after* npm `@latest` already moved,
+so a silent miss leaves a half-published release. The script now verifies `plur-hermes==<version>`
+is retrievable from PyPI after upload (with retries for propagation lag) and, if it can't confirm,
+prints the recovery path: check the project history (usually just lag), re-run `twine upload`, or —
+if the filename is already registered from a partial upload — bump to the next patch, because the
+version is burned and cannot be reused.
+
 ## Manual publish (one package)
 
 When `main` has a version bump that hasn't reached npm yet — e.g. `@plur-ai/claw@0.9.10` is on

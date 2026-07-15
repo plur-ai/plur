@@ -104,6 +104,39 @@ describe('MCP tools', () => {
       expect(result.ids).toEqual([])
       expect(result.warning).toMatch(/No engrams/)
     })
+
+    it('aligns ids to inputs with null in the failed slot, through the MCP handler (#281)', async () => {
+      // The core learnBatch partial-failure path is covered in core/test/batch.test.ts.
+      // This exercises the MCP GLUE that the core test cannot reach: the handler
+      // rebuilds `ids` 1:1 with the input array from each result's input_index. A
+      // COMPACTED results array (failed item absent) must NOT shift ids left — the
+      // failed slot must be null. Stub learnBatch so the failure is deterministic.
+      const original = plur.learnBatch.bind(plur)
+      ;(plur as any).learnBatch = async () => ({
+        results: [
+          { input_index: 0, engram: { id: 'ENG-2026-0101-001', statement: 'good one', scope: 'global', type: 'behavioral' }, decision: 'ADD' },
+          { input_index: 2, engram: { id: 'ENG-2026-0101-003', statement: 'good two', scope: 'global', type: 'behavioral' }, decision: 'ADD' },
+        ],
+        stats: { added: 2, updated: 0, merged: 0, noops: 0, failed: 1 },
+        failures: [{ index: 1, statement: 'this one fails', error: 'simulated write failure' }],
+      })
+      try {
+        const result = await callTool('plur_learn_batch', {
+          engrams: [
+            { statement: 'good one', scope: 'global' },
+            { statement: 'this one fails', scope: 'global' },
+            { statement: 'good two', scope: 'global' },
+          ],
+        }) as any
+        // 1:1 with input (length 3, not compacted to 2); failed middle slot is null.
+        expect(result.ids).toEqual(['ENG-2026-0101-001', null, 'ENG-2026-0101-003'])
+        expect(result.stats.failed).toBe(1)
+        expect(result.failures).toHaveLength(1)
+        expect(result.failures[0].index).toBe(1)
+      } finally {
+        ;(plur as any).learnBatch = original
+      }
+    })
   })
 
   // #347 — temporal validity params on the write path.

@@ -493,7 +493,10 @@ echo "--- Step 5b: Smoke test from @next ---"
 SMOKE_DIR=$(mktemp -d)
 pushd "$SMOKE_DIR" > /dev/null
 SMOKE_OK=true
-for pkg_check in "cli:$VERSION"; do
+# CLI-shaped packages ship a `--version` bin (cli → `plur`, mcp → `plur-mcp`).
+# Both are promoted to @latest, so both are smoke-tested — #584: previously only
+# cli was checked, yet the audited fixes live in core (pulled in transitively).
+for pkg_check in "cli:$VERSION" "mcp:$VERSION"; do
   pkg_name="${pkg_check%%:*}"
   pkg_ver="${pkg_check##*:}"
   echo -n "  npx -y @plur-ai/$pkg_name@$pkg_ver --version → "
@@ -510,6 +513,24 @@ for pkg_check in "cli:$VERSION"; do
     SMOKE_OK=false
   fi
 done
+# core has no bin — smoke it by installing the exact @next version and importing
+# the ESM entry (#584). This catches the import-time crash class that bricked
+# cli@0.9.2 ("Dynamic require of \"os\" is not supported", #64) and confirms the
+# Plur class is actually exported at the promoted version, before @latest moves.
+echo -n "  @plur-ai/core@$VERSION install + import → "
+core_exit=0
+npm install --no-save --no-audit --no-fund "@plur-ai/core@$VERSION" > /dev/null 2>&1 || core_exit=$?
+if [ "$core_exit" -eq 0 ]; then
+  core_out=$(node --input-type=module -e "import('@plur-ai/core').then(m => process.exit(typeof m.Plur === 'function' ? 0 : 3)).catch(e => { console.error(e && e.message); process.exit(4) })" 2>&1) && core_exit=0 || core_exit=$?
+fi
+core_inst=$(node -p "require('$SMOKE_DIR/node_modules/@plur-ai/core/package.json').version" 2>/dev/null || echo "?")
+if [ "$core_exit" -eq 0 ] && [ "$core_inst" = "$VERSION" ]; then
+  echo "✓ (core@$core_inst, Plur export present)"
+else
+  echo "✗"
+  echo "      Expected core@$VERSION to import with a Plur export (exit=$core_exit, installed=$core_inst): ${core_out:-}"
+  SMOKE_OK=false
+fi
 popd > /dev/null
 rm -rf "$SMOKE_DIR"
 if [ "$SMOKE_OK" != true ]; then
@@ -548,6 +569,36 @@ cd packages/hermes
 rm -rf dist/
 python3 -m build 2>&1 | tail -1
 TWINE_USERNAME=__token__ TWINE_PASSWORD="$PYPI_TOKEN_PLUR_HERMES" python3 -m twine upload dist/* 2>&1 | tail -1
+
+# Post-publish verification (#584). PyPI is IMMUTABLE — a dropped or partial
+# upload can't be overwritten, only superseded by a new version — and this step
+# runs AFTER npm @latest already moved, so a silent PyPI miss = a half-published
+# release. Verify the version is actually retrievable (retry for propagation lag),
+# and if not, print the exact recovery path rather than exiting 0 as if done.
+echo -n "  Verifying plur-hermes==$VERSION on PyPI... "
+pypi_ok=false
+for _attempt in 1 2 3 4 5; do
+  if curl -sf "https://pypi.org/pypi/plur-hermes/$VERSION/json" > /dev/null 2>&1; then
+    pypi_ok=true; break
+  fi
+  sleep 6
+done
+if [ "$pypi_ok" = true ]; then
+  echo "✓"
+else
+  echo "✗ not visible after retries"
+  echo ""
+  echo "  ⚠ plur-hermes==$VERSION did not verify on PyPI. npm @latest is ALREADY"
+  echo "    promoted, so this is a half-published release — resolve before announcing."
+  echo "    PyPI is immutable: you CANNOT re-upload the same version+filename. Recovery:"
+  echo "      1. Check https://pypi.org/project/plur-hermes/#history — if $VERSION is"
+  echo "         listed, this was propagation lag; no action needed."
+  echo "      2. If absent, retry the upload: (cd packages/hermes && \\"
+  echo "         TWINE_USERNAME=__token__ TWINE_PASSWORD=\$PYPI_TOKEN_PLUR_HERMES \\"
+  echo "         python3 -m twine upload dist/*)"
+  echo "      3. If the filename is locked (a partial upload registered it), the version"
+  echo "         is burned — bump to the next patch and re-release; it cannot be reused."
+fi
 cd "$REPO_ROOT"
 echo ""
 
