@@ -409,6 +409,7 @@ describe('claw doctor command', () => {
       'plugin_enabled',
       'slot_selected',
       'allow_gated',
+      'orphaned_entries',
       'reload_required',
       'runtime_registered',
       'telemetry_optin',
@@ -535,6 +536,88 @@ describe('claw doctor command', () => {
       expect(step.status).toBe('fail')
       expect(step.detail).toContain('plur-claw')
       expect(step.detail).toContain('npx @plur-ai/claw setup')
+    })
+  })
+
+  // #583: the removed #51 / D-2 prune DELETED any plugins.entries[<id>] whose
+  // extensions/<id> dir was absent, destroying third-party config (and API keys)
+  // during the transient absence of a normal install/upgrade. These tests prove
+  // the replacement DETECTS the same orphan condition WITHOUT ever mutating the
+  // config, does not fire for a present plugin, and stays silent (never warns,
+  // never fails) during a simulated whole-tree transient absence.
+  describe('orphaned_entries step (#583 — non-destructive replacement for #51 prune)', () => {
+    it('warns (does NOT delete) a genuinely-orphaned third-party entry and its API key', () => {
+      const prior = {
+        plugins: {
+          entries: {
+            'plur-claw': { enabled: true },
+            'weather-plugin': { enabled: true, config: { api_key: 'sk-SECRET-USER-KEY-123' } },
+          },
+          slots: { memory: 'plur-claw' },
+        },
+      }
+      const raw = JSON.stringify(prior)
+      writeFileSync(cfgPath, raw, 'utf8')
+      // extensions/ exists and plur-claw is installed, but weather-plugin is not:
+      // a genuine, stable orphan — not a transient whole-tree absence.
+      mkdirSync(join(dir, 'extensions', 'plur-claw'), { recursive: true })
+      const r = runDoctor({ configPath: cfgPath, openclawHome: dir })
+      const step = r.steps.find((s) => s.step === 'orphaned_entries')!
+      expect(step.status).toBe('warn')
+      expect(step.detail).toContain('weather-plugin')
+      expect(step.detail).toContain('ADVISORY ONLY')
+      // Non-destructive: doctor must not rewrite the config, and warn must not fail.
+      expect(readFileSync(cfgPath, 'utf8')).toBe(raw)
+      expect(r.steps.some((s) => s.status === 'fail')).toBe(false)
+    })
+
+    it('flags plur-claw itself when its own entry is orphaned', () => {
+      const prior = {
+        plugins: { entries: { 'plur-claw': { enabled: true } }, slots: { memory: 'plur-claw' } },
+      }
+      writeFileSync(cfgPath, JSON.stringify(prior), 'utf8')
+      // extensions/ exists (some other plugin present) but plur-claw's own dir is gone.
+      mkdirSync(join(dir, 'extensions', 'other-plugin'), { recursive: true })
+      const r = runDoctor({ configPath: cfgPath, openclawHome: dir })
+      const step = r.steps.find((s) => s.step === 'orphaned_entries')!
+      expect(step.status).toBe('warn')
+      expect(step.detail).toContain('plur-claw')
+    })
+
+    it('does NOT warn when every entry has a backing extension (present plugin)', () => {
+      const prior = {
+        plugins: {
+          entries: { 'plur-claw': { enabled: true }, 'active-plugin': { enabled: true } },
+          slots: { memory: 'plur-claw' },
+        },
+      }
+      writeFileSync(cfgPath, JSON.stringify(prior), 'utf8')
+      mkdirSync(join(dir, 'extensions', 'plur-claw'), { recursive: true })
+      mkdirSync(join(dir, 'extensions', 'active-plugin'), { recursive: true })
+      const r = runDoctor({ configPath: cfgPath, openclawHome: dir })
+      const step = r.steps.find((s) => s.step === 'orphaned_entries')!
+      expect(step.status).toBe('ok')
+    })
+
+    it('stays silent (skip, never warn) during a simulated transient whole-tree absence', () => {
+      // The exact false-positive that made the removed prune destructive: mid
+      // install/upgrade the extensions/ tree is not yet populated. With the dir
+      // absent we cannot tell orphaned from transient, so we must NOT warn.
+      const prior = {
+        plugins: {
+          entries: {
+            'plur-claw': { enabled: true },
+            'weather-plugin': { enabled: true, config: { api_key: 'sk-SECRET' } },
+          },
+          slots: { memory: 'plur-claw' },
+        },
+      }
+      writeFileSync(cfgPath, JSON.stringify(prior), 'utf8')
+      // Note: dir/extensions is intentionally NOT created.
+      const r = runDoctor({ configPath: cfgPath, openclawHome: dir })
+      const step = r.steps.find((s) => s.step === 'orphaned_entries')!
+      expect(step.status).toBe('skip')
+      expect(step.detail).toContain('cannot assess')
     })
   })
 })

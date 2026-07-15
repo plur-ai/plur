@@ -254,7 +254,14 @@ export const EngramSchema = z.object({
     .describe('Unique identifier. Class prefix ENG (concrete engram), ABS (abstraction), or META (meta-engram). Canonical concrete form: ENG-YYYY-MMDD-NNN; store-namespaced form: ENG-{PREFIX}-YYYY-MMDD-NNN.'),
   version: z.number().int().min(1).default(2)
     .describe('Schema-shape generation of this engram object (currently 2). Distinct from engram_version, which tracks content evolution.'),
-  status: z.enum(['active', 'dormant', 'retired', 'candidate']).describe('Lifecycle state.'),
+  // 'active' and 'retired' are the two states any current code path assigns
+  // (retire via forget/dedup/supersede). 'dormant' and 'candidate' are NOT
+  // assigned by any code today: 'dormant' was only ever set by the batchDecay
+  // pass removed in #563 (decay is now a read-time property, not a materialized
+  // status), and 'candidate' is reserved. They are kept in the enum so stores
+  // written before #563 that persisted status:'dormant' still load, and so the
+  // status filter accepts them; do not remove without a data migration.
+  status: z.enum(['active', 'dormant', 'retired', 'candidate']).describe('Lifecycle state. Assigned values today are active/retired; dormant/candidate are legacy/reserved (see note above).'),
   consolidated: z.boolean().default(false)
     .describe('Whether this engram has been through consolidation (sleep-like batch reprocessing).'),
   type: z.enum(['behavioral', 'terminological', 'procedural', 'architectural'])

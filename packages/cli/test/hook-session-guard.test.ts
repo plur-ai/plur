@@ -128,6 +128,8 @@ describe('hook-session-guard', () => {
       })
       expect(result.status ?? 1).toBe(0) // fail-open: never a non-zero exit
       expect(result.stdout ?? '').not.toContain('"error"')
+      // The fail-open must leave an audit trail, not silently bypass the guard (#584).
+      expect(result.stderr ?? '').toContain('plur doctor')
     } finally {
       chmodSync(roTmp, 0o700)
       rmSync(roTmp, { recursive: true, force: true })

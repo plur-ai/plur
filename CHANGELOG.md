@@ -24,9 +24,16 @@ The clean re-release of the queued batch that 0.12.0 shipped unreviewed and 0.13
 - **Process-group orphan kill ported to the hermes bridge** (#575): the `plur-hermes` bridge now kills the whole process group on timeout (`start_new_session` + `killpg`), so a timed-out `npx @plur-ai/cli` can't orphan a runaway `node` grandchild.
 - **Hooks fail open on an unwritable state dir** (#574): the session-guard, learn-check, and inject-lock hooks now proceed instead of crashing the prompt or tool call when their state directory isn't writable.
 - **Assorted hook/remote robustness**: per-session concurrency lock for hook-inject (#519), AbortController coverage extended to the `RemoteStore.load()` body read (#531), and `isPlurConfigured` checks the home directory only when the working directory is under home (#521, #247).
+- **`plur doctor` flags stale PGLite + embedding-gemma vectors** (#581): the companion diagnostic to the #483 caveat above — when the PGLite backend runs the opt-in `embedding-gemma` (whose vectors that backend does not auto-rebuild), doctor advises a one-time `plur sync --reembed --full`. Advisory only; it never fails the overall check.
+- **claw warns non-destructively on orphaned OpenClaw config entries** (#583): #51 removed the destructive prune that deleted third-party plugin config — including embedded API keys — whenever a plugin dir was transiently absent during install. `plur doctor` now *warns* about genuinely-orphaned entries (PLUR's own and third-party) without ever deleting, restoring detection without the data-loss.
+
+### Changed (cleanup)
+
+- **Removed dead `strengthToStatus`** (#582): unused since batchDecay's removal, and its label vocabulary never matched the persisted `status` enum. The `dormant`/`candidate` enum values are retained (legacy/reserved) for backward-compatibility with stores written before #563 — removing them would reject existing data.
 
 ### Added
 
+- **`plur compact` + `plur_compact`** (#580): explicitly reclaim disk space from retired engrams, exposed as both a CLI command and an MCP tool. With batchDecay gone (#563), this is the deliberate, logged maintenance op for shrinking the store — retired rows previously had no user-facing removal path.
 - **Session injection telemetry** (#536): per-pack activation tracking logged at `session_end` for offline relevance analysis.
 - **`plur_status` domain + `created_after` filters** (#522, #524).
 - **packs install/list/uninstall CLI subcommands** (#513), and the claw `before_prompt_build` migration with sharpened ClawHub positioning (#516).
@@ -34,7 +41,8 @@ The clean re-release of the queued batch that 0.12.0 shipped unreviewed and 0.13
 ### Release tooling
 
 - The manifest gate (`release.sh`) now recognizes multi-issue commit trailers like `(#521, #247)` — the old extraction silently dropped every number in a comma trailer — and curates out this repo's internal `ops`/`cmo` commit types alongside the standard non-user-facing set. The canary smoke-test command substitution is also guarded under `set -e` (#578).
-- The pre-release hardening pass for this release — the U+2028/U+2029 scope-metadata gap, multi-word historical-keyword matching, the `feedback()` `last_accessed` re-anchor, and the manifest-gate fix above — landed in (#579).
+- **Publish verification hardened** (#584): the `@next` smoke test now covers `core` (install + ESM import, catching the import-time crash class that bricked `cli@0.9.2`) and `mcp`, not just `cli` — the audited fixes live in `core`. PyPI publish now verifies the version is retrievable after upload and prints an explicit recovery path on failure (PyPI is immutable). The session-guard's unwritable-state-dir fail-open now leaves a stderr audit trail instead of a silent bypass.
+- The pre-release hardening pass for this release — the U+2028/U+2029 scope-metadata gap, multi-word historical-keyword matching, the `feedback()` `last_accessed` re-anchor, and the manifest-gate fix above — landed in (#579). The audit follow-ups (#580–#584) landed in (#585).
 
 ## 0.12.0 (2026-07-09)
 

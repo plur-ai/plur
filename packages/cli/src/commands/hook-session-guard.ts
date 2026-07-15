@@ -121,6 +121,15 @@ export async function run(_args: string[], _flags: GlobalFlags): Promise<void> {
   try {
     blockCount = incrementBlockCount(sessionId)
   } catch {
+    // Fail open on an unwritable state dir — but leave an audit trail. A silent
+    // return here is a bypass of the session guard with no signal; write the
+    // same advisory the deadlock fallback below does, for parity with the other
+    // fail-open hooks (hook-inject, hook-learn-check) so the bypass is
+    // observable rather than invisible.
+    process.stderr.write(
+      '[plur] session guard: state dir not writable — allowing tools through ' +
+      '(fail-open). Memory injection is best-effort; run `plur doctor` to diagnose.\n',
+    )
     return
   }
   if (blockCount > MAX_BLOCKS_BEFORE_FALLBACK) {
