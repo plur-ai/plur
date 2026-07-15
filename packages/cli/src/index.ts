@@ -46,6 +46,7 @@ Commands:
   stores add <path>       Add a knowledge store
   init                    Install Claude Code hooks + register plur MCP server
   init-remote             Opt this project into recall from a PLUR Enterprise server
+  login <host>            Mint an enterprise token and configure the MCP server
   doctor                  Diagnose Claude Code / Claude Desktop integration
   rerank-eval             Per-store reranker self-eval gate (advisory, #451)
                           [--reranker <name>] [--sample N] [--seed N] [--force]
@@ -100,6 +101,7 @@ const COMMANDS: Record<string, string> = {
   migrate: './commands/migrate.js',
   init: './commands/init.js',
   'init-remote': './commands/init-remote.js',
+  login: './commands/login.js',
   doctor: './commands/doctor.js',
   'rerank-eval': './commands/rerank-eval.js',
   tensions: './commands/tensions.js',
