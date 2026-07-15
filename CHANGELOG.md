@@ -2,19 +2,20 @@
 
 ## 0.14.0 (2026-07-15)
 
-Clean re-release — 11 held-back features re-audited & fixed.
+A hardening release — 24 issues closed.
 
-- batchDecay removed
-- scope injection hardening
-- feedback() decay bug fixed
-- multi-evaluator re-audit
+- sharper recall + reranker fixes
+- hardened shared-scope metadata
+- feedback + hook reliability
+- CLI pack management
 
-The clean re-release of the queued batch that 0.12.0 shipped unreviewed and 0.13.0 then pulled back. Every held-back feature was individually re-audited this cycle through a multi-evaluator review (correctness, risk, edge-case, and code-correctness passes), fixed where the audit found a real defect, and locked behind a test that fails if the bug comes back. The riskiest piece — batchDecay — was removed outright rather than patched. npm `latest` moves 0.13.0 → 0.14.0; 0.12.0 remains deprecated.
+A reliability and hardening release: memory-quality, feedback, and security fixes across recall and shared-scope handling, plus CLI pack management and richer status filters. npm `latest` moves 0.13.0 → 0.14.0; 0.12.0 remains deprecated.
 
 ### Changed
 
 - **batchDecay removed — decay is a read-time property, not a scheduled job** (#563). The weekly/cron decay pass materialized elapsed-time decay back into stored `retrieval_strength`, which both double-counted against the read-time decay already applied at injection and mutated provenance on a timer. Decay is now computed only at read time (`decayedStrength` over `last_accessed`), and reinforcement re-anchors `last_accessed` on access. The `plur batch-decay` CLI command and `plur_batch_decay` MCP tool are **removed** — any cron or client still invoking them will get an "unknown command/tool" error, so delete those schedules. There is no replacement scheduled job, by design. The superseded-engram "decays 2× faster" path lived only inside batchDecay and is gone with it; superseded engrams are still de-prioritized at injection time by the ×0.3 historical-intent penalty, which is unaffected.
 - **`plur_learn_batch` output contract** (#281, #572) — *breaking for direct MCP consumers*: on partial failure, `ids` is now a 1:1 input-aligned array with `null` in each failed slot, instead of a compacted array of only the successes. A client indexing `ids` positionally against its inputs was silently misattributing IDs on any partial failure; it now lines up. Update anything that assumed `ids.length === successCount`.
+- **`plur login` groundwork landed but is not active** (#532): the enterprise OAuth device-flow login implementation shipped in the tree but is **intentionally not registered** in the CLI dispatcher — `plur login` returns "Unknown command." It is happy-path only (no paste-token fallback, a hard dependency on server device-flow endpoints, no refresh tokens), so it is deactivated pending that hardening and will be enabled in a later release. See #300.
 
 ### Fixed
 
@@ -40,8 +41,6 @@ The clean re-release of the queued batch that 0.12.0 shipped unreviewed and 0.13
 
 ### Added
 
-- **`plur login` — enterprise OAuth device flow** (#532): authenticate against an enterprise server (`plur login https://plur.datafund.io`) via the RFC 8628 device-authorization grant, writing the token to `~/.plur/config.json` (mode `0600`) and hot-reloading a running MCP server over SIGUSR1 (reload-marker file on Windows). The command was fully implemented but never registered in the CLI dispatcher (closes #300); it now is. Hardened through a dedicated security review (#551): the browser launcher uses `spawn` with an argument array (no shell) and validates the URL scheme, closing a command-injection vector from a server-controlled `verification_uri`; `http://` is rejected for any non-localhost host so tokens never travel in plaintext.
-- **`plur compact` + `plur_compact`** (#580): explicitly reclaim disk space from retired engrams, exposed as both a CLI command and an MCP tool. With batchDecay gone (#563), this is the deliberate, logged maintenance op for shrinking the store — retired rows previously had no user-facing removal path.
 - **Session injection telemetry** (#536): per-pack activation tracking logged at `session_end` for offline relevance analysis.
 - **`plur_status` domain + `created_after` filters** (#522, #524).
 - **packs install/list/uninstall CLI subcommands** (#513), and the claw `before_prompt_build` migration with sharpened ClawHub positioning (#516).
@@ -50,7 +49,7 @@ The clean re-release of the queued batch that 0.12.0 shipped unreviewed and 0.13
 
 - The manifest gate (`release.sh`) now recognizes multi-issue commit trailers like `(#521, #247)` — the old extraction silently dropped every number in a comma trailer — and curates out this repo's internal `ops`/`cmo` commit types alongside the standard non-user-facing set. The canary smoke-test command substitution is also guarded under `set -e` (#578).
 - **Publish verification hardened** (#584): the `@next` smoke test now covers `core` (install + ESM import, catching the import-time crash class that bricked `cli@0.9.2`) and `mcp`, not just `cli` — the audited fixes live in `core`. PyPI publish now verifies the version is retrievable after upload and prints an explicit recovery path on failure (PyPI is immutable). The session-guard's unwritable-state-dir fail-open now leaves a stderr audit trail instead of a silent bypass.
-- The pre-release hardening pass for this release — the U+2028/U+2029 scope-metadata gap, multi-word historical-keyword matching, the `feedback()` `last_accessed` re-anchor, and the manifest-gate fix above — landed in (#579). The audit follow-ups (#580–#584) landed in (#585).
+- The pre-release hardening pass for this release — the U+2028/U+2029 scope-metadata gap, multi-word historical-keyword matching, the `feedback()` `last_accessed` re-anchor, and the manifest-gate fix above — landed in (#579). The audit follow-ups (#581–#584) landed in (#585).
 
 ## 0.12.0 (2026-07-09)
 

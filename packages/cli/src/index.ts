@@ -25,7 +25,6 @@ Commands:
   inject <task>           Get relevant engrams for a task
   list                    List all engrams
   forget <id>             Retire an engram
-  compact                 Remove retired engrams and reclaim store space
   ingest <content>        Extract and save engrams from content
   import                  Import memories from another system (issue #441)
                           --from <generic|gp-engram|mem0> --path <input-file>
@@ -46,7 +45,6 @@ Commands:
   stores add <path>       Add a knowledge store
   init                    Install Claude Code hooks + register plur MCP server
   init-remote             Opt this project into recall from a PLUR Enterprise server
-  login <host>            Mint an enterprise token and configure the MCP server
   doctor                  Diagnose Claude Code / Claude Desktop integration
   rerank-eval             Per-store reranker self-eval gate (advisory, #451)
                           [--reranker <name>] [--sample N] [--seed N] [--force]
@@ -86,7 +84,6 @@ const COMMANDS: Record<string, string> = {
   inject: './commands/inject.js',
   list: './commands/list.js',
   forget: './commands/forget.js',
-  compact: './commands/compact.js',
   feedback: './commands/feedback.js',
   capture: './commands/capture.js',
   timeline: './commands/timeline.js',
@@ -101,7 +98,11 @@ const COMMANDS: Record<string, string> = {
   migrate: './commands/migrate.js',
   init: './commands/init.js',
   'init-remote': './commands/init-remote.js',
-  login: './commands/login.js',
+  // `login` (enterprise OAuth device flow, #532) is intentionally NOT registered
+  // yet — the implementation in ./commands/login.js is complete but happy-path
+  // only (no paste-token fallback, hard dependency on server device-flow
+  // endpoints, no refresh tokens). Deactivated pending that hardening; re-add
+  // this line to activate. See #300.
   doctor: './commands/doctor.js',
   'rerank-eval': './commands/rerank-eval.js',
   tensions: './commands/tensions.js',

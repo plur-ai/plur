@@ -54,45 +54,12 @@ describe('MCP tools', () => {
     expect(names).toContain('plur_packs_install')
     expect(names).toContain('plur_packs_list')
     expect(names).toContain('plur_status')
-    expect(names).toContain('plur_compact')
   })
 
   it('plur_learn creates an engram', async () => {
     const result = await callTool('plur_learn', { statement: 'Test learning', scope: 'global' }) as any
     expect(result.id).toMatch(/^ENG-/)
     expect(result.statement).toBe('Test learning')
-  })
-
-  describe('plur_compact (#580)', () => {
-    it('is registered as a destructive maintenance tool', () => {
-      const tool = tools.find(t => t.name === 'plur_compact')
-      expect(tool).toBeDefined()
-      expect(tool!.annotations?.destructiveHint).toBe(true)
-    })
-
-    it('physically removes retired engrams and reports removed/remaining', async () => {
-      const doomed = await callTool('plur_learn', { statement: 'compact me away', scope: 'global' }) as any
-      await callTool('plur_learn', { statement: 'keep me active', scope: 'global' })
-      await callTool('plur_forget', { id: doomed.id }) // status:retired, row still on disk
-
-      const result = await callTool('plur_compact') as any
-      expect(result.removed).toBe(1)
-      expect(result.remaining).toBe(1)
-      expect(result.message).toContain('Removed 1 retired engram')
-
-      // idempotent: nothing left to remove on a second pass
-      const again = await callTool('plur_compact') as any
-      expect(again.removed).toBe(0)
-      expect(again.remaining).toBe(1)
-    })
-
-    it('reports zero removed when there is nothing to compact', async () => {
-      await callTool('plur_learn', { statement: 'only active engram', scope: 'global' })
-      const result = await callTool('plur_compact') as any
-      expect(result.removed).toBe(0)
-      expect(result.remaining).toBe(1)
-      expect(result.message).toContain('No retired engrams')
-    })
   })
 
   describe('plur_learn_batch', () => {

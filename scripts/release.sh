@@ -131,7 +131,6 @@ $headline
 $features
 
 Tell your agent to update.
-
 github.com/plur-ai/plur/releases/tag/v$VERSION"
 
   REPLY="Manual update:

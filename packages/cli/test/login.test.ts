@@ -252,8 +252,14 @@ describe('pollForToken', () => {
 })
 
 // ── CLI process-level smoke tests ─────────────────────────────────────────────
-
-describe('plur login CLI', () => {
+// SKIPPED: `plur login` is deactivated — the command is intentionally not
+// registered in the CLI dispatcher (packages/cli/src/index.ts) pending the
+// hardening in #300 (paste-token fallback, refresh tokens, live-server
+// verification). These process-level tests invoke `plur login` via the
+// dispatcher, so they can only pass once the command is re-registered. The
+// helper unit tests above still run — they exercise the (dormant) login.ts
+// functions directly. Re-enable this block when login is reactivated.
+describe.skip('plur login CLI', () => {
   let home: string
   let cwd: string
 
