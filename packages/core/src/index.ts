@@ -80,7 +80,6 @@ export { recallAuto, type AutoSearchResult, type SearchStrategy } from './search
 export { generateProfile, getProfileForInjection, loadProfileCache, saveProfileCache, markProfileDirty, profileNeedsRegeneration, type ProfileCache } from './profile.js'
 export { formatLayer1, formatLayer2, formatLayer3, formatWithLayer, assignLayer, type InjectionLayer } from './inject.js'
 export { appendHistory, readHistory, listHistoryMonths, readHistoryForEngram, generateEventId, generateInjectionId, computeQueryHash, findLatestInjectionFor, countInjectionEvents, type HistoryEvent, type InjectionEventCounts } from './history.js'
-export { strengthToStatus } from './decay.js'
 export { computeContentHash, normalizeStatement } from './content-hash.js'
 export { parseDedupResponse, buildDedupPrompt, buildBatchDedupPrompt } from './dedup.js'
 export { runMigrations, rollbackMigrations, getSchemaVersion, setSchemaVersion, ALL_MIGRATIONS, CURRENT_SCHEMA_VERSION, type Migration, type MigrationResult } from './migrations/index.js'

@@ -254,7 +254,7 @@ export const EngramSchema = z.object({
     .describe('Unique identifier. Class prefix ENG (concrete engram), ABS (abstraction), or META (meta-engram). Canonical concrete form: ENG-YYYY-MMDD-NNN; store-namespaced form: ENG-{PREFIX}-YYYY-MMDD-NNN.'),
   version: z.number().int().min(1).default(2)
     .describe('Schema-shape generation of this engram object (currently 2). Distinct from engram_version, which tracks content evolution.'),
-  status: z.enum(['active', 'dormant', 'retired', 'candidate']).describe('Lifecycle state.'),
+  status: z.enum(['active', 'dormant', 'retired', 'candidate']).describe('Lifecycle state. active: normal; retired: soft-deleted (plur forget); dormant/candidate: reserved for future automated lifecycle transitions, currently never assigned by application code.'),
   consolidated: z.boolean().default(false)
     .describe('Whether this engram has been through consolidation (sleep-like batch reprocessing).'),
   type: z.enum(['behavioral', 'terminological', 'procedural', 'architectural'])
