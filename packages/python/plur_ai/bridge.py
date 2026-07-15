@@ -28,7 +28,7 @@ from typing import Any, Sequence
 # packages/hermes/scripts/check_version_sync.py enforces pin >= published
 # @plur-ai/cli. A stale pin silently runs a pre-release CLI on the npx-fallback
 # write path, bypassing that release's scope-routing / leak-guard fixes.
-_NPX_CLI_VERSION = "0.13.0"
+_NPX_CLI_VERSION = "0.14.0"
 _DEFAULT_TIMEOUT = 30
 
 
