@@ -77,13 +77,16 @@ export function readHistoryForEngram(root: string, engramId: string): HistoryEve
   return events
 }
 
+let _evtSeq = 0
+let _injSeq = 0
+
 /**
  * Generate a unique event ID for history entries.
+ * Uses a per-process counter combined with timestamp to guarantee uniqueness
+ * even when called in rapid succession within the same millisecond.
  */
 export function generateEventId(): string {
-  const ts = Date.now()
-  const rand = Math.random().toString(36).slice(2, 6)
-  return `EVT-${ts}-${rand}`
+  return `EVT-${Date.now()}-${(_evtSeq++).toString(36).padStart(4, '0')}`
 }
 
 // --- Injection provenance (#452) ---
@@ -107,11 +110,11 @@ export function generateEventId(): string {
 
 /**
  * Generate a unique injection ID for co_injection events.
+ * Uses a per-process counter combined with timestamp to guarantee uniqueness
+ * even when called in rapid succession within the same millisecond.
  */
 export function generateInjectionId(): string {
-  const ts = Date.now()
-  const rand = Math.random().toString(36).slice(2, 6)
-  return `INJ-${ts}-${rand}`
+  return `INJ-${Date.now()}-${(_injSeq++).toString(36).padStart(4, '0')}`
 }
 
 /**
