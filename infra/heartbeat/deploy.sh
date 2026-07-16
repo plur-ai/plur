@@ -15,8 +15,13 @@ DEPLOY_USER="${DEPLOY_USER:-$(whoami)}"
 echo "==> Installing backend"
 sudo mkdir -p /opt/plur-heartbeat /var/lib/plur-heartbeat
 sudo cp "$SCRIPT_DIR/server.py" /opt/plur-heartbeat/server.py
+sudo cp "$SCRIPT_DIR/metrics.py" /opt/plur-heartbeat/metrics.py
 sudo cp "$SCRIPT_DIR/query.py" /opt/plur-heartbeat/query.py 2>/dev/null || true
 sudo chown -R "${DEPLOY_USER}:${DEPLOY_USER}" /opt/plur-heartbeat /var/lib/plur-heartbeat
+
+echo "==> Installing daily metrics cron (01:00 UTC)"
+CRON_JOB="0 1 * * * /usr/bin/python3 /opt/plur-heartbeat/metrics.py >> /var/log/plur-heartbeat-metrics.log 2>&1"
+(crontab -u "${DEPLOY_USER}" -l 2>/dev/null | grep -v 'metrics.py'; echo "$CRON_JOB") | sudo crontab -u "${DEPLOY_USER}" -
 
 echo "==> Installing systemd unit"
 sudo cp "$SCRIPT_DIR/plur-heartbeat.service" /etc/systemd/system/plur-heartbeat.service
