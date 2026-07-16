@@ -1,7 +1,7 @@
 """PlurMemory — BaseMemory adapter for legacy ConversationChain."""
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Optional
 
 from langchain_core.memory import BaseMemory  # type: ignore[import]
 
@@ -29,7 +29,7 @@ class PlurMemory(BaseMemory):
     output_key: str = "response"
     inject_budget: int = 1500
     auto_learn: bool = True
-    plur_path: str | None = None
+    plur_path: Optional[str] = None
 
     class Config:
         arbitrary_types_allowed = True
