@@ -50,7 +50,7 @@ export type FlushOpts = CountersOpts & {
   packageVersion?: string
 }
 
-const DEFAULT_ENDPOINT = 'https://plur.ai/v1/heartbeat'
+const DEFAULT_ENDPOINT = 'https://heartbeat.plur-ai.org/v1/heartbeat'
 const DEFAULT_TIMEOUT_MS = 5000
 
 function resolveEndpoint(opts: FlushOpts): string {
