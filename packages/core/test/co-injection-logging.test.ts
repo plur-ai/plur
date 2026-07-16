@@ -44,7 +44,7 @@ describe('co-injection helpers (#452)', () => {
 
   describe('generateInjectionId', () => {
     it('uses the INJ- prefix', () => {
-      expect(generateInjectionId()).toMatch(/^INJ-\d+-[a-z0-9]{4}$/)
+      expect(generateInjectionId()).toMatch(/^INJ-\d+-[a-z0-9]{6}$/)
     })
 
     it('generates unique ids', () => {
