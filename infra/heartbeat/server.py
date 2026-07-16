@@ -11,12 +11,15 @@ import sys
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+from socketserver import ThreadingMixIn
 from typing import Optional
 
 DATA_DIR = Path(os.environ.get("HEARTBEAT_DATA_DIR", "/var/lib/plur-heartbeat"))
 BIND_HOST = os.environ.get("HEARTBEAT_HOST", "127.0.0.1")
 BIND_PORT = int(os.environ.get("HEARTBEAT_PORT", "8001"))
 MAX_BODY = 1024  # bytes
+
+KNOWN_FIELDS = {"install_id", "version", "platform", "date", "learn_count", "recall_count", "session_count"}
 
 UUID_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
@@ -29,10 +32,12 @@ PLATFORMS = {"linux", "darwin", "win32"}
 
 def validate(payload: dict) -> Optional[str]:
     """Return error string or None if valid."""
-    required = {"install_id", "version", "platform", "date", "learn_count", "recall_count", "session_count"}
-    missing = required - payload.keys()
+    missing = KNOWN_FIELDS - payload.keys()
     if missing:
         return f"missing fields: {', '.join(sorted(missing))}"
+    unknown = payload.keys() - KNOWN_FIELDS
+    if unknown:
+        return f"unknown fields: {', '.join(sorted(unknown))}"
     if not isinstance(payload["install_id"], str) or not UUID_RE.match(payload["install_id"]):
         return "install_id must be UUID v4"
     if not isinstance(payload["version"], str) or not VERSION_RE.match(payload["version"]):
@@ -47,7 +52,13 @@ def validate(payload: dict) -> Optional[str]:
     return None
 
 
+class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
+    daemon_threads = True
+
+
 class HeartbeatHandler(BaseHTTPRequestHandler):
+    timeout = 10  # seconds; drops connections that stall on body delivery
+
     def log_message(self, fmt, *args):
         # Suppress default access log (contains client IP)
         pass
@@ -111,7 +122,7 @@ class HeartbeatHandler(BaseHTTPRequestHandler):
 
 
 def main():
-    server = HTTPServer((BIND_HOST, BIND_PORT), HeartbeatHandler)
+    server = ThreadingHTTPServer((BIND_HOST, BIND_PORT), HeartbeatHandler)
     print(f"plur-heartbeat listening on {BIND_HOST}:{BIND_PORT}", flush=True)
     try:
         server.serve_forever()
