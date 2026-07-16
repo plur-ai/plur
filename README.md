@@ -130,6 +130,29 @@ context = plur.inject("write a streaming endpoint", limit=10)
 
 Ask your agent: *"What's my PLUR status?"* — it should call `plur_status` and return your engram count and storage path.
 
+### See it in action
+
+Once it's running, teach your agent something once:
+
+> *"Always use `pnpm` in this project — `npm install` breaks the lockfile in CI."*
+
+Start a new session the next day and ask:
+
+```
+You: How do I run the tests?
+
+<plur-memory> 1 engram · project:my-api </plur-memory>
+
+Agent: Use pnpm — you mentioned npm breaks the lockfile in CI:
+
+  pnpm test                           # full suite
+  pnpm test -- src/auth.test.ts       # single file
+```
+
+New session. No reminder. The correction was there.
+
+That's the moment PLUR pays off — the agent remembers a project convention you mentioned once, without it being in any file it can read.
+
 ## How it works
 
 PLUR has two storage primitives:
