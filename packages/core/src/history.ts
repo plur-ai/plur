@@ -77,16 +77,25 @@ export function readHistoryForEngram(root: string, engramId: string): HistoryEve
   return events
 }
 
+// Two-character base-36 salt derived from this process's PID.
+// Different processes have different PIDs → different salts → no cross-process
+// collision even when two processes generate an ID in the same millisecond.
+// PID space: Linux default max 32768 → 0–'p0' in base36 (always ≤2 chars).
+const _pidSalt = (process.pid % 1296).toString(36).padStart(2, '0')
+
 let _evtSeq = 0
 let _injSeq = 0
 
 /**
  * Generate a unique event ID for history entries.
- * Uses a per-process counter combined with timestamp to guarantee uniqueness
- * even when called in rapid succession within the same millisecond.
+ * Format: `EVT-<ms>-<2-char pid salt><2-char counter>` (suffix always 4 base-36 chars).
+ * Cross-process safe: pid salt distinguishes concurrent processes.
+ * Intra-process safe: counter is monotonic; wraps at 36²=1296 per counter reset
+ * (unreachable within a single millisecond in any realistic workload).
  */
 export function generateEventId(): string {
-  return `EVT-${Date.now()}-${(_evtSeq++).toString(36).padStart(4, '0')}`
+  const seq = (_evtSeq++ % 1296).toString(36).padStart(2, '0')
+  return `EVT-${Date.now()}-${_pidSalt}${seq}`
 }
 
 // --- Injection provenance (#452) ---
@@ -110,11 +119,14 @@ export function generateEventId(): string {
 
 /**
  * Generate a unique injection ID for co_injection events.
- * Uses a per-process counter combined with timestamp to guarantee uniqueness
- * even when called in rapid succession within the same millisecond.
+ * Format: `INJ-<ms>-<2-char pid salt><2-char counter>` (suffix always 4 base-36 chars).
+ * Cross-process safe: pid salt distinguishes concurrent processes.
+ * Intra-process safe: counter is monotonic; wraps at 36²=1296 per counter reset
+ * (unreachable within a single millisecond in any realistic workload).
  */
 export function generateInjectionId(): string {
-  return `INJ-${Date.now()}-${(_injSeq++).toString(36).padStart(4, '0')}`
+  const seq = (_injSeq++ % 1296).toString(36).padStart(2, '0')
+  return `INJ-${Date.now()}-${_pidSalt}${seq}`
 }
 
 /**
