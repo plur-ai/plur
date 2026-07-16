@@ -77,16 +77,28 @@ export function readHistoryForEngram(root: string, engramId: string): HistoryEve
   return events
 }
 
+// Per-process salt — generated once at module load, never reused across processes.
+// Two processes that both call generateEventId/generateInjectionId in the same
+// millisecond will differ unless they happen to draw the same 2-char base36 value
+// (~1/1296 probability), which is far better than the deterministic collision
+// guaranteed by the counter-only format (#596 left this gap, closed here).
+// Note: the counter suffix widens past 4 chars once _seq exceeds 36^4 (1,679,616
+// calls); IDs remain unique and monotonic, but the fixed-width invariant breaks.
+// At typical session rates this takes years; for safety the salt segment makes
+// even a width-collision identifiable across processes.
+const _PROC_SALT = Math.random().toString(36).slice(2, 4).padEnd(2, '0')
+
 let _evtSeq = 0
 let _injSeq = 0
 
 /**
  * Generate a unique event ID for history entries.
- * Uses a per-process counter combined with timestamp to guarantee uniqueness
- * even when called in rapid succession within the same millisecond.
+ * Combines a per-process monotonic counter (intra-process uniqueness from #596)
+ * with a one-time per-process salt (cross-process uniqueness, closes #600).
+ * Format: EVT-<ms>-<counter>-<salt>
  */
 export function generateEventId(): string {
-  return `EVT-${Date.now()}-${(_evtSeq++).toString(36).padStart(4, '0')}`
+  return `EVT-${Date.now()}-${(_evtSeq++).toString(36).padStart(4, '0')}-${_PROC_SALT}`
 }
 
 // --- Injection provenance (#452) ---
@@ -110,11 +122,12 @@ export function generateEventId(): string {
 
 /**
  * Generate a unique injection ID for co_injection events.
- * Uses a per-process counter combined with timestamp to guarantee uniqueness
- * even when called in rapid succession within the same millisecond.
+ * Combines a per-process monotonic counter (intra-process uniqueness from #596)
+ * with a one-time per-process salt (cross-process uniqueness, closes #600).
+ * Format: INJ-<ms>-<counter>-<salt>
  */
 export function generateInjectionId(): string {
-  return `INJ-${Date.now()}-${(_injSeq++).toString(36).padStart(4, '0')}`
+  return `INJ-${Date.now()}-${(_injSeq++).toString(36).padStart(4, '0')}-${_PROC_SALT}`
 }
 
 /**
