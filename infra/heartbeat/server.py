@@ -11,6 +11,7 @@ import sys
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+from typing import Optional
 
 DATA_DIR = Path(os.environ.get("HEARTBEAT_DATA_DIR", "/var/lib/plur-heartbeat"))
 BIND_HOST = os.environ.get("HEARTBEAT_HOST", "127.0.0.1")
@@ -26,7 +27,7 @@ DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 PLATFORMS = {"linux", "darwin", "win32"}
 
 
-def validate(payload: dict) -> str | None:
+def validate(payload: dict) -> Optional[str]:
     """Return error string or None if valid."""
     required = {"install_id", "version", "platform", "date", "learn_count", "recall_count", "session_count"}
     missing = required - payload.keys()
