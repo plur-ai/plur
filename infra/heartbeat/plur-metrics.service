@@ -1,0 +1,15 @@
+[Unit]
+Description=plur daily MAU metric aggregation
+After=network.target
+
+[Service]
+Type=oneshot
+User=${DEPLOY_USER:-gregor}
+Group=${DEPLOY_USER:-gregor}
+ExecStart=/usr/bin/python3 /opt/plur-heartbeat/query.py --mau --write
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=plur-metrics
+
+Environment=HEARTBEAT_DATA_DIR=/var/lib/plur-heartbeat
+Environment=METRICS_DIR=/var/lib/plur-metrics
