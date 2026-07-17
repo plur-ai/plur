@@ -19,10 +19,11 @@ sudo cp "$SCRIPT_DIR/query.py" /opt/plur-heartbeat/query.py 2>/dev/null || true
 sudo chown -R "${DEPLOY_USER}:${DEPLOY_USER}" /opt/plur-heartbeat /var/lib/plur-heartbeat /var/lib/plur-metrics
 
 echo "==> Installing systemd units (heartbeat ingress + daily MAU timer)"
-sudo cp "$SCRIPT_DIR/plur-heartbeat.service" /etc/systemd/system/plur-heartbeat.service
-sudo cp "$SCRIPT_DIR/plur-metrics.service" /etc/systemd/system/plur-metrics.service
+# Both service files use __DEPLOY_USER__ as a placeholder — expand at install time.
+# Never `cp` these directly; systemd does not expand shell variables in User=.
+sed "s/__DEPLOY_USER__/${DEPLOY_USER}/g" "$SCRIPT_DIR/plur-heartbeat.service" | sudo tee /etc/systemd/system/plur-heartbeat.service > /dev/null
+sed "s/__DEPLOY_USER__/${DEPLOY_USER}/g" "$SCRIPT_DIR/plur-metrics.service" | sudo tee /etc/systemd/system/plur-metrics.service > /dev/null
 sudo cp "$SCRIPT_DIR/plur-metrics.timer" /etc/systemd/system/plur-metrics.timer
-sudo sed -i "s/\${DEPLOY_USER:-gregor}/${DEPLOY_USER}/g" /etc/systemd/system/plur-metrics.service
 sudo systemctl daemon-reload
 sudo systemctl enable --now plur-heartbeat
 sudo systemctl enable --now plur-metrics.timer

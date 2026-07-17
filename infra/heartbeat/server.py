@@ -9,7 +9,7 @@ import os
 import re
 import sys
 from datetime import datetime, timezone
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Optional
 
@@ -17,6 +17,7 @@ DATA_DIR = Path(os.environ.get("HEARTBEAT_DATA_DIR", "/var/lib/plur-heartbeat"))
 BIND_HOST = os.environ.get("HEARTBEAT_HOST", "127.0.0.1")
 BIND_PORT = int(os.environ.get("HEARTBEAT_PORT", "8001"))
 MAX_BODY = 1024  # bytes
+SOCKET_TIMEOUT = int(os.environ.get("HEARTBEAT_TIMEOUT", "10"))
 
 UUID_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
@@ -25,11 +26,15 @@ UUID_RE = re.compile(
 VERSION_RE = re.compile(r"^\d+\.\d+\.\d+(-[\w.]+)?$")
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 PLATFORMS = {"linux", "darwin", "win32"}
+KNOWN_FIELDS = frozenset({"install_id", "version", "platform", "date", "learn_count", "recall_count", "session_count"})
 
 
 def validate(payload: dict) -> Optional[str]:
     """Return error string or None if valid."""
-    required = {"install_id", "version", "platform", "date", "learn_count", "recall_count", "session_count"}
+    unknown = set(payload.keys()) - KNOWN_FIELDS
+    if unknown:
+        return f"unknown fields: {', '.join(sorted(unknown))}"
+    required = KNOWN_FIELDS
     missing = required - payload.keys()
     if missing:
         return f"missing fields: {', '.join(sorted(missing))}"
@@ -42,12 +47,14 @@ def validate(payload: dict) -> Optional[str]:
     if not isinstance(payload["date"], str) or not DATE_RE.match(payload["date"]):
         return "date must be YYYY-MM-DD"
     for field in ("learn_count", "recall_count", "session_count"):
-        if not isinstance(payload[field], int) or payload[field] < 0:
+        if not isinstance(payload[field], int) or isinstance(payload[field], bool) or payload[field] < 0:
             return f"{field} must be non-negative integer"
     return None
 
 
 class HeartbeatHandler(BaseHTTPRequestHandler):
+    timeout = SOCKET_TIMEOUT
+
     def log_message(self, fmt, *args):
         # Suppress default access log (contains client IP)
         pass
@@ -111,7 +118,7 @@ class HeartbeatHandler(BaseHTTPRequestHandler):
 
 
 def main():
-    server = HTTPServer((BIND_HOST, BIND_PORT), HeartbeatHandler)
+    server = ThreadingHTTPServer((BIND_HOST, BIND_PORT), HeartbeatHandler)
     print(f"plur-heartbeat listening on {BIND_HOST}:{BIND_PORT}", flush=True)
     try:
         server.serve_forever()

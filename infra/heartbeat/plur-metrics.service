@@ -4,8 +4,9 @@ After=network.target
 
 [Service]
 Type=oneshot
-User=${DEPLOY_USER:-gregor}
-Group=${DEPLOY_USER:-gregor}
+# Templated at install time — deploy.sh expands __DEPLOY_USER__ via sed.
+User=__DEPLOY_USER__
+Group=__DEPLOY_USER__
 ExecStart=/usr/bin/python3 /opt/plur-heartbeat/query.py --mau --write
 StandardOutput=journal
 StandardError=journal
