@@ -1,0 +1,32 @@
+name: Publish plur-langchain (PyPI)
+
+# Publishes the plur-langchain Python package on GitHub release (or manual dispatch).
+#
+# Uses PyPI Trusted Publishing (OIDC) — no API token stored in the repo.
+# One-time PyPI setup before the first release:
+#   PyPI → project "plur-langchain" → Publishing → add a trusted publisher:
+#     owner=plur-ai, repo=plur, workflow=publish-langchain.yml, environment=pypi
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write   # required for Trusted Publishing
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install build
+      - run: python -m build packages/langchain
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: packages/langchain/dist

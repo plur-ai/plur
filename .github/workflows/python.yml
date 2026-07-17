@@ -3,10 +3,10 @@ name: Python SDK
 on:
   push:
     branches: [main]
-    paths: ['packages/python/**', '.github/workflows/python.yml']
+    paths: ['packages/python/**', 'packages/langchain/**', '.github/workflows/python.yml']
   pull_request:
     branches: [main]
-    paths: ['packages/python/**', 'packages/cli/**', 'packages/core/**', '.github/workflows/python.yml']
+    paths: ['packages/python/**', 'packages/langchain/**', 'packages/cli/**', 'packages/core/**', '.github/workflows/python.yml']
 
 permissions:
   contents: read
@@ -34,3 +34,6 @@ jobs:
         env:
           PLUR_CLI: node ${{ github.workspace }}/packages/cli/dist/index.js
         run: pytest packages/python -q
+      - run: pip install -e "packages/langchain[dev]"
+      - name: Run pytest (langchain adapter)
+        run: pytest packages/langchain -q
