@@ -6,15 +6,19 @@ Persistent memory for AI agents. An agent corrected on Monday remembers on Tuesd
 
 Knowledge is stored as **engrams** — small assertions that strengthen with use and decay when irrelevant, modeled on human memory (ACT-R activation). Storage is plain YAML on disk. Search is fully local: BM25 + BGE embeddings + Reciprocal Rank Fusion. Zero API calls, zero cloud.
 
-Three packages:
+Seven packages:
 
 ```
-@plur-ai/core   — engram engine (learn, recall, inject, search, decay, sync)
-@plur-ai/mcp    — MCP server (Claude Code, Cursor, Windsurf)
-@plur-ai/claw   — OpenClaw ContextEngine plugin
+@plur-ai/core       — engram engine (learn, recall, inject, search, decay, sync)
+@plur-ai/mcp        — MCP server (Claude Code, Cursor, Windsurf)
+@plur-ai/claw       — OpenClaw ContextEngine plugin
+@plur-ai/cli        — CLI: init, doctor, compact, admin
+@plur-ai/langchain  — LangChain / LCEL adapter
+plur-hermes         — Hermes Agent plugin (Python, via CLI bridge)
+plur-ai             — Python SDK (learn/recall/inject for scripts and LangChain)
 ```
 
-Core is the engine. MCP and Claw are thin wrappers — MCP exposes tools via Model Context Protocol, Claw hooks into OpenClaw's lifecycle (auto-inject on session start, auto-learn on corrections).
+Core is the engine. MCP, Claw, and Langchain are adapters for their respective ecosystems. CLI is the install and ops tool. Hermes and the Python SDK bridge non-Node runtimes to the same engram store.
 
 ## Development
 
@@ -26,7 +30,7 @@ pnpm build
 pnpm test
 ```
 
-~1045 tests across ~120 files (117 Vitest + Python suites). All must pass before committing.
+~2250 tests across ~197 files. All must pass before committing.
 
 ## Package dependency
 
@@ -57,13 +61,7 @@ Nine places. Miss one and something breaks:
 
 ## Publishing
 
-Authenticate as `plur9`. Core first (it's the dependency):
-
-```
-pnpm --filter @plur-ai/core publish --access public --no-git-checks
-pnpm --filter @plur-ai/mcp publish --access public --no-git-checks
-pnpm --filter @plur-ai/claw publish --access public --no-git-checks
-```
+Follow the full publish procedure in [RELEASING.md](RELEASING.md). It covers all packages (core, mcp, claw, cli, hermes/PyPI, langchain) and the mandatory manifest gate that aborts the release if any user-facing PR is undeclared in the CHANGELOG. Do not drive a release from this file alone — RELEASING.md is the source of truth.
 
 ## Testing a change
 
