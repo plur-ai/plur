@@ -49,7 +49,7 @@ pnpm --filter @plur-ai/core build
 
 `scripts/release.sh` is the authoritative source. Two independent version tracks:
 
-**Standard release** (core / mcp / cli — always bumped together):
+**Standard release** (core / mcp / cli / hermes / python — always bumped together):
 
 1. `packages/core/package.json`
 2. `packages/mcp/package.json`
@@ -59,10 +59,12 @@ pnpm --filter @plur-ai/core build
 6. `packages/cli/src/index.ts` — `const VERSION`
 7. `packages/mcp/test/server.test.ts` — version assertions
 8. `packages/hermes/pyproject.toml`
-9. `packages/hermes/plur_hermes/skills/plur-memory.SKILL.md` — frontmatter `version:`
-10. `packages/hermes/plur_hermes/bridge.py` — `_NPX_CLI_VERSION`
-11. `packages/python/pyproject.toml`
-12. `packages/python/plur_ai/bridge.py` — `_NPX_CLI_VERSION`
+9. `packages/hermes/plugin.yaml` — top-level `version:` field
+10. `packages/hermes/plur_hermes/skills/plur-memory.SKILL.md` — frontmatter `version:`
+11. `packages/hermes/plur_hermes/bridge.py` — `_NPX_CLI_VERSION`
+12. `packages/python/pyproject.toml`
+13. `packages/python/plur_ai/bridge.py` — `_NPX_CLI_VERSION`
+14. `skills/plur-memory/SKILL.md` — frontmatter `version:` (standalone skills.sh copy)
 
 **Claw track** (independent — only bumped when `--claw <ver>` is passed to release.sh):
 
@@ -71,6 +73,11 @@ pnpm --filter @plur-ai/core build
 - `packages/claw/src/context-engine.ts` — `version:` in info object
 - `packages/claw/openclaw.plugin.json` — `version` field
 - `packages/claw/test/hello.test.ts` — version assertion
+
+**Langchain track** (independent — bumped separately when `plur-langchain` ships):
+
+- `packages/langchain/pyproject.toml`
+- `packages/langchain/plur_langchain/__init__.py` — `__version__`
 
 ## Publishing
 
