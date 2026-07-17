@@ -8,6 +8,7 @@ Usage:
   python3 query.py --summary        # full summary stats
   python3 query.py --mau            # north-star MAU/WAU/DAU metric
   python3 query.py --mau --write    # same, but also persist to METRICS_DIR/YYYY-MM-DD.json
+                                   #   and update METRICS_DIR/metrics-latest.json pointer
 
 Data lives in /var/lib/plur-heartbeat/YYYY-MM-DD.jsonl (one record per flush).
 """
@@ -177,8 +178,10 @@ def main():
         result = mau_stats()
         if args.write:
             METRICS_DIR.mkdir(parents=True, exist_ok=True)
+            payload = json.dumps(result, indent=2) + "\n"
             out_path = METRICS_DIR / f"{result['date']}.json"
-            out_path.write_text(json.dumps(result, indent=2) + "\n")
+            out_path.write_text(payload)
+            (METRICS_DIR / "metrics-latest.json").write_text(payload)
         print(json.dumps(result, indent=2))
     elif args.summary:
         result = summary_stats(args.days)
