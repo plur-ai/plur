@@ -1,0 +1,10 @@
+[Unit]
+Description=Run plur MAU aggregation daily at 00:05 UTC
+
+[Timer]
+OnCalendar=*-*-* 00:05:00
+AccuracySec=1min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

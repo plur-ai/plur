@@ -13,16 +13,21 @@ DEPLOY_USER="${DEPLOY_USER:-$(whoami)}"
 : "${CERTBOT_EMAIL:?CERTBOT_EMAIL env var is required for Phase 2 (certbot TLS)}"
 
 echo "==> Installing backend"
-sudo mkdir -p /opt/plur-heartbeat /var/lib/plur-heartbeat
+sudo mkdir -p /opt/plur-heartbeat /var/lib/plur-heartbeat /var/lib/plur-metrics
 sudo cp "$SCRIPT_DIR/server.py" /opt/plur-heartbeat/server.py
 sudo cp "$SCRIPT_DIR/query.py" /opt/plur-heartbeat/query.py 2>/dev/null || true
-sudo chown -R "${DEPLOY_USER}:${DEPLOY_USER}" /opt/plur-heartbeat /var/lib/plur-heartbeat
+sudo chown -R "${DEPLOY_USER}:${DEPLOY_USER}" /opt/plur-heartbeat /var/lib/plur-heartbeat /var/lib/plur-metrics
 
-echo "==> Installing systemd unit"
+echo "==> Installing systemd units (heartbeat ingress + daily MAU timer)"
 sudo cp "$SCRIPT_DIR/plur-heartbeat.service" /etc/systemd/system/plur-heartbeat.service
+sudo cp "$SCRIPT_DIR/plur-metrics.service" /etc/systemd/system/plur-metrics.service
+sudo cp "$SCRIPT_DIR/plur-metrics.timer" /etc/systemd/system/plur-metrics.timer
+sudo sed -i "s/\${DEPLOY_USER:-gregor}/${DEPLOY_USER}/g" /etc/systemd/system/plur-metrics.service
 sudo systemctl daemon-reload
 sudo systemctl enable --now plur-heartbeat
+sudo systemctl enable --now plur-metrics.timer
 sudo systemctl status plur-heartbeat --no-pager
+sudo systemctl status plur-metrics.timer --no-pager
 
 echo "==> Installing nginx config (Phase 1: HTTP)"
 sudo cp "$SCRIPT_DIR/nginx-heartbeat-http.conf" /etc/nginx/sites-available/heartbeat-http
