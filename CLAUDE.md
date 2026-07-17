@@ -151,6 +151,11 @@ current scores. If your PR improves any of these, mention it in the PR descripti
 
 ## Conventions
 
+- **Claim before you code**: before starting a GitHub issue, self-assign it
+  (`gh issue edit <n> --add-assignee @me`); if it is already assigned to someone
+  else, coordinate on the issue rather than opening a duplicate parallel fix.
+  This binds automated runs too — self-assign or skip if already claimed. See
+  `CONTRIBUTING.md`.
 - TypeScript, Vitest, tsup, Zod for validation
 - No external API calls in core — search must work offline at zero cost
 - YAML for all persistent storage (not JSON, not SQLite for primary data)

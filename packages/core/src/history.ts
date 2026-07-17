@@ -77,16 +77,23 @@ export function readHistoryForEngram(root: string, engramId: string): HistoryEve
   return events
 }
 
+// Per-process 2-char salt (PID mod 1296, base36) prevents cross-process
+// same-millisecond collisions when the MCP server and a hook-spawned CLI
+// process both call generateInjectionId()/generateEventId() concurrently.
+// Suffix format: <2-char salt><4-char counter> = 6 chars [a-z0-9]{6}.
+// Counter overflows to 5 chars past 36^4 (1,679,616 events/process) — not
+// reachable in practice; suffix becomes 7 chars, IDs remain unique.
+const _PROC_SALT = (process.pid % 1296).toString(36).padStart(2, '0')
 let _evtSeq = 0
 let _injSeq = 0
 
 /**
- * Generate a unique event ID for history entries.
- * Uses a per-process counter combined with timestamp to guarantee uniqueness
- * even when called in rapid succession within the same millisecond.
+ * Generate a globally-unique event ID for history entries.
+ * Cross-process uniqueness via PID salt; intra-process via monotonic counter.
+ * Format: EVT-<ts>-<2-char-pid-salt><4-char-counter>
  */
 export function generateEventId(): string {
-  return `EVT-${Date.now()}-${(_evtSeq++).toString(36).padStart(4, '0')}`
+  return `EVT-${Date.now()}-${_PROC_SALT}${(_evtSeq++).toString(36).padStart(4, '0')}`
 }
 
 // --- Injection provenance (#452) ---
@@ -109,12 +116,12 @@ export function generateEventId(): string {
 // under ~1 MiB/month of JSONL — see the #452 PR body for the measured table.
 
 /**
- * Generate a unique injection ID for co_injection events.
- * Uses a per-process counter combined with timestamp to guarantee uniqueness
- * even when called in rapid succession within the same millisecond.
+ * Generate a globally-unique injection ID for co_injection events.
+ * Cross-process uniqueness via PID salt; intra-process via monotonic counter.
+ * Format: INJ-<ts>-<2-char-pid-salt><4-char-counter>
  */
 export function generateInjectionId(): string {
-  return `INJ-${Date.now()}-${(_injSeq++).toString(36).padStart(4, '0')}`
+  return `INJ-${Date.now()}-${_PROC_SALT}${(_injSeq++).toString(36).padStart(4, '0')}`
 }
 
 /**

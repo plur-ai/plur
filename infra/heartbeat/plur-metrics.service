@@ -1,0 +1,16 @@
+[Unit]
+Description=plur daily MAU metric aggregation
+After=network.target
+
+[Service]
+Type=oneshot
+# Templated at install time — deploy.sh expands __DEPLOY_USER__ via sed.
+User=__DEPLOY_USER__
+Group=__DEPLOY_USER__
+ExecStart=/usr/bin/python3 /opt/plur-heartbeat/query.py --mau --write
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=plur-metrics
+
+Environment=HEARTBEAT_DATA_DIR=/var/lib/plur-heartbeat
+Environment=METRICS_DIR=/var/lib/plur-metrics
