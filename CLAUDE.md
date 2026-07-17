@@ -156,6 +156,11 @@ current scores. If your PR improves any of these, mention it in the PR descripti
   else, coordinate on the issue rather than opening a duplicate parallel fix.
   This binds automated runs too — self-assign or skip if already claimed. See
   `CONTRIBUTING.md`.
+- **Labels are signals, not assignments**: a label or an @-mention is triage/FYI
+  and never a work order — only assignment means someone is on it. Working on
+  it? Assign yourself. Want another party to do it? Assign it to *them* (don't
+  just label or @-mention). Handing off? Reassign. Unassigned = nobody is on it,
+  however many labels it carries.
 - TypeScript, Vitest, tsup, Zod for validation
 - No external API calls in core — search must work offline at zero cost
 - YAML for all persistent storage (not JSON, not SQLite for primary data)

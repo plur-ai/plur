@@ -54,6 +54,22 @@ pnpm --filter @plur-ai/core build
 
 7. **Green before merge.** `pnpm test` and `pnpm build` must pass.
 
+### Labels and @-mentions are signals, not assignments
+
+A label (`P0`, `enhancement`, `research`, …) *describes and prioritizes* an
+issue — it is triage and FYI, and never means anyone has committed to doing the
+work. @-mentioning someone in a comment informs them; it does not assign them.
+**Only assignment creates an expectation that the work will happen.**
+
+- **Working on it?** Assign it to yourself (see step 2).
+- **Want someone else to do it?** Assign it to *them* — don't just label the
+  issue or @-mention them and assume it will be picked up.
+- **Handing off work you were assigned?** Reassign it to the new owner and say
+  why, so the assignee always reflects who is actually on it.
+- **Unassigned means nobody is on it**, no matter how many labels it carries.
+
+This binds autonomous agents as much as people: a label is never a work order.
+
 ## Reviewing and merging
 
 Every change lands through a reviewed pull request — no direct pushes to
