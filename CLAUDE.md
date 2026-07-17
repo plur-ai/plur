@@ -6,12 +6,16 @@ Persistent memory for AI agents. An agent corrected on Monday remembers on Tuesd
 
 Knowledge is stored as **engrams** — small assertions that strengthen with use and decay when irrelevant, modeled on human memory (ACT-R activation). Storage is plain YAML on disk. Search is fully local: BM25 + BGE embeddings + Reciprocal Rank Fusion. Zero API calls, zero cloud.
 
-Three packages:
+Seven packages (four npm, three Python/PyPI):
 
 ```
-@plur-ai/core   — engram engine (learn, recall, inject, search, decay, sync)
-@plur-ai/mcp    — MCP server (Claude Code, Cursor, Windsurf)
-@plur-ai/claw   — OpenClaw ContextEngine plugin
+@plur-ai/core        — engram engine (learn, recall, inject, search, decay, sync)
+@plur-ai/mcp         — MCP server (Claude Code, Cursor, Windsurf)
+@plur-ai/claw        — OpenClaw ContextEngine plugin
+@plur-ai/cli         — CLI (plur learn / recall / inject / status)
+plur-hermes          — Hermes Agent plugin (Python, via CLI bridge)
+plur-ai              — Python SDK (LangChain, llama.cpp, scripts)
+plur-langchain       — LangChain BaseMemory + BaseChatMessageHistory adapter
 ```
 
 Core is the engine. MCP and Claw are thin wrappers — MCP exposes tools via Model Context Protocol, Claw hooks into OpenClaw's lifecycle (auto-inject on session start, auto-learn on corrections).
@@ -26,7 +30,7 @@ pnpm build
 pnpm test
 ```
 
-~1045 tests across ~120 files (117 Vitest + Python suites). All must pass before committing.
+~3500 tests across ~200 files (Vitest + Python suites). All must pass before committing.
 
 ## Package dependency
 
@@ -70,13 +74,16 @@ pnpm --filter @plur-ai/core build
 
 ## Publishing
 
-Authenticate as `plur9`. Core first (it's the dependency):
+See [RELEASING.md](RELEASING.md) for the authoritative publish procedure (including the manifest gate that runs before any irreversible step). Quick reference for npm packages — authenticate as `plur9` first, publish core before dependents:
 
 ```
 pnpm --filter @plur-ai/core publish --access public --no-git-checks
 pnpm --filter @plur-ai/mcp publish --access public --no-git-checks
 pnpm --filter @plur-ai/claw publish --access public --no-git-checks
+pnpm --filter @plur-ai/cli publish --access public --no-git-checks
 ```
+
+Python packages (`plur-hermes`, `plur-ai`, `plur-langchain`) ship via PyPI — see RELEASING.md for the build/twine workflow.
 
 ## Testing a change
 

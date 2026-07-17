@@ -292,8 +292,10 @@ While search is a core part of PLUR (finding the right engram to inject), the se
 | [`@plur-ai/core`](packages/core) | Engram engine — learn, recall, inject, search, decay |
 | [`@plur-ai/mcp`](packages/mcp) | MCP server for Claude Code, Cursor, Windsurf |
 | [`@plur-ai/claw`](packages/claw) | OpenClaw ContextEngine plugin |
+| [`@plur-ai/cli`](packages/cli) | CLI — plur learn / recall / inject / status |
 | [`plur-hermes`](packages/hermes) | Hermes Agent plugin (Python, via CLI bridge) |
 | [`plur-ai`](packages/python) | Python SDK — learn/recall/inject for LangChain, llama.cpp, scripts |
+| [`plur-langchain`](packages/langchain) | LangChain BaseMemory + BaseChatMessageHistory adapter |
 
 ## Architecture
 
@@ -346,7 +348,7 @@ cd plur
 pnpm install && pnpm build && pnpm test
 ```
 
-~340 tests across 27 files. `pnpm test:watch` for development.
+~3500 tests across ~200 files. `pnpm test:watch` for development.
 
 ## Contributing
 

@@ -1,6 +1,8 @@
 # Releasing
 
-This repo publishes four npm packages from `packages/`:
+This repo publishes four npm packages and three Python/PyPI packages from `packages/`:
+
+**npm:**
 
 | Package | npm name |
 |---|---|
@@ -9,7 +11,15 @@ This repo publishes four npm packages from `packages/`:
 | `claw` | `@plur-ai/claw` |
 | `cli` | `@plur-ai/cli` |
 
-`hermes` (Python) ships through a separate PyPI pipeline and is out of scope for this guide.
+**Python/PyPI** (separate pipeline — build + twine, not pnpm):
+
+| Package | PyPI name |
+|---|---|
+| `hermes` | `plur-hermes` |
+| `python` | `plur-ai` |
+| `langchain` | `plur-langchain` |
+
+This guide covers the npm release workflow. Python packages follow the same versioning cadence but ship via `python -m build` + `twine upload`.
 
 Publishing credentials (npm auth as `plur9`, the pending `NPM_TOKEN` repo secret, ClawHub OAuth)
 are documented in [`docs/runbooks/credentials.md`](docs/runbooks/credentials.md).
