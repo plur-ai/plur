@@ -47,7 +47,7 @@ def validate(payload: dict) -> Optional[str]:
     if not isinstance(payload["date"], str) or not DATE_RE.match(payload["date"]):
         return "date must be YYYY-MM-DD"
     for field in ("learn_count", "recall_count", "session_count"):
-        if not isinstance(payload[field], int) or payload[field] < 0:
+        if not isinstance(payload[field], int) or isinstance(payload[field], bool) or payload[field] < 0:
             return f"{field} must be non-negative integer"
     return None
 

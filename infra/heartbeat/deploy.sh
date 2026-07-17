@@ -19,7 +19,7 @@ sudo cp "$SCRIPT_DIR/query.py" /opt/plur-heartbeat/query.py 2>/dev/null || true
 sudo chown -R "${DEPLOY_USER}:${DEPLOY_USER}" /opt/plur-heartbeat /var/lib/plur-heartbeat
 
 echo "==> Installing systemd unit"
-sudo cp "$SCRIPT_DIR/plur-heartbeat.service" /etc/systemd/system/plur-heartbeat.service
+sed "s/__DEPLOY_USER__/${DEPLOY_USER}/g" "$SCRIPT_DIR/plur-heartbeat.service" | sudo tee /etc/systemd/system/plur-heartbeat.service > /dev/null
 sudo systemctl daemon-reload
 sudo systemctl enable --now plur-heartbeat
 sudo systemctl status plur-heartbeat --no-pager

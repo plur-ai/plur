@@ -131,3 +131,12 @@ def test_float_count():
 def test_string_count():
     err = validate(_patch(recall_count="ten"))
     assert err and "recall_count" in err
+
+
+def test_bool_count_rejected():
+    # bool is a subclass of int in Python — must be explicitly rejected
+    for field in ("learn_count", "recall_count", "session_count"):
+        err = validate(_patch(**{field: True}))
+        assert err and field in err, f"bool True should be rejected for {field}"
+        err = validate(_patch(**{field: False}))
+        assert err and field in err, f"bool False should be rejected for {field}"
