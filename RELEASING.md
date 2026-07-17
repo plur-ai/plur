@@ -152,8 +152,8 @@ until `cli@0.9.3` was bumped (#64) and republished.
    done
    ```
 2. If a consumer's published `core` pin is older than the fix, that consumer is shipping the
-   broken dep. Bump it: follow the nine-place version-bump checklist in `CLAUDE.md`
-   (package.json + in-source `VERSION` constants + test assertions), open a PR, merge.
+   broken dep. Bump it: follow the version-bump checklist in `CLAUDE.md`
+   (standard-release surfaces: package.json + VERSION constants + test assertions + hermes/python pins), open a PR, merge.
 3. After merge, run the **Manual publish** recipe above for each bumped consumer.
 4. Verify the pin landed:
    ```sh

@@ -43,17 +43,30 @@ pnpm --filter @plur-ai/core build
 
 ## Version bumps
 
-Nine places. Miss one and something breaks:
+`scripts/release.sh` is the authoritative source. Two independent version tracks:
+
+**Standard release** (core / mcp / cli — always bumped together):
 
 1. `packages/core/package.json`
 2. `packages/mcp/package.json`
-3. `packages/mcp/src/version.ts` — `VERSION` (shared by server.ts and tools.ts)
-4. `packages/mcp/src/index.ts` — `const VERSION` (CLI)
-5. `packages/claw/package.json`
-6. `packages/claw/src/index.ts` — `version:` in plugin object
-7. `packages/claw/src/context-engine.ts` — `version:` in info object
-8. `packages/claw/openclaw.plugin.json` — `version` field
-9. `packages/claw/test/hello.test.ts` + `packages/mcp/test/server.test.ts` — version assertions
+3. `packages/cli/package.json`
+4. `packages/mcp/src/version.ts` — `export const VERSION`
+5. `packages/mcp/src/index.ts` — `const VERSION`
+6. `packages/cli/src/index.ts` — `const VERSION`
+7. `packages/mcp/test/server.test.ts` — version assertions
+8. `packages/hermes/pyproject.toml`
+9. `packages/hermes/plur_hermes/skills/plur-memory.SKILL.md` — frontmatter `version:`
+10. `packages/hermes/plur_hermes/bridge.py` — `_NPX_CLI_VERSION`
+11. `packages/python/pyproject.toml`
+12. `packages/python/plur_ai/bridge.py` — `_NPX_CLI_VERSION`
+
+**Claw track** (independent — only bumped when `--claw <ver>` is passed to release.sh):
+
+- `packages/claw/package.json`
+- `packages/claw/src/index.ts` — `version:` in plugin object
+- `packages/claw/src/context-engine.ts` — `version:` in info object
+- `packages/claw/openclaw.plugin.json` — `version` field
+- `packages/claw/test/hello.test.ts` — version assertion
 
 ## Publishing
 
