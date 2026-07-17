@@ -13,7 +13,7 @@ Seven packages:
 @plur-ai/mcp        — MCP server (Claude Code, Cursor, Windsurf)
 @plur-ai/claw       — OpenClaw ContextEngine plugin
 @plur-ai/cli        — CLI: init, doctor, compact, admin
-@plur-ai/langchain  — LangChain / LCEL adapter
+plur-langchain      — LangChain / LCEL adapter (Python, PyPI)
 plur-hermes         — Hermes Agent plugin (Python, via CLI bridge)
 plur-ai             — Python SDK (learn/recall/inject for scripts and LangChain)
 ```

@@ -293,7 +293,7 @@ While search is a core part of PLUR (finding the right engram to inject), the se
 | [`@plur-ai/mcp`](packages/mcp) | MCP server for Claude Code, Cursor, Windsurf |
 | [`@plur-ai/claw`](packages/claw) | OpenClaw ContextEngine plugin |
 | [`@plur-ai/cli`](packages/cli) | CLI — init, doctor, compact, admin |
-| [`@plur-ai/langchain`](packages/langchain) | LangChain / LCEL adapter |
+| [`plur-langchain`](packages/langchain) | LangChain / LCEL adapter (Python, PyPI) |
 | [`plur-hermes`](packages/hermes) | Hermes Agent plugin (Python, via CLI bridge) |
 | [`plur-ai`](packages/python) | Python SDK — learn/recall/inject for LangChain, llama.cpp, scripts |
 
@@ -316,7 +316,7 @@ While search is a core part of PLUR (finding the right engram to inject), the se
 @plur-ai/mcp          Wraps core as MCP tools
 @plur-ai/claw          OpenClaw ContextEngine hooks (assemble/compact/afterTurn)
 @plur-ai/cli           CLI: init, doctor, compact, admin
-@plur-ai/langchain     LangChain / LCEL adapter (wraps core)
+plur-langchain         LangChain / LCEL adapter (Python, PyPI)
 plur-hermes            Python plugin for Hermes Agent (auto inject/learn)
 plur-ai                Python SDK — direct learn/recall/inject for scripts and frameworks
 ```
