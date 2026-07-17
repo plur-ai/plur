@@ -20,6 +20,7 @@ sudo chown -R "${DEPLOY_USER}:${DEPLOY_USER}" /opt/plur-heartbeat /var/lib/plur-
 
 echo "==> Installing systemd units (heartbeat ingress + daily MAU timer)"
 sudo cp "$SCRIPT_DIR/plur-heartbeat.service" /etc/systemd/system/plur-heartbeat.service
+sudo sed -i "s/\${DEPLOY_USER:-gregor}/${DEPLOY_USER}/g" /etc/systemd/system/plur-heartbeat.service
 sudo cp "$SCRIPT_DIR/plur-metrics.service" /etc/systemd/system/plur-metrics.service
 sudo cp "$SCRIPT_DIR/plur-metrics.timer" /etc/systemd/system/plur-metrics.timer
 sudo sed -i "s/\${DEPLOY_USER:-gregor}/${DEPLOY_USER}/g" /etc/systemd/system/plur-metrics.service

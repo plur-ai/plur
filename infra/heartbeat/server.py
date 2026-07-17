@@ -33,6 +33,9 @@ def validate(payload: dict) -> Optional[str]:
     missing = required - payload.keys()
     if missing:
         return f"missing fields: {', '.join(sorted(missing))}"
+    unknown = payload.keys() - required
+    if unknown:
+        return f"unknown fields: {', '.join(sorted(unknown))}"
     if not isinstance(payload["install_id"], str) or not UUID_RE.match(payload["install_id"]):
         return "install_id must be UUID v4"
     if not isinstance(payload["version"], str) or not VERSION_RE.match(payload["version"]):
