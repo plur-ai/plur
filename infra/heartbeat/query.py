@@ -64,7 +64,7 @@ def weekly_active_count(days: int = 7) -> dict:
     }
 
 
-def summary_stats(days: int = 30) -> dict:
+def summary_stats(days: int = 7) -> dict:
     """Full summary: active installs, learn/recall rates, version distribution."""
     until = date.today()
     since = until - timedelta(days=days - 1)

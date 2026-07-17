@@ -4,8 +4,6 @@ After=network.target
 
 [Service]
 Type=simple
-User=gregor
-Group=gregor
 ExecStart=/usr/bin/python3 /opt/plur-heartbeat/server.py
 Restart=on-failure
 RestartSec=5
