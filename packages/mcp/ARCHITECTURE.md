@@ -75,18 +75,20 @@ Each tool is an object with:
 }
 ```
 
-Tool families (~20 tools total):
+Tool families (~40 tools total):
 
 | Family | Tools |
 |---|---|
 | Lifecycle | `plur_session_start`, `plur_session_end` |
 | Learning | `plur_learn`, `plur_learn_batch`, `plur_capture`, `plur_ingest`, `plur_extract_meta` |
 | Recall | `plur_recall`, `plur_recall_hybrid`, `plur_inject`, `plur_inject_hybrid`, `plur_similarity_search` |
+| Scopes | `plur_suggest_scope`, `plur_scopes_discover` |
 | Lifecycle (engram) | `plur_forget`, `plur_pin`, `plur_promote`, `plur_feedback`, `plur_history` |
 | Multi-store | `plur_stores_add`, `plur_stores_list` |
 | Packs | `plur_packs_install`, `plur_packs_list`, `plur_packs_export`, `plur_packs_discover`, `plur_packs_preview`, `plur_packs_uninstall` |
-| Diagnostics | `plur_status`, `plur_doctor`, `plur_profile`, `plur_timeline`, `plur_tensions`, `plur_meta_engrams` |
+| Diagnostics | `plur_status`, `plur_doctor`, `plur_profile`, `plur_timeline`, `plur_tensions`, `plur_tensions_purge`, `plur_meta_engrams` |
 | Sync / maintenance | `plur_sync`, `plur_sync_status`, `plur_validate_meta`, `plur_episode_to_engram`, `plur_report_failure` |
+| Admin dispatch | `plur_admin` (lean profile umbrella — bundles less-common tools for clients with tool-count limits) |
 
 When adding a new tool: define it in `tools.ts`, write the Zod schema
 (MCP clients use the schema to format args), add the test in
