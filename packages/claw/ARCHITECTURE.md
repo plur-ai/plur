@@ -11,14 +11,16 @@ sibling MCP adapter see [`packages/mcp/ARCHITECTURE.md`](../mcp/ARCHITECTURE.md)
 
 ## The shape, in one paragraph
 
-OpenClaw exposes a `ContextEngine` lifecycle: `onSessionStart`, `onTurn`,
-`onSessionEnd`. Claw implements that interface, hooks each event into a
-`Plur` instance from `@plur-ai/core`. On session start it injects
-relevant engrams into the system prompt. On every assistant turn it
-runs the learner over the conversation looking for corrections /
-preferences / decisions. On session end it captures the episode and
-runs decay. There is no UI, no MCP transport, no user interaction — the
-entire memory layer is invisible.
+OpenClaw's `ContextEngine` protocol exposes lifecycle hooks: `assemble`
+(called before each prompt build to inject context), `ingest` (called
+per message for real-time correction detection), `compact` (called on
+context compaction to extract learnings), and `afterTurn` (called after
+every assistant response for batch learning + episode capture). Claw
+implements that interface via `PlurContextEngine`, registered with
+`api.registerContextEngine()`. It also installs two event hooks alongside
+— `before_prompt_build` and `agent_end` — for runtimes that use the event
+bus rather than the ContextEngine protocol. There is no UI, no MCP
+transport, no user interaction — the entire memory layer is invisible.
 
 ## Top-level layout
 
@@ -41,28 +43,51 @@ slot, version — OpenClaw reads this when discovering plugins.
 
 ## ContextEngine integration
 
-OpenClaw's `ContextEngine` interface (simplified):
+OpenClaw's `ContextEngine` interface (from `src/types.ts`):
 
 ```ts
 interface ContextEngine {
-  info(): { name, version, slot }
-  onSessionStart(session): Promise<{ inject?: string }>
-  onTurn(session, turn): Promise<{ inject?: string, capture?: any }>
-  onSessionEnd(session): Promise<void>
+  readonly info: ContextEngineInfo        // { id, name, version, ownsCompaction }
+  bootstrap?(params): Promise<BootstrapResult>   // optional: session init / scope setup
+  ingest(params): Promise<IngestResult>          // required: per-message processing
+  ingestBatch?(params): Promise<...>             // optional: batch ingest
+  afterTurn?(params): Promise<void>              // optional: post-turn learning + capture
+  assemble(params): Promise<AssembleResult>      // required: inject context before prompt build
+  compact(params): Promise<CompactResult>        // required: extract learnings on compaction
+  prepareSubagentSpawn?(params): Promise<...>    // optional: propagate scope to child session
+  onSubagentEnded?(params): Promise<void>        // optional: clean up child session state
+  dispose?(): Promise<void>                      // optional: clean up all session state
 }
 ```
 
-Claw's implementation in `context-engine.ts`:
+`PlurContextEngine` in `context-engine.ts` implements all required methods
+plus the optional ones:
 
-| Hook | What it does |
+| Method | What it does |
 |---|---|
-| `info()` | Returns `{ name: 'plur-claw', version, slot: 'memory' }` |
-| `onSessionStart` | Calls `plur.inject(task)` → builds system-prompt block via `assembler.ts` → returns `{ inject }` |
-| `onTurn` | Runs `learner.ts` over the user+assistant turn → if corrections detected, calls `plur.learn()` async (background) → optionally captures the turn as an episode |
-| `onSessionEnd` | Calls `plur.capture(summary)` |
+| `info` | Returns `{ id: 'plur-claw', name: 'PLUR Memory Engine', version, ownsCompaction: false }` |
+| `bootstrap` | Records session key for scope propagation to subagents |
+| `ingest` | Real-time correction detection per message — runs `learner.ts`; fires `plur.learnRouted()` async (fire-and-forget) when confidence ≥ 0.7 |
+| `assemble` | Injects relevant engrams before each prompt build via `plur.injectHybrid()` (BM25 + embeddings fallback to BM25-only) → `assembler.ts` formats the result |
+| `compact` | Extracts learnings from accumulated messages before context is dropped |
+| `afterTurn` | Primary learning pass: LLM self-report (🧠 I learned: section) + regex fallback; also captures episode summary |
+| `prepareSubagentSpawn` | Inherits parent scope for the child session |
+| `onSubagentEnded` | Cleans up child session scope and message state |
+| `dispose` | Clears all in-memory session maps |
 
-All operations are awaited from OpenClaw's perspective but the actual
-LLM-blocking work (learn, capture) is queued — `onTurn` returns fast.
+Learning and capture calls are fire-and-forget (`void promise.catch(...)`) —
+`ingest` and `afterTurn` return fast; slow remote stores don't stall the agent turn.
+
+### Parallel event hooks (legacy / redundancy path)
+
+The plugin also registers two event hooks via `api.on()` alongside the
+ContextEngine. These provide coverage for runtimes that use the event
+bus rather than the ContextEngine protocol:
+
+| Event | What it does |
+|---|---|
+| `before_prompt_build` | Injects engrams via `plur.inject()` (BM25 only — fast path) |
+| `agent_end` | Captures episode summary from the last assistant message |
 
 ## Assembler (`assembler.ts`)
 

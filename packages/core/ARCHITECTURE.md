@@ -48,6 +48,7 @@ src/
 │
 ├── storage.ts             # Legacy single-file YAML helpers (still used by tests)
 ├── storage-indexed.ts     # SQLite secondary index over engrams for fast load
+├── storage-pglite.ts      # PGLite (WebAssembly PostgreSQL) storage layer
 │
 ├── # — search layer —
 ├── fts.ts                 # In-memory BM25 over enriched engram text

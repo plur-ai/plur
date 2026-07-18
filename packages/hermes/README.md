@@ -18,7 +18,7 @@ Once installed, PLUR runs invisibly in the background:
 - **Every response**: corrections and insights are captured automatically (via `post_llm_call` hook)
 - **Every session**: episodes are recorded to a timeline (via `on_session_end` hook)
 
-The agent also gets 16 tools it can call explicitly:
+The agent also gets 22 tools it can call explicitly:
 
 | Tool | What it does |
 |------|-------------|
@@ -34,10 +34,16 @@ The agent also gets 16 tools it can call explicitly:
 | `plur_sync` | Cross-device sync via git |
 | `plur_packs_list` | List installed knowledge packs |
 | `plur_packs_install` | Install a community knowledge pack |
+| `plur_packs_export` | Export a pack to a shareable file |
 | `plur_extract_meta` | Distill cross-domain principles from your memories |
 | `plur_meta_engrams` | List extracted meta-engrams |
 | `plur_meta_submit_analysis` | Continue multi-turn extraction |
 | `plur_validate_meta` | Test a principle against a new domain |
+| `plur_ingest` | Ingest a message into the memory pipeline |
+| `plur_promote` | Promote an engram to higher confidence |
+| `plur_similarity_search` | Embedding-based similarity search |
+| `plur_stores_add` | Register an additional engram store |
+| `plur_stores_list` | List all registered stores |
 
 ## How it works
 
