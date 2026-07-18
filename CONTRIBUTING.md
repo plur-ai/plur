@@ -1,10 +1,11 @@
 # Contributing to PLUR
 
 Thanks for helping build PLUR — persistent, composable memory for AI agents.
-This monorepo holds `@plur-ai/core` (the engine), `@plur-ai/mcp` (the MCP
-server), and `@plur-ai/claw` (the OpenClaw plugin). For the release process see
-[RELEASING.md](RELEASING.md); for agent/automation working rules see
-[CLAUDE.md](CLAUDE.md).
+This monorepo holds seven packages: `@plur-ai/core` (the engine), `@plur-ai/mcp`
+(the MCP server), `@plur-ai/claw` (the OpenClaw plugin), `@plur-ai/cli` (the CLI),
+`plur-hermes` (Hermes Agent plugin), `plur-ai` (Python SDK), and `plur-langchain`
+(LangChain adapter). For the release process see [RELEASING.md](RELEASING.md); for
+agent/automation working rules see [CLAUDE.md](CLAUDE.md).
 
 ## Getting started
 

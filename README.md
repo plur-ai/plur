@@ -74,7 +74,7 @@ For **multi-project setups**, use domain/scope to separate knowledge:
 
 ```bash
 cd ~/projects/my-app
-npx @plur-ai/cli@0.10.1 init --domain myapp --scope project:my-app
+npx @plur-ai/cli init --domain myapp --scope project:my-app
 ```
 
 This creates a `.plur.yaml` in the project with defaults that hooks apply automatically. Engrams learned in that project are tagged; recall filters by scope but always includes global knowledge.
@@ -101,10 +101,10 @@ That's it. PLUR works in the background from here. No workflow changes needed �
 
 ```bash
 pip install plur-hermes
-npm install -g @plur-ai/cli@0.10.1
+npm install -g @plur-ai/cli
 ```
 
-The plugin registers automatically via Hermes' plugin system. It injects relevant memories before each LLM call, extracts learnings from agent responses, and exposes all PLUR tools to the agent. Hermes shells out to the PLUR CLI; current verified pairing is `plur-hermes==0.10.0` with `@plur-ai/cli@0.10.1`.
+The plugin registers automatically via Hermes' plugin system. It injects relevant memories before each LLM call, extracts learnings from agent responses, and exposes all PLUR tools to the agent. Hermes shells out to the PLUR CLI.
 
 ### Python SDK (LangChain, llama.cpp, scripts)
 
@@ -112,7 +112,7 @@ For Python environments that aren't Hermes:
 
 ```bash
 pip install plur-ai
-npm install -g @plur-ai/cli@0.10.1   # bridge (required)
+npm install -g @plur-ai/cli   # bridge (required)
 ```
 
 ```python
@@ -292,8 +292,10 @@ While search is a core part of PLUR (finding the right engram to inject), the se
 | [`@plur-ai/core`](packages/core) | Engram engine — learn, recall, inject, search, decay |
 | [`@plur-ai/mcp`](packages/mcp) | MCP server for Claude Code, Cursor, Windsurf |
 | [`@plur-ai/claw`](packages/claw) | OpenClaw ContextEngine plugin |
+| [`@plur-ai/cli`](packages/cli) | CLI — plur learn / recall / inject / status |
 | [`plur-hermes`](packages/hermes) | Hermes Agent plugin (Python, via CLI bridge) |
 | [`plur-ai`](packages/python) | Python SDK — learn/recall/inject for LangChain, llama.cpp, scripts |
+| [`plur-langchain`](packages/langchain) | LangChain BaseMemory + BaseChatMessageHistory adapter |
 
 ## Architecture
 
@@ -346,7 +348,7 @@ cd plur
 pnpm install && pnpm build && pnpm test
 ```
 
-~340 tests across 27 files. `pnpm test:watch` for development.
+~3500 tests across ~200 files. `pnpm test:watch` for development.
 
 ## Contributing
 

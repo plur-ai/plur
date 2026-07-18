@@ -1,6 +1,8 @@
 # Releasing
 
-This repo publishes four npm packages from `packages/`:
+This repo publishes four npm packages and three Python/PyPI packages from `packages/`:
+
+**npm:**
 
 | Package | npm name |
 |---|---|
@@ -9,7 +11,15 @@ This repo publishes four npm packages from `packages/`:
 | `claw` | `@plur-ai/claw` |
 | `cli` | `@plur-ai/cli` |
 
-`hermes` (Python) ships through a separate PyPI pipeline and is out of scope for this guide.
+**Python/PyPI** (separate pipeline — build + twine, not pnpm):
+
+| Package | PyPI name |
+|---|---|
+| `hermes` | `plur-hermes` |
+| `python` | `plur-ai` |
+| `langchain` | `plur-langchain` |
+
+This guide covers the npm release workflow. Python packages follow the same versioning cadence but ship via `python -m build` + `twine upload`.
 
 Publishing credentials (npm auth as `plur9`, the pending `NPM_TOKEN` repo secret, ClawHub OAuth)
 are documented in [`docs/runbooks/credentials.md`](docs/runbooks/credentials.md).
@@ -152,8 +162,8 @@ until `cli@0.9.3` was bumped (#64) and republished.
    done
    ```
 2. If a consumer's published `core` pin is older than the fix, that consumer is shipping the
-   broken dep. Bump it: follow the nine-place version-bump checklist in `CLAUDE.md`
-   (package.json + in-source `VERSION` constants + test assertions), open a PR, merge.
+   broken dep. Bump it: follow the version-bump checklist in `CLAUDE.md`
+   (standard-release surfaces: package.json + VERSION constants + test assertions + hermes/python pins), open a PR, merge.
 3. After merge, run the **Manual publish** recipe above for each bumped consumer.
 4. Verify the pin landed:
    ```sh

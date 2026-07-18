@@ -7,16 +7,14 @@ PLUR stores corrections, preferences, and patterns as **engrams** that strengthe
 ## Install
 
 ```bash
-npm install -g @plur-ai/cli@0.9.4
+npm install -g @plur-ai/cli
 ```
 
 Or use without installing:
 
 ```bash
-npx @plur-ai/cli@0.9.4 status
+npx @plur-ai/cli status
 ```
-
-> Current verified CLI release: `@plur-ai/cli@0.9.4`.
 
 ## Quick Start
 
