@@ -38,10 +38,13 @@ function makeTransport(plurPath: string): StdioClientTransport {
     // When `env` is provided the child gets ONLY these vars — deliberate, so
     // the test can't accidentally inherit a developer's real ~/.plur via a
     // stray PLUR_PATH. PATH/HOME are passed through for node + os.homedir().
+    // PLUR_TOOL_PROFILE=full: smoke-tests the full dist surface, not the lean
+    // profile (that is covered by tool-profile.test.ts).
     env: {
       ...(process.env.PATH ? { PATH: process.env.PATH } : {}),
       ...(process.env.HOME ? { HOME: process.env.HOME } : {}),
       PLUR_PATH: plurPath,
+      PLUR_TOOL_PROFILE: 'full',
     },
   })
 }

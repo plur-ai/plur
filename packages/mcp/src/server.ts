@@ -174,7 +174,7 @@ Override with \`PLUR_PATH\` environment variable.
 
 export async function createServer(plur?: Plur, options?: { profile?: ToolProfile }): Promise<Server> {
   const instance = plur ?? new Plur()
-  const tools = getToolDefinitions(options?.profile ?? 'full')
+  const tools = getToolDefinitions(options?.profile ?? 'lean')
 
   // Non-blocking version check — fire and forget
   checkForUpdate('@plur-ai/mcp', VERSION, (r) => {
@@ -295,11 +295,12 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
       // iteration 2, 2026-07-09), not a second hardcoded copy of it — a
       // second copy drifts the moment the core set changes and nothing
       // catches it, silently making this exact text wrong.
-      const cursorNote = options?.profile === 'cursor'
-        ? '\n\n## Cursor tool profile\n\nMost tools above are NOT directly callable in this session — only ' +
+      const cursorNote = (options?.profile === 'cursor' || options?.profile === 'lean' || options?.profile == null)
+        ? '\n\n## Lean tool profile (default)\n\nMost tools above are NOT directly callable in this session — only ' +
           `${[...CURSOR_CORE_TOOL_NAMES].join(', ')} are top-level tools here. ` +
           'Everything else in this guide is reachable through **plur_admin**: call it with ' +
-          '`{ action: "<tool name above>", args: {...} }`.'
+          '`{ action: "<tool name above>", args: {...} }`. ' +
+          'Set `PLUR_TOOL_PROFILE=full` to expose all 40 tools directly.'
         : ''
       return {
         contents: [{
@@ -406,7 +407,8 @@ Please:
 }
 
 export async function runStdio(): Promise<void> {
-  const profile = process.env.PLUR_TOOL_PROFILE === 'cursor' ? 'cursor' as const : 'full' as const
+  const envProfile = process.env.PLUR_TOOL_PROFILE
+  const profile: ToolProfile = envProfile === 'full' ? 'full' : envProfile === 'cursor' ? 'cursor' : 'lean'
   const server = await createServer(undefined, { profile })
   // Opt-in, content-free telemetry: ship any pending daily counter snapshot on
   // process exit (best-effort). Self-gates on telemetry opt-in — an opted-out

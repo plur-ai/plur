@@ -11,10 +11,37 @@ import { getToolDefinitions } from '../src/tools.js'
 describe('tool profiles', () => {
   it('full profile returns every tool, unfiltered', () => {
     const full = getToolDefinitions('full')
-    const bareCall = getToolDefinitions()
-    expect(full.length).toBe(bareCall.length)
+    expect(full.length).toBeGreaterThanOrEqual(39)
     expect(full.some(t => t.name === 'plur_packs_install')).toBe(true)
     expect(full.some(t => t.name === 'plur_admin')).toBe(false)
+  })
+
+  it('default (no arg) is lean — not full', () => {
+    const lean = getToolDefinitions()
+    const full = getToolDefinitions('full')
+    expect(lean.length).toBeLessThan(full.length)
+    expect(lean.length).toBeLessThanOrEqual(12)
+    expect(lean.some(t => t.name === 'plur_admin')).toBe(true)
+    expect(lean.some(t => t.name === 'plur_packs_install')).toBe(false)
+  })
+
+  it('lean profile stays at or under 12 tools and includes plur_admin', () => {
+    const lean = getToolDefinitions('lean')
+    expect(lean.length).toBeLessThanOrEqual(12)
+    const names = lean.map(t => t.name)
+    expect(names).toContain('plur_session_start')
+    expect(names).toContain('plur_learn')
+    expect(names).toContain('plur_recall_hybrid')
+    expect(names).toContain('plur_admin')
+    expect(names).toContain('plur_packs_uninstall')
+    expect(names).toContain('plur_tensions_purge')
+    expect(names).not.toContain('plur_packs_install')
+  })
+
+  it('cursor profile is identical to lean', () => {
+    const lean = getToolDefinitions('lean')
+    const cursor = getToolDefinitions('cursor')
+    expect(cursor.map(t => t.name).sort()).toEqual(lean.map(t => t.name).sort())
   })
 
   it('cursor profile stays at or under 12 tools and includes plur_admin', () => {
@@ -117,11 +144,9 @@ describe('tool profiles', () => {
     })
 
     // Audit fix (evaluator review, iteration 2, 2026-07-09): the
-    // plur://guide resource's cursor-profile note used to hardcode a SECOND
-    // copy of the core tool list, independent of getToolDefinitions('cursor')
-    // — this proves the guide's redirect note actually lists every real
-    // top-level tool this profile exposes, not a stale hand-typed copy.
-    it('plur://guide names every actual cursor-profile top-level tool in its redirect note', async () => {
+    // plur://guide resource's lean-profile note must list every real top-level
+    // tool this profile exposes — not a stale hand-typed copy.
+    it('plur://guide names every actual lean-profile top-level tool in its redirect note', async () => {
       const { tools } = await client.listTools()
       const coreNames = tools.map((t) => t.name).filter((n) => n !== 'plur_admin')
 

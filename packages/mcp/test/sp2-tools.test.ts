@@ -8,7 +8,7 @@ import { getToolDefinitions } from '../src/tools.js'
 describe('SP2 MCP Tools', () => {
   let dir: string
   let plur: Plur
-  const tools = getToolDefinitions()
+  const tools = getToolDefinitions('full')
 
   function getTool(name: string) {
     const tool = tools.find(t => t.name === name)

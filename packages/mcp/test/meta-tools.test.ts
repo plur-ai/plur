@@ -20,7 +20,7 @@ describe('MCP meta-engram tool integration', () => {
   beforeEach(() => {
     tempDir = mkdtempSync(join(tmpdir(), 'plur-mcp-meta-'))
     plur = new Plur({ path: tempDir })
-    tools = getToolDefinitions()
+    tools = getToolDefinitions('full')
   })
 
   afterEach(() => {

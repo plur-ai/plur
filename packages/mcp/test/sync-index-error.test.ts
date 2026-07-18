@@ -29,7 +29,7 @@ describe('MCP index-error surfacing (#272)', () => {
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), 'plur-mcp-idxerr-'))
     plur = new Plur({ path: dir })
-    tools = getToolDefinitions()
+    tools = getToolDefinitions('full')
   })
   afterEach(() => { rmSync(dir, { recursive: true }) })
 

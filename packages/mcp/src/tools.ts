@@ -269,7 +269,7 @@ function _recordInjectionTelemetry(session_id: string | undefined, injected_pack
   }
 }
 
-export type ToolProfile = 'full' | 'cursor'
+export type ToolProfile = 'full' | 'lean' | 'cursor'
 
 // The day-to-day tools a Cursor user needs, plus every tool marked
 // `destructiveHint: true` — everything else (packs install/list, sync,
@@ -366,9 +366,10 @@ function buildAdminDispatchTool(all: ToolDefinition[]): ToolDefinition {
   }
 }
 
-export function getToolDefinitions(profile: ToolProfile = 'full'): ToolDefinition[] {
+export function getToolDefinitions(profile: ToolProfile = 'lean'): ToolDefinition[] {
   const all = getAllToolDefinitions()
-  if (profile !== 'cursor') return all
+  if (profile === 'full') return all
+  // 'lean' and 'cursor' are identical: 10 core tools + plur_admin dispatch
   const core = all.filter(t => CURSOR_CORE_TOOL_NAMES.has(t.name))
   return [...core, buildAdminDispatchTool(all)]
 }

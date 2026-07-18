@@ -26,7 +26,7 @@ describe('CapabilityCanary session reset (#192)', () => {
   afterEach(() => { rmSync(dir, { recursive: true }) })
 
   const callDirect = async (name: string, args: Record<string, unknown> = {}) => {
-    const tools = getToolDefinitions()
+    const tools = getToolDefinitions('full')
     const tool = tools.find(t => t.name === name)
     if (!tool) throw new Error(`Unknown tool: ${name}`)
     return tool.handler(args, plur)
