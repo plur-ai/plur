@@ -46,26 +46,23 @@ Knowledge is stored as **engrams** — small assertions that strengthen with use
 
 ## Tools
 
-Your agent gets these tools automatically:
+By default (lean profile), your agent gets 11 tools. Everything else is reachable through `plur_admin`:
 
 | Tool | What it does |
 |------|-------------|
 | `plur_session_start` | Start a session — injects relevant engrams for your task |
 | `plur_learn` | Store a memory — correction, preference, convention, or decision |
-| `plur_learn_batch` | Store many memories in one call — same dedup + policy as `plur_learn`, with per-item failure isolation |
 | `plur_recall_hybrid` | **Best default** — BM25 + embeddings merged via RRF. Zero cost. |
-| `plur_recall` | Keyword search (BM25 only, instant) |
-| `plur_inject_hybrid` | Load relevant memories for the current task |
 | `plur_feedback` | Rate a memory — trains relevance over time |
 | `plur_forget` | Retire a memory (history preserved) |
 | `plur_session_end` | End a session — captures summary and new learnings |
-| `plur_capture` | Record a session event |
-| `plur_timeline` | Query session history |
-| `plur_ingest` | Extract learnings from text |
-| `plur_sync` | Sync memory across machines via git |
-| `plur_packs_install` | Install a shareable memory pack |
-| `plur_packs_list` | List installed packs |
 | `plur_status` | System health |
+| `plur_doctor` | Diagnose embedder, hybrid search, and remote-store auth |
+| `plur_packs_uninstall` | Remove an installed pack |
+| `plur_tensions_purge` | Clear stale/resolved tensions |
+| `plur_admin` | Dispatch to any other tool: `{ action: "plur_packs_install", args: {...} }` |
+
+Less commonly needed tools (`plur_recall`, `plur_inject_hybrid`, `plur_learn_batch`, `plur_ingest`, `plur_sync`, `plur_packs_install`, `plur_packs_list`, `plur_capture`, `plur_timeline`, and more) are all reachable via `plur_admin`. Set `PLUR_TOOL_PROFILE=full` to expose all 40 tools directly.
 
 ## Sync across machines
 

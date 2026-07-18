@@ -16,7 +16,7 @@ describe('MCP server (wire protocol)', () => {
     dir = mkdtempSync(join(tmpdir(), 'plur-mcp-server-'))
     const plur = new Plur({ path: dir })
     plurInstance = plur
-    const server = await createServer(plur)
+    const server = await createServer(plur, { profile: 'full' })
 
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
     await server.connect(serverTransport)

@@ -14,7 +14,7 @@ describe('plur_tensions lifecycle (#181)', () => {
   let dir: string
   let plur: Plur
   let originalFetch: typeof globalThis.fetch
-  const tools = getToolDefinitions()
+  const tools = getToolDefinitions('full')
   const tensionsTool = tools.find(t => t.name === 'plur_tensions')!
   const injectTool = tools.find(t => t.name === 'plur_inject')!
 

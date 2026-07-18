@@ -57,7 +57,7 @@ let activeClients: Client[] = []
 
 async function makeClient(plurPath: string): Promise<{ client: Client }> {
   const plur = new Plur({ path: plurPath })
-  const server = await createServer(plur)
+  const server = await createServer(plur, { profile: 'full' })
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
   await server.connect(serverTransport)
   const client = new Client({ name: 'test-client', version: '1.0.0' })

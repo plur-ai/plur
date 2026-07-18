@@ -79,7 +79,7 @@ describe('plur_doctor per-store reranker eval gate (#451)', () => {
     dir = mkdtempSync(join(tmpdir(), 'plur-evalgate-'))
     plur = new Plur({ path: dir })
     for (const s of STATEMENTS) plur.learn(s, { scope: 'global' })
-    tools = getToolDefinitions()
+    tools = getToolDefinitions('full')
     process.env.PLUR_RERANKER = TINY
     _resetRerankerCache()
     resetRerankerStatus()
