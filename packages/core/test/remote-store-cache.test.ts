@@ -127,6 +127,143 @@ describe('RemoteStore — optimistic cache insert (issue #89)', () => {
 })
 
 // ---------------------------------------------------------------------------
+// Cache poisoning — issue #550
+// ---------------------------------------------------------------------------
+
+describe('RemoteStore — cache poisoning on partial pagination (issue #550)', () => {
+  let originalFetch: typeof globalThis.fetch
+  let fetchMock: ReturnType<typeof vi.fn>
+
+  beforeEach(() => {
+    originalFetch = globalThis.fetch
+    fetchMock = vi.fn()
+    globalThis.fetch = fetchMock as any
+  })
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch
+  })
+
+  // To trigger multi-page pagination the first page must be a full 200-row page
+  // (limit is hardcoded at 200 in load()). We generate 200 stub rows here.
+  const PAGE_LIMIT = 200
+  const page1Rows = Array.from({ length: PAGE_LIMIT }, (_, i) => ({
+    id: `ENG-P1-${String(i + 1).padStart(3, '0')}`,
+    scope: 'group:test',
+    status: 'active',
+    data: { statement: `page1 item ${i + 1}` },
+  }))
+  // A smaller set used as "prior good cache" primed via a short initial load.
+  const primeRows = [
+    { id: 'ENG-GOOD-001', scope: 'group:test', status: 'active', data: { statement: 'good a' } },
+    { id: 'ENG-GOOD-002', scope: 'group:test', status: 'active', data: { statement: 'good b' } },
+  ]
+
+  it('page 1 OK + page 2 AbortError — does not overwrite a good prior cache (#550)', async () => {
+    let loadCall = 0
+    fetchMock.mockImplementation(async (url: string) => {
+      const offsetMatch = url.match(/offset=(\d+)/)
+      const offset = offsetMatch ? parseInt(offsetMatch[1], 10) : 0
+      loadCall++
+
+      if (loadCall === 1) {
+        // First overall fetch: clean 2-engram load that primes the cache.
+        return {
+          ok: true, status: 200,
+          json: async () => ({ rows: primeRows, total_count: 2 }),
+        } as Response
+      }
+      // Second load (after cache expires via ttlMs:0) — page 1 returns a full
+      // 200-row page signalling total_count=400 (more pages remain).
+      if (offset === 0) {
+        return {
+          ok: true, status: 200,
+          json: async () => ({ rows: page1Rows, total_count: PAGE_LIMIT + 1 }),
+        } as Response
+      }
+      // Page 2 throws (simulates AbortError / network stall after abort fires).
+      const err = new Error('This operation was aborted.')
+      ;(err as any).name = 'AbortError'
+      throw err
+    })
+
+    const store = new RemoteStore('https://plur.example.com/sse', 'tok', 'group:test', { ttlMs: 0 })
+
+    // Prime the cache with the known-good set.
+    const primed = await store.load()
+    expect(primed.map(e => e.id).sort()).toEqual(['ENG-GOOD-001', 'ENG-GOOD-002'])
+
+    // Second load: page 1 OK, page 2 aborts → must NOT overwrite prior cache.
+    const afterError = await store.load()
+    expect(afterError.map(e => e.id).sort()).toEqual(['ENG-GOOD-001', 'ENG-GOOD-002'])
+  })
+
+  it('5xx on page 2 does not overwrite prior good cache (#550)', async () => {
+    let loadCall = 0
+    fetchMock.mockImplementation(async (url: string) => {
+      const offsetMatch = url.match(/offset=(\d+)/)
+      const offset = offsetMatch ? parseInt(offsetMatch[1], 10) : 0
+      loadCall++
+      if (loadCall === 1) {
+        return {
+          ok: true, status: 200,
+          json: async () => ({ rows: primeRows, total_count: 2 }),
+        } as Response
+      }
+      if (offset === 0) {
+        return {
+          ok: true, status: 200,
+          json: async () => ({ rows: page1Rows, total_count: PAGE_LIMIT + 1 }),
+        } as Response
+      }
+      return { ok: false, status: 503 } as Response
+    })
+
+    const store = new RemoteStore('https://plur.example.com/sse', 'tok', 'group:test', { ttlMs: 0 })
+    const primed = await store.load()
+    expect(primed.map(e => e.id).sort()).toEqual(['ENG-GOOD-001', 'ENG-GOOD-002'])
+
+    const afterError = await store.load()
+    expect(afterError.map(e => e.id).sort()).toEqual(['ENG-GOOD-001', 'ENG-GOOD-002'])
+  })
+
+  it('transient page 1 error caches nothing — prior cache preserved (#550)', async () => {
+    let loadCall = 0
+    fetchMock.mockImplementation(async () => {
+      loadCall++
+      if (loadCall === 1) {
+        return {
+          ok: true, status: 200,
+          json: async () => ({ rows: primeRows, total_count: 2 }),
+        } as Response
+      }
+      return { ok: false, status: 500 } as Response
+    })
+
+    const store = new RemoteStore('https://plur.example.com/sse', 'tok', 'group:test', { ttlMs: 0 })
+    const primed = await store.load()
+    expect(primed.length).toBe(2)
+
+    const afterError = await store.load()
+    // Must still return the two engrams from the good first load.
+    expect(afterError.length).toBe(2)
+  })
+
+  it('403 on page 1 caches empty result (stable state — scope has no access)', async () => {
+    fetchMock.mockResolvedValue({ ok: false, status: 403 } as Response)
+
+    const store = new RemoteStore('https://plur.example.com/sse', 'tok', 'group:test', { ttlMs: 60_000 })
+    const result = await store.load()
+    expect(result).toEqual([])
+
+    // Next call within TTL must be served from cache (no additional fetch).
+    const cached = await store.load()
+    expect(cached).toEqual([])
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+})
+
+// ---------------------------------------------------------------------------
 // Cold-start behavior — Plur-level (issue #184, #185 gap 3)
 // ---------------------------------------------------------------------------
 
