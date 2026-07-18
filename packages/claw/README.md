@@ -122,11 +122,9 @@ Everything is stored as plain YAML in `~/.plur/`. Open it, read it, edit it. Ove
 
 ## Benchmark
 
-| Metric | Score |
-|--------|-------|
-| LongMemEval overall | **86.7%** |
-| A/B win rate vs no memory | 89% |
-| House rules accuracy | 100% |
+**Retrieval** (LongMemEval R@5): **76.7%** out-of-the-box · **97.0%** with openai-3-large embeddings
+
+**Agent task impact:** Haiku + PLUR outperforms Opus *without* memory at ~10× less cost. House rules: **12–0** across Haiku, Sonnet, Opus. A/B win rate: **89%**.
 
 [Full methodology →](https://plur.ai/benchmark.html)
 
