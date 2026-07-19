@@ -96,6 +96,8 @@ Python packages (`plur-hermes`, `plur-ai`, `plur-langchain`) ship via PyPI — s
 
 ### Unit tests
 
+The test architecture (unit / integration / smoke tiers and the rationale for no Docker-based integration tests) is documented in [docs/test-pyramid.md](docs/test-pyramid.md).
+
 ```
 pnpm test                                    # all packages
 pnpm test -- packages/core/test/sync.test.ts # specific file
@@ -190,9 +192,10 @@ current scores. If your PR improves any of these, mention it in the PR descripti
   however many labels it carries.
 - TypeScript, Vitest, tsup, Zod for validation
 - No external API calls in core — search must work offline at zero cost
-- YAML for all persistent storage (not JSON, not SQLite for primary data)
+- YAML for all persistent storage (not JSON, not SQLite — SQLite is permitted only as an optional read-cache index, never as source of truth)
 - Tests in `packages/*/test/`, named `*.test.ts`
 - Apache-2.0 license
+- **No AI attribution in commits, PRs, or issues** — do not add `Co-Authored-By: Claude ...`, `🤖 Generated with Claude Code`, or similar AI-attribution footers. They add noise and conflict with the project's human-attribution standard.
 
 ## Key files
 
@@ -210,6 +213,17 @@ current scores. If your PR improves any of these, mention it in the PR descripti
 | `packages/mcp/src/tools.ts` | All MCP tool definitions |
 | `packages/claw/src/assembler.ts` | Context assembly for OpenClaw |
 | `packages/claw/src/learner.ts` | Auto-extraction of learnings from conversation |
+
+## Documentation index
+
+| Document | What it covers |
+|----------|---------------|
+| [ROADMAP.md](ROADMAP.md) | Feature roadmap and milestone targets |
+| [docs/test-pyramid.md](docs/test-pyramid.md) | Test architecture — unit / integration / smoke tiers; why there are no Docker integration tests |
+| [docs/adr/ADR-0002-derived-state-provenance.md](docs/adr/ADR-0002-derived-state-provenance.md) | ADR: derived-state provenance for episodes |
+| [docs/runbooks/store-consolidation.md](docs/runbooks/store-consolidation.md) | Runbook: destructive store merge procedure |
+| [docs/telemetry-design.md](docs/telemetry-design.md) | Opt-in telemetry mechanism; "no external calls in core" invariant explained |
+| [docs/benchmarks/](docs/benchmarks/) | Historical benchmark results (current scores are in plur-bench) |
 
 ## Datacore Space Context
 
