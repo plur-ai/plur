@@ -220,11 +220,7 @@ This project lives inside a Datacore space. Session lifecycle commands are avail
 - `/standup` — generate/post standup from recent team journals
 - `/today` — daily briefing (incremental if already generated)
 
-| Key | Value |
-|-----|-------|
-| Space | `5-plur` |
-| Journal | `~/Data/5-plur/journal/YYYY-MM-DD.md` |
-| Org | `~/Data/5-plur/org/next_actions.org` |
+Journal and org paths are workspace-local — they vary per machine and are not tracked here.
 
 When `/wrap-up` runs, use the team journal schema: `## @contributor` narrative sections + `## Session Metadata` YAML block.
 
