@@ -31,7 +31,7 @@
     "@plur-ai/core": "workspace:*"
   },
   "peerDependencies": {
-    "openclaw": ">=2026.3"
+    "openclaw": ">=2026.6.5"
   },
   "peerDependenciesMeta": {
     "openclaw": {
