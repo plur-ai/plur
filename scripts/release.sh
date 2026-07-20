@@ -372,7 +372,8 @@ else
   #     ignores bare in-prose refs like "refs #535" (not paren-wrapped) so a
   #     cross-repo issue mention is never mistaken for a shipped PR.
   #   Skip list also curates out this repo's internal non-user-facing types
-  #     'ops' (release tooling) and 'cmo' (marketing copy) alongside the standard
+  #     'ops' (release tooling), 'cmo' (marketing copy), and 'infra' (server-side
+  #     infrastructure — heartbeat, ingress, telemetry server) alongside the standard
   #     conventional set — same "not in the user CHANGELOG" convention.
   #   sort -u (lexical): comm below compares lexically; numeric -n would disagree
   #     on mixed-digit PR numbers and silently misfire.
@@ -380,7 +381,7 @@ else
   #     abort the release instead of taking the empty-set path below.
   PR_TRAILER='\(#[0-9]+(,[[:space:]]*#[0-9]+)*\)'
   SHIPPED_PRS=$(git log --format='%s' "${MANIFEST_LAST_TAG}..HEAD" \
-    | grep -vE '^(chore|ci|docs|test|build|refactor|style|ops|cmo)(\(|:|!)' \
+    | grep -vE '^(chore|ci|docs|test|build|refactor|style|ops|cmo|infra)(\(|:|!)' \
     | grep -oE "$PR_TRAILER" | grep -oE '[0-9]+' | sort -u || true)
 
   DECLARED_PRS=$(printf '%s\n' "$MANIFEST_CHANGELOG" \

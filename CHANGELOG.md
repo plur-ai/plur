@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.15.0 (upcoming)
+
+Performance + expansion — lean MCP surface by default, new LangChain adapter, three core stability fixes.
+
+- **74% fewer tool tokens per turn** (lean profile now default)
+- new `plur-langchain` Python package
+- three core ID-uniqueness and cache-safety fixes
+
+### Changed
+
+- **Lean tool profile is now the default** (#625): the MCP server exposes 11 tools (down from 40) to every consumer — Claude Code, Cursor, Windsurf, OpenClaw, Hermes, and nightshift agents alike. Per-turn tool-schema overhead drops ~74% (~2K vs ~9K tokens). All 40 tools remain reachable via `plur_admin { action: "<tool>", args: {...} }`. Restore the full surface with `PLUR_TOOL_PROFILE=full`. **Consumers that depend on all 40 tools being available by default must either call via `plur_admin` or set `PLUR_TOOL_PROFILE=full`.**
+
+### Added
+
+- **`plur-langchain` adapter** (#529): new Python package providing a LangChain `BaseMemory` + `BaseChatMessageHistory` adapter. Install with `pip install plur-langchain`. Chains and LCEL pipelines now get persistent engram memory with zero extra wiring.
+
+### Fixed
+
+- **`generateInjectionId` / `generateEventId` cross-process uniqueness** (#596): IDs are now unique across processes started within the same millisecond. Replaced `Date.now() + 4-char random suffix` with a per-process counter — eliminates the ~0.07% birthday-collision chance per 50-call batch and removes the intermittent `expected 49 to be 50` flake in co-injection tests.
+- **`RemoteStore.load()` — no cache poisoning on mid-pagination error** (#550): a network or server error mid-way through a paginated remote load no longer overwrites the local cache with partial data. The local cache is only updated after a complete, successful load.
+- **PID salt for cross-process ID uniqueness** (#600): ID generation now includes the process ID as a salt, preventing collisions between sibling processes (e.g. parallel nightshift agents) that start in the same millisecond.
+
 ## 0.14.0 (2026-07-15)
 
 A hardening release — 24 issues closed.

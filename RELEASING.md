@@ -54,7 +54,8 @@ section, and compares the sets.
 The gate parses PR numbers from the trailing `(#N)` on each squash-commit subject,
 including multi-issue trailers like `(#521, #247)`. Non-user-facing conventional
 types are curated out — the standard `chore`/`ci`/`docs`/`test`/`build`/`refactor`/
-`style` plus this repo's internal `ops` (release tooling) and `cmo` (marketing copy).
+`style` plus this repo's internal `ops` (release tooling), `cmo` (marketing copy),
+and `infra` (server-side infrastructure — heartbeat, ingress, telemetry server).
 
 ## Publish verification (npm smoke + PyPI verify)
 
