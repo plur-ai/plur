@@ -1,0 +1,61 @@
+name: PR Issue Guard
+
+on:
+  pull_request:
+    types: [opened, edited, reopened]
+
+# Only needs to comment on PRs and assign issues — no code access needed.
+permissions:
+  issues: write
+  pull-requests: write
+
+jobs:
+  issue-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const body = context.payload.pull_request.body || '';
+            const prNumber = context.payload.pull_request.number;
+            const prAuthor = context.payload.pull_request.user.login;
+            const { owner, repo } = context.repo;
+
+            // Extract issue numbers from standard closing keywords
+            const re = /(?:closes?|fixes?|resolves?|part\s+of)\s+#(\d+)/gi;
+            const seen = new Set();
+            let m;
+            while ((m = re.exec(body)) !== null) {
+              seen.add(parseInt(m[1], 10));
+            }
+
+            if (seen.size === 0) return;
+
+            for (const issueNumber of seen) {
+              let issue;
+              try {
+                ({ data: issue } = await github.rest.issues.get({ owner, repo, issue_number: issueNumber }));
+              } catch (e) {
+                core.warning(`Could not fetch issue #${issueNumber}: ${e.message}`);
+                continue;
+              }
+
+              const assignees = (issue.assignees || []).map(a => a.login);
+
+              if (assignees.length === 0) {
+                await github.rest.issues.addAssignees({
+                  owner, repo,
+                  issue_number: issueNumber,
+                  assignees: [prAuthor],
+                });
+                core.info(`Auto-assigned #${issueNumber} to @${prAuthor}`);
+              } else if (!assignees.includes(prAuthor)) {
+                const list = assignees.map(a => `@${a}`).join(', ');
+                await github.rest.issues.createComment({
+                  owner, repo,
+                  issue_number: prNumber,
+                  body: `⚠️ This PR addresses #${issueNumber}, which is assigned to ${list} — possible duplicate effort. Confirm coordination before merging.`,
+                });
+                core.warning(`Conflict: #${issueNumber} is assigned to ${list}; PR opened by @${prAuthor}`);
+              }
+            }
