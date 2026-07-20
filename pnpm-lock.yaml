@@ -10,7 +10,7 @@ overrides:
   openclaw: '>=2026.6.5'
   undici: '>=7.28.0'
   linkify-it: '>=5.0.1'
-  js-yaml: '>=4.2.0'
+  js-yaml: '>=4.2.0 <5'
   protobufjs: '>=7.5.6'
   hono: '>=4.12.18'
   brace-expansion: '>=2.0.2'
@@ -78,8 +78,8 @@ importers:
         specifier: ^0.4.6
         version: 0.4.6
       js-yaml:
-        specifier: '>=4.2.0'
-        version: 5.2.1
+        specifier: '>=4.2.0 <5'
+        version: 4.3.0
       zod:
         specifier: ^3.23.0
         version: 3.25.76
@@ -1776,8 +1776,8 @@ packages:
     resolution: {integrity: sha512-34wB/Y7MW7bzjKRjUKTa46I2Z7eV62Rkhva+KkopW7Qvv/OSWBqvkSY7vusOPrNuZcUG3tApvdVgNB8POj3SPw==}
     engines: {node: '>=10'}
 
-  js-yaml@5.2.1:
-    resolution: {integrity: sha512-zfLtNfQqxVqq3uaTqSkh4x4hZw3KHobGUA0fJUj4wawW8bsQLTVqpHdXSIzidh7o+4lEW36tANuAGdaFx6Zgnw==}
+  js-yaml@4.3.0:
+    resolution: {integrity: sha512-1td788aAnnZ5qs7V2QIRl1owjtYpbKt749Y3xauqQgwIIGF/xXWz1wMTEBx5O3LK3lXLVuqXPdPxj2BoFHaW9Q==}
     hasBin: true
 
   json-bigint@1.0.0:
@@ -4397,7 +4397,7 @@ snapshots:
 
   joycon@3.1.1: {}
 
-  js-yaml@5.2.1:
+  js-yaml@4.3.0:
     dependencies:
       argparse: 2.0.1
 
