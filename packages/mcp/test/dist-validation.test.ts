@@ -23,8 +23,8 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs
 import { join, dirname } from 'path'
 import { tmpdir } from 'os'
 import { fileURLToPath } from 'url'
-import { Client } from '@modelcontextprotocol/sdk/client/index.js'
-import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
+import { Client } from '@modelcontextprotocol/client'
+import { StdioClientTransport } from '@modelcontextprotocol/client/stdio'
 
 const PKG_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const DIST_ENTRY = join(PKG_ROOT, 'dist', 'index.js')

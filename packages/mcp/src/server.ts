@@ -1,15 +1,5 @@
-import { Server } from '@modelcontextprotocol/sdk/server/index.js'
-import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
-import {
-  ListToolsRequestSchema,
-  CallToolRequestSchema,
-  ListResourcesRequestSchema,
-  ReadResourceRequestSchema,
-  ListPromptsRequestSchema,
-  GetPromptRequestSchema,
-  ErrorCode,
-  McpError,
-} from '@modelcontextprotocol/sdk/types.js'
+import { Server, ProtocolError, ProtocolErrorCode } from '@modelcontextprotocol/server'
+import { StdioServerTransport } from '@modelcontextprotocol/server/stdio'
 import { existsSync, readFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
@@ -198,7 +188,7 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
 
   // --- Tools ---
 
-  server.setRequestHandler(ListToolsRequestSchema, async () => ({
+  server.setRequestHandler('tools/list', async () => ({
     tools: tools.map(t => ({
       name: t.name,
       description: t.description,
@@ -207,7 +197,7 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
     })),
   }))
 
-  server.setRequestHandler(CallToolRequestSchema, async (request) => {
+  server.setRequestHandler('tools/call', async (request) => {
     const tool = tools.find(t => t.name === request.params.name)
     if (!tool) {
       return {
@@ -261,7 +251,7 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
 
   // --- Resources ---
 
-  server.setRequestHandler(ListResourcesRequestSchema, async () => ({
+  server.setRequestHandler('resources/list', async () => ({
     resources: [
       {
         uri: 'plur://guide',
@@ -278,7 +268,7 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
     ],
   }))
 
-  server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
+  server.setRequestHandler('resources/read', async (request) => {
     const uri = request.params.uri
 
     if (uri === 'plur://guide') {
@@ -328,12 +318,12 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
       }
     }
 
-    throw new McpError(ErrorCode.InvalidRequest, `Unknown resource: ${uri}`)
+    throw new ProtocolError(ProtocolErrorCode.InvalidRequest, `Unknown resource: ${uri}`)
   })
 
   // --- Prompts ---
 
-  server.setRequestHandler(ListPromptsRequestSchema, async () => ({
+  server.setRequestHandler('prompts/list', async () => ({
     prompts: [
       {
         name: 'plur-getting-started',
@@ -350,7 +340,7 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
     ],
   }))
 
-  server.setRequestHandler(GetPromptRequestSchema, async (request) => {
+  server.setRequestHandler('prompts/get', async (request) => {
     const name = request.params.name
 
     if (name === 'plur-getting-started') {
@@ -400,7 +390,7 @@ Please:
       }
     }
 
-    throw new McpError(ErrorCode.InvalidRequest, `Unknown prompt: ${name}`)
+    throw new ProtocolError(ProtocolErrorCode.InvalidRequest, `Unknown prompt: ${name}`)
   })
 
   return server
