@@ -45,7 +45,8 @@ pnpm --filter @plur-ai/core build
 4. **Write tests.** Every change to behavior needs a test. Add unit tests in
    the affected package's `test/` directory (named `*.test.ts`). For changes to
    `RemoteStore`'s wire surface, extend the stub server in
-   `packages/core/test/helpers/stub-server.ts`.
+   `packages/core/test/helpers/stub-server.ts`. See [`docs/test-pyramid.md`](docs/test-pyramid.md)
+   for test-layer boundaries before adding a new test category.
 
 5. **Keep core offline and free.** Core must work with no external API calls —
    search runs locally at zero cost. Don't introduce a runtime network
@@ -105,9 +106,10 @@ plur-ai/plur#544) — don't work around it; declare the PRs.
 ## Conventions
 
 - TypeScript, Vitest, tsup, Zod for validation.
-- YAML for persistent storage (not JSON, not SQLite for primary data).
+- YAML for persistent storage (not JSON; SQLite is an optional read cache via `PLUR_BACKEND=pglite`, never source of truth).
 - Apache-2.0 licensed — by contributing you agree your contribution is
   licensed under the same terms.
+- **No AI attribution.** Do not add `Co-Authored-By: Claude` / `🤖 Generated with ...` trailers, AI-tool badges, or any other AI-attribution markers to commit messages, PR descriptions, or issue comments.
 
 ## Reporting bugs and requesting features
 

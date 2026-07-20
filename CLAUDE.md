@@ -190,9 +190,23 @@ current scores. If your PR improves any of these, mention it in the PR descripti
   however many labels it carries.
 - TypeScript, Vitest, tsup, Zod for validation
 - No external API calls in core — search must work offline at zero cost
-- YAML for all persistent storage (not JSON, not SQLite for primary data)
-- Tests in `packages/*/test/`, named `*.test.ts`
+- YAML for all persistent storage (not JSON; SQLite is an optional read cache via `PLUR_BACKEND=pglite`, never the source of truth)
+- Tests in `packages/*/test/`, named `*.test.ts`. Test-layer boundaries are documented in [`docs/test-pyramid.md`](docs/test-pyramid.md) — read it before adding a new test category.
 - Apache-2.0 license
+- **No AI attribution in commits or PRs.** Do not add `Co-Authored-By: Claude` / `🤖 Generated with ...` trailers, AI-tool badges, or any other AI-attribution markers to commit messages, PR descriptions, or issue comments. This applies to both human and automated contributors.
+
+## Developer docs
+
+Key docs that are not linked from the README but matter for contributors:
+
+| Doc | What it covers |
+|-----|---------------|
+| [`docs/test-pyramid.md`](docs/test-pyramid.md) | Unit / integration / smoke test boundaries — why there are no Docker integration tests |
+| [`docs/telemetry-design.md`](docs/telemetry-design.md) | Opt-in telemetry mechanism; relevant to the "no external calls in core" invariant |
+| [`docs/adr/ADR-0002-derived-state-provenance.md`](docs/adr/ADR-0002-derived-state-provenance.md) | Accepted decision: derived-state provenance for episodes |
+| [`docs/runbooks/store-consolidation.md`](docs/runbooks/store-consolidation.md) | The only procedure for a destructive store merge — read before merging stores |
+| [`docs/benchmarks/`](docs/benchmarks/) | Methodology notes and archived benchmark results |
+| [`ROADMAP.md`](ROADMAP.md) | Public roadmap — feature horizon and prioritization |
 
 ## Key files
 
