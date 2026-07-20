@@ -2,7 +2,7 @@ import { existsSync, unlinkSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
 import { Plur, extractMetaEngrams, validateMetaEngram, confidenceBand, generateProfile, getProfileForInjection, markProfileDirty, selectModelForOperation, readHistoryForEngram, getCachedUpdateCheck, minorVersionsBehind, scanForTensions, CapabilityCanary, readProjectConfig, isSharedScope, resolveRerankerName, getReranker, classifyRerankerFailure, hfCacheDirName } from '@plur-ai/core'
-import type { LlmFunction, MetaField, TensionStatus, RerankerEvalResult } from '@plur-ai/core'
+import type { LlmFunction, MetaField, TensionStatus, RerankerEvalResult, HistoryEvent } from '@plur-ai/core'
 import { recordTelemetry } from './telemetry.js'
 import { VERSION } from './version.js'
 import { z } from 'zod'
@@ -41,7 +41,7 @@ export interface ToolAnnotations {
 export interface ToolDefinition {
   name: string
   description: string
-  inputSchema: Record<string, unknown>
+  inputSchema: { type: 'object'; [key: string]: unknown }
   annotations?: ToolAnnotations
   handler: (args: Record<string, unknown>, plur: Plur) => Promise<unknown>
 }
@@ -2489,7 +2489,7 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
         const { listHistoryMonths, readHistory } = await import('@plur-ai/core')
         const status = plur.status()
         const months = listHistoryMonths(status.storage_root)
-        const allEvents: Array<Record<string, unknown>> = []
+        const allEvents: HistoryEvent[] = []
         // Read from most recent months first
         for (const month of months.reverse()) {
           const events = readHistory(status.storage_root, month)
