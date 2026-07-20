@@ -19,9 +19,46 @@ export function shouldOutputJson(options: OutputOptions): boolean {
   return !isTTY()
 }
 
-/** Write JSON to stdout. */
+const SECRET_KEYS = new Set([
+  'token', 'api_key', 'apikey', 'password', 'secret', 'authorization',
+  'refresh_token', 'access_token', 'client_secret', 'private_key',
+])
+
+/**
+ * Strip credential-bearing fields from anything printed as JSON.
+ *
+ * `StatusResult` embeds the whole `PlurConfig`, including `stores[].token` —
+ * live enterprise bearer tokens. Without this, `plur status --json` pipes them
+ * into CI logs, pasted issues and agent transcripts. Redaction lives at the
+ * output boundary so every present and future JSON command inherits it.
+ *
+ * `path` tracks the current ancestor chain, not every object ever visited: a
+ * DAG is not a cycle, and PlurConfig legitimately shares sub-objects between
+ * store entries. Tracking all visited nodes would render the second reference
+ * as '[Circular]' and silently drop real config from the output.
+ */
+export function redactSecrets(value: unknown, path = new Set<object>()): unknown {
+  if (value === null || typeof value !== 'object') return value
+  const obj = value as object
+  if (path.has(obj)) return '[Circular]'
+
+  path.add(obj)
+  try {
+    if (Array.isArray(value)) return value.map(v => redactSecrets(v, path))
+
+    const out: Record<string, unknown> = {}
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      out[k] = SECRET_KEYS.has(k.toLowerCase()) ? '[REDACTED]' : redactSecrets(v, path)
+    }
+    return out
+  } finally {
+    path.delete(obj)
+  }
+}
+
+/** Write JSON to stdout. Credentials are redacted first — see redactSecrets. */
 export function outputJson(data: unknown): void {
-  process.stdout.write(JSON.stringify(data) + '\n')
+  process.stdout.write(JSON.stringify(redactSecrets(data)) + '\n')
 }
 
 /** Write human-readable text to stdout. */
