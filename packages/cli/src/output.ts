@@ -36,11 +36,23 @@ const SECRET_KEYS = new Set([
  * DAG is not a cycle, and PlurConfig legitimately shares sub-objects between
  * store entries. Tracking all visited nodes would render the second reference
  * as '[Circular]' and silently drop real config from the output.
+ *
+ * Only plain objects and arrays are rebuilt. Non-plain objects (Date, Buffer,
+ * RegExp, Map, class instances) pass through untouched: rebuilding them via
+ * Object.entries would corrupt their JSON form — a Date would serialize as `{}`
+ * instead of its ISO string. They cannot carry a redactable string field that
+ * JSON.stringify would otherwise expose, so passing them through is safe.
  */
+function isPlainObject(v: object): boolean {
+  const proto = Object.getPrototypeOf(v)
+  return proto === Object.prototype || proto === null
+}
+
 export function redactSecrets(value: unknown, path = new Set<object>()): unknown {
   if (value === null || typeof value !== 'object') return value
   const obj = value as object
   if (path.has(obj)) return '[Circular]'
+  if (!Array.isArray(value) && !isPlainObject(obj)) return value
 
   path.add(obj)
   try {

@@ -87,4 +87,17 @@ describe('redactSecrets', () => {
     const out = redactSecrets({ token: { nested: 'still-secret' } }) as any
     expect(out.token).toBe('[REDACTED]')
   })
+
+  it('preserves a Date so it still serializes as an ISO string, not {}', () => {
+    const d = new Date('2026-01-01T00:00:00.000Z')
+    const out = redactSecrets({ created: d, token: 'x' }) as any
+    expect(JSON.stringify(out.created)).toBe(JSON.stringify(d))
+    expect(out.token).toBe('[REDACTED]')
+  })
+
+  it('preserves a Date nested inside an array', () => {
+    const d = new Date('2026-01-01T00:00:00.000Z')
+    const out = redactSecrets({ items: [d] }) as any
+    expect(JSON.stringify(out.items[0])).toBe(JSON.stringify(d))
+  })
 })
