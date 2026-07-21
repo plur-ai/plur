@@ -1923,11 +1923,10 @@ function getAllToolDefinitions(): ToolDefinition[] {
                   `Reads fall back to local; team-scoped writes queue in the outbox` +
                   (pending > 0 ? ` (${pending} pending)` : '') + ` until it recovers. Check connectivity/VPN.`
             }
+            // #647: use per-scope dismissed count (dismissed scopes excluded from unregistered)
             const unregistered = [...new Set(discoveries.filter(d => d.ok).flatMap(d => d.unregistered))]
             if (unregistered.length > 0) {
-              const list = unregistered.map(s => `"${safe(s)}"`).join(', ')
-              guide += `\n\n🔎 Your token is authorized for ${unregistered.length} more scope(s) not yet registered: ${list}. ` +
-                `Call plur_scopes_discover with register:true to add them all in one step.`
+              guide += `\n\n${unregistered.length} scope(s) available — run \`plur scopes\` to register or dismiss.`
             }
           } catch { /* discovery is best-effort — never block session_start */ }
 

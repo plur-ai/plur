@@ -244,6 +244,12 @@ export const PlurConfigSchema = z.object({
    * See {@link ScopeRoutingConfigSchema} for per-field semantics.
    */
   scope_routing: ScopeRoutingConfigSchema.default({}),
+  /**
+   * Scopes the user has explicitly dismissed from the session-start nudge (#647).
+   * Persisted so dismissed scopes stop being re-offered every session. Cleared
+   * by `reofferScopes()` to re-surface them.
+   */
+  dismissed_scopes: z.array(z.string()).default([]),
 }).partial()
 
 export type PlurConfig = z.infer<typeof PlurConfigSchema>

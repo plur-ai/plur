@@ -274,8 +274,10 @@ export interface RemoteScopeDiscovery {
   authorized: string[]
   /** Scopes already registered in local config for this URL. */
   registered: string[]
-  /** Authorized minus registered — the scopes a user could still add. */
+  /** Authorized minus registered minus dismissed — the scopes a user could still add. */
   unregistered: string[]
+  /** Authorized scopes the user explicitly dismissed — excluded from `unregistered` (#647). */
+  dismissed: string[]
   /**
    * Server-authoritative scope metadata (#345 D2) for the authorized scopes,
    * when the remote serves it via `/api/v1/me` (`scope_metadata`). Each entry
@@ -4169,6 +4171,21 @@ Generate an improved version of the procedure that prevents this failure. Return
     this.configMtimeMs = this.statConfigMtime()
   }
 
+  /** Persist updated `dismissed_scopes` list to config.yaml, preserving other keys (#647). */
+  private persistDismissedScopes(dismissed: string[]): void {
+    let configData: Record<string, unknown> = {}
+    try {
+      const raw = fs.readFileSync(this.paths.config, 'utf8')
+      if (raw) configData = (yaml.load(raw) as Record<string, unknown>) ?? {}
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') throw err
+    }
+    configData.dismissed_scopes = dismissed
+    fs.writeFileSync(this.paths.config, yaml.dump(configData, { lineWidth: 120, noRefs: true }))
+    this.config = loadConfig(this.paths.config)
+    this.configMtimeMs = this.statConfigMtime()
+  }
+
   /**
    * MERGE the typed `stores` array onto the RAW (freshly-read YAML) entries so a
    * writeback never strips fields the typed schema doesn't know about (PR-3,
@@ -4582,6 +4599,11 @@ Generate an improved version of the procedure that prevents this failure. Return
           }),
         ])
         const registeredSet = new Set(registered)
+        const dismissed = new Set(this.config.dismissed_scopes ?? [])
+        // Only shared-family scopes are offerable (#649, #382): personal-family
+        // scopes (global/local/user:*/agent:*) are never surfaced in unregistered
+        // or dismissed — they cannot be auto-registered and should not be offered.
+        const offerable = me.scopes.filter(s => isSharedScope(s) && !registeredSet.has(s))
         return {
           url,
           ok: true,
@@ -4590,7 +4612,8 @@ Generate an improved version of the procedure that prevents this failure. Return
           role: me.role,
           authorized: me.scopes,
           registered,
-          unregistered: me.scopes.filter(s => !registeredSet.has(s)),
+          unregistered: offerable.filter(s => !dismissed.has(s)),
+          dismissed: offerable.filter(s => dismissed.has(s)),
           // #345 D2: server-authoritative metadata for the authorized scopes,
           // already validated in RemoteStore.me(). Empty for older servers.
           metadata: me.scope_metadata ?? [],
@@ -4598,7 +4621,7 @@ Generate an improved version of the procedure that prevents this failure. Return
       } catch (err) {
         return {
           url, ok: false,
-          authorized: [], registered, unregistered: [], metadata: [],
+          authorized: [], registered, unregistered: [], dismissed: [], metadata: [],
           error: err instanceof Error ? err.message : String(err),
         }
       }
@@ -4718,6 +4741,43 @@ Generate an improved version of the procedure that prevents this failure. Return
       }
       return { url: d.url, ok: true, added, already_registered: already, skipped }
     })
+  }
+
+  /**
+   * Register a single authorized-but-unregistered shared scope for a remote URL (#647).
+   * Factored-out single-scope variant of `registerDiscoveredScopes` — does exactly one
+   * `addStore` call, applying the same SECURITY guard (#382) against personal-family scopes.
+   */
+  registerScope(scope: string, opts?: { url?: string; token?: string }): { status: 'added' | 'already_registered' | 'skipped'; reason?: string } {
+    if (!isSharedScope(scope)) return { status: 'skipped', reason: 'personal-family scopes cannot be auto-registered' }
+    const storeEntry = (this.config.stores ?? []).find(s => opts?.url ? s.url === opts.url : s.url)
+    const url = opts?.url ?? storeEntry?.url
+    const token = opts?.token ?? storeEntry?.token
+    if (!url) return { status: 'skipped', reason: 'no remote URL configured or provided' }
+    try {
+      const { status } = this.addStore('', scope, { url, token })
+      return { status: status === 'added' ? 'added' : 'already_registered' }
+    } catch (err) {
+      return { status: 'skipped', reason: err instanceof Error ? err.message : String(err) }
+    }
+  }
+
+  /**
+   * Persist a scope dismissal so it stops appearing in the session-start nudge (#647).
+   * Only shared-family scopes can be dismissed — personal-family scopes are never offered.
+   */
+  dismissScope(scope: string): void {
+    const existing = this.config.dismissed_scopes ?? []
+    if (existing.includes(scope)) return
+    this.persistDismissedScopes([...existing, scope])
+  }
+
+  /**
+   * Clear all previously-dismissed scopes, causing them to reappear in the next
+   * session-start nudge (#647). The inverse of `dismissScope`.
+   */
+  reofferScopes(): void {
+    this.persistDismissedScopes([])
   }
 
   /** Set a session-level default scope. Used as fallback in learn/learnRouted when no explicit scope is provided. */
