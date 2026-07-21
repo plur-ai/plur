@@ -51,7 +51,12 @@ export interface Receipt {
     engrams: number
     activation_rate: number
     retrievals: number
-    /** Distinct (engram, session) pairs over all local engrams (own + packs). */
+    /**
+     * Distinct (engram, session) pairs over LOCAL stored engrams (own + packs).
+     * Equals taught_pairs + pack_pairs by construction. Retrievals of retired
+     * or team-store engrams are excluded here and surfaced separately
+     * (dormant.unavailable_but_retrieved, external_retrieved).
+     */
     engram_session_pairs: number
     /** Of those pairs, the ones for engrams the user taught (own store, not packs). */
     taught_pairs: number
@@ -217,7 +222,9 @@ export function computeReceipt(input: ReceiptInput): Receipt {
       engrams: liveRetrieved.length,
       activation_rate: stored.size > 0 ? liveRetrieved.length / stored.size : 0,
       retrievals: inWindow.length,
-      engram_session_pairs: [...engramSessions.values()].reduce((n, s) => n + s.size, 0),
+      // Local pairs only, so this equals taught + pack. Retired/external pairs
+      // are reported via unavailable_but_retrieved / external_retrieved.
+      engram_session_pairs: taughtPairs + packPairs,
       taught_pairs: taughtPairs,
       pack_pairs: packPairs,
     },

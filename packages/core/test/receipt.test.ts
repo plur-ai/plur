@@ -81,6 +81,26 @@ describe('computeReceipt — retrieval counts', () => {
     expect(r.retrieved.taught_pairs + r.retrieved.pack_pairs).toBe(r.retrieved.engram_session_pairs)
   })
 
+  it('taught + pack === engram_session_pairs even when retired and external are retrieved', () => {
+    const events = [
+      ev('2026-07-20T10:00:00.000Z', ['E1'], 's1'),        // own
+      ev('2026-07-20T11:00:00.000Z', ['P1'], 's2'),        // pack
+      ev('2026-07-20T12:00:00.000Z', ['GONE'], 's3'),      // retired local
+      ev('2026-07-20T13:00:00.000Z', ['ENG-DF-x'], 's4'),  // external team
+    ]
+    const r = computeReceipt({
+      ownEngramIds: ['E1'], packEngramIds: ['P1'], events, now: NOW,
+      externalIdPrefixes: ['ENG-DF-'],
+    })
+    expect(r.retrieved.taught_pairs).toBe(1)
+    expect(r.retrieved.pack_pairs).toBe(1)
+    // the identity must hold; retired/external are reported elsewhere
+    expect(r.retrieved.engram_session_pairs).toBe(2)
+    expect(r.retrieved.taught_pairs + r.retrieved.pack_pairs).toBe(r.retrieved.engram_session_pairs)
+    expect(r.dormant.unavailable_but_retrieved).toBe(1)
+    expect(r.external_retrieved).toBe(1)
+  })
+
   it('a retired engram does not inflate activation rate', () => {
     const events = [ev('2026-07-20T10:00:00.000Z', ['GONE'], 's1')]
     const r = computeReceipt({ ownEngramIds: ['E1'], packEngramIds: [], events, now: NOW })
