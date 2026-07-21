@@ -100,4 +100,24 @@ describe('redactSecrets', () => {
     const out = redactSecrets({ items: [d] }) as any
     expect(JSON.stringify(out.items[0])).toBe(JSON.stringify(d))
   })
+
+  it('redacts a token on a class instance, not just plain objects', () => {
+    class StoreDriver {
+      readonly url = 'https://plur.datafund.io/sse'
+      readonly token = 'eyJ-live-credential'
+    }
+    const out = redactSecrets({ driver: new StoreDriver() }) as any
+    expect(out.driver.token).toBe('[REDACTED]')
+    expect(out.driver.url).toBe('https://plur.datafund.io/sse')
+  })
+
+  it('a class instance with a toJSON serializes itself and is not walked', () => {
+    class Money {
+      constructor(private cents: number) {}
+      toJSON() { return `$${(this.cents / 100).toFixed(2)}` }
+    }
+    const out = redactSecrets({ price: new Money(1299) }) as any
+    expect(out.price).toBeInstanceOf(Money)
+    expect(JSON.stringify(out.price)).toBe('"$12.99"')
+  })
 })

@@ -37,22 +37,22 @@ const SECRET_KEYS = new Set([
  * store entries. Tracking all visited nodes would render the second reference
  * as '[Circular]' and silently drop real config from the output.
  *
- * Only plain objects and arrays are rebuilt. Non-plain objects (Date, Buffer,
- * RegExp, Map, class instances) pass through untouched: rebuilding them via
- * Object.entries would corrupt their JSON form — a Date would serialize as `{}`
- * instead of its ISO string. They cannot carry a redactable string field that
- * JSON.stringify would otherwise expose, so passing them through is safe.
+ * An object that defines its own JSON form (`toJSON`, e.g. Date, Buffer)
+ * serializes itself; rebuilding it via Object.entries would corrupt that form
+ * (a Date would become `{}` instead of its ISO string), so it passes through.
+ * Everything else is walked — plain objects AND class instances alike — so a
+ * token sitting on a store driver or other non-plain object is redacted rather
+ * than silently emitted, not merely assumed absent.
  */
-function isPlainObject(v: object): boolean {
-  const proto = Object.getPrototypeOf(v)
-  return proto === Object.prototype || proto === null
+function definesOwnJson(v: object): boolean {
+  return typeof (v as { toJSON?: unknown }).toJSON === 'function'
 }
 
 export function redactSecrets(value: unknown, path = new Set<object>()): unknown {
   if (value === null || typeof value !== 'object') return value
   const obj = value as object
   if (path.has(obj)) return '[Circular]'
-  if (!Array.isArray(value) && !isPlainObject(obj)) return value
+  if (!Array.isArray(value) && definesOwnJson(obj)) return value
 
   path.add(obj)
   try {
