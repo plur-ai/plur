@@ -216,6 +216,30 @@ plur.sync('git@github.com:you/plur-memory.git')
 | `plur_ingest` | Extract engrams from text automatically |
 | `plur_sync` | Sync across devices via git (remote receives all engrams — use a private repo) |
 | `plur_status` | Check system health and engram counts |
+| `plur_receipt` | Counted, local report of what your memory retrieved for you |
+
+### The memory receipt
+
+`plur receipt` (and the `plur_receipt` MCP tool) show what your memory actually did — counted from PLUR's own retrieval history, never estimated:
+
+```
+Your Memory Receipt
+===================
+  2026-07-03 .. 2026-07-20  (68 sessions)
+
+  449 times a memory you taught PLUR
+  was put in front of the model.
+
+  across 68 retrievals in 68 sessions
+  153 distinct engrams did the work
+
+  MOST-RELIED-ON
+      33x  PLUR positioning thesis across every vertical: PLUR layers …
+      28x  Datacore app CoS architecture: reasoning layer added on to…
+  ...
+```
+
+It is local and read-only — nothing leaves the machine — and carries **no dollar or token figure by design**: on a subscription your marginal token cost is zero, and the value of an avoided rediscovery is not measurable from this data. The receipt reports only what it can count. `--days N` narrows the window; `--json` emits the raw shape.
 
 ### Syncing across devices
 

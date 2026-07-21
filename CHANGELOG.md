@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **`plur receipt` + `plur_receipt` MCP tool — the memory receipt.** A counted, local, read-only report of what your memory actually retrieved for you: how many times a memory you taught PLUR was put in front of the model, how many distinct engrams did the work, which are most relied on (with their statement text), and how much of the store is dormant. Every figure is directly counted — there is no estimate, no counterfactual, and deliberately no dollar or token-savings figure (on a subscription your marginal token cost is zero; the value of an avoided rediscovery is not measurable from this data). Scoped to local memory (primary store + installed packs) so the number is identical from the cold CLI and the warm MCP server; retrievals of team-store engrams are reported separately, never as deletions. States its own coverage window so the numbers are never misread as lifetime figures. Nothing leaves the machine.
+- **`co_injection` history events now record `tokens_used` and the calling `source`** (`session_start` / `inject` / `hook`), and every injection call site is tagged. Hook retrievals — the large majority — now also carry the session id, so the receipt's (engram, session) unit is well-defined. Events written before this change remain fully readable.
+
+### Fixed
+
+- **Security: `plur status --json` printed live enterprise bearer tokens.** `StatusResult` embeds the full `PlurConfig`, so `--json` piped the `stores[].token` values (live credentials for the configured enterprise servers) to stdout — into CI logs, pasted issues, and agent transcripts. All CLI JSON output is now credential-redacted at the output boundary, so every present and future JSON command inherits the protection.
+
 ## 0.14.0 (2026-07-15)
 
 A hardening release — 24 issues closed.
