@@ -403,7 +403,12 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     // queries where BM25 holds its own against embeddings anyway. The main
     // first-message injection keeps full hybrid — it runs async with room
     // to breathe.
-    const result = plur.inject(task, { budget: 3000 })
+    // Attribute the retrieval to this session when the marker is readable, so
+    // the memory receipt can count (engram, session) pairs from hook traffic —
+    // which is the large majority of all injections.
+    let eventSessionId: string | undefined
+    try { eventSessionId = JSON.parse(readFileSync(marker, 'utf8')).sessionId } catch { /* fail-open */ }
+    const result = plur.inject(task, { budget: 3000, source: 'hook', session_id: eventSessionId })
     if (result.count > 0) {
       const parts: string[] = []
       if (result.directives) parts.push(result.directives)
@@ -470,9 +475,17 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     touchReminder() // Reset reminder timer on first message
   }
 
-  // Inject engrams (with project scope if configured)
+  // Inject engrams (with project scope if configured). Read the session marker
+  // now — not later where it's only used for the label — so the injection is
+  // attributed to this session on the co_injection event the receipt reads.
   const plur = createPlur(flags)
-  const injectOpts = projectConfig.scope ? { scope: projectConfig.scope } : undefined
+  let injectSessionId: string | undefined
+  try { injectSessionId = JSON.parse(readFileSync(marker, 'utf8')).sessionId } catch { /* fail-open */ }
+  const injectOpts = {
+    source: 'hook' as const,
+    ...(projectConfig.scope ? { scope: projectConfig.scope } : {}),
+    ...(injectSessionId ? { session_id: injectSessionId } : {}),
+  }
   let context: string | null = null
   let count = 0
   let remoteUsed = false
@@ -521,12 +534,8 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   // Build session header
   const parts: string[] = []
 
-  // Read back session info for the label
-  let sessionId: string | undefined
-  try {
-    const markerData = JSON.parse(readFileSync(marker, 'utf8'))
-    sessionId = markerData.sessionId
-  } catch {}
+  // Session id for the label — already read above for injection attribution.
+  const sessionId = injectSessionId
 
   const sourceLabel = remoteUsed ? ' (Enterprise)' : ''
   if (isRehydrate) {

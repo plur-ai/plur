@@ -157,6 +157,84 @@ export function findLatestInjectionFor(
   return null
 }
 
+/**
+ * Which surface asked for an injection. `'recall'` is deliberately absent:
+ * plur_recall / plur_recall_hybrid do not route through _formatInjection and
+ * therefore emit no co_injection event at all.
+ */
+export type InjectionSource = 'session_start' | 'inject' | 'hook' | 'unknown'
+
+const INJECTION_SOURCES: ReadonlySet<string> = new Set([
+  'session_start', 'inject', 'hook', 'unknown',
+])
+
+/**
+ * Payload of a `co_injection` event. `tokens_used` and `source` were added by
+ * the memory-receipt work; events written before that lack them, so both are
+ * optional and every reader must tolerate their absence.
+ */
+export interface CoInjectionData {
+  ids: string[]
+  query_hash: string
+  tokens_used?: number
+  source?: InjectionSource
+  scope?: string
+  session_id?: string
+}
+
+export interface CoInjectionEvent {
+  injection_id: string
+  timestamp: string
+  data: CoInjectionData
+}
+
+export interface CoInjectionReadResult {
+  events: CoInjectionEvent[]
+  /** Lines present but unusable — corrupt JSON or a malformed payload. */
+  skipped: number
+}
+
+/**
+ * Read every co_injection event across all history months, oldest first.
+ *
+ * Defensive by design: this feeds a read-only report that must degrade to
+ * "no data" rather than throw. Unknown `source` values are coerced to
+ * 'unknown' so they can never become arbitrary keys in a caller's tally, and
+ * non-string ids are dropped so they can never reach a renderer.
+ */
+export function readCoInjections(root: string, months?: string[]): CoInjectionReadResult {
+  const events: CoInjectionEvent[] = []
+  let skipped = 0
+  const wanted = months ? new Set(months) : null
+
+  for (const month of listHistoryMonths(root)) {
+    if (wanted && !wanted.has(month)) continue
+    for (const event of readHistory(root, month)) {
+      if (event.event !== 'co_injection') continue
+      const raw = event.data as Partial<CoInjectionData>
+      if (!Array.isArray(raw.ids) || typeof raw.query_hash !== 'string') { skipped++; continue }
+      if (typeof event.timestamp !== 'string' || Number.isNaN(Date.parse(event.timestamp))) { skipped++; continue }
+
+      const ids = raw.ids.filter((id): id is string => typeof id === 'string' && id.length > 0)
+      if (ids.length !== raw.ids.length) skipped++
+
+      const data: CoInjectionData = { ids, query_hash: raw.query_hash }
+      if (typeof raw.tokens_used === 'number' && Number.isFinite(raw.tokens_used)) {
+        data.tokens_used = raw.tokens_used
+      }
+      if (raw.source !== undefined) {
+        data.source = INJECTION_SOURCES.has(raw.source) ? raw.source : 'unknown'
+      }
+      if (typeof raw.scope === 'string') data.scope = raw.scope
+      if (typeof raw.session_id === 'string') data.session_id = raw.session_id
+
+      events.push({ injection_id: event.engram_id, timestamp: event.timestamp, data })
+    }
+  }
+  events.sort((a, b) => a.timestamp.localeCompare(b.timestamp))
+  return { events, skipped }
+}
+
 export interface InjectionEventCounts {
   co_injection: number
   injection_outcome: number

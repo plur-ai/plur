@@ -777,6 +777,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
         const result = plur.inject(args.task as string, {
           budget: args.budget as number | undefined,
           scope: args.scope as string | undefined,
+          source: 'inject',
         })
         _recordInjectionTelemetry(_activeSessionId, result.injected_packs)
         return {
@@ -808,6 +809,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
         const result = await plur.injectHybrid(args.task as string, {
           budget: args.budget as number | undefined,
           scope: args.scope as string | undefined,
+          source: 'inject',
         })
         _recordInjectionTelemetry(_activeSessionId, result.injected_packs)
         return {
@@ -1801,6 +1803,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
           const result = await plur.injectHybrid(task, {
             scope: tags?.length ? `tags:${tags.join(',')}` : undefined,
             session_id, // stamped on the co_injection provenance event (#452)
+            source: 'session_start',
           })
           _recordInjectionTelemetry(session_id, result.injected_packs)
           if (result.count > 0) {
@@ -1815,6 +1818,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
           const result = plur.inject(task, {
             scope: tags?.length ? `tags:${tags.join(',')}` : undefined,
             session_id,
+            source: 'session_start',
           })
           _recordInjectionTelemetry(session_id, result.injected_packs)
           if (result.count > 0) {
