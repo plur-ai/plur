@@ -181,7 +181,7 @@ current scores. If your PR improves any of these, mention it in the PR descripti
 | Document | What it covers |
 |----------|---------------|
 | [docs/test-pyramid.md](docs/test-pyramid.md) | Test architecture — when to write unit vs integration vs smoke tests, why there are no Docker integration tests |
-| [docs/adr/ADR-0002-derived-state-provenance.md](docs/adr/ADR-0002-derived-state-provenance.md) | ADR index — architecture decisions (derived-state provenance, etc.) |
+| [docs/adr/README.md](docs/adr/README.md) | ADR index — architecture decisions (ADR-0001: YAML-as-truth, ADR-0002: derived-state provenance) |
 | [docs/runbooks/store-consolidation.md](docs/runbooks/store-consolidation.md) | Runbook for destructive store merges — read before touching `plur sync --consolidate` |
 | [docs/telemetry-design.md](docs/telemetry-design.md) | Opt-in telemetry design — what is collected, what is not, the no-external-calls-in-core invariant |
 | [ROADMAP.md](ROADMAP.md) | Prioritized feature roadmap |
