@@ -2,7 +2,7 @@ import type { Engram } from './schemas/engram.js'
 import type { EmbedRole } from './embedders/types.js'
 import { engramSearchText } from './fts.js'
 import { existsSync, readFileSync, mkdirSync } from 'fs'
-import { join } from 'path'
+import { join, dirname } from 'path'
 import { createHash } from 'crypto'
 import { atomicWrite } from './sync.js'
 import { logger } from './logger.js'
@@ -308,8 +308,8 @@ function loadCache(cachePath: string, active: { name: string; dim: number }): Em
 }
 
 function saveCache(cachePath: string, cache: EmbeddingCache): void {
-  const dir = cachePath.substring(0, cachePath.lastIndexOf('/'))
-  if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
+  const dir = dirname(cachePath)
+  if (dir && !existsSync(dir)) mkdirSync(dir, { recursive: true })
   atomicWrite(cachePath, JSON.stringify(cache))
 }
 
