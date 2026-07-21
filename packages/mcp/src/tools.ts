@@ -301,6 +301,7 @@ export const CURSOR_CORE_TOOL_NAMES: ReadonlySet<string> = new Set([
   'plur_feedback',
   'plur_forget',
   'plur_status',
+  'plur_receipt',
   'plur_doctor',
   'plur_packs_uninstall',
   'plur_tensions_purge',
@@ -1447,6 +1448,22 @@ function getAllToolDefinitions(): ToolDefinition[] {
           } : {}),
           capabilities: mcpCanary.status(),
         }
+      },
+    },
+
+    {
+      name: 'plur_receipt',
+      description: 'Counted report of what your memory retrieved for you: engrams stored, how many were retrieved and how often, which are most relied on, and how much of the store is dormant. Local and read-only. Every figure is directly counted, never estimated.',
+      annotations: { title: 'Memory receipt', readOnlyHint: true, idempotentHint: true },
+      inputSchema: {
+        type: 'object',
+        properties: {
+          days: { type: 'number', description: 'Restrict to the last N days. Omit for all recorded history.' },
+        },
+      },
+      handler: async (args, plur) => {
+        const days = typeof args.days === 'number' && args.days > 0 ? args.days : undefined
+        return plur.receipt(days ? { days } : undefined)
       },
     },
 
