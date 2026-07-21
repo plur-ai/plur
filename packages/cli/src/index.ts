@@ -43,6 +43,10 @@ Commands:
   migrate [up|down|status] Run schema migrations
   stores list             List configured stores
   stores add <path>       Add a knowledge store
+  scopes                  List available but unregistered remote scopes
+  scopes register <scope> Register a scope from a remote store
+  scopes dismiss <scope>  Stop seeing a scope in session nudges
+  scopes --reoffer        Re-surface all previously dismissed scopes
   init                    Install Claude Code hooks + register plur MCP server
   init-remote             Opt this project into recall from a PLUR Enterprise server
   doctor                  Diagnose Claude Code / Claude Desktop integration
@@ -95,6 +99,7 @@ const COMMANDS: Record<string, string> = {
   promote: './commands/promote.js',
   'similarity-search': './commands/similarity-search.js',
   stores: './commands/stores.js',
+  scopes: './commands/scopes.js',
   migrate: './commands/migrate.js',
   init: './commands/init.js',
   'init-remote': './commands/init-remote.js',
