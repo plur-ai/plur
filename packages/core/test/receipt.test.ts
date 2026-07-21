@@ -270,6 +270,36 @@ describe('computeReceipt — external (team-store) retrievals', () => {
   })
 })
 
+describe('computeReceipt — statement snippets', () => {
+  it('attaches a one-line snippet to top entries when a lookup is given', () => {
+    const events = [ev('2026-07-20T10:00:00.000Z', ['E1'], 's1')]
+    const r = computeReceipt({
+      ownEngramIds: ['E1'], packEngramIds: [], events, now: NOW,
+      statements: { E1: 'Always use pnpm  in\tthis   repo.' },
+    })
+    expect(r.reuse.top[0].statement).toBe('Always use pnpm in this repo.')
+  })
+
+  it('truncates a long statement to a bounded snippet', () => {
+    const long = 'x'.repeat(200)
+    const r = computeReceipt({
+      ownEngramIds: ['E1'], packEngramIds: [],
+      events: [ev('2026-07-20T10:00:00.000Z', ['E1'], 's1')], now: NOW,
+      statements: { E1: long },
+    })
+    expect(r.reuse.top[0].statement!.length).toBeLessThanOrEqual(72)
+    expect(r.reuse.top[0].statement!.endsWith('…')).toBe(true)
+  })
+
+  it('leaves statement undefined when no lookup entry exists', () => {
+    const r = computeReceipt({
+      ownEngramIds: ['E1'], packEngramIds: [],
+      events: [ev('2026-07-20T10:00:00.000Z', ['E1'], 's1')], now: NOW,
+    })
+    expect(r.reuse.top[0].statement).toBeUndefined()
+  })
+})
+
 describe('computeReceipt — publishing guarantees', () => {
   it('the numeric shape never carries a cost, dollar or savings field', () => {
     const events = [ev('2026-07-20T10:00:00.000Z', ['E1'], 's1')]

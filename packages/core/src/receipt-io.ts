@@ -17,7 +17,7 @@ export function gatherReceipt(
   ownIds: string[],
   packIds: string[],
   externalPrefixes: string[],
-  opts: { days?: number; now?: Date } = {},
+  opts: { days?: number; now?: Date; statements?: Record<string, string> } = {},
 ): Receipt {
   let events
   try {
@@ -34,5 +34,6 @@ export function gatherReceipt(
     now: opts.now ?? new Date(),
     days: opts.days,
     externalIdPrefixes: externalPrefixes,
+    statements: opts.statements,
   })
 }

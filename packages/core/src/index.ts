@@ -3790,14 +3790,23 @@ Generate an improved version of the procedure that prevents this failure. Return
    * reported separately as `external_retrieved` rather than counted as deleted.
    */
   receipt(options?: { days?: number; now?: Date }): Receipt {
-    const ownIds = this._loadCached(this.paths.engrams)
-      .filter(e => e.status === 'active')
-      .map(e => e.id)
+    const primary = this._loadCached(this.paths.engrams).filter(e => e.status === 'active')
+    const ownIds = primary.map(e => e.id)
+
+    // Statement snippets for the "most relied on" list, so it reads as memories
+    // rather than opaque ids. Local only — never transmitted.
+    const statements: Record<string, string> = {}
+    for (const e of primary) {
+      if (typeof e.statement === 'string') statements[e.id] = e.statement
+    }
 
     const packIds: string[] = []
     for (const pack of loadAllPacks(this.paths.packs)) {
       for (const e of pack.engrams) {
-        if (e.status === 'active') packIds.push(e.id)
+        if (e.status === 'active') {
+          packIds.push(e.id)
+          if (typeof e.statement === 'string') statements[e.id] = e.statement
+        }
       }
     }
 
@@ -3810,7 +3819,7 @@ Generate an improved version of the procedure that prevents this failure. Return
       externalPrefixes.push(`ENG-${p}-`, `ABS-${p}-`, `META-${p}-`)
     }
 
-    return gatherReceipt(this.paths.root, ownIds, packIds, externalPrefixes, options)
+    return gatherReceipt(this.paths.root, ownIds, packIds, externalPrefixes, { ...options, statements })
   }
 
   // ------------------------------------------------------------------

@@ -19,12 +19,20 @@ export interface ReceiptInput {
    * deleted.
    */
   externalIdPrefixes?: string[]
+  /**
+   * Optional id → statement snippet map. When present, top entries carry a
+   * short, single-line snippet so "most relied on" is readable rather than a
+   * list of opaque ids. Statement text is local; it is never transmitted.
+   */
+  statements?: Record<string, string>
 }
 
 export interface ReceiptTopEntry {
   id: string
   count: number
   retired: boolean
+  /** Short snippet of the engram's statement, when the caller supplies a lookup. */
+  statement?: string
 }
 
 export interface Receipt {
@@ -165,11 +173,23 @@ export function computeReceipt(input: ReceiptInput): Receipt {
   // since-retired engram stays visible; external team engrams are excluded from
   // this local receipt's "most reused". reuse median/mean/max are stored-only,
   // so max is always an upper bound on the live entries the reuse block describes.
+  const statements = input.statements
+  const snippet = (id: string): string | undefined => {
+    const s = statements?.[id]
+    if (!s) return undefined
+    const oneLine = s.replace(/\s+/g, ' ').trim()
+    return oneLine.length > 72 ? oneLine.slice(0, 71) + '…' : oneLine
+  }
   const top: ReceiptTopEntry[] = [...retrievalCount.entries()]
     .filter(([id]) => !isExternal(id) || stored.has(id))
     .sort((a, b) => b[1] - a[1] || cmpId(a[0], b[0]))
     .slice(0, 10)
-    .map(([id, count]) => ({ id, count, retired: !stored.has(id) }))
+    .map(([id, count]) => {
+      const entry: ReceiptTopEntry = { id, count, retired: !stored.has(id) }
+      const s = snippet(id)
+      if (s) entry.statement = s
+      return entry
+    })
 
   const toDate = (iso: string | null) => (iso ? iso.slice(0, 10) : null)
 

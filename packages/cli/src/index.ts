@@ -34,6 +34,7 @@ Commands:
   capture <summary>       Record an episode
   timeline [query]        Query episode timeline
   status                  System health check
+  receipt [--days N]      What your memory retrieved for you
   sync                    Cross-device sync
   packs list              List installed packs
   packs install <source>  Install engram pack
@@ -88,6 +89,7 @@ const COMMANDS: Record<string, string> = {
   capture: './commands/capture.js',
   timeline: './commands/timeline.js',
   status: './commands/status.js',
+  receipt: './commands/receipt.js',
   sync: './commands/sync.js',
   packs: './commands/packs.js',
   ingest: './commands/ingest.js',
