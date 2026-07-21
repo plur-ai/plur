@@ -73,6 +73,10 @@ A reliability and hardening release: memory-quality, feedback, and security fixe
 - **Publish verification hardened** (#584): the `@next` smoke test now covers `core` (install + ESM import, catching the import-time crash class that bricked `cli@0.9.2`) and `mcp`, not just `cli` — the audited fixes live in `core`. PyPI publish now verifies the version is retrievable after upload and prints an explicit recovery path on failure (PyPI is immutable). The session-guard's unwritable-state-dir fail-open now leaves a stderr audit trail instead of a silent bypass.
 - The pre-release hardening pass for this release — the U+2028/U+2029 scope-metadata gap, multi-word historical-keyword matching, the `feedback()` `last_accessed` re-anchor, and the manifest-gate fix above — landed in (#579). The audit follow-ups (#581–#584) landed in (#585).
 
+## 0.13.0 (2026-07-09)
+
+Withdrawn — manifest-gate incident (#544). Cut ~90 minutes after 0.12.0 to walk back unintended features that weren't sufficiently tested. npm `latest` skips this version; upgrade directly to 0.14.0.
+
 ## 0.12.0 (2026-07-09)
 
 Cursor IDE support (experimental/beta), plus a batch of queued core improvements: batch learning, supersedes chains, commitment tiers, reranker fit checks, session-end auto-close.

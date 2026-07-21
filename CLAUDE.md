@@ -176,6 +176,17 @@ The earlier v0.2.1 baseline (86.7% overall / 93.3% Hit@10) is still cited in
 is the reproducible harness that realises it. That doc tracks methodology, not
 current scores. If your PR improves any of these, mention it in the PR description.
 
+## Developer documentation
+
+| Document | What it covers |
+|----------|---------------|
+| [docs/test-pyramid.md](docs/test-pyramid.md) | Test architecture — when to write unit vs integration vs smoke tests, why there are no Docker integration tests |
+| [docs/adr/README.md](docs/adr/README.md) | ADR index — architecture decisions (ADR-0001: YAML-as-truth, ADR-0002: derived-state provenance) |
+| [docs/runbooks/store-consolidation.md](docs/runbooks/store-consolidation.md) | Runbook for destructive store merges — read before touching `plur sync --consolidate` |
+| [docs/telemetry-design.md](docs/telemetry-design.md) | Opt-in telemetry design — what is collected, what is not, the no-external-calls-in-core invariant |
+| [ROADMAP.md](ROADMAP.md) | Prioritized feature roadmap |
+| [RELEASING.md](RELEASING.md) | Authoritative publish procedure, manifest gate, version tracks |
+
 ## Conventions
 
 - **Claim before you code**: before starting a GitHub issue, self-assign it
@@ -188,9 +199,13 @@ current scores. If your PR improves any of these, mention it in the PR descripti
   it? Assign yourself. Want another party to do it? Assign it to *them* (don't
   just label or @-mention). Handing off? Reassign. Unassigned = nobody is on it,
   however many labels it carries.
+- **No AI attribution in commits, PRs, or issues**: do not add `Co-Authored-By:` AI
+  lines, `🤖 Generated with` footers, or any other AI-assistant credit to commits,
+  PR descriptions, or issue comments. Automated runs may tag their output with a
+  role marker (e.g. `🤖 heartbeat —`) in issue comments, but not in git history.
 - TypeScript, Vitest, tsup, Zod for validation
 - No external API calls in core — search must work offline at zero cost
-- YAML for all persistent storage (not JSON, not SQLite for primary data)
+- YAML for all persistent storage (not JSON, not SQLite for primary data; SQLite is used only as an optional read index — YAML is always the source of truth)
 - Tests in `packages/*/test/`, named `*.test.ts`
 - Apache-2.0 license
 
