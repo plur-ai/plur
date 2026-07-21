@@ -45,11 +45,14 @@ export function renderReceipt(r: Receipt): string {
   L.push('')
 
   // ---- Lead: what memory delivered ----
-  L.push(`  ${n(r.retrieved.engram_session_pairs)} times a memory you taught PLUR`)
+  L.push(`  ${n(r.retrieved.taught_pairs)} times a memory you taught PLUR`)
   L.push('  was put in front of the model.')
   L.push('')
   L.push(`  across ${n(r.retrieved.retrievals)} retrievals in ${n(r.window.sessions)} sessions`)
   L.push(`  ${n(r.retrieved.engrams)} distinct engrams did the work`)
+  if (r.retrieved.pack_pairs > 0) {
+    L.push(`  (+ ${n(r.retrieved.pack_pairs)} from installed packs)`)
+  }
   if (r.external_retrieved > 0) {
     L.push(`  (+ ${n(r.external_retrieved)} retrievals from team stores, not counted here)`)
   }
@@ -72,19 +75,25 @@ export function renderReceipt(r: Receipt): string {
   }
 
   // ---- Store health (activation rate lives here, framed as coverage) ----
+  // Numbers lead in a fixed-width column so variable-length labels below can't
+  // knock them out of alignment.
+  const row = (count: number, label: string) => `    ${n(count).padStart(8)}   ${label}`
+  // "never" is unverifiable: logging began at complete_from, so we report only
+  // what we can observe — retrievals since that date.
+  const dormantLabel = r.window.windowed
+    ? `not retrieved in the last ${r.window.requested_days} days (${pct(1 - r.retrieved.activation_rate)})`
+    : `not retrieved since ${r.coverage.complete_from} (${pct(1 - r.retrieved.activation_rate)})`
   L.push('')
   L.push('  STORE HEALTH')
-  L.push(`    engrams stored                ${n(r.stored.total).padStart(8)}   (you: ${n(r.stored.own)}, packs: ${n(r.stored.pack)})`)
-  const dormantLabel = r.window.windowed
-    ? `not retrieved in the last ${r.window.requested_days} days`
-    : 'never retrieved'
-  L.push(`    ${dormantLabel.padEnd(30)}${n(r.dormant.never_retrieved).padStart(6)}   (${pct(1 - r.retrieved.activation_rate)})`)
-  L.push(`    retrieved at least once       ${n(r.retrieved.engrams).padStart(8)}   (${pct(r.retrieved.activation_rate)} of store)`)
+  L.push(row(r.stored.total, `engrams stored (you: ${n(r.stored.own)}, packs: ${n(r.stored.pack)})`))
+  L.push(row(r.retrieved.engrams, `retrieved at least once (${pct(r.retrieved.activation_rate)} of store)`))
+  L.push(row(r.dormant.never_retrieved, dormantLabel))
   if (r.dormant.unavailable_but_retrieved > 0) {
-    L.push(`    retrieved but since removed   ${n(r.dormant.unavailable_but_retrieved).padStart(8)}`)
+    L.push(row(r.dormant.unavailable_but_retrieved, 'retrieved but since removed'))
   }
-  L.push('    A low activation rate is normal and healthy — memory is meant to')
-  L.push('    be selective. A large dormant tail is a prompt to prune, not a fault.')
+  L.push('    Over a short logging window a low rate is expected, not a fault —')
+  L.push('    memory is meant to be selective, and much of the store predates')
+  L.push('    logging. A large dormant tail is a prompt to prune, and to keep teaching.')
 
   // ---- Provenance / coverage caveats ----
   L.push('')

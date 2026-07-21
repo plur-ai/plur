@@ -19,6 +19,12 @@ export function gatherReceipt(
   externalPrefixes: string[],
   opts: { days?: number; now?: Date; statements?: Record<string, string> } = {},
 ): Receipt {
+  // Read all history unconditionally, even for a --days window: coverage.
+  // complete_from must report the ALL-TIME earliest logged retrieval so a
+  // windowed number is never misread as lifetime, and that floor is only
+  // knowable by seeing the oldest event. This is a manual command, not a hot
+  // path; if enterprise history ever makes the full parse costly, add a
+  // cheap earliest-event probe rather than dropping the all-time floor.
   let events
   try {
     ({ events } = readCoInjections(root))

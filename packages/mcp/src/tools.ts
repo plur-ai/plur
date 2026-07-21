@@ -779,6 +779,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
           budget: args.budget as number | undefined,
           scope: args.scope as string | undefined,
           source: 'inject',
+          session_id: _activeSessionId,
         })
         _recordInjectionTelemetry(_activeSessionId, result.injected_packs)
         return {
@@ -811,6 +812,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
           budget: args.budget as number | undefined,
           scope: args.scope as string | undefined,
           source: 'inject',
+          session_id: _activeSessionId,
         })
         _recordInjectionTelemetry(_activeSessionId, result.injected_packs)
         return {

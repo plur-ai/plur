@@ -5,7 +5,7 @@ import type { Receipt } from '@plur-ai/core'
 const receipt: Receipt = {
   window: { from: '2026-07-03', to: '2026-07-20', requested_days: null, windowed: false, sessions: 59 },
   stored: { own: 3730, pack: 771, total: 4501 },
-  retrieved: { engrams: 153, activation_rate: 0.034, retrievals: 68, engram_session_pairs: 449 },
+  retrieved: { engrams: 153, activation_rate: 0.034, retrievals: 68, engram_session_pairs: 449, taught_pairs: 438, pack_pairs: 11 },
   reuse: { median: 1, mean: 2.9, max: 33, top: [{ id: 'ENG-2026-0513-004', count: 33, retired: false }] },
   dormant: { never_retrieved: 4348, unavailable_but_retrieved: 0 },
   external_retrieved: 0,
@@ -14,13 +14,22 @@ const receipt: Receipt = {
 }
 
 describe('renderReceipt', () => {
-  it('leads with delivery (engram-session pairs), not activation rate', () => {
+  it('leads with taught delivery, not activation rate', () => {
     const out = renderReceipt(receipt)
-    const pairsIdx = out.indexOf('449')
+    const pairsIdx = out.indexOf('438') // taught_pairs, not the pack-inclusive 449
     const activationIdx = out.indexOf('3%')
     expect(pairsIdx).toBeGreaterThan(-1)
     expect(activationIdx).toBeGreaterThan(-1)
     expect(pairsIdx).toBeLessThan(activationIdx) // delivery appears first
+  })
+
+  it('does not claim pack memories were taught by the user', () => {
+    const out = renderReceipt(receipt)
+    // headline number is taught-only; pack contribution is shown separately
+    const headline = out.split('\n').find(l => l.includes('you taught'))!
+    expect(headline).toContain('438')
+    expect(headline).not.toContain('449')
+    expect(out).toMatch(/11 from installed packs/)
   })
 
   it('shows the coverage window so numbers are not read as lifetime', () => {
@@ -37,6 +46,17 @@ describe('renderReceipt', () => {
   it('shows activation rate as store health, not as a success score', () => {
     const out = renderReceipt(receipt)
     expect(out).toMatch(/health|coverage|dormant/i)
+  })
+
+  it('never claims engrams were "never" retrieved on an all-time receipt', () => {
+    // "never" is unverifiable — logging started at complete_from.
+    const out = renderReceipt(receipt)
+    expect(out).not.toMatch(/never retrieved/i)
+    expect(out).toContain('not retrieved since 2026-07-03')
+  })
+
+  it('acknowledges the logging window when framing the dormant tail', () => {
+    expect(renderReceipt(receipt)).toMatch(/short logging window|predates logging/i)
   })
 
   it('uses the word retrieved, never served', () => {
@@ -66,7 +86,7 @@ describe('renderReceipt', () => {
     const empty: Receipt = {
       window: { from: '', to: '', requested_days: null, windowed: false, sessions: 0 },
       stored: { own: 0, pack: 0, total: 0 },
-      retrieved: { engrams: 0, activation_rate: 0, retrievals: 0, engram_session_pairs: 0 },
+      retrieved: { engrams: 0, activation_rate: 0, retrievals: 0, engram_session_pairs: 0, taught_pairs: 0, pack_pairs: 0 },
       reuse: { median: 0, mean: 0, max: 0, top: [] },
       dormant: { never_retrieved: 0, unavailable_but_retrieved: 0 },
       external_retrieved: 0,

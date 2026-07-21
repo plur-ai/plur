@@ -190,7 +190,13 @@ export interface CoInjectionEvent {
 
 export interface CoInjectionReadResult {
   events: CoInjectionEvent[]
-  /** Lines present but unusable — corrupt JSON or a malformed payload. */
+  /**
+   * Count of co_injection events that were unusable or had to be cleaned:
+   * a malformed payload (no ids array / no query_hash / unparseable timestamp),
+   * dropped entirely, OR a kept event that had non-string ids stripped out.
+   * Corrupt-JSON lines are dropped upstream in readHistory and are NOT counted
+   * here. A diagnostic signal only — not currently surfaced in the receipt.
+   */
   skipped: number
 }
 

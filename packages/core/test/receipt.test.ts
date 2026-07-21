@@ -69,6 +69,18 @@ describe('computeReceipt — retrieval counts', () => {
     expect(r.window.sessions).toBe(2)
   })
 
+  it('splits pairs into taught (own) and pack, summing to engram_session_pairs', () => {
+    const events = [
+      ev('2026-07-20T10:00:00.000Z', ['E1', 'P1'], 's1'),
+      ev('2026-07-20T11:00:00.000Z', ['E1'], 's2'),
+    ]
+    const r = computeReceipt({ ownEngramIds: ['E1'], packEngramIds: ['P1'], events, now: NOW })
+    // E1 in 2 sessions → 2 taught pairs; P1 in 1 session → 1 pack pair
+    expect(r.retrieved.taught_pairs).toBe(2)
+    expect(r.retrieved.pack_pairs).toBe(1)
+    expect(r.retrieved.taught_pairs + r.retrieved.pack_pairs).toBe(r.retrieved.engram_session_pairs)
+  })
+
   it('a retired engram does not inflate activation rate', () => {
     const events = [ev('2026-07-20T10:00:00.000Z', ['GONE'], 's1')]
     const r = computeReceipt({ ownEngramIds: ['E1'], packEngramIds: [], events, now: NOW })

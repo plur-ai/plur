@@ -68,6 +68,15 @@ describe('co_injection carries tokens_used and source', () => {
     expect(bySession.get('s-inject')).toBe('inject')
     expect(bySession.get('s-hook')).toBe('hook')
   })
+
+  it('an inject with source but no session_id is anonymous and readable', () => {
+    // Mirrors the MCP inject tools when no session is active: source tagged,
+    // session_id undefined — the event must still round-trip cleanly.
+    plur.inject('pnpm install monorepo', { source: 'inject' })
+    const e = readCoInjections(dir).events.at(-1)!
+    expect(e.data.source).toBe('inject')
+    expect(e.data.session_id).toBeUndefined()
+  })
 })
 
 describe('readCoInjections is defensive', () => {

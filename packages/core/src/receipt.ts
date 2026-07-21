@@ -51,7 +51,12 @@ export interface Receipt {
     engrams: number
     activation_rate: number
     retrievals: number
+    /** Distinct (engram, session) pairs over all local engrams (own + packs). */
     engram_session_pairs: number
+    /** Of those pairs, the ones for engrams the user taught (own store, not packs). */
+    taught_pairs: number
+    /** Of those pairs, the ones for engrams from installed packs. */
+    pack_pairs: number
   }
   /** Reuse over engrams that are BOTH retrieved and still stored. */
   reuse: { median: number; mean: number; max: number; top: ReceiptTopEntry[] }
@@ -169,6 +174,12 @@ export function computeReceipt(input: ReceiptInput): Receipt {
   const trulyGone = retrievedIds.filter(id => !stored.has(id) && !isExternal(id))
   const liveCounts = liveRetrieved.map(id => retrievalCount.get(id)!).sort((a, b) => a - b)
 
+  // Split (engram, session) pairs by provenance so the headline can name what
+  // the user TAUGHT without silently folding in installed-pack memories.
+  const pairsFor = (id: string) => engramSessions.get(id)?.size ?? 0
+  const taughtPairs = liveRetrieved.filter(id => own.has(id)).reduce((n, id) => n + pairsFor(id), 0)
+  const packPairs = liveRetrieved.filter(id => packOnly.has(id)).reduce((n, id) => n + pairsFor(id), 0)
+
   // top spans local (stored) + genuinely-gone engrams, so a heavily-used but
   // since-retired engram stays visible; external team engrams are excluded from
   // this local receipt's "most reused". reuse median/mean/max are stored-only,
@@ -207,6 +218,8 @@ export function computeReceipt(input: ReceiptInput): Receipt {
       activation_rate: stored.size > 0 ? liveRetrieved.length / stored.size : 0,
       retrievals: inWindow.length,
       engram_session_pairs: [...engramSessions.values()].reduce((n, s) => n + s.size, 0),
+      taught_pairs: taughtPairs,
+      pack_pairs: packPairs,
     },
     reuse: {
       median: median(liveCounts),
