@@ -1,12 +1,13 @@
 # Changelog
 
-## 0.15.0 (upcoming)
+## 0.15.0 (2026-07-21)
 
-Performance + expansion — lean MCP surface by default, new LangChain adapter, three core stability fixes.
+Performance + expansion — lean MCP surface by default, new LangChain adapter, cross-platform path fix, dependency security hardening, and four core stability fixes.
 
 - **74% fewer tool tokens per turn** (lean profile now default)
 - new `plur-langchain` Python package
-- three core ID-uniqueness and cache-safety fixes
+- Windows path fix for `plur_recall_hybrid`
+- four core ID-uniqueness, cache-safety, and security fixes
 
 ### Changed
 
@@ -18,6 +19,8 @@ Performance + expansion — lean MCP surface by default, new LangChain adapter, 
 
 ### Fixed
 
+- **`plur_recall_hybrid` fails with `ENOENT: mkdir ''` on Windows** (#641, #642): `saveCache` extracted the directory with `cachePath.lastIndexOf('/')`, which returns -1 on Windows backslash paths — `substring(0, -1)` yields `''`, and `mkdirSync('')` throws ENOENT. Replaced with `path.dirname()` (cross-platform) and added a guard against empty dirname. `plur_recall` / `plur_learn` / `plur_doctor` were unaffected; only the hybrid path (`plur_recall_hybrid`) hit `saveCache`. Regression tests added (4 cases, offline mock embedder).
+- **Dependency security overrides** (#632): tightened transitive dependency overrides addressing 30 Dependabot alerts across `openclaw`, `undici`, `linkify-it`, and `js-yaml`.
 - **`generateInjectionId` / `generateEventId` cross-process uniqueness** (#596): IDs are now unique across processes started within the same millisecond. Replaced `Date.now() + 4-char random suffix` with a per-process counter — eliminates the ~0.07% birthday-collision chance per 50-call batch and removes the intermittent `expected 49 to be 50` flake in co-injection tests.
 - **`RemoteStore.load()` — no cache poisoning on mid-pagination error** (#550): a network or server error mid-way through a paginated remote load no longer overwrites the local cache with partial data. The local cache is only updated after a complete, successful load.
 - **PID salt for cross-process ID uniqueness** (#600): ID generation now includes the process ID as a salt, preventing collisions between sibling processes (e.g. parallel nightshift agents) that start in the same millisecond.
