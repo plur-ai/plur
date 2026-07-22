@@ -4734,21 +4734,33 @@ Generate an improved version of the procedure that prevents this failure. Return
    * Personal-family scopes are excluded here (they can't be registered from
    * discovery — see {@link registerScope} / #382), so the offer only ever shows
    * scopes the user can actually act on.
+   *
+   * Also returns any `failures` (remotes whose /me could not be reached / whose
+   * token was rejected) so the caller can distinguish "genuinely nothing to
+   * offer" from "couldn't reach the server" — the CLI must not report an empty
+   * offer when it simply failed to talk to the remote (#656 self-review).
    */
-  async offerableScopes(opts?: { url?: string; timeoutMs?: number }): Promise<Array<{ scope: string; url: string; description?: string }>> {
+  async offerableScopes(opts?: { url?: string; timeoutMs?: number }): Promise<{
+    scopes: Array<{ scope: string; url: string; description?: string }>
+    failures: Array<{ url: string; error?: string }>
+  }> {
     const discoveries = await this.discoverRemoteScopes(opts)
     const seen = new Set<string>()
-    const out: Array<{ scope: string; url: string; description?: string }> = []
+    const scopes: Array<{ scope: string; url: string; description?: string }> = []
+    const failures: Array<{ url: string; error?: string }> = []
     for (const d of discoveries) {
-      if (!d.ok) continue
+      if (!d.ok) {
+        failures.push({ url: d.url, error: d.error })
+        continue
+      }
       for (const scope of d.unregistered) {
         if (!isSharedScope(scope) || seen.has(scope)) continue
         seen.add(scope)
         const meta = d.metadata.find(m => m.scope === scope)
-        out.push({ scope, url: d.url, description: meta?.description })
+        scopes.push({ scope, url: d.url, description: meta?.description })
       }
     }
-    return out
+    return { scopes, failures }
   }
 
   /**

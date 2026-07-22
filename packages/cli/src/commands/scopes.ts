@@ -58,15 +58,28 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     exit(1, `Unknown subcommand "${subcommand}". Usage: plur scopes [list] | register <scope> | dismiss <scope> | --reoffer`)
   }
 
-  const offered = await plur.offerableScopes()
-  if (json) return outputJson({ success: true, action: 'list', scopes: offered })
+  const { scopes: offered, failures } = await plur.offerableScopes()
+  if (json) {
+    return outputJson({ success: failures.length === 0, action: 'list', scopes: offered, failures })
+  }
 
+  // Don't report an empty offer when we simply couldn't reach the remote (#656):
+  // if nothing is offerable AND a remote failed, that's an error, not "nothing to do".
+  if (offered.length === 0 && failures.length > 0) {
+    const urls = failures.map(f => f.url).join(', ')
+    return exit(1, `Could not reach ${failures.length} remote store(s): ${urls}. ` +
+      `Check connectivity/VPN and that the token is valid (\`plur doctor\`).`)
+  }
   if (offered.length === 0) {
     return outputText('No authorized-but-unregistered scopes to offer. (Nothing to register.)')
   }
   outputText(`${offered.length} scope(s) authorized but not yet registered:\n`)
   for (const o of offered) {
     outputText(`  ${o.scope}${o.description ? ` — ${o.description}` : ''}`)
+  }
+  // Some remotes returned scopes but others failed — say so, don't hide it.
+  if (failures.length > 0) {
+    outputText(`\n(warning: could not reach ${failures.map(f => f.url).join(', ')} — that store's scopes may be missing above.)`)
   }
   outputText(`\nRegister one:  plur scopes register <scope>`)
   outputText(`Dismiss one:   plur scopes dismiss <scope>`)

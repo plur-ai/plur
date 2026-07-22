@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, readFileSync } from 'fs'
+import { mkdtempSync, rmSync, readFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { execSync } from 'child_process'
@@ -49,5 +49,18 @@ describe('plur scopes (#647)', () => {
 
   it('rejects an unknown subcommand', () => {
     expect(() => run('scopes bogus')).toThrow()
+  })
+
+  it('surfaces an unreachable remote instead of a silent empty offer (#656)', () => {
+    // a remote store that refuses the connection — discovery fails
+    writeFileSync(
+      join(dir, 'config.yaml'),
+      `embeddings:\n  enabled: false\nstores:\n  - url: "http://127.0.0.1:9"\n    token: "x"\n    scope: "group:acme/team"\n`,
+    )
+    const out = JSON.parse(run('scopes'))
+    expect(out.success).toBe(false)
+    expect(out.action).toBe('list')
+    expect(out.scopes).toEqual([])
+    expect(out.failures.length).toBeGreaterThan(0)
   })
 })

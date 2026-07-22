@@ -329,7 +329,7 @@ describe('Plur scope opt-out (#647)', () => {
   afterEach(() => { if (dir) rmSync(dir, { recursive: true, force: true }) })
 
   it('offerableScopes lists shared unregistered scopes, excluding the registered one', async () => {
-    const offered = (await freshPlur().offerableScopes()).map(o => o.scope).sort()
+    const offered = (await freshPlur().offerableScopes()).scopes.map(o => o.scope).sort()
     expect(offered).toEqual([
       'group:plur/plur-ai',
       'group:plur/plur-ai/comms',
@@ -344,13 +344,13 @@ describe('Plur scope opt-out (#647)', () => {
 
     const [d] = await plur.discoverRemoteScopes()
     expect(d.unregistered).not.toContain('group:plur/plur-ai/comms')
-    expect((await plur.offerableScopes()).map(o => o.scope)).not.toContain('group:plur/plur-ai/comms')
+    expect((await plur.offerableScopes()).scopes.map(o => o.scope)).not.toContain('group:plur/plur-ai/comms')
 
     // persisted on disk + honored by a fresh instance
     const cfg = yaml.load(readFileSync(join(dir, 'config.yaml'), 'utf8')) as any
     expect(cfg.dismissed_scopes).toContain('group:plur/plur-ai/comms')
     const reloaded = new Plur({ path: dir })
-    expect((await reloaded.offerableScopes()).map(o => o.scope)).not.toContain('group:plur/plur-ai/comms')
+    expect((await reloaded.offerableScopes()).scopes.map(o => o.scope)).not.toContain('group:plur/plur-ai/comms')
   })
 
   it('reofferScopes clears dismissals — the scope is offered again', async () => {
@@ -358,7 +358,7 @@ describe('Plur scope opt-out (#647)', () => {
     plur.dismissScope('group:plur/plur-ai/comms')
     plur.reofferScopes()
     expect(plur.getDismissedScopes()).toEqual([])
-    expect((await plur.offerableScopes()).map(o => o.scope)).toContain('group:plur/plur-ai/comms')
+    expect((await plur.offerableScopes()).scopes.map(o => o.scope)).toContain('group:plur/plur-ai/comms')
   })
 
   it('registerScope adds exactly one store (not all) and clears any prior dismissal', async () => {
@@ -373,7 +373,7 @@ describe('Plur scope opt-out (#647)', () => {
     expect(cfg.stores.map((s: any) => s.scope)).toContain('group:plur/plur-ai/research')
 
     expect(plur.getDismissedScopes()).not.toContain('group:plur/plur-ai/research')
-    expect((await plur.offerableScopes()).map(o => o.scope)).not.toContain('group:plur/plur-ai/research')
+    expect((await plur.offerableScopes()).scopes.map(o => o.scope)).not.toContain('group:plur/plur-ai/research')
   })
 
   it('offerableScopes excludes personal-family scopes; registerScope rejects them', async () => {
@@ -382,10 +382,27 @@ describe('Plur scope opt-out (#647)', () => {
       scopes: ['group:plur/plur-ai/engineering', 'group:plur/plur-ai/comms', 'user:plur:crtahlin', 'global'],
     })
     const plur = freshPlur()
-    const offered = (await plur.offerableScopes()).map(o => o.scope)
+    const offered = (await plur.offerableScopes()).scopes.map(o => o.scope)
     expect(offered).toContain('group:plur/plur-ai/comms')
     expect(offered).not.toContain('user:plur:crtahlin')
     expect(offered).not.toContain('global')
     await expect(plur.registerScope('user:plur:crtahlin')).rejects.toThrow(/non-shared/)
+  })
+
+  it('offerableScopes reports failures instead of a silently-empty offer when a remote is unreachable (#656)', async () => {
+    dir = mkdtempSync(join(tmpdir(), 'plur-optout-fail-'))
+    writeFileSync(
+      join(dir, 'config.yaml'),
+      yaml.dump({
+        stores: [{ url: baseUrl, token: 'bad-token', scope: 'group:plur/plur-ai/engineering', shared: true, readonly: false }],
+        index: false,
+      }, { lineWidth: 120, noRefs: true }),
+    )
+    const plur = new Plur({ path: dir })
+    const { scopes, failures } = await plur.offerableScopes()
+    expect(scopes).toEqual([])
+    expect(failures).toHaveLength(1)
+    expect(failures[0].url).toBe(baseUrl)
+    expect(failures[0].error).toMatch(/401/)
   })
 })
