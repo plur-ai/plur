@@ -2,12 +2,12 @@
 
 ## 0.15.0 (2026-07-21)
 
-Performance + expansion — lean MCP surface by default, new LangChain adapter, cross-platform path fix, dependency security hardening, and four core stability fixes.
+Lean default, LangChain, MCP SDK v2.
 
-- **74% fewer tool tokens per turn** (lean profile now default)
-- new `plur-langchain` Python package
-- Windows path fix for `plur_recall_hybrid`
-- four core ID-uniqueness, cache-safety, and security fixes
+- lean default — 74% fewer tokens
+- plur-langchain Python package
+- MCP SDK v2 (split packages)
+- Windows path + ID uniqueness fix
 
 ### Changed
 
