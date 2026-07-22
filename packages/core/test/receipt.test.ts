@@ -347,6 +347,34 @@ describe('computeReceipt — statement snippets', () => {
     expect(/[\u0000-\u001f\u007f-\u009f]/.test(snip)).toBe(false)
   })
 
+  it('strips bidi overrides and zero-width spacers (Trojan-Source defense)', () => {
+    const RLO = String.fromCharCode(0x202e)   // right-to-left override
+    const LRI = String.fromCharCode(0x2066)   // isolate
+    const PDI = String.fromCharCode(0x2069)
+    const ZWSP = String.fromCharCode(0x200b)
+    const BOM = String.fromCharCode(0xfeff)
+    const evil = `safe${RLO}reversed${LRI}x${PDI}wo${ZWSP}rd${BOM}`
+    const r = computeReceipt({
+      ownEngramIds: ['E1'], packEngramIds: [],
+      events: [ev('2026-07-20T10:00:00.000Z', ['E1'], 's1')], now: NOW,
+      statements: { E1: evil },
+    })
+    const snip = r.reuse.top[0].statement!
+    const hostile = [0x202e, 0x2066, 0x2069, 0x200b, 0xfeff]
+    expect(snip.split('').some(c => hostile.includes(c.charCodeAt(0)))).toBe(false)
+  })
+
+  it('keeps ZWJ so legitimate emoji sequences and scripts survive', () => {
+    const ZWJ = String.fromCharCode(0x200d)
+    // family emoji is a ZWJ sequence; ZWJ must not be stripped
+    const r = computeReceipt({
+      ownEngramIds: ['E1'], packEngramIds: [],
+      events: [ev('2026-07-20T10:00:00.000Z', ['E1'], 's1')], now: NOW,
+      statements: { E1: `team ${'👩'}${ZWJ}${'💻'} note` },
+    })
+    expect(r.reuse.top[0].statement).toContain(ZWJ)
+  })
+
   it('truncates on code points so an emoji at the boundary is never split', () => {
     const r = computeReceipt({
       ownEngramIds: ['E1'], packEngramIds: [],

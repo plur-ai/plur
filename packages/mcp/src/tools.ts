@@ -2,7 +2,7 @@ import { existsSync, unlinkSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
 import { Plur, extractMetaEngrams, validateMetaEngram, confidenceBand, generateProfile, getProfileForInjection, markProfileDirty, selectModelForOperation, readHistoryForEngram, getCachedUpdateCheck, minorVersionsBehind, scanForTensions, CapabilityCanary, readProjectConfig, isSharedScope, resolveRerankerName, getReranker, classifyRerankerFailure, hfCacheDirName } from '@plur-ai/core'
-import type { LlmFunction, MetaField, TensionStatus, RerankerEvalResult } from '@plur-ai/core'
+import type { LlmFunction, MetaField, TensionStatus, RerankerEvalResult, Receipt } from '@plur-ai/core'
 import { recordTelemetry } from './telemetry.js'
 import { VERSION } from './version.js'
 import { z } from 'zod'
@@ -372,6 +372,30 @@ export function getToolDefinitions(profile: ToolProfile = 'full'): ToolDefinitio
   if (profile !== 'cursor') return all
   const core = all.filter(t => CURSOR_CORE_TOOL_NAMES.has(t.name))
   return [...core, buildAdminDispatchTool(all)]
+}
+
+/**
+ * One-line, honest framing of a Receipt for the calling agent — carries the
+ * same guardrail the CLI renders, so an agent never presents the coverage-style
+ * activation_rate as an effectiveness score.
+ */
+function receiptSummary(r: Receipt): string {
+  if (r.coverage.source === 'none') {
+    return r.window.windowed
+      ? `No retrievals recorded in the last ${r.window.requested_days} days.`
+      : 'No retrieval history yet — logging begins once memory is used.'
+  }
+  const since = r.window.windowed
+    ? `the last ${r.window.requested_days} days`
+    : `${r.coverage.complete_from}`
+  const pct = Math.round(r.retrieved.activation_rate * 100)
+  return (
+    `Since ${since}, ${r.retrieved.taught_pairs} times a memory the user taught was ` +
+    `retrieved into context (across ${r.retrieved.retrievals} retrievals in ` +
+    `${r.window.sessions} sessions; ${r.retrieved.engrams} distinct engrams). ` +
+    `Activation ${pct}% is store COVERAGE over the logging window, not a quality ` +
+    `score — it is expected to be low and to fall as more engrams are added.`
+  )
 }
 
 function getAllToolDefinitions(): ToolDefinition[] {
@@ -1455,17 +1479,21 @@ function getAllToolDefinitions(): ToolDefinition[] {
 
     {
       name: 'plur_receipt',
-      description: 'Counted report of what your memory retrieved for you: engrams stored, how many were retrieved and how often, which are most relied on, and how much of the store is dormant. Local and read-only. Every figure is directly counted, never estimated.',
+      description:
+        'Counted report of what your memory retrieved for you: engrams stored, how many were retrieved and how often, which are most relied on, and how much of the store is dormant. Local and read-only; every figure is directly counted, never estimated. IMPORTANT when relaying to the user: `activation_rate` is COVERAGE over the logging window (≈ how much of the store was surfaced), NOT a quality or effectiveness score — it is naturally low and FALLS as more engrams are added, so never present it as "memory is N% effective". A `summary` line is included; prefer relaying that.',
       annotations: { title: 'Memory receipt', readOnlyHint: true, idempotentHint: true },
       inputSchema: {
         type: 'object',
         properties: {
-          days: { type: 'number', description: 'Restrict to the last N days. Omit for all recorded history.' },
+          days: { type: 'number', description: 'Restrict to the last N days (integer). Omit for all recorded history.' },
         },
       },
       handler: async (args, plur) => {
-        const days = typeof args.days === 'number' && args.days > 0 ? args.days : undefined
-        return plur.receipt(days ? { days } : undefined)
+        const days = typeof args.days === 'number' && Number.isFinite(args.days) && args.days >= 1
+          ? Math.floor(args.days)
+          : undefined
+        const receipt = plur.receipt(days ? { days } : undefined)
+        return { summary: receiptSummary(receipt), ...receipt }
       },
     },
 

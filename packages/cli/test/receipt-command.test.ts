@@ -29,7 +29,7 @@ describe('renderReceipt', () => {
     const headline = out.split('\n').find(l => l.includes('you taught'))!
     expect(headline).toContain('438')
     expect(headline).not.toContain('449')
-    expect(out).toMatch(/11 from installed packs/)
+    expect(out).toMatch(/11 times an installed-pack memory/)
   })
 
   it('shows the coverage window so numbers are not read as lifetime', () => {

@@ -45,14 +45,16 @@ export function renderReceipt(r: Receipt): string {
   L.push('')
 
   // ---- Lead: what memory delivered ----
+  // Keep the two pair figures (taught / pack) adjacent so they read as parallel
+  // counts, not as "distinct engrams" plus extra.
   L.push(`  ${n(r.retrieved.taught_pairs)} times a memory you taught PLUR`)
   L.push('  was put in front of the model.')
+  if (r.retrieved.pack_pairs > 0) {
+    L.push(`  (plus ${n(r.retrieved.pack_pairs)} times an installed-pack memory)`)
+  }
   L.push('')
   L.push(`  across ${n(r.retrieved.retrievals)} retrievals in ${n(r.window.sessions)} sessions`)
-  L.push(`  ${n(r.retrieved.engrams)} distinct engrams did the work`)
-  if (r.retrieved.pack_pairs > 0) {
-    L.push(`  (+ ${n(r.retrieved.pack_pairs)} from installed packs)`)
-  }
+  L.push(`  drawing on ${n(r.retrieved.engrams)} distinct engrams`)
   if (r.external_retrieved > 0) {
     L.push(`  (+ ${n(r.external_retrieved)} retrievals from team stores, not counted here)`)
   }
@@ -111,10 +113,11 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   const daysIdx = args.indexOf('--days')
   let days: number | undefined
   if (daysIdx >= 0) {
-    days = Number(args[daysIdx + 1])
-    if (!Number.isFinite(days) || days <= 0) {
-      throw new Error('--days requires a positive number')
+    const raw = Number(args[daysIdx + 1])
+    if (!Number.isFinite(raw) || raw < 1) {
+      throw new Error('--days requires a whole number of days (1 or more)')
     }
+    days = Math.floor(raw)
   }
 
   const plur = createPlur(flags)

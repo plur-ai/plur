@@ -91,13 +91,19 @@ export interface Receipt {
 const DAY_MS = 86_400_000
 const SNIPPET_MAX = 71
 
-// C0 controls + DEL + C1 + the Unicode line/paragraph separators. Statement
-// text can originate in third-party installed packs, so an author could embed
-// ANSI/terminal escapes (ESC, BEL, CSI) or U+2028/U+2029 to spoof output or
-// drive the terminal when `plur receipt` prints the snippet. Mirrors the
-// scope-metadata hardening (#345).
+// Statement text can originate in third-party installed packs, so an author
+// could embed hostile characters that spoof output when the snippet prints to
+// a terminal or reaches the calling agent via the MCP result. We strip:
+//   - C0 controls + DEL + C1 (0x00-1F except tab/LF/CR, 0x7F-9F): ANSI/terminal
+//     escapes (ESC, BEL, CSI), covering the #345 scope-metadata baseline;
+//   - line/paragraph separators (U+2028/U+2029): fake line breaks;
+//   - bidi controls (U+200E/F marks, U+202A-E embeddings/overrides,
+//     U+2066-9 isolates): Trojan-Source reordering that can make a malicious
+//     snippet render as benign;
+//   - invisible spacers (U+200B ZWSP, U+FEFF BOM).
+// ZWJ/ZWNJ (U+200C/D) are kept — they carry meaning in real scripts and emoji.
 // eslint-disable-next-line no-control-regex
-const CONTROL_CHARS = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\u2028\u2029]/g
+const CONTROL_CHARS = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\u200b\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069\ufeff]/g
 
 /**
  * One-line, control-char-free, grapheme-safe snippet of an engram statement.
