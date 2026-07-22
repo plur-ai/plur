@@ -209,6 +209,13 @@ export const PlurConfigSchema = z.object({
   embeddings: EmbeddingsConfigSchema.default({}),
   vector: VectorConfigSchema.default({}),
   stores: z.array(StoreEntrySchema).default([]),
+  /**
+   * Shared scopes the user has explicitly dismissed from the "authorized but
+   * unregistered" offer (#647). Excluded from discoverRemoteScopes().unregistered
+   * and from the session-start hint so they stop being re-surfaced every session.
+   * `plur scopes --reoffer` clears this list.
+   */
+  dismissed_scopes: z.array(z.string()).default([]),
   llm: LlmTierConfigSchema.default({}),
   profile: ProfileConfigSchema.default({}),
   registry_url: z.string().url().optional(),

@@ -119,3 +119,40 @@ describe('plur_session_start remote auth surfacing (#295)', () => {
     }
   })
 })
+
+describe('plur_session_start scope-offer hint (#647)', () => {
+  // config with one registered store + optional dismissed_scopes
+  function writeConfigDismissed(dismissed: string[]): string {
+    const dir = mkdtempSync(join(tmpdir(), 'plur-mcp-offer-'))
+    dirs.push(dir)
+    const dis = dismissed.length ? `dismissed_scopes:\n${dismissed.map(s => `  - "${s}"`).join('\n')}\n` : ''
+    writeFileSync(
+      join(dir, 'config.yaml'),
+      `embeddings:\n  enabled: false\n${dis}stores:\n  - url: "${baseUrl}"\n    token: "${TOKEN}"\n    scope: "${SCOPE}"\n`,
+    )
+    return dir
+  }
+
+  it('emits a quiet plur-scopes hint (not register:true) for an unregistered shared scope', async () => {
+    stub.setMe({ username: 'crtahlin', org_id: 'plur', role: 'developer', scopes: [SCOPE, 'group:plur/plur-ai/comms'] })
+    const client = await makeClient(writeConfig(TOKEN))
+    const res = callResult(await client.callTool({ name: 'plur_session_start', arguments: { task: 'anything' } }))
+    expect(res.guide).toContain('plur scopes')
+    expect(res.guide).not.toContain('register:true')
+  })
+
+  it('omits a dismissed scope from the hint', async () => {
+    stub.setMe({ username: 'crtahlin', org_id: 'plur', role: 'developer', scopes: [SCOPE, 'group:plur/plur-ai/comms'] })
+    const client = await makeClient(writeConfigDismissed(['group:plur/plur-ai/comms']))
+    const res = callResult(await client.callTool({ name: 'plur_session_start', arguments: { task: 'anything' } }))
+    // the only extra scope is dismissed → nothing offerable → no hint
+    expect(res.guide).not.toContain('plur scopes')
+  })
+
+  it('never offers a personal-family scope advertised by /me', async () => {
+    stub.setMe({ username: 'crtahlin', org_id: 'plur', role: 'developer', scopes: [SCOPE, 'user:plur:crtahlin'] })
+    const client = await makeClient(writeConfig(TOKEN))
+    const res = callResult(await client.callTool({ name: 'plur_session_start', arguments: { task: 'anything' } }))
+    expect(res.guide).not.toContain('plur scopes')
+  })
+})

@@ -1923,11 +1923,16 @@ function getAllToolDefinitions(): ToolDefinition[] {
                   `Reads fall back to local; team-scoped writes queue in the outbox` +
                   (pending > 0 ? ` (${pending} pending)` : '') + ` until it recovers. Check connectivity/VPN.`
             }
-            const unregistered = [...new Set(discoveries.filter(d => d.ok).flatMap(d => d.unregistered))]
-            if (unregistered.length > 0) {
-              const list = unregistered.map(s => `"${safe(s)}"`).join(', ')
-              guide += `\n\n🔎 Your token is authorized for ${unregistered.length} more scope(s) not yet registered: ${list}. ` +
-                `Call plur_scopes_discover with register:true to add them all in one step.`
+            // #647: a QUIET, per-scope-aware hint. `d.unregistered` already
+            // excludes dismissed scopes; also drop personal-family (they can't be
+            // registered from discovery). Point at the user-facing `plur scopes`
+            // CLI for the actual register/dismiss decision instead of the old
+            // all-or-nothing `register:true`.
+            const offerable = [...new Set(discoveries.filter(d => d.ok).flatMap(d => d.unregistered))].filter(isSharedScope)
+            if (offerable.length > 0) {
+              guide += `\n\n🔎 ${offerable.length} authorized scope(s) not yet registered. Tell the user they can run ` +
+                `\`plur scopes\` to register or dismiss them per-scope (dismissed scopes stop being offered; ` +
+                `\`plur scopes --reoffer\` re-surfaces them).`
             }
           } catch { /* discovery is best-effort — never block session_start */ }
 
