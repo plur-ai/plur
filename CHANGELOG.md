@@ -1,11 +1,5 @@
 # Changelog
 
-## 0.16.0 (upcoming)
-
-### Added
-
-- **`plur scopes` — per-scope opt-out for authorized-but-unregistered scopes** (#647, #656): a new user-facing CLI to register, dismiss, or re-offer the shared scopes your enterprise token is authorized for, one at a time — instead of the old all-or-nothing `register:true`. `plur scopes` lists them (with each scope's description); `plur scopes register <scope>` adds one; `plur scopes dismiss <scope>` remembers "don't offer this again" (persisted to `config.yaml`); `plur scopes --reoffer` clears dismissals. Dismissed scopes are excluded from the list and from the session-start hint, so PLUR stops re-listing scopes you've deliberately skipped. The session-start hint is now a quiet one-liner pointing at `plur scopes` (it was agent-facing guide text that users never saw).
-
 ## 0.15.0 (2026-07-21)
 
 Lean default, LangChain, MCP SDK v2.
@@ -14,6 +8,7 @@ Lean default, LangChain, MCP SDK v2.
 - plur-langchain Python package
 - MCP SDK v2 (split packages)
 - Windows path + ID uniqueness fix
+- `plur scopes` opt-out CLI (#647, #656)
 
 ### Changed
 
@@ -23,6 +18,7 @@ Lean default, LangChain, MCP SDK v2.
 ### Added
 
 - **`plur-langchain` adapter** (#529): new Python package providing a LangChain `BaseMemory` + `BaseChatMessageHistory` adapter. Install with `pip install plur-langchain`. Chains and LCEL pipelines now get persistent engram memory with zero extra wiring.
+- **`plur scopes` CLI — per-scope opt-out for authorized-but-unregistered scopes** (#647, #656): `plur scopes` lists shared scopes from configured remotes (with each scope's description); `plur scopes register <scope>` adds one; `plur scopes dismiss <scope>` opts out permanently (persisted to `~/.plur/config.yaml`); `plur scopes --reoffer` clears all dismissals. Dismissed scopes are excluded from `plur scopes list` and from the MCP session-start hint. The session-start nudge is now a single quiet line pointing at `plur scopes` (replacing the all-or-nothing `register:true` model and the verbose agent-facing guide text users never saw).
 
 ### Fixed
 
