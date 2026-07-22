@@ -22,7 +22,11 @@ export interface ReceiptInput {
   /**
    * Optional id → statement snippet map. When present, top entries carry a
    * short, single-line snippet so "most relied on" is readable rather than a
-   * list of opaque ids. Statement text is local; it is never transmitted.
+   * list of opaque ids. Snippets are sanitized (control chars stripped) since
+   * statements can come from third-party packs. The snippet DOES appear in the
+   * receipt's MCP result and thus reaches the calling agent — but only for the
+   * caller's own local engrams, which that agent already receives via injection,
+   * so it is not a new disclosure. Team/remote-store statements are never added.
    */
   statements?: Record<string, string>
 }
@@ -85,6 +89,26 @@ export interface Receipt {
 }
 
 const DAY_MS = 86_400_000
+const SNIPPET_MAX = 71
+
+// C0 controls + DEL + C1 + the Unicode line/paragraph separators. Statement
+// text can originate in third-party installed packs, so an author could embed
+// ANSI/terminal escapes (ESC, BEL, CSI) or U+2028/U+2029 to spoof output or
+// drive the terminal when `plur receipt` prints the snippet. Mirrors the
+// scope-metadata hardening (#345).
+// eslint-disable-next-line no-control-regex
+const CONTROL_CHARS = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\u2028\u2029]/g
+
+/**
+ * One-line, control-char-free, grapheme-safe snippet of an engram statement.
+ * Strips control chars BEFORE collapsing whitespace so a removed control char
+ * cannot fuse two words, and truncates on code points (never mid-surrogate).
+ */
+function sanitizeSnippet(text: string): string {
+  const clean = text.replace(CONTROL_CHARS, ' ').replace(/\s+/g, ' ').trim()
+  const cp = Array.from(clean)
+  return cp.length > SNIPPET_MAX ? cp.slice(0, SNIPPET_MAX).join('') + '…' : clean
+}
 
 function median(sortedAsc: number[]): number {
   if (sortedAsc.length === 0) return 0
@@ -189,12 +213,9 @@ export function computeReceipt(input: ReceiptInput): Receipt {
   // since-retired engram stays visible; external team engrams are excluded from
   // this local receipt's "most reused". reuse median/mean/max are stored-only,
   // so max is always an upper bound on the live entries the reuse block describes.
-  const statements = input.statements
   const snippet = (id: string): string | undefined => {
-    const s = statements?.[id]
-    if (!s) return undefined
-    const oneLine = s.replace(/\s+/g, ' ').trim()
-    return oneLine.length > 72 ? oneLine.slice(0, 71) + '…' : oneLine
+    const raw = input.statements?.[id]
+    return raw === undefined ? undefined : sanitizeSnippet(raw)
   }
   const top: ReceiptTopEntry[] = [...retrievalCount.entries()]
     .filter(([id]) => !isExternal(id) || stored.has(id))

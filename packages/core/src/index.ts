@@ -2541,6 +2541,9 @@ export class Plur {
           data: {
             ids: injected_ids,
             query_hash: computeQueryHash(task),
+            // Event provenance for offline token-economics analysis of real
+            // sessions (the plur-bench #42 measurement). Deliberately NOT read
+            // by the receipt, which shows no token/cost figure by design.
             tokens_used: tokensUsed,
             source: options?.source ?? 'inject',
             ...(options?.scope ? { scope: options.scope } : {}),
@@ -3794,7 +3797,11 @@ Generate an improved version of the procedure that prevents this failure. Return
     const ownIds = primary.map(e => e.id)
 
     // Statement snippets for the "most relied on" list, so it reads as memories
-    // rather than opaque ids. Local only — never transmitted.
+    // rather than opaque ids. Built only from LOCAL engrams (primary store +
+    // installed packs); remote/team-store statements are never included. The
+    // snippet is sanitized downstream and does surface in the MCP result, but
+    // only for the caller's own engrams — content that agent already receives
+    // via injection, so no new disclosure.
     const statements: Record<string, string> = {}
     for (const e of primary) {
       if (typeof e.statement === 'string') statements[e.id] = e.statement

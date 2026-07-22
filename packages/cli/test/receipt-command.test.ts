@@ -43,9 +43,12 @@ describe('renderReceipt', () => {
     expect(out).toContain('4,348')
   })
 
-  it('shows activation rate as store health, not as a success score', () => {
+  it('shows activation rate under a STORE HEALTH heading with the not-a-fault framing', () => {
     const out = renderReceipt(receipt)
-    expect(out).toMatch(/health|coverage|dormant/i)
+    expect(out).toContain('STORE HEALTH')
+    expect(out).toMatch(/expected, not a fault/i)
+    // the 3% figure lives in the health block, not as a headline success score
+    expect(out.indexOf('3% of store')).toBeGreaterThan(out.indexOf('STORE HEALTH'))
   })
 
   it('never claims engrams were "never" retrieved on an all-time receipt', () => {
@@ -72,8 +75,12 @@ describe('renderReceipt', () => {
     }
   })
 
-  it('warns when session_id coverage is incomplete', () => {
-    expect(renderReceipt(receipt)).toMatch(/87%|session/i)
+  it('warns, with the exact coverage figure, when session_id coverage is incomplete', () => {
+    // Must assert on 87% specifically — matching "session" alone is vacuous
+    // because the header always prints "N sessions" regardless of the warning.
+    const out = renderReceipt(receipt)
+    expect(out).toContain('87%')
+    expect(out).toMatch(/anonymous sessions/i)
   })
 
   it('renders the most-reused engram id and its count', () => {

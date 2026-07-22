@@ -22,7 +22,19 @@ export function shouldOutputJson(options: OutputOptions): boolean {
 const SECRET_KEYS = new Set([
   'token', 'api_key', 'apikey', 'password', 'secret', 'authorization',
   'refresh_token', 'access_token', 'client_secret', 'private_key',
+  'bearer', 'jwt', 'auth', 'cookie', 'credential', 'credentials',
 ])
+
+// URL userinfo (scheme://user:pass@host). A store URL may carry credentials in
+// the password position, and config/error strings interpolate raw URLs — key-
+// based redaction can't reach a secret embedded in a string value, so mask it
+// here. Only the password half is masked; the username stays for diagnosis.
+const URL_USERINFO = /(\b[a-z][a-z0-9+.-]*:\/\/[^/\s:@]+:)[^/\s@]+(@)/gi
+
+/** Mask credentials embedded inside string values (URL userinfo). */
+function maskStringSecrets(s: string): string {
+  return s.replace(URL_USERINFO, '$1***$2')
+}
 
 /**
  * Strip credential-bearing fields from anything printed as JSON.
@@ -31,6 +43,13 @@ const SECRET_KEYS = new Set([
  * live enterprise bearer tokens. Without this, `plur status --json` pipes them
  * into CI logs, pasted issues and agent transcripts. Redaction lives at the
  * output boundary so every present and future JSON command inherits it.
+ *
+ * Two layers: secret-named keys (SECRET_KEYS) are replaced wholesale, and every
+ * string value is scanned for credentials embedded in it (URL userinfo), since
+ * a key-based denylist can't reach a password sitting inside a `stores[].url`
+ * or interpolated into an error message. Value scanning is deliberately narrow
+ * (URL userinfo only) to avoid corrupting legitimate output; it is not a
+ * general secret scrubber.
  *
  * `path` tracks the current ancestor chain, not every object ever visited: a
  * DAG is not a cycle, and PlurConfig legitimately shares sub-objects between
@@ -49,6 +68,7 @@ function definesOwnJson(v: object): boolean {
 }
 
 export function redactSecrets(value: unknown, path = new Set<object>()): unknown {
+  if (typeof value === 'string') return maskStringSecrets(value)
   if (value === null || typeof value !== 'object') return value
   const obj = value as object
   if (path.has(obj)) return '[Circular]'

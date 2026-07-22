@@ -120,4 +120,30 @@ describe('redactSecrets', () => {
     expect(out.price).toBeInstanceOf(Money)
     expect(JSON.stringify(out.price)).toBe('"$12.99"')
   })
+
+  it('masks a password embedded in a store URL (key-based redaction can not reach it)', () => {
+    const out = redactSecrets({
+      stores: [{ url: 'https://gregor:s3cr3tPassw0rd@plur.datafund.io/sse', scope: 'x' }],
+    }) as any
+    expect(out.stores[0].url).toBe('https://gregor:***@plur.datafund.io/sse')
+    expect(out.stores[0].url).not.toContain('s3cr3tPassw0rd')
+  })
+
+  it('masks URL userinfo inside an error string', () => {
+    const out = redactSecrets({ error: 'failed to add store ftp://user:hunter2@host' }) as any
+    expect(out.error).toBe('failed to add store ftp://user:***@host')
+    expect(out.error).not.toContain('hunter2')
+  })
+
+  it('leaves a plain URL without userinfo untouched', () => {
+    const url = 'https://plur.datafund.io/sse'
+    expect(redactSecrets({ url })).toEqual({ url })
+  })
+
+  it('redacts the newly-covered secret key names', () => {
+    const out = redactSecrets({
+      bearer: 'a', jwt: 'b', auth: 'c', cookie: 'd', credential: 'e',
+    }) as Record<string, string>
+    for (const v of Object.values(out)) expect(v).toBe('[REDACTED]')
+  })
 })
