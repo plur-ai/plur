@@ -306,3 +306,126 @@ describe('Plur.registerDiscoveredScopes()', () => {
     expect(config.stores).toHaveLength(4)
   })
 })
+
+// ---------------------------------------------------------------------------
+// Scopes opt-out — dismissScope / reofferScopes / registerScope (#647, #649)
+// ---------------------------------------------------------------------------
+
+describe('Scopes opt-out (#647/#649)', () => {
+  let dir: string
+
+  const writeConfig = (stores: unknown[], extra: Record<string, unknown> = {}) => {
+    dir = mkdtempSync(join(tmpdir(), 'plur-dismiss-'))
+    writeFileSync(join(dir, 'config.yaml'), yaml.dump({ stores, index: false, ...extra }, { lineWidth: 120, noRefs: true }))
+    return new Plur({ path: dir })
+  }
+
+  afterAll(() => { if (dir) rmSync(dir, { recursive: true, force: true }) })
+
+  beforeEach(() => {
+    server.reset()
+    server.setMe({
+      username: 'crtahlin',
+      org_id: 'plur',
+      role: 'developer',
+      scopes: [
+        'group:plur/plur-ai',
+        'group:plur/plur-ai/engineering',
+        'group:plur/plur-ai/comms',
+        'group:plur/plur-ai/research',
+      ],
+    })
+  })
+
+  it('dismissScope persists to config.yaml and survives reload', async () => {
+    const plur = writeConfig([
+      { url: baseUrl, token: TOKEN, scope: 'group:plur/plur-ai/engineering', shared: true, readonly: false },
+    ])
+    plur.dismissScope('group:plur/plur-ai/comms')
+
+    const raw = yaml.load(readFileSync(join(dir, 'config.yaml'), 'utf8')) as any
+    expect(raw.dismissed_scopes).toContain('group:plur/plur-ai/comms')
+
+    // Reload from disk — dismissed scope must still be excluded from discovery.
+    const fresh = new Plur({ path: dir })
+    const [d] = await fresh.discoverRemoteScopes()
+    expect(d.dismissed).toContain('group:plur/plur-ai/comms')
+    expect(d.unregistered).not.toContain('group:plur/plur-ai/comms')
+  })
+
+  it('dismissed scope is excluded from discoverRemoteScopes().unregistered', async () => {
+    const plur = writeConfig([
+      { url: baseUrl, token: TOKEN, scope: 'group:plur/plur-ai/engineering', shared: true, readonly: false },
+    ], { dismissed_scopes: ['group:plur/plur-ai/comms'] })
+
+    const [d] = await plur.discoverRemoteScopes()
+    expect(d.ok).toBe(true)
+    expect(d.unregistered).not.toContain('group:plur/plur-ai/comms')
+    expect(d.dismissed).toContain('group:plur/plur-ai/comms')
+    // Other unregistered scopes still surface.
+    expect(d.unregistered).toContain('group:plur/plur-ai')
+    expect(d.unregistered).toContain('group:plur/plur-ai/research')
+  })
+
+  it('reofferScopes clears dismissals and scope reappears in discovery', async () => {
+    const plur = writeConfig([
+      { url: baseUrl, token: TOKEN, scope: 'group:plur/plur-ai/engineering', shared: true, readonly: false },
+    ], { dismissed_scopes: ['group:plur/plur-ai/comms'] })
+
+    plur.reofferScopes()
+
+    const raw = yaml.load(readFileSync(join(dir, 'config.yaml'), 'utf8')) as any
+    expect(raw.dismissed_scopes).toEqual([])
+
+    const [d] = await plur.discoverRemoteScopes()
+    expect(d.unregistered).toContain('group:plur/plur-ai/comms')
+    expect(d.dismissed).toEqual([])
+  })
+
+  it('dismissScope is idempotent — dismissing twice does not duplicate', () => {
+    const plur = writeConfig([])
+    plur.dismissScope('group:plur/plur-ai/comms')
+    plur.dismissScope('group:plur/plur-ai/comms')
+
+    const raw = yaml.load(readFileSync(join(dir, 'config.yaml'), 'utf8')) as any
+    expect(raw.dismissed_scopes.filter((s: string) => s === 'group:plur/plur-ai/comms')).toHaveLength(1)
+  })
+
+  it('registerScope adds exactly one store entry (not all)', async () => {
+    const plur = writeConfig([
+      { url: baseUrl, token: TOKEN, scope: 'group:plur/plur-ai/engineering', shared: true, readonly: false },
+    ])
+
+    const result = plur.registerScope('group:plur/plur-ai/comms', { url: baseUrl })
+    expect(result).toBe('added')
+
+    const raw = yaml.load(readFileSync(join(dir, 'config.yaml'), 'utf8')) as any
+    // Only the two stores should exist — the original + the newly-registered one.
+    expect(raw.stores).toHaveLength(2)
+    expect(raw.stores.map((s: any) => s.scope)).toContain('group:plur/plur-ai/comms')
+    expect(raw.stores.map((s: any) => s.scope)).not.toContain('group:plur/plur-ai')
+    expect(raw.stores.map((s: any) => s.scope)).not.toContain('group:plur/plur-ai/research')
+  })
+
+  it('registerScope returns already_registered when scope already exists', () => {
+    const plur = writeConfig([
+      { url: baseUrl, token: TOKEN, scope: 'group:plur/plur-ai/engineering', shared: true, readonly: false },
+    ])
+    const result = plur.registerScope('group:plur/plur-ai/engineering', { url: baseUrl })
+    expect(result).toBe('already_registered')
+  })
+
+  it('personal-family scopes are rejected by registerScope', () => {
+    const plur = writeConfig([
+      { url: baseUrl, token: TOKEN, scope: 'group:plur/plur-ai/engineering', shared: true, readonly: false },
+    ])
+    expect(plur.registerScope('global', { url: baseUrl })).toBe('skipped')
+    expect(plur.registerScope('user:crtahlin', { url: baseUrl })).toBe('skipped')
+    expect(plur.registerScope('local', { url: baseUrl })).toBe('skipped')
+
+    // Config must be unchanged — no personal scopes registered.
+    const raw = yaml.load(readFileSync(join(dir, 'config.yaml'), 'utf8')) as any
+    expect(raw.stores).toHaveLength(1)
+    expect(raw.stores[0].scope).toBe('group:plur/plur-ai/engineering')
+  })
+})

@@ -244,6 +244,13 @@ export const PlurConfigSchema = z.object({
    * See {@link ScopeRoutingConfigSchema} for per-field semantics.
    */
   scope_routing: ScopeRoutingConfigSchema.default({}),
+  /**
+   * Shared scopes the user has explicitly opted out of being offered (#647).
+   * Scopes in this list are excluded from `discoverRemoteScopes().unregistered`
+   * and from the MCP session-start nudge. Call `reofferScopes()` / `plur scopes
+   * --reoffer` to clear and surface them again.
+   */
+  dismissed_scopes: z.array(z.string()).default([]),
 }).partial()
 
 export type PlurConfig = z.infer<typeof PlurConfigSchema>

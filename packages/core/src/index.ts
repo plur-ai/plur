@@ -274,8 +274,14 @@ export interface RemoteScopeDiscovery {
   authorized: string[]
   /** Scopes already registered in local config for this URL. */
   registered: string[]
-  /** Authorized minus registered — the scopes a user could still add. */
+  /** Authorized minus registered — the scopes a user could still add. Excludes dismissed scopes. */
   unregistered: string[]
+  /**
+   * Authorized scopes the user has dismissed (#647). Excluded from `unregistered`
+   * so they don't surface in the session nudge or CLI list. Present only when
+   * `ok` is true; empty array when nothing is dismissed.
+   */
+  dismissed: string[]
   /**
    * Server-authoritative scope metadata (#345 D2) for the authorized scopes,
    * when the remote serves it via `/api/v1/me` (`scope_metadata`). Each entry
@@ -4569,6 +4575,7 @@ Generate an improved version of the procedure that prevents this failure. Return
   async discoverRemoteScopes(opts?: { url?: string; timeoutMs?: number }): Promise<RemoteScopeDiscovery[]> {
     const timeoutMs = opts?.timeoutMs ?? 5000
     const endpoints = this._distinctRemoteEndpoints().filter(e => !opts?.url || e.url === opts.url)
+    const dismissedSet = new Set(this.config.dismissed_scopes ?? [])
 
     return Promise.all(endpoints.map(async ({ url, token }) => {
       const registered = (this.config.stores ?? []).filter(s => s.url === url).map(s => s.scope)
@@ -4582,6 +4589,7 @@ Generate an improved version of the procedure that prevents this failure. Return
           }),
         ])
         const registeredSet = new Set(registered)
+        const unregisteredAll = me.scopes.filter(s => !registeredSet.has(s))
         return {
           url,
           ok: true,
@@ -4590,7 +4598,9 @@ Generate an improved version of the procedure that prevents this failure. Return
           role: me.role,
           authorized: me.scopes,
           registered,
-          unregistered: me.scopes.filter(s => !registeredSet.has(s)),
+          // Exclude dismissed scopes from the actionable set (#647).
+          unregistered: unregisteredAll.filter(s => !dismissedSet.has(s)),
+          dismissed: unregisteredAll.filter(s => dismissedSet.has(s)),
           // #345 D2: server-authoritative metadata for the authorized scopes,
           // already validated in RemoteStore.me(). Empty for older servers.
           metadata: me.scope_metadata ?? [],
@@ -4598,7 +4608,7 @@ Generate an improved version of the procedure that prevents this failure. Return
       } catch (err) {
         return {
           url, ok: false,
-          authorized: [], registered, unregistered: [], metadata: [],
+          authorized: [], registered, unregistered: [], dismissed: [], metadata: [],
           error: err instanceof Error ? err.message : String(err),
         }
       }
@@ -4718,6 +4728,83 @@ Generate an improved version of the procedure that prevents this failure. Return
       }
       return { url: d.url, ok: true, added, already_registered: already, skipped }
     })
+  }
+
+  /**
+   * Register a single authorized-but-unregistered shared scope (#647).
+   * Factors out the per-scope registration logic from `registerDiscoveredScopes`
+   * so callers can register one scope at a time (e.g. `plur scopes register <scope>`).
+   *
+   * Enforces the same SECURITY guard as `registerDiscoveredScopes`: personal-family
+   * scopes (global/local/user:/agent:) are rejected — only shared-family scopes
+   * (group:/project:/space:/team:/org:/public) are registered this way.
+   *
+   * Returns `'added'` if the store entry was created, `'already_registered'` if
+   * it already existed, or `'skipped'` if the scope was rejected (personal-family)
+   * or could not be registered (conflict with another URL).
+   */
+  registerScope(scope: string, opts?: { url?: string }): 'added' | 'already_registered' | 'skipped' {
+    if (!isSharedScope(scope)) {
+      logger.warning(
+        `[plur] refused to register non-shared scope "${scope}" — ` +
+        `only shared-family scopes (group:/project:/space:/team:/org:/public) can be ` +
+        `registered this way. Use plur stores add for personal-family scopes.`,
+      )
+      return 'skipped'
+    }
+    this.reloadConfigIfChanged()
+    const url = opts?.url ?? (this.config.stores ?? []).find(s => s.url)?.url
+    if (!url) {
+      logger.warning(`[plur] registerScope: no remote URL — configure a remote store first.`)
+      return 'skipped'
+    }
+    const token = (this.config.stores ?? []).find(s => s.url === url)?.token
+    try {
+      const { status } = this.addStore('', scope, { url, token })
+      return status === 'added' ? 'added' : 'already_registered'
+    } catch {
+      return 'skipped'
+    }
+  }
+
+  /**
+   * Dismiss a scope so it stops appearing in discovery and the session nudge (#647).
+   * Persists to `dismissed_scopes` in config.yaml. Call `reofferScopes()` to undo.
+   * No-op if the scope is already dismissed.
+   */
+  dismissScope(scope: string): void {
+    this.reloadConfigIfChanged()
+    const current = this.config.dismissed_scopes ?? []
+    if (current.includes(scope)) return
+    this._persistConfigField('dismissed_scopes', [...current, scope])
+  }
+
+  /**
+   * Clear all dismissed scopes so they re-appear in discovery (#647).
+   * Persists to config.yaml immediately.
+   */
+  reofferScopes(): void {
+    this.reloadConfigIfChanged()
+    this._persistConfigField('dismissed_scopes', [])
+  }
+
+  /**
+   * Persist a single top-level config field to config.yaml, preserving all
+   * other keys, then refresh the in-memory config + mtime.
+   * Same read-preserve-write pattern as `persistStores()`.
+   */
+  private _persistConfigField(key: string, value: unknown): void {
+    let configData: Record<string, unknown> = {}
+    try {
+      const raw = fs.readFileSync(this.paths.config, 'utf8')
+      if (raw) configData = (yaml.load(raw) as Record<string, unknown>) ?? {}
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') throw err
+    }
+    configData[key] = value
+    fs.writeFileSync(this.paths.config, yaml.dump(configData, { lineWidth: 120, noRefs: true }))
+    this.config = loadConfig(this.paths.config)
+    this.configMtimeMs = this.statConfigMtime()
   }
 
   /** Set a session-level default scope. Used as fallback in learn/learnRouted when no explicit scope is provided. */
