@@ -9,7 +9,7 @@
  * Depends on the URL+scope dedup from #291 — registering N scopes under one URL
  * is what makes auto-register meaningful.
  */
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest'
 import { mkdtempSync, rmSync, readFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
@@ -304,5 +304,105 @@ describe('Plur.registerDiscoveredScopes()', () => {
     ])
     const config = yaml.load(readFileSync(join(dir, 'config.yaml'), 'utf8')) as any
     expect(config.stores).toHaveLength(4)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Scope opt-out — per-scope register / dismiss / reoffer (#647)
+// ---------------------------------------------------------------------------
+
+describe('Plur scope opt-out (#647)', () => {
+  let dir: string
+
+  const freshPlur = () => {
+    dir = mkdtempSync(join(tmpdir(), 'plur-optout-'))
+    writeFileSync(
+      join(dir, 'config.yaml'),
+      yaml.dump({
+        stores: [{ url: baseUrl, token: TOKEN, scope: 'group:plur/plur-ai/engineering', shared: true, readonly: false }],
+        index: false,
+      }, { lineWidth: 120, noRefs: true }),
+    )
+    return new Plur({ path: dir })
+  }
+
+  afterEach(() => { if (dir) rmSync(dir, { recursive: true, force: true }) })
+
+  it('offerableScopes lists shared unregistered scopes, excluding the registered one', async () => {
+    const offered = (await freshPlur().offerableScopes()).scopes.map(o => o.scope).sort()
+    expect(offered).toEqual([
+      'group:plur/plur-ai',
+      'group:plur/plur-ai/comms',
+      'group:plur/plur-ai/research',
+    ])
+  })
+
+  it('dismissScope persists, survives reload, and drops the scope from the offer', async () => {
+    const plur = freshPlur()
+    plur.dismissScope('group:plur/plur-ai/comms')
+    expect(plur.getDismissedScopes()).toContain('group:plur/plur-ai/comms')
+
+    const [d] = await plur.discoverRemoteScopes()
+    expect(d.unregistered).not.toContain('group:plur/plur-ai/comms')
+    expect((await plur.offerableScopes()).scopes.map(o => o.scope)).not.toContain('group:plur/plur-ai/comms')
+
+    // persisted on disk + honored by a fresh instance
+    const cfg = yaml.load(readFileSync(join(dir, 'config.yaml'), 'utf8')) as any
+    expect(cfg.dismissed_scopes).toContain('group:plur/plur-ai/comms')
+    const reloaded = new Plur({ path: dir })
+    expect((await reloaded.offerableScopes()).scopes.map(o => o.scope)).not.toContain('group:plur/plur-ai/comms')
+  })
+
+  it('reofferScopes clears dismissals — the scope is offered again', async () => {
+    const plur = freshPlur()
+    plur.dismissScope('group:plur/plur-ai/comms')
+    plur.reofferScopes()
+    expect(plur.getDismissedScopes()).toEqual([])
+    expect((await plur.offerableScopes()).scopes.map(o => o.scope)).toContain('group:plur/plur-ai/comms')
+  })
+
+  it('registerScope adds exactly one store (not all) and clears any prior dismissal', async () => {
+    const plur = freshPlur()
+    plur.dismissScope('group:plur/plur-ai/research')
+    const res = await plur.registerScope('group:plur/plur-ai/research')
+    expect(res.status).toBe('added')
+
+    const cfg = yaml.load(readFileSync(join(dir, 'config.yaml'), 'utf8')) as any
+    // started with 1 store (engineering), added exactly 1 (research) — not all 3
+    expect(cfg.stores).toHaveLength(2)
+    expect(cfg.stores.map((s: any) => s.scope)).toContain('group:plur/plur-ai/research')
+
+    expect(plur.getDismissedScopes()).not.toContain('group:plur/plur-ai/research')
+    expect((await plur.offerableScopes()).scopes.map(o => o.scope)).not.toContain('group:plur/plur-ai/research')
+  })
+
+  it('offerableScopes excludes personal-family scopes; registerScope rejects them', async () => {
+    server.setMe({
+      username: 'crtahlin', org_id: 'plur', role: 'developer',
+      scopes: ['group:plur/plur-ai/engineering', 'group:plur/plur-ai/comms', 'user:plur:crtahlin', 'global'],
+    })
+    const plur = freshPlur()
+    const offered = (await plur.offerableScopes()).scopes.map(o => o.scope)
+    expect(offered).toContain('group:plur/plur-ai/comms')
+    expect(offered).not.toContain('user:plur:crtahlin')
+    expect(offered).not.toContain('global')
+    await expect(plur.registerScope('user:plur:crtahlin')).rejects.toThrow(/non-shared/)
+  })
+
+  it('offerableScopes reports failures instead of a silently-empty offer when a remote is unreachable (#656)', async () => {
+    dir = mkdtempSync(join(tmpdir(), 'plur-optout-fail-'))
+    writeFileSync(
+      join(dir, 'config.yaml'),
+      yaml.dump({
+        stores: [{ url: baseUrl, token: 'bad-token', scope: 'group:plur/plur-ai/engineering', shared: true, readonly: false }],
+        index: false,
+      }, { lineWidth: 120, noRefs: true }),
+    )
+    const plur = new Plur({ path: dir })
+    const { scopes, failures } = await plur.offerableScopes()
+    expect(scopes).toEqual([])
+    expect(failures).toHaveLength(1)
+    expect(failures[0].url).toBe(baseUrl)
+    expect(failures[0].error).toMatch(/401/)
   })
 })

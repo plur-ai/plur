@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.16.0 (upcoming)
+
+### Added
+
+- **`plur scopes` — per-scope opt-out for authorized-but-unregistered scopes** (#647, #656): a new user-facing CLI to register, dismiss, or re-offer the shared scopes your enterprise token is authorized for, one at a time — instead of the old all-or-nothing `register:true`. `plur scopes` lists them (with each scope's description); `plur scopes register <scope>` adds one; `plur scopes dismiss <scope>` remembers "don't offer this again" (persisted to `config.yaml`); `plur scopes --reoffer` clears dismissals. Dismissed scopes are excluded from the list and from the session-start hint, so PLUR stops re-listing scopes you've deliberately skipped. The session-start hint is now a quiet one-liner pointing at `plur scopes` (it was agent-facing guide text that users never saw).
+
 ## 0.15.0 (2026-07-21)
 
 Lean default, LangChain, MCP SDK v2.
