@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.16.0 (upcoming)
+
+Scope opt-out and quieter session nudges — per-scope dismiss/reoffer, `plur scopes` CLI, and a one-line session-start hint.
+
+### Added
+
+- **`plur scopes` CLI** (#650): discover, register, and dismiss authorized-but-unregistered shared scopes without all-or-nothing mode. `plur scopes list` / `plur scopes register <scope>` / `plur scopes dismiss <scope>` / `plur scopes --reoffer`.
+- **Per-scope dismiss and reoffer** (#649): `dismissScope(scope)` persists a `dismissed_scopes` list in `config.yaml`; dismissed scopes stop appearing in session nudges. `reofferScopes()` clears dismissals. `discoverRemoteScopes()` now exposes both `unregistered` and `dismissed` slices.
+
+### Changed
+
+- **Session-start scope nudge is now a single quiet line** (#651): the multi-line banner is replaced with `"N scope(s) available — run \`plur scopes\` to register or dismiss."` — pointing at the CLI surface rather than inlining instructions.
+
 ## 0.15.0 (2026-07-21)
 
 Performance + expansion — lean MCP surface by default, new LangChain adapter, cross-platform path fix, dependency security hardening, and four core stability fixes.
