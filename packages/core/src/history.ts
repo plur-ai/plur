@@ -168,6 +168,11 @@ const INJECTION_SOURCES: ReadonlySet<string> = new Set([
   'session_start', 'inject', 'hook', 'unknown',
 ])
 
+// Strict ISO-8601 as produced by Date.prototype.toISOString (the only shape a
+// co_injection timestamp legitimately takes). Used instead of a bare Date.parse
+// check, which accepts control characters inside a date and returns non-NaN.
+const ISO_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/
+
 /**
  * Payload of a `co_injection` event. `tokens_used` and `source` were added by
  * the memory-receipt work; events written before that lack them, so both are
@@ -219,7 +224,11 @@ export function readCoInjections(root: string, months?: string[]): CoInjectionRe
       if (event.event !== 'co_injection') continue
       const raw = event.data as Partial<CoInjectionData>
       if (!Array.isArray(raw.ids) || typeof raw.query_hash !== 'string') { skipped++; continue }
-      if (typeof event.timestamp !== 'string' || Number.isNaN(Date.parse(event.timestamp))) { skipped++; continue }
+      // Strict ISO-8601 only. Date.parse is lenient (accepts control chars in a
+      // date, returns non-NaN); the timestamp is later sliced into the rendered
+      // window dates, so a crafted line must not pass. co_injection timestamps
+      // are always toISOString().
+      if (typeof event.timestamp !== 'string' || !ISO_TIMESTAMP.test(event.timestamp)) { skipped++; continue }
 
       const ids = raw.ids.filter((id): id is string => typeof id === 'string' && id.length > 0)
       if (ids.length !== raw.ids.length) skipped++

@@ -193,6 +193,37 @@ describe('computeReceipt — windowing', () => {
 })
 
 describe('computeReceipt — clock skew and bad input', () => {
+  it('drops a control-char timestamp so it cannot render into window dates', () => {
+    // Date.parse accepts control chars in a date; the timestamp is sliced into
+    // window.from/to and coverage.complete_from and rendered raw, so a crafted
+    // history line must be rejected, not merely parsed.
+    const CR = String.fromCharCode(0x0d)
+    const r = computeReceipt({
+      ownEngramIds: ['E1'], packEngramIds: [],
+      events: [
+        ev(`2026-${CR}07-10`, ['E1'], 's-bad'),
+        ev('2026-07-20T10:00:00.000Z', ['E1'], 's-ok'),
+      ],
+      now: NOW,
+    })
+    expect(r.retrieved.retrievals).toBe(1)
+    expect(r.window.from).toBe('2026-07-20')
+    expect(r.coverage.complete_from).toBe('2026-07-20')
+    expect(/[\u0000-\u001f\u007f-\u009f]/.test(r.window.from)).toBe(false)
+    expect(/[\u0000-\u001f\u007f-\u009f]/.test(r.coverage.complete_from ?? '')).toBe(false)
+  })
+
+  it('coerces an unrecognized source to unknown so it can not become a hostile key', () => {
+    const ESC = String.fromCharCode(0x1b)
+    const evil: CoInjectionEvent = {
+      injection_id: 'INJ-x', timestamp: '2026-07-20T10:00:00.000Z',
+      data: { ids: ['E1'], query_hash: '0123456789abcdef', session_id: 's1',
+              source: `hook${ESC}[31m` as unknown as undefined },
+    }
+    const r = computeReceipt({ ownEngramIds: ['E1'], packEngramIds: [], events: [evil], now: NOW })
+    expect(Object.keys(r.sources)).toEqual(['unknown'])
+  })
+
   it('drops events timestamped in the future rather than stretching the window', () => {
     const events = [
       ev('2026-07-20T10:00:00.000Z', ['E1'], 's1'),

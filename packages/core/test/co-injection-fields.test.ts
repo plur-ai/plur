@@ -153,6 +153,26 @@ describe('readCoInjections is defensive', () => {
     expect(r.skipped).toBe(1)
   })
 
+  it('drops a Date.parse-lenient timestamp carrying a control char', () => {
+    // Date.parse('2026-\r07-10') is NOT NaN; only a strict ISO gate rejects it.
+    writeRaw({
+      event: 'co_injection', engram_id: 'INJ-ctrl',
+      timestamp: `2026-${String.fromCharCode(0x0d)}07-10`,
+      data: { ids: ['ENG-1'], query_hash: 'abcdef0123456789' },
+    })
+    const r = readCoInjections(dir)
+    expect(r.events).toHaveLength(0)
+    expect(r.skipped).toBe(1)
+  })
+
+  it('accepts a normal toISOString timestamp', () => {
+    writeRaw({
+      event: 'co_injection', engram_id: 'INJ-ok2', timestamp: new Date('2026-07-10T08:00:00.000Z').toISOString(),
+      data: { ids: ['ENG-1'], query_hash: 'abcdef0123456789' },
+    })
+    expect(readCoInjections(dir).events).toHaveLength(1)
+  })
+
   it('returns an empty result when no history directory exists', () => {
     expect(readCoInjections(dir)).toEqual({ events: [], skipped: 0 })
   })

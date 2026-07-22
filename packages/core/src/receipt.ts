@@ -91,6 +91,17 @@ export interface Receipt {
 const DAY_MS = 86_400_000
 const SNIPPET_MAX = 71
 
+// Strict ISO-8601 as produced by Date.prototype.toISOString — the only shape a
+// co_injection timestamp legitimately takes. Used instead of a bare Date.parse
+// check because Date.parse accepts control chars in a date and returns non-NaN.
+const ISO_TS = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/
+
+// Recognized injection sources; anything else becomes 'unknown' so a source
+// value can never reach the `sources` tally as an arbitrary (possibly hostile)
+// key. Mirrors the coercion in history.ts readCoInjections — defense in depth
+// for direct computeReceipt callers that bypass the reader.
+const KNOWN_SOURCES = new Set<string>(['session_start', 'inject', 'hook', 'unknown'])
+
 // Statement text can originate in third-party installed packs, so an author
 // could embed hostile characters that spoof output when the snippet prints to
 // a terminal or reaches the calling agent via the MCP result. We strip by
@@ -170,10 +181,15 @@ export function computeReceipt(input: ReceiptInput): Receipt {
   const packOnly = new Set([...packEngramIds].filter(id => !own.has(id)))
   const stored = new Set([...own, ...packOnly])
 
-  // Drop clock-skewed (future) events entirely — they cannot be attributed to a
-  // real lookback window and would otherwise stretch `window.to` to a fiction.
+  // Drop events whose timestamp is not strict ISO-8601, then clock-skewed
+  // (future) ones. The strict gate matters for security: window.from/to and
+  // coverage.complete_from are `timestamp.slice(0,10)` rendered raw, and V8's
+  // Date.parse is lenient enough to accept control chars inside a date and
+  // return non-NaN — so a crafted history line could otherwise smuggle ESC/CR/BS
+  // into the rendered output. co_injection timestamps are always toISOString().
   let skippedFuture = 0
   const sane = events.filter(e => {
+    if (typeof e.timestamp !== 'string' || !ISO_TS.test(e.timestamp)) return false
     const t = Date.parse(e.timestamp)
     if (Number.isNaN(t)) return false
     if (t > nowMs) { skippedFuture++; return false }
@@ -199,7 +215,8 @@ export function computeReceipt(input: ReceiptInput): Receipt {
   let latestWin: string | null = null
 
   for (const [i, e] of inWindow.entries()) {
-    const src: InjectionSource | 'unknown' = e.data.source ?? 'unknown'
+    const rawSrc = e.data.source ?? 'unknown'
+    const src = KNOWN_SOURCES.has(rawSrc) ? rawSrc : 'unknown'
     sources[src] = (sources[src] ?? 0) + 1
 
     // An event without a session_id is its own anonymous session: it genuinely
