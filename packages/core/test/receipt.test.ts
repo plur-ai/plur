@@ -364,6 +364,36 @@ describe('computeReceipt — statement snippets', () => {
     expect(snip.split('').some(c => hostile.includes(c.charCodeAt(0)))).toBe(false)
   })
 
+  it('strips the invisible Unicode Tags block (ASCII-smuggling to the agent)', () => {
+    // Tags block U+E0000-E007F can smuggle invisible ASCII instructions that a
+    // human never sees but the agent reads from the MCP result.
+    const tags = String.fromCodePoint(0xe0049, 0xe0047, 0xe004e, 0xe004f, 0xe0052, 0xe0045)
+    const r = computeReceipt({
+      ownEngramIds: ['E1'], packEngramIds: [],
+      events: [ev('2026-07-20T10:00:00.000Z', ['E1'], 's1')], now: NOW,
+      statements: { E1: `Legit note${tags}` },
+    })
+    const snip = r.reuse.top[0].statement!
+    const hasTags = [...snip].some(c => {
+      const n = c.codePointAt(0)!
+      return n >= 0xe0000 && n <= 0xe007f
+    })
+    expect(hasTags).toBe(false)
+  })
+
+  it('sanitizes a hostile engram id, not just the statement', () => {
+    // A crafted id in the local co_injection history reaches renderReceipt
+    // (statement ?? id) and the MCP result raw unless sanitized at compute.
+    const badId = `ENG-${String.fromCharCode(0x1b)}[31m${String.fromCharCode(0x202e)}X`
+    const r = computeReceipt({
+      ownEngramIds: [], packEngramIds: [],
+      events: [ev('2026-07-20T10:00:00.000Z', [badId], 's1')], now: NOW,
+    })
+    const entry = r.reuse.top[0]
+    const hostile = /[\p{Cc}\p{Cf}]/u.test(entry.id)
+    expect(hostile).toBe(false)
+  })
+
   it('keeps ZWJ so legitimate emoji sequences and scripts survive', () => {
     const ZWJ = String.fromCharCode(0x200d)
     // family emoji is a ZWJ sequence; ZWJ must not be stripped

@@ -31,9 +31,15 @@ const SECRET_KEYS = new Set([
 // here. Only the password half is masked; the username stays for diagnosis.
 const URL_USERINFO = /(\b[a-z][a-z0-9+.-]*:\/\/[^/\s:@]+:)[^/\s@]+(@)/gi
 
-/** Mask credentials embedded inside string values (URL userinfo). */
+// Secret-bearing query/fragment parameters (?token=…&api_key=…). Same class as
+// URL userinfo: a credential smuggled inside a string value that key-based
+// redaction can't see. Only the value is masked, and only for known secret
+// param names, to avoid corrupting ordinary query strings.
+const URL_SECRET_PARAM = /([?&#](?:token|api_key|apikey|access_token|auth|key|secret|password|sig|signature)=)[^&#\s]+/gi
+
+/** Mask credentials embedded inside string values (URL userinfo + secret params). */
 function maskStringSecrets(s: string): string {
-  return s.replace(URL_USERINFO, '$1***$2')
+  return s.replace(URL_USERINFO, '$1***$2').replace(URL_SECRET_PARAM, '$1***')
 }
 
 /**

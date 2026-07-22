@@ -93,17 +93,37 @@ const SNIPPET_MAX = 71
 
 // Statement text can originate in third-party installed packs, so an author
 // could embed hostile characters that spoof output when the snippet prints to
-// a terminal or reaches the calling agent via the MCP result. We strip:
-//   - C0 controls + DEL + C1 (0x00-1F except tab/LF/CR, 0x7F-9F): ANSI/terminal
-//     escapes (ESC, BEL, CSI), covering the #345 scope-metadata baseline;
-//   - line/paragraph separators (U+2028/U+2029): fake line breaks;
-//   - bidi controls (U+200E/F marks, U+202A-E embeddings/overrides,
-//     U+2066-9 isolates): Trojan-Source reordering that can make a malicious
-//     snippet render as benign;
-//   - invisible spacers (U+200B ZWSP, U+FEFF BOM).
-// ZWJ/ZWNJ (U+200C/D) are kept — they carry meaning in real scripts and emoji.
+// a terminal or reaches the calling agent via the MCP result. We strip by
+// Unicode category rather than an enumerated denylist, so the whole class is
+// covered in one rule:
+//   - \p{Cc} — C0/C1 controls: ANSI/terminal escapes (ESC, BEL, CSI), and
+//     tab/LF/CR (harmless, but collapsed to a space either way);
+//   - \p{Cf} — format characters: bidi controls (Trojan-Source reordering),
+//     zero-width spacers (ZWSP, BOM), the invisible Tags block
+//     (U+E0000-E007F, an ASCII-smuggling prompt-injection channel), soft
+//     hyphen, word joiner, ALM, and friends.
+// ZWJ/ZWNJ (U+200C/D) are the sole exception — kept because they carry meaning
+// in real scripts and emoji sequences. Line/paragraph separators (U+2028/9)
+// are whitespace under \s and get collapsed below.
 // eslint-disable-next-line no-control-regex
-const CONTROL_CHARS = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\u200b\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069\ufeff]/g
+const HOSTILE_CHARS = /[\p{Cc}\p{Cf}]/gu
+const KEEP_FORMAT = new Set(['\u200c', '\u200d']) // ZWNJ, ZWJ
+
+/** Replace hostile control/format chars with a space, keeping ZWJ/ZWNJ. */
+function stripHostile(text: string): string {
+  return text.replace(HOSTILE_CHARS, ch => (KEEP_FORMAT.has(ch) ? ch : ' '))
+}
+
+/**
+ * Sanitize any string that appears in receipt output (statement OR id) so a
+ * hostile value from an untrusted pack or a malformed history line cannot
+ * spoof the terminal or smuggle an invisible instruction into the agent MCP
+ * result. Ids are schema-constrained on the honest path; this is boundary
+ * defense for the crafted-history case.
+ */
+function sanitizeDisplay(text: string): string {
+  return stripHostile(text).replace(/\s+/g, ' ').trim()
+}
 
 /**
  * One-line, control-char-free, grapheme-safe snippet of an engram statement.
@@ -111,7 +131,7 @@ const CONTROL_CHARS = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\u200
  * cannot fuse two words, and truncates on code points (never mid-surrogate).
  */
 function sanitizeSnippet(text: string): string {
-  const clean = text.replace(CONTROL_CHARS, ' ').replace(/\s+/g, ' ').trim()
+  const clean = sanitizeDisplay(text)
   const cp = Array.from(clean)
   return cp.length > SNIPPET_MAX ? cp.slice(0, SNIPPET_MAX).join('') + '…' : clean
 }
@@ -228,7 +248,7 @@ export function computeReceipt(input: ReceiptInput): Receipt {
     .sort((a, b) => b[1] - a[1] || cmpId(a[0], b[0]))
     .slice(0, 10)
     .map(([id, count]) => {
-      const entry: ReceiptTopEntry = { id, count, retired: !stored.has(id) }
+      const entry: ReceiptTopEntry = { id: sanitizeDisplay(id), count, retired: !stored.has(id) }
       const s = snippet(id)
       if (s) entry.statement = s
       return entry

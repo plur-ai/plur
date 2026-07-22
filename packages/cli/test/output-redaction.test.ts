@@ -140,6 +140,20 @@ describe('redactSecrets', () => {
     expect(redactSecrets({ url })).toEqual({ url })
   })
 
+  it('masks a secret query parameter in a URL string', () => {
+    const out = redactSecrets({
+      url: 'https://api.example.com/x?token=abc123secret&page=2',
+    }) as any
+    expect(out.url).toBe('https://api.example.com/x?token=***&page=2')
+    expect(out.url).not.toContain('abc123secret')
+    expect(out.url).toContain('page=2') // ordinary params untouched
+  })
+
+  it('leaves an ordinary query string untouched', () => {
+    const url = 'https://x.com/s?q=hello&sort=asc'
+    expect(redactSecrets({ url })).toEqual({ url })
+  })
+
   it('redacts the newly-covered secret key names', () => {
     const out = redactSecrets({
       bearer: 'a', jwt: 'b', auth: 'c', cookie: 'd', credential: 'e',
