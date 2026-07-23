@@ -4737,7 +4737,7 @@ Generate an improved version of the procedure that prevents this failure. Return
    */
   async registerDiscoveredScopes(opts?: { url?: string; timeoutMs?: number }): Promise<RegisterDiscoveredResult[]> {
     const discoveries = await this.discoverRemoteScopes(opts)
-    return discoveries.map(d => {
+    const results = discoveries.map(d => {
       if (!d.ok) return { url: d.url, ok: false, added: [], already_registered: [], skipped: [], error: d.error }
       const token = (this.config.stores ?? []).find(s => s.url === d.url)?.token
       const added: string[] = []
@@ -4778,6 +4778,9 @@ Generate an improved version of the procedure that prevents this failure. Return
       }
       return { url: d.url, ok: true, added, already_registered: already, skipped }
     })
+    // Persist covers/description/sensitivity for all registered scopes (#668)
+    this.persistScopeMetadata(discoveries)
+    return results
   }
 
   /**
@@ -4842,6 +4845,8 @@ Generate an improved version of the procedure that prevents this failure. Return
     }
     const token = (this.config.stores ?? []).find(s => s.url === match.url)?.token
     const { status } = this.addStore('', scope, { url: match.url, token })
+    // Persist covers/description/sensitivity so suggestScope activates (#668).
+    this.persistScopeMetadata(discoveries)
     // Registering a scope also clears any prior dismissal of it (#647).
     if ((this.config.dismissed_scopes ?? []).includes(scope)) {
       this.persistDismissedScopes((this.config.dismissed_scopes ?? []).filter(s => s !== scope))
@@ -4888,6 +4893,46 @@ Generate an improved version of the procedure that prevents this failure. Return
     fs.writeFileSync(this.paths.config, yaml.dump(configData, { lineWidth: 120, noRefs: true }))
     this.config = loadConfig(this.paths.config)
     this.configMtimeMs = this.statConfigMtime()
+  }
+
+  /**
+   * Sync server-authoritative scope metadata (covers/description/sensitivity)
+   * from /me discoveries into the matching local config store entries (#668).
+   *
+   * discoverRemoteScopes() fetches scope_metadata from /me but never persisted
+   * covers into local config, so listScopeMetadata() returned empty covers and
+   * suggestScope() was inert for remote scopes. Called after any /me pull
+   * (session_start, registerDiscoveredScopes, registerScope) to close that gap.
+   * Personal-family scopes are skipped — they are never routing targets.
+   * No-op when nothing changed (avoids spurious config writes).
+   */
+  persistScopeMetadata(discoveries: RemoteScopeDiscovery[]): void {
+    const stores = this.config.stores ?? []
+    if (!stores.length) return
+
+    let changed = false
+    const updated = stores.map(entry => {
+      if (!entry.url) return entry                  // local store — no server metadata
+      if (!isSharedScope(entry.scope)) return entry // never write covers to personal scopes
+      const discovery = discoveries.find(d => d.ok && d.url === entry.url)
+      if (!discovery?.metadata.length) return entry
+      const meta = discovery.metadata.find(m => m.scope === entry.scope)
+      if (!meta) return entry
+      // Only write when values differ to avoid spurious config writes
+      const coversMatch = JSON.stringify(meta.covers) === JSON.stringify(entry.covers)
+      const descMatch = meta.description === entry.description
+      const sensMatch = JSON.stringify(meta.sensitivity) === JSON.stringify(entry.sensitivity)
+      if (coversMatch && descMatch && sensMatch) return entry
+      changed = true
+      return {
+        ...entry,
+        ...(meta.covers !== undefined ? { covers: meta.covers } : {}),
+        ...(meta.description !== undefined ? { description: meta.description } : {}),
+        ...(meta.sensitivity !== undefined ? { sensitivity: meta.sensitivity } : {}),
+      }
+    })
+
+    if (changed) this.persistStores(updated)
   }
 
   /** Set a session-level default scope. Used as fallback in learn/learnRouted when no explicit scope is provided. */

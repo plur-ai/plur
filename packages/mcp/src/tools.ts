@@ -1957,6 +1957,8 @@ function getAllToolDefinitions(): ToolDefinition[] {
           // session_start. Only hints when there's actually something to add.
           try {
             const discoveries = await plur.discoverRemoteScopes({ timeoutMs: 3000 })
+            // Persist covers/description/sensitivity so suggestScope activates (#668).
+            plur.persistScopeMetadata(discoveries)
             // #295: surface auth/reachability failures LOUDLY. discoverRemoteScopes
             // already probed /me per URL — a failure here means team-scoped writes
             // are silently queuing to the outbox. Don't swallow it.

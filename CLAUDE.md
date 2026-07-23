@@ -268,6 +268,23 @@ PLUR uses `domain` and `scope` fields to separate knowledge. **Set `scope` on ev
 - Personal preferences / your workflow → leave at the default/local scope.
 - Don't omit `scope` for team-relevant knowledge — it falls back to `global`, which leaks into every project and never reaches the team store. Reserve `global` for genuinely cross-project facts.
 
+### Domain convention
+
+**Always set `domain` on every `plur_learn` call.** An engram without a `domain` cannot auto-route to a team scope — it falls to `global` regardless of its content. Domain is the primary routing signal; omitting it makes the engram effectively invisible to scope routing.
+
+Use dotted namespace `plur.<team>.<area>`:
+
+| Team | Domain prefix | Example |
+|------|--------------|---------|
+| Engineering | `plur.engineering` | `plur.engineering.search`, `plur.engineering.mcp` |
+| Comms / Marketing | `plur.comms` | `plur.comms.positioning`, `plur.comms.release` |
+| Research | `plur.research` | `plur.research.benchmarks`, `plur.research.competitors` |
+| Leadership / Strategy | `plur.leadership` | `plur.leadership.roadmap`, `plur.leadership.hiring` |
+| Company / Org | `plur.company` | `plur.company.legal`, `plur.company.finance` |
+| Personal workflow | (omit or `personal.*`) | — |
+
+The convention is **free-form with documented shape** — a soft convention, not a validated registry. Unknown teams or cross-cutting domains are fine (`plur.infra`, `plur.security`); the table above covers the common cases. A conforming `plur.<team>` domain auto-routes at ≥0.5 confidence after the covers are set (see #668).
+
 ### When to check memory
 
 Before reaching for web search, file reads, or guessing — apply this priority:
