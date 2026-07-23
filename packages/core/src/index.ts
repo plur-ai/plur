@@ -3384,6 +3384,28 @@ export class Plur {
     return engrams.filter(e => (e as any).structured_data?._outbox).length
   }
 
+  /** List engrams pending remote sync — entry metadata only; never exposes remote URL or token. */
+  outboxEntries(): Array<{ id: string; target_scope: string; queued_at: string; attempt_count: number; last_error?: string; age_days: number }> {
+    const engrams = this._loadCached(this.paths.engrams)
+    const now = Date.now()
+    return engrams
+      .filter(e => (e as any).structured_data?._outbox)
+      .map(e => {
+        const ob = (e as any).structured_data._outbox as {
+          target_scope: string; queued_at: string; attempt_count: number; last_error?: string
+        }
+        const age_days = Math.floor((now - new Date(ob.queued_at).getTime()) / 86400000)
+        return {
+          id: e.id,
+          target_scope: ob.target_scope,
+          queued_at: ob.queued_at,
+          attempt_count: ob.attempt_count,
+          ...(ob.last_error ? { last_error: ob.last_error } : {}),
+          age_days,
+        }
+      })
+  }
+
   /**
    * Flush the outbox — retry pushing pending engrams to their target remote
    * stores. Called automatically on session_start and plur_sync.
@@ -4737,7 +4759,7 @@ Generate an improved version of the procedure that prevents this failure. Return
    */
   async registerDiscoveredScopes(opts?: { url?: string; timeoutMs?: number }): Promise<RegisterDiscoveredResult[]> {
     const discoveries = await this.discoverRemoteScopes(opts)
-    return discoveries.map(d => {
+    const results = discoveries.map(d => {
       if (!d.ok) return { url: d.url, ok: false, added: [], already_registered: [], skipped: [], error: d.error }
       const token = (this.config.stores ?? []).find(s => s.url === d.url)?.token
       const added: string[] = []
@@ -4778,6 +4800,10 @@ Generate an improved version of the procedure that prevents this failure. Return
       }
       return { url: d.url, ok: true, added, already_registered: already, skipped }
     })
+    // Sync server-authoritative covers/description into local config (#668) so
+    // suggestScope() activates for all registered scopes on this endpoint.
+    this.syncScopeMetadata(discoveries.filter(d => d.ok).flatMap(d => d.metadata))
+    return results
   }
 
   /**
@@ -4842,6 +4868,9 @@ Generate an improved version of the procedure that prevents this failure. Return
     }
     const token = (this.config.stores ?? []).find(s => s.url === match.url)?.token
     const { status } = this.addStore('', scope, { url: match.url, token })
+    // Sync server-authoritative covers/description for all scopes on this
+    // endpoint (#668) so suggestScope() activates immediately after registration.
+    this.syncScopeMetadata(match.metadata)
     // Registering a scope also clears any prior dismissal of it (#647).
     if ((this.config.dismissed_scopes ?? []).includes(scope)) {
       this.persistDismissedScopes((this.config.dismissed_scopes ?? []).filter(s => s !== scope))
@@ -4885,6 +4914,62 @@ Generate an improved version of the procedure that prevents this failure. Return
       if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') throw err
     }
     configData.dismissed_scopes = [...new Set(list)].sort()
+    fs.writeFileSync(this.paths.config, yaml.dump(configData, { lineWidth: 120, noRefs: true }))
+    this.config = loadConfig(this.paths.config)
+    this.configMtimeMs = this.statConfigMtime()
+  }
+
+  /**
+   * Persist server-authoritative scope metadata (covers/description) from a
+   * remote `/me` pull into local config store entries (#668). This is the missing
+   * write-side that activates {@link suggestScope}: without it, `covers[]` never
+   * reaches the local config so the ranker always returns `[]`.
+   *
+   * Call after every `/me` pull — session_start, plur_scopes_discover,
+   * registerScope, registerDiscoveredScopes. Personal-family scopes are excluded:
+   * they are never routing targets so covers are meaningless for them. Updates
+   * existing registered stores only — never adds new stores. Read-preserve-write
+   * so other config keys and unknown store fields survive the writeback.
+   *
+   * @param serverMetadata - Validated {@link ScopeMetadata} entries from the remote `/me` endpoint.
+   */
+  syncScopeMetadata(serverMetadata: ScopeMetadata[]): void {
+    if (!serverMetadata.length) return
+    const metaMap = new Map(serverMetadata.map(m => [m.scope, m]))
+    const stores = this.config.stores ?? []
+    let changed = false
+
+    const updated = stores.map((store): StoreEntry => {
+      // Personal-family scopes are never routing targets — skip covers sync
+      if (!isSharedScope(store.scope)) return store
+      const meta = metaMap.get(store.scope)
+      if (!meta) return store
+
+      const patch: Partial<StoreEntry> = {}
+      // Sync covers when the server provides non-empty covers that differ locally
+      if (meta.covers.length > 0 &&
+          JSON.stringify(store.covers ?? []) !== JSON.stringify(meta.covers)) {
+        patch.covers = meta.covers
+      }
+      // Sync description when the server provides one that differs locally
+      if (meta.description && store.description !== meta.description) {
+        patch.description = meta.description
+      }
+      if (!Object.keys(patch).length) return store
+      changed = true
+      return { ...store, ...patch }
+    })
+
+    if (!changed) return
+
+    let configData: Record<string, unknown> = {}
+    try {
+      const raw = fs.readFileSync(this.paths.config, 'utf8')
+      if (raw) configData = (yaml.load(raw) as Record<string, unknown>) ?? {}
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') throw err
+    }
+    configData.stores = this.mergeStoresForWriteback(configData.stores, updated)
     fs.writeFileSync(this.paths.config, yaml.dump(configData, { lineWidth: 120, noRefs: true }))
     this.config = loadConfig(this.paths.config)
     this.configMtimeMs = this.statConfigMtime()

@@ -1203,7 +1203,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
 
     {
       name: 'plur_sync',
-      description: 'Sync engrams via git AND refresh the derived index from YAML. Initializes repo on first call, commits and pushes/pulls on subsequent calls. Provide a remote URL on first call to enable cross-device sync. Pass full=true to drop-and-rebuild the index from YAML (recovery path; YAML stays untouched).',
+      description: 'Sync engrams via git AND refresh the derived index from YAML. Initializes repo on first call, commits and pushes/pulls on subsequent calls. Provide a remote URL on first call to enable cross-device sync. Pass full=true to drop-and-rebuild the index from YAML (recovery path; YAML stays untouched). Also flushes the remote-write outbox — retries team-scoped writes that were queued while their remote store was unreachable.',
       annotations: { title: 'Sync', openWorldHint: true, destructiveHint: false, idempotentHint: true },
       inputSchema: {
         type: 'object',
@@ -1260,6 +1260,37 @@ function getAllToolDefinitions(): ToolDefinition[] {
       },
       handler: async (_args, plur) => {
         return plur.syncStatus()
+      },
+    },
+
+    {
+      name: 'plur_outbox',
+      description: 'Inspect and flush the remote-write outbox. When a team-scoped write fails (store down, VPN off, expired token), the engram is saved locally with outbox metadata and retried on the next session_start or plur_sync. Read (default): returns pending count + entry metadata (no credentials). flush=true: retries all pending writes immediately and returns the result.',
+      annotations: { title: 'Outbox', readOnlyHint: false, idempotentHint: false },
+      inputSchema: {
+        type: 'object',
+        properties: {
+          flush: {
+            type: 'boolean',
+            description: 'Retry all pending remote writes immediately. Returns { flushed, failed, expired_warnings }.',
+          },
+        },
+      },
+      handler: async (args, plur) => {
+        if (args.flush === true) {
+          const result = await plur.flushOutbox()
+          return {
+            flushed: result.flushed,
+            failed: result.failed,
+            pending: result.failed,
+            expired_warnings: result.expired_warnings,
+          }
+        }
+        const entries = plur.outboxEntries()
+        return {
+          pending: entries.length,
+          entries,
+        }
       },
     },
 
@@ -1985,6 +2016,9 @@ function getAllToolDefinitions(): ToolDefinition[] {
                 `\`plur scopes\` to register or dismiss them per-scope (dismissed scopes stop being offered; ` +
                 `\`plur scopes --reoffer\` re-surfaces them).`
             }
+            // Persist server-authoritative covers/description into local config
+            // so suggestScope() activates for already-registered scopes (#668).
+            plur.syncScopeMetadata(discoveries.filter(d => d.ok).flatMap(d => d.metadata))
           } catch { /* discovery is best-effort — never block session_start */ }
 
           // #295: proactive token-expiry warning — purely local JWT decode, no
@@ -1998,6 +2032,11 @@ function getAllToolDefinitions(): ToolDefinition[] {
               }
             }
           } catch { /* best-effort */ }
+        }
+
+        // Surface pending outbox count in guide when non-zero and not already mentioned (issue #667)
+        if (outbox_result && outbox_result.failed > 0 && !guide.includes('queued in the outbox') && !guide.includes('queue in the outbox')) {
+          guide += `\n\n⚠️ ${outbox_result.failed} team-scoped write(s) still pending in the outbox — run plur_outbox {flush:true} or plur_sync to retry.`
         }
 
         return {
@@ -2260,6 +2299,9 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
         if (discoveries.length === 0) {
           return { discovered: [], note: 'No remote stores configured. Register one scope first with plur_stores_add, then discover the rest.' }
         }
+        // Persist server-authoritative covers/description into local config for
+        // already-registered scopes so suggestScope() activates (#668).
+        plur.syncScopeMetadata(discoveries.filter(d => d.ok).flatMap(d => d.metadata))
         // #345 D2: surface the server-authoritative description/covers per scope
         // so an agent can pick the right scope from discovery alone (instead of
         // guessing from the bare scope name). Each authorized scope is annotated
