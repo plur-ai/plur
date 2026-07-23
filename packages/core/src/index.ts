@@ -4626,7 +4626,7 @@ Generate an improved version of the procedure that prevents this failure. Return
     const timeoutMs = opts?.timeoutMs ?? 5000
     const endpoints = this._distinctRemoteEndpoints().filter(e => !opts?.url || e.url === opts.url)
 
-    return Promise.all(endpoints.map(async ({ url, token }) => {
+    const discoveries = await Promise.all(endpoints.map(async ({ url, token }) => {
       const registered = (this.config.stores ?? []).filter(s => s.url === url).map(s => s.scope)
       try {
         const driver = this._getRemoteDriver({ url, token, scope: registered[0] ?? '' })
@@ -4663,6 +4663,67 @@ Generate an improved version of the procedure that prevents this failure. Return
         }
       }
     }))
+    // #668: mirror server-authoritative scope metadata (covers/description/
+    // sensitivity) into the matching LOCAL config store entries so the
+    // client-side ranker (suggestScope) has covers to route on. Every /me pull
+    // (session_start, plur_scopes_discover, registerScope) funnels through here,
+    // so this is the single sync point. Idempotent — writes only on a real diff.
+    this._syncScopeMetadataToConfig(discoveries)
+    return discoveries
+  }
+
+  /**
+   * Persist server-authoritative scope metadata (`description`/`covers`/
+   * `sensitivity`, #345 D2) from a `/me` discovery into the matching LOCAL
+   * config store entries (#668). The client-side ranker reads `covers` from
+   * `config.stores[]` (`getScopeMetadata` → `listScopeMetadata` → `suggestScope`);
+   * nothing else populates them, so without this sync the ranker returns no
+   * candidates for remote scopes and team-relevant writes silently default to
+   * `global`/`personal:*`.
+   *
+   * - Updates only REGISTERED entries, matched by `url`+`scope`. Never creates
+   *   entries; local/path stores and personal-family scopes carry no server
+   *   metadata and are left untouched.
+   * - The server is authoritative: `covers` is overwritten from `scope_metadata`
+   *   (this also keeps it fresh — #648); `description`/`sensitivity` are synced
+   *   additively when the server declares them. Idempotent: persists only when a
+   *   value actually changed, so repeat discovery causes no config churn.
+   *
+   * Returns true when a write occurred (used by tests).
+   */
+  private _syncScopeMetadataToConfig(discoveries: RemoteScopeDiscovery[]): boolean {
+    const byKey = new Map<string, ScopeMetadata>()
+    for (const d of discoveries) {
+      if (!d.ok) continue
+      for (const md of d.metadata ?? []) byKey.set(`${d.url} ${md.scope}`, md)
+    }
+    if (byKey.size === 0) return false
+
+    const sameCovers = (a: string[] | undefined, b: string[]): boolean => {
+      const x = a ?? []
+      if (x.length !== b.length) return false
+      const bs = new Set(b)
+      return x.every(t => bs.has(t))
+    }
+
+    let changed = false
+    const next = (this.config.stores ?? []).map(s => {
+      if (typeof s.url !== 'string') return s
+      const md = byKey.get(`${s.url} ${s.scope}`)
+      if (!md) return s
+      const nextCovers = md.covers ?? []
+      const coversDiff = !sameCovers(s.covers, nextCovers)
+      const descDiff = !!md.description && s.description !== md.description
+      const sensDiff = !!md.sensitivity && JSON.stringify(s.sensitivity ?? null) !== JSON.stringify(md.sensitivity)
+      if (!coversDiff && !descDiff && !sensDiff) return s
+      changed = true
+      const updated: StoreEntry = { ...s, covers: nextCovers }
+      if (md.description) updated.description = md.description
+      if (md.sensitivity) updated.sensitivity = md.sensitivity
+      return updated
+    })
+    if (changed) this.persistStores(next as StoreEntry[])
+    return changed
   }
 
   /**
