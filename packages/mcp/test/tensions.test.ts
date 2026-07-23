@@ -26,7 +26,7 @@ function injectLegacyConflict(plur: Plur, fromId: string, toId: string): void {
 describe('plur_tensions tool', () => {
   let dir: string
   let plur: Plur
-  const tools = getToolDefinitions()
+  const tools = getToolDefinitions('full')
   const tensionsTool = tools.find(t => t.name === 'plur_tensions')!
   const purgeTool = tools.find(t => t.name === 'plur_tensions_purge')!
 
@@ -137,7 +137,7 @@ describe('plur_tensions scan mode', () => {
   let dir: string
   let plur: Plur
   let originalFetch: typeof globalThis.fetch
-  const tools = getToolDefinitions()
+  const tools = getToolDefinitions('full')
   const tensionsTool = tools.find(t => t.name === 'plur_tensions')!
 
   beforeEach(() => {
@@ -306,7 +306,7 @@ describe('plur_tensions scan mode', () => {
 describe('plur_tensions temporal config wiring (#240)', () => {
   let dir: string
   let originalFetch: typeof globalThis.fetch
-  const tools = getToolDefinitions()
+  const tools = getToolDefinitions('full')
   const tensionsTool = tools.find(t => t.name === 'plur_tensions')!
 
   beforeEach(() => {
@@ -419,7 +419,7 @@ describe('plur_tensions temporal config wiring (#240)', () => {
 describe('plur_learn supersedes (#240)', () => {
   let dir: string
   let plur: Plur
-  const tools = getToolDefinitions()
+  const tools = getToolDefinitions('full')
   const learnTool = tools.find(t => t.name === 'plur_learn')!
   const tensionsTool = tools.find(t => t.name === 'plur_tensions')!
 
@@ -475,7 +475,7 @@ describe('plur_learn supersedes (#240)', () => {
 describe('plur_tensions_purge tool', () => {
   let dir: string
   let plur: Plur
-  const tools = getToolDefinitions()
+  const tools = getToolDefinitions('full')
   const tensionsTool = tools.find(t => t.name === 'plur_tensions')!
   const purgeTool = tools.find(t => t.name === 'plur_tensions_purge')!
 

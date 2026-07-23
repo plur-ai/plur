@@ -6,12 +6,16 @@ Persistent memory for AI agents. An agent corrected on Monday remembers on Tuesd
 
 Knowledge is stored as **engrams** — small assertions that strengthen with use and decay when irrelevant, modeled on human memory (ACT-R activation). Storage is plain YAML on disk. Search is fully local: BM25 + BGE embeddings + Reciprocal Rank Fusion. Zero API calls, zero cloud.
 
-Three packages:
+Seven packages (four npm, three Python/PyPI):
 
 ```
-@plur-ai/core   — engram engine (learn, recall, inject, search, decay, sync)
-@plur-ai/mcp    — MCP server (Claude Code, Cursor, Windsurf)
-@plur-ai/claw   — OpenClaw ContextEngine plugin
+@plur-ai/core        — engram engine (learn, recall, inject, search, decay, sync)
+@plur-ai/mcp         — MCP server (Claude Code, Cursor, Windsurf)
+@plur-ai/claw        — OpenClaw ContextEngine plugin
+@plur-ai/cli         — CLI (plur learn / recall / inject / status)
+plur-hermes          — Hermes Agent plugin (Python, via CLI bridge)
+plur-ai              — Python SDK (LangChain, llama.cpp, scripts)
+plur-langchain       — LangChain BaseMemory + BaseChatMessageHistory adapter
 ```
 
 Core is the engine. MCP and Claw are thin wrappers — MCP exposes tools via Model Context Protocol, Claw hooks into OpenClaw's lifecycle (auto-inject on session start, auto-learn on corrections).
@@ -26,7 +30,7 @@ pnpm build
 pnpm test
 ```
 
-~1045 tests across ~120 files (117 Vitest + Python suites). All must pass before committing.
+~3500 tests across ~200 files (Vitest + Python suites). All must pass before committing.
 
 ## Package dependency
 
@@ -43,27 +47,50 @@ pnpm --filter @plur-ai/core build
 
 ## Version bumps
 
-Nine places. Miss one and something breaks:
+`scripts/release.sh` is the authoritative source. Two independent version tracks:
+
+**Standard release** (core / mcp / cli / hermes / python — always bumped together):
 
 1. `packages/core/package.json`
 2. `packages/mcp/package.json`
-3. `packages/mcp/src/version.ts` — `VERSION` (shared by server.ts and tools.ts)
-4. `packages/mcp/src/index.ts` — `const VERSION` (CLI)
-5. `packages/claw/package.json`
-6. `packages/claw/src/index.ts` — `version:` in plugin object
-7. `packages/claw/src/context-engine.ts` — `version:` in info object
-8. `packages/claw/openclaw.plugin.json` — `version` field
-9. `packages/claw/test/hello.test.ts` + `packages/mcp/test/server.test.ts` — version assertions
+3. `packages/cli/package.json`
+4. `packages/mcp/src/version.ts` — `export const VERSION`
+5. `packages/mcp/src/index.ts` — `const VERSION`
+6. `packages/cli/src/index.ts` — `const VERSION`
+7. `packages/mcp/test/server.test.ts` — version assertions
+8. `packages/hermes/pyproject.toml`
+9. `packages/hermes/plugin.yaml` — top-level `version:` field
+10. `packages/hermes/plur_hermes/skills/plur-memory.SKILL.md` — frontmatter `version:`
+11. `packages/hermes/plur_hermes/bridge.py` — `_NPX_CLI_VERSION`
+12. `packages/python/pyproject.toml`
+13. `packages/python/plur_ai/bridge.py` — `_NPX_CLI_VERSION`
+14. `skills/plur-memory/SKILL.md` — frontmatter `version:` (standalone skills.sh copy)
+
+**Claw track** (independent — only bumped when `--claw <ver>` is passed to release.sh):
+
+- `packages/claw/package.json`
+- `packages/claw/src/index.ts` — `version:` in plugin object
+- `packages/claw/src/context-engine.ts` — `version:` in info object
+- `packages/claw/openclaw.plugin.json` — `version` field
+- `packages/claw/test/hello.test.ts` — version assertion
+
+**Langchain track** (independent — bumped separately when `plur-langchain` ships):
+
+- `packages/langchain/pyproject.toml`
+- `packages/langchain/plur_langchain/__init__.py` — `__version__`
 
 ## Publishing
 
-Authenticate as `plur9`. Core first (it's the dependency):
+See [RELEASING.md](RELEASING.md) for the authoritative publish procedure (including the manifest gate that runs before any irreversible step). Quick reference for npm packages — authenticate as `plur9` first, publish core before dependents:
 
 ```
 pnpm --filter @plur-ai/core publish --access public --no-git-checks
 pnpm --filter @plur-ai/mcp publish --access public --no-git-checks
 pnpm --filter @plur-ai/claw publish --access public --no-git-checks
+pnpm --filter @plur-ai/cli publish --access public --no-git-checks
 ```
+
+Python packages (`plur-hermes`, `plur-ai`, `plur-langchain`) ship via PyPI — see RELEASING.md for the build/twine workflow.
 
 ## Testing a change
 
@@ -149,11 +176,36 @@ The earlier v0.2.1 baseline (86.7% overall / 93.3% Hit@10) is still cited in
 is the reproducible harness that realises it. That doc tracks methodology, not
 current scores. If your PR improves any of these, mention it in the PR description.
 
+## Developer documentation
+
+| Document | What it covers |
+|----------|---------------|
+| [docs/test-pyramid.md](docs/test-pyramid.md) | Test architecture — when to write unit vs integration vs smoke tests, why there are no Docker integration tests |
+| [docs/adr/README.md](docs/adr/README.md) | ADR index — architecture decisions (ADR-0001: YAML-as-truth, ADR-0002: derived-state provenance) |
+| [docs/runbooks/store-consolidation.md](docs/runbooks/store-consolidation.md) | Runbook for destructive store merges — read before touching `plur sync --consolidate` |
+| [docs/telemetry-design.md](docs/telemetry-design.md) | Opt-in telemetry design — what is collected, what is not, the no-external-calls-in-core invariant |
+| [ROADMAP.md](ROADMAP.md) | Prioritized feature roadmap |
+| [RELEASING.md](RELEASING.md) | Authoritative publish procedure, manifest gate, version tracks |
+
 ## Conventions
 
+- **Claim before you code**: before starting a GitHub issue, self-assign it
+  (`gh issue edit <n> --add-assignee @me`); if it is already assigned to someone
+  else, coordinate on the issue rather than opening a duplicate parallel fix.
+  This binds automated runs too — self-assign or skip if already claimed. See
+  `CONTRIBUTING.md`.
+- **Labels are signals, not assignments**: a label or an @-mention is triage/FYI
+  and never a work order — only assignment means someone is on it. Working on
+  it? Assign yourself. Want another party to do it? Assign it to *them* (don't
+  just label or @-mention). Handing off? Reassign. Unassigned = nobody is on it,
+  however many labels it carries.
+- **No AI attribution in commits, PRs, or issues**: do not add `Co-Authored-By:` AI
+  lines, `🤖 Generated with` footers, or any other AI-assistant credit to commits,
+  PR descriptions, or issue comments. Automated runs may tag their output with a
+  role marker (e.g. `🤖 heartbeat —`) in issue comments, but not in git history.
 - TypeScript, Vitest, tsup, Zod for validation
 - No external API calls in core — search must work offline at zero cost
-- YAML for all persistent storage (not JSON, not SQLite for primary data)
+- YAML for all persistent storage (not JSON, not SQLite for primary data; SQLite is used only as an optional read index — YAML is always the source of truth)
 - Tests in `packages/*/test/`, named `*.test.ts`
 - Apache-2.0 license
 
@@ -183,11 +235,7 @@ This project lives inside a Datacore space. Session lifecycle commands are avail
 - `/standup` — generate/post standup from recent team journals
 - `/today` — daily briefing (incremental if already generated)
 
-| Key | Value |
-|-----|-------|
-| Space | `5-plur` |
-| Journal | `~/Data/5-plur/journal/YYYY-MM-DD.md` |
-| Org | `~/Data/5-plur/org/next_actions.org` |
+Journal and org paths are workspace-local — they vary per machine and are not tracked here.
 
 When `/wrap-up` runs, use the team journal schema: `## @contributor` narrative sections + `## Session Metadata` YAML block.
 

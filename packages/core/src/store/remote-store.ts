@@ -169,6 +169,11 @@ export class RemoteStore implements EngramStore {
         let offset = 0
         const limit = 200
         const maxPages = 50  // hard cap to avoid runaway loops
+        // #550: only cache a result set from a clean (complete) pagination run.
+        // A mid-pagination abort/error must not overwrite a prior good cache with
+        // a partial view — that's the "cache poisoning" class fixed in #130 for
+        // cold-cache appends, and reintroduced by #531 for page-fetch errors.
+        let paginationComplete = false
         for (let i = 0; i < maxPages; i++) {
           const u = `${this.apiBase}/engrams?scope=${encodeURIComponent(this.scope)}&limit=${limit}&offset=${offset}`
           const ctrl = new AbortController()
@@ -176,10 +181,16 @@ export class RemoteStore implements EngramStore {
           try {
             const r = await fetch(u, { headers: this.headers(), signal: ctrl.signal })
             if (!r.ok) {
-              // 403 (no read access) and 404 (scope doesn't exist) are
-              // not errors at the store level — that store just contributes
-              // nothing. Bubble other 5xx as logs.
-              if (r.status >= 500) console.error(`[plur:remote-store] ${this.url} returned ${r.status} loading scope ${this.scope}`)
+              // 403 (no read access) and 404 (scope doesn't exist) are stable
+              // states: the scope genuinely has nothing for us. Cache [] so we
+              // don't spam the server on every TTL expiry.
+              // 5xx are transient — don't cache the partial/empty result; fall
+              // back to the prior good cache so recall stays useful.
+              if (r.status === 403 || r.status === 404) {
+                paginationComplete = true
+              } else if (r.status >= 500) {
+                console.error(`[plur:remote-store] ${this.url} returned ${r.status} loading scope ${this.scope}`)
+              }
               break
             }
             const body = await r.json() as { rows: any[]; total_count: number }
@@ -189,17 +200,29 @@ export class RemoteStore implements EngramStore {
               const e = this.reshape(row)
               if (e) all.push(e)
             }
-            if (all.length >= body.total_count || body.rows.length < limit) break
+            if (all.length >= body.total_count || body.rows.length < limit) {
+              paginationComplete = true
+              break
+            }
             offset += limit
           } catch (err) {
-            console.error(`[plur:remote-store] ${this.url} load page failed: ${(err as Error).message}`)
+            const msg = (err as Error).name === 'AbortError'
+              ? `page fetch timed out after ${LOAD_FETCH_TIMEOUT_MS}ms`
+              : (err as Error).message
+            console.error(`[plur:remote-store] ${this.url} load page failed: ${msg}`)
             break
           } finally {
             clearTimeout(t)
           }
         }
-        this.cache = { ts: Date.now(), engrams: all }
-        return all
+        if (paginationComplete) {
+          this.cache = { ts: Date.now(), engrams: all }
+          return all
+        }
+        // Incomplete pagination (transient error / abort): preserve the prior
+        // good cache and return it so callers keep seeing valid engrams. Fall
+        // back to the partial set only if there is no prior cache at all.
+        return this.cache?.engrams ?? all
       } catch (err) {
         console.error(`[plur:remote-store] ${this.url} load failed: ${(err as Error).message}`)
         // Don't poison the cache on failure — let the next call retry.

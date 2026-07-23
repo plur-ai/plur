@@ -31,7 +31,7 @@ describe('MCP tools', () => {
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), 'plur-mcp-'))
     plur = new Plur({ path: dir })
-    tools = getToolDefinitions()
+    tools = getToolDefinitions('full')
   })
   afterEach(() => { rmSync(dir, { recursive: true }) })
 

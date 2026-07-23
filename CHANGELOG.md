@@ -12,6 +12,38 @@
 - **Security: `plur status --json` printed live enterprise bearer tokens.** `StatusResult` embeds the full `PlurConfig`, so `--json` piped the `stores[].token` values (live credentials for the configured enterprise servers) to stdout — into CI logs, pasted issues, and agent transcripts. All CLI JSON output is now credential-redacted at the output boundary, so every present and future JSON command inherits the protection. Redaction also masks credentials embedded in string values (URL userinfo, e.g. `https://user:pass@host`), which a key-based denylist cannot reach.
 - **Security: hardened the memory receipt against hostile engram statements.** Statement text can come from third-party installed packs, so the "most relied on" snippet — which prints to the terminal and is returned to the calling agent — is now sanitized: ANSI/terminal escapes and other C0/C1/DEL controls, Unicode line/paragraph separators, and bidi (Trojan-Source) reordering + zero-width spoofing characters are stripped before rendering, and truncation is grapheme-safe.
 
+## 0.16.0 (upcoming)
+
+### Added
+
+- **`plur scopes` — per-scope opt-out for authorized-but-unregistered scopes** (#647, #656): a new user-facing CLI to register, dismiss, or re-offer the shared scopes your enterprise token is authorized for, one at a time — instead of the old all-or-nothing `register:true`. `plur scopes` lists them (with each scope's description); `plur scopes register <scope>` adds one; `plur scopes dismiss <scope>` remembers "don't offer this again" (persisted to `config.yaml`); `plur scopes --reoffer` clears dismissals. Dismissed scopes are excluded from the list and from the session-start hint, so PLUR stops re-listing scopes you've deliberately skipped. The session-start hint is now a quiet one-liner pointing at `plur scopes` (it was agent-facing guide text that users never saw).
+
+## 0.15.0 (2026-07-21)
+
+Lean default, LangChain, MCP SDK v2.
+
+- lean default — 74% fewer tokens
+- plur-langchain Python package
+- MCP SDK v2 (split packages)
+- Windows path + ID uniqueness fix
+
+### Changed
+
+- **Lean tool profile is now the default** (#625): the MCP server exposes 11 tools (down from 40) to every consumer — Claude Code, Cursor, Windsurf, OpenClaw, Hermes, and nightshift agents alike. Per-turn tool-schema overhead drops ~74% (~2K vs ~9K tokens). All 40 tools remain reachable via `plur_admin { action: "<tool>", args: {...} }`. Restore the full surface with `PLUR_TOOL_PROFILE=full`. **Consumers that depend on all 40 tools being available by default must either call via `plur_admin` or set `PLUR_TOOL_PROFILE=full`.**
+- **MCP SDK v2 migration** (#638): `@plur-ai/mcp` now uses the MCP SDK v2 split packages (`@modelcontextprotocol/server`, `@modelcontextprotocol/client`, `@modelcontextprotocol/core` @ 2.0.0-beta.4), replacing the monolithic `@modelcontextprotocol/sdk@^1.12.0`. Prepares for the MCP spec stable release (2026-07-28). The public API of `@plur-ai/mcp` is unchanged; 226 tests pass.
+
+### Added
+
+- **`plur-langchain` adapter** (#529): new Python package providing a LangChain `BaseMemory` + `BaseChatMessageHistory` adapter. Install with `pip install plur-langchain`. Chains and LCEL pipelines now get persistent engram memory with zero extra wiring.
+
+### Fixed
+
+- **`plur_recall_hybrid` fails with `ENOENT: mkdir ''` on Windows** (#641, #642): `saveCache` extracted the directory with `cachePath.lastIndexOf('/')`, which returns -1 on Windows backslash paths — `substring(0, -1)` yields `''`, and `mkdirSync('')` throws ENOENT. Replaced with `path.dirname()` (cross-platform) and added a guard against empty dirname. `plur_recall` / `plur_learn` / `plur_doctor` were unaffected; only the hybrid path (`plur_recall_hybrid`) hit `saveCache`. Regression tests added (4 cases, offline mock embedder).
+- **Dependency security overrides** (#632): tightened transitive dependency overrides addressing 30 Dependabot alerts across `openclaw`, `undici`, `linkify-it`, and `js-yaml`.
+- **`generateInjectionId` / `generateEventId` cross-process uniqueness** (#596): IDs are now unique across processes started within the same millisecond. Replaced `Date.now() + 4-char random suffix` with a per-process counter — eliminates the ~0.07% birthday-collision chance per 50-call batch and removes the intermittent `expected 49 to be 50` flake in co-injection tests.
+- **`RemoteStore.load()` — no cache poisoning on mid-pagination error** (#550): a network or server error mid-way through a paginated remote load no longer overwrites the local cache with partial data. The local cache is only updated after a complete, successful load.
+- **PID salt for cross-process ID uniqueness** (#600): ID generation now includes the process ID as a salt, preventing collisions between sibling processes (e.g. parallel nightshift agents) that start in the same millisecond.
+
 ## 0.14.0 (2026-07-15)
 
 A hardening release — 24 issues closed.
@@ -62,6 +94,10 @@ A reliability and hardening release: memory-quality, feedback, and security fixe
 - The manifest gate (`release.sh`) now recognizes multi-issue commit trailers like `(#521, #247)` — the old extraction silently dropped every number in a comma trailer — and curates out this repo's internal `ops`/`cmo` commit types alongside the standard non-user-facing set. The canary smoke-test command substitution is also guarded under `set -e` (#578).
 - **Publish verification hardened** (#584): the `@next` smoke test now covers `core` (install + ESM import, catching the import-time crash class that bricked `cli@0.9.2`) and `mcp`, not just `cli` — the audited fixes live in `core`. PyPI publish now verifies the version is retrievable after upload and prints an explicit recovery path on failure (PyPI is immutable). The session-guard's unwritable-state-dir fail-open now leaves a stderr audit trail instead of a silent bypass.
 - The pre-release hardening pass for this release — the U+2028/U+2029 scope-metadata gap, multi-word historical-keyword matching, the `feedback()` `last_accessed` re-anchor, and the manifest-gate fix above — landed in (#579). The audit follow-ups (#581–#584) landed in (#585).
+
+## 0.13.0 (2026-07-09)
+
+Withdrawn — manifest-gate incident (#544). Cut ~90 minutes after 0.12.0 to walk back unintended features that weren't sufficiently tested. npm `latest` skips this version; upgrade directly to 0.14.0.
 
 ## 0.12.0 (2026-07-09)
 

@@ -1,15 +1,5 @@
-import { Server } from '@modelcontextprotocol/sdk/server/index.js'
-import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
-import {
-  ListToolsRequestSchema,
-  CallToolRequestSchema,
-  ListResourcesRequestSchema,
-  ReadResourceRequestSchema,
-  ListPromptsRequestSchema,
-  GetPromptRequestSchema,
-  ErrorCode,
-  McpError,
-} from '@modelcontextprotocol/sdk/types.js'
+import { Server, ProtocolError, ProtocolErrorCode } from '@modelcontextprotocol/server'
+import { StdioServerTransport } from '@modelcontextprotocol/server/stdio'
 import { existsSync, readFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
@@ -176,7 +166,7 @@ Override with \`PLUR_PATH\` environment variable.
 
 export async function createServer(plur?: Plur, options?: { profile?: ToolProfile }): Promise<Server> {
   const instance = plur ?? new Plur()
-  const tools = getToolDefinitions(options?.profile ?? 'full')
+  const tools = getToolDefinitions(options?.profile ?? 'lean')
 
   // Non-blocking version check — fire and forget
   checkForUpdate('@plur-ai/mcp', VERSION, (r) => {
@@ -200,7 +190,7 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
 
   // --- Tools ---
 
-  server.setRequestHandler(ListToolsRequestSchema, async () => ({
+  server.setRequestHandler('tools/list', async () => ({
     tools: tools.map(t => ({
       name: t.name,
       description: t.description,
@@ -209,7 +199,7 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
     })),
   }))
 
-  server.setRequestHandler(CallToolRequestSchema, async (request) => {
+  server.setRequestHandler('tools/call', async (request) => {
     const tool = tools.find(t => t.name === request.params.name)
     if (!tool) {
       return {
@@ -263,7 +253,7 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
 
   // --- Resources ---
 
-  server.setRequestHandler(ListResourcesRequestSchema, async () => ({
+  server.setRequestHandler('resources/list', async () => ({
     resources: [
       {
         uri: 'plur://guide',
@@ -280,7 +270,7 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
     ],
   }))
 
-  server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
+  server.setRequestHandler('resources/read', async (request) => {
     const uri = request.params.uri
 
     if (uri === 'plur://guide') {
@@ -297,11 +287,12 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
       // iteration 2, 2026-07-09), not a second hardcoded copy of it — a
       // second copy drifts the moment the core set changes and nothing
       // catches it, silently making this exact text wrong.
-      const cursorNote = options?.profile === 'cursor'
-        ? '\n\n## Cursor tool profile\n\nMost tools above are NOT directly callable in this session — only ' +
+      const cursorNote = (options?.profile === 'cursor' || options?.profile === 'lean' || options?.profile == null)
+        ? '\n\n## Lean tool profile (default)\n\nMost tools above are NOT directly callable in this session — only ' +
           `${[...CURSOR_CORE_TOOL_NAMES].join(', ')} are top-level tools here. ` +
           'Everything else in this guide is reachable through **plur_admin**: call it with ' +
-          '`{ action: "<tool name above>", args: {...} }`.'
+          '`{ action: "<tool name above>", args: {...} }`. ' +
+          'Set `PLUR_TOOL_PROFILE=full` to expose all 40 tools directly.'
         : ''
       return {
         contents: [{
@@ -329,12 +320,12 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
       }
     }
 
-    throw new McpError(ErrorCode.InvalidRequest, `Unknown resource: ${uri}`)
+    throw new ProtocolError(ProtocolErrorCode.InvalidRequest, `Unknown resource: ${uri}`)
   })
 
   // --- Prompts ---
 
-  server.setRequestHandler(ListPromptsRequestSchema, async () => ({
+  server.setRequestHandler('prompts/list', async () => ({
     prompts: [
       {
         name: 'plur-getting-started',
@@ -351,7 +342,7 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
     ],
   }))
 
-  server.setRequestHandler(GetPromptRequestSchema, async (request) => {
+  server.setRequestHandler('prompts/get', async (request) => {
     const name = request.params.name
 
     if (name === 'plur-getting-started') {
@@ -401,14 +392,15 @@ Please:
       }
     }
 
-    throw new McpError(ErrorCode.InvalidRequest, `Unknown prompt: ${name}`)
+    throw new ProtocolError(ProtocolErrorCode.InvalidRequest, `Unknown prompt: ${name}`)
   })
 
   return server
 }
 
 export async function runStdio(): Promise<void> {
-  const profile = process.env.PLUR_TOOL_PROFILE === 'cursor' ? 'cursor' as const : 'full' as const
+  const envProfile = process.env.PLUR_TOOL_PROFILE
+  const profile: ToolProfile = envProfile === 'full' ? 'full' : envProfile === 'cursor' ? 'cursor' : 'lean'
   const server = await createServer(undefined, { profile })
   // Opt-in, content-free telemetry: ship any pending daily counter snapshot on
   // process exit (best-effort). Self-gates on telemetry opt-in — an opted-out

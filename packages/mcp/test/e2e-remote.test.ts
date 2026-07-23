@@ -17,8 +17,8 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from
 import { mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
-import { Client } from '@modelcontextprotocol/sdk/client/index.js'
-import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
+import { Client } from '@modelcontextprotocol/client'
+import { InMemoryTransport } from '@modelcontextprotocol/server'
 import { Plur } from '@plur-ai/core'
 import { createServer } from '../src/server.js'
 import { StubServer } from '../../core/test/helpers/stub-server.js'
@@ -57,7 +57,7 @@ let activeClients: Client[] = []
 
 async function makeClient(plurPath: string): Promise<{ client: Client }> {
   const plur = new Plur({ path: plurPath })
-  const server = await createServer(plur)
+  const server = await createServer(plur, { profile: 'full' })
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
   await server.connect(serverTransport)
   const client = new Client({ name: 'test-client', version: '1.0.0' })

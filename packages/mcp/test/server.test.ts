@@ -2,8 +2,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { mkdtempSync, rmSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
-import { Client } from '@modelcontextprotocol/sdk/client/index.js'
-import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
+import { Client } from '@modelcontextprotocol/client'
+import { InMemoryTransport } from '@modelcontextprotocol/server'
 import { Plur, checkForUpdate, clearVersionCache } from '@plur-ai/core'
 import { createServer } from '../src/server.js'
 
@@ -16,7 +16,7 @@ describe('MCP server (wire protocol)', () => {
     dir = mkdtempSync(join(tmpdir(), 'plur-mcp-server-'))
     const plur = new Plur({ path: dir })
     plurInstance = plur
-    const server = await createServer(plur)
+    const server = await createServer(plur, { profile: 'full' })
 
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
     await server.connect(serverTransport)

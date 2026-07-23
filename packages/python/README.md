@@ -69,7 +69,8 @@ Runnable patterns in [`examples/`](examples/):
 | Method | Returns |
 |--------|---------|
 | `learn(statement, *, type, scope, domain, tags, source, rationale)` | the created engram (dict) |
-| `recall(query, *, limit)` | list of matching engrams |
+| `recall(query, *, limit)` | list of matching engrams (BM25) |
+| `recall_hybrid(query, *, limit)` | list of matching engrams (BM25 + embeddings) |
 | `inject(task, *, budget)` | `{directives, constraints, consider, count, tokens_used}` |
 | `status()` | `{engram_count, episode_count, storage_root, ...}` |
 

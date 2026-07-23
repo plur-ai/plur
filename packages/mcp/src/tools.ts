@@ -2,7 +2,7 @@ import { existsSync, unlinkSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
 import { Plur, extractMetaEngrams, validateMetaEngram, confidenceBand, generateProfile, getProfileForInjection, markProfileDirty, selectModelForOperation, readHistoryForEngram, getCachedUpdateCheck, minorVersionsBehind, scanForTensions, CapabilityCanary, readProjectConfig, isSharedScope, resolveRerankerName, getReranker, classifyRerankerFailure, hfCacheDirName } from '@plur-ai/core'
-import type { LlmFunction, MetaField, TensionStatus, RerankerEvalResult, Receipt } from '@plur-ai/core'
+import type { LlmFunction, MetaField, TensionStatus, RerankerEvalResult, HistoryEvent, Receipt } from '@plur-ai/core'
 import { recordTelemetry } from './telemetry.js'
 import { VERSION } from './version.js'
 import { z } from 'zod'
@@ -41,7 +41,7 @@ export interface ToolAnnotations {
 export interface ToolDefinition {
   name: string
   description: string
-  inputSchema: Record<string, unknown>
+  inputSchema: { type: 'object'; [key: string]: unknown }
   annotations?: ToolAnnotations
   handler: (args: Record<string, unknown>, plur: Plur) => Promise<unknown>
 }
@@ -269,7 +269,7 @@ function _recordInjectionTelemetry(session_id: string | undefined, injected_pack
   }
 }
 
-export type ToolProfile = 'full' | 'cursor'
+export type ToolProfile = 'full' | 'lean' | 'cursor'
 
 // The day-to-day tools a Cursor user needs, plus every tool marked
 // `destructiveHint: true` — everything else (packs install/list, sync,
@@ -367,9 +367,10 @@ function buildAdminDispatchTool(all: ToolDefinition[]): ToolDefinition {
   }
 }
 
-export function getToolDefinitions(profile: ToolProfile = 'full'): ToolDefinition[] {
+export function getToolDefinitions(profile: ToolProfile = 'lean'): ToolDefinition[] {
   const all = getAllToolDefinitions()
-  if (profile !== 'cursor') return all
+  if (profile === 'full') return all
+  // 'lean' and 'cursor' are identical: 10 core tools + plur_admin dispatch
   const core = all.filter(t => CURSOR_CORE_TOOL_NAMES.has(t.name))
   return [...core, buildAdminDispatchTool(all)]
 }
@@ -1973,11 +1974,16 @@ function getAllToolDefinitions(): ToolDefinition[] {
                   `Reads fall back to local; team-scoped writes queue in the outbox` +
                   (pending > 0 ? ` (${pending} pending)` : '') + ` until it recovers. Check connectivity/VPN.`
             }
-            const unregistered = [...new Set(discoveries.filter(d => d.ok).flatMap(d => d.unregistered))]
-            if (unregistered.length > 0) {
-              const list = unregistered.map(s => `"${safe(s)}"`).join(', ')
-              guide += `\n\n🔎 Your token is authorized for ${unregistered.length} more scope(s) not yet registered: ${list}. ` +
-                `Call plur_scopes_discover with register:true to add them all in one step.`
+            // #647: a QUIET, per-scope-aware hint. `d.unregistered` already
+            // excludes dismissed scopes; also drop personal-family (they can't be
+            // registered from discovery). Point at the user-facing `plur scopes`
+            // CLI for the actual register/dismiss decision instead of the old
+            // all-or-nothing `register:true`.
+            const offerable = [...new Set(discoveries.filter(d => d.ok).flatMap(d => d.unregistered))].filter(isSharedScope)
+            if (offerable.length > 0) {
+              guide += `\n\n🔎 ${offerable.length} authorized scope(s) not yet registered. Tell the user they can run ` +
+                `\`plur scopes\` to register or dismiss them per-scope (dismissed scopes stop being offered; ` +
+                `\`plur scopes --reoffer\` re-surfaces them).`
             }
           } catch { /* discovery is best-effort — never block session_start */ }
 
@@ -2539,7 +2545,7 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
         const { listHistoryMonths, readHistory } = await import('@plur-ai/core')
         const status = plur.status()
         const months = listHistoryMonths(status.storage_root)
-        const allEvents: Array<Record<string, unknown>> = []
+        const allEvents: HistoryEvent[] = []
         // Read from most recent months first
         for (const month of months.reverse()) {
           const events = readHistory(status.storage_root, month)

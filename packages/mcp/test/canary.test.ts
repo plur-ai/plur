@@ -7,8 +7,8 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { mkdtempSync, rmSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
-import { Client } from '@modelcontextprotocol/sdk/client/index.js'
-import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
+import { Client } from '@modelcontextprotocol/client'
+import { InMemoryTransport } from '@modelcontextprotocol/server'
 import { Plur } from '@plur-ai/core'
 import { getToolDefinitions } from '../src/tools.js'
 import { createServer } from '../src/server.js'
@@ -26,7 +26,7 @@ describe('CapabilityCanary session reset (#192)', () => {
   afterEach(() => { rmSync(dir, { recursive: true }) })
 
   const callDirect = async (name: string, args: Record<string, unknown> = {}) => {
-    const tools = getToolDefinitions()
+    const tools = getToolDefinitions('full')
     const tool = tools.find(t => t.name === name)
     if (!tool) throw new Error(`Unknown tool: ${name}`)
     return tool.handler(args, plur)

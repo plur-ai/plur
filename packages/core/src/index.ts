@@ -278,7 +278,7 @@ export interface RemoteScopeDiscovery {
   authorized: string[]
   /** Scopes already registered in local config for this URL. */
   registered: string[]
-  /** Authorized minus registered — the scopes a user could still add. */
+  /** Authorized minus registered minus dismissed (#647) — the scopes a user could still add. */
   unregistered: string[]
   /**
    * Server-authoritative scope metadata (#345 D2) for the authorized scopes,
@@ -4638,6 +4638,10 @@ Generate an improved version of the procedure that prevents this failure. Return
           }),
         ])
         const registeredSet = new Set(registered)
+        // #647: scopes the user has dismissed from the offer are not "actionable"
+        // — drop them from `unregistered` so the session-start hint and CLI stop
+        // re-surfacing them every session. `plur scopes --reoffer` clears these.
+        const dismissedSet = new Set(this.config.dismissed_scopes ?? [])
         return {
           url,
           ok: true,
@@ -4646,7 +4650,7 @@ Generate an improved version of the procedure that prevents this failure. Return
           role: me.role,
           authorized: me.scopes,
           registered,
-          unregistered: me.scopes.filter(s => !registeredSet.has(s)),
+          unregistered: me.scopes.filter(s => !registeredSet.has(s) && !dismissedSet.has(s)),
           // #345 D2: server-authoritative metadata for the authorized scopes,
           // already validated in RemoteStore.me(). Empty for older servers.
           metadata: me.scope_metadata ?? [],
@@ -4774,6 +4778,116 @@ Generate an improved version of the procedure that prevents this failure. Return
       }
       return { url: d.url, ok: true, added, already_registered: already, skipped }
     })
+  }
+
+  /**
+   * The single source of truth for the "authorized but unregistered" OFFER
+   * (#647), shared by the `plur scopes` CLI and the session-start hint. Returns
+   * the shared-family scopes the token is authorized for that are neither
+   * registered nor dismissed, deduped across remotes, each with its
+   * self-describing metadata description (#345) when the server serves it.
+   *
+   * Personal-family scopes are excluded here (they can't be registered from
+   * discovery — see {@link registerScope} / #382), so the offer only ever shows
+   * scopes the user can actually act on.
+   *
+   * Also returns any `failures` (remotes whose /me could not be reached / whose
+   * token was rejected) so the caller can distinguish "genuinely nothing to
+   * offer" from "couldn't reach the server" — the CLI must not report an empty
+   * offer when it simply failed to talk to the remote (#656 self-review).
+   */
+  async offerableScopes(opts?: { url?: string; timeoutMs?: number }): Promise<{
+    scopes: Array<{ scope: string; url: string; description?: string }>
+    failures: Array<{ url: string; error?: string }>
+  }> {
+    const discoveries = await this.discoverRemoteScopes(opts)
+    const seen = new Set<string>()
+    const scopes: Array<{ scope: string; url: string; description?: string }> = []
+    const failures: Array<{ url: string; error?: string }> = []
+    for (const d of discoveries) {
+      if (!d.ok) {
+        failures.push({ url: d.url, error: d.error })
+        continue
+      }
+      for (const scope of d.unregistered) {
+        if (!isSharedScope(scope) || seen.has(scope)) continue
+        seen.add(scope)
+        const meta = d.metadata.find(m => m.scope === scope)
+        scopes.push({ scope, url: d.url, description: meta?.description })
+      }
+    }
+    return { scopes, failures }
+  }
+
+  /**
+   * Register a SINGLE authorized-but-unregistered shared scope (#647) — the
+   * per-scope counterpart to {@link registerDiscoveredScopes} (all-or-nothing).
+   * Discovers which configured remote authorizes `scope`, then adds one store
+   * entry via the same url+scope-idempotent {@link addStore} path.
+   *
+   * Rejects personal-family scopes (`user:*`/`global`/…) — same #382 guard as
+   * the batch path: a `/me`-advertised personal scope must never become a
+   * routing target for the user's default/unscoped writes. Throws if no
+   * configured remote authorizes the scope.
+   */
+  async registerScope(scope: string, opts?: { url?: string; timeoutMs?: number }): Promise<{ url: string; status: 'added' | 'already_registered' | 'overwritten' | 'token_rotated' }> {
+    if (!isSharedScope(scope)) {
+      throw new Error(`refusing to register non-shared scope "${scope}" — only shared-family scopes (group:/project:/space:/team:/org:/public) can be registered from discovery; add a personal-backed store explicitly with \`plur stores add\``)
+    }
+    const discoveries = await this.discoverRemoteScopes(opts?.url ? { url: opts.url, timeoutMs: opts?.timeoutMs } : { timeoutMs: opts?.timeoutMs })
+    const match = discoveries.find(d => d.ok && d.authorized.includes(scope))
+    if (!match) {
+      const failed = discoveries.filter(d => !d.ok).map(d => d.url)
+      throw new Error(`scope "${scope}" is not authorized on any configured remote${failed.length ? ` (could not reach: ${failed.join(', ')})` : ''}`)
+    }
+    const token = (this.config.stores ?? []).find(s => s.url === match.url)?.token
+    const { status } = this.addStore('', scope, { url: match.url, token })
+    // Registering a scope also clears any prior dismissal of it (#647).
+    if ((this.config.dismissed_scopes ?? []).includes(scope)) {
+      this.persistDismissedScopes((this.config.dismissed_scopes ?? []).filter(s => s !== scope))
+    }
+    return { url: match.url, status }
+  }
+
+  /**
+   * Dismiss a scope from the "authorized but unregistered" offer (#647). It is
+   * remembered in config (`dismissed_scopes`) and excluded from
+   * discoverRemoteScopes().unregistered + the session-start hint until
+   * {@link reofferScopes}. No-op if already dismissed.
+   */
+  dismissScope(scope: string): void {
+    const current = this.config.dismissed_scopes ?? []
+    if (current.includes(scope)) return
+    this.persistDismissedScopes([...current, scope])
+  }
+
+  /** Clear all dismissals (#647) — previously dismissed scopes are offered again. */
+  reofferScopes(): void {
+    this.persistDismissedScopes([])
+  }
+
+  /** The scopes currently dismissed from the offer (#647). */
+  getDismissedScopes(): string[] {
+    return [...(this.config.dismissed_scopes ?? [])]
+  }
+
+  /**
+   * Persist `dismissed_scopes` to config.yaml, preserving every other top-level
+   * key, then refresh the in-memory config + mtime. Mirrors {@link persistStores}:
+   * a transient read error on an EXISTING config aborts rather than truncating.
+   */
+  private persistDismissedScopes(list: string[]): void {
+    let configData: Record<string, unknown> = {}
+    try {
+      const raw = fs.readFileSync(this.paths.config, 'utf8')
+      if (raw) configData = (yaml.load(raw) as Record<string, unknown>) ?? {}
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') throw err
+    }
+    configData.dismissed_scopes = [...new Set(list)].sort()
+    fs.writeFileSync(this.paths.config, yaml.dump(configData, { lineWidth: 120, noRefs: true }))
+    this.config = loadConfig(this.paths.config)
+    this.configMtimeMs = this.statConfigMtime()
   }
 
   /** Set a session-level default scope. Used as fallback in learn/learnRouted when no explicit scope is provided. */

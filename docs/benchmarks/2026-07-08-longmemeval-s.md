@@ -2,6 +2,8 @@
 
 **Commit:** `5a0ea11` | **Embedder:** `minilm` (local, all-MiniLM-L6-v2) | **Corpus:** PLUR fixture (hand-curated, n=30)
 
+> **Embedder note:** `minilm` (all-MiniLM-L6-v2) is **not the shipping default**. The production default is `bge-small` hybrid, which scores **76.7% R@5** on this same fixture. Numbers below use `minilm` as a comparison baseline; the shipping default numbers are in [CLAUDE.md](../../CLAUDE.md#current-numbers) and [plur-bench](https://github.com/plur-ai/plur-bench).
+
 > This is the PLUR v0.9.x baseline published in response to gbrain's 2026-05-07 benchmark.
 > The gbrain hero metric (R@5 = 97.60%) is a **retrieval-only** score using a commercial
 > cloud embedder on the full 500-question LongMemEval-S corpus. The numbers below use the
@@ -31,7 +33,7 @@ R@K and MRR measure the *retrieval pipeline* (did PLUR find the right memory?). 
 |--------|---------------------|--------------------|
 | R@1 | 53.3% | — |
 | R@3 | 80.0% | — |
-| **R@5** | **80.0%** | **97.60%** |
+| R@5 | 80.0% | 97.60% |
 | R@10 | 90.0% | — |
 | MRR | 0.6685 | — |
 | nDCG@5 | 0.6929 | — |
@@ -43,8 +45,8 @@ R@K and MRR measure the *retrieval pipeline* (did PLUR find the right memory?). 
 | Peak RSS | 503 MB | — |
 | Corpus size (n) | 30 (fixture) | 500 (full) |
 
-> **Baseline comparison:** gbrain R@5 = 97.60% (2026-05-07, ZeroEntropy zembed-1, LongMemEval-S full 500-question corpus).
-> PLUR results use the 30-question fixture subset on a local embedder. Full 500-question results pending corpus import (#336).
+> **Baseline comparison (not head-to-head):** gbrain R@5 = 97.60% (2026-05-07, ZeroEntropy zembed-1, LongMemEval-S full 500-question corpus).
+> PLUR results use a 30-question hand-curated fixture and a local `minilm` embedder — two axes differ simultaneously (corpus size and embedder tier). These numbers are not directly comparable; see Analysis section for interpretation. Full 500-question results pending corpus import (#336).
 
 ---
 
@@ -91,7 +93,7 @@ gbrain's benchmark report leads with R@5 = 97.60%. This is a strong retrieval nu
 
 3. **No cost, latency, or footprint disclosure.** gbrain's report publishes R@5 only. PLUR publishes R@1/3/5/10, MRR, nDCG@5, accuracy, latency p50/p95/p99, peak RSS, store size, and cost. Benchmark credibility requires full disclosure — cherry-picking one favourable metric is a yellow flag.
 
-4. **Single-config snapshot vs multi-adapter sweep.** gbrain published one number for one embedder. PLUR can sweep four adapter configs (BM25, semantic, hybrid, hybrid+reranker) in a single command. This sweep is reproducible, open-source, and runnable by anyone with the corpus.
+4. **Single-config snapshot vs multi-adapter sweep.** gbrain published one number for one embedder. PLUR can sweep four adapter configs (BM25, semantic, hybrid, hybrid+reranker) in a single command. This sweep is reproducible, open-source, and runnable by anyone with the corpus via [plur-bench](https://github.com/plur-ai/plur-bench) (`pnpm stats:test`).
 
 5. **Cross-vendor neutrality.** PLUR is Apache-2.0, has no token, and runs identically in every AI agent environment. Commercial memory systems require API keys, usage-based billing, and vendor lock-in. The missing token is a credibility asset: any competitor that adds a token retroactively loses the cross-vendor neutrality claim.
 
@@ -103,7 +105,7 @@ gbrain's benchmark report leads with R@5 = 97.60%. This is a strong retrieval nu
 |--------|-------------|--------|
 | minilm hybrid (this report) | 80% | **Published** |
 | minilm hybrid+reranker | ~90% | Pending #220 merge |
-| bge-small hybrid | TBD | Pending corpus import (#336) |
+| bge-small hybrid | **76.7%** | Done (fixture n=30); full 500-question corpus pending #336 |
 | Full 500-question corpus | TBD | Pending corpus import (#336) |
 
 Delta reports will be published as each configuration becomes available.
