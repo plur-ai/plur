@@ -1,4 +1,4 @@
-import { readCoInjections } from './history.js'
+import { readCoInjections, type CoInjectionEvent } from './history.js'
 import { computeReceipt, type Receipt } from './receipt.js'
 
 /**
@@ -25,7 +25,7 @@ export function gatherReceipt(
   // knowable by seeing the oldest event. This is a manual command, not a hot
   // path; if enterprise history ever makes the full parse costly, add a
   // cheap earliest-event probe rather than dropping the all-time floor.
-  let events
+  let events: CoInjectionEvent[]
   try {
     ({ events } = readCoInjections(root))
   } catch {
