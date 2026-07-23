@@ -239,6 +239,40 @@ plur.sync('git@github.com:you/plur-memory.git')
 | `plur_ingest` | Extract engrams from text automatically |
 | `plur_sync` | Sync across devices via git (remote receives all engrams — use a private repo) |
 | `plur_status` | Check system health and engram counts |
+| `plur_receipt` | Counted, local report of what your memory retrieved for you |
+
+### The memory receipt
+
+`plur receipt` (and the `plur_receipt` MCP tool) show what your memory actually did — counted from PLUR's own retrieval history, never estimated:
+
+```
+Your Memory Receipt
+===================
+  2026-07-03 .. 2026-07-22  (71 sessions)
+
+  423 times a memory you taught PLUR
+  was put in front of the model.
+  (plus 45 times an installed-pack memory)
+
+  across 71 retrievals in 71 sessions
+  drawing on 162 distinct engrams
+
+  MOST-RELIED-ON
+      34x  PLUR positioning thesis across every vertical: PLUR layers …
+      28x  Datacore app CoS architecture: reasoning layer added on to…
+      ...
+
+  STORE HEALTH
+       4,517   engrams stored (you: 3,746, packs: 771)
+         162   retrieved at least once (4% of store)
+       4,355   not retrieved since 2026-07-03 (96%)
+    Over a short logging window a low rate is expected, not a fault —
+    memory is meant to be selective, and much of the store predates logging.
+```
+
+(REUSE stats and coverage caveats are also shown; trimmed here for length.)
+
+It is local and read-only, and carries **no dollar or token figure by design**: on a subscription your marginal token cost is zero, and the value of an avoided rediscovery is not measurable from this data. The receipt reports only what it can count. Activation rate is store *coverage over the logging window*, not a quality score — it is naturally low and falls as you add engrams. `--days N` narrows the window; `--json` emits the raw shape. (The `plur_receipt` MCP tool returns the same figures plus a one-line `summary` that carries this framing to the agent.)
 
 ### Syncing across devices
 

@@ -1,4 +1,5 @@
 import type { Engram } from './schemas/engram.js'
+import type { InjectionSource } from './history.js'
 export type { Engram, KnowledgeAnchor, Association } from './schemas/engram.js'
 export type { Episode } from './schemas/episode.js'
 export type { PlurConfig } from './schemas/config.js'
@@ -158,6 +159,8 @@ export interface InjectOptions {
   rerank?: boolean
   /** Session ID (from plur_session_start) recorded on the co_injection provenance event (#452). */
   session_id?: string
+  /** Which surface asked for this injection. Recorded on the co_injection event. */
+  source?: InjectionSource
 }
 
 export interface InjectionResult {

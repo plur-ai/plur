@@ -2,7 +2,7 @@ import { existsSync, unlinkSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
 import { Plur, extractMetaEngrams, validateMetaEngram, confidenceBand, generateProfile, getProfileForInjection, markProfileDirty, selectModelForOperation, readHistoryForEngram, getCachedUpdateCheck, minorVersionsBehind, scanForTensions, CapabilityCanary, readProjectConfig, isSharedScope, resolveRerankerName, getReranker, classifyRerankerFailure, hfCacheDirName } from '@plur-ai/core'
-import type { LlmFunction, MetaField, TensionStatus, RerankerEvalResult, HistoryEvent } from '@plur-ai/core'
+import type { LlmFunction, MetaField, TensionStatus, RerankerEvalResult, HistoryEvent, Receipt } from '@plur-ai/core'
 import { recordTelemetry } from './telemetry.js'
 import { VERSION } from './version.js'
 import { z } from 'zod'
@@ -301,6 +301,7 @@ export const CURSOR_CORE_TOOL_NAMES: ReadonlySet<string> = new Set([
   'plur_feedback',
   'plur_forget',
   'plur_status',
+  'plur_receipt',
   'plur_doctor',
   'plur_packs_uninstall',
   'plur_tensions_purge',
@@ -372,6 +373,30 @@ export function getToolDefinitions(profile: ToolProfile = 'lean'): ToolDefinitio
   // 'lean' and 'cursor' are identical: 10 core tools + plur_admin dispatch
   const core = all.filter(t => CURSOR_CORE_TOOL_NAMES.has(t.name))
   return [...core, buildAdminDispatchTool(all)]
+}
+
+/**
+ * One-line, honest framing of a Receipt for the calling agent — carries the
+ * same guardrail the CLI renders, so an agent never presents the coverage-style
+ * activation_rate as an effectiveness score.
+ */
+function receiptSummary(r: Receipt): string {
+  if (r.coverage.source === 'none') {
+    return r.window.windowed
+      ? `No retrievals recorded in the last ${r.window.requested_days} days.`
+      : 'No retrieval history yet — logging begins once memory is used.'
+  }
+  const since = r.window.windowed
+    ? `the last ${r.window.requested_days} days`
+    : `${r.coverage.complete_from}`
+  const pct = Math.round(r.retrieved.activation_rate * 100)
+  return (
+    `Since ${since}, ${r.retrieved.taught_pairs} times a memory the user taught was ` +
+    `retrieved into context (across ${r.retrieved.retrievals} retrievals in ` +
+    `${r.window.sessions} sessions; ${r.retrieved.engrams} distinct engrams). ` +
+    `Activation ${pct}% is store COVERAGE over the logging window, not a quality ` +
+    `score — it is expected to be low and to fall as more engrams are added.`
+  )
 }
 
 function getAllToolDefinitions(): ToolDefinition[] {
@@ -778,6 +803,8 @@ function getAllToolDefinitions(): ToolDefinition[] {
         const result = plur.inject(args.task as string, {
           budget: args.budget as number | undefined,
           scope: args.scope as string | undefined,
+          source: 'inject',
+          session_id: _activeSessionId,
         })
         _recordInjectionTelemetry(_activeSessionId, result.injected_packs)
         return {
@@ -809,6 +836,8 @@ function getAllToolDefinitions(): ToolDefinition[] {
         const result = await plur.injectHybrid(args.task as string, {
           budget: args.budget as number | undefined,
           scope: args.scope as string | undefined,
+          source: 'inject',
+          session_id: _activeSessionId,
         })
         _recordInjectionTelemetry(_activeSessionId, result.injected_packs)
         return {
@@ -1450,6 +1479,26 @@ function getAllToolDefinitions(): ToolDefinition[] {
     },
 
     {
+      name: 'plur_receipt',
+      description:
+        'Counted report of what your memory retrieved for you: engrams stored, how many were retrieved and how often, which are most relied on, and how much of the store is dormant. Local and read-only; every figure is directly counted, never estimated. IMPORTANT when relaying to the user: `activation_rate` is COVERAGE over the logging window (≈ how much of the store was surfaced), NOT a quality or effectiveness score — it is naturally low and FALLS as more engrams are added, so never present it as "memory is N% effective". A `summary` line is included; prefer relaying that.',
+      annotations: { title: 'Memory receipt', readOnlyHint: true, idempotentHint: true },
+      inputSchema: {
+        type: 'object',
+        properties: {
+          days: { type: 'number', description: 'Restrict to the last N days (integer). Omit for all recorded history.' },
+        },
+      },
+      handler: async (args, plur) => {
+        const days = typeof args.days === 'number' && Number.isFinite(args.days) && args.days >= 1
+          ? Math.floor(args.days)
+          : undefined
+        const receipt = plur.receipt(days ? { days } : undefined)
+        return { summary: receiptSummary(receipt), ...receipt }
+      },
+    },
+
+    {
       name: 'plur_doctor',
       description: 'Diagnose the PLUR ENGINE (embedder, hybrid search, remote-store auth) — not hook/MCP wiring. Reports whether the embedding model loaded, whether hybrid search is fully operational, and — for any configured enterprise/remote store — whether its auth is valid (probes /api/v1/me and decodes token expiry), so a dead or soon-to-expire token surfaces instead of hiding behind a "healthy" report. Run this first when recall feels off or team engrams stop syncing. Does NOT check .cursor/mcp.json, .cursor/hooks.json, or the live MCP tool count — for that, run the `plur doctor` CLI command in a terminal (a different, more thorough check with the same name).',
       annotations: { title: 'Doctor', readOnlyHint: false, idempotentHint: false },
@@ -1802,6 +1851,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
           const result = await plur.injectHybrid(task, {
             scope: tags?.length ? `tags:${tags.join(',')}` : undefined,
             session_id, // stamped on the co_injection provenance event (#452)
+            source: 'session_start',
           })
           _recordInjectionTelemetry(session_id, result.injected_packs)
           if (result.count > 0) {
@@ -1816,6 +1866,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
           const result = plur.inject(task, {
             scope: tags?.length ? `tags:${tags.join(',')}` : undefined,
             session_id,
+            source: 'session_start',
           })
           _recordInjectionTelemetry(session_id, result.injected_packs)
           if (result.count > 0) {

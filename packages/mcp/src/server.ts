@@ -102,6 +102,7 @@ Persistent memory for AI agents. Corrections, preferences, and conventions are s
 | A recalled engram was wrong or irrelevant | \`plur_feedback\` with "negative" |
 | User says "forget X" or a memory is outdated | \`plur_forget\` |
 | You need to check what's stored | \`plur_status\` or \`plur_packs_list\` |
+| User asks what memory did for them / is memory working | \`plur_receipt\` (relay its \`summary\`; activation_rate is coverage, not quality) |
 | End of session | \`plur_session_end\` with summary and suggestions |
 
 ## Tool Categories
@@ -142,6 +143,7 @@ Persistent memory for AI agents. Corrections, preferences, and conventions are s
 - **plur_sync** — sync engrams across devices via git
 - **plur_sync_status** — check sync state
 - **plur_status** — system health
+- **plur_receipt** — counted report of what memory retrieved for the user (local, read-only)
 
 ## Scoping
 

@@ -79,7 +79,11 @@ export { selectModel, selectModelForOperation, resolveOperationTier, type ModelT
 export { recallAuto, type AutoSearchResult, type SearchStrategy } from './search-orchestrator.js'
 export { generateProfile, getProfileForInjection, loadProfileCache, saveProfileCache, markProfileDirty, profileNeedsRegeneration, type ProfileCache } from './profile.js'
 export { formatLayer1, formatLayer2, formatLayer3, formatWithLayer, assignLayer, type InjectionLayer } from './inject.js'
-export { appendHistory, readHistory, listHistoryMonths, readHistoryForEngram, generateEventId, generateInjectionId, computeQueryHash, findLatestInjectionFor, countInjectionEvents, type HistoryEvent, type InjectionEventCounts } from './history.js'
+export { appendHistory, readHistory, listHistoryMonths, readHistoryForEngram, generateEventId, generateInjectionId, computeQueryHash, findLatestInjectionFor, countInjectionEvents, readCoInjections, type HistoryEvent, type InjectionEventCounts, type InjectionSource, type CoInjectionData, type CoInjectionEvent, type CoInjectionReadResult } from './history.js'
+export { computeReceipt } from './receipt.js'
+export type { Receipt, ReceiptInput, ReceiptTopEntry } from './receipt.js'
+import type { Receipt } from './receipt.js'
+import { gatherReceipt } from './receipt-io.js'
 export { computeContentHash, normalizeStatement } from './content-hash.js'
 export { parseDedupResponse, buildDedupPrompt, buildBatchDedupPrompt } from './dedup.js'
 export { runMigrations, rollbackMigrations, getSchemaVersion, setSchemaVersion, ALL_MIGRATIONS, CURRENT_SCHEMA_VERSION, type Migration, type MigrationResult } from './migrations/index.js'
@@ -2537,6 +2541,11 @@ export class Plur {
           data: {
             ids: injected_ids,
             query_hash: computeQueryHash(task),
+            // Event provenance for offline token-economics analysis of real
+            // sessions (the plur-bench #42 measurement). Deliberately NOT read
+            // by the receipt, which shows no token/cost figure by design.
+            tokens_used: tokensUsed,
+            source: options?.source ?? 'inject',
             ...(options?.scope ? { scope: options.scope } : {}),
             ...(options?.session_id ? { session_id: options.session_id } : {}),
           },
@@ -3771,6 +3780,53 @@ Generate an improved version of the procedure that prevents this failure. Return
       history_events: countInjectionEvents(this.paths.root),
       ...(this._lastIndexError ? { index_error: this._lastIndexError } : {}),
     }
+  }
+
+  /**
+   * Counted report of what memory retrieved for this user — the "memory
+   * receipt". Local and read-only: reads the primary engram store, installed
+   * packs and the co_injection history, and transmits nothing.
+   *
+   * Scoped to LOCAL memory (primary store + installed packs). Remote/team
+   * stores are deliberately excluded so the number is identical whether called
+   * from the cold CLI or the warm MCP server; retrievals of team engrams are
+   * reported separately as `external_retrieved` rather than counted as deleted.
+   */
+  receipt(options?: { days?: number; now?: Date }): Receipt {
+    const primary = this._loadCached(this.paths.engrams).filter(e => e.status === 'active')
+    const ownIds = primary.map(e => e.id)
+
+    // Statement snippets for the "most relied on" list, so it reads as memories
+    // rather than opaque ids. Built only from LOCAL engrams (primary store +
+    // installed packs); remote/team-store statements are never included. The
+    // snippet is sanitized downstream and does surface in the MCP result, but
+    // only for the caller's own engrams — content that agent already receives
+    // via injection, so no new disclosure.
+    const statements: Record<string, string> = {}
+    for (const e of primary) {
+      if (typeof e.statement === 'string') statements[e.id] = e.statement
+    }
+
+    const packIds: string[] = []
+    for (const pack of loadAllPacks(this.paths.packs)) {
+      for (const e of pack.engrams) {
+        if (e.status === 'active') {
+          packIds.push(e.id)
+          if (typeof e.statement === 'string') statements[e.id] = e.statement
+        }
+      }
+    }
+
+    // A retrieved id namespaced with a configured store's prefix (ENG-DFU-…) is
+    // a team-store engram this local receipt doesn't scope — mark those prefixes
+    // so they read as external, not as retired.
+    const externalPrefixes: string[] = []
+    for (const store of this.config.stores ?? []) {
+      const p = storePrefix(store.scope)
+      externalPrefixes.push(`ENG-${p}-`, `ABS-${p}-`, `META-${p}-`)
+    }
+
+    return gatherReceipt(this.paths.root, ownIds, packIds, externalPrefixes, { ...options, statements })
   }
 
   // ------------------------------------------------------------------
