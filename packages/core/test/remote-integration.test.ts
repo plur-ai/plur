@@ -349,19 +349,20 @@ describe('Plur integration with stub server', () => {
 
     expect(engram.scope).toBe('group:test')
 
-    // Wait for background append
-    await new Promise(r => setTimeout(r, 50))
+    // The remote append and the local outbox cleanup are fire-and-forget —
+    // a fixed sleep races them and loses under load (release-run flake,
+    // 2026-07-24). Poll instead: as fast as before when idle, tolerant when
+    // the machine is busy.
+    await expect.poll(() => server.engramCount, { timeout: 10_000, interval: 25 }).toBe(1)
 
-    // Server should have the engram
-    expect(server.engramCount).toBe(1)
-
-    // Local YAML should NOT have it
+    // Local YAML should NOT have it (the outbox copy is removed AFTER the
+    // remote push succeeds — poll for the removal, don't race it)
     const localYaml = join(primaryDir, 'engrams.yaml')
-    if (existsSync(localYaml)) {
+    await expect.poll(() => {
+      if (!existsSync(localYaml)) return undefined
       const local = yaml.load(readFileSync(localYaml, 'utf-8')) as { engrams?: any[] } | null
-      const found = (local?.engrams ?? []).find((e: any) => e.statement === 'integration test engram')
-      expect(found).toBeUndefined()
-    }
+      return (local?.engrams ?? []).find((e: any) => e.statement === 'integration test engram')
+    }, { timeout: 10_000, interval: 25 }).toBeUndefined()
   })
 
   it('learn with unmatched scope writes locally', () => {
@@ -389,10 +390,9 @@ describe('Plur integration with stub server', () => {
 
     // Write one to remote
     plur.learn('remote team knowledge about deployment', { scope: 'group:test', type: 'procedural' })
-    await new Promise(r => setTimeout(r, 50))
 
-    // Server has the remote engram
-    expect(server.engramCount).toBe(1)
+    // Fire-and-forget append — poll, don't race (release-run flake, 2026-07-24)
+    await expect.poll(() => server.engramCount, { timeout: 10_000, interval: 25 }).toBe(1)
     const srvEngram = server.getEngram('ENG-SRV-001')
     expect((srvEngram?.data as any)?.statement).toBe('remote team knowledge about deployment')
 
