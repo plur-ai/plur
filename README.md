@@ -234,7 +234,7 @@ const incidents = plur.timeline({ agent: 'claude-code' })
 plur.sync('git@github.com:you/plur-memory.git')
 ```
 
-### MCP tools
+## Tools
 
 | Tool | What it does |
 |------|-------------|
@@ -251,7 +251,7 @@ plur.sync('git@github.com:you/plur-memory.git')
 | `plur_status` | Check system health and engram counts |
 | `plur_receipt` | Counted, local report of what your memory retrieved for you |
 
-### The memory receipt
+## The memory receipt
 
 `plur receipt` (and the `plur_receipt` MCP tool) show what your memory actually did — counted from PLUR's own retrieval history, never estimated:
 
@@ -284,7 +284,7 @@ Your Memory Receipt
 
 It is local and read-only, and carries **no dollar or token figure by design**: on a subscription your marginal token cost is zero, and the value of an avoided rediscovery is not measurable from this data. The receipt reports only what it can count. Activation rate is store *coverage over the logging window*, not a quality score — it is naturally low and falls as you add engrams. `--days N` narrows the window; `--json` emits the raw shape. (The `plur_receipt` MCP tool returns the same figures plus a one-line `summary` that carries this framing to the agent.)
 
-### Syncing across devices
+## Syncing across devices
 
 `plur.sync(remote)` is git underneath: it commits your engram store and pushes it to the remote you give it. What gets pushed depends on the remote's declared type (`sync.remote_type` in `config.yaml`, or the `remote_type` argument):
 
