@@ -76,7 +76,10 @@ describe('MED-20 + LOW-9 — learnAsync UPDATE/MERGE demotion (real guard, share
     const seed = plur.learn('the staging cluster is documented in the handbook', { scope: SHARED_SCOPE, type: 'procedural' }) as Engram
 
     const llm = dedupLlm('MERGE', seed.id)
-    const result = await plur.learnAsync(`reachable at ${PUBLIC_IP}:8877`, { llm })
+    // "staging" is shared with the seed so BM25 finds the candidate even when
+    // embeddings are unavailable under full-suite load (prevents a flake where
+    // zero-overlap candidates caused an ADD instead of MERGE — see #680).
+    const result = await plur.learnAsync(`staging cluster reachable at ${PUBLIC_IP}:8877`, { llm })
 
     expect(result.decision).toBe('MERGE')
     const e = result.engram as Engram & { visibility?: string; structured_data?: { _demoted?: { from: string; to: string; patterns: string } } }
