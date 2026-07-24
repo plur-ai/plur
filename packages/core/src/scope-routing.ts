@@ -25,7 +25,11 @@
  * Confidence is normalized into [0,1] by squashing the raw weighted score, so a
  * single weak keyword hit reads as low-confidence and a domain-prefix match
  * reads as high-confidence. Ties break deterministically: equal confidence
- * prefers a domain-prefix match, then scope name ascending.
+ * prefers a domain-prefix match, then more-specific cover depth, then scope
+ * name ascending (#670). Keyword-only ties (both candidates from a single
+ * coincidental keyword hit each) therefore break alphabetically — this is the
+ * documented limitation of the purely-lexical keyword channel. Set a deliberate
+ * `domain` on the engram to route reliably without touching the keyword channel.
  *
  * Each candidate carries two domain-channel booleans (see {@link ScopeCandidate}):
  * `domainMatch` (true for EITHER prefix direction — used for scoring/ordering)
@@ -48,6 +52,17 @@ import type { ScopeMetadata } from './schemas/scope-metadata.js'
  * auto-route gate in index.ts (`_resolveUnscopedScope`) is `>=`, so a confidence
  * that lands EXACTLY on this value clears it — see THRESHOLD_SINGLE_DOMAIN. */
 export const SCOPE_MATCH_THRESHOLD = 0.5
+
+/** Default floor for DISPLAY/suggestion surfaces (#670): a lone coincidental
+ * statement keyword squashes to ≈0.1176, which is noise, not signal — showing
+ * it teaches agents to distrust the suggestion tool. 0.15 sits above the
+ * lone-keyword band and below the two-keyword band (≈0.2105), so real
+ * multi-signal matches always survive. Consumed by `plur_suggest_scope`
+ * (packages/mcp) as its fallback when neither the tool arg nor
+ * `scope_routing.min_confidence` config specifies a floor. The core
+ * `suggestScope` API deliberately defaults to 0 (unfiltered). Defined once
+ * here alongside its sibling thresholds — retune in one place. */
+export const SUGGEST_DISPLAY_MIN_CONFIDENCE = 0.15
 
 /** Per-channel weights. domain ≫ tag > keyword by design (see module doc).
  *
@@ -306,6 +321,14 @@ function scoreScope(
 export interface RankScopesOptions {
   /** Override {@link WEIGHT_TAG} for this call. Default: 0.5. */
   weightTag?: number
+  /**
+   * Exclude candidates whose `confidence` is strictly below this value (default: 0
+   * — return all positive-scoring candidates and let the caller decide). Useful in
+   * display/suggestion contexts to suppress lone keyword hits (≈0.12) that add noise
+   * without being reliable routing signals (#670 Option 4). The write-path auto-router
+   * in index.ts gates via `matchThreshold` (default 0.5) independently of this option.
+   */
+  minConfidence?: number
 }
 
 /**
@@ -349,5 +372,9 @@ export function rankScopes(
     b.coverSpecificity - a.coverSpecificity ||
     a.scope.localeCompare(b.scope),
   )
-  return candidates
+  // Number.isFinite guards NaN/Infinity from library callers computing a floor
+  // (e.g. parseFloat(env)) — NaN would otherwise silently disable filtering
+  // (NaN > 0 is false) with no error (#670 review).
+  const min = options?.minConfidence ?? 0
+  return Number.isFinite(min) && min > 0 ? candidates.filter(c => c.confidence >= min) : candidates
 }

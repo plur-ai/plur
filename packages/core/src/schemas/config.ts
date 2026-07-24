@@ -134,11 +134,28 @@ export type VectorConfigYaml = z.infer<typeof VectorConfigSchema>
  * tag-only signals relative to keyword evidence. WEIGHT_DOMAIN (1.5) is NOT
  * configurable: the lone-domain-clears-threshold invariant is load-bearing.
  */
+// Field-level tolerance (#670 review): these fields sit inside the top-level
+// PlurConfigSchema.parse(), where a single out-of-range value (e.g.
+// `min_confidence: 1.5`, or `15` from a percent misread) would otherwise fail
+// the WHOLE config parse — loadConfig's catch falls back to full defaults,
+// silently dropping every configured store AND reverting match_threshold to
+// 0.5 for the process (so unscoped writes start auto-routing at the default
+// gate). `.catch(undefined)` drops only the bad field instead, mirroring the
+// per-entry tolerance philosophy the stores array already follows.
 export const ScopeRoutingConfigSchema = z.object({
   /** Minimum confidence to auto-route an unscoped write. Default: 0.5. */
-  match_threshold: z.number().min(0).max(1).optional(),
+  match_threshold: z.number().min(0).max(1).optional().catch(undefined),
   /** Per-tag weight in the ranker. Default: 0.5. */
-  weight_tag: z.number().min(0).optional(),
+  weight_tag: z.number().min(0).optional().catch(undefined),
+  /**
+   * Floor for the SUGGESTION surface (#670): `suggestScope` drops candidates
+   * below this confidence, clipping lone-coincidental-keyword noise (≈0.12).
+   * Independent of `match_threshold` (the auto-route gate). Default: 0 — no
+   * floor at the core API; the MCP `plur_suggest_scope` tool falls back to
+   * SUGGEST_DISPLAY_MIN_CONFIDENCE (0.15) when neither the tool arg nor this
+   * key is set.
+   */
+  min_confidence: z.number().min(0).max(1).optional().catch(undefined),
 }).partial()
 
 export type ScopeRoutingConfig = z.infer<typeof ScopeRoutingConfigSchema>
