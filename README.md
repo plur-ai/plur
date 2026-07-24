@@ -45,6 +45,8 @@ PLUR fixes this. Install it once, and corrections, preferences, and conventions 
 
 The interesting part: in our tool-routing and local-knowledge benchmark, **Haiku with PLUR memory outperformed Opus without it** — 2.6x better on tool routing, at roughly 10x less cost. Turns out the bottleneck isn't model intelligence. It's context.
 
+**The model is rented; your memory is owned.** Swap Haiku for Opus for whatever ships next month — the reasoning is a commodity you don't control. The part that's *yours* — everything the agent has learned about your work, your corrections, your conventions — shouldn't live in someone else's cloud or be baked into weights you can't read. PLUR keeps it in plain files on your disk, in an open format you can inspect, correct, and delete. That's what owning your intelligence actually means.
+
 ## Install
 
 ### Tell your agent
