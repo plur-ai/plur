@@ -1,6 +1,6 @@
 {
   "name": "@plur-ai/cli",
-  "version": "0.14.0",
+  "version": "0.15.0",
   "type": "module",
   "bin": {
     "plur": "dist/index.js"
