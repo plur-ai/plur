@@ -1216,10 +1216,18 @@ function getAllToolDefinitions(): ToolDefinition[] {
             type: 'boolean',
             description: 'Full reindex: drop the derived index (PGLite/SQLite) and rebuild from YAML. YAML is never modified. Use to recover from an out-of-sync index.',
           },
+          remote_type: {
+            type: 'string',
+            enum: ['personal', 'shared'],
+            description: 'What the sync remote is for (#640). personal (default): mirror everything non-local, private included — a solo user\'s own backup. shared: push ONLY shared-scope, non-private engrams — personal-family and private engrams never reach the remote. Persist the choice in config.yaml as sync.remote_type instead of passing it per call.',
+          },
         },
       },
       handler: async (args, plur) => {
-        const result = plur.sync(args.remote as string | undefined, { full: args.full === true })
+        const result = plur.sync(args.remote as string | undefined, {
+          full: args.full === true,
+          ...(args.remote_type === 'personal' || args.remote_type === 'shared' ? { remoteType: args.remote_type } : {}),
+        })
 
         // #272: block on the background index/reembed chain and surface its
         // failure — the chain's .catch swallows the rejection, so without

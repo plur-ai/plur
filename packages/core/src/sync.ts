@@ -2,6 +2,7 @@ import { execFileSync } from 'child_process'
 import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync, unlinkSync, statSync, readdirSync } from 'fs'
 import { join, dirname, relative } from 'path'
 import * as yaml from 'js-yaml'
+import { isSharedScope } from './scope-util.js'
 
 export interface SyncStatus {
   initialized: boolean
@@ -12,12 +13,21 @@ export interface SyncStatus {
   behind: number
 }
 
+/**
+ * What the sync remote is for (#640). `personal` (default): the user's own
+ * backup/mirror across their machines — every non-`scope:local` engram is
+ * pushed, private included (today's historical behavior). `shared`: a
+ * team-visible remote — ONLY shared-family-scope, non-private engrams are
+ * pushed; personal-family and private engrams never leave the machine.
+ */
+export type SyncRemoteType = 'personal' | 'shared'
+
 export interface SyncResult {
   action: 'initialized' | 'committed' | 'synced' | 'up-to-date'
   message: string
   remote: string | null
   files_changed: number
-  /** Present when syncing to a remote — all engrams (including private) are pushed to that remote. */
+  /** Present when syncing to a remote — describes what the push set includes/excludes (#640). */
   warning?: string
 }
 
@@ -213,37 +223,61 @@ function readEngramList(root: string): { raw: unknown; list: EngramRecord[] } | 
 }
 
 /**
- * Warning shown when a remote is involved: the sync remote receives every engram
- * that is pushed, including private-visibility ones. Counts private engrams that
- * would actually be pushed (scope:local engrams are excluded from the remote).
- * Returns undefined when nothing private would be pushed.
+ * Push-set predicate per remote type (#640). `personal`: everything except
+ * `scope:local` (historical behavior — private engrams follow the user across
+ * their own machines). `shared`: ONLY shared-family scopes (`isSharedScope`)
+ * with a non-private visibility — personal-family (`local`/`global`/`user:*`/
+ * `agent:*`) and private-visibility engrams are excluded by construction.
+ * NOTE the default visibility is 'private' (#401), so a shared remote receives
+ * only engrams whose visibility was set deliberately — conservative on purpose,
+ * consistent with the "private stays local" write-path semantics (#90).
  */
-function privateWarning(root: string): string | undefined {
+function pushKeep(remoteType: SyncRemoteType): (e: EngramRecord) => boolean {
+  if (remoteType === 'shared') {
+    return e => isSharedScope(e?.scope ?? '') && (e?.visibility ?? 'private') !== 'private'
+  }
+  return e => e?.scope !== 'local'
+}
+
+/**
+ * Warning shown when a remote is involved: states what the push set actually
+ * includes/excludes for this remote type (#640). Returns undefined when there
+ * is nothing noteworthy to say.
+ */
+function stripWarning(root: string, remoteType: SyncRemoteType): string | undefined {
   const parsed = readEngramList(root)
   if (!parsed) return undefined
+  if (remoteType === 'shared') {
+    const stripped = parsed.list.filter(e => !pushKeep('shared')(e)).length
+    if (stripped === 0) return undefined
+    return `Shared remote: pushed only shared-scope, non-private engrams — ${stripped} personal-scope or private-visibility engram(s) stayed local.`
+  }
   const count = parsed.list.filter(
     e => e?.scope !== 'local' && (e?.visibility ?? 'private') === 'private',
   ).length
   if (count === 0) return undefined
-  return `Note: sync remote receives all engrams including ${count} private-visibility one(s) — use a private git remote.`
+  return `Note: sync remote receives all engrams including ${count} private-visibility one(s) — use a private git remote. For a team remote, set sync.remote_type: shared to exclude them.`
 }
 
 /**
- * Replace the *staged* engrams.yaml blob with one that omits scope:local engrams,
- * using git plumbing (hash-object + update-index) so the working tree keeps the
- * local engrams while the commit (and therefore the remote) never sees them.
+ * Replace the *staged* engrams.yaml blob with one that keeps only the push set
+ * for this remote type (#640; generalizes the scope:local strip of #380/#396),
+ * using git plumbing (hash-object + update-index) so the working tree keeps
+ * every engram while the commit (and therefore the remote) never sees the
+ * excluded ones.
  *
  * Must be called after staging. Re-serializes with the same YAML options PLUR
  * uses everywhere, so the stripped blob is deterministic across runs — this is what
  * prevents an infinite-dirty-state loop (issue #396): a sync whose only change is to
- * a local engram produces the identical stripped blob and therefore no new commit.
+ * a stripped engram produces the identical stripped blob and therefore no new commit.
  */
-function stageLocalStripped(root: string): void {
+function stageStripped(root: string, remoteType: SyncRemoteType): void {
   const parsed = readEngramList(root)
   if (!parsed) return
   const { raw, list } = parsed
-  if (!list.some(e => e?.scope === 'local')) return
-  const filtered = list.filter(e => e?.scope !== 'local')
+  const keep = pushKeep(remoteType)
+  const filtered = list.filter(keep)
+  if (filtered.length === list.length) return
   const out = Array.isArray(raw)
     ? yaml.dump(filtered, YAML_DUMP_OPTS)
     : yaml.dump({ ...(raw as object), engrams: filtered }, YAML_DUMP_OPTS)
@@ -253,18 +287,18 @@ function stageLocalStripped(root: string): void {
   git(['update-index', '--cacheinfo', `100644,${hash},engrams.yaml`], root)
 }
 
-function initRepo(root: string): void {
+function initRepo(root: string, remoteType: SyncRemoteType): void {
   git(['init'], root)
   atomicWrite(join(root, '.gitignore'), GITIGNORE)
   stageStoreFiles(root)
-  stageLocalStripped(root)
+  stageStripped(root, remoteType)
   git(['commit', '-m', 'Initial PLUR engram store'], root)
 }
 
-function commitChanges(root: string): number {
+function commitChanges(root: string, remoteType: SyncRemoteType): number {
   const filesChanged = stageStoreFiles(root)
   if (filesChanged === 0) return 0
-  stageLocalStripped(root)
+  stageStripped(root, remoteType)
   // Count changes from the STAGED tree (after stripping) vs HEAD. When the only
   // change is to a scope:local engram, the stripped blob is identical to HEAD, so
   // nothing is staged and we must NOT commit — otherwise every sync would loop
@@ -284,7 +318,7 @@ function hasConflictMarkers(root: string): boolean {
   return result !== null && result.length > 0
 }
 
-function pullRebase(root: string): boolean {
+function pullRebase(root: string, remoteType: SyncRemoteType): boolean {
   const branch = gitSafe(['rev-parse', '--abbrev-ref', 'HEAD'], root) || 'main'
   const result = gitSafe(['pull', '--rebase', 'origin', branch], root)
   if (result !== null) return true
@@ -299,24 +333,31 @@ function pullRebase(root: string): boolean {
     throw new Error('Sync conflict: YAML files have merge conflicts that require manual resolution. Your local changes are preserved.')
   }
   stageStoreFiles(root)
+  // #640: the conflict-resolution commit previously staged the working-tree
+  // engrams.yaml VERBATIM — scope:local engrams rode into the remote on this
+  // path. Strip the staged blob exactly like every other commit path.
+  stageStripped(root, remoteType)
   gitSafe(['commit', '-m', 'plur sync: merge conflict resolved (kept both)'], root)
   return true
 }
 
-export function sync(root: string, remote?: string): SyncResult {
+export function sync(root: string, remote?: string, options?: { remoteType?: SyncRemoteType }): SyncResult {
   if (!hasGitCli()) {
     throw new Error('git is not installed. Install git to enable sync.')
   }
+  // Default `personal` preserves the historical mirror-everything behavior for
+  // every existing install (#640) — `shared` is an explicit opt-in.
+  const remoteType: SyncRemoteType = options?.remoteType ?? 'personal'
 
   // State 1: No git repo — initialize
   if (!isGitRepo(root)) {
-    initRepo(root)
+    initRepo(root, remoteType)
     if (remote) {
       git(['remote', 'add', 'origin', remote], root)
       // Detect default branch name
       const branch = git(['rev-parse', '--abbrev-ref', 'HEAD'], root)
       git(['push', '-u', 'origin', branch], root)
-      return { action: 'initialized', message: `Initialized and pushed to ${remote}`, remote, files_changed: 0, warning: privateWarning(root) }
+      return { action: 'initialized', message: `Initialized and pushed to ${remote}`, remote, files_changed: 0, warning: stripWarning(root, remoteType) }
     }
     return {
       action: 'initialized',
@@ -330,15 +371,15 @@ export function sync(root: string, remote?: string): SyncResult {
   const existingRemote = getRemote(root)
   if (remote && !existingRemote) {
     git(['remote', 'add', 'origin', remote], root)
-    const filesChanged = commitChanges(root)
+    const filesChanged = commitChanges(root, remoteType)
     const branch = git(['rev-parse', '--abbrev-ref', 'HEAD'], root)
     git(['push', '-u', 'origin', branch], root)
-    return { action: 'synced', message: `Remote added and pushed to ${remote}`, remote, files_changed: filesChanged, warning: privateWarning(root) }
+    return { action: 'synced', message: `Remote added and pushed to ${remote}`, remote, files_changed: filesChanged, warning: stripWarning(root, remoteType) }
   }
 
   // State 2: Git repo, no remote
   if (!existingRemote) {
-    const filesChanged = commitChanges(root)
+    const filesChanged = commitChanges(root, remoteType)
     if (filesChanged === 0) {
       return { action: 'up-to-date', message: 'No changes to commit. Add a remote with plur.sync({ remote: "..." }) to enable cross-device sync.', remote: null, files_changed: 0 }
     }
@@ -346,7 +387,7 @@ export function sync(root: string, remote?: string): SyncResult {
   }
 
   // State 3: Git repo with remote — full sync
-  const filesChanged = commitChanges(root)
+  const filesChanged = commitChanges(root, remoteType)
 
   // Fetch to check if we need to pull/push
   gitSafe(['fetch', 'origin', '--quiet'], root)
@@ -354,7 +395,7 @@ export function sync(root: string, remote?: string): SyncResult {
   const aheadBefore = countDiff(root, 'ahead')
 
   if (behind > 0) {
-    pullRebase(root)
+    pullRebase(root, remoteType)
   }
 
   // Push if we have local commits
@@ -364,7 +405,7 @@ export function sync(root: string, remote?: string): SyncResult {
   }
 
   if (filesChanged === 0 && behind === 0 && aheadBefore === 0) {
-    return { action: 'up-to-date', message: 'Already in sync.', remote: existingRemote, files_changed: 0, warning: privateWarning(root) }
+    return { action: 'up-to-date', message: 'Already in sync.', remote: existingRemote, files_changed: 0, warning: stripWarning(root, remoteType) }
   }
 
   const parts: string[] = []
@@ -377,7 +418,7 @@ export function sync(root: string, remote?: string): SyncResult {
     message: `Synced. ${parts.join(', ')}.`,
     remote: existingRemote,
     files_changed: filesChanged,
-    warning: privateWarning(root),
+    warning: stripWarning(root, remoteType),
   }
 }
 
