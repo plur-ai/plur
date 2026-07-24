@@ -279,14 +279,18 @@ export type ToolProfile = 'full' | 'lean' | 'cursor'
 // surface alone would consume ~97.5% of that budget.
 //
 // Destructive tools are kept OUT of plur_admin's dispatch specifically
-// (audit fix — evaluator review, 2026-07-08): a client that gates
+// (audit fix — evaluator review, 2026-07-08; ENFORCED in the handler since
+// the 2026-07-24 lean audit — previously they were only omitted from the
+// advertised list while byName still dispatched them): a client that gates
 // confirmation prompts or audit trails off MCP tool annotations — the whole
 // point of the annotations field — can no longer tell "delete a pack and
 // all its engrams" apart from "check status" once both are wrapped behind
 // the same generic dispatch tool, whose own single static annotation
 // (`{ title: 'Admin dispatch', readOnlyHint: false }`) can't carry a
-// per-action risk signal. Two more core tools (11 total) is still far under
-// the ~40-tool cap, so there's no budget reason to wrap them either.
+// per-action risk signal. The handler refuses any target with
+// `destructiveHint: true` and points at the direct tool. Two more core
+// tools (11 total) is still far under the ~40-tool cap, so there's no
+// budget reason to wrap them either.
 // Exported (audit fix — evaluator review, iteration 2, 2026-07-09) so
 // server.ts's plur://guide resource can build its cursor-profile redirect
 // note FROM this set instead of hardcoding a second, independent copy of
@@ -340,6 +344,22 @@ function buildAdminDispatchTool(all: ToolDefinition[]): ToolDefinition {
       if (!target) {
         return { error: `Unknown action "${action}". Valid actions: ${adminActions.join(', ')}`, success: false, _isError: true }
       }
+      // #625 audit: ENFORCE the annotation-visibility guarantee the module
+      // comment documents. Destructive tools must never execute through this
+      // generic dispatch — plur_admin's single static annotation carries no
+      // per-action risk signal, so a client gating confirmation prompts on
+      // `destructiveHint` would silently lose that gate for a wrapped call.
+      // Every destructive tool is in CURSOR_CORE_TOOL_NAMES (directly
+      // callable in every profile, with its real annotations), so refusing
+      // dispatch loses nothing. Keyed off destructiveHint, not a name list,
+      // so future destructive tools are protected automatically.
+      if (target.annotations?.destructiveHint === true) {
+        return {
+          error: `"${action}" is a destructive operation and cannot be dispatched via plur_admin — call the ${action} tool directly (it is exposed in every profile) so your client sees its destructiveHint annotation.`,
+          success: false,
+          _isError: true,
+        }
+      }
       const innerArgs = (args.args as Record<string, unknown>) ?? {}
       const validated = validateToolArgs(target, innerArgs)
       if (!validated.ok) {
@@ -370,7 +390,7 @@ function buildAdminDispatchTool(all: ToolDefinition[]): ToolDefinition {
 export function getToolDefinitions(profile: ToolProfile = 'lean'): ToolDefinition[] {
   const all = getAllToolDefinitions()
   if (profile === 'full') return all
-  // 'lean' and 'cursor' are identical: 10 core tools + plur_admin dispatch
+  // 'lean' and 'cursor' are identical: 11 core tools + plur_admin dispatch (12 exposed)
   const core = all.filter(t => CURSOR_CORE_TOOL_NAMES.has(t.name))
   return [...core, buildAdminDispatchTool(all)]
 }

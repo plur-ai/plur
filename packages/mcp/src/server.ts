@@ -47,6 +47,8 @@ export const INSTRUCTIONS = `PLUR is your persistent memory. Corrections, prefer
 
 PLUR is a GLOBAL tool — one MCP server, one engram store (~/.plur/), available in every project. Multi-project scoping uses domain/scope fields on engrams, not separate installations.
 
+TOOL PROFILE: by default only the core session tools are exposed directly (lean profile). Every other plur_* operation is reachable via plur_admin: { action: "<tool name>", args: {...} } — same arguments and validation as a direct call. PLUR_TOOL_PROFILE=full exposes everything directly.
+
 SESSION LIFECYCLE:
 - With hooks installed (plur init): engrams are injected automatically on first message. You do NOT need to call plur_session_start — it happens via hooks. Just call plur_session_end before the conversation ends.
 - Without hooks: call plur_session_start at the start, plur_session_end at the end.
@@ -202,6 +204,22 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
   server.setRequestHandler('tools/call', async (request) => {
     const tool = tools.find(t => t.name === request.params.name)
     if (!tool) {
+      // #625 audit: under a gated profile, a REAL tool that is merely hidden
+      // must return an ACTIONABLE error, not a dead-end "Unknown tool" —
+      // agents carrying pre-lean instructions (docs, engrams, templates) call
+      // hidden tools by their old names and need a machine-readable recovery
+      // path in the error itself, at the moment recovery matters.
+      const hidden = getToolDefinitions('full').find(t => t.name === request.params.name)
+      if (hidden) {
+        return {
+          content: [{ type: 'text', text: JSON.stringify({
+            error: `Tool "${request.params.name}" exists but is not directly callable under the current tool profile.`,
+            success: false,
+            hint: `Call it via plur_admin: { action: "${request.params.name}", args: { ... } } — same arguments, same validation, same result. To expose all tools directly, set PLUR_TOOL_PROFILE=full.`,
+          }) }],
+          isError: true,
+        }
+      }
       return {
         content: [{ type: 'text', text: JSON.stringify({ error: `Unknown tool: ${request.params.name}`, success: false }) }],
         isError: true,
@@ -292,7 +310,9 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
           `${[...CURSOR_CORE_TOOL_NAMES].join(', ')} are top-level tools here. ` +
           'Everything else in this guide is reachable through **plur_admin**: call it with ' +
           '`{ action: "<tool name above>", args: {...} }`. ' +
-          'Set `PLUR_TOOL_PROFILE=full` to expose all 40 tools directly.'
+          // Count computed, not hardcoded (#625 audit) — a literal "40" goes
+          // silently stale the moment a tool is added or removed.
+          `Set \`PLUR_TOOL_PROFILE=full\` to expose all ${getToolDefinitions('full').length} tools directly.`
         : ''
       return {
         contents: [{
