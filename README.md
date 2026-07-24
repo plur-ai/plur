@@ -8,6 +8,7 @@
 [![CI](https://img.shields.io/github/actions/workflow/status/plur-ai/plur/ci.yml?branch=main&logo=github&label=CI)](https://github.com/plur-ai/plur/actions/workflows/ci.yml)
 [![License: Apache-2.0](https://img.shields.io/github/license/plur-ai/plur?color=blue)](LICENSE)
 [![GitHub stars](https://img.shields.io/github/stars/plur-ai/plur?style=social)](https://github.com/plur-ai/plur/stargazers)
+[![Glama score](https://glama.ai/mcp/servers/plur-ai/plur/badges/score.svg)](https://glama.ai/mcp/servers/plur-ai/plur)
 
 Persistent, **open** memory for AI agents — local-first, zero-cost, shared across MCP tools (Claude Code, Hermes, OpenClaw, Cursor). Your agent's memory is plain-text **engrams** you can read, correct, and delete — not weights you can't.
 
