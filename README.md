@@ -85,6 +85,16 @@ npm install -g @plur-ai/mcp
 plur-mcp init
 ```
 
+### Cursor
+
+Run init from your project root — it sets up Cursor's `.cursor/mcp.json` (plus Cursor hooks and a context rule):
+
+```bash
+npx @plur-ai/mcp init
+```
+
+PLUR runs under a **lean tool profile** in Cursor (`PLUR_TOOL_PROFILE=cursor`) — Cursor caps the tools a workspace can expose, so PLUR surfaces a curated core set (learn / recall / inject / status) instead of all 40, with the rest reachable through `plur_admin`. Cursor support shipped in v0.13.
+
 ### OpenClaw
 
 ```bash
@@ -339,7 +349,6 @@ While search is a core part of PLUR (finding the right engram to inject), the se
 | [`@plur-ai/cli`](packages/cli) | CLI — plur learn / recall / inject / status |
 | [`plur-hermes`](packages/hermes) | Hermes Agent plugin (Python, via CLI bridge) |
 | [`plur-ai`](packages/python) | Python SDK — learn/recall/inject for LangChain, llama.cpp, scripts |
-| [`plur-langchain`](packages/langchain) | LangChain BaseMemory + BaseChatMessageHistory adapter |
 
 ## Architecture
 
