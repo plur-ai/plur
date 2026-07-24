@@ -4,9 +4,12 @@ name: Publish to MCP Registry
 # on every GitHub Release. Auth is GitHub OIDC — no secrets, no local install needed.
 # The registry listing propagates to directories that ingest it (PulseMCP, mcp.so, …).
 
+# Triggered explicitly by scripts/release.sh (`gh workflow run` on the release tag)
+# — the single deterministic path. The old `release: published` trigger was removed
+# because that event is suppressed when a release is created by a GITHUB_TOKEN actor
+# (GitHub's recursion guard), which silently skipped the registry publish for v0.14.0.
+# To publish a tag by hand: gh workflow run "Publish to MCP Registry" --ref vX.Y.Z
 on:
-  release:
-    types: [published]
   workflow_dispatch:
 
 jobs:

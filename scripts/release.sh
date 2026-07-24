@@ -661,6 +661,25 @@ fi
 gh release create "v$VERSION" --title "v$VERSION" --notes "$RELEASE_NOTES" 2>&1 | tail -1
 echo ""
 
+# --- 7b. Publish to the official MCP Registry ---
+# Publishing server.json to registry.modelcontextprotocol.io is what propagates
+# the release to the directories that ingest it (mcp.so, PulseMCP, …); Glama
+# re-scans npm/GitHub on its own. The publish-mcp-registry workflow used to run
+# only on `release: published`, but that event is SUPPRESSED when the release is
+# created by a GITHUB_TOKEN-authenticated actor (GitHub's recursion guard) — which
+# silently skipped the registry publish for v0.14.0. So we dispatch it explicitly
+# on the tag here, which is now the single deterministic trigger (the workflow's
+# release trigger has been removed). Non-fatal: a registry hiccup must never fail
+# an otherwise-good release.
+echo "--- Step 7b: MCP Registry publish ---"
+if gh workflow run "Publish to MCP Registry" --ref "v$VERSION" 2>&1 | tail -1; then
+  echo "  Dispatched registry publish for v$VERSION → registry.modelcontextprotocol.io"
+else
+  echo "  ⚠ Could not dispatch the registry publish. Run it manually:"
+  echo "      gh workflow run \"Publish to MCP Registry\" --ref v$VERSION"
+fi
+echo ""
+
 # --- 8. Website deploy ---
 # Closes engrams ENG-2026-0422-052/053 — plur.ai must be updated as part
 # of every release, not as a follow-up. Looks for the website repo at
