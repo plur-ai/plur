@@ -432,6 +432,25 @@ describe('rankScopes — keyword-only cap (#395)', () => {
     expect(ranked[0].domainMatch).toBe(false)               // genuinely no domain intent
     expect(ranked[0].confidence).toBeLessThan(SCOPE_MATCH_THRESHOLD) // must not auto-route
   })
+
+  it('minConfidence option: lone keyword hit (≈0.12) is excluded when minConfidence exceeds it (#670)', () => {
+    const scope = { scope: 'group:acme/eng', covers: ['plur'] }
+    // Without minConfidence — lone keyword hit is returned (confidence ≈ 0.1176)
+    const all = rankScopes({ statement: 'plur notes' }, [scope])
+    expect(all).toHaveLength(1)
+    expect(all[0].confidence).toBeLessThan(0.15)
+    // With minConfidence: 0.15 — weak hit is suppressed
+    const filtered = rankScopes({ statement: 'plur notes' }, [scope], { minConfidence: 0.15 })
+    expect(filtered).toHaveLength(0)
+    // Two keyword hits (raw=0.4, squash≈0.21) survive the floor
+    const two = rankScopes(
+      { statement: 'plur engine notes' },
+      [{ scope: 'group:acme/eng', covers: ['plur', 'engine'] }],
+      { minConfidence: 0.15 },
+    )
+    expect(two).toHaveLength(1)
+    expect(two[0].confidence).toBeGreaterThanOrEqual(0.15)
+  })
 })
 
 describe('rankScopes — specificity tie-break (#399)', () => {
@@ -444,6 +463,26 @@ describe('rankScopes — specificity tie-break (#399)', () => {
     const ranked = rankScopes({ statement: 'x', domain: 'plur.core.security' }, [broad, specific])
     expect(ranked[0].confidence).toBe(ranked[1].confidence) // genuinely a tie on confidence
     expect(ranked[0].scope).toBe('group:zzz-specific')      // specificity beats alphabetical
+  })
+})
+
+describe('rankScopes — keyword-only ties (documented limitation, #670)', () => {
+  it('two scopes each matching one keyword at equal confidence break alphabetically by scope name', () => {
+    // When both candidates have identical confidence from a lone coincidental keyword hit
+    // and neither has a domain match, the tie-break falls through to scope name ascending.
+    // This is the DOCUMENTED LIMITATION of the lexical keyword channel: keyword-only routing
+    // is best-effort. Setting a deliberate `domain` on the engram routes reliably instead.
+    const comms = { scope: 'group:plur/comms', covers: ['positioning', 'marketing'] }
+    const eng = { scope: 'group:plur/engineering', covers: ['benchmarking', 'engine'] }
+    // Statement hits one keyword from each scope → equal confidence
+    const signals = { statement: 'blog post positioning our new benchmarking numbers' }
+    const ranked = rankScopes(signals, [comms, eng])
+    expect(ranked).toHaveLength(2)
+    expect(ranked[0].confidence).toBe(ranked[1].confidence)  // genuinely tied
+    expect(ranked[0].domainMatch).toBe(false)                // no domain → keyword only
+    // Alphabetical: 'comms' < 'engineering' — intentional, not semantic
+    expect(ranked[0].scope).toBe('group:plur/comms')
+    expect(ranked[1].scope).toBe('group:plur/engineering')
   })
 })
 
