@@ -2,12 +2,12 @@
 
 ## 0.15.0 (2026-07-21)
 
-Lean default, memory receipt, scopes CLI, LangChain, MCP SDK v2, and two security fixes.
+Scopes go live + leaner MCP.
 
 - lean default — 74% fewer tokens
-- `plur receipt` / `plur_receipt` — memory receipt (what did memory actually do for you?)
-- `plur scopes` — per-scope opt-out for authorized-but-unregistered remote scopes
-- plur-langchain Python package
+- scope routing + plur scopes CLI
+- plur receipt — memory receipt
+- scope-aware sync + security fixes
 - MCP SDK v2 (split packages)
 - Windows path + ID uniqueness fix
 - two P0 security fixes: credential redaction + receipt snippet sanitization
