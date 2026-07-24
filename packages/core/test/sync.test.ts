@@ -405,4 +405,108 @@ describe('sync', () => {
       expect(result.warning).toBeUndefined()
     })
   })
+
+  // #640 — scope-filtered push. A `shared` remote receives ONLY shared-family-
+  // scope, non-private engrams; `personal` (the default) keeps the historical
+  // mirror-everything-non-local behavior.
+  describe('scope-filtered push for shared remotes (#640)', () => {
+    let bareRemote: string
+
+    const MIXED = [
+      'engrams:',
+      '  - id: ENG-TEAM',
+      '    scope: "group:acme/engineering"',
+      '    visibility: public',
+      '    statement: team convention everyone should see',
+      '  - id: ENG-TEAMPRIV',
+      '    scope: "group:acme/engineering"',
+      '    visibility: private',
+      '    statement: drafted team note not yet shared',
+      '  - id: ENG-GLOBAL',
+      '    scope: global',
+      '    statement: personal cross-project note',
+      '  - id: ENG-USER',
+      '    scope: "user:alice"',
+      '    visibility: public',
+      '    statement: personal-family scope even though public',
+      '  - id: ENG-LOCAL',
+      '    scope: local',
+      '    statement: machine-specific note',
+      '',
+    ].join('\n')
+
+    beforeEach(() => {
+      writeFileSync(join(dir, 'engrams.yaml'), MIXED)
+      bareRemote = mkdtempSync(join(tmpdir(), 'plur-remote-'))
+      execSync('git init --bare', { cwd: bareRemote })
+    })
+
+    afterEach(() => {
+      rmSync(bareRemote, { recursive: true, force: true })
+    })
+
+    it('shared: commits ONLY shared-scope, non-private engrams', () => {
+      sync(dir, bareRemote, { remoteType: 'shared' })
+      const committed = git('show HEAD:engrams.yaml', dir)
+      expect(committed).toContain('ENG-TEAM')
+      // Private shared-scope engram excluded (visibility gate)…
+      expect(committed).not.toContain('ENG-TEAMPRIV')
+      // …personal-family scopes excluded regardless of visibility (scope gate)…
+      expect(committed).not.toContain('ENG-GLOBAL')
+      expect(committed).not.toContain('ENG-USER')
+      expect(committed).not.toContain('ENG-LOCAL')
+    })
+
+    it('shared: round-trip — a teammate clone receives only the shared set, the working tree keeps everything', () => {
+      sync(dir, bareRemote, { remoteType: 'shared' })
+      const clone = mkdtempSync(join(tmpdir(), 'plur-clone-'))
+      try {
+        execSync(`git clone ${bareRemote} .`, { cwd: clone, stdio: 'pipe' })
+        const remoteCopy = readFileSync(join(clone, 'engrams.yaml'), 'utf8')
+        expect(remoteCopy).toContain('ENG-TEAM')
+        expect(remoteCopy).not.toContain('drafted team note')
+        expect(remoteCopy).not.toContain('personal cross-project note')
+      } finally {
+        rmSync(clone, { recursive: true, force: true })
+      }
+      const onDisk = readFileSync(join(dir, 'engrams.yaml'), 'utf8')
+      expect(onDisk).toContain('ENG-GLOBAL')
+      expect(onDisk).toContain('ENG-TEAMPRIV')
+    })
+
+    it('personal (default): behavior unchanged — private and personal-scope engrams still mirror', () => {
+      sync(dir, bareRemote)
+      const committed = git('show HEAD:engrams.yaml', dir)
+      expect(committed).toContain('ENG-TEAM')
+      expect(committed).toContain('ENG-TEAMPRIV')
+      expect(committed).toContain('ENG-GLOBAL')
+      expect(committed).toContain('ENG-USER')
+      expect(committed).not.toContain('ENG-LOCAL')
+    })
+
+    it('shared: no new commit when only a stripped engram changes (deterministic blob, #396 property)', () => {
+      sync(dir, bareRemote, { remoteType: 'shared' })
+      const countAfterFirst = parseInt(git('rev-list --count HEAD', dir), 10)
+      writeFileSync(
+        join(dir, 'engrams.yaml'),
+        MIXED.replace('personal cross-project note', 'personal cross-project note EDITED'),
+      )
+      const result = sync(dir, undefined, { remoteType: 'shared' })
+      expect(result.files_changed).toBe(0)
+      expect(result.action).toBe('up-to-date')
+      expect(parseInt(git('rev-list --count HEAD', dir), 10)).toBe(countAfterFirst)
+    })
+
+    it('shared: warning reports the stripped count instead of the mirror-everything note', () => {
+      const result = sync(dir, bareRemote, { remoteType: 'shared' })
+      expect(result.warning).toBeDefined()
+      expect(result.warning).toMatch(/stayed local/)
+    })
+
+    it('personal: warning now points at sync.remote_type shared for team remotes', () => {
+      const result = sync(dir, bareRemote)
+      expect(result.warning).toBeDefined()
+      expect(result.warning).toMatch(/remote_type/)
+    })
+  })
 })

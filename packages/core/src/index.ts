@@ -30,7 +30,7 @@ import { installPack, uninstallPack, listPacks, exportPack, scanPrivacy, compute
 // SP5 imports (deferred — vault-export, registry not yet merged)
 // import { exportVault, type VaultExportOptions, type VaultExportResult } from './vault-export.js'
 // import { fetchRegistry, discoverPacks, verifyPackIntegrity, DEFAULT_REGISTRY_URL, type PackRegistry, type RegistryPack } from './registry.js'
-import { sync as gitSync, getSyncStatus, withLock, type SyncResult, type SyncStatus } from './sync.js'
+import { sync as gitSync, getSyncStatus, withLock, type SyncResult, type SyncStatus, type SyncRemoteType } from './sync.js'
 import { detectSecrets, detectSensitive, sensitivityCategory, SCAN_TRUNCATED } from './secrets.js'
 import type { SecretMatch } from './secrets.js'
 import { SENSITIVITY_CATEGORIES, type ScopeMetadata, type SensitivityCategory } from './schemas/scope-metadata.js'
@@ -132,7 +132,7 @@ export {
   type RerankerEvalResult, type RerankerEvalVerdict, type RerankerEvalOptions,
 } from './reranker-eval.js'
 export type { SimilarityResult } from './embeddings.js'
-export type { SyncResult, SyncStatus } from './sync.js'
+export type { SyncResult, SyncStatus, SyncRemoteType } from './sync.js'
 export { checkForUpdate, getCachedUpdateCheck, clearVersionCache, minorVersionsBehind, type VersionCheckResult } from './version-check.js'
 export { scanForTensions, getCandidatePairs, scopesOverlap, domainSegmentsOverlap, subjectsOverlap, statementOverlap, buildContradictionPrompt, parseContradictionResponse, buildBatchContradictionPrompt, parseBatchContradictionResponse, engramDate, daysApart, inTemporalDomain, temporalDiscountFactor, SNAPSHOT_CONFIDENCE_CAP, type ContradictionVerdict, type TensionPair, type TensionScanResult, type TensionScanOptions, type TemporalGateOptions, type CandidatePairOptions, type JudgeStatement } from './tensions.js'
 // Tension lifecycle persistence (#181)
@@ -3420,8 +3420,12 @@ export class Plur {
    * deletes every row in the derived index and replays YAML. YAML is never
    * touched in either mode.
    */
-  sync(remote?: string, options?: { full?: boolean }): SyncResult {
-    const result = gitSync(this.paths.root, remote)
+  sync(remote?: string, options?: { full?: boolean; remoteType?: SyncRemoteType }): SyncResult {
+    // #640: explicit option > config.sync.remote_type > 'personal' (historical
+    // mirror-everything default — `shared` is an explicit opt-in that filters
+    // the push set to shared-scope, non-private engrams).
+    const remoteType = options?.remoteType ?? this.config.sync?.remote_type ?? 'personal'
+    const result = gitSync(this.paths.root, remote, { remoteType })
     // After git pull, YAML may have changed — refresh the index.
     // PGLite path is the only backend that honors --full directly here; the
     // legacy SQLite path also reindexes on full, otherwise calls syncFromYaml.

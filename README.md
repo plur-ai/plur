@@ -247,7 +247,7 @@ plur.sync('git@github.com:you/plur-memory.git')
 | `plur_capture` | Record an event — incident, resolution, session milestone |
 | `plur_timeline` | Query episode history by time, agent, or channel |
 | `plur_ingest` | Extract engrams from text automatically |
-| `plur_sync` | Sync across devices via git (remote receives all engrams — use a private repo) |
+| `plur_sync` | Sync via git. `personal` remotes mirror everything (use a private repo); `shared` remotes receive only shared-scope, non-private engrams |
 | `plur_status` | Check system health and engram counts |
 | `plur_receipt` | Counted, local report of what your memory retrieved for you |
 
@@ -286,11 +286,12 @@ It is local and read-only, and carries **no dollar or token figure by design**: 
 
 ### Syncing across devices
 
-`plur.sync(remote)` is git underneath: it commits your engram store and pushes it to the remote you give it. **The remote receives everything that is pushed — including `visibility: private` engrams.** Private visibility means "don't share this in a pack", not "don't mirror it to my own devices", so private engrams are intentionally synced so your memory follows you from machine to machine.
+`plur.sync(remote)` is git underneath: it commits your engram store and pushes it to the remote you give it. What gets pushed depends on the remote's declared type (`sync.remote_type` in `config.yaml`, or the `remote_type` argument):
 
-Because the push contains private engrams, **always use a private git remote** (a private GitHub/GitLab repo, or your own server). PLUR surfaces a `warning` in the sync result reminding you of this whenever private engrams are present. Never point sync at a public repository.
+- **`personal`** (default) — your own backup/mirror across your machines. The remote receives everything that is pushed, **including `visibility: private` engrams**: private visibility means "don't share this in a pack", not "don't mirror it to my own devices", so private engrams intentionally follow you from machine to machine. Because of that, **always use a private git remote** (a private GitHub/GitLab repo, or your own server). PLUR surfaces a `warning` in the sync result whenever private engrams are present. Never point a personal sync at a public repository.
+- **`shared`** — a team-visible remote. Only engrams with a **shared-family scope** (`group:`/`project:`/`space:`/`team:`/`org:`/`public`) **and a non-private visibility** are pushed; personal-family engrams (`local`, `global`, `user:*`, `agent:*`) and private-visibility engrams never reach the remote, by construction. Note the default visibility is `private`, so a shared remote receives only engrams whose visibility was set deliberately — teammates get what you chose to share, nothing else. **Current limit (#686):** the filter applies to `engrams.yaml`; the sibling store files (`episodes.yaml`, `candidates.yaml`, `tensions.yaml`) still sync verbatim and can embed statement text derived from private engrams. Until the sibling-file strip lands, treat a shared remote as team-visible for those files too.
 
-The one exception is **`scope: local` engrams**: these are machine-specific by design (paths, local ports, per-host quirks), so they are stripped from every commit and never reach the remote. They stay in your local working copy only — other devices won't see them, and they won't pollute a shared store.
+In both modes **`scope: local` engrams** are machine-specific by design (paths, local ports, per-host quirks), so they are stripped from every commit and never reach any remote. Stripping happens on the *staged blob*: your local working copy always keeps every engram.
 
 ## Benchmark details
 
