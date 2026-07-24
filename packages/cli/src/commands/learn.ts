@@ -154,6 +154,27 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   const demoted = (engram as { structured_data?: { _demoted?: { from: string; to: string; patterns: string } } })
     .structured_data?._demoted
 
+  // Missing-domain nudge (#671), CLI surface — mirrors the MCP domain_hint
+  // contract in tools.ts. An engram without a `domain` cannot auto-route (the
+  // domain-prefix channel is the only signal that reliably clears the
+  // auto-route threshold). Fire only when routing was on the table: no
+  // --domain, no --scope, the write did NOT auto-route, and at least one
+  // registered scope declares covers. Advisory only — never fails the write.
+  let domainHint: string | undefined
+  const routed = (engram as { structured_data?: { _routed?: unknown } }).structured_data?._routed
+  if (!domain && !scopeProvided && !routed) {
+    try {
+      const coversScopes = plur.listScopeMetadata()
+        .filter(md => (md.covers?.length ?? 0) > 0)
+        .map(md => md.scope)
+      if (coversScopes.length > 0) {
+        domainHint =
+          `No domain set — without a dotted domain this engram cannot auto-route to a covers-declaring scope ` +
+          `(${coversScopes.join(', ')}). Pass --domain "<org>.<team>.<area>" (e.g. "plur.engineering.mcp").`
+      }
+    } catch { /* advisory only */ }
+  }
+
   if (shouldOutputJson(flags)) {
     outputJson({
       id: engram.id,
@@ -167,6 +188,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
       ...(demoted
         ? { demoted: { from: demoted.from, to: demoted.to, patterns: demoted.patterns }, ...(scopeProvided ? { requested_scope: demoted.from } : {}) }
         : {}),
+      ...(domainHint ? { domain_hint: domainHint } : {}),
     })
   } else {
     outputText(`Learned: "${engram.statement}"`)
@@ -176,6 +198,9 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
         `  Warning: Sensitive content (${demoted.patterns}) detected — stored at ` +
         `${demoted.to}/private instead of ${demoted.from}; re-scope deliberately if false positive.`,
       )
+    }
+    if (domainHint) {
+      outputText(`  Hint: ${domainHint}`)
     }
   }
 }
