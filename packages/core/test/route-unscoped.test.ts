@@ -18,7 +18,7 @@
  * domain + tag (+ keyword) so they sit comfortably above the boundary.
  */
 import { describe, it, expect, afterEach, vi } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync } from 'fs'
+import { mkdtempSync, rmSync, writeFileSync, utimesSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import yaml from 'js-yaml'
@@ -551,5 +551,47 @@ describe('Stage 3b — auto-route un-scoped writes (#351)', () => {
     expect(e.structured_data?._demoted?.patterns).toMatch(/public_ipv4/)
     // The routing decision is preserved alongside the demotion — both facts are true.
     expect(e.structured_data?._routed?.scope).toBe('group:plur/infra')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// scope-audit 2026-07-24: the WRITE path picks up out-of-process config edits.
+// suggestScope (the advisory read path) called reloadConfigIfChanged (#307),
+// but _resolveUnscopedScope did not — so a scope registered / covers synced by
+// another process after startup was invisible to auto-routing until restart.
+// ---------------------------------------------------------------------------
+
+describe('unscoped write routing reloads a changed config (scope-audit 2026-07-24)', () => {
+  it('routes against covers added to config.yaml AFTER the Plur instance was created', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'plur-route-reload-'))
+    dirs.push(dir)
+    const configPath = join(dir, 'config.yaml')
+    writeFileSync(configPath, yaml.dump({ index: false, stores: [] }, { noRefs: true }))
+    const plur = new Plur({ path: dir })
+
+    // Baseline: nothing to route against — falls to the unscoped default.
+    const before = plur.learn('the embeddings index for the core engine', {
+      domain: 'plur.core.embeddings', tags: ['embeddings'],
+    }) as { scope: string }
+    expect(before.scope).toBe('global')
+
+    // Another process (CLI, session_start metadata sync) registers a
+    // covers-rich store by editing config.yaml directly.
+    writeFileSync(configPath, yaml.dump({
+      index: false,
+      stores: [
+        { path: '/tmp/r-core.yaml', scope: 'group:plur/core', description: 'Core', covers: ['plur.*', 'embeddings', 'core'] },
+      ],
+    }, { noRefs: true }))
+    // Guarantee an observable mtime change regardless of FS timestamp granularity.
+    const future = new Date(Date.now() + 2_000)
+    utimesSync(configPath, future, future)
+
+    // The very next unscoped write must see the new store and auto-route.
+    const after = plur.learn('the embeddings index for the core engine again', {
+      domain: 'plur.core.embeddings', tags: ['embeddings'],
+    }) as { scope: string; structured_data?: { _routed?: { scope: string } } }
+    expect(after.scope).toBe('group:plur/core')
+    expect(after.structured_data?._routed?.scope).toBe('group:plur/core')
   })
 })

@@ -72,9 +72,10 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
       registered.forEach(r => {
         if (!r.ok) { outputText(`${r.url}: register failed — ${r.error}`); return }
         outputText(`${r.url}: added ${r.added.length} scope(s)${r.added.length ? ` (${r.added.join(', ')})` : ''}`)
-        // `skipped` now has two causes (a personal-family scope refused by the
-        // #382 guard, OR a scope whose addStore threw — e.g. an endpoint conflict
-        // from #397), so the label stays neutral rather than asserting one cause.
+        // `skipped` now has three causes (a personal-family scope refused by the
+        // #382 guard, a scope whose addStore threw — e.g. an endpoint conflict
+        // from #397 — OR a dismissed scope the batch path respects, scope-audit
+        // 2026-07-24), so the label stays neutral rather than asserting one cause.
         if (r.skipped.length) outputText(`  skipped ${r.skipped.length} scope(s) (not auto-registered): ${r.skipped.join(', ')}`)
       })
     } else {

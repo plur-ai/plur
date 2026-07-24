@@ -23,6 +23,13 @@
 export const SHARED_SCOPE_PREFIXES = ['group:', 'project:', 'space:', 'team:', 'org:', 'public'] as const
 
 export function isSharedScope(scope: string): boolean {
+  // Case-insensitive prefix test (scope-audit 2026-07-24): the /me scope grammar
+  // admits uppercase (`[\w:./-]+` in remote-store.ts), so `Group:x` must classify
+  // as shared-family exactly like `group:x` — a case-sensitive test silently
+  // filed it as personal (never offerable, and NOT scanned by the write-time
+  // leak guard). Only the PREFIX comparison is case-folded; the stored scope
+  // value is never mutated.
+  const s = scope.toLowerCase()
   // The `group:`/`project:`/… entries carry their `:` delimiter, so `startsWith`
   // already requires a real boundary. `'public'` is the odd one out — a complete
   // scope name / namespace root, not a bare prefix — so it must match exactly or
@@ -30,8 +37,8 @@ export function isSharedScope(scope: string): boolean {
   // scopes like `public-roadmap` / `publicfoobar` as shared (#403).
   return SHARED_SCOPE_PREFIXES.some(p =>
     p === 'public'
-      ? scope === 'public' || scope.startsWith('public:') || scope.startsWith('public/')
-      : scope.startsWith(p),
+      ? s === 'public' || s.startsWith('public:') || s.startsWith('public/')
+      : s.startsWith(p),
   )
 }
 
