@@ -14,7 +14,7 @@ Scopes go live + leaner MCP.
 
 ### Changed
 
-- **Lean tool profile is now the default** (#625): the MCP server exposes 11 tools (down from 40) to every consumer — Claude Code, Cursor, Windsurf, OpenClaw, Hermes, and nightshift agents alike. Per-turn tool-schema overhead drops ~74% (~2K vs ~9K tokens). All 40 tools remain reachable via `plur_admin { action: "<tool>", args: {...} }`. Restore the full surface with `PLUR_TOOL_PROFILE=full`. **Consumers that depend on all 40 tools being available by default must either call via `plur_admin` or set `PLUR_TOOL_PROFILE=full`.**
+- **Lean tool profile is now the default** (#625, #694): the MCP server exposes 12 tools — 11 core + the `plur_admin` dispatch (down from 40) to every consumer — Claude Code, Cursor, Windsurf, OpenClaw, Hermes, and nightshift agents alike. Per-turn tool-schema overhead drops ~74% (~2K vs ~9K tokens). All 40 tools remain reachable via `plur_admin { action: "<tool>", args: {...} }`. Restore the full surface with `PLUR_TOOL_PROFILE=full`. **Consumers that depend on all 40 tools being available by default must either call via `plur_admin` or set `PLUR_TOOL_PROFILE=full`.**
 - **MCP SDK v2 migration** (#638): `@plur-ai/mcp` now uses the MCP SDK v2 split packages (`@modelcontextprotocol/server`, `@modelcontextprotocol/client`, `@modelcontextprotocol/core` @ 2.0.0-beta.4), replacing the monolithic `@modelcontextprotocol/sdk@^1.12.0`. Prepares for the MCP spec stable release (2026-07-28). The public API of `@plur-ai/mcp` is unchanged; 226 tests pass.
 
 ### Added

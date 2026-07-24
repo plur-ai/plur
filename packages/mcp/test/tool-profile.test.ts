@@ -158,5 +158,91 @@ describe('tool profiles', () => {
         expect(text).toContain(name)
       }
     })
+
+    // --- #625 lean audit (2026-07-24) ---
+
+    it('direct call of a REAL-but-hidden tool returns an actionable plur_admin hint, not a dead end', async () => {
+      const result = await client.callTool({ name: 'plur_sync', arguments: {} })
+      expect(result.isError).toBe(true)
+      const data = JSON.parse((result.content as any)[0].text)
+      expect(data.success).toBe(false)
+      expect(data.error).toContain('plur_sync')
+      expect(data.hint).toContain('plur_admin')
+      expect(data.hint).toContain('PLUR_TOOL_PROFILE=full')
+    })
+
+    it('a genuinely unknown tool still gets the bare Unknown-tool error (no false hint)', async () => {
+      const result = await client.callTool({ name: 'plur_totally_fake', arguments: {} })
+      expect(result.isError).toBe(true)
+      const data = JSON.parse((result.content as any)[0].text)
+      expect(data.error).toContain('Unknown tool')
+      expect(data.hint).toBeUndefined()
+    })
+
+    it('plur_admin REFUSES to dispatch destructive tools — the annotation-visibility guarantee is enforced', async () => {
+      for (const action of ['plur_forget', 'plur_packs_uninstall', 'plur_tensions_purge']) {
+        const result = await client.callTool({
+          name: 'plur_admin',
+          arguments: { action, args: {} },
+        })
+        expect(result.isError).toBe(true)
+        const data = JSON.parse((result.content as any)[0].text)
+        expect(data.success).toBe(false)
+        expect(data.error).toContain('destructive')
+        expect(data.error).toContain(action)
+      }
+    })
+
+    it('destructive tools still work as DIRECT calls (the sanctioned path)', async () => {
+      const result = await client.callTool({ name: 'plur_tensions_purge', arguments: {} })
+      expect(result.isError).toBeFalsy()
+    })
+
+    it('plur_admin cannot dispatch itself (recursion blocked)', async () => {
+      const result = await client.callTool({
+        name: 'plur_admin',
+        arguments: { action: 'plur_admin', args: { action: 'plur_status' } },
+      })
+      const data = JSON.parse((result.content as any)[0].text)
+      expect(data.success).toBe(false)
+      expect(data.error).toContain('Unknown action')
+    })
+
+    it('prototype-key action names are rejected as unknown actions', async () => {
+      for (const action of ['__proto__', 'constructor', '']) {
+        const result = await client.callTool({
+          name: 'plur_admin',
+          arguments: { action, args: {} },
+        })
+        const data = JSON.parse((result.content as any)[0].text)
+        expect(data.success).toBe(false)
+        expect(data.error).toContain('Unknown action')
+      }
+    })
+
+    it('every advertised admin action dispatches — none is orphaned by a filter regression', { timeout: 120_000 }, async () => {
+      // The advertised set = full minus core. Each must reach its handler:
+      // any response is acceptable EXCEPT the "Unknown action" dead end
+      // (validation errors and handler errors prove reachability).
+      const full = getToolDefinitions('full').map((t) => t.name)
+      const { tools } = await client.listTools()
+      const core = new Set(tools.map((t) => t.name))
+      const advertised = full.filter((n) => !core.has(n))
+      expect(advertised.length).toBeGreaterThanOrEqual(28)
+      for (const action of advertised) {
+        const result = await client.callTool({
+          name: 'plur_admin',
+          arguments: { action, args: {} },
+        })
+        const text = (result.content as any)[0].text as string
+        expect(text, `action ${action} hit the Unknown-action dead end`).not.toContain('Unknown action')
+      }
+    })
+
+    it('the guide tool count is computed from the full profile, never a stale literal', async () => {
+      const { contents } = await client.readResource({ uri: 'plur://guide' })
+      const text = (contents as any)[0].text as string
+      expect(text).toContain(`all ${getToolDefinitions('full').length} tools`)
+    })
   })
 })
