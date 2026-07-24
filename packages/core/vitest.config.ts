@@ -23,6 +23,12 @@ export const PGLITE_SUITES = [
   // Not named pglite, but PGLite-backed (it uses the same PGLITE_TIMEOUT) and
   // fails in the same way under load.
   'test/sync-index-error.test.ts',
+  // Not PGLite, but relies on the BGE embedder to surface recall candidates for
+  // the LLM dedup path. Under the fully-parallel pool the embedder is cold-loaded
+  // by several workers simultaneously, causing intermittent zero-candidate results
+  // that make the learnAsync demotion assertions flaky (#680). Runs serially in
+  // the core-pglite project to guarantee an undisturbed embedder load.
+  'test/pr5-hardening.test.ts',
 ]
 
 // testTimeout raised from the 5s default: the BGE embedder (@huggingface/
