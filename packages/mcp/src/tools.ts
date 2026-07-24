@@ -1,7 +1,7 @@
 import { existsSync, unlinkSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
-import { Plur, extractMetaEngrams, validateMetaEngram, confidenceBand, generateProfile, getProfileForInjection, markProfileDirty, selectModelForOperation, readHistoryForEngram, getCachedUpdateCheck, minorVersionsBehind, scanForTensions, CapabilityCanary, readProjectConfig, isSharedScope, resolveRerankerName, getReranker, classifyRerankerFailure, hfCacheDirName } from '@plur-ai/core'
+import { Plur, extractMetaEngrams, validateMetaEngram, confidenceBand, generateProfile, getProfileForInjection, markProfileDirty, selectModelForOperation, readHistoryForEngram, getCachedUpdateCheck, minorVersionsBehind, scanForTensions, CapabilityCanary, readProjectConfig, isSharedScope, resolveRerankerName, getReranker, classifyRerankerFailure, hfCacheDirName, SUGGEST_DISPLAY_MIN_CONFIDENCE } from '@plur-ai/core'
 import type { LlmFunction, MetaField, TensionStatus, RerankerEvalResult, HistoryEvent, Receipt } from '@plur-ai/core'
 import { recordTelemetry } from './telemetry.js'
 import { VERSION } from './version.js'
@@ -2223,7 +2223,7 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
 
     {
       name: 'plur_suggest_scope',
-      description: 'Suggest which registered scope(s) an engram belongs in, ranked by fit. Deterministic — no LLM, no network. Scores the statement keywords, optional domain (a dotted namespace like "plur.core.security"), and tags against the covers[] each scope declares. ADVISORY ONLY: this does not route or store anything; pass the chosen scope to plur_learn yourself. Returns candidates sorted by confidence (empty when nothing matches).',
+      description: 'Suggest which registered scope(s) an engram belongs in, ranked by fit. Deterministic — no LLM, no network. Scores the statement keywords, optional domain (a dotted namespace like "plur.core.security"), and tags against the covers[] each scope declares. ADVISORY ONLY: this does not route or store anything; pass the chosen scope to plur_learn yourself. Returns candidates sorted by confidence (empty when nothing matches). Candidates below min_confidence (default: scope_routing.min_confidence config, else 0.15) are suppressed — a lone coincidental keyword scores ≈0.12 and is noise, not signal (#670); pass min_confidence: 0 to see every scored candidate.',
       annotations: { title: 'Suggest scope', readOnlyHint: true, idempotentHint: true },
       inputSchema: {
         type: 'object',
@@ -2231,16 +2231,32 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
           statement: { type: 'string', description: 'The engram statement to route' },
           domain:    { type: 'string', description: 'Optional dotted namespace for the engram (e.g. "plur.core.security") — strongest routing signal' },
           tags:      { type: 'array', items: { type: 'string' }, description: 'Optional tags on the engram' },
+          min_confidence: { type: 'number', minimum: 0, maximum: 1, description: 'Suppress candidates below this confidence (0-1; out-of-range values are clamped). Default: scope_routing.min_confidence from config, else 0.15 — clips lone-keyword noise (≈0.12) while keeping real multi-signal matches. Pass 0 for the unfiltered list.' },
         },
         required: ['statement'],
       },
       handler: async (args, plur) => {
+        // #670 keyword floor, precedence: explicit tool arg > the user's
+        // scope_routing.min_confidence config > SUGGEST_DISPLAY_MIN_CONFIDENCE
+        // (0.15 — the display default; a suggestion surface that shows
+        // 0.12-confidence lone-keyword hits teaches agents to distrust it).
+        // An explicit arg of 0 wins (unfiltered). The arg is clamped to [0,1]
+        // and non-finite values (NaN/Infinity) fall through to the defaults:
+        // the JSON-schema bounds are advisory only — the arg validator maps
+        // `type: number` to a bare z.number(), so bounds must be enforced here.
+        const raw = args.min_confidence
+        const explicit = typeof raw === 'number' && Number.isFinite(raw)
+          ? Math.min(1, Math.max(0, raw))
+          : undefined
+        const minConfidence = explicit
+          ?? plur.getScopeRoutingConfig().min_confidence
+          ?? SUGGEST_DISPLAY_MIN_CONFIDENCE
         const candidates = plur.suggestScope({
           statement: args.statement as string,
           domain: args.domain as string | undefined,
           tags: args.tags as string[] | undefined,
-        })
-        return { candidates, count: candidates.length }
+        }, { minConfidence })
+        return { candidates, count: candidates.length, min_confidence: minConfidence }
       },
     },
 
