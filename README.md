@@ -27,6 +27,8 @@ PLUR is memory, not just retrieval — so we measure it on more than one axis, o
 
 Chunk granularity, canonical-doc scoring, corpus SHA256 pinned — reproduce it in [plur-ai/plur-bench](https://github.com/plur-ai/plur-bench). No cloud call is required for any of these numbers (an *optional* cloud embedder, openai-3-large, reaches 97.0% hybrid). A faster reranker — `ms-marco-minilm-l6` (p50≈245ms vs BGE's ≈5s on CPU) — trades a little recall for sub-second latency.
 
+**Run it yourself — and tell us what you get.** The harness is [plur-ai/plur-bench](https://github.com/plur-ai/plur-bench): CPU-runnable, no API key needed for the local path, corpus auto-fetched and SHA-verified. If you run it, we'd genuinely love to see your numbers — open an issue or discussion with your results, **especially if they don't match ours.** Independent reproduction is worth more than any number we publish, and we'll gladly credit you.
+
 **Retrieval ≠ answer accuracy — and we report them separately, never conflated.** End-to-end (LLM-judge) answer accuracy with the reranker stack is **60.5%**, versus **52.0%** for dumping full context into the prompt and **5.5%** with no memory at all.
 
 **Agent-task impact** — same task, with memory vs without: Haiku + PLUR outperforms Opus *without* it at roughly **10× less cost**; house rules **12–0** across Haiku, Sonnet, and Opus.
