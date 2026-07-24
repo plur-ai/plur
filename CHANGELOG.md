@@ -1,31 +1,16 @@
 # Changelog
 
-## Unreleased
-
-### Added
-
-- **`plur receipt` + `plur_receipt` MCP tool — the memory receipt.** A counted, local, read-only report of what your memory actually retrieved for you: how many times a memory you taught PLUR was put in front of the model, how many distinct engrams it drew on, which are most relied on (with their statement text), and how much of the store is dormant. Every figure is directly counted — there is no estimate, no counterfactual, and deliberately no dollar or token-savings figure (on a subscription your marginal token cost is zero; the value of an avoided rediscovery is not measurable from this data). Scoped to local memory (primary store + installed packs) so the number is identical from the cold CLI and the warm MCP server; retrievals of team-store engrams are reported separately, never as deletions. States its own coverage window so the numbers are never misread as lifetime figures. Nothing leaves the machine.
-- **`co_injection` history events now record `tokens_used` and the calling `source`** (`session_start` / `inject` / `hook`), and every injection call site is tagged. Hook retrievals — the large majority — now also carry the session id, so the receipt's (engram, session) unit is well-defined. Events written before this change remain fully readable.
-
-### Fixed
-
-- **Security: `plur status --json` printed live enterprise bearer tokens.** `StatusResult` embeds the full `PlurConfig`, so `--json` piped the `stores[].token` values (live credentials for the configured enterprise servers) to stdout — into CI logs, pasted issues, and agent transcripts. All CLI JSON output is now credential-redacted at the output boundary, so every present and future JSON command inherits the protection. Redaction also masks credentials embedded in string values (URL userinfo, e.g. `https://user:pass@host`), which a key-based denylist cannot reach.
-- **Security: hardened the memory receipt against hostile engram statements.** Statement text can come from third-party installed packs, so the "most relied on" snippet — which prints to the terminal and is returned to the calling agent — is now sanitized: ANSI/terminal escapes and other C0/C1/DEL controls, Unicode line/paragraph separators, and bidi (Trojan-Source) reordering + zero-width spoofing characters are stripped before rendering, and truncation is grapheme-safe.
-
-## 0.16.0 (upcoming)
-
-### Added
-
-- **`plur scopes` — per-scope opt-out for authorized-but-unregistered scopes** (#647, #656): a new user-facing CLI to register, dismiss, or re-offer the shared scopes your enterprise token is authorized for, one at a time — instead of the old all-or-nothing `register:true`. `plur scopes` lists them (with each scope's description); `plur scopes register <scope>` adds one; `plur scopes dismiss <scope>` remembers "don't offer this again" (persisted to `config.yaml`); `plur scopes --reoffer` clears dismissals. Dismissed scopes are excluded from the list and from the session-start hint, so PLUR stops re-listing scopes you've deliberately skipped. The session-start hint is now a quiet one-liner pointing at `plur scopes` (it was agent-facing guide text that users never saw).
-
 ## 0.15.0 (2026-07-21)
 
-Lean default, LangChain, MCP SDK v2.
+Lean default, memory receipt, scopes CLI, LangChain, MCP SDK v2, and two security fixes.
 
 - lean default — 74% fewer tokens
+- `plur receipt` / `plur_receipt` — memory receipt (what did memory actually do for you?)
+- `plur scopes` — per-scope opt-out for authorized-but-unregistered remote scopes
 - plur-langchain Python package
 - MCP SDK v2 (split packages)
 - Windows path + ID uniqueness fix
+- two P0 security fixes: credential redaction + receipt snippet sanitization
 
 ### Changed
 
@@ -35,6 +20,9 @@ Lean default, LangChain, MCP SDK v2.
 ### Added
 
 - **`plur-langchain` adapter** (#529): new Python package providing a LangChain `BaseMemory` + `BaseChatMessageHistory` adapter. Install with `pip install plur-langchain`. Chains and LCEL pipelines now get persistent engram memory with zero extra wiring.
+- **`plur scopes` CLI — per-scope opt-out for authorized-but-unregistered scopes** (#647, #656): `plur scopes` lists shared scopes from configured remotes (with each scope's description); `plur scopes register <scope>` adds one; `plur scopes dismiss <scope>` opts out permanently (persisted to `~/.plur/config.yaml`); `plur scopes --reoffer` clears all dismissals. Dismissed scopes are excluded from `plur scopes list` and from the MCP session-start hint. The session-start nudge is now a single quiet line pointing at `plur scopes` (replacing the all-or-nothing `register:true` model and the verbose agent-facing guide text users never saw).
+- **`plur receipt` + `plur_receipt` MCP tool — the memory receipt** (#660): a counted, local, read-only report of what your memory actually retrieved for you — how many times a memory was put in front of the model, how many distinct engrams it drew on, and which are most relied on (with their statement text). Every figure is directly counted — no estimate, no counterfactual, no dollar or token-savings figure (on a subscription your marginal token cost is zero). Scoped to local memory (primary store + installed packs) so the number is identical from the cold CLI and the warm MCP server; retrievals of team-store engrams are reported separately. Nothing leaves the machine.
+- **`co_injection` history events now record `tokens_used` and the calling `source`** (#660): `session_start` / `inject` / `hook` sources are tagged at every injection call site. Hook retrievals now also carry the session id, so the receipt's (engram, session) unit is well-defined. Events written before this change remain fully readable.
 
 ### Fixed
 
@@ -43,6 +31,9 @@ Lean default, LangChain, MCP SDK v2.
 - **`generateInjectionId` / `generateEventId` cross-process uniqueness** (#596): IDs are now unique across processes started within the same millisecond. Replaced `Date.now() + 4-char random suffix` with a per-process counter — eliminates the ~0.07% birthday-collision chance per 50-call batch and removes the intermittent `expected 49 to be 50` flake in co-injection tests.
 - **`RemoteStore.load()` — no cache poisoning on mid-pagination error** (#550): a network or server error mid-way through a paginated remote load no longer overwrites the local cache with partial data. The local cache is only updated after a complete, successful load.
 - **PID salt for cross-process ID uniqueness** (#600): ID generation now includes the process ID as a salt, preventing collisions between sibling processes (e.g. parallel nightshift agents) that start in the same millisecond.
+- **Security: `plur status --json` printed live enterprise bearer tokens** (#660): `StatusResult` embedded the full `PlurConfig`, so `--json` piped the `stores[].token` values (live credentials for configured enterprise servers) to stdout — into CI logs, pasted issues, and agent transcripts. All CLI JSON output is now credential-redacted at the output boundary, so every present and future JSON command inherits the protection. Redaction also masks credentials embedded in string values (URL userinfo, e.g. `https://user:pass@host`), which a key-based denylist cannot reach.
+- **Security: memory receipt snippet sanitized against hostile engram statements** (#660): statement text can come from third-party installed packs; the "most relied on" snippet (printed to the terminal and returned to the calling agent) now strips ANSI/terminal escapes, C0/C1/DEL controls, Unicode line/paragraph separators, and bidi (Trojan-Source) reordering + zero-width spoofing characters before rendering. Truncation is grapheme-safe.
+- **`suggestScope` silently inert for remote scopes** (#668, #674): `discoverRemoteScopes()` fetched `scope_metadata` (including `covers[]`) from `GET /api/v1/me` but never wrote it to the local config store entries that `listScopeMetadata()` and `suggestScope()` read — so scope routing returned `[]` for every remote scope regardless of query relevance. New `persistScopeMetadata()` call at every `/me` pull site (session_start, registerDiscoveredScopes, registerScope) fixes this.
 
 ## 0.14.0 (2026-07-15)
 
