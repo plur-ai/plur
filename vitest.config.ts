@@ -34,7 +34,7 @@ export default defineConfig({
           name: 'core-pglite',
           root: 'packages/core',
           globals: true,
-          include: ['test/pglite-*.test.ts', 'test/sync-index-error.test.ts'],
+          include: ['test/pglite-*.test.ts', 'test/sync-index-error.test.ts', 'test/pr5-hardening.test.ts'],
           // The whole point: one file at a time, so no two WASM Postgres
           // instances are booting concurrently.
           fileParallelism: false,
