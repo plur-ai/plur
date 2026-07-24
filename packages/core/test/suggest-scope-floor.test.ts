@@ -64,4 +64,37 @@ describe('suggestScope minConfidence floor (#670)', () => {
     expect(candidates[0].scope).toBe('group:acme/engineering')
     expect(candidates[0].confidence).toBeGreaterThanOrEqual(0.15)
   })
+
+  it('the floor is inclusive: a candidate EXACTLY at the floor survives', () => {
+    writeConfig()
+    const plur = new Plur({ path: dir })
+    // A pure domain-prefix match squashes to exactly 0.5.
+    const signals = { statement: 'x', domain: 'acme.engineering.storage' }
+    expect(plur.suggestScope(signals, { minConfidence: 0.5 }).length).toBeGreaterThan(0)
+    expect(plur.suggestScope(signals, { minConfidence: 0.5001 })).toHaveLength(0)
+  })
+
+  it('NaN does not silently disable the floor semantics (treated as no-floor, not a filter of nothing)', () => {
+    writeConfig()
+    const plur = new Plur({ path: dir })
+    // Number.isFinite guard: NaN behaves exactly like "no floor" — the full
+    // advisory list comes back rather than an exception or an empty list.
+    const candidates = plur.suggestScope(LONE_KEYWORD, { minConfidence: NaN })
+    expect(candidates.length).toBeGreaterThan(0)
+  })
+
+  it('an out-of-range config value drops only the field — stores and siblings survive (#670 review)', () => {
+    // min_confidence: 1.5 violates .max(1). Field-level .catch(undefined) must
+    // drop ONLY that field: the store (and its covers) stays registered and a
+    // valid sibling match_threshold is preserved — previously the whole config
+    // parse failed and loadConfig fell back to full defaults, silently
+    // dropping every store.
+    writeConfig('scope_routing:\n  min_confidence: 1.5\n  match_threshold: 0.9\n')
+    const plur = new Plur({ path: dir })
+    expect(plur.listScopeMetadata().length).toBeGreaterThan(0)
+    expect(plur.getScopeRoutingConfig().min_confidence).toBeUndefined()
+    expect(plur.getScopeRoutingConfig().match_threshold).toBe(0.9)
+    // And the suggestion surface behaves as if the bad field were absent.
+    expect(plur.suggestScope(LONE_KEYWORD).length).toBeGreaterThan(0)
+  })
 })

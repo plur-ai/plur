@@ -642,5 +642,53 @@ describe('MCP tools', () => {
       expect(result.count).toBeGreaterThan(0)
       expect(result.candidates[0].scope).toBe('group:acme/engineering')
     })
+
+    it('scope_routing.min_confidence config is honored when no arg is passed (#670 review)', async () => {
+      // Config floor of 0 = user explicitly un-floored the surface; the 0.15
+      // display default must NOT shadow it (precedence: arg > config > 0.15).
+      writeFileSync(join(floorDir, 'config.yaml'),
+        `index: false\n` +
+        `scope_routing:\n  min_confidence: 0\n` +
+        `stores:\n` +
+        `  - path: ${join(floorDir, 'team.yaml')}\n` +
+        `    scope: "group:acme/engineering"\n` +
+        `    shared: true\n` +
+        `    description: Engineering\n` +
+        `    covers: ['acme.engineering', 'benchmarking', 'kubernetes']\n`,
+      )
+      floorPlur = new Plur({ path: floorDir })
+      const result = await floorCall('plur_suggest_scope', {
+        statement: 'we briefly mentioned benchmarking at lunch',
+      }) as any
+      expect(result.min_confidence).toBe(0)
+      expect(result.count).toBeGreaterThan(0)
+    })
+
+    it('out-of-range arg is clamped to [0,1], not applied raw (#670 review)', async () => {
+      // min_confidence: 2 previously suppressed EVERY candidate (including a
+      // perfect domain match) indistinguishably from "no scope matched".
+      const result = await floorCall('plur_suggest_scope', {
+        statement: 'storage layer notes', domain: 'acme.engineering.storage',
+        min_confidence: 2,
+      }) as any
+      expect(result.min_confidence).toBe(1)
+      const negative = await floorCall('plur_suggest_scope', {
+        statement: 'we briefly mentioned benchmarking at lunch',
+        min_confidence: -5,
+      }) as any
+      expect(negative.min_confidence).toBe(0)
+      expect(negative.count).toBeGreaterThan(0)
+    })
+
+    it('a non-finite arg falls through to the display default instead of disabling the floor (#670 review)', async () => {
+      // NaN passes `typeof === 'number'`; without the isFinite guard it would
+      // silently disable filtering and echo null in JSON.
+      const result = await floorCall('plur_suggest_scope', {
+        statement: 'we briefly mentioned benchmarking at lunch',
+        min_confidence: NaN,
+      }) as any
+      expect(result.min_confidence).toBe(0.15)
+      expect(result.count).toBe(0)
+    })
   })
 })

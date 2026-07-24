@@ -48,7 +48,7 @@ import { isSharedScope, isPersonalScope, isScopeWithin } from './scope-util.js'
 import type { Engram } from './schemas/engram.js'
 import type { Episode } from './schemas/episode.js'
 import type { PackManifest } from './schemas/pack.js'
-import type { PlurConfig, StoreEntry } from './schemas/config.js'
+import type { PlurConfig, StoreEntry, ScopeRoutingConfig } from './schemas/config.js'
 import type {
   LearnContext,
   LearnAsyncContext,
@@ -89,7 +89,7 @@ export { parseDedupResponse, buildDedupPrompt, buildBatchDedupPrompt } from './d
 export { runMigrations, rollbackMigrations, getSchemaVersion, setSchemaVersion, ALL_MIGRATIONS, CURRENT_SCHEMA_VERSION, type Migration, type MigrationResult } from './migrations/index.js'
 export { detectSecrets, detectSensitive, sensitivityCategory } from './secrets.js'
 export { ScopeMetadataSchema, ScopeSensitivitySchema, SENSITIVITY_CATEGORIES, type ScopeMetadata, type ScopeSensitivity, type SensitivityCategory } from './schemas/scope-metadata.js'
-export { rankScopes, SCOPE_MATCH_THRESHOLD, WEIGHT_TAG, type ScopeSignals, type ScopeCandidate, type RankScopesOptions } from './scope-routing.js'
+export { rankScopes, SCOPE_MATCH_THRESHOLD, WEIGHT_TAG, SUGGEST_DISPLAY_MIN_CONFIDENCE, type ScopeSignals, type ScopeCandidate, type RankScopesOptions } from './scope-routing.js'
 
 // Scope-family predicates live in the leaf module `scope-util.ts` to break a
 // module cycle: `inject.ts` (imported by index.ts) needs `isPersonalScope`, and
@@ -1013,18 +1013,33 @@ export class Plur {
    *
    * ADVISORY ONLY. This does NOT route or store anything — `learn()` /
    * `learnRouted()` ignore it. The auto-route behavior flip is the gated Stage
-   * 3b PR; this method just answers "where would this fit?". Returns candidates
-   * sorted by confidence descending (empty array when nothing matches).
+   * 3b PR; this method just answers "where would this fit?".
+   *
+   * `options.minConfidence` (#670) floors the returned list — candidates
+   * strictly below it are dropped. Precedence: explicit option >
+   * `scope_routing.min_confidence` config > 0 (unfiltered, the historical
+   * default). This floors the SUGGESTION surface only; the auto-route gate is
+   * `scope_routing.match_threshold` and is deliberately independent. Returns
+   * candidates sorted by confidence descending — an empty array means nothing
+   * matched OR every match fell below the floor.
    */
   suggestScope(input: ScopeSignals, options?: { minConfidence?: number }): ScopeCandidate[] {
     this.reloadConfigIfChanged()  // pick up out-of-process config edits (#307)
-    // #670 keyword floor: explicit option > config.scope_routing.min_confidence
-    // > 0 (no floor — full advisory list, historical behavior). This floors the
-    // SUGGESTION surface only; the auto-route gate is scope_routing.match_threshold
-    // in _resolveUnscopedScope and is deliberately independent.
     const minConfidence =
       options?.minConfidence ?? this.config.scope_routing?.min_confidence ?? 0
     return rankScopes(input, this.listScopeMetadata(), { minConfidence })
+  }
+
+  /**
+   * Read-only view of the `scope_routing` config block (#670). Lets display
+   * surfaces (the MCP `plur_suggest_scope` handler) resolve the configured
+   * suggestion floor without reaching into the private config — precedence at
+   * that surface is: explicit tool arg > this config value >
+   * SUGGEST_DISPLAY_MIN_CONFIDENCE.
+   */
+  getScopeRoutingConfig(): Readonly<ScopeRoutingConfig> {
+    this.reloadConfigIfChanged()
+    return { ...(this.config.scope_routing ?? {}) }
   }
 
   /**
