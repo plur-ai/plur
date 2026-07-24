@@ -53,6 +53,23 @@ const RemoteRowSchema = z.object({
 // server while still keeping the process mortal on a blackholed route.
 const LOAD_FETCH_TIMEOUT_MS = 30_000
 
+/**
+ * Canonical endpoint identity for a configured remote URL (scope-audit
+ * 2026-07-24). Users configure the SSE URL (mcp.json shape), so
+ * `https://x.com`, `https://x.com/`, and `https://x.com/sse` all name the SAME
+ * server — RemoteStore.apiBase has always folded them at HTTP time. Every
+ * IDENTITY comparison (endpoint dedup, addStore same-URL dedup, /me metadata ↔
+ * store-entry matching, registered-vs-offerable splits) must apply the same
+ * fold, or the three spellings count as three distinct endpoints and a scope
+ * registered under one spelling is re-offered under another.
+ *
+ * Comparison-time only: callers must NEVER rewrite a stored config value with
+ * the normalized form — the user's spelling is preserved on disk.
+ */
+export function normalizeEndpointUrl(url: string): string {
+  return url.replace(/\/sse\/?$/, '').replace(/\/$/, '')
+}
+
 export class RemoteStore implements EngramStore {
   private cache: { ts: number; engrams: Engram[] } | null = null
   private inFlight: Promise<Engram[]> | null = null
@@ -67,8 +84,9 @@ export class RemoteStore implements EngramStore {
   private get apiBase(): string {
     // The user configures the SSE URL (consistent with mcp.json shape);
     // /api/v1 is rooted at the same host. Strip /sse if present, then
-    // append /api/v1.
-    return this.url.replace(/\/sse\/?$/, '').replace(/\/$/, '') + '/api/v1'
+    // append /api/v1. Shares normalizeEndpointUrl so HTTP-time and
+    // identity-time normalization can never drift (scope-audit 2026-07-24).
+    return normalizeEndpointUrl(this.url) + '/api/v1'
   }
 
   private get ttlMs(): number { return this.opts.ttlMs ?? 60_000 }

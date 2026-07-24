@@ -117,6 +117,31 @@ describe('plur learn', () => {
     expect(output.requested_scope).toBeUndefined()
   })
 
+  // --- #671: missing-domain nudge — mirrors the MCP domain_hint contract ---
+
+  it('#671 JSON: an un-scoped, un-domained learn against a covers-declaring scope reports domain_hint', () => {
+    writeCoversConfig(['plur.*'])
+    // No covers match, no --domain, no --scope → lands global unrouted; the
+    // covers-declaring scope proves routing was possible had a domain been set.
+    const output = JSON.parse(run('learn "an unrelated note about gardening"'))
+    expect(output.scope).toBe('global')
+    expect(output.domain_hint).toBeDefined()
+    expect(output.domain_hint).toContain('group:plur/core')
+    expect(output.domain_hint).toContain('--domain')
+  })
+
+  it('#671 JSON: no domain_hint when --domain is passed', () => {
+    writeCoversConfig(['plur.*'])
+    const output = JSON.parse(run('learn "a note about routing internals" --domain software.routing'))
+    expect(output.domain_hint).toBeUndefined()
+  })
+
+  it('#671 JSON: no domain_hint on a personal install (no covers-declaring scopes)', () => {
+    const output = JSON.parse(run('learn "a note with no domain"'))
+    expect(output.scope).toBe('global')
+    expect(output.domain_hint).toBeUndefined()
+  })
+
   // --- #8: CLI must accept and forward the context fields Hermes sends ---
   // (was silently dropping --rationale/--tags/--visibility/--dual-coding/
   //  --abstract/--knowledge-anchors/--derived-from). Each test writes via the

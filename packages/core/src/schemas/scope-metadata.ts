@@ -34,6 +34,18 @@ import { logger } from '../logger.js'
 export const SENSITIVITY_CATEGORIES = ['secrets', 'infra'] as const
 export type SensitivityCategory = (typeof SENSITIVITY_CATEGORIES)[number]
 
+/**
+ * TRUST RULE (scope-audit 2026-07-24): remote-served sensitivity may only
+ * TIGHTEN the write-time leak guard, never loosen it. The guard consults
+ * `allow` BEFORE `forbid`, and `allow` accepts arbitrary strings — so a
+ * hostile/compromised enterprise `/me` serving `allow:['secrets','infra']`
+ * would silently disarm the guard for that scope at the next session_start.
+ * persistScopeMetadata therefore NEVER persists a remote `allow` (it is
+ * dropped) and persists only `forbid`, sanitized to SENSITIVITY_CATEGORIES.
+ * A hand-edited `allow` in local config.yaml remains honored by the guard —
+ * that is a deliberate LOCAL decision, made on the machine the data lives on,
+ * not one a remote endpoint can make for you.
+ */
 export const ScopeSensitivitySchema = z.object({
   /**
    * Sensitive categories that must NOT be written to this scope (PR-3, #353

@@ -14,7 +14,7 @@ import { mkdtempSync, rmSync, readFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import yaml from 'js-yaml'
-import { RemoteStore } from '../src/store/remote-store.js'
+import { RemoteStore, normalizeEndpointUrl } from '../src/store/remote-store.js'
 import { Plur } from '../src/index.js'
 import { StubServer } from './helpers/stub-server.js'
 
@@ -389,6 +389,50 @@ describe('Plur scope opt-out (#647)', () => {
     await expect(plur.registerScope('user:plur:crtahlin')).rejects.toThrow(/non-shared/)
   })
 
+  it('batch register respects dismissals: a dismissed scope is NOT registered and stays dismissed (scope-audit 2026-07-24)', async () => {
+    const plur = freshPlur()
+    plur.dismissScope('group:plur/plur-ai/comms')
+
+    const [result] = await plur.registerDiscoveredScopes()
+    expect(result.ok).toBe(true)
+    // comms is skipped, the other two unregistered scopes still register.
+    expect(result.added.sort()).toEqual(['group:plur/plur-ai', 'group:plur/plur-ai/research'])
+    expect(result.skipped).toContain('group:plur/plur-ai/comms')
+
+    const cfg = yaml.load(readFileSync(join(dir, 'config.yaml'), 'utf8')) as any
+    expect(cfg.stores.some((s: any) => s.scope === 'group:plur/plur-ai/comms')).toBe(false)
+    // The dismissal record is intact — not consumed, not stale-orphaned.
+    expect(cfg.dismissed_scopes).toContain('group:plur/plur-ai/comms')
+
+    // The per-scope registerScope remains the deliberate override: it registers
+    // AND clears the dismissal.
+    const res = await plur.registerScope('group:plur/plur-ai/comms')
+    expect(res.status).toBe('added')
+    expect(plur.getDismissedScopes()).not.toContain('group:plur/plur-ai/comms')
+  })
+
+  it('dismissed-scope matching is case-insensitive: a case-variant re-advertisement does not resurface the offer (scope-audit 2026-07-24)', async () => {
+    const plur = freshPlur()
+    plur.dismissScope('GROUP:plur/plur-ai/comms')  // case-variant dismissal
+    // A second case-variant dismissal is a no-op, not a duplicate.
+    plur.dismissScope('group:plur/plur-ai/comms')
+    expect(plur.getDismissedScopes()).toHaveLength(1)
+
+    // The server advertises the lowercase spelling — still filtered.
+    const [d] = await plur.discoverRemoteScopes()
+    expect(d.unregistered).not.toContain('group:plur/plur-ai/comms')
+    expect((await plur.offerableScopes()).scopes.map(o => o.scope)).not.toContain('group:plur/plur-ai/comms')
+
+    // Batch register also respects the case-variant dismissal.
+    const [result] = await plur.registerDiscoveredScopes()
+    expect(result.added).not.toContain('group:plur/plur-ai/comms')
+    expect(result.skipped).toContain('group:plur/plur-ai/comms')
+
+    // registerScope clears the case-variant dismissal record too.
+    await plur.registerScope('group:plur/plur-ai/comms')
+    expect(plur.getDismissedScopes()).toEqual([])
+  })
+
   it('offerableScopes reports failures instead of a silently-empty offer when a remote is unreachable (#656)', async () => {
     dir = mkdtempSync(join(tmpdir(), 'plur-optout-fail-'))
     writeFileSync(
@@ -404,5 +448,92 @@ describe('Plur scope opt-out (#647)', () => {
     expect(failures).toHaveLength(1)
     expect(failures[0].url).toBe(baseUrl)
     expect(failures[0].error).toMatch(/401/)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Endpoint URL identity (scope-audit 2026-07-24) — `https://x.com`,
+// `https://x.com/` and `https://x.com/sse` name ONE server (RemoteStore.apiBase
+// has always folded them at HTTP time), so identity comparisons must fold too:
+// exact-string identity counted them as three endpoints, probed /me per
+// spelling, and re-offered a scope registered under a sibling spelling.
+// ---------------------------------------------------------------------------
+
+describe('endpoint URL identity normalization (scope-audit 2026-07-24)', () => {
+  let dir: string
+
+  const writeConfig = (stores: unknown[]) => {
+    dir = mkdtempSync(join(tmpdir(), 'plur-url-identity-'))
+    writeFileSync(join(dir, 'config.yaml'), yaml.dump({ stores, index: false }, { lineWidth: 120, noRefs: true }))
+    return new Plur({ path: dir })
+  }
+
+  afterEach(() => { if (dir) rmSync(dir, { recursive: true, force: true }) })
+
+  it('normalizeEndpointUrl folds the three spellings and leaves real paths alone', () => {
+    expect(normalizeEndpointUrl('https://x.com')).toBe('https://x.com')
+    expect(normalizeEndpointUrl('https://x.com/')).toBe('https://x.com')
+    expect(normalizeEndpointUrl('https://x.com/sse')).toBe('https://x.com')
+    expect(normalizeEndpointUrl('https://x.com/sse/')).toBe('https://x.com')
+    // A genuine path prefix is NOT a spelling variant — must stay distinct.
+    expect(normalizeEndpointUrl('https://x.com/api')).toBe('https://x.com/api')
+    expect(normalizeEndpointUrl('https://x.com/ssex')).toBe('https://x.com/ssex')
+  })
+
+  it('the three spellings dedupe to ONE endpoint whose registered view spans all of them', async () => {
+    const plur = writeConfig([
+      { url: baseUrl,          token: TOKEN, scope: 'group:plur/plur-ai/engineering', shared: true, readonly: false },
+      { url: baseUrl + '/',    token: TOKEN, scope: 'group:plur/plur-ai/comms',       shared: true, readonly: false },
+      { url: baseUrl + '/sse', token: TOKEN, scope: 'group:plur/plur-ai/research',    shared: true, readonly: false },
+    ])
+    const discoveries = await plur.discoverRemoteScopes()
+    expect(discoveries).toHaveLength(1)  // one endpoint, not three
+    expect(discoveries[0].registered.sort()).toEqual([
+      'group:plur/plur-ai/comms',
+      'group:plur/plur-ai/engineering',
+      'group:plur/plur-ai/research',
+    ])
+    expect(discoveries[0].unregistered).toEqual(['group:plur/plur-ai'])
+  })
+
+  it('a scope registered under one spelling is not re-offered under another', async () => {
+    const plur = writeConfig([
+      { url: baseUrl,          token: TOKEN, scope: 'group:plur/plur-ai/engineering', shared: true, readonly: false },
+      { url: baseUrl + '/sse', token: TOKEN, scope: 'group:plur/plur-ai/comms',       shared: true, readonly: false },
+    ])
+    const { scopes } = await plur.offerableScopes()
+    const names = scopes.map(o => o.scope).sort()
+    expect(names).not.toContain('group:plur/plur-ai/comms')        // registered (under /sse)
+    expect(names).not.toContain('group:plur/plur-ai/engineering')  // registered (bare)
+    expect(names).toEqual(['group:plur/plur-ai', 'group:plur/plur-ai/research'])
+  })
+
+  it('addStore treats a spelling variant of an existing url+scope as already_registered', async () => {
+    const plur = writeConfig([
+      { url: baseUrl, token: TOKEN, scope: 'group:plur/plur-ai/engineering', shared: true, readonly: false },
+    ])
+    const res = plur.addStore('', 'group:plur/plur-ai/engineering', { url: baseUrl + '/sse', token: TOKEN })
+    expect(res.status).toBe('already_registered')
+    // The stored spelling is untouched — normalization is comparison-time only.
+    const cfg = yaml.load(readFileSync(join(dir, 'config.yaml'), 'utf8')) as any
+    expect(cfg.stores).toHaveLength(1)
+    expect(cfg.stores[0].url).toBe(baseUrl)
+  })
+
+  it('persistScopeMetadata matches a store entry configured under a sibling spelling', async () => {
+    server.setMe({
+      scope_metadata: [
+        { scope: 'group:plur/plur-ai/engineering', description: 'Eng knowledge', covers: ['ci', 'deploy'] },
+      ],
+    })
+    // Entry registered under the /sse spelling; discovery reports the bare URL.
+    const plur = writeConfig([
+      { url: baseUrl + '/sse', token: TOKEN, scope: 'group:plur/plur-ai/engineering', shared: true, readonly: false },
+    ])
+    const discoveries = await plur.discoverRemoteScopes()
+    plur.persistScopeMetadata(discoveries)
+    const cfg = yaml.load(readFileSync(join(dir, 'config.yaml'), 'utf8')) as any
+    expect(cfg.stores[0].covers).toEqual(['ci', 'deploy'])
+    expect(cfg.stores[0].url).toBe(baseUrl + '/sse')  // spelling preserved
   })
 })
