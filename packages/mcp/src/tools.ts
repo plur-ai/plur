@@ -492,6 +492,30 @@ function getAllToolDefinitions(): ToolDefinition[] {
             `store; keep genuinely personal notes at the default scope.` }
         }
 
+        // Missing-domain nudge (#671): the domain-prefix channel is the only
+        // routing signal that reliably clears the auto-route threshold — an
+        // engram written without a `domain` is unroutable by construction and
+        // falls to the personal default no matter what the covers say. Fire
+        // only when routing was actually on the table: no explicit scope, the
+        // write did NOT auto-route anyway, and at least one registered scope
+        // declares covers to route against. Personal installs with no
+        // covers-bearing scopes stay silent.
+        const domainHint = (wasRouted: boolean): { domain_hint?: string } => {
+          if (typeof args.domain === 'string' && args.domain.length > 0) return {}
+          if (explicitScope || wasRouted) return {}
+          let coversScopes: string[] = []
+          try {
+            coversScopes = plur.listScopeMetadata()
+              .filter(md => (md.covers?.length ?? 0) > 0)
+              .map(md => md.scope)
+          } catch { return {} }
+          if (coversScopes.length === 0) return {}
+          return { domain_hint:
+            `No domain set — without a dotted domain this engram cannot auto-route to a covers-declaring scope ` +
+            `(${coversScopes.join(', ')}) and is harder to re-scope later. Set domain on every plur_learn, ` +
+            `shape "<org>.<team>.<area>" (e.g. "plur.engineering.mcp") — see the domain convention in CLAUDE.md.` }
+        }
+
         // Temporal validity echo (#347): report the stored window back, and
         // when valid_until was auto-extracted from the statement (not passed
         // by the caller), confirm the parse loudly — extraction must never
@@ -521,6 +545,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
             decision: 'ADD',
             ...temporalEcho(engram),
             ...scopeHint(engram.scope, !!routed),
+            ...domainHint(!!routed),
             ...(isOutbox ? { outbox: true, warning: 'Remote write failed; engram queued locally for retry on next session start or plur_sync.' } : {}),
             ...(demoted ? { demoted: true, requested_scope: demoted.from, warning: `Sensitive content (${demoted.patterns}) detected — stored at "${demoted.to}"/private instead of the requested shared scope "${demoted.from}". If this is a false positive, re-scope deliberately.` } : {}),
             ...(routed ? { routed: { scope: routed.scope, confidence: routed.confidence, reason: routed.reason }, info: `No scope was provided; auto-routed to "${routed.scope}" (confidence ${routed.confidence}) because its content matched that scope's covers. Pass an explicit scope to override.` } : {}),
@@ -539,6 +564,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
             scope: engram.scope, type: engram.type, decision: 'ADD',
             ...temporalEcho(engram),
             ...scopeHint(engram.scope, !!routedFallback),
+            ...domainHint(!!routedFallback),
             ...(isOutbox ? { outbox: true } : {}),
             warning: `Remote write failed (${(err as Error).message}); engram queued for retry.`,
           }
@@ -628,6 +654,27 @@ function getAllToolDefinitions(): ToolDefinition[] {
         for (const r of results) {
           if (r.input_index !== undefined) ids[r.input_index] = r.engram.id
         }
+        // Missing-domain nudge (#671), batch form: aggregate count instead of a
+        // per-item echo. Same gate as plur_learn — only items that passed
+        // neither a domain nor an explicit scope, and only when at least one
+        // registered scope declares covers to route against.
+        let batchDomainHint: { domain_hint?: string } = {}
+        const noDomainCount = raw.filter(e =>
+          !(typeof e.domain === 'string' && e.domain.length > 0) &&
+          !(typeof e.scope === 'string' && e.scope.length > 0)).length
+        if (noDomainCount > 0) {
+          try {
+            const coversScopes = plur.listScopeMetadata()
+              .filter(md => (md.covers?.length ?? 0) > 0)
+              .map(md => md.scope)
+            if (coversScopes.length > 0) {
+              batchDomainHint = { domain_hint:
+                `${noDomainCount} of ${raw.length} item(s) had no domain and no explicit scope — they cannot ` +
+                `auto-route to a covers-declaring scope (${coversScopes.join(', ')}) and are harder to re-scope ` +
+                `later. Set domain on every item, shape "<org>.<team>.<area>" — see the domain convention in CLAUDE.md.` }
+            }
+          } catch { /* advisory only — never fail the batch over a hint */ }
+        }
         return {
           ids,
           results: results.map((r) => ({
@@ -640,6 +687,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
             ...(r.existing_id ? { existing_id: r.existing_id } : {}),
           })),
           stats,
+          ...batchDomainHint,
           ...(failures.length > 0
             ? { failures, warning: `${failures.length} of ${raw.length} engram(s) failed to persist; the rest were written.` }
             : {}),

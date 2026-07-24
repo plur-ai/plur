@@ -303,6 +303,92 @@ describe('MCP tools', () => {
     expect(result.scope_hint).toBeUndefined()
   })
 
+  // #671 — missing-domain nudge. An engram with no `domain` cannot auto-route
+  // (the domain-prefix channel is the only signal that reliably clears the
+  // auto-route threshold), so surface that at write time — but only when a
+  // covers-declaring scope exists to route against.
+  describe('domain hint when covers-declaring scopes exist (#671)', () => {
+    let coversDir: string
+    let coversPlur: Plur
+    const coversCall = async (name: string, args: Record<string, unknown> = {}) => {
+      const tool = tools.find(t => t.name === name)!
+      return tool.handler(args, coversPlur)
+    }
+
+    beforeEach(() => {
+      coversDir = mkdtempSync(join(tmpdir(), 'plur-mcp-covers-'))
+      // A shared store WITH covers that deliberately do NOT match the test
+      // statements — so nothing auto-routes and the missing domain is the
+      // reason routing could not happen.
+      const teamPath = join(coversDir, 'team.yaml')
+      writeFileSync(join(coversDir, 'config.yaml'),
+        `index: false\n` +
+        `stores:\n` +
+        `  - path: ${teamPath}\n` +
+        `    scope: group:acme/engineering\n` +
+        `    shared: true\n` +
+        `    description: Acme engineering team store\n` +
+        `    covers: ['acme.engineering', 'kubernetes', 'terraform']\n`,
+      )
+      coversPlur = new Plur({ path: coversDir })
+    })
+    afterEach(() => { rmSync(coversDir, { recursive: true, force: true }) })
+
+    it('hints when domain is omitted, nothing routed, and a covers-declaring scope exists', async () => {
+      const result = await coversCall('plur_learn', { statement: 'An unrelated note about gardening' }) as any
+      expect(result.routed).toBeUndefined()
+      expect(result.domain_hint).toBeDefined()
+      expect(result.domain_hint).toContain('group:acme/engineering')
+      expect(result.domain_hint).toContain('<org>.<team>.<area>')
+    })
+
+    it('silent when a domain is passed', async () => {
+      const result = await coversCall('plur_learn', {
+        statement: 'A note about the build system', domain: 'acme.tooling.build',
+      }) as any
+      expect(result.domain_hint).toBeUndefined()
+    })
+
+    it('silent when an explicit scope is passed (routing was not on the table)', async () => {
+      const result = await coversCall('plur_learn', {
+        statement: 'A note about the build system', scope: 'global',
+      }) as any
+      expect(result.domain_hint).toBeUndefined()
+    })
+
+    it('silent when no registered scope declares covers (metadata-less team store)', async () => {
+      // The base fixture's addStore path registers a team store WITHOUT covers —
+      // there is nothing to route against, so the domain nudge must stay quiet
+      // (the #296 scope_hint is the right nudge there, not this one).
+      plur.addStore('', 'group:acme/engineering', { url: 'https://plur.example.com', token: 'tok' })
+      const result = await callTool('plur_learn', { statement: 'A note with no domain' }) as any
+      expect(result.domain_hint).toBeUndefined()
+    })
+
+    it('batch: aggregates the hint over items lacking both domain and scope', async () => {
+      const result = await coversCall('plur_learn_batch', {
+        engrams: [
+          { statement: 'First fact with neither domain nor scope' },
+          { statement: 'Second fact with a domain', domain: 'acme.engineering.ci' },
+          { statement: 'Third fact with an explicit scope', scope: 'global' },
+        ],
+      }) as any
+      expect(result.domain_hint).toBeDefined()
+      expect(result.domain_hint).toContain('1 of 3')
+      expect(result.domain_hint).toContain('group:acme/engineering')
+    })
+
+    it('batch: silent when every item carries a domain or explicit scope', async () => {
+      const result = await coversCall('plur_learn_batch', {
+        engrams: [
+          { statement: 'Fact with a domain', domain: 'acme.engineering.ci' },
+          { statement: 'Fact with a scope', scope: 'global' },
+        ],
+      }) as any
+      expect(result.domain_hint).toBeUndefined()
+    })
+  })
+
   it('plur_learn strips XML envelope artifacts from statement (#145)', async () => {
     // Reproduce the corruption: LLM generates old XML tool-call format where the
     // statement value contains the closing tag + duplicated parameter body.
