@@ -2223,7 +2223,7 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
 
     {
       name: 'plur_suggest_scope',
-      description: 'Suggest which registered scope(s) an engram belongs in, ranked by fit. Deterministic — no LLM, no network. Scores the statement keywords, optional domain (a dotted namespace like "plur.core.security"), and tags against the covers[] each scope declares. ADVISORY ONLY: this does not route or store anything; pass the chosen scope to plur_learn yourself. Returns candidates sorted by confidence (empty when nothing matches).',
+      description: 'Suggest which registered scope(s) an engram belongs in, ranked by fit. Deterministic — no LLM, no network. Scores the statement keywords, optional domain (a dotted namespace like "plur.core.security"), and tags against the covers[] each scope declares. ADVISORY ONLY: this does not route or store anything; pass the chosen scope to plur_learn yourself. Returns candidates sorted by confidence (empty when nothing matches). Candidates below min_confidence (default 0.15) are suppressed — a lone coincidental keyword scores ≈0.12 and is noise, not signal (#670); pass min_confidence: 0 to see every scored candidate.',
       annotations: { title: 'Suggest scope', readOnlyHint: true, idempotentHint: true },
       inputSchema: {
         type: 'object',
@@ -2231,16 +2231,22 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
           statement: { type: 'string', description: 'The engram statement to route' },
           domain:    { type: 'string', description: 'Optional dotted namespace for the engram (e.g. "plur.core.security") — strongest routing signal' },
           tags:      { type: 'array', items: { type: 'string' }, description: 'Optional tags on the engram' },
+          min_confidence: { type: 'number', description: 'Suppress candidates below this confidence. Default 0.15 — clips lone-keyword noise (≈0.12) while keeping real multi-signal matches. Pass 0 for the unfiltered list.' },
         },
         required: ['statement'],
       },
       handler: async (args, plur) => {
+        // #670 keyword floor: the DISPLAY default is 0.15 (triage decision) —
+        // stricter than the core API default (0) because a suggestion surface
+        // that shows 0.12-confidence lone-keyword hits teaches agents to
+        // distrust it. Explicit args.min_confidence (including 0) wins.
+        const minConfidence = typeof args.min_confidence === 'number' ? args.min_confidence : 0.15
         const candidates = plur.suggestScope({
           statement: args.statement as string,
           domain: args.domain as string | undefined,
           tags: args.tags as string[] | undefined,
-        })
-        return { candidates, count: candidates.length }
+        }, { minConfidence })
+        return { candidates, count: candidates.length, min_confidence: minConfidence }
       },
     },
 

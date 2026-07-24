@@ -591,4 +591,56 @@ describe('MCP tools', () => {
       expect(again.requested_scope).toBeUndefined()
     })
   })
+
+  // #670 — the MCP suggestion surface applies a display floor of 0.15 by
+  // default (lone-keyword noise ≈0.12); min_confidence: 0 restores the
+  // unfiltered advisory list.
+  describe('plur_suggest_scope min_confidence display floor (#670)', () => {
+    let floorDir: string
+    let floorPlur: Plur
+    const floorCall = async (name: string, args: Record<string, unknown> = {}) => {
+      const tool = tools.find(t => t.name === name)!
+      return tool.handler(args, floorPlur)
+    }
+
+    beforeEach(() => {
+      floorDir = mkdtempSync(join(tmpdir(), 'plur-mcp-floor-'))
+      writeFileSync(join(floorDir, 'config.yaml'),
+        `index: false\n` +
+        `stores:\n` +
+        `  - path: ${join(floorDir, 'team.yaml')}\n` +
+        `    scope: "group:acme/engineering"\n` +
+        `    shared: true\n` +
+        `    description: Engineering\n` +
+        `    covers: ['acme.engineering', 'benchmarking', 'kubernetes']\n`,
+      )
+      floorPlur = new Plur({ path: floorDir })
+    })
+    afterEach(() => { rmSync(floorDir, { recursive: true, force: true }) })
+
+    it('suppresses a lone-keyword candidate by default and reports the floor', async () => {
+      const result = await floorCall('plur_suggest_scope', {
+        statement: 'we briefly mentioned benchmarking at lunch',
+      }) as any
+      expect(result.count).toBe(0)
+      expect(result.min_confidence).toBe(0.15)
+    })
+
+    it('min_confidence: 0 restores the unfiltered list', async () => {
+      const result = await floorCall('plur_suggest_scope', {
+        statement: 'we briefly mentioned benchmarking at lunch',
+        min_confidence: 0,
+      }) as any
+      expect(result.count).toBeGreaterThan(0)
+      expect(result.candidates[0].confidence).toBeLessThan(0.15)
+    })
+
+    it('a domain match clears the default floor', async () => {
+      const result = await floorCall('plur_suggest_scope', {
+        statement: 'storage layer notes', domain: 'acme.engineering.storage',
+      }) as any
+      expect(result.count).toBeGreaterThan(0)
+      expect(result.candidates[0].scope).toBe('group:acme/engineering')
+    })
+  })
 })

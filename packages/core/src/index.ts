@@ -1016,9 +1016,15 @@ export class Plur {
    * 3b PR; this method just answers "where would this fit?". Returns candidates
    * sorted by confidence descending (empty array when nothing matches).
    */
-  suggestScope(input: ScopeSignals): ScopeCandidate[] {
+  suggestScope(input: ScopeSignals, options?: { minConfidence?: number }): ScopeCandidate[] {
     this.reloadConfigIfChanged()  // pick up out-of-process config edits (#307)
-    return rankScopes(input, this.listScopeMetadata())
+    // #670 keyword floor: explicit option > config.scope_routing.min_confidence
+    // > 0 (no floor — full advisory list, historical behavior). This floors the
+    // SUGGESTION surface only; the auto-route gate is scope_routing.match_threshold
+    // in _resolveUnscopedScope and is deliberately independent.
+    const minConfidence =
+      options?.minConfidence ?? this.config.scope_routing?.min_confidence ?? 0
+    return rankScopes(input, this.listScopeMetadata(), { minConfidence })
   }
 
   /**

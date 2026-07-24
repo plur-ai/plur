@@ -139,6 +139,14 @@ export const ScopeRoutingConfigSchema = z.object({
   match_threshold: z.number().min(0).max(1).optional(),
   /** Per-tag weight in the ranker. Default: 0.5. */
   weight_tag: z.number().min(0).optional(),
+  /**
+   * Floor for the SUGGESTION surface (#670): `suggestScope` drops candidates
+   * below this confidence, clipping lone-coincidental-keyword noise (≈0.12).
+   * Independent of `match_threshold` (the auto-route gate). Default: 0 — no
+   * floor at the core API; the MCP `plur_suggest_scope` tool applies its own
+   * display default of 0.15.
+   */
+  min_confidence: z.number().min(0).max(1).optional(),
 }).partial()
 
 export type ScopeRoutingConfig = z.infer<typeof ScopeRoutingConfigSchema>
