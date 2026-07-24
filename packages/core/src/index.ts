@@ -33,7 +33,7 @@ import { installPack, uninstallPack, listPacks, exportPack, scanPrivacy, compute
 import { sync as gitSync, getSyncStatus, withLock, type SyncResult, type SyncStatus } from './sync.js'
 import { detectSecrets, detectSensitive, sensitivityCategory, SCAN_TRUNCATED } from './secrets.js'
 import type { SecretMatch } from './secrets.js'
-import type { ScopeMetadata, SensitivityCategory } from './schemas/scope-metadata.js'
+import { SENSITIVITY_CATEGORIES, type ScopeMetadata, type SensitivityCategory } from './schemas/scope-metadata.js'
 import { rankScopes, SCOPE_MATCH_THRESHOLD, type ScopeSignals, type ScopeCandidate } from './scope-routing.js'
 import { appendHistory, readHistoryForEngram, generateEventId, generateInjectionId, computeQueryHash, findLatestInjectionFor, countInjectionEvents, type InjectionEventCounts } from './history.js'
 import { computeContentHash } from './content-hash.js'
@@ -43,7 +43,7 @@ import type { TensionPair } from './tensions.js'
 import { engramDate } from './tensions.js'
 import { resolveValidity, buildTemporal } from './expiry.js'
 import { decodeJwtExpiry } from './jwt.js'
-import { RemoteStore } from './store/remote-store.js'
+import { RemoteStore, normalizeEndpointUrl } from './store/remote-store.js'
 import { isSharedScope, isPersonalScope, isScopeWithin } from './scope-util.js'
 import type { Engram } from './schemas/engram.js'
 import type { Episode } from './schemas/episode.js'
@@ -319,9 +319,42 @@ export interface RegisterDiscoveredResult {
   ok: boolean
   added: string[]
   already_registered: string[]
-  /** Personal-family scopes a `/me` returned that were refused auto-registration (#382). */
+  /** Scopes refused auto-registration: personal-family scopes a `/me` returned
+   *  (#382), scopes whose addStore threw (#397), and dismissed scopes the batch
+   *  path respects (scope-audit 2026-07-24). */
   skipped: string[]
   error?: string
+}
+
+/**
+ * Sanitize a remote-served `forbid` list to the known SENSITIVITY_CATEGORIES
+ * (scope-audit 2026-07-24). Belt-and-braces behind the /me schema validation:
+ * persistScopeMetadata may receive discoveries built by other callers (tests,
+ * future code paths), and a `forbid` that sanitizes to EMPTY would be maximal
+ * loosening — so empty falls to the safe default, mirroring
+ * ScopeSensitivitySchema's preprocess. See the trust rule on
+ * {@link Plur.persistScopeMetadata}.
+ */
+function sanitizeForbidCategories(forbid: readonly string[]): SensitivityCategory[] {
+  const kept = forbid.filter((c): c is SensitivityCategory =>
+    (SENSITIVITY_CATEGORIES as readonly string[]).includes(c))
+  return kept.length ? [...new Set(kept)] : [...SENSITIVITY_CATEGORIES]
+}
+
+/**
+ * Key-order-insensitive JSON for VALUE-equality comparison (scope-audit
+ * 2026-07-24). persistScopeMetadata's change-detector compares "what will be
+ * persisted" against the loaded entry; a plain JSON.stringify is key-order
+ * sensitive, and object spreads vs a zod re-parse can order the same keys
+ * differently — which would report a phantom "change" forever (the exact
+ * rewrite-every-session_start loop the detector exists to prevent). Arrays
+ * keep their order (element order is meaningful for covers/forbid).
+ */
+function stableJson(v: unknown): string {
+  return JSON.stringify(v, (_key, val) =>
+    val !== null && typeof val === 'object' && !Array.isArray(val)
+      ? Object.fromEntries(Object.entries(val as Record<string, unknown>).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)))
+      : val)
 }
 
 /** Commitment level scoring multipliers for injection priority (Idea 6). */
@@ -1236,6 +1269,12 @@ export class Plur {
     statement: string,
     context?: LearnContext,
   ): { scope: string; routed: { scope: string; confidence: number; reason: string } | null } {
+    // Pick up out-of-process config edits (#307) — mirrors suggestScope. Without
+    // this the WRITE path routed against a stale stores/covers snapshot: a scope
+    // registered (or covers synced) by another process after startup was
+    // invisible to auto-routing until restart (scope-audit 2026-07-24). Cheap:
+    // one statSync, reload only on an actual mtime change.
+    this.reloadConfigIfChanged()
     // Match the schema default (config.ts `unscoped_default.default('global')`)
     // so the two cannot drift; reverted local→global in 0.10.0 (#353).
     const fallback = this.config.unscoped_default ?? 'global'
@@ -4224,24 +4263,34 @@ Generate an improved version of the procedure that prevents this failure. Return
 
   /** Persist a new stores list to config.yaml, preserving other keys, then
    *  refresh the in-memory config + mtime. Shared by addStore's append and
-   *  token-rotation paths. */
-  private persistStores(stores: StoreEntry[]): void {
-    let configData: Record<string, unknown> = {}
-    // Read the existing config to preserve other top-level keys (auto_learn,
-    // packs, embeddings, routing defaults, …). A TRANSIENT read failure on an
-    // EXISTING file (EACCES, a concurrent truncating writer, a momentary FS
-    // error) must NOT be swallowed: proceeding from `{}` would write a
-    // stores-only file and silently drop every other top-level setting. Only an
-    // ENOENT (the config genuinely doesn't exist yet) is safe to start from `{}`;
-    // any other error aborts the writeback so we never truncate a live config.
-    try {
-      const raw = fs.readFileSync(this.paths.config, 'utf8')
-      if (raw) configData = (yaml.load(raw) as Record<string, unknown>) ?? {}
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') throw err
-    }
-    configData.stores = this.mergeStoresForWriteback(configData.stores, stores)
-    fs.writeFileSync(this.paths.config, yaml.dump(configData, { lineWidth: 120, noRefs: true }))
+   *  token-rotation paths, and by persistScopeMetadata (which passes
+   *  `serverSensitivityScopes` — see {@link mergeStoresForWriteback}).
+   *
+   *  The read-modify-write runs under {@link withLock} on config.yaml
+   *  (scope-audit 2026-07-24): two concurrent persist paths (e.g. an MCP
+   *  session_start metadata sync racing a CLI `plur stores add`) could each
+   *  re-read the file and last-writer-wins away the other's change. Same
+   *  lock discipline engrams.yaml has always had. Lock scope is kept tight —
+   *  read + merge + write only; the in-memory refresh happens after release. */
+  private persistStores(stores: StoreEntry[], opts?: { serverSensitivityScopes?: Set<string> }): void {
+    withLock(this.paths.config, () => {
+      let configData: Record<string, unknown> = {}
+      // Read the existing config to preserve other top-level keys (auto_learn,
+      // packs, embeddings, routing defaults, …). A TRANSIENT read failure on an
+      // EXISTING file (EACCES, a concurrent truncating writer, a momentary FS
+      // error) must NOT be swallowed: proceeding from `{}` would write a
+      // stores-only file and silently drop every other top-level setting. Only an
+      // ENOENT (the config genuinely doesn't exist yet) is safe to start from `{}`;
+      // any other error aborts the writeback so we never truncate a live config.
+      try {
+        const raw = fs.readFileSync(this.paths.config, 'utf8')
+        if (raw) configData = (yaml.load(raw) as Record<string, unknown>) ?? {}
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') throw err
+      }
+      configData.stores = this.mergeStoresForWriteback(configData.stores, stores, opts?.serverSensitivityScopes)
+      fs.writeFileSync(this.paths.config, yaml.dump(configData, { lineWidth: 120, noRefs: true }))
+    })
     this.config = loadConfig(this.paths.config)
     this.configMtimeMs = this.statConfigMtime()
   }
@@ -4257,8 +4306,14 @@ Generate an improved version of the procedure that prevents this failure. Return
    *     one-level deep-merge below; a shallow spread would replace `sensitivity`
    *     wholesale and lose them even with ScopeSensitivitySchema.passthrough)
    * Parsed deltas (e.g. a corrected `forbid`) land ON TOP of the raw values.
+   *
+   * `serverSensitivityScopes` (scope-audit 2026-07-24): the scopes whose typed
+   * `sensitivity.forbid` is SERVER-AUTHORITATIVE for this writeback — i.e.
+   * persistScopeMetadata just synced them from `/me` — so the raw-forbid
+   * restore below must NOT undo the update for those entries. Every other
+   * caller omits it and keeps the historical restore-raw behavior.
    */
-  private mergeStoresForWriteback(rawStores: unknown, stores: StoreEntry[]): StoreEntry[] {
+  private mergeStoresForWriteback(rawStores: unknown, stores: StoreEntry[], serverSensitivityScopes?: Set<string>): StoreEntry[] {
     if (!Array.isArray(rawStores)) return stores
     // Key on url+scope (remote) or path+scope (local); never url alone — one
     // enterprise URL hosts many scopes (addStore dedup identity is url+scope).
@@ -4300,15 +4355,25 @@ Generate an improved version of the procedure that prevents this failure. Return
       // time (loadConfig's preprocess rewrites a forward-compat `forbid:['pii']`
       // to the safe default). A shallow `...typed.sensitivity` would then write
       // the normalized value over the raw one, ERASING the forward-compat
-      // declaration on the first writeback. No code path intentionally mutates
-      // `forbid` via persistStores, so when raw carried a `forbid` we restore it
-      // verbatim — mirroring the nested-unknown preservation below. This is the
-      // same version-skew writeback-strip class PR-3 closed for nested unknowns.
+      // declaration on the first writeback. So when raw carried a `forbid` we
+      // restore it verbatim — mirroring the nested-unknown preservation below.
+      // This is the same version-skew writeback-strip class PR-3 closed for
+      // nested unknowns.
+      //
+      // ONE deliberate exception (scope-audit 2026-07-24): persistScopeMetadata
+      // DOES intentionally mutate `forbid` — it syncs the server-authoritative
+      // policy from `/me` — and names the affected scopes in
+      // `serverSensitivityScopes`. For those entries the typed (sanitized)
+      // `forbid` must win, or the server's policy change is silently discarded
+      // on every writeback and the metadata change-detector can never converge
+      // (config.yaml rewritten on every session_start).
+      const restoreRawForbid =
+        rawSensitivity && 'forbid' in rawSensitivity && !serverSensitivityScopes?.has(typed.scope)
       const mergedSensitivity = typed.sensitivity
         ? {
             ...(rawSensitivity ?? {}),
             ...typed.sensitivity,
-            ...(rawSensitivity && 'forbid' in rawSensitivity ? { forbid: rawSensitivity.forbid } : {}),
+            ...(restoreRawForbid ? { forbid: rawSensitivity.forbid } : {}),
           }
         : rawSensitivity
       const merged: Record<string, unknown> = {
@@ -4367,8 +4432,14 @@ Generate an improved version of the procedure that prevents this failure. Return
     // LOCAL stores keep path-only identity: one engrams.yaml is one store.
     // The loader clones global-scoped engrams into each entry's scope, so a
     // second scope on the same file would double-load those engrams.
+    //
+    // URL identity is NORMALIZED (scope-audit 2026-07-24): `https://x.com`,
+    // `https://x.com/` and `https://x.com/sse` all name the same server
+    // (RemoteStore.apiBase folds them at HTTP time), so an exact-string compare
+    // here would happily register the same url+scope twice under two spellings.
+    // Comparison-time only — the stored spelling is never rewritten.
     const sameEntry = config.stores?.find(s =>
-      isRemote ? (s.url === options!.url && s.scope === scope)
+      isRemote ? (s.url !== undefined && normalizeEndpointUrl(s.url) === normalizeEndpointUrl(options!.url!) && s.scope === scope)
                : (s.path === storePath),
     )
     if (sameEntry) {
@@ -4622,13 +4693,30 @@ Generate an improved version of the procedure that prevents this failure. Return
    * Group configured remote stores by distinct URL, returning one entry per URL
    * with the token to query it. Tokens should be identical across a URL's
    * entries (same user, same instance); the first is used.
+   *
+   * "Distinct" is keyed on {@link normalizeEndpointUrl} (scope-audit
+   * 2026-07-24): `https://x.com`, `https://x.com/` and `https://x.com/sse` are
+   * ONE endpoint, not three — an exact-string key probed the same server once
+   * per spelling and split its registered-scope view across the copies. The
+   * FIRST configured spelling is what gets reported/queried; stored values are
+   * never rewritten.
    */
   private _distinctRemoteEndpoints(): Array<{ url: string; token?: string }> {
     const byUrl = new Map<string, { url: string; token?: string }>()
     for (const s of this.config.stores ?? []) {
-      if (s.url && !byUrl.has(s.url)) byUrl.set(s.url, { url: s.url, token: s.token })
+      if (!s.url) continue
+      const key = normalizeEndpointUrl(s.url)
+      if (!byUrl.has(key)) byUrl.set(key, { url: s.url, token: s.token })
     }
     return [...byUrl.values()]
+  }
+
+  /** All store entries registered against `url` under ANY spelling of that
+   *  endpoint (scope-audit 2026-07-24) — the identity-normalized counterpart of
+   *  `stores.filter(s => s.url === url)`. */
+  private _storesForEndpoint(url: string): StoreEntry[] {
+    const key = normalizeEndpointUrl(url)
+    return (this.config.stores ?? []).filter(s => s.url !== undefined && normalizeEndpointUrl(s.url) === key)
   }
 
   /**
@@ -4645,10 +4733,14 @@ Generate an improved version of the procedure that prevents this failure. Return
    */
   async discoverRemoteScopes(opts?: { url?: string; timeoutMs?: number }): Promise<RemoteScopeDiscovery[]> {
     const timeoutMs = opts?.timeoutMs ?? 5000
-    const endpoints = this._distinctRemoteEndpoints().filter(e => !opts?.url || e.url === opts.url)
+    // Endpoint identity is normalized (scope-audit 2026-07-24) so a caller
+    // restricting by one spelling still matches an entry configured under
+    // another, and `registered` sees every spelling's entries.
+    const endpoints = this._distinctRemoteEndpoints()
+      .filter(e => !opts?.url || normalizeEndpointUrl(e.url) === normalizeEndpointUrl(opts.url))
 
     return Promise.all(endpoints.map(async ({ url, token }) => {
-      const registered = (this.config.stores ?? []).filter(s => s.url === url).map(s => s.scope)
+      const registered = this._storesForEndpoint(url).map(s => s.scope)
       try {
         const driver = this._getRemoteDriver({ url, token, scope: registered[0] ?? '' })
         let timeoutHandle: ReturnType<typeof setTimeout> | undefined
@@ -4662,7 +4754,11 @@ Generate an improved version of the procedure that prevents this failure. Return
         // #647: scopes the user has dismissed from the offer are not "actionable"
         // — drop them from `unregistered` so the session-start hint and CLI stop
         // re-surfacing them every session. `plur scopes --reoffer` clears these.
-        const dismissedSet = new Set(this.config.dismissed_scopes ?? [])
+        // Membership is CASE-INSENSITIVE (scope-audit 2026-07-24): the /me scope
+        // grammar admits uppercase, so a case-variant re-advertisement of a
+        // dismissed scope must not resurrect the offer. Stored values keep
+        // their original case.
+        const dismissedSet = this._dismissedScopeKeys()
         return {
           url,
           ok: true,
@@ -4671,7 +4767,7 @@ Generate an improved version of the procedure that prevents this failure. Return
           role: me.role,
           authorized: me.scopes,
           registered,
-          unregistered: me.scopes.filter(s => !registeredSet.has(s) && !dismissedSet.has(s)),
+          unregistered: me.scopes.filter(s => !registeredSet.has(s) && !dismissedSet.has(s.toLowerCase())),
           // #345 D2: server-authoritative metadata for the authorized scopes,
           // already validated in RemoteStore.me(). Empty for older servers.
           metadata: me.scope_metadata ?? [],
@@ -4694,7 +4790,7 @@ Generate an improved version of the procedure that prevents this failure. Return
    */
   remoteTokenExpiries(now: number = Date.now()): Array<{ url: string; scopes: string[]; expiresAt: string | null; expiresInDays: number | null; expired: boolean }> {
     return this._distinctRemoteEndpoints().map(({ url, token }) => {
-      const scopes = (this.config.stores ?? []).filter(s => s.url === url).map(s => s.scope)
+      const scopes = this._storesForEndpoint(url).map(s => s.scope)
       const exp = decodeJwtExpiry(token, now)
       return {
         url, scopes,
@@ -4717,7 +4813,7 @@ Generate an improved version of the procedure that prevents this failure. Return
     const timeoutMs = opts?.timeoutMs ?? 5000
     const endpoints = this._distinctRemoteEndpoints()
     return Promise.all(endpoints.map(async ({ url, token }) => {
-      const scopes = (this.config.stores ?? []).filter(s => s.url === url).map(s => s.scope)
+      const scopes = this._storesForEndpoint(url).map(s => s.scope)
       const exp = decodeJwtExpiry(token)
       const expiryFields = {
         tokenExpiresAt: exp.expiresAt ? exp.expiresAt.toISOString() : undefined,
@@ -4751,7 +4847,9 @@ Generate an improved version of the procedure that prevents this failure. Return
    * Register every authorized-but-unregistered scope discovered for the
    * configured remote URL(s) (#292). One token → all the user's team scopes in
    * a single action. Relies on URL+scope dedup (#291) so multiple scopes coexist
-   * under one URL.
+   * under one URL. Scopes the user has dismissed (#647) are respected — the
+   * batch path skips them (scope-audit 2026-07-24); only the per-scope
+   * {@link registerScope} overrides a dismissal.
    *
    * Returns per-URL what was newly `added` vs `already_registered`. A URL whose
    * `/me` failed yields `ok:false` and registers nothing.
@@ -4760,14 +4858,32 @@ Generate an improved version of the procedure that prevents this failure. Return
     const discoveries = await this.discoverRemoteScopes(opts)
     const results = discoveries.map(d => {
       if (!d.ok) return { url: d.url, ok: false, added: [], already_registered: [], skipped: [], error: d.error }
-      const token = (this.config.stores ?? []).find(s => s.url === d.url)?.token
+      const token = this._storesForEndpoint(d.url)[0]?.token
       const added: string[] = []
       const already: string[] = []
       const skipped: string[] = []
-      // Attempt every authorized scope (not just the pre-computed unregistered
-      // set) and let addStore's url+scope idempotency (#291) classify each — so
-      // the result is accurate even if config changed between discover and now.
+      // Dismissals gate the batch path (scope-audit 2026-07-24): iterating the
+      // raw `d.authorized` set used to register scopes the user had explicitly
+      // dismissed (#647) — `unregistered` filters them out, but this loop never
+      // consulted it, so `plur_scopes_discover register:true` silently overrode
+      // the recorded opt-out and left the stale `dismissed_scopes` entry behind.
+      // The per-scope {@link registerScope} remains the deliberate override
+      // (it registers AND clears the dismissal). Case-insensitive, matching
+      // the discover-time filter.
+      const dismissed = this._dismissedScopeKeys()
+      // Attempt every non-dismissed authorized scope (not just the pre-computed
+      // unregistered set) and let addStore's url+scope idempotency (#291)
+      // classify each — so the result is accurate even if config changed
+      // between discover and now.
       for (const scope of d.authorized) {
+        if (dismissed.has(scope.toLowerCase()) && !d.registered.includes(scope)) {
+          // Dismissed and not currently registered → the batch path must not
+          // register it. (A registered scope stays reported as
+          // already_registered even if a stale dismissal lingers.)
+          skipped.push(scope)
+          logger.info(`[plur] skipping dismissed scope "${scope}" from ${d.url} — batch register respects dismissals; use \`plur scopes register ${scope}\` to override (it also clears the dismissal)`)
+          continue
+        }
         // SECURITY (#382): never auto-register a PERSONAL-family scope returned
         // by `/me` as a writable remote store. A compromised/MITM'd endpoint can
         // claim `scopes:['global','user:<victim>','local']`; registering those
@@ -4864,13 +4980,15 @@ Generate an improved version of the procedure that prevents this failure. Return
       const failed = discoveries.filter(d => !d.ok).map(d => d.url)
       throw new Error(`scope "${scope}" is not authorized on any configured remote${failed.length ? ` (could not reach: ${failed.join(', ')})` : ''}`)
     }
-    const token = (this.config.stores ?? []).find(s => s.url === match.url)?.token
+    const token = this._storesForEndpoint(match.url)[0]?.token
     const { status } = this.addStore('', scope, { url: match.url, token })
     // Persist covers/description/sensitivity so suggestScope activates (#668).
     this.persistScopeMetadata(discoveries)
-    // Registering a scope also clears any prior dismissal of it (#647).
-    if ((this.config.dismissed_scopes ?? []).includes(scope)) {
-      this.persistDismissedScopes((this.config.dismissed_scopes ?? []).filter(s => s !== scope))
+    // Registering a scope also clears any prior dismissal of it (#647) —
+    // case-insensitively (scope-audit 2026-07-24), so a case-variant dismissal
+    // can't linger and re-suppress the scope from future offers.
+    if ((this.config.dismissed_scopes ?? []).some(s => s.toLowerCase() === scope.toLowerCase())) {
+      this.persistDismissedScopes((this.config.dismissed_scopes ?? []).filter(s => s.toLowerCase() !== scope.toLowerCase()))
     }
     return { url: match.url, status }
   }
@@ -4883,8 +5001,16 @@ Generate an improved version of the procedure that prevents this failure. Return
    */
   dismissScope(scope: string): void {
     const current = this.config.dismissed_scopes ?? []
-    if (current.includes(scope)) return
+    // Case-insensitive membership (scope-audit 2026-07-24): dismissing `Group:x`
+    // when `group:x` is already recorded must stay a no-op, not a duplicate.
+    if (current.some(s => s.toLowerCase() === scope.toLowerCase())) return
     this.persistDismissedScopes([...current, scope])
+  }
+
+  /** Lowercased `dismissed_scopes` for case-insensitive membership tests
+   *  (scope-audit 2026-07-24). The stored values keep their original case. */
+  private _dismissedScopeKeys(): Set<string> {
+    return new Set((this.config.dismissed_scopes ?? []).map(s => s.toLowerCase()))
   }
 
   /** Clear all dismissals (#647) — previously dismissed scopes are offered again. */
@@ -4900,18 +5026,32 @@ Generate an improved version of the procedure that prevents this failure. Return
   /**
    * Persist `dismissed_scopes` to config.yaml, preserving every other top-level
    * key, then refresh the in-memory config + mtime. Mirrors {@link persistStores}:
-   * a transient read error on an EXISTING config aborts rather than truncating.
+   * a transient read error on an EXISTING config aborts rather than truncating,
+   * and the read-modify-write runs under {@link withLock} so a concurrent
+   * config persist path can't be last-writer-wins'd away (scope-audit
+   * 2026-07-24). Dedup is case-insensitive (first spelling wins) so case
+   * variants of one scope never accumulate.
    */
   private persistDismissedScopes(list: string[]): void {
-    let configData: Record<string, unknown> = {}
-    try {
-      const raw = fs.readFileSync(this.paths.config, 'utf8')
-      if (raw) configData = (yaml.load(raw) as Record<string, unknown>) ?? {}
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') throw err
+    const seen = new Set<string>()
+    const deduped: string[] = []
+    for (const s of list) {
+      const key = s.toLowerCase()
+      if (seen.has(key)) continue
+      seen.add(key)
+      deduped.push(s)
     }
-    configData.dismissed_scopes = [...new Set(list)].sort()
-    fs.writeFileSync(this.paths.config, yaml.dump(configData, { lineWidth: 120, noRefs: true }))
+    withLock(this.paths.config, () => {
+      let configData: Record<string, unknown> = {}
+      try {
+        const raw = fs.readFileSync(this.paths.config, 'utf8')
+        if (raw) configData = (yaml.load(raw) as Record<string, unknown>) ?? {}
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') throw err
+      }
+      configData.dismissed_scopes = deduped.sort()
+      fs.writeFileSync(this.paths.config, yaml.dump(configData, { lineWidth: 120, noRefs: true }))
+    })
     this.config = loadConfig(this.paths.config)
     this.configMtimeMs = this.statConfigMtime()
   }
@@ -4926,34 +5066,85 @@ Generate an improved version of the procedure that prevents this failure. Return
    * (session_start, registerDiscoveredScopes, registerScope) to close that gap.
    * Personal-family scopes are skipped — they are never routing targets.
    * No-op when nothing changed (avoids spurious config writes).
+   *
+   * TRUST RULE for `sensitivity` (scope-audit 2026-07-24): remote-served
+   * sensitivity may only TIGHTEN the write-time leak guard, never loosen it.
+   * The guard checks `allow` BEFORE `forbid` and `allow` admits arbitrary
+   * strings, so persisting a remote `allow:['secrets','infra']` verbatim would
+   * let a hostile/compromised enterprise endpoint silently disarm the guard at
+   * the next session_start. Therefore:
+   *   - a remote `allow` is NEVER persisted (dropped, along with any unknown
+   *     nested sensitivity fields the remote sent);
+   *   - only the remote `forbid` is persisted, sanitized to the known
+   *     SENSITIVITY_CATEGORIES (empty-after-sanitize falls to the safe
+   *     default, mirroring ScopeSensitivitySchema);
+   *   - a hand-edited `allow` in local config.yaml is preserved and remains
+   *     honored by the guard — a deliberate LOCAL decision.
+   *
+   * The change-detector compares what WILL actually be persisted
+   * (post-sanitization, post-merge) against the loaded entry, so an unchanged
+   * server state is a true no-op — no write, no mtime bump, no config-reload
+   * storm on every session_start. When `forbid` DOES change, the affected
+   * scopes are named to persistStores (`serverSensitivityScopes`) so
+   * mergeStoresForWriteback's raw-forbid restore doesn't discard the update.
    */
   persistScopeMetadata(discoveries: RemoteScopeDiscovery[]): void {
     const stores = this.config.stores ?? []
     if (!stores.length) return
 
     let changed = false
+    const serverSensitivityScopes = new Set<string>()
     const updated = stores.map(entry => {
       if (!entry.url) return entry                  // local store — no server metadata
       if (!isSharedScope(entry.scope)) return entry // never write covers to personal scopes
-      const discovery = discoveries.find(d => d.ok && d.url === entry.url)
+      // Endpoint identity is normalized (scope-audit 2026-07-24): a discovery
+      // for https://x.com must match an entry configured as https://x.com/sse.
+      const discovery = discoveries.find(d => d.ok && normalizeEndpointUrl(d.url) === normalizeEndpointUrl(entry.url!))
       if (!discovery?.metadata.length) return entry
       const meta = discovery.metadata.find(m => m.scope === entry.scope)
       if (!meta) return entry
-      // Only write when values differ to avoid spurious config writes
-      const coversMatch = JSON.stringify(meta.covers) === JSON.stringify(entry.covers)
-      const descMatch = meta.description === entry.description
-      const sensMatch = JSON.stringify(meta.sensitivity) === JSON.stringify(entry.sensitivity)
+
+      // What WILL be persisted (trust rule above): server covers/description
+      // verbatim; sensitivity = local entry's policy (incl. any hand-edited
+      // `allow` + nested unknowns) with only `forbid` taken from the server,
+      // sanitized to the category enum. No server sensitivity → local untouched.
+      const nextSensitivity = meta.sensitivity !== undefined
+        ? { ...(entry.sensitivity ?? { allow: [] }), forbid: sanitizeForbidCategories(meta.sensitivity.forbid) }
+        : entry.sensitivity
+      const nextCovers = meta.covers !== undefined ? meta.covers : entry.covers
+      const nextDescription = meta.description !== undefined ? meta.description : entry.description
+
+      // Only write when the PERSISTED value would differ — comparing the raw
+      // server payload instead (as pre-audit code did) never converges once a
+      // field (e.g. `allow`) is deliberately not persisted. stableJson keeps
+      // the compare key-order-insensitive across spread/re-parse round-trips.
+      const coversMatch = stableJson(nextCovers) === stableJson(entry.covers)
+      const descMatch = nextDescription === entry.description
+      const sensMatch = stableJson(nextSensitivity) === stableJson(entry.sensitivity)
       if (coversMatch && descMatch && sensMatch) return entry
+
+      // Server-authoritative overwrite is by design — but overwriting a
+      // DIFFERENT non-empty local value must be visible, not silent (F5,
+      // scope-audit 2026-07-24): a hand-set covers/description vanishing with
+      // no trace looks like data loss.
+      const clobbered: string[] = []
+      if (!coversMatch && (entry.covers?.length ?? 0) > 0) clobbered.push('covers')
+      if (!descMatch && entry.description !== undefined && entry.description !== '') clobbered.push('description')
+      if (clobbered.length) {
+        logger.warning(`[plur:scope-metadata] scope "${entry.scope}": overwriting local ${clobbered.join(' + ')} with server values from ${discovery.url} (server-authoritative)`)
+      }
+
       changed = true
+      if (!sensMatch) serverSensitivityScopes.add(entry.scope)
       return {
         ...entry,
-        ...(meta.covers !== undefined ? { covers: meta.covers } : {}),
-        ...(meta.description !== undefined ? { description: meta.description } : {}),
-        ...(meta.sensitivity !== undefined ? { sensitivity: meta.sensitivity } : {}),
+        ...(nextCovers !== undefined ? { covers: nextCovers } : {}),
+        ...(nextDescription !== undefined ? { description: nextDescription } : {}),
+        ...(nextSensitivity !== undefined ? { sensitivity: nextSensitivity } : {}),
       }
     })
 
-    if (changed) this.persistStores(updated)
+    if (changed) this.persistStores(updated, { serverSensitivityScopes })
   }
 
   /** Set a session-level default scope. Used as fallback in learn/learnRouted when no explicit scope is provided. */

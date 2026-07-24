@@ -1915,8 +1915,13 @@ function getAllToolDefinitions(): ToolDefinition[] {
           // No project scope detected — warn about cross-project context bleed
           // (this is the #177 failure mode: agents that don't pass scope get
           // 'global', and global pollutes every future session).
-          guide += `\n\n⚠️ No project scope detected. plur_learn calls without explicit scope will be tagged ` +
-            `"global" and will appear in EVERY project's future sessions. Create a .plur.yaml NOW to prevent this: ` +
+          // Wording matches post-#674 behavior (scope-audit 2026-07-24): with
+          // synced covers, a genuinely-unscoped write can AUTO-ROUTE to a
+          // covers-matching team scope — it is no longer always tagged "global".
+          guide += `\n\n⚠️ No project scope detected. plur_learn calls without explicit scope may AUTO-ROUTE to a ` +
+            `registered team scope whose covers confidently match the engram's domain/tags (the response reports ` +
+            `\`routed\` when that happens); otherwise they land at the unscoped default "global" and will appear in ` +
+            `EVERY project's future sessions. Create a .plur.yaml NOW to prevent this: ` +
             `scope: "project:<your-project-name>". (This is every project's PERSONAL recall context, NOT team ` +
             `shared stores — use an explicit shared scope like project:/group: to reach a team store.) ` +
             `Note: an explicit scope=global RECALL surfaces all your personal engrams, but scope=global INJECT is ` +
@@ -1944,12 +1949,17 @@ function getAllToolDefinitions(): ToolDefinition[] {
           guide += default_scope
             ? `\n\nSession default scope is set to "${default_scope}". To route an engram to a remote ` +
               `enterprise store instead, pass scope explicitly to plur_learn (available remote scopes: ${scopeList}).`
+            // Wording matches post-#674 behavior (scope-audit 2026-07-24):
+            // unscoped writes are no longer guaranteed to land at "global" —
+            // covers-matching ones auto-route to the shared team store.
             : `\n\nRemote store scopes available: ${scopeList}. Set scope PER ENGRAM by content: when an engram is ` +
               `relevant to the team (engineering patterns, architecture decisions, project conventions), set scope to ` +
               `the matching remote scope in plur_learn. Personal preferences, local project details, and corrections ` +
-              `specific to your workflow can be left unscoped (they land at the unscoped default, "global" — the ` +
-              `cross-project personal namespace). Do NOT let TEAM knowledge fall back to "global" — without an ` +
-              `explicit scope it will, and it will never reach the shared store.`
+              `specific to your workflow can be left unscoped — but note an unscoped write whose domain/tags ` +
+              `confidently match a team scope's covers AUTO-ROUTES to that shared team store (the response reports ` +
+              `\`routed\` when that happens); otherwise it lands at the unscoped default, "global" — the ` +
+              `cross-project personal namespace. Do NOT rely on auto-routing for TEAM knowledge — set the matching ` +
+              `scope explicitly; a weak or absent covers match falls back to "global" and never reaches the shared store.`
 
           // Surface authorized-but-unregistered scopes (#292). Best-effort:
           // gated to enterprise users (remote stores configured), bounded by a
@@ -2262,7 +2272,7 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
 
     {
       name: 'plur_scopes_discover',
-      description: 'Discover which scopes your remote token is authorized for via the enterprise server (GET /api/v1/me), and which of those are not yet registered locally. Read-only by default; pass register:true to register all authorized-but-unregistered scopes in one step. Only shared-family scopes (group:/project:/space:/team:/org:/public) are auto-registered — personal-family scopes (global/local/user:*/agent:*) advertised by /me are skipped and surfaced in the result. Use this when you have access to multiple team scopes on one server.',
+      description: 'Discover which scopes your remote token is authorized for via the enterprise server (GET /api/v1/me), and which of those are not yet registered locally. Read-only by default; pass register:true to register all authorized-but-unregistered scopes in one step. Only shared-family scopes (group:/project:/space:/team:/org:/public) are auto-registered — personal-family scopes (global/local/user:*/agent:*) advertised by /me are skipped and surfaced in the result, and scopes the user has dismissed are respected (NOT registered by the batch path; register one individually via the CLI `plur scopes register <scope>` to override, which also clears the dismissal). Use this when you have access to multiple team scopes on one server.',
       annotations: { title: 'Discover scopes', readOnlyHint: false, idempotentHint: true },
       inputSchema: {
         type: 'object',
