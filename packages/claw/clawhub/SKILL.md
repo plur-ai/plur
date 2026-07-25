@@ -1,7 +1,7 @@
 ---
 name: plur-memory
 description: "Your memory stays on your machine. No cloud, no tracking, no API key. PLUR makes your OpenClaw remember — and shares that memory with every other tool you use."
-version: 0.10.0
+version: 0.15.0
 ---
 
 # PLUR Memory
