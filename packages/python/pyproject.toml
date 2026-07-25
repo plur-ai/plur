@@ -22,6 +22,9 @@ classifiers = [
 ]
 dependencies = []
 
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+
 [project.urls]
 Homepage = "https://plur.ai"
 Repository = "https://github.com/plur-ai/plur"
@@ -30,3 +33,6 @@ Issues = "https://github.com/plur-ai/plur/issues"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["plur_ai*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

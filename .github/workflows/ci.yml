@@ -63,3 +63,40 @@ jobs:
       # Getting-started examples must stay runnable against the public API (#267).
       - name: Run examples
         run: pnpm --filter @plur-ai/examples run all
+
+  test-python:
+    # Runs pytest for all three Python packages.  Previously there was no Python
+    # CI job — bugs in plur-langchain, plur-ai, and plur-hermes were invisible
+    # because the TS/Bun suite never touched them (#549).
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11"]
+        package:
+          - name: plur-hermes
+            path: packages/hermes
+            extras: test
+          - name: plur-ai
+            path: packages/python
+            extras: dev
+          - name: plur-langchain
+            path: packages/langchain
+            extras: dev
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      # plur-langchain depends on plur-ai at runtime; install the local copy so
+      # tests import the in-tree version rather than pulling from PyPI.
+      - name: Install plur-ai (required by plur-langchain)
+        if: matrix.package.name == 'plur-langchain'
+        run: pip install -e packages/python
+      - name: Install ${{ matrix.package.name }} with dev/test dependencies
+        run: pip install -e "${{ matrix.package.path }}[${{ matrix.package.extras }}]"
+      - name: Run pytest for ${{ matrix.package.name }}
+        run: pytest ${{ matrix.package.path }} -v
