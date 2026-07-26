@@ -48,7 +48,7 @@ import { YamlPrimaryStore } from './store/yaml-primary-store.js'
 import type { PrimaryStore } from './store/primary-store.js'
 import { requiresIndexSync, asDerivedIndex } from './storage-adapter.js'
 import { resolveBackendTier, type BackendSelection } from './backend-selection.js'
-import { isSharedScope, isPersonalScope, isScopeWithin } from './scope-util.js'
+import { isSharedScope, isPersonalScope, isScopeWithin, scopeAllowFilter } from './scope-util.js'
 import type { Engram } from './schemas/engram.js'
 import type { Episode } from './schemas/episode.js'
 import type { PackManifest } from './schemas/pack.js'
@@ -100,11 +100,18 @@ export { rankScopes, SCOPE_MATCH_THRESHOLD, WEIGHT_TAG, SUGGEST_DISPLAY_MIN_CONF
 // importing it from here would form index → inject → index. They are imported
 // above for internal use and re-exported here so the public `@plur-ai/core` API
 // (`isSharedScope`, `isPersonalScope`, `SHARED_SCOPE_PREFIXES`) is unchanged.
-export { isSharedScope, isPersonalScope, SHARED_SCOPE_PREFIXES } from './scope-util.js'
+export { isSharedScope, isPersonalScope, SHARED_SCOPE_PREFIXES, scopeAllowFilter } from './scope-util.js'
 export { detectPlurStorage, type PlurPaths } from './storage.js'
 export { IndexedStorage } from './storage-indexed.js'
 export { PGLiteAdapter, type PGLiteAdapterOptions, type VectorPrecision } from './storage-pglite.js'
-export type { StorageAdapter, StorageFilter, VectorSearchHit, StorageAdapterRole, DerivedIndexAdapter } from './storage-adapter.js'
+export type {
+  ScopeRestriction,
+  StorageAdapter,
+  StorageFilter,
+  VectorSearchHit,
+  StorageAdapterRole,
+  DerivedIndexAdapter,
+} from './storage-adapter.js'
 export { requiresIndexSync, asDerivedIndex } from './storage-adapter.js'
 export {
   EXACT_VECTOR_INDEX,
@@ -2449,7 +2456,7 @@ export class Plur {
   }
 
   /** List all active engrams, optionally filtered by scope/domain. No search — returns all matches. */
-  list(options?: { scope?: string; domain?: string; min_strength?: number; include_expired?: boolean }): Engram[] {
+  list(options?: { scope?: string; scopes?: string[]; domain?: string; min_strength?: number; include_expired?: boolean }): Engram[] {
     return this._filterEngrams(options)
   }
 
@@ -2460,6 +2467,7 @@ export class Plur {
       engrams = this.indexedStorage.loadFiltered({
         status: 'active',
         scope: options?.scope,
+        scopes: options?.scopes,
         domain: options?.domain,
       })
     } else {
@@ -2471,6 +2479,14 @@ export class Plur {
       // so the cost is comparable.
       engrams = this._loadAllEngrams()
       engrams = engrams.filter(e => e.status === 'active')
+      if (options?.scopes !== undefined) {
+        // Permitted-scope allow-list (Phase 3). The in-memory twin of the SQL
+        // `scope = ANY($n)` pushdown, so the YAML path can never be the one
+        // read path that silently ignores an authorization filter. EXACT
+        // membership; `[]` matches nothing — see scopeAllowFilter.
+        const allowed = scopeAllowFilter(options.scopes)
+        engrams = engrams.filter(e => allowed(e.scope))
+      }
       if (options?.domain) {
         engrams = engrams.filter(e => e.domain?.startsWith(options.domain!))
       }
