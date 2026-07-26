@@ -25,6 +25,25 @@ jobs:
       fail-fast: false
       matrix:
         node-version: [20, 22, 24]
+    # Real Postgres + pgvector for the PostgresAdapter suite (ADR-0005). The
+    # suite skips when PLUR_TEST_POSTGRES_URL is unset, so without this service
+    # it would be permanently skipped and permanently unproven — which is worse
+    # than not having it. With the service set, a broken database FAILS the run
+    # instead of quietly skipping.
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: plur_test
+          POSTGRES_PASSWORD: plur_test_only
+          POSTGRES_DB: plur_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U plur_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -60,6 +79,10 @@ jobs:
             exit 1
           }
       - run: pnpm test
+        env:
+          # Throwaway credentials for the ephemeral service container above —
+          # it is reachable only from this job.
+          PLUR_TEST_POSTGRES_URL: postgres://plur_test:plur_test_only@127.0.0.1:5432/plur_test
       # Getting-started examples must stay runnable against the public API (#267).
       - name: Run examples
         run: pnpm --filter @plur-ai/examples run all

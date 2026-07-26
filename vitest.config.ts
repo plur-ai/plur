@@ -34,7 +34,8 @@ export default defineConfig({
           name: 'core-pglite',
           root: 'packages/core',
           globals: true,
-          include: ['test/pglite-*.test.ts', 'test/sync-index-error.test.ts'],
+          // Keep in sync with PGLITE_SUITES in packages/core/vitest.config.ts.
+          include: ['test/pglite-*.test.ts', 'test/sync-index-error.test.ts', 'test/postgres-*.test.ts'],
           // The whole point: one file at a time, so no two WASM Postgres
           // instances are booting concurrently.
           fileParallelism: false,

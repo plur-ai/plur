@@ -47,6 +47,7 @@ import { RemoteStore, normalizeEndpointUrl } from './store/remote-store.js'
 import { YamlPrimaryStore } from './store/yaml-primary-store.js'
 import type { PrimaryStore } from './store/primary-store.js'
 import { requiresIndexSync, asDerivedIndex } from './storage-adapter.js'
+import { resolveBackendTier, type BackendSelection } from './backend-selection.js'
 import { isSharedScope, isPersonalScope, isScopeWithin } from './scope-util.js'
 import type { Engram } from './schemas/engram.js'
 import type { Episode } from './schemas/episode.js'
@@ -105,8 +106,39 @@ export { IndexedStorage } from './storage-indexed.js'
 export { PGLiteAdapter, type PGLiteAdapterOptions, type VectorPrecision } from './storage-pglite.js'
 export type { StorageAdapter, StorageFilter, VectorSearchHit, StorageAdapterRole, DerivedIndexAdapter } from './storage-adapter.js'
 export { requiresIndexSync, asDerivedIndex } from './storage-adapter.js'
+export {
+  EXACT_VECTOR_INDEX,
+  PGVECTOR_DEFAULT_EF_SEARCH,
+  EF_SEARCH_FILTER_HEADROOM,
+  efSearchFor,
+  type VectorIndexKind,
+  type VectorIndexStrategy,
+  type VectorElementFormat,
+} from './storage-adapter.js'
+// Server-Postgres backend (ADR-0005): store AND index in one engine.
+export {
+  PostgresAdapter,
+  type PostgresAdapterOptions,
+  type PostgresVectorIndexMode,
+  DEFAULT_POSTGRES_SCHEMA,
+  HNSW_DEFAULT_M,
+  HNSW_DEFAULT_EF_CONSTRUCTION,
+  HNSW_RECALL_TARGET,
+  HNSW_MIN_ROWS,
+  redactDsn,
+} from './storage-postgres.js'
+export {
+  resolveBackendTier,
+  BACKEND_TIERS,
+  PGLITE_MIN_ENGRAMS,
+  POSTGRES_MIN_ENGRAMS,
+  type BackendTier,
+  type BackendSelection,
+  type BackendSelectionInput,
+  type BackendSelectionReason,
+} from './backend-selection.js'
 export { YamlStore, SqliteStore, createStore, migrateStore, type EngramStore, type StorageBackend, type StorageConfig } from './store/index.js'
-export { YamlPrimaryStore, MemoryPrimaryStore, type PrimaryStore, type PrimaryStoreKind } from './store/index.js'
+export { YamlPrimaryStore, MemoryPrimaryStore, type PrimaryStore, type AsyncPrimaryStore, type PrimaryStoreKind } from './store/index.js'
 export { withAsyncLock, asyncAtomicWrite } from './store/index.js'
 // Embedding primitive — public so alternative store backends can compute
 // vectors identically to core's hybrid search (same model + EMBED_DIM). The
@@ -391,8 +423,10 @@ export class Plur {
   private config: PlurConfig
   private indexedStorage: IndexedStorage | null = null
   /**
-   * PGLite adapter (ADR-0001, Sprint 0 PR 2). Opt-in via
-   * PLUR_BACKEND=pglite env var or `backend: pglite` in config.yaml.
+   * PGLite adapter (ADR-0001, Sprint 0 PR 2). Selected explicitly via
+   * `PLUR_BACKEND=pglite` / `backend: pglite`, or automatically once the store
+   * is large enough to make brute-force scanning the dominant cost (ADR-0005,
+   * `backend-selection.ts`).
    * When active, runs in parallel to the YAML write path: every YAML
    * mutation triggers syncFromYaml on the PGLite index. The YAML file
    * remains the source of truth — see yaml-truth-rebuild and
@@ -421,6 +455,13 @@ export class Plur {
    * when the primary store is not.
    */
   private _secondaryStores: Map<string, PrimaryStore> = new Map()
+  /**
+   * The storage-tier decision this instance was constructed with (ADR-0005).
+   * Kept so `backendSelection()` can report the tier AND the reason — "which
+   * backend am I on, and why" is a question a deployment must be able to answer
+   * without reading the source.
+   */
+  private _backendSelection: BackendSelection
   /**
    * engram_id → injection_id of the most recent co_injection that included it
    * (#452). Fast path for linking plur_feedback verdicts to their injection
@@ -464,8 +505,30 @@ export class Plur {
       this.config = loadConfig(this.paths.config)
     }
     this.configMtimeMs = this.statConfigMtime()
-    const backend = this._resolveBackend()
-    if (backend === 'pglite') {
+    const selection = this._resolveBackend()
+    this._backendSelection = selection
+    // The `postgres` tier cannot yet BE this process's primary store: `Plur`'s
+    // write path is synchronous (ADR-0003) and Node has no synchronous Postgres
+    // client, so a network-backed store cannot satisfy the `PrimaryStore`
+    // contract until convergence Phase 2 makes that path async. Rather than
+    // half-wire it, the process runs the best tier it CAN wire — PGLite, a real
+    // working index — and says so once, loudly. `PostgresAdapter` is exported
+    // and fully usable by a deployment that drives it directly (ADR-0005).
+    if (selection.tier === 'postgres') {
+      logger.warning(
+        `[plur] backend=postgres selected (${selection.reason}, ~${selection.engramCount} engrams) but core's `
+        + `write path is still synchronous — this process is running the PGLite index instead and keeping its `
+        + `configured primary store (${this._primaryStore.kind}). Use PostgresAdapter directly, or wait for the `
+        + `async write path (convergence Phase 2).`,
+      )
+    } else if (selection.wanted === 'postgres') {
+      logger.warning(
+        `[plur] ~${selection.engramCount} engrams is past the Postgres threshold, but no connection string is `
+        + `configured (postgres.url / PLUR_POSTGRES_URL) — running the PGLite index instead.`,
+      )
+    }
+    const indexTier = selection.tier === 'postgres' ? 'pglite' : selection.tier
+    if (indexTier === 'pglite') {
       // PGLite path. Keep SQLite indexedStorage null so we don't double-index.
       // vector.precision (#223): unset = keep the store's existing column
       // type; 'halfvec' opts in to fp16 storage (lazy in-place migration).
@@ -503,17 +566,44 @@ export class Plur {
   }
 
   /**
-   * Resolve the active index backend. Order:
-   *   1. PLUR_BACKEND env var (pglite|sqlite)
+   * Resolve the active storage tier. Order:
+   *   1. `PLUR_BACKEND` env var (yaml|sqlite|pglite|postgres)
    *   2. config.yaml `backend` field
-   *   3. default: sqlite (historical)
+   *   3. the size of the store — see `backend-selection.ts` / ADR-0005
+   *
+   * Step 3 is the new one. The old implementation stopped at "default: sqlite",
+   * which combined with `config.index` being undefined-by-default meant the
+   * common case built no index at all and brute-forced cosine over the entire
+   * corpus, in every process, on every recall.
+   *
+   * The estimate comes from `PrimaryStore.estimateCount()` — a `stat()`, not a
+   * parse. Deciding which backend to build must not cost what the wrong backend
+   * would have cost.
    */
-  private _resolveBackend(): 'sqlite' | 'pglite' {
-    const env = process.env.PLUR_BACKEND
-    if (env === 'pglite' || env === 'sqlite') return env
-    const fromConfig = (this.config as { backend?: string }).backend
-    if (fromConfig === 'pglite' || fromConfig === 'sqlite') return fromConfig
-    return 'sqlite'
+  private _resolveBackend(): BackendSelection {
+    return resolveBackendTier({
+      env: process.env.PLUR_BACKEND,
+      config: (this.config as { backend?: string }).backend,
+      engramCount: this._primaryStore.estimateCount?.() ?? 0,
+      postgresConfigured: Boolean(this._postgresUrl()),
+    })
+  }
+
+  /** Configured Postgres DSN, env first. Never logged unredacted. */
+  private _postgresUrl(): string | undefined {
+    const env = process.env.PLUR_POSTGRES_URL
+    if (env) return env
+    return (this.config as { postgres?: { url?: string } }).postgres?.url
+  }
+
+  /**
+   * How this instance's storage tier was chosen — tier, reason, the estimate it
+   * was made from, and (when the size estimate wanted a tier it could not have)
+   * `wanted`. Diagnostics: a deployment should never have to guess which
+   * backend it is on or why.
+   */
+  backendSelection(): BackendSelection {
+    return this._backendSelection
   }
 
   private _autoPurgeLegacyTensions(): void {

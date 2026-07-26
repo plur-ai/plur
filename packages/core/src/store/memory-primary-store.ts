@@ -39,4 +39,9 @@ export class MemoryPrimaryStore implements PrimaryStore {
   invalidate(): void {
     // Nothing is cached — the store IS the memory.
   }
+
+  /** Exact, not an estimate — the corpus is already in memory. */
+  estimateCount(): number {
+    return this.engrams.length
+  }
 }

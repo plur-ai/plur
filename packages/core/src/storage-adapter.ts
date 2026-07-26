@@ -35,10 +35,22 @@
  * and declares `role: 'primary'` here to say "my query index and my store are
  * the same engine".
  *
+ * ## Why the vector-index strategy is on the interface
+ *
+ * Core has always answered `searchVector()` exactly — a brute-force cosine
+ * scan over every candidate, so recall was 1.0 by construction and nobody had
+ * to ask. A server-scale backend cannot do that; it needs an approximate index
+ * whose recall is a tuning outcome. `vectorIndex` makes that a DECLARED
+ * property of the adapter rather than a silent difference between deployments:
+ * a caller can ask what it is getting. See ADR-0005.
+ *
  * Backends today:
- *   - IndexedStorage  (legacy, better-sqlite3, in-process WAL — synchronous,
- *                      does not implement this interface)
- *   - PGLiteAdapter   (PGLite WASM, pgvector + AGE — ADR-0001, `role: 'index'`)
+ *   - IndexedStorage   (legacy, better-sqlite3, in-process WAL — synchronous,
+ *                       does not implement this interface)
+ *   - PGLiteAdapter    (PGLite WASM, pgvector + AGE — ADR-0001, `role: 'index'`,
+ *                       exact vector search)
+ *   - PostgresAdapter  (server Postgres + pgvector — ADR-0005,
+ *                       `role: 'primary'`, exact or HNSW)
  *
  * The PGLite path adds `searchBM25`, `searchVector`, and `upsertEmbedding` to
  * support the Wave 1 retrieval upgrades; the legacy SQLite path leaves those
@@ -66,6 +78,109 @@ export interface VectorSearchHit {
  */
 export type StorageAdapterRole = 'index' | 'primary'
 
+/**
+ * How an adapter answers `searchVector()` (ADR-0005).
+ *
+ *   - `exact`   — brute-force scan of every candidate vector. Returns the true
+ *                 top-k: recall is 1.0 by construction, not by tuning.
+ *   - `hnsw`    — pgvector's graph index. APPROXIMATE: recall depends on
+ *                 `m` / `ef_construction` (build time) and `ef_search`
+ *                 (query time).
+ *   - `ivfflat` — pgvector's inverted-list index. Also approximate; listed for
+ *                 completeness, not implemented in-repo.
+ */
+export type VectorIndexKind = 'exact' | 'hnsw' | 'ivfflat'
+
+/**
+ * On-disk element format of the embedding column (#223). A REAL difference in
+ * stored values, not just a size knob: `halfvec` rounds every element to fp16,
+ * so two tiers running different precisions answer the same query with
+ * slightly different scores. Part of the strategy so a caller comparing two
+ * deployments can see it.
+ */
+export type VectorElementFormat = 'float32' | 'halfvec'
+
+/**
+ * What a caller gets from `searchVector()` — DECLARED, not inferred.
+ *
+ * Core has always been exact (in-memory cosine over the whole corpus), so
+ * "100% recall" was a property nobody had to ask about. At Postgres scale that
+ * stops being free: an approximate index is the only way to answer in
+ * bounded time, and its recall is a tuning outcome. Rather than let that
+ * become an implementation detail that differs silently between deployments,
+ * every adapter declares it. See ADR-0005 for the decision and the measurement
+ * protocol behind `recallTarget`.
+ */
+export interface VectorIndexStrategy {
+  readonly kind: VectorIndexKind
+  /** True iff `searchVector()` returns the true top-k (recall 1.0 by construction). */
+  readonly exact: boolean
+  /**
+   * Recall@k the approximate tier is tuned to hit, as a fraction in (0, 1].
+   * `null` for exact strategies — there is nothing to target. Measured, not
+   * assumed: ADR-0005 defines the harness (same corpus, same queries, exact
+   * scan as ground truth, |approx ∩ exact| / k averaged over the query set).
+   */
+  readonly recallTarget: number | null
+  /** Element format of the stored vectors (#223). */
+  readonly format: VectorElementFormat
+  /**
+   * Tuning parameters actually in force, e.g. `{ m, efConstruction, efSearch }`
+   * for HNSW. Empty for exact. Reported so two deployments can be diffed
+   * without reading either one's source.
+   */
+  readonly params: Readonly<Record<string, number>>
+}
+
+/** The strategy every exact (brute-force) backend reports. */
+export const EXACT_VECTOR_INDEX: VectorIndexStrategy = Object.freeze({
+  kind: 'exact' as const,
+  exact: true,
+  recallTarget: null,
+  format: 'float32' as const,
+  params: Object.freeze({}),
+})
+
+/**
+ * pgvector's built-in `hnsw.ef_search` default. Below most useful result
+ * limits — an HNSW scan visits at most `ef_search` candidates, so a query with
+ * `LIMIT 50` on the default returns at most 40 rows. Exported because it is the
+ * number the guard below exists to defeat.
+ */
+export const PGVECTOR_DEFAULT_EF_SEARCH = 40
+
+/**
+ * Headroom multiplier applied on top of the hard `>= limit` floor.
+ *
+ * The floor is a correctness requirement: `ef_search < limit` cannot return
+ * `limit` rows at all. The multiplier covers the *second* failure mode — a
+ * post-filter. When a vector scan is followed by a predicate the index cannot
+ * evaluate (`status = 'active'`, a scope restriction), pgvector yields
+ * `ef_search` candidates and the filter then removes some of them, so a query
+ * asking for `k` rows can come back short even with `ef_search = k`. Fetching
+ * 2x candidates absorbs a filter that rejects up to half the neighbourhood.
+ */
+export const EF_SEARCH_FILTER_HEADROOM = 2
+
+/**
+ * The `hnsw.ef_search` a query must run with to be able to return `limit` rows.
+ *
+ * Never below `limit` — that is the whole point. `configured` raises the floor
+ * (an operator who tuned recall upward keeps their value) but never lowers it.
+ *
+ * @param limit      rows the caller asked for
+ * @param configured operator-configured ef_search (defaults to pgvector's own)
+ * @param headroom   post-filter headroom multiplier
+ */
+export function efSearchFor(
+  limit: number,
+  configured: number = PGVECTOR_DEFAULT_EF_SEARCH,
+  headroom: number = EF_SEARCH_FILTER_HEADROOM,
+): number {
+  const wanted = Math.ceil(Math.max(1, limit) * Math.max(1, headroom))
+  return Math.max(wanted, configured, Math.max(1, limit))
+}
+
 /** Async-style storage adapter. */
 export interface StorageAdapter {
   /**
@@ -73,6 +188,13 @@ export interface StorageAdapter {
    * (`'index'`) or is itself backed by the store of record (`'primary'`).
    */
   readonly role: StorageAdapterRole
+  /**
+   * What `searchVector()` actually does — exact or approximate, with which
+   * parameters. REQUIRED: a caller must be able to ask what it is getting
+   * rather than assume the exactness core happened to have historically.
+   * Exact backends report {@link EXACT_VECTOR_INDEX}.
+   */
+  readonly vectorIndex: VectorIndexStrategy
   /** Load all engrams from the backend, applying a filter. */
   loadFiltered(filter: StorageFilter): Promise<Engram[]>
   /** Count engrams with optional status filter. */
