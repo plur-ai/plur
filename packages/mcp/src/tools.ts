@@ -74,7 +74,18 @@ function jsonSchemaPropToZod(prop: any): z.ZodTypeAny {
           return val
         }
       }
-      if (prop.items?.type === 'string') {
+      // The comma-separated fallback must also cover union item schemas that
+      // ACCEPT a bare string, not just `items: {type: 'string'}`. Before this,
+      // `engram_suggestions` — whose items are
+      // `anyOf: [{type:'string'}, {type:'object'}]` (#231) — failed the check
+      // and fell through to `return val`, so the very workaround the #297
+      // error message advertises did not work for it.
+      const items = prop.items as any
+      const itemVariants = (items?.anyOf as any[] | undefined) ?? (items?.oneOf as any[] | undefined)
+      const itemsAcceptString = items?.type === 'string'
+        || (Array.isArray(itemVariants) && itemVariants.some((v: any) => v?.type === 'string'))
+
+      if (itemsAcceptString) {
         return trimmed.length === 0 ? [] : trimmed.split(',').map((s: string) => s.trim()).filter((s: string) => s.length > 0)
       }
       return val
@@ -123,9 +134,31 @@ export function validateToolArgs(
     const details = parsed.error.issues.map(i => `${i.path.join('.') || 'root'}: ${i.message}`).join(', ')
     const hasArrayParam = Object.values((schema.properties ?? {}) as Record<string, any>)
       .some((p: any) => p?.type === 'array')
-    const arrayBugHint = receivedFields.length === 0 && hasArrayParam
-      ? ' Known client-side bug (plur-ai/plur#297): some MCP clients drop the entire arguments payload ' +
-        'when an array-typed parameter is included. Retry passing array parameters as a JSON string ' +
+
+    // #297 has TWO shapes, not one. The original (total drop) loses the whole
+    // arguments object. The partial drop keeps the early scalar fields and
+    // silently discards trailing ones — observed on a large payload where a
+    // ~700-char `summary` plus a 5-element `engram_suggestions` array arrived
+    // as `{summary}` alone. Gating the hint on `receivedFields.length === 0`
+    // meant the partial case — the one that actually looks like a schema bug
+    // to the caller — got a bare "Required" with no workaround. Fire the hint
+    // whenever a *missing* field is itself array-typed.
+    const missingArrayParams = parsed.error.issues
+      .filter((i: any) => i.code === 'invalid_type' && i.received === 'undefined')
+      .map((i: any) => String(i.path[0] ?? ''))
+      .filter((k: string) => (schema.properties as any)?.[k]?.type === 'array')
+
+    const totalDrop = receivedFields.length === 0 && hasArrayParam
+    const partialDrop = missingArrayParams.length > 0
+
+    const arrayBugHint = totalDrop || partialDrop
+      ? ' Known client-side bug (plur-ai/plur#297): some MCP clients drop ' +
+        (partialDrop
+          ? `array-typed parameters from a large arguments payload while keeping the earlier fields ` +
+            `(here: ${missingArrayParams.join(', ')}). This is size-sensitive — the same call often ` +
+            `succeeds with a shorter payload, so shrink the other fields (e.g. a briefer summary) as well. `
+          : 'the entire arguments payload when an array-typed parameter is included. ') +
+        'Retry passing array parameters as a JSON string ' +
         '(e.g. tags: "[\\"a\\",\\"b\\"]") or a comma-separated string (tags: "a, b") — the server coerces ' +
         'both back into arrays.'
       : ''
