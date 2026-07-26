@@ -29,7 +29,7 @@ import type { Engram } from './schemas/engram.js'
 import { loadEngrams } from './engrams.js'
 import { searchEngrams } from './fts.js'
 import { logger } from './logger.js'
-import type { DerivedIndexAdapter, StorageFilter, VectorSearchHit } from './storage-adapter.js'
+import type { DerivedIndexAdapter, ScopeRestriction, StorageFilter, VectorSearchHit } from './storage-adapter.js'
 
 /** Vector dimension used by the default BGE-small-en-v1.5 model. */
 const DEFAULT_VECTOR_DIM = 384
@@ -356,14 +356,38 @@ export class PGLiteAdapter implements DerivedIndexAdapter {
     }
   }
 
-  /** Apply a filter to a SELECT query. */
-  private buildFilterClause(filter: StorageFilter): { where: string; params: any[] } {
+  /**
+   * Apply a filter to a SELECT query.
+   *
+   * `opts.alias` qualifies every column (the join in searchVector needs
+   * `e.status`, not a bare `status`); `opts.startIndex` is the first free
+   * placeholder number so the clause can be spliced into a query that already
+   * bound `$1` (the query vector).
+   */
+  private buildFilterClause(
+    filter: StorageFilter,
+    opts?: { alias?: string; startIndex?: number },
+  ): { where: string; params: any[]; nextIndex: number } {
+    const col = opts?.alias ? `${opts.alias}.` : ''
     const conditions: string[] = []
     const params: any[] = []
-    let i = 1
+    let i = opts?.startIndex ?? 1
     if (filter.status) {
-      conditions.push(`status = $${i++}`)
+      conditions.push(`${col}status = $${i++}`)
       params.push(filter.status)
+    }
+    if (filter.scopes !== undefined) {
+      // Permitted-scope allow-list pushdown (Phase 3). EXACT membership — no
+      // hierarchy expansion, no personal-family pass-through: the caller has
+      // already resolved identity to a complete set of permitted scopes, so
+      // widening it here would grant access the authorization layer did not.
+      //
+      // An EMPTY array must match NOTHING: `= ANY(ARRAY[]::text[])` is false
+      // for every row, which is exactly right — a principal with no permitted
+      // scopes sees nothing. This is why the guard is `!== undefined` and not
+      // a truthiness/length test; `[]` is a real filter, not an absent one.
+      conditions.push(`${col}scope = ANY($${i++}::text[])`)
+      params.push(filter.scopes)
     }
     if (filter.scope) {
       // Read-side scope filter, two parts OR'd:
@@ -376,17 +400,17 @@ export class PGLiteAdapter implements DerivedIndexAdapter {
       //  (2) segment-aware membership (#383): the requested scope, exactly or a
       //      descendant on a REAL delimiter (`:`/`/`) — never a sibling prefix.
       conditions.push(
-        `((NOT (scope LIKE 'group:%' OR scope LIKE 'project:%' OR scope LIKE 'space:%' OR scope LIKE 'team:%' OR scope LIKE 'org:%' OR scope = 'public' OR scope LIKE 'public:%' OR scope LIKE 'public/%'))`
-        + ` OR scope = $${i++} OR scope LIKE $${i++} || ':%' OR scope LIKE $${i++} || '/%')`,
+        `((NOT (${col}scope LIKE 'group:%' OR ${col}scope LIKE 'project:%' OR ${col}scope LIKE 'space:%' OR ${col}scope LIKE 'team:%' OR ${col}scope LIKE 'org:%' OR ${col}scope = 'public' OR ${col}scope LIKE 'public:%' OR ${col}scope LIKE 'public/%'))`
+        + ` OR ${col}scope = $${i++} OR ${col}scope LIKE $${i++} || ':%' OR ${col}scope LIKE $${i++} || '/%')`,
       )
       params.push(filter.scope, filter.scope, filter.scope)
     }
     if (filter.domain) {
-      conditions.push(`domain LIKE $${i++} || '%'`)
+      conditions.push(`${col}domain LIKE $${i++} || '%'`)
       params.push(filter.domain)
     }
     const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : ''
-    return { where, params }
+    return { where, params, nextIndex: i }
   }
 
   /** Parse a `data` row back to an Engram. PGLite returns JSONB as parsed JSON. */
@@ -510,46 +534,64 @@ export class PGLiteAdapter implements DerivedIndexAdapter {
    * yields identical results to load the candidate set into JS and run the
    * existing BM25 scorer. This also keeps fts.ts as the single ranking
    * authority (one tokenizer, one IDF computation).
+   *
+   * `opts.scopes` is pushed into the candidate SELECT via loadFiltered, so the
+   * BM25 scorer only ever sees permitted engrams — IDF and the top-N cut are
+   * both computed over the in-scope corpus, not over the org's.
    */
-  async searchBM25(query: string, opts: { limit: number }): Promise<Engram[]> {
-    const candidates = await this.loadFiltered({ status: 'active' })
+  async searchBM25(query: string, opts: { limit: number } & ScopeRestriction): Promise<Engram[]> {
+    const candidates = await this.loadFiltered({ status: 'active', scopes: opts.scopes })
     return searchEngrams(candidates, query, opts.limit)
   }
 
   /**
    * Vector search. Uses pgvector when available, JS cosine otherwise.
    * Returns scored results so callers can fuse with BM25 via RRF.
+   *
+   * `opts.scopes` is applied INSIDE the k-NN query (Phase 3 scope pushdown),
+   * never to the returned rows. Post-filtering an org-wide neighbour list is
+   * the dilution bug: `LIMIT` would be spent on engrams the caller may not
+   * see, so asking for N in-scope results would silently return fewer.
+   * Filtering in the query means `limit` counts permitted rows only.
    */
-  async searchVector(query: Float32Array, limit: number): Promise<VectorSearchHit[]> {
+  async searchVector(query: Float32Array, limit: number, opts?: ScopeRestriction): Promise<VectorSearchHit[]> {
     const db = await this.getDb()
     const totalRes = await db.query('SELECT COUNT(*)::int AS c FROM engram_embeddings')
     if (Number(totalRes.rows[0].c) === 0) return []
+    // status defaults to 'active' (historical behaviour) but stays overridable.
+    const filter: StorageFilter = { status: 'active', scopes: opts?.scopes }
     if (this.hasVector) {
       // pgvector path. Cosine distance = 1 - cosine similarity. The query
       // param is cast to the column's ACTUAL type (#223) — pgvector's <=>
       // operators are per-type, so a halfvec column needs a halfvec operand.
+      // $1 is the query vector, so the filter's placeholders start at $2 and
+      // LIMIT takes whatever number is free after them.
       const t = this.activeVecType
       const literal = vectorLiteral(query)
+      const { where, params, nextIndex } = this.buildFilterClause(filter, { alias: 'e', startIndex: 2 })
       const res = await db.query(
         `SELECT e.data, 1 - (em.embedding <=> $1::${t}) AS score
          FROM engram_embeddings em
          JOIN engrams e ON e.id = em.engram_id
-         WHERE e.status = 'active'
+         ${where}
          ORDER BY em.embedding <=> $1::${t}
-         LIMIT $2`,
-        [literal, limit],
+         LIMIT $${nextIndex}`,
+        [literal, ...params, limit],
       )
       return res.rows.map((r: any) => ({
         engram: this.parseRow(r),
         score: Number(r.score),
       }))
     }
-    // BYTEA fallback: read all embeddings, compute cosine in JS.
+    // BYTEA fallback: read all embeddings, compute cosine in JS. The scope
+    // filter still runs in SQL — the JS side only does the cosine.
+    const { where, params } = this.buildFilterClause(filter, { alias: 'e' })
     const res = await db.query(
       `SELECT e.data, em.embedding
        FROM engram_embeddings em
        JOIN engrams e ON e.id = em.engram_id
-       WHERE e.status = 'active'`,
+       ${where}`,
+      params,
     )
     const scored: VectorSearchHit[] = res.rows.map((r: any) => {
       const vec = bytesToFloat32(r.embedding)
