@@ -175,7 +175,7 @@ const PLUR_GUIDE = `## PLUR Quick Start
 
 ### Core Tools
 - **plur_learn** — record corrections, preferences, patterns (CALL THIS OFTEN)
-- **plur_recall_hybrid** — search engrams by topic
+- **plur_recall** — search engrams by topic (default: hybrid BM25 + embeddings; use mode:"keyword" for BM25-only)
 - **plur_forget** — retire an outdated engram`
 
 function getLlmFunction(): LlmFunction | undefined {
@@ -301,7 +301,7 @@ export const CURSOR_CORE_TOOL_NAMES: ReadonlySet<string> = new Set([
   'plur_session_start',
   'plur_session_end',
   'plur_learn',
-  'plur_recall_hybrid',
+  'plur_recall',
   'plur_feedback',
   'plur_forget',
   'plur_status',
@@ -717,52 +717,13 @@ function getAllToolDefinitions(): ToolDefinition[] {
 
     {
       name: 'plur_recall',
-      description: 'Query engrams by BM25 keyword matching — use plur_recall_hybrid for semantic similarity. Note: a project-scope filter also returns personal-family engrams (local, global, user:*, agent:*); an explicit scope=global recall returns ALL personal-family engrams — wider than scope=global INJECT, which is targeted to the global namespace only.',
-      annotations: { title: 'Recall (BM25)', readOnlyHint: true, idempotentHint: true },
+      description: 'Search engrams by topic. Default mode is hybrid (BM25 + local embeddings via RRF) — set mode:"keyword" for BM25-only. No API calls, fully local. Note: a project-scope filter also returns personal-family engrams (local, global, user:*, agent:*); an explicit scope=global recall returns ALL personal-family engrams — wider than scope=global INJECT, which is targeted to the global namespace only.',
+      annotations: { title: 'Recall', readOnlyHint: true, idempotentHint: true },
       inputSchema: {
         type: 'object',
         properties: {
           query: { type: 'string', description: 'Search query to find relevant engrams' },
-          scope: { type: 'string', description: 'Filter by scope (also includes global)' },
-          domain: { type: 'string', description: 'Filter by domain prefix' },
-          limit: { type: 'number', description: 'Max results to return (default 20)' },
-          budget: { type: 'object', description: 'Budget constraints for sub-agents', properties: { max_tokens: { type: 'number' }, max_results: { type: 'number' } } },
-          caller_session_id: { type: 'string', description: 'Caller session ID for budget enforcement' },
-        },
-        required: ['query'],
-      },
-      handler: async (args, plur) => {
-        const results = plur.recall(args.query as string, {
-          scope: args.scope as string | undefined,
-          domain: args.domain as string | undefined,
-          limit: args.limit as number | undefined,
-        })
-        return {
-          results: results.map(e => {
-            const supersededBy = e.relations?.superseded_by
-            const annotation = supersededBy?.length ? ` [superseded by ${supersededBy.join(', ')}]` : ''
-            return {
-              id: e.id,
-              statement: e.statement + annotation,
-              type: e.type,
-              scope: e.scope,
-              domain: e.domain,
-              retrieval_strength: e.activation.retrieval_strength,
-            }
-          }),
-          count: results.length,
-        }
-      },
-    },
-
-    {
-      name: 'plur_recall_hybrid',
-      description: 'Hybrid search — BM25 + local embeddings merged via Reciprocal Rank Fusion. No API calls, fully local. Best default for most use cases.',
-      annotations: { title: 'Recall (hybrid)', readOnlyHint: true, idempotentHint: true },
-      inputSchema: {
-        type: 'object',
-        properties: {
-          query: { type: 'string', description: 'Search query to find relevant engrams' },
+          mode: { type: 'string', enum: ['hybrid', 'keyword'], description: 'Search mode — hybrid (default): BM25 + embeddings via RRF; keyword: BM25-only (faster, embeddings-independent)' },
           scope: { type: 'string', description: 'Filter by scope (also includes global)' },
           domain: { type: 'string', description: 'Filter by domain prefix' },
           limit: { type: 'number', description: 'Max results to return (default 20)' },
@@ -773,6 +734,31 @@ function getAllToolDefinitions(): ToolDefinition[] {
         required: ['query'],
       },
       handler: async (args, plur) => {
+        const mode = (args.mode as string | undefined) ?? 'hybrid'
+        if (mode === 'keyword') {
+          const results = plur.recall(args.query as string, {
+            scope: args.scope as string | undefined,
+            domain: args.domain as string | undefined,
+            limit: args.limit as number | undefined,
+          })
+          return {
+            results: results.map(e => {
+              const supersededBy = e.relations?.superseded_by
+              const annotation = supersededBy?.length ? ` [superseded by ${supersededBy.join(', ')}]` : ''
+              return {
+                id: e.id,
+                statement: e.statement + annotation,
+                type: e.type,
+                scope: e.scope,
+                domain: e.domain,
+                retrieval_strength: e.activation.retrieval_strength,
+              }
+            }),
+            count: results.length,
+            mode: 'keyword',
+          }
+        }
+        // mode === 'hybrid' (default)
         const budget = args.budget as { max_tokens?: number; max_results?: number; ttl_seconds?: number } | undefined
         const effectiveLimit = budget?.max_results ?? (args.limit as number | undefined) ?? 20
         const meta = await plur.recallHybridWithMeta(args.query as string, {
@@ -840,6 +826,94 @@ function getAllToolDefinitions(): ToolDefinition[] {
         // so in the response instead of a per-call stderr warning nobody
         // reads. The caller believes reranking is on; RRF-only results must
         // not be silently mislabeled.
+        if (resolveRerankerName() !== 'off') {
+          response.reranked = meta.reranked ?? 0
+          const rr = plur.rerankerStatus()
+          if (boundedResults.length > 0 && (meta.reranked ?? 0) === 0 && rr.lastError) {
+            const corruptNote = rr.lastErrorKind === 'corrupt-cache'
+              ? ' The model cache looks corrupt (truncated download) — purge and re-download, see plur_doctor.'
+              : ''
+            response.reranker_warning = `PLUR_RERANKER is set but the reranker did not engage — results are RRF-only (fusion order, no cross-encoder rerank).${corruptNote} Last error: ${rr.lastError}. Run plur_doctor for diagnosis.`
+          }
+        }
+        return response
+      },
+    },
+
+    {
+      name: 'plur_recall_hybrid',
+      description: '[Deprecated since 0.16 — use plur_recall (mode defaults to hybrid). Alias kept for backwards compatibility; removal earliest 0.18.] Hybrid search — BM25 + local embeddings merged via Reciprocal Rank Fusion. No API calls, fully local.',
+      annotations: { title: 'Recall (hybrid) [deprecated alias]', readOnlyHint: true, idempotentHint: true },
+      inputSchema: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: 'Search query to find relevant engrams' },
+          scope: { type: 'string', description: 'Filter by scope (also includes global)' },
+          domain: { type: 'string', description: 'Filter by domain prefix' },
+          limit: { type: 'number', description: 'Max results to return (default 20)' },
+          budget: { type: 'object', description: 'Budget constraints for sub-agents', properties: { max_tokens: { type: 'number' }, max_results: { type: 'number' }, ttl_seconds: { type: 'number' } } },
+          caller_session_id: { type: 'string', description: 'Session ID of calling agent for budget enforcement' },
+          include_episodes: { type: 'boolean', description: 'If true, include linked episode summaries for each engram (SP2 episodic anchoring)' },
+        },
+        required: ['query'],
+      },
+      handler: async (args, plur) => {
+        const budget = args.budget as { max_tokens?: number; max_results?: number; ttl_seconds?: number } | undefined
+        const effectiveLimit = budget?.max_results ?? (args.limit as number | undefined) ?? 20
+        const meta = await plur.recallHybridWithMeta(args.query as string, {
+          scope: args.scope as string | undefined,
+          domain: args.domain as string | undefined,
+          limit: effectiveLimit,
+        })
+        recordTelemetry('recall')
+        const results = meta.engrams
+        let truncated = false
+        let boundedResults = results
+        if (budget?.max_results && results.length > budget.max_results) {
+          boundedResults = results.slice(0, budget.max_results)
+          truncated = true
+        }
+        if (budget?.max_tokens) {
+          let tokenCount = 0
+          const withinBudget = []
+          for (const e of boundedResults) {
+            const tokens = Math.ceil(e.statement.length / 4) + 20
+            if (tokenCount + tokens > budget.max_tokens) { truncated = true; break }
+            withinBudget.push(e)
+            tokenCount += tokens
+          }
+          boundedResults = withinBudget
+        }
+        const includeEpisodes = args.include_episodes === true
+        const response: Record<string, unknown> = {
+          deprecated: 'plur_recall_hybrid is deprecated since 0.16 — use plur_recall (mode defaults to hybrid). This alias will be removed in 0.18.',
+          results: boundedResults.map(e => {
+            const raw = e as any
+            const supersededBy = (e as any).relations?.superseded_by
+            const annotation = supersededBy?.length ? ` [superseded by ${supersededBy.join(', ')}]` : ''
+            const base: Record<string, unknown> = {
+              id: e.id,
+              statement: e.statement + annotation,
+              type: e.type,
+              scope: e.scope,
+              domain: e.domain,
+              retrieval_strength: e.activation.retrieval_strength,
+            }
+            if (includeEpisodes && raw.episode_ids?.length > 0) {
+              const episodes = plur.timeline({ search: '' })
+              base.episodes = episodes
+                .filter((ep: any) => raw.episode_ids.includes(ep.id))
+                .map((ep: any) => ({ id: ep.id, summary: ep.summary, timestamp: ep.timestamp }))
+            }
+            return base
+          }),
+          count: boundedResults.length,
+          truncated,
+          mode: meta.mode,
+        }
+        if (meta.mode === 'hybrid-degraded') {
+          response.warning = `Embedding layer unavailable — results are BM25-only. Run plur_doctor for diagnosis. Last error: ${meta.embedderError ?? 'unknown'}`
+        }
         if (resolveRerankerName() !== 'off') {
           response.reranked = meta.reranked ?? 0
           const rr = plur.rerankerStatus()

@@ -405,10 +405,24 @@ describe('MCP tools', () => {
     expect(result.statement).toBe(clean)
   })
 
-  it('plur_recall finds learned engrams', async () => {
+  it('plur_recall finds learned engrams (default hybrid mode)', async () => {
     await callTool('plur_learn', { statement: 'API uses snake_case', scope: 'global' })
     const result = await callTool('plur_recall', { query: 'API snake' }) as any
     expect(result.results.length).toBeGreaterThan(0)
+  })
+
+  it('plur_recall mode:keyword returns BM25-only results', async () => {
+    await callTool('plur_learn', { statement: 'deploy uses rsync for file transfer', scope: 'global' })
+    const result = await callTool('plur_recall', { query: 'deploy rsync', mode: 'keyword' }) as any
+    expect(result.results.length).toBeGreaterThan(0)
+    expect(result.mode).toBe('keyword')
+  })
+
+  it('plur_recall_hybrid is a deprecated alias that returns results and a deprecation notice', async () => {
+    await callTool('plur_learn', { statement: 'staging server uses port 8080', scope: 'global' })
+    const result = await callTool('plur_recall_hybrid', { query: 'staging port' }) as any
+    expect(result.results.length).toBeGreaterThan(0)
+    expect(result.deprecated).toMatch(/deprecated since 0\.16/)
   })
 
   it('plur_inject returns formatted injection', async () => {

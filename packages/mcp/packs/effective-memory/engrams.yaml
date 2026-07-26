@@ -90,7 +90,7 @@ engrams:
     pinned: true
     statement: >-
       Before answering factual questions about the user's project, codebase,
-      preferences, infrastructure, or past decisions, call plur_recall_hybrid
+      preferences, infrastructure, or past decisions, call plur_recall
       first. The answer may already be in memory. Do not fabricate or compose
       answers from prior-conversation context — that context is often stale
       or invented.
@@ -99,10 +99,10 @@ engrams:
       queried. Recall before reasoning. The most common memory failure
       is not forgetting — it's not checking.
     domain: plur.recall
-    tags: [recall, search, before-answering, plur_recall_hybrid, confabulation]
+    tags: [recall, search, before-answering, plur_recall, confabulation]
     activation: { retrieval_strength: 0.95, storage_strength: 0.95, frequency: 0, last_accessed: "2026-05-04" }
     dual_coding:
-      example: "User asks 'how do we deploy to production?' — call plur_recall_hybrid('deployment production') before answering. You might find 'deploy requires git push to nightshift server, not GitHub' from a previous session."
+      example: "User asks 'how do we deploy to production?' — call plur_recall('deployment production') before answering. You might find 'deploy requires git push to nightshift server, not GitHub' from a previous session."
       analogy: "Like checking your notes before answering a question in a meeting, instead of guessing."
     pack: effective-memory
     polarity: do

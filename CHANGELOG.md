@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.16.0 (unreleased)
+
+Unified recall surface.
+
+### Changed
+
+- **`plur_recall` is now the unified recall tool (#693)**: gains a `mode` parameter — `'hybrid'` (default, BM25 + local embeddings via RRF) or `'keyword'` (BM25-only). Existing callers that pass no `mode` get a quality upgrade without any API change. **Breaking for the lean/cursor profile**: `plur_recall_hybrid` is no longer a top-level lean tool — `plur_recall` takes its slot. Agents configured against the lean profile that call `plur_recall_hybrid` by name will still get results (the tool remains accessible via `plur_admin` dispatch), but should migrate to `plur_recall`.
+- **`plur_recall_hybrid` is a deprecated alias** (#693): resolves to `plur_recall {mode:'hybrid'}`. Responses include a one-line `deprecated` notice. Removal target: 0.18. Accessible in both full and lean profiles (via `plur_admin`) to avoid breaking existing CLAUDE.md files and agent templates in the wild.
+
 ## 0.15.0 (2026-07-21)
 
 Scopes go live + leaner MCP.

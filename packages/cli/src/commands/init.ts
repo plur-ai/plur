@@ -357,7 +357,7 @@ You have persistent memory via PLUR. Corrections, preferences, and conventions p
 
 ### Architecture
 
-PLUR is installed **globally** — one MCP server, one engram store (\`~/.plur/\`), available in every project. You do NOT need per-project installation. The \`plur\` MCP server provides tools named \`plur_session_start\`, \`plur_learn\`, \`plur_recall_hybrid\`, \`plur_feedback\`, \`plur_session_end\`, etc. If you cannot find these tools, run \`plur doctor\` to diagnose. Do **not** substitute tools from other MCP servers (e.g. \`datacore_*\`) — those belong to a different system.
+PLUR is installed **globally** — one MCP server, one engram store (\`~/.plur/\`), available in every project. You do NOT need per-project installation. The \`plur\` MCP server provides tools named \`plur_session_start\`, \`plur_learn\`, \`plur_recall\`, \`plur_feedback\`, \`plur_session_end\`, etc. If you cannot find these tools, run \`plur doctor\` to diagnose. Do **not** substitute tools from other MCP servers (e.g. \`datacore_*\`) — those belong to a different system.
 
 A PreToolUse guard enforces that \`plur_session_start\` is called at the beginning of every session. All other tools are blocked until this is done. The flow is: ToolSearch to load \`plur_session_start\` → call it with a task description → proceed.
 
@@ -365,7 +365,7 @@ A PreToolUse guard enforces that \`plur_session_start\` is called at the beginni
 
 1. **Start**: Call \`plur_session_start\` with task description — enforced by guard hook
 2. **Learn**: When corrected or discovering something new, call \`plur_learn\` immediately
-3. **Recall**: Before answering factual questions, call \`plur_recall_hybrid\` — check memory first
+3. **Recall**: Before answering factual questions, call \`plur_recall\` — check memory first
 4. **Feedback**: Rate injected engrams with \`plur_feedback\` (positive/negative) — trains relevance
 5. **End**: Call \`plur_session_end\` with summary + engram_suggestions — a SessionEnd hook auto-closes the lifecycle if you forget, but calling it yourself captures higher-quality learnings
 
@@ -383,7 +383,7 @@ PLUR uses \`domain\` and \`scope\` fields to separate knowledge. **Set \`scope\`
 ### When to check memory
 
 Before reaching for web search, file reads, or guessing — apply this priority:
-1. Is the answer already in engrams? → \`plur_recall_hybrid\`
+1. Is the answer already in engrams? → \`plur_recall\`
 2. Is the answer in the local filesystem? → Read/Grep/Glob
 3. Is the answer derivable from context already loaded? → Just answer
 4. Only if 1-3 fail → Use external tools
@@ -411,7 +411,7 @@ You have persistent memory via PLUR (tools prefixed \`plur_\`; less-common ones 
   **plur_learn** on anything worth remembering and **plur_session_end**
   before wrapping up.
 - When corrected or you learn a convention/preference: call **plur_learn** immediately.
-- Before answering factual questions about this project: call **plur_recall_hybrid** first.
+- Before answering factual questions about this project: call **plur_recall** first.
 - Rate injected engrams with **plur_feedback** when you notice one helped or missed.
 - Call **plur_session_end** before wrapping up, with a summary and engram suggestions.
 
