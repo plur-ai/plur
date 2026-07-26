@@ -158,6 +158,40 @@ describe('MCP server (wire protocol)', () => {
       expect(parsed.error).toContain('arguments object was empty')
       expect(parsed.error).not.toContain('plur-ai/plur#297')
     })
+
+    // Partial-drop variant (#704): some fields arrive but trailing array params are
+    // silently dropped when total payload size exceeds the client threshold.
+    it('partial drop — required array field missing with other fields present fires #297 hint (#704)', async () => {
+      // Simulate a partial drop: summary arrived, engram_suggestions was dropped.
+      const result = await client.callTool({
+        name: 'plur_session_end',
+        arguments: { summary: 'session summary' },
+      })
+      expect(result.isError).toBe(true)
+      const parsed = JSON.parse((result.content as any)[0].text)
+      expect(parsed.error).toContain('plur-ai/plur#297')
+      // Names the dropped parameter so the caller knows what to fix.
+      expect(parsed.error).toContain('engram_suggestions')
+      // States payload-size is the trigger, not field content.
+      expect(parsed.error).toMatch(/size|threshold|limit/)
+    })
+
+    // Comma-separated coercion for anyOf item schemas (#704 / #231).
+    // engram_suggestions items are anyOf:[{type:'string'},{type:'object'}] —
+    // prop.items.type is undefined, so the old guard (items.type==='string') blocked coercion.
+    it('coerces a comma-separated string into engram_suggestions array (anyOf items) (#704)', async () => {
+      const result = await client.callTool({
+        name: 'plur_session_end',
+        arguments: {
+          summary: 'session summary',
+          engram_suggestions: 'learned thing one, learned thing two',
+        },
+      })
+      // Should succeed (not fail due to uncoerced string) — bare-string items are
+      // handled in the handler itself, so what matters is no validation error.
+      const parsed = JSON.parse((result.content as any)[0].text)
+      expect(parsed.success).not.toBe(false)
+    })
   })
 
   it('learn → recall → feedback roundtrip', async () => {
