@@ -2,6 +2,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, chmodSync } from 'f
 import { join, dirname } from 'path'
 import { fileURLToPath } from 'url'
 import { homedir, platform } from 'os'
+import { createInterface } from 'readline'
 import { type GlobalFlags } from '../plur.js'
 import { outputText } from '../output.js'
 import {
@@ -357,7 +358,7 @@ You have persistent memory via PLUR. Corrections, preferences, and conventions p
 
 ### Architecture
 
-PLUR is installed **globally** — one MCP server, one engram store (\`~/.plur/\`), available in every project. You do NOT need per-project installation. The \`plur\` MCP server provides tools named \`plur_session_start\`, \`plur_learn\`, \`plur_recall_hybrid\`, \`plur_feedback\`, \`plur_session_end\`, etc. If you cannot find these tools, run \`plur doctor\` to diagnose. Do **not** substitute tools from other MCP servers (e.g. \`datacore_*\`) — those belong to a different system.
+PLUR is installed **globally** — one MCP server, one engram store (\`~/.plur/\`), available in every project. You do NOT need per-project installation. The \`plur\` MCP server provides tools named \`plur_session_start\`, \`plur_learn\`, \`plur_recall\`, \`plur_feedback\`, \`plur_session_end\`, etc. If you cannot find these tools, run \`plur doctor\` to diagnose. Do **not** substitute tools from other MCP servers (e.g. \`datacore_*\`) — those belong to a different system.
 
 A PreToolUse guard enforces that \`plur_session_start\` is called at the beginning of every session. All other tools are blocked until this is done. The flow is: ToolSearch to load \`plur_session_start\` → call it with a task description → proceed.
 
@@ -365,7 +366,7 @@ A PreToolUse guard enforces that \`plur_session_start\` is called at the beginni
 
 1. **Start**: Call \`plur_session_start\` with task description — enforced by guard hook
 2. **Learn**: When corrected or discovering something new, call \`plur_learn\` immediately
-3. **Recall**: Before answering factual questions, call \`plur_recall_hybrid\` — check memory first
+3. **Recall**: Before answering factual questions, call \`plur_recall\` — check memory first
 4. **Feedback**: Rate injected engrams with \`plur_feedback\` (positive/negative) — trains relevance
 5. **End**: Call \`plur_session_end\` with summary + engram_suggestions — a SessionEnd hook auto-closes the lifecycle if you forget, but calling it yourself captures higher-quality learnings
 
@@ -383,7 +384,7 @@ PLUR uses \`domain\` and \`scope\` fields to separate knowledge. **Set \`scope\`
 ### When to check memory
 
 Before reaching for web search, file reads, or guessing — apply this priority:
-1. Is the answer already in engrams? → \`plur_recall_hybrid\`
+1. Is the answer already in engrams? → \`plur_recall\`
 2. Is the answer in the local filesystem? → Read/Grep/Glob
 3. Is the answer derivable from context already loaded? → Just answer
 4. Only if 1-3 fail → Use external tools
@@ -411,7 +412,7 @@ You have persistent memory via PLUR (tools prefixed \`plur_\`; less-common ones 
   **plur_learn** on anything worth remembering and **plur_session_end**
   before wrapping up.
 - When corrected or you learn a convention/preference: call **plur_learn** immediately.
-- Before answering factual questions about this project: call **plur_recall_hybrid** first.
+- Before answering factual questions about this project: call **plur_recall** first.
 - Rate injected engrams with **plur_feedback** when you notice one helped or missed.
 - Call **plur_session_end** before wrapping up, with a summary and engram suggestions.
 
@@ -655,12 +656,77 @@ function writeSettings(path: string, settings: Settings): void {
   writeFileSync(path, JSON.stringify(settings, null, 2) + '\n')
 }
 
+// ── Telemetry opt-in prompt ─────────────────────────────────────────────────
+// Asks the user once during `plur init` whether to enable anonymous usage stats.
+// Resolution rules (mirrors telemetry.ts — env var still overrides this):
+//   - Interactive TTY + no existing config → ask the question
+//   - Non-interactive (CI, pipe, --no-prompt) → write enabled:false silently
+//   - Config already present → skip (never nag a returning user)
+
+function telemetryConfigPath(): string {
+  return join(homedir(), '.plur', 'telemetry.json')
+}
+
+function writeTelemetryConfig(enabled: boolean, configPath?: string): void {
+  const target = configPath ?? telemetryConfigPath()
+  mkdirSync(dirname(target), { recursive: true })
+  writeFileSync(target, JSON.stringify({ enabled }, null, 2) + '\n')
+}
+
+/**
+ * Prompt for telemetry opt-in during `plur init`.
+ *
+ * Returns 'opted-in' | 'opted-out' | 'already-configured' | 'non-interactive'.
+ * Exported for testing with injectable config path.
+ */
+export async function promptTelemetryOptIn(opts: {
+  configPath?: string
+  noPrompt?: boolean
+  env?: NodeJS.ProcessEnv
+} = {}): Promise<'opted-in' | 'opted-out' | 'already-configured' | 'non-interactive'> {
+  const configPath = opts.configPath ?? telemetryConfigPath()
+  const env = opts.env ?? process.env
+
+  // Never write config when the env var is already explicit — env wins at runtime.
+  // Also skip if config already exists — we only ask once.
+  if (existsSync(configPath)) return 'already-configured'
+
+  // Non-interactive: CI, piped input, or --no-prompt flag → default off, never prompt.
+  const isInteractive = process.stdin.isTTY && process.stdout.isTTY
+  if (!isInteractive || opts.noPrompt || env.CI) {
+    writeTelemetryConfig(false, configPath)
+    return 'non-interactive'
+  }
+
+  return new Promise((resolve) => {
+    const rl = createInterface({ input: process.stdin, output: process.stdout })
+    rl.question(
+      '\nEnable anonymous usage statistics? (helps us improve PLUR — no code, no keys) [y/N] ',
+      (answer) => {
+        rl.close()
+        const yes = answer.trim().toLowerCase() === 'y'
+        writeTelemetryConfig(yes, configPath)
+        resolve(yes ? 'opted-in' : 'opted-out')
+      },
+    )
+    // Handle non-TTY / closed stdin gracefully
+    rl.on('close', () => {
+      if (!existsSync(configPath)) {
+        writeTelemetryConfig(false, configPath)
+        resolve('non-interactive')
+      }
+    })
+  })
+}
+
 function hooksStatusFor(before: string, after: string, hadHooks: boolean): string {
   if (!hadHooks) return 'installed'
   return before === after ? 'already up to date' : 'upgraded'
 }
 
 export async function run(args: string[], flags: GlobalFlags): Promise<void> {
+  const noPrompt = args.includes('--no-prompt')
+
   // Install local hook shim FIRST — hook commands depend on it (#178)
   const shim = installHookBinary()
   const cmd = shim.shimPath || 'npx @plur-ai/cli' // fallback if shim failed
@@ -816,4 +882,21 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     outputText('')
   }
   outputText('Restart Claude Code to pick up the changes, then run `plur doctor` to verify.')
+
+  // Telemetry opt-in — ask once, never nag. Runs last so it doesn't interrupt the
+  // settings-installation summary above. Non-interactive installs silently write
+  // enabled:false (opt-out), which ensures they are never opted in without consent.
+  const telemetryResult = await promptTelemetryOptIn({ noPrompt })
+  outputText('')
+  if (telemetryResult === 'opted-in') {
+    outputText('Telemetry: enabled (thank you — anonymous counts only, nothing leaves your machine before POST /v1/heartbeat).')
+    outputText('           Disable any time: plur telemetry off  or  set PLUR_TELEMETRY=off')
+  } else if (telemetryResult === 'opted-out') {
+    outputText('Telemetry: disabled. Enable any time: plur telemetry on  or  set PLUR_TELEMETRY=on')
+    outputText('           See docs/telemetry-design.md for what is and is not collected.')
+  } else if (telemetryResult === 'non-interactive') {
+    outputText('Telemetry: disabled (non-interactive install). Enable: set PLUR_TELEMETRY=on')
+    outputText('           See docs/telemetry-design.md for what is collected.')
+  }
+  // 'already-configured' → silent, user already made a choice
 }
