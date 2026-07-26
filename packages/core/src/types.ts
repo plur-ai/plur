@@ -49,6 +49,17 @@ export interface LearnContext {
    * intentional update is not a contradiction.
    */
   supersedes?: string[]
+  /**
+   * Session key this write belongs to (convergence Phase 2).
+   *
+   * Resolves the session default scope from the per-session registry instead of
+   * the process-wide slot. Supply it whenever one `Plur` instance serves more
+   * than one session concurrently — without it, `setSessionScope()` is a single
+   * shared field and one session's scope silently becomes another's (see
+   * `session-scopes.ts`). Never persisted on the engram; it selects a scope, it
+   * is not part of one.
+   */
+  session?: string
 }
 
 /** Extended context for async learn with LLM dedup. */

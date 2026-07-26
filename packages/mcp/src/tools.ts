@@ -251,12 +251,48 @@ function _cleanExpiredSessions(): void {
 }
 
 /**
- * The session_id of the currently active session. Set by session_start, cleared
- * by session_end. MCP sessions are sequential within a process, so a single
- * module-level variable is safe. Used by plur_inject / plur_inject_hybrid to
- * record telemetry without requiring callers to pass a session_id.
+ * The session an untagged `plur_inject` / `plur_inject_hybrid` call belongs to.
+ *
+ * This used to be a module-level `_activeSessionId`, assigned by session_start
+ * and cleared by session_end, justified by "MCP sessions are sequential within
+ * a process". Convergence Phase 2 removes that assumption: a deployment that
+ * serves concurrent sessions from one process has overlapping session_start
+ * calls, and the second one silently reassigns the variable — so an inject
+ * belonging to session A is recorded against session B, and when A ends the
+ * `if (_activeSessionId === session_id)` guard leaves the stale id in place.
+ *
+ * Derived, not stored, and only answered when it is UNAMBIGUOUS. With exactly
+ * one session open the implicit attribution is correct and behaviour is
+ * unchanged. With none or several, there is no right answer, and recording
+ * nothing beats recording against the wrong session — telemetry that is
+ * silently misattributed is worse than telemetry that is absent. Callers that
+ * need attribution under concurrency pass `session_id` explicitly.
  */
-let _activeSessionId: string | undefined
+function _implicitSessionId(): string | undefined {
+  _cleanExpiredSessions()
+  if (_sessionTelemetry.size !== 1) return undefined
+  return _sessionTelemetry.keys().next().value
+}
+
+/**
+ * Drop all session telemetry.
+ *
+ * The map is module-level, so it outlives any single `Plur` instance and leaks
+ * between tests in one file. Exported as a test seam — and usable by an
+ * embedding consumer that recycles the tool definitions across tenants — so
+ * "which sessions are open" is a controllable input rather than whatever the
+ * previous test happened to leave behind.
+ */
+export function _resetSessionTelemetry(): void {
+  _sessionTelemetry.clear()
+}
+
+/** Resolve the session for an injection: explicit argument first, then implicit. */
+function _resolveInjectionSession(args: Record<string, unknown>): string | undefined {
+  const explicit = args.session_id
+  if (typeof explicit === 'string' && explicit.length > 0) return explicit
+  return _implicitSessionId()
+}
 
 /** Record pack counts from an InjectionResult into the active session's telemetry. */
 function _recordInjectionTelemetry(session_id: string | undefined, injected_packs: Record<string, number> | undefined): void {
@@ -864,17 +900,19 @@ function getAllToolDefinitions(): ToolDefinition[] {
           task: { type: 'string', description: 'The task description to inject context for' },
           budget: { type: 'number', description: 'Token budget for injection (default 2000)' },
           scope: { type: 'string', description: 'Scope filter for engram selection' },
+          session_id: { type: 'string', description: 'Session this injection belongs to (from plur_session_start). Optional when one session is open; required for correct attribution when several are.' },
         },
         required: ['task'],
       },
       handler: async (args, plur) => {
+        const session_id = _resolveInjectionSession(args)
         const result = plur.inject(args.task as string, {
           budget: args.budget as number | undefined,
           scope: args.scope as string | undefined,
           source: 'inject',
-          session_id: _activeSessionId,
+          session_id,
         })
-        _recordInjectionTelemetry(_activeSessionId, result.injected_packs)
+        _recordInjectionTelemetry(session_id, result.injected_packs)
         return {
           directives: result.directives,
           consider: result.consider,
@@ -897,17 +935,19 @@ function getAllToolDefinitions(): ToolDefinition[] {
           task: { type: 'string', description: 'The task description to inject context for' },
           budget: { type: 'number', description: 'Token budget for injection (default 2000)' },
           scope: { type: 'string', description: 'Scope filter for engram selection' },
+          session_id: { type: 'string', description: 'Session this injection belongs to (from plur_session_start). Optional when one session is open; required for correct attribution when several are.' },
         },
         required: ['task'],
       },
       handler: async (args, plur) => {
+        const session_id = _resolveInjectionSession(args)
         const result = await plur.injectHybrid(args.task as string, {
           budget: args.budget as number | undefined,
           scope: args.scope as string | undefined,
           source: 'inject',
-          session_id: _activeSessionId,
+          session_id,
         })
-        _recordInjectionTelemetry(_activeSessionId, result.injected_packs)
+        _recordInjectionTelemetry(session_id, result.injected_packs)
         return {
           directives: result.directives,
           consider: result.consider,
@@ -1854,7 +1894,6 @@ function getAllToolDefinitions(): ToolDefinition[] {
         // activation-rate validation (target: 25-80 sessions/month per user).
         // TTL cleanup runs here to evict any unclosed sessions from prior starts.
         _cleanExpiredSessions()
-        _activeSessionId = session_id
         _sessionTelemetry.set(session_id, {
           pack_counts: {},
           injection_calls: 0,
@@ -2205,7 +2244,6 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
         // Clean up session telemetry
         if (session_id) {
           _sessionTelemetry.delete(session_id)
-          if (_activeSessionId === session_id) _activeSessionId = undefined
         }
 
         // Clean up session checkpoint (#215) — session ended cleanly

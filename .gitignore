@@ -30,3 +30,8 @@ benchmark/data/
 benchmark/results/
 benchmark/.cache/
 
+
+# Scratch tree for the non-temp-root auto-discovery tests (see
+# packages/core/test/concurrency-auto-discover.test.ts — discovery short-circuits
+# under the OS temp dir, so those tests must use a real path).
+packages/core/test/.scratch-auto-discover/
