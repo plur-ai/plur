@@ -47,6 +47,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./tools": {
+      "types": "./dist/tools-export.d.ts",
+      "import": "./dist/tools-export.js"
     }
   }
 }
