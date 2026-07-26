@@ -45,6 +45,7 @@ import { resolveValidity, buildTemporal } from './expiry.js'
 import { decodeJwtExpiry } from './jwt.js'
 import { RemoteStore, normalizeEndpointUrl } from './store/remote-store.js'
 import { YamlPrimaryStore } from './store/yaml-primary-store.js'
+import { withAsyncLock } from './store/async-lock.js'
 import { SessionScopeRegistry } from './session-scopes.js'
 import type { PrimaryStore } from './store/primary-store.js'
 import { requiresIndexSync, asDerivedIndex } from './storage-adapter.js'
@@ -476,6 +477,8 @@ export class Plur {
   private _rerankerEvalAdvisoryDone = false
   /** mtime (ms) of config.yaml at last load — drives reloadConfigIfChanged (#307). */
   private configMtimeMs = 0
+  /** Whether constructor-time cwd store discovery is enabled for this instance. */
+  private _autoDiscover = true
 
   /**
    * @param options.path  Root directory for this instance (defaults to
@@ -484,13 +487,27 @@ export class Plur {
    *   `YamlPrimaryStore(paths.engrams)`, i.e. exactly the previous behaviour.
    *   Supplying one is what makes `Plur` source-of-truth agnostic: nothing in
    *   the class reads or writes `engrams.yaml` directly any more.
+   * @param options.autoDiscover Run cwd-walking project-store discovery in the
+   *   constructor. Defaults to true (`PLUR_AUTO_DISCOVER=0` flips the default
+   *   without touching call sites). See {@link autoDiscoveryEnabled}.
+   * @param options.cwd Directory discovery walks up from. Defaults to
+   *   `process.cwd()`.
    */
-  constructor(options?: { path?: string; store?: PrimaryStore }) {
+  constructor(options?: { path?: string; store?: PrimaryStore; autoDiscover?: boolean; cwd?: string }) {
     this.paths = detectPlurStorage(options?.path)
     this._primaryStore = options?.store ?? new YamlPrimaryStore(this.paths.engrams)
     this.config = loadConfig(this.paths.config)
-    // Auto-discover project stores from CWD (skips temp dirs for test safety)
-    this.autoDiscoverStores()
+    this._autoDiscover = Plur.resolveAutoDiscover(options?.autoDiscover)
+    // Auto-discover project stores from CWD (skips temp dirs for test safety).
+    //
+    // Opt-out exists because this is a constructor with a DISK SIDE EFFECT
+    // derived from `process.cwd()`: a discovered `.plur/engrams.yaml` is written
+    // into config.yaml via addStore. For a CLI, whose cwd IS the user's intent,
+    // that is the feature. For an instance shared by concurrent sessions it is
+    // not: the process cwd expresses nobody's intent, and the store it adds
+    // becomes visible to every session on the instance. Construction should not
+    // silently reconfigure a shared deployment.
+    if (this._autoDiscover) this.autoDiscoverStores(options?.cwd)
     // Re-read config after potential store additions
     if (this.config.stores?.length !== loadConfig(this.paths.config).stores?.length) {
       this.config = loadConfig(this.paths.config)
@@ -1832,7 +1849,7 @@ export class Plur {
     const hashMatch = this._hashDedup(statement, allEngrams, scope)
     if (hashMatch) {
       // Mutate + persist if local; otherwise return mutated (best-effort)
-      return withLock(this.paths.engrams, () => {
+      return await withAsyncLock(this.paths.engrams, async () => {
         const engrams = this._primaryStore.load()
         return this._recordDuplicate(hashMatch, engrams, scope, context)
       })
@@ -1840,7 +1857,7 @@ export class Plur {
     // #176: cross-scope recurrence (same semantics as the local learn() path).
     const crossMatch = this._crossScopeRecurrenceDetect(statement, allEngrams, scope)
     if (crossMatch) {
-      return withLock(this.paths.engrams, () => {
+      return await withAsyncLock(this.paths.engrams, async () => {
         const engrams = this._primaryStore.load()
         return this._recordCrossScopeRecurrence(crossMatch, engrams, scope, context)
       })
@@ -1872,7 +1889,7 @@ export class Plur {
       // matches the scope (e.g. readonly remote), we still save the local
       // engram but omit the outbox marker — the retry path will skip it.
       const storeEntry = (this.config.stores ?? []).find(s => s.url && s.scope === scope && !s.readonly)
-      return withLock(this.paths.engrams, () => {
+      return await withAsyncLock(this.paths.engrams, async () => {
         const engrams = this._primaryStore.load()
         // Replace placeholder ID with a real local ID
         localPlaceholder.id = generateEngramId([...engrams, ...allEngrams])
@@ -2743,7 +2760,7 @@ export class Plur {
   /** Update feedback_signals and adjust retrieval_strength. Searches primary, stores, then packs. */
   async feedback(id: string, signal: 'positive' | 'negative' | 'neutral'): Promise<void> {
     // Try primary engrams first
-    const found = withLock(this.paths.engrams, () => {
+    const found = await withAsyncLock(this.paths.engrams, async () => {
       const engrams = this._primaryStore.load()
       const engram = engrams.find(e => e.id === id)
       if (!engram) return false
@@ -3007,7 +3024,7 @@ export class Plur {
    */
   async updateEngramAsync(updated: Engram): Promise<Engram | null> {
     // Local primary first.
-    const localResult = withLock(this.paths.engrams, () => {
+    const localResult = await withAsyncLock(this.paths.engrams, async () => {
       const engrams = this._primaryStore.load()
       const idx = engrams.findIndex(e => e.id === updated.id)
       if (idx === -1) return null
@@ -3089,7 +3106,7 @@ export class Plur {
    */
   async setPinnedAsync(id: string, pinned: boolean): Promise<Engram | null> {
     // Local primary first.
-    const localResult = withLock(this.paths.engrams, () => {
+    const localResult = await withAsyncLock(this.paths.engrams, async () => {
       const engrams = this._primaryStore.load()
       const idx = engrams.findIndex(e => e.id === id)
       if (idx === -1) return null
@@ -3126,7 +3143,7 @@ export class Plur {
     // physically retire when it reaches 0. forget() called N times on an
     // engram with reference_count=N retires it; called fewer times, the
     // engram stays active with a lower count.
-    const foundInPrimary = withLock(this.paths.engrams, () => {
+    const foundInPrimary = await withAsyncLock(this.paths.engrams, async () => {
       const engrams = this._primaryStore.load()
       const engram = engrams.find(e => e.id === id)
       if (!engram) return false
@@ -3792,7 +3809,7 @@ Generate an improved version of the procedure that prevents this failure. Return
           const now = new Date().toISOString()
 
           // Try local primary first.
-          const localResult = withLock(this.paths.engrams, () => {
+          const localResult = await withAsyncLock(this.paths.engrams, async () => {
             const engrams = this._primaryStore.load()
             const idx = engrams.findIndex(e => e.id === engramId)
             if (idx === -1) return null
@@ -3892,7 +3909,7 @@ Generate an improved version of the procedure that prevents this failure. Return
           // intentionally left unchanged — report a not-evolved/blocked outcome
           // (the failure episode is still linked below) instead of throwing.
           if (blockedRemote) {
-            withLock(this.paths.engrams, () => {
+            await withAsyncLock(this.paths.engrams, async () => {
               const engrams = this._primaryStore.load()
               const idx = engrams.findIndex(e => e.id === engramId)
               if (idx !== -1) {
@@ -3915,7 +3932,7 @@ Generate an improved version of the procedure that prevents this failure. Return
     }
 
     // Fallback: link failure episode to engram without rewriting
-    withLock(this.paths.engrams, () => {
+    await withAsyncLock(this.paths.engrams, async () => {
       const engrams = this._primaryStore.load()
       const idx = engrams.findIndex(e => e.id === engramId)
       if (idx !== -1) {
@@ -4632,6 +4649,26 @@ Generate an improved version of the procedure that prevents this failure. Return
    * If found and not already registered, auto-register as a project store.
    * Returns list of newly discovered stores (empty if none found or all already known).
    */
+  /**
+   * Resolve whether constructor-time discovery should run.
+   *
+   * Explicit option wins; otherwise `PLUR_AUTO_DISCOVER=0` / `=false` disables
+   * it. The env var exists so a deployment that does not own the construction
+   * call site (an embedded consumer, a wrapper binary) can still turn off a
+   * cwd-derived disk side effect it never asked for.
+   */
+  static resolveAutoDiscover(explicit?: boolean): boolean {
+    if (explicit !== undefined) return explicit
+    const env = process.env.PLUR_AUTO_DISCOVER
+    if (env === '0' || env === 'false') return false
+    return true
+  }
+
+  /** Whether this instance ran (and would re-run) cwd store discovery. */
+  autoDiscoveryEnabled(): boolean {
+    return this._autoDiscover
+  }
+
   autoDiscoverStores(cwd?: string): Array<{ path: string; scope: string }> {
     const startDir = cwd || process.cwd()
     const discovered: Array<{ path: string; scope: string }> = []

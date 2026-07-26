@@ -42,7 +42,13 @@ describe('Plur is source-of-truth agnostic', () => {
     expect(readFileSync(yamlPath, 'utf8')).toContain('the default store still writes engrams.yaml')
   })
 
-  it('runs the full learn → recall → update → forget cycle on an injected store', () => {
+  // `feedback` and `forget` are declared `Promise`-returning and must be
+  // awaited. They used to complete synchronously anyway — an `async` function
+  // runs to its first `await`, and with the synchronous `withLock` there was
+  // none — so an un-awaited call happened to take effect immediately. Phase 2
+  // put a real await in the write path, which turns that accident back into
+  // what the signature always said. Assertions below are unchanged.
+  it('runs the full learn → recall → update → forget cycle on an injected store', async () => {
     const store = new MemoryPrimaryStore()
     const plur = new Plur({ path: dir, store })
     expect(plur.primaryStore.kind).toBe('memory')
@@ -56,8 +62,8 @@ describe('Plur is source-of-truth agnostic', () => {
     expect(plur.recall('readiness endpoint').map(e => e.id)).toContain(learned.id)
 
     // Mutating write path.
-    plur.feedback(learned.id, 'positive')
-    plur.forget(learned.id, 'no longer true')
+    await plur.feedback(learned.id, 'positive')
+    await plur.forget(learned.id, 'no longer true')
     expect(plur.getById(learned.id)?.status).toBe('retired')
 
     // The state genuinely lives in the injected store, not in a hidden cache.

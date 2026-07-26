@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { Plur } from '@plur-ai/core'
-import { getToolDefinitions } from '../src/tools.js'
+import { getToolDefinitions, _resetSessionTelemetry } from '../src/tools.js'
 
 describe('Session & store tools', () => {
   let plur: Plur
@@ -14,6 +14,10 @@ describe('Session & store tools', () => {
     dir = mkdtempSync(join(tmpdir(), 'plur-session-'))
     plur = new Plur({ path: dir })
     tools = getToolDefinitions('full')
+    // Session telemetry is module-level, so sessions started by earlier tests
+    // in this file are still "open" when a later one runs. Start from a clean
+    // slate — otherwise each test inherits whatever the previous one leaked.
+    _resetSessionTelemetry()
   })
   afterEach(() => { rmSync(dir, { recursive: true }) })
 
