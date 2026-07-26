@@ -12,6 +12,7 @@ open a PR. Link the issue that prompted the decision in the `Related:` field.
 |---|-------|--------|------|-------|
 | 0001 | [YAML as source of truth for engram state](https://github.com/plur-ai/plur/issues/226) | Accepted | 2025-09 | [#226](https://github.com/plur-ai/plur/issues/226) |
 | 0002 | [Derived-state provenance — history JSONL as source of truth for graph edges](ADR-0002-derived-state-provenance.md) | Accepted | 2026-07-02 | [#452](https://github.com/plur-ai/plur/issues/452) |
+| 0003 | [Primary store capability — separating "the store" from "the index"](ADR-0003-primary-store-capability.md) | Proposed | 2026-07-26 | — |
 
 ## Notes
 

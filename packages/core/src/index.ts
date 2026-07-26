@@ -6,7 +6,7 @@ import { detectPlurStorage, type PlurPaths } from './storage.js'
 import { IndexedStorage } from './storage-indexed.js'
 import { PGLiteAdapter } from './storage-pglite.js'
 import { loadConfig } from './config.js'
-import { loadEngrams, saveEngrams, generateEngramId, loadAllPacks, storePrefix } from './engrams.js'
+import { generateEngramId, loadAllPacks, storePrefix } from './engrams.js'
 import { logger } from './logger.js'
 import { searchEngrams } from './fts.js'
 import { selectAndSpread, scoreEngramsPublic, formatWithLayer, assignLayer } from './inject.js'
@@ -44,6 +44,9 @@ import { engramDate } from './tensions.js'
 import { resolveValidity, buildTemporal } from './expiry.js'
 import { decodeJwtExpiry } from './jwt.js'
 import { RemoteStore, normalizeEndpointUrl } from './store/remote-store.js'
+import { YamlPrimaryStore } from './store/yaml-primary-store.js'
+import type { PrimaryStore } from './store/primary-store.js'
+import { requiresIndexSync, asDerivedIndex } from './storage-adapter.js'
 import { isSharedScope, isPersonalScope, isScopeWithin } from './scope-util.js'
 import type { Engram } from './schemas/engram.js'
 import type { Episode } from './schemas/episode.js'
@@ -100,8 +103,10 @@ export { isSharedScope, isPersonalScope, SHARED_SCOPE_PREFIXES } from './scope-u
 export { detectPlurStorage, type PlurPaths } from './storage.js'
 export { IndexedStorage } from './storage-indexed.js'
 export { PGLiteAdapter, type PGLiteAdapterOptions, type VectorPrecision } from './storage-pglite.js'
-export type { StorageAdapter, StorageFilter, VectorSearchHit } from './storage-adapter.js'
+export type { StorageAdapter, StorageFilter, VectorSearchHit, StorageAdapterRole, DerivedIndexAdapter } from './storage-adapter.js'
+export { requiresIndexSync, asDerivedIndex } from './storage-adapter.js'
 export { YamlStore, SqliteStore, createStore, migrateStore, type EngramStore, type StorageBackend, type StorageConfig } from './store/index.js'
+export { YamlPrimaryStore, MemoryPrimaryStore, type PrimaryStore, type PrimaryStoreKind } from './store/index.js'
 export { withAsyncLock, asyncAtomicWrite } from './store/index.js'
 // Embedding primitive — public so alternative store backends can compute
 // vectors identically to core's hybrid search (same model + EMBED_DIM). The
@@ -402,7 +407,20 @@ export class Plur {
    * successful pass leaves it null. Read via lastIndexError()/status().
    */
   private _lastIndexError: IndexSyncError | null = null
-  private _engramCache: Map<string, { mtime: bigint; engrams: Engram[] }> = new Map()
+  /**
+   * The source of truth for this instance's engrams (convergence Phase 1).
+   * Defaults to `YamlPrimaryStore(paths.engrams)` — ADR-0001 behaviour,
+   * unchanged — but the `Plur` class no longer knows that. All reads and writes
+   * of primary engram state go through this, never through `loadEngrams` /
+   * `saveEngrams` directly.
+   */
+  private _primaryStore: PrimaryStore
+  /**
+   * File-backed secondary stores (config `stores:` entries and installed packs),
+   * memoised by path. These are YAML artifacts by definition and stay YAML even
+   * when the primary store is not.
+   */
+  private _secondaryStores: Map<string, PrimaryStore> = new Map()
   /**
    * engram_id → injection_id of the most recent co_injection that included it
    * (#452). Fast path for linking plur_feedback verdicts to their injection
@@ -427,8 +445,17 @@ export class Plur {
   /** mtime (ms) of config.yaml at last load — drives reloadConfigIfChanged (#307). */
   private configMtimeMs = 0
 
-  constructor(options?: { path?: string }) {
+  /**
+   * @param options.path  Root directory for this instance (defaults to
+   *   `PLUR_PATH` or `~/.plur`).
+   * @param options.store Source of truth for primary engram state. Defaults to
+   *   `YamlPrimaryStore(paths.engrams)`, i.e. exactly the previous behaviour.
+   *   Supplying one is what makes `Plur` source-of-truth agnostic: nothing in
+   *   the class reads or writes `engrams.yaml` directly any more.
+   */
+  constructor(options?: { path?: string; store?: PrimaryStore }) {
     this.paths = detectPlurStorage(options?.path)
+    this._primaryStore = options?.store ?? new YamlPrimaryStore(this.paths.engrams)
     this.config = loadConfig(this.paths.config)
     // Auto-discover project stores from CWD (skips temp dirs for test safety)
     this.autoDiscoverStores()
@@ -555,19 +582,16 @@ export class Plur {
     return all
   }
 
-  /** Load engrams from a path with mtime-based caching */
+  /**
+   * Cached read from the store that owns `path`.
+   *
+   * The mtime bookkeeping that used to live here now lives inside
+   * `YamlPrimaryStore` — a cache is a property of the backing medium, not of
+   * the caller, and a store whose medium has no mtime (memory, Postgres)
+   * answers `loadCached()` its own way.
+   */
   private _loadCached(path: string): Engram[] {
-    let mtime: bigint
-    try {
-      mtime = fs.statSync(path, { bigint: true }).mtimeNs
-    } catch {
-      return []
-    }
-    const cached = this._engramCache.get(path)
-    if (cached && cached.mtime === mtime) return cached.engrams
-    const engrams = loadEngrams(path)
-    this._engramCache.set(path, { mtime, engrams })
-    return engrams
+    return this._storeAt(path).loadCached()
   }
 
   /**
@@ -594,19 +618,49 @@ export class Plur {
   }
 
   /**
-   * Write engrams to disk and invalidate the cache for that path.
+   * Persist engrams to the store that owns `path`.
    *
-   * Why: `_loadCached` uses mtime-based invalidation, but on CI tmpfs
-   * (ubuntu-latest runners) mtime resolution can be coarse enough that a
-   * stat() taken before and after a write returns the same mtime. When that
-   * happens the cache serves a pre-write snapshot and a subsequent `getById`
-   * returns `undefined` for an engram that `learn()` just created. Explicit
-   * invalidation on write removes the filesystem as a source of cache
+   * The write-invalidates-cache rule now lives inside the store
+   * (`PrimaryStore.save()` drops its own cache) rather than being the caller's
+   * job. Why it matters: `YamlPrimaryStore.loadCached()` uses mtime-based
+   * invalidation, but on CI tmpfs (ubuntu-latest runners) mtime resolution can
+   * be coarse enough that a stat() taken before and after a write returns the
+   * same mtime. When that happens the cache serves a pre-write snapshot and a
+   * subsequent `getById` returns `undefined` for an engram that `learn()` just
+   * created. Invalidating on write removes the filesystem as a source of cache
    * freshness and closes the race. See issue #25.
    */
   private _writeEngrams(path: string, engrams: Engram[]): void {
-    saveEngrams(path, engrams)
-    this._engramCache.delete(path)
+    this._storeAt(path).save(engrams)
+  }
+
+  /**
+   * Resolve the `PrimaryStore` that owns `path`.
+   *
+   * `paths.engrams` maps to the configured primary store — which may be
+   * injected and need not be YAML at all. Every other path is a file-backed
+   * secondary store (a `stores:` entry, or an installed pack's engrams.yaml),
+   * which is a YAML artifact by definition. Instances are memoised so each
+   * path keeps one cache, matching the old per-path `_engramCache` map.
+   */
+  private _storeAt(path: string): PrimaryStore {
+    if (path === this.paths.engrams) return this._primaryStore
+    let store = this._secondaryStores.get(path)
+    if (!store) {
+      store = new YamlPrimaryStore(path)
+      this._secondaryStores.set(path, store)
+    }
+    return store
+  }
+
+  /**
+   * The store of record for this instance's own engrams.
+   *
+   * Public so callers can ask what they are actually persisting to
+   * (`plur.primaryStore.kind`) instead of assuming `engrams.yaml`.
+   */
+  get primaryStore(): PrimaryStore {
+    return this._primaryStore
   }
 
   /** Get or create a RemoteStore driver for a store config entry. */
@@ -892,7 +946,7 @@ export class Plur {
       // primaryIdx already proved this isn't in primary; only check writability.
       const storeInfo = this._findEngramStore(hit.id)
       if (storeInfo && !storeInfo.readonly) {
-        const storeEngrams = loadEngrams(storeInfo.path)
+        const storeEngrams = this._storeAt(storeInfo.path).load()
         const sidx = storeEngrams.findIndex(e => e.id === storeInfo.originalId)
         // Audit iter-5 defense (Critic low #3): _crossScopeRecurrenceDetect
         // filters status==='active' at the entry point, but a cross-process
@@ -1420,7 +1474,7 @@ export class Plur {
     // into an existing engram below.
     const validity = resolveValidity(statement, context)
     return withLock(this.paths.engrams, () => {
-      const engrams = loadEngrams(this.paths.engrams)
+      const engrams = this._primaryStore.load()
       const allEngrams = this._loadAllEngrams()
 
       const scope = guarded.scope
@@ -1608,7 +1662,7 @@ export class Plur {
             await remoteDriver.append(engram)
             // Success: remove outbox entry from local store
             withLock(this.paths.engrams, () => {
-              const fresh = loadEngrams(this.paths.engrams)
+              const fresh = this._primaryStore.load()
               const idx = fresh.findIndex(e => e.id === engram.id)
               if (idx !== -1) {
                 fresh.splice(idx, 1)
@@ -1620,7 +1674,7 @@ export class Plur {
             // Already saved locally with outbox metadata — will be retried
             logger.warning(`[plur:outbox] immediate push failed for ${engram.id}, queued for retry: ${(err as Error).message}`)
             withLock(this.paths.engrams, () => {
-              const fresh = loadEngrams(this.paths.engrams)
+              const fresh = this._primaryStore.load()
               const target = fresh.find(e => e.id === engram.id) as any
               if (target?.structured_data?._outbox) {
                 target.structured_data._outbox.last_error = (err as Error).message
@@ -1724,7 +1778,7 @@ export class Plur {
     if (hashMatch) {
       // Mutate + persist if local; otherwise return mutated (best-effort)
       return withLock(this.paths.engrams, () => {
-        const engrams = loadEngrams(this.paths.engrams)
+        const engrams = this._primaryStore.load()
         return this._recordDuplicate(hashMatch, engrams, scope, context)
       })
     }
@@ -1732,7 +1786,7 @@ export class Plur {
     const crossMatch = this._crossScopeRecurrenceDetect(statement, allEngrams, scope)
     if (crossMatch) {
       return withLock(this.paths.engrams, () => {
-        const engrams = loadEngrams(this.paths.engrams)
+        const engrams = this._primaryStore.load()
         return this._recordCrossScopeRecurrence(crossMatch, engrams, scope, context)
       })
     }
@@ -1764,7 +1818,7 @@ export class Plur {
       // engram but omit the outbox marker — the retry path will skip it.
       const storeEntry = (this.config.stores ?? []).find(s => s.url && s.scope === scope && !s.readonly)
       return withLock(this.paths.engrams, () => {
-        const engrams = loadEngrams(this.paths.engrams)
+        const engrams = this._primaryStore.load()
         // Replace placeholder ID with a real local ID
         localPlaceholder.id = generateEngramId([...engrams, ...allEngrams])
         if (storeEntry) {
@@ -1899,6 +1953,7 @@ export class Plur {
       recall: (query: string, options?: { limit?: number }) => this.recall(query, options),
       learn: (statement: string, context?: LearnContext) => this.learn(statement, context),
       getById: (id: string) => this.getById(id),
+      store: this._primaryStore,
       engramsPath: this.paths.engrams,
       rootPath: this.paths.root,
       dedupConfig: this.config.dedup ?? {},
@@ -2372,7 +2427,7 @@ export class Plur {
     const primaryResults = results.filter(e => !isStoreEngram(e))
     if (primaryResults.length === 0) return
     withLock(this.paths.engrams, () => {
-      const allEngrams = loadEngrams(this.paths.engrams)
+      const allEngrams = this._primaryStore.load()
       const resultIds = new Set(primaryResults.map(e => e.id))
       const today = new Date().toISOString().slice(0, 10)
       let modified = false
@@ -2634,7 +2689,7 @@ export class Plur {
   async feedback(id: string, signal: 'positive' | 'negative' | 'neutral'): Promise<void> {
     // Try primary engrams first
     const found = withLock(this.paths.engrams, () => {
-      const engrams = loadEngrams(this.paths.engrams)
+      const engrams = this._primaryStore.load()
       const engram = engrams.find(e => e.id === id)
       if (!engram) return false
 
@@ -2685,7 +2740,7 @@ export class Plur {
         throw new Error('Engram is in a readonly store')
       }
       // Must load fresh (not cached) since we're about to mutate and write back
-      const storeEngrams = loadEngrams(storeInfo.path)
+      const storeEngrams = this._storeAt(storeInfo.path).load()
       const engram = storeEngrams.find(e => e.id === storeInfo.originalId)
       if (engram) {
         if (!engram.feedback_signals) {
@@ -2788,7 +2843,7 @@ export class Plur {
    */
   saveMetaEngrams(metas: Engram[]): { saved: number; skipped: number } {
     return withLock(this.paths.engrams, () => {
-      const engrams = loadEngrams(this.paths.engrams)
+      const engrams = this._primaryStore.load()
       const existingIds = new Set(engrams.map(e => e.id))
       let saved = 0
       let skipped = 0
@@ -2852,7 +2907,7 @@ export class Plur {
   updateEngram(updated: Engram): boolean {
     // Local primary first.
     const localResult = withLock(this.paths.engrams, () => {
-      const engrams = loadEngrams(this.paths.engrams)
+      const engrams = this._primaryStore.load()
       const idx = engrams.findIndex(e => e.id === updated.id)
       if (idx === -1) return false
       // Leak guard (#353): local-resident → demote a sensitive update in place.
@@ -2898,7 +2953,7 @@ export class Plur {
   async updateEngramAsync(updated: Engram): Promise<Engram | null> {
     // Local primary first.
     const localResult = withLock(this.paths.engrams, () => {
-      const engrams = loadEngrams(this.paths.engrams)
+      const engrams = this._primaryStore.load()
       const idx = engrams.findIndex(e => e.id === updated.id)
       if (idx === -1) return null
       // Leak guard (#353): local-resident → demote a sensitive update in place.
@@ -2937,7 +2992,7 @@ export class Plur {
   setPinned(id: string, pinned: boolean): Engram | null {
     // Local primary first.
     const localResult = withLock(this.paths.engrams, () => {
-      const engrams = loadEngrams(this.paths.engrams)
+      const engrams = this._primaryStore.load()
       const idx = engrams.findIndex(e => e.id === id)
       if (idx === -1) return null
       const e = engrams[idx]
@@ -2980,7 +3035,7 @@ export class Plur {
   async setPinnedAsync(id: string, pinned: boolean): Promise<Engram | null> {
     // Local primary first.
     const localResult = withLock(this.paths.engrams, () => {
-      const engrams = loadEngrams(this.paths.engrams)
+      const engrams = this._primaryStore.load()
       const idx = engrams.findIndex(e => e.id === id)
       if (idx === -1) return null
       const e = engrams[idx]
@@ -3017,7 +3072,7 @@ export class Plur {
     // engram with reference_count=N retires it; called fewer times, the
     // engram stays active with a lower count.
     const foundInPrimary = withLock(this.paths.engrams, () => {
-      const engrams = loadEngrams(this.paths.engrams)
+      const engrams = this._primaryStore.load()
       const engram = engrams.find(e => e.id === id)
       if (!engram) return false
 
@@ -3067,7 +3122,7 @@ export class Plur {
       if (storeInfo.readonly) {
         throw new Error('Cannot retire engram from readonly store')
       }
-      const storeEngrams = loadEngrams(storeInfo.path)
+      const storeEngrams = this._storeAt(storeInfo.path).load()
       const engram = storeEngrams.find(e => e.id === storeInfo.originalId)
       if (engram) {
         // Same legacy-engram migration as primary path (audit iter-2, Data).
@@ -3136,7 +3191,7 @@ export class Plur {
   /** Remove retired engrams from storage. Returns count of removed and remaining. */
   compact(): { removed: number; remaining: number } {
     return withLock(this.paths.engrams, () => {
-      const engrams = loadEngrams(this.paths.engrams)
+      const engrams = this._primaryStore.load()
       const active = engrams.filter(e => e.status !== 'retired')
       const removed = engrams.length - active.length
       if (removed > 0) {
@@ -3170,8 +3225,12 @@ export class Plur {
    */
   reindex(): void {
     if (this.pgliteAdapter) {
+      // Only a DERIVED index has anything to rebuild. A `role: 'primary'`
+      // adapter IS the store of record — there is no external source to
+      // rebuild from, so "reindex" is a no-op rather than an error.
+      const adapter = asDerivedIndex(this.pgliteAdapter)
+      if (!adapter) return
       // Fire-and-track. Callers that need to block use reindexAsync().
-      const adapter = this.pgliteAdapter
       this._lastIndexError = null // new pass — stale failures cleared on success
       this._pgliteInitPromise = adapter.reindex()
         .then(() => this._autoEmbedNewEngrams(adapter))
@@ -3193,8 +3252,10 @@ export class Plur {
    */
   async reindexAsync(): Promise<void> {
     if (this.pgliteAdapter) {
-      await this.pgliteAdapter.reindex()
-      await this._autoEmbedNewEngrams(this.pgliteAdapter)
+      const adapter = asDerivedIndex(this.pgliteAdapter)
+      if (!adapter) return
+      await adapter.reindex()
+      await this._autoEmbedNewEngrams(adapter)
       return
     }
     if (!this.indexedStorage) {
@@ -3254,11 +3315,21 @@ export class Plur {
     return this._lastIndexError
   }
 
-  /** Sync index after YAML write (no-op if no index is active). */
+  /**
+   * Sync the index after a write to the primary store.
+   *
+   * No-op when no index is active, and — via `requiresIndexSync` — when the
+   * adapter declares `role: 'primary'`, because then the write already landed
+   * in the backend that answers queries and there is no delta to apply.
+   */
   private _syncIndex(): void {
     if (this.pgliteAdapter) {
+      // `IndexedStorage` below is unconditionally a derived index (it rebuilds
+      // itself from YAML by construction), so only the adapter path needs the
+      // role check.
+      if (!requiresIndexSync(this.pgliteAdapter)) return
       // Synchronous-shaped path: kick off the sync, track the promise.
-      // The YAML write already happened — this is the index catching up, then
+      // The store write already happened — this is the index catching up, then
       // auto-embed any new engrams so they're vector-searchable.
       const adapter = this.pgliteAdapter
       this._lastIndexError = null // new pass — stale failures cleared on success
@@ -3292,7 +3363,8 @@ export class Plur {
       const engramsPath = `${packDir}/engrams.yaml`
       if (!fs.existsSync(engramsPath)) continue
 
-      const engrams = loadEngrams(engramsPath)
+      const packStore = this._storeAt(engramsPath)
+      const engrams = packStore.load()
       const engram = engrams.find(e => e.id === id)
       if (!engram) continue
 
@@ -3312,7 +3384,7 @@ export class Plur {
         engram.activation.last_accessed = new Date().toISOString().slice(0, 10)
       }
 
-      saveEngrams(engramsPath, engrams)
+      packStore.save(engrams)
       return
     }
 
@@ -3457,7 +3529,7 @@ export class Plur {
    * After 7 days: includes warning in expired_warnings.
    */
   async flushOutbox(): Promise<{ flushed: number; failed: number; expired_warnings: string[] }> {
-    const engrams = loadEngrams(this.paths.engrams)
+    const engrams = this._primaryStore.load()
     const pending = engrams.filter(e => (e as any).structured_data?._outbox)
     if (pending.length === 0) return { flushed: 0, failed: 0, expired_warnings: [] }
 
@@ -3666,7 +3738,7 @@ Generate an improved version of the procedure that prevents this failure. Return
 
           // Try local primary first.
           const localResult = withLock(this.paths.engrams, () => {
-            const engrams = loadEngrams(this.paths.engrams)
+            const engrams = this._primaryStore.load()
             const idx = engrams.findIndex(e => e.id === engramId)
             if (idx === -1) return null
 
@@ -3766,7 +3838,7 @@ Generate an improved version of the procedure that prevents this failure. Return
           // (the failure episode is still linked below) instead of throwing.
           if (blockedRemote) {
             withLock(this.paths.engrams, () => {
-              const engrams = loadEngrams(this.paths.engrams)
+              const engrams = this._primaryStore.load()
               const idx = engrams.findIndex(e => e.id === engramId)
               if (idx !== -1) {
                 const raw = engrams[idx] as any
@@ -3789,7 +3861,7 @@ Generate an improved version of the procedure that prevents this failure. Return
 
     // Fallback: link failure episode to engram without rewriting
     withLock(this.paths.engrams, () => {
-      const engrams = loadEngrams(this.paths.engrams)
+      const engrams = this._primaryStore.load()
       const idx = engrams.findIndex(e => e.id === engramId)
       if (idx !== -1) {
         const raw = engrams[idx] as any
@@ -4054,7 +4126,7 @@ Generate an improved version of the procedure that prevents this failure. Return
       if (!engram.rationale) engram.rationale = `Retired: ${reason}`
     }
     const foundInPrimary = withLock(this.paths.engrams, () => {
-      const engrams = loadEngrams(this.paths.engrams)
+      const engrams = this._primaryStore.load()
       const engram = engrams.find(e => e.id === id)
       if (!engram) return false
       stamp(engram)
@@ -4074,7 +4146,7 @@ Generate an improved version of the procedure that prevents this failure. Return
     const storeInfo = this._findEngramStore(id)
     if (storeInfo && storeInfo.path !== this.paths.engrams) {
       if (storeInfo.readonly) throw new Error('Cannot retire engram from readonly store')
-      const storeEngrams = loadEngrams(storeInfo.path)
+      const storeEngrams = this._storeAt(storeInfo.path).load()
       const engram = storeEngrams.find(e => e.id === storeInfo.originalId)
       if (engram) {
         stamp(engram)
