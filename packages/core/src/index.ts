@@ -45,6 +45,7 @@ import { resolveValidity, buildTemporal } from './expiry.js'
 import { decodeJwtExpiry } from './jwt.js'
 import { RemoteStore, normalizeEndpointUrl } from './store/remote-store.js'
 import { YamlPrimaryStore } from './store/yaml-primary-store.js'
+import { SessionScopeRegistry } from './session-scopes.js'
 import type { PrimaryStore } from './store/primary-store.js'
 import { requiresIndexSync, asDerivedIndex } from './storage-adapter.js'
 import { isSharedScope, isPersonalScope, isScopeWithin } from './scope-util.js'
@@ -71,6 +72,8 @@ export * from './meta/index.js'
 export { classifyPolarity } from './polarity.js'
 export { computeConfidence, computeMetaConfidence, confidenceBand } from './confidence.js'
 export { SessionBreadcrumbs } from './session-state.js'
+export { SessionScopeRegistry } from './session-scopes.js'
+export { AsyncMutex, KeyedAsyncMutex } from './async-mutex.js'
 export { findProjectConfigPath, readProjectConfig, type ProjectConfig } from './project-config.js'
 export { generateGuardrails } from './guardrails.js'
 export type { MetaField, StructuralTemplate, EvidenceEntry, MetaConfidence, DomainCoverage, HierarchyPosition, Falsification } from './schemas/meta-engram.js'
@@ -370,6 +373,19 @@ export const COMMITMENT_MULTIPLIER: Record<string, number> = {
   exploring: 0.5,
 }
 
+/**
+ * LLM dedup circuit breaker (convergence Phase 2).
+ *
+ * Sliding window rather than a consecutive-failure counter: see
+ * `_recordLlmSuccess`. The threshold of 3 is unchanged from the counter
+ * version; the window is what makes it concurrency-safe. It is generous enough
+ * (5 min) that three failures inside it still mean "the LLM is broken", and
+ * short enough that three failures spread across an afternoon do not.
+ */
+const LLM_BREAKER_THRESHOLD = 3
+const LLM_BREAKER_WINDOW_MS = 5 * 60 * 1000
+const LLM_BREAKER_COOLDOWN_MS = 60 * 60 * 1000
+
 /** Map engram type to default cognitive level (Idea 5). */
 const TYPE_TO_COGNITIVE: Record<string, string> = {
   behavioral: 'apply',
@@ -427,9 +443,25 @@ export class Plur {
    * event; findLatestInjectionFor covers the cross-process case.
    */
   private _lastInjectionByEngram: Map<string, string> = new Map()
-  private _llmFailureCount = 0
+  /**
+   * Timestamps (ms) of recent LLM failures, newest last (convergence Phase 2).
+   *
+   * Replaces a plain `_llmFailureCount` that `_recordLlmSuccess()` zeroed. That
+   * reset is a lost-update under concurrency: `isLlmAvailable()` → `await llm()`
+   * → record is a read-modify-write straddling an await, so a success returning
+   * from one in-flight call erases the failures other in-flight calls just
+   * recorded, and a breaker meant to trip on 3 failures never trips at all. A
+   * window of failure timestamps has no such reset — a success simply does not
+   * add one, and old failures age out on their own.
+   */
+  private _llmFailures: number[] = []
   private _llmDisabledUntil: number | null = null
-  private _sessionScope: string | null = null
+  /**
+   * Per-session default write scopes (convergence Phase 2). Was a single
+   * `_sessionScope` field shared by every caller of the instance; see
+   * `session-scopes.ts` for why that could not survive the async write path.
+   */
+  private _sessionScopes = new SessionScopeRegistry()
   /**
    * Cross-encoder reranker adapter (#220). Resolved lazily on first recall with
    * `rerank: true`. Defaults to the "off" sentinel when PLUR_RERANKER is unset,
@@ -1031,20 +1063,36 @@ export class Plur {
     if (this._llmDisabledUntil !== null) {
       if (Date.now() < this._llmDisabledUntil) return false
       this._llmDisabledUntil = null
-      this._llmFailureCount = 0
+      this._llmFailures = []
     }
     return true
   }
 
   private _recordLlmFailure(): void {
-    this._llmFailureCount++
-    if (this._llmFailureCount >= 3) {
-      this._llmDisabledUntil = Date.now() + 60 * 60 * 1000
+    const now = Date.now()
+    // Age out failures older than the window, then count what is left. Purely
+    // additive — nothing here erases a failure another in-flight call recorded.
+    this._llmFailures = this._llmFailures.filter(t => now - t < LLM_BREAKER_WINDOW_MS)
+    this._llmFailures.push(now)
+    if (this._llmFailures.length >= LLM_BREAKER_THRESHOLD) {
+      this._llmDisabledUntil = now + LLM_BREAKER_COOLDOWN_MS
       logger.warning('LLM dedup circuit breaker tripped — disabled for 1 hour')
     }
   }
 
-  private _recordLlmSuccess(): void { this._llmFailureCount = 0 }
+  /**
+   * Record a successful LLM call.
+   *
+   * Deliberately NOT a reset. The previous implementation set the failure count
+   * to zero, which under concurrent calls means one success cancels every
+   * failure recorded by calls still in flight — the breaker then never trips
+   * however badly the LLM is behaving. Successes now only fail to *add* to the
+   * window; failures leave it by aging out.
+   */
+  private _recordLlmSuccess(): void {
+    const now = Date.now()
+    this._llmFailures = this._llmFailures.filter(t => now - t < LLM_BREAKER_WINDOW_MS)
+  }
 
   /** Create engram with content hash + commitment + cognitive level.
    * Fast-path hash dedup returns existing on exact match.
@@ -1404,19 +1452,26 @@ export class Plur {
     context?: LearnContext,
   ): { scope: string; context: LearnContext | undefined; demotion: { from: string; to: string; patterns: string } | null; routed: { scope: string; confidence: number; reason: string } | null } {
     // "Truly unscoped" = caller passed no scope AND no session/`.plur.yaml`
-    // default is in effect (both land in _sessionScope). Only this path
-    // auto-routes / applies unscoped_default; everything else is honored as-is.
+    // default is in effect (both land in the session scope registry). Only this
+    // path auto-routes / applies unscoped_default; everything else is honored
+    // as-is.
+    //
+    // The session scope is resolved for THIS call's session (`context.session`),
+    // not read off a shared field — under concurrent sessions the shared field
+    // let one session's `setSessionScope` decide another session's write. See
+    // `session-scopes.ts`.
+    const sessionScope = this._sessionScopes.get(context?.session)
     let routed: { scope: string; confidence: number; reason: string } | null = null
     let scope: string
-    if (context?.scope == null && this._sessionScope == null) {
+    if (context?.scope == null && sessionScope == null) {
       const resolved = this._resolveUnscopedScope(statement, context)
       scope = resolved.scope
       routed = resolved.routed
     } else {
       // Terminal fallback respects unscoped_default so a `unscoped_default:'local'`
-      // user with a null _sessionScope and no context scope is not silently forced
+      // user with no session scope and no context scope is not silently forced
       // to global (#353). No behavior change for the default-global user.
-      scope = context?.scope ?? this._sessionScope ?? (this.config.unscoped_default ?? 'global')
+      scope = context?.scope ?? sessionScope ?? (this.config.unscoped_default ?? 'global')
     }
     // Guard fires when the write can leave the machine: shared scope (others can
     // read it) OR remote-backed scope (routes to a remote store, e.g. a personal
@@ -5223,13 +5278,45 @@ Generate an improved version of the procedure that prevents this failure. Return
     if (changed) this.persistStores(updated, { serverSensitivityScopes })
   }
 
-  /** Set a session-level default scope. Used as fallback in learn/learnRouted when no explicit scope is provided. */
-  setSessionScope(scope: string | null): void {
-    this._sessionScope = scope
+  /**
+   * Set a session-level default scope — the fallback in learn/learnRouted when
+   * no explicit scope is provided.
+   *
+   * Omit `session` and this sets the process-wide slot, exactly as before: one
+   * session per instance, one scope. That is right for the CLI and for an MCP
+   * server handling one session at a time.
+   *
+   * Pass `session` and the scope is isolated to that session key. Any
+   * deployment where one `Plur` serves concurrent sessions MUST do this and
+   * thread the same key through `LearnContext.session` — otherwise the scope is
+   * a single shared field, and a `setSessionScope` from one session decides
+   * where another session's in-flight write lands. Passing `null` for a keyed
+   * session pins it to "no session scope" (unscoped writes auto-route), which
+   * is distinct from never having registered it (inherits the process slot).
+   */
+  setSessionScope(scope: string | null, opts?: { session?: string }): void {
+    this._sessionScopes.set(scope, opts?.session)
   }
 
-  /** Get the current session-level default scope, or null if not set. */
-  getSessionScope(): string | null {
-    return this._sessionScope
+  /**
+   * Get the session-level default scope for `opts.session`, or the process-wide
+   * one when no session is named. Returns null if not set.
+   */
+  getSessionScope(opts?: { session?: string }): string | null {
+    return this._sessionScopes.get(opts?.session)
+  }
+
+  /**
+   * Forget a session's scope registration. Call on session end: a long-lived
+   * deployment would otherwise retain one entry per session it has ever served.
+   * Omitting `session` clears the process-wide slot.
+   */
+  clearSessionScope(opts?: { session?: string }): void {
+    this._sessionScopes.clear(opts?.session)
+  }
+
+  /** Session keys with their own scope registration. Diagnostic / test seam. */
+  trackedSessionScopes(): string[] {
+    return this._sessionScopes.trackedSessions
   }
 }
