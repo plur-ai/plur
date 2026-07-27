@@ -323,7 +323,7 @@ describe('runImport engine', () => {
   })
 
   it('re-importing the same file is idempotent (all skipped)', async () => {
-    runImport(plur, [rec('idem one'), rec('idem two')], { from: 'generic' })
+    await runImport(plur, [rec('idem one'), rec('idem two')], { from: 'generic' })
     const second = await runImport(plur, [rec('idem one'), rec('idem two')], { from: 'generic' })
     expect(second.imported).toBe(0)
     expect(second.skipped).toBe(2)
@@ -373,13 +373,13 @@ describe('runImport engine', () => {
   })
 
   it('applies a scope override to every record', async () => {
-    runImport(plur, [rec('scoped fact', { scope: 'user:bob' })], { from: 'generic', scope: 'project:acme' })
+    await runImport(plur, [rec('scoped fact', { scope: 'user:bob' })], { from: 'generic', scope: 'project:acme' })
     const [engram] = await plur.list({})
     expect(engram.scope).toBe('project:acme')
   })
 
   it('preserves temporal metadata from the source', async () => {
-    runImport(plur, [rec('old knowledge', {
+    await runImport(plur, [rec('old knowledge', {
       created_at: '2024-03-01T08:00:00Z',
       last_accessed: '2025-01-15T09:00:00Z',
       valid_until: '2027-01-01',
@@ -392,7 +392,7 @@ describe('runImport engine', () => {
   })
 
   it('maps confidence onto episodic.confidence (1-10)', async () => {
-    runImport(plur, [rec('confident fact', { confidence: 0.9 })], { from: 'generic' })
+    await runImport(plur, [rec('confident fact', { confidence: 0.9 })], { from: 'generic' })
     const [engram] = await plur.list({})
     expect(engram.episodic?.confidence).toBe(9)
   })
@@ -431,7 +431,7 @@ describe('runImport engine', () => {
   })
 
   it('stamps a default source label when the record has none', async () => {
-    runImport(plur, [rec('unlabeled fact')], { from: 'mem0', defaultSource: 'import:mem0:memories.json' })
+    await runImport(plur, [rec('unlabeled fact')], { from: 'mem0', defaultSource: 'import:mem0:memories.json' })
     const [engram] = await plur.list({})
     expect(engram.source).toBe('import:mem0:memories.json')
   })
@@ -487,8 +487,8 @@ describe('importFrom end-to-end', async () => {
     expect(pinned?.scope).toBe('project:acme-api')
   })
 
-  it('throws for a missing input file', () => {
-    expect(() => importFrom(plur, { from: 'generic', path: join(dir, 'nope.json') })).toThrow()
+  it('throws for a missing input file', async () => {
+    await expect(importFrom(plur, { from: 'generic', path: join(dir, 'nope.json') })).rejects.toThrow()
     expect(existsSync(join(dir, 'nope.json'))).toBe(false)
   })
 })

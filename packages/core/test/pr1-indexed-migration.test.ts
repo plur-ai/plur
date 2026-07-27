@@ -46,7 +46,7 @@ describe.skipIf(!hasSqlite)('PR-1 indexed-storage personal-column migration (#35
 
     // Open via IndexedStorage — should ALTER TABLE ADD COLUMN personal + reindex.
     const store = new IndexedStorage(yamlPath, dbPath, [])
-    const visible = store.loadFiltered({ status: 'active', scope: 'project:myapp' })
+    const visible = await store.loadFiltered({ status: 'active', scope: 'project:myapp' })
     expect(visible.some(e => e.id === seeded.id)).toBe(true)
 
     // Column now exists and the local engram's flag is 1.
@@ -101,7 +101,7 @@ describe.skipIf(!hasSqlite)('PR-1 indexed-storage personal-column migration (#35
 
     // Open via IndexedStorage — must detect the unstamped sentinel and re-backfill.
     const store = new IndexedStorage(yamlPath, dbPath, [])
-    const visible = store.loadFiltered({ status: 'active', scope: 'project:myapp' })
+    const visible = await store.loadFiltered({ status: 'active', scope: 'project:myapp' })
     // Both personal-family engrams are visible again under a project-scope filter.
     expect(visible.some(e => e.id === localE.id)).toBe(true)
     expect(visible.some(e => e.id === globalE.id)).toBe(true)

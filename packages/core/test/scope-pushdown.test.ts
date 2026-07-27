@@ -120,36 +120,36 @@ describe.skipIf(!hasSqlite)('IndexedStorage.loadFiltered — permitted-scope pus
 
   it('REGRESSION GUARD: omitting scopes returns exactly what it returned before', async () => {
     const s = await seedAndOpen(BASE)
-    expect(s.loadFiltered({}).length).toBe(5)
-    expect(s.loadFiltered({ status: 'active' }).length).toBe(5)
-    expect(s.loadFiltered({ scopes: undefined }).map(e => e.id).sort())
-      .toEqual(s.loadFiltered({}).map(e => e.id).sort())
+    expect((await s.loadFiltered({})).length).toBe(5)
+    expect((await s.loadFiltered({ status: 'active' })).length).toBe(5)
+    expect((await s.loadFiltered({ scopes: undefined })).map(e => e.id).sort())
+      .toEqual((await s.loadFiltered({})).map(e => e.id).sort())
   })
 
   it('SECURITY: an empty permitted-scope list matches NOTHING', async () => {
     const s = await seedAndOpen(BASE)
-    expect(s.loadFiltered({ scopes: [] })).toEqual([])
-    expect(s.loadFiltered({ status: 'active', scopes: [] })).toEqual([])
+    expect(await s.loadFiltered({ scopes: [] })).toEqual([])
+    expect(await s.loadFiltered({ status: 'active', scopes: [] })).toEqual([])
     // Combined with the visibility filter, which on its own returns rows.
-    expect(s.loadFiltered({ scope: 'project:a' }).length).toBeGreaterThan(0)
-    expect(s.loadFiltered({ scope: 'project:a', scopes: [] })).toEqual([])
+    expect((await s.loadFiltered({ scope: 'project:a' })).length).toBeGreaterThan(0)
+    expect(await s.loadFiltered({ scope: 'project:a', scopes: [] })).toEqual([])
   })
 
   it('restricts to exactly the listed scopes', async () => {
     const s = await seedAndOpen(BASE)
-    expect(s.loadFiltered({ scopes: ['project:a'] }).map(e => e.id)).toEqual(['ENG-2026-0726-001'])
-    expect(s.loadFiltered({ scopes: ['project:a', 'project:b'] }).map(e => e.id).sort())
+    expect((await s.loadFiltered({ scopes: ['project:a'] })).map(e => e.id)).toEqual(['ENG-2026-0726-001'])
+    expect((await s.loadFiltered({ scopes: ['project:a', 'project:b'] })).map(e => e.id).sort())
       .toEqual(['ENG-2026-0726-001', 'ENG-2026-0726-003'])
   })
 
   it('does NOT expand the hierarchy and does NOT pass personal scopes through', async () => {
     const s = await seedAndOpen(BASE)
-    const ids = s.loadFiltered({ scopes: ['project:a'] }).map(e => e.id)
+    const ids = (await s.loadFiltered({ scopes: ['project:a'] })).map(e => e.id)
     expect(ids).not.toContain('ENG-2026-0726-002') // project:a:sub
     expect(ids).not.toContain('ENG-2026-0726-004') // global
     expect(ids).not.toContain('ENG-2026-0726-005') // local
     // Contrast: `scope` (visibility) DOES expand + pass personal through.
-    const visIds = s.loadFiltered({ scope: 'project:a' }).map(e => e.id)
+    const visIds = (await s.loadFiltered({ scope: 'project:a' })).map(e => e.id)
     expect(visIds).toContain('ENG-2026-0726-002')
     expect(visIds).toContain('ENG-2026-0726-004')
     expect(visIds).toContain('ENG-2026-0726-005')
@@ -162,9 +162,9 @@ describe.skipIf(!hasSqlite)('IndexedStorage.loadFiltered — permitted-scope pus
       mkEngram('ENG-2026-0726-012', 'x', { scope: 'project:a', domain: 'other.thing', status: 'active' }),
       mkEngram('ENG-2026-0726-013', 'x', { scope: 'project:b', domain: 'plur.search', status: 'active' }),
     ])
-    expect(s.loadFiltered({ status: 'active', domain: 'plur', scopes: ['project:a', 'project:b'] })
+    expect(await s.loadFiltered({ status: 'active', domain: 'plur', scopes: ['project:a', 'project:b'] })
       .map(e => e.id).sort()).toEqual(['ENG-2026-0726-010', 'ENG-2026-0726-013'])
-    expect(s.loadFiltered({ scope: 'project:a', scopes: ['project:b'] })).toEqual([])
+    expect(await s.loadFiltered({ scope: 'project:a', scopes: ['project:b'] })).toEqual([])
   })
 
   it('DILUTION: a corpus dominated by out-of-scope rows still yields every in-scope row', async () => {
@@ -176,7 +176,7 @@ describe.skipIf(!hasSqlite)('IndexedStorage.loadFiltered — permitted-scope pus
       engrams.push(mkEngram(`ENG-2026-0726-M${String(j).padStart(3, '0')}`, `mine ${j}`, { scope: 'project:mine' }))
     }
     const s = await seedAndOpen(engrams)
-    const mine = s.loadFiltered({ status: 'active', scopes: ['project:mine'] })
+    const mine = await s.loadFiltered({ status: 'active', scopes: ['project:mine'] })
     expect(mine.length).toBe(20)
     expect(mine.every(e => e.scope === 'project:mine')).toBe(true)
   })
