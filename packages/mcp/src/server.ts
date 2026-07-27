@@ -324,7 +324,7 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
     }
 
     if (uri === 'plur://status') {
-      const status = instance.status()
+      const status = await instance.status()
       return {
         contents: [{
           uri: 'plur://status',
@@ -366,7 +366,7 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
     const name = request.params.name
 
     if (name === 'plur-getting-started') {
-      const status = instance.status()
+      const status = await instance.status()
       return {
         description: 'Get started with PLUR memory',
         messages: [{

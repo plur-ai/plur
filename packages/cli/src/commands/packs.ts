@@ -111,7 +111,7 @@ Options:
     }
 
     // Filter engrams thematically
-    let engrams = plur.list({ domain, scope })
+    let engrams = await plur.list({ domain, scope })
 
     // Additional filters not supported by list()
     if (tags) {
@@ -177,7 +177,7 @@ Options:
     if (!source) {
       exit(1, 'Usage: plur packs install <source>')
     }
-    const result = plur.installPack(source)
+    const result = await plur.installPack(source)
     if (shouldOutputJson(flags)) {
       outputJson(result)
     } else {

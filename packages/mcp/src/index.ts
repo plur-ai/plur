@@ -320,7 +320,7 @@ async function runInit() {
       const installedVersion = installedByName.get(entry)
       if (!installedByName.has(entry)) {
         try {
-          plur.installPack(join(bundledPacksDir, entry))
+          await plur.installPack(join(bundledPacksDir, entry))
           newPacks.push(entry)
         } catch {}
       } else if (
@@ -335,7 +335,7 @@ async function runInit() {
         // can't do a comparison, so we upgrade unconditionally rather than
         // leave a versionless pack stale forever.
         try {
-          plur.installPack(join(bundledPacksDir, entry))
+          await plur.installPack(join(bundledPacksDir, entry))
           upgradedPacks.push(
             `${entry} ${installedVersion ?? 'unknown'}→${bundledVersion}`,
           )
@@ -382,7 +382,7 @@ async function runPacks(): Promise<void> {
       process.exit(1)
     }
     try {
-      const result = plur.installPack(source)
+      const result = await plur.installPack(source)
       process.stdout.write(`Installed pack '${result.name}' (${result.installed} engrams)\n`)
     } catch (err) {
       process.stderr.write(`Error: ${(err as Error).message}\n`)

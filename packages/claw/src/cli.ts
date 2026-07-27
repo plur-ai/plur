@@ -36,7 +36,7 @@ export async function runLearn(
   const { Plur } = await import('@plur-ai/core')
   const plurPath = opts.plurPath ?? process.env.PLUR_PATH ?? join(homedir(), '.plur')
   const plur = new Plur({ path: plurPath })
-  const engram = plur.learn(text)
+  const engram = await plur.learn(text)
   out(`Learned: ${engram.id}\n  ${engram.statement}\n`)
   return 0
 }
@@ -55,7 +55,7 @@ export async function runRecall(
   const { Plur } = await import('@plur-ai/core')
   const plurPath = opts.plurPath ?? process.env.PLUR_PATH ?? join(homedir(), '.plur')
   const plur = new Plur({ path: plurPath })
-  const results = plur.recall(query, { limit: 10 })
+  const results = await plur.recall(query, { limit: 10 })
   if (results.length === 0) {
     out('No engrams found.\n')
     return 0

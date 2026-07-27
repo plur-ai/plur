@@ -30,7 +30,9 @@ if (!cmd) { console.error('usage: fix-await-scopes.mjs <tsc command>'); process.
 const KEYWORDS = new Set(['if','for','while','switch','catch','return','do','else','try','with','constructor'])
 const MEMBER = /^ {2}(?:(?:private|public|protected|readonly)\s+)*(?:(async)\s+)?(?:get\s+|set\s+)?([A-Za-z_$][\w$]*)\s*(?:<[^>]*>)?\s*\(/
 const ARROW = /=>\s*\{\s*$/
-const FUNCEXPR = /\bfunction\s*[\w$]*\s*\([^)]*\)\s*\{\s*$/
+// Must tolerate a return annotation between `)` and `{` — a module-level
+// `function usage(): string {` is otherwise invisible to the walker.
+const FUNCEXPR = /\bfunction\s*[\w$]*\s*\([^)]*\)\s*(?::[^{]+)?\{\s*$/
 
 function tscErrors() {
   try { execSync(cmd, { stdio: ['ignore', 'pipe', 'pipe'] }); return [] }
@@ -87,7 +89,15 @@ function markAsync(lines, i) {
     lines[i] = out
     return true
   }
-  if (FUNCEXPR.test(l)) { lines[i] = l.replace(/\bfunction\b/, 'async function'); return true }
+  if (FUNCEXPR.test(l)) {
+    let out = l.replace(/\bfunction\b/, 'async function')
+    const rt = /\)\s*:\s*([^{]+?)\s*\{\s*$/.exec(out)
+    if (rt && !/^Promise\s*</.test(rt[1].trim())) {
+      out = out.replace(/\)\s*:\s*([^{]+?)\s*\{\s*$/, `): Promise<${rt[1].trim()}> {`)
+    }
+    lines[i] = out
+    return true
+  }
 
   const m = MEMBER.exec(l)
   if (m && !m[1] && !KEYWORDS.has(m[2])) {

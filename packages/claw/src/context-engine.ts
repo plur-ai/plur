@@ -165,7 +165,7 @@ export class PlurContextEngine implements ContextEngine {
           injection = await this.plur.injectHybrid(task, injectOpts)
         } catch {
           // Fall back to BM25 when embeddings unavailable
-          injection = this.plur.inject(task, injectOpts)
+          injection = await this.plur.inject(task, injectOpts)
         }
         maybeFlushAfter(recordEvent('recall'))
       }

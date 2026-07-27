@@ -118,7 +118,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
           exit(1, `Usage: plur tensions resolve ${tensionId} --winner <engram-id>`)
           return
         }
-        const { record, retired_id } = plur.resolveTension(tensionId, winner)
+        const { record, retired_id } = await plur.resolveTension(tensionId, winner)
         if (shouldOutputJson(flags)) { outputJson({ record, retired: retired_id }) } else {
           outputText(`Resolved ${record.id}: ${winner} wins, ${retired_id} retired.`)
         }
@@ -129,7 +129,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     return
   }
 
-  const engrams = plur.list({ scope, domain })
+  const engrams = await plur.list({ scope, domain })
 
   if (scan) {
     const llm: LlmFunction | undefined =
@@ -170,7 +170,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
       temporal_discount: temporalDiscount ?? tensionsConfig.temporal_discount,
       ...(persist ? { exclude_pairs: new Set(plur.suppressedTensionPairKeys()) } : {}),
     })
-    const persisted = persist && result.tensions.length > 0 ? plur.recordTensions(result.tensions) : undefined
+    const persisted = persist && result.tensions.length > 0 ? await plur.recordTensions(result.tensions) : undefined
 
     if (shouldOutputJson(flags)) {
       outputJson({

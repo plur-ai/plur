@@ -609,7 +609,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
         } catch (err) {
 // learnRouted now saves to outbox on remote failure, so this
           // path should rarely be reached. Keep as defense-in-depth.
-          const engram = plur.learn(statement, context)
+          const engram = await plur.learn(statement, context)
           const isOutbox = !!(engram as any).structured_data?._outbox
           const routedFallback = (engram as any).structured_data?._routed as { scope: string; confidence: number; reason: string } | undefined
           mcpCanary.signal('learn_activity')
@@ -768,7 +768,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
         required: ['query'],
       },
       handler: async (args, plur) => {
-        const results = plur.recall(args.query as string, {
+        const results = await plur.recall(args.query as string, {
           scope: args.scope as string | undefined,
           domain: args.domain as string | undefined,
           limit: args.limit as number | undefined,
@@ -906,7 +906,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
       },
       handler: async (args, plur) => {
         const session_id = _resolveInjectionSession(args)
-        const result = plur.inject(args.task as string, {
+        const result = await plur.inject(args.task as string, {
           budget: args.budget as number | undefined,
           scope: args.scope as string | undefined,
           source: 'inject',
@@ -1031,7 +1031,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
       },
       handler: async (args, plur) => {
         if (args.list === true) {
-          const pinned = plur.listPinned()
+          const pinned = await plur.listPinned()
           return {
             count: pinned.length,
             pinned: pinned.map(e => ({ id: e.id, statement: e.statement, scope: e.scope, domain: e.domain })),
@@ -1068,7 +1068,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
       },
       handler: async (args, plur) => {
         if (args.id) {
-          const engram = plur.getById(args.id as string)
+          const engram = await plur.getById(args.id as string)
           if (engram) {
             if (engram.status === 'retired') return { success: false, error: `Already retired: ${args.id}` }
             await plur.forget(args.id as string)
@@ -1081,7 +1081,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
           return { success: true, retired: { id: args.id as string } }
         }
         if (args.search) {
-          const matches = plur.recall(args.search as string, { limit: 100 })
+          const matches = await plur.recall(args.search as string, { limit: 100 })
           if (matches.length === 0) return { success: false, error: `No active engrams matching "${args.search}"` }
           if (matches.length === 1) {
             await plur.forget(matches[0].id)
@@ -1230,7 +1230,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
         required: ['source'],
       },
       handler: async (args, plur) => {
-        const result = plur.installPack(args.source as string)
+        const result = await plur.installPack(args.source as string)
         return {
           installed: result.installed,
           name: result.name,
@@ -1332,7 +1332,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
         },
       },
       handler: async (args, plur) => {
-        const result = plur.sync(args.remote as string | undefined, {
+        const result = await plur.sync(args.remote as string | undefined, {
           full: args.full === true,
           ...(args.remote_type === 'personal' || args.remote_type === 'shared' ? { remoteType: args.remote_type } : {}),
         })
@@ -1403,12 +1403,12 @@ function getAllToolDefinitions(): ToolDefinition[] {
           args.llm_model as string | undefined,
         )
         // Load all active engrams (list() returns all, no BM25 filter)
-        const sourceEngrams = plur.list({
+        const sourceEngrams = await plur.list({
           domain: args.domain as string | undefined,
           scope: args.scope as string | undefined,
         })
         // Load existing meta-engrams for deduplication during pipeline
-        const existingMetas = plur.list().filter(e => e.id.startsWith('META-'))
+        const existingMetas = (await plur.list()).filter(e => e.id.startsWith('META-'))
         const result = await extractMetaEngrams(sourceEngrams, llm, {
           run_validation: args.run_validation as boolean | undefined,
           existing_metas: existingMetas,
@@ -1418,7 +1418,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
         const isDryRun = args.dry_run === true
         let saveStats: { saved: number; skipped: number } | null = null
         if (!isDryRun && result.results.length > 0) {
-          saveStats = plur.saveMetaEngrams(result.results)
+          saveStats = await plur.saveMetaEngrams(result.results)
         }
 
         return {
@@ -1456,7 +1456,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
         },
       },
       handler: async (args, plur) => {
-        const allEngrams = plur.list()
+        const allEngrams = await plur.list()
         const metaEngrams = allEngrams.filter(e => e.id.startsWith('META-'))
         const minConfidence = (args.min_confidence as number | undefined) ?? 0
         const levelFilter = args.hierarchy_level as string | undefined
@@ -1512,14 +1512,14 @@ function getAllToolDefinitions(): ToolDefinition[] {
         required: ['meta_engram_id', 'test_domain', 'llm_base_url', 'llm_api_key'],
       },
       handler: async (args, plur) => {
-        const allEngrams = plur.list()
+        const allEngrams = await plur.list()
         const meta = allEngrams.find(e => e.id === (args.meta_engram_id as string))
         if (!meta) {
           throw new Error(`Meta-engram not found: ${args.meta_engram_id}`)
         }
 
         const testDomain = args.test_domain as string
-        const testEngrams = plur.list({ domain: testDomain })
+        const testEngrams = await plur.list({ domain: testDomain })
 
         const llm = makeHttpLlm(
           args.llm_base_url as string,
@@ -1530,7 +1530,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
         const result = await validateMetaEngram(meta, testEngrams, testDomain, llm)
 
         // validateMetaEngram mutates domain_coverage + confidence in-place — persist changes
-        plur.updateEngram(meta)
+        await plur.updateEngram(meta)
 
         return {
           meta_engram_id: result.meta_engram_id,
@@ -1557,7 +1557,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
         },
       },
       handler: async (args, plur) => {
-        const status = plur.status({
+        const status = await plur.status({
           domain: args.domain as string | undefined,
           created_after: args.created_after as string | undefined,
         })
@@ -1589,7 +1589,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
               behind: minorVersionsBehind(versionCheck.current, versionCheck.latest),
             },
           } : {}),
-          capabilities: mcpCanary.status(),
+          capabilities: await mcpCanary.status(),
         }
       },
     },
@@ -1609,7 +1609,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
         const days = typeof args.days === 'number' && Number.isFinite(args.days) && args.days >= 1
           ? Math.floor(args.days)
           : undefined
-        const receipt = plur.receipt(days ? { days } : undefined)
+        const receipt = await plur.receipt(days ? { days } : undefined)
         return { summary: receiptSummary(receipt), ...receipt }
       },
     },
@@ -1632,7 +1632,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
           // corrupt model cache can be re-probed without a process restart.
           plur.resetReranker()
         }
-        const status = plur.status()
+        const status = await plur.status()
         const before = plur.embedderStatus()
         // Skip the load probe when explicitly disabled — would short-circuit
         // anyway and pollute the report with a misleading "load attempt".
@@ -1774,7 +1774,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
               evalStatus = { result: run.result, stale: false }
               freshlyRun = !run.cached
             } else {
-              evalStatus = plur.rerankerEvalStatus(rerankerName)
+              evalStatus = await plur.rerankerEvalStatus(rerankerName)
             }
             if (!evalStatus) {
               checks.push({
@@ -1816,7 +1816,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
             })
           }
         }
-        const canaryStatuses = mcpCanary.status()
+        const canaryStatuses = await mcpCanary.status()
         for (const cs of canaryStatuses) {
           if (!cs.healthy) {
             checks.push({ check: `capability: ${cs.capability}`, ok: false, detail: cs.warning })
@@ -1949,7 +1949,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
         plur.setSessionScope(default_scope)
 
         // Get store stats for context
-        const status = plur.status()
+        const status = await plur.status()
         const store_stats = {
           engram_count: status.engram_count,
           episode_count: status.episode_count,
@@ -1978,7 +1978,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
           }
         } catch {
           // Fall back to BM25 if hybrid unavailable
-          const result = plur.inject(task, {
+          const result = await plur.inject(task, {
             scope: tags?.length ? `tags:${tags.join(',')}` : undefined,
             session_id,
             source: 'session_start',
@@ -2220,7 +2220,7 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
                 `engram_suggestions[${i}] must be a string or {statement: string, type?: string}, got ${typeof s}`,
               )
             }
-            plur.learn(statement, { type: type as any })
+            await plur.learn(statement, { type: type as any })
             engrams_created++
           }
         }
@@ -2260,7 +2260,7 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
           }
         } catch { /* cleanup is best-effort */ }
 
-        const status = plur.status()
+        const status = await plur.status()
 
         return {
           engrams_created,
@@ -2336,7 +2336,7 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
         // Use async variant so remote store engram_count reflects real data
         // even on first call after server start (issue #184).
         const stores = await plur.listStoresAsync()
-        const outboxCount = plur.outboxCount()
+        const outboxCount = await plur.outboxCount()
         return {
           stores,
           count: stores.length,
@@ -2375,7 +2375,7 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
         const minConfidence = explicit
           ?? plur.getScopeRoutingConfig().min_confidence
           ?? SUGGEST_DISPLAY_MIN_CONFIDENCE
-        const candidates = plur.suggestScope({
+        const candidates = await plur.suggestScope({
           statement: args.statement as string,
           domain: args.domain as string | undefined,
           tags: args.tags as string[] | undefined,
@@ -2450,7 +2450,7 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
         const errors: Array<{ id: string; error: string }> = []
 
         for (const id of targetIds) {
-          const engram = plur.getById(id)
+          const engram = await plur.getById(id)
           if (!engram) { errors.push({ id, error: 'Not found' }); continue }
           if (engram.status === 'active') { errors.push({ id, error: 'Already active' }); continue }
           if (engram.status === 'retired') { errors.push({ id, error: 'Cannot promote retired' }); continue }
@@ -2459,7 +2459,7 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
           engram.activation.retrieval_strength = 0.7
           engram.activation.storage_strength = 1.0
           engram.activation.last_accessed = new Date().toISOString().split('T')[0]
-          plur.updateEngram(engram)
+          await plur.updateEngram(engram)
           promoted.push({ id, statement: engram.statement })
         }
 
@@ -2507,13 +2507,13 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
           if (args.action === 'resolve') {
             const winner = args.winner as string | undefined
             if (!winner) throw new Error('action:"resolve" requires winner (the engram id to keep)')
-            const { record, retired_id } = plur.resolveTension(id, winner)
+            const { record, retired_id } = await plur.resolveTension(id, winner)
             return { record, retired: retired_id, message: `Tension ${id} resolved: ${winner} wins, ${retired_id} retired.` }
           }
           throw new Error(`Unknown action: ${args.action}. Use confirm, dismiss, or resolve.`)
         }
 
-        const engrams = plur.list({
+        const engrams = await plur.list({
           scope: args.scope as string | undefined,
           domain: args.domain as string | undefined,
         })
@@ -2548,7 +2548,7 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
             ...(persist ? { exclude_pairs: new Set(plur.suppressedTensionPairKeys()) } : {}),
           })
           const persisted = persist && result.tensions.length > 0
-            ? plur.recordTensions(result.tensions)
+            ? await plur.recordTensions(result.tensions)
             : undefined
 
           return {
@@ -2620,7 +2620,7 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
       annotations: { title: 'Purge Tensions', destructiveHint: true, idempotentHint: true },
       inputSchema: { type: 'object', properties: {} },
       handler: async (_args, plur) => {
-        const result = plur.purgeTensions()
+        const result = await plur.purgeTensions()
         return {
           purged_conflict_refs: result.purged_count,
           engrams_modified: result.engrams_modified,
@@ -2644,7 +2644,7 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
         required: ['episode_id'],
       },
       handler: async (args, plur) => {
-        const engram = plur.episodeToEngram(args.episode_id as string, {
+        const engram = await plur.episodeToEngram(args.episode_id as string, {
           scope: args.scope as string | undefined,
           domain: args.domain as string | undefined,
           tags: args.tags as string[] | undefined,
@@ -2685,7 +2685,7 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
 
         // Return recent history across all engrams
         const { listHistoryMonths, readHistory } = await import('@plur-ai/core')
-        const status = plur.status()
+        const status = await plur.status()
         const months = listHistoryMonths(status.storage_root)
         const allEvents: HistoryEvent[] = []
         // Read from most recent months first
@@ -2766,7 +2766,7 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
       },
       handler: async (args, plur) => {
         const name = args.name as string
-        let engrams = plur.list({
+        let engrams = await plur.list({
           domain: args.filter_domain as string | undefined,
           scope: args.filter_scope as string | undefined,
         })
@@ -2852,7 +2852,7 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
         },
       },
       handler: async (args, plur) => {
-        const status = plur.status()
+        const status = await plur.status()
         const storagePath = status.storage_root
         if (!args.force_regenerate) {
           const cached = getProfileForInjection(storagePath)
@@ -2865,7 +2865,7 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
         }
         const model = (args.llm_model as string) ?? selectModelForOperation('profile', status.config?.llm)
         const llm = makeHttpLlm(args.llm_base_url as string, args.llm_api_key as string, model)
-        const engrams = plur.list({ scope: args.scope as string | undefined })
+        const engrams = await plur.list({ scope: args.scope as string | undefined })
         const profile = await generateProfile(engrams, llm, storagePath, status.config?.profile?.cache_ttl_hours ?? 24)
         return { profile, source: 'generated', engram_count: engrams.length, model }
       },

@@ -50,8 +50,13 @@ function walk(dir, out = []) {
 }
 
 // `<receiver>.<method>(` — receiver is an identifier, `this`, or a chain tail.
+// Receiver may itself contain a call — `getEngine(p).plur.learn(...)` — and a
+// method may be a bare module function with no receiver at all
+// (`listImportSources()`). Both appear in real call sites; a receiver pattern
+// that only allows identifier chains silently skips them.
+const RECV = String.raw`(?:this|[A-Za-z_$][\w$]*(?:\([^()]*\))?(?:\.[A-Za-z_$][\w$]*(?:\([^()]*\))?)*)`
 const CALL = new RegExp(
-  String.raw`(^|[^.\w$])((?:this|[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)\.(?:${METHODS.join('|')}))\s*\(`,
+  String.raw`(^|[^.\w$])((?:${RECV}\.)?(?:${METHODS.join('|')}))\s*\(`,
   'g',
 )
 // A definition looks like `async name(` / `name(` at member indent — never a call.
@@ -68,60 +73,58 @@ function matchParen(s, open) {
 }
 
 let files = 0, sites = 0
+
+/** Line-start offsets, so we can tell whether an index sits in a comment line. */
+function lineStarts(src) {
+  const out = [0]
+  for (let i = 0; i < src.length; i++) if (src[i] === '\n') out.push(i + 1)
+  return out
+}
+function lineTextAt(src, starts, idx) {
+  let lo = 0, hi = starts.length - 1
+  while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (starts[mid] <= idx) lo = mid; else hi = mid - 1 }
+  const end = src.indexOf('\n', starts[lo])
+  return src.slice(starts[lo], end < 0 ? src.length : end)
+}
+
 for (const root of roots) {
   for (const file of walk(root)) {
-    const orig = fs.readFileSync(file, 'utf8')
-    const lines = orig.split('\n')
-    let touched = false
-
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i]
-      const t = line.trim()
-      if (t.startsWith('//') || t.startsWith('*') || t.startsWith('/*')) continue
-      if (DEF.test(line)) continue
-
-      let out = line
-      let guard = 0
-      for (;;) {
-        if (++guard > 50) break
-        CALL.lastIndex = 0
-        const m = CALL.exec(out)
-        if (!m) break
+    let src = fs.readFileSync(file, 'utf8')
+    const before0 = src
+    // Whole-file scan: a call may span lines, so a line-based pass misses the
+    // closing paren and silently skips exactly the multi-line sites that matter.
+    let guard = 0
+    for (;;) {
+      if (++guard > 5000) break
+      const starts = lineStarts(src)
+      const re = new RegExp(CALL.source, 'g')
+      let m, done = true
+      while ((m = re.exec(src))) {
         const lead = m[1]
         const callStart = m.index + lead.length
-        const before = out.slice(0, callStart)
-        if (/\b(await|yield|function|async)\s*$/.test(before)) { CALL.lastIndex = 0; break }
-        // A concise arrow body (`=> this.x()`) already RETURNS the promise, and
-        // that is usually the contract — a dependency callback, a `.then()` arm.
-        // Inserting `await` there needs the arrow marked async too, which is
-        // churn for no behavioural gain, and it is what made earlier runs
-        // oscillate against fix-await-scopes. Leave it returning the promise.
-        const openIdx = out.indexOf('(', callStart + m[2].length)
-        const close = matchParen(out, openIdx)
-        if (close < 0) break
-        if (/=>\s*$/.test(before)) { CALL.lastIndex = close; continue }
-        const after = out.slice(close)
+        const pre = src.slice(Math.max(0, callStart - 220), callStart)
+        if (/\b(await|yield|function|async)\s*$/.test(pre)) continue
+        if (/=>\s*$/.test(pre)) continue
+        const lt = lineTextAt(src, starts, callStart).trim()
+        if (lt.startsWith('//') || lt.startsWith('*') || lt.startsWith('/*')) continue
+        if (DEF.test(lineTextAt(src, starts, callStart))) continue
+
+        const openIdx = src.indexOf('(', callStart + m[2].length)
+        if (openIdx < 0) continue
+        const close = matchParen(src, openIdx)
+        if (close < 0) continue
+        const after = src.slice(close, close + 4)
         const consumed = /^\s*[.[(]/.test(after) || /^\s*\?\./.test(after)
-
-        const call = out.slice(callStart, close)
+        const call = src.slice(callStart, close)
         const repl = consumed ? `(await ${call})` : `await ${call}`
-        const next = before + repl + out.slice(close)
-        if (next === out) break
-        out = next
+        src = src.slice(0, callStart) + repl + src.slice(close)
         sites++
-        // Continue scanning AFTER what we just rewrote.
-        CALL.lastIndex = before.length + repl.length
-        const rest = out.slice(CALL.lastIndex)
-        const m2 = new RegExp(CALL.source, 'g').exec(rest)
-        if (!m2) break
+        done = false
+        break
       }
-      if (out !== line) { lines[i] = out; touched = true }
+      if (done) break
     }
-
-    if (touched) {
-      files++
-      if (!DRY) fs.writeFileSync(file, lines.join('\n'))
-    }
+    if (src !== before0) { files++; if (!DRY) fs.writeFileSync(file, src) }
   }
 }
 console.log(`${DRY ? '[dry] ' : ''}rewrote ${sites} call site(s) across ${files} file(s)`)
