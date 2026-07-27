@@ -563,19 +563,24 @@ export class Plur {
     this.configMtimeMs = this.statConfigMtime()
     const selection = this._resolveBackend()
     this._backendSelection = selection
-    // The `postgres` tier cannot yet BE this process's primary store: `Plur`'s
-    // write path is synchronous (ADR-0003) and Node has no synchronous Postgres
-    // client, so a network-backed store cannot satisfy the `PrimaryStore`
-    // contract until convergence Phase 2 makes that path async. Rather than
-    // half-wire it, the process runs the best tier it CAN wire — PGLite, a real
-    // working index — and says so once, loudly. `PostgresAdapter` is exported
-    // and fully usable by a deployment that drives it directly (ADR-0005).
-    if (selection.tier === 'postgres') {
-      logger.warning(
-        `[plur] backend=postgres selected (${selection.reason}, ~${selection.engramCount} engrams) but core's `
-        + `write path is still synchronous — this process is running the PGLite index instead and keeping its `
-        + `configured primary store (${this._primaryStore.kind}). Use PostgresAdapter directly, or wait for the `
-        + `async write path (convergence Phase 2).`,
+    // Phase 2b removed the constraint that used to live here: `Plur`'s write
+    // path was synchronous, and Node has no synchronous Postgres client, so a
+    // network-backed store could not satisfy the primary-store contract. The
+    // store interface is async now (`AsyncPrimaryStore`), and `PostgresAdapter`
+    // implements it alongside `StorageAdapter` — so the postgres tier CAN be
+    // this process's primary store.
+    //
+    // Selection still does not construct one implicitly: a connection is a
+    // resource with credentials and a lifecycle, and manufacturing one from a
+    // config string inside a constructor would make failure modes appear at
+    // surprising moments. The caller passes the adapter in
+    // (`new Plur({ store: new PostgresAdapter(...) })`), and selection reports
+    // the tier so a deployment can act on it.
+    if (selection.tier === 'postgres' && this._primaryStore.kind !== 'postgres') {
+      logger.info(
+        `[plur] backend=postgres selected (${selection.reason}, ~${selection.engramCount} engrams), `
+        + `but this instance was constructed with a ${this._primaryStore.kind} store. Pass `
+        + `new Plur({ store: new PostgresAdapter(...) }) to run on the Postgres tier.`,
       )
     } else if (selection.wanted === 'postgres') {
       logger.warning(
@@ -618,7 +623,13 @@ export class Plur {
     // Auto-purge legacy tension false positives (#156). PR #138 removed all
     // conflict creation from the dedup prompt, so any remaining conflicts are
     // false positives from the old system. Run once, mark with a sentinel file.
-    this._autoPurgeLegacyTensions()
+    // Fire-and-forget, deliberately: a constructor cannot await, and this is a
+    // one-time migration guarded by a sentinel file (#156). It must never take
+    // the constructor down, but it must also not fail silently — hence the
+    // explicit `void` and the logged rejection rather than a bare call.
+    void this._autoPurgeLegacyTensions().catch((err: unknown) => {
+      logger.warning(`[plur] legacy tension auto-purge failed: ${(err as Error).message}`)
+    })
   }
 
   /**
@@ -955,7 +966,7 @@ export class Plur {
     const idx = engrams.findIndex(e => e.id === hit.id)
     if (idx !== -1) {
       engrams[idx] = hit
-      this._writeEngrams(this.paths.engrams, engrams)
+      await this._writeEngrams(this.paths.engrams, engrams)
       await this._syncIndex()
     }
     return hit
@@ -1080,7 +1091,7 @@ export class Plur {
       // secondary path — both mutate the on-disk-bound object, not hit).
       const target = engrams[primaryIdx]
       newRecurrence = applyMutation(target, sourceEntry, lockTimestamp)
-      this._writeEngrams(this.paths.engrams, engrams)
+      await this._writeEngrams(this.paths.engrams, engrams)
       await this._syncIndex()
       persistedTo = 'primary'
       // Audit iter-5 fix (Data finding 1): explicit identity guard makes the
@@ -1100,7 +1111,7 @@ export class Plur {
         // mutation. Treat retired-on-arrival the same as not-found.
         if (sidx !== -1 && storeEngrams[sidx].status === 'active') {
           newRecurrence = applyMutation(storeEngrams[sidx], sourceEntry, lockTimestamp)
-          this._writeEngrams(storeInfo.path, storeEngrams)
+          await this._writeEngrams(storeInfo.path, storeEngrams)
           await this._syncIndex()
           persistedTo = 'secondary'
           if (storeEngrams[sidx] !== hit) syncHitFrom(storeEngrams[sidx])
@@ -1822,7 +1833,7 @@ export class Plur {
           }
         }
         engrams.push(engram)
-        this._writeEngrams(this.paths.engrams, engrams)
+        await this._writeEngrams(this.paths.engrams, engrams)
         await this._syncIndex()
 
         // Fire-and-forget: attempt immediate push, clean up on success
@@ -1835,7 +1846,7 @@ export class Plur {
               const idx = fresh.findIndex(e => e.id === engram.id)
               if (idx !== -1) {
                 fresh.splice(idx, 1)
-                this._writeEngrams(this.paths.engrams, fresh)
+                await this._writeEngrams(this.paths.engrams, fresh)
                 await this._syncIndex()
               }
             })
@@ -1848,7 +1859,7 @@ export class Plur {
               if (target?.structured_data?._outbox) {
                 target.structured_data._outbox.last_error = (err as Error).message
                 target.structured_data._outbox.attempt_count = 1
-                this._writeEngrams(this.paths.engrams, fresh)
+                await this._writeEngrams(this.paths.engrams, fresh)
               }
             })
           }
@@ -1864,7 +1875,7 @@ export class Plur {
       }
 
       engrams.push(engram)
-      this._writeEngrams(this.paths.engrams, engrams)
+      await this._writeEngrams(this.paths.engrams, engrams)
       await this._syncIndex()
       appendHistory(this.paths.root, {
         event: 'engram_created',
@@ -2010,7 +2021,7 @@ export class Plur {
           logger.warning(`[plur:learnRouted] no writable store for scope=${scope} — saving locally without outbox marker`)
         }
         engrams.push(localPlaceholder)
-        this._writeEngrams(this.paths.engrams, engrams)
+        await this._writeEngrams(this.paths.engrams, engrams)
         await this._syncIndex()
         appendHistory(this.paths.root, {
           event: 'engram_created',
@@ -2178,7 +2189,7 @@ export class Plur {
   async recallSemantic(query: string, options?: Omit<RecallOptions, 'mode' | 'llm'>): Promise<Engram[]> {
     const filtered = await this._filterEngrams(options)
     const limit = options?.limit ?? 20
-    const rerank = this._resolveRerankOptions(options?.rerank)
+    const rerank = await this._resolveRerankOptions(options?.rerank)
     const intent = this._resolveIntentProfile(query, options?.intentOverride)
     // Two over-fetch sources stack: intent routing wants headroom for its
     // re-rank, the reranker wants topK candidates. Take the larger; truncate
@@ -2222,7 +2233,7 @@ export class Plur {
   ): Promise<HybridSearchResult> {
     const filtered = await this._filterEngrams(options)
     const limit = options?.limit ?? 20
-    const rerank = this._resolveRerankOptions(options?.rerank)
+    const rerank = await this._resolveRerankOptions(options?.rerank)
     const intent = this._resolveIntentProfile(query, options?.intentOverride)
     // When intent routing is on we over-fetch from the hybrid call WITHOUT the
     // reranker, apply intent routing, then run the reranker on the routed set.
@@ -2265,7 +2276,7 @@ export class Plur {
   }
 
   /** Resolve the cross-encoder rerank options for a call (#220). */
-  private _resolveRerankOptions(rerank?: boolean): RerankOptions | undefined {
+  private async _resolveRerankOptions(rerank?: boolean): Promise<RerankOptions | undefined> {
     if (rerank === false) return undefined
     if (rerank === true) {
       // Explicit opt-in: if PLUR_RERANKER is off (the default), upgrade to
@@ -2273,7 +2284,7 @@ export class Plur {
       const envName = resolveRerankerName()
       const name = envName === 'off' ? 'bge-reranker-v2-m3' : envName
       this._reranker = getReranker(name)
-      this._maybeLogRerankerEvalAdvisory(name)
+      await this._maybeLogRerankerEvalAdvisory(name)
       return { reranker: this._reranker }
     }
     // Implicit: follow the env. Off → undefined so the stage is skipped.
@@ -2282,7 +2293,7 @@ export class Plur {
     if (!this._reranker || isRerankerOff(this._reranker)) {
       this._reranker = getReranker(envName)
     }
-    this._maybeLogRerankerEvalAdvisory(envName)
+    await this._maybeLogRerankerEvalAdvisory(envName)
     return { reranker: this._reranker }
   }
 
@@ -2658,7 +2669,7 @@ export class Plur {
       }
 
       if (modified) {
-        this._writeEngrams(this.paths.engrams, allEngrams)
+        await this._writeEngrams(this.paths.engrams, allEngrams)
         await this._syncIndex()
       }
     })
@@ -2706,7 +2717,7 @@ export class Plur {
       // Cross-encoder rerank stage (#220): replace the cosine boosts for the
       // top-K with the reranker's relevance, min-max normalized into [0,1] so
       // the selectAndSpread 0.5 threshold stays meaningful. Off by default.
-      const rerank = this._resolveRerankOptions(options?.rerank)
+      const rerank = await this._resolveRerankOptions(options?.rerank)
       if (rerank && results.length > 0) {
         const topK = Math.max(1, Math.min(results.length, rerank.topK ?? 50))
         const head = results.slice(0, topK)
@@ -2895,7 +2906,7 @@ export class Plur {
         engram.activation.last_accessed = new Date().toISOString().slice(0, 10)
       }
 
-      this._writeEngrams(this.paths.engrams, engrams)
+      await this._writeEngrams(this.paths.engrams, engrams)
       await this._syncIndex()
       appendHistory(this.paths.root, {
         event: 'feedback_received',
@@ -2935,7 +2946,7 @@ export class Plur {
         if (signal !== 'neutral') {
           engram.activation.last_accessed = new Date().toISOString().slice(0, 10)
         }
-        this._writeEngrams(storeInfo.path, storeEngrams)
+        await this._writeEngrams(storeInfo.path, storeEngrams)
         await this._syncIndex()
         this._logInjectionOutcome(id, signal)
         return
@@ -2971,7 +2982,7 @@ export class Plur {
     }
 
     // Search pack engrams by scanning pack directories
-    this._feedbackPack(id, signal)
+    await this._feedbackPack(id, signal)
     this._logInjectionOutcome(id, signal)
   }
 
@@ -3069,7 +3080,7 @@ export class Plur {
         saved++
       }
       if (saved > 0) {
-        this._writeEngrams(this.paths.engrams, engrams)
+        await this._writeEngrams(this.paths.engrams, engrams)
         await this._syncIndex()
       }
       return { saved, skipped }
@@ -3093,7 +3104,7 @@ export class Plur {
       const demote = this._guardExplicitUpdate(updated.statement, updated.scope, false, this._engramContextFields(updated))
       const toWrite = demote ? { ...updated, ...demote } : updated
       engrams[idx] = toWrite
-      this._writeEngrams(this.paths.engrams, engrams)
+      await this._writeEngrams(this.paths.engrams, engrams)
       await this._syncIndex()
       return true
     })
@@ -3139,7 +3150,7 @@ export class Plur {
       const demote = this._guardExplicitUpdate(updated.statement, updated.scope, false, this._engramContextFields(updated))
       const toWrite = demote ? { ...updated, ...demote } : updated
       engrams[idx] = toWrite
-      this._writeEngrams(this.paths.engrams, engrams)
+      await this._writeEngrams(this.paths.engrams, engrams)
       await this._syncIndex()
       return toWrite
     })
@@ -3176,7 +3187,7 @@ export class Plur {
       const e = engrams[idx]
       const updated: Engram = { ...e, pinned: pinned === true ? true : undefined }
       engrams[idx] = updated
-      this._writeEngrams(this.paths.engrams, engrams)
+      await this._writeEngrams(this.paths.engrams, engrams)
       await this._syncIndex()
       return updated
     })
@@ -3219,7 +3230,7 @@ export class Plur {
       const e = engrams[idx]
       const updated: Engram = { ...e, pinned: pinned === true ? true : undefined }
       engrams[idx] = updated
-      this._writeEngrams(this.paths.engrams, engrams)
+      await this._writeEngrams(this.paths.engrams, engrams)
       await this._syncIndex()
       return updated
     })
@@ -3272,7 +3283,7 @@ export class Plur {
         }
       }
 
-      this._writeEngrams(this.paths.engrams, engrams)
+      await this._writeEngrams(this.paths.engrams, engrams)
       await this._syncIndex()
       appendHistory(this.paths.root, {
         event: newCount === 0 ? 'engram_retired' : 'engram_decremented',
@@ -3316,7 +3327,7 @@ export class Plur {
           }
         }
 
-        this._writeEngrams(storeInfo.path, storeEngrams)
+        await this._writeEngrams(storeInfo.path, storeEngrams)
         await this._syncIndex()
         appendHistory(this.paths.root, {
           event: newCount === 0 ? 'engram_retired' : 'engram_decremented',
@@ -3373,7 +3384,7 @@ export class Plur {
       const active = engrams.filter(e => e.status !== 'retired')
       const removed = engrams.length - active.length
       if (removed > 0) {
-        this._writeEngrams(this.paths.engrams, active)
+        await this._writeEngrams(this.paths.engrams, active)
         await this._syncIndex()
       }
       return { removed, remaining: active.length }
@@ -3811,7 +3822,7 @@ export class Plur {
 
     // Write back changes (removals + updated outbox metadata)
     if (flushed > 0 || failed > 0) {
-      this._writeEngrams(this.paths.engrams, engrams)
+      await this._writeEngrams(this.paths.engrams, engrams)
       await this._syncIndex()
     }
 
@@ -3944,7 +3955,7 @@ Generate an improved version of the procedure that prevents this failure. Return
             if (!raw.episode_ids) raw.episode_ids = []
             raw.episode_ids.push(episode.id)
 
-            this._writeEngrams(this.paths.engrams, engrams)
+            await this._writeEngrams(this.paths.engrams, engrams)
             await this._syncIndex()
 
             appendHistory(this.paths.root, {
@@ -4022,7 +4033,7 @@ Generate an improved version of the procedure that prevents this failure. Return
                 const raw = engrams[idx] as any
                 if (!raw.episode_ids) raw.episode_ids = []
                 raw.episode_ids.push(episode.id)
-                this._writeEngrams(this.paths.engrams, engrams)
+                await this._writeEngrams(this.paths.engrams, engrams)
                 await this._syncIndex()
               }
             })
@@ -4045,7 +4056,7 @@ Generate an improved version of the procedure that prevents this failure. Return
         const raw = engrams[idx] as any
         if (!raw.episode_ids) raw.episode_ids = []
         raw.episode_ids.push(episode.id)
-        this._writeEngrams(this.paths.engrams, engrams)
+        await this._writeEngrams(this.paths.engrams, engrams)
         await this._syncIndex()
       }
     })
@@ -4308,7 +4319,7 @@ Generate an improved version of the procedure that prevents this failure. Return
       const engram = engrams.find(e => e.id === id)
       if (!engram) return false
       stamp(engram)
-      this._writeEngrams(this.paths.engrams, engrams)
+      await this._writeEngrams(this.paths.engrams, engrams)
       await this._syncIndex()
       appendHistory(this.paths.root, {
         event: 'engram_retired',
@@ -4328,7 +4339,7 @@ Generate an improved version of the procedure that prevents this failure. Return
       const engram = storeEngrams.find(e => e.id === storeInfo.originalId)
       if (engram) {
         stamp(engram)
-        this._writeEngrams(storeInfo.path, storeEngrams)
+        await this._writeEngrams(storeInfo.path, storeEngrams)
         await this._syncIndex()
         appendHistory(this.paths.root, {
           event: 'engram_retired',
@@ -4451,7 +4462,7 @@ Generate an improved version of the procedure that prevents this failure. Return
           }
         }
         if (storeModified > 0) {
-          this._writeEngrams(storePath, engrams)
+          await this._writeEngrams(storePath, engrams)
           storesCleaned++
         }
       } catch {
