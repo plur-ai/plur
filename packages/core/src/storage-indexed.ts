@@ -117,9 +117,9 @@ export class IndexedStorage {
   }
 
   /** Load all engrams from SQLite index. Auto-rebuilds if db missing. */
-  loadAll(): Engram[] {
+  async loadAll(): Promise<Engram[]> {
     if (!existsSync(this.dbPath)) {
-      this.reindex()
+      await this.reindex()
     }
     const db = this.getDb()
     const rows = db.prepare('SELECT data FROM engrams').all() as { data: string }[]
@@ -127,9 +127,9 @@ export class IndexedStorage {
   }
 
   /** Load engrams with SQL-level filtering. */
-  loadFiltered(filter: StorageFilter): Engram[] {
+  async loadFiltered(filter: StorageFilter): Promise<Engram[]> {
     if (!existsSync(this.dbPath)) {
-      this.reindex()
+      await this.reindex()
     }
     const db = this.getDb()
     const conditions: string[] = []
@@ -183,9 +183,9 @@ export class IndexedStorage {
   }
 
   /** Count engrams with optional status filter. */
-  count(filter?: { status?: string }): number {
+  async count(filter?: { status?: string }): Promise<number> {
     if (!existsSync(this.dbPath)) {
-      this.reindex()
+      await this.reindex()
     }
     const db = this.getDb()
     if (filter?.status) {

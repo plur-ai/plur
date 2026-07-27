@@ -272,7 +272,7 @@ describe.skipIf(!DSN)('PostgresAdapter (requires PLUR_TEST_POSTGRES_URL)', () =>
  * error, no warning, and results that look plausible. These tests demonstrate
  * the failure against a real index and then demonstrate the fix.
  */
-describe.skipIf(!DSN)('PostgresAdapter — HNSW tier (requires PLUR_TEST_POSTGRES_URL)', () => {
+describe.skipIf(!DSN)('PostgresAdapter — HNSW tier (requires PLUR_TEST_POSTGRES_URL)', async () => {
   const hnswSchema = `${SCHEMA}_hnsw`
   let hnsw: PostgresAdapter
   const ROWS = 200
@@ -396,7 +396,7 @@ describe.skipIf(!DSN)('PostgresAdapter — HNSW tier (requires PLUR_TEST_POSTGRE
  * a divergence waiting to happen, so the invariant is enforced behaviourally
  * rather than by hoping: same corpus, same filters, identical result sets.
  */
-describe.skipIf(!DSN)('PGLite and Postgres answer the same filter identically', () => {
+describe.skipIf(!DSN)('PGLite and Postgres answer the same filter identically', async () => {
   const paritySchema = `${SCHEMA}_parity`
   let pg: PostgresAdapter
   let pglite: PGLiteAdapter

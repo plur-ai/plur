@@ -100,7 +100,25 @@ export function outputJson(data: unknown): void {
 }
 
 /** Write human-readable text to stdout. */
-export function outputText(text: string): void {
+/**
+ * Write a line of human-readable output, honouring `--quiet`.
+ *
+ * The `options` parameter is not decorative. `init-remote` has been calling
+ * `outputText(text, flags)` at 35 sites since it was written, believing that was
+ * how output got routed; the one-parameter signature silently discarded the
+ * second argument, so `--quiet` did nothing there. Nothing caught it: esbuild
+ * strips types without checking them, and the test suites were not typechecked
+ * at all until `tsconfig.tests.json` was added.
+ *
+ * `--json` is deliberately NOT handled here. There is no correct automatic
+ * translation from a line of prose to a machine-readable record, and inventing
+ * one per call site is how you end up with output that is neither. A command
+ * that supports `--json` builds a result object and calls {@link outputJson};
+ * one that cannot should say so rather than emit prose to a caller that asked
+ * for JSON.
+ */
+export function outputText(text: string, options?: OutputOptions): void {
+  if (options?.quiet) return
   process.stdout.write(text + '\n')
 }
 

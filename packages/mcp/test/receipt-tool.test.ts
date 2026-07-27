@@ -42,8 +42,8 @@ describe('plur_receipt tool', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'plur-receipt-mcp-'))
     try {
       const plur = new Plur({ path: dir })
-      plur.learn('This monorepo uses pnpm for every install, never npm.', { type: 'procedural' })
-      plur.inject('pnpm install', { session_id: 's1', source: 'hook' })
+      await plur.learn('This monorepo uses pnpm for every install, never npm.', { type: 'procedural' })
+      await plur.inject('pnpm install', { session_id: 's1', source: 'hook' })
       const tool = getToolDefinitions().find(t => t.name === 'plur_receipt')!
       const res = await tool.handler({}, plur) as { summary?: string; retrieved?: unknown }
       expect(typeof res.summary).toBe('string')

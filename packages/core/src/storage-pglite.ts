@@ -29,7 +29,14 @@ import type { Engram } from './schemas/engram.js'
 import { loadEngrams } from './engrams.js'
 import { searchEngrams } from './fts.js'
 import { logger } from './logger.js'
-import type { DerivedIndexAdapter, ScopeRestriction, StorageFilter, VectorIndexStrategy, VectorSearchHit } from './storage-adapter.js'
+import type {
+  DerivedIndexAdapter,
+  ScopeRestriction,
+  StorageAdapter,
+  StorageFilter,
+  VectorIndexStrategy,
+  VectorSearchHit,
+} from './storage-adapter.js'
 
 /** Vector dimension used by the default BGE-small-en-v1.5 model. */
 const DEFAULT_VECTOR_DIM = 384

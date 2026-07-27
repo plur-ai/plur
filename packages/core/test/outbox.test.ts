@@ -12,7 +12,7 @@ function writeStoresConfig(dir: string, stores: Array<Record<string, unknown>>) 
   )
 }
 
-function readLocalEngrams(dir: string): any[] {
+async function readLocalEngrams(dir: string): Promise<any[]> {
   const path = join(dir, 'engrams.yaml')
   if (!existsSync(path)) return []
   const data = yaml.load(readFileSync(path, 'utf-8')) as { engrams?: unknown[] } | null
@@ -86,7 +86,7 @@ describe('outbox pattern (issue #26)', () => {
     writeStoresConfig(primaryDir, storeConfig())
     const plur = new Plur({ path: primaryDir })
 
-    const engram = plur.learn('outbox test engram', {
+    const engram = await plur.learn('outbox test engram', {
       scope: REMOTE_SCOPE,
       type: 'behavioral',
     })
@@ -98,7 +98,7 @@ describe('outbox pattern (issue #26)', () => {
     await new Promise(r => setTimeout(r, 50))
 
     // Engram should be in local store with outbox metadata
-    const local = readLocalEngrams(primaryDir)
+    const local = await readLocalEngrams(primaryDir)
     const outboxEngram = local.find((e: any) => e.statement === 'outbox test engram')
     expect(outboxEngram).toBeDefined()
     expect(outboxEngram.structured_data._outbox).toBeDefined()
@@ -113,7 +113,7 @@ describe('outbox pattern (issue #26)', () => {
     writeStoresConfig(primaryDir, storeConfig())
     const plur = new Plur({ path: primaryDir })
 
-    plur.learn('success test engram', {
+    await plur.learn('success test engram', {
       scope: REMOTE_SCOPE,
       type: 'behavioral',
     })
@@ -122,7 +122,7 @@ describe('outbox pattern (issue #26)', () => {
     await new Promise(r => setTimeout(r, 100))
 
     // Local store should NOT contain the engram (removed after success)
-    const local = readLocalEngrams(primaryDir)
+    const local = await readLocalEngrams(primaryDir)
     const found = local.find((e: any) => e.statement === 'success test engram')
     expect(found).toBeUndefined()
   })
@@ -144,7 +144,7 @@ describe('outbox pattern (issue #26)', () => {
     expect((engram as any).structured_data._outbox.last_error).toBe('server error')
 
     // Should be in local store
-    const local = readLocalEngrams(primaryDir)
+    const local = await readLocalEngrams(primaryDir)
     const found = local.find((e: any) => e.statement === 'routed outbox test')
     expect(found).toBeDefined()
     expect(found.structured_data._outbox).toBeDefined()
@@ -162,7 +162,7 @@ describe('outbox pattern (issue #26)', () => {
     })
 
     // Verify it's in the outbox
-    expect(plur.outboxCount()).toBe(1)
+    expect(await plur.outboxCount()).toBe(1)
 
     // Now mock success and flush
     mockRemoteSuccess()
@@ -170,10 +170,10 @@ describe('outbox pattern (issue #26)', () => {
 
     expect(result.flushed).toBe(1)
     expect(result.failed).toBe(0)
-    expect(plur.outboxCount()).toBe(0)
+    expect(await plur.outboxCount()).toBe(0)
 
     // Local store should not contain it anymore
-    const local = readLocalEngrams(primaryDir)
+    const local = await readLocalEngrams(primaryDir)
     const found = local.find((e: any) => e.statement === 'flush test engram')
     expect(found).toBeUndefined()
   })
@@ -192,10 +192,10 @@ describe('outbox pattern (issue #26)', () => {
     const result = await plur.flushOutbox()
     expect(result.flushed).toBe(0)
     expect(result.failed).toBe(1)
-    expect(plur.outboxCount()).toBe(1)
+    expect(await plur.outboxCount()).toBe(1)
 
     // Check attempt_count incremented
-    const local = readLocalEngrams(primaryDir)
+    const local = await readLocalEngrams(primaryDir)
     const found = local.find((e: any) => e.statement === 'retry test')
     expect(found.structured_data._outbox.attempt_count).toBe(2) // 1 from learnRouted + 1 from flush
     expect(found.structured_data._outbox.last_error).toBe('still down')
@@ -212,7 +212,7 @@ describe('outbox pattern (issue #26)', () => {
     })
 
     // Manually backdate the outbox entry
-    const local = readLocalEngrams(primaryDir)
+    const local = await readLocalEngrams(primaryDir)
     const found = local.find((e: any) => e.statement === 'old engram')
     const eightDaysAgo = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000).toISOString()
     found.structured_data._outbox.queued_at = eightDaysAgo
@@ -231,13 +231,13 @@ describe('outbox pattern (issue #26)', () => {
     writeStoresConfig(primaryDir, storeConfig())
     const plur = new Plur({ path: primaryDir })
 
-    expect(plur.outboxCount()).toBe(0)
+    expect(await plur.outboxCount()).toBe(0)
 
     await plur.learnRouted('count test 1', { scope: REMOTE_SCOPE })
-    expect(plur.outboxCount()).toBe(1)
+    expect(await plur.outboxCount()).toBe(1)
 
     await plur.learnRouted('count test 2', { scope: REMOTE_SCOPE })
-    expect(plur.outboxCount()).toBe(2)
+    expect(await plur.outboxCount()).toBe(2)
   })
 
   it('status().outbox_count reflects pending entries', async () => {
@@ -245,10 +245,10 @@ describe('outbox pattern (issue #26)', () => {
     writeStoresConfig(primaryDir, storeConfig())
     const plur = new Plur({ path: primaryDir })
 
-    expect(plur.status().outbox_count).toBe(0)
+    expect((await plur.status()).outbox_count).toBe(0)
 
     await plur.learnRouted('status test', { scope: REMOTE_SCOPE })
-    expect(plur.status().outbox_count).toBe(1)
+    expect((await plur.status()).outbox_count).toBe(1)
   })
 
   it('flushOutbox() returns clean result when no pending entries', async () => {
@@ -268,11 +268,11 @@ describe('outbox pattern (issue #26)', () => {
     const plur = new Plur({ path: primaryDir })
 
     await plur.learnRouted('dedup test', { scope: REMOTE_SCOPE })
-    const first = plur.outboxCount()
+    const first = await plur.outboxCount()
 
     // Same statement should be deduped
     await plur.learnRouted('dedup test', { scope: REMOTE_SCOPE })
-    expect(plur.outboxCount()).toBe(first)
+    expect(await plur.outboxCount()).toBe(first)
   })
 
   // R2-D (#12): flushOutbox re-runs the leak guard against the target scope's
@@ -293,7 +293,7 @@ describe('outbox pattern (issue #26)', () => {
     const plur = new Plur({ path: primaryDir })
 
     await plur.learnRouted(`prod box is at ${PUBLIC_IP}`, { scope: REMOTE_SCOPE, type: 'procedural' })
-    expect(plur.outboxCount()).toBe(1) // queued (clean under the old policy)
+    expect(await plur.outboxCount()).toBe(1) // queued (clean under the old policy)
 
     // Tighten the policy: forbid infra, NO allow. Fresh Plur picks up the edit.
     writeStoresConfig(primaryDir, [{
@@ -319,7 +319,7 @@ describe('outbox pattern (issue #26)', () => {
     expect(result.expired_warnings.some(w => /demoted to local\/private|now forbidden/.test(w))).toBe(true)
 
     // Engram demoted in place: scope→local, _outbox dropped, _demoted stamped.
-    const local = readLocalEngrams(primaryDir)
+    const local = await readLocalEngrams(primaryDir)
     const found = local.find((e: any) => e.statement.includes(PUBLIC_IP))
     expect(found).toBeDefined()
     expect(found.scope).toBe('local')
@@ -345,7 +345,7 @@ describe('outbox pattern (issue #26)', () => {
     const plur = new Plur({ path: primaryDir })
 
     await plur.learnRouted('routine team note', { scope: REMOTE_SCOPE, type: 'procedural', domain: `prod ${PUBLIC_IP}` })
-    expect(plur.outboxCount()).toBe(1) // queued (clean under the old policy)
+    expect(await plur.outboxCount()).toBe(1) // queued (clean under the old policy)
 
     // Tighten: forbid infra, no allow. Fresh Plur picks up the edit.
     writeStoresConfig(primaryDir, [{
@@ -369,7 +369,7 @@ describe('outbox pattern (issue #26)', () => {
     expect(pushSpy).not.toHaveBeenCalled()
 
     // Demoted in place: scope→local, visibility→private, _outbox dropped.
-    const local = readLocalEngrams(primaryDir)
+    const local = await readLocalEngrams(primaryDir)
     const found = local.find((e: any) => e.domain === `prod ${PUBLIC_IP}`)
     expect(found).toBeDefined()
     expect(found.scope).toBe('local')
@@ -384,13 +384,13 @@ describe('outbox pattern (issue #26)', () => {
     writeStoresConfig(primaryDir, storeConfig())
     const plur = new Plur({ path: primaryDir })
     await plur.learnRouted('a perfectly clean team note', { scope: REMOTE_SCOPE, type: 'behavioral' })
-    expect(plur.outboxCount()).toBe(1)
+    expect(await plur.outboxCount()).toBe(1)
 
     mockRemoteSuccess()
     const result = await plur.flushOutbox()
     expect(result.flushed).toBe(1)
     expect(result.failed).toBe(0)
-    expect(plur.outboxCount()).toBe(0)
+    expect(await plur.outboxCount()).toBe(0)
   })
 
   it('flushOutbox() warns when remote store no longer configured', async () => {

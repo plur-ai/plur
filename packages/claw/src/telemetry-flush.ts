@@ -63,17 +63,33 @@ let cachedPackageVersion: string | null = null
 
 function readPackageVersion(): string {
   if (cachedPackageVersion !== null) return cachedPackageVersion
+  // Resolve into a local `string`, then publish to the cache. Writing the
+  // `JSON.parse` result (typed `any`) straight into the `string | null` cache
+  // reset its narrowing to the declared type, so the compiler could not prove
+  // the returned value was non-null — the cache's "not yet read" sentinel
+  // looked reachable from the return. Parsing as `unknown` and narrowing
+  // explicitly keeps `'unknown'` the only fallback and the return provably a
+  // string, with no `any` laundered through a typed slot.
+  let version = 'unknown'
   try {
     const here = dirname(fileURLToPath(import.meta.url))
     // src → package root: ../package.json (when running tests against src)
     // dist → package root: ../package.json (when running built)
     const pkgPath = join(here, '..', 'package.json')
-    const pkg = JSON.parse(readFileSync(pkgPath, 'utf8'))
-    cachedPackageVersion = typeof pkg.version === 'string' ? pkg.version : 'unknown'
+    const pkg: unknown = JSON.parse(readFileSync(pkgPath, 'utf8'))
+    if (
+      typeof pkg === 'object' &&
+      pkg !== null &&
+      'version' in pkg &&
+      typeof pkg.version === 'string'
+    ) {
+      version = pkg.version
+    }
   } catch {
-    cachedPackageVersion = 'unknown'
+    // Unreadable or malformed package.json → keep the 'unknown' fallback.
   }
-  return cachedPackageVersion
+  cachedPackageVersion = version
+  return version
 }
 
 export function buildHeartbeatPayload(

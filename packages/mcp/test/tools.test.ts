@@ -21,7 +21,7 @@ describe('MCP tools', () => {
     const warmDir = mkdtempSync(join(tmpdir(), 'plur-mcp-warm-'))
     try {
       const warm = new Plur({ path: warmDir })
-      warm.learn('embedder warm-up', { scope: 'global' })
+      await warm.learn('embedder warm-up', { scope: 'global' })
       await warm.recallHybrid('embedder warm-up')
     } finally {
       rmSync(warmDir, { recursive: true, force: true })
@@ -83,7 +83,7 @@ describe('MCP tools', () => {
       expect(result.stats.failed).toBe(0)
       expect(result.failures).toBeUndefined() // omitted when there are none
       // every returned id is actually persisted
-      for (const id of result.ids) expect(plur.getById(id)).toBeTruthy()
+      for (const id of result.ids) expect(await plur.getById(id)).toBeTruthy()
     })
 
     it('dedupes a duplicate within the same batch to NOOP', async () => {
@@ -148,7 +148,7 @@ describe('MCP tools', () => {
         valid_until: '2099-12-31',
       }) as any
       expect(result.valid_until).toBe('2099-12-31')
-      const stored = plur.getById(result.id)
+      const stored = await plur.getById(result.id)
       expect(stored?.temporal?.valid_until).toBe('2099-12-31')
     })
 
@@ -644,11 +644,11 @@ describe('MCP tools', () => {
       async scoreBatch(_q: string, docs: string[]): Promise<number[]> { return docs.map(() => 0.5) },
     })
 
-    beforeEach(() => {
+    beforeEach(async () => {
       process.env.PLUR_RERANKER = BGE
       _resetRerankerCache()
       resetRerankerStatus()
-      plur.learn('The deploy target for staging is cluster-2', { scope: 'global' })
+      await plur.learn('The deploy target for staging is cluster-2', { scope: 'global' })
     })
     afterEach(() => {
       delete process.env.PLUR_RERANKER

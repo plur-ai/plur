@@ -56,50 +56,50 @@ describe('PrimaryStore contract (shared by every implementation)', () => {
 
   for (const { name, make } of cases) {
     describe(name, () => {
-      it('starts empty', () => {
+      it('starts empty', async () => {
         const store = make()
-        expect(store.load()).toEqual([])
-        expect(store.loadCached()).toEqual([])
+        expect(await store.load()).toEqual([])
+        expect(await store.loadCached()).toEqual([])
       })
 
-      it('round-trips a save through load()', () => {
+      it('round-trips a save through load()', async () => {
         const store = make()
-        store.save([engram('ENG-2026-0701-001')])
-        expect(store.load().map(e => e.id)).toEqual(['ENG-2026-0701-001'])
+        await store.save([engram('ENG-2026-0701-001')])
+        expect((await store.load()).map(e => e.id)).toEqual(['ENG-2026-0701-001'])
       })
 
-      it('loadCached() reflects a save made through the same store', () => {
+      it('loadCached() reflects a save made through the same store', async () => {
         const store = make()
         // Warm the cache first — the regression this guards (#25) is a cached
         // pre-write snapshot surviving a write.
-        expect(store.loadCached()).toEqual([])
-        store.save([engram('ENG-2026-0701-002')])
-        expect(store.loadCached().map(e => e.id)).toEqual(['ENG-2026-0701-002'])
+        expect(await store.loadCached()).toEqual([])
+        await store.save([engram('ENG-2026-0701-002')])
+        expect((await store.loadCached()).map(e => e.id)).toEqual(['ENG-2026-0701-002'])
       })
 
-      it('save() replaces the whole contents rather than appending', () => {
+      it('save() replaces the whole contents rather than appending', async () => {
         const store = make()
-        store.save([engram('ENG-2026-0701-003'), engram('ENG-2026-0701-004')])
-        store.save([engram('ENG-2026-0701-005')])
-        expect(store.load().map(e => e.id)).toEqual(['ENG-2026-0701-005'])
+        await store.save([engram('ENG-2026-0701-003'), engram('ENG-2026-0701-004')])
+        await store.save([engram('ENG-2026-0701-005')])
+        expect((await store.load()).map(e => e.id)).toEqual(['ENG-2026-0701-005'])
       })
 
-      it('mutating a loaded array does not mutate stored state', () => {
+      it('mutating a loaded array does not mutate stored state', async () => {
         const store = make()
-        store.save([engram('ENG-2026-0701-006', 'original')])
-        const loaded = store.load()
+        await store.save([engram('ENG-2026-0701-006', 'original')])
+        const loaded = await store.load()
         loaded[0].statement = 'tampered'
         loaded.push(engram('ENG-2026-0701-007'))
-        const reread = store.load()
+        const reread = await store.load()
         expect(reread).toHaveLength(1)
         expect(reread[0].statement).toBe('original')
       })
 
-      it('invalidate() does not lose persisted data', () => {
+      it('invalidate() does not lose persisted data', async () => {
         const store = make()
-        store.save([engram('ENG-2026-0701-008')])
+        await store.save([engram('ENG-2026-0701-008')])
         store.invalidate()
-        expect(store.load().map(e => e.id)).toEqual(['ENG-2026-0701-008'])
+        expect((await store.load()).map(e => e.id)).toEqual(['ENG-2026-0701-008'])
       })
     })
   }
@@ -121,55 +121,55 @@ describe('YamlPrimaryStore — ADR-0001 compatibility', () => {
     expect(store.location).toBe(path)
   })
 
-  it('reads a file written by saveEngrams() and writes one readable by loadEngrams()', () => {
+  it('reads a file written by saveEngrams() and writes one readable by loadEngrams()', async () => {
     // Byte-level interop with the pre-refactor helpers is the whole point: an
     // existing ~/.plur/engrams.yaml must keep working untouched.
     saveEngrams(path, [engram('ENG-2026-0701-100', 'written by the old helper')])
     const store = new YamlPrimaryStore(path)
-    expect(store.load()[0].statement).toBe('written by the old helper')
+    expect((await store.load())[0].statement).toBe('written by the old helper')
 
-    store.save([engram('ENG-2026-0701-101', 'written by the store')])
+    await store.save([engram('ENG-2026-0701-101', 'written by the store')])
     expect(loadEngrams(path)[0].statement).toBe('written by the store')
   })
 
-  it('does not create the file merely by being constructed or read', () => {
+  it('does not create the file merely by being constructed or read', async () => {
     const store = new YamlPrimaryStore(path)
-    store.load()
-    store.loadCached()
+    await store.load()
+    await store.loadCached()
     expect(existsSync(path)).toBe(false)
   })
 
-  it('loadCached() serves a cached snapshot while mtime is unchanged', () => {
+  it('loadCached() serves a cached snapshot while mtime is unchanged', async () => {
     saveEngrams(path, [engram('ENG-2026-0701-102')])
     const store = new YamlPrimaryStore(path)
-    const first = store.loadCached()
-    const second = store.loadCached()
+    const first = await store.loadCached()
+    const second = await store.loadCached()
     // Same array identity proves the second call did not re-parse the file.
     expect(second).toBe(first)
   })
 
-  it('loadCached() picks up an out-of-band write with a newer mtime', () => {
+  it('loadCached() picks up an out-of-band write with a newer mtime', async () => {
     saveEngrams(path, [engram('ENG-2026-0701-103')])
     const store = new YamlPrimaryStore(path)
-    expect(store.loadCached().map(e => e.id)).toEqual(['ENG-2026-0701-103'])
+    expect((await store.loadCached()).map(e => e.id)).toEqual(['ENG-2026-0701-103'])
     // Simulate another process replacing the file.
     saveEngrams(path, [engram('ENG-2026-0701-104')])
     store.invalidate()
-    expect(store.loadCached().map(e => e.id)).toEqual(['ENG-2026-0701-104'])
+    expect((await store.loadCached()).map(e => e.id)).toEqual(['ENG-2026-0701-104'])
   })
 
-  it('load() bypasses the cache entirely', () => {
+  it('load() bypasses the cache entirely', async () => {
     saveEngrams(path, [engram('ENG-2026-0701-105')])
     const store = new YamlPrimaryStore(path)
-    store.loadCached()
+    await store.loadCached()
     saveEngrams(path, [engram('ENG-2026-0701-106')])
-    expect(store.load().map(e => e.id)).toEqual(['ENG-2026-0701-106'])
+    expect((await store.load()).map(e => e.id)).toEqual(['ENG-2026-0701-106'])
   })
 
-  it('returns [] for an unparseable file rather than throwing', () => {
+  it('returns [] for an unparseable file rather than throwing', async () => {
     writeFileSync(path, ':\n  not: [valid', 'utf8')
     const store = new YamlPrimaryStore(path)
-    expect(store.load()).toEqual([])
+    expect(await store.load()).toEqual([])
   })
 })
 
@@ -180,10 +180,10 @@ describe('MemoryPrimaryStore', () => {
     expect(store.location).toBeNull()
   })
 
-  it('accepts a seed and clones it so the caller cannot mutate stored state', () => {
+  it('accepts a seed and clones it so the caller cannot mutate stored state', async () => {
     const seed = [engram('ENG-2026-0701-200', 'seeded')]
     const store = new MemoryPrimaryStore(seed)
     seed[0].statement = 'mutated after construction'
-    expect(store.load()[0].statement).toBe('seeded')
+    expect((await store.load())[0].statement).toBe('seeded')
   })
 })

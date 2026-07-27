@@ -339,7 +339,7 @@ describe('Plur scope opt-out (#647)', () => {
 
   it('dismissScope persists, survives reload, and drops the scope from the offer', async () => {
     const plur = freshPlur()
-    plur.dismissScope('group:plur/plur-ai/comms')
+    await plur.dismissScope('group:plur/plur-ai/comms')
     expect(plur.getDismissedScopes()).toContain('group:plur/plur-ai/comms')
 
     const [d] = await plur.discoverRemoteScopes()
@@ -355,15 +355,15 @@ describe('Plur scope opt-out (#647)', () => {
 
   it('reofferScopes clears dismissals — the scope is offered again', async () => {
     const plur = freshPlur()
-    plur.dismissScope('group:plur/plur-ai/comms')
-    plur.reofferScopes()
+    await plur.dismissScope('group:plur/plur-ai/comms')
+    await plur.reofferScopes()
     expect(plur.getDismissedScopes()).toEqual([])
     expect((await plur.offerableScopes()).scopes.map(o => o.scope)).toContain('group:plur/plur-ai/comms')
   })
 
   it('registerScope adds exactly one store (not all) and clears any prior dismissal', async () => {
     const plur = freshPlur()
-    plur.dismissScope('group:plur/plur-ai/research')
+    await plur.dismissScope('group:plur/plur-ai/research')
     const res = await plur.registerScope('group:plur/plur-ai/research')
     expect(res.status).toBe('added')
 
@@ -391,7 +391,7 @@ describe('Plur scope opt-out (#647)', () => {
 
   it('batch register respects dismissals: a dismissed scope is NOT registered and stays dismissed (scope-audit 2026-07-24)', async () => {
     const plur = freshPlur()
-    plur.dismissScope('group:plur/plur-ai/comms')
+    await plur.dismissScope('group:plur/plur-ai/comms')
 
     const [result] = await plur.registerDiscoveredScopes()
     expect(result.ok).toBe(true)
@@ -413,9 +413,9 @@ describe('Plur scope opt-out (#647)', () => {
 
   it('dismissed-scope matching is case-insensitive: a case-variant re-advertisement does not resurface the offer (scope-audit 2026-07-24)', async () => {
     const plur = freshPlur()
-    plur.dismissScope('GROUP:plur/plur-ai/comms')  // case-variant dismissal
+    await plur.dismissScope('GROUP:plur/plur-ai/comms')  // case-variant dismissal
     // A second case-variant dismissal is a no-op, not a duplicate.
-    plur.dismissScope('group:plur/plur-ai/comms')
+    await plur.dismissScope('group:plur/plur-ai/comms')
     expect(plur.getDismissedScopes()).toHaveLength(1)
 
     // The server advertises the lowercase spelling — still filtered.

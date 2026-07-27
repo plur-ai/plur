@@ -190,10 +190,10 @@ describe('co-injection logging integration (#452)', () => {
     fs.rmSync(dir, { recursive: true, force: true })
   })
 
-  it('inject() logs a co_injection event with injected ids and query hash', () => {
-    const a = plur.learn('Always use pnpm for package installation in this monorepo')
-    const b = plur.learn('Run pnpm build before running package tests')
-    const result = plur.inject('how do I run pnpm installation and build for a package')
+  it('inject() logs a co_injection event with injected ids and query hash', async () => {
+    const a = await plur.learn('Always use pnpm for package installation in this monorepo')
+    const b = await plur.learn('Run pnpm build before running package tests')
+    const result = await plur.inject('how do I run pnpm installation and build for a package')
     expect(result.injected_ids.length).toBeGreaterThanOrEqual(2)
 
     const events = readHistory(dir, thisMonth()).filter(e => e.event === 'co_injection')
@@ -209,17 +209,17 @@ describe('co-injection logging integration (#452)', () => {
     expect(JSON.stringify(ev)).not.toContain('Always use pnpm')
   })
 
-  it('inject() with no matches logs no co_injection event', () => {
-    plur.learn('Always use pnpm for package installation in this monorepo')
-    const result = plur.inject('zzz qqq xyzzy')
+  it('inject() with no matches logs no co_injection event', async () => {
+    await plur.learn('Always use pnpm for package installation in this monorepo')
+    const result = await plur.inject('zzz qqq xyzzy')
     expect(result.injected_ids.length).toBe(0)
     const events = readHistory(dir, thisMonth()).filter(e => e.event === 'co_injection')
     expect(events.length).toBe(0)
   })
 
   it('feedback on an injected engram logs injection_outcome linked to the injection', async () => {
-    const a = plur.learn('Always use pnpm for package installation in this monorepo')
-    plur.inject('how do I run pnpm installation for a package')
+    const a = await plur.learn('Always use pnpm for package installation in this monorepo')
+    await plur.inject('how do I run pnpm installation for a package')
     const coEvents = readHistory(dir, thisMonth()).filter(e => e.event === 'co_injection')
     expect(coEvents.length).toBe(1)
     const injectionId = coEvents[0].engram_id
@@ -234,8 +234,8 @@ describe('co-injection logging integration (#452)', () => {
   })
 
   it('negative feedback logs a negative injection_outcome', async () => {
-    const a = plur.learn('Always use pnpm for package installation in this monorepo')
-    plur.inject('how do I run pnpm installation for a package')
+    const a = await plur.learn('Always use pnpm for package installation in this monorepo')
+    await plur.inject('how do I run pnpm installation for a package')
     await plur.feedback(a.id, 'negative')
     const outcomes = readHistory(dir, thisMonth()).filter(e => e.event === 'injection_outcome')
     expect(outcomes.length).toBe(1)
@@ -243,23 +243,23 @@ describe('co-injection logging integration (#452)', () => {
   })
 
   it('neutral feedback logs no injection_outcome (ignored = absence)', async () => {
-    const a = plur.learn('Always use pnpm for package installation in this monorepo')
-    plur.inject('how do I run pnpm installation for a package')
+    const a = await plur.learn('Always use pnpm for package installation in this monorepo')
+    await plur.inject('how do I run pnpm installation for a package')
     await plur.feedback(a.id, 'neutral')
     const outcomes = readHistory(dir, thisMonth()).filter(e => e.event === 'injection_outcome')
     expect(outcomes.length).toBe(0)
   })
 
   it('feedback on a never-injected engram logs no injection_outcome', async () => {
-    const a = plur.learn('Always use pnpm for package installation in this monorepo')
+    const a = await plur.learn('Always use pnpm for package installation in this monorepo')
     await plur.feedback(a.id, 'positive')
     const outcomes = readHistory(dir, thisMonth()).filter(e => e.event === 'injection_outcome')
     expect(outcomes.length).toBe(0)
   })
 
   it('links feedback to injections from a previous process via history scan', async () => {
-    const a = plur.learn('Always use pnpm for package installation in this monorepo')
-    plur.inject('how do I run pnpm installation for a package')
+    const a = await plur.learn('Always use pnpm for package installation in this monorepo')
+    await plur.inject('how do I run pnpm installation for a package')
     const injectionId = readHistory(dir, thisMonth())
       .filter(e => e.event === 'co_injection')[0].engram_id
 
@@ -273,9 +273,9 @@ describe('co-injection logging integration (#452)', () => {
   })
 
   it('repeated injections update the outcome link to the most recent injection', async () => {
-    const a = plur.learn('Always use pnpm for package installation in this monorepo')
-    plur.inject('how do I run pnpm installation for a package')
-    plur.inject('pnpm installation again please')
+    const a = await plur.learn('Always use pnpm for package installation in this monorepo')
+    await plur.inject('how do I run pnpm installation for a package')
+    await plur.inject('pnpm installation again please')
     const coEvents = readHistory(dir, thisMonth()).filter(e => e.event === 'co_injection')
     expect(coEvents.length).toBe(2)
 
@@ -286,11 +286,11 @@ describe('co-injection logging integration (#452)', () => {
   })
 
   it('status() surfaces injection event and label counts', async () => {
-    const a = plur.learn('Always use pnpm for package installation in this monorepo')
-    plur.inject('how do I run pnpm installation for a package')
+    const a = await plur.learn('Always use pnpm for package installation in this monorepo')
+    await plur.inject('how do I run pnpm installation for a package')
     await plur.feedback(a.id, 'positive')
 
-    const status = plur.status()
+    const status = await plur.status()
     expect(status.history_events).toEqual({
       co_injection: 1,
       injection_outcome: 1,

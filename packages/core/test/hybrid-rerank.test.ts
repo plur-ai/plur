@@ -225,19 +225,19 @@ describe('Plur.recallHybrid with rerank=true (integration)', () => {
   let dir: string
   let plur: Plur
 
-  beforeEach(() => {
+  beforeEach(async () => {
     dir = mkdtempSync(join(tmpdir(), 'plur-rerank-'))
     plur = new Plur({ path: dir })
     // Seed engrams that BM25 will fight over for the query 'capital France'.
     // Statement (a) has the most token overlap with the query, but a noisy
     // distractor (d) also includes 'France' — without the reranker, RRF
     // ordering is sensitive to BM25 + embedding noise on a tiny corpus.
-    plur.learn('The capital of France is Paris', { type: 'terminological' })
-    plur.learn('Paris hosts the French government', { type: 'terminological' })
-    plur.learn('The French language is widely spoken in Europe', { type: 'terminological' })
-    plur.learn('France borders Germany Belgium Spain Italy Switzerland', { type: 'terminological' })
-    plur.learn('Cooking with butter is a French tradition', { type: 'behavioral' })
-    plur.learn('Berlin is the capital of Germany', { type: 'terminological' })
+    await plur.learn('The capital of France is Paris', { type: 'terminological' })
+    await plur.learn('Paris hosts the French government', { type: 'terminological' })
+    await plur.learn('The French language is widely spoken in Europe', { type: 'terminological' })
+    await plur.learn('France borders Germany Belgium Spain Italy Switzerland', { type: 'terminological' })
+    await plur.learn('Cooking with butter is a French tradition', { type: 'behavioral' })
+    await plur.learn('Berlin is the capital of Germany', { type: 'terminological' })
   })
 
   afterEach(() => { rmSync(dir, { recursive: true, force: true }) })

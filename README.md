@@ -202,8 +202,10 @@ import { Plur } from '@plur-ai/core'
 
 const plur = new Plur()
 
-// Learn from a correction
-plur.learn('toEqual() in Vitest is strict — use toMatchObject() for partial matching', {
+// Learn from a correction. The engine's read and write methods are async —
+// they return promises so a `Plur` can be backed by a network store as well
+// as by the default local YAML one.
+await plur.learn('toEqual() in Vitest is strict — use toMatchObject() for partial matching', {
   type: 'behavioral',
   scope: 'project:my-app',
   domain: 'dev/testing'
@@ -213,15 +215,16 @@ plur.learn('toEqual() in Vitest is strict — use toMatchObject() for partial ma
 const results = await plur.recallHybrid('vitest assertion matching')
 
 // Inject relevant engrams into agent context
-const { engrams } = plur.inject('Write tests for the user service', {
+const { engrams } = await plur.inject('Write tests for the user service', {
   scope: 'project:my-app',
   limit: 15
 })
 
 // Feedback trains the system
-plur.feedback(engram.id, 'positive')
+await plur.feedback(engram.id, 'positive')
 
-// Capture an event (episode)
+// Capture an event (episode). Episode operations stay synchronous — they are
+// backed by episodes.yaml, not the engram primary store.
 plur.capture('Fixed CrashLoopBackOff on bee-3-4 by increasing memory limits', {
   agent: 'claude-code',
   channel: 'terminal'
@@ -231,7 +234,7 @@ plur.capture('Fixed CrashLoopBackOff on bee-3-4 by increasing memory limits', {
 const incidents = plur.timeline({ agent: 'claude-code' })
 
 // Sync across machines (use a private git remote — all engrams including private-visibility ones are pushed)
-plur.sync('git@github.com:you/plur-memory.git')
+await plur.sync('git@github.com:you/plur-memory.git')
 ```
 
 ## Tools

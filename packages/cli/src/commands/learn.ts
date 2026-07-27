@@ -124,7 +124,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   let timeoutHandle: ReturnType<typeof setTimeout> | undefined
   try {
     engram = await Promise.race([
-      plur.learnRouted(statement, ctx),
+      await plur.learnRouted(statement, ctx),
       new Promise<never>((_, rej) => {
         timeoutHandle = setTimeout(
           () => rej(new Error('learnRouted timed out after 5s — remote store slow/unreachable; engram not confirmed remotely')),

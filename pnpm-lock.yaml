@@ -26,6 +26,9 @@ importers:
 
   .:
     devDependencies:
+      '@types/node':
+        specifier: 25.5.0
+        version: 25.5.0
       tsup:
         specifier: ^8.5.1
         version: 8.5.1(jiti@2.7.0)(postcss@8.5.14)(tsx@4.22.4)(typescript@6.0.2)(yaml@2.9.0)

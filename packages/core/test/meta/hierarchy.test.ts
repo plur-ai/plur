@@ -11,6 +11,7 @@ function makeMeta(id: string, template: string, domainCount: number, validatedDo
       constraint_type: 'assumed-independence',
       outcome_type: 'understated-risk',
       template,
+      structure_type: 'goal-constraint-outcome',
     },
     evidence: Array.from({ length: domainCount }, (_, i) => ({
       engram_id: `ENG-${i}`,
@@ -43,8 +44,13 @@ function makeMeta(id: string, template: string, domainCount: number, validatedDo
     knowledge_anchors: [], associations: [],
     feedback_signals: { positive: 0, negative: 0, neutral: 0 },
     derivation_count: domainCount, visibility: 'private',
+    reference_count: 1,
+    sources: [{ scope: 'global', session_id: null, stored_at: '2026-03-29T00:00:00.000Z' }],
+    recurrence_count: 0,
+    engram_version: 1,
+    episode_ids: [],
     structured_data: { meta: metaField },
-  } as Engram
+  }
 }
 
 describe('organizeHierarchy', () => {

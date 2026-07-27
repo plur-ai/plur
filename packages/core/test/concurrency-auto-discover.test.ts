@@ -43,32 +43,32 @@ describe('Plur — constructor auto-discovery', () => {
     rmSync(SCRATCH, { recursive: true, force: true })
   })
 
-  it('discovers a project store by default (unchanged behaviour)', () => {
+  it('discovers a project store by default (unchanged behaviour)', async () => {
     const plur = new Plur({ path: root, cwd: projectDir })
     expect(plur.autoDiscoveryEnabled()).toBe(true)
-    expect(plur.listStores().some(s => s.path === projectStore)).toBe(true)
+    expect((await plur.listStores()).some(s => s.path === projectStore)).toBe(true)
     // And it persisted — this is the disk side effect the opt-out exists for.
     expect(existsSync(join(root, 'config.yaml'))).toBe(true)
   })
 
-  it('writes nothing to config when autoDiscover is false', () => {
+  it('writes nothing to config when autoDiscover is false', async () => {
     const plur = new Plur({ path: root, cwd: projectDir, autoDiscover: false })
     expect(plur.autoDiscoveryEnabled()).toBe(false)
-    expect(plur.listStores().some(s => s.path === projectStore)).toBe(false)
+    expect((await plur.listStores()).some(s => s.path === projectStore)).toBe(false)
   })
 
-  it('PLUR_AUTO_DISCOVER=0 disables it without touching the call site', () => {
+  it('PLUR_AUTO_DISCOVER=0 disables it without touching the call site', async () => {
     process.env.PLUR_AUTO_DISCOVER = '0'
     const plur = new Plur({ path: root, cwd: projectDir })
     expect(plur.autoDiscoveryEnabled()).toBe(false)
-    expect(plur.listStores().some(s => s.path === projectStore)).toBe(false)
+    expect((await plur.listStores()).some(s => s.path === projectStore)).toBe(false)
   })
 
-  it('an explicit option beats the environment variable', () => {
+  it('an explicit option beats the environment variable', async () => {
     process.env.PLUR_AUTO_DISCOVER = '0'
     const plur = new Plur({ path: root, cwd: projectDir, autoDiscover: true })
     expect(plur.autoDiscoveryEnabled()).toBe(true)
-    expect(plur.listStores().some(s => s.path === projectStore)).toBe(true)
+    expect((await plur.listStores()).some(s => s.path === projectStore)).toBe(true)
   })
 
   it('resolveAutoDiscover pins the precedence rules', () => {
@@ -82,9 +82,9 @@ describe('Plur — constructor auto-discovery', () => {
     expect(Plur.resolveAutoDiscover()).toBe(true)
   })
 
-  it('discovery stays opt-out-able when called explicitly after construction', () => {
+  it('discovery stays opt-out-able when called explicitly after construction', async () => {
     const plur = new Plur({ path: root, cwd: projectDir, autoDiscover: false })
-    expect(plur.listStores().some(s => s.path === projectStore)).toBe(false)
+    expect((await plur.listStores()).some(s => s.path === projectStore)).toBe(false)
     // The method itself is unchanged and still works when called deliberately.
     const found = plur.autoDiscoverStores(projectDir)
     expect(found.some(f => f.path === projectStore)).toBe(true)

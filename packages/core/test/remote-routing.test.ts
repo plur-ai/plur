@@ -74,7 +74,7 @@ describe('learn() — remote routing (issue #25)', () => {
     ])
     const plur = new Plur({ path: primaryDir })
 
-    const engram = plur.learn('test engram for remote', {
+    const engram = await plur.learn('test engram for remote', {
       scope: 'group:plur/plur-ai/engineering',
       type: 'behavioral',
     })
@@ -104,7 +104,7 @@ describe('learn() — remote routing (issue #25)', () => {
     }
   })
 
-  it('writes locally when scope does NOT match any remote store', () => {
+  it('writes locally when scope does NOT match any remote store', async () => {
     writeStoresConfig(primaryDir, [
       {
         url: 'https://plur.example.com/sse',
@@ -116,7 +116,7 @@ describe('learn() — remote routing (issue #25)', () => {
     ])
     const plur = new Plur({ path: primaryDir })
 
-    const engram = plur.learn('local-only engram', {
+    const engram = await plur.learn('local-only engram', {
       scope: 'global',
       type: 'behavioral',
     })
@@ -130,7 +130,7 @@ describe('learn() — remote routing (issue #25)', () => {
     expect(local.engrams.find(e => e.statement === 'local-only engram')).toBeTruthy()
   })
 
-  it('writes locally when remote store entry is readonly', () => {
+  it('writes locally when remote store entry is readonly', async () => {
     writeStoresConfig(primaryDir, [
       {
         url: 'https://plur.example.com/sse',
@@ -142,7 +142,7 @@ describe('learn() — remote routing (issue #25)', () => {
     ])
     const plur = new Plur({ path: primaryDir })
 
-    plur.learn('readonly-store engram', {
+    await plur.learn('readonly-store engram', {
       scope: 'group:plur/plur-ai/engineering',
       type: 'behavioral',
     })
@@ -182,12 +182,11 @@ describe('learn() — remote routing (issue #25)', () => {
     const plur = new Plur({ path: primaryDir })
 
     // Should NOT throw — the engram is saved to local outbox.
-    expect(() => {
-      plur.learn('engram-with-failing-remote', {
-        scope: 'group:plur/plur-ai/engineering',
-        type: 'behavioral',
-      })
-    }).not.toThrow()
+    // Should NOT reject — the engram is saved to the local outbox.
+    await expect(plur.learn('engram-with-failing-remote', {
+      scope: 'group:plur/plur-ai/engineering',
+      type: 'behavioral',
+    })).resolves.toBeDefined()
 
     // Wait for the fire-and-forget push attempt to settle.
     await new Promise(r => setTimeout(r, 50))
@@ -326,7 +325,7 @@ describe('forget() — remote routing (issue #84)', () => {
     const plur = new Plur({ path: primaryDir })
 
     // Create a local engram first
-    const engram = plur.learn('local engram to retire', { scope: 'global' })
+    const engram = await plur.learn('local engram to retire', { scope: 'global' })
 
     // Forget it — should retire locally, no remote calls for getById/DELETE
     await plur.forget(engram.id)
@@ -336,7 +335,7 @@ describe('forget() — remote routing (issue #84)', () => {
     expect(deletes.length).toBe(0)
 
     // Verify local retirement
-    const found = plur.getById(engram.id)
+    const found = await plur.getById(engram.id)
     expect(found!.status).toBe('retired')
   })
 
@@ -477,7 +476,7 @@ describe('feedback() — remote routing (issue #85)', () => {
     ])
     const plur = new Plur({ path: primaryDir })
 
-    const engram = plur.learn('local engram for feedback', { scope: 'global' })
+    const engram = await plur.learn('local engram for feedback', { scope: 'global' })
     await plur.feedback(engram.id, 'positive')
 
     // No feedback POST to remote
@@ -485,7 +484,7 @@ describe('feedback() — remote routing (issue #85)', () => {
     expect(posts.length).toBe(0)
 
     // Local engram was updated
-    const found = plur.getById(engram.id)
+    const found = await plur.getById(engram.id)
     expect(found!.feedback_signals?.positive).toBe(1)
   })
 

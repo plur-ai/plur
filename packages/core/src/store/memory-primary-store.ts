@@ -13,9 +13,9 @@
  * source of truth, which is exactly what this class exists to rule out.
  */
 import type { Engram } from '../schemas/engram.js'
-import type { PrimaryStore, PrimaryStoreKind } from './primary-store.js'
+import type { AsyncPrimaryStore, PrimaryStoreKind } from './primary-store.js'
 
-export class MemoryPrimaryStore implements PrimaryStore {
+export class MemoryPrimaryStore implements AsyncPrimaryStore {
   readonly kind: PrimaryStoreKind = 'memory'
   readonly location: string | null = null
   private engrams: Engram[] = []
@@ -24,15 +24,15 @@ export class MemoryPrimaryStore implements PrimaryStore {
     if (seed) this.engrams = seed.map(e => structuredClone(e))
   }
 
-  load(): Engram[] {
+  async load(): Promise<Engram[]> {
     return this.engrams.map(e => structuredClone(e))
   }
 
-  loadCached(): Engram[] {
+  async loadCached(): Promise<Engram[]> {
     return this.load()
   }
 
-  save(engrams: Engram[]): void {
+  async save(engrams: Engram[]): Promise<void> {
     this.engrams = engrams.map(e => structuredClone(e))
   }
 

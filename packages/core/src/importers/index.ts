@@ -58,7 +58,7 @@ export const IMPORT_SOURCES: ImportSource[] = [
   lettaSource,
 ]
 
-export function listImportSources(): ImportSource[] {
+export async function listImportSources(): Promise<ImportSource[]> {
   return IMPORT_SOURCES
 }
 
@@ -81,10 +81,10 @@ export interface ImportFromOptions {
 }
 
 /** File → parse → dedup-gated learn, in one call. Used by the CLI command. */
-export function importFrom(plur: Plur, opts: ImportFromOptions): MigrationReport {
+export async function importFrom(plur: Plur, opts: ImportFromOptions): Promise<MigrationReport> {
   const source = getImportSource(opts.from)
   const records = source.parse({ path: opts.path, mapping: opts.mapping })
-  return runImport(plur, records, {
+  return await runImport(plur, records, {
     from: opts.from,
     path: opts.path,
     dryRun: opts.dryRun,

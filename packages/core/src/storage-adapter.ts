@@ -265,8 +265,8 @@ export interface StorageAdapter {
    *
    * `opts.scopes` must be applied IN the query (as part of the k-NN
    * predicate), not to the returned rows — otherwise `limit` is measured
-   * against the org-wide neighbour list and in-scope results are diluted away.
-   * See {@link ScopeRestriction}.
+   * against the unrestricted neighbour list and in-scope results are diluted
+   * away. See {@link ScopeRestriction}.
    */
   searchVector(query: Float32Array, limit: number, opts?: ScopeRestriction): Promise<VectorSearchHit[]>
   /** Upsert an embedding for a specific engram. */

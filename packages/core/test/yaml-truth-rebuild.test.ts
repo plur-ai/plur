@@ -51,36 +51,36 @@ describe('yaml-as-truth: nuke-the-db rebuild (Test A)', () => {
     rmSync(dir, { recursive: true, force: true })
   })
 
-  it('recall results survive a full rebuild from YAML', () => {
+  it('recall results survive a full rebuild from YAML', async () => {
     // 1. Seed a realistic store with engrams across types and scopes
     const seed = new Plur({ path: dir })
-    seed.learn('always run tests before merging', {
+    await seed.learn('always run tests before merging', {
       scope: 'project:plur',
       domain: 'workflow.testing',
       type: 'procedural',
     })
-    seed.learn('YAML is the source of truth', {
+    await seed.learn('YAML is the source of truth', {
       scope: 'project:plur',
       domain: 'plur.architecture',
       type: 'architectural',
     })
-    seed.learn('embedding model influences recall quality more than fusion', {
+    await seed.learn('embedding model influences recall quality more than fusion', {
       scope: 'project:plur',
       domain: 'plur.retrieval',
       type: 'terminological',
     })
-    seed.learn('the user prefers terse responses', {
+    await seed.learn('the user prefers terse responses', {
       scope: 'global',
       domain: 'workflow.communication',
       type: 'behavioral',
     })
 
     // 2. Capture results from every public read method
-    const beforeList = seed.list().map(e => e.id).sort()
-    const beforeRecall = seed.recall('source of truth').map(e => e.id)
-    const beforeInject = seed.inject('about to merge a PR').injected_ids
+    const beforeList = (await seed.list()).map(e => e.id).sort()
+    const beforeRecall = (await seed.recall('source of truth')).map(e => e.id)
+    const beforeInject = (await seed.inject('about to merge a PR')).injected_ids
     const firstId = beforeList[0]
-    const beforeGetById = seed.getById(firstId)?.id
+    const beforeGetById = (await seed.getById(firstId))?.id
 
     // 3. Nuke derived state. YAML on disk is untouched.
     nukeDerivedState(dir)
@@ -90,10 +90,10 @@ describe('yaml-as-truth: nuke-the-db rebuild (Test A)', () => {
     const rebuilt = new Plur({ path: dir })
 
     // 5. Recapture the same operations
-    const afterList = rebuilt.list().map(e => e.id).sort()
-    const afterRecall = rebuilt.recall('source of truth').map(e => e.id)
-    const afterInject = rebuilt.inject('about to merge a PR').injected_ids
-    const afterGetById = rebuilt.getById(firstId)?.id
+    const afterList = (await rebuilt.list()).map(e => e.id).sort()
+    const afterRecall = (await rebuilt.recall('source of truth')).map(e => e.id)
+    const afterInject = (await rebuilt.inject('about to merge a PR')).injected_ids
+    const afterGetById = (await rebuilt.getById(firstId))?.id
 
     // 6. Identical results — derived state is rebuildable
     expect(afterList).toEqual(beforeList)
@@ -102,53 +102,53 @@ describe('yaml-as-truth: nuke-the-db rebuild (Test A)', () => {
     expect(afterGetById).toEqual(beforeGetById)
   })
 
-  it('list returns same engrams in same order after rebuild', () => {
+  it('list returns same engrams in same order after rebuild', async () => {
     const seed = new Plur({ path: dir })
     const ids: string[] = []
     for (let i = 0; i < 10; i++) {
-      const e = seed.learn(`statement number ${i}`, {
+      const e = await seed.learn(`statement number ${i}`, {
         scope: 'project:plur',
         type: 'behavioral',
       })
       ids.push(e.id)
     }
 
-    const before = seed.list().map(e => e.id)
+    const before = (await seed.list()).map(e => e.id)
     nukeDerivedState(dir)
-    const after = new Plur({ path: dir }).list().map(e => e.id)
+    const after = (await new Plur({ path: dir }).list()).map(e => e.id)
 
     expect(after).toEqual(before)
     expect(after).toEqual(expect.arrayContaining(ids))
   })
 
-  it('forget persists across rebuild (YAML stores the tombstone)', () => {
+  it('forget persists across rebuild (YAML stores the tombstone)', async () => {
     const seed = new Plur({ path: dir })
-    const e1 = seed.learn('to be forgotten', { scope: 'global', type: 'behavioral' })
-    seed.learn('to be remembered', { scope: 'global', type: 'behavioral' })
+    const e1 = await seed.learn('to be forgotten', { scope: 'global', type: 'behavioral' })
+    await seed.learn('to be remembered', { scope: 'global', type: 'behavioral' })
 
     // forget the first engram (marks it as inactive)
-    return seed.forget(e1.id, 'test cleanup').then(() => {
-      const before = seed.list().map(e => e.id)
-      expect(before).not.toContain(e1.id)
+    await seed.forget(e1.id, 'test cleanup')
 
-      nukeDerivedState(dir)
-      const after = new Plur({ path: dir }).list().map(e => e.id)
+    const before = (await seed.list()).map(e => e.id)
+    expect(before).not.toContain(e1.id)
 
-      // Forget must be a YAML-resident operation, not DB-only state
-      expect(after).toEqual(before)
-      expect(after).not.toContain(e1.id)
-    })
+    nukeDerivedState(dir)
+    const after = (await new Plur({ path: dir }).list()).map(e => e.id)
+
+    // Forget must be a YAML-resident operation, not DB-only state
+    expect(after).toEqual(before)
+    expect(after).not.toContain(e1.id)
   })
 
-  it('scope-filtered recall is identical after rebuild', () => {
+  it('scope-filtered recall is identical after rebuild', async () => {
     const seed = new Plur({ path: dir })
-    seed.learn('project a fact', { scope: 'project:a', type: 'behavioral' })
-    seed.learn('project b fact', { scope: 'project:b', type: 'behavioral' })
-    seed.learn('global fact', { scope: 'global', type: 'behavioral' })
+    await seed.learn('project a fact', { scope: 'project:a', type: 'behavioral' })
+    await seed.learn('project b fact', { scope: 'project:b', type: 'behavioral' })
+    await seed.learn('global fact', { scope: 'global', type: 'behavioral' })
 
-    const before = seed.list({ scope: 'project:a' }).map(e => e.id)
+    const before = (await seed.list({ scope: 'project:a' })).map(e => e.id)
     nukeDerivedState(dir)
-    const after = new Plur({ path: dir }).list({ scope: 'project:a' }).map(e => e.id)
+    const after = (await new Plur({ path: dir }).list({ scope: 'project:a' })).map(e => e.id)
 
     expect(after).toEqual(before)
   })

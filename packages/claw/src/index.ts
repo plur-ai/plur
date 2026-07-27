@@ -75,9 +75,9 @@ const plugin = {
     })
 
     // 3. Register context engine
-    api.registerContextEngine('plur', () => {
+    api.registerContextEngine('plur', async () => {
       const e = getEngine(path)
-      api.logger.info(`PLUR ContextEngine — engrams: ${e.plur.status().engram_count}`)
+      api.logger.info(`PLUR ContextEngine — engrams: ${(await e.plur.status()).engram_count}`)
       return e
     })
 
@@ -89,15 +89,15 @@ const plugin = {
       fix: 'openclaw config set plugins.entries.plur-claw.hooks.allowConversationAccess true --strict-json && openclaw gateway restart',
     })
 
-    api.on('before_prompt_build', (event: any, ctx: any) => {
+    api.on('before_prompt_build', async (event: any, ctx: any) => {
       canary.tick()
       const e = getEngine(path)
       const task = typeof event?.prompt === 'string' ? event.prompt : ''
       if (!task) return
-      const injection = e.plur.inject(task, { budget: 2000 })
+      const injection = await e.plur.inject(task, { budget: 2000 })
       maybeFlushAfter(recordEvent('recall'))
       const lines: string[] = []
-      const warnings = canary.warnings()
+      const warnings = await canary.warnings()
       if (warnings) lines.push(warnings)
       if (injection.count > 0) {
         lines.push('<plur-memory>')
@@ -130,9 +130,9 @@ const plugin = {
         name: 'learn',
         description: 'Save something to PLUR memory',
         acceptsArgs: true,
-        handler: (ctx: any) => {
+        handler: async (ctx: any) => {
           if (!ctx.args?.trim()) return { text: 'Usage: /learn <statement to remember>' }
-          const engram = getEngine(path).plur.learn(ctx.args.trim(), { source: 'openclaw:slash', rationale: 'user explicitly saved via /learn command' })
+          const engram = await getEngine(path).plur.learn(ctx.args.trim(), { source: 'openclaw:slash', rationale: 'user explicitly saved via /learn command' })
           maybeFlushAfter(recordEvent('learn'))
           return { text: `Remembered: "${ctx.args.trim()}" (${engram.id})` }
         },
@@ -142,9 +142,9 @@ const plugin = {
         name: 'recall',
         description: 'Search PLUR memories',
         acceptsArgs: true,
-        handler: (ctx: any) => {
+        handler: async (ctx: any) => {
           if (!ctx.args?.trim()) return { text: 'Usage: /recall <search query>' }
-          const results = getEngine(path).plur.recall(ctx.args.trim(), { limit: 10 })
+          const results = await getEngine(path).plur.recall(ctx.args.trim(), { limit: 10 })
           maybeFlushAfter(recordEvent('recall'))
           if (!Array.isArray(results) || !results.length) return { text: 'No matching memories.' }
           return { text: `Found ${results.length} memories:\n${results.map((r: any, i: number) => `${i + 1}. [${r.id}] ${r.statement}`).join('\n')}` }
@@ -166,9 +166,9 @@ const plugin = {
         name: 'sync',
         description: 'Sync PLUR memories across devices via git',
         acceptsArgs: true,
-        handler: (ctx: any) => {
+        handler: async (ctx: any) => {
           const remote = ctx.args?.trim() || undefined
-          const result = getEngine(path).plur.sync(remote)
+          const result = await getEngine(path).plur.sync(remote)
           return { text: `Sync: ${result.action}${result.message ? ` — ${result.message}` : ''}` }
         },
       })
@@ -192,7 +192,7 @@ const plugin = {
         name: 'packs',
         description: 'Manage knowledge packs: list, install <path>, uninstall <name>',
         acceptsArgs: true,
-        handler: (ctx: any) => {
+        handler: async (ctx: any) => {
           const args = (ctx.args?.trim() || '').split(/\s+/)
           const sub = args[0] || 'list'
           const e = getEngine(path)
@@ -203,7 +203,7 @@ const plugin = {
             return { text: packs.map((p: any) => `${p.name} v${p.manifest?.version ?? '?'} (${p.engram_count} engrams)${p.integrity ? ` [${p.integrity.slice(0, 12)}]` : ''}`).join('\n') }
           }
           if (sub === 'install' && args[1]) {
-            const result = e.plur.installPack(args[1])
+            const result = await e.plur.installPack(args[1])
             let text = `Installed "${result.name}": ${result.installed} engrams`
             if (result.conflicts?.length) text += `\n${result.conflicts.length} conflicts detected — use /recall to review`
             return { text }
@@ -237,8 +237,8 @@ const plugin = {
         const cmd = cliCtx.program
           .command('plur')
           .description('PLUR memory management')
-          .action(() => {
-            const s = getEngine(path).plur.status()
+          .action(async () => {
+            const s = await getEngine(path).plur.status()
             console.log(`PLUR Memory Status:`)
             console.log(`  Engrams: ${s.engram_count}`)
             console.log(`  Episodes: ${s.episode_count}`)
@@ -248,8 +248,8 @@ const plugin = {
         cmd
           .command('sync [remote]')
           .description('Sync memories via git')
-          .action((remote?: string) => {
-            const result = getEngine(path).plur.sync(remote)
+          .action(async (remote?: string) => {
+            const result = await getEngine(path).plur.sync(remote)
             console.log(`Sync: ${result.action}${result.message ? ` — ${result.message}` : ''}`)
           })
       }, { commands: ['plur'] })

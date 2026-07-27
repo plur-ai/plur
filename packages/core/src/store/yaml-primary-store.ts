@@ -16,7 +16,7 @@
 import * as fs from 'fs'
 import { loadEngrams, saveEngrams } from '../engrams.js'
 import type { Engram } from '../schemas/engram.js'
-import type { PrimaryStore, PrimaryStoreKind } from './primary-store.js'
+import type { AsyncPrimaryStore, PrimaryStoreKind } from './primary-store.js'
 
 /**
  * Mean serialized size of one engram in `engrams.yaml`, in bytes.
@@ -31,7 +31,7 @@ import type { PrimaryStore, PrimaryStoreKind } from './primary-store.js'
  */
 export const AVG_YAML_BYTES_PER_ENGRAM = 2400
 
-export class YamlPrimaryStore implements PrimaryStore {
+export class YamlPrimaryStore implements AsyncPrimaryStore {
   readonly kind: PrimaryStoreKind = 'yaml'
   private readonly filePath: string
   private cache: { mtime: bigint; engrams: Engram[] } | null = null
@@ -44,11 +44,11 @@ export class YamlPrimaryStore implements PrimaryStore {
     return this.filePath
   }
 
-  load(): Engram[] {
+  async load(): Promise<Engram[]> {
     return loadEngrams(this.filePath)
   }
 
-  loadCached(): Engram[] {
+  async loadCached(): Promise<Engram[]> {
     let mtime: bigint
     try {
       mtime = fs.statSync(this.filePath, { bigint: true }).mtimeNs
@@ -61,7 +61,7 @@ export class YamlPrimaryStore implements PrimaryStore {
     return engrams
   }
 
-  save(engrams: Engram[]): void {
+  async save(engrams: Engram[]): Promise<void> {
     saveEngrams(this.filePath, engrams)
     this.cache = null
   }

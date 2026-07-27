@@ -47,12 +47,12 @@ const globalCandidate: Engram = {
 
 function makeDeps(candidates: Engram[]): LearnAsyncDeps {
   return {
-    hashDedup: () => null,
+    hashDedup: async () => null,
     recallHybrid: async () => candidates,
-    recall: () => candidates,
-    learn: (statement: string, context?: any) =>
+    recall: async () => candidates,
+    learn: async (statement: string, context?: any) =>
       ({ id: 'ENG-2026-0619-001', statement, scope: context?.scope ?? 'global' } as unknown as Engram),
-    getById: (id: string) => candidates.find(c => c.id === id) ?? null,
+    getById: async (id: string) => candidates.find(c => c.id === id) ?? null,
     store: new MemoryPrimaryStore(),
     engramsPath: '/tmp/plur-test-engrams.yaml',
     rootPath: '/tmp/plur-test',
@@ -60,7 +60,7 @@ function makeDeps(candidates: Engram[]): LearnAsyncDeps {
     isLlmAvailable: () => true,
     recordLlmSuccess: () => {},
     recordLlmFailure: () => {},
-    syncIndex: () => {},
+    syncIndex: async () => {},
     offendingHitsForScope: () => [],
   }
 }

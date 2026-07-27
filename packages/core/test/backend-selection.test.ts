@@ -151,11 +151,11 @@ describe('PrimaryStore.estimateCount — cheap by contract', () => {
     expect(new YamlPrimaryStore(yamlPath).estimateCount()).toBe(300)
   })
 
-  it('is exact once a snapshot is cached — no reason to estimate what we hold', () => {
+  it('is exact once a snapshot is cached — no reason to estimate what we hold', async () => {
     const engrams = Array.from({ length: 7 }, (_, i) => mkEngram(`ENG-2026-0726-${String(i).padStart(3, '0')}`))
     writeFileSync(yamlPath, yaml.dump({ engrams }), 'utf8')
     const store = new YamlPrimaryStore(yamlPath)
-    store.loadCached()
+    await store.loadCached()
     expect(store.estimateCount()).toBe(7)
   })
 
@@ -190,9 +190,9 @@ describe('Plur.backendSelection — the instance can say which tier it is on, an
     expect(s.engramCount).toBe(0)
   })
 
-  it('stays on the YAML tier after a handful of writes — no index churn for a small store', () => {
+  it('stays on the YAML tier after a handful of writes — no index churn for a small store', async () => {
     const plur = new Plur({ path: dir })
-    plur.learn('the estimate is not a reason to build an index')
+    await plur.learn('the estimate is not a reason to build an index')
     expect(new Plur({ path: dir }).backendSelection().tier).toBe('yaml')
   })
 
@@ -215,9 +215,9 @@ describe('Plur.backendSelection — the instance can say which tier it is on, an
     const noEstimate = {
       kind: 'memory' as const,
       location: null,
-      load: () => [],
-      loadCached: () => [],
-      save: () => {},
+      load: async () => [],
+      loadCached: async () => [],
+      save: async () => {},
       invalidate: () => {},
     }
     const tier: BackendTier = new Plur({ path: dir, store: noEstimate }).backendSelection().tier

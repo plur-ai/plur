@@ -66,23 +66,23 @@ describe('Multi-store', () => {
     return new Plur({ path: primaryDir })
   }
 
-  it('recall finds engrams from both primary and store', () => {
+  it('recall finds engrams from both primary and store', async () => {
     writeStoreEngrams([makeEngram({ statement: 'Store uses PostgreSQL for persistence' })])
     writeConfig([{ path: storePath, scope: 'datafund' }])
     const plur = createPlur()
-    plur.learn('Primary uses Redis for caching', { scope: 'global' })
+    await plur.learn('Primary uses Redis for caching', { scope: 'global' })
 
-    const results = plur.recall('PostgreSQL Redis persistence caching')
+    const results = await plur.recall('PostgreSQL Redis persistence caching')
     const statements = results.map(e => e.statement)
     expect(statements).toContain('Store uses PostgreSQL for persistence')
     expect(statements).toContain('Primary uses Redis for caching')
   })
 
-  it('learn writes only to primary', () => {
+  it('learn writes only to primary', async () => {
     writeStoreEngrams([makeEngram()])
     writeConfig([{ path: storePath, scope: 'datafund' }])
     const plur = createPlur()
-    plur.learn('New learning goes to primary only', { scope: 'global' })
+    await plur.learn('New learning goes to primary only', { scope: 'global' })
 
     // Primary should have the new engram
     const primaryRaw = yaml.load(readFileSync(join(primaryDir, 'engrams.yaml'), 'utf8')) as any
@@ -94,13 +94,13 @@ describe('Multi-store', () => {
     expect(storeRaw.engrams[0].id).toBe('ENG-2026-0401-001')
   })
 
-  it('learn generates IDs without collision', () => {
+  it('learn generates IDs without collision', async () => {
     writeStoreEngrams([makeEngram({ id: 'ENG-2026-0401-001' })])
     writeConfig([{ path: storePath, scope: 'datafund' }])
     const plur = createPlur()
-    plur.learn('First primary engram', { scope: 'global' })
-    const first = plur.list()[0]
-    const second = plur.learn('Second primary engram', { scope: 'global' })
+    await plur.learn('First primary engram', { scope: 'global' })
+    const first = (await plur.list())[0]
+    const second = await plur.learn('Second primary engram', { scope: 'global' })
     expect(second.id).not.toBe(first.id)
     expect(second.id).not.toBe('ENG-2026-0401-001')
     expect(second.id).toMatch(/^ENG-/)
@@ -148,22 +148,22 @@ describe('Multi-store', () => {
     await expect(plur.forget(NS_ID, 'test')).rejects.toThrow('readonly store')
   })
 
-  it('getById finds store engrams by namespaced ID', () => {
+  it('getById finds store engrams by namespaced ID', async () => {
     writeStoreEngrams([makeEngram({ statement: 'Findable by namespaced ID' })])
     writeConfig([{ path: storePath, scope: 'datafund' }])
     const plur = createPlur()
 
-    const found = plur.getById(NS_ID)
+    const found = await plur.getById(NS_ID)
     expect(found).not.toBeNull()
     expect(found!.statement).toBe('Findable by namespaced ID')
     expect(found!.id).toBe(NS_ID)
   })
 
-  it('status counts across stores', () => {
+  it('status counts across stores', async () => {
     // 2 primary engrams
     const plur0 = new Plur({ path: primaryDir })
-    plur0.learn('Primary one', { scope: 'global' })
-    plur0.learn('Primary two', { scope: 'global' })
+    await plur0.learn('Primary one', { scope: 'global' })
+    await plur0.learn('Primary two', { scope: 'global' })
 
     // 3 store engrams
     writeStoreEngrams([
@@ -174,40 +174,40 @@ describe('Multi-store', () => {
     writeConfig([{ path: storePath, scope: 'datafund' }])
     const plur = createPlur()
 
-    const st = plur.status()
+    const st = await plur.status()
     expect(st.engram_count).toBe(5)
   })
 
-  it('inject includes store engrams', () => {
+  it('inject includes store engrams', async () => {
     writeStoreEngrams([makeEngram({ statement: 'Always validate user input before processing' })])
     writeConfig([{ path: storePath, scope: 'datafund' }])
     const plur = createPlur()
 
-    const result = plur.inject('validate user input')
+    const result = await plur.inject('validate user input')
     expect(result.count).toBeGreaterThan(0)
     expect(result.directives + result.constraints + result.consider).toContain('validate')
   })
 
-  it('scope validation: global narrowed to store scope', () => {
+  it('scope validation: global narrowed to store scope', async () => {
     writeStoreEngrams([makeEngram({ scope: 'global', statement: 'Global narrowed to datafund' })])
     writeConfig([{ path: storePath, scope: 'datafund' }])
     const plur = createPlur()
 
-    const found = plur.getById(NS_ID)
+    const found = await plur.getById(NS_ID)
     expect(found).not.toBeNull()
     expect(found!.scope).toBe('datafund')
   })
 
-  it('scope validation: mismatch skipped', () => {
+  it('scope validation: mismatch skipped', async () => {
     writeStoreEngrams([makeEngram({ scope: 'personal', statement: 'Should be skipped' })])
     writeConfig([{ path: storePath, scope: 'datafund' }])
     const plur = createPlur()
 
     // The engram should not appear because scope 'personal' mismatches store scope 'datafund'
-    const found = plur.getById(NS_ID)
+    const found = await plur.getById(NS_ID)
     expect(found).toBeNull()
 
-    const st = plur.status()
+    const st = await plur.status()
     expect(st.engram_count).toBe(0)
   })
 
@@ -222,10 +222,10 @@ describe('Multi-store', () => {
       }, { lineWidth: 120, noRefs: true }),
     )
     const plur = createPlur()
-    plur.learn('Primary engram about database indexing', { scope: 'global' })
+    await plur.learn('Primary engram about database indexing', { scope: 'global' })
 
     // Recall through indexed path should find both
-    const results = plur.recall('SQLite database queries indexing')
+    const results = await plur.recall('SQLite database queries indexing')
     const ids = results.map(e => e.id)
     expect(ids.some(id => id.startsWith('ENG-DFD-'))).toBe(true)
 
@@ -246,7 +246,7 @@ describe('Multi-store', () => {
     writeStoreEngrams([makeEngram({ statement: 'PostgreSQL requires vacuum to reclaim dead tuples' })])
     writeConfig([{ path: storePath, scope: 'datafund' }])
     const plur = createPlur()
-    plur.learn('Redis maxmemory policy controls eviction behavior', { scope: 'global' })
+    await plur.learn('Redis maxmemory policy controls eviction behavior', { scope: 'global' })
 
     const results = await plur.recallHybrid('database memory management postgres redis')
     const statements = results.map(e => e.statement)
@@ -259,7 +259,7 @@ describe('Multi-store', () => {
     writeStoreEngrams([makeEngram({ statement: 'PostgreSQL requires vacuum to reclaim dead tuples' })])
     writeConfig([{ path: storePath, scope: 'datafund' }])
     const plur = createPlur()
-    plur.learn('Redis maxmemory policy controls eviction behavior', { scope: 'global' })
+    await plur.learn('Redis maxmemory policy controls eviction behavior', { scope: 'global' })
 
     const results = await plur.similaritySearch('database memory management postgres redis')
     // All scores should be in [0, 1]
@@ -303,7 +303,7 @@ describe('Multi-store', () => {
     const plur = createPlur()
 
     // First recall — gets the engram
-    const before = plur.getById(NS_ID)
+    const before = await plur.getById(NS_ID)
     expect(before).not.toBeNull()
     expect(before!.activation.retrieval_strength).toBe(0.3)
 
@@ -311,7 +311,7 @@ describe('Multi-store', () => {
     await plur.feedback(NS_ID, 'positive')
 
     // Next getById should reflect the updated strength (cache was invalidated)
-    const after = plur.getById(NS_ID)
+    const after = await plur.getById(NS_ID)
     expect(after).not.toBeNull()
     expect(after!.activation.retrieval_strength).toBe(0.35)
   })

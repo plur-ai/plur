@@ -25,11 +25,11 @@ describe('LLM dedup circuit breaker — concurrent calls', () => {
   let dir: string
   let plur: Plur
 
-  beforeEach(() => {
+  beforeEach(async () => {
     dir = mkdtempSync(join(tmpdir(), 'plur-llm-breaker-'))
     plur = new Plur({ path: dir })
     // Seed so semantic recall finds candidates and the LLM path is reached.
-    plur.learn('Deploy using the blue green strategy for zero downtime', { tags: ['deploy'] })
+    await plur.learn('Deploy using the blue green strategy for zero downtime', { tags: ['deploy'] })
   })
 
   afterEach(() => {
@@ -59,7 +59,7 @@ describe('LLM dedup circuit breaker — concurrent calls', () => {
     await Promise.all(
       statements.map((s, i) => (async () => {
         for (let k = 0; k < i; k++) await new Promise(r => setImmediate(r))
-        return plur.learnAsync(s, { llm })
+        return await plur.learnAsync(s, { llm })
       })()),
     )
 
@@ -77,7 +77,7 @@ describe('LLM dedup circuit breaker — concurrent calls', () => {
     // the corpus has grown.
     const rounds = ['alpha', 'beta', 'delta', 'gamma', 'omega']
     for (const r of rounds) {
-      plur.learn(`The ${r} rollout convention is blue green with zero downtime`, { tags: [r] })
+      await plur.learn(`The ${r} rollout convention is blue green with zero downtime`, { tags: [r] })
     }
 
     // Outcome per call, not per prompt: `buildDedupPrompt` embeds the candidate

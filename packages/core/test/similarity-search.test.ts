@@ -9,13 +9,13 @@ describe('similaritySearch (embedding search with cosine scores)', () => {
   let dir: string
   let plur: Plur
 
-  beforeEach(() => {
+  beforeEach(async () => {
     dir = mkdtempSync(join(tmpdir(), 'plur-similarity-'))
     plur = new Plur({ path: dir })
-    plur.learn('The capital of France is Paris', { type: 'terminological' })
-    plur.learn('TypeScript strict mode catches null errors at compile time', { type: 'behavioral' })
-    plur.learn('User prefers dark theme for all code editors', { type: 'behavioral' })
-    plur.learn('Deploy to production requires two senior approvals', { type: 'procedural' })
+    await plur.learn('The capital of France is Paris', { type: 'terminological' })
+    await plur.learn('TypeScript strict mode catches null errors at compile time', { type: 'behavioral' })
+    await plur.learn('User prefers dark theme for all code editors', { type: 'behavioral' })
+    await plur.learn('Deploy to production requires two senior approvals', { type: 'procedural' })
   })
 
   afterEach(() => { rmSync(dir, { recursive: true }) })
@@ -58,7 +58,7 @@ describe('similaritySearch (embedding search with cosine scores)', () => {
 
   it('filters by scope when provided', async () => {
     // Add a scoped engram
-    plur.learn('Python uses indentation for blocks', { type: 'behavioral', scope: 'project:alpha' })
+    await plur.learn('Python uses indentation for blocks', { type: 'behavioral', scope: 'project:alpha' })
     const results = await plur.similaritySearch('Python indentation', { scope: 'project:alpha' })
     // All returned engrams should be either global or matching scope (scope filter includes global)
     for (const r of results) {
@@ -69,7 +69,7 @@ describe('similaritySearch (embedding search with cosine scores)', () => {
   })
 
   it('filters by domain when provided', async () => {
-    plur.learn('Redis is used for caching', { type: 'architectural', domain: 'infrastructure' })
+    await plur.learn('Redis is used for caching', { type: 'architectural', domain: 'infrastructure' })
     const results = await plur.similaritySearch('caching', { domain: 'infrastructure' })
     for (const r of results) {
       expect(r.engram.domain).toMatch(/^infrastructure/)

@@ -22,6 +22,18 @@ import { join } from 'path'
 import { Plur } from '../src/index.js'
 import { withAsyncLock } from '../src/store/async-lock.js'
 
+/**
+ * The key `Plur` locks on for a write. It is the primary store's `location` —
+ * the interface documents that field as serving exactly this purpose while
+ * locking is path-based — so the test can name the same lock the engine takes
+ * without reaching into `Plur`'s private `paths`.
+ */
+function lockKey(p: Plur): string {
+  const loc = p.primaryStore.location
+  if (loc === null) throw new Error('this test needs a store with a filesystem location')
+  return loc
+}
+
 describe('Plur — concurrent writes', () => {
   let dir: string
   let plur: Plur
@@ -46,56 +58,57 @@ describe('Plur — concurrent writes', () => {
     )
 
     expect(new Set(engrams.map(e => e.id)).size).toBe(N)
-    const stored = plur.list()
+    const stored = await plur.list()
     for (const e of engrams) {
       expect(stored.find(s => s.id === e.id), `engram ${e.id} was lost`).toBeDefined()
     }
   })
 
   it('does not lose a feedback increment when signals race on one engram', async () => {
-    const target = plur.learn('feedback races on a single engram', { scope: 'global' })
+    const target = await plur.learn('feedback races on a single engram', { scope: 'global' })
 
     const N = 20
     await Promise.all(Array.from({ length: N }, () => plur.feedback(target.id, 'positive')))
 
-    const after = plur.getById(target.id)
+    const after = await plur.getById(target.id)
     expect(after?.feedback_signals?.positive).toBe(N)
   })
 
   it('does not lose pin updates across concurrent setPinnedAsync calls', async () => {
-    const ids = Array.from({ length: 12 }, (_, i) =>
-      plur.learn(`pinnable engram number ${i}`, { scope: 'global' }).id,
-    )
+    // learn() is async now — the array must settle before its ids exist.
+    const ids = (await Promise.all(Array.from({ length: 12 }, (_, i) =>
+      plur.learn(`pinnable engram number ${i}`, { scope: 'global' }),
+    ))).map(e => e.id)
 
     await Promise.all(ids.map(id => plur.setPinnedAsync(id, true)))
 
-    const pinned = plur.listPinned().map(e => e.id).sort()
+    const pinned = (await plur.listPinned()).map(e => e.id).sort()
     expect(pinned).toEqual([...ids].sort())
   })
 
   it('does not lose statement updates across concurrent updateEngramAsync calls', async () => {
-    const engrams = Array.from({ length: 12 }, (_, i) =>
+    const engrams = await Promise.all(Array.from({ length: 12 }, (_, i) =>
       plur.learn(`updatable engram number ${i}`, { scope: 'global' }),
-    )
+    ))
 
     await Promise.all(
       engrams.map(e => plur.updateEngramAsync({ ...e, statement: `${e.statement} — revised` })),
     )
 
     for (const e of engrams) {
-      expect(plur.getById(e.id)?.statement).toBe(`${e.statement} — revised`)
+      expect((await plur.getById(e.id))?.statement).toBe(`${e.statement} — revised`)
     }
   })
 
   it('retires every engram in a concurrent forget fan-out', async () => {
-    const ids = Array.from({ length: 15 }, (_, i) =>
-      plur.learn(`forgettable engram number ${i}`, { scope: 'global' }).id,
-    )
+    const ids = (await Promise.all(Array.from({ length: 15 }, (_, i) =>
+      plur.learn(`forgettable engram number ${i}`, { scope: 'global' }),
+    ))).map(e => e.id)
 
     await Promise.all(ids.map(id => plur.forget(id)))
 
     for (const id of ids) {
-      expect(plur.getById(id)?.status, `engram ${id} not retired`).toBe('retired')
+      expect((await plur.getById(id))?.status, `engram ${id} not retired`).toBe('retired')
     }
   })
 
@@ -115,34 +128,34 @@ describe('Plur — concurrent writes', () => {
    * the remaining half of Phase 2 (see ADR-0004); this change does not claim it.
    */
   it('feedback waits out a lock held across an await instead of spinning', async () => {
-    const target = plur.learn('an engram whose feedback has to wait', { scope: 'global' })
+    const target = await plur.learn('an engram whose feedback has to wait', { scope: 'global' })
 
     let ticks = 0
     const timer = setInterval(() => { ticks++ }, 5)
-    const holder = withAsyncLock(plur.paths.engrams, async () => {
+    const holder = withAsyncLock(lockKey(plur), async () => {
       await new Promise(r => setTimeout(r, 60))
     })
     // Let the holder actually take the lock before the writer starts.
     await new Promise(r => setImmediate(r))
 
-    const writer = plur.feedback(target.id, 'positive')
+    const writer = await plur.feedback(target.id, 'positive')
     await Promise.all([holder, writer])
     clearInterval(timer)
 
-    expect(plur.getById(target.id)?.feedback_signals?.positive).toBe(1)
+    expect((await plur.getById(target.id))?.feedback_signals?.positive).toBe(1)
     expect(ticks, 'event loop was starved while waiting for the lock').toBeGreaterThan(0)
   })
 
   it('setPinnedAsync waits out a lock held across an await instead of spinning', async () => {
-    const target = plur.learn('an engram whose pin has to wait', { scope: 'global' })
+    const target = await plur.learn('an engram whose pin has to wait', { scope: 'global' })
 
-    const holder = withAsyncLock(plur.paths.engrams, async () => {
+    const holder = withAsyncLock(lockKey(plur), async () => {
       await new Promise(r => setTimeout(r, 60))
     })
     await new Promise(r => setImmediate(r))
 
-    const [, pinned] = await Promise.all([holder, plur.setPinnedAsync(target.id, true)])
+    const [, pinned] = await Promise.all([holder, await plur.setPinnedAsync(target.id, true)])
     expect(pinned?.pinned).toBe(true)
-    expect(plur.listPinned().map(e => e.id)).toEqual([target.id])
+    expect((await plur.listPinned()).map(e => e.id)).toEqual([target.id])
   })
 })

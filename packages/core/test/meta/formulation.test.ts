@@ -13,6 +13,7 @@ const baseAlignment: AlignmentResult = {
     constraint_type: 'assumed-independence-of-correlated-variables',
     outcome_type: 'systematically-understated-risk',
     template: '[risk-assessment] + [assumed-independence-of-correlated-variables] → [systematically-understated-risk]',
+    structure_type: 'goal-constraint-outcome',
   },
   structural_depth: 3,
   systematicity: 3,
@@ -94,6 +95,7 @@ describe('formulateMetaEngram', () => {
         constraint_type: 'any',
         outcome_type: 'any',
         template: 'always be careful and verify before acting',
+        structure_type: 'goal-constraint-outcome',
       },
     }
     const result = await formulateMetaEngram(platitudeAlignment, mockLlm)
@@ -111,6 +113,13 @@ describe('formulateMetaEngram', () => {
       feedback_signals: { positive: 0, negative: 0, neutral: 0 },
       derivation_count: 2,
       visibility: 'private',
+      // Written once by a previous extraction run, never re-learned — the shape
+      // formulateMetaEngram() persists for a freshly stored meta-engram.
+      reference_count: 1,
+      sources: [{ scope: 'global', session_id: null, stored_at: '2026-03-29T00:00:00.000Z' }],
+      recurrence_count: 0,
+      engram_version: 1,
+      episode_ids: [],
       structured_data: {
         meta: {
           structure: {
@@ -118,6 +127,7 @@ describe('formulateMetaEngram', () => {
             constraint_type: 'assumed-independence-of-correlated-variables',
             outcome_type: 'systematically-understated-risk',
             template: '[risk-assessment] + [assumed-independence-of-correlated-variables] → [systematically-understated-risk]',
+            structure_type: 'goal-constraint-outcome',
           },
           evidence: [
             { engram_id: 'ENG-OLD', domain: 'trading', mapping_rationale: 'old', alignment_score: 0.9 },

@@ -330,10 +330,10 @@ describe('PGLiteAdapter — substrate', () => {
       // Fire several reindex calls concurrently; the YAML stays the same.
       // Final state must reflect that single engram exactly once.
       await Promise.all([
-        adapter.reindex(),
-        adapter.reindex(),
-        adapter.reindex(),
-        adapter.reindex(),
+        await adapter.reindex(),
+        await adapter.reindex(),
+        await adapter.reindex(),
+        await adapter.reindex(),
       ])
       const all = await adapter.loadFiltered({})
       expect(all.map(e => e.id)).toEqual(['ENG-2026-0530-001'])
@@ -428,7 +428,7 @@ describe('Plur — PGLite backend integration', () => {
 
   it('creates a PGLite directory when constructed with PLUR_BACKEND=pglite', async () => {
     const plur = new Plur({ path: dir })
-    plur.learn('YAML is the source of truth', {
+    await plur.learn('YAML is the source of truth', {
       scope: 'project:plur',
       type: 'architectural',
     })
@@ -438,21 +438,21 @@ describe('Plur — PGLite backend integration', () => {
 
   it('list and recall stay YAML-backed when PGLite is active', async () => {
     const plur = new Plur({ path: dir })
-    plur.learn('first statement', { scope: 'project:plur', type: 'behavioral' })
-    plur.learn('second statement', { scope: 'project:plur', type: 'behavioral' })
+    await plur.learn('first statement', { scope: 'project:plur', type: 'behavioral' })
+    await plur.learn('second statement', { scope: 'project:plur', type: 'behavioral' })
     await (plur as unknown as { waitForIndex: () => Promise<void> }).waitForIndex()
-    const all = plur.list()
+    const all = await plur.list()
     expect(all.length).toBe(2)
-    const recalled = plur.recall('first')
+    const recalled = await plur.recall('first')
     expect(recalled.length).toBeGreaterThan(0)
   }, PGLITE_TIMEOUT)
 
   it('sync({ full: true }) survives a nuked PGLite dir', async () => {
     const plur = new Plur({ path: dir })
-    plur.learn('one', { scope: 'project:plur', type: 'behavioral' })
-    plur.learn('two', { scope: 'project:plur', type: 'behavioral' })
+    await plur.learn('one', { scope: 'project:plur', type: 'behavioral' })
+    await plur.learn('two', { scope: 'project:plur', type: 'behavioral' })
     await (plur as unknown as { waitForIndex: () => Promise<void> }).waitForIndex()
-    const before = plur.list().map(e => e.id).sort()
+    const before = (await plur.list()).map(e => e.id).sort()
 
     // Nuke the index — YAML is untouched.
     rmSync(join(dir, 'store.pglite'), { recursive: true, force: true })
@@ -463,7 +463,7 @@ describe('Plur — PGLite backend integration', () => {
     await (fresh as unknown as { reindexAsync: () => Promise<void> }).reindexAsync()
     await (fresh as unknown as { waitForIndex: () => Promise<void> }).waitForIndex()
 
-    const after = fresh.list().map(e => e.id).sort()
+    const after = (await fresh.list()).map(e => e.id).sort()
     expect(after).toEqual(before)
     expect(existsSync(join(dir, 'store.pglite'))).toBe(true)
   }, PGLITE_TIMEOUT)
