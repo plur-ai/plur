@@ -2,6 +2,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, chmodSync } from 'f
 import { join, dirname } from 'path'
 import { fileURLToPath } from 'url'
 import { homedir, platform } from 'os'
+import { createInterface } from 'readline'
 import { type GlobalFlags } from '../plur.js'
 import { outputText } from '../output.js'
 import {
@@ -655,12 +656,95 @@ function writeSettings(path: string, settings: Settings): void {
   writeFileSync(path, JSON.stringify(settings, null, 2) + '\n')
 }
 
+// ── Telemetry opt-in prompt ─────────────────────────────────────────────────
+// Asks the user once during `plur init` whether to enable anonymous usage stats.
+// Resolution rules (mirrors telemetry.ts — env var still overrides this):
+//   - Interactive TTY + no existing config → ask the question
+//   - Non-interactive (CI, pipe, --no-prompt) → write enabled:false silently
+//   - Config already present → skip (never nag a returning user)
+
+function telemetryConfigPath(): string {
+  return join(homedir(), '.plur', 'telemetry.json')
+}
+
+function writeTelemetryConfig(enabled: boolean, configPath?: string): void {
+  const target = configPath ?? telemetryConfigPath()
+  mkdirSync(dirname(target), { recursive: true })
+  writeFileSync(target, JSON.stringify({ enabled }, null, 2) + '\n')
+}
+
+/**
+ * Prompt for telemetry opt-in during `plur init`.
+ *
+ * Returns 'opted-in' | 'opted-out' | 'already-configured' | 'non-interactive'.
+ * Exported for testing with injectable config path.
+ */
+export async function promptTelemetryOptIn(opts: {
+  configPath?: string
+  noPrompt?: boolean
+  env?: NodeJS.ProcessEnv
+  input?: NodeJS.ReadableStream & { isTTY?: boolean }
+  output?: NodeJS.WritableStream & { isTTY?: boolean }
+} = {}): Promise<'opted-in' | 'opted-out' | 'already-configured' | 'non-interactive'> {
+  const configPath = opts.configPath ?? telemetryConfigPath()
+  const env = opts.env ?? process.env
+  const input = opts.input ?? process.stdin
+  const output = opts.output ?? process.stdout
+
+  // Skip if config already exists — we only ask once.
+  if (existsSync(configPath)) return 'already-configured'
+
+  // Never write config when the env var is already explicit — env wins at
+  // runtime, so persisting a contradictory file here would both mislead
+  // (`telemetry.json` disagreeing with the active setting) and burn the
+  // one-time prompt, leaving the user never asked once the var is unset.
+  if (env.PLUR_TELEMETRY) return 'already-configured'
+
+  // Non-interactive: CI, piped input, or --no-prompt flag → default off, never prompt.
+  const isInteractive = Boolean(input.isTTY && output.isTTY)
+  if (!isInteractive || opts.noPrompt || env.CI) {
+    writeTelemetryConfig(false, configPath)
+    return 'non-interactive'
+  }
+
+  return new Promise((resolve) => {
+    const rl = createInterface({ input, output })
+    // `rl.close()` fires the 'close' handler synchronously, so both sites race
+    // to settle the same promise. Guard explicitly rather than inferring
+    // settled-ness from the config file existing on disk.
+    let settled = false
+    const settle = (
+      result: 'opted-in' | 'opted-out' | 'non-interactive',
+      enabled: boolean,
+    ) => {
+      if (settled) return
+      settled = true
+      writeTelemetryConfig(enabled, configPath)
+      resolve(result)
+    }
+
+    rl.question(
+      '\nEnable anonymous usage statistics? (helps us improve PLUR — no code, no keys) [y/N] ',
+      (answer) => {
+        const normalized = answer.trim().toLowerCase()
+        const yes = normalized === 'y' || normalized === 'yes'
+        settle(yes ? 'opted-in' : 'opted-out', yes)
+        rl.close()
+      },
+    )
+    // Handle non-TTY / closed stdin gracefully — no answer given, so default off.
+    rl.on('close', () => settle('non-interactive', false))
+  })
+}
+
 function hooksStatusFor(before: string, after: string, hadHooks: boolean): string {
   if (!hadHooks) return 'installed'
   return before === after ? 'already up to date' : 'upgraded'
 }
 
 export async function run(args: string[], flags: GlobalFlags): Promise<void> {
+  const noPrompt = args.includes('--no-prompt')
+
   // Install local hook shim FIRST — hook commands depend on it (#178)
   const shim = installHookBinary()
   const cmd = shim.shimPath || 'npx @plur-ai/cli' // fallback if shim failed
@@ -816,4 +900,21 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     outputText('')
   }
   outputText('Restart Claude Code to pick up the changes, then run `plur doctor` to verify.')
+
+  // Telemetry opt-in — ask once, never nag. Runs last so it doesn't interrupt the
+  // settings-installation summary above. Non-interactive installs silently write
+  // enabled:false (opt-out), which ensures they are never opted in without consent.
+  const telemetryResult = await promptTelemetryOptIn({ noPrompt })
+  outputText('')
+  if (telemetryResult === 'opted-in') {
+    outputText('Telemetry: enabled (thank you — anonymous counts only, nothing leaves your machine before POST /v1/heartbeat).')
+    outputText('           Disable any time: plur telemetry off  or  set PLUR_TELEMETRY=off')
+  } else if (telemetryResult === 'opted-out') {
+    outputText('Telemetry: disabled. Enable any time: plur telemetry on  or  set PLUR_TELEMETRY=on')
+    outputText('           See docs/telemetry-design.md for what is and is not collected.')
+  } else if (telemetryResult === 'non-interactive') {
+    outputText('Telemetry: disabled (non-interactive install). Enable: set PLUR_TELEMETRY=on')
+    outputText('           See docs/telemetry-design.md for what is collected.')
+  }
+  // 'already-configured' → silent, user already made a choice
 }
