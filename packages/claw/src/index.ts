@@ -97,7 +97,7 @@ const plugin = {
       const injection = await e.plur.inject(task, { budget: 2000 })
       maybeFlushAfter(recordEvent('recall'))
       const lines: string[] = []
-      const warnings = await canary.warnings()
+      const warnings = canary.warnings()
       if (warnings) lines.push(warnings)
       if (injection.count > 0) {
         lines.push('<plur-memory>')

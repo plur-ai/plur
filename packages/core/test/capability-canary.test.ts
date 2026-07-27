@@ -15,7 +15,7 @@ describe('CapabilityCanary', () => {
     canary.tick()
     const statuses = await canary.status()
     expect(statuses.every((s) => s.healthy)).toBe(true)
-    expect(await canary.warnings()).toBe('')
+    expect(canary.warnings()).toBe('')
   })
 
   it('stays healthy when capabilities fire', async () => {
@@ -25,7 +25,7 @@ describe('CapabilityCanary', () => {
     canary.tick()
     canary.tick()
     expect((await canary.status()).every((s) => s.healthy)).toBe(true)
-    expect(await canary.warnings()).toBe('')
+    expect(canary.warnings()).toBe('')
   })
 
   it('flags unhealthy after threshold ticks with no firing', async () => {
@@ -34,8 +34,8 @@ describe('CapabilityCanary', () => {
     canary.tick()
     const statuses = await canary.status()
     expect(statuses.every((s) => !s.healthy)).toBe(true)
-    expect(await canary.warnings()).toContain('learn')
-    expect(await canary.warnings()).toContain('inject')
+    expect(canary.warnings()).toContain('learn')
+    expect(canary.warnings()).toContain('inject')
   })
 
   it('only flags capabilities that have not fired', async () => {
@@ -48,15 +48,15 @@ describe('CapabilityCanary', () => {
     const inject = statuses.find((s) => s.capability === 'inject')!
     expect(learn.healthy).toBe(false)
     expect(inject.healthy).toBe(true)
-    expect(await canary.warnings()).toContain('learn')
-    expect(await canary.warnings()).not.toContain('inject')
+    expect(canary.warnings()).toContain('learn')
+    expect(canary.warnings()).not.toContain('inject')
   })
 
   it('includes fix hint in warning when provided', async () => {
     canary.tick()
     canary.tick()
     canary.tick()
-    const warnings = await canary.warnings()
+    const warnings = canary.warnings()
     expect(warnings).toContain('allowConversationAccess')
   })
 

@@ -258,7 +258,7 @@ describe('gp-engram importer parsing', () => {
 
 describe('import source registry', () => {
   it('lists implemented and stubbed sources', async () => {
-    const sources = await listImportSources()
+    const sources = listImportSources()
     const names = sources.map(s => s.name)
     expect(names).toEqual(expect.arrayContaining(['generic', 'gp-engram', 'mem0', 'zep', 'letta']))
     expect(sources.find(s => s.name === 'generic')?.implemented).toBe(true)

@@ -355,7 +355,7 @@ describe('plur.suggestScope — reads scope metadata from config stores', () => 
       { path: '/tmp/core.yaml', scope: 'group:plur/core', description: 'Core engine', covers: ['plur.*', 'engine'] },
       { path: '/tmp/infra.yaml', scope: 'group:plur/infra', description: 'Infra', covers: ['servers', 'deployment'] },
     ])
-    const ranked = await plur.suggestScope({ statement: 'embedding model init', domain: 'plur.core.embeddings' })
+    const ranked = plur.suggestScope({ statement: 'embedding model init', domain: 'plur.core.embeddings' })
     expect(ranked[0].scope).toBe('group:plur/core')
     expect(ranked[0].confidence).toBeGreaterThan(0)
   })
@@ -364,12 +364,12 @@ describe('plur.suggestScope — reads scope metadata from config stores', () => 
     const plur = plurWithStores([
       { path: '/tmp/x.yaml', scope: 'group:plur/x', description: 'No covers declared' },
     ])
-    expect(await plur.suggestScope({ statement: 'anything at all', domain: 'plur.core' })).toEqual([])
+    expect(plur.suggestScope({ statement: 'anything at all', domain: 'plur.core' })).toEqual([])
   })
 
   it('returns an empty array with no stores configured', async () => {
     const plur = plurWithStores([])
-    expect(await plur.suggestScope({ statement: 'whatever', tags: ['infra'] })).toEqual([])
+    expect(plur.suggestScope({ statement: 'whatever', tags: ['infra'] })).toEqual([])
   })
 
   it('Stage 3b: a weak (sub-threshold) match falls to unscoped_default, NOT the top suggestion', async () => {
@@ -377,7 +377,7 @@ describe('plur.suggestScope — reads scope metadata from config stores', () => 
       { path: '/tmp/infra.yaml', scope: 'group:plur/infra', description: 'Infra', covers: ['servers', 'deployment'] },
     ])
     // suggestScope still points at the infra scope (advisory ranking unchanged)…
-    const ranked = await plur.suggestScope({ statement: 'restart the deployment on the servers' })
+    const ranked = plur.suggestScope({ statement: 'restart the deployment on the servers' })
     expect(ranked[0].scope).toBe('group:plur/infra')
     // …but its confidence is only a keyword match (deployment + servers), which
     // sits BELOW SCOPE_MATCH_THRESHOLD, so Stage 3b auto-routing does NOT fire —
@@ -393,7 +393,7 @@ describe('plur.suggestScope — reads scope metadata from config stores', () => 
     const plur = plurWithStores([
       { path: '/tmp/infra.yaml', scope: 'group:plur/infra', description: 'Infra', covers: ['servers'] },
     ])
-    const ranked = await plur.suggestScope({ statement: 'no overlap words zzz', tags: ['servers'] })
+    const ranked = plur.suggestScope({ statement: 'no overlap words zzz', tags: ['servers'] })
     expect(ranked.map(c => c.scope)).toContain('group:plur/infra')
   })
 })
@@ -542,7 +542,7 @@ describe('scope_routing config — Plur integration (#362)', () => {
       [{ path: '/tmp/infra.yaml', scope: 'group:plur/infra', covers: ['servers', 'deploy', 'infra'] }],
       { match_threshold: 0.7 },
     )
-    const ranked = await plur.suggestScope({ statement: 'no overlap zzz', tags: ['servers', 'deploy', 'infra'] })
+    const ranked = plur.suggestScope({ statement: 'no overlap zzz', tags: ['servers', 'deploy', 'infra'] })
     expect(ranked[0].confidence).toBe(0.5)
     const e = await plur.learn('no overlap zzz', { tags: ['servers', 'deploy', 'infra'] }) as { scope: string }
     expect(e.scope).toBe('global')

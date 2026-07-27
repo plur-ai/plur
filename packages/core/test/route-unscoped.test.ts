@@ -267,7 +267,7 @@ describe('Stage 3b — auto-route un-scoped writes (#351)', () => {
     // The readonly filter applies ONLY to the auto-route candidate set inside
     // _resolveUnscopedScope. Advisory discovery (suggestScope/listScopeMetadata)
     // must still show readonly scopes so a human can find them.
-    const ranked = await plur.suggestScope({ statement: 'embeddings core', domain: 'plur.core.embeddings', tags: ['embeddings'] })
+    const ranked = plur.suggestScope({ statement: 'embeddings core', domain: 'plur.core.embeddings', tags: ['embeddings'] })
     expect(ranked.map(c => c.scope)).toContain('group:plur/core')
   })
 
@@ -474,7 +474,7 @@ describe('Stage 3b — auto-route un-scoped writes (#351)', () => {
     // Sanity: the advisory ranker still SURFACES the scope (reverse hit scores > 0)
     // — only the deterministic auto-route is withheld. Confidence stays below
     // threshold so even the `>=` path doesn't fire on the lone reverse match.
-    const ranked = await plur.suggestScope({ statement: 'zzz', domain: 'plur' })
+    const ranked = plur.suggestScope({ statement: 'zzz', domain: 'plur' })
     const core = ranked.find(c => c.scope === 'group:plur/core')!
     expect(core).toBeDefined()
     expect(core.domainMatch).toBe(true)            // it IS a domain-channel hit…

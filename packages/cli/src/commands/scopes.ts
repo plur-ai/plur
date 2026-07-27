@@ -21,7 +21,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   // --reoffer: clear dismissals (works as a flag on the bare command).
   if (args.includes('--reoffer')) {
     const cleared = plur.getDismissedScopes()
-    await plur.reofferScopes()
+    plur.reofferScopes()
     if (json) return outputJson({ success: true, action: 'reoffer', cleared })
     return outputText(cleared.length
       ? `Re-offering ${cleared.length} previously dismissed scope(s): ${cleared.join(', ')}`
@@ -48,7 +48,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   if (subcommand === 'dismiss') {
     const scope = args[1]
     if (!scope) exit(1, 'Usage: plur scopes dismiss <scope>')
-    await plur.dismissScope(scope)
+    plur.dismissScope(scope)
     if (json) return outputJson({ success: true, action: 'dismiss', scope })
     return outputText(`Dismissed "${scope}" — it won't be offered again. Run \`plur scopes --reoffer\` to undo.`)
   }

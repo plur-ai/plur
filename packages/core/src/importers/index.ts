@@ -58,7 +58,7 @@ export const IMPORT_SOURCES: ImportSource[] = [
   lettaSource,
 ]
 
-export async function listImportSources(): Promise<ImportSource[]> {
+export function listImportSources(): ImportSource[] {
   return IMPORT_SOURCES
 }
 

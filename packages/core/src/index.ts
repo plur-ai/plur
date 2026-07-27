@@ -1286,11 +1286,11 @@ export class Plur {
    * candidates sorted by confidence descending — an empty array means nothing
    * matched OR every match fell below the floor.
    */
-  async suggestScope(input: ScopeSignals, options?: { minConfidence?: number }): Promise<ScopeCandidate[]> {
+  suggestScope(input: ScopeSignals, options?: { minConfidence?: number }): ScopeCandidate[] {
     this.reloadConfigIfChanged()  // pick up out-of-process config edits (#307)
     const minConfidence =
       options?.minConfidence ?? this.config.scope_routing?.min_confidence ?? 0
-    return rankScopes(input, await this.listScopeMetadata(), { minConfidence })
+    return rankScopes(input, this.listScopeMetadata(), { minConfidence })
   }
 
   /**
@@ -5305,12 +5305,12 @@ Generate an improved version of the procedure that prevents this failure. Return
    * discoverRemoteScopes().unregistered + the session-start hint until
    * {@link reofferScopes}. No-op if already dismissed.
    */
-  async dismissScope(scope: string): Promise<void> {
+  dismissScope(scope: string): void {
     const current = this.config.dismissed_scopes ?? []
     // Case-insensitive membership (scope-audit 2026-07-24): dismissing `Group:x`
     // when `group:x` is already recorded must stay a no-op, not a duplicate.
     if (current.some(s => s.toLowerCase() === scope.toLowerCase())) return
-    await this.persistDismissedScopes([...current, scope])
+    this.persistDismissedScopes([...current, scope])
   }
 
   /** Lowercased `dismissed_scopes` for case-insensitive membership tests
@@ -5320,8 +5320,8 @@ Generate an improved version of the procedure that prevents this failure. Return
   }
 
   /** Clear all dismissals (#647) — previously dismissed scopes are offered again. */
-  async reofferScopes(): Promise<void> {
-    await this.persistDismissedScopes([])
+  reofferScopes(): void {
+    this.persistDismissedScopes([])
   }
 
   /** The scopes currently dismissed from the offer (#647). */

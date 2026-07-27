@@ -34,7 +34,7 @@ describe('suggestScope minConfidence floor (#670)', () => {
   it('default (no option, no config): lone keyword hit is still returned (floor 0)', async () => {
     writeConfig()
     const plur = new Plur({ path: dir })
-    const candidates = await plur.suggestScope(LONE_KEYWORD)
+    const candidates = plur.suggestScope(LONE_KEYWORD)
     expect(candidates.length).toBeGreaterThan(0)
     expect(candidates[0].confidence).toBeLessThan(0.15)
   })
@@ -42,21 +42,21 @@ describe('suggestScope minConfidence floor (#670)', () => {
   it('explicit option floors the list', async () => {
     writeConfig()
     const plur = new Plur({ path: dir })
-    expect(await plur.suggestScope(LONE_KEYWORD, { minConfidence: 0.15 })).toHaveLength(0)
+    expect(plur.suggestScope(LONE_KEYWORD, { minConfidence: 0.15 })).toHaveLength(0)
   })
 
   it('config scope_routing.min_confidence is honored when no option is passed', async () => {
     writeConfig('scope_routing:\n  min_confidence: 0.15\n')
     const plur = new Plur({ path: dir })
-    expect(await plur.suggestScope(LONE_KEYWORD)).toHaveLength(0)
+    expect(plur.suggestScope(LONE_KEYWORD)).toHaveLength(0)
     // Explicit option (including 0) overrides the config floor.
-    expect((await plur.suggestScope(LONE_KEYWORD, { minConfidence: 0 })).length).toBeGreaterThan(0)
+    expect((plur.suggestScope(LONE_KEYWORD, { minConfidence: 0 })).length).toBeGreaterThan(0)
   })
 
   it('a domain match (0.5) survives the display floor', async () => {
     writeConfig()
     const plur = new Plur({ path: dir })
-    const candidates = await plur.suggestScope(
+    const candidates = plur.suggestScope(
       { statement: 'storage layer notes', domain: 'acme.engineering.storage' },
       { minConfidence: 0.15 },
     )
@@ -70,8 +70,8 @@ describe('suggestScope minConfidence floor (#670)', () => {
     const plur = new Plur({ path: dir })
     // A pure domain-prefix match squashes to exactly 0.5.
     const signals = { statement: 'x', domain: 'acme.engineering.storage' }
-    expect((await plur.suggestScope(signals, { minConfidence: 0.5 })).length).toBeGreaterThan(0)
-    expect(await plur.suggestScope(signals, { minConfidence: 0.5001 })).toHaveLength(0)
+    expect((plur.suggestScope(signals, { minConfidence: 0.5 })).length).toBeGreaterThan(0)
+    expect(plur.suggestScope(signals, { minConfidence: 0.5001 })).toHaveLength(0)
   })
 
   it('NaN does not silently disable the floor semantics (treated as no-floor, not a filter of nothing)', async () => {
@@ -79,7 +79,7 @@ describe('suggestScope minConfidence floor (#670)', () => {
     const plur = new Plur({ path: dir })
     // Number.isFinite guard: NaN behaves exactly like "no floor" — the full
     // advisory list comes back rather than an exception or an empty list.
-    const candidates = await plur.suggestScope(LONE_KEYWORD, { minConfidence: NaN })
+    const candidates = plur.suggestScope(LONE_KEYWORD, { minConfidence: NaN })
     expect(candidates.length).toBeGreaterThan(0)
   })
 
@@ -95,6 +95,6 @@ describe('suggestScope minConfidence floor (#670)', () => {
     expect(plur.getScopeRoutingConfig().min_confidence).toBeUndefined()
     expect(plur.getScopeRoutingConfig().match_threshold).toBe(0.9)
     // And the suggestion surface behaves as if the bad field were absent.
-    expect((await plur.suggestScope(LONE_KEYWORD)).length).toBeGreaterThan(0)
+    expect((plur.suggestScope(LONE_KEYWORD)).length).toBeGreaterThan(0)
   })
 })
