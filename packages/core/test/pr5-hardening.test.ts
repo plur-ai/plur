@@ -196,12 +196,12 @@ describe('LOW-1 — saveMetaEngrams runs the leak guard before persist', async (
    * engram on a throwaway Plur, then overriding fields. Hand-built engrams miss
    * required fields (version/content_hash/…) and are silently dropped on reload.
    */
-  function meta(overrides: Partial<Engram> & { statement: string; scope: string }): Engram {
+  async function meta(overrides: Partial<Engram> & { statement: string; scope: string }): Promise<Engram> {
     const tmp = mkdtempSync(join(tmpdir(), 'plur-pr5-meta-'))
     dirs.push(tmp)
     writeFileSync(join(tmp, 'config.yaml'), yaml.dump({ stores: [], index: false }, { noRefs: true }))
-    const base = new (Plur as unknown as { new (o: { path: string }): Plur })({ path: tmp })
-      .learn('seed for meta shape', { scope: 'global' }) as Engram
+    const base = await (new (Plur as unknown as { new (o: { path: string }): Plur })({ path: tmp })
+      .learn('seed for meta shape', { scope: 'global' })) as Engram
     metaSeq += 1
     return {
       ...base,
@@ -213,7 +213,7 @@ describe('LOW-1 — saveMetaEngrams runs the leak guard before persist', async (
 
   it('demotes a SHARED-scope meta with a public IP (statement) to local/private + stamps _demoted', async () => {
     const plur = freshPlur()
-    const m = meta({ statement: `infra note: prod box ${PUBLIC_IP}`, scope: SHARED_SCOPE })
+    const m = await meta({ statement: `infra note: prod box ${PUBLIC_IP}`, scope: SHARED_SCOPE })
     const res = await plur.saveMetaEngrams([m])
     expect(res.saved).toBe(1)
     const saved = (await plur.list()).find(e => e.id === m.id) as (Engram & { visibility?: string; structured_data?: { _demoted?: { from: string; patterns: string } } }) | undefined
@@ -226,7 +226,7 @@ describe('LOW-1 — saveMetaEngrams runs the leak guard before persist', async (
 
   it('demotes a SHARED-scope meta whose sensitive content is in a CONTEXT field (source)', async () => {
     const plur = freshPlur()
-    const m = meta({ statement: 'a clean meta statement', source: `seen at ${PUBLIC_IP}`, scope: SHARED_SCOPE })
+    const m = await meta({ statement: 'a clean meta statement', source: `seen at ${PUBLIC_IP}`, scope: SHARED_SCOPE })
     await plur.saveMetaEngrams([m])
     const saved = (await plur.list()).find(e => e.id === m.id) as (Engram & { visibility?: string }) | undefined
     expect(saved!.scope).toBe('local')
@@ -238,7 +238,7 @@ describe('LOW-1 — saveMetaEngrams runs the leak guard before persist', async (
     // previously omitted `tags`, so saveMetaEngrams scanned a smaller surface than
     // learn-time and the tag reached the shared (git-synced) scope unguarded.
     const plur = freshPlur()
-    const m = meta({ statement: 'a clean meta statement', tags: ['db.internal:5432'], scope: SHARED_SCOPE })
+    const m = await meta({ statement: 'a clean meta statement', tags: ['db.internal:5432'], scope: SHARED_SCOPE })
     await plur.saveMetaEngrams([m])
     const saved = (await plur.list()).find(e => e.id === m.id) as (Engram & { visibility?: string }) | undefined
     expect(saved!.scope).toBe('local')
@@ -247,13 +247,13 @@ describe('LOW-1 — saveMetaEngrams runs the leak guard before persist', async (
 
   it('THROWS on a raw secret in a SHARED-scope meta (HARD detectSecrets check)', async () => {
     const plur = freshPlur()
-    const m = meta({ statement: 'the api key is sk-aaaabbbbccccddddeeeeffffgggg', scope: SHARED_SCOPE })
+    const m = await meta({ statement: 'the api key is sk-aaaabbbbccccddddeeeeffffgggg', scope: SHARED_SCOPE })
     await expect(plur.saveMetaEngrams([m])).rejects.toThrow(/secret detected/i)
   })
 
   it('leaves a clean PERSONAL-scope meta untouched (no-op for in-tree callers)', async () => {
     const plur = freshPlur()
-    const m = meta({ statement: 'a perfectly clean meta', scope: 'global' })
+    const m = await meta({ statement: 'a perfectly clean meta', scope: 'global' })
     const res = await plur.saveMetaEngrams([m])
     expect(res.saved).toBe(1)
     const saved = (await plur.list()).find(e => e.id === m.id) as (Engram & { structured_data?: { _demoted?: unknown } }) | undefined
