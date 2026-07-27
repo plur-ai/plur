@@ -122,15 +122,15 @@ async function executeDedupDecision(
   switch (decision) {
     case 'NOOP': {
       if (targetId) {
-        const existing = deps.getById(targetId)
+        const existing = await deps.getById(targetId)
         if (existing) return { engram: existing, decision: 'NOOP', existing_id: targetId }
       }
-      return { engram: deps.learn(statement, context), decision: 'ADD' }
+      return { engram: await deps.learn(statement, context), decision: 'ADD' }
     }
 
     case 'UPDATE': {
       if (targetId) {
-        const existing = deps.getById(targetId)
+        const existing = await deps.getById(targetId)
         if (existing && (existing as any).commitment !== 'locked') {
           const result = await withAsyncLock(deps.engramsPath, async () => {
             const engrams = deps.store.load()
@@ -160,12 +160,12 @@ async function executeDedupDecision(
           if (result) return result
         }
       }
-      return { engram: deps.learn(statement, context), decision: 'ADD' }
+      return { engram: await deps.learn(statement, context), decision: 'ADD' }
     }
 
     case 'MERGE': {
       if (targetId) {
-        const existing = deps.getById(targetId)
+        const existing = await deps.getById(targetId)
         if (existing && (existing as any).commitment !== 'locked') {
           const result = await withAsyncLock(deps.engramsPath, async () => {
             const engrams = deps.store.load()
@@ -197,12 +197,12 @@ async function executeDedupDecision(
           if (result) return result
         }
       }
-      return { engram: deps.learn(statement, context), decision: 'ADD' }
+      return { engram: await deps.learn(statement, context), decision: 'ADD' }
     }
 
     case 'ADD':
     default:
-      return { engram: deps.learn(statement, context), decision: 'ADD' }
+      return { engram: await deps.learn(statement, context), decision: 'ADD' }
   }
 }
 
@@ -224,7 +224,7 @@ export async function learnAsync(
   // Step 2: Check dedup config
   const { enabled = true, threshold = 0.85, mode = 'llm' } = deps.dedupConfig
   if (!enabled || mode === 'off') {
-    return { engram: deps.learn(statement, context), decision: 'ADD' }
+    return { engram: await deps.learn(statement, context), decision: 'ADD' }
   }
 
   // Step 3: Semantic similarity search
@@ -232,12 +232,12 @@ export async function learnAsync(
   try {
     candidates = await deps.recallHybrid(statement, { limit: 5 })
   } catch {
-    candidates = deps.recall(statement, { limit: 5 })
+    candidates = await deps.recall(statement, { limit: 5 })
   }
   // Fallback to BM25 when hybrid returns empty (e.g. embedding model warmup on
   // cold CI runners makes embeddings return []; BM25 usually still matches).
   if (candidates.length === 0) {
-    candidates = deps.recall(statement, { limit: 5 })
+    candidates = await deps.recall(statement, { limit: 5 })
   }
   candidates = candidates.filter(c => c.status === 'active')
   // Mirror hashDedup scope-awareness (issue #359): only dedup against same-scope engrams.
@@ -248,7 +248,7 @@ export async function learnAsync(
   }
 
   if (candidates.length === 0) {
-    return { engram: deps.learn(statement, context), decision: 'ADD' }
+    return { engram: await deps.learn(statement, context), decision: 'ADD' }
   }
 
   // Step 4: LLM or cosine-only decision

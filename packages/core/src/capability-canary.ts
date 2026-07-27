@@ -60,8 +60,8 @@ export class CapabilityCanary {
     })
   }
 
-  warnings(): string {
-    return this.status()
+  async warnings(): Promise<string> {
+    return await this.status()
       .filter((s) => !s.healthy && s.warning)
       .map((s) => s.warning!)
       .join('\n')

@@ -47,7 +47,7 @@ import { RemoteStore, normalizeEndpointUrl } from './store/remote-store.js'
 import { YamlPrimaryStore } from './store/yaml-primary-store.js'
 import { withAsyncLock } from './store/async-lock.js'
 import { SessionScopeRegistry } from './session-scopes.js'
-import type { PrimaryStore } from './store/primary-store.js'
+import type { AsyncPrimaryStore } from './store/primary-store.js'
 import { requiresIndexSync, asDerivedIndex } from './storage-adapter.js'
 import { resolveBackendTier, type BackendSelection } from './backend-selection.js'
 import { isSharedScope, isPersonalScope, isScopeWithin, scopeAllowFilter } from './scope-util.js'
@@ -472,13 +472,13 @@ export class Plur {
    * of primary engram state go through this, never through `loadEngrams` /
    * `saveEngrams` directly.
    */
-  private _primaryStore: PrimaryStore
+  private _primaryStore: AsyncPrimaryStore
   /**
    * File-backed secondary stores (config `stores:` entries and installed packs),
    * memoised by path. These are YAML artifacts by definition and stay YAML even
    * when the primary store is not.
    */
-  private _secondaryStores: Map<string, PrimaryStore> = new Map()
+  private _secondaryStores: Map<string, AsyncPrimaryStore> = new Map()
   /**
    * The storage-tier decision this instance was constructed with (ADR-0005).
    * Kept so `backendSelection()` can report the tier AND the reason — "which
@@ -541,7 +541,7 @@ export class Plur {
    * @param options.cwd Directory discovery walks up from. Defaults to
    *   `process.cwd()`.
    */
-  constructor(options?: { path?: string; store?: PrimaryStore; autoDiscover?: boolean; cwd?: string }) {
+  constructor(options?: { path?: string; store?: AsyncPrimaryStore; autoDiscover?: boolean; cwd?: string }) {
     this.paths = detectPlurStorage(options?.path)
     this._primaryStore = options?.store ?? new YamlPrimaryStore(this.paths.engrams)
     this.config = loadConfig(this.paths.config)
@@ -736,8 +736,8 @@ export class Plur {
    * the caller, and a store whose medium has no mtime (memory, Postgres)
    * answers `loadCached()` its own way.
    */
-  private _loadCached(path: string): Engram[] {
-    return this._storeAt(path).loadCached()
+  private async _loadCached(path: string): Promise<Engram[]> {
+    return await this._storeAt(path).loadCached()
   }
 
   /**
@@ -776,8 +776,8 @@ export class Plur {
    * created. Invalidating on write removes the filesystem as a source of cache
    * freshness and closes the race. See issue #25.
    */
-  private _writeEngrams(path: string, engrams: Engram[]): void {
-    this._storeAt(path).save(engrams)
+  private async _writeEngrams(path: string, engrams: Engram[]): Promise<void> {
+    await this._storeAt(path).save(engrams)
   }
 
   /**
@@ -789,7 +789,7 @@ export class Plur {
    * which is a YAML artifact by definition. Instances are memoised so each
    * path keeps one cache, matching the old per-path `_engramCache` map.
    */
-  private _storeAt(path: string): PrimaryStore {
+  private _storeAt(path: string): AsyncPrimaryStore {
     if (path === this.paths.engrams) return this._primaryStore
     let store = this._secondaryStores.get(path)
     if (!store) {
@@ -805,7 +805,7 @@ export class Plur {
    * Public so callers can ask what they are actually persisting to
    * (`plur.primaryStore.kind`) instead of assuming `engrams.yaml`.
    */
-  get primaryStore(): PrimaryStore {
+  get primaryStore(): AsyncPrimaryStore {
     return this._primaryStore
   }
 
@@ -938,12 +938,12 @@ export class Plur {
   /** Apply a duplicate-write to an existing engram: increment reference_count,
    * append source, persist to primary store if that's where the engram lives.
    * Mutates the engram and (best-effort) writes back. See issue #107. */
-  private _recordDuplicate(
+  private async _recordDuplicate(
     hit: Engram,
     engrams: Engram[],
     scope: string,
     context: LearnContext | undefined,
-  ): Engram {
+  ): Promise<Engram> {
     // Use defaults for engrams migrated without these fields.
     const currentCount = (hit as any).reference_count ?? 1
     const currentSources = (hit as any).sources ?? []
@@ -956,7 +956,7 @@ export class Plur {
     if (idx !== -1) {
       engrams[idx] = hit
       this._writeEngrams(this.paths.engrams, engrams)
-      this._syncIndex()
+      await this._syncIndex()
     }
     return hit
   }
@@ -994,12 +994,12 @@ export class Plur {
    *
    * See issue #176.
    */
-  private _recordCrossScopeRecurrence(
+  private async _recordCrossScopeRecurrence(
     hit: Engram,
     engrams: Engram[],
     scope: string,
     context: LearnContext | undefined,
-  ): Engram {
+  ): Promise<Engram> {
     const previousScope = hit.scope
     const previousCommitment = hit.commitment
 
@@ -1081,7 +1081,7 @@ export class Plur {
       const target = engrams[primaryIdx]
       newRecurrence = applyMutation(target, sourceEntry, lockTimestamp)
       this._writeEngrams(this.paths.engrams, engrams)
-      this._syncIndex()
+      await this._syncIndex()
       persistedTo = 'primary'
       // Audit iter-5 fix (Data finding 1): explicit identity guard makes the
       // self-assign no-op contract visible. When _loadAllEngrams and the primary
@@ -1092,7 +1092,7 @@ export class Plur {
       // primaryIdx already proved this isn't in primary; only check writability.
       const storeInfo = this._findEngramStore(hit.id)
       if (storeInfo && !storeInfo.readonly) {
-        const storeEngrams = this._storeAt(storeInfo.path).load()
+        const storeEngrams = await this._storeAt(storeInfo.path).load()
         const sidx = storeEngrams.findIndex(e => e.id === storeInfo.originalId)
         // Audit iter-5 defense (Critic low #3): _crossScopeRecurrenceDetect
         // filters status==='active' at the entry point, but a cross-process
@@ -1101,7 +1101,7 @@ export class Plur {
         if (sidx !== -1 && storeEngrams[sidx].status === 'active') {
           newRecurrence = applyMutation(storeEngrams[sidx], sourceEntry, lockTimestamp)
           this._writeEngrams(storeInfo.path, storeEngrams)
-          this._syncIndex()
+          await this._syncIndex()
           persistedTo = 'secondary'
           if (storeEngrams[sidx] !== hit) syncHitFrom(storeEngrams[sidx])
         } else {
@@ -1272,11 +1272,11 @@ export class Plur {
    * candidates sorted by confidence descending — an empty array means nothing
    * matched OR every match fell below the floor.
    */
-  suggestScope(input: ScopeSignals, options?: { minConfidence?: number }): ScopeCandidate[] {
+  async suggestScope(input: ScopeSignals, options?: { minConfidence?: number }): Promise<ScopeCandidate[]> {
     this.reloadConfigIfChanged()  // pick up out-of-process config edits (#307)
     const minConfidence =
       options?.minConfidence ?? this.config.scope_routing?.min_confidence ?? 0
-    return rankScopes(input, this.listScopeMetadata(), { minConfidence })
+    return rankScopes(input, await this.listScopeMetadata(), { minConfidence })
   }
 
   /**
@@ -1481,10 +1481,10 @@ export class Plur {
    * `{ scope, confidence, reason }`; `routed` is null on the `unscoped_default`
    * fall-through (so an explicit/default `global` is never mislabeled as routed).
    */
-  private _resolveUnscopedScope(
+  private async _resolveUnscopedScope(
     statement: string,
     context?: LearnContext,
-  ): { scope: string; routed: { scope: string; confidence: number; reason: string } | null } {
+  ): Promise<{ scope: string; routed: { scope: string; confidence: number; reason: string } | null }> {
     // Pick up out-of-process config edits (#307) — mirrors suggestScope. Without
     // this the WRITE path routed against a stale stores/covers snapshot: a scope
     // registered (or covers synced) by another process after startup was
@@ -1507,7 +1507,7 @@ export class Plur {
     // path- and url-based stores, so this view covers both. `listScopeMetadata()`
     // and `suggestScope()` are left UNCHANGED — advisory discovery still surfaces
     // readonly scopes.
-    const writableScopeMetadata = this.listScopeMetadata().filter(md => {
+    const writableScopeMetadata = (await this.listScopeMetadata()).filter(md => {
       const entry = (this.config.stores ?? []).find(s => s.scope === md.scope)
       return entry?.readonly !== true
     })
@@ -1561,7 +1561,7 @@ export class Plur {
     return { scope: fallback, routed: null }
   }
 
-  private _guardSensitiveScope(
+  private async _guardSensitiveScope(
     statement: string,
     context?: LearnContext,
   ): { scope: string; context: LearnContext | undefined; demotion: { from: string; to: string; patterns: string } | null; routed: { scope: string; confidence: number; reason: string } | null } {
@@ -1578,7 +1578,7 @@ export class Plur {
     let routed: { scope: string; confidence: number; reason: string } | null = null
     let scope: string
     if (context?.scope == null && sessionScope == null) {
-      const resolved = this._resolveUnscopedScope(statement, context)
+      const resolved = await this._resolveUnscopedScope(statement, context)
       scope = resolved.scope
       routed = resolved.routed
     } else {
@@ -1619,7 +1619,7 @@ export class Plur {
     }
   }
 
-  learn(statement: string, context?: LearnContext): Engram {
+  async learn(statement: string, context?: LearnContext): Promise<Engram> {
     if (typeof statement !== 'string' || statement.length === 0) {
       throw new TypeError(`plur.learn: statement must be a non-empty string, got ${typeof statement}`)
     }
@@ -1642,8 +1642,8 @@ export class Plur {
     // valid_from/valid_until fail fast — even when the write would dedup
     // into an existing engram below.
     const validity = resolveValidity(statement, context)
-    return withLock(this.paths.engrams, () => {
-      const engrams = this._primaryStore.load()
+    return await withAsyncLock(this.paths.engrams, async () => {
+      const engrams = await this._primaryStore.load()
       const allEngrams = this._loadAllEngrams()
 
       const scope = guarded.scope
@@ -1651,14 +1651,14 @@ export class Plur {
       // Idea 29: Content hash fast-path dedup (scope-aware — issue #136).
       // On dedup hit, mutate: increment reference_count, append source (#107).
       const hashMatch = this._hashDedup(statement, allEngrams, scope)
-      if (hashMatch) return this._recordDuplicate(hashMatch, engrams, scope, context)
+      if (hashMatch) return await this._recordDuplicate(hashMatch, engrams, scope, context)
 
       // #176: cross-scope recurrence — same statement, different scope.
       // Treated as evidence of universal applicability: graduates the
       // existing engram toward 'global' + 'locked' commitment instead of
       // creating a new scope-bound duplicate.
       const crossMatch = this._crossScopeRecurrenceDetect(statement, allEngrams, scope)
-      if (crossMatch) return this._recordCrossScopeRecurrence(crossMatch, engrams, scope, context)
+      if (crossMatch) return await this._recordCrossScopeRecurrence(crossMatch, engrams, scope, context)
 
       const id = generateEngramId(allEngrams)
       const now = new Date().toISOString()
@@ -1823,27 +1823,27 @@ export class Plur {
         }
         engrams.push(engram)
         this._writeEngrams(this.paths.engrams, engrams)
-        this._syncIndex()
+        await this._syncIndex()
 
         // Fire-and-forget: attempt immediate push, clean up on success
         void (async () => {
           try {
             await remoteDriver.append(engram)
             // Success: remove outbox entry from local store
-            withLock(this.paths.engrams, () => {
-              const fresh = this._primaryStore.load()
+            await withAsyncLock(this.paths.engrams, async () => {
+              const fresh = await this._primaryStore.load()
               const idx = fresh.findIndex(e => e.id === engram.id)
               if (idx !== -1) {
                 fresh.splice(idx, 1)
                 this._writeEngrams(this.paths.engrams, fresh)
-                this._syncIndex()
+                await this._syncIndex()
               }
             })
           } catch (err) {
             // Already saved locally with outbox metadata — will be retried
             logger.warning(`[plur:outbox] immediate push failed for ${engram.id}, queued for retry: ${(err as Error).message}`)
-            withLock(this.paths.engrams, () => {
-              const fresh = this._primaryStore.load()
+            await withAsyncLock(this.paths.engrams, async () => {
+              const fresh = await this._primaryStore.load()
               const target = fresh.find(e => e.id === engram.id) as any
               if (target?.structured_data?._outbox) {
                 target.structured_data._outbox.last_error = (err as Error).message
@@ -1865,7 +1865,7 @@ export class Plur {
 
       engrams.push(engram)
       this._writeEngrams(this.paths.engrams, engrams)
-      this._syncIndex()
+      await this._syncIndex()
       appendHistory(this.paths.root, {
         event: 'engram_created',
         engram_id: engram.id,
@@ -1920,7 +1920,7 @@ export class Plur {
       // Local route — sync learn() owns dedup, build, write, history. learn()'s
       // own guard sees the already-demoted (local) context and no-ops, so the
       // demotion marker is stamped here for the learnRouted-demoted case (#326).
-      const engram = this.learn(statement, context)
+      const engram = await this.learn(statement, context)
       if (guarded.demotion) {
         ;(engram as any).structured_data = {
           ...((engram as any).structured_data ?? {}),
@@ -1947,16 +1947,16 @@ export class Plur {
     if (hashMatch) {
       // Mutate + persist if local; otherwise return mutated (best-effort)
       return await withAsyncLock(this.paths.engrams, async () => {
-        const engrams = this._primaryStore.load()
-        return this._recordDuplicate(hashMatch, engrams, scope, context)
+        const engrams = await this._primaryStore.load()
+        return await this._recordDuplicate(hashMatch, engrams, scope, context)
       })
     }
     // #176: cross-scope recurrence (same semantics as the local learn() path).
     const crossMatch = this._crossScopeRecurrenceDetect(statement, allEngrams, scope)
     if (crossMatch) {
       return await withAsyncLock(this.paths.engrams, async () => {
-        const engrams = this._primaryStore.load()
-        return this._recordCrossScopeRecurrence(crossMatch, engrams, scope, context)
+        const engrams = await this._primaryStore.load()
+        return await this._recordCrossScopeRecurrence(crossMatch, engrams, scope, context)
       })
     }
     const now = new Date().toISOString()
@@ -1987,7 +1987,7 @@ export class Plur {
       // engram but omit the outbox marker — the retry path will skip it.
       const storeEntry = (this.config.stores ?? []).find(s => s.url && s.scope === scope && !s.readonly)
       return await withAsyncLock(this.paths.engrams, async () => {
-        const engrams = this._primaryStore.load()
+        const engrams = await this._primaryStore.load()
         // Replace placeholder ID with a real local ID
         localPlaceholder.id = generateEngramId([...engrams, ...allEngrams])
         if (storeEntry) {
@@ -2011,7 +2011,7 @@ export class Plur {
         }
         engrams.push(localPlaceholder)
         this._writeEngrams(this.paths.engrams, engrams)
-        this._syncIndex()
+        await this._syncIndex()
         appendHistory(this.paths.root, {
           event: 'engram_created',
           engram_id: localPlaceholder.id,
@@ -2115,7 +2115,7 @@ export class Plur {
   }
 
   /** Build deps for learn-async module. */
-  private _learnAsyncDeps() {
+  private async _learnAsyncDeps() {
     return {
       hashDedup: (statement: string, scope?: string) => this._hashDedup(statement, this._loadAllEngrams(), scope),
       recallHybrid: (query: string, options?: { limit?: number }) => this.recallHybrid(query, options),
@@ -2137,7 +2137,7 @@ export class Plur {
   /** Async learn with LLM-driven deduplication (Ideas 1+2+19). */
   async learnAsync(statement: string, context?: LearnAsyncContext): Promise<LearnAsyncResult> {
     const { learnAsync: learnAsyncImpl } = await import('./learn-async.js')
-    return learnAsyncImpl(this._learnAsyncDeps(), statement, context)
+    return learnAsyncImpl(await this._learnAsyncDeps(), statement, context)
   }
 
   /** Batch learn with LLM dedup. LLM calls are capped (default 50) to bound bulk-import cost. */
@@ -2147,7 +2147,7 @@ export class Plur {
     opts?: { maxLlmCalls?: number },
   ): Promise<LearnBatchResult> {
     const { learnBatch: learnBatchImpl } = await import('./learn-async.js')
-    return learnBatchImpl(this._learnAsyncDeps(), statements, llm, opts)
+    return learnBatchImpl(await this._learnAsyncDeps(), statements, llm, opts)
   }
 
   /**
@@ -2157,11 +2157,11 @@ export class Plur {
    *   - 'agentic': LLM-assisted semantic search, higher accuracy, requires llm function
    */
   /** Search engrams using fast BM25 keyword matching. Sync, no API calls. */
-  recall(query: string, options?: Omit<RecallOptions, 'mode' | 'llm'>): Engram[] {
+  async recall(query: string, options?: Omit<RecallOptions, 'mode' | 'llm'>): Promise<Engram[]> {
     const filtered = this._filterEngrams(options)
     const limit = options?.limit ?? 20
     const results = searchEngrams(filtered, query, limit)
-    this._reactivateResults(results)
+    await this._reactivateResults(results)
     return results
   }
 
@@ -2170,7 +2170,7 @@ export class Plur {
     const filtered = this._filterEngrams(options)
     const limit = options?.limit ?? 20
     const results = await agenticSearch(filtered, query, limit, options.llm)
-    this._reactivateResults(results)
+    await this._reactivateResults(results)
     return results
   }
 
@@ -2201,7 +2201,7 @@ export class Plur {
     } else {
       results = results.slice(0, limit)
     }
-    this._reactivateResults(results)
+    await this._reactivateResults(results)
     return results
   }
 
@@ -2247,7 +2247,7 @@ export class Plur {
     } else {
       result = await hybridSearchWithMeta(filtered, query, limit, this.paths.root, rerank)
     }
-    this._reactivateResults(result.engrams)
+    await this._reactivateResults(result.engrams)
     // WS5 demand flywheel: a zero-result or low-top-score recall is a demand
     // signal. Emit an anonymized, content-free miss-signal (query fingerprint +
     // scope/domain + timestamp; never the raw query). Opt-in/default-off and
@@ -2365,7 +2365,7 @@ export class Plur {
   async checkRerankerFit(opts?: { sampleSize?: number; rerankerName?: string }): Promise<FitCheckResult> {
     const name = (opts?.rerankerName as RerankerName | undefined) ?? resolveRerankerName()
     const adapter = getReranker(name === 'off' ? undefined : name)
-    const engrams = this.list().map(e => ({ statement: e.statement, domain: e.domain }))
+    const engrams = (await this.list()).map(e => ({ statement: e.statement, domain: e.domain }))
     return checkRerankerFit(engrams, adapter, { sampleSize: opts?.sampleSize })
   }
 
@@ -2509,7 +2509,7 @@ export class Plur {
     const filtered = this._filterEngrams(options)
     const limit = options?.limit ?? 20
     const results = await expandedSearch(filtered, query, limit, options.llm, this.paths.root)
-    this._reactivateResults(results)
+    await this._reactivateResults(results)
     return results
   }
 
@@ -2517,7 +2517,7 @@ export class Plur {
     const filtered = this._filterEngrams(options)
     const limit = options?.limit ?? 20
     const result = await recallAuto(filtered, query, limit, this.paths.root, options?.llm)
-    this._reactivateResults(result.results)
+    await this._reactivateResults(result.results)
     return result
   }
 
@@ -2596,7 +2596,7 @@ export class Plur {
   }
 
   /** Reactivate accessed engrams and update co-access associations */
-  private _reactivateResults(results: Engram[]): void {
+  private async _reactivateResults(results: Engram[]): Promise<void> {
     if (results.length === 0) return
     // Filter out store engrams — they're managed by their source.
     // Via YAML path: store engrams have _originalId. Via SQLite path: namespaced IDs (ENG-XX-...).
@@ -2604,8 +2604,8 @@ export class Plur {
       (e as any)._originalId || /^(ENG|ABS|META)-[A-Z]{3}-/.test(e.id)
     const primaryResults = results.filter(e => !isStoreEngram(e))
     if (primaryResults.length === 0) return
-    withLock(this.paths.engrams, () => {
-      const allEngrams = this._primaryStore.load()
+    await withAsyncLock(this.paths.engrams, async () => {
+      const allEngrams = await this._primaryStore.load()
       const resultIds = new Set(primaryResults.map(e => e.id))
       const today = new Date().toISOString().slice(0, 10)
       let modified = false
@@ -2659,7 +2659,7 @@ export class Plur {
 
       if (modified) {
         this._writeEngrams(this.paths.engrams, allEngrams)
-        this._syncIndex()
+        await this._syncIndex()
       }
     })
   }
@@ -2867,7 +2867,7 @@ export class Plur {
   async feedback(id: string, signal: 'positive' | 'negative' | 'neutral'): Promise<void> {
     // Try primary engrams first
     const found = await withAsyncLock(this.paths.engrams, async () => {
-      const engrams = this._primaryStore.load()
+      const engrams = await this._primaryStore.load()
       const engram = engrams.find(e => e.id === id)
       if (!engram) return false
 
@@ -2896,7 +2896,7 @@ export class Plur {
       }
 
       this._writeEngrams(this.paths.engrams, engrams)
-      this._syncIndex()
+      await this._syncIndex()
       appendHistory(this.paths.root, {
         event: 'feedback_received',
         engram_id: id,
@@ -2918,7 +2918,7 @@ export class Plur {
         throw new Error('Engram is in a readonly store')
       }
       // Must load fresh (not cached) since we're about to mutate and write back
-      const storeEngrams = this._storeAt(storeInfo.path).load()
+      const storeEngrams = await this._storeAt(storeInfo.path).load()
       const engram = storeEngrams.find(e => e.id === storeInfo.originalId)
       if (engram) {
         if (!engram.feedback_signals) {
@@ -2936,7 +2936,7 @@ export class Plur {
           engram.activation.last_accessed = new Date().toISOString().slice(0, 10)
         }
         this._writeEngrams(storeInfo.path, storeEngrams)
-        this._syncIndex()
+        await this._syncIndex()
         this._logInjectionOutcome(id, signal)
         return
       }
@@ -3019,9 +3019,9 @@ export class Plur {
    * scopes (the index.ts personal fast-path). Defense-in-depth: activates only
    * if a future caller passes a shared-scope meta.
    */
-  saveMetaEngrams(metas: Engram[]): { saved: number; skipped: number } {
-    return withLock(this.paths.engrams, () => {
-      const engrams = this._primaryStore.load()
+  async saveMetaEngrams(metas: Engram[]): Promise<{ saved: number; skipped: number }> {
+    return await withAsyncLock(this.paths.engrams, async () => {
+      const engrams = await this._primaryStore.load()
       const existingIds = new Set(engrams.map(e => e.id))
       let saved = 0
       let skipped = 0
@@ -3070,7 +3070,7 @@ export class Plur {
       }
       if (saved > 0) {
         this._writeEngrams(this.paths.engrams, engrams)
-        this._syncIndex()
+        await this._syncIndex()
       }
       return { saved, skipped }
     })
@@ -3082,10 +3082,10 @@ export class Plur {
    * to ensure remote-routed updates are awaited (used by promote of remote
    * candidate engrams — closes the promote remainder of #86).
    */
-  updateEngram(updated: Engram): boolean {
+  async updateEngram(updated: Engram): Promise<boolean> {
     // Local primary first.
-    const localResult = withLock(this.paths.engrams, () => {
-      const engrams = this._primaryStore.load()
+    const localResult = await withAsyncLock(this.paths.engrams, async () => {
+      const engrams = await this._primaryStore.load()
       const idx = engrams.findIndex(e => e.id === updated.id)
       if (idx === -1) return false
       // Leak guard (#353): local-resident → demote a sensitive update in place.
@@ -3094,7 +3094,7 @@ export class Plur {
       const toWrite = demote ? { ...updated, ...demote } : updated
       engrams[idx] = toWrite
       this._writeEngrams(this.paths.engrams, engrams)
-      this._syncIndex()
+      await this._syncIndex()
       return true
     })
     if (localResult) return true
@@ -3131,7 +3131,7 @@ export class Plur {
   async updateEngramAsync(updated: Engram): Promise<Engram | null> {
     // Local primary first.
     const localResult = await withAsyncLock(this.paths.engrams, async () => {
-      const engrams = this._primaryStore.load()
+      const engrams = await this._primaryStore.load()
       const idx = engrams.findIndex(e => e.id === updated.id)
       if (idx === -1) return null
       // Leak guard (#353): local-resident → demote a sensitive update in place.
@@ -3140,7 +3140,7 @@ export class Plur {
       const toWrite = demote ? { ...updated, ...demote } : updated
       engrams[idx] = toWrite
       this._writeEngrams(this.paths.engrams, engrams)
-      this._syncIndex()
+      await this._syncIndex()
       return toWrite
     })
     if (localResult) return localResult
@@ -3167,17 +3167,17 @@ export class Plur {
    * Toggle the always-load (pinned) flag for an engram.
    * Returns the updated engram on success, null if not found.
    */
-  setPinned(id: string, pinned: boolean): Engram | null {
+  async setPinned(id: string, pinned: boolean): Promise<Engram | null> {
     // Local primary first.
-    const localResult = withLock(this.paths.engrams, () => {
-      const engrams = this._primaryStore.load()
+    const localResult = await withAsyncLock(this.paths.engrams, async () => {
+      const engrams = await this._primaryStore.load()
       const idx = engrams.findIndex(e => e.id === id)
       if (idx === -1) return null
       const e = engrams[idx]
       const updated: Engram = { ...e, pinned: pinned === true ? true : undefined }
       engrams[idx] = updated
       this._writeEngrams(this.paths.engrams, engrams)
-      this._syncIndex()
+      await this._syncIndex()
       return updated
     })
     if (localResult) return localResult
@@ -3213,14 +3213,14 @@ export class Plur {
   async setPinnedAsync(id: string, pinned: boolean): Promise<Engram | null> {
     // Local primary first.
     const localResult = await withAsyncLock(this.paths.engrams, async () => {
-      const engrams = this._primaryStore.load()
+      const engrams = await this._primaryStore.load()
       const idx = engrams.findIndex(e => e.id === id)
       if (idx === -1) return null
       const e = engrams[idx]
       const updated: Engram = { ...e, pinned: pinned === true ? true : undefined }
       engrams[idx] = updated
       this._writeEngrams(this.paths.engrams, engrams)
-      this._syncIndex()
+      await this._syncIndex()
       return updated
     })
     if (localResult) return localResult
@@ -3250,7 +3250,7 @@ export class Plur {
     // engram with reference_count=N retires it; called fewer times, the
     // engram stays active with a lower count.
     const foundInPrimary = await withAsyncLock(this.paths.engrams, async () => {
-      const engrams = this._primaryStore.load()
+      const engrams = await this._primaryStore.load()
       const engram = engrams.find(e => e.id === id)
       if (!engram) return false
 
@@ -3273,7 +3273,7 @@ export class Plur {
       }
 
       this._writeEngrams(this.paths.engrams, engrams)
-      this._syncIndex()
+      await this._syncIndex()
       appendHistory(this.paths.root, {
         event: newCount === 0 ? 'engram_retired' : 'engram_decremented',
         engram_id: id,
@@ -3300,7 +3300,7 @@ export class Plur {
       if (storeInfo.readonly) {
         throw new Error('Cannot retire engram from readonly store')
       }
-      const storeEngrams = this._storeAt(storeInfo.path).load()
+      const storeEngrams = await this._storeAt(storeInfo.path).load()
       const engram = storeEngrams.find(e => e.id === storeInfo.originalId)
       if (engram) {
         // Same legacy-engram migration as primary path (audit iter-2, Data).
@@ -3317,7 +3317,7 @@ export class Plur {
         }
 
         this._writeEngrams(storeInfo.path, storeEngrams)
-        this._syncIndex()
+        await this._syncIndex()
         appendHistory(this.paths.root, {
           event: newCount === 0 ? 'engram_retired' : 'engram_decremented',
           engram_id: id,
@@ -3367,14 +3367,14 @@ export class Plur {
   }
 
   /** Remove retired engrams from storage. Returns count of removed and remaining. */
-  compact(): { removed: number; remaining: number } {
-    return withLock(this.paths.engrams, () => {
-      const engrams = this._primaryStore.load()
+  async compact(): Promise<{ removed: number; remaining: number }> {
+    return await withAsyncLock(this.paths.engrams, async () => {
+      const engrams = await this._primaryStore.load()
       const active = engrams.filter(e => e.status !== 'retired')
       const removed = engrams.length - active.length
       if (removed > 0) {
         this._writeEngrams(this.paths.engrams, active)
-        this._syncIndex()
+        await this._syncIndex()
       }
       return { removed, remaining: active.length }
     })
@@ -3401,7 +3401,7 @@ export class Plur {
    * and the promise tracked on the instance so `await plur.reindexAsync()` is
    * available for code paths that need to block.
    */
-  reindex(): void {
+  async reindex(): Promise<void> {
     if (this.pgliteAdapter) {
       // Only a DERIVED index has anything to rebuild. A `role: 'primary'`
       // adapter IS the store of record — there is no external source to
@@ -3410,7 +3410,7 @@ export class Plur {
       if (!adapter) return
       // Fire-and-track. Callers that need to block use reindexAsync().
       this._lastIndexError = null // new pass — stale failures cleared on success
-      this._pgliteInitPromise = adapter.reindex()
+      this._pgliteInitPromise = await adapter.reindex()
         .then(() => this._autoEmbedNewEngrams(adapter))
         .catch((err: unknown) => {
           this._recordIndexError('reindex', err)
@@ -3421,7 +3421,7 @@ export class Plur {
     if (!this.indexedStorage) {
       this.indexedStorage = new IndexedStorage(this.paths.engrams, this.paths.db, this.config.stores)
     }
-    this.indexedStorage.reindex()
+    await this.indexedStorage.reindex()
   }
 
   /**
@@ -3439,7 +3439,7 @@ export class Plur {
     if (!this.indexedStorage) {
       this.indexedStorage = new IndexedStorage(this.paths.engrams, this.paths.db, this.config.stores)
     }
-    this.indexedStorage.reindex()
+    await this.indexedStorage.reindex()
   }
 
   /**
@@ -3500,7 +3500,7 @@ export class Plur {
    * adapter declares `role: 'primary'`, because then the write already landed
    * in the backend that answers queries and there is no delta to apply.
    */
-  private _syncIndex(): void {
+  private async _syncIndex(): Promise<void> {
     if (this.pgliteAdapter) {
       // `IndexedStorage` below is unconditionally a derived index (it rebuilds
       // itself from YAML by construction), so only the adapter path needs the
@@ -3670,7 +3670,7 @@ export class Plur {
    * deletes every row in the derived index and replays YAML. YAML is never
    * touched in either mode.
    */
-  sync(remote?: string, options?: { full?: boolean; remoteType?: SyncRemoteType }): SyncResult {
+  async sync(remote?: string, options?: { full?: boolean; remoteType?: SyncRemoteType }): Promise<SyncResult> {
     // #640: explicit option > config.sync.remote_type > 'personal' (historical
     // mirror-everything default — `shared` is an explicit opt-in that filters
     // the push set to shared-scope, non-private engrams).
@@ -3680,9 +3680,9 @@ export class Plur {
     // PGLite path is the only backend that honors --full directly here; the
     // legacy SQLite path also reindexes on full, otherwise calls syncFromYaml.
     if (options?.full) {
-      this.reindex()
+      await this.reindex()
     } else {
-      this._syncIndex()
+      await this._syncIndex()
     }
     return result
   }
@@ -3707,7 +3707,7 @@ export class Plur {
    * After 7 days: includes warning in expired_warnings.
    */
   async flushOutbox(): Promise<{ flushed: number; failed: number; expired_warnings: string[] }> {
-    const engrams = this._primaryStore.load()
+    const engrams = await this._primaryStore.load()
     const pending = engrams.filter(e => (e as any).structured_data?._outbox)
     if (pending.length === 0) return { flushed: 0, failed: 0, expired_warnings: [] }
 
@@ -3812,7 +3812,7 @@ export class Plur {
     // Write back changes (removals + updated outbox metadata)
     if (flushed > 0 || failed > 0) {
       this._writeEngrams(this.paths.engrams, engrams)
-      this._syncIndex()
+      await this._syncIndex()
     }
 
     return { flushed, failed, expired_warnings }
@@ -3864,7 +3864,7 @@ export class Plur {
     failureContext: string,
     llm?: LlmFunction,
   ): Promise<{ engram: Engram; episode: Episode; evolved: boolean; blocked?: boolean }> {
-    const engram = this.getById(engramId)
+    const engram = await this.getById(engramId)
     if (!engram) throw new Error(`Engram not found: ${engramId}`)
 
     // Only procedural engrams can evolve
@@ -3916,7 +3916,7 @@ Generate an improved version of the procedure that prevents this failure. Return
 
           // Try local primary first.
           const localResult = await withAsyncLock(this.paths.engrams, async () => {
-            const engrams = this._primaryStore.load()
+            const engrams = await this._primaryStore.load()
             const idx = engrams.findIndex(e => e.id === engramId)
             if (idx === -1) return null
 
@@ -3945,7 +3945,7 @@ Generate an improved version of the procedure that prevents this failure. Return
             raw.episode_ids.push(episode.id)
 
             this._writeEngrams(this.paths.engrams, engrams)
-            this._syncIndex()
+            await this._syncIndex()
 
             appendHistory(this.paths.root, {
               event: 'procedure_evolved',
@@ -4016,14 +4016,14 @@ Generate an improved version of the procedure that prevents this failure. Return
           // (the failure episode is still linked below) instead of throwing.
           if (blockedRemote) {
             await withAsyncLock(this.paths.engrams, async () => {
-              const engrams = this._primaryStore.load()
+              const engrams = await this._primaryStore.load()
               const idx = engrams.findIndex(e => e.id === engramId)
               if (idx !== -1) {
                 const raw = engrams[idx] as any
                 if (!raw.episode_ids) raw.episode_ids = []
                 raw.episode_ids.push(episode.id)
                 this._writeEngrams(this.paths.engrams, engrams)
-                this._syncIndex()
+                await this._syncIndex()
               }
             })
             return { engram, episode, evolved: false, blocked: true }
@@ -4039,18 +4039,18 @@ Generate an improved version of the procedure that prevents this failure. Return
 
     // Fallback: link failure episode to engram without rewriting
     await withAsyncLock(this.paths.engrams, async () => {
-      const engrams = this._primaryStore.load()
+      const engrams = await this._primaryStore.load()
       const idx = engrams.findIndex(e => e.id === engramId)
       if (idx !== -1) {
         const raw = engrams[idx] as any
         if (!raw.episode_ids) raw.episode_ids = []
         raw.episode_ids.push(episode.id)
         this._writeEngrams(this.paths.engrams, engrams)
-        this._syncIndex()
+        await this._syncIndex()
       }
     })
 
-    const updated = this.getById(engramId)
+    const updated = await this.getById(engramId)
     return { engram: updated ?? engram, episode, evolved }
   }
 
@@ -4270,7 +4270,7 @@ Generate an improved version of the procedure that prevents this failure. Return
    * audit #213 §2), the record becomes status 'resolved' with resolved_by /
    * resolved_at set.
    */
-  resolveTension(id: string, winnerId: string): { record: TensionRecord; retired_id: string } {
+  async resolveTension(id: string, winnerId: string): { record: TensionRecord; retired_id: string } {
     const existing = this.listTensions().find(r => r.id === id)
     if (!existing) throw new Error(`Tension ${id} not found`)
     if (existing.status === 'resolved') throw new Error(`Tension ${id} is already resolved`)
@@ -4281,7 +4281,7 @@ Generate an improved version of the procedure that prevents this failure. Return
     const loserId = winnerId === existing.engram_a ? existing.engram_b : existing.engram_a
     // Retire the loser FIRST — if retirement fails, the record stays
     // unresolved and the operation can be retried.
-    const retired = this._retireEngramForResolution(loserId, `tension ${id} resolved in favor of ${winnerId}`)
+    const retired = await this._retireEngramForResolution(loserId, `tension ${id} resolved in favor of ${winnerId}`)
     if (!retired) throw new Error(`Cannot retire losing engram ${loserId} (not found in a writable local store)`)
     const record = this._mutateTension(id, r => {
       r.status = 'resolved'
@@ -4298,18 +4298,18 @@ Generate an improved version of the procedure that prevents this failure. Return
    * (audit #213 §2: "a user who resolved a tension by forgetting the loser
    * may find it still active").
    */
-  private _retireEngramForResolution(id: string, reason: string): boolean {
+  private async _retireEngramForResolution(id: string, reason: string): Promise<boolean> {
     const stamp = (engram: Engram): void => {
       engram.status = 'retired'
       if (!engram.rationale) engram.rationale = `Retired: ${reason}`
     }
-    const foundInPrimary = withLock(this.paths.engrams, () => {
-      const engrams = this._primaryStore.load()
+    const foundInPrimary = await withAsyncLock(this.paths.engrams, async () => {
+      const engrams = await this._primaryStore.load()
       const engram = engrams.find(e => e.id === id)
       if (!engram) return false
       stamp(engram)
       this._writeEngrams(this.paths.engrams, engrams)
-      this._syncIndex()
+      await this._syncIndex()
       appendHistory(this.paths.root, {
         event: 'engram_retired',
         engram_id: id,
@@ -4324,12 +4324,12 @@ Generate an improved version of the procedure that prevents this failure. Return
     const storeInfo = this._findEngramStore(id)
     if (storeInfo && storeInfo.path !== this.paths.engrams) {
       if (storeInfo.readonly) throw new Error('Cannot retire engram from readonly store')
-      const storeEngrams = this._storeAt(storeInfo.path).load()
+      const storeEngrams = await this._storeAt(storeInfo.path).load()
       const engram = storeEngrams.find(e => e.id === storeInfo.originalId)
       if (engram) {
         stamp(engram)
         this._writeEngrams(storeInfo.path, storeEngrams)
-        this._syncIndex()
+        await this._syncIndex()
         appendHistory(this.paths.root, {
           event: 'engram_retired',
           engram_id: id,
@@ -5262,7 +5262,7 @@ Generate an improved version of the procedure that prevents this failure. Return
     // case-insensitively (scope-audit 2026-07-24), so a case-variant dismissal
     // can't linger and re-suppress the scope from future offers.
     if ((this.config.dismissed_scopes ?? []).some(s => s.toLowerCase() === scope.toLowerCase())) {
-      this.persistDismissedScopes((this.config.dismissed_scopes ?? []).filter(s => s.toLowerCase() !== scope.toLowerCase()))
+      await this.persistDismissedScopes((this.config.dismissed_scopes ?? []).filter(s => s.toLowerCase() !== scope.toLowerCase()))
     }
     return { url: match.url, status }
   }
@@ -5273,12 +5273,12 @@ Generate an improved version of the procedure that prevents this failure. Return
    * discoverRemoteScopes().unregistered + the session-start hint until
    * {@link reofferScopes}. No-op if already dismissed.
    */
-  dismissScope(scope: string): void {
+  async dismissScope(scope: string): Promise<void> {
     const current = this.config.dismissed_scopes ?? []
     // Case-insensitive membership (scope-audit 2026-07-24): dismissing `Group:x`
     // when `group:x` is already recorded must stay a no-op, not a duplicate.
     if (current.some(s => s.toLowerCase() === scope.toLowerCase())) return
-    this.persistDismissedScopes([...current, scope])
+    await this.persistDismissedScopes([...current, scope])
   }
 
   /** Lowercased `dismissed_scopes` for case-insensitive membership tests
@@ -5288,8 +5288,8 @@ Generate an improved version of the procedure that prevents this failure. Return
   }
 
   /** Clear all dismissals (#647) — previously dismissed scopes are offered again. */
-  reofferScopes(): void {
-    this.persistDismissedScopes([])
+  async reofferScopes(): Promise<void> {
+    await this.persistDismissedScopes([])
   }
 
   /** The scopes currently dismissed from the offer (#647). */
