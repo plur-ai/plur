@@ -49,6 +49,7 @@ import { withAsyncLock } from './store/async-lock.js'
 import { SessionScopeRegistry } from './session-scopes.js'
 import type { AsyncPrimaryStore } from './store/primary-store.js'
 import { requiresIndexSync, asDerivedIndex } from './storage-adapter.js'
+import type { StorageAdapter } from './storage-adapter.js'
 import { resolveBackendTier, type BackendSelection } from './backend-selection.js'
 import { isSharedScope, isPersonalScope, isScopeWithin, scopeAllowFilter } from './scope-util.js'
 import type { Engram } from './schemas/engram.js'
@@ -591,7 +592,24 @@ export class Plur {
         + `configured (postgres.url / PLUR_POSTGRES_URL) — running the PGLite index instead.`,
       )
     }
-    const indexTier = selection.tier === 'postgres' ? 'pglite' : selection.tier
+    // A Postgres PRIMARY store answers its own queries — do not build a PGLite
+    // index alongside it.
+    //
+    // This used to read `selection.tier === 'postgres' ? 'pglite' : ...`
+    // unconditionally, which then constructed a `PGLiteAdapter` rooted at
+    // `this.paths.engrams` and synced it `syncFromYaml()`. For a Postgres-backed
+    // deployment that YAML file is not the source of truth and need not exist,
+    // so the derived index was built from nothing and every query went to it
+    // instead of to the store that actually holds the data — which is why
+    // `searchBM25` and `corpusStats` had no reachable call sites.
+    //
+    // The condition is the injected store, not the size-based tier: the tier can
+    // read 'postgres' while the caller passed no Postgres store at all (the
+    // warning above covers that case), and then PGLite is still the right index.
+    const hasPrimaryQueryStore = this._primaryQueryAdapter() !== null
+    const indexTier = hasPrimaryQueryStore
+      ? 'none'
+      : selection.tier === 'postgres' ? 'pglite' : selection.tier
     if (indexTier === 'pglite') {
       // PGLite path. Keep SQLite indexedStorage null so we don't double-index.
       // vector.precision (#223): unset = keep the store's existing column
@@ -2258,11 +2276,56 @@ export class Plur {
    */
   /** Search engrams using fast BM25 keyword matching. Sync, no API calls. */
   async recall(query: string, options?: Omit<RecallOptions, 'mode' | 'llm'>): Promise<Engram[]> {
-    const filtered = await this._filterEngrams(options)
     const limit = options?.limit ?? 20
+
+    // Push the search into the store when the store can answer it.
+    //
+    // Until now this always loaded the corpus into memory and ranked it here,
+    // which is correct at YAML scale and is the whole cost the Postgres tier
+    // exists to avoid. `searchBM25` and `corpusStats` were implemented and
+    // parity-tested against real Postgres but had ZERO call sites — built and
+    // unreachable. This is the wiring.
+    //
+    // The adapter is handed the SAME filter this method would have applied in
+    // memory, so scope, domain and the permitted-scope allow-list are enforced
+    // in the query rather than after it. That is the point: post-filtering
+    // measures `limit` against rows the caller may not be allowed to see.
+    const adapter = this._primaryQueryAdapter()
+    if (adapter) {
+      const results = await adapter.searchBM25(query, {
+        limit,
+        status: 'active',
+        scope: options?.scope,
+        scopes: options?.scopes,
+        domain: options?.domain,
+      })
+      await this._reactivateResults(results)
+      return results
+    }
+
+    const filtered = await this._filterEngrams(options)
     const results = searchEngrams(filtered, query, limit)
     await this._reactivateResults(results)
     return results
+  }
+
+  /**
+   * The primary store, when it can also answer queries itself.
+   *
+   * A `role: 'primary'` adapter IS the source of truth and the query engine at
+   * once (ADR-0005), so a search can be pushed into it. A `role: 'index'`
+   * adapter is derived from a separate store and is driven through the existing
+   * index path instead; returning one here would bypass the sync bookkeeping
+   * that keeps it honest.
+   *
+   * Returns null for the default YAML store, which has no query engine — that
+   * path keeps loading and ranking in memory, which is the right answer for a
+   * file.
+   */
+  private _primaryQueryAdapter(): StorageAdapter | null {
+    const s = this._primaryStore as unknown as Partial<StorageAdapter>
+    if (s?.role === 'primary' && typeof s.searchBM25 === 'function') return s as StorageAdapter
+    return null
   }
 
   /** Search engrams using LLM-assisted semantic filtering. Async, requires llm function. */
@@ -2288,7 +2351,7 @@ export class Plur {
     const fetchLimit = Math.max(intentFetch, rerankFetch)
     let results: Engram[]
     if (this.pgliteAdapter) {
-      results = await this._pgliteSemanticRecall(query, fetchLimit, filtered)
+      results = await this._pgliteSemanticRecall(query, fetchLimit, filtered, options?.scopes)
     } else {
       results = await embeddingSearch(filtered, query, fetchLimit, this.paths.root)
     }
@@ -2332,7 +2395,7 @@ export class Plur {
     let result: HybridSearchResult
     if (intent) {
       result = this.pgliteAdapter
-        ? await this._pgliteHybridRecall(query, intentLimit, filtered)
+        ? await this._pgliteHybridRecall(query, intentLimit, filtered, undefined, options?.scopes)
         : await hybridSearchWithMeta(filtered, query, intentLimit, this.paths.root)
       let routed = applyIntentRouting(result.engrams, intent.profile)
       let rerankedCount = result.reranked
@@ -2343,7 +2406,7 @@ export class Plur {
       }
       result = { ...result, engrams: routed.slice(0, limit), reranked: rerankedCount }
     } else if (this.pgliteAdapter) {
-      result = await this._pgliteHybridRecall(query, limit, filtered, rerank)
+      result = await this._pgliteHybridRecall(query, limit, filtered, rerank, options?.scopes)
     } else {
       result = await hybridSearchWithMeta(filtered, query, limit, this.paths.root, rerank)
     }
@@ -2492,6 +2555,7 @@ export class Plur {
     limit: number,
     filtered: Engram[],
     rerank?: RerankOptions,
+    scopes?: string[],
   ): Promise<HybridSearchResult> {
     if (!this.pgliteAdapter) {
       return hybridSearchWithMeta(filtered, query, limit, this.paths.root, rerank)
@@ -2509,7 +2573,17 @@ export class Plur {
     const embLimit = Math.min(filtered.length, wantReranker ? Math.max(limit * 3, 50) : limit * 2)
     let pgHits: Engram[] = []
     try {
-      const hits = await this.pgliteAdapter.searchVector(queryVec, embLimit)
+    // The scope restriction goes INTO the k-NN query, not onto its results.
+    //
+    // This used to fetch an unrestricted neighbour list and intersect it with
+    // the already-filtered set afterwards. That is the dilution failure
+    // `ScopeRestriction` exists to prevent: `limit` is spent on rows the caller
+    // may not be permitted to see, so a principal whose permitted scopes are a
+    // small share of the corpus asks for N results and silently gets far fewer,
+    // with relevant permitted rows sitting just below the cut. The intersection
+    // kept it CORRECT — nothing out of scope was ever returned — but it made it
+    // INCOMPLETE, which is the harder failure to notice.
+      const hits = await this.pgliteAdapter.searchVector(queryVec, embLimit, { scopes })
       const allowed = new Map<string, Engram>(filtered.map(e => [e.id, e]))
       pgHits = hits.map(h => allowed.get(h.engram.id)).filter((e): e is Engram => !!e)
     } catch (err) {
@@ -2536,7 +2610,7 @@ export class Plur {
    * intersected with the YAML-rooted `filtered` set. Falls back to the JSON
    * cache on cold-start / embedder-unavailable / PGLite error.
    */
-  private async _pgliteSemanticRecall(query: string, limit: number, filtered: Engram[]): Promise<Engram[]> {
+  private async _pgliteSemanticRecall(query: string, limit: number, filtered: Engram[], scopes?: string[]): Promise<Engram[]> {
     if (!this.pgliteAdapter) return []
     const { embed } = await import('./embeddings.js')
     const queryVec = await embed(query, 'query')
@@ -2544,7 +2618,17 @@ export class Plur {
       return embeddingSearch(filtered, query, limit, this.paths.root)
     }
     try {
-      const hits = await this.pgliteAdapter.searchVector(queryVec, Math.max(limit * 3, 50))
+    // The scope restriction goes INTO the k-NN query, not onto its results.
+    //
+    // This used to fetch an unrestricted neighbour list and intersect it with
+    // the already-filtered set afterwards. That is the dilution failure
+    // `ScopeRestriction` exists to prevent: `limit` is spent on rows the caller
+    // may not be permitted to see, so a principal whose permitted scopes are a
+    // small share of the corpus asks for N results and silently gets far fewer,
+    // with relevant permitted rows sitting just below the cut. The intersection
+    // kept it CORRECT — nothing out of scope was ever returned — but it made it
+    // INCOMPLETE, which is the harder failure to notice.
+      const hits = await this.pgliteAdapter.searchVector(queryVec, Math.max(limit * 3, 50), { scopes })
       if (hits.length === 0) {
         return embeddingSearch(filtered, query, limit, this.paths.root)
       }
@@ -2802,7 +2886,13 @@ export class Plur {
         const queryVec = await embed(task, 'query')
         if (queryVec) {
           try {
-            const hits = await this.pgliteAdapter.searchVector(queryVec, engrams.length)
+            // Scope-restricted in-query, same reason as the recall legs. Less
+            // acute here because `limit` is `engrams.length` rather than a
+            // small k, so there is no cut for permitted rows to fall below —
+            // but passing it keeps every vector path consistent, and a future
+            // change to that limit would otherwise reintroduce the dilution
+            // silently.
+            const hits = await this.pgliteAdapter.searchVector(queryVec, engrams.length, { scopes: options?.scopes })
             if (hits.length > 0) {
               const allowed = new Map<string, Engram>(engrams.map(e => [e.id, e]))
               for (const hit of hits) {
