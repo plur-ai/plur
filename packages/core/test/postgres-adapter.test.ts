@@ -174,7 +174,7 @@ describe.skipIf(!DSN)('PostgresAdapter (requires PLUR_TEST_POSTGRES_URL)', () =>
     }, TIMEOUT)
   })
 
-  describe('query surface', async () => {
+  describe('query surface', () => {
     beforeAll(async () => {
       await adapter.save([
         mkEngram('ENG-2026-0726-101', 'postgres owns the bytes', { scope: 'project:plur', domain: 'plur.storage' }),
@@ -217,7 +217,7 @@ describe.skipIf(!DSN)('PostgresAdapter (requires PLUR_TEST_POSTGRES_URL)', () =>
     }, TIMEOUT)
   })
 
-  describe('embedding write guard (#335)', async () => {
+  describe('embedding write guard (#335)', () => {
     it('refuses a wrong-dimension vector instead of persisting garbage', async () => {
       await adapter.save([mkEngram('ENG-2026-0726-201', 'guarded')])
       await expect(adapter.upsertEmbedding('ENG-2026-0726-201', new Float32Array(VECTOR_DIM + 1)))
@@ -230,7 +230,7 @@ describe.skipIf(!DSN)('PostgresAdapter (requires PLUR_TEST_POSTGRES_URL)', () =>
     }, TIMEOUT)
   })
 
-  describe('exact vector search', async () => {
+  describe('exact vector search', () => {
     it('declares exact search and returns the true nearest neighbour first', async () => {
       const engrams = Array.from({ length: 12 }, (_, i) =>
         mkEngram(`ENG-2026-0726-3${String(i).padStart(2, '0')}`, `vector subject ${i}`, { scope: 'global' }))

@@ -295,7 +295,7 @@ describe('Stage 3b — auto-route un-scoped writes (#351)', () => {
     expect(e.structured_data?._routed?.reason).toContain('domain plur.core.security')
   })
 
-  it('R2-C: the bypass is taken BEFORE the threshold gate — a sub-threshold FORWARD (coverContainsDomain) candidate STILL routes', () => {
+  it('R2-C: the bypass is taken BEFORE the threshold gate — a sub-threshold FORWARD (coverContainsDomain) candidate STILL routes', async () => {
     // Rigorously decouples the bypass from SCOPE_MATCH_THRESHOLD. We feed the
     // private resolver a hand-built ranked list (via a mocked rankScopes) whose
     // top candidate has `coverContainsDomain:true` (FORWARD: cover ⊃ domain) but a
@@ -314,7 +314,7 @@ describe('Stage 3b — auto-route un-scoped writes (#351)', () => {
     routeMock.mockReturnValueOnce([
       { scope: 'group:plur/core', confidence: 0.2, reason: 'domain x ⊂ covers plur.*', domainMatch: true, coverContainsDomain: true },
     ])
-    const routedLow = plur._resolveUnscopedScope('anything', { domain: 'plur.core.x' })
+    const routedLow = await plur._resolveUnscopedScope('anything', { domain: 'plur.core.x' })
     expect(routedLow.scope).toBe('group:plur/core')
     expect(routedLow.routed?.scope).toBe('group:plur/core')
 
@@ -325,7 +325,7 @@ describe('Stage 3b — auto-route un-scoped writes (#351)', () => {
     routeMock.mockReturnValueOnce([
       { scope: 'group:plur/core', confidence: 0.2, reason: 'domain plur ⊃ covers plur.core', domainMatch: true, coverContainsDomain: false },
     ])
-    const reverseLow = plur._resolveUnscopedScope('anything', { domain: 'plur' })
+    const reverseLow = await plur._resolveUnscopedScope('anything', { domain: 'plur' })
     expect(reverseLow.scope).toBe('global')
     expect(reverseLow.routed).toBeNull()
 
@@ -333,7 +333,7 @@ describe('Stage 3b — auto-route un-scoped writes (#351)', () => {
     routeMock.mockReturnValueOnce([
       { scope: 'group:plur/core', confidence: 0.2, reason: 'keywords [...]', domainMatch: false, coverContainsDomain: false },
     ])
-    const gatedLow = plur._resolveUnscopedScope('anything')
+    const gatedLow = await plur._resolveUnscopedScope('anything')
     expect(gatedLow.scope).toBe('global')
     expect(gatedLow.routed).toBeNull()
   })
@@ -561,7 +561,7 @@ describe('Stage 3b — auto-route un-scoped writes (#351)', () => {
 // another process after startup was invisible to auto-routing until restart.
 // ---------------------------------------------------------------------------
 
-describe('unscoped write routing reloads a changed config (scope-audit 2026-07-24)', async () => {
+describe('unscoped write routing reloads a changed config (scope-audit 2026-07-24)', () => {
   it('routes against covers added to config.yaml AFTER the Plur instance was created', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'plur-route-reload-'))
     dirs.push(dir)

@@ -137,7 +137,7 @@ describe('hybrid search reranker stage — applyReranker (unit)', () => {
 // #341 — applyReranker must leave an observable trace when it engages or
 // silently falls back, and the per-query warning flood must collapse to a
 // loud-once pattern (first failure at warning, repeats at debug).
-describe('applyReranker runtime surfacing (#341)', async () => {
+describe('applyReranker runtime surfacing (#341)', () => {
   beforeEach(() => {
     resetRerankerStatus()
   })
@@ -221,7 +221,7 @@ describe('applyReranker runtime surfacing (#341)', async () => {
   })
 })
 
-describe('Plur.recallHybrid with rerank=true (integration)', async () => {
+describe('Plur.recallHybrid with rerank=true (integration)', () => {
   let dir: string
   let plur: Plur
 

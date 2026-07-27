@@ -101,7 +101,7 @@ describe('login helpers — config read/write', () => {
   })
 })
 
-describe('login helpers — signalReload', async () => {
+describe('login helpers — signalReload', () => {
   let tmpHome: string
 
   beforeEach(() => {
@@ -134,7 +134,7 @@ describe('login helpers — signalReload', async () => {
 
 // ── OAuth device flow unit tests (no subprocess, with stub server) ────────────
 
-describe('requestDeviceCode', async () => {
+describe('requestDeviceCode', () => {
   let server: Server
   let serverUrl: string
   let nextHandler: (req: { path: string; body: any }) => { status: number; body: any }
@@ -191,7 +191,7 @@ describe('requestDeviceCode', async () => {
   })
 })
 
-describe('pollForToken', async () => {
+describe('pollForToken', () => {
   let server: Server
   let serverUrl: string
   let responses: Array<{ status: number; body: any }>
@@ -259,7 +259,7 @@ describe('pollForToken', async () => {
 // dispatcher, so they can only pass once the command is re-registered. The
 // helper unit tests above still run — they exercise the (dormant) login.ts
 // functions directly. Re-enable this block when login is reactivated.
-describe.skip('plur login CLI', async () => {
+describe.skip('plur login CLI', () => {
   let home: string
   let cwd: string
 

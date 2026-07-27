@@ -107,14 +107,14 @@ describe('Session & store tools', () => {
   })
 
   it('plur_session_end throws a clear error for non-string non-object items (#231)', async () => {
-    await expect(await callTool('plur_session_end', {
+    await expect(callTool('plur_session_end', {
       summary: 'Session with malformed suggestions',
       engram_suggestions: [42, true],
     })).rejects.toThrow(/engram_suggestions\[0\] must be a string or \{statement/)
   })
 
   it('plur_session_end throws a clear error for object items missing statement (#231)', async () => {
-    await expect(await callTool('plur_session_end', {
+    await expect(callTool('plur_session_end', {
       summary: 'Session with empty objects',
       engram_suggestions: [{ type: 'behavioral' }],
     })).rejects.toThrow(/must be a string or \{statement/)
@@ -126,7 +126,7 @@ describe('Session & store tools', () => {
   // session_end can surface them as injection_summary. Validates the 25-80
   // sessions/month activation-rate assumption in hypotheses.yaml (H003).
 
-  describe('session injection telemetry', async () => {
+  describe('session injection telemetry', () => {
     it('session_end returns injection_summary when engrams were injected', async () => {
       // Seed an engram so session_start injects something
       await plur.learn('Always use semicolons in TypeScript', { scope: 'global' })
@@ -313,7 +313,7 @@ describe('Session & store tools', () => {
   // projects. These tests pin the new behavior: project scope is auto-applied
   // as the session default + surfaced in the response.
 
-  describe('project scope auto-detection (#177)', async () => {
+  describe('project scope auto-detection (#177)', () => {
     let projectDir: string
     let originalCwd: string
 

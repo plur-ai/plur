@@ -122,6 +122,7 @@ describe('PlurContextEngine', () => {
       sessionKey: 'user:john',
       sessionFile: '/tmp/test',
     })
+    await engine.settle()   // compact also fires learns in the background
     expect(result.ok).toBe(true)
   })
 

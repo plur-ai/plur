@@ -105,7 +105,7 @@ describe('PrimaryStore contract (shared by every implementation)', () => {
   }
 })
 
-describe('YamlPrimaryStore — ADR-0001 compatibility', async () => {
+describe('YamlPrimaryStore — ADR-0001 compatibility', () => {
   let dir: string
   let path: string
 
@@ -173,7 +173,7 @@ describe('YamlPrimaryStore — ADR-0001 compatibility', async () => {
   })
 })
 
-describe('MemoryPrimaryStore', async () => {
+describe('MemoryPrimaryStore', () => {
   it('reports kind and a null location', () => {
     const store = new MemoryPrimaryStore()
     expect(store.kind).toBe('memory')

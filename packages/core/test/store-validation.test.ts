@@ -265,7 +265,7 @@ describe('addStore validation (#93)', () => {
    * onboarding step) stayed invisible until a server restart, with no hint why.
    * The stores operations now reload when the file's mtime changed.
    */
-  describe('out-of-process config reload (#307)', async () => {
+  describe('out-of-process config reload (#307)', () => {
     const cfgPath = () => join(dir, 'config.yaml')
 
     /** Simulate another process editing config.yaml, forcing a newer mtime so

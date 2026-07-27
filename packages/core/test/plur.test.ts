@@ -322,7 +322,7 @@ describe('Plur', () => {
   })
 
   // #347 — populate temporal.valid_until on the write path.
-  describe('temporal validity on the write path (#347)', async () => {
+  describe('temporal validity on the write path (#347)', () => {
     it('learn stores explicit valid_until in temporal', async () => {
       const engram = await plur.learn('Conference discount code is CONF20', {
         scope: 'global',

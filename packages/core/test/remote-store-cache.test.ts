@@ -130,7 +130,7 @@ describe('RemoteStore — optimistic cache insert (issue #89)', () => {
 // Cache poisoning — issue #550
 // ---------------------------------------------------------------------------
 
-describe('RemoteStore — cache poisoning on partial pagination (issue #550)', async () => {
+describe('RemoteStore — cache poisoning on partial pagination (issue #550)', () => {
   let originalFetch: typeof globalThis.fetch
   let fetchMock: ReturnType<typeof vi.fn>
 
@@ -281,7 +281,7 @@ afterAll(async () => {
   await stubServer.stop()
 })
 
-describe('Plur cold-start with remote store (issues #184, #185)', async () => {
+describe('Plur cold-start with remote store (issues #184, #185)', () => {
   let dir: string
 
   beforeEach(() => {
@@ -448,7 +448,7 @@ describe('Plur cold-start with remote store (issues #184, #185)', async () => {
 // and RemoteStore.update() are implemented.
 // ---------------------------------------------------------------------------
 
-describe.skip('updateEngram remote routing (blocked on enterprise#110)', async () => {
+describe.skip('updateEngram remote routing (blocked on enterprise#110)', () => {
   let dir: string
 
   beforeEach(() => {

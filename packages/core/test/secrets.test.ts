@@ -487,7 +487,7 @@ describe('context-field credential demotion at shared scope (#353 #21)', () => {
 // #386 end-to-end: infra content PAST the old 64KB cap must now be demoted on a
 // shared-scope write and excluded from a publishable set. Before the ceiling was
 // raised it was silently passed — the exact 2026-06-leak class.
-describe('infra content past 64KB is demoted / excluded (#386)', async () => {
+describe('infra content past 64KB is demoted / excluded (#386)', () => {
   const FILLER = 'x'.repeat(70 * 1024) // past the old 64KB cap, inside the 1 MiB window
 
   it('demotes a shared-scope learn whose infra payload sits past byte 64KB', async () => {

@@ -171,7 +171,7 @@ describe('F1: remote `allow` cannot disarm the leak guard', () => {
 // F2 — the change-detector and the writeback merge converge
 // ---------------------------------------------------------------------------
 
-describe('F2: metadata persist converges (no rewrite-every-session_start loop)', async () => {
+describe('F2: metadata persist converges (no rewrite-every-session_start loop)', () => {
   it('two consecutive syncs with identical server metadata (incl. sensitivity) → second is a no-op', async () => {
     server.setMe({
       scope_metadata: [{
@@ -244,7 +244,7 @@ describe('F2: metadata persist converges (no rewrite-every-session_start loop)',
 // F5 — clobbering a hand-set local covers/description is visible
 // ---------------------------------------------------------------------------
 
-describe('F5: server-authoritative overwrite of local covers/description warns', async () => {
+describe('F5: server-authoritative overwrite of local covers/description warns', () => {
   it('emits one warning naming the scope and fields when differing non-empty local values are overwritten', async () => {
     const warn = vi.spyOn(logger, 'warning')
     const { dir, plur } = makeDir([

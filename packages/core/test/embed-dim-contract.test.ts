@@ -190,7 +190,7 @@ describe.each([
 
 // ─── Plur wires the ACTIVE embedder dim into the column ──────────────
 
-describe('Plur constructor sizes the PGLite column from the active embedder (#335)', async () => {
+describe('Plur constructor sizes the PGLite column from the active embedder (#335)', () => {
   let dir: string
   const savedBackend = process.env.PLUR_BACKEND
   const savedEmbedder = process.env.PLUR_EMBEDDER

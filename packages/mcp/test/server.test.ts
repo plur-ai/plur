@@ -82,7 +82,7 @@ describe('MCP server (wire protocol)', () => {
   // (a) coerce the natural string workarounds back into arrays, and (b) name the
   // known client bug when the payload arrives empty, so the caller can retry
   // with a coercible shape instead of abandoning the write.
-  describe('array argument hardening (#297)', async () => {
+  describe('array argument hardening (#297)', () => {
     it('coerces a JSON-stringified array into a real array', async () => {
       const result = await client.callTool({
         name: 'plur_learn',
@@ -362,7 +362,7 @@ describe('MCP server (wire protocol)', () => {
 
   // --- Version staleness warnings (issue #151) ---
 
-  describe('version staleness warnings', async () => {
+  describe('version staleness warnings', () => {
     const originalFetch = globalThis.fetch
 
     afterEach(() => {

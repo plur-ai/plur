@@ -43,7 +43,7 @@ describe('PR-1 — auto-route still fires after the default revert (#353)', () =
   })
 })
 
-describe('PR-1 — RECURRENCE-INTERACTION under unscoped_default:local (#353, v2 item ii — fixed #362/#366)', async () => {
+describe('PR-1 — RECURRENCE-INTERACTION under unscoped_default:local (#353, v2 item ii — fixed #362/#366)', () => {
   it('a local engram stays local on cross-scope recurrence (personal-scope ceiling)', async () => {
     const dir = makeDir('plur-pr1-recur-')
     writeFileSync(join(dir, 'config.yaml'), yaml.dump({ index: false, unscoped_default: 'local' }, { noRefs: true }))
@@ -63,7 +63,7 @@ describe('PR-1 — RECURRENCE-INTERACTION under unscoped_default:local (#353, v2
   })
 })
 
-describe('PR-1 — SECONDARY-STORE rename preserved (#353)', async () => {
+describe('PR-1 — SECONDARY-STORE rename preserved (#353)', () => {
   it('a global-scoped engram in a secondary store is renamed to the store scope on load', async () => {
     const primaryDir = makeDir('plur-pr1-sec-primary-')
     const storeDir = makeDir('plur-pr1-sec-store-')

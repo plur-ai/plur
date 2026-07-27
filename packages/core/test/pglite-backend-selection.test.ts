@@ -92,7 +92,7 @@ describe('size-based selection builds the index it selected', () => {
   }, PGLITE_TIMEOUT)
 })
 
-describe('the Postgres tier degrades loudly, never silently', async () => {
+describe('the Postgres tier degrades loudly, never silently', () => {
   let dir: string
   let warnings: string[]
   const saved = { backend: process.env.PLUR_BACKEND, pg: process.env.PLUR_POSTGRES_URL }

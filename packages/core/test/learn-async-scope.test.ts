@@ -118,7 +118,7 @@ describe('learnAsync scope-aware LLM dedup (issue #359)', () => {
 
 // #484: async UPDATE/MERGE must increment `engram_version` (content-evolution
 // counter used by previous_version chains), not `version` (schema-shape field).
-describe('learnAsync UPDATE/MERGE increment engram_version not version (#484)', async () => {
+describe('learnAsync UPDATE/MERGE increment engram_version not version (#484)', () => {
   let dir: string
   let engramsPath: string
   afterEach(() => { if (dir) rmSync(dir, { recursive: true, force: true }) })
@@ -160,7 +160,7 @@ describe('learnAsync UPDATE/MERGE increment engram_version not version (#484)', 
 // #409: a dedup UPDATE/MERGE unions context.tags into the engram, but the demote
 // scan only looked at the statement — a secret in a merged TAG reached the shared
 // store unguarded. The demote now scans statement + tags.
-describe('learnAsync demote scans merged tags (#409)', async () => {
+describe('learnAsync demote scans merged tags (#409)', () => {
   let dir: string
   let engramsPath: string
   afterEach(() => { if (dir) rmSync(dir, { recursive: true, force: true }) })

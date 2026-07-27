@@ -192,7 +192,7 @@ describe('scan suppression via recorded pairs (#181)', () => {
   })
 })
 
-describe('confirm / dismiss / resolve (#181)', async () => {
+describe('confirm / dismiss / resolve (#181)', () => {
   let dir: string
   let plur: Plur
 
@@ -321,7 +321,7 @@ describe('injection warnings (#181, audit item 4)', () => {
   })
 })
 
-describe('lock-escalation gate (#181, audit item 3)', async () => {
+describe('lock-escalation gate (#181, audit item 3)', () => {
   let dir: string
   let plur: Plur
 

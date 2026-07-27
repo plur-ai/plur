@@ -70,7 +70,7 @@ describe('RemoteStore.me()', () => {
 // Plur.discoverRemoteScopes()
 // ---------------------------------------------------------------------------
 
-describe('Plur.discoverRemoteScopes()', async () => {
+describe('Plur.discoverRemoteScopes()', () => {
   let dir: string
 
   const writeConfig = (stores: unknown[]) => {
@@ -222,7 +222,7 @@ describe('Plur.discoverRemoteScopes()', async () => {
 // Plur.registerDiscoveredScopes() — exercises the #291 URL+scope dedup
 // ---------------------------------------------------------------------------
 
-describe('Plur.registerDiscoveredScopes()', async () => {
+describe('Plur.registerDiscoveredScopes()', () => {
   let dir: string
 
   const freshPlur = () => {
@@ -311,7 +311,7 @@ describe('Plur.registerDiscoveredScopes()', async () => {
 // Scope opt-out — per-scope register / dismiss / reoffer (#647)
 // ---------------------------------------------------------------------------
 
-describe('Plur scope opt-out (#647)', async () => {
+describe('Plur scope opt-out (#647)', () => {
   let dir: string
 
   const freshPlur = () => {
@@ -459,7 +459,7 @@ describe('Plur scope opt-out (#647)', async () => {
 // spelling, and re-offered a scope registered under a sibling spelling.
 // ---------------------------------------------------------------------------
 
-describe('endpoint URL identity normalization (scope-audit 2026-07-24)', async () => {
+describe('endpoint URL identity normalization (scope-audit 2026-07-24)', () => {
   let dir: string
 
   const writeConfig = (stores: unknown[]) => {

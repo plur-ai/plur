@@ -53,7 +53,7 @@ describe('SP2 MCP Tools', () => {
     })
   })
 
-  describe('plur_history', async () => {
+  describe('plur_history', () => {
     it('is registered', () => {
       expect(getTool('plur_history')).toBeDefined()
     })
@@ -82,7 +82,7 @@ describe('SP2 MCP Tools', () => {
     })
   })
 
-  describe('plur_report_failure', async () => {
+  describe('plur_report_failure', () => {
     it('is registered', () => {
       expect(getTool('plur_report_failure')).toBeDefined()
     })
@@ -112,7 +112,7 @@ describe('SP2 MCP Tools', () => {
     })
   })
 
-  describe('plur_status (versioned count)', async () => {
+  describe('plur_status (versioned count)', () => {
     it('includes versioned_engram_count', async () => {
       await plur.learn('Test')
       const result = await getTool('plur_status').handler({}, plur) as any
@@ -124,7 +124,7 @@ describe('SP2 MCP Tools', () => {
   // inputSchema in plur-ai/plur#139 (LLMs don't fill them meaningfully and
   // the schema bloat costs tokens every session). The features still work
   // at the Plur class level — these tests now assert that contract.
-  describe('plur.learn() — memory_class + session_episode_id at Plur class level', async () => {
+  describe('plur.learn() — memory_class + session_episode_id at Plur class level', () => {
     it('Plur.learn accepts memory_class and stores it on the engram', async () => {
       const engram = await plur.learn('An episodic memory', { memory_class: 'episodic' })
       expect((engram as any).knowledge_type?.memory_class).toBe('episodic')

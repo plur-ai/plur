@@ -55,7 +55,7 @@ describe('SP2 Idea 3: Three-Memory Unification', () => {
   })
 })
 
-describe('SP2 Idea 3: Episode to Engram promotion', async () => {
+describe('SP2 Idea 3: Episode to Engram promotion', () => {
   let dir: string
 
   beforeEach(() => {

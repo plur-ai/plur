@@ -99,7 +99,7 @@ describe('PGLite vector precision (#223)', () => {
     }, PGLITE_TIMEOUT)
   })
 
-  describe('search at halfvec precision', async () => {
+  describe('search at halfvec precision', () => {
     it('upsert + searchVector work on a halfvec column with correct ordering', async () => {
       seedYaml(yamlPath, [
         mkEngram('ENG-2026-0702-001', 'north'),
@@ -154,7 +154,7 @@ describe('PGLite vector precision (#223)', () => {
     }, PGLITE_TIMEOUT)
   })
 
-  describe('lazy migration on init', async () => {
+  describe('lazy migration on init', () => {
     it('migrates an existing float32 store to halfvec, preserving embeddings', async () => {
       seedYaml(yamlPath, [
         mkEngram('ENG-2026-0702-001', 'north'),
@@ -227,7 +227,7 @@ describe('PGLite vector precision (#223)', () => {
     }, PGLITE_TIMEOUT)
   })
 
-  describe('index recreation during migration (gbrain pattern)', async () => {
+  describe('index recreation during migration (gbrain pattern)', () => {
     it('drops and recreates an out-of-band HNSW index with the matching opclass, atomically', async () => {
       seedYaml(yamlPath, [
         mkEngram('ENG-2026-0702-001', 'north'),

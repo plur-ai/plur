@@ -439,7 +439,7 @@ describe('runImport engine', () => {
 
 // ─── importFrom: file → parse → engine end-to-end ────────────────────────────
 
-describe('importFrom end-to-end', async () => {
+describe('importFrom end-to-end', () => {
   let dir: string
   let plur: Plur
 

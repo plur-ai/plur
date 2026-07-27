@@ -206,7 +206,7 @@ describe('learn() — remote routing (issue #25)', () => {
  * is not found locally. RemoteStore.getById() + .remove() handle the
  * server-side retirement.
  */
-describe('forget() — remote routing (issue #84)', async () => {
+describe('forget() — remote routing (issue #84)', () => {
   let primaryDir: string
   let fetchMock: ReturnType<typeof vi.fn>
   let originalFetch: typeof globalThis.fetch
@@ -382,7 +382,7 @@ describe('forget() — remote routing (issue #84)', async () => {
  * is not found locally. Sends the signal to the server via
  * POST /api/v1/engrams/:id/feedback; server owns the mutation logic.
  */
-describe('feedback() — remote routing (issue #85)', async () => {
+describe('feedback() — remote routing (issue #85)', () => {
   let primaryDir: string
   let fetchMock: ReturnType<typeof vi.fn>
   let originalFetch: typeof globalThis.fetch

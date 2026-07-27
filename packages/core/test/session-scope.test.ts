@@ -215,7 +215,7 @@ describe('session scope (#229)', () => {
     await plur.warmRemoteCaches()
 
     // After warming — remote engrams should be in the merged view
-    const all = (plur as any)._loadAllEngrams() as Array<{ id: string; statement?: string }>
+    const all = await (plur as any)._loadAllEngrams() as Array<{ id: string; statement?: string }>
     const remoteEngram = all.find(e => e.id.includes('WARM-001'))
     expect(remoteEngram).toBeDefined()
   })

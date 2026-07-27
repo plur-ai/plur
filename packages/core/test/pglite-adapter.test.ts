@@ -101,7 +101,7 @@ describe('PGLiteAdapter — substrate', () => {
     }, PGLITE_TIMEOUT)
   })
 
-  describe('rebuild from YAML', async () => {
+  describe('rebuild from YAML', () => {
     it('rebuilds engrams from YAML on reindex', async () => {
       seedYaml(yamlPath, [
         mkEngram('ENG-2026-0530-001', 'one'),
@@ -157,7 +157,7 @@ describe('PGLiteAdapter — substrate', () => {
     }, PGLITE_TIMEOUT)
   })
 
-  describe('filtered queries', async () => {
+  describe('filtered queries', () => {
     it('filters by status', async () => {
       seedYaml(yamlPath, [
         mkEngram('ENG-2026-0530-001', 'active', { status: 'active' }),
@@ -244,7 +244,7 @@ describe('PGLiteAdapter — substrate', () => {
     }, PGLITE_TIMEOUT)
   })
 
-  describe('count', async () => {
+  describe('count', () => {
     it('counts engrams', async () => {
       seedYaml(yamlPath, [
         mkEngram('ENG-2026-0530-001', 'one'),
@@ -258,7 +258,7 @@ describe('PGLiteAdapter — substrate', () => {
     }, PGLITE_TIMEOUT)
   })
 
-  describe('vector search', async () => {
+  describe('vector search', () => {
     it('stores embeddings and returns engrams ordered by cosine similarity', async () => {
       seedYaml(yamlPath, [
         mkEngram('ENG-2026-0530-001', 'apple'),
@@ -305,7 +305,7 @@ describe('PGLiteAdapter — substrate', () => {
     }, PGLITE_TIMEOUT)
   })
 
-  describe('BM25 search', async () => {
+  describe('BM25 search', () => {
     it('returns engrams matching token query', async () => {
       seedYaml(yamlPath, [
         mkEngram('ENG-2026-0530-001', 'always run tests before merging'),
@@ -321,7 +321,7 @@ describe('PGLiteAdapter — substrate', () => {
     }, PGLITE_TIMEOUT)
   })
 
-  describe('concurrent writes', async () => {
+  describe('concurrent writes', () => {
     it('serializes reindex calls so the final state is consistent', async () => {
       seedYaml(yamlPath, [mkEngram('ENG-2026-0530-001', 'one')])
       const adapter = new PGLiteAdapter(yamlPath, dbPath)
@@ -365,7 +365,7 @@ describe('PGLiteAdapter — substrate', () => {
     }, PGLITE_TIMEOUT)
   })
 
-  describe('syncFromYaml — incremental', async () => {
+  describe('syncFromYaml — incremental', () => {
     it('picks up new engrams added to YAML without dropping existing rows', async () => {
       seedYaml(yamlPath, [mkEngram('ENG-2026-0530-001', 'one')])
       const adapter = new PGLiteAdapter(yamlPath, dbPath)
@@ -411,7 +411,7 @@ describe('PGLiteAdapter — substrate', () => {
  */
 import { Plur } from '../src/index.js'
 
-describe('Plur — PGLite backend integration', async () => {
+describe('Plur — PGLite backend integration', () => {
   let dir: string
   const originalBackend = process.env.PLUR_BACKEND
 

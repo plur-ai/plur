@@ -228,7 +228,7 @@ describe('cross-scope recurrence (#176)', () => {
     })
   })
 
-  describe('does not trigger when it should not', async () => {
+  describe('does not trigger when it should not', () => {
     it('same-scope re-learn does NOT count as recurrence (uses #107 path instead)', async () => {
       const first = await plur.learn('rule', { scope: 'project:a' })
       const second = await plur.learn('rule', { scope: 'project:a' })
@@ -284,7 +284,7 @@ describe('cross-scope recurrence (#176)', () => {
     })
   })
 
-  describe('persistence + observability', async () => {
+  describe('persistence + observability', () => {
     it('persists recurrence_count + broadened scope across Plur instances', async () => {
       await plur.learn('persisted rule', { scope: 'project:a' })
       await plur.learn('persisted rule', { scope: 'project:b' })

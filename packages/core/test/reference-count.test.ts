@@ -57,7 +57,7 @@ describe('reference-counted content-addressed dedup (#107)', () => {
     })
   })
 
-  describe('duplicate writes', async () => {
+  describe('duplicate writes', () => {
     it('increments reference_count on second write of the same statement', async () => {
       const first = await plur.learn('always use semicolons', { scope: 'global' })
       const second = await plur.learn('always use semicolons', { scope: 'global' })
@@ -119,7 +119,7 @@ describe('reference-counted content-addressed dedup (#107)', () => {
     })
   })
 
-  describe('forget — decrement semantics', async () => {
+  describe('forget — decrement semantics', () => {
     it('decrements reference_count, leaves engram active when count > 0', async () => {
       const a = await plur.learn('soon-to-be-forgotten', { scope: 'global' })
       await plur.learn('soon-to-be-forgotten', { scope: 'global' })
@@ -158,7 +158,7 @@ describe('reference-counted content-addressed dedup (#107)', () => {
     })
   })
 
-  describe('migration — old engrams without these fields', async () => {
+  describe('migration — old engrams without these fields', () => {
     it('loads pre-existing engrams with default reference_count: 1 and empty sources', async () => {
       // Hand-write an old-format engram (no reference_count, no sources)
       const oldEngram = {

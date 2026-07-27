@@ -215,7 +215,7 @@ describe('persistScopeMetadata()', () => {
 // suggestScope() with synced covers
 // ---------------------------------------------------------------------------
 
-describe('suggestScope() activates after persistScopeMetadata()', async () => {
+describe('suggestScope() activates after persistScopeMetadata()', () => {
   it('returns the matching scope for a covers-vocabulary statement', async () => {
     const { dir, plur } = makeDir([
       { url: baseUrl, token: TOKEN, scope: 'group:plur/engineering', shared: true, readonly: false },
@@ -247,7 +247,7 @@ describe('suggestScope() activates after persistScopeMetadata()', async () => {
 // registerDiscoveredScopes() calls persistScopeMetadata internally
 // ---------------------------------------------------------------------------
 
-describe('registerDiscoveredScopes() auto-syncs metadata', async () => {
+describe('registerDiscoveredScopes() auto-syncs metadata', () => {
   it('persists covers for all newly registered scopes', async () => {
     const { dir, plur } = makeDir([
       // One pre-registered scope with token
@@ -270,7 +270,7 @@ describe('registerDiscoveredScopes() auto-syncs metadata', async () => {
 // registerScope() calls persistScopeMetadata internally
 // ---------------------------------------------------------------------------
 
-describe('registerScope() auto-syncs metadata', async () => {
+describe('registerScope() auto-syncs metadata', () => {
   it('persists covers for the single registered scope', async () => {
     const { dir, plur } = makeDir([
       { url: baseUrl, token: TOKEN, scope: 'group:plur/engineering', shared: true, readonly: false },
