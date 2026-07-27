@@ -152,6 +152,73 @@ describe('MCP server (wire protocol)', () => {
       expect(parsed.error).toContain('tags')
     })
 
+    // #297 partial drop: the client keeps the early scalar fields and silently
+    // discards a trailing array-typed one. Observed with plur_session_end on a
+    // large payload (long summary + 5-element engram_suggestions) arriving as
+    // {summary} alone. Previously the hint was gated on receivedFields.length
+    // === 0, so this — the shape that most looks like a server schema bug to
+    // the caller — got a bare "Required" and no workaround.
+    it('partial drop of an array param still names the client bug (#297)', async () => {
+      const result = await client.callTool({
+        name: 'plur_session_end',
+        arguments: { summary: 'Trailing array param was dropped by the client' },
+      })
+      expect(result.isError).toBe(true)
+      const parsed = JSON.parse((result.content as any)[0].text)
+      // The scalar field survived, so this is NOT the empty-payload path.
+      expect(parsed.received_fields).toEqual(['summary'])
+      expect(parsed.error).not.toContain('arguments object was empty')
+      // ...but the caller must still be told what happened and how to retry.
+      expect(parsed.error).toContain('plur-ai/plur#297')
+      expect(parsed.error).toContain('engram_suggestions')
+      expect(parsed.error).toMatch(/JSON string|comma-separated/)
+      // Size is the trigger; say so, or the caller retries an identical payload.
+      expect(parsed.error).toMatch(/size-sensitive|shorter payload/)
+    })
+
+    it('a missing NON-array required field does not mention #297', async () => {
+      // plur_session_end also requires `summary`. Omitting only that is an
+      // ordinary caller error — the array hint would be misleading noise.
+      const result = await client.callTool({
+        name: 'plur_session_end',
+        arguments: { engram_suggestions: ['a real suggestion'] },
+      })
+      expect(result.isError).toBe(true)
+      const parsed = JSON.parse((result.content as any)[0].text)
+      expect(parsed.error).toContain('summary')
+      expect(parsed.error).not.toContain('plur-ai/plur#297')
+    })
+
+    // The workaround the #297 message advertises must actually work for the
+    // parameter it is most often needed on. engram_suggestions has union items
+    // (anyOf: [string, object], #231); the old `items?.type === 'string'` check
+    // was false for it, so comma-separated input fell through uncoerced.
+    it('coerces comma-separated input for union (anyOf) item schemas', async () => {
+      const result = await client.callTool({
+        name: 'plur_session_end',
+        arguments: {
+          summary: 'Union-item coercion',
+          engram_suggestions: 'first learning, second learning',
+        },
+      })
+      expect(result.isError).toBeFalsy()
+      const parsed = JSON.parse((result.content as any)[0].text)
+      expect(parsed.engrams_created).toBe(2)
+    })
+
+    it('coerces a JSON-stringified array for union (anyOf) item schemas', async () => {
+      const result = await client.callTool({
+        name: 'plur_session_end',
+        arguments: {
+          summary: 'Union-item JSON coercion',
+          engram_suggestions: '["json one","json two"]',
+        },
+      })
+      expect(result.isError).toBeFalsy()
+      const parsed = JSON.parse((result.content as any)[0].text)
+      expect(parsed.engrams_created).toBe(2)
+    })
+
     it('empty arguments on a tool with array params names the client bug (#297)', async () => {
       const result = await client.callTool({ name: 'plur_learn', arguments: {} })
       expect(result.isError).toBe(true)
