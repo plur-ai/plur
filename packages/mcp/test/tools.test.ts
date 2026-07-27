@@ -425,6 +425,96 @@ describe('MCP tools', () => {
     expect(result.deprecated).toMatch(/deprecated since 0\.16/)
   })
 
+  // ── #693 acceptance: embeddings-off degradation surfaces to the caller ────
+
+  /**
+   * Force the degraded path. `hybrid-degraded` is produced deep in core when
+   * the ONNX embedder fails to load; stubbing the method the handler
+   * delegates to exercises the handler's warning branch directly, without
+   * depending on a broken model cache.
+   */
+  const stubDegraded = () => {
+    (plur as any).recallHybridWithMeta = async () => ({
+      engrams: [{
+        id: 'ENG-2026-0101-001',
+        statement: 'degraded result',
+        type: 'fact',
+        scope: 'global',
+        domain: 'test',
+        activation: { retrieval_strength: 0.5 },
+      }],
+      mode: 'hybrid-degraded',
+      embedderError: 'onnxruntime failed to load',
+      topScore: 0.5,
+      reranked: 0,
+    })
+  }
+
+  it('plur_recall surfaces a warning when embeddings are unavailable (hybrid-degraded)', async () => {
+    stubDegraded()
+    const result = await callTool('plur_recall', { query: 'anything' }) as any
+    expect(result.mode).toBe('hybrid-degraded')
+    expect(result.warning).toMatch(/Embedding layer unavailable/)
+    expect(result.warning).toMatch(/onnxruntime failed to load/)
+  })
+
+  it('plur_recall_hybrid inherits the degraded warning — proving it forwards, not copies', async () => {
+    stubDegraded()
+    const result = await callTool('plur_recall_hybrid', { query: 'anything' }) as any
+    expect(result.mode).toBe('hybrid-degraded')
+    expect(result.warning).toMatch(/Embedding layer unavailable/)
+    expect(result.deprecated).toMatch(/deprecated since 0\.16/)
+  })
+
+  /**
+   * Anti-drift guard for the deprecated alias. The alias must be a forwarder
+   * to the canonical plur_recall handler, so its response is byte-identical
+   * apart from the added `deprecated` field. A future edit that re-copies the
+   * hybrid branch into the alias — or fixes one path and not the other —
+   * fails here rather than silently diverging until the 0.18 removal.
+   */
+  it('plur_recall_hybrid response matches plur_recall exactly apart from `deprecated`', async () => {
+    await callTool('plur_learn', { statement: 'cache TTL is 300 seconds', scope: 'global' })
+
+    const args = { query: 'cache TTL', include_episodes: true, budget: { max_results: 5 } }
+    const canonical = await callTool('plur_recall', args) as any
+    const alias = await callTool('plur_recall_hybrid', args) as any
+
+    // retrieval_strength is an activation value that each recall boosts, so it
+    // legitimately differs between two sequential calls. Normalize it; every
+    // other field must match exactly.
+    const normalize = (r: any) => ({
+      ...r,
+      results: r.results.map(({ retrieval_strength, ...rest }: any) => rest),
+    })
+
+    const { deprecated, ...aliasRest } = alias
+    expect(deprecated).toMatch(/deprecated since 0\.16/)
+    expect(normalize(aliasRest)).toEqual(normalize(canonical))
+    // Same top-level shape — a re-copied alias that gains or loses a field fails here.
+    expect(Object.keys(aliasRest).sort()).toEqual(Object.keys(canonical).sort())
+  })
+
+  it('plur_recall_hybrid honours budget through the forwarder', async () => {
+    for (let i = 0; i < 5; i++) {
+      await callTool('plur_learn', { statement: `retry policy rule number ${i}`, scope: 'global' })
+    }
+
+    // max_results caps the underlying query limit, so results are bounded.
+    const capped = await callTool('plur_recall_hybrid', {
+      query: 'retry policy rule', budget: { max_results: 2 },
+    }) as any
+    expect(capped.results.length).toBeLessThanOrEqual(2)
+
+    // max_tokens truncates mid-list and flags it — the budget path the alias
+    // would lose entirely if it stopped forwarding.
+    const squeezed = await callTool('plur_recall_hybrid', {
+      query: 'retry policy rule', budget: { max_tokens: 25 },
+    }) as any
+    expect(squeezed.truncated).toBe(true)
+    expect(squeezed.deprecated).toMatch(/deprecated since 0\.16/)
+  })
+
   it('plur_inject returns formatted injection', async () => {
     await callTool('plur_learn', { statement: 'Always deploy carefully', scope: 'global' })
     const result = await callTool('plur_inject', { task: 'deploy the application' }) as any

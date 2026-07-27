@@ -46,6 +46,124 @@ export interface ToolDefinition {
   handler: (args: Record<string, unknown>, plur: Plur) => Promise<unknown>
 }
 
+/**
+ * The canonical `plur_recall` handler (#693).
+ *
+ * Hoisted out of the tool literal so the deprecated `plur_recall_hybrid`
+ * alias can forward to it rather than re-implementing the hybrid branch.
+ * Budget capping, episode expansion, the hybrid-degraded warning and the
+ * #341 reranker surfacing all live here once — the alias adds only its
+ * deprecation notice, so the two cannot drift before the 0.18 removal.
+ */
+const recallHandler: ToolDefinition['handler'] = async (args, plur) => {
+  const mode = (args.mode as string | undefined) ?? 'hybrid'
+  if (mode === 'keyword') {
+    const results = plur.recall(args.query as string, {
+      scope: args.scope as string | undefined,
+      domain: args.domain as string | undefined,
+      limit: args.limit as number | undefined,
+    })
+    return {
+      results: results.map(e => {
+        const supersededBy = e.relations?.superseded_by
+        const annotation = supersededBy?.length ? ` [superseded by ${supersededBy.join(', ')}]` : ''
+        return {
+          id: e.id,
+          statement: e.statement + annotation,
+          type: e.type,
+          scope: e.scope,
+          domain: e.domain,
+          retrieval_strength: e.activation.retrieval_strength,
+        }
+      }),
+      count: results.length,
+      mode: 'keyword',
+    }
+  }
+  // mode === 'hybrid' (default)
+  const budget = args.budget as { max_tokens?: number; max_results?: number; ttl_seconds?: number } | undefined
+  const effectiveLimit = budget?.max_results ?? (args.limit as number | undefined) ?? 20
+  const meta = await plur.recallHybridWithMeta(args.query as string, {
+    scope: args.scope as string | undefined,
+    domain: args.domain as string | undefined,
+    limit: effectiveLimit,
+  })
+  // Opt-in, content-free engagement counter (default-off; no query text).
+  recordTelemetry('recall')
+  // Failed-recall miss-signal (WS5 demand flywheel) is emitted from the
+  // core recallHybridWithMeta() this handler delegates to — it fires once
+  // there for ALL consumers (MCP, claw, CLI, direct API), so we do NOT
+  // re-emit here and double-count. It is opt-in/default-off and ships only
+  // a query fingerprint hash + scope/domain + timestamp, never raw text.
+  const results = meta.engrams
+  let truncated = false
+  let boundedResults = results
+  if (budget?.max_results && results.length > budget.max_results) {
+    boundedResults = results.slice(0, budget.max_results)
+    truncated = true
+  }
+  if (budget?.max_tokens) {
+    let tokenCount = 0
+    const withinBudget = []
+    for (const e of boundedResults) {
+      const tokens = Math.ceil(e.statement.length / 4) + 20
+      if (tokenCount + tokens > budget.max_tokens) { truncated = true; break }
+      withinBudget.push(e)
+      tokenCount += tokens
+    }
+    boundedResults = withinBudget
+  }
+  const includeEpisodes = args.include_episodes === true
+  const response: Record<string, unknown> = {
+    results: boundedResults.map(e => {
+      const raw = e as any
+      const supersededBy = (e as any).relations?.superseded_by
+      const annotation = supersededBy?.length ? ` [superseded by ${supersededBy.join(', ')}]` : ''
+      const base: Record<string, unknown> = {
+        id: e.id,
+        statement: e.statement + annotation,
+        type: e.type,
+        scope: e.scope,
+        domain: e.domain,
+        retrieval_strength: e.activation.retrieval_strength,
+      }
+      if (includeEpisodes && raw.episode_ids?.length > 0) {
+        const episodes = plur.timeline({ search: '' })
+        base.episodes = episodes
+          .filter((ep: any) => raw.episode_ids.includes(ep.id))
+          .map((ep: any) => ({ id: ep.id, summary: ep.summary, timestamp: ep.timestamp }))
+      }
+      return base
+    }),
+    count: boundedResults.length,
+    truncated,
+    mode: meta.mode,
+  }
+  if (meta.mode === 'hybrid-degraded') {
+    response.warning = `Embedding layer unavailable — results are BM25-only. Run plur_doctor for diagnosis. Last error: ${meta.embedderError ?? 'unknown'}`
+  }
+  // #341: reranker non-engagement surfacing. When PLUR_RERANKER requests
+  // reranking, report how many candidates the cross-encoder actually
+  // re-scored — and if it never engaged on a non-empty result set, say
+  // so in the response instead of a per-call stderr warning nobody
+  // reads. The caller believes reranking is on; RRF-only results must
+  // not be silently mislabeled.
+  if (resolveRerankerName() !== 'off') {
+    response.reranked = meta.reranked ?? 0
+    const rr = plur.rerankerStatus()
+    if (boundedResults.length > 0 && (meta.reranked ?? 0) === 0 && rr.lastError) {
+      const corruptNote = rr.lastErrorKind === 'corrupt-cache'
+        ? ' The model cache looks corrupt (truncated download) — purge and re-download, see plur_doctor.'
+        : ''
+      response.reranker_warning = `PLUR_RERANKER is set but the reranker did not engage — results are RRF-only (fusion order, no cross-encoder rerank).${corruptNote} Last error: ${rr.lastError}. Run plur_doctor for diagnosis.`
+    }
+  }
+  return response
+}
+
+const RECALL_HYBRID_DEPRECATION =
+  'plur_recall_hybrid is deprecated since 0.16 — use plur_recall (mode defaults to hybrid). This alias will be removed in 0.18.'
+
 // Recursive JSON-Schema → Zod converter for tool input validation. Moved here
 // (was previously private to server.ts) so plur_admin's dispatch handler can
 // validate inner-tool args the same way the top-level CallToolRequestSchema
@@ -723,121 +841,17 @@ function getAllToolDefinitions(): ToolDefinition[] {
         type: 'object',
         properties: {
           query: { type: 'string', description: 'Search query to find relevant engrams' },
-          mode: { type: 'string', enum: ['hybrid', 'keyword'], description: 'Search mode — hybrid (default): BM25 + embeddings via RRF; keyword: BM25-only (faster, embeddings-independent)' },
+          mode: { type: 'string', enum: ['hybrid', 'keyword'], description: 'Search mode — hybrid (default): BM25 + embeddings via RRF; keyword: BM25-only (faster, embeddings-independent). budget, caller_session_id and include_episodes apply to hybrid mode only — in keyword mode use limit to bound results.' },
           scope: { type: 'string', description: 'Filter by scope (also includes global)' },
           domain: { type: 'string', description: 'Filter by domain prefix' },
           limit: { type: 'number', description: 'Max results to return (default 20)' },
-          budget: { type: 'object', description: 'Budget constraints for sub-agents', properties: { max_tokens: { type: 'number' }, max_results: { type: 'number' }, ttl_seconds: { type: 'number' } } },
-          caller_session_id: { type: 'string', description: 'Session ID of calling agent for budget enforcement' },
-          include_episodes: { type: 'boolean', description: 'If true, include linked episode summaries for each engram (SP2 episodic anchoring)' },
+          budget: { type: 'object', description: 'Budget constraints for sub-agents. Hybrid mode only — ignored when mode:"keyword".', properties: { max_tokens: { type: 'number' }, max_results: { type: 'number' }, ttl_seconds: { type: 'number' } } },
+          caller_session_id: { type: 'string', description: 'Session ID of calling agent for budget enforcement. Hybrid mode only — ignored when mode:"keyword".' },
+          include_episodes: { type: 'boolean', description: 'If true, include linked episode summaries for each engram (SP2 episodic anchoring). Hybrid mode only — ignored when mode:"keyword".' },
         },
         required: ['query'],
       },
-      handler: async (args, plur) => {
-        const mode = (args.mode as string | undefined) ?? 'hybrid'
-        if (mode === 'keyword') {
-          const results = plur.recall(args.query as string, {
-            scope: args.scope as string | undefined,
-            domain: args.domain as string | undefined,
-            limit: args.limit as number | undefined,
-          })
-          return {
-            results: results.map(e => {
-              const supersededBy = e.relations?.superseded_by
-              const annotation = supersededBy?.length ? ` [superseded by ${supersededBy.join(', ')}]` : ''
-              return {
-                id: e.id,
-                statement: e.statement + annotation,
-                type: e.type,
-                scope: e.scope,
-                domain: e.domain,
-                retrieval_strength: e.activation.retrieval_strength,
-              }
-            }),
-            count: results.length,
-            mode: 'keyword',
-          }
-        }
-        // mode === 'hybrid' (default)
-        const budget = args.budget as { max_tokens?: number; max_results?: number; ttl_seconds?: number } | undefined
-        const effectiveLimit = budget?.max_results ?? (args.limit as number | undefined) ?? 20
-        const meta = await plur.recallHybridWithMeta(args.query as string, {
-          scope: args.scope as string | undefined,
-          domain: args.domain as string | undefined,
-          limit: effectiveLimit,
-        })
-        // Opt-in, content-free engagement counter (default-off; no query text).
-        recordTelemetry('recall')
-        // Failed-recall miss-signal (WS5 demand flywheel) is emitted from the
-        // core recallHybridWithMeta() this handler delegates to — it fires once
-        // there for ALL consumers (MCP, claw, CLI, direct API), so we do NOT
-        // re-emit here and double-count. It is opt-in/default-off and ships only
-        // a query fingerprint hash + scope/domain + timestamp, never raw text.
-        const results = meta.engrams
-        let truncated = false
-        let boundedResults = results
-        if (budget?.max_results && results.length > budget.max_results) {
-          boundedResults = results.slice(0, budget.max_results)
-          truncated = true
-        }
-        if (budget?.max_tokens) {
-          let tokenCount = 0
-          const withinBudget = []
-          for (const e of boundedResults) {
-            const tokens = Math.ceil(e.statement.length / 4) + 20
-            if (tokenCount + tokens > budget.max_tokens) { truncated = true; break }
-            withinBudget.push(e)
-            tokenCount += tokens
-          }
-          boundedResults = withinBudget
-        }
-        const includeEpisodes = args.include_episodes === true
-        const response: Record<string, unknown> = {
-          results: boundedResults.map(e => {
-            const raw = e as any
-            const supersededBy = (e as any).relations?.superseded_by
-            const annotation = supersededBy?.length ? ` [superseded by ${supersededBy.join(', ')}]` : ''
-            const base: Record<string, unknown> = {
-              id: e.id,
-              statement: e.statement + annotation,
-              type: e.type,
-              scope: e.scope,
-              domain: e.domain,
-              retrieval_strength: e.activation.retrieval_strength,
-            }
-            if (includeEpisodes && raw.episode_ids?.length > 0) {
-              const episodes = plur.timeline({ search: '' })
-              base.episodes = episodes
-                .filter((ep: any) => raw.episode_ids.includes(ep.id))
-                .map((ep: any) => ({ id: ep.id, summary: ep.summary, timestamp: ep.timestamp }))
-            }
-            return base
-          }),
-          count: boundedResults.length,
-          truncated,
-          mode: meta.mode,
-        }
-        if (meta.mode === 'hybrid-degraded') {
-          response.warning = `Embedding layer unavailable — results are BM25-only. Run plur_doctor for diagnosis. Last error: ${meta.embedderError ?? 'unknown'}`
-        }
-        // #341: reranker non-engagement surfacing. When PLUR_RERANKER requests
-        // reranking, report how many candidates the cross-encoder actually
-        // re-scored — and if it never engaged on a non-empty result set, say
-        // so in the response instead of a per-call stderr warning nobody
-        // reads. The caller believes reranking is on; RRF-only results must
-        // not be silently mislabeled.
-        if (resolveRerankerName() !== 'off') {
-          response.reranked = meta.reranked ?? 0
-          const rr = plur.rerankerStatus()
-          if (boundedResults.length > 0 && (meta.reranked ?? 0) === 0 && rr.lastError) {
-            const corruptNote = rr.lastErrorKind === 'corrupt-cache'
-              ? ' The model cache looks corrupt (truncated download) — purge and re-download, see plur_doctor.'
-              : ''
-            response.reranker_warning = `PLUR_RERANKER is set but the reranker did not engage — results are RRF-only (fusion order, no cross-encoder rerank).${corruptNote} Last error: ${rr.lastError}. Run plur_doctor for diagnosis.`
-          }
-        }
-        return response
-      },
+      handler: recallHandler,
     },
 
     {
@@ -857,74 +871,12 @@ function getAllToolDefinitions(): ToolDefinition[] {
         },
         required: ['query'],
       },
+      // True forwarder — delegates to the canonical plur_recall handler and
+      // prepends the deprecation notice. No duplicated budget/episode/
+      // reranker logic, so a fix to plur_recall reaches this alias too.
       handler: async (args, plur) => {
-        const budget = args.budget as { max_tokens?: number; max_results?: number; ttl_seconds?: number } | undefined
-        const effectiveLimit = budget?.max_results ?? (args.limit as number | undefined) ?? 20
-        const meta = await plur.recallHybridWithMeta(args.query as string, {
-          scope: args.scope as string | undefined,
-          domain: args.domain as string | undefined,
-          limit: effectiveLimit,
-        })
-        recordTelemetry('recall')
-        const results = meta.engrams
-        let truncated = false
-        let boundedResults = results
-        if (budget?.max_results && results.length > budget.max_results) {
-          boundedResults = results.slice(0, budget.max_results)
-          truncated = true
-        }
-        if (budget?.max_tokens) {
-          let tokenCount = 0
-          const withinBudget = []
-          for (const e of boundedResults) {
-            const tokens = Math.ceil(e.statement.length / 4) + 20
-            if (tokenCount + tokens > budget.max_tokens) { truncated = true; break }
-            withinBudget.push(e)
-            tokenCount += tokens
-          }
-          boundedResults = withinBudget
-        }
-        const includeEpisodes = args.include_episodes === true
-        const response: Record<string, unknown> = {
-          deprecated: 'plur_recall_hybrid is deprecated since 0.16 — use plur_recall (mode defaults to hybrid). This alias will be removed in 0.18.',
-          results: boundedResults.map(e => {
-            const raw = e as any
-            const supersededBy = (e as any).relations?.superseded_by
-            const annotation = supersededBy?.length ? ` [superseded by ${supersededBy.join(', ')}]` : ''
-            const base: Record<string, unknown> = {
-              id: e.id,
-              statement: e.statement + annotation,
-              type: e.type,
-              scope: e.scope,
-              domain: e.domain,
-              retrieval_strength: e.activation.retrieval_strength,
-            }
-            if (includeEpisodes && raw.episode_ids?.length > 0) {
-              const episodes = plur.timeline({ search: '' })
-              base.episodes = episodes
-                .filter((ep: any) => raw.episode_ids.includes(ep.id))
-                .map((ep: any) => ({ id: ep.id, summary: ep.summary, timestamp: ep.timestamp }))
-            }
-            return base
-          }),
-          count: boundedResults.length,
-          truncated,
-          mode: meta.mode,
-        }
-        if (meta.mode === 'hybrid-degraded') {
-          response.warning = `Embedding layer unavailable — results are BM25-only. Run plur_doctor for diagnosis. Last error: ${meta.embedderError ?? 'unknown'}`
-        }
-        if (resolveRerankerName() !== 'off') {
-          response.reranked = meta.reranked ?? 0
-          const rr = plur.rerankerStatus()
-          if (boundedResults.length > 0 && (meta.reranked ?? 0) === 0 && rr.lastError) {
-            const corruptNote = rr.lastErrorKind === 'corrupt-cache'
-              ? ' The model cache looks corrupt (truncated download) — purge and re-download, see plur_doctor.'
-              : ''
-            response.reranker_warning = `PLUR_RERANKER is set but the reranker did not engage — results are RRF-only (fusion order, no cross-encoder rerank).${corruptNote} Last error: ${rr.lastError}. Run plur_doctor for diagnosis.`
-          }
-        }
-        return response
+        const result = await recallHandler({ ...args, mode: 'hybrid' }, plur)
+        return { deprecated: RECALL_HYBRID_DEPRECATION, ...(result as Record<string, unknown>) }
       },
     },
 
