@@ -4,6 +4,22 @@
 
 Unified recall surface.
 
+### Breaking Changes
+
+> **Migration guide for programmatic consumers of `@plur-ai/core`**
+>
+> Two compile-time breaking changes land in this release. Both affect out-of-tree code that imports from `@plur-ai/core` directly. Neither affects MCP, CLI, or Claw users — only programmatic importers.
+
+- **The public `Plur` API is now fully async** (#716, #728): every method on the `Plur` class that performs a store operation — `learn`, `recall`, `getById`, `list`, `status`, `inject`, `sync`, `delete`, and related variants — now returns a `Promise`. This is a cascade of making `_loadAllEngrams` async (required for the Postgres write path); every public surface that called it inherited the async contract. **All programmatic callers must `await` these methods.** Sync invocations silently returned `undefined` before; they now return an unresolved `Promise`, so existing sync call sites produce wrong results without any type error if you are not running strict TypeScript. Run `pnpm tsc --noEmit` after upgrading to surface every affected call site.
+
+  *Contract rename:* `PrimaryStore` is now the async store contract (all methods return `Promise`). `AsyncPrimaryStore` becomes a **deprecated alias** for `PrimaryStore` — it is still exported and still compiles, but will be removed in 0.18. Update `implements AsyncPrimaryStore` → `implements PrimaryStore` at your convenience.
+
+  *Why pre-1.0 minor, not major:* SemVer pre-1.0 (major = 0) permits breaking changes in minor increments. The async flip was required to unlock enterprise Postgres support (convergence epic #707) and is the largest single structural change since the initial BM25 implementation. It is surfaced here because the enterprise consumer (`0.9.13`) must plan a migration before adopting the 0.16 line.
+
+- **`StorageAdapter` requires a `role` field** (#716, ADR-0003): `StorageAdapter` is a publicly exported interface (`export type { StorageAdapter } from './storage-adapter.js'`). It now has a required `role: 'index' | 'primary'` field. Any out-of-tree class that `implements StorageAdapter` will fail to compile until `role` is added. In-repo adapters (`PGLiteAdapter`, `PostgresAdapter`) already carry it.
+
+  *Migration:* add `role: 'index'` to any custom adapter that serves as a search index, or `role: 'primary'` if it is the canonical store. See `docs/adr/ADR-0003-primary-store-capability.md` for the full capability taxonomy and rationale.
+
 ### Changed
 
 - **`plur_recall` is now the unified recall tool (#693)**: gains a `mode` parameter — `'hybrid'` (default, BM25 + local embeddings via RRF) or `'keyword'` (BM25-only). Existing callers that pass no `mode` get a quality upgrade without any API change. **Breaking for the lean/cursor profile**: `plur_recall_hybrid` is no longer a top-level lean tool — `plur_recall` takes its slot. Agents configured against the lean profile that call `plur_recall_hybrid` by name will still get results (the tool remains accessible via `plur_admin` dispatch), but should migrate to `plur_recall`.
