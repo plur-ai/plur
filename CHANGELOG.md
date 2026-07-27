@@ -19,7 +19,11 @@ appears to work while operating on nothing. `{...plur.status()}` becomes `{}`.
 `undefined`. TypeScript catches all of it; JavaScript consumers will not.
 
 `capture()` and `timeline()` stay synchronous — they are backed by
-`episodes.yaml`, not the engram primary store.
+`episodes.yaml`, not the engram primary store. So do `suggestScope`,
+`dismissScope`, `reofferScopes`, `CapabilityCanary.warnings` and
+`listImportSources`: an automated pass made them async during the flip even
+though they do no async work, and they were reverted rather than shipped as
+breaking changes that bought nothing.
 
 Why: a network-backed store cannot satisfy a synchronous contract (there is no
 synchronous Postgres client for Node, and manufacturing one trades a documented

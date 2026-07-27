@@ -1312,11 +1312,17 @@ export class Plur {
    * candidates sorted by confidence descending — an empty array means nothing
    * matched OR every match fell below the floor.
    */
-  async suggestScope(input: ScopeSignals, options?: { minConfidence?: number }): Promise<ScopeCandidate[]> {
+  // Synchronous. An automated add-awaits pass made this `async` during the
+  // Phase 2 flip even though it does no async work — every call in its body
+  // is synchronous. Reverted: 0.16.0 is unreleased, so this method was never
+  // actually breaking, and leaving it async would have been a breaking
+  // signature change that bought nothing. Shrinking the migration surface is
+  // worth more than uniformity.
+  suggestScope(input: ScopeSignals, options?: { minConfidence?: number }): ScopeCandidate[] {
     this.reloadConfigIfChanged()  // pick up out-of-process config edits (#307)
     const minConfidence =
       options?.minConfidence ?? this.config.scope_routing?.min_confidence ?? 0
-    return rankScopes(input, await this.listScopeMetadata(), { minConfidence })
+    return rankScopes(input, this.listScopeMetadata(), { minConfidence })
   }
 
   /**
@@ -5395,7 +5401,7 @@ Generate an improved version of the procedure that prevents this failure. Return
     // case-insensitively (scope-audit 2026-07-24), so a case-variant dismissal
     // can't linger and re-suppress the scope from future offers.
     if ((this.config.dismissed_scopes ?? []).some(s => s.toLowerCase() === scope.toLowerCase())) {
-      await this.persistDismissedScopes((this.config.dismissed_scopes ?? []).filter(s => s.toLowerCase() !== scope.toLowerCase()))
+      this.persistDismissedScopes((this.config.dismissed_scopes ?? []).filter(s => s.toLowerCase() !== scope.toLowerCase()))
     }
     return { url: match.url, status }
   }
@@ -5406,12 +5412,18 @@ Generate an improved version of the procedure that prevents this failure. Return
    * discoverRemoteScopes().unregistered + the session-start hint until
    * {@link reofferScopes}. No-op if already dismissed.
    */
-  async dismissScope(scope: string): Promise<void> {
+  // Synchronous. An automated add-awaits pass made this `async` during the
+  // Phase 2 flip even though it does no async work — every call in its body
+  // is synchronous. Reverted: 0.16.0 is unreleased, so this method was never
+  // actually breaking, and leaving it async would have been a breaking
+  // signature change that bought nothing. Shrinking the migration surface is
+  // worth more than uniformity.
+  dismissScope(scope: string): void {
     const current = this.config.dismissed_scopes ?? []
     // Case-insensitive membership (scope-audit 2026-07-24): dismissing `Group:x`
     // when `group:x` is already recorded must stay a no-op, not a duplicate.
     if (current.some(s => s.toLowerCase() === scope.toLowerCase())) return
-    await this.persistDismissedScopes([...current, scope])
+    this.persistDismissedScopes([...current, scope])
   }
 
   /** Lowercased `dismissed_scopes` for case-insensitive membership tests
@@ -5421,8 +5433,14 @@ Generate an improved version of the procedure that prevents this failure. Return
   }
 
   /** Clear all dismissals (#647) — previously dismissed scopes are offered again. */
-  async reofferScopes(): Promise<void> {
-    await this.persistDismissedScopes([])
+  // Synchronous. An automated add-awaits pass made this `async` during the
+  // Phase 2 flip even though it does no async work — every call in its body
+  // is synchronous. Reverted: 0.16.0 is unreleased, so this method was never
+  // actually breaking, and leaving it async would have been a breaking
+  // signature change that bought nothing. Shrinking the migration surface is
+  // worth more than uniformity.
+  reofferScopes(): void {
+    this.persistDismissedScopes([])
   }
 
   /** The scopes currently dismissed from the offer (#647). */
