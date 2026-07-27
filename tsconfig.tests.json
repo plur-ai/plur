@@ -31,7 +31,12 @@
     "packages/*/src/**/*.ts",
     "packages/*/test/**/*.ts",
     "scripts/**/*.ts",
-    "benchmark/**/*.ts"
+    "benchmark/**/*.ts",
+    // The getting-started examples are the first code a user reads, and CI
+    // already runs them (#267). Running them catches a break only at the first
+    // line that happens to execute; typechecking catches all of it, and catches
+    // it before the four minutes of build and test that precede that step.
+    "examples/**/*.ts"
   ],
   "exclude": ["**/dist/**", "**/node_modules/**"]
 }

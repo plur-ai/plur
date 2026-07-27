@@ -21,21 +21,21 @@ const plur = new Plur({ path })
 
 try {
   // Teach the agent a few corrections / conventions
-  plur.learn('Use toMatchObject() for partial matching in Vitest — toEqual() is strict', {
+  await plur.learn('Use toMatchObject() for partial matching in Vitest — toEqual() is strict', {
     type: 'behavioral',
     domain: 'dev/testing',
   })
-  plur.learn('Never force-push to main; open a PR instead', {
+  await plur.learn('Never force-push to main; open a PR instead', {
     type: 'behavioral',
     domain: 'dev/git',
   })
-  plur.learn('House style: tabs for indentation, single quotes in TypeScript', {
+  await plur.learn('House style: tabs for indentation, single quotes in TypeScript', {
     type: 'terminological',
     domain: 'dev/style',
   })
 
-  // Recall the most relevant engrams for a query (BM25, sync, ~15ms)
-  const hits = plur.recall('vitest assertion matching', { limit: 3 })
+  // Recall the most relevant engrams for a query (BM25, ~15ms)
+  const hits = await plur.recall('vitest assertion matching', { limit: 3 })
 
   console.log('Stored 3 engrams. Top matches for "vitest assertion matching":\n')
   for (const e of hits) {
