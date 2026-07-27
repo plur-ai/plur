@@ -5,6 +5,7 @@ import { tmpdir } from 'os'
 import { Plur } from '../src/index.js'
 import { learnBatch } from '../src/learn-async.js'
 import type { LearnAsyncDeps } from '../src/learn-async.js'
+import { MemoryPrimaryStore } from '../src/store/memory-primary-store.js'
 import type { Engram } from '../src/schemas/engram.js'
 
 /**
@@ -91,6 +92,7 @@ describe('learnBatch: partial-failure isolation', () => {
       return { id: 'ENG-2026-0101-777', statement } as unknown as Engram
     },
     getById: () => null,
+    store: new MemoryPrimaryStore(),
     engramsPath: '/tmp/plur-batch-fail-engrams.yaml',
     rootPath: '/tmp/plur-batch-fail',
     dedupConfig: { enabled: false }, // straight to deps.learn, no recall/LLM

@@ -29,7 +29,7 @@ import type { Engram } from './schemas/engram.js'
 import { loadEngrams } from './engrams.js'
 import { searchEngrams } from './fts.js'
 import { logger } from './logger.js'
-import type { StorageAdapter, StorageFilter, VectorSearchHit } from './storage-adapter.js'
+import type { DerivedIndexAdapter, StorageFilter, VectorSearchHit } from './storage-adapter.js'
 
 /** Vector dimension used by the default BGE-small-en-v1.5 model. */
 const DEFAULT_VECTOR_DIM = 384
@@ -125,7 +125,16 @@ export interface PGLiteAdapterOptions {
   precision?: VectorPrecision
 }
 
-export class PGLiteAdapter implements StorageAdapter {
+export class PGLiteAdapter implements DerivedIndexAdapter {
+  /**
+   * This adapter is a DERIVED index — YAML (the `PrimaryStore`) owns the data
+   * and every row here is rebuildable via `reindex()`. Declaring the role means
+   * callers no longer have to assume it: `requiresIndexSync()` reads this field
+   * to decide whether a write needs a follow-up sync, and a future
+   * `role: 'primary'` backend answers the same question correctly without any
+   * caller changes.
+   */
+  readonly role = 'index' as const
   private yamlPath: string
   private dbPath: string
   private vectorDim: number

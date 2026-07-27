@@ -2,13 +2,13 @@
  * Async learning with LLM-driven deduplication (Ideas 1+2+19).
  * Separated from index.ts to avoid merge conflicts with parallel SPs.
  */
-import { loadEngrams, saveEngrams } from './engrams.js'
 import { computeContentHash } from './content-hash.js'
 import { buildDedupPrompt, parseDedupResponse } from './dedup.js'
 import { appendHistory } from './history.js'
 import { logger } from './logger.js'
 import { withLock } from './sync.js'
 import type { Engram } from './schemas/engram.js'
+import type { PrimaryStore } from './store/primary-store.js'
 import type { SecretMatch } from './secrets.js'
 import type { LearnContext, LearnAsyncContext, LearnAsyncResult, LearnBatchResult, LearnBatchFailure, DedupDecision, LlmFunction } from './types.js'
 
@@ -23,7 +23,18 @@ export interface LearnAsyncDeps {
   learn: (statement: string, context?: LearnContext) => Engram
   /** Get engram by ID. */
   getById: (id: string) => Engram | null
-  /** Paths. */
+  /**
+   * Source of truth for primary engram state (convergence Phase 1). The
+   * UPDATE/MERGE paths below read and write through this rather than calling
+   * loadEngrams/saveEngrams on `engramsPath`, so a non-YAML primary store works
+   * here too.
+   */
+  store: PrimaryStore
+  /**
+   * Paths. `engramsPath` is still the LOCK KEY for `withLock` — file-based
+   * locking is Phase 2's problem, not this one — and is no longer used to read
+   * or write engram state.
+   */
   engramsPath: string
   rootPath: string
   /** Dedup config. */
@@ -111,7 +122,7 @@ function executeDedupDecision(
         const existing = deps.getById(targetId)
         if (existing && (existing as any).commitment !== 'locked') {
           return withLock(deps.engramsPath, () => {
-            const engrams = loadEngrams(deps.engramsPath)
+            const engrams = deps.store.load()
             const idx = engrams.findIndex(e => e.id === targetId)
             if (idx === -1) return { engram: deps.learn(statement, context), decision: 'ADD' as DedupDecision }
             const updated = { ...engrams[idx] } as any
@@ -124,7 +135,7 @@ function executeDedupDecision(
             // into an engram living at a shared scope. Demote before persisting.
             demoteIfSensitive(deps, updated, updated.statement)
             engrams[idx] = updated
-            saveEngrams(deps.engramsPath, engrams)
+            deps.store.save(engrams)
             deps.syncIndex()
             appendHistory(deps.rootPath, {
               event: 'engram_updated',
@@ -144,7 +155,7 @@ function executeDedupDecision(
         const existing = deps.getById(targetId)
         if (existing && (existing as any).commitment !== 'locked') {
           return withLock(deps.engramsPath, () => {
-            const engrams = loadEngrams(deps.engramsPath)
+            const engrams = deps.store.load()
             const idx = engrams.findIndex(e => e.id === targetId)
             if (idx === -1) return { engram: deps.learn(statement, context), decision: 'ADD' as DedupDecision }
             const merged = { ...engrams[idx] } as any
@@ -159,7 +170,7 @@ function executeDedupDecision(
             // a shared scope. Demote before persisting.
             demoteIfSensitive(deps, merged, merged.statement)
             engrams[idx] = merged
-            saveEngrams(deps.engramsPath, engrams)
+            deps.store.save(engrams)
             deps.syncIndex()
             appendHistory(deps.rootPath, {
               event: 'engram_merged',

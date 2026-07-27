@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { learnBatch } from '../src/learn-async.js'
 import type { LearnAsyncDeps } from '../src/learn-async.js'
+import { MemoryPrimaryStore } from '../src/store/memory-primary-store.js'
 import type { Engram } from '../src/schemas/engram.js'
 
 /**
@@ -29,6 +30,7 @@ function makeDeps(llmCalls: { n: number }): { deps: LearnAsyncDeps; llm: (p: str
     recall: () => [candidate],
     learn: (statement: string) => ({ id: 'ENG-2026-0101-999', statement } as unknown as Engram),
     getById: () => null,
+    store: new MemoryPrimaryStore(),
     engramsPath: '/tmp/plur-test-engrams.yaml',
     rootPath: '/tmp/plur-test',
     dedupConfig: { enabled: true, mode: 'llm' },
