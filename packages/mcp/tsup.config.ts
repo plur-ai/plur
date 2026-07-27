@@ -1,6 +1,6 @@
 import { defineConfig } from 'tsup'
 export default defineConfig({
-  entry: ['src/index.ts'],
+  entry: ['src/index.ts', 'src/tools-export.ts'],
   format: ['esm'],
   target: 'node22',
   dts: true,
