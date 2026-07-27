@@ -24,7 +24,7 @@ describe('SP2 Idea 18: Failure-Driven Procedure Evolution', () => {
     const engram = await plur.learn('Use camelCase', { type: 'behavioral' })
 
     await expect(
-      await plur.reportFailure(engram.id, 'Did not work')
+      plur.reportFailure(engram.id, 'Did not work')
     ).rejects.toThrow('Only procedural engrams can evolve')
   })
 
@@ -32,7 +32,7 @@ describe('SP2 Idea 18: Failure-Driven Procedure Evolution', () => {
     const plur = new Plur({ path: dir })
 
     await expect(
-      await plur.reportFailure('ENG-nonexistent', 'Did not work')
+      plur.reportFailure('ENG-nonexistent', 'Did not work')
     ).rejects.toThrow('Engram not found')
   })
 
@@ -108,7 +108,7 @@ describe('SP2 Idea 18: Failure-Driven Procedure Evolution', () => {
 
     // Fourth should be rate limited
     await expect(
-      await plur.reportFailure(engram.id, 'Failure 4', mockLlm)
+      plur.reportFailure(engram.id, 'Failure 4', mockLlm)
     ).rejects.toThrow('Rate limit')
   })
 

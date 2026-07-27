@@ -472,6 +472,9 @@ export class Plur {
    * of primary engram state go through this, never through `loadEngrams` /
    * `saveEngrams` directly.
    */
+  /** Constructor-initiated async work — see `ready()`. */
+  private _readyPromise: Promise<void> = Promise.resolve()
+
   private _primaryStore: AsyncPrimaryStore
   /**
    * File-backed secondary stores (config `stores:` entries and installed packs),
@@ -623,11 +626,11 @@ export class Plur {
     // Auto-purge legacy tension false positives (#156). PR #138 removed all
     // conflict creation from the dedup prompt, so any remaining conflicts are
     // false positives from the old system. Run once, mark with a sentinel file.
-    // Fire-and-forget, deliberately: a constructor cannot await, and this is a
-    // one-time migration guarded by a sentinel file (#156). It must never take
-    // the constructor down, but it must also not fail silently — hence the
-    // explicit `void` and the logged rejection rather than a bare call.
-    void this._autoPurgeLegacyTensions().catch((err: unknown) => {
+    // A constructor cannot await, and this is a one-time migration guarded by a
+    // sentinel file (#156). It must never take the constructor down — but with
+    // an async write path, "started in the constructor" and "finished" are no
+    // longer the same moment, so callers that need the result get `ready()`.
+    this._readyPromise = this._autoPurgeLegacyTensions().catch((err: unknown) => {
       logger.warning(`[plur] legacy tension auto-purge failed: ${(err as Error).message}`)
     })
   }
@@ -2541,6 +2544,21 @@ export class Plur {
   /** List all active engrams, optionally filtered by scope/domain. No search — returns all matches. */
   async list(options?: { scope?: string; scopes?: string[]; domain?: string; min_strength?: number; include_expired?: boolean }): Promise<Engram[]> {
     return await this._filterEngrams(options)
+  }
+
+  /**
+   * Resolve once the work the constructor kicked off has finished.
+   *
+   * A constructor cannot await, so one-time migrations start in the background.
+   * While the write path was synchronous that was invisible — they completed
+   * before anything could observe otherwise. With an async store they do not,
+   * and a caller that depends on the migration having run (a test, a first
+   * read after upgrade) needs somewhere to wait.
+   *
+   * Cheap and idempotent: it is the same settled promise on every call.
+   */
+  async ready(): Promise<void> {
+    await this._readyPromise
   }
 
   /** Filter engrams by scope/domain/strength (shared by both modes) */

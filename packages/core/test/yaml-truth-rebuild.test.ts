@@ -115,7 +115,7 @@ describe('yaml-as-truth: nuke-the-db rebuild (Test A)', () => {
 
     const before = (await seed.list()).map(e => e.id)
     nukeDerivedState(dir)
-    const after = new (await Plur({ path: dir }).list()).map(e => e.id)
+    const after = (await new Plur({ path: dir }).list()).map(e => e.id)
 
     expect(after).toEqual(before)
     expect(after).toEqual(expect.arrayContaining(ids))
@@ -127,17 +127,17 @@ describe('yaml-as-truth: nuke-the-db rebuild (Test A)', () => {
     await seed.learn('to be remembered', { scope: 'global', type: 'behavioral' })
 
     // forget the first engram (marks it as inactive)
-    return (await seed.forget(e1.id, 'test cleanup')).then(async () => {
-      const before = (await seed.list()).map(e => e.id)
-      expect(before).not.toContain(e1.id)
+    await seed.forget(e1.id, 'test cleanup')
 
-      nukeDerivedState(dir)
-      const after = new (await Plur({ path: dir }).list()).map(e => e.id)
+    const before = (await seed.list()).map(e => e.id)
+    expect(before).not.toContain(e1.id)
 
-      // Forget must be a YAML-resident operation, not DB-only state
-      expect(after).toEqual(before)
-      expect(after).not.toContain(e1.id)
-    })
+    nukeDerivedState(dir)
+    const after = (await new Plur({ path: dir }).list()).map(e => e.id)
+
+    // Forget must be a YAML-resident operation, not DB-only state
+    expect(after).toEqual(before)
+    expect(after).not.toContain(e1.id)
   })
 
   it('scope-filtered recall is identical after rebuild', async () => {
@@ -148,7 +148,7 @@ describe('yaml-as-truth: nuke-the-db rebuild (Test A)', () => {
 
     const before = (await seed.list({ scope: 'project:a' })).map(e => e.id)
     nukeDerivedState(dir)
-    const after = new (await Plur({ path: dir }).list({ scope: 'project:a' })).map(e => e.id)
+    const after = (await new Plur({ path: dir }).list({ scope: 'project:a' })).map(e => e.id)
 
     expect(after).toEqual(before)
   })

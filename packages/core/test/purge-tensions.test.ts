@@ -72,6 +72,8 @@ describe('purgeTensions', () => {
     const { Plur } = await import('../src/index.js')
     const plur = new Plur({ path: dir })
 
+    await plur.ready()   // the constructor starts it; ready() is where it lands
+
     // Auto-purge should have already run in constructor
     const engrams = await readEngrams(engramsPath)
     const withConflicts = engrams.filter((e: any) => e.relations?.conflicts?.length > 0)
@@ -99,6 +101,7 @@ describe('purgeTensions', () => {
 
     const { Plur } = await import('../src/index.js')
     const plur = new Plur({ path: dir })
+    await plur.ready()
 
     // Verify project store was cleaned
     const projectEngrams = await readEngrams(projectPath)
@@ -115,6 +118,7 @@ describe('purgeTensions', () => {
 
     const { Plur } = await import('../src/index.js')
     const plur = new Plur({ path: dir })
+    await plur.ready()
     const status = await plur.status()
     expect(status.tension_count).toBe(0)
   })
@@ -124,7 +128,7 @@ describe('purgeTensions', () => {
     writeEngrams(engramsPath, [makeEngram('ENG-001', ['ENG-002'])])
 
     const { Plur } = await import('../src/index.js')
-    new Plur({ path: dir })
+    await new Plur({ path: dir }).ready()
 
     expect(existsSync(join(dir, '.tensions-purged'))).toBe(true)
   })
@@ -141,6 +145,7 @@ describe('purgeTensions', () => {
 
     const { Plur } = await import('../src/index.js')
     const plur = new Plur({ path: dir })
+    await plur.ready()
 
     // Conflicts should still be there (purge was skipped)
     const engrams = await readEngrams(engramsPath)
@@ -156,6 +161,7 @@ describe('purgeTensions', () => {
 
     const { Plur } = await import('../src/index.js')
     const plur = new Plur({ path: dir })
+    await plur.ready()
 
     const engrams = await readEngrams(engramsPath)
     expect(engrams[0].id).toBe('ENG-001')
@@ -179,6 +185,7 @@ describe('purgeTensions', () => {
     // Create sentinel to skip auto-purge
     writeFileSync(join(dir, '.tensions-purged'), 'skip\n', 'utf8')
     const plur = new Plur({ path: dir })
+    await plur.ready()
 
     // Remove sentinel and re-purge manually
     rmSync(join(dir, '.tensions-purged'))
@@ -199,6 +206,7 @@ describe('purgeTensions', () => {
     const { Plur } = await import('../src/index.js')
     // Should not throw trying to write to remote store
     const plur = new Plur({ path: dir })
+    await plur.ready()
     const result = await plur.purgeTensions()
     expect(result.stores_cleaned).toBe(0)
   })
