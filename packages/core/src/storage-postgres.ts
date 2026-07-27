@@ -626,6 +626,53 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
    * deliberately not attempted here — a second ranking authority is exactly the
    * kind of silent divergence this programme exists to remove.
    */
+
+  /**
+   * Serialize a read-modify-write across every process sharing this schema,
+   * using a Postgres advisory lock.
+   *
+   * `pg_advisory_lock` is session-scoped, so the lock and its release must
+   * happen on the SAME connection — hence a dedicated client checked out for
+   * the duration rather than `pool.query`, which may hand back a different
+   * connection each call.
+   *
+   * The key is derived from the schema name, so two adapters pointed at the
+   * same schema contend and two pointed at different schemas do not. `hashtext`
+   * is Postgres's own hash, computed server-side, so every client agrees on it
+   * without the driver having to reproduce the hash function.
+   *
+   * Costs, both real and accepted here:
+   *   - one pooled connection is held for the whole critical section, so a pool
+   *     of N supports N-1 concurrent non-write operations. `maxConnections`
+   *     defaults to 10.
+   *   - writers serialize globally per schema. That is the point; the
+   *     alternative on a whole-corpus `save()` is losing data.
+   *
+   * The real fix for the throughput cost is incremental writes — an
+   * `append`/`update` seam on `PrimaryStore` so a write does not rewrite the
+   * corpus at all. That is a larger change; this makes the current write path
+   * CORRECT, which it was not.
+   */
+  async withExclusiveAccess<T>(fn: () => Promise<T>): Promise<T> {
+    const pool = await this.getPool()
+    const client = await pool.connect()
+    try {
+      await client.query(`SELECT pg_advisory_lock(hashtext($1))`, [`plur:${this.schema}`])
+      try {
+        return await fn()
+      } finally {
+        // Release on the same session, even if `fn` threw. If THIS throws the
+        // connection is broken; releasing it below discards it from the pool,
+        // and Postgres drops session advisory locks when the session ends, so
+        // the lock cannot leak.
+        await client.query(`SELECT pg_advisory_unlock(hashtext($1))`, [`plur:${this.schema}`])
+          .catch(() => { /* session is going away; the lock dies with it */ })
+      }
+    } finally {
+      client.release()
+    }
+  }
+
   /**
    * Escape a query token for use inside a `LIKE` pattern.
    *
