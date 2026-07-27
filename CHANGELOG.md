@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.16.0 (unreleased)
+
+Unified recall surface.
+
+### Changed
+
+- **`plur_recall` is now the unified recall tool (#693)**: gains a `mode` parameter — `'hybrid'` (default, BM25 + local embeddings via RRF) or `'keyword'` (BM25-only). Existing callers that pass no `mode` get a quality upgrade without any API change. **Breaking for the lean/cursor profile**: `plur_recall_hybrid` is no longer a top-level lean tool — `plur_recall` takes its slot. Agents configured against the lean profile that call `plur_recall_hybrid` by name will still get results (the tool remains accessible via `plur_admin` dispatch), but should migrate to `plur_recall`.
+- **`plur_recall_hybrid` is a deprecated alias** (#693): it invokes the canonical `plur_recall` handler with `{mode:'hybrid'}` and prepends a one-line `deprecated` notice — a real forwarder, so budget capping, episode expansion, the degraded-embeddings warning and reranker surfacing cannot drift between the two before the alias is removed. Removal target: 0.18. Accessible in both full and lean profiles (via `plur_admin`) to avoid breaking existing CLAUDE.md files and agent templates in the wild.
+
+### Added
+
+- **`plur init` now prompts for anonymous usage statistics opt-in.** On interactive installs a single yes/no prompt asks "Enable anonymous usage statistics? (helps us improve PLUR — no code, no keys) [y/N]" and persists the answer to `~/.plur/telemetry.json`. Non-interactive installs (CI, piped stdin, `--no-prompt`) write `enabled:false` silently — they are never opted in without explicit consent. Already-configured installs skip the prompt entirely, as do installs with an explicit `PLUR_TELEMETRY` env var — env wins at runtime, so no contradictory config file is written. To enable after the fact: `PLUR_TELEMETRY=on` env var or edit `~/.plur/telemetry.json`. See [`docs/telemetry-design.md`](docs/telemetry-design.md) for what is collected (learn/recall counters only — no code, no keys, no content).
+
 ## 0.15.0 (2026-07-21)
 
 Scopes go live + leaner MCP.
