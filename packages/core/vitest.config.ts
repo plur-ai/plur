@@ -23,6 +23,10 @@ export const PGLITE_SUITES = [
   // Not named pglite, but PGLite-backed (it uses the same PGLITE_TIMEOUT) and
   // fails in the same way under load.
   'test/sync-index-error.test.ts',
+  // Server-Postgres suite (ADR-0005). Same reason, one step further: it talks
+  // to a real database and boots PGLite alongside it for the cross-adapter
+  // parity check. Skips entirely unless PLUR_TEST_POSTGRES_URL is set.
+  'test/postgres-*.test.ts',
 ]
 
 // testTimeout raised from the 5s default: the BGE embedder (@huggingface/

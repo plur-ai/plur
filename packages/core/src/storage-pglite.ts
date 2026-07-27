@@ -29,7 +29,7 @@ import type { Engram } from './schemas/engram.js'
 import { loadEngrams } from './engrams.js'
 import { searchEngrams } from './fts.js'
 import { logger } from './logger.js'
-import type { DerivedIndexAdapter, ScopeRestriction, StorageFilter, VectorSearchHit } from './storage-adapter.js'
+import type { DerivedIndexAdapter, ScopeRestriction, StorageFilter, VectorIndexStrategy, VectorSearchHit } from './storage-adapter.js'
 
 /** Vector dimension used by the default BGE-small-en-v1.5 model. */
 const DEFAULT_VECTOR_DIM = 384
@@ -119,6 +119,27 @@ export class PGLiteAdapter implements DerivedIndexAdapter {
    * caller changes.
    */
   readonly role = 'index' as const
+  /**
+   * PGLite answers `searchVector()` with an EXACT scan — there is no vector
+   * index on `engram_embeddings`, so pgvector computes the distance for every
+   * row and `ORDER BY ... LIMIT k` returns the true top-k. Recall is 1.0 by
+   * construction; there is nothing to tune and nothing to lose.
+   *
+   * `format` tracks the column's ACTUAL element type after init (#223), which
+   * is why this is a getter and not a frozen constant: a store migrated to
+   * `halfvec` really does store fp16 and really does score marginally
+   * differently from a float32 tier. See ADR-0005.
+   */
+  get vectorIndex(): VectorIndexStrategy {
+    return {
+      kind: 'exact',
+      exact: true,
+      recallTarget: null,
+      // The BYTEA fallback stores raw fp32 bytes, so 'float32' is correct there too.
+      format: this.hasVector && this.activeVecType === 'halfvec' ? 'halfvec' : 'float32',
+      params: {},
+    }
+  }
   private yamlPath: string
   private dbPath: string
   private vectorDim: number

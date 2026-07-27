@@ -18,6 +18,19 @@ import { loadEngrams, saveEngrams } from '../engrams.js'
 import type { Engram } from '../schemas/engram.js'
 import type { PrimaryStore, PrimaryStoreKind } from './primary-store.js'
 
+/**
+ * Mean serialized size of one engram in `engrams.yaml`, in bytes.
+ *
+ * Measured 2026-07-26 on a real long-lived personal store: 9,595,797 bytes /
+ * 4,009 engrams = 2,394 B. Rounded to 2,400. Used ONLY to turn a `stat()` into
+ * an order-of-magnitude engram count for backend selection — never to report a
+ * count to a user. Being off by 2x moves the tier boundary by 2x, which is
+ * within the tolerance the thresholds were chosen with (see
+ * `backend-selection.ts`); parsing a 9 MB YAML file just to decide whether to
+ * build an index is exactly the cost the estimate exists to avoid.
+ */
+export const AVG_YAML_BYTES_PER_ENGRAM = 2400
+
 export class YamlPrimaryStore implements PrimaryStore {
   readonly kind: PrimaryStoreKind = 'yaml'
   private readonly filePath: string
@@ -55,5 +68,22 @@ export class YamlPrimaryStore implements PrimaryStore {
 
   invalidate(): void {
     this.cache = null
+  }
+
+  /**
+   * Order-of-magnitude engram count, without parsing the file.
+   *
+   * Exact when a snapshot is already cached (free — we have the array). Else
+   * `size / AVG_YAML_BYTES_PER_ENGRAM`. A missing or unreadable file is 0, not
+   * an error: "no store yet" is the smallest possible store.
+   */
+  estimateCount(): number {
+    if (this.cache) return this.cache.engrams.length
+    try {
+      const size = fs.statSync(this.filePath).size
+      return Math.round(size / AVG_YAML_BYTES_PER_ENGRAM)
+    } catch {
+      return 0
+    }
   }
 }

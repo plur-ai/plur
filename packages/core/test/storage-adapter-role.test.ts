@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { requiresIndexSync, asDerivedIndex, type StorageAdapter } from '../src/storage-adapter.js'
+import { requiresIndexSync, asDerivedIndex, EXACT_VECTOR_INDEX, type StorageAdapter } from '../src/storage-adapter.js'
 import { PGLiteAdapter } from '../src/storage-pglite.js'
 
 /**
@@ -14,6 +14,10 @@ import { PGLiteAdapter } from '../src/storage-pglite.js'
 
 function fakeAdapter(overrides: Partial<StorageAdapter> & Pick<StorageAdapter, 'role'>): StorageAdapter {
   return {
+    // `vectorIndex` became required alongside `role` (ADR-0005): a caller must
+    // be able to ask whether searchVector() is exact. Exact is the default a
+    // stub should claim, since a stub that returns [] loses nothing.
+    vectorIndex: EXACT_VECTOR_INDEX,
     loadFiltered: async () => [],
     count: async () => 0,
     searchBM25: async () => [],
