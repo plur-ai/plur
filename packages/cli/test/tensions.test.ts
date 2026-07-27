@@ -113,7 +113,7 @@ describe('plur tensions --scan temporal gates (#240)', () => {
   })
 })
 
-describe('plur learn --supersedes (#240)', () => {
+describe('plur learn --supersedes (#240)', async () => {
   let dir: string
   beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'plur-cli-supersedes-')) })
   afterEach(() => { rmSync(dir, { recursive: true, force: true }) })

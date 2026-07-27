@@ -158,11 +158,11 @@ describe('Plur', () => {
   })
 
   it('feedback throws on unknown id', async () => {
-    await expect(await plur.feedback('ENG-9999-01-001', 'positive')).rejects.toThrow('Engram not found')
+    await expect(plur.feedback('ENG-9999-01-001', 'positive')).rejects.toThrow('Engram not found')
   })
 
   it('forget throws on unknown id', async () => {
-    await expect(await plur.forget('ENG-9999-01-001', 'test')).rejects.toThrow('Engram not found')
+    await expect(plur.forget('ENG-9999-01-001', 'test')).rejects.toThrow('Engram not found')
   })
 
   it('status includes storage root', async () => {
@@ -322,7 +322,7 @@ describe('Plur', () => {
   })
 
   // #347 — populate temporal.valid_until on the write path.
-  describe('temporal validity on the write path (#347)', () => {
+  describe('temporal validity on the write path (#347)', async () => {
     it('learn stores explicit valid_until in temporal', async () => {
       const engram = await plur.learn('Conference discount code is CONF20', {
         scope: 'global',
@@ -345,18 +345,17 @@ describe('Plur', () => {
       expect(engram.temporal).toBeUndefined()
     })
 
-    it('learn rejects malformed valid_until', () => {
-      expect(() => plur.learn('Something', { valid_until: 'end of Q2' })).toThrow(/valid_until/)
-      expect(() => plur.learn('Something', { valid_until: '2026-02-30' })).toThrow(/valid_until/)
+    it('learn rejects malformed valid_until', async () => {
+      await expect(plur.learn('Something', { valid_until: 'end of Q2' })).rejects.toThrow(/valid_until/)
+      await expect(plur.learn('Something', { valid_until: '2026-02-30' })).rejects.toThrow(/valid_until/)
     })
 
-    it('learn rejects malformed valid_from', () => {
-      expect(() => plur.learn('Something', { valid_from: 'someday' })).toThrow(/valid_from/)
+    it('learn rejects malformed valid_from', async () => {
+      await expect(plur.learn('Something', { valid_from: 'someday' })).rejects.toThrow(/valid_from/)
     })
 
-    it('learn rejects an inverted validity window (valid_from after valid_until)', () => {
-      expect(() => plur.learn('Something', { valid_from: '2026-06-01', valid_until: '2026-05-01' }))
-        .toThrow(/valid_from/)
+    it('learn rejects an inverted validity window (valid_from after valid_until)', async () => {
+      await expect(plur.learn('Something', { valid_from: '2026-06-01', valid_until: '2026-05-01' })).rejects.toThrow(/valid_from/)
     })
 
     it('extraction round-trip: expiry phrase in statement → structured valid_until → hard-skipped after expiry', async () => {
@@ -416,18 +415,16 @@ describe('Plur', () => {
     })
   })
 
-  it('learn rejects statements containing secrets', () => {
-    expect(() => plur.learn('API key is sk-1234567890abcdefghijklmn')).toThrow('Secret detected')
+  it('learn rejects statements containing secrets', async () => {
+    await expect(plur.learn('API key is sk-1234567890abcdefghijklmn')).rejects.toThrow('Secret detected')
   })
 
-  it('learn rejects a secret hidden in caller-supplied domain (#381)', () => {
-    expect(() => plur.learn('A clean statement', { domain: 'token sk-1234567890abcdefghijklmn' }))
-      .toThrow('Secret detected')
+  it('learn rejects a secret hidden in caller-supplied domain (#381)', async () => {
+    await expect(plur.learn('A clean statement', { domain: 'token sk-1234567890abcdefghijklmn' })).rejects.toThrow('Secret detected')
   })
 
-  it('learn rejects a secret hidden in caller-supplied tags (#389)', () => {
-    expect(() => plur.learn('A clean statement', { tags: ['ok', 'sk-1234567890abcdefghijklmn'] }))
-      .toThrow('Secret detected')
+  it('learn rejects a secret hidden in caller-supplied tags (#389)', async () => {
+    await expect(plur.learn('A clean statement', { tags: ['ok', 'sk-1234567890abcdefghijklmn'] })).rejects.toThrow('Secret detected')
   })
 
   it('learn allows clean statements', async () => {
@@ -709,6 +706,6 @@ describe('Plur', () => {
   })
 
   it('feedback on pack engram throws for unknown id', async () => {
-    await expect(await plur.feedback('ENG-9999-01-001', 'positive')).rejects.toThrow('Engram not found')
+    await expect(plur.feedback('ENG-9999-01-001', 'positive')).rejects.toThrow('Engram not found')
   })
 })

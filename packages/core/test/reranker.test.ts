@@ -261,7 +261,7 @@ describe.skipIf(!NETWORK)(
 
 describe.skipIf(!NETWORK)(
   'ms-marco tiny-tier reranker — live model (PLUR_RERANKER_NETWORK_TESTS=1)',
-  () => {
+  async () => {
     // The tiny tier is ~23 MB quantized — loads far faster than bge, but the
     // first call may still download, so keep a generous timeout.
     const LIVE_TIMEOUT = 180_000

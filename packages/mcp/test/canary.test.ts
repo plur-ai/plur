@@ -51,7 +51,7 @@ describe('CapabilityCanary session reset (#192)', () => {
     expect(capability(status, 'session_start_hook').firedCount).toBeGreaterThan(0)
   })
 
-  describe('wire protocol (per-turn ticks)', () => {
+  describe('wire protocol (per-turn ticks)', async () => {
     let client: Client
 
     beforeEach(async () => {

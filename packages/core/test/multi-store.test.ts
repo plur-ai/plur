@@ -125,7 +125,7 @@ describe('Multi-store', () => {
     writeConfig([{ path: storePath, scope: 'datafund', readonly: true }])
     const plur = createPlur()
 
-    await expect(await plur.feedback(NS_ID, 'positive')).rejects.toThrow('readonly store')
+    await expect(plur.feedback(NS_ID, 'positive')).rejects.toThrow('readonly store')
   })
 
   it('forget on writable store engram works', async () => {
@@ -145,7 +145,7 @@ describe('Multi-store', () => {
     writeConfig([{ path: storePath, scope: 'datafund', readonly: true }])
     const plur = createPlur()
 
-    await expect(await plur.forget(NS_ID, 'test')).rejects.toThrow('readonly store')
+    await expect(plur.forget(NS_ID, 'test')).rejects.toThrow('readonly store')
   })
 
   it('getById finds store engrams by namespaced ID', async () => {

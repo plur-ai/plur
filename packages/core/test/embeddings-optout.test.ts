@@ -135,7 +135,7 @@ describe('embeddings opt-out', () => {
     })
   })
 
-  describe('mode reporting precedence', () => {
+  describe('mode reporting precedence', async () => {
     it('disabled-by-config takes precedence over a separately-failing model', async () => {
       writeFileSync(
         join(dir, 'config.yaml'),
@@ -150,7 +150,7 @@ describe('embeddings opt-out', () => {
     })
   })
 
-  describe('PLUR_DISABLE_EMBEDDINGS env var (import-time path)', () => {
+  describe('PLUR_DISABLE_EMBEDDINGS env var (import-time path)', async () => {
     // The env-var capture is unit-tested via the `readDisabledFromEnv` helper
     // below; the module-level `DISABLED_VIA_ENV` is just `readDisabledFromEnv(process.env)`
     // executed once at import. Testing the helper proves the parsing logic;

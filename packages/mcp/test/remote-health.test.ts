@@ -98,7 +98,7 @@ describe('plur_doctor remote check (#295)', () => {
   })
 })
 
-describe('plur_session_start remote auth surfacing (#295)', () => {
+describe('plur_session_start remote auth surfacing (#295)', async () => {
   it('warns loudly in the guide when the enterprise token is rejected', async () => {
     const client = await makeClient(writeConfig('wrong-token'))
     const res = callResult(await client.callTool({ name: 'plur_session_start', arguments: { task: 'anything' } }))
@@ -120,7 +120,7 @@ describe('plur_session_start remote auth surfacing (#295)', () => {
   })
 })
 
-describe('plur_session_start scope-offer hint (#647)', () => {
+describe('plur_session_start scope-offer hint (#647)', async () => {
   // config with one registered store + optional dismissed_scopes
   function writeConfigDismissed(dismissed: string[]): string {
     const dir = mkdtempSync(join(tmpdir(), 'plur-mcp-offer-'))

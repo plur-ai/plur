@@ -69,7 +69,7 @@ describe('addStore validation (#93)', () => {
   })
 
   describe('duplicate handling', () => {
-    it('idempotent on same URL + same scope — second call is a no-op', () => {
+    it('idempotent on same URL + same scope — second call is a no-op', async () => {
       plur.addStore('', 'group:test', { url: 'https://plur.datafund.io', token: 'tok' })
       expect(() =>
         plur.addStore('', 'group:test', { url: 'https://plur.datafund.io', token: 'tok' })
@@ -86,7 +86,7 @@ describe('addStore validation (#93)', () => {
       ).toThrow(/scope "group:test" is already registered/)
     })
 
-    it('overwrites with overwriteScope: true', () => {
+    it('overwrites with overwriteScope: true', async () => {
       plur.addStore('', 'group:test', { url: 'https://plur.datafund.io', token: 'tok' })
       expect(() =>
         plur.addStore('', 'group:test', {
@@ -116,7 +116,7 @@ describe('addStore validation (#93)', () => {
       ).toThrow(/already registered/)
     })
 
-    it('allows different scopes for different stores', () => {
+    it('allows different scopes for different stores', async () => {
       plur.addStore('', 'group:a', { url: 'https://a.example.com', token: 'tok' })
       plur.addStore('', 'group:b', { url: 'https://b.example.com', token: 'tok' })
 
@@ -136,7 +136,7 @@ describe('addStore validation (#93)', () => {
   describe('multiple scopes per remote URL (#291)', () => {
     const URL = 'https://plur.datafund.io/sse'
 
-    it('persists a second scope on an already-registered URL', () => {
+    it('persists a second scope on an already-registered URL', async () => {
       plur.addStore('', 'group:plur/plur-ai/engineering', { url: URL, token: 'tok' })
       plur.addStore('', 'group:plur/plur-ai/comms', { url: URL, token: 'tok' })
 
@@ -148,7 +148,7 @@ describe('addStore validation (#93)', () => {
       expect(config.stores.every((s: any) => s.url === URL)).toBe(true)
     })
 
-    it('registers every authorized scope on one enterprise URL (the live repro)', () => {
+    it('registers every authorized scope on one enterprise URL (the live repro)', async () => {
       const scopes = [
         'group:plur/plur-ai',
         'group:plur/plur-ai/engineering',
@@ -179,7 +179,7 @@ describe('addStore validation (#93)', () => {
       })).toEqual({ status: 'overwritten', scope: 'group:plur/plur-ai/comms' })
     })
 
-    it('same URL + same scope + same token is an idempotent no-op (no spurious rotation)', () => {
+    it('same URL + same scope + same token is an idempotent no-op (no spurious rotation)', async () => {
       plur.addStore('', 'group:plur/plur-ai/engineering', { url: URL, token: 'tok' })
       const result = plur.addStore('', 'group:plur/plur-ai/engineering', { url: URL, token: 'tok' })
 
@@ -189,7 +189,7 @@ describe('addStore validation (#93)', () => {
       expect(config.stores[0].token).toBe('tok')
     })
 
-    it('same URL + same scope + NEW token rotates the token in place (#305)', () => {
+    it('same URL + same scope + NEW token rotates the token in place (#305)', async () => {
       plur.addStore('', 'group:plur/plur-ai/engineering', { url: URL, token: 'original' })
       const result = plur.addStore('', 'group:plur/plur-ai/engineering', { url: URL, token: 'rotated' })
 
@@ -201,7 +201,7 @@ describe('addStore validation (#93)', () => {
       expect(config.stores[0].token).toBe('rotated')
     })
 
-    it('rotation leaves OTHER scopes on the same URL untouched (#305)', () => {
+    it('rotation leaves OTHER scopes on the same URL untouched (#305)', async () => {
       plur.addStore('', 'group:plur/plur-ai/engineering', { url: URL, token: 'eng-old' })
       plur.addStore('', 'group:plur/plur-ai/comms', { url: URL, token: 'comms-tok' })
 
@@ -222,7 +222,7 @@ describe('addStore validation (#93)', () => {
    * same file would load those engrams twice (once per scope).
    */
   describe('local stores: path-only identity (#291 boundary)', () => {
-    it('same path with a different scope is already_registered, reporting the EXISTING scope', () => {
+    it('same path with a different scope is already_registered, reporting the EXISTING scope', async () => {
       plur.addStore('/tmp/local-store/engrams.yaml', 'space:original')
       const result = plur.addStore('/tmp/local-store/engrams.yaml', 'space:other')
 
@@ -233,7 +233,7 @@ describe('addStore validation (#93)', () => {
       expect(config.stores[0].scope).toBe('space:original')
     })
 
-    it('same path + same scope is an idempotent no-op', () => {
+    it('same path + same scope is an idempotent no-op', async () => {
       plur.addStore('/tmp/local-store/engrams.yaml', 'space:test')
       const result = plur.addStore('/tmp/local-store/engrams.yaml', 'space:test')
 
@@ -244,7 +244,7 @@ describe('addStore validation (#93)', () => {
   })
 
   describe('readonly stores', () => {
-    it('readonly remote store is registered and persists the flag', () => {
+    it('readonly remote store is registered and persists the flag', async () => {
       plur.addStore('', 'group:ro', {
         url: 'https://readonly.example.com',
         token: 'tok',
@@ -265,7 +265,7 @@ describe('addStore validation (#93)', () => {
    * onboarding step) stayed invisible until a server restart, with no hint why.
    * The stores operations now reload when the file's mtime changed.
    */
-  describe('out-of-process config reload (#307)', () => {
+  describe('out-of-process config reload (#307)', async () => {
     const cfgPath = () => join(dir, 'config.yaml')
 
     /** Simulate another process editing config.yaml, forcing a newer mtime so

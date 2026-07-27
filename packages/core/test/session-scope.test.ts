@@ -231,12 +231,12 @@ describe('session scope (#229)', () => {
     const plur = new Plur({ path: primaryDir })
 
     // Should not throw
-    await expect(await plur.warmRemoteCaches()).resolves.toBeUndefined()
+    await expect(plur.warmRemoteCaches()).resolves.toBeUndefined()
   })
 
   it('warmRemoteCaches with no remote stores is a no-op', async () => {
     const plur = new Plur({ path: primaryDir })
-    await expect(await plur.warmRemoteCaches()).resolves.toBeUndefined()
+    await expect(plur.warmRemoteCaches()).resolves.toBeUndefined()
     expect(fetchMock).not.toHaveBeenCalled()
   })
 

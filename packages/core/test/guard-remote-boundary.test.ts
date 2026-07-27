@@ -41,7 +41,7 @@ function storeConfig() {
   }]
 }
 
-function readLocalEngrams(dir: string): any[] {
+async function readLocalEngrams(dir: string): Promise<any[]> {
   const path = join(dir, 'engrams.yaml')
   if (!existsSync(path)) return []
   const data = yaml.load(readFileSync(path, 'utf-8')) as { engrams?: unknown[] } | null
@@ -116,8 +116,8 @@ describe('remote-boundary leak guard (#353)', () => {
 
   /** Prime the lazy remote cache, then return the namespaced engram id list sees. */
   async function primedRemoteId(plur: Plur, serverId: string): Promise<string> {
-    await plur.list()                                   // triggers background load()
-    await new Promise(r => setTimeout(r, 50))     // let the load() settle
+    await plur.list()                                   // triggers background await load()
+    await new Promise(r => setTimeout(r, 50))     // let the await load() settle
     const found = (await plur.list()).find(e => (e as any)._originalId === serverId || e.id.endsWith(serverId))
     if (!found) throw new Error(`remote engram ${serverId} not in cache after prime`)
     return found.id
@@ -148,7 +148,7 @@ describe('remote-boundary leak guard (#353)', () => {
     expect(await plur.outboxCount()).toBe(0)
 
     // It is kept locally (demoted), not lost.
-    const local = readLocalEngrams(dir)
+    const local = await readLocalEngrams(dir)
     expect(local.find(e => e.scope === 'local' && String(e.statement).includes(PUBLIC_IP))).toBeDefined()
   })
 
@@ -183,7 +183,7 @@ describe('remote-boundary leak guard (#353)', () => {
     const found = (await plur.list()).find(e => e.id === id)!
     const sensitive = { ...found, statement: `connect to ${PUBLIC_IP}:8877 for the dashboard` } as any
 
-    await expect(await plur.updateEngramAsync(sensitive)).rejects.toThrow(/sensitive content/i)
+    await expect(plur.updateEngramAsync(sensitive)).rejects.toThrow(/sensitive content/i)
     expect(patchCalls().length).toBe(0)
   })
 
@@ -196,7 +196,7 @@ describe('remote-boundary leak guard (#353)', () => {
     const found = (await plur.list()).find(e => e.id === id)!
     const sensitive = { ...found, statement: `the prod box is ${PUBLIC_IP}` } as any
 
-    expect(() => plur.updateEngram(sensitive)).toThrow(/sensitive content/i)
+    await expect(plur.updateEngram(sensitive)).rejects.toThrow(/sensitive content/i)
     expect(patchCalls().length).toBe(0)
   })
 

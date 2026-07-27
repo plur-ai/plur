@@ -182,7 +182,7 @@ describe.skipIf(!hasSqlite)('IndexedStorage.loadFiltered — permitted-scope pus
   })
 })
 
-describe('Plur read paths — permitted-scope pushdown', () => {
+describe('Plur read paths — permitted-scope pushdown', async () => {
   let dir: string
 
   beforeEach(() => {

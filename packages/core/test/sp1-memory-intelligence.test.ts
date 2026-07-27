@@ -72,7 +72,7 @@ describe('SP1: Memory Intelligence', () => {
 
   // === Idea 6: Commitment Levels ===
 
-  describe('Idea 6: Commitment Levels', () => {
+  describe('Idea 6: Commitment Levels', async () => {
     it('new engrams default to leaning commitment', async () => {
       const engram = await plur.learn('Prefer blue-green deployments')
       expect((engram as any).commitment).toBe('leaning')
@@ -134,7 +134,7 @@ describe('SP1: Memory Intelligence', () => {
 
   // === Idea 5: Cognitive Level for Injection ===
 
-  describe('Idea 5: Cognitive Level Injection', () => {
+  describe('Idea 5: Cognitive Level Injection', async () => {
     it('learn() sets knowledge_type based on engram type', async () => {
       const behavioral = await plur.learn('Always validate', { type: 'behavioral' })
       const terminological = await plur.learn('REST means Representational State Transfer', { type: 'terminological' })
@@ -167,7 +167,7 @@ describe('SP1: Memory Intelligence', () => {
 
   // === Idea 19: Tension Detection ===
 
-  describe('Idea 19: Tension Detection', () => {
+  describe('Idea 19: Tension Detection', async () => {
     it('status includes tension_count — zero when no explicit tensions recorded', async () => {
       // Auto-detection via dedup was removed (caused 109K false positives, issue #137).
       // Tensions are now user-managed via plur_tensions_purge.
@@ -180,7 +180,7 @@ describe('SP1: Memory Intelligence', () => {
 
   // === Ideas 1+2: LLM Dedup ===
 
-  describe('Ideas 1+2: LLM Dedup', () => {
+  describe('Ideas 1+2: LLM Dedup', async () => {
     it('buildDedupPrompt generates correct format', () => {
       const prompt = buildDedupPrompt('Use TypeScript for all projects', [
         { id: 'ENG-2026-0406-001', statement: 'Prefer TypeScript over JavaScript', type: 'behavioral' },
@@ -395,7 +395,7 @@ REASON: This contradicts the REST-only policy
 
   // === Migration stubs ===
 
-  describe('Migrations', () => {
+  describe('Migrations', async () => {
     it('commitment migration sets decided for active engrams', async () => {
       const { migration } = await import('../src/migrations/20260406-001-add-commitment.js')
       const engrams = [

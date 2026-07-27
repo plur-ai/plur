@@ -172,7 +172,7 @@ describe('plur init-remote', () => {
   })
 })
 
-describe('plur init-remote --verify', () => {
+describe('plur init-remote --verify', async () => {
   let home: string
   let cwd: string
   let server: Server

@@ -129,7 +129,7 @@ describe.each([
   { embedderName: 'bge-small', dim: 384 },
   { embedderName: 'embedding-gemma', dim: 768 },
   { embedderName: 'openai-3-large', dim: 3072 },
-])('PGLite cross-shape roundtrip at $dim d ($embedderName) — ADR-0001 (#335)', ({ dim }) => {
+])('PGLite cross-shape roundtrip at $dim d ($embedderName) — ADR-0001 (#335)', async ({ dim }) => {
   let dir: string
   let yamlPath: string
   let dbPath: string
@@ -190,7 +190,7 @@ describe.each([
 
 // ─── Plur wires the ACTIVE embedder dim into the column ──────────────
 
-describe('Plur constructor sizes the PGLite column from the active embedder (#335)', () => {
+describe('Plur constructor sizes the PGLite column from the active embedder (#335)', async () => {
   let dir: string
   const savedBackend = process.env.PLUR_BACKEND
   const savedEmbedder = process.env.PLUR_EMBEDDER

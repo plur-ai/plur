@@ -216,7 +216,7 @@ describe('sync', () => {
     })
   })
 
-  describe('remote sync', () => {
+  describe('remote sync', async () => {
     let bareRemote: string
 
     beforeEach(() => {
@@ -293,7 +293,7 @@ describe('sync', () => {
     })
   })
 
-  describe('scope:local exclusion (issue #396)', () => {
+  describe('scope:local exclusion (issue #396)', async () => {
     let bareRemote: string
 
     // Canonical engrams.yaml shape: { engrams: [...] }
@@ -374,7 +374,7 @@ describe('sync', () => {
     })
   })
 
-  describe('private-engram warning (issue #396)', () => {
+  describe('private-engram warning (issue #396)', async () => {
     let bareRemote: string
 
     beforeEach(() => {
@@ -409,7 +409,7 @@ describe('sync', () => {
   // #640 — scope-filtered push. A `shared` remote receives ONLY shared-family-
   // scope, non-private engrams; `personal` (the default) keeps the historical
   // mirror-everything-non-local behavior.
-  describe('scope-filtered push for shared remotes (#640)', () => {
+  describe('scope-filtered push for shared remotes (#640)', async () => {
     let bareRemote: string
 
     const MIXED = [

@@ -67,7 +67,7 @@ function makeDir(stores: unknown[], extra: Record<string, unknown> = {}): { dir:
   return { dir, plur: new Plur({ path: dir }) }
 }
 
-function readStores(dir: string): Array<Record<string, any>> {
+async function readStores(dir: string): Promise<Array<Record<string, any>>> {
   const raw = readFileSync(join(dir, 'config.yaml'), 'utf8')
   return ((yaml.load(raw) as Record<string, unknown>).stores ?? []) as Array<Record<string, any>>
 }
@@ -99,7 +99,7 @@ describe('F1: remote `allow` cannot disarm the leak guard', () => {
     await syncMeta(plur)
 
     // The remote allow is NOT persisted (absent or empty), forbid is.
-    const eng = readStores(dir).find(s => s.scope === ENG)!
+    const eng = (await readStores(dir)).find(s => s.scope === ENG)!
     expect(eng.sensitivity?.forbid).toEqual(['secrets', 'infra'])
     expect(eng.sensitivity?.allow ?? []).toEqual([])
 
@@ -126,7 +126,7 @@ describe('F1: remote `allow` cannot disarm the leak guard', () => {
         sensitivity: { forbid: ['secrets', 'malware', 'pii'] as never, allow: ['secrets'] },
       }],
     }])
-    const eng = readStores(dir).find(s => s.scope === ENG)!
+    const eng = (await readStores(dir)).find(s => s.scope === ENG)!
     expect(eng.sensitivity?.forbid).toEqual(['secrets'])       // junk dropped
     expect(eng.sensitivity?.allow ?? []).toEqual([])           // allow never persisted
 
@@ -138,7 +138,7 @@ describe('F1: remote `allow` cannot disarm the leak guard', () => {
         sensitivity: { forbid: ['malware'] as never, allow: [] },
       }],
     }])
-    const eng2 = readStores(dir).find(s => s.scope === ENG)!
+    const eng2 = (await readStores(dir)).find(s => s.scope === ENG)!
     expect(eng2.sensitivity?.forbid).toEqual(['secrets', 'infra'])
   })
 
@@ -156,7 +156,7 @@ describe('F1: remote `allow` cannot disarm the leak guard', () => {
     ])
     await syncMeta(plur)
 
-    const eng = readStores(dir).find(s => s.scope === ENG)!
+    const eng = (await readStores(dir)).find(s => s.scope === ENG)!
     expect(eng.sensitivity?.allow).toEqual(['infra'])   // local allow survives the sync
     expect(eng.sensitivity?.forbid).toEqual(['secrets'])
 
@@ -171,7 +171,7 @@ describe('F1: remote `allow` cannot disarm the leak guard', () => {
 // F2 — the change-detector and the writeback merge converge
 // ---------------------------------------------------------------------------
 
-describe('F2: metadata persist converges (no rewrite-every-session_start loop)', () => {
+describe('F2: metadata persist converges (no rewrite-every-session_start loop)', async () => {
   it('two consecutive syncs with identical server metadata (incl. sensitivity) → second is a no-op', async () => {
     server.setMe({
       scope_metadata: [{
@@ -203,7 +203,7 @@ describe('F2: metadata persist converges (no rewrite-every-session_start loop)',
       { url: baseUrl, token: TOKEN, scope: ENG, shared: true, readonly: false },
     ])
     await syncMeta(plur)
-    expect(readStores(dir).find(s => s.scope === ENG)!.sensitivity?.forbid).toEqual(['secrets', 'infra'])
+    expect((await readStores(dir)).find(s => s.scope === ENG)!.sensitivity?.forbid).toEqual(['secrets', 'infra'])
 
     // Server tightens the policy shape → the change must land ON DISK (the
     // pre-audit raw-forbid restore in mergeStoresForWriteback discarded it).
@@ -211,7 +211,7 @@ describe('F2: metadata persist converges (no rewrite-every-session_start loop)',
       scope_metadata: [{ scope: ENG, description: 'Eng', covers: ['plur.engineering'], sensitivity: { forbid: ['secrets'] } }],
     })
     await syncMeta(plur)
-    expect(readStores(dir).find(s => s.scope === ENG)!.sensitivity?.forbid).toEqual(['secrets'])
+    expect((await readStores(dir)).find(s => s.scope === ENG)!.sensitivity?.forbid).toEqual(['secrets'])
 
     // …and the new state converges: the next identical sync is a no-op.
     const before = { mtime: statSync(join(dir, 'config.yaml')).mtimeMs, content: readFileSync(join(dir, 'config.yaml'), 'utf8') }
@@ -236,7 +236,7 @@ describe('F2: metadata persist converges (no rewrite-every-session_start loop)',
     expect(statSync(join(dir, 'config.yaml')).mtimeMs).toBe(before.mtime)
     expect(readFileSync(join(dir, 'config.yaml'), 'utf8')).toBe(before.content)
     // Local sensitivity untouched.
-    expect(readStores(dir).find(s => s.scope === ENG)!.sensitivity?.allow).toEqual(['infra'])
+    expect((await readStores(dir)).find(s => s.scope === ENG)!.sensitivity?.allow).toEqual(['infra'])
   })
 })
 
@@ -244,7 +244,7 @@ describe('F2: metadata persist converges (no rewrite-every-session_start loop)',
 // F5 — clobbering a hand-set local covers/description is visible
 // ---------------------------------------------------------------------------
 
-describe('F5: server-authoritative overwrite of local covers/description warns', () => {
+describe('F5: server-authoritative overwrite of local covers/description warns', async () => {
   it('emits one warning naming the scope and fields when differing non-empty local values are overwritten', async () => {
     const warn = vi.spyOn(logger, 'warning')
     const { dir, plur } = makeDir([
@@ -254,7 +254,7 @@ describe('F5: server-authoritative overwrite of local covers/description warns',
     await syncMeta(plur)
 
     // Overwrite happened (by design)…
-    const eng = readStores(dir).find(s => s.scope === ENG)!
+    const eng = (await readStores(dir)).find(s => s.scope === ENG)!
     expect(eng.covers).toEqual(['plur.engineering'])
     expect(eng.description).toBe('Engineering knowledge')
     // …but visibly.

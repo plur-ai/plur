@@ -28,7 +28,7 @@ function makeDir(config: Record<string, unknown> = {}): { dir: string; plur: Plu
 }
 
 describe('config.yaml persist paths take withLock (scope-audit 2026-07-24)', () => {
-  it('addStore (persistStores) releases the lock and persists the entry', () => {
+  it('addStore (persistStores) releases the lock and persists the entry', async () => {
     const { dir, plur } = makeDir()
     plur.addStore('/tmp/lock-test-engrams.yaml', 'project:lock-test')
     // Write landed…
@@ -38,7 +38,7 @@ describe('config.yaml persist paths take withLock (scope-audit 2026-07-24)', () 
     expect(existsSync(join(dir, 'config.yaml.lock'))).toBe(false)
   })
 
-  it('a STALE lock (dead process) is broken — the write goes through', () => {
+  it('a STALE lock (dead process) is broken — the write goes through', async () => {
     const { dir, plur } = makeDir()
     const lockPath = join(dir, 'config.yaml.lock')
     writeFileSync(lockPath, '999999')  // pid of a long-gone process

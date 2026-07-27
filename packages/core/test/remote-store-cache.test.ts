@@ -122,7 +122,7 @@ describe('RemoteStore — optimistic cache insert (issue #89)', () => {
     const posts = fetchMock.mock.calls.filter(([, init]) => (init as any)?.method === 'POST')
     const gets  = fetchMock.mock.calls.filter(([, init]) => !(init as any)?.method || (init as any)?.method === 'GET')
     expect(posts.length).toBe(1)
-    expect(gets.length).toBe(1) // cold-cache must refetch on the next load()
+    expect(gets.length).toBe(1) // cold-cache must refetch on the next await load()
   })
 })
 
@@ -130,7 +130,7 @@ describe('RemoteStore — optimistic cache insert (issue #89)', () => {
 // Cache poisoning — issue #550
 // ---------------------------------------------------------------------------
 
-describe('RemoteStore — cache poisoning on partial pagination (issue #550)', () => {
+describe('RemoteStore — cache poisoning on partial pagination (issue #550)', async () => {
   let originalFetch: typeof globalThis.fetch
   let fetchMock: ReturnType<typeof vi.fn>
 
@@ -281,7 +281,7 @@ afterAll(async () => {
   await stubServer.stop()
 })
 
-describe('Plur cold-start with remote store (issues #184, #185)', () => {
+describe('Plur cold-start with remote store (issues #184, #185)', async () => {
   let dir: string
 
   beforeEach(() => {
@@ -448,7 +448,7 @@ describe('Plur cold-start with remote store (issues #184, #185)', () => {
 // and RemoteStore.update() are implemented.
 // ---------------------------------------------------------------------------
 
-describe.skip('updateEngram remote routing (blocked on enterprise#110)', () => {
+describe.skip('updateEngram remote routing (blocked on enterprise#110)', async () => {
   let dir: string
 
   beforeEach(() => {

@@ -63,7 +63,7 @@ describe('claw CLI — learn/recall/forget subcommands (item 5)', () => {
     })
   })
 
-  describe('recall', () => {
+  describe('recall', async () => {
     it('returns matching engrams after learning', async () => {
       // Seed a known engram
       await runLearn(['Database runs on PostgreSQL port 5432'], { plurPath, out: () => {} })
@@ -107,7 +107,7 @@ describe('claw CLI — learn/recall/forget subcommands (item 5)', () => {
     })
   })
 
-  describe('forget', () => {
+  describe('forget', async () => {
     it('retires an engram by id', async () => {
       // Learn and capture the id
       let engId = ''

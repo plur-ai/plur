@@ -13,7 +13,7 @@ function writeEngrams(path: string, engrams: any[]): void {
   writeFileSync(path, yaml.dump({ engrams }), 'utf8')
 }
 
-function readEngrams(path: string): any[] {
+async function readEngrams(path: string): Promise<any[]> {
   const raw = readFileSync(path, 'utf8')
   const data = yaml.load(raw) as any
   return data?.engrams ?? []
@@ -73,7 +73,7 @@ describe('purgeTensions', () => {
     const plur = new Plur({ path: dir })
 
     // Auto-purge should have already run in constructor
-    const engrams = readEngrams(engramsPath)
+    const engrams = await readEngrams(engramsPath)
     const withConflicts = engrams.filter((e: any) => e.relations?.conflicts?.length > 0)
     expect(withConflicts).toHaveLength(0)
   })
@@ -101,7 +101,7 @@ describe('purgeTensions', () => {
     const plur = new Plur({ path: dir })
 
     // Verify project store was cleaned
-    const projectEngrams = readEngrams(projectPath)
+    const projectEngrams = await readEngrams(projectPath)
     const withConflicts = projectEngrams.filter((e: any) => e.relations?.conflicts?.length > 0)
     expect(withConflicts).toHaveLength(0)
   })
@@ -143,7 +143,7 @@ describe('purgeTensions', () => {
     const plur = new Plur({ path: dir })
 
     // Conflicts should still be there (purge was skipped)
-    const engrams = readEngrams(engramsPath)
+    const engrams = await readEngrams(engramsPath)
     const withConflicts = engrams.filter((e: any) => e.relations?.conflicts?.length > 0)
     expect(withConflicts).toHaveLength(2)
   })
@@ -157,7 +157,7 @@ describe('purgeTensions', () => {
     const { Plur } = await import('../src/index.js')
     const plur = new Plur({ path: dir })
 
-    const engrams = readEngrams(engramsPath)
+    const engrams = await readEngrams(engramsPath)
     expect(engrams[0].id).toBe('ENG-001')
     expect(engrams[0].statement).toBe('Test engram ENG-001')
     expect(engrams[0].type).toBe('behavioral')

@@ -102,7 +102,7 @@ describe('readCoInjections is defensive', () => {
     expect(legacy!.data.source).toBeUndefined()
   })
 
-  it('skips malformed lines without throwing and counts them', () => {
+  it('skips malformed lines without throwing and counts them', async () => {
     const month = new Date().toISOString().slice(0, 7)
     fs.mkdirSync(path.join(dir, 'history'), { recursive: true })
     fs.appendFileSync(path.join(dir, 'history', `${month}.jsonl`), '{not json\n')

@@ -113,6 +113,14 @@ for (const root of roots) {
         // Inserting after `new` yields `new await Plur(...)`, a parse error;
         // the await belongs in front of the whole expression instead.
         if (/\bnew\s*$/.test(pre)) continue
+        // Ambiguous member names (load/save/list/status/sync) also exist on
+        // stdlib and third-party objects. `yaml.load(...)` is synchronous and
+        // awaiting it is wrong — harmless at runtime, but it corrupts the code
+        // and, inside a non-async helper, breaks the parse. Never rewrite a call
+        // whose receiver is a known-sync module.
+        if (/\b(yaml|JSON|fs|fsp|path|os|crypto|util|process|console|Math|Object|Array)\.$/.test(
+              src.slice(Math.max(0, callStart - 40), callStart + m[2].length).replace(/[\w$]+\($/, ''))) continue
+        if (/\b(yaml|JSON|fs|path|os|crypto|util|process|console|Math|Object|Array)\.[\w$]*$/.test(src.slice(Math.max(0, callStart - 40), callStart + m[2].length))) continue
         if (/=>\s*$/.test(pre)) continue
         // Never rewrite inside a string or template literal. Assertion messages
         // routinely contain method names — `expect(x, `learn(shared) should

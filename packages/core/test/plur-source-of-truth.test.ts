@@ -67,7 +67,7 @@ describe('Plur is source-of-truth agnostic', () => {
     expect((await plur.getById(learned.id))?.status).toBe('retired')
 
     // The state genuinely lives in the injected store, not in a hidden cache.
-    expect(store.load().map(e => e.id)).toContain(learned.id)
+    expect((await store.load()).map(e => e.id)).toContain(learned.id)
   })
 
   it('never touches engrams.yaml when a non-YAML store is injected', async () => {

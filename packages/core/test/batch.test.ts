@@ -49,7 +49,7 @@ describe('learnBatch: batch write', () => {
   })
 })
 
-describe('learnBatch: dedup within the batch', () => {
+describe('learnBatch: dedup within the batch', async () => {
   let plur: Plur
   let dir: string
 
@@ -80,7 +80,7 @@ describe('learnBatch: dedup within the batch', () => {
   })
 })
 
-describe('learnBatch: partial-failure isolation', () => {
+describe('learnBatch: partial-failure isolation', async () => {
   // A fake deps whose write throws for one statement, so we can assert the
   // batch keeps going and records the failure against its input index.
   const makeDeps = (): LearnAsyncDeps => ({

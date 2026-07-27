@@ -126,7 +126,7 @@ describe('Session & store tools', () => {
   // session_end can surface them as injection_summary. Validates the 25-80
   // sessions/month activation-rate assumption in hypotheses.yaml (H003).
 
-  describe('session injection telemetry', () => {
+  describe('session injection telemetry', async () => {
     it('session_end returns injection_summary when engrams were injected', async () => {
       // Seed an engram so session_start injects something
       await plur.learn('Always use semicolons in TypeScript', { scope: 'global' })
@@ -313,7 +313,7 @@ describe('Session & store tools', () => {
   // projects. These tests pin the new behavior: project scope is auto-applied
   // as the session default + surfaced in the response.
 
-  describe('project scope auto-detection (#177)', () => {
+  describe('project scope auto-detection (#177)', async () => {
     let projectDir: string
     let originalCwd: string
 

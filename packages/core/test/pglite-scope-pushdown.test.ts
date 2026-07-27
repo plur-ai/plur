@@ -191,7 +191,7 @@ describe('PGLiteAdapter — permitted-scope pushdown', () => {
     }, PGLITE_TIMEOUT)
   })
 
-  describe('searchBM25', () => {
+  describe('searchBM25', async () => {
     beforeEach(async () => {
       seedYaml(yamlPath, [
         mkEngram('ENG-2026-0726-020', 'yaml is the source of truth', { scope: 'project:a' }),
@@ -230,7 +230,7 @@ describe('PGLiteAdapter — permitted-scope pushdown', () => {
     }, PGLITE_TIMEOUT)
   })
 
-  describe('searchVector (pgvector path)', () => {
+  describe('searchVector (pgvector path)', async () => {
     it('REGRESSION GUARD: omitting scopes returns the org-wide neighbours, unchanged', async () => {
       adapter = new PGLiteAdapter(yamlPath, dbPath, { vectorDim: DIM })
       await seedDilutionCorpus(adapter, yamlPath)
@@ -294,7 +294,7 @@ describe('PGLiteAdapter — permitted-scope pushdown', () => {
   })
 })
 
-describe('PGLiteAdapter — permitted-scope pushdown on the BYTEA fallback', () => {
+describe('PGLiteAdapter — permitted-scope pushdown on the BYTEA fallback', async () => {
   let dir: string
   let yamlPath: string
   let dbPath: string

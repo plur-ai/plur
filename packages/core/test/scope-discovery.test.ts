@@ -70,7 +70,7 @@ describe('RemoteStore.me()', () => {
 // Plur.discoverRemoteScopes()
 // ---------------------------------------------------------------------------
 
-describe('Plur.discoverRemoteScopes()', () => {
+describe('Plur.discoverRemoteScopes()', async () => {
   let dir: string
 
   const writeConfig = (stores: unknown[]) => {
@@ -222,7 +222,7 @@ describe('Plur.discoverRemoteScopes()', () => {
 // Plur.registerDiscoveredScopes() — exercises the #291 URL+scope dedup
 // ---------------------------------------------------------------------------
 
-describe('Plur.registerDiscoveredScopes()', () => {
+describe('Plur.registerDiscoveredScopes()', async () => {
   let dir: string
 
   const freshPlur = () => {
@@ -311,7 +311,7 @@ describe('Plur.registerDiscoveredScopes()', () => {
 // Scope opt-out — per-scope register / dismiss / reoffer (#647)
 // ---------------------------------------------------------------------------
 
-describe('Plur scope opt-out (#647)', () => {
+describe('Plur scope opt-out (#647)', async () => {
   let dir: string
 
   const freshPlur = () => {
@@ -386,7 +386,7 @@ describe('Plur scope opt-out (#647)', () => {
     expect(offered).toContain('group:plur/plur-ai/comms')
     expect(offered).not.toContain('user:plur:crtahlin')
     expect(offered).not.toContain('global')
-    await expect(await plur.registerScope('user:plur:crtahlin')).rejects.toThrow(/non-shared/)
+    await expect(plur.registerScope('user:plur:crtahlin')).rejects.toThrow(/non-shared/)
   })
 
   it('batch register respects dismissals: a dismissed scope is NOT registered and stays dismissed (scope-audit 2026-07-24)', async () => {
@@ -459,7 +459,7 @@ describe('Plur scope opt-out (#647)', () => {
 // spelling, and re-offered a scope registered under a sibling spelling.
 // ---------------------------------------------------------------------------
 
-describe('endpoint URL identity normalization (scope-audit 2026-07-24)', () => {
+describe('endpoint URL identity normalization (scope-audit 2026-07-24)', async () => {
   let dir: string
 
   const writeConfig = (stores: unknown[]) => {

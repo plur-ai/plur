@@ -561,7 +561,7 @@ describe('Stage 3b — auto-route un-scoped writes (#351)', () => {
 // another process after startup was invisible to auto-routing until restart.
 // ---------------------------------------------------------------------------
 
-describe('unscoped write routing reloads a changed config (scope-audit 2026-07-24)', () => {
+describe('unscoped write routing reloads a changed config (scope-audit 2026-07-24)', async () => {
   it('routes against covers added to config.yaml AFTER the Plur instance was created', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'plur-route-reload-'))
     dirs.push(dir)

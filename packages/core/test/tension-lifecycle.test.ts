@@ -209,22 +209,22 @@ describe('confirm / dismiss / resolve (#181)', async () => {
     return { id: records[0].id, a: a as Engram, b: b as Engram }
   }
 
-  it('confirm marks a detected tension confirmed', () => {
-    const { id } = seed()
+  it('confirm marks a detected tension confirmed', async () => {
+    const { id } = await seed()
     const record = plur.confirmTension(id)
     expect(record.status).toBe('confirmed')
     expect(plur.listTensions({ status: ['confirmed'] })).toHaveLength(1)
   })
 
-  it('dismiss works from detected and confirmed', () => {
-    const { id } = seed()
+  it('dismiss works from detected and confirmed', async () => {
+    const { id } = await seed()
     plur.confirmTension(id)
     const record = plur.dismissTension(id)
     expect(record.status).toBe('dismissed')
   })
 
   it('resolve picks a winner, retires the loser, stamps the record', async () => {
-    const { id, a, b } = seed()
+    const { id, a, b } = await seed()
     const { record, retired_id } = await plur.resolveTension(id, b.id)
 
     expect(record.status).toBe('resolved')
@@ -250,17 +250,17 @@ describe('confirm / dismiss / resolve (#181)', async () => {
   })
 
   it('resolve rejects a winner outside the pair', async () => {
-    const { id } = seed()
+    const { id } = await seed()
     const c = await plur.learn('unrelated statement about storage')
-    expect(() => plur.resolveTension(id, c.id)).toThrow(/not part of tension/)
+    await expect(plur.resolveTension(id, c.id)).rejects.toThrow(/not part of tension/)
   })
 
   it('terminal states are enforced', async () => {
-    const { id, b } = seed()
+    const { id, b } = await seed()
     await plur.resolveTension(id, b.id)
     expect(() => plur.confirmTension(id)).toThrow(/already resolved/)
     expect(() => plur.dismissTension(id)).toThrow(/already resolved/)
-    expect(() => plur.resolveTension(id, b.id)).toThrow(/already resolved/)
+    await expect(plur.resolveTension(id, b.id)).rejects.toThrow(/already resolved/)
   })
 
   it('unknown tension ids throw', () => {
@@ -321,7 +321,7 @@ describe('injection warnings (#181, audit item 4)', () => {
   })
 })
 
-describe('lock-escalation gate (#181, audit item 3)', () => {
+describe('lock-escalation gate (#181, audit item 3)', async () => {
   let dir: string
   let plur: Plur
 

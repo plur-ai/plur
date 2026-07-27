@@ -133,7 +133,7 @@ describe('plur_tensions tool', () => {
   })
 })
 
-describe('plur_tensions scan mode', () => {
+describe('plur_tensions scan mode', async () => {
   let dir: string
   let plur: Plur
   let originalFetch: typeof globalThis.fetch
@@ -303,7 +303,7 @@ describe('plur_tensions scan mode', () => {
   })
 })
 
-describe('plur_tensions temporal config wiring (#240)', () => {
+describe('plur_tensions temporal config wiring (#240)', async () => {
   let dir: string
   let originalFetch: typeof globalThis.fetch
   const tools = getToolDefinitions('full')
@@ -416,7 +416,7 @@ describe('plur_tensions temporal config wiring (#240)', () => {
   })
 })
 
-describe('plur_learn supersedes (#240)', () => {
+describe('plur_learn supersedes (#240)', async () => {
   let dir: string
   let plur: Plur
   const tools = getToolDefinitions('full')
@@ -472,7 +472,7 @@ describe('plur_learn supersedes (#240)', () => {
   })
 })
 
-describe('plur_tensions_purge tool', () => {
+describe('plur_tensions_purge tool', async () => {
   let dir: string
   let plur: Plur
   const tools = getToolDefinitions('full')

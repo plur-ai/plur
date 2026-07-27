@@ -174,7 +174,7 @@ describe.skipIf(!DSN)('PostgresAdapter (requires PLUR_TEST_POSTGRES_URL)', () =>
     }, TIMEOUT)
   })
 
-  describe('query surface', () => {
+  describe('query surface', async () => {
     beforeAll(async () => {
       await adapter.save([
         mkEngram('ENG-2026-0726-101', 'postgres owns the bytes', { scope: 'project:plur', domain: 'plur.storage' }),
@@ -217,7 +217,7 @@ describe.skipIf(!DSN)('PostgresAdapter (requires PLUR_TEST_POSTGRES_URL)', () =>
     }, TIMEOUT)
   })
 
-  describe('embedding write guard (#335)', () => {
+  describe('embedding write guard (#335)', async () => {
     it('refuses a wrong-dimension vector instead of persisting garbage', async () => {
       await adapter.save([mkEngram('ENG-2026-0726-201', 'guarded')])
       await expect(adapter.upsertEmbedding('ENG-2026-0726-201', new Float32Array(VECTOR_DIM + 1)))
@@ -230,7 +230,7 @@ describe.skipIf(!DSN)('PostgresAdapter (requires PLUR_TEST_POSTGRES_URL)', () =>
     }, TIMEOUT)
   })
 
-  describe('exact vector search', () => {
+  describe('exact vector search', async () => {
     it('declares exact search and returns the true nearest neighbour first', async () => {
       const engrams = Array.from({ length: 12 }, (_, i) =>
         mkEngram(`ENG-2026-0726-3${String(i).padStart(2, '0')}`, `vector subject ${i}`, { scope: 'global' }))
@@ -272,7 +272,7 @@ describe.skipIf(!DSN)('PostgresAdapter (requires PLUR_TEST_POSTGRES_URL)', () =>
  * error, no warning, and results that look plausible. These tests demonstrate
  * the failure against a real index and then demonstrate the fix.
  */
-describe.skipIf(!DSN)('PostgresAdapter — HNSW tier (requires PLUR_TEST_POSTGRES_URL)', () => {
+describe.skipIf(!DSN)('PostgresAdapter — HNSW tier (requires PLUR_TEST_POSTGRES_URL)', async () => {
   const hnswSchema = `${SCHEMA}_hnsw`
   let hnsw: PostgresAdapter
   const ROWS = 200
@@ -396,7 +396,7 @@ describe.skipIf(!DSN)('PostgresAdapter — HNSW tier (requires PLUR_TEST_POSTGRE
  * a divergence waiting to happen, so the invariant is enforced behaviourally
  * rather than by hoping: same corpus, same filters, identical result sets.
  */
-describe.skipIf(!DSN)('PGLite and Postgres answer the same filter identically', () => {
+describe.skipIf(!DSN)('PGLite and Postgres answer the same filter identically', async () => {
   const paritySchema = `${SCHEMA}_parity`
   let pg: PostgresAdapter
   let pglite: PGLiteAdapter

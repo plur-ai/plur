@@ -157,7 +157,7 @@ describe('MCP plur_learn routing', () => {
 // routing regresses, they fail.
 // ---------------------------------------------------------------------------
 
-describe('MCP plur_forget routing', () => {
+describe('MCP plur_forget routing', async () => {
   it('plur_forget with server ID reaches server and retires', async () => {
     const { client } = await makeClient(dir)
 
@@ -187,7 +187,7 @@ describe('MCP plur_forget routing', () => {
 // plur_feedback routing
 // ---------------------------------------------------------------------------
 
-describe('MCP plur_feedback routing', () => {
+describe('MCP plur_feedback routing', async () => {
   it('plur_feedback with server ID reaches server and updates weight', async () => {
     const { client } = await makeClient(dir)
 
@@ -214,7 +214,7 @@ describe('MCP plur_feedback routing', () => {
 // plur_stores_list
 // ---------------------------------------------------------------------------
 
-describe('MCP plur_stores_list', () => {
+describe('MCP plur_stores_list', async () => {
   it('remote store appears with correct engram count after write', async () => {
     const { client } = await makeClient(dir)
 
@@ -238,7 +238,7 @@ describe('MCP plur_stores_list', () => {
 // Config persistence across MCP server restart
 // ---------------------------------------------------------------------------
 
-describe('MCP config loading', () => {
+describe('MCP config loading', async () => {
   it('remote store entry survives MCP server restart', async () => {
     // First session: learn something
     const { client: client1 } = await makeClient(dir)
@@ -264,7 +264,7 @@ describe('MCP config loading', () => {
 // Scope discovery (#292) — full MCP → core → RemoteStore.me() pipeline
 // ---------------------------------------------------------------------------
 
-describe('MCP plur_scopes_discover', () => {
+describe('MCP plur_scopes_discover', async () => {
   it('discovers authorized-but-unregistered scopes (read-only by default)', async () => {
     stub.setMe({ username: 'crtahlin', scopes: [REMOTE_SCOPE, 'team:e2e-other', 'team:e2e-third'] })
     const { client } = await makeClient(dir)

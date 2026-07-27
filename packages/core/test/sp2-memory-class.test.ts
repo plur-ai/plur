@@ -55,7 +55,7 @@ describe('SP2 Idea 3: Three-Memory Unification', () => {
   })
 })
 
-describe('SP2 Idea 3: Episode to Engram promotion', () => {
+describe('SP2 Idea 3: Episode to Engram promotion', async () => {
   let dir: string
 
   beforeEach(() => {
@@ -80,9 +80,9 @@ describe('SP2 Idea 3: Episode to Engram promotion', () => {
     expect((engram as any).episode_ids).toContain(episode.id)
   })
 
-  it('throws on non-existent episode', () => {
+  it('throws on non-existent episode', async () => {
     const plur = new Plur({ path: dir })
-    expect(() => plur.episodeToEngram('EP-nonexistent')).toThrow('Episode not found')
+    await expect(plur.episodeToEngram('EP-nonexistent')).rejects.toThrow('Episode not found')
   })
 
   it('passes context to the created engram', async () => {

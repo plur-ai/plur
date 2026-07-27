@@ -91,7 +91,7 @@ function bothStores(dir: string) {
   ]
 }
 
-function readLocalEngrams(dir: string): any[] {
+async function readLocalEngrams(dir: string): Promise<any[]> {
   const path = join(dir, 'engrams.yaml')
   if (!existsSync(path)) return []
   const data = yaml.load(readFileSync(path, 'utf-8')) as { engrams?: unknown[] } | null
@@ -102,7 +102,7 @@ function writeLocalEngrams(dir: string, engrams: any[]) {
   writeFileSync(join(dir, 'engrams.yaml'), yaml.dump({ engrams }, { lineWidth: 120, noRefs: true }))
 }
 
-function readSharedStore(dir: string): any[] {
+async function readSharedStore(dir: string): Promise<any[]> {
   const path = join(dir, 'team-store.yaml')
   if (!existsSync(path)) return []
   const data = yaml.load(readFileSync(path, 'utf-8')) as { engrams?: unknown[] } | null
@@ -221,8 +221,8 @@ describe('adversarial leak-guard fuzzer (#353 round-3)', () => {
       expect(e.visibility).toBe('private')
     }
     // Nothing landed in the shared store; only demoted-local engrams in primary.
-    expect(readSharedStore(dir).length).toBe(0)
-    const local = readLocalEngrams(dir)
+    expect((await readSharedStore(dir)).length).toBe(0)
+    const local = await readLocalEngrams(dir)
     expect(local.length).toBe(SENSITIVE_CORPUS.length)
     expect(local.every(e => e.scope === 'local')).toBe(true)
   })
@@ -269,7 +269,7 @@ describe('adversarial leak-guard fuzzer (#353 round-3)', () => {
     expect(e.visibility).toBe('private')
     expect(e.structured_data?._routed?.scope).toBe(SHARED_SCOPE) // it DID auto-route
     expect(e.structured_data?._demoted?.from).toBe(SHARED_SCOPE) // and was then demoted
-    expect(readSharedStore(dir).length).toBe(0)
+    expect((await readSharedStore(dir)).length).toBe(0)
   })
 
   // ==========================================================================
@@ -298,7 +298,7 @@ describe('adversarial leak-guard fuzzer (#353 round-3)', () => {
       expect(e.scope).toBe('local')
       expect(e.visibility).toBe('private')
     }
-    expect(readSharedStore(dir).length).toBe(0)
+    expect((await readSharedStore(dir)).length).toBe(0)
   })
 
   it('learnRouted() does NOT over-block clean content (it reaches the remote)', async () => {
@@ -374,7 +374,7 @@ describe('adversarial leak-guard fuzzer (#353 round-3)', () => {
 
     for (const payload of [`connect to ${PUBLIC_IP}:8877`, `login ${BASIC_AUTH_URL}`]) {
       const sensitive = { ...found, statement: payload } as any
-      await expect(await plur.updateEngramAsync(sensitive)).rejects.toThrow(/sensitive content/i)
+      await expect(plur.updateEngramAsync(sensitive)).rejects.toThrow(/sensitive content/i)
     }
     expect(patchCalls().length, 'remote PATCH must be ZERO').toBe(0)
   })
@@ -387,7 +387,7 @@ describe('adversarial leak-guard fuzzer (#353 round-3)', () => {
     const found = (await plur.list()).find(e => e.id === id)!
     const sensitive = { ...found, statement: `the prod box is ${PUBLIC_IP}` } as any
 
-    expect(() => plur.updateEngram(sensitive)).toThrow(/sensitive content/i)
+    await expect(plur.updateEngram(sensitive)).rejects.toThrow(/sensitive content/i)
     expect(patchCalls().length).toBe(0)
   })
 
@@ -401,7 +401,7 @@ describe('adversarial leak-guard fuzzer (#353 round-3)', () => {
     const found = (await plur.list()).find(e => e.id === id)!
     const sensitive = { ...found, statement: 'still clean here', rationale: `because ${PUBLIC_IP} is the box` } as any
 
-    await expect(await plur.updateEngramAsync(sensitive)).rejects.toThrow(/sensitive content/i)
+    await expect(plur.updateEngramAsync(sensitive)).rejects.toThrow(/sensitive content/i)
     expect(patchCalls().length).toBe(0)
   })
 
@@ -436,7 +436,7 @@ describe('adversarial leak-guard fuzzer (#353 round-3)', () => {
     const updated = (await plur.list()).find(e => String(e.statement).includes(PUBLIC_IP))!
     expect(updated.scope, 'local-resident sensitive update must demote').toBe('local')
     expect((updated as any).visibility).toBe('private')
-    expect(readSharedStore(dir).find(e => String(e.statement).includes(PUBLIC_IP))).toBeUndefined()
+    expect((await readSharedStore(dir)).find(e => String(e.statement).includes(PUBLIC_IP))).toBeUndefined()
   })
 
   // ==========================================================================
@@ -462,7 +462,7 @@ describe('adversarial leak-guard fuzzer (#353 round-3)', () => {
     const res = await plur.saveMetaEngrams(metas)
     expect(res.saved).toBe(metas.length)
 
-    const local = readLocalEngrams(dir)
+    const local = await readLocalEngrams(dir)
     for (const m of metas) {
       const persisted = local.find(e => e.id === m.id)
       expect(persisted, `meta ${m.id} persisted`).toBeDefined()
@@ -472,7 +472,7 @@ describe('adversarial leak-guard fuzzer (#353 round-3)', () => {
     }
     // None written at the shared scope.
     expect(local.some(e => e.scope === SHARED_SCOPE)).toBe(false)
-    expect(readSharedStore(dir).length).toBe(0)
+    expect((await readSharedStore(dir)).length).toBe(0)
   })
 
   it('saveMetaEngrams() does NOT demote a clean shared-scope meta', async () => {
@@ -487,7 +487,7 @@ describe('adversarial leak-guard fuzzer (#353 round-3)', () => {
       knowledge_type: { memory_class: 'semantic', cognitive_level: 'remember' },
     }] as any[]
     await plur.saveMetaEngrams(metas)
-    const persisted = readLocalEngrams(dir).find(e => e.id === 'META-FUZZ-CLEAN')
+    const persisted = (await readLocalEngrams(dir)).find(e => e.id === 'META-FUZZ-CLEAN')
     expect(persisted.scope, 'clean meta keeps its scope').toBe(SHARED_SCOPE)
   })
 
@@ -520,7 +520,7 @@ describe('adversarial leak-guard fuzzer (#353 round-3)', () => {
 
     await new Promise(r => setTimeout(r, 80))
     expect(egressCalls().length, 'no append/PATCH to remote').toBe(0)
-    expect(readSharedStore(dir).find(e => String(e.statement).includes(PUBLIC_IP))).toBeUndefined()
+    expect((await readSharedStore(dir)).find(e => String(e.statement).includes(PUBLIC_IP))).toBeUndefined()
   })
 
   // ==========================================================================
@@ -546,7 +546,7 @@ describe('adversarial leak-guard fuzzer (#353 round-3)', () => {
 
     await new Promise(r => setTimeout(r, 80))
     expect(egressCalls().length).toBe(0)
-    expect(readSharedStore(dir).find(e => String(e.statement).includes('hub-staging'))).toBeUndefined()
+    expect((await readSharedStore(dir)).find(e => String(e.statement).includes('hub-staging'))).toBeUndefined()
   })
 
   it('learnAsync UPDATE: a CLEAN mutation does NOT demote (no over-block)', async () => {
@@ -613,7 +613,7 @@ describe('adversarial leak-guard fuzzer (#353 round-3)', () => {
     expect(result.expired_warnings.some(w => /demoted to local\/private|now forbidden/.test(w))).toBe(true)
 
     // Demoted in place: scope→local, _outbox dropped, _demoted stamped.
-    const found = readLocalEngrams(dir).find(e => e.id === 'ENG-FUZZ-OUTBOX-1')
+    const found = (await readLocalEngrams(dir)).find(e => e.id === 'ENG-FUZZ-OUTBOX-1')
     expect(found.scope).toBe('local')
     expect(found.visibility).toBe('private')
     expect(found.structured_data?._outbox).toBeUndefined()

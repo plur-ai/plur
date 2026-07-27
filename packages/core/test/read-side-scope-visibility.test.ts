@@ -144,7 +144,7 @@ describe.skipIf(!hasSqlite)('PR-1 read-side scope visibility (indexed path, #353
 })
 
 // --- Non-indexed read filter (index.ts:1812) ---
-describe('PR-1 read-side scope visibility (NON-indexed path, #353)', () => {
+describe('PR-1 read-side scope visibility (NON-indexed path, #353)', async () => {
   let dir: string
   let plur: Plur
 

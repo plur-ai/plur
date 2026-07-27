@@ -67,7 +67,7 @@ describe('SP2 Idea 7: Enhanced Event-Sourced History', () => {
   })
 })
 
-describe('SP2 Idea 8: Version Lineage Tracking', () => {
+describe('SP2 Idea 8: Version Lineage Tracking', async () => {
   let dir: string
 
   beforeEach(() => {
@@ -101,7 +101,7 @@ describe('SP2 Idea 8: Version Lineage Tracking', () => {
   })
 })
 
-describe('SP2 Idea 24: Episodic Anchoring', () => {
+describe('SP2 Idea 24: Episodic Anchoring', async () => {
   let dir: string
 
   beforeEach(() => {

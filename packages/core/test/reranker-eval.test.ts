@@ -417,7 +417,7 @@ describe('Plur.rerankerSelfEval + advisory on the enable path (#451)', () => {
 
   it('throws when no reranker is configured and none is passed', async () => {
     delete process.env.PLUR_RERANKER
-    await expect(await plur.rerankerSelfEval()).rejects.toThrow(/PLUR_RERANKER|reranker/i)
+    await expect(plur.rerankerSelfEval()).rejects.toThrow(/PLUR_RERANKER|reranker/i)
   })
 
   it('rerankerEvalStatus reads the cached verdict without running anything', async () => {
@@ -446,10 +446,10 @@ describe('Plur.rerankerSelfEval + advisory on the enable path (#451)', () => {
       const warnings = () => spy.mock.calls
         .filter(c => String(c[0]).includes('plur:warning') && c.map(String).join(' ').includes('net-negative'))
         .length
-      expect(warnings()).toBe(1)
+      expect(await warnings()).toBe(1)
       // Second recall: advisory does not repeat.
       await fresh.recallHybridWithMeta('staging deploy target cluster', { limit: 5 })
-      expect(warnings()).toBe(1)
+      expect(await warnings()).toBe(1)
     } finally {
       spy.mockRestore()
     }

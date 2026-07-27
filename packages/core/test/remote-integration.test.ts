@@ -165,7 +165,7 @@ describe('RemoteStore against stub server', () => {
   // #327: a 2xx PATCH whose echoed row fails RemoteRowSchema must NOT return
   // null — that's indistinguishable from the 404 "not found" return, so a
   // successful write would be misreported as a failure (or retried).
-  describe('patch() — 2xx with malformed echoed row (#327)', () => {
+  describe('patch() — 2xx with malformed echoed row (#327)', async () => {
     it('returns the optimistically-merged engram when the echo fails validation (warm cache)', async () => {
       const store = new RemoteStore(baseUrl, TOKEN, 'group:test')
       server.seedEngram({
@@ -315,7 +315,7 @@ describe('RemoteStore against stub server', () => {
 // Plur integration — real learn() → RemoteStore → stub server
 // ---------------------------------------------------------------------------
 
-describe('Plur integration with stub server', () => {
+describe('Plur integration with stub server', async () => {
   let primaryDir: string
 
   beforeEach(() => {
@@ -358,7 +358,7 @@ describe('Plur integration with stub server', () => {
     // Local YAML should NOT have it (the outbox copy is removed AFTER the
     // remote push succeeds — poll for the removal, don't race it)
     const localYaml = join(primaryDir, 'engrams.yaml')
-    await expect.poll(() => {
+    await expect.poll(async () => {
       if (!existsSync(localYaml)) return undefined
       const local = yaml.load(readFileSync(localYaml, 'utf-8')) as { engrams?: any[] } | null
       return (local?.engrams ?? []).find((e: any) => e.statement === 'integration test engram')
@@ -440,7 +440,7 @@ describe('Plur integration with stub server', () => {
 // ID prefix round-trip — the #86 regression test
 // ---------------------------------------------------------------------------
 
-describe('ID prefix round-trip (issue #86)', () => {
+describe('ID prefix round-trip (issue #86)', async () => {
   let primaryDir: string
 
   beforeEach(() => {
@@ -543,7 +543,7 @@ describe('ID prefix round-trip (issue #86)', () => {
  * endpoint (PR #111) is now consumed by RemoteStore.patch(), and setPinned,
  * updateEngram, and reportFailure route to remote when the engram lives there.
  */
-describe('Remote mutation routing — pin / promote / reportFailure (#185, #86)', () => {
+describe('Remote mutation routing — pin / promote / reportFailure (#185, #86)', async () => {
   let primaryDir: string
 
   beforeEach(() => {

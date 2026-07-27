@@ -12,7 +12,7 @@ function writeStoresConfig(dir: string, stores: Array<Record<string, unknown>>) 
   )
 }
 
-function readLocalEngrams(dir: string): any[] {
+async function readLocalEngrams(dir: string): Promise<any[]> {
   const path = join(dir, 'engrams.yaml')
   if (!existsSync(path)) return []
   const data = yaml.load(readFileSync(path, 'utf-8')) as { engrams?: unknown[] } | null
@@ -98,7 +98,7 @@ describe('outbox pattern (issue #26)', () => {
     await new Promise(r => setTimeout(r, 50))
 
     // Engram should be in local store with outbox metadata
-    const local = readLocalEngrams(primaryDir)
+    const local = await readLocalEngrams(primaryDir)
     const outboxEngram = local.find((e: any) => e.statement === 'outbox test engram')
     expect(outboxEngram).toBeDefined()
     expect(outboxEngram.structured_data._outbox).toBeDefined()
@@ -122,7 +122,7 @@ describe('outbox pattern (issue #26)', () => {
     await new Promise(r => setTimeout(r, 100))
 
     // Local store should NOT contain the engram (removed after success)
-    const local = readLocalEngrams(primaryDir)
+    const local = await readLocalEngrams(primaryDir)
     const found = local.find((e: any) => e.statement === 'success test engram')
     expect(found).toBeUndefined()
   })
@@ -144,7 +144,7 @@ describe('outbox pattern (issue #26)', () => {
     expect((engram as any).structured_data._outbox.last_error).toBe('server error')
 
     // Should be in local store
-    const local = readLocalEngrams(primaryDir)
+    const local = await readLocalEngrams(primaryDir)
     const found = local.find((e: any) => e.statement === 'routed outbox test')
     expect(found).toBeDefined()
     expect(found.structured_data._outbox).toBeDefined()
@@ -173,7 +173,7 @@ describe('outbox pattern (issue #26)', () => {
     expect(await plur.outboxCount()).toBe(0)
 
     // Local store should not contain it anymore
-    const local = readLocalEngrams(primaryDir)
+    const local = await readLocalEngrams(primaryDir)
     const found = local.find((e: any) => e.statement === 'flush test engram')
     expect(found).toBeUndefined()
   })
@@ -195,7 +195,7 @@ describe('outbox pattern (issue #26)', () => {
     expect(await plur.outboxCount()).toBe(1)
 
     // Check attempt_count incremented
-    const local = readLocalEngrams(primaryDir)
+    const local = await readLocalEngrams(primaryDir)
     const found = local.find((e: any) => e.statement === 'retry test')
     expect(found.structured_data._outbox.attempt_count).toBe(2) // 1 from learnRouted + 1 from flush
     expect(found.structured_data._outbox.last_error).toBe('still down')
@@ -212,7 +212,7 @@ describe('outbox pattern (issue #26)', () => {
     })
 
     // Manually backdate the outbox entry
-    const local = readLocalEngrams(primaryDir)
+    const local = await readLocalEngrams(primaryDir)
     const found = local.find((e: any) => e.statement === 'old engram')
     const eightDaysAgo = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000).toISOString()
     found.structured_data._outbox.queued_at = eightDaysAgo
@@ -319,7 +319,7 @@ describe('outbox pattern (issue #26)', () => {
     expect(result.expired_warnings.some(w => /demoted to local\/private|now forbidden/.test(w))).toBe(true)
 
     // Engram demoted in place: scope→local, _outbox dropped, _demoted stamped.
-    const local = readLocalEngrams(primaryDir)
+    const local = await readLocalEngrams(primaryDir)
     const found = local.find((e: any) => e.statement.includes(PUBLIC_IP))
     expect(found).toBeDefined()
     expect(found.scope).toBe('local')
@@ -369,7 +369,7 @@ describe('outbox pattern (issue #26)', () => {
     expect(pushSpy).not.toHaveBeenCalled()
 
     // Demoted in place: scope→local, visibility→private, _outbox dropped.
-    const local = readLocalEngrams(primaryDir)
+    const local = await readLocalEngrams(primaryDir)
     const found = local.find((e: any) => e.domain === `prod ${PUBLIC_IP}`)
     expect(found).toBeDefined()
     expect(found.scope).toBe('local')

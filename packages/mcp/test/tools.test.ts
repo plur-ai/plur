@@ -62,7 +62,7 @@ describe('MCP tools', () => {
     expect(result.statement).toBe('Test learning')
   })
 
-  describe('plur_learn_batch', () => {
+  describe('plur_learn_batch', async () => {
     it('is registered as a tool', () => {
       expect(tools.map(t => t.name)).toContain('plur_learn_batch')
     })
@@ -140,7 +140,7 @@ describe('MCP tools', () => {
   })
 
   // #347 — temporal validity params on the write path.
-  describe('plur_learn temporal validity (#347)', () => {
+  describe('plur_learn temporal validity (#347)', async () => {
     it('accepts explicit valid_until and echoes it back', async () => {
       const result = await callTool('plur_learn', {
         statement: 'Conference discount code is CONF20',
@@ -183,7 +183,7 @@ describe('MCP tools', () => {
 
   // #296 — team knowledge silently defaulting to 'global'. When a team store is
   // configured and no scope is passed, surface a hint at the moment of the write.
-  describe('scope hint when a team store is configured (#296)', () => {
+  describe('scope hint when a team store is configured (#296)', async () => {
     beforeEach(() => {
       plur.addStore('', 'group:acme/engineering', { url: 'https://plur.example.com', token: 'tok' })
     })
@@ -232,7 +232,7 @@ describe('MCP tools', () => {
   // a writable team store IS configured. Without the wasRouted-silence branch the
   // hint would fire (personal landing + team store); with it, the routing decision
   // already explained the scope, so the hint must stay silent.
-  describe('scope hint is suppressed after a Stage-3b auto-route to a personal scope (LOW-22)', () => {
+  describe('scope hint is suppressed after a Stage-3b auto-route to a personal scope (LOW-22)', async () => {
     let routedDir: string
     let routedPlur: Plur
     const routedCall = async (name: string, args: Record<string, unknown> = {}) => {
@@ -307,7 +307,7 @@ describe('MCP tools', () => {
   // (the domain-prefix channel is the only signal that reliably clears the
   // auto-route threshold), so surface that at write time — but only when a
   // covers-declaring scope exists to route against.
-  describe('domain hint when covers-declaring scopes exist (#671)', () => {
+  describe('domain hint when covers-declaring scopes exist (#671)', async () => {
     let coversDir: string
     let coversPlur: Plur
     const coversCall = async (name: string, args: Record<string, unknown> = {}) => {
@@ -485,7 +485,7 @@ describe('MCP tools', () => {
 
   // plur_stores_add must report an honest status, never an unconditional
   // success:true that masks a dropped scope (#291).
-  describe('plur_stores_add status reporting (#291)', () => {
+  describe('plur_stores_add status reporting (#291)', async () => {
     const url = 'https://plur.datafund.io/sse'
 
     it('reports status:added for a second scope on the same remote URL', async () => {
@@ -522,7 +522,7 @@ describe('MCP tools', () => {
   // pin the surfacing: a warning on the recall response and a plur_doctor
   // check with corrupt-vs-unavailable remediation. Fakes are seeded into the
   // adapter cache so no test touches the real ~300 MB model.
-  describe('reranker non-engagement surfacing (#341)', () => {
+  describe('reranker non-engagement surfacing (#341)', async () => {
     const BGE = 'bge-reranker-v2-m3' as const
     const BGE_MODEL_ID = 'onnx-community/bge-reranker-v2-m3-ONNX'
 
@@ -652,7 +652,7 @@ describe('MCP tools', () => {
     })
   })
 
-  describe('plur_stores_add honest reporting for a re-registered local path (#406)', () => {
+  describe('plur_stores_add honest reporting for a re-registered local path (#406)', async () => {
     it('reports success:false and the dropped requested scope when a local path already exists', async () => {
       const storePath = join(dir, 'extra', 'engrams.yaml')
       const first = await callTool('plur_stores_add', { path: storePath, scope: 'space:original' }) as any
@@ -681,7 +681,7 @@ describe('MCP tools', () => {
   // #670 — the MCP suggestion surface applies a display floor of 0.15 by
   // default (lone-keyword noise ≈0.12); min_confidence: 0 restores the
   // unfiltered advisory list.
-  describe('plur_suggest_scope min_confidence display floor (#670)', () => {
+  describe('plur_suggest_scope min_confidence display floor (#670)', async () => {
     let floorDir: string
     let floorPlur: Plur
     const floorCall = async (name: string, args: Record<string, unknown> = {}) => {

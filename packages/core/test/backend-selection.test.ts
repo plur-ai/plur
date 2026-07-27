@@ -151,11 +151,11 @@ describe('PrimaryStore.estimateCount — cheap by contract', () => {
     expect(new YamlPrimaryStore(yamlPath).estimateCount()).toBe(300)
   })
 
-  it('is exact once a snapshot is cached — no reason to estimate what we hold', () => {
+  it('is exact once a snapshot is cached — no reason to estimate what we hold', async () => {
     const engrams = Array.from({ length: 7 }, (_, i) => mkEngram(`ENG-2026-0726-${String(i).padStart(3, '0')}`))
     writeFileSync(yamlPath, yaml.dump({ engrams }), 'utf8')
     const store = new YamlPrimaryStore(yamlPath)
-    store.loadCached()
+    await store.loadCached()
     expect(store.estimateCount()).toBe(7)
   })
 

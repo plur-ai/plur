@@ -59,9 +59,9 @@ describe('Plur.receipt()', () => {
     expect(r.window.requested_days).toBe(30)
   })
 
-  it('does not throw when the history directory is absent', () => {
+  it('does not throw when the history directory is absent', async () => {
     fs.rmSync(path.join(dir, 'history'), { recursive: true, force: true })
-    expect(() => plur.receipt()).not.toThrow()
+    await expect(plur.receipt()).resolves.toBeDefined()
   })
 
   it('counts never-retrieved engrams as dormant', async () => {

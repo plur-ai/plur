@@ -77,7 +77,7 @@ describe('openai-3-large hardening (#269) — timeout', () => {
   })
 })
 
-describe('openai-3-large hardening (#269) — retry', () => {
+describe('openai-3-large hardening (#269) — retry', async () => {
   it('retries a 429 and succeeds on the next attempt', async () => {
     const calls: string[][] = []
     const fetch = recordingFetch(calls, (inputs, call) =>
@@ -173,7 +173,7 @@ describe('openai-3-large hardening (#269) — batching', () => {
   })
 })
 
-describe('openai-3-large hardening (#269) — 8191-token pre-check', () => {
+describe('openai-3-large hardening (#269) — 8191-token pre-check', async () => {
   it('truncates an oversize input instead of sending it', async () => {
     const calls: string[][] = []
     const fetch = recordingFetch(calls, (inputs) => okResponse(inputs))

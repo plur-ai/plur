@@ -142,7 +142,7 @@ describe('EmbeddingGemma — role-aware prefix contract', () => {
   })
 })
 
-describe.skipIf(!NETWORK)('EmbedderAdapter — live model loads (PLUR_EMBEDDER_NETWORK_TESTS=1)', () => {
+describe.skipIf(!NETWORK)('EmbedderAdapter — live model loads (PLUR_EMBEDDER_NETWORK_TESTS=1)', async () => {
   // Live tests share state across the suite because each model is ~100MB+
   // and downloads can take a minute on cold caches.
   const LIVE_TIMEOUT = 180_000

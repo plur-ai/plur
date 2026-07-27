@@ -52,7 +52,7 @@ function remoteUserStore(extra: Record<string, unknown> = {}) {
   }]
 }
 
-function readLocalEngrams(dir: string): any[] {
+async function readLocalEngrams(dir: string): Promise<any[]> {
   const path = join(dir, 'engrams.yaml')
   if (!existsSync(path)) return []
   const data = yaml.load(readFileSync(path, 'utf-8')) as { engrams?: unknown[] } | null
@@ -116,7 +116,7 @@ describe('remote-backed (non-shared) leak guard', () => {
     expect(await plur.outboxCount()).toBe(0)
 
     // Kept locally (demoted), not lost.
-    const local = readLocalEngrams(dir)
+    const local = await readLocalEngrams(dir)
     expect(local.find(e => e.scope === 'local' && String(e.statement).includes(PUBLIC_IP))).toBeDefined()
   })
 

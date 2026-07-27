@@ -107,7 +107,7 @@ describe('MED-20 + LOW-9 — learnAsync UPDATE/MERGE demotion (real guard, share
   }, 30_000)
 })
 
-describe('LOW-2 — _guardExplicitUpdate scans context fields', () => {
+describe('LOW-2 — _guardExplicitUpdate scans context fields', async () => {
   it('demotes an explicit update when a public IP is ONLY in a context field (source) at a shared scope', async () => {
     const plur = freshPlur()
     // Seed a clean engram at the shared scope.
@@ -149,7 +149,7 @@ describe('LOW-2 — _guardExplicitUpdate scans context fields', () => {
  * local/private — silently breaking remote sync. A regression removing the
  * `if (!k.startsWith('_'))` guard must fail this test.
  */
-describe('R2-D #11 — underscore-strip protects internal bookkeeping from the infra detector', () => {
+describe('R2-D #11 — underscore-strip protects internal bookkeeping from the infra detector', async () => {
   it('a remote-routed engram carrying _outbox.target_url (ipv4_port-shaped) is NOT demoted on a clean update', async () => {
     const plur = freshPlur()
     const seed = await plur.learn('the release runbook lives in the team wiki', { scope: SHARED_SCOPE, type: 'procedural' }) as Engram
@@ -189,7 +189,7 @@ describe('R2-D #11 — underscore-strip protects internal bookkeeping from the i
   })
 })
 
-describe('LOW-1 — saveMetaEngrams runs the leak guard before persist', () => {
+describe('LOW-1 — saveMetaEngrams runs the leak guard before persist', async () => {
   let metaSeq = 0
   /**
    * Build a schema-valid meta-engram by deriving it from a real `learn()`
@@ -245,10 +245,10 @@ describe('LOW-1 — saveMetaEngrams runs the leak guard before persist', () => {
     expect(saved!.visibility).toBe('private')
   })
 
-  it('THROWS on a raw secret in a SHARED-scope meta (HARD detectSecrets check)', () => {
+  it('THROWS on a raw secret in a SHARED-scope meta (HARD detectSecrets check)', async () => {
     const plur = freshPlur()
     const m = meta({ statement: 'the api key is sk-aaaabbbbccccddddeeeeffffgggg', scope: SHARED_SCOPE })
-    expect(() => plur.saveMetaEngrams([m])).toThrow(/secret detected/i)
+    await expect(plur.saveMetaEngrams([m])).rejects.toThrow(/secret detected/i)
   })
 
   it('leaves a clean PERSONAL-scope meta untouched (no-op for in-tree callers)', async () => {
