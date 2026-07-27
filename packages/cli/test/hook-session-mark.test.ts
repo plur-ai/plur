@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
-import { spawnSync } from 'child_process'
+import { runCli } from './helpers/spawn.js'
 
 const CLI = join(__dirname, '..', 'dist', 'index.js')
 
@@ -37,7 +37,7 @@ describe('hook-session-mark', () => {
   })
 
   function runMark(input: object): { stdout: string; status: number } {
-    const result = spawnSync('node', [CLI, 'hook-session-mark'], {
+    const result = runCli('node', [CLI, 'hook-session-mark'], {
       input: JSON.stringify(input),
       encoding: 'utf-8',
       timeout: 10000,

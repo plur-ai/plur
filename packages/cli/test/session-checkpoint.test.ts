@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { mkdtempSync, rmSync, readFileSync, writeFileSync, mkdirSync, existsSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
-import { spawnSync } from 'child_process'
+import { runCli } from './helpers/spawn.js'
 
 const CLI = join(__dirname, '..', 'dist', 'index.js')
 
@@ -30,7 +30,7 @@ describe('session checkpoint (#215)', () => {
   })
 
   function runLearnCheck(input: object, env?: Record<string, string>): { stdout: string; stderr: string } {
-    const result = spawnSync('node', [CLI, 'hook-learn-check'], {
+    const result = runCli('node', [CLI, 'hook-learn-check'], {
       input: JSON.stringify(input),
       encoding: 'utf-8',
       timeout: 10000,
@@ -140,7 +140,7 @@ describe('deferred wrap-up detection (#216)', () => {
   }
 
   function runInject(prompt: string, extraEnv?: Record<string, string>): { stdout: string } {
-    const result = spawnSync('node', [CLI, 'hook-inject'], {
+    const result = runCli('node', [CLI, 'hook-inject'], {
       input: JSON.stringify({ prompt }),
       encoding: 'utf-8',
       timeout: 15000,

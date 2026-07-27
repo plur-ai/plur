@@ -4,19 +4,31 @@ import { join } from 'path'
 import { tmpdir } from 'os'
 import { Client } from '@modelcontextprotocol/client'
 import { InMemoryTransport } from '@modelcontextprotocol/server'
-import { Plur, checkForUpdate, clearVersionCache } from '@plur-ai/core'
+import { Plur, checkForUpdate, clearVersionCache, settleVersionChecks } from '@plur-ai/core'
 import { createServer } from '../src/server.js'
 
 describe('MCP server (wire protocol)', () => {
   let client: Client
   let dir: string
   let plurInstance: Plur
+  const realFetch = globalThis.fetch
 
   beforeEach(async () => {
     dir = mkdtempSync(join(tmpdir(), 'plur-mcp-server-'))
+
+    // `createServer` fires a fire-and-forget npm version check. Left alone it
+    // reaches the real registry — 32 live requests per run of this file — and,
+    // worse, lands in a module-level cache at an unpredictable moment, which is
+    // what made the staleness assertions below fail under parallel load while
+    // passing in isolation. Stub the network for the whole file, then drain the
+    // check and reset the cache so each test starts from a known-empty one.
+    globalThis.fetch = vi.fn().mockResolvedValue({ ok: false, json: () => Promise.resolve({}) }) as any
+
     const plur = new Plur({ path: dir })
     plurInstance = plur
     const server = await createServer(plur, { profile: 'full' })
+    await settleVersionChecks()
+    clearVersionCache()
 
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
     await server.connect(serverTransport)
@@ -26,6 +38,7 @@ describe('MCP server (wire protocol)', () => {
   })
 
   afterEach(() => {
+    globalThis.fetch = realFetch
     rmSync(dir, { recursive: true })
   })
 
