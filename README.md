@@ -214,14 +214,19 @@ await plur.learn('toEqual() in Vitest is strict — use toMatchObject() for part
 // Recall (hybrid: BM25 + embeddings, zero cost)
 const results = await plur.recallHybrid('vitest assertion matching')
 
-// Inject relevant engrams into agent context
-const { engrams } = await plur.inject('Write tests for the user service', {
+// Inject relevant engrams into agent context. You get context blocks ready to
+// paste into a prompt plus the IDs that went into them — not the engrams
+// themselves. `budget` is the ceiling in tokens; selection fills it by relevance.
+const injection = await plur.inject('Write tests for the user service', {
   scope: 'project:my-app',
-  limit: 15
+  budget: 2000
 })
+console.log(injection.directives)   // also .constraints, .consider
+console.log(`${injection.count} engrams, ${injection.tokens_used} tokens`)
 
-// Feedback trains the system
-await plur.feedback(engram.id, 'positive')
+// Feedback trains the system — rate anything you have an ID for, whether it came
+// back from recall or went out in an injection (injection.injected_ids).
+if (results[0]) await plur.feedback(results[0].id, 'positive')
 
 // Capture an event (episode). Episode operations stay synchronous — they are
 // backed by episodes.yaml, not the engram primary store.

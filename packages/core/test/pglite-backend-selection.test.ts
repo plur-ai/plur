@@ -16,6 +16,7 @@ import { join } from 'path'
 import { tmpdir } from 'os'
 import yaml from 'js-yaml'
 import { Plur } from '../src/index.js'
+import { logger } from '../src/logger.js'
 import { MemoryPrimaryStore } from '../src/store/memory-primary-store.js'
 import { PGLITE_MIN_ENGRAMS, POSTGRES_MIN_ENGRAMS } from '../src/backend-selection.js'
 import { AVG_YAML_BYTES_PER_ENGRAM } from '../src/store/yaml-primary-store.js'
@@ -94,16 +95,37 @@ describe('size-based selection builds the index it selected', () => {
 
 describe('the Postgres tier degrades loudly, never silently', () => {
   let dir: string
-  let warnings: string[]
+  let logs: string[]
   const saved = { backend: process.env.PLUR_BACKEND, pg: process.env.PLUR_POSTGRES_URL }
+
+  /**
+   * Capture the LOGGER, not `console.error`.
+   *
+   * `logger.info` is filtered out at the default `PLUR_LOG_LEVEL` (warning),
+   * and the threshold is read once at module load — so a `console.error` spy
+   * never observes the info-level lines this suite is about, and any assertion
+   * against them was really an assertion against the empty string. Spying the
+   * logger records the call arguments whatever the threshold does with them.
+   */
+  const captureLevel = (level: 'debug' | 'info' | 'warning' | 'error') => {
+    vi.spyOn(logger, level).mockImplementation((...args: unknown[]) => {
+      logs.push(`[${level}] ${args.map(String).join(' ')}`)
+    })
+  }
 
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), 'plur-tier-pg-'))
     delete process.env.PLUR_BACKEND
     delete process.env.PLUR_POSTGRES_URL
-    warnings = []
+    logs = []
+    captureLevel('debug')
+    captureLevel('info')
+    captureLevel('warning')
+    captureLevel('error')
+    // Anything bypassing the logger still gets recorded, and stays out of the
+    // test output.
     vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => {
-      warnings.push(args.map(String).join(' '))
+      logs.push(args.map(String).join(' '))
     })
   })
   afterEach(() => {
@@ -121,7 +143,7 @@ describe('the Postgres tier degrades loudly, never silently', () => {
     const selection = plur.backendSelection()
     expect(selection.tier).toBe('pglite')
     expect(selection.wanted).toBe('postgres')
-    expect(warnings.join('\n')).toMatch(/past the Postgres threshold/)
+    expect(logs.join('\n')).toMatch(/past the Postgres threshold/)
     // Degraded, but still indexed — the fallback is a working backend, not none.
     expect(existsSync(join(dir, 'store.pglite'))).toBe(true)
   }, PGLITE_TIMEOUT)
@@ -136,16 +158,29 @@ describe('the Postgres tier degrades loudly, never silently', () => {
     // connection has credentials and a lifecycle, and a constructor that dials
     // out because a config string was present puts failure somewhere nobody is
     // looking. The caller passes the adapter in explicitly.
-    process.env.PLUR_POSTGRES_URL = 'postgres://user:pw@127.0.0.1:5432/nope'
+    const password = 'n0t-in-any-log'
+    const dsn = `postgres://user:${password}@127.0.0.1:5432/nope`
+    process.env.PLUR_POSTGRES_URL = dsn
     const plur = new Plur({ path: dir, store: storeClaiming(POSTGRES_MIN_ENGRAMS * 3) })
     await (plur as unknown as { waitForIndex: () => Promise<void> }).waitForIndex()
     expect(plur.backendSelection().tier).toBe('postgres')
     // The store it was constructed with is the store it uses. The unreachable
     // DSN above is proof: had anything dialled it, this would have thrown.
     expect(plur.primaryStore.kind).toBe('memory')
-    // And the password never reaches a log line.
-    expect(warnings.join('\n')).not.toContain('pw@')
     expect(existsSync(join(dir, 'store.pglite'))).toBe(true)
+
+    // Choosing this tier is ANNOUNCED — a deployment that silently is not on
+    // the store it configured is the failure this whole phase removes. Pinned
+    // before the credential check below, because "the DSN is absent" is
+    // trivially true of a log nobody wrote, and that is exactly what the
+    // previous version of this assertion was checking.
+    const emitted = logs.join('\n')
+    expect(emitted, 'nothing was logged — the credential assertion would be vacuous')
+      .toMatch(/backend=postgres selected/)
+    // And the announcement carries no credentials: not the password, and not
+    // the DSN it came from.
+    expect(emitted).not.toContain(password)
+    expect(emitted).not.toContain(dsn)
   }, PGLITE_TIMEOUT)
 
   it('an explicit backend: postgres override is honoured as a selection, not ignored', async () => {

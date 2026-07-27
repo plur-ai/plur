@@ -107,16 +107,35 @@ describe('withAsyncLock — in-process contention', () => {
   })
 
   it('keys distinct paths independently — no false serialization', async () => {
+    // "b ran" is NOT the property — b runs eventually even under total
+    // serialization. The property is OVERLAP: b must run to completion while a
+    // is still inside its critical section. Only an ordering trace can tell
+    // those apart, so record one.
     const a = join(dir, 'a.txt')
     const b = join(dir, 'b.txt')
-    let bRanWhileAHeld = false
+    const events: string[] = []
     const first = withAsyncLock(a, async () => {
-      await new Promise(r => setTimeout(r, 40))
-      // b must have completed during a's critical section
+      events.push('a:enter')
+      await new Promise(r => setTimeout(r, 60))
+      events.push('a:exit')
     })
-    const second = withAsyncLock(b, async () => { bRanWhileAHeld = true })
+    const second = withAsyncLock(b, async () => {
+      events.push('b:enter')
+      await new Promise(r => setTimeout(r, 10))
+      events.push('b:exit')
+    })
     await Promise.all([first, second])
-    expect(bRanWhileAHeld).toBe(true)
+
+    const aEnter = events.indexOf('a:enter')
+    const aExit = events.indexOf('a:exit')
+    const bExit = events.indexOf('b:exit')
+    expect(aEnter, 'a never entered its critical section').toBeGreaterThanOrEqual(0)
+    expect(bExit, 'b never finished').toBeGreaterThanOrEqual(0)
+    // aEnter < bExit < aExit — b finished strictly INSIDE a's critical section.
+    // Serialized on a single key this reads a:enter,a:exit,b:enter,b:exit (or
+    // the b-first mirror), and one of these two bounds breaks either way.
+    expect(aEnter, `b finished before a started — ${events.join(',')}`).toBeLessThan(bExit)
+    expect(bExit, `b was serialized behind a — ${events.join(',')}`).toBeLessThan(aExit)
   })
 
   it('still excludes a foreign lock holder (cross-process guard intact)', async () => {
@@ -129,19 +148,42 @@ describe('withAsyncLock — in-process contention', () => {
     rmSync(p + '.lock')
   })
 
-  it('interoperates with the synchronous withLock on the same path', async () => {
-    // Mixed sync/async callers must still be mutually exclusive — the file
-    // lock is the shared mechanism.
+  it('excludes the synchronous withLock while an async holder is inside its critical section', async () => {
+    // Mixed sync/async callers must be mutually exclusive — the O_EXCL file
+    // lock is the shared mechanism, and it is the ONLY one they share (the
+    // in-process queue is async-side only). So the contention has to happen
+    // for real: the sync caller attempts entry WHILE the async holder is
+    // inside, not politely after it has finished.
+    //
+    // `withLock` cannot wait this out — its backoff is a `Date.now()` spin,
+    // which would block the very loop the async holder needs to finish. So
+    // exclusion here means it throws rather than entering, and 1 retry keeps
+    // the spin to ~1ms.
     const p = join(dir, 'mixed.txt')
     await writeFile(p, '0')
 
+    let syncEntered = false
+    let syncExcluded = false
     const asyncSide = withAsyncLock(p, async () => {
+      try {
+        withLock(p, () => {
+          syncEntered = true
+          writeFileSync(p, 'trampled')
+        }, { maxRetries: 1, baseDelay: 1 })
+      } catch {
+        syncExcluded = true
+      }
       const cur = parseInt(await readFile(p, 'utf8'), 10)
       await new Promise(r => setImmediate(r))
       await writeFile(p, String(cur + 1))
     })
     await asyncSide
 
+    expect(syncEntered, 'sync withLock walked into a held async critical section').toBe(false)
+    expect(syncExcluded, 'sync withLock was never actually excluded').toBe(true)
+
+    // ...and once the async holder released, the sync side gets its turn on
+    // the same path — exclusion, not permanent lockout.
     withLock(p, () => {
       const cur = parseInt(readFileSync(p, 'utf8'), 10)
       writeFileSync(p, String(cur + 1))

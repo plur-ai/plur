@@ -1,10 +1,13 @@
 # ADR-0005: The Postgres tier, and what happens to exact search
 
-Status: **Proposed**
+Status: **Proposed** — amended 2026-07-27, see
+[Update — Phases 2 and 4 have landed](#what-this-phase-does-not-do-and-why)
 Date: 2026-07-26
 Authors: convergence programme, Phase 5
 Related: ADR-0001 ([#226](https://github.com/plur-ai/plur/issues/226)), ADR-0003,
-[#223](https://github.com/plur-ai/plur/issues/223) (halfvec tier)
+ADR-0004 (the Phase 2 async flip), [#223](https://github.com/plur-ai/plur/issues/223)
+(halfvec tier), [#711](https://github.com/plur-ai/plur/issues/711) (Phase 4 BM25
+pushdown)
 
 ## Context
 
@@ -185,6 +188,46 @@ rather than as an unexplained scoring delta, which is exactly the failure mode
 this field exists to prevent.
 
 ## What this phase does NOT do, and why
+
+> ### Update — Phases 2 and 4 have landed
+>
+> *Added 2026-07-27. The rest of this section is the record as written at Phase
+> 5 and is kept for the reasoning; the two deferrals it describes are no longer
+> in force. Where the two disagree, this block is what the code does.*
+>
+> **`PostgresAdapter` IS accepted by `new Plur({ store })`.** Convergence
+> Phase 2 flipped `Plur`'s write path, so the synchronous ceiling described
+> below is gone. The two interfaces collapsed exactly as planned:
+> `PrimaryStore` *is* the async contract, and `AsyncPrimaryStore` is now a
+> deprecated alias for it (`packages/core/src/store/primary-store.ts`). The
+> acceptance test is `new Plur({ path: dir, store: adapter })` in
+> `test/postgres-primary-store.test.ts` — it writes through the adapter and
+> reads the row back from a second `Plur` over the same schema, proving the
+> data is in the database rather than in a process-local cache.
+>
+> The three-point consequence list below therefore no longer describes an
+> unconditional fallback. Backend selection still never *constructs* a
+> connection implicitly — a connection has credentials and a lifecycle, and
+> manufacturing one inside a constructor hides failure at a surprising moment —
+> so the caller still passes the adapter in. What changed is the branch taken
+> when it does not: `Plur` logs one message naming the tier and how to run on
+> it, rather than reporting a limitation. Points 2 and 3 still hold as written:
+> the query index is PGLite even on the Postgres tier, and persistence goes
+> through the configured `PrimaryStore` — which may now be the adapter itself.
+>
+> **BM25 pushdown (Phase 4) has landed too**, and did not cost the property the
+> last paragraph below exists to protect. `PostgresAdapter.searchBM25()` narrows
+> the candidate set in the database with `pg_trgm` where it is available, then
+> still scores in core through `fts.ts`, using corpus-wide statistics from
+> `StorageAdapter.corpusStats` so the narrowing cannot change the ranking. Where
+> `pg_trgm` is absent it loads the active set and scores locally, which is
+> exactly the behaviour described below. There is still one tokenizer and one
+> IDF computation across every backend.
+>
+> Only the vector path remains a declared behavioural difference between tiers,
+> which is what `VectorIndexStrategy` is for.
+
+*As written at Phase 5 (2026-07-26):*
 
 **`PostgresAdapter` is not yet accepted by `new Plur({ store })`.**
 
