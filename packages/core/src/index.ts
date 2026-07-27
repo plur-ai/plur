@@ -2823,8 +2823,35 @@ export class Plur {
   }
 
   private async _formatInjection(task: string, options?: InjectOptions, embeddingBoosts?: Map<string, number>): Promise<InjectionResult> {
-    const engrams = await this._loadAllEngrams()
-    const packs = loadAllPacks(this.paths.packs)
+    const allEngrams = await this._loadAllEngrams()
+    const allPacks = loadAllPacks(this.paths.packs)
+
+    // Permitted-scope allow-list — AUTHORIZATION, applied before selection.
+    //
+    // `options.scope` below is a VISIBILITY filter and deliberately passes the
+    // whole personal family through (`local`, `global`, `user:*`, `agent:*`),
+    // which is right for a single user and wrong for a multi-tenant caller:
+    // without this, every principal's personal engrams reach every other
+    // principal's context. `inject()` is what a session calls on every prompt,
+    // so it was the widest surface with no authorization filter at all.
+    //
+    // Exact membership, matching `ScopeRestriction`: absent = unrestricted,
+    // `[]` = nothing (never widened), non-empty = the list itself with no
+    // hierarchy expansion.
+    //
+    // Packs are filtered too. A pack is installed knowledge rather than user
+    // data, so it is tempting to exempt it — but its engrams carry scopes, they
+    // reach the same output, and an allow-list with an exemption is not an
+    // allow-list. A caller that wants pack content in scope names it.
+    const permitted = options?.scopes
+    const inScope = (e: Engram): boolean => permitted === undefined || permitted.includes(e.scope)
+    const engrams = permitted === undefined ? allEngrams : allEngrams.filter(inScope)
+    const packs = permitted === undefined
+      ? allPacks
+      : allPacks
+        .map(p => ({ ...p, engrams: p.engrams.filter(inScope) }))
+        .filter(p => p.engrams.length > 0)
+
     const budget = options?.budget ?? this.config.injection_budget ?? 2000
 
     const result = selectAndSpread(
