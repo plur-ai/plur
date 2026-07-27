@@ -35,7 +35,12 @@ running core anywhere except one local process. See ADR-0003 and ADR-0004.
 
 `StorageAdapter` — a public export — gains two required members (`role`,
 `vectorIndex`) and demotes `syncFromYaml()` / `reindex()` to optional. An
-out-of-tree implementation of that interface will not compile until updated.
+out-of-tree implementation of that interface will not compile until updated;
+`DERIVED_INDEX_DEFAULTS` is exported to make that a two-line change for an
+adapter that has the historical behaviour (a derived index over YAML, answering
+`searchVector` exactly). Adapters that are approximate should declare that
+rather than take the default — a wrong `vectorIndex` is worse than none,
+because it is a claim a caller may act on.
 
 ### Added
 

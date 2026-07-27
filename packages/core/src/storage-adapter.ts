@@ -237,6 +237,33 @@ export function efSearchFor(
   return Math.min(raised, PGVECTOR_MAX_EF_SEARCH)
 }
 
+/**
+ * Defaults for an out-of-tree adapter adopting the 0.16 interface.
+ *
+ * `role` and `vectorIndex` are REQUIRED, deliberately — the point of ADR-0005
+ * is that a caller can ask what it is getting instead of assuming the exactness
+ * core happened to have historically. That makes them a breaking change for
+ * anyone who implemented this interface before 0.16, so here is the one-line
+ * adoption:
+ *
+ * ```ts
+ * class MyAdapter implements StorageAdapter {
+ *   readonly role = DERIVED_INDEX_DEFAULTS.role
+ *   readonly vectorIndex = DERIVED_INDEX_DEFAULTS.vectorIndex
+ *   // ...
+ * }
+ * ```
+ *
+ * These describe the historical behaviour every pre-0.16 adapter had: a derived
+ * index over YAML, answering `searchVector` with an exact scan. If yours is
+ * approximate, say so rather than taking these — a wrong `vectorIndex` is worse
+ * than none, because it is a claim a caller may act on.
+ */
+export const DERIVED_INDEX_DEFAULTS = {
+  role: 'index',
+  vectorIndex: EXACT_VECTOR_INDEX,
+} as const satisfies { role: StorageAdapterRole; vectorIndex: VectorIndexStrategy }
+
 /** Async-style storage adapter. */
 export interface StorageAdapter {
   /**

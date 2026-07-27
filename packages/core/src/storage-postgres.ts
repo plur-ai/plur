@@ -17,16 +17,23 @@
  * have; `requiresIndexSync()` returns false for this role precisely so no
  * caller tries.
  *
- * ## Why `AsyncPrimaryStore` and not `PrimaryStore`
+ * ## `PrimaryStore` is the async contract now
  *
- * `PrimaryStore` is synchronous (ADR-0003, on purpose and temporarily). Node
- * has no synchronous Postgres client, and the ways to fake one — blocking on a
- * promise, shelling out per query — trade a documented limitation for an
- * undocumented hazard. So the adapter implements the async successor and is not
- * yet accepted by `new Plur({ store })`. Convergence Phase 2 makes `Plur`'s
- * write path async, and this adapter becomes injectable with no changes here.
- * Until then, a deployment that wants a Postgres-backed store drives the
- * adapter directly.
+ * This section used to explain why the adapter implemented an
+ * `AsyncPrimaryStore` successor and was "not yet accepted by
+ * `new Plur({ store })`" — because `PrimaryStore` was synchronous, and Node has
+ * no synchronous Postgres client.
+ *
+ * Phase 2 flipped the write path, so that ceiling is gone: `PrimaryStore` IS
+ * the async contract, `AsyncPrimaryStore` is a deprecated alias of it, and
+ * `new Plur({ store: new PostgresAdapter(...) })` is the acceptance test
+ * (`test/postgres-primary-store.test.ts`). The adapter became injectable with
+ * no changes here, exactly as planned.
+ *
+ * One caveat that is NOT stale: `Plur` still builds its query index on PGLite
+ * even when the primary store is Postgres (`index.ts` forces the index tier),
+ * so `searchBM25` / `corpusStats` on this class are reachable by driving the
+ * adapter directly, not through `Plur.recall()`. Tracked separately.
  *
  * ## Vector search is the one place behaviour can differ
  *
@@ -182,9 +189,28 @@ export function redactDsn(dsn: string): string {
   }
 }
 
+/**
+ * Postgres's `NAMEDATALEN - 1`. An identifier longer than this is SILENTLY
+ * TRUNCATED to it rather than rejected.
+ */
+const PG_MAX_IDENTIFIER_BYTES = 63
+
 function assertIdentifier(name: string, what: string): string {
   if (!SAFE_IDENTIFIER.test(name)) {
     throw new Error(`[postgres] refusing to use ${what} "${name}": not a plain SQL identifier`)
+  }
+  // Length matters for a reason the regex cannot express: Postgres truncates an
+  // over-long identifier instead of erroring, so two tenants whose schema names
+  // share their first 63 bytes silently land in ONE schema and read each
+  // other's engrams. Measured in BYTES, not characters — the limit is on the
+  // encoded form.
+  const bytes = Buffer.byteLength(name, 'utf8')
+  if (bytes > PG_MAX_IDENTIFIER_BYTES) {
+    throw new Error(
+      `[postgres] refusing to use ${what} "${name}": ${bytes} bytes exceeds Postgres's `
+      + `${PG_MAX_IDENTIFIER_BYTES}-byte identifier limit. Postgres would truncate it silently, so two names `
+      + `sharing a prefix this long would collide into the same schema.`,
+    )
   }
   return name
 }
@@ -429,6 +455,14 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
     await pool.query(
       `CREATE INDEX IF NOT EXISTS idx_engrams_tokens ON "${this.schema}".engrams USING GIN (tokens)`,
     )
+    // Partial index over exactly the rows the migration guard looks for. It is
+    // empty on a fully-backfilled store, so the guard's probe is an index scan
+    // that finds nothing rather than a sequential scan of the whole table —
+    // which is what it was doing on every BM25 query.
+    await pool.query(
+      `CREATE INDEX IF NOT EXISTS idx_engrams_tokens_missing
+       ON "${this.schema}".engrams (id) WHERE tokens IS NULL`,
+    )
 
     const wantType = this.precision === 'halfvec' ? 'halfvec' : 'vector'
     await pool.query(`
@@ -631,7 +665,10 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
   async loadFiltered(filter: StorageFilter): Promise<Engram[]> {
     const pool = await this.getPool()
     const { where, params } = buildFilterClause(filter)
-    const res = await pool.query(`SELECT data FROM "${this.schema}".engrams ${where}`, params)
+    // Ordered for the same reason as the BM25 candidate query: downstream
+    // ranking uses a stable sort, so an unordered read makes tie-breaks depend
+    // on physical row order.
+    const res = await pool.query(`SELECT data FROM "${this.schema}".engrams ${where} ORDER BY id`, params)
     return res.rows.map((r: any) => parseRow(r))
   }
 
@@ -777,13 +814,25 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
     // A row written before this column existed has NULL tokens and would count
     // as matching nothing, quietly deflating every df. Refuse rather than
     // report a number that is wrong in an invisible direction.
+    //
+    // Served by a PARTIAL INDEX (see `initSchema`), so this is a cheap index
+    // probe rather than the sequential scan it used to be — the original ran an
+    // unindexed `count(*) WHERE tokens IS NULL` on every BM25 call.
+    //
+    // Deliberately NOT cached after the first pass. Caching would assume this
+    // adapter is the only writer, and the whole reason Postgres is a supported
+    // primary store is that it is NOT: an older build writing to the same
+    // schema can introduce NULL-token rows at any time, and a latched flag
+    // would then skip the check exactly when it mattered. `LIMIT 1` because
+    // "are there any?" is the question; the count only ever dressed up the
+    // message.
     const { rows: stale } = await pool.query(
-      `SELECT count(*)::int AS n FROM "${this.schema}".engrams WHERE status = 'active' AND tokens IS NULL`,
+      `SELECT 1 FROM "${this.schema}".engrams WHERE status = 'active' AND tokens IS NULL LIMIT 1`,
     )
-    if ((stale[0]?.n ?? 0) > 0) {
+    if (stale.length > 0) {
       throw new Error(
-        `[postgres] ${stale[0].n} active engram(s) have no tokens column populated, so corpus statistics `
-        + `would undercount document frequency. Re-save the store (PostgresAdapter.save) to backfill before `
+        `[postgres] some active engrams have no tokens column populated, so corpus statistics would `
+        + `undercount document frequency. Re-save the store (PostgresAdapter.save) to backfill before `
         + `using BM25 pushdown.`,
       )
     }
@@ -869,8 +918,14 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
     // could score above zero, because BM25 ranks them and a row cut here can
     // never be recovered. `limit` is applied after scoring, in core.
     const { rows } = await pool.query(
+      // ORDER BY id: BM25 ties are broken by `Array.prototype.sort`, which is
+      // stable, so without a deterministic SELECT order the tie-break follows
+      // PHYSICAL row order — and any ordinary UPDATE moves a tuple in the heap
+      // and silently changes the answer. Same corpus, same query, different
+      // result depending on write history.
       `SELECT data FROM "${this.schema}".engrams
-       WHERE status = 'active'${scopeClause} AND (${perToken.join(' OR ')})`,
+       WHERE status = 'active'${scopeClause} AND (${perToken.join(' OR ')})
+       ORDER BY id`,
       params,
     )
     const candidates = rows.map((r: { data: Engram }) => r.data)

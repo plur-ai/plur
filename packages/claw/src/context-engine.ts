@@ -344,6 +344,16 @@ export class PlurContextEngine implements ContextEngine {
 
   /** Dispose: clean up */
   async dispose(): Promise<void> {
+    // Drain before clearing.
+    //
+    // `settle()` was added as the drain point for background learns and had no
+    // production caller — which made it decoration. `ingest()` reports success
+    // as soon as it has QUEUED a learn, so tearing the engine down without
+    // waiting drops writes the caller was already told had succeeded. Shutdown
+    // is exactly when that happens.
+    //
+    // Failures are surfaced by the learns themselves; `settle` only waits.
+    await this.settle()
     this.sessionScopes.clear()
     this.sessionMessages.clear()
     this.sessionLearned.clear()

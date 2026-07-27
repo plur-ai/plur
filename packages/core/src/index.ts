@@ -116,7 +116,7 @@ export type {
   StorageAdapterRole,
   DerivedIndexAdapter,
 } from './storage-adapter.js'
-export { requiresIndexSync, asDerivedIndex } from './storage-adapter.js'
+export { requiresIndexSync, asDerivedIndex, DERIVED_INDEX_DEFAULTS } from './storage-adapter.js'
 export {
   EXACT_VECTOR_INDEX,
   PGVECTOR_DEFAULT_EF_SEARCH,
@@ -759,13 +759,25 @@ export class Plur {
    * RemoteStore holds its own internal TTL cache so repeated load()
    * within ttlMs returns the same array without a network call.
    *
-   * Note `_loadAllEngrams` is sync but RemoteStore.load() is async.
-   * We bridge that by returning whatever's in the driver's cache
-   * synchronously and triggering a background refresh on cache miss.
-   * The first call after server start returns [] for that store; the
-   * call after the first refresh sees the data. For our pilot this
-   * is acceptable — recall is expected to be tried more than once
-   * in any real session.
+   * This method is synchronous, so it does not await `RemoteStore.load()`:
+   * it returns whatever is in the driver's cache and fires the real load
+   * into the background. The consequence is unchanged and still real — the
+   * first call after process start returns [] for that store, and only the
+   * call after the first refresh completes sees the data.
+   *
+   * The reason that USED to justify it no longer holds. It was written when
+   * `_loadAllEngrams` was synchronous and physically could not await a
+   * network load; convergence Phase 2 made `_loadAllEngrams` async, and its
+   * sibling branch already does `await this._loadCached(...)`. So this is now
+   * a workaround for a constraint that was removed — awaiting `driver.load()`
+   * here would be legal and would delete the cold-start hole outright.
+   *
+   * Left as-is deliberately: making it await changes when remote engrams
+   * appear and puts a network round-trip on the first recall of every
+   * session, which is a behavioural change that wants its own change and its
+   * own tests rather than a drive-by inside a docs fix. Follow-up: await the
+   * load and drop the private-cache peek (the `as unknown as { cache }` cast
+   * below is reaching past `RemoteStore`'s encapsulation to sustain it).
    */
   private _remoteStores = new Map<string, RemoteStore>()
   private _loadRemoteCached(store: StoreEntry): Engram[] {
@@ -984,21 +996,35 @@ export class Plur {
     scope: string,
     context: LearnContext | undefined,
   ): Promise<Engram> {
+    // Apply the increment to the row from the CALLER'S array, not to `hit`.
+    //
+    // `hit` is the match the caller found, and on the remote route that search
+    // ran OUTSIDE the write lock — so by the time we are here it may be a stale
+    // copy of a row another writer has since changed. Mutating `hit` and
+    // splicing it in (`engrams[idx] = hit`, as this did) writes the pre-lock
+    // snapshot over the fresh row and reverts that other change: a concurrent
+    // `feedback` increment simply disappears, with both calls reporting success.
+    //
+    // Reading the current row out of `engrams` and incrementing THAT keeps the
+    // read-modify-write inside the lock, where it belongs.
+    const idx = engrams.findIndex(e => e.id === hit.id)
+    const target = idx !== -1 ? engrams[idx] : hit
+
     // Use defaults for engrams migrated without these fields.
-    const currentCount = (hit as any).reference_count ?? 1
-    const currentSources = (hit as any).sources ?? []
-    ;(hit as any).reference_count = currentCount + 1
-    ;(hit as any).sources = [...currentSources, this._buildSourceEntry(scope, context)]
+    const currentCount = (target as any).reference_count ?? 1
+    const currentSources = (target as any).sources ?? []
+    ;(target as any).reference_count = currentCount + 1
+    ;(target as any).sources = [...currentSources, this._buildSourceEntry(scope, context)]
 
     // Persist if the engram is in the primary store. Cross-store duplicates
-    // (same scope across stores) are deduplicated but not persisted in v1.
-    const idx = engrams.findIndex(e => e.id === hit.id)
+    // (same scope across stores) are deduplicated but not persisted in v1 —
+    // `target` is then `hit` itself and the mutation is returned to the caller
+    // without a write, which is the documented v1 behaviour.
     if (idx !== -1) {
-      engrams[idx] = hit
       await this._writeEngrams(this.paths.engrams, engrams)
       await this._syncIndex()
     }
-    return hit
+    return target
   }
 
   /** Find an active engram with the same content_hash but a DIFFERENT scope.
@@ -1871,22 +1897,27 @@ export class Plur {
         await this._writeEngrams(this.paths.engrams, engrams)
         await this._syncIndex()
 
-        // Fire-and-forget: attempt immediate push, clean up on success
+        // Fire-and-forget: attempt immediate push, clean up on success.
+        //
+        // The push and the local bookkeeping are caught SEPARATELY. Wrapping
+        // both in one try meant a failure while removing the local copy — after
+        // the remote had already accepted the engram — was recorded as a failed
+        // push, so the outbox retried it and the remote ended up with a
+        // duplicate. "The write did not land" and "the write landed but I could
+        // not tidy up" are different facts and must not share a handler.
+        //
+        // The trailing `.catch()` is load-bearing: the error path below itself
+        // awaits a store write, and if THAT throws the IIFE's promise rejects
+        // with nothing attached — an unhandled rejection, which terminates the
+        // process on modern Node. A background task must not be able to take
+        // the host down.
         void (async () => {
+          let pushed = false
           try {
             await remoteDriver.append(engram)
-            // Success: remove outbox entry from local store
-            await this._withStoreLock(this.paths.engrams, async () => {
-              const fresh = await this._primaryStore.load()
-              const idx = fresh.findIndex(e => e.id === engram.id)
-              if (idx !== -1) {
-                fresh.splice(idx, 1)
-                await this._writeEngrams(this.paths.engrams, fresh)
-                await this._syncIndex()
-              }
-            })
+            pushed = true
           } catch (err) {
-            // Already saved locally with outbox metadata — will be retried
+            // Already saved locally with outbox metadata — will be retried.
             logger.warning(`[plur:outbox] immediate push failed for ${engram.id}, queued for retry: ${(err as Error).message}`)
             await this._withStoreLock(this.paths.engrams, async () => {
               const fresh = await this._primaryStore.load()
@@ -1897,8 +1928,31 @@ export class Plur {
                 await this._writeEngrams(this.paths.engrams, fresh)
               }
             })
+            return
           }
-        })()
+
+          if (!pushed) return
+          // Remote has it. Remove the local copy — and if this fails, say so
+          // rather than re-queueing something already accepted.
+          try {
+            await this._withStoreLock(this.paths.engrams, async () => {
+              const fresh = await this._primaryStore.load()
+              const idx = fresh.findIndex(e => e.id === engram.id)
+              if (idx !== -1) {
+                fresh.splice(idx, 1)
+                await this._writeEngrams(this.paths.engrams, fresh)
+                await this._syncIndex()
+              }
+            })
+          } catch (err) {
+            logger.warning(
+              `[plur:outbox] ${engram.id} was accepted by the remote but its local copy could not be removed: `
+              + `${(err as Error).message}. It will be retried, which may create a duplicate on the remote.`,
+            )
+          }
+        })().catch(err => {
+          logger.warning(`[plur:outbox] background push for ${engram.id} failed unexpectedly: ${(err as Error).message}`)
+        })
 
         appendHistory(this.paths.root, {
           event: 'engram_created',
@@ -3767,6 +3821,14 @@ export class Plur {
     // the push set to shared-scope, non-private engrams).
     const remoteType = options?.remoteType ?? this.config.sync?.remote_type ?? 'personal'
     const result = gitSync(this.paths.root, remote, { remoteType })
+    // `git pull --rebase` may have REPLACED engrams.yaml underneath us, so any
+    // cached snapshot the store is holding now describes a file that no longer
+    // exists in that form. `invalidate()` exists precisely for this and had no
+    // caller anywhere in the repo — a cache-invalidation hook that nothing
+    // invalidates is a stale read waiting to happen, and this is the one place
+    // in the codebase where the bytes change without going through `save()`.
+    this._primaryStore.invalidate()
+    for (const store of this._secondaryStores.values()) store.invalidate()
     // After git pull, YAML may have changed — refresh the index.
     // PGLite path is the only backend that honors --full directly here; the
     // legacy SQLite path also reindexes on full, otherwise calls syncFromYaml.
@@ -4146,8 +4208,19 @@ Generate an improved version of the procedure that prevents this failure. Return
           // happen since getById succeeded at top of function).
           throw new Error(`Engram not found in any store: ${engramId}`)
         }
-      } catch {
-        // LLM failed — fallback: log without rewriting
+      } catch (err) {
+        // The `try` above spans the LLM call AND the local/remote writes that
+        // follow it, so a bare `catch` here reclassifies a genuine store
+        // failure as "the LLM was unavailable" — swallowed, unlogged, and
+        // reported to the caller as a successful not-evolved outcome. A write
+        // that failed must not look like a model that declined.
+        //
+        // Not rethrown: this path's contract is best-effort evolution, and the
+        // fallback below still links the failure episode. But it says so.
+        logger.warning(
+          `[plur] reportFailure: could not evolve ${engramId} — ${(err as Error).message}. `
+          + `Falling back to linking the failure episode without rewriting.`,
+        )
       }
     }
 
