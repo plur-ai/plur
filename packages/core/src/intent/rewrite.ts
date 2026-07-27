@@ -11,7 +11,7 @@
  * embedding/cross-encoder models are trained on questions; BM25 is not.
  *
  * Why scaffolding hurts BM25 here: `ftsScore` uses substring matching
- * (`t.includes(qt) || qt.includes(t)`), so interrogative tokens are not
+ * (`t.includes(qt) || qt.startsWith(t)`), so interrogative tokens are not
  * inert — "what" matches "whatsapp", "how" matches "showed" — and every
  * scaffold token that substring-matches anything consumes IDF budget and
  * pulls in distractors.

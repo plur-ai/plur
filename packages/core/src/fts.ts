@@ -62,7 +62,7 @@ export function computeIdf(engrams: Engram[], queryTokens: string[]): Map<string
   for (const qt of queryTokens) {
     let df = 0
     for (const termSet of engramTermSets) {
-      if (termSet.has(qt) || Array.from(termSet).some(t => t.includes(qt) || qt.includes(t))) {
+      if (termSet.has(qt) || Array.from(termSet).some(t => t.includes(qt) || qt.startsWith(t))) {
         df++
       }
     }
@@ -103,7 +103,7 @@ export function ftsScore(engram: Engram, queryTokens: string[], idfWeights?: Map
     // Count term frequency (including substring matches)
     let tf = 0
     for (const t of allTerms) {
-      if (t.includes(qt) || qt.includes(t)) tf++
+      if (t.includes(qt) || qt.startsWith(t)) tf++
     }
     if (tf === 0) continue
 
