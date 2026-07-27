@@ -49,6 +49,17 @@ export interface LearnContext {
    * intentional update is not a contradiction.
    */
   supersedes?: string[]
+  /**
+   * Session key this write belongs to (convergence Phase 2).
+   *
+   * Resolves the session default scope from the per-session registry instead of
+   * the process-wide slot. Supply it whenever one `Plur` instance serves more
+   * than one session concurrently — without it, `setSessionScope()` is a single
+   * shared field and one session's scope silently becomes another's (see
+   * `session-scopes.ts`). Never persisted on the engram; it selects a scope, it
+   * is not part of one.
+   */
+  session?: string
 }
 
 /** Extended context for async learn with LLM dedup. */
@@ -115,6 +126,21 @@ export interface RecallBudget {
 
 export interface RecallOptions {
   scope?: string
+  /**
+   * Permitted-scope allow-list — an AUTHORIZATION filter, distinct from the
+   * `scope` visibility filter above (see `ScopeRestriction` in
+   * storage-adapter.ts for the full contract).
+   *
+   * Absent = unrestricted. `[]` = matches NOTHING (a principal with no
+   * permitted scopes must see nothing — never widened to "no filter").
+   * Non-empty = EXACT membership: no hierarchy expansion, no personal-family
+   * pass-through, because the caller has already resolved identity to a
+   * complete set of permitted scopes.
+   *
+   * Pushed into the query on the indexed paths so `limit` counts permitted
+   * results rather than being spent on rows the caller may not see.
+   */
+  scopes?: string[]
   domain?: string
   limit?: number
   min_strength?: number
