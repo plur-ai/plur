@@ -8,28 +8,28 @@ import { appendHistory } from './history.js'
 import { logger } from './logger.js'
 import { withAsyncLock } from './store/async-lock.js'
 import type { Engram } from './schemas/engram.js'
-import type { PrimaryStore } from './store/primary-store.js'
+import type { AsyncPrimaryStore } from './store/primary-store.js'
 import type { SecretMatch } from './secrets.js'
 import type { LearnContext, LearnAsyncContext, LearnAsyncResult, LearnBatchResult, LearnBatchFailure, DedupDecision, LlmFunction } from './types.js'
 
 export interface LearnAsyncDeps {
   /** Content hash dedup against all engrams. Scope-aware: only matches same scope. */
-  hashDedup: (statement: string, scope?: string) => Engram | null
+  hashDedup: (statement: string, scope?: string) => Promise<Engram | null>
   /** Hybrid recall for semantic similarity. */
   recallHybrid: (query: string, options?: { limit?: number }) => Promise<Engram[]>
   /** BM25 recall fallback. */
-  recall: (query: string, options?: { limit?: number }) => Engram[]
+  recall: (query: string, options?: { limit?: number }) => Promise<Engram[]>
   /** Sync learn for the ADD path. */
-  learn: (statement: string, context?: LearnContext) => Engram
+  learn: (statement: string, context?: LearnContext) => Promise<Engram>
   /** Get engram by ID. */
-  getById: (id: string) => Engram | null
+  getById: (id: string) => Promise<Engram | null>
   /**
    * Source of truth for primary engram state (convergence Phase 1). The
    * UPDATE/MERGE paths below read and write through this rather than calling
    * loadEngrams/saveEngrams on `engramsPath`, so a non-YAML primary store works
    * here too.
    */
-  store: PrimaryStore
+  store: AsyncPrimaryStore
   /**
    * Paths. `engramsPath` is still the LOCK KEY for `withAsyncLock` — file-based
    * locking is Phase 2's problem, not this one — and is no longer used to read
@@ -46,7 +46,7 @@ export interface LearnAsyncDeps {
   /** Record LLM failure. */
   recordLlmFailure: () => void
   /** Sync index after write. */
-  syncIndex: () => void
+  syncIndex: () => Promise<void>
   /**
    * Leak guard predicate (#353). Returns the offending sensitivity hits when
    * `statement` carries content the SHARED `scope` forbids, else `[]` (always
@@ -106,7 +106,7 @@ function demoteIfSensitive(
  * all but one of them retry an `EEXIST` and eventually throw.
  *
  * The "target vanished" fallback (`idx === -1`) now runs OUTSIDE the lock. It
- * used to call `deps.learn()` from inside it, and `Plur.learn()` takes the same
+ * used to call `await deps.learn()` from inside it, and `Plur.learn()` takes the same
  * lock on the same path — a self-deadlock that resolved only by the inner
  * acquire exhausting its retries and throwing. Reachable whenever the target
  * engram disappears between `getById` and the lock, which is exactly the
@@ -133,7 +133,7 @@ async function executeDedupDecision(
         const existing = await deps.getById(targetId)
         if (existing && (existing as any).commitment !== 'locked') {
           const result = await withAsyncLock(deps.engramsPath, async () => {
-            const engrams = deps.store.load()
+            const engrams = await deps.store.load()
             const idx = engrams.findIndex(e => e.id === targetId)
             // Target gone — fall out of the lock and ADD; see the doc comment.
             if (idx === -1) return null
@@ -147,8 +147,8 @@ async function executeDedupDecision(
             // into an engram living at a shared scope. Demote before persisting.
             demoteIfSensitive(deps, updated, updated.statement)
             engrams[idx] = updated
-            deps.store.save(engrams)
-            deps.syncIndex()
+            await deps.store.save(engrams)
+            await deps.syncIndex()
             appendHistory(deps.rootPath, {
               event: 'engram_updated',
               engram_id: targetId,
@@ -168,7 +168,7 @@ async function executeDedupDecision(
         const existing = await deps.getById(targetId)
         if (existing && (existing as any).commitment !== 'locked') {
           const result = await withAsyncLock(deps.engramsPath, async () => {
-            const engrams = deps.store.load()
+            const engrams = await deps.store.load()
             const idx = engrams.findIndex(e => e.id === targetId)
             // Target gone — fall out of the lock and ADD; see the doc comment.
             if (idx === -1) return null
@@ -184,8 +184,8 @@ async function executeDedupDecision(
             // a shared scope. Demote before persisting.
             demoteIfSensitive(deps, merged, merged.statement)
             engrams[idx] = merged
-            deps.store.save(engrams)
-            deps.syncIndex()
+            await deps.store.save(engrams)
+            await deps.syncIndex()
             appendHistory(deps.rootPath, {
               event: 'engram_merged',
               engram_id: targetId,
@@ -216,7 +216,7 @@ export async function learnAsync(
   context?: LearnAsyncContext,
 ): Promise<LearnAsyncResult> {
   // Step 1: Content hash fast-path (scope-aware — issue #136)
-  const hashMatch = deps.hashDedup(statement, context?.scope)
+  const hashMatch = await deps.hashDedup(statement, context?.scope)
   if (hashMatch) {
     return { engram: hashMatch, decision: 'NOOP', existing_id: hashMatch.id }
   }
