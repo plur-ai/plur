@@ -56,7 +56,7 @@
  * pay for a driver it will never open.
  */
 import type { Engram } from './schemas/engram.js'
-import { searchEngrams } from './fts.js'
+import { searchEngrams, ftsTokenize, engramSearchText, type CorpusStats } from './fts.js'
 import { logger } from './logger.js'
 import {
   EXACT_VECTOR_INDEX,
@@ -64,6 +64,7 @@ import {
   efSearchFor,
   type StorageAdapter,
   type StorageFilter,
+  type ScopeRestriction,
   type VectorElementFormat,
   type VectorIndexStrategy,
   type VectorSearchHit,
@@ -207,6 +208,14 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
 
   private readonly connectionString: string
   private readonly schema: string
+  /**
+   * Whether pg_trgm is installed, decided once at schema setup.
+   *
+   * `undefined` means schema setup has not run yet, which is distinct from
+   * "checked and absent" — a query must not read this as "no pushdown" before
+   * the answer exists.
+   */
+  private trigramAvailable: boolean | undefined
   private readonly vectorDim: number
   private readonly precision: VectorElementFormat | undefined
   private readonly indexMode: PostgresVectorIndexMode
@@ -350,6 +359,48 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_engrams_scope ON "${this.schema}".engrams(scope)`)
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_engrams_domain ON "${this.schema}".engrams(domain)`)
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_engrams_source ON "${this.schema}".engrams(source)`)
+
+    // --- BM25 pushdown (Phase 4, #711) ---
+    //
+    // Two columns, because the matching rule has two arms and they need
+    // different indexes:
+    //
+    //   forward  t.includes(qt)   -> `search_text LIKE '%qt%'`, served by a GIN
+    //                               trigram index. This is the arm that finds
+    //                               `transferWithAuthorization` from `auth`, and
+    //                               it is why this needs pg_trgm rather than
+    //                               tsvector: a prefix query cannot express an
+    //                               infix match.
+    //   reverse  qt.startsWith(t) -> `tokens && ARRAY[<prefixes of qt>]`, served
+    //                               by a GIN array index. The prefixes are
+    //                               enumerable at query time because qt is
+    //                               known, which is exactly what #721's change
+    //                               from `qt.includes(t)` bought.
+    await pool.query(`ALTER TABLE "${this.schema}".engrams ADD COLUMN IF NOT EXISTS tokens TEXT[]`)
+    await pool.query(`ALTER TABLE "${this.schema}".engrams ADD COLUMN IF NOT EXISTS search_text TEXT`)
+    try {
+      await pool.query('CREATE EXTENSION IF NOT EXISTS pg_trgm SCHEMA public')
+      this.trigramAvailable = true
+    } catch (err) {
+      // Not fatal: without pg_trgm the adapter falls back to loading candidates
+      // and scoring in core, which is what it did before this phase. Say so
+      // once, loudly, rather than let a deployment silently lose the pushdown
+      // and wonder why recall got slow.
+      this.trigramAvailable = false
+      logger.warning(
+        `[postgres] pg_trgm is unavailable (${(err as Error).message}). BM25 narrowing will not be pushed `
+        + `into the database; queries will load candidates and score in core. Install the extension to enable it.`,
+      )
+    }
+    if (this.trigramAvailable) {
+      await pool.query(
+        `CREATE INDEX IF NOT EXISTS idx_engrams_search_trgm
+         ON "${this.schema}".engrams USING GIN (search_text gin_trgm_ops)`,
+      )
+    }
+    await pool.query(
+      `CREATE INDEX IF NOT EXISTS idx_engrams_tokens ON "${this.schema}".engrams USING GIN (tokens)`,
+    )
 
     const wantType = this.precision === 'halfvec' ? 'halfvec' : 'vector'
     await pool.query(`
@@ -504,17 +555,20 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
       for (let i = 0; i < engrams.length; i += SAVE_CHUNK_SIZE) {
         const chunk = engrams.slice(i, i + SAVE_CHUNK_SIZE)
         await client.query(
-          `INSERT INTO "${this.schema}".engrams (id, status, scope, domain, last_accessed, data, source)
-           SELECT t.id, t.status, t.scope, t.domain, t.last_accessed, t.data, 'primary'
+          `INSERT INTO "${this.schema}".engrams (id, status, scope, domain, last_accessed, data, source, tokens, search_text)
+           SELECT t.id, t.status, t.scope, t.domain, t.last_accessed, t.data, 'primary', t.tokens, t.search_text
            FROM jsonb_to_recordset($1::jsonb)
-             AS t(id text, status text, scope text, domain text, last_accessed text, data jsonb)
+             AS t(id text, status text, scope text, domain text, last_accessed text, data jsonb,
+                  tokens text[], search_text text)
            ON CONFLICT (id) DO UPDATE SET
              status = EXCLUDED.status,
              scope = EXCLUDED.scope,
              domain = EXCLUDED.domain,
              last_accessed = EXCLUDED.last_accessed,
              data = EXCLUDED.data,
-             source = EXCLUDED.source`,
+             source = EXCLUDED.source,
+             tokens = EXCLUDED.tokens,
+             search_text = EXCLUDED.search_text`,
           [JSON.stringify(chunk.map(toRow))],
         )
       }
@@ -572,9 +626,137 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
    * deliberately not attempted here — a second ranking authority is exactly the
    * kind of silent divergence this programme exists to remove.
    */
-  async searchBM25(query: string, opts: { limit: number }): Promise<Engram[]> {
-    const candidates = await this.loadFiltered({ status: 'active' })
-    return searchEngrams(candidates, query, opts.limit)
+  /**
+   * Prefixes of a query token that could legally match a document token under
+   * the reverse arm (`qt.startsWith(t)`).
+   *
+   * Bounded below by 3 because `ftsTokenize` discards anything shorter, so no
+   * stored token can be 1 or 2 characters and testing for them would be dead
+   * work. `qt` itself is included — a token equal to the query is a prefix of
+   * it, and that is the exact-match case.
+   */
+  private static reversePrefixes(qt: string): string[] {
+    const out: string[] = []
+    for (let n = 3; n <= qt.length; n++) out.push(qt.slice(0, n))
+    return out
+  }
+
+  /**
+   * Corpus-wide N and per-term df (Phase 4, #711).
+   *
+   * Counted under exactly `termMatches` from fts.ts, expressed as SQL:
+   *
+   *   forward  t.includes(qt)    ->  search_text LIKE '%' || qt || '%'
+   *   reverse  qt.startsWith(t)  ->  tokens && ARRAY[<prefixes of qt>]
+   *
+   * The equivalence of the first line holds because `search_text` is the
+   * tokens joined by a space and a query token can never contain a space —
+   * `ftsTokenize` splits on it. So a substring hit in the joined string implies
+   * a substring hit in some token, and conversely.
+   *
+   * Returns `undefined` rather than an approximation when the pushdown cannot
+   * be answered exactly. Per the interface contract, an approximate df is worse
+   * than the local fallback.
+   */
+  async corpusStats(queryTokens: string[], opts?: ScopeRestriction): Promise<CorpusStats> {
+    const pool = await this.getPool()
+    if (queryTokens.length === 0) {
+      const { rows } = await pool.query(
+        `SELECT count(*)::int AS n FROM "${this.schema}".engrams WHERE status = 'active'`,
+      )
+      return { N: rows[0]?.n ?? 0, df: new Map() }
+    }
+
+    // A row written before this column existed has NULL tokens and would count
+    // as matching nothing, quietly deflating every df. Refuse rather than
+    // report a number that is wrong in an invisible direction.
+    const { rows: stale } = await pool.query(
+      `SELECT count(*)::int AS n FROM "${this.schema}".engrams WHERE status = 'active' AND tokens IS NULL`,
+    )
+    if ((stale[0]?.n ?? 0) > 0) {
+      throw new Error(
+        `[postgres] ${stale[0].n} active engram(s) have no tokens column populated, so corpus statistics `
+        + `would undercount document frequency. Re-save the store (PostgresAdapter.save) to backfill before `
+        + `using BM25 pushdown.`,
+      )
+    }
+
+    const params: unknown[] = []
+    let scopeClause = ''
+    if (opts?.scopes !== undefined) {
+      params.push(opts.scopes)
+      scopeClause = ` AND scope = ANY($${params.length}::text[])`
+    }
+
+    const { rows: totals } = await pool.query(
+      `SELECT count(*)::int AS n FROM "${this.schema}".engrams WHERE status = 'active'${scopeClause}`,
+      params,
+    )
+    const N = totals[0]?.n ?? 0
+
+    const df = new Map<string, number>()
+    for (const qt of queryTokens) {
+      const p = [...params]
+      p.push(`%${qt}%`)
+      const likeIdx = p.length
+      p.push(PostgresAdapter.reversePrefixes(qt))
+      const prefixIdx = p.length
+      const { rows } = await pool.query(
+        `SELECT count(*)::int AS n FROM "${this.schema}".engrams
+         WHERE status = 'active'${scopeClause}
+           AND (search_text LIKE $${likeIdx} OR tokens && $${prefixIdx}::text[])`,
+        p,
+      )
+      df.set(qt, rows[0]?.n ?? 0)
+    }
+    return { N, df }
+  }
+
+  /**
+   * BM25 over Postgres.
+   *
+   * Narrows in the database when pg_trgm is present, then scores in core with
+   * corpus-wide statistics so the narrowing cannot change the ranking — see
+   * {@link StorageAdapter.corpusStats}. Falls back to loading the active set
+   * and scoring locally when it is not, which is what this method did before
+   * Phase 4.
+   */
+  async searchBM25(query: string, opts: { limit: number } & ScopeRestriction): Promise<Engram[]> {
+    const queryTokens = ftsTokenize(query)
+    if (queryTokens.length === 0) return []
+
+    if (this.trigramAvailable !== true) {
+      const candidates = await this.loadFiltered({ status: 'active', scopes: opts.scopes })
+      return searchEngrams(candidates, query, opts.limit)
+    }
+
+    const pool = await this.getPool()
+    const params: unknown[] = []
+    let scopeClause = ''
+    if (opts.scopes !== undefined) {
+      params.push(opts.scopes)
+      scopeClause = ` AND scope = ANY($${params.length}::text[])`
+    }
+    const perToken: string[] = []
+    for (const qt of queryTokens) {
+      params.push(`%${qt}%`)
+      const likeIdx = params.length
+      params.push(PostgresAdapter.reversePrefixes(qt))
+      const prefixIdx = params.length
+      perToken.push(`(search_text LIKE $${likeIdx} OR tokens && $${prefixIdx}::text[])`)
+    }
+
+    // Deliberately unbounded by `limit`: the candidate set is every row that
+    // could score above zero, because BM25 ranks them and a row cut here can
+    // never be recovered. `limit` is applied after scoring, in core.
+    const { rows } = await pool.query(
+      `SELECT data FROM "${this.schema}".engrams
+       WHERE status = 'active'${scopeClause} AND (${perToken.join(' OR ')})`,
+      params,
+    )
+    const candidates = rows.map((r: { data: Engram }) => r.data)
+    const stats = await this.corpusStats(queryTokens, { scopes: opts.scopes })
+    return searchEngrams(candidates, query, opts.limit, stats)
   }
 
   /**
@@ -740,6 +922,16 @@ function parseRow(row: { data: any }): Engram {
 }
 
 function toRow(e: Engram): Record<string, unknown> {
+  // Tokens are computed HERE, in TypeScript, with the same `ftsTokenize` the
+  // scorer uses — not by a Postgres text-search configuration.
+  //
+  // That is the whole reason the pushdown can claim exactness. `corpusStats`
+  // has to count `df` under precisely the rule `ftsScore` counts `tf` under; a
+  // SQL-side tokenizer would be a second implementation of stop-words, the
+  // length floor, and the non-word split, free to drift from this one with
+  // nothing to report the drift. Deriving the tokens once, on write, makes the
+  // two impossible to disagree.
+  const tokens = ftsTokenize(engramSearchText(e))
   return {
     id: e.id,
     status: e.status,
@@ -747,6 +939,11 @@ function toRow(e: Engram): Record<string, unknown> {
     domain: e.domain ?? null,
     last_accessed: e.activation?.last_accessed ?? null,
     data: e,
+    tokens,
+    // Joined form for the trigram index. `t.includes(qt)` at token level is
+    // equivalent to a substring test over this string because query tokens
+    // never contain the separator — `ftsTokenize` splits on it.
+    search_text: tokens.join(' '),
   }
 }
 
