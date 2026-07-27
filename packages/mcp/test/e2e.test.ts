@@ -87,7 +87,7 @@ describe('E2E: full learn-inject-feedback-recall lifecycle', () => {
 
   it('ingest extracts and saves', async () => {
     // Ingest with extract_only = false (saves to store)
-    const saved = plur.ingest(
+    const saved = await plur.ingest(
       'We decided to use GraphQL for the API. Always validate inputs at the boundary.',
       { source: 'meeting-notes' }
     )

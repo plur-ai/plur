@@ -3609,7 +3609,7 @@ export class Plur {
   }
 
   /** Rule-based extraction of engram candidates from content. */
-  ingest(content: string, options?: IngestOptions): IngestCandidate[] {
+  async ingest(content: string, options?: IngestOptions): Promise<IngestCandidate[]> {
     const candidates: IngestCandidate[] = []
     const seen = new Set<string>()
 
@@ -3633,8 +3633,11 @@ export class Plur {
 
     // If not extract_only, save the candidates as actual engrams
     if (!options?.extract_only && candidates.length > 0) {
+      // Sequential, not Promise.all: learn() serialises on the store lock
+      // anyway, and a fan-out here would just queue behind itself while making
+      // a partial failure harder to attribute to a candidate.
       for (const candidate of candidates) {
-        this.learn(candidate.statement, {
+        await this.learn(candidate.statement, {
           type: candidate.type,
           scope: options?.scope ?? 'global',
           domain: options?.domain,

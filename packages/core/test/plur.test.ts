@@ -77,8 +77,8 @@ describe('Plur', () => {
     expect(filtered).toHaveLength(1)
   })
 
-  it('ingest extracts engrams from content', () => {
-    const candidates = plur.ingest(
+  it('ingest extracts engrams from content', async () => {
+    const candidates = await plur.ingest(
       'We decided to use PostgreSQL for ACID compliance. Always run migrations before deploy.',
       { source: 'conversation', extract_only: true }
     )
@@ -171,7 +171,7 @@ describe('Plur', () => {
   })
 
   it('ingest saves engrams when not extract_only', async () => {
-    plur.ingest(
+    await plur.ingest(
       'We decided to use TypeScript for all new projects.',
       { source: 'conversation', scope: 'global' }
     )
@@ -439,8 +439,8 @@ describe('Plur', () => {
     expect(engram.id).toMatch(/^ENG-/)
   })
 
-  it('ingest skips candidates containing secrets', () => {
-    const candidates = plur.ingest(
+  it('ingest skips candidates containing secrets', async () => {
+    const candidates = await plur.ingest(
       'We decided to use password = supersecretpass123 for the database. Always encrypt at rest.',
       { source: 'conversation', extract_only: true }
     )

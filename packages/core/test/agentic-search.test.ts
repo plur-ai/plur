@@ -31,7 +31,8 @@ describe('agentic search', () => {
       return '1'
     }
 
-    const result = await plur.recallAsync('database', { llm: mockLlm, limit: 5 })
+    // NOT awaited on purpose — this test pins that recallAsync returns a Promise.
+    const result = plur.recallAsync('database', { llm: mockLlm, limit: 5 })
     expect(result).toBeInstanceOf(Promise)
     const engrams = await result
     expect(engrams.length).toBeGreaterThanOrEqual(1)

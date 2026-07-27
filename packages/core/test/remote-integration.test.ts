@@ -129,7 +129,7 @@ describe('RemoteStore against stub server', () => {
   })
 
   it('append throws on bad token', async () => {
-    const badStore = new RemoteStore(baseUrl, 'wrong-token', 'group:test')
+    const badStore = new RemoteStore(baseUrl, 'wrong-token', 'group:test');
     (await expect(badStore.append({ id: 'x', scope: 'group:test', status: 'active' } as any)))
       .rejects.toThrow('Remote store append failed: 401')
   })

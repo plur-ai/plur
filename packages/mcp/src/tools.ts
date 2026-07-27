@@ -1184,7 +1184,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
         required: ['content'],
       },
       handler: async (args, plur) => {
-        const candidates = plur.ingest(args.content as string, {
+        const candidates = await plur.ingest(args.content as string, {
           source: args.source as string | undefined,
           extract_only: args.extract_only as boolean | undefined,
           scope: args.scope as string | undefined,

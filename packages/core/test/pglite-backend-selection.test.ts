@@ -126,22 +126,25 @@ describe('the Postgres tier degrades loudly, never silently', async () => {
     expect(existsSync(join(dir, 'store.pglite'))).toBe(true)
   }, PGLITE_TIMEOUT)
 
-  it('selects postgres when a DSN is configured, and refuses to pretend it is wired', async () => {
-    // The collision this phase documents rather than papers over: `Plur`'s
-    // write path is synchronous, and no network-backed store can satisfy a
-    // synchronous `PrimaryStore`. So the tier resolves to postgres, the process
-    // says exactly why it is not using it, and runs the index it CAN run.
+  it('selects postgres when a DSN is configured, but never connects on its own', async () => {
+    // Phase 2b removed the constraint this test used to pin. The write path is
+    // async now, so a Postgres store CAN be the primary — see
+    // postgres-primary-store.test.ts, which proves it end to end.
+    //
+    // What must NOT change is that selection never OPENS a connection by
+    // itself. A DSN in the environment resolves the tier and nothing more: a
+    // connection has credentials and a lifecycle, and a constructor that dials
+    // out because a config string was present puts failure somewhere nobody is
+    // looking. The caller passes the adapter in explicitly.
     process.env.PLUR_POSTGRES_URL = 'postgres://user:pw@127.0.0.1:5432/nope'
     const plur = new Plur({ path: dir, store: storeClaiming(POSTGRES_MIN_ENGRAMS * 3) })
     await (plur as unknown as { waitForIndex: () => Promise<void> }).waitForIndex()
     expect(plur.backendSelection().tier).toBe('postgres')
-    const joined = warnings.join('\n')
-    expect(joined).toMatch(/backend=postgres/)
-    expect(joined).toMatch(/write path is still synchronous/)
-    // The primary store is untouched: nothing silently started writing to a
-    // database, and the DSN never appears with its password in the warning.
+    // The store it was constructed with is the store it uses. The unreachable
+    // DSN above is proof: had anything dialled it, this would have thrown.
     expect(plur.primaryStore.kind).toBe('memory')
-    expect(joined).not.toContain('pw@')
+    // And the password never reaches a log line.
+    expect(warnings.join('\n')).not.toContain('pw@')
     expect(existsSync(join(dir, 'store.pglite'))).toBe(true)
   }, PGLITE_TIMEOUT)
 
@@ -152,6 +155,9 @@ describe('the Postgres tier degrades loudly, never silently', async () => {
     const selection = plur.backendSelection()
     expect(selection.tier).toBe('postgres')
     expect(selection.reason).toBe('env-override')
-    expect(warnings.join('\n')).toMatch(/backend=postgres/)
+    // The override is a SELECTION, not an instruction to connect. With a
+    // default (YAML) store and no adapter passed, core says so at info level
+    // and keeps the store it was given.
+    expect(plur.primaryStore.kind).toBe('yaml')
   }, PGLITE_TIMEOUT)
 })

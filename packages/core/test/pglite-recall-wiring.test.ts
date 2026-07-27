@@ -96,7 +96,7 @@ describe('PGLite recall wiring (iter-2 audit B-1)', () => {
 
     const results = await plur.recallSemantic('ocean')
     // YAML-as-truth — every returned ID came from learn().
-    const seededIds = new Set([learned.id])
+    const seededIds = new Set([learned.id]);
     (await plur.list()).forEach(e => seededIds.add(e.id))
     for (const r of results) {
       expect(seededIds.has(r.id)).toBe(true)
