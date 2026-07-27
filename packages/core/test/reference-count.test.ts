@@ -138,7 +138,7 @@ describe('reference-counted content-addressed dedup (#107)', () => {
       await plur.learn('eventually-retired', { scope: 'global' })
 
       await plur.forget(a.id) // 2 → 1
-      expect(await plur.getById(a.id)!.status).toBe('active')
+      expect((await plur.getById(a.id))!.status).toBe('active')
 
       await plur.forget(a.id) // 1 → 0 → retired
       const final = await plur.getById(a.id)
@@ -149,7 +149,7 @@ describe('reference-counted content-addressed dedup (#107)', () => {
     it('retired engrams are excluded from dedup — new write creates new engram', async () => {
       const first = await plur.learn('phoenix correction', { scope: 'global' })
       await plur.forget(first.id) // 1 → 0 → retired
-      expect(await plur.getById(first.id)!.status).toBe('retired')
+      expect((await plur.getById(first.id))!.status).toBe('retired')
 
       const second = await plur.learn('phoenix correction', { scope: 'global' })
       expect(second.id).not.toBe(first.id)

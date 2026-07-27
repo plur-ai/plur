@@ -162,7 +162,7 @@ describe.skipIf(!hasSqlite)('IndexedStorage.loadFiltered — permitted-scope pus
       mkEngram('ENG-2026-0726-012', 'x', { scope: 'project:a', domain: 'other.thing', status: 'active' }),
       mkEngram('ENG-2026-0726-013', 'x', { scope: 'project:b', domain: 'plur.search', status: 'active' }),
     ])
-    expect(await s.loadFiltered({ status: 'active', domain: 'plur', scopes: ['project:a', 'project:b'] })
+    expect((await s.loadFiltered({ status: 'active', domain: 'plur', scopes: ['project:a', 'project:b'] }))
       .map(e => e.id).sort()).toEqual(['ENG-2026-0726-010', 'ENG-2026-0726-013'])
     expect(await s.loadFiltered({ scope: 'project:a', scopes: ['project:b'] })).toEqual([])
   })

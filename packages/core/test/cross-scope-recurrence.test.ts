@@ -217,7 +217,7 @@ describe('cross-scope recurrence (#176)', () => {
         // have been written to the SECONDARY store, not silently dropped
         // (this was the iter-1 defect Critic + Data flagged).
         const fresh = new Plur({ path: dir })
-        const reloaded = await fresh.list({ scope: 'global' })
+        const reloaded = (await fresh.list({ scope: 'global' }))
           .find(e => e.statement === 'cross-store rule')
         expect(reloaded).toBeDefined()
         expect(reloaded!.recurrence_count).toBe(2)
@@ -252,7 +252,7 @@ describe('cross-scope recurrence (#176)', () => {
       const first = await plur.learn('phoenix rule', { scope: 'project:a' })
       // Retire (force count to 0 then forget)
       await plur.forget(first.id)
-      expect(await plur.getById(first.id)!.status).toBe('retired')
+      expect((await plur.getById(first.id))!.status).toBe('retired')
 
       // Cross-scope re-learn should create a NEW engram, not resurrect
       const fresh = await plur.learn('phoenix rule', { scope: 'project:b' })
