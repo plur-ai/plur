@@ -61,7 +61,7 @@ function makeDeps(candidates: Engram[]): LearnAsyncDeps {
     recordLlmSuccess: () => {},
     recordLlmFailure: () => {},
     syncIndex: async () => {},
-    offendingHitsForScope: async () => [],
+    offendingHitsForScope: () => [],
   }
 }
 
@@ -176,7 +176,7 @@ describe('learnAsync demote scans merged tags (#409)', async () => {
       store: new YamlPrimaryStore(engramsPath),
       // Flag any scan text containing the sentinel — placed ONLY in a tag below,
       // so a hit proves the scan now includes the merged tags.
-      offendingHitsForScope: async (text: string) =>
+      offendingHitsForScope: (text: string) =>
         text.includes('LEAKTAG') ? ([{ pattern: 'fake_infra', match: 'LEAKTAG' }] as any) : [],
     }
   }

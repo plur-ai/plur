@@ -63,9 +63,10 @@ describe('Plur — concurrent writes', () => {
   })
 
   it('does not lose pin updates across concurrent setPinnedAsync calls', async () => {
-    const ids = Array.from({ length: 12 }, (_, i) =>
-      plur.learn(`pinnable engram number ${i}`, { scope: 'global' }).id,
-    )
+    // learn() is async now — the array must settle before its ids exist.
+    const ids = (await Promise.all(Array.from({ length: 12 }, (_, i) =>
+      plur.learn(`pinnable engram number ${i}`, { scope: 'global' }),
+    ))).map(e => e.id)
 
     await Promise.all(ids.map(id => plur.setPinnedAsync(id, true)))
 
@@ -74,9 +75,9 @@ describe('Plur — concurrent writes', () => {
   })
 
   it('does not lose statement updates across concurrent updateEngramAsync calls', async () => {
-    const engrams = Array.from({ length: 12 }, (_, i) =>
+    const engrams = await Promise.all(Array.from({ length: 12 }, (_, i) =>
       plur.learn(`updatable engram number ${i}`, { scope: 'global' }),
-    )
+    ))
 
     await Promise.all(
       engrams.map(e => plur.updateEngramAsync({ ...e, statement: `${e.statement} — revised` })),
@@ -88,9 +89,9 @@ describe('Plur — concurrent writes', () => {
   })
 
   it('retires every engram in a concurrent forget fan-out', async () => {
-    const ids = Array.from({ length: 15 }, (_, i) =>
-      plur.learn(`forgettable engram number ${i}`, { scope: 'global' }).id,
-    )
+    const ids = (await Promise.all(Array.from({ length: 15 }, (_, i) =>
+      plur.learn(`forgettable engram number ${i}`, { scope: 'global' }),
+    ))).map(e => e.id)
 
     await Promise.all(ids.map(id => plur.forget(id)))
 
