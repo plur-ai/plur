@@ -334,6 +334,39 @@ export interface StorageAdapter {
    */
   corpusStats?(queryTokens: string[], opts?: ScopeRestriction): Promise<CorpusStats>
   /**
+   * Corpus-wide `N` and per-term `df` for BM25 scoring (convergence Phase 4,
+   * #711). OPTIONAL — a store that cannot compute these exactly must leave it
+   * undefined, and the caller falls back to deriving them from the candidate
+   * set.
+   *
+   * ## Why this exists
+   *
+   * `searchBM25` returns a ranked, truncated candidate list. Scoring in core
+   * over that list means `computeIdf` sees `N = candidates.length`, so a term
+   * that is rare across 50,000 engrams but common among the 200 that came back
+   * is scored as common — IDF inverted, precisely for the terms it exists to
+   * privilege. Nothing errors; the ranking is just quietly wrong.
+   *
+   * So narrowing in the store and scoring in core is only sound if the store
+   * ALSO reports what the corpus looks like beyond the candidates.
+   *
+   * ## The exactness requirement
+   *
+   * `df` must be counted under `termMatches` from `fts.ts` —
+   * `t.includes(qt) || qt.startsWith(t)` — over the same scope restriction the
+   * search used. Not "close enough": an approximate `df` is worse than the
+   * local fallback, because local `df` is at least wrong in a way that
+   * correlates with the candidate set and can be reasoned about, whereas an
+   * approximation is wrong in a way that varies per term with no pattern.
+   *
+   * An implementation that cannot reproduce the rule should return `undefined`
+   * rather than a best effort.
+   *
+   * @param queryTokens Tokens from `ftsTokenize` — already lowercased and
+   *   stop-word filtered, so the store must not re-tokenize.
+   */
+  corpusStats?(queryTokens: string[], opts?: ScopeRestriction): Promise<CorpusStats>
+  /**
    * Vector similarity search (cosine).
    *
    * `opts.scopes` must be applied IN the query (as part of the k-NN
