@@ -272,7 +272,7 @@ export interface StorageAdapter {
    * {@link ScopeRestriction}. An implementation that accepts `scopes` and does
    * not apply it is a silent-wrong-results bug, not a missing optimization.
    */
-  searchBM25(query: string, opts: { limit: number } & ScopeRestriction): Promise<Engram[]>
+  searchBM25(query: string, opts: { limit: number } & StorageFilter): Promise<Engram[]>
   /**
    * Corpus-wide `N` and per-term `df` for BM25 scoring (convergence Phase 4,
    * #711). OPTIONAL — a store that cannot compute these exactly must leave it

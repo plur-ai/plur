@@ -753,23 +753,18 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
    * be answered exactly. Per the interface contract, an approximate df is worse
    * than the local fallback.
    */
-  async corpusStats(queryTokens: string[], opts?: ScopeRestriction): Promise<CorpusStats> {
+  async corpusStats(queryTokens: string[], opts?: StorageFilter): Promise<CorpusStats> {
     const pool = await this.getPool()
     if (queryTokens.length === 0) {
       // Still honours `scopes`: an empty token list is "no query terms", not
       // "no restriction". Counting the whole corpus here would report a corpus
       // size the caller is not permitted to see — including for `scopes: []`,
       // which must yield 0.
-      const p0: unknown[] = []
-      let clause0 = ''
-      if (opts?.scopes !== undefined) {
-        p0.push(opts.scopes)
-        clause0 = ` AND scope = ANY($${p0.length}::text[])`
-      }
+      const f0 = buildFilterClause({ ...(opts ?? {}), status: 'active' })
       const { rows } = await pool.query(
         `SELECT count(*)::int AS n, COALESCE(AVG(COALESCE(array_length(tokens, 1), 0)), 0)::float8 AS avg_len
-         FROM "${this.schema}".engrams WHERE status = 'active'${clause0}`,
-        p0,
+         FROM "${this.schema}".engrams ${f0.where}`,
+        f0.params,
       )
       return { N: rows[0]?.n ?? 0, df: new Map(), avgDocLength: rows[0]?.avg_len ?? 0 }
     }
@@ -777,8 +772,10 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
     // A row written before this column existed has NULL tokens and would count
     // as matching nothing, quietly deflating every df. Refuse rather than
     // report a number that is wrong in an invisible direction.
+    const staleF = buildFilterClause({ ...(opts ?? {}), status: 'active' })
     const { rows: stale } = await pool.query(
-      `SELECT count(*)::int AS n FROM "${this.schema}".engrams WHERE status = 'active' AND tokens IS NULL`,
+      `SELECT count(*)::int AS n FROM "${this.schema}".engrams ${staleF.where} AND tokens IS NULL`,
+      staleF.params,
     )
     if ((stale[0]?.n ?? 0) > 0) {
       throw new Error(
@@ -788,19 +785,19 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
       )
     }
 
-    const params: unknown[] = []
-    let scopeClause = ''
-    if (opts?.scopes !== undefined) {
-      params.push(opts.scopes)
-      scopeClause = ` AND scope = ANY($${params.length}::text[])`
-    }
+    // SAME filter as the candidate query, not just `scopes`. Statistics scoped
+    // differently from the candidates they describe is the subtler form of the
+    // bug this phase exists to prevent: N and df would then describe a wider
+    // corpus than the rows being ranked, and every IDF would be quietly wrong.
+    const { where, params } = buildFilterClause({ ...(opts ?? {}), status: 'active' })
+    const scopeClause = where.replace(/^WHERE /, ' AND ')
 
     // N and avgdl together: BM25 needs both to be corpus-wide, and computing
     // them in one statement means they cannot describe different row sets.
     // `array_length` on an empty array is NULL, hence the inner COALESCE.
     const { rows: totals } = await pool.query(
       `SELECT count(*)::int AS n, COALESCE(AVG(COALESCE(array_length(tokens, 1), 0)), 0)::float8 AS avg_len
-       FROM "${this.schema}".engrams WHERE status = 'active'${scopeClause}`,
+       FROM "${this.schema}".engrams WHERE TRUE${scopeClause}`,
       params,
     )
     const N = totals[0]?.n ?? 0
@@ -815,7 +812,7 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
       const prefixIdx = p.length
       const { rows } = await pool.query(
         `SELECT count(*)::int AS n FROM "${this.schema}".engrams
-         WHERE status = 'active'${scopeClause}
+         WHERE TRUE${scopeClause}
            AND (search_text LIKE $${likeIdx} ESCAPE '\\' OR tokens && $${prefixIdx}::text[])`,
         p,
       )
@@ -833,7 +830,7 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
    * and scoring locally when it is not, which is what this method did before
    * Phase 4.
    */
-  async searchBM25(query: string, opts: { limit: number } & ScopeRestriction): Promise<Engram[]> {
+  async searchBM25(query: string, opts: { limit: number } & StorageFilter): Promise<Engram[]> {
     const queryTokens = ftsTokenize(query)
     if (queryTokens.length === 0) return []
 
@@ -846,16 +843,15 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
     const pool = await this.getPool()
 
     if (this.trigramAvailable !== true) {
-      const candidates = await this.loadFiltered({ status: 'active', scopes: opts.scopes })
+      const candidates = await this.loadFiltered({ ...opts, status: 'active' })
       return searchEngrams(candidates, query, opts.limit)
     }
 
-    const params: unknown[] = []
-    let scopeClause = ''
-    if (opts.scopes !== undefined) {
-      params.push(opts.scopes)
-      scopeClause = ` AND scope = ANY($${params.length}::text[])`
-    }
+    // Reuse `buildFilterClause` for status/scope/domain/scopes rather than
+    // hand-rolling a second WHERE. Two copies of the scope rules is exactly how
+    // the authorization filter went missing from this file in the first place.
+    const { where, params } = buildFilterClause({ ...opts, status: 'active' })
+    const scopeClause = where.replace(/^WHERE /, ' AND ')
     const perToken: string[] = []
     for (const qt of queryTokens) {
       params.push(`%${PostgresAdapter.escapeLike(qt)}%`)
@@ -870,11 +866,11 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
     // never be recovered. `limit` is applied after scoring, in core.
     const { rows } = await pool.query(
       `SELECT data FROM "${this.schema}".engrams
-       WHERE status = 'active'${scopeClause} AND (${perToken.join(' OR ')})`,
+       WHERE TRUE${scopeClause} AND (${perToken.join(' OR ')})`,
       params,
     )
     const candidates = rows.map((r: { data: Engram }) => r.data)
-    const stats = await this.corpusStats(queryTokens, { scopes: opts.scopes })
+    const stats = await this.corpusStats(queryTokens, opts)
     return searchEngrams(candidates, query, opts.limit, stats)
   }
 

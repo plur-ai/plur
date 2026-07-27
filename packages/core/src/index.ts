@@ -49,6 +49,7 @@ import { withAsyncLock } from './store/async-lock.js'
 import { SessionScopeRegistry } from './session-scopes.js'
 import type { AsyncPrimaryStore } from './store/primary-store.js'
 import { requiresIndexSync, asDerivedIndex } from './storage-adapter.js'
+import type { StorageAdapter } from './storage-adapter.js'
 import { resolveBackendTier, type BackendSelection } from './backend-selection.js'
 import { isSharedScope, isPersonalScope, isScopeWithin, scopeAllowFilter } from './scope-util.js'
 import type { Engram } from './schemas/engram.js'
@@ -2204,11 +2205,56 @@ export class Plur {
    */
   /** Search engrams using fast BM25 keyword matching. Sync, no API calls. */
   async recall(query: string, options?: Omit<RecallOptions, 'mode' | 'llm'>): Promise<Engram[]> {
-    const filtered = await this._filterEngrams(options)
     const limit = options?.limit ?? 20
+
+    // Push the search into the store when the store can answer it.
+    //
+    // Until now this always loaded the corpus into memory and ranked it here,
+    // which is correct at YAML scale and is the whole cost the Postgres tier
+    // exists to avoid. `searchBM25` and `corpusStats` were implemented and
+    // parity-tested against real Postgres but had ZERO call sites — built and
+    // unreachable. This is the wiring.
+    //
+    // The adapter is handed the SAME filter this method would have applied in
+    // memory, so scope, domain and the permitted-scope allow-list are enforced
+    // in the query rather than after it. That is the point: post-filtering
+    // measures `limit` against rows the caller may not be allowed to see.
+    const adapter = this._primaryQueryAdapter()
+    if (adapter) {
+      const results = await adapter.searchBM25(query, {
+        limit,
+        status: 'active',
+        scope: options?.scope,
+        scopes: options?.scopes,
+        domain: options?.domain,
+      })
+      await this._reactivateResults(results)
+      return results
+    }
+
+    const filtered = await this._filterEngrams(options)
     const results = searchEngrams(filtered, query, limit)
     await this._reactivateResults(results)
     return results
+  }
+
+  /**
+   * The primary store, when it can also answer queries itself.
+   *
+   * A `role: 'primary'` adapter IS the source of truth and the query engine at
+   * once (ADR-0005), so a search can be pushed into it. A `role: 'index'`
+   * adapter is derived from a separate store and is driven through the existing
+   * index path instead; returning one here would bypass the sync bookkeeping
+   * that keeps it honest.
+   *
+   * Returns null for the default YAML store, which has no query engine — that
+   * path keeps loading and ranking in memory, which is the right answer for a
+   * file.
+   */
+  private _primaryQueryAdapter(): StorageAdapter | null {
+    const s = this._primaryStore as unknown as Partial<StorageAdapter>
+    if (s?.role === 'primary' && typeof s.searchBM25 === 'function') return s as StorageAdapter
+    return null
   }
 
   /** Search engrams using LLM-assisted semantic filtering. Async, requires llm function. */
