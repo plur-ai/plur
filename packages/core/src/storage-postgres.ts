@@ -225,6 +225,12 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
   private readonly maxConnections: number
 
   private pool: any = null
+  /**
+   * In-flight (or completed) pool construction. Memoized so concurrent first
+   * callers share one `Pool` instead of each building their own and leaking all
+   * but the last — see `getPool`.
+   */
+  private poolPromise: Promise<any> | undefined
   private initPromise: Promise<void> | null = null
   /** Actual element type of the embedding column after init. */
   private activeVecType: 'vector' | 'halfvec' = 'vector'
@@ -295,7 +301,29 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
 
   private async getPool(): Promise<any> {
     if (this.closed) throw new Error('[postgres] adapter is closed')
-    if (!this.pool) {
+    // Memoize the PROMISE, not the resolved pool.
+    //
+    // The old shape checked `if (!this.pool)` and then awaited `loadPg()`.
+    // Every concurrent first caller passes that check before any of them
+    // assigns, so each constructs its own `new Pool` and the last assignment
+    // wins. The earlier pools are unreferenced but still holding server
+    // connections, and `close()` only ends the one that survived — a leak that
+    // grows with startup concurrency and is invisible until the server runs out
+    // of connections. Memoizing the in-flight promise makes the first call the
+    // only call.
+    if (!this.poolPromise) {
+      this.poolPromise = this.createPool().catch(err => {
+        // A failed init must not be cached, or every later call replays the
+        // same error against a pool that was never built.
+        this.poolPromise = undefined
+        throw err
+      })
+    }
+    return await this.poolPromise
+  }
+
+  private async createPool(): Promise<any> {
+    {
       const pg = await loadPg()
       const Pool = pg.Pool ?? pg.default?.Pool
       if (!Pool) throw new Error("[postgres] 'pg' loaded but exposes no Pool export")
@@ -507,10 +535,12 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
     if (this.pool) {
       const pool = this.pool
       this.pool = null
+      this.poolPromise = undefined
       this.initPromise = null
       this.closed = true
       await pool.end().catch(() => { /* pool already torn down */ })
     }
+    this.poolPromise = undefined
     this.closed = true
   }
 

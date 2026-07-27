@@ -207,6 +207,12 @@ export const PGVECTOR_DEFAULT_EF_SEARCH = 40
 export const EF_SEARCH_FILTER_HEADROOM = 2
 
 /**
+ * pgvector's hard ceiling on `hnsw.ef_search`. Setting a larger value is not
+ * clamped by the server — it raises an error and the whole query fails.
+ */
+export const PGVECTOR_MAX_EF_SEARCH = 1000
+
+/**
  * The `hnsw.ef_search` a query must run with to be able to return `limit` rows.
  *
  * Never below `limit` — that is the whole point. `configured` raises the floor
@@ -222,7 +228,13 @@ export function efSearchFor(
   headroom: number = EF_SEARCH_FILTER_HEADROOM,
 ): number {
   const wanted = Math.ceil(Math.max(1, limit) * Math.max(1, headroom))
-  return Math.max(wanted, configured, Math.max(1, limit))
+  const raised = Math.max(wanted, configured, Math.max(1, limit))
+  // Clamp to pgvector's maximum. Above it the server REJECTS the SET rather
+  // than clamping, so an unclamped value turns a large-`limit` vector search
+  // into a hard failure instead of a slightly-degraded one — with headroom 2
+  // that is any limit above 500. Degrading recall is the correct trade here;
+  // failing the query is not.
+  return Math.min(raised, PGVECTOR_MAX_EF_SEARCH)
 }
 
 /** Async-style storage adapter. */
