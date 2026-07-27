@@ -173,3 +173,103 @@ describe.skipIf(!PG_URL)('BM25 pushdown parity (#711)', () => {
     }
   }, TIMEOUT)
 })
+
+describe.skipIf(!PG_URL)('PostgresAdapter — scope restriction as an AUTHORIZATION control', () => {
+  let adapter: PostgresAdapter
+  let corpus: Engram[]
+
+  beforeAll(async () => {
+    corpus = buildCorpus()
+    adapter = new PostgresAdapter({ connectionString: PG_URL!, schema: 'plur_authz_check', vectorIndex: 'exact' })
+    await adapter.save(corpus)
+  }, TIMEOUT)
+
+  afterAll(async () => {
+    if (adapter) {
+      await adapter.dropSchema().catch(() => { /* best effort */ })
+      await adapter.close().catch(() => { /* best effort */ })
+    }
+  }, TIMEOUT)
+
+  // These four cover the hole the audit found: `buildFilterClause` had no
+  // branch for `filter.scopes` at all, so loadFiltered returned every scope —
+  // including for `scopes: []`, which must return nothing. PGLite implemented
+  // it correctly, Postgres did not, and no test compared them.
+  it('loadFiltered honours a non-empty allow-list', async () => {
+    const rows = await adapter.loadFiltered({ status: 'active', scopes: ['project:alpha'] })
+    expect(rows.map(e => e.id)).toEqual(['ENG-2026-0727-700'])
+  }, TIMEOUT)
+
+  it('loadFiltered with an EMPTY allow-list returns nothing, never everything', async () => {
+    // The privilege-escalation case. A principal with zero permitted scopes
+    // must see zero engrams; a truthiness guard would let `[]` fall through to
+    // no clause and return the whole corpus.
+    expect(await adapter.loadFiltered({ status: 'active', scopes: [] })).toEqual([])
+  }, TIMEOUT)
+
+  it('loadFiltered with an ABSENT allow-list is unrestricted', async () => {
+    const rows = await adapter.loadFiltered({ status: 'active' })
+    expect(rows.length).toBe(corpus.length)
+  }, TIMEOUT)
+
+  it('does no hierarchy expansion — an allow-list is exact membership', async () => {
+    // `scopes` is authorization, not visibility: it must NOT admit descendants
+    // or pass personal-family scopes through, both of which `filter.scope` does.
+    const rows = await adapter.loadFiltered({ status: 'active', scopes: ['project'] })
+    expect(rows).toEqual([])
+  }, TIMEOUT)
+
+  it('searchVector applies the restriction inside the k-NN query', async () => {
+    // searchVector previously omitted the `opts` parameter entirely; TypeScript
+    // accepted the narrower arity, so callers passing `scopes` got an
+    // unrestricted search with no error.
+    const dim = 384
+    const v = new Float32Array(dim)
+    v[0] = 1
+    // No embeddings are stored in this fixture, so the assertion that matters
+    // is that the call ACCEPTS the restriction and returns nothing out of scope
+    // rather than ignoring it.
+    const hits = await adapter.searchVector(v, 10, { scopes: [] })
+    expect(hits).toEqual([])
+  }, TIMEOUT)
+
+  it('corpusStats honours the allow-list even with no query tokens', async () => {
+    // The empty-token early return used to count the whole corpus regardless of
+    // scope, reporting an N the caller was not permitted to see.
+    const none = await adapter.corpusStats([], { scopes: [] })
+    expect(none.N).toBe(0)
+    const alpha = await adapter.corpusStats([], { scopes: ['project:alpha'] })
+    expect(alpha.N).toBe(1)
+  }, TIMEOUT)
+})
+
+describe.skipIf(!PG_URL)('PostgresAdapter — LIKE metacharacters in query tokens (#711)', () => {
+  let adapter: PostgresAdapter
+
+  beforeAll(async () => {
+    adapter = new PostgresAdapter({ connectionString: PG_URL!, schema: 'plur_like_escape', vectorIndex: 'exact' })
+    await adapter.save([
+      makeEngram('ENG-2026-0727-950', 'the snakeXcase identifier appears here'),
+      makeEngram('ENG-2026-0727-951', 'the snake_case identifier appears here'),
+    ])
+  }, TIMEOUT)
+
+  afterAll(async () => {
+    if (adapter) {
+      await adapter.dropSchema().catch(() => { /* best effort */ })
+      await adapter.close().catch(() => { /* best effort */ })
+    }
+  }, TIMEOUT)
+
+  it('treats `_` as a literal, not as a single-character wildcard', async () => {
+    // `ftsTokenize` keeps `_` (it is a \w character), so unescaped it reaches
+    // LIKE as a wildcard: in Postgres `'snakeXcase' LIKE '%snake_case%'` is
+    // true. That makes the SQL predicate disagree with `termMatches`, so df is
+    // counted under a different rule than tf — which is not BM25.
+    const hits = await adapter.searchBM25('snake_case', { limit: 10 })
+    expect(hits.map(e => e.id)).toEqual(['ENG-2026-0727-951'])
+
+    const stats = await adapter.corpusStats(ftsTokenize('snake_case'))
+    expect(stats.df.get('snake_case')).toBe(1)
+  }, TIMEOUT)
+})

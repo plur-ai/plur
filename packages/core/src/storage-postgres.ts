@@ -627,6 +627,24 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
    * kind of silent divergence this programme exists to remove.
    */
   /**
+   * Escape a query token for use inside a `LIKE` pattern.
+   *
+   * `ftsTokenize` splits on non-`\w`, and `_` IS a `\w` character, so it
+   * survives tokenization and arrives here as LIKE's single-character wildcard.
+   * Unescaped, the token `snake_case` matches `snakeXcase` — verified: in
+   * Postgres, `'snakeXcase' LIKE '%snake_case%'` is true. Worse, `_` can match
+   * the space that separates two tokens in `search_text`, so the predicate
+   * matches across a token boundary, which `termMatches` never does.
+   *
+   * That makes `df` count under a different rule than `tf`, which is not BM25
+   * and which nothing would report. `%` cannot survive tokenization today, but
+   * it is escaped anyway so this does not depend on that staying true.
+   */
+  private static escapeLike(qt: string): string {
+    return qt.replace(/[\\%_]/g, c => `\\${c}`)
+  }
+
+  /**
    * Prefixes of a query token that could legally match a document token under
    * the reverse arm (`qt.startsWith(t)`).
    *
@@ -661,10 +679,22 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
   async corpusStats(queryTokens: string[], opts?: ScopeRestriction): Promise<CorpusStats> {
     const pool = await this.getPool()
     if (queryTokens.length === 0) {
+      // Still honours `scopes`: an empty token list is "no query terms", not
+      // "no restriction". Counting the whole corpus here would report a corpus
+      // size the caller is not permitted to see — including for `scopes: []`,
+      // which must yield 0.
+      const p0: unknown[] = []
+      let clause0 = ''
+      if (opts?.scopes !== undefined) {
+        p0.push(opts.scopes)
+        clause0 = ` AND scope = ANY($${p0.length}::text[])`
+      }
       const { rows } = await pool.query(
-        `SELECT count(*)::int AS n FROM "${this.schema}".engrams WHERE status = 'active'`,
+        `SELECT count(*)::int AS n, COALESCE(AVG(COALESCE(array_length(tokens, 1), 0)), 0)::float8 AS avg_len
+         FROM "${this.schema}".engrams WHERE status = 'active'${clause0}`,
+        p0,
       )
-      return { N: rows[0]?.n ?? 0, df: new Map() }
+      return { N: rows[0]?.n ?? 0, df: new Map(), avgDocLength: rows[0]?.avg_len ?? 0 }
     }
 
     // A row written before this column existed has NULL tokens and would count
@@ -688,28 +718,33 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
       scopeClause = ` AND scope = ANY($${params.length}::text[])`
     }
 
+    // N and avgdl together: BM25 needs both to be corpus-wide, and computing
+    // them in one statement means they cannot describe different row sets.
+    // `array_length` on an empty array is NULL, hence the inner COALESCE.
     const { rows: totals } = await pool.query(
-      `SELECT count(*)::int AS n FROM "${this.schema}".engrams WHERE status = 'active'${scopeClause}`,
+      `SELECT count(*)::int AS n, COALESCE(AVG(COALESCE(array_length(tokens, 1), 0)), 0)::float8 AS avg_len
+       FROM "${this.schema}".engrams WHERE status = 'active'${scopeClause}`,
       params,
     )
     const N = totals[0]?.n ?? 0
+    const avgDocLength = totals[0]?.avg_len ?? 0
 
     const df = new Map<string, number>()
     for (const qt of queryTokens) {
       const p = [...params]
-      p.push(`%${qt}%`)
+      p.push(`%${PostgresAdapter.escapeLike(qt)}%`)
       const likeIdx = p.length
       p.push(PostgresAdapter.reversePrefixes(qt))
       const prefixIdx = p.length
       const { rows } = await pool.query(
         `SELECT count(*)::int AS n FROM "${this.schema}".engrams
          WHERE status = 'active'${scopeClause}
-           AND (search_text LIKE $${likeIdx} OR tokens && $${prefixIdx}::text[])`,
+           AND (search_text LIKE $${likeIdx} ESCAPE '\\' OR tokens && $${prefixIdx}::text[])`,
         p,
       )
       df.set(qt, rows[0]?.n ?? 0)
     }
-    return { N, df }
+    return { N, df, avgDocLength }
   }
 
   /**
@@ -725,12 +760,19 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
     const queryTokens = ftsTokenize(query)
     if (queryTokens.length === 0) return []
 
+    // Resolve the pool FIRST. `trigramAvailable` is only assigned inside
+    // `initSchema`, which `getPool` drives; reading it beforehand on a freshly
+    // constructed adapter sees `undefined` and sends the very first query of
+    // every process down the fallback path — the one case where the difference
+    // is invisible, because both paths return correct rows and only the plan
+    // differs.
+    const pool = await this.getPool()
+
     if (this.trigramAvailable !== true) {
       const candidates = await this.loadFiltered({ status: 'active', scopes: opts.scopes })
       return searchEngrams(candidates, query, opts.limit)
     }
 
-    const pool = await this.getPool()
     const params: unknown[] = []
     let scopeClause = ''
     if (opts.scopes !== undefined) {
@@ -739,11 +781,11 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
     }
     const perToken: string[] = []
     for (const qt of queryTokens) {
-      params.push(`%${qt}%`)
+      params.push(`%${PostgresAdapter.escapeLike(qt)}%`)
       const likeIdx = params.length
       params.push(PostgresAdapter.reversePrefixes(qt))
       const prefixIdx = params.length
-      perToken.push(`(search_text LIKE $${likeIdx} OR tokens && $${prefixIdx}::text[])`)
+      perToken.push(`(search_text LIKE $${likeIdx} ESCAPE '\\' OR tokens && $${prefixIdx}::text[])`)
     }
 
     // Deliberately unbounded by `limit`: the candidate set is every row that
@@ -772,7 +814,7 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
    * `SET LOCAL` scopes the setting to the transaction, so a pooled connection
    * is never left with another query's tuning on it.
    */
-  async searchVector(query: Float32Array, limit: number): Promise<VectorSearchHit[]> {
+  async searchVector(query: Float32Array, limit: number, opts?: ScopeRestriction): Promise<VectorSearchHit[]> {
     const pool = await this.getPool()
     const t = this.activeVecType
     const literal = vectorLiteral(query)
@@ -782,14 +824,30 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
       if (this.hnswActive) {
         await client.query(`SET LOCAL hnsw.ef_search = ${this.efSearchForLimit(limit)}`)
       }
+      // The scope restriction goes IN the k-NN predicate, never on the rows
+      // that come back. Post-filtering measures LIMIT against the unrestricted
+      // neighbour list, so a principal permitted a small share of the corpus
+      // asks for N and silently gets far fewer, with permitted rows sitting
+      // just below the cut.
+      //
+      // This method previously omitted the `opts` parameter entirely. TypeScript
+      // accepts a narrower arity than the interface declares, so a caller
+      // passing `scopes` compiled, ran, and got an unrestricted search with no
+      // error — on an authorization filter.
+      const params: unknown[] = [literal, limit]
+      let scopeClause = ''
+      if (opts?.scopes !== undefined) {
+        params.push(opts.scopes)
+        scopeClause = ` AND e.scope = ANY($${params.length}::text[])`
+      }
       const res = await client.query(
         `SELECT e.data, 1 - (em.embedding <=> $1::${t}) AS score
          FROM "${this.schema}".engram_embeddings em
          JOIN "${this.schema}".engrams e ON e.id = em.engram_id
-         WHERE e.status = 'active'
+         WHERE e.status = 'active'${scopeClause}
          ORDER BY em.embedding <=> $1::${t}
          LIMIT $2`,
-        [literal, limit],
+        params,
       )
       await client.query('COMMIT')
       return res.rows.map((r: any) => ({ engram: parseRow(r), score: Number(r.score) }))
@@ -900,6 +958,27 @@ export function buildFilterClause(filter: StorageFilter): { where: string; param
   if (filter.status) {
     conditions.push(`status = $${i++}`)
     params.push(filter.status)
+  }
+  if (filter.scopes !== undefined) {
+    // Permitted-scope allow-list (Phase 3) — the AUTHORIZATION filter, distinct
+    // from `filter.scope` below, which is a visibility filter with hierarchy
+    // expansion and personal-family pass-through. This one is exact membership
+    // and expands nothing: the caller has already resolved an identity to a
+    // complete set of permitted scopes.
+    //
+    // The guard is `!== undefined`, NOT truthiness. An empty array is a
+    // MEANINGFUL value — a principal with zero permitted scopes must see zero
+    // engrams — and `scope = ANY('{}')` is false for every row, which is
+    // exactly right. Testing `if (filter.scopes)` would let `[]` fall through
+    // to no clause at all and return the whole corpus, which is the privilege
+    // escalation this comment exists to prevent.
+    //
+    // This branch was MISSING here while present in PGLiteAdapter, so every
+    // permitted-scope query against Postgres silently returned every scope.
+    // The docstring above claimed the two were lifted from each other; they had
+    // diverged, and no test compared them.
+    conditions.push(`scope = ANY($${i++}::text[])`)
+    params.push(filter.scopes)
   }
   if (filter.scope) {
     conditions.push(

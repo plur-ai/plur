@@ -77,6 +77,21 @@ export interface CorpusStats {
    * that does not correlate with the candidate set and cannot be reasoned about.
    */
   df: Map<string, number>
+  /**
+   * Corpus-wide mean document length in tokens — BM25's `avgdl`.
+   *
+   * Required for the same reason `N` is. BM25 normalises each document's length
+   * against the corpus average; deriving that average from the NARROWED
+   * candidates uses a systematically larger number, because candidates are by
+   * construction the documents containing a query term. Every candidate then
+   * looks shorter than average, the length penalty is under-applied, and the
+   * ranking shifts.
+   *
+   * This was the hole in the original parity claim: `df` and `N` came from the
+   * corpus while `avgdl` came from the candidates, so the two paths agreed only
+   * on fixtures uniform enough to hide it.
+   */
+  avgDocLength: number
 }
 
 /**
@@ -196,10 +211,20 @@ export function searchEngrams(
   // `engrams` is the whole corpus and deriving them here is correct.
   const idfWeights = computeIdf(engrams, queryTokens, stats)
 
-  // Compute average document length for BM25 normalization
-  const avgDocLength = engrams.length > 0
-    ? engrams.reduce((sum, e) => sum + ftsTokenize(engramSearchText(e)).length, 0) / engrams.length
-    : 0
+  // Compute average document length for BM25 normalization.
+  //
+  // From `stats` when narrowing happened, because `engrams` is then the
+  // candidate set, whose mean length has no reason to equal the corpus mean —
+  // it can fall either side of it. Using it mis-applies BM25's length penalty
+  // and reorders results, which is precisely how the two paths diverged while
+  // `df` and `N` agreed. Pinned by the length-skew fixture in
+  // corpus-stats.test.ts, which is mutation-checked: reverting this line
+  // reverses the ranking there.
+  const avgDocLength = stats
+    ? stats.avgDocLength
+    : engrams.length > 0
+      ? engrams.reduce((sum, e) => sum + ftsTokenize(engramSearchText(e)).length, 0) / engrams.length
+      : 0
 
   let scored = engrams
     .map(e => ({ engram: e, score: ftsScore(e, queryTokens, idfWeights, avgDocLength) }))
