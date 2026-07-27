@@ -29,6 +29,7 @@ describe('PlurContextEngine', () => {
       sessionKey: 'user:john',
       message: { role: 'user', content: 'No, always use snake_case for the API responses in this project' },
     })
+    await engine.settle()   // ingest fires the learn in the background
     const recalled = await engine.plur.recall('snake_case API')
     expect(recalled.length).toBeGreaterThan(0)
   })
@@ -39,6 +40,7 @@ describe('PlurContextEngine', () => {
       message: { role: 'user', content: 'No, this is wrong' },
       isHeartbeat: true,
     })
+    await engine.settle()   // ingest fires the learn in the background
     expect(result.ingested).toBe(false)
   })
 
@@ -101,6 +103,7 @@ describe('PlurContextEngine', () => {
       ],
       prePromptMessageCount: 1, // system message was pre-prompt
     })
+    await engine.settle()   // afterTurn fires its learns in the background
     const recalled = await engine.plur.recall('GraphQL')
     expect(recalled.length).toBeGreaterThan(0)
   })
@@ -112,6 +115,7 @@ describe('PlurContextEngine', () => {
       sessionKey: 'user:john',
       message: { role: 'user', content: 'The convention is to always prefix environment variables with APP_' },
     })
+    await engine.settle()   // ingest fires the learn in the background
     // Compact triggers extraction
     const result = await engine.compact({
       sessionId: 'test-1',

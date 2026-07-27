@@ -65,6 +65,21 @@ export class PlurContextEngine implements ContextEngine {
 
   public readonly plur: Plur
   private options: PlurContextEngineOptions
+  /**
+   * In-flight background learns, so a caller can wait for them.
+   *
+   * `ingest()` deliberately does not block on `_learnIfNew` — a shared-scope
+   * learn may touch a remote, and stalling the ingest hook on that would make
+   * every turn wait on the network. That was safe to leave unobservable while
+   * the write path completed within a tick; once it is genuinely async, "fired
+   * and forgotten" and "finished" stop being the same thing, and anything that
+   * needs to observe the result (a test, a shutdown path) has no way to wait.
+   *
+   * `settle()` is that way. It is NOT a queue or a scheduler — the writes still
+   * run concurrently and are still not awaited by `ingest()`.
+   */
+  private inflight = new Set<Promise<unknown>>()
+
   private sessionScopes = new Map<string, string>() // sessionKey → scope
   private sessionMessages = new Map<string, AgentMessage[]>() // track messages per session for afterTurn
   private sessionLearned = new Map<string, Set<string>>() // track learned statements per session to prevent duplicates
@@ -123,13 +138,14 @@ export class PlurContextEngine implements ContextEngine {
             // don't stall the ingest hook on it. Scope `|| undefined` (not
             // `|| 'global'`) so an unscoped session reaches the core unscoped
             // routing path (_guardSensitiveScope sees scope == null) (#353).
-            void this._learnIfNew(key, candidate.statement, {
+            const pending = this._learnIfNew(key, candidate.statement, {
               type: candidate.type,
               scope: this.sessionScopes.get(params.sessionKey || '') || undefined,
               source: 'openclaw:ingest',
               rationale: 'user correction detected in real-time',
               tags: [candidate.type],
             }).catch(err => console.error('[plur-claw] _learnIfNew error:', err))
+            this._track(pending)
           }
         }
       }
@@ -203,13 +219,13 @@ export class PlurContextEngine implements ContextEngine {
         const learnings = extractLearnings(messages)
         for (const candidate of learnings) {
           if (candidate.confidence >= 0.7) {
-            void this._learnIfNew(key, candidate.statement, {
+            this._track(this._learnIfNew(key, candidate.statement, {
               type: candidate.type,
               scope: this.sessionScopes.get(params.sessionKey || '') || undefined,
               source: 'openclaw:compact',
               rationale: 'extracted during context compaction',
               tags: [candidate.type],
-            }).catch(err => console.error('[plur-claw] _learnIfNew error:', err))
+            }).catch(err => console.error('[plur-claw] _learnIfNew error:', err)))
           }
         }
       }
@@ -251,13 +267,13 @@ export class PlurContextEngine implements ContextEngine {
         if (lastAssistant) {
           const selfReported = extractSelfReportedLearnings(lastAssistant)
           for (const statement of selfReported) {
-            void this._learnIfNew(key, statement, {
+            this._track(this._learnIfNew(key, statement, {
               type: 'behavioral',
               scope,
               source: 'openclaw:self-report',
               rationale: 'self-reported by agent via learning section',
               tags: ['self-report'],
-            }).catch(err => console.error('[plur-claw] _learnIfNew error:', err))
+            }).catch(err => console.error('[plur-claw] _learnIfNew error:', err)))
           }
         }
 
@@ -265,13 +281,13 @@ export class PlurContextEngine implements ContextEngine {
         const learnings = extractLearnings(newMessages)
         for (const candidate of learnings) {
           if (candidate.confidence >= 0.7) {
-            void this._learnIfNew(key, candidate.statement, {
+            this._track(this._learnIfNew(key, candidate.statement, {
               type: candidate.type,
               scope,
               source: 'openclaw:afterTurn',
               rationale: 'extracted from conversation via pattern matching',
               tags: [candidate.type],
-            }).catch(err => console.error('[plur-claw] _learnIfNew error:', err))
+            }).catch(err => console.error('[plur-claw] _learnIfNew error:', err)))
           }
         }
       }
@@ -356,4 +372,23 @@ export class PlurContextEngine implements ContextEngine {
     await this.plur.learnRouted(statement, context)
     maybeFlushAfter(recordEvent('learn'))
   }
+
+  /**
+   * Resolve once every background learn started so far has finished.
+   *
+   * For callers that must observe the effect of an `ingest()` — tests, and any
+   * shutdown path that should not drop a write. Does not change scheduling.
+   */
+  /** Register a background write so `settle()` can wait for it. */
+  private _track(p: Promise<unknown>): void {
+    this.inflight.add(p)
+    void p.finally(() => this.inflight.delete(p))
+  }
+
+  async settle(): Promise<void> {
+    while (this.inflight.size > 0) {
+      await Promise.allSettled([...this.inflight])
+    }
+  }
+
 }
