@@ -125,6 +125,38 @@ describe('BM25 term frequency saturation', () => {
   })
 })
 
+describe('BM25 reverse substring junk matching (#721)', () => {
+  // qt.includes(t) allowed any document token that is a non-prefix substring of
+  // the query to score a TF hit. e.g. "deploying".includes("yin") = true, so
+  // an engram about "yin yang" matched the query "deploying" and could outscore
+  // the correct "deploy" stem (which had higher df → lower IDF).
+  // Fix: require qt.startsWith(t) so only true morphological prefixes match.
+
+  it('"yin" is a non-prefix substring of "deploying" and must not produce a result', () => {
+    // With the bug: 'deploying'.includes('yin') = true → tf=1 → engram surfaces
+    // With the fix: 'deploying'.startsWith('yin') = false → tf=0 → no result
+    const yin = makeEngram({ id: 'ENG-2026-0330-010', statement: 'yin yang balance practice' })
+    const results = searchEngrams([yin], 'deploying')
+    expect(results).toHaveLength(0)
+  })
+
+  it('"res" is a non-prefix substring of "postgres" and must not produce a result', () => {
+    // "postgres"[5:8] = "res" — 'postgres'.includes('res') = true (non-prefix)
+    // "res" must be a standalone token: use "res judicata" so it survives ftsTokenize
+    const res = makeEngram({ id: 'ENG-2026-0330-012', statement: 'res judicata legal doctrine principle' })
+    const results = searchEngrams([res], 'postgres')
+    expect(results).toHaveLength(0)
+  })
+
+  it('morphological prefix "deploy" still matches query "deploying"', () => {
+    // "deploy" is a true prefix of "deploying" → must survive the fix
+    const deploy = makeEngram({ id: 'ENG-2026-0330-014', statement: 'deploy application server production' })
+    const results = searchEngrams([deploy], 'deploying')
+    expect(results).toHaveLength(1)
+    expect(results[0].id).toBe('ENG-2026-0330-014')
+  })
+})
+
 describe('BM25 document length normalization', () => {
   it('short doc with rare term beats long doc with same term', () => {
     const engrams = [
