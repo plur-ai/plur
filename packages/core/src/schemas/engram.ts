@@ -398,6 +398,12 @@ export const EngramSchema = z.object({
  * This prevents data loss when new fields are added by hand or by other SPs.
  * The Engram type is derived from the strict schema (without passthrough) to keep
  * TypeScript type safety — passthrough only affects runtime Zod validation.
+ *
+ * Extension point: enterprise adds `commitment: 'draft'` (review-queue staging —
+ * pending human approval before an engram enters the recall pool) via this passthrough
+ * rather than the core enum. The value is intentionally absent from the strict enum
+ * because it is only meaningful in governed deployments with an admin triage UI;
+ * see plur-ai/enterprise#567 for the write sites.
  */
 export const EngramSchemaPassthrough = EngramSchema.passthrough()
 
