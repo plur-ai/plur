@@ -165,7 +165,7 @@ Hooks inject engrams automatically on every first message — you do not need to
 
 1. **Automatic**: Hooks inject relevant engrams on first message — no action needed
 2. **Learn**: When corrected or discovering something new, call \`plur_learn\` immediately
-3. **Recall**: Before answering factual questions, call \`plur_recall_hybrid\` — check memory first
+3. **Recall**: Before answering factual questions, call \`plur_recall\` — check memory first
 4. **Feedback**: Rate injected engrams with \`plur_feedback\` (positive/negative) — trains relevance
 5. **End**: Call \`plur_session_end\` with summary + engram_suggestions — a SessionEnd hook auto-closes the lifecycle if you forget, but calling it yourself captures higher-quality learnings
 

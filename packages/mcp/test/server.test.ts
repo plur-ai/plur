@@ -314,7 +314,7 @@ describe('MCP server (wire protocol)', () => {
     const text = (result.contents[0] as any).text
     expect(text).toContain('PLUR')
     expect(text).toContain('plur_learn')
-    expect(text).toContain('plur_recall_hybrid')
+    expect(text).toContain('plur_recall')
   })
 
   it('reads the status resource with live data', async () => {
@@ -377,6 +377,14 @@ describe('MCP server (wire protocol)', () => {
 
   describe('version staleness warnings', () => {
     const originalFetch = globalThis.fetch
+
+    beforeEach(() => {
+      // createServer() fires checkForUpdate() fire-and-forget in beforeEach.
+      // That async call can populate the cache before the test body mocks fetch,
+      // causing the test's checkForUpdate() to return the stale cache entry.
+      // Clear eagerly to guarantee the test body's mock is the first writer.
+      clearVersionCache()
+    })
 
     afterEach(() => {
       globalThis.fetch = originalFetch
