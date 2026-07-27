@@ -58,7 +58,10 @@ export const IMPORT_SOURCES: ImportSource[] = [
   lettaSource,
 ]
 
-export async function listImportSources(): Promise<ImportSource[]> {
+// Synchronous — the entire body returns a frozen module-level constant. An
+// automated pass made it async during the Phase 2 flip; there is nothing to
+// await. See the note in index.ts on suggestScope.
+export function listImportSources(): ImportSource[] {
   return IMPORT_SOURCES
 }
 

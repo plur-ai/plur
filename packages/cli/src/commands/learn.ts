@@ -124,7 +124,14 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   let timeoutHandle: ReturnType<typeof setTimeout> | undefined
   try {
     engram = await Promise.race([
-      await plur.learnRouted(statement, ctx),
+      // NOT `await plur.learnRouted(...)`. Awaiting here resolves the call
+      // before the array is even constructed and before the timer below is
+      // armed, so `Promise.race` receives a settled value and the 5s guard
+      // never runs — the CLI would hang indefinitely on an unreachable remote,
+      // which is the exact failure this guard exists to bound. An automated
+      // add-awaits pass inserted it; the resulting code is still valid
+      // TypeScript and every test still passed.
+      plur.learnRouted(statement, ctx),
       new Promise<never>((_, rej) => {
         timeoutHandle = setTimeout(
           () => rej(new Error('learnRouted timed out after 5s — remote store slow/unreachable; engram not confirmed remotely')),

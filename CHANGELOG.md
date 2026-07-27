@@ -2,7 +2,60 @@
 
 ## 0.16.0 (unreleased)
 
-Unified recall surface.
+Unified recall surface, and the convergence programme: one engine, two
+deployments.
+
+### BREAKING — the write path is asynchronous
+
+`Plur`'s store interface and roughly twenty public methods now return promises
+(`learn`, `learnRouted`, `recall`, `recallHybrid`, `inject`, `injectHybrid`,
+`feedback`, `forget`, `getById`, `list`, `status`, `ingest`, `sync`, …).
+
+**Every out-of-tree consumer must add `await`.** The failure mode is quiet: a
+call whose result is used without awaiting yields a `Promise`, and most
+assertions and property reads on a `Promise` succeed rather than throw, so code
+appears to work while operating on nothing. `{...plur.status()}` becomes `{}`.
+`for (const e of plur.recall(q))` throws, but `plur.recall(q).length` is simply
+`undefined`. TypeScript catches all of it; JavaScript consumers will not.
+
+`capture()` and `timeline()` stay synchronous — they are backed by
+`episodes.yaml`, not the engram primary store. So do `suggestScope`,
+`dismissScope`, `reofferScopes`, `CapabilityCanary.warnings` and
+`listImportSources`: an automated pass made them async during the flip even
+though they do no async work, and they were reverted rather than shipped as
+breaking changes that bought nothing.
+
+Why: a network-backed store cannot satisfy a synchronous contract (there is no
+synchronous Postgres client for Node, and manufacturing one trades a documented
+limitation for an undocumented hazard). The sync interface was a hard ceiling on
+running core anywhere except one local process. See ADR-0003 and ADR-0004.
+
+`PrimaryStore` and `AsyncPrimaryStore` have collapsed into one interface;
+`AsyncPrimaryStore` remains as a deprecated alias so existing imports resolve.
+
+`StorageAdapter` — a public export — gains two required members (`role`,
+`vectorIndex`) and demotes `syncFromYaml()` / `reindex()` to optional. An
+out-of-tree implementation of that interface will not compile until updated;
+`DERIVED_INDEX_DEFAULTS` is exported to make that a two-line change for an
+adapter that has the historical behaviour (a derived index over YAML, answering
+`searchVector` exactly). Adapters that are approximate should declare that
+rather than take the default — a wrong `vectorIndex` is worse than none,
+because it is a claim a caller may act on.
+
+### Added
+
+- **`npx @plur-ai/migrate`** — finds the un-awaited calls this release creates, and fixes the unambiguous ones. Reports by default; `--write` applies. It refuses to rewrite the three cases where inserting `await` changes program meaning rather than just adding a wait (inside a `Promise` combinator array, a concise arrow body, a result consumed across lines) and lists them for a human instead. Exit code 2 when anything needs attention, so it composes in CI. Every hazard it guards is one the codemods that migrated PLUR itself actually hit.
+- **Postgres as a primary store** (ADR-0005). `new Plur({ store: new PostgresAdapter({ connectionString }) })` runs the engine directly against server Postgres — the same engine, a different deployment. `pgvector` for vectors, exact or HNSW with the recall target declared rather than implied.
+- **Cross-process write safety.** `PrimaryStore.withExclusiveAccess?()` — the store decides how it is serialized, because the store is what knows what it shares. `PostgresAdapter` takes a session-scoped advisory lock; a local-file store keeps its file lock. Without this, two processes over one database silently overwrote each other, and a *read-only* `recall()` on one could delete an engram another had just committed (`recall` updates activation, so it is a whole-corpus write).
+- **Permitted-scope allow-list pushed into the query** — `scopes` on `RecallOptions` and now `InjectOptions`. An AUTHORIZATION filter, distinct from the `scope` visibility filter: absent = unrestricted, `[]` = matches nothing, non-empty = exact membership with no hierarchy expansion and no personal-family pass-through. `inject()` had no authorization filter at all before this, which for a multi-tenant caller meant every principal's personal engrams reached every other principal's context.
+- **BM25 narrowing pushed into Postgres** (#711) via `pg_trgm`, with corpus-wide statistics (`CorpusStats`: `N`, per-term `df`, `avgDocLength`) supplied by the store so narrowing cannot change the ranking. Tokens are computed in TypeScript at write time by the same `ftsTokenize` the scorer uses, so there is no second tokenizer free to drift.
+
+### Fixed
+
+- **BM25 reverse-substring matches** (#721): `qt.includes(t)` let any document token that was a non-prefix substring of the query score a hit — `deploying` matched an engram about *yin*, `postgres` matched one about *res*. Now `qt.startsWith(t)`, which keeps morphological prefixes (`deploy` → `deploying`) and drops the junk. Measured on a 3,930-engram store: no query loses results, and the reverse-substring matches it removes were never meaningful.
+- `pg` is externalized from the bundle — it is an `optionalDependency`, so it was being inlined into `dist` and the published `PostgresAdapter` would have thrown on first use.
+- `plur learn`'s 5s remote-write timeout was dead code (an `await` inside `Promise.race` resolved the call before the timer was armed).
+- `init-remote` silently ignored `--quiet` and printed prose under `--json`.
 
 ### Changed
 

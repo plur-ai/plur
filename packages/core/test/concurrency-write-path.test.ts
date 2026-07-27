@@ -130,31 +130,76 @@ describe('Plur — concurrent writes', () => {
   it('feedback waits out a lock held across an await instead of spinning', async () => {
     const target = await plur.learn('an engram whose feedback has to wait', { scope: 'global' })
 
-    let ticks = 0
-    const timer = setInterval(() => { ticks++ }, 5)
-    const holder = withAsyncLock(lockKey(plur), async () => {
-      await new Promise(r => setTimeout(r, 60))
-    })
-    // Let the holder actually take the lock before the writer starts.
-    await new Promise(r => setImmediate(r))
+    const HOLD_MS = 200
+    const TICK_MS = 10
+    // A starved event loop CANNOT reach this. Node coalesces a blocked
+    // `setInterval` into a SINGLE callback fired the moment the loop is
+    // released, so a spin-waiting writer scores exactly 1 tick no matter how
+    // long it blocked — which is why `toBeGreaterThan(0)` proved nothing here.
+    // A loop that keeps turning fires ~HOLD_MS / TICK_MS times; half of that
+    // is the bar.
+    const MIN_TICKS = HOLD_MS / TICK_MS / 2
 
-    const writer = await plur.feedback(target.id, 'positive')
-    await Promise.all([holder, writer])
+    const events: string[] = []
+    let ticks = 0
+    const timer = setInterval(() => { ticks++ }, TICK_MS)
+
+    let ticksDuringHold = -1
+    let holderEntered!: () => void
+    const holding = new Promise<void>(r => { holderEntered = r })
+    const holder = withAsyncLock(lockKey(plur), async () => {
+      events.push('holder:enter')
+      const at = ticks
+      holderEntered()
+      await new Promise(r => setTimeout(r, HOLD_MS))
+      ticksDuringHold = ticks - at
+      events.push('holder:release')
+    })
+
+    // The writer starts only once the lock is genuinely HELD, and is not
+    // awaited here — so it has to contend for real. (Awaiting it to completion
+    // before assembling a `Promise.all`, as this used to, cannot tell "queued
+    // behind the holder" from "never touched the lock at all".)
+    await holding
+    const writer = plur.feedback(target.id, 'positive').then(() => { events.push('feedback:done') })
+
+    const settled = await Promise.allSettled([holder, writer])
     clearInterval(timer)
 
+    // Checked first, because a spinning writer ALSO exhausts its retries and
+    // throws — and that rejection would otherwise mask the actual diagnosis.
+    expect(
+      ticksDuringHold,
+      `event loop was starved while the writer waited: ${ticksDuringHold} ticks of ~${HOLD_MS / TICK_MS} in ${HOLD_MS}ms`,
+    ).toBeGreaterThanOrEqual(MIN_TICKS)
+    for (const r of settled) {
+      expect(r.status, r.status === 'rejected' ? String(r.reason) : 'settled').toBe('fulfilled')
+    }
+    // Queued, not skipped: the write landed only after the holder let go.
+    expect(events).toEqual(['holder:enter', 'holder:release', 'feedback:done'])
     expect((await plur.getById(target.id))?.feedback_signals?.positive).toBe(1)
-    expect(ticks, 'event loop was starved while waiting for the lock').toBeGreaterThan(0)
   })
 
   it('setPinnedAsync waits out a lock held across an await instead of spinning', async () => {
     const target = await plur.learn('an engram whose pin has to wait', { scope: 'global' })
 
+    const events: string[] = []
+    let holderEntered!: () => void
+    const holding = new Promise<void>(r => { holderEntered = r })
     const holder = withAsyncLock(lockKey(plur), async () => {
+      events.push('holder:enter')
+      holderEntered()
       await new Promise(r => setTimeout(r, 60))
+      events.push('holder:release')
     })
-    await new Promise(r => setImmediate(r))
+    // Same shape as above: contend against a lock that is already held, and
+    // let the ordering — not mere completion — be the evidence.
+    await holding
 
-    const [, pinned] = await Promise.all([holder, await plur.setPinnedAsync(target.id, true)])
+    const writer = plur.setPinnedAsync(target.id, true).then(r => { events.push('pin:done'); return r })
+    const [, pinned] = await Promise.all([holder, writer])
+
+    expect(events).toEqual(['holder:enter', 'holder:release', 'pin:done'])
     expect(pinned?.pinned).toBe(true)
     expect((await plur.listPinned()).map(e => e.id)).toEqual([target.id])
   })

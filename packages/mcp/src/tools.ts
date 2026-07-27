@@ -417,10 +417,27 @@ function _resolveInjectionSession(args: Record<string, unknown>): string | undef
 
 /** Record pack counts from an InjectionResult into the active session's telemetry. */
 function _recordInjectionTelemetry(session_id: string | undefined, injected_packs: Record<string, number> | undefined): void {
-  if (!session_id || !injected_packs) return
+  if (!session_id) return
   const state = _sessionTelemetry.get(session_id)
   if (!state) return
+
+  // The CALL is counted whether or not it injected anything.
+  //
+  // This used to return early on `!injected_packs`, and core only builds that
+  // object when at least one engram was injected — so an inject call that
+  // matched nothing was not counted at all, while the field is named
+  // `injection_calls` and documented as "number of distinct inject calls".
+  //
+  // The effect was load-bearing and intermittent: `session_start` injects for
+  // the session's task, and if that task happens to match no engram (or if
+  // `injectHybrid` falls back to BM25 because the embedding model is slow to
+  // load, which is exactly what happens on a cold CI runner) the count silently
+  // came up short. A telemetry counter that undercounts only when retrieval
+  // does badly is worse than no counter: it biases the metric toward sessions
+  // that went well.
   state.injection_calls++
+
+  if (!injected_packs) return
   for (const [pack, count] of Object.entries(injected_packs)) {
     state.pack_counts[pack] = (state.pack_counts[pack] ?? 0) + count
   }

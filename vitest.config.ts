@@ -29,6 +29,7 @@ export default defineConfig({
       'packages/mcp',
       'packages/cli',
       'packages/claw',
+      'packages/migrate',
       {
         test: {
           name: 'core-pglite',

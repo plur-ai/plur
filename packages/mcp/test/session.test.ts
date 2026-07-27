@@ -172,8 +172,16 @@ describe('Session & store tools', () => {
       expect(session_duration_ms).toBeLessThanOrEqual(after - before)
     })
 
-    it('session_end returns no injection_summary when no engrams exist', async () => {
-      // No engrams → session_start injects nothing
+    it('reports an injection_summary on an empty store — the call happened, it found nothing', async () => {
+      // Previously asserted `injection_summary` was undefined here, on the
+      // premise "no engrams → session_start injects nothing → nothing to
+      // report". That premise conflated a call that found nothing with a call
+      // that never happened, and it was the same conflation that made
+      // `total_injections` undercount (see the recorder in tools.ts).
+      //
+      // An empty store is precisely the case where you want to know injection
+      // RAN and came back empty — that is the difference between "memory is
+      // not wired up" and "memory is wired up and this task matched nothing".
       const startResult = await callTool('plur_session_start', { task: 'fresh store task' }) as any
       const session_id = startResult.session_id
 
@@ -183,7 +191,9 @@ describe('Session & store tools', () => {
         engram_suggestions: [],
       }) as any
 
-      expect(endResult.injection_summary).toBeUndefined()
+      expect(endResult.injection_summary).toBeDefined()
+      expect(endResult.injection_summary.total_injections).toBeGreaterThanOrEqual(1)
+      expect(endResult.injection_summary.pack_counts).toEqual({})
     })
 
     it('standalone plur_inject calls accumulate into the session telemetry', async () => {
@@ -203,6 +213,34 @@ describe('Session & store tools', () => {
 
       // At least 2 injection calls: one from session_start, one from plur_inject
       expect(endResult.injection_summary).toBeDefined()
+      expect(endResult.injection_summary.total_injections).toBeGreaterThanOrEqual(2)
+    })
+
+    it('counts an inject call that matched NOTHING', async () => {
+      // The counter is "distinct inject calls", not "calls that found
+      // something". It used to skip empty ones, which made the count depend on
+      // retrieval quality: a session_start whose task matched no engram — or
+      // one where injectHybrid fell back to BM25 because the embedding model
+      // was slow to load, as on a cold CI runner — silently undercounted.
+      // Intermittent by construction, and biased toward sessions that went
+      // well.
+      await plur.learn('Use pnpm for package management', { scope: 'global' })
+
+      const startResult = await callTool('plur_session_start', { task: 'tooling check' }) as any
+      const session_id = startResult.session_id
+
+      const inject = await callTool('plur_inject', {
+        task: 'zzzz nothing in the corpus resembles this query zzzz',
+      }) as any
+      expect(inject.count).toBe(0)
+
+      const endResult = await callTool('plur_session_end', {
+        summary: 'no matches',
+        session_id,
+        engram_suggestions: [],
+      }) as any
+
+      // session_start + the empty standalone call.
       expect(endResult.injection_summary.total_injections).toBeGreaterThanOrEqual(2)
     })
 

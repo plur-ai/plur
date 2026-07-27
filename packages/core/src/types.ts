@@ -178,6 +178,21 @@ export interface BoundedRecallResult {
 export interface InjectOptions {
   budget?: number
   scope?: string
+  /**
+   * Permitted-scope allow-list — the AUTHORIZATION filter, same contract as
+   * {@link RecallOptions.scopes}: absent = unrestricted, `[]` = matches
+   * NOTHING, non-empty = exact membership with no hierarchy expansion.
+   *
+   * `RecallOptions` gained this in Phase 3 and `InjectOptions` did not, which
+   * left `inject()` — the surface a session actually calls on every prompt —
+   * with no way to be authorization-scoped at all. Its only scope input was
+   * `scope` above, a VISIBILITY filter that deliberately passes the entire
+   * personal family through (`local`, `global`, `user:*`, `agent:*`). For a
+   * multi-tenant caller that means every principal's personal engrams land in
+   * every other principal's context: the visibility filter is doing what it is
+   * designed to do, and there was simply no authorization filter above it.
+   */
+  scopes?: string[]
   boost_recent?: boolean
   /** Force a query intent for routing (#224); omitted → classifier decides. */
   intentOverride?: 'entity' | 'temporal' | 'event' | 'general'

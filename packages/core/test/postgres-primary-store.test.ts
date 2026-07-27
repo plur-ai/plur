@@ -62,10 +62,15 @@ describe.skipIf(!PG_URL)('Phase 2b acceptance — Plur on a Postgres primary sto
   }, TIMEOUT)
 
   it('reports Postgres as its primary store, not a fallback tier', () => {
-    // Before this phase the constructor logged a warning and quietly kept a
-    // YAML store. If this is 'yaml', the flip did not actually land.
-    expect(adapter.kind).toBe('postgres')
-    expect(plur.status).toBeTypeOf('function')
+    // Assert on the ENGINE, not on the adapter we just built. `adapter.kind`
+    // and `typeof plur.status` hold whether or not `Plur` adopted the store —
+    // they would both be green on the pre-flip code this test exists to
+    // distinguish from. `plur.primaryStore` is the store the engine actually
+    // persists through: before this phase the constructor logged a warning and
+    // quietly kept a YAML one. If this is 'yaml', the flip did not land.
+    expect(plur.primaryStore.kind).toBe('postgres')
+    // ...and it is THIS adapter, not some other Postgres store it built itself.
+    expect(plur.primaryStore).toBe(adapter)
   })
 
   it('round-trips learn -> recall through Postgres', async () => {

@@ -75,6 +75,42 @@ export interface PrimaryStore {
   invalidate(): void
 
   /**
+   * Run `fn` with EXCLUSIVE access to this store, across every process that
+   * shares it. Optional; when absent the caller falls back to its own
+   * path-based file lock.
+   *
+   * ## Why this is on the store
+   *
+   * `Plur`'s write methods are read-modify-write: load the corpus, change one
+   * engram, save the corpus. That is only safe under mutual exclusion, and
+   * until now `Plur` provided it with `withAsyncLock(this.paths.engrams, …)` —
+   * an in-process mutex plus an `O_EXCL` lock file on the LOCAL filesystem.
+   *
+   * That is a YAML assumption compiled into the engine. It is correct for
+   * `YamlPrimaryStore`, where the path being locked IS the data. It protects
+   * nothing when the data lives in a shared database: two containers share
+   * neither the mutex nor the lock file, so both load, both mutate, and both
+   * save — and because `save()` replaces the whole corpus, the loser does not
+   * merely lose its own update, it DELETES rows the winner committed.
+   *
+   * Measured, not theorised: with two `Plur` instances over one Postgres
+   * schema, a concurrent `feedback` + `learn` reverted the feedback increment
+   * in 5 runs out of 5, and a concurrent *read-only* `recall()` + `learn`
+   * permanently deleted the learned engram in 2 out of 5 — because `recall()`
+   * updates activation, which is itself a whole-corpus write.
+   *
+   * So the lock has to be the store's business. A store that spans processes
+   * implements this with something those processes actually share — a Postgres
+   * advisory lock, a row lock, a lease. A single-file store can leave it
+   * undefined and keep the file lock.
+   *
+   * Implementations MUST be reentrant-safe from the caller's perspective in the
+   * sense that `fn` may itself call `load`/`save` on the same store, and MUST
+   * release on throw.
+   */
+  withExclusiveAccess?<T>(fn: () => Promise<T>): Promise<T>
+
+  /**
    * Cheap, approximate size of the store — for choosing a backend, never for
    * reporting a count to a user.
    *

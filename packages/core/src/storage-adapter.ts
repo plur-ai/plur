@@ -58,6 +58,7 @@
  * modules.
  */
 import type { Engram } from './schemas/engram.js'
+import type { CorpusStats } from './fts.js'
 
 /**
  * Permitted-scope allow-list — the authorization filter (Phase 3, scope
@@ -206,6 +207,12 @@ export const PGVECTOR_DEFAULT_EF_SEARCH = 40
 export const EF_SEARCH_FILTER_HEADROOM = 2
 
 /**
+ * pgvector's hard ceiling on `hnsw.ef_search`. Setting a larger value is not
+ * clamped by the server — it raises an error and the whole query fails.
+ */
+export const PGVECTOR_MAX_EF_SEARCH = 1000
+
+/**
  * The `hnsw.ef_search` a query must run with to be able to return `limit` rows.
  *
  * Never below `limit` — that is the whole point. `configured` raises the floor
@@ -221,8 +228,41 @@ export function efSearchFor(
   headroom: number = EF_SEARCH_FILTER_HEADROOM,
 ): number {
   const wanted = Math.ceil(Math.max(1, limit) * Math.max(1, headroom))
-  return Math.max(wanted, configured, Math.max(1, limit))
+  const raised = Math.max(wanted, configured, Math.max(1, limit))
+  // Clamp to pgvector's maximum. Above it the server REJECTS the SET rather
+  // than clamping, so an unclamped value turns a large-`limit` vector search
+  // into a hard failure instead of a slightly-degraded one — with headroom 2
+  // that is any limit above 500. Degrading recall is the correct trade here;
+  // failing the query is not.
+  return Math.min(raised, PGVECTOR_MAX_EF_SEARCH)
 }
+
+/**
+ * Defaults for an out-of-tree adapter adopting the 0.16 interface.
+ *
+ * `role` and `vectorIndex` are REQUIRED, deliberately — the point of ADR-0005
+ * is that a caller can ask what it is getting instead of assuming the exactness
+ * core happened to have historically. That makes them a breaking change for
+ * anyone who implemented this interface before 0.16, so here is the one-line
+ * adoption:
+ *
+ * ```ts
+ * class MyAdapter implements StorageAdapter {
+ *   readonly role = DERIVED_INDEX_DEFAULTS.role
+ *   readonly vectorIndex = DERIVED_INDEX_DEFAULTS.vectorIndex
+ *   // ...
+ * }
+ * ```
+ *
+ * These describe the historical behaviour every pre-0.16 adapter had: a derived
+ * index over YAML, answering `searchVector` with an exact scan. If yours is
+ * approximate, say so rather than taking these — a wrong `vectorIndex` is worse
+ * than none, because it is a claim a caller may act on.
+ */
+export const DERIVED_INDEX_DEFAULTS = {
+  role: 'index',
+  vectorIndex: EXACT_VECTOR_INDEX,
+} as const satisfies { role: StorageAdapterRole; vectorIndex: VectorIndexStrategy }
 
 /** Async-style storage adapter. */
 export interface StorageAdapter {
@@ -260,6 +300,39 @@ export interface StorageAdapter {
    * not apply it is a silent-wrong-results bug, not a missing optimization.
    */
   searchBM25(query: string, opts: { limit: number } & ScopeRestriction): Promise<Engram[]>
+  /**
+   * Corpus-wide `N` and per-term `df` for BM25 scoring (convergence Phase 4,
+   * #711). OPTIONAL — a store that cannot compute these exactly must leave it
+   * undefined, and the caller falls back to deriving them from the candidate
+   * set.
+   *
+   * ## Why this exists
+   *
+   * `searchBM25` returns a ranked, truncated candidate list. Scoring in core
+   * over that list means `computeIdf` sees `N = candidates.length`, so a term
+   * that is rare across 50,000 engrams but common among the 200 that came back
+   * is scored as common — IDF inverted, precisely for the terms it exists to
+   * privilege. Nothing errors; the ranking is just quietly wrong.
+   *
+   * So narrowing in the store and scoring in core is only sound if the store
+   * ALSO reports what the corpus looks like beyond the candidates.
+   *
+   * ## The exactness requirement
+   *
+   * `df` must be counted under `termMatches` from `fts.ts` —
+   * `t.includes(qt) || qt.startsWith(t)` — over the same scope restriction the
+   * search used. Not "close enough": an approximate `df` is worse than the
+   * local fallback, because local `df` is at least wrong in a way that
+   * correlates with the candidate set and can be reasoned about, whereas an
+   * approximation is wrong in a way that varies per term with no pattern.
+   *
+   * An implementation that cannot reproduce the rule should return `undefined`
+   * rather than a best effort.
+   *
+   * @param queryTokens Tokens from `ftsTokenize` — already lowercased and
+   *   stop-word filtered, so the store must not re-tokenize.
+   */
+  corpusStats?(queryTokens: string[], opts?: ScopeRestriction): Promise<CorpusStats>
   /**
    * Vector similarity search (cosine).
    *
