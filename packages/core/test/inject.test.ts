@@ -343,6 +343,12 @@ describe('injection engine', () => {
         pinned: true,
       }),
       pinned: true,
+      // fillTokenBudget takes ScoredEngram[] = Engram + keyword_match/raw_score/
+      // score. selectAndSpread stamps all three from the same raw score; mirror
+      // that. estimateTokens strips them before serializing, so they do not
+      // affect the token math the comment above works through.
+      keyword_match: 1.0,
+      raw_score: 1.0,
       score: 1.0,
     }))
     const maxTokens = 600

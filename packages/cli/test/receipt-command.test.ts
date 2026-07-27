@@ -11,6 +11,7 @@ const receipt: Receipt = {
   external_retrieved: 0,
   sources: { hook: 60, session_start: 8 },
   coverage: { source: 'co_injection', complete_from: '2026-07-03', session_id_coverage: 0.87 },
+  skipped_future: 0,
 }
 
 describe('renderReceipt', () => {
@@ -99,6 +100,7 @@ describe('renderReceipt', () => {
       external_retrieved: 0,
       sources: {},
       coverage: { source: 'none', complete_from: null, session_id_coverage: 0 },
+      skipped_future: 0,
     }
     expect(renderReceipt(empty)).toMatch(/no data yet/i)
   })

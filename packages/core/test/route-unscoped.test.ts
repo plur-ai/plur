@@ -39,8 +39,10 @@ const { Plur, SCOPE_MATCH_THRESHOLD } = await import('../src/index.js')
 
 const dirs: string[] = []
 
-/** Build a Plur whose config carries the given stores + any extra config keys. */
-function makePlur(config: Record<string, unknown>): Plur {
+/** Build a Plur whose config carries the given stores + any extra config keys.
+ *  `Plur` here is a dynamic-import binding (a value), so the instance type has
+ *  to be spelled `InstanceType<typeof Plur>` rather than `Plur`. */
+function makePlur(config: Record<string, unknown>): InstanceType<typeof Plur> {
   const dir = mkdtempSync(join(tmpdir(), 'plur-route-unscoped-'))
   dirs.push(dir)
   writeFileSync(join(dir, 'config.yaml'), yaml.dump({ index: false, ...config }, { noRefs: true }))
@@ -312,7 +314,9 @@ describe('Stage 3b — auto-route un-scoped writes (#351)', () => {
 
     // FORWARD: coverContainsDomain:true, confidence 0.2 (< 0.5) → routes via bypass.
     routeMock.mockReturnValueOnce([
-      { scope: 'group:plur/core', confidence: 0.2, reason: 'domain x ⊂ covers plur.*', domainMatch: true, coverContainsDomain: true },
+      // coverSpecificity 1: the forward-matching cover `plur.*` normalizes to the
+      // single segment `plur`. It is a tie-break only — irrelevant to a one-candidate list.
+      { scope: 'group:plur/core', confidence: 0.2, reason: 'domain x ⊂ covers plur.*', domainMatch: true, coverContainsDomain: true, coverSpecificity: 1 },
     ])
     const routedLow = await plur._resolveUnscopedScope('anything', { domain: 'plur.core.x' })
     expect(routedLow.scope).toBe('group:plur/core')
@@ -323,7 +327,8 @@ describe('Stage 3b — auto-route un-scoped writes (#351)', () => {
     // Keying on domainMatch (the old bug) would have routed this; keying on
     // coverContainsDomain correctly gates it.
     routeMock.mockReturnValueOnce([
-      { scope: 'group:plur/core', confidence: 0.2, reason: 'domain plur ⊃ covers plur.core', domainMatch: true, coverContainsDomain: false },
+      // coverSpecificity 0: no FORWARD match, so the ranker records no depth.
+      { scope: 'group:plur/core', confidence: 0.2, reason: 'domain plur ⊃ covers plur.core', domainMatch: true, coverContainsDomain: false, coverSpecificity: 0 },
     ])
     const reverseLow = await plur._resolveUnscopedScope('anything', { domain: 'plur' })
     expect(reverseLow.scope).toBe('global')
@@ -331,7 +336,7 @@ describe('Stage 3b — auto-route un-scoped writes (#351)', () => {
 
     // WEAK: neither flag set, same low confidence 0.2 (< 0.5) → must NOT route.
     routeMock.mockReturnValueOnce([
-      { scope: 'group:plur/core', confidence: 0.2, reason: 'keywords [...]', domainMatch: false, coverContainsDomain: false },
+      { scope: 'group:plur/core', confidence: 0.2, reason: 'keywords [...]', domainMatch: false, coverContainsDomain: false, coverSpecificity: 0 },
     ])
     const gatedLow = await plur._resolveUnscopedScope('anything')
     expect(gatedLow.scope).toBe('global')

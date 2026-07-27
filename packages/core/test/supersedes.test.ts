@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi, assert } from 'vitest'
 import { mkdtempSync, rmSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
@@ -63,7 +63,8 @@ describe('learn with supersedes (#240)', () => {
 
   it('preserves existing relations on the target when adding the reverse edge', async () => {
     const oldE = await plur.learn('plur cli version is 0.3.0')
-    const stored = await plur.getById(oldE.id)!
+    const stored = await plur.getById(oldE.id)
+    assert(stored !== null, 'superseded target was not stored')
     await plur.updateEngram({
       ...stored,
       relations: { broader: ['B1'], narrower: [], related: [], conflicts: [], supersedes: [], superseded_by: [] },

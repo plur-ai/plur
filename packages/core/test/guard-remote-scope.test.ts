@@ -128,8 +128,11 @@ describe('remote-backed (non-shared) leak guard', () => {
     const plur = new Plur({ path: dir })
 
     const engram = await plur.learn('I prefer concise commit messages', {
+      // A preference IS a behavioral engram — normalizeImportType maps
+      // 'preference' -> 'behavioral'. There is no 'preference' member of the
+      // type enum; the old value was written to disk unvalidated.
       scope: REMOTE_USER_SCOPE,
-      type: 'preference',
+      type: 'behavioral',
     }) as { scope: string }
 
     // Not demoted — scope honored.

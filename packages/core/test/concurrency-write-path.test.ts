@@ -22,6 +22,18 @@ import { join } from 'path'
 import { Plur } from '../src/index.js'
 import { withAsyncLock } from '../src/store/async-lock.js'
 
+/**
+ * The key `Plur` locks on for a write. It is the primary store's `location` —
+ * the interface documents that field as serving exactly this purpose while
+ * locking is path-based — so the test can name the same lock the engine takes
+ * without reaching into `Plur`'s private `paths`.
+ */
+function lockKey(p: Plur): string {
+  const loc = p.primaryStore.location
+  if (loc === null) throw new Error('this test needs a store with a filesystem location')
+  return loc
+}
+
 describe('Plur — concurrent writes', () => {
   let dir: string
   let plur: Plur
@@ -120,7 +132,7 @@ describe('Plur — concurrent writes', () => {
 
     let ticks = 0
     const timer = setInterval(() => { ticks++ }, 5)
-    const holder = withAsyncLock(plur.paths.engrams, async () => {
+    const holder = withAsyncLock(lockKey(plur), async () => {
       await new Promise(r => setTimeout(r, 60))
     })
     // Let the holder actually take the lock before the writer starts.
@@ -137,7 +149,7 @@ describe('Plur — concurrent writes', () => {
   it('setPinnedAsync waits out a lock held across an await instead of spinning', async () => {
     const target = await plur.learn('an engram whose pin has to wait', { scope: 'global' })
 
-    const holder = withAsyncLock(plur.paths.engrams, async () => {
+    const holder = withAsyncLock(lockKey(plur), async () => {
       await new Promise(r => setTimeout(r, 60))
     })
     await new Promise(r => setImmediate(r))

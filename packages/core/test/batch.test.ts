@@ -98,6 +98,11 @@ describe('learnBatch: partial-failure isolation', () => {
     dedupConfig: { enabled: false }, // straight to deps.learn, no recall/LLM
     isLlmAvailable: () => false,
     recordLlmSuccess: () => {},
+    // No secrets in these fixtures, so nothing is ever demoted. Present because
+    // `demoteIfSensitive` calls it unconditionally on the dedup UPDATE/MERGE
+    // path: omitting it left the fake one routing decision away from a
+    // TypeError that would have read as a batch bug rather than a missing dep.
+    offendingHitsForScope: () => [],
     recordLlmFailure: () => {},
     syncIndex: async () => {},
   })

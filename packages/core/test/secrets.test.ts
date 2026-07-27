@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { detectSecrets, detectSensitive, sensitivityCategory, SCAN_TRUNCATED } from '../src/secrets.js'
+import { isSharedScope } from '../src/scope-util.js'
 
 describe('detectSecrets', () => {
   it('detects AWS access keys', () => {
@@ -449,6 +450,34 @@ describe('detectSensitive — 1 MiB scan ceiling, fail-closed (#386)', () => {
   })
 })
 
+/**
+ * Build a Plur whose config registers a real SHARED file store for `group:eng`.
+ *
+ * `stores` is CONFIG, read off disk by the constructor — NOT a constructor
+ * option. `new Plur({ path, stores: [...] })` type-errors, and before the test
+ * suites were typechecked it was silently dropped: the two suites below had no
+ * shared store registered at all, so `group:eng` was a shared scope only by the
+ * `isSharedScope` name-prefix rule, with nothing on disk the engram could have
+ * been written into. The demotion assertions were still real (they fail if the
+ * guard stops demoting), but the "so it is not written to a shared store" half
+ * of the claim had no store to be true about. This makes the setup match it.
+ */
+async function plurWithSharedStore(prefix: string) {
+  const { Plur } = await import('../src/index.js')
+  const { mkdtempSync, writeFileSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const yaml = (await import('js-yaml')).default
+
+  const dir = mkdtempSync(join(tmpdir(), prefix))
+  const sharedStore = join(mkdtempSync(join(tmpdir(), `${prefix}shared-`)), 'engrams.yaml')
+  writeFileSync(
+    join(dir, 'config.yaml'),
+    yaml.dump({ stores: [{ scope: 'group:eng', shared: true, readonly: false, path: sharedStore }] }, { noRefs: true }),
+  )
+  return { plur: new Plur({ path: dir }), dir, sharedStore }
+}
+
 // PR-2 (#353) test #21 — a secrets-category credential hidden ONLY in a context
 // field (rationale/source/...), reaching a SHARED scope under DEFAULT config
 // (allow_secrets:false), must be demoted to local/private with _demoted.patterns
@@ -456,17 +485,7 @@ describe('detectSensitive — 1 MiB scan ceiling, fail-closed (#386)', () => {
 // `statement + JSON.stringify(context)` (index.ts:1038); this exercises it.
 describe('context-field credential demotion at shared scope (#353 #21)', () => {
   it('demotes a shared-scope engram whose credential is only in a context field', async () => {
-    const { Plur } = await import('../src/index.js')
-    const { mkdtempSync } = await import('node:fs')
-    const { tmpdir } = await import('node:os')
-    const { join } = await import('node:path')
-
-    const dir = mkdtempSync(join(tmpdir(), 'plur-pr2-ctx-'))
-    const sharedPath = mkdtempSync(join(tmpdir(), 'plur-pr2-shared-'))
-    const plur = new Plur({
-      path: dir,
-      stores: [{ scope: 'group:eng', shared: true, path: sharedPath }],
-    })
+    const { plur } = await plurWithSharedStore('plur-pr2-ctx-')
 
     // Credential lives ONLY in the context (source field), not the statement.
     const engram = await plur.learn('deployment runbook for the staging cluster', {
@@ -481,6 +500,20 @@ describe('context-field credential demotion at shared scope (#353 #21)', () => {
       .structured_data?._demoted
     expect(demoted).toBeDefined()
     expect(demoted?.patterns).toContain('basic_auth_url')
+
+    // The claim this test exists to make: the engram is excluded from what a
+    // shared publish would carry. Stated in the publish path's own terms —
+    // `pushKeep('shared')` in sync.ts keeps exactly
+    // `isSharedScope(scope) && visibility !== 'private'`, so failing either
+    // clause is what "excluded" means. Asserting the literal 'local' above says
+    // the same thing today but stops meaning it the moment the scope taxonomy
+    // grows another non-shared family.
+    //
+    // NOT asserted via `existsSync(sharedStore)`: `learn()` never writes to a
+    // shared store, publishing is a separate step, so that file is absent
+    // whether or not the guard fired. It looks like a leak check and proves
+    // nothing — I probed it, and it passes for a clean, undemoted write too.
+    expect(isSharedScope(engram.scope), 'still in the shared push set').toBe(false)
   })
 })
 
@@ -491,17 +524,24 @@ describe('infra content past 64KB is demoted / excluded (#386)', () => {
   const FILLER = 'x'.repeat(70 * 1024) // past the old 64KB cap, inside the 1 MiB window
 
   it('demotes a shared-scope learn whose infra payload sits past byte 64KB', async () => {
-    const { Plur } = await import('../src/index.js')
-    const { mkdtempSync } = await import('node:fs')
-    const { tmpdir } = await import('node:os')
-    const { join } = await import('node:path')
-
-    const dir = mkdtempSync(join(tmpdir(), 'plur-386-'))
-    const sharedPath = mkdtempSync(join(tmpdir(), 'plur-386-shared-'))
-    const plur = new Plur({ path: dir, stores: [{ scope: 'group:eng', shared: true, path: sharedPath }] })
+    const { plur } = await plurWithSharedStore('plur-386-')
 
     const engram = await plur.learn(`benign runbook ${FILLER} deploy droplet 139.59.155.82`, { scope: 'group:eng' })
     expect(engram.scope).toBe('local')
     expect((engram as { visibility?: string }).visibility).toBe('private')
+
+    // The claim this test exists to make: the engram is excluded from what a
+    // shared publish would carry. Stated in the publish path's own terms —
+    // `pushKeep('shared')` in sync.ts keeps exactly
+    // `isSharedScope(scope) && visibility !== 'private'`, so failing either
+    // clause is what "excluded" means. Asserting the literal 'local' above says
+    // the same thing today but stops meaning it the moment the scope taxonomy
+    // grows another non-shared family.
+    //
+    // NOT asserted via `existsSync(sharedStore)`: `learn()` never writes to a
+    // shared store, publishing is a separate step, so that file is absent
+    // whether or not the guard fired. It looks like a leak check and proves
+    // nothing — I probed it, and it passes for a clean, undemoted write too.
+    expect(isSharedScope(engram.scope), 'still in the shared push set').toBe(false)
   })
 })

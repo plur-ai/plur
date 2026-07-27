@@ -36,6 +36,11 @@ function makeDeps(llmCalls: { n: number }): { deps: LearnAsyncDeps; llm: (p: str
     dedupConfig: { enabled: true, mode: 'llm' },
     isLlmAvailable: () => true,
     recordLlmSuccess: () => {},
+    // No secrets in these fixtures, so nothing is ever demoted. Present because
+    // `demoteIfSensitive` calls it unconditionally on the dedup UPDATE/MERGE
+    // path: omitting it left the fake one routing decision away from a
+    // TypeError that would have read as a batch bug rather than a missing dep.
+    offendingHitsForScope: () => [],
     recordLlmFailure: () => {},
     syncIndex: async () => {},
   }

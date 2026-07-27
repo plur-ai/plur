@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi, assert } from 'vitest'
 import { mkdtempSync, rmSync, existsSync, readFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
@@ -243,7 +243,9 @@ describe('confirm / dismiss / resolve (#181)', () => {
     const a = await plur.learn('plur cli version is 0.3.0')
     await plur.learn('plur cli version is 0.3.0', { scope: 'project:other' }) // bump reference_count
     const b = await plur.learn('plur cli version is 0.8.2')
-    const { records } = await plur.recordTensions([pairOf(await plur.getById(a.id)!, b)])
+    const aStored = await plur.getById(a.id)
+    assert(aStored !== null, 'seed engram a was not stored')
+    const { records } = await plur.recordTensions([pairOf(aStored, b)])
 
     await plur.resolveTension(records[0].id, b.id)
     expect((await plur.getById(a.id))?.status).toBe('retired')
@@ -302,8 +304,9 @@ describe('injection warnings (#181, audit item 4)', () => {
     expect(oneSide.warnings).toBeUndefined()
 
     // Pin the other side too — now both inject and the warning fires
-    const bStored = await plur.getById(b.id)!
-    await plur.updateEngram({ ...bStored, pinned: true } as Engram)
+    const bStored = await plur.getById(b.id)
+    assert(bStored !== null, 'seed engram b was not stored')
+    await plur.updateEngram({ ...bStored, pinned: true })
     const bothSides = await plur.inject('anything at all')
     expect(bothSides.injected_ids).toEqual(expect.arrayContaining([a.id, b.id]))
     expect(bothSides.warnings).toBeDefined()
@@ -351,7 +354,9 @@ describe('lock-escalation gate (#181, audit item 3)', () => {
   it('an unresolved tension blocks the decided → locked step', async () => {
     const e = await escalateToDecided()
     const rival = await plur.learn('deploy platform is render.com for all services')
-    await plur.recordTensions([pairOf(await plur.getById(e.id)!, rival)])
+    const eStored = await plur.getById(e.id)
+    assert(eStored !== null, 'escalated engram was not stored')
+    await plur.recordTensions([pairOf(eStored, rival)])
 
     await plur.learn(STMT, { scope: 'project:d' })            // recurrence 3 — capped
     expect((await plur.getById(e.id) as any).commitment).toBe('decided')
@@ -360,7 +365,9 @@ describe('lock-escalation gate (#181, audit item 3)', () => {
   it('resolving the tension re-opens the path to locked', async () => {
     const e = await escalateToDecided()
     const rival = await plur.learn('deploy platform is render.com for all services')
-    const { records } = await plur.recordTensions([pairOf(await plur.getById(e.id)!, rival)])
+    const eStored = await plur.getById(e.id)
+    assert(eStored !== null, 'escalated engram was not stored')
+    const { records } = await plur.recordTensions([pairOf(eStored, rival)])
 
     await plur.learn(STMT, { scope: 'project:d' })            // blocked
     expect((await plur.getById(e.id) as any).commitment).toBe('decided')

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi, assert } from 'vitest'
 import * as fs from 'fs'
 import * as os from 'os'
 import * as path from 'path'
@@ -14,10 +14,13 @@ async function injectLegacyConflict(plur: Plur, fromId: string, toId: string): P
   const engram = engrams.find(e => e.id === fromId)!
   await plur.updateEngram({
     ...engram,
+    // Spread the engram's own relations rather than rebuilding the object: the
+    // literal form omitted `supersedes` and `superseded_by`, so this helper —
+    // whose only job is to add ONE legacy conflict ref — was also silently
+    // dropping two other relation fields from the engram it wrote back.
     relations: {
-      broader: [],
-      narrower: [],
-      related: [],
+      broader: [], narrower: [], related: [], supersedes: [], superseded_by: [],
+      ...engram.relations,
       conflicts: [toId],
     },
   })
@@ -326,7 +329,14 @@ describe('plur_tensions temporal config wiring (#240)', () => {
     const a = await plur.learn('hormuz strait ceasefire holding, passage regulated', { domain: 'war-analysis' })
     const b = await plur.learn('hormuz strait ceasefire collapsed, passage closed', { domain: 'war-analysis' })
     for (const [id, learnedAt] of [[a.id, '2026-04-07'], [b.id, '2026-05-05']] as const) {
-      const stored = await plur.getById(id)!
+      // Was `await plur.getById(id)!`, which parses as `await (getById(id)!)` —
+      // the assertion lands on the Promise, which was never nullable, so it did
+      // nothing and `stored` stayed `Engram | null`. Spreading a null then made
+      // every field optional, which is what the typechecker was objecting to.
+      // Assert on the awaited value instead, so a seed that failed to store says
+      // so here rather than surfacing as an unrelated failure downstream.
+      const stored = await plur.getById(id)
+      assert(stored !== null, `seed engram ${id} was not stored`)
       await plur.updateEngram({ ...stored, temporal: { ...stored.temporal, learned_at: learnedAt } })
     }
   }

@@ -19,19 +19,24 @@
  * it is now a *choice of implementation* rather than an assumption baked into
  * the caller.
  *
- * ### Why synchronous
+ * ### Why asynchronous (convergence Phase 2, landed)
  *
- * Every `Plur` write path is synchronous today (`withLock` + `readFileSync`).
- * Converting them is convergence Phase 2, deliberately kept separate: flipping
- * ~20 methods to async turns every `await` into an interleaving point and
- * invalidates the implicit atomicity the current code relies on. `PrimaryStore`
- * is intentionally shaped like the *existing* async `EngramStore`
- * (`store/types.ts`) minus the `Promise`s, so Phase 2 is a mechanical
- * `sync → async` flip of one interface instead of a rewrite of 40 call sites.
+ * This interface was synchronous when Phase 1 introduced it — deliberately and
+ * temporarily. Every `Plur` write path was synchronous (`withLock` +
+ * `readFileSync`), so a sync contract was a faithful description of the caller.
+ * It was also a hard ceiling: there is no synchronous Postgres client for Node,
+ * so no network-backed store could ever satisfy it, and manufacturing one
+ * (block-on-promise, a sync subprocess) would have traded a documented
+ * limitation for an undocumented hazard.
  *
- * A network- or Postgres-backed primary store cannot satisfy this synchronous
- * contract — that is expected. Phase 5's `PostgresAdapter` lands *after* the
- * Phase 2 async flip, and will implement the async successor of this interface.
+ * Phase 2 flipped the write path, so the ceiling is gone and the two interfaces
+ * this file used to carry have collapsed into one, exactly as planned:
+ * `PrimaryStore` IS the async contract, and {@link AsyncPrimaryStore} is now an
+ * alias kept only so existing imports keep resolving.
+ *
+ * `invalidate()` stays synchronous. It drops a local cache; it does not touch
+ * the backing medium, and making it async would add an interleaving point that
+ * buys nothing.
  */
 import type { Engram } from '../schemas/engram.js'
 
@@ -43,9 +48,9 @@ export interface PrimaryStore {
   readonly kind: PrimaryStoreKind
 
   /**
-   * Human-readable location of the store (a file path for YAML). Used for
-   * diagnostics and for lock keys while locking is still path-based. `null`
-   * when the store has no filesystem location.
+   * Human-readable location of the store (a file path for YAML, a schema
+   * identifier for Postgres). Used for diagnostics and for lock keys while
+   * locking is still path-based. `null` when the store has no such location.
    */
   readonly location: string | null
 
@@ -53,19 +58,20 @@ export interface PrimaryStore {
    * Authoritative read — always goes to the backing medium, never a cache.
    * Used inside write transactions where a stale snapshot would lose data.
    */
-  load(): Engram[]
+  load(): Promise<Engram[]>
 
   /**
    * Cached read. May return a previously-loaded snapshot when the backing
-   * medium is provably unchanged. Implementations that cannot detect change
-   * cheaply may simply delegate to `load()`.
+   * medium is provably unchanged. An implementation with no cheap
+   * change-detection MUST delegate to `load()` rather than serve a snapshot it
+   * cannot prove is current.
    */
-  loadCached(): Engram[]
+  loadCached(): Promise<Engram[]>
 
   /** Replace the entire contents of the store, and drop any read cache. */
-  save(engrams: Engram[]): void
+  save(engrams: Engram[]): Promise<void>
 
-  /** Drop any read cache without writing. */
+  /** Drop any read cache without writing. Synchronous — see the note above. */
   invalidate(): void
 
   /**
@@ -84,39 +90,16 @@ export interface PrimaryStore {
 }
 
 /**
- * The async successor to {@link PrimaryStore} (convergence Phase 2).
+ * @deprecated Use {@link PrimaryStore}. This is now an alias for it.
  *
- * `PrimaryStore` is synchronous on purpose and temporarily — see the note
- * above. A network-backed store cannot satisfy it: there is no synchronous
- * Postgres client for Node, and manufacturing one (block-on-promise, a sync
- * subprocess) would trade a documented limitation for an undocumented hazard.
+ * Phase 1 shipped two structurally identical interfaces — a synchronous
+ * `PrimaryStore` describing what `Plur` could actually call, and this async
+ * successor that only `PostgresAdapter` could satisfy — with the explicit plan
+ * that Phase 2 would collapse them. Phase 2 has landed, so it has: there is one
+ * contract, and the distinction the two names drew no longer exists.
  *
- * So Phase 5's `PostgresAdapter` implements THIS interface instead: the same
- * four operations with the same semantics, returning promises. It is not yet
- * accepted by `new Plur({ store })` — that hand-off is exactly what Phase 2
- * exists to make possible, when `Plur`'s own write path stops being
- * synchronous. Until then a consumer that needs a Postgres-backed store drives
- * the adapter directly.
- *
- * Keeping the two interfaces structurally identical is deliberate: Phase 2
- * collapses them by making `PrimaryStore` async, at which point
- * `AsyncPrimaryStore` becomes an alias and disappears.
+ * The alias stays because the name is used across `packages/core/src` and by
+ * out-of-tree consumers; removing it would be a breaking change that buys
+ * nothing. Prefer `PrimaryStore` in new code.
  */
-export interface AsyncPrimaryStore {
-  readonly kind: PrimaryStoreKind
-  readonly location: string | null
-  /** Authoritative read — always goes to the backing medium, never a cache. */
-  load(): Promise<Engram[]>
-  /**
-   * Cached read, where the medium allows one. An implementation with no cheap
-   * change-detection MUST delegate to `load()` rather than serve a snapshot it
-   * cannot prove is current.
-   */
-  loadCached(): Promise<Engram[]>
-  /** Replace the entire contents of the store, and drop any read cache. */
-  save(engrams: Engram[]): Promise<void>
-  /** Drop any read cache without writing. */
-  invalidate(): void
-  /** @see PrimaryStore.estimateCount */
-  estimateCount?(): number
-}
+export type AsyncPrimaryStore = PrimaryStore

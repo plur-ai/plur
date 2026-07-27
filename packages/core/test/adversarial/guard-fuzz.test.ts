@@ -246,7 +246,10 @@ describe('adversarial leak-guard fuzzer (#353 round-3)', () => {
     mockEmptyRemote()
     writeStoresConfig(dir, bothStores(dir))
     const plur = new Plur({ path: dir })
-    const e = await plur.learn(CLEAN_CORPUS[0], { scope: REMOTE_SCOPE, type: 'preference' }) as any
+    // 'behavioral', matching every other write in this file. The adversarial
+    // dimension here is the payload (CLEAN_CORPUS vs SENSITIVE_CORPUS), not the
+    // type field — 'preference' was a stale value, not a deliberate fuzz input.
+    const e = await plur.learn(CLEAN_CORPUS[0], { scope: REMOTE_SCOPE, type: 'behavioral' }) as any
     expect(e.scope).toBe(REMOTE_SCOPE) // honored, not demoted
     await new Promise(r => setTimeout(r, 80))
     expect(postCalls().length, 'a clean engram SHOULD reach the remote').toBe(1)

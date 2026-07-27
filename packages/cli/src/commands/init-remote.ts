@@ -300,6 +300,18 @@ async function verifyConnectivity(url: string, token: string): Promise<{ usernam
 }
 
 export async function run(args: string[], flags: GlobalFlags): Promise<void> {
+  // This command reports progress as prose across ~35 messages and has no
+  // machine-readable result to offer. It used to accept `--json` and print that
+  // prose anyway, so a caller parsing stdout got a syntax error rather than an
+  // answer. Refusing is the honest response; silently ignoring the flag is not.
+  if (flags.json === true) {
+    process.stderr.write(
+      'Error: init-remote does not support --json — it is an interactive setup command with no structured result.\n' +
+      'Run it without --json, or use `plur init-remote --verify` and check the exit code.\n',
+    )
+    process.exit(1)
+  }
+
   const parsed = parseArgs(args)
   if ('error' in parsed) {
     outputText(`Error: ${parsed.error}\n\n${HELP}`, flags)

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, beforeAll, afterAll } from 'vitest'
+import { describe, it, expect, assert, beforeEach, afterEach, beforeAll, afterAll } from 'vitest'
 import { mkdtempSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
@@ -69,7 +69,11 @@ describe('plur tensions --scan temporal gates (#240)', () => {
     const a = await plur.learn('hormuz strait ceasefire holding, passage regulated', domain ? { domain } : undefined)
     const b = await plur.learn('hormuz strait ceasefire collapsed, passage closed', domain ? { domain } : undefined)
     for (const [id, learnedAt] of [[a.id, '2026-04-07'], [b.id, '2026-05-05']] as const) {
-      const stored = await plur.getById(id)!
+      // NOTE: `await plur.getById(id)!` asserted on the Promise, not the value,
+      // so a seed that silently failed to store spread `null` into the update
+      // and surfaced as an unrelated failure. Assert the read instead.
+      const stored = await plur.getById(id)
+      assert(stored !== null, `seedPair: engram ${id} was not stored`)
       await plur.updateEngram({ ...stored, temporal: { ...stored.temporal, learned_at: learnedAt } })
     }
   }

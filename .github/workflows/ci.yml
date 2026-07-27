@@ -64,6 +64,17 @@ jobs:
       # before the test step.
       - name: Type-check core (module-cycle gate)
         run: pnpm --filter @plur-ai/core exec tsc --noEmit
+      # The test suites were never typechecked: tsup emits declarations for src
+      # only, and esbuild strips types without checking them. That is ~a third of
+      # the repo compiling against types no tool read. It matters most exactly
+      # when the API changes shape — a test that drops an `await` on a method
+      # that just became async still transpiles, still runs, and still passes,
+      # because almost any assertion is true of a pending Promise. Adding this
+      # gate surfaced 93 errors, several of them tests that were not testing what
+      # they claimed. Keep it ahead of `pnpm test` so the cause is reported
+      # instead of the symptom.
+      - name: Type-check test suites
+        run: pnpm typecheck:tests
       # D1-followup gate (#177): the KNOWN_ISSUES Stage 3b v2 tracking sentinel
       # must be present and point at a GitHub issue. macOS grep lacks -P, so this
       # is a portable Node check (mirrors release.sh).
