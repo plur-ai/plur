@@ -6,7 +6,7 @@ import { computeContentHash } from './content-hash.js'
 import { buildDedupPrompt, parseDedupResponse } from './dedup.js'
 import { appendHistory } from './history.js'
 import { logger } from './logger.js'
-import { withLock } from './sync.js'
+import { withAsyncLock } from './store/async-lock.js'
 import type { Engram } from './schemas/engram.js'
 import type { PrimaryStore } from './store/primary-store.js'
 import type { SecretMatch } from './secrets.js'
@@ -31,7 +31,7 @@ export interface LearnAsyncDeps {
    */
   store: PrimaryStore
   /**
-   * Paths. `engramsPath` is still the LOCK KEY for `withLock` — file-based
+   * Paths. `engramsPath` is still the LOCK KEY for `withAsyncLock` — file-based
    * locking is Phase 2's problem, not this one — and is no longer used to read
    * or write engram state.
    */
@@ -100,14 +100,25 @@ function demoteIfSensitive(
 
 /**
  * Execute LLM-driven dedup decision.
+ *
+ * Async since convergence Phase 2: the UPDATE/MERGE writes take
+ * `withAsyncLock`, which queues concurrent in-process writers instead of making
+ * all but one of them retry an `EEXIST` and eventually throw.
+ *
+ * The "target vanished" fallback (`idx === -1`) now runs OUTSIDE the lock. It
+ * used to call `deps.learn()` from inside it, and `Plur.learn()` takes the same
+ * lock on the same path — a self-deadlock that resolved only by the inner
+ * acquire exhausting its retries and throwing. Reachable whenever the target
+ * engram disappears between `getById` and the lock, which is exactly the
+ * concurrent case this phase is about.
  */
-function executeDedupDecision(
+async function executeDedupDecision(
   deps: LearnAsyncDeps,
   statement: string,
   context: LearnContext | undefined,
   decision: DedupDecision,
   targetId: string | null,
-): LearnAsyncResult {
+): Promise<LearnAsyncResult> {
   switch (decision) {
     case 'NOOP': {
       if (targetId) {
@@ -121,10 +132,11 @@ function executeDedupDecision(
       if (targetId) {
         const existing = deps.getById(targetId)
         if (existing && (existing as any).commitment !== 'locked') {
-          return withLock(deps.engramsPath, () => {
+          const result = await withAsyncLock(deps.engramsPath, async () => {
             const engrams = deps.store.load()
             const idx = engrams.findIndex(e => e.id === targetId)
-            if (idx === -1) return { engram: deps.learn(statement, context), decision: 'ADD' as DedupDecision }
+            // Target gone — fall out of the lock and ADD; see the doc comment.
+            if (idx === -1) return null
             const updated = { ...engrams[idx] } as any
             updated.statement = statement
             updated.content_hash = computeContentHash(statement)
@@ -145,6 +157,7 @@ function executeDedupDecision(
             })
             return { engram: updated as Engram, decision: 'UPDATE' as DedupDecision, existing_id: targetId }
           })
+          if (result) return result
         }
       }
       return { engram: deps.learn(statement, context), decision: 'ADD' }
@@ -154,10 +167,11 @@ function executeDedupDecision(
       if (targetId) {
         const existing = deps.getById(targetId)
         if (existing && (existing as any).commitment !== 'locked') {
-          return withLock(deps.engramsPath, () => {
+          const result = await withAsyncLock(deps.engramsPath, async () => {
             const engrams = deps.store.load()
             const idx = engrams.findIndex(e => e.id === targetId)
-            if (idx === -1) return { engram: deps.learn(statement, context), decision: 'ADD' as DedupDecision }
+            // Target gone — fall out of the lock and ADD; see the doc comment.
+            if (idx === -1) return null
             const merged = { ...engrams[idx] } as any
             merged.statement = `${merged.statement} ${statement}`
             merged.content_hash = computeContentHash(merged.statement)
@@ -180,6 +194,7 @@ function executeDedupDecision(
             })
             return { engram: merged as Engram, decision: 'MERGE' as DedupDecision, existing_id: targetId }
           })
+          if (result) return result
         }
       }
       return { engram: deps.learn(statement, context), decision: 'ADD' }

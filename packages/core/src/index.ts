@@ -45,6 +45,8 @@ import { resolveValidity, buildTemporal } from './expiry.js'
 import { decodeJwtExpiry } from './jwt.js'
 import { RemoteStore, normalizeEndpointUrl } from './store/remote-store.js'
 import { YamlPrimaryStore } from './store/yaml-primary-store.js'
+import { withAsyncLock } from './store/async-lock.js'
+import { SessionScopeRegistry } from './session-scopes.js'
 import type { PrimaryStore } from './store/primary-store.js'
 import { requiresIndexSync, asDerivedIndex } from './storage-adapter.js'
 import { isSharedScope, isPersonalScope, isScopeWithin, scopeAllowFilter } from './scope-util.js'
@@ -71,6 +73,8 @@ export * from './meta/index.js'
 export { classifyPolarity } from './polarity.js'
 export { computeConfidence, computeMetaConfidence, confidenceBand } from './confidence.js'
 export { SessionBreadcrumbs } from './session-state.js'
+export { SessionScopeRegistry } from './session-scopes.js'
+export { AsyncMutex, KeyedAsyncMutex } from './async-mutex.js'
 export { findProjectConfigPath, readProjectConfig, type ProjectConfig } from './project-config.js'
 export { generateGuardrails } from './guardrails.js'
 export type { MetaField, StructuralTemplate, EvidenceEntry, MetaConfidence, DomainCoverage, HierarchyPosition, Falsification } from './schemas/meta-engram.js'
@@ -370,6 +374,19 @@ export const COMMITMENT_MULTIPLIER: Record<string, number> = {
   exploring: 0.5,
 }
 
+/**
+ * LLM dedup circuit breaker (convergence Phase 2).
+ *
+ * Sliding window rather than a consecutive-failure counter: see
+ * `_recordLlmSuccess`. The threshold of 3 is unchanged from the counter
+ * version; the window is what makes it concurrency-safe. It is generous enough
+ * (5 min) that three failures inside it still mean "the LLM is broken", and
+ * short enough that three failures spread across an afternoon do not.
+ */
+const LLM_BREAKER_THRESHOLD = 3
+const LLM_BREAKER_WINDOW_MS = 5 * 60 * 1000
+const LLM_BREAKER_COOLDOWN_MS = 60 * 60 * 1000
+
 /** Map engram type to default cognitive level (Idea 5). */
 const TYPE_TO_COGNITIVE: Record<string, string> = {
   behavioral: 'apply',
@@ -427,9 +444,25 @@ export class Plur {
    * event; findLatestInjectionFor covers the cross-process case.
    */
   private _lastInjectionByEngram: Map<string, string> = new Map()
-  private _llmFailureCount = 0
+  /**
+   * Timestamps (ms) of recent LLM failures, newest last (convergence Phase 2).
+   *
+   * Replaces a plain `_llmFailureCount` that `_recordLlmSuccess()` zeroed. That
+   * reset is a lost-update under concurrency: `isLlmAvailable()` → `await llm()`
+   * → record is a read-modify-write straddling an await, so a success returning
+   * from one in-flight call erases the failures other in-flight calls just
+   * recorded, and a breaker meant to trip on 3 failures never trips at all. A
+   * window of failure timestamps has no such reset — a success simply does not
+   * add one, and old failures age out on their own.
+   */
+  private _llmFailures: number[] = []
   private _llmDisabledUntil: number | null = null
-  private _sessionScope: string | null = null
+  /**
+   * Per-session default write scopes (convergence Phase 2). Was a single
+   * `_sessionScope` field shared by every caller of the instance; see
+   * `session-scopes.ts` for why that could not survive the async write path.
+   */
+  private _sessionScopes = new SessionScopeRegistry()
   /**
    * Cross-encoder reranker adapter (#220). Resolved lazily on first recall with
    * `rerank: true`. Defaults to the "off" sentinel when PLUR_RERANKER is unset,
@@ -444,6 +477,8 @@ export class Plur {
   private _rerankerEvalAdvisoryDone = false
   /** mtime (ms) of config.yaml at last load — drives reloadConfigIfChanged (#307). */
   private configMtimeMs = 0
+  /** Whether constructor-time cwd store discovery is enabled for this instance. */
+  private _autoDiscover = true
 
   /**
    * @param options.path  Root directory for this instance (defaults to
@@ -452,13 +487,27 @@ export class Plur {
    *   `YamlPrimaryStore(paths.engrams)`, i.e. exactly the previous behaviour.
    *   Supplying one is what makes `Plur` source-of-truth agnostic: nothing in
    *   the class reads or writes `engrams.yaml` directly any more.
+   * @param options.autoDiscover Run cwd-walking project-store discovery in the
+   *   constructor. Defaults to true (`PLUR_AUTO_DISCOVER=0` flips the default
+   *   without touching call sites). See {@link autoDiscoveryEnabled}.
+   * @param options.cwd Directory discovery walks up from. Defaults to
+   *   `process.cwd()`.
    */
-  constructor(options?: { path?: string; store?: PrimaryStore }) {
+  constructor(options?: { path?: string; store?: PrimaryStore; autoDiscover?: boolean; cwd?: string }) {
     this.paths = detectPlurStorage(options?.path)
     this._primaryStore = options?.store ?? new YamlPrimaryStore(this.paths.engrams)
     this.config = loadConfig(this.paths.config)
-    // Auto-discover project stores from CWD (skips temp dirs for test safety)
-    this.autoDiscoverStores()
+    this._autoDiscover = Plur.resolveAutoDiscover(options?.autoDiscover)
+    // Auto-discover project stores from CWD (skips temp dirs for test safety).
+    //
+    // Opt-out exists because this is a constructor with a DISK SIDE EFFECT
+    // derived from `process.cwd()`: a discovered `.plur/engrams.yaml` is written
+    // into config.yaml via addStore. For a CLI, whose cwd IS the user's intent,
+    // that is the feature. For an instance shared by concurrent sessions it is
+    // not: the process cwd expresses nobody's intent, and the store it adds
+    // becomes visible to every session on the instance. Construction should not
+    // silently reconfigure a shared deployment.
+    if (this._autoDiscover) this.autoDiscoverStores(options?.cwd)
     // Re-read config after potential store additions
     if (this.config.stores?.length !== loadConfig(this.paths.config).stores?.length) {
       this.config = loadConfig(this.paths.config)
@@ -1031,20 +1080,36 @@ export class Plur {
     if (this._llmDisabledUntil !== null) {
       if (Date.now() < this._llmDisabledUntil) return false
       this._llmDisabledUntil = null
-      this._llmFailureCount = 0
+      this._llmFailures = []
     }
     return true
   }
 
   private _recordLlmFailure(): void {
-    this._llmFailureCount++
-    if (this._llmFailureCount >= 3) {
-      this._llmDisabledUntil = Date.now() + 60 * 60 * 1000
+    const now = Date.now()
+    // Age out failures older than the window, then count what is left. Purely
+    // additive — nothing here erases a failure another in-flight call recorded.
+    this._llmFailures = this._llmFailures.filter(t => now - t < LLM_BREAKER_WINDOW_MS)
+    this._llmFailures.push(now)
+    if (this._llmFailures.length >= LLM_BREAKER_THRESHOLD) {
+      this._llmDisabledUntil = now + LLM_BREAKER_COOLDOWN_MS
       logger.warning('LLM dedup circuit breaker tripped — disabled for 1 hour')
     }
   }
 
-  private _recordLlmSuccess(): void { this._llmFailureCount = 0 }
+  /**
+   * Record a successful LLM call.
+   *
+   * Deliberately NOT a reset. The previous implementation set the failure count
+   * to zero, which under concurrent calls means one success cancels every
+   * failure recorded by calls still in flight — the breaker then never trips
+   * however badly the LLM is behaving. Successes now only fail to *add* to the
+   * window; failures leave it by aging out.
+   */
+  private _recordLlmSuccess(): void {
+    const now = Date.now()
+    this._llmFailures = this._llmFailures.filter(t => now - t < LLM_BREAKER_WINDOW_MS)
+  }
 
   /** Create engram with content hash + commitment + cognitive level.
    * Fast-path hash dedup returns existing on exact match.
@@ -1404,19 +1469,26 @@ export class Plur {
     context?: LearnContext,
   ): { scope: string; context: LearnContext | undefined; demotion: { from: string; to: string; patterns: string } | null; routed: { scope: string; confidence: number; reason: string } | null } {
     // "Truly unscoped" = caller passed no scope AND no session/`.plur.yaml`
-    // default is in effect (both land in _sessionScope). Only this path
-    // auto-routes / applies unscoped_default; everything else is honored as-is.
+    // default is in effect (both land in the session scope registry). Only this
+    // path auto-routes / applies unscoped_default; everything else is honored
+    // as-is.
+    //
+    // The session scope is resolved for THIS call's session (`context.session`),
+    // not read off a shared field — under concurrent sessions the shared field
+    // let one session's `setSessionScope` decide another session's write. See
+    // `session-scopes.ts`.
+    const sessionScope = this._sessionScopes.get(context?.session)
     let routed: { scope: string; confidence: number; reason: string } | null = null
     let scope: string
-    if (context?.scope == null && this._sessionScope == null) {
+    if (context?.scope == null && sessionScope == null) {
       const resolved = this._resolveUnscopedScope(statement, context)
       scope = resolved.scope
       routed = resolved.routed
     } else {
       // Terminal fallback respects unscoped_default so a `unscoped_default:'local'`
-      // user with a null _sessionScope and no context scope is not silently forced
+      // user with no session scope and no context scope is not silently forced
       // to global (#353). No behavior change for the default-global user.
-      scope = context?.scope ?? this._sessionScope ?? (this.config.unscoped_default ?? 'global')
+      scope = context?.scope ?? sessionScope ?? (this.config.unscoped_default ?? 'global')
     }
     // Guard fires when the write can leave the machine: shared scope (others can
     // read it) OR remote-backed scope (routes to a remote store, e.g. a personal
@@ -1777,7 +1849,7 @@ export class Plur {
     const hashMatch = this._hashDedup(statement, allEngrams, scope)
     if (hashMatch) {
       // Mutate + persist if local; otherwise return mutated (best-effort)
-      return withLock(this.paths.engrams, () => {
+      return await withAsyncLock(this.paths.engrams, async () => {
         const engrams = this._primaryStore.load()
         return this._recordDuplicate(hashMatch, engrams, scope, context)
       })
@@ -1785,7 +1857,7 @@ export class Plur {
     // #176: cross-scope recurrence (same semantics as the local learn() path).
     const crossMatch = this._crossScopeRecurrenceDetect(statement, allEngrams, scope)
     if (crossMatch) {
-      return withLock(this.paths.engrams, () => {
+      return await withAsyncLock(this.paths.engrams, async () => {
         const engrams = this._primaryStore.load()
         return this._recordCrossScopeRecurrence(crossMatch, engrams, scope, context)
       })
@@ -1817,7 +1889,7 @@ export class Plur {
       // matches the scope (e.g. readonly remote), we still save the local
       // engram but omit the outbox marker — the retry path will skip it.
       const storeEntry = (this.config.stores ?? []).find(s => s.url && s.scope === scope && !s.readonly)
-      return withLock(this.paths.engrams, () => {
+      return await withAsyncLock(this.paths.engrams, async () => {
         const engrams = this._primaryStore.load()
         // Replace placeholder ID with a real local ID
         localPlaceholder.id = generateEngramId([...engrams, ...allEngrams])
@@ -2697,7 +2769,7 @@ export class Plur {
   /** Update feedback_signals and adjust retrieval_strength. Searches primary, stores, then packs. */
   async feedback(id: string, signal: 'positive' | 'negative' | 'neutral'): Promise<void> {
     // Try primary engrams first
-    const found = withLock(this.paths.engrams, () => {
+    const found = await withAsyncLock(this.paths.engrams, async () => {
       const engrams = this._primaryStore.load()
       const engram = engrams.find(e => e.id === id)
       if (!engram) return false
@@ -2961,7 +3033,7 @@ export class Plur {
    */
   async updateEngramAsync(updated: Engram): Promise<Engram | null> {
     // Local primary first.
-    const localResult = withLock(this.paths.engrams, () => {
+    const localResult = await withAsyncLock(this.paths.engrams, async () => {
       const engrams = this._primaryStore.load()
       const idx = engrams.findIndex(e => e.id === updated.id)
       if (idx === -1) return null
@@ -3043,7 +3115,7 @@ export class Plur {
    */
   async setPinnedAsync(id: string, pinned: boolean): Promise<Engram | null> {
     // Local primary first.
-    const localResult = withLock(this.paths.engrams, () => {
+    const localResult = await withAsyncLock(this.paths.engrams, async () => {
       const engrams = this._primaryStore.load()
       const idx = engrams.findIndex(e => e.id === id)
       if (idx === -1) return null
@@ -3080,7 +3152,7 @@ export class Plur {
     // physically retire when it reaches 0. forget() called N times on an
     // engram with reference_count=N retires it; called fewer times, the
     // engram stays active with a lower count.
-    const foundInPrimary = withLock(this.paths.engrams, () => {
+    const foundInPrimary = await withAsyncLock(this.paths.engrams, async () => {
       const engrams = this._primaryStore.load()
       const engram = engrams.find(e => e.id === id)
       if (!engram) return false
@@ -3746,7 +3818,7 @@ Generate an improved version of the procedure that prevents this failure. Return
           const now = new Date().toISOString()
 
           // Try local primary first.
-          const localResult = withLock(this.paths.engrams, () => {
+          const localResult = await withAsyncLock(this.paths.engrams, async () => {
             const engrams = this._primaryStore.load()
             const idx = engrams.findIndex(e => e.id === engramId)
             if (idx === -1) return null
@@ -3846,7 +3918,7 @@ Generate an improved version of the procedure that prevents this failure. Return
           // intentionally left unchanged — report a not-evolved/blocked outcome
           // (the failure episode is still linked below) instead of throwing.
           if (blockedRemote) {
-            withLock(this.paths.engrams, () => {
+            await withAsyncLock(this.paths.engrams, async () => {
               const engrams = this._primaryStore.load()
               const idx = engrams.findIndex(e => e.id === engramId)
               if (idx !== -1) {
@@ -3869,7 +3941,7 @@ Generate an improved version of the procedure that prevents this failure. Return
     }
 
     // Fallback: link failure episode to engram without rewriting
-    withLock(this.paths.engrams, () => {
+    await withAsyncLock(this.paths.engrams, async () => {
       const engrams = this._primaryStore.load()
       const idx = engrams.findIndex(e => e.id === engramId)
       if (idx !== -1) {
@@ -4586,6 +4658,26 @@ Generate an improved version of the procedure that prevents this failure. Return
    * If found and not already registered, auto-register as a project store.
    * Returns list of newly discovered stores (empty if none found or all already known).
    */
+  /**
+   * Resolve whether constructor-time discovery should run.
+   *
+   * Explicit option wins; otherwise `PLUR_AUTO_DISCOVER=0` / `=false` disables
+   * it. The env var exists so a deployment that does not own the construction
+   * call site (an embedded consumer, a wrapper binary) can still turn off a
+   * cwd-derived disk side effect it never asked for.
+   */
+  static resolveAutoDiscover(explicit?: boolean): boolean {
+    if (explicit !== undefined) return explicit
+    const env = process.env.PLUR_AUTO_DISCOVER
+    if (env === '0' || env === 'false') return false
+    return true
+  }
+
+  /** Whether this instance ran (and would re-run) cwd store discovery. */
+  autoDiscoveryEnabled(): boolean {
+    return this._autoDiscover
+  }
+
   autoDiscoverStores(cwd?: string): Array<{ path: string; scope: string }> {
     const startDir = cwd || process.cwd()
     const discovered: Array<{ path: string; scope: string }> = []
@@ -5232,13 +5324,45 @@ Generate an improved version of the procedure that prevents this failure. Return
     if (changed) this.persistStores(updated, { serverSensitivityScopes })
   }
 
-  /** Set a session-level default scope. Used as fallback in learn/learnRouted when no explicit scope is provided. */
-  setSessionScope(scope: string | null): void {
-    this._sessionScope = scope
+  /**
+   * Set a session-level default scope — the fallback in learn/learnRouted when
+   * no explicit scope is provided.
+   *
+   * Omit `session` and this sets the process-wide slot, exactly as before: one
+   * session per instance, one scope. That is right for the CLI and for an MCP
+   * server handling one session at a time.
+   *
+   * Pass `session` and the scope is isolated to that session key. Any
+   * deployment where one `Plur` serves concurrent sessions MUST do this and
+   * thread the same key through `LearnContext.session` — otherwise the scope is
+   * a single shared field, and a `setSessionScope` from one session decides
+   * where another session's in-flight write lands. Passing `null` for a keyed
+   * session pins it to "no session scope" (unscoped writes auto-route), which
+   * is distinct from never having registered it (inherits the process slot).
+   */
+  setSessionScope(scope: string | null, opts?: { session?: string }): void {
+    this._sessionScopes.set(scope, opts?.session)
   }
 
-  /** Get the current session-level default scope, or null if not set. */
-  getSessionScope(): string | null {
-    return this._sessionScope
+  /**
+   * Get the session-level default scope for `opts.session`, or the process-wide
+   * one when no session is named. Returns null if not set.
+   */
+  getSessionScope(opts?: { session?: string }): string | null {
+    return this._sessionScopes.get(opts?.session)
+  }
+
+  /**
+   * Forget a session's scope registration. Call on session end: a long-lived
+   * deployment would otherwise retain one entry per session it has ever served.
+   * Omitting `session` clears the process-wide slot.
+   */
+  clearSessionScope(opts?: { session?: string }): void {
+    this._sessionScopes.clear(opts?.session)
+  }
+
+  /** Session keys with their own scope registration. Diagnostic / test seam. */
+  trackedSessionScopes(): string[] {
+    return this._sessionScopes.trackedSessions
   }
 }
