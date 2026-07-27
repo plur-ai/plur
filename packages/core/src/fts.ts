@@ -50,8 +50,73 @@ export function engramSearchText(engram: Engram): string {
   return parts.join(' ')
 }
 
-/** Compute IDF weights for query tokens against a corpus of engrams */
-export function computeIdf(engrams: Engram[], queryTokens: string[]): Map<string, number> {
+/**
+ * Corpus-wide statistics for IDF, supplied by a store that can compute them
+ * without materialising the corpus (convergence Phase 4, #711).
+ *
+ * `computeIdf`'s default behaviour derives `N` and `df` from the engrams it is
+ * handed. That is correct only when it is handed the WHOLE corpus, which is
+ * true today because search loads everything. It stops being true the moment
+ * narrowing is pushed into the store: given 200 candidates out of 50,000
+ * engrams, deriving `N = 200` scores a term that is rare corpus-wide but common
+ * among the candidates as if it were common — the exact inversion IDF exists to
+ * prevent.
+ *
+ * The failure is silent. Every score is a plausible number, every test that
+ * checks "the right rows came back" still passes, and the only symptom is
+ * quietly worse ranking. So a store that narrows MUST also supply these.
+ */
+export interface CorpusStats {
+  /** Total number of documents in the corpus — not in the candidate set. */
+  N: number
+  /**
+   * Corpus-wide document frequency per query token, under the SAME matching
+   * rule `ftsScore` applies (`t.includes(qt) || qt.startsWith(t)`). A store
+   * that cannot reproduce that rule exactly must not supply stats at all —
+   * approximate `df` is worse than local `df`, because it is wrong in a way
+   * that does not correlate with the candidate set and cannot be reasoned about.
+   */
+  df: Map<string, number>
+}
+
+/**
+ * True when a document term matches a query term under BM25's matching rule.
+ *
+ * Single definition so `ftsScore`, `computeIdf`, and any store implementing
+ * {@link CorpusStats} cannot drift apart. They must agree exactly: `df` counted
+ * under one rule and `tf` counted under another produces scores that are not
+ * BM25 at all, with no error to signal it.
+ *
+ * Forward (`t.includes(qt)`) finds `transferWithAuthorization` from `auth`.
+ * Reverse is bounded to a prefix so `deploy` still matches `deploying` while
+ * `yin` no longer matches it (#721).
+ */
+export function termMatches(t: string, qt: string): boolean {
+  return t.includes(qt) || qt.startsWith(t)
+}
+
+/**
+ * Compute IDF weights for query tokens.
+ *
+ * When `stats` is supplied, uses those corpus-wide figures. Otherwise derives
+ * them from `engrams`, which is correct only if `engrams` IS the corpus — see
+ * {@link CorpusStats}.
+ */
+export function computeIdf(
+  engrams: Engram[],
+  queryTokens: string[],
+  stats?: CorpusStats,
+): Map<string, number> {
+  if (stats) {
+    if (stats.N === 0) return new Map()
+    const idf = new Map<string, number>()
+    for (const qt of queryTokens) {
+      const df = stats.df.get(qt) ?? 0
+      idf.set(qt, Math.max(0, Math.log(stats.N / (1 + df))))
+    }
+    return idf
+  }
+
   const N = engrams.length
   if (N === 0) return new Map()
 
@@ -62,7 +127,7 @@ export function computeIdf(engrams: Engram[], queryTokens: string[]): Map<string
   for (const qt of queryTokens) {
     let df = 0
     for (const termSet of engramTermSets) {
-      if (termSet.has(qt) || Array.from(termSet).some(t => t.includes(qt) || qt.startsWith(t))) {
+      if (termSet.has(qt) || Array.from(termSet).some(t => termMatches(t, qt))) {
         df++
       }
     }
@@ -100,10 +165,11 @@ export function ftsScore(engram: Engram, queryTokens: string[], idfWeights?: Map
       effectiveIdf = 1
     }
 
-    // Count term frequency (including substring matches)
+    // Count term frequency. Shares `termMatches` with `computeIdf` — tf and df
+    // counted under different rules is not BM25, and nothing would report it.
     let tf = 0
     for (const t of allTerms) {
-      if (t.includes(qt) || qt.startsWith(t)) tf++
+      if (termMatches(t, qt)) tf++
     }
     if (tf === 0) continue
 
@@ -117,10 +183,18 @@ export function ftsScore(engram: Engram, queryTokens: string[], idfWeights?: Map
 }
 
 /** Search engrams by text query with BM25 scoring */
-export function searchEngrams(engrams: Engram[], query: string, limit = 20): Engram[] {
+export function searchEngrams(
+  engrams: Engram[],
+  query: string,
+  limit = 20,
+  stats?: CorpusStats,
+): Engram[] {
   const queryTokens = ftsTokenize(query)
   if (queryTokens.length === 0) return []
-  const idfWeights = computeIdf(engrams, queryTokens)
+  // `stats` present means `engrams` is a NARROWED candidate set and the corpus
+  // figures had to come from the store — see CorpusStats. Absent means
+  // `engrams` is the whole corpus and deriving them here is correct.
+  const idfWeights = computeIdf(engrams, queryTokens, stats)
 
   // Compute average document length for BM25 normalization
   const avgDocLength = engrams.length > 0
