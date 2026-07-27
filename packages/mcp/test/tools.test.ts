@@ -515,6 +515,50 @@ describe('MCP tools', () => {
     expect(squeezed.deprecated).toMatch(/deprecated since 0\.16/)
   })
 
+  // ── #725: truncated flag accuracy when budget.max_results drops results ───
+
+  describe('plur_recall budget.max_results truncation (#725)', () => {
+    beforeEach(async () => {
+      for (let i = 1; i <= 5; i++) {
+        await callTool('plur_learn', { statement: `zephyr convention rule ${i}`, scope: 'global' })
+      }
+    })
+
+    it('sets truncated: true when max_results drops at least one result', async () => {
+      const result = await callTool('plur_recall', {
+        query: 'zephyr convention rule',
+        budget: { max_results: 2 },
+      }) as any
+      expect(result.truncated).toBe(true)
+      expect(result.count).toBe(2)
+      expect(result.results).toHaveLength(2)
+    })
+
+    it('sets truncated: false when all results fit within max_results', async () => {
+      const result = await callTool('plur_recall', {
+        query: 'zephyr convention rule',
+        budget: { max_results: 10 },
+      }) as any
+      expect(result.truncated).toBe(false)
+    })
+
+    it('sets truncated: false when no budget is given', async () => {
+      const result = await callTool('plur_recall', {
+        query: 'zephyr convention rule',
+      }) as any
+      expect(result.truncated).toBe(false)
+    })
+
+    it('plur_recall_hybrid inherits accurate truncated via forwarder', async () => {
+      const result = await callTool('plur_recall_hybrid', {
+        query: 'zephyr convention rule',
+        budget: { max_results: 2 },
+      }) as any
+      expect(result.truncated).toBe(true)
+      expect(result.count).toBe(2)
+    })
+  })
+
   it('plur_inject returns formatted injection', async () => {
     await callTool('plur_learn', { statement: 'Always deploy carefully', scope: 'global' })
     const result = await callTool('plur_inject', { task: 'deploy the application' }) as any

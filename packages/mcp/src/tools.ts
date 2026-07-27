@@ -85,11 +85,16 @@ const recallHandler: ToolDefinition['handler'] = async (args, plur) => {
   }
   // mode === 'hybrid' (default)
   const budget = args.budget as { max_tokens?: number; max_results?: number; ttl_seconds?: number } | undefined
-  const effectiveLimit = budget?.max_results ?? (args.limit as number | undefined) ?? 20
+  const cap = budget?.max_results ?? (args.limit as number | undefined) ?? 20
+  // When a max_results budget is set, fetch one extra so we can detect
+  // whether the store had more results than the cap without over-fetching.
+  // Without this, the search layer already caps at `cap` before we can
+  // compare, so `results.length > cap` is always false (#725).
+  const fetchLimit = budget?.max_results != null ? cap + 1 : cap
   const meta = await plur.recallHybridWithMeta(args.query as string, {
     scope: args.scope as string | undefined,
     domain: args.domain as string | undefined,
-    limit: effectiveLimit,
+    limit: fetchLimit,
   })
   // Opt-in, content-free engagement counter (default-off; no query text).
   recordTelemetry('recall')
@@ -98,13 +103,9 @@ const recallHandler: ToolDefinition['handler'] = async (args, plur) => {
   // there for ALL consumers (MCP, claw, CLI, direct API), so we do NOT
   // re-emit here and double-count. It is opt-in/default-off and ships only
   // a query fingerprint hash + scope/domain + timestamp, never raw text.
-  const results = meta.engrams
-  let truncated = false
-  let boundedResults = results
-  if (budget?.max_results && results.length > budget.max_results) {
-    boundedResults = results.slice(0, budget.max_results)
-    truncated = true
-  }
+  const truncatedByCount = budget?.max_results != null && meta.engrams.length > cap
+  let truncated = truncatedByCount
+  let boundedResults = truncatedByCount ? meta.engrams.slice(0, cap) : meta.engrams
   if (budget?.max_tokens) {
     let tokenCount = 0
     const withinBudget = []
