@@ -469,7 +469,7 @@ describe('context-field credential demotion at shared scope (#353 #21)', () => {
     })
 
     // Credential lives ONLY in the context (source field), not the statement.
-    const engram = plur.learn('deployment runbook for the staging cluster', {
+    const engram = await plur.learn('deployment runbook for the staging cluster', {
       scope: 'group:eng',
       source: 'https://team:supersecret@hub.example.com/runbook',
     })
@@ -500,7 +500,7 @@ describe('infra content past 64KB is demoted / excluded (#386)', () => {
     const sharedPath = mkdtempSync(join(tmpdir(), 'plur-386-shared-'))
     const plur = new Plur({ path: dir, stores: [{ scope: 'group:eng', shared: true, path: sharedPath }] })
 
-    const engram = plur.learn(`benign runbook ${FILLER} deploy droplet 139.59.155.82`, { scope: 'group:eng' })
+    const engram = await plur.learn(`benign runbook ${FILLER} deploy droplet 139.59.155.82`, { scope: 'group:eng' })
     expect(engram.scope).toBe('local')
     expect((engram as { visibility?: string }).visibility).toBe('private')
   })

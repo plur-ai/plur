@@ -32,12 +32,12 @@ describe('Plur is source-of-truth agnostic', () => {
   })
   afterEach(() => { rmSync(dir, { recursive: true, force: true }) })
 
-  it('defaults to a YAML primary store — single-user behaviour is unchanged', () => {
+  it('defaults to a YAML primary store — single-user behaviour is unchanged', async () => {
     const plur = new Plur({ path: dir })
     expect(plur.primaryStore.kind).toBe('yaml')
     expect(plur.primaryStore.location).toBe(yamlPath)
 
-    plur.learn('the default store still writes engrams.yaml')
+    await plur.learn('the default store still writes engrams.yaml')
     expect(existsSync(yamlPath)).toBe(true)
     expect(readFileSync(yamlPath, 'utf8')).toContain('the default store still writes engrams.yaml')
   })
@@ -53,36 +53,36 @@ describe('Plur is source-of-truth agnostic', () => {
     const plur = new Plur({ path: dir, store })
     expect(plur.primaryStore.kind).toBe('memory')
 
-    const learned = plur.learn('kubernetes probes belong on the readiness endpoint', { domain: 'infra' })
+    const learned = await plur.learn('kubernetes probes belong on the readiness endpoint', { domain: 'infra' })
     expect(learned.id).toBeTruthy()
 
     // Read back through the public API…
-    expect(plur.getById(learned.id)?.statement).toContain('readiness endpoint')
+    expect((await plur.getById(learned.id))?.statement).toContain('readiness endpoint')
     // …and through search, which goes down the _loadAllEngrams path.
-    expect(plur.recall('readiness endpoint').map(e => e.id)).toContain(learned.id)
+    expect((await plur.recall('readiness endpoint')).map(e => e.id)).toContain(learned.id)
 
     // Mutating write path.
     await plur.feedback(learned.id, 'positive')
     await plur.forget(learned.id, 'no longer true')
-    expect(plur.getById(learned.id)?.status).toBe('retired')
+    expect((await plur.getById(learned.id))?.status).toBe('retired')
 
     // The state genuinely lives in the injected store, not in a hidden cache.
     expect(store.load().map(e => e.id)).toContain(learned.id)
   })
 
-  it('never touches engrams.yaml when a non-YAML store is injected', () => {
+  it('never touches engrams.yaml when a non-YAML store is injected', async () => {
     const plur = new Plur({ path: dir, store: new MemoryPrimaryStore() })
-    plur.learn('this statement must not reach the filesystem')
-    plur.learn('nor this one')
+    await plur.learn('this statement must not reach the filesystem')
+    await plur.learn('nor this one')
     expect(existsSync(yamlPath)).toBe(false)
   })
 
-  it('keeps two instances on separate stores isolated from each other', () => {
+  it('keeps two instances on separate stores isolated from each other', async () => {
     const a = new Plur({ path: dir, store: new MemoryPrimaryStore() })
     const b = new Plur({ path: dir, store: new MemoryPrimaryStore() })
-    const learned = a.learn('only instance A should see this')
-    expect(a.getById(learned.id)).not.toBeNull()
-    expect(b.getById(learned.id)).toBeNull()
+    const learned = await a.learn('only instance A should see this')
+    expect(await a.getById(learned.id)).not.toBeNull()
+    expect(await b.getById(learned.id)).toBeNull()
   })
 })
 

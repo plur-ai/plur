@@ -104,7 +104,7 @@ describe('F1: remote `allow` cannot disarm the leak guard', () => {
     expect(eng.sensitivity?.allow ?? []).toEqual([])
 
     // End to end: infra content targeted at the shared scope still demotes.
-    const e = plur.learn('deploy target is 139.59.155.82', { scope: ENG }) as { scope: string; visibility: string }
+    const e = await plur.learn('deploy target is 139.59.155.82', { scope: ENG }) as { scope: string; visibility: string }
     expect(e.scope).toBe('local')
     expect(e.visibility).toBe('private')
     await new Promise(r => setTimeout(r, 60)) // let learn's background append settle before dir cleanup
@@ -161,7 +161,7 @@ describe('F1: remote `allow` cannot disarm the leak guard', () => {
     expect(eng.sensitivity?.forbid).toEqual(['secrets'])
 
     // …and the guard still honors it: infra content stays at the shared scope.
-    const e = plur.learn('deploy target is 139.59.155.82', { scope: ENG }) as { scope: string }
+    const e = await plur.learn('deploy target is 139.59.155.82', { scope: ENG }) as { scope: string }
     expect(e.scope).toBe(ENG)
     await new Promise(r => setTimeout(r, 60)) // let learn's background remote append settle before dir cleanup
   })

@@ -52,16 +52,16 @@ describe('tension detection e2e', () => {
 
   it('detects contradictory engrams through the full pipeline', async () => {
     // Learn two contradictory facts about PLUR storage format
-    plur.learn('PLUR engrams storage uses individual JSON files per engram', {
+    await plur.learn('PLUR engrams storage uses individual JSON files per engram', {
       type: 'architectural',
       domain: 'plur.storage',
     })
-    plur.learn('PLUR engrams storage uses a single YAML file for all engrams', {
+    await plur.learn('PLUR engrams storage uses a single YAML file for all engrams', {
       type: 'architectural',
       domain: 'plur.storage',
     })
 
-    const engrams = plur.list()
+    const engrams = await plur.list()
     expect(engrams).toHaveLength(2)
 
     // Stage 1: getCandidatePairs should find them (same scope, same domain, overlapping subjects)
@@ -79,16 +79,16 @@ describe('tension detection e2e', () => {
   })
 
   it('does not flag unrelated engrams in different domains', async () => {
-    plur.learn('PLUR uses YAML for engram storage', {
+    await plur.learn('PLUR uses YAML for engram storage', {
       type: 'architectural',
       domain: 'plur.storage',
     })
-    plur.learn('Bitcoin price dropped 5% after the Fed announcement', {
+    await plur.learn('Bitcoin price dropped 5% after the Fed announcement', {
       type: 'behavioral',
       domain: 'markets.crypto',
     })
 
-    const engrams = plur.list()
+    const engrams = await plur.list()
     const pairs = getCandidatePairs(engrams)
 
     // Different domains, no domain segment overlap → filtered out before LLM
@@ -96,16 +96,16 @@ describe('tension detection e2e', () => {
   })
 
   it('does not flag complementary facts in the same domain', async () => {
-    plur.learn('PLUR supports BM25 keyword search for engram retrieval', {
+    await plur.learn('PLUR supports BM25 keyword search for engram retrieval', {
       type: 'architectural',
       domain: 'plur.search',
     })
-    plur.learn('PLUR supports BGE embedding vectors for semantic similarity', {
+    await plur.learn('PLUR supports BGE embedding vectors for semantic similarity', {
       type: 'architectural',
       domain: 'plur.search',
     })
 
-    const engrams = plur.list()
+    const engrams = await plur.list()
     const pairs = getCandidatePairs(engrams)
 
     // These may pass pre-filtering (same domain, shared "plur" token)
@@ -119,18 +119,18 @@ describe('tension detection e2e', () => {
   })
 
   it('filters out cross-scope pairs', async () => {
-    plur.learn('Deploy to production on Fridays', {
+    await plur.learn('Deploy to production on Fridays', {
       type: 'behavioral',
       domain: 'ops.deploy',
       scope: 'project:alpha',
     })
-    plur.learn('Never deploy to production on Fridays', {
+    await plur.learn('Never deploy to production on Fridays', {
       type: 'behavioral',
       domain: 'ops.deploy',
       scope: 'project:beta',
     })
 
-    const engrams = plur.list()
+    const engrams = await plur.list()
     const pairs = getCandidatePairs(engrams)
 
     // Different project scopes → filtered out (conservative rule)
@@ -138,20 +138,20 @@ describe('tension detection e2e', () => {
   })
 
   it('global engrams can conflict with project-scoped engrams', async () => {
-    plur.learn('Default timeout for API requests is 30 seconds', {
+    await plur.learn('Default timeout for API requests is 30 seconds', {
       type: 'architectural',
       domain: 'plur.api',
       // Explicit 'global' — this test is about global-vs-project overlap, not the
       // unscoped default (which is now 'local' as of Stage 3b, #351).
       scope: 'global',
     })
-    plur.learn('Default timeout for API requests is 60 seconds', {
+    await plur.learn('Default timeout for API requests is 60 seconds', {
       type: 'architectural',
       domain: 'plur.api',
       scope: 'project:plur',
     })
 
-    const engrams = plur.list()
+    const engrams = await plur.list()
     const pairs = getCandidatePairs(engrams)
 
     // Global + project:plur → should overlap (global is universal)
@@ -163,13 +163,13 @@ describe('tension detection e2e', () => {
 
   // Phase 2 (#180): candidate pairs are ranked by shared-token overlap so the
   // most likely contradictions are checked first even when max_pairs truncates.
-  it('ranks candidate pairs by overlap score, not insertion order (#180)', () => {
+  it('ranks candidate pairs by overlap score, not insertion order (#180)', async () => {
     // Learn 3 engrams: A and C contradict (high overlap), B is unrelated but inserted between them
-    plur.learn('PLUR storage format uses JSON files', { domain: 'plur.storage' })
-    plur.learn('PLUR search uses hybrid BM25 plus embeddings', { domain: 'plur.search' })
-    plur.learn('PLUR storage format uses YAML not JSON', { domain: 'plur.storage' })
+    await plur.learn('PLUR storage format uses JSON files', { domain: 'plur.storage' })
+    await plur.learn('PLUR search uses hybrid BM25 plus embeddings', { domain: 'plur.search' })
+    await plur.learn('PLUR storage format uses YAML not JSON', { domain: 'plur.storage' })
 
-    const engrams = plur.list()
+    const engrams = await plur.list()
     const pairs = getCandidatePairs(engrams)
 
     const pairIds = pairs.map(([a, b]) => [a.id, b.id].sort().join(':'))

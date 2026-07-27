@@ -52,9 +52,9 @@ describe('config.yaml persist paths take withLock (scope-audit 2026-07-24)', () 
     expect(existsSync(lockPath)).toBe(false)
   })
 
-  it('dismissScope (persistDismissedScopes) releases the lock and persists', () => {
+  it('dismissScope (persistDismissedScopes) releases the lock and persists', async () => {
     const { dir, plur } = makeDir()
-    plur.dismissScope('group:plur/x')
+    await plur.dismissScope('group:plur/x')
     const cfg = yaml.load(readFileSync(join(dir, 'config.yaml'), 'utf8')) as any
     expect(cfg.dismissed_scopes).toEqual(['group:plur/x'])
     expect(existsSync(join(dir, 'config.yaml.lock'))).toBe(false)

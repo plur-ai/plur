@@ -18,39 +18,39 @@ describe('SP2 Idea 3: Three-Memory Unification', () => {
     fs.rmSync(dir, { recursive: true })
   })
 
-  it('auto-sets memory_class=semantic for behavioral engrams', () => {
+  it('auto-sets memory_class=semantic for behavioral engrams', async () => {
     const plur = new Plur({ path: dir })
-    const engram = plur.learn('Always use camelCase', { type: 'behavioral' })
+    const engram = await plur.learn('Always use camelCase', { type: 'behavioral' })
     expect((engram as any).knowledge_type?.memory_class).toBe('semantic')
   })
 
-  it('auto-sets memory_class=procedural for procedural engrams', () => {
+  it('auto-sets memory_class=procedural for procedural engrams', async () => {
     const plur = new Plur({ path: dir })
-    const engram = plur.learn('Run npm test before committing', { type: 'procedural' })
+    const engram = await plur.learn('Run npm test before committing', { type: 'procedural' })
     expect((engram as any).knowledge_type?.memory_class).toBe('procedural')
   })
 
-  it('auto-sets memory_class=semantic for terminological engrams', () => {
+  it('auto-sets memory_class=semantic for terminological engrams', async () => {
     const plur = new Plur({ path: dir })
-    const engram = plur.learn('A widget is a reusable component', { type: 'terminological' })
+    const engram = await plur.learn('A widget is a reusable component', { type: 'terminological' })
     expect((engram as any).knowledge_type?.memory_class).toBe('semantic')
   })
 
-  it('auto-sets memory_class=semantic for architectural engrams', () => {
+  it('auto-sets memory_class=semantic for architectural engrams', async () => {
     const plur = new Plur({ path: dir })
-    const engram = plur.learn('Use event sourcing for audit', { type: 'architectural' })
+    const engram = await plur.learn('Use event sourcing for audit', { type: 'architectural' })
     expect((engram as any).knowledge_type?.memory_class).toBe('semantic')
   })
 
-  it('respects explicit memory_class override', () => {
+  it('respects explicit memory_class override', async () => {
     const plur = new Plur({ path: dir })
-    const engram = plur.learn('That time the server crashed', { type: 'behavioral', memory_class: 'episodic' })
+    const engram = await plur.learn('That time the server crashed', { type: 'behavioral', memory_class: 'episodic' })
     expect((engram as any).knowledge_type?.memory_class).toBe('episodic')
   })
 
-  it('defaults to semantic when type is omitted', () => {
+  it('defaults to semantic when type is omitted', async () => {
     const plur = new Plur({ path: dir })
-    const engram = plur.learn('Use port 3000 for development')
+    const engram = await plur.learn('Use port 3000 for development')
     expect((engram as any).knowledge_type?.memory_class).toBe('semantic')
   })
 })
@@ -69,10 +69,10 @@ describe('SP2 Idea 3: Episode to Engram promotion', () => {
     fs.rmSync(dir, { recursive: true })
   })
 
-  it('promotes an episode to an episodic engram', () => {
+  it('promotes an episode to an episodic engram', async () => {
     const plur = new Plur({ path: dir })
     const episode = plur.capture('Discovered a critical bug in the deploy pipeline')
-    const engram = plur.episodeToEngram(episode.id)
+    const engram = await plur.episodeToEngram(episode.id)
 
     expect(engram.statement).toBe('Discovered a critical bug in the deploy pipeline')
     expect((engram as any).knowledge_type?.memory_class).toBe('episodic')
@@ -85,19 +85,19 @@ describe('SP2 Idea 3: Episode to Engram promotion', () => {
     expect(() => plur.episodeToEngram('EP-nonexistent')).toThrow('Episode not found')
   })
 
-  it('passes context to the created engram', () => {
+  it('passes context to the created engram', async () => {
     const plur = new Plur({ path: dir })
     const episode = plur.capture('Important meeting outcome')
-    const engram = plur.episodeToEngram(episode.id, { domain: 'meetings', tags: ['important'] })
+    const engram = await plur.episodeToEngram(episode.id, { domain: 'meetings', tags: ['important'] })
 
     expect(engram.domain).toBe('meetings')
     expect(engram.tags).toContain('important')
   })
 
-  it('logs promotion in history', () => {
+  it('logs promotion in history', async () => {
     const plur = new Plur({ path: dir })
     const episode = plur.capture('Something important happened')
-    const engram = plur.episodeToEngram(episode.id)
+    const engram = await plur.episodeToEngram(episode.id)
 
     const history = plur.getEngramHistory(engram.id)
     const promotionEvents = history.filter(e => e.event === 'engram_promoted')

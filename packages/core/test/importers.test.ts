@@ -257,8 +257,8 @@ describe('gp-engram importer parsing', () => {
 // ─── Adapter registry ────────────────────────────────────────────────────────
 
 describe('import source registry', () => {
-  it('lists implemented and stubbed sources', () => {
-    const sources = listImportSources()
+  it('lists implemented and stubbed sources', async () => {
+    const sources = await listImportSources()
     const names = sources.map(s => s.name)
     expect(names).toEqual(expect.arrayContaining(['generic', 'gp-engram', 'mem0', 'zep', 'letta']))
     expect(sources.find(s => s.name === 'generic')?.implemented).toBe(true)
@@ -293,54 +293,54 @@ describe('runImport engine', () => {
   const rec = (statement: string, extra: Partial<ImportRecord> = {}): ImportRecord =>
     ({ statement, ...extra })
 
-  it('imports records through learn() and reports counts', () => {
-    const report = runImport(plur, [rec('fact one'), rec('fact two')], { from: 'generic' })
+  it('imports records through learn() and reports counts', async () => {
+    const report = await runImport(plur, [rec('fact one'), rec('fact two')], { from: 'generic' })
     expect(report.total).toBe(2)
     expect(report.imported).toBe(2)
     expect(report.skipped).toBe(0)
     expect(report.conflicts).toBe(0)
     expect(report.errors).toBe(0)
-    expect(plur.list({})).toHaveLength(2)
+    expect(await plur.list({})).toHaveLength(2)
     expect(report.records.filter(r => r.action === 'imported')).toHaveLength(2)
     expect(report.records[0].id).toMatch(/^ENG-/)
   })
 
-  it('routes duplicates through the content-hash dedup gate (skipped, not re-added)', () => {
-    plur.learn('fact one', { scope: 'global' })
-    const report = runImport(plur, [rec('fact one', { scope: 'global' }), rec('fact two')], { from: 'generic' })
+  it('routes duplicates through the content-hash dedup gate (skipped, not re-added)', async () => {
+    await plur.learn('fact one', { scope: 'global' })
+    const report = await runImport(plur, [rec('fact one', { scope: 'global' }), rec('fact two')], { from: 'generic' })
     expect(report.imported).toBe(1)
     expect(report.skipped).toBe(1)
-    expect(plur.list({})).toHaveLength(2)
+    expect(await plur.list({})).toHaveLength(2)
     const skipped = report.records.find(r => r.action === 'skipped')
     expect(skipped?.id).toMatch(/^ENG-/) // points at the existing engram
   })
 
-  it('dedups repeated statements within one import run', () => {
-    const report = runImport(plur, [rec('same fact'), rec('same fact')], { from: 'generic' })
+  it('dedups repeated statements within one import run', async () => {
+    const report = await runImport(plur, [rec('same fact'), rec('same fact')], { from: 'generic' })
     expect(report.imported).toBe(1)
     expect(report.skipped).toBe(1)
-    expect(plur.list({})).toHaveLength(1)
+    expect(await plur.list({})).toHaveLength(1)
   })
 
-  it('re-importing the same file is idempotent (all skipped)', () => {
+  it('re-importing the same file is idempotent (all skipped)', async () => {
     runImport(plur, [rec('idem one'), rec('idem two')], { from: 'generic' })
-    const second = runImport(plur, [rec('idem one'), rec('idem two')], { from: 'generic' })
+    const second = await runImport(plur, [rec('idem one'), rec('idem two')], { from: 'generic' })
     expect(second.imported).toBe(0)
     expect(second.skipped).toBe(2)
-    expect(plur.list({})).toHaveLength(2)
+    expect(await plur.list({})).toHaveLength(2)
   })
 
-  it('re-importing an ALREADY-EXPIRED record is still a skip (learn-dedup parity)', () => {
+  it('re-importing an ALREADY-EXPIRED record is still a skip (learn-dedup parity)', async () => {
     // learn()'s content-hash dedup ignores temporal validity, so the engine's
     // pre-existing snapshot must too — a plain list() drops engrams whose
     // valid_until has passed, which would misreport the second run as
     // "imported" and re-patch the existing engram's temporal metadata.
     const expired = rec('conference wifi password is hunter2', { valid_until: '2020-01-01' })
-    const first = runImport(plur, [expired], { from: 'generic' })
+    const first = await runImport(plur, [expired], { from: 'generic' })
     expect(first.imported).toBe(1)
-    const learnedAt = plur.list({ include_expired: true })[0].temporal?.learned_at
+    const learnedAt = (await plur.list({ include_expired: true }))[0].temporal?.learned_at
 
-    const second = runImport(plur, [rec('conference wifi password is hunter2', {
+    const second = await runImport(plur, [rec('conference wifi password is hunter2', {
       valid_until: '2020-01-01',
       created_at: '2010-05-05T00:00:00Z', // must NOT overwrite the existing engram
     })], { from: 'generic' })
@@ -348,19 +348,19 @@ describe('runImport engine', () => {
     expect(second.skipped).toBe(1)
     expect(second.records[0].id).toMatch(/^ENG-/)
 
-    const engrams = plur.list({ include_expired: true })
+    const engrams = await plur.list({ include_expired: true })
     expect(engrams).toHaveLength(1)
     expect(engrams[0].temporal?.learned_at).toBe(learnedAt)
 
     // dry-run predicts the same
-    const dry = runImport(plur, [expired], { from: 'generic', dryRun: true })
+    const dry = await runImport(plur, [expired], { from: 'generic', dryRun: true })
     expect(dry.skipped).toBe(1)
     expect(dry.imported).toBe(0)
   })
 
-  it('dry-run predicts the report without writing anything', () => {
-    plur.learn('already here', { scope: 'global' })
-    const report = runImport(
+  it('dry-run predicts the report without writing anything', async () => {
+    await plur.learn('already here', { scope: 'global' })
+    const report = await runImport(
       plur,
       [rec('already here', { scope: 'global' }), rec('brand new'), rec('brand new')],
       { from: 'generic', dryRun: true },
@@ -369,37 +369,37 @@ describe('runImport engine', () => {
     expect(report.total).toBe(3)
     expect(report.imported).toBe(1)
     expect(report.skipped).toBe(2) // one pre-existing dup + one in-file dup
-    expect(plur.list({})).toHaveLength(1) // nothing written
+    expect(await plur.list({})).toHaveLength(1) // nothing written
   })
 
-  it('applies a scope override to every record', () => {
+  it('applies a scope override to every record', async () => {
     runImport(plur, [rec('scoped fact', { scope: 'user:bob' })], { from: 'generic', scope: 'project:acme' })
-    const [engram] = plur.list({})
+    const [engram] = await plur.list({})
     expect(engram.scope).toBe('project:acme')
   })
 
-  it('preserves temporal metadata from the source', () => {
+  it('preserves temporal metadata from the source', async () => {
     runImport(plur, [rec('old knowledge', {
       created_at: '2024-03-01T08:00:00Z',
       last_accessed: '2025-01-15T09:00:00Z',
       valid_until: '2027-01-01',
     })], { from: 'generic' })
-    const [engram] = plur.list({})
+    const [engram] = await plur.list({})
     expect(engram.temporal?.learned_at).toBe('2024-03-01T08:00:00Z')
     expect(engram.temporal?.valid_until).toBe('2027-01-01')
     expect(engram.temporal?.ingested_at).toBeDefined()
     expect(engram.activation.last_accessed).toBe('2025-01-15')
   })
 
-  it('maps confidence onto episodic.confidence (1-10)', () => {
+  it('maps confidence onto episodic.confidence (1-10)', async () => {
     runImport(plur, [rec('confident fact', { confidence: 0.9 })], { from: 'generic' })
-    const [engram] = plur.list({})
+    const [engram] = await plur.list({})
     expect(engram.episodic?.confidence).toBe(9)
   })
 
-  it('flags conflicts against pre-existing engrams and links relations.conflicts', () => {
-    const existing = plur.learn('The deploy target is fly.io', { scope: 'global', domain: 'infra.deploy' })
-    const report = runImport(
+  it('flags conflicts against pre-existing engrams and links relations.conflicts', async () => {
+    const existing = await plur.learn('The deploy target is fly.io', { scope: 'global', domain: 'infra.deploy' })
+    const report = await runImport(
       plur,
       [rec('The deploy target is render.com', { scope: 'global', domain: 'infra.deploy' })],
       { from: 'generic' },
@@ -408,12 +408,12 @@ describe('runImport engine', () => {
     expect(report.conflicts).toBe(1)
     const imported = report.records[0]
     expect(imported.conflicts).toContain(existing.id)
-    const newEngram = plur.list({}).find(e => e.id === imported.id)
+    const newEngram = (await plur.list({})).find(e => e.id === imported.id)
     expect(newEngram?.relations?.conflicts).toContain(existing.id)
   })
 
-  it('counts records that fail the learn gates as errors (e.g. secrets)', () => {
-    const report = runImport(
+  it('counts records that fail the learn gates as errors (e.g. secrets)', async () => {
+    const report = await runImport(
       plur,
       [rec('api key is sk-abcdefghijklmnopqrstuvwxyz1234567890ABCDEFGH'), rec('a clean fact')],
       { from: 'generic' },
@@ -421,18 +421,18 @@ describe('runImport engine', () => {
     expect(report.imported).toBe(1)
     expect(report.errors).toBe(1)
     expect(report.records.find(r => r.action === 'error')?.error).toMatch(/secret/i)
-    expect(plur.list({})).toHaveLength(1)
+    expect(await plur.list({})).toHaveLength(1)
   })
 
-  it('counts empty statements as errors', () => {
-    const report = runImport(plur, [rec('')], { from: 'generic' })
+  it('counts empty statements as errors', async () => {
+    const report = await runImport(plur, [rec('')], { from: 'generic' })
     expect(report.errors).toBe(1)
     expect(report.imported).toBe(0)
   })
 
-  it('stamps a default source label when the record has none', () => {
+  it('stamps a default source label when the record has none', async () => {
     runImport(plur, [rec('unlabeled fact')], { from: 'mem0', defaultSource: 'import:mem0:memories.json' })
-    const [engram] = plur.list({})
+    const [engram] = await plur.list({})
     expect(engram.source).toBe('import:mem0:memories.json')
   })
 })
@@ -449,29 +449,29 @@ describe('importFrom end-to-end', () => {
   })
   afterEach(() => { rmSync(dir, { recursive: true, force: true }) })
 
-  it('imports the generic JSON fixture with dedup of the in-file duplicate', () => {
-    const report = importFrom(plur, { from: 'generic', path: join(FIXTURES, 'generic.json') })
+  it('imports the generic JSON fixture with dedup of the in-file duplicate', async () => {
+    const report = await importFrom(plur, { from: 'generic', path: join(FIXTURES, 'generic.json') })
     expect(report.from).toBe('generic')
     expect(report.total).toBe(3)
     expect(report.imported).toBe(2)
     expect(report.skipped).toBe(1)
-    const engrams = plur.list({})
+    const engrams = await plur.list({})
     expect(engrams).toHaveLength(2)
     const staged = engrams.find(e => e.statement.includes('staging API'))
     expect(staged?.temporal?.valid_until).toBe('2026-12-31')
   })
 
-  it('imports the mem0 fixture preserving scopes and temporal metadata', () => {
-    const report = importFrom(plur, { from: 'mem0', path: join(FIXTURES, 'mem0-export.json') })
+  it('imports the mem0 fixture preserving scopes and temporal metadata', async () => {
+    const report = await importFrom(plur, { from: 'mem0', path: join(FIXTURES, 'mem0-export.json') })
     expect(report.imported).toBe(3)
-    const engrams = plur.list({})
+    const engrams = await plur.list({})
     const darkMode = engrams.find(e => e.statement.includes('dark mode'))
     expect(darkMode?.scope).toBe('user:alice')
     expect(darkMode?.temporal?.learned_at).toBe('2025-09-14T12:00:00.000000-07:00')
     expect(darkMode?.tags).toEqual(['preferences', 'ui'])
   })
 
-  it('imports a gp-engram .db end-to-end', () => {
+  it('imports a gp-engram .db end-to-end', async () => {
     const require = createRequire(import.meta.url)
     const Database = require('better-sqlite3')
     const dbPath = join(dir, 'engram.db')
@@ -479,9 +479,9 @@ describe('importFrom end-to-end', () => {
     db.exec(readFileSync(join(FIXTURES, 'gp-engram-fixture.sql'), 'utf-8'))
     db.close()
 
-    const report = importFrom(plur, { from: 'gp-engram', path: dbPath })
+    const report = await importFrom(plur, { from: 'gp-engram', path: dbPath })
     expect(report.imported).toBe(3)
-    const engrams = plur.list({})
+    const engrams = await plur.list({})
     const pinned = engrams.find(e => e.statement.includes('Error wrapping'))
     expect(pinned?.pinned).toBe(true)
     expect(pinned?.scope).toBe('project:acme-api')

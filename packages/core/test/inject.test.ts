@@ -373,13 +373,13 @@ describe('injection engine', () => {
       // its normalized score falls below DEFAULT_MIN_RELEVANCE (0.3) and the
       // pinned engram is silently dropped before fillTokenBudget sees it.
       for (let i = 0; i < 5; i++) {
-        plur.learn(`The deployment script is at scripts/deploy-${i}.sh and runs deploy daily`, { type: 'procedural' })
+        await plur.learn(`The deployment script is at scripts/deploy-${i}.sh and runs deploy daily`, { type: 'procedural' })
       }
-      const pinned = plur.learn('Never type a day-of-week from memory', {
+      const pinned = await plur.learn('Never type a day-of-week from memory', {
         type: 'behavioral',
         pinned: true,
       })
-      const result = plur.inject('deploy', { budget: 8000 })
+      const result = await plur.inject('deploy', { budget: 8000 })
       expect(result.injected_ids).toContain(pinned.id)
     } finally {
       rmSync(dir, { recursive: true })

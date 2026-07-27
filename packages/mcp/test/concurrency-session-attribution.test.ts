@@ -44,11 +44,11 @@ describe('injection telemetry attribution', () => {
     (await call('plur_session_end', { session_id, summary: 'done' })).injection_summary
       ?.total_injections ?? 0
 
-  beforeEach(() => {
+  beforeEach(async () => {
     dir = mkdtempSync(join(tmpdir(), 'plur-session-attr-'))
     plur = new Plur({ path: dir })
     tools = getToolDefinitions('full')
-    plur.learn(SEED, { scope: 'global' })
+    await plur.learn(SEED, { scope: 'global' })
   })
 
   afterEach(() => {

@@ -116,9 +116,9 @@ describe('remote-boundary leak guard (#353)', () => {
 
   /** Prime the lazy remote cache, then return the namespaced engram id list sees. */
   async function primedRemoteId(plur: Plur, serverId: string): Promise<string> {
-    plur.list()                                   // triggers background load()
+    await plur.list()                                   // triggers background load()
     await new Promise(r => setTimeout(r, 50))     // let the load() settle
-    const found = plur.list().find(e => (e as any)._originalId === serverId || e.id.endsWith(serverId))
+    const found = (await plur.list()).find(e => (e as any)._originalId === serverId || e.id.endsWith(serverId))
     if (!found) throw new Error(`remote engram ${serverId} not in cache after prime`)
     return found.id
   }
@@ -131,7 +131,7 @@ describe('remote-boundary leak guard (#353)', () => {
     writeStoresConfig(dir, storeConfig())
     const plur = new Plur({ path: dir })
 
-    const engram = plur.learn(`deploy target is ${PUBLIC_IP}`, {
+    const engram = await plur.learn(`deploy target is ${PUBLIC_IP}`, {
       scope: REMOTE_SCOPE,
       type: 'behavioral',
     }) as { scope: string; visibility: string }
@@ -145,7 +145,7 @@ describe('remote-boundary leak guard (#353)', () => {
 
     // The remote append spy saw ZERO engrams, and nothing queued for retry.
     expect(postCalls().length).toBe(0)
-    expect(plur.outboxCount()).toBe(0)
+    expect(await plur.outboxCount()).toBe(0)
 
     // It is kept locally (demoted), not lost.
     const local = readLocalEngrams(dir)
@@ -180,10 +180,10 @@ describe('remote-boundary leak guard (#353)', () => {
     const plur = new Plur({ path: dir })
 
     const id = await primedRemoteId(plur, 'ENG-2026-0601-002')
-    const found = plur.list().find(e => e.id === id)!
+    const found = (await plur.list()).find(e => e.id === id)!
     const sensitive = { ...found, statement: `connect to ${PUBLIC_IP}:8877 for the dashboard` } as any
 
-    await expect(plur.updateEngramAsync(sensitive)).rejects.toThrow(/sensitive content/i)
+    await expect(await plur.updateEngramAsync(sensitive)).rejects.toThrow(/sensitive content/i)
     expect(patchCalls().length).toBe(0)
   })
 
@@ -193,7 +193,7 @@ describe('remote-boundary leak guard (#353)', () => {
     const plur = new Plur({ path: dir })
 
     const id = await primedRemoteId(plur, 'ENG-2026-0601-003')
-    const found = plur.list().find(e => e.id === id)!
+    const found = (await plur.list()).find(e => e.id === id)!
     const sensitive = { ...found, statement: `the prod box is ${PUBLIC_IP}` } as any
 
     expect(() => plur.updateEngram(sensitive)).toThrow(/sensitive content/i)
@@ -225,7 +225,7 @@ describe('remote-boundary leak guard (#353)', () => {
     const plur = new Plur({ path: dir })
 
     const id = await primedRemoteId(plur, 'ENG-2026-0601-005')
-    const found = plur.list().find(e => e.id === id)!
+    const found = (await plur.list()).find(e => e.id === id)!
     const clean = { ...found, statement: 'a slightly improved but still clean procedure' } as any
 
     const patched = await plur.updateEngramAsync(clean)

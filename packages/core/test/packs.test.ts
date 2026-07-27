@@ -15,12 +15,12 @@ describe('pack management', () => {
   })
   afterEach(() => { rmSync(dir, { recursive: true }) })
 
-  it('installs a pack from a directory', () => {
+  it('installs a pack from a directory', async () => {
     const packDir = join(dir, 'test-pack')
     mkdirSync(packDir)
     writeFileSync(join(packDir, 'SKILL.md'), '---\nname: test-pack\nversion: "1.0"\nx-datacore:\n  id: test\n  injection_policy: on_match\n  engram_count: 1\n---\n')
     writeFileSync(join(packDir, 'engrams.yaml'), 'engrams:\n  - id: ENG-2026-0101-001\n    statement: test pattern\n    type: behavioral\n    scope: global\n    status: active\n    version: 2\n    activation:\n      retrieval_strength: 0.7\n      storage_strength: 1.0\n      frequency: 0\n      last_accessed: "2026-01-01"\n')
-    const result = installPack(join(dir, 'packs'), packDir)
+    const result = await installPack(join(dir, 'packs'), packDir)
     expect(result.installed).toBe(1)
   })
 
@@ -29,7 +29,7 @@ describe('pack management', () => {
     expect(Array.isArray(packs)).toBe(true)
   })
 
-  it('exports engrams as a pack', () => {
+  it('exports engrams as a pack', async () => {
     const engram = EngramSchema.parse({
       id: 'ENG-2026-0319-001',
       statement: 'Test engram',
@@ -47,11 +47,11 @@ describe('pack management', () => {
     expect(result.engram_count).toBe(1)
 
     // Verify it can be re-imported
-    const installResult = installPack(join(dir, 'packs'), outputDir)
+    const installResult = await installPack(join(dir, 'packs'), outputDir)
     expect(installResult.installed).toBe(1)
   })
 
-  it('installed pack engrams are findable via recall (issue #13)', () => {
+  it('installed pack engrams are findable via recall (issue #13)', async () => {
     // Set up a Plur instance with a temp directory
     const plurDir = mkdtempSync(join(tmpdir(), 'plur-recall-'))
     mkdirSync(join(plurDir, 'packs'), { recursive: true })
@@ -77,15 +77,15 @@ describe('pack management', () => {
       frequency: 0
       last_accessed: "2026-01-01"
 `)
-    plur.installPack(packSource)
+    await plur.installPack(packSource)
 
     // Recall should find the pack engram
-    const results = plur.recall('stoicism philosophy communication')
+    const results = await plur.recall('stoicism philosophy communication')
     expect(results.length).toBeGreaterThan(0)
     expect(results[0].statement).toContain('Stoic communication')
 
     // Status should count the pack engram
-    const status = plur.status()
+    const status = await plur.status()
     expect(status.engram_count).toBeGreaterThanOrEqual(1)
     expect(status.pack_count).toBe(1)
 
@@ -184,7 +184,7 @@ describe('pack management', () => {
     expect(() => installPack(join(dir, 'packs'), packDir)).toThrow(/secrets/)
   })
 
-  it('install records registry entry with metadata', () => {
+  it('install records registry entry with metadata', async () => {
     const packDir = join(dir, 'registry-pack')
     mkdirSync(packDir)
     writeFileSync(join(packDir, 'SKILL.md'), '---\nname: registry-test\nversion: "1.0"\ncreator: alice\n---\n')
@@ -201,7 +201,7 @@ describe('pack management', () => {
       frequency: 0
       last_accessed: "2026-01-01"
 `)
-    const result = installPack(join(dir, 'packs'), packDir)
+    const result = await installPack(join(dir, 'packs'), packDir)
     expect(result.registry).toBeDefined()
     expect(result.registry.name).toBe('registry-test')
     expect(result.registry.version).toBe('1.0')
@@ -283,7 +283,7 @@ describe('pack management', () => {
 
   // --- Security hardening (audit 2026-06-10, finding #2) ---
 
-  it('install strips pinned + unlocks commitment from pack engrams', () => {
+  it('install strips pinned + unlocks commitment from pack engrams', async () => {
     const packDir = join(dir, 'pinned-pack')
     mkdirSync(packDir)
     writeFileSync(join(packDir, 'SKILL.md'), '---\nname: pinned-pack\nversion: "1.0"\n---\n')
@@ -303,7 +303,7 @@ describe('pack management', () => {
       frequency: 0
       last_accessed: "2026-01-01"
 `)
-    const result = installPack(join(dir, 'packs'), packDir)
+    const result = await installPack(join(dir, 'packs'), packDir)
     expect(result.installed).toBe(1)
 
     // The on-disk installed pack must not carry pinned/locked
@@ -597,7 +597,7 @@ describe('pack management', () => {
     expect(exportPack([clean], join(dir, 'exp-clean'), { name: 'exp-clean', version: '1.0.0' }).engram_count).toBe(1)
   })
 
-  it('install allows injection text when allowInjection override is set', () => {
+  it('install allows injection text when allowInjection override is set', async () => {
     const packDir = join(dir, 'injection-pack-ok')
     mkdirSync(packDir)
     writeFileSync(join(packDir, 'SKILL.md'), '---\nname: injection-pack-ok\nversion: "1.0"\n---\n')
@@ -614,7 +614,7 @@ describe('pack management', () => {
       frequency: 0
       last_accessed: "2026-01-01"
 `)
-    const result = installPack(join(dir, 'packs'), packDir, undefined, { allowInjection: true })
+    const result = await installPack(join(dir, 'packs'), packDir, undefined, { allowInjection: true })
     expect(result.installed).toBe(1)
   })
 

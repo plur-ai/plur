@@ -115,7 +115,7 @@ describe('purgeTensions', () => {
 
     const { Plur } = await import('../src/index.js')
     const plur = new Plur({ path: dir })
-    const status = plur.status()
+    const status = await plur.status()
     expect(status.tension_count).toBe(0)
   })
 
@@ -182,7 +182,7 @@ describe('purgeTensions', () => {
 
     // Remove sentinel and re-purge manually
     rmSync(join(dir, '.tensions-purged'))
-    const result = plur.purgeTensions()
+    const result = await plur.purgeTensions()
     expect(result.purged_count).toBe(3) // ENG-001 has 2 + ENG-002 has 1
     expect(result.engrams_modified).toBe(2) // ENG-001 and ENG-002
     expect(result.stores_cleaned).toBe(1) // primary store
@@ -199,7 +199,7 @@ describe('purgeTensions', () => {
     const { Plur } = await import('../src/index.js')
     // Should not throw trying to write to remote store
     const plur = new Plur({ path: dir })
-    const result = plur.purgeTensions()
+    const result = await plur.purgeTensions()
     expect(result.stores_cleaned).toBe(0)
   })
 })

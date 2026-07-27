@@ -27,7 +27,7 @@ describe('MCP meta-engram tool integration', () => {
     rmSync(tempDir, { recursive: true, force: true })
   })
 
-  it('saveMetaEngrams persists to store and list() retrieves them', () => {
+  it('saveMetaEngrams persists to store and list() retrieves them', async () => {
     const meta: Engram = {
       id: 'META-test-principle',
       version: 2,
@@ -65,19 +65,19 @@ describe('MCP meta-engram tool integration', () => {
     } as Engram
 
     // Save via Plur class (same path the MCP handler uses)
-    const { saved, skipped } = plur.saveMetaEngrams([meta])
+    const { saved, skipped } = await plur.saveMetaEngrams([meta])
     expect(saved).toBe(1)
     expect(skipped).toBe(0)
 
     // Retrieve via list — same as plur_meta_engrams tool does
-    const all = plur.list()
+    const all = await plur.list()
     const metas = all.filter(e => e.id.startsWith('META-'))
     expect(metas).toHaveLength(1)
     expect(metas[0].id).toBe('META-test-principle')
     expect(metas[0].structured_data?.meta).toBeTruthy()
 
     // Save again — should skip duplicate
-    const { saved: saved2, skipped: skipped2 } = plur.saveMetaEngrams([meta])
+    const { saved: saved2, skipped: skipped2 } = await plur.saveMetaEngrams([meta])
     expect(saved2).toBe(0)
     expect(skipped2).toBe(1)
   })
@@ -105,7 +105,7 @@ describe('MCP meta-engram tool integration', () => {
       },
     } as Engram
 
-    plur.saveMetaEngrams([meta])
+    await plur.saveMetaEngrams([meta])
 
     const result = await callTool('plur_meta_engrams', {}) as any
     expect(result.count).toBe(1)
@@ -114,8 +114,8 @@ describe('MCP meta-engram tool integration', () => {
     expect(result.results[0].template).toBe('[x] + [y] -> [z]')
   })
 
-  it('list() returns both regular and meta engrams', () => {
-    plur.learn('Regular engram test')
+  it('list() returns both regular and meta engrams', async () => {
+    await plur.learn('Regular engram test')
 
     const meta = {
       id: 'META-mixed-test',
@@ -127,9 +127,9 @@ describe('MCP meta-engram tool integration', () => {
       knowledge_anchors: [], associations: [], derivation_count: 1,
       pack: null, abstract: null, derived_from: null, polarity: null,
     } as Engram
-    plur.saveMetaEngrams([meta])
+    await plur.saveMetaEngrams([meta])
 
-    const all = plur.list()
+    const all = await plur.list()
     expect(all.length).toBe(2)
     expect(all.some(e => e.id.startsWith('ENG-'))).toBe(true)
     expect(all.some(e => e.id.startsWith('META-'))).toBe(true)

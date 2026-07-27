@@ -75,10 +75,10 @@ describe('Plur — concurrent session scopes', () => {
     const [a, b] = await Promise.all([
       (async () => {
         await new Promise(r => setImmediate(r))
-        return plur.learnRouted('alpha uses pnpm for the monorepo', { session: 's1' })
+        return await plur.learnRouted('alpha uses pnpm for the monorepo', { session: 's1' })
       })(),
       (async () => {
-        return plur.learnRouted('beta uses cargo for the workspace', { session: 's2' })
+        return await plur.learnRouted('beta uses cargo for the workspace', { session: 's2' })
       })(),
     ])
 
@@ -96,7 +96,7 @@ describe('Plur — concurrent session scopes', () => {
           // Stagger the suspension points so the calls genuinely interleave
           // rather than each running to completion in its own turn.
           for (let k = 0; k < i; k++) await new Promise(r => setImmediate(r))
-          return plur.learnRouted(`session ${s} prefers convention number ${i}`, { session: s })
+          return await plur.learnRouted(`session ${s} prefers convention number ${i}`, { session: s })
         })(),
       ),
     )
@@ -105,7 +105,7 @@ describe('Plur — concurrent session scopes', () => {
       expect(engrams[i].scope).toBe(`project:p${sessions[i]}`)
     }
     // And every one of them actually persisted — no lost writes.
-    const stored = plur.list()
+    const stored = await plur.list()
     for (const e of engrams) {
       expect(stored.find(s => s.id === e.id)?.scope).toBe(e.scope)
     }
@@ -119,7 +119,7 @@ describe('Plur — concurrent session scopes', () => {
 
     const first = (async () => {
       await gate
-      return plur.learnRouted('the first session records its own convention', { session: 'sA' })
+      return await plur.learnRouted('the first session records its own convention', { session: 'sA' })
     })()
 
     // While sA is suspended, a brand-new session registers a different scope
@@ -170,7 +170,7 @@ describe('Plur — concurrent session scopes', () => {
     plur.setSessionScope('project:alpha', { session: 's1' })
     const e = await plur.learnRouted('the session key selects a scope, it is not part of one', { session: 's1' })
     expect((e as unknown as Record<string, unknown>).session).toBeUndefined()
-    const reloaded = plur.getById(e.id)
+    const reloaded = await plur.getById(e.id)
     expect((reloaded as unknown as Record<string, unknown>).session).toBeUndefined()
   })
 })

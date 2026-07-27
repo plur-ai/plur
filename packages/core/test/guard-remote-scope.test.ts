@@ -99,7 +99,7 @@ describe('remote-backed (non-shared) leak guard', () => {
     writeStoresConfig(dir, remoteUserStore())
     const plur = new Plur({ path: dir })
 
-    const engram = plur.learn(`my prod box is ${PUBLIC_IP}`, {
+    const engram = await plur.learn(`my prod box is ${PUBLIC_IP}`, {
       scope: REMOTE_USER_SCOPE,
       type: 'behavioral',
     }) as { scope: string; visibility: string }
@@ -113,7 +113,7 @@ describe('remote-backed (non-shared) leak guard', () => {
 
     // The remote append spy saw ZERO engrams, and nothing queued for retry.
     expect(postCalls().length).toBe(0)
-    expect(plur.outboxCount()).toBe(0)
+    expect(await plur.outboxCount()).toBe(0)
 
     // Kept locally (demoted), not lost.
     const local = readLocalEngrams(dir)
@@ -127,7 +127,7 @@ describe('remote-backed (non-shared) leak guard', () => {
     writeStoresConfig(dir, remoteUserStore())
     const plur = new Plur({ path: dir })
 
-    const engram = plur.learn('I prefer concise commit messages', {
+    const engram = await plur.learn('I prefer concise commit messages', {
       scope: REMOTE_USER_SCOPE,
       type: 'preference',
     }) as { scope: string }
@@ -144,12 +144,12 @@ describe('remote-backed (non-shared) leak guard', () => {
 
   // (c) `global` is a PERSONAL local scope with NO store backing — it must stay
   // exempt. Sensitive content here is NOT demoted (global stays personal/local).
-  it('(c) sensitive write to global (no store) is not demoted', () => {
+  it('(c) sensitive write to global (no store) is not demoted', async () => {
     // No stores at all → global is neither shared nor remote-backed.
     writeStoresConfig(dir, [])
     const plur = new Plur({ path: dir })
 
-    const engram = plur.learn(`my home server is ${PUBLIC_IP}`, {
+    const engram = await plur.learn(`my home server is ${PUBLIC_IP}`, {
       scope: 'global',
       type: 'behavioral',
     }) as { scope: string }
@@ -160,7 +160,7 @@ describe('remote-backed (non-shared) leak guard', () => {
   // (d) A local-FILE store (path, no url) at a shared-prefix scope still demotes
   // on sensitive content — unchanged existing isSharedScope behavior. Confirms the
   // change only ADDS remote-backed coverage, it does not alter shared-prefix paths.
-  it('(d) sensitive write to a local-file shared-prefix store still demotes', () => {
+  it('(d) sensitive write to a local-file shared-prefix store still demotes', async () => {
     const filePath = join(dir, 'team-store.yaml')
     writeStoresConfig(dir, [{
       path: filePath,
@@ -169,7 +169,7 @@ describe('remote-backed (non-shared) leak guard', () => {
     }])
     const plur = new Plur({ path: dir })
 
-    const engram = plur.learn(`the deploy target is ${PUBLIC_IP}`, {
+    const engram = await plur.learn(`the deploy target is ${PUBLIC_IP}`, {
       scope: 'project:plur',
       type: 'behavioral',
     }) as { scope: string; visibility: string }
@@ -191,7 +191,7 @@ describe('remote-backed (non-shared) leak guard', () => {
     }))
     const plur = new Plur({ path: dir })
 
-    const engram = plur.learn(`my prod box is ${PUBLIC_IP}`, {
+    const engram = await plur.learn(`my prod box is ${PUBLIC_IP}`, {
       scope: REMOTE_USER_SCOPE,
       type: 'behavioral',
     }) as { scope: string }

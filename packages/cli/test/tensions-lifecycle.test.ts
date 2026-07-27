@@ -122,8 +122,8 @@ describe('plur tensions lifecycle (#181)', () => {
     expect(resolved.retired).toBe(aId)
 
     const plur = new Plur({ path: dir })
-    expect(plur.getById(aId)?.status).toBe('retired')
-    expect(plur.getById(bId)?.status).toBe('active')
+    expect((await plur.getById(aId))?.status).toBe('retired')
+    expect((await plur.getById(bId))?.status).toBe('active')
   })
 
   it('resolve without --winner exits 1', async () => {

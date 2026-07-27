@@ -91,7 +91,7 @@ describe('MCP server (wire protocol)', () => {
       expect(result.isError).toBeFalsy()
       const parsed = JSON.parse((result.content as any)[0].text)
       expect(parsed.id).toBeDefined()
-      const stored = plurInstance.getById(parsed.id)
+      const stored = await plurInstance.getById(parsed.id)
       expect(stored?.tags).toEqual(['alpha', 'beta'])
     })
 
@@ -102,7 +102,7 @@ describe('MCP server (wire protocol)', () => {
       })
       expect(result.isError).toBeFalsy()
       const parsed = JSON.parse((result.content as any)[0].text)
-      const stored = plurInstance.getById(parsed.id)
+      const stored = await plurInstance.getById(parsed.id)
       expect(stored?.tags).toEqual(['alpha', 'beta'])
     })
 
@@ -113,7 +113,7 @@ describe('MCP server (wire protocol)', () => {
       })
       expect(result.isError).toBeFalsy()
       const parsed = JSON.parse((result.content as any)[0].text)
-      const stored = plurInstance.getById(parsed.id)
+      const stored = await plurInstance.getById(parsed.id)
       expect(stored?.tags).toEqual(['solo'])
     })
 

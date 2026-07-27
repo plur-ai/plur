@@ -103,10 +103,10 @@ describe.skipIf(!hasSqlite)('IndexedStorage.loadFiltered — permitted-scope pus
     rmSync(dir, { recursive: true, force: true })
   })
 
-  function seedAndOpen(engrams: Engram[]): IndexedStorage {
+  async function seedAndOpen(engrams: Engram[]): Promise<IndexedStorage> {
     seedYaml(yamlPath, engrams)
     store = new IndexedStorage(yamlPath, dbPath)
-    store.reindex()
+    await store.reindex()
     return store
   }
 
@@ -118,16 +118,16 @@ describe.skipIf(!hasSqlite)('IndexedStorage.loadFiltered — permitted-scope pus
     mkEngram('ENG-2026-0726-005', 'local', { scope: 'local' }),
   ]
 
-  it('REGRESSION GUARD: omitting scopes returns exactly what it returned before', () => {
-    const s = seedAndOpen(BASE)
+  it('REGRESSION GUARD: omitting scopes returns exactly what it returned before', async () => {
+    const s = await seedAndOpen(BASE)
     expect(s.loadFiltered({}).length).toBe(5)
     expect(s.loadFiltered({ status: 'active' }).length).toBe(5)
     expect(s.loadFiltered({ scopes: undefined }).map(e => e.id).sort())
       .toEqual(s.loadFiltered({}).map(e => e.id).sort())
   })
 
-  it('SECURITY: an empty permitted-scope list matches NOTHING', () => {
-    const s = seedAndOpen(BASE)
+  it('SECURITY: an empty permitted-scope list matches NOTHING', async () => {
+    const s = await seedAndOpen(BASE)
     expect(s.loadFiltered({ scopes: [] })).toEqual([])
     expect(s.loadFiltered({ status: 'active', scopes: [] })).toEqual([])
     // Combined with the visibility filter, which on its own returns rows.
@@ -135,15 +135,15 @@ describe.skipIf(!hasSqlite)('IndexedStorage.loadFiltered — permitted-scope pus
     expect(s.loadFiltered({ scope: 'project:a', scopes: [] })).toEqual([])
   })
 
-  it('restricts to exactly the listed scopes', () => {
-    const s = seedAndOpen(BASE)
+  it('restricts to exactly the listed scopes', async () => {
+    const s = await seedAndOpen(BASE)
     expect(s.loadFiltered({ scopes: ['project:a'] }).map(e => e.id)).toEqual(['ENG-2026-0726-001'])
     expect(s.loadFiltered({ scopes: ['project:a', 'project:b'] }).map(e => e.id).sort())
       .toEqual(['ENG-2026-0726-001', 'ENG-2026-0726-003'])
   })
 
-  it('does NOT expand the hierarchy and does NOT pass personal scopes through', () => {
-    const s = seedAndOpen(BASE)
+  it('does NOT expand the hierarchy and does NOT pass personal scopes through', async () => {
+    const s = await seedAndOpen(BASE)
     const ids = s.loadFiltered({ scopes: ['project:a'] }).map(e => e.id)
     expect(ids).not.toContain('ENG-2026-0726-002') // project:a:sub
     expect(ids).not.toContain('ENG-2026-0726-004') // global
@@ -155,8 +155,8 @@ describe.skipIf(!hasSqlite)('IndexedStorage.loadFiltered — permitted-scope pus
     expect(visIds).toContain('ENG-2026-0726-005')
   })
 
-  it('composes with status and domain as an AND (intersection)', () => {
-    const s = seedAndOpen([
+  it('composes with status and domain as an AND (intersection)', async () => {
+    const s = await seedAndOpen([
       mkEngram('ENG-2026-0726-010', 'x', { scope: 'project:a', domain: 'plur.search', status: 'active' }),
       mkEngram('ENG-2026-0726-011', 'x', { scope: 'project:a', domain: 'plur.search', status: 'retired' }),
       mkEngram('ENG-2026-0726-012', 'x', { scope: 'project:a', domain: 'other.thing', status: 'active' }),
@@ -167,7 +167,7 @@ describe.skipIf(!hasSqlite)('IndexedStorage.loadFiltered — permitted-scope pus
     expect(s.loadFiltered({ scope: 'project:a', scopes: ['project:b'] })).toEqual([])
   })
 
-  it('DILUTION: a corpus dominated by out-of-scope rows still yields every in-scope row', () => {
+  it('DILUTION: a corpus dominated by out-of-scope rows still yields every in-scope row', async () => {
     const engrams: Engram[] = []
     for (let i = 0; i < 100; i++) {
       engrams.push(mkEngram(`ENG-2026-0726-O${String(i).padStart(3, '0')}`, `other ${i}`, { scope: 'project:other' }))
@@ -175,7 +175,7 @@ describe.skipIf(!hasSqlite)('IndexedStorage.loadFiltered — permitted-scope pus
     for (let j = 0; j < 20; j++) {
       engrams.push(mkEngram(`ENG-2026-0726-M${String(j).padStart(3, '0')}`, `mine ${j}`, { scope: 'project:mine' }))
     }
-    const s = seedAndOpen(engrams)
+    const s = await seedAndOpen(engrams)
     const mine = s.loadFiltered({ status: 'active', scopes: ['project:mine'] })
     expect(mine.length).toBe(20)
     expect(mine.every(e => e.scope === 'project:mine')).toBe(true)
@@ -197,14 +197,14 @@ describe('Plur read paths — permitted-scope pushdown', () => {
    * `index: false` exercises the in-memory YAML branch of _filterEngrams;
    * `index: true` exercises IndexedStorage.loadFiltered. Both must agree.
    */
-  function makePlur(indexed: boolean): Plur {
+  async function makePlur(indexed: boolean): Promise<Plur> {
     writeFileSync(join(dir, 'config.yaml'), yaml.dump({ index: indexed }, { noRefs: true }))
     const plur = new Plur({ path: dir })
-    plur.learn('the deployment pipeline uses snake_case for alpha', { scope: 'project:a' })
-    plur.learn('the deployment pipeline uses snake_case for alpha sub', { scope: 'project:a:sub' })
-    plur.learn('the deployment pipeline uses snake_case for beta', { scope: 'project:b' })
-    plur.learn('the deployment pipeline uses snake_case for everyone', { scope: 'global' })
-    plur.learn('the deployment pipeline uses snake_case for me', { scope: 'local' })
+    await plur.learn('the deployment pipeline uses snake_case for alpha', { scope: 'project:a' })
+    await plur.learn('the deployment pipeline uses snake_case for alpha sub', { scope: 'project:a:sub' })
+    await plur.learn('the deployment pipeline uses snake_case for beta', { scope: 'project:b' })
+    await plur.learn('the deployment pipeline uses snake_case for everyone', { scope: 'global' })
+    await plur.learn('the deployment pipeline uses snake_case for me', { scope: 'local' })
     return plur
   }
 
@@ -214,30 +214,30 @@ describe('Plur read paths — permitted-scope pushdown', () => {
 
   for (const [label, indexed] of modes) {
     describe(label, () => {
-      it('REGRESSION GUARD: omitting scopes lists the whole active corpus', () => {
-        const plur = makePlur(indexed)
-        expect(plur.list().length).toBe(5)
-        expect(plur.list({ scopes: undefined }).length).toBe(5)
+      it('REGRESSION GUARD: omitting scopes lists the whole active corpus', async () => {
+        const plur = await makePlur(indexed)
+        expect((await plur.list()).length).toBe(5)
+        expect((await plur.list({ scopes: undefined })).length).toBe(5)
       })
 
-      it('SECURITY: an empty permitted-scope list lists NOTHING', () => {
-        const plur = makePlur(indexed)
-        expect(plur.list({ scopes: [] })).toEqual([])
+      it('SECURITY: an empty permitted-scope list lists NOTHING', async () => {
+        const plur = await makePlur(indexed)
+        expect(await plur.list({ scopes: [] })).toEqual([])
       })
 
-      it('lists exactly the listed scopes — no descendants, no personal pass-through', () => {
-        const plur = makePlur(indexed)
-        const scopes = plur.list({ scopes: ['project:a'] }).map(e => e.scope)
+      it('lists exactly the listed scopes — no descendants, no personal pass-through', async () => {
+        const plur = await makePlur(indexed)
+        const scopes = (await plur.list({ scopes: ['project:a'] })).map(e => e.scope)
         expect(scopes).toEqual(['project:a'])
       })
 
-      it('composes with the visibility scope filter as an intersection', () => {
-        const plur = makePlur(indexed)
+      it('composes with the visibility scope filter as an intersection', async () => {
+        const plur = await makePlur(indexed)
         // `scope: project:a` alone is wide (descendants + personal pass-through)…
-        expect(plur.list({ scope: 'project:a' }).length).toBeGreaterThan(1)
+        expect((await plur.list({ scope: 'project:a' })).length).toBeGreaterThan(1)
         // …and intersecting it with an allow-list can only narrow it.
-        expect(plur.list({ scope: 'project:a', scopes: ['project:b'] })).toEqual([])
-        expect(plur.list({ scope: 'project:a', scopes: ['project:a'] }).map(e => e.scope))
+        expect(await plur.list({ scope: 'project:a', scopes: ['project:b'] })).toEqual([])
+        expect((await plur.list({ scope: 'project:a', scopes: ['project:a'] })).map(e => e.scope))
           .toEqual(['project:a'])
       })
     })

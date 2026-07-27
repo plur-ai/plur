@@ -50,7 +50,7 @@ describe('sync() surfaces background index failures (#272)', () => {
     const realSyncFromYaml = adapter.syncFromYaml.bind(adapter)
     adapter.syncFromYaml = () => Promise.reject(new Error('disk on fire'))
 
-    const result = plur.sync()
+    const result = await plur.sync()
     expect(result.action).toBeTruthy() // git SyncResult shape unchanged
     await plur.waitForIndex() // must resolve, not reject
 
@@ -59,14 +59,14 @@ describe('sync() surfaces background index failures (#272)', () => {
     expect(err!.op).toBe('sync-from-yaml')
     expect(err!.message).toContain('disk on fire')
     expect(new Date(err!.at).getTime()).not.toBeNaN()
-    expect(plur.status().index_error).toEqual(err)
+    expect((await plur.status()).index_error).toEqual(err)
 
     // Recovery: the next successful pass clears the recorded error.
     adapter.syncFromYaml = realSyncFromYaml
-    plur.sync()
+    await plur.sync()
     await plur.waitForIndex()
     expect(plur.lastIndexError()).toBeNull()
-    expect(plur.status().index_error).toBeUndefined()
+    expect((await plur.status()).index_error).toBeUndefined()
   }, PGLITE_TIMEOUT)
 
   it('records a failed full reindex under op "reindex"', async () => {
@@ -76,7 +76,7 @@ describe('sync() surfaces background index failures (#272)', () => {
     const adapter = (plur as any).pgliteAdapter
     adapter.reindex = () => Promise.reject(new Error('rebuild exploded'))
 
-    plur.sync(undefined, { full: true })
+    await plur.sync(undefined, { full: true })
     await plur.waitForIndex()
 
     const err = plur.lastIndexError()
@@ -88,7 +88,7 @@ describe('sync() surfaces background index failures (#272)', () => {
   it('records a failed auto-embed pass under op "auto-embed"', async () => {
     const plur = new Plur({ path: dir })
     // Seed one active engram so the auto-embed pass has work to attempt.
-    plur.learn('index errors must be surfaced, not swallowed', {
+    await plur.learn('index errors must be surfaced, not swallowed', {
       type: 'behavioral',
       scope: 'global',
     })
@@ -100,7 +100,7 @@ describe('sync() surfaces background index failures (#272)', () => {
     // the preceding syncFromYaml still succeeds.
     adapter.getVectorColumnDim = () => Promise.reject(new Error('vector column gone'))
 
-    plur.sync()
+    await plur.sync()
     await plur.waitForIndex()
 
     const err = plur.lastIndexError()

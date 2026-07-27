@@ -19,18 +19,18 @@ describe('Plur.receipt()', () => {
   })
   afterEach(() => { fs.rmSync(dir, { recursive: true, force: true }) })
 
-  it('returns an empty receipt for a fresh store', () => {
-    const r = plur.receipt()
+  it('returns an empty receipt for a fresh store', async () => {
+    const r = await plur.receipt()
     expect(r.stored.total).toBe(0)
     expect(r.retrieved.retrievals).toBe(0)
     expect(r.coverage.source).toBe('none')
   })
 
-  it('reflects a real injection end to end', () => {
-    plur.learn('This monorepo uses pnpm for every install, never npm.', { type: 'procedural' })
-    plur.inject('pnpm install monorepo', { session_id: 's1', source: 'hook' })
+  it('reflects a real injection end to end', async () => {
+    await plur.learn('This monorepo uses pnpm for every install, never npm.', { type: 'procedural' })
+    await plur.inject('pnpm install monorepo', { session_id: 's1', source: 'hook' })
 
-    const r = plur.receipt()
+    const r = await plur.receipt()
     expect(r.stored.own).toBe(1)
     expect(r.retrieved.retrievals).toBe(1)
     expect(r.retrieved.engrams).toBe(1)
@@ -40,20 +40,20 @@ describe('Plur.receipt()', () => {
     expect(r.coverage.session_id_coverage).toBe(1)
   })
 
-  it('counts an engram retrieved in two sessions as two pairs', () => {
-    plur.learn('This monorepo uses pnpm for every install, never npm.', { type: 'procedural' })
-    plur.inject('pnpm install', { session_id: 's1' })
-    plur.inject('pnpm install', { session_id: 's2' })
+  it('counts an engram retrieved in two sessions as two pairs', async () => {
+    await plur.learn('This monorepo uses pnpm for every install, never npm.', { type: 'procedural' })
+    await plur.inject('pnpm install', { session_id: 's1' })
+    await plur.inject('pnpm install', { session_id: 's2' })
 
-    const r = plur.receipt()
+    const r = await plur.receipt()
     expect(r.retrieved.engram_session_pairs).toBe(2)
     expect(r.window.sessions).toBe(2)
   })
 
-  it('honours the days window', () => {
-    plur.learn('This monorepo uses pnpm for every install, never npm.', { type: 'procedural' })
-    plur.inject('pnpm install', { session_id: 's1' })
-    const r = plur.receipt({ days: 30 })
+  it('honours the days window', async () => {
+    await plur.learn('This monorepo uses pnpm for every install, never npm.', { type: 'procedural' })
+    await plur.inject('pnpm install', { session_id: 's1' })
+    const r = await plur.receipt({ days: 30 })
     expect(r.retrieved.retrievals).toBe(1)
     expect(r.window.windowed).toBe(true)
     expect(r.window.requested_days).toBe(30)
@@ -64,19 +64,19 @@ describe('Plur.receipt()', () => {
     expect(() => plur.receipt()).not.toThrow()
   })
 
-  it('counts never-retrieved engrams as dormant', () => {
-    plur.learn('This monorepo uses pnpm for every install, never npm.', { type: 'procedural' })
-    plur.learn('Nightshift deploys run via systemd restart after a git pull.', { type: 'procedural' })
-    plur.inject('pnpm install', { session_id: 's1' })
+  it('counts never-retrieved engrams as dormant', async () => {
+    await plur.learn('This monorepo uses pnpm for every install, never npm.', { type: 'procedural' })
+    await plur.learn('Nightshift deploys run via systemd restart after a git pull.', { type: 'procedural' })
+    await plur.inject('pnpm install', { session_id: 's1' })
 
-    const r = plur.receipt()
+    const r = await plur.receipt()
     expect(r.stored.total).toBe(2)
     expect(r.dormant.never_retrieved).toBeGreaterThanOrEqual(1)
   })
 
-  it('own + pack always equals total', () => {
-    plur.learn('This monorepo uses pnpm for every install, never npm.', { type: 'procedural' })
-    const r = plur.receipt()
+  it('own + pack always equals total', async () => {
+    await plur.learn('This monorepo uses pnpm for every install, never npm.', { type: 'procedural' })
+    const r = await plur.receipt()
     expect(r.stored.own + r.stored.pack).toBe(r.stored.total)
   })
 })

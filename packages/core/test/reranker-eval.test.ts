@@ -377,10 +377,10 @@ describe('Plur.rerankerSelfEval + advisory on the enable path (#451)', () => {
   let dir: string
   let plur: Plur
 
-  beforeEach(() => {
+  beforeEach(async () => {
     dir = mkdtempSync(join(tmpdir(), 'plur-rerank-plur-'))
     plur = new Plur({ path: dir })
-    for (const s of STATEMENTS) plur.learn(s, { scope: 'global' })
+    for (const s of STATEMENTS) await plur.learn(s, { scope: 'global' })
     _resetRerankerCache()
     resetRerankerStatus()
   })
@@ -399,7 +399,7 @@ describe('Plur.rerankerSelfEval + advisory on the enable path (#451)', () => {
     expect(result.verdict).toBe('harmful')
     expect(result.reranker).toBe('ms-marco-minilm-l6')
     // Cached on disk, keyed by reranker name.
-    const disk = loadRerankerEvalCache(plur.status().storage_root)
+    const disk = loadRerankerEvalCache((await plur.status()).storage_root)
     expect(disk['ms-marco-minilm-l6']?.verdict).toBe('harmful')
   })
 
@@ -417,15 +417,15 @@ describe('Plur.rerankerSelfEval + advisory on the enable path (#451)', () => {
 
   it('throws when no reranker is configured and none is passed', async () => {
     delete process.env.PLUR_RERANKER
-    await expect(plur.rerankerSelfEval()).rejects.toThrow(/PLUR_RERANKER|reranker/i)
+    await expect(await plur.rerankerSelfEval()).rejects.toThrow(/PLUR_RERANKER|reranker/i)
   })
 
   it('rerankerEvalStatus reads the cached verdict without running anything', async () => {
-    expect(plur.rerankerEvalStatus('ms-marco-minilm-l6')).toBeNull()
+    expect(await plur.rerankerEvalStatus('ms-marco-minilm-l6')).toBeNull()
     process.env.PLUR_RERANKER = 'ms-marco-minilm-l6'
     _setCachedReranker('ms-marco-minilm-l6', { ...adversary, name: 'ms-marco-minilm-l6' })
     await plur.rerankerSelfEval()
-    const status = plur.rerankerEvalStatus('ms-marco-minilm-l6')
+    const status = await plur.rerankerEvalStatus('ms-marco-minilm-l6')
     expect(status).not.toBeNull()
     expect(status!.result.verdict).toBe('harmful')
     expect(status!.stale).toBe(false)

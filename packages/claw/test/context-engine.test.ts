@@ -29,7 +29,7 @@ describe('PlurContextEngine', () => {
       sessionKey: 'user:john',
       message: { role: 'user', content: 'No, always use snake_case for the API responses in this project' },
     })
-    const recalled = engine.plur.recall('snake_case API')
+    const recalled = await engine.plur.recall('snake_case API')
     expect(recalled.length).toBeGreaterThan(0)
   })
 
@@ -43,7 +43,7 @@ describe('PlurContextEngine', () => {
   })
 
   it('assemble includes engrams in systemPromptAddition', async () => {
-    engine.plur.learn('Database is PostgreSQL on port 5433', { scope: 'global' })
+    await engine.plur.learn('Database is PostgreSQL on port 5433', { scope: 'global' })
     const result = await engine.assemble({
       sessionId: 'test-1',
       messages: [{ role: 'user', content: 'check the database connection' }],
@@ -101,7 +101,7 @@ describe('PlurContextEngine', () => {
       ],
       prePromptMessageCount: 1, // system message was pre-prompt
     })
-    const recalled = engine.plur.recall('GraphQL')
+    const recalled = await engine.plur.recall('GraphQL')
     expect(recalled.length).toBeGreaterThan(0)
   })
 
@@ -143,7 +143,7 @@ describe('PlurContextEngine', () => {
 
   it('cross-session memory persists', async () => {
     // Session 1: learn something
-    engine.plur.learn('Always use feature flags for new features', { scope: 'global' })
+    await engine.plur.learn('Always use feature flags for new features', { scope: 'global' })
 
     // Session 2: create new engine with same path
     const engine2 = new PlurContextEngine({ path: dir })

@@ -9,15 +9,15 @@ describe('expanded search (query expansion + hybrid + RRF)', () => {
   let dir: string
   let plur: Plur
 
-  beforeEach(() => {
+  beforeEach(async () => {
     dir = mkdtempSync(join(tmpdir(), 'plur-expanded-'))
     plur = new Plur({ path: dir })
-    plur.learn('The capital of France is Paris', { type: 'terminological' })
-    plur.learn('TypeScript strict mode catches null errors', { type: 'behavioral' })
-    plur.learn('User prefers dark theme for all editors', { type: 'behavioral' })
-    plur.learn('We decided to use PostgreSQL for the database', { type: 'architectural' })
-    plur.learn('The API returns XML not JSON', { type: 'behavioral' })
-    plur.learn('Deploy to production requires two approvals', { type: 'procedural' })
+    await plur.learn('The capital of France is Paris', { type: 'terminological' })
+    await plur.learn('TypeScript strict mode catches null errors', { type: 'behavioral' })
+    await plur.learn('User prefers dark theme for all editors', { type: 'behavioral' })
+    await plur.learn('We decided to use PostgreSQL for the database', { type: 'architectural' })
+    await plur.learn('The API returns XML not JSON', { type: 'behavioral' })
+    await plur.learn('Deploy to production requires two approvals', { type: 'procedural' })
   })
 
   afterEach(() => { rmSync(dir, { recursive: true }) })
@@ -55,9 +55,9 @@ describe('expanded search (query expansion + hybrid + RRF)', () => {
   })
 
   it('reactivates returned engrams', async () => {
-    const before = plur.recall('France')[0]?.activation.frequency ?? 0
+    const before = (await plur.recall('France'))[0]?.activation.frequency ?? 0
     await plur.recallExpanded('France', { llm: mockLlm, limit: 5 })
-    const after = plur.recall('France')[0]?.activation.frequency ?? 0
+    const after = (await plur.recall('France'))[0]?.activation.frequency ?? 0
     expect(after).toBeGreaterThan(before)
   })
 

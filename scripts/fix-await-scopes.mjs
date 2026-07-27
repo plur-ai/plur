@@ -32,7 +32,9 @@ const MEMBER = /^ {2}(?:(?:private|public|protected|readonly)\s+)*(?:(async)\s+)
 const ARROW = /=>\s*\{\s*$/
 // Must tolerate a return annotation between `)` and `{` — a module-level
 // `function usage(): string {` is otherwise invisible to the walker.
-const FUNCEXPR = /\bfunction\s*[\w$]*\s*\([^)]*\)\s*(?::[^{]+)?\{\s*$/
+// The return annotation may itself contain braces — `function seed(): { a: X } {`
+// — so anchor on the LAST `{` of the line rather than the first.
+const FUNCEXPR = /\bfunction\s*[\w$]*\s*\([^)]*\)\s*(?::.*)?\{\s*$/
 
 function tscErrors() {
   try { execSync(cmd, { stdio: ['ignore', 'pipe', 'pipe'] }); return [] }
@@ -91,9 +93,13 @@ function markAsync(lines, i) {
   }
   if (FUNCEXPR.test(l)) {
     let out = l.replace(/\bfunction\b/, 'async function')
-    const rt = /\)\s*:\s*([^{]+?)\s*\{\s*$/.exec(out)
-    if (rt && !/^Promise\s*</.test(rt[1].trim())) {
-      out = out.replace(/\)\s*:\s*([^{]+?)\s*\{\s*$/, `): Promise<${rt[1].trim()}> {`)
+    const ci = out.lastIndexOf('{')
+    const colon = out.indexOf('):')
+    if (colon >= 0 && ci > colon) {
+      const rt = out.slice(colon + 2, ci).trim()
+      if (rt && !/^Promise\s*</.test(rt)) {
+        out = `${out.slice(0, colon + 1)}: Promise<${rt}> ${out.slice(ci)}`
+      }
     }
     lines[i] = out
     return true

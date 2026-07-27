@@ -49,7 +49,7 @@ describe('size-based selection builds the index it selected', () => {
 
   it('builds no index for a personal-sized store', async () => {
     const plur = new Plur({ path: dir, store: storeClaiming(PGLITE_MIN_ENGRAMS - 1) })
-    plur.learn('small stores pay for no index')
+    await plur.learn('small stores pay for no index')
     await (plur as unknown as { waitForIndex: () => Promise<void> }).waitForIndex()
     expect(plur.backendSelection().tier).toBe('yaml')
     expect(existsSync(join(dir, 'store.pglite'))).toBe(false)

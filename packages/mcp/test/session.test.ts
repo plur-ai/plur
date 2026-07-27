@@ -29,7 +29,7 @@ describe('Session & store tools', () => {
 
   it('plur_session_start returns session_id and engrams when engrams exist', async () => {
     // Seed an engram so injection finds something
-    plur.learn('Always use semicolons in TypeScript', { scope: 'global' })
+    await plur.learn('Always use semicolons in TypeScript', { scope: 'global' })
 
     const result = await callTool('plur_session_start', { task: 'write TypeScript code' }) as any
     expect(result.session_id).toBeDefined()
@@ -51,7 +51,7 @@ describe('Session & store tools', () => {
   })
 
   it('plur_session_start returns guide when engrams exist but none match', async () => {
-    plur.learn('Always use semicolons in TypeScript', { scope: 'global' })
+    await plur.learn('Always use semicolons in TypeScript', { scope: 'global' })
     const result = await callTool('plur_session_start', { task: 'cooking recipes for dinner' }) as any
     expect(result.session_id).toBeDefined()
     expect(result.engrams).toEqual([])
@@ -73,7 +73,7 @@ describe('Session & store tools', () => {
     expect(result.episode_id).toBeDefined()
 
     // Verify engrams were created
-    const status = plur.status()
+    const status = await plur.status()
     expect(status.engram_count).toBe(2)
 
     // Verify episode was captured
@@ -102,19 +102,19 @@ describe('Session & store tools', () => {
     }) as any
     expect(result.engrams_created).toBe(2)
     expect(result.episode_id).toBeDefined()
-    const status = plur.status()
+    const status = await plur.status()
     expect(status.engram_count).toBe(2)
   })
 
   it('plur_session_end throws a clear error for non-string non-object items (#231)', async () => {
-    await expect(callTool('plur_session_end', {
+    await expect(await callTool('plur_session_end', {
       summary: 'Session with malformed suggestions',
       engram_suggestions: [42, true],
     })).rejects.toThrow(/engram_suggestions\[0\] must be a string or \{statement/)
   })
 
   it('plur_session_end throws a clear error for object items missing statement (#231)', async () => {
-    await expect(callTool('plur_session_end', {
+    await expect(await callTool('plur_session_end', {
       summary: 'Session with empty objects',
       engram_suggestions: [{ type: 'behavioral' }],
     })).rejects.toThrow(/must be a string or \{statement/)
@@ -129,7 +129,7 @@ describe('Session & store tools', () => {
   describe('session injection telemetry', () => {
     it('session_end returns injection_summary when engrams were injected', async () => {
       // Seed an engram so session_start injects something
-      plur.learn('Always use semicolons in TypeScript', { scope: 'global' })
+      await plur.learn('Always use semicolons in TypeScript', { scope: 'global' })
 
       const startResult = await callTool('plur_session_start', { task: 'write TypeScript code' }) as any
       const session_id = startResult.session_id
@@ -152,7 +152,7 @@ describe('Session & store tools', () => {
     })
 
     it('injection_summary.session_duration_ms reflects elapsed wall-clock time', async () => {
-      plur.learn('Timing test engram', { scope: 'global' })
+      await plur.learn('Timing test engram', { scope: 'global' })
 
       const before = Date.now()
       const startResult = await callTool('plur_session_start', { task: 'timing test' }) as any
@@ -187,7 +187,7 @@ describe('Session & store tools', () => {
     })
 
     it('standalone plur_inject calls accumulate into the session telemetry', async () => {
-      plur.learn('Use pnpm for package management', { scope: 'global' })
+      await plur.learn('Use pnpm for package management', { scope: 'global' })
 
       const startResult = await callTool('plur_session_start', { task: 'tooling check' }) as any
       const session_id = startResult.session_id
@@ -207,7 +207,7 @@ describe('Session & store tools', () => {
     })
 
     it('session telemetry is cleared after session_end — no cross-session bleed', async () => {
-      plur.learn('Test engram', { scope: 'global' })
+      await plur.learn('Test engram', { scope: 'global' })
 
       const startA = await callTool('plur_session_start', { task: 'task A' }) as any
       const session_id_A = startA.session_id
@@ -273,10 +273,10 @@ describe('Session & store tools', () => {
 
   it('plur_promote promotes a candidate engram', async () => {
     // Create an engram and manually set it to candidate status
-    const engram = plur.learn('Test candidate engram', { scope: 'global' })
+    const engram = await plur.learn('Test candidate engram', { scope: 'global' })
     engram.status = 'candidate' as any
     engram.activation.retrieval_strength = 0.3
-    plur.updateEngram(engram)
+    await plur.updateEngram(engram)
 
     const result = await callTool('plur_promote', { id: engram.id }) as any
     expect(result.success).toBe(true)
@@ -284,13 +284,13 @@ describe('Session & store tools', () => {
     expect(result.promoted[0].id).toBe(engram.id)
 
     // Verify it's now active
-    const updated = plur.getById(engram.id)
+    const updated = await plur.getById(engram.id)
     expect(updated!.status).toBe('active')
     expect(updated!.activation.retrieval_strength).toBe(0.7)
   })
 
   it('plur_promote returns already_active for active engrams', async () => {
-    const engram = plur.learn('Already active engram', { scope: 'global' })
+    const engram = await plur.learn('Already active engram', { scope: 'global' })
     const result = await callTool('plur_promote', { id: engram.id }) as any
     expect(result.success).toBe(false)
     expect(result.errors).toHaveLength(1)
@@ -298,7 +298,7 @@ describe('Session & store tools', () => {
   })
 
   it('plur_promote returns error for retired engrams', async () => {
-    const engram = plur.learn('Soon retired', { scope: 'global' })
+    const engram = await plur.learn('Soon retired', { scope: 'global' })
     await plur.forget(engram.id)
     const result = await callTool('plur_promote', { id: engram.id }) as any
     expect(result.success).toBe(false)
@@ -370,7 +370,7 @@ describe('Session & store tools', () => {
 
       await callTool('plur_session_start', { task: 'integration test' })
 
-      const engram = plur.learn('this should NOT leak to global')
+      const engram = await plur.learn('this should NOT leak to global')
       expect(engram.scope).toBe('project:integration-test')
     })
 
@@ -415,7 +415,7 @@ describe('Session & store tools', () => {
         await callTool('plur_session_start', { task: 'B' })
         expect(plur.getSessionScope()).toBeNull()  // not "project:a"!
 
-        const bEngram = plur.learn('B-side engram')
+        const bEngram = await plur.learn('B-side engram')
         // 0.10.0 (#353): un-scoped writes default to "global" (reverted from the
         // Stage 3b "local"). The property under test is "no cross-project leak"
         // into project:a — "global" satisfies that (it is the personal namespace,

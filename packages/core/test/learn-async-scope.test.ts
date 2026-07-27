@@ -47,12 +47,12 @@ const globalCandidate: Engram = {
 
 function makeDeps(candidates: Engram[]): LearnAsyncDeps {
   return {
-    hashDedup: () => null,
+    hashDedup: async () => null,
     recallHybrid: async () => candidates,
-    recall: () => candidates,
-    learn: (statement: string, context?: any) =>
+    recall: async () => candidates,
+    learn: async (statement: string, context?: any) =>
       ({ id: 'ENG-2026-0619-001', statement, scope: context?.scope ?? 'global' } as unknown as Engram),
-    getById: (id: string) => candidates.find(c => c.id === id) ?? null,
+    getById: async (id: string) => candidates.find(c => c.id === id) ?? null,
     store: new MemoryPrimaryStore(),
     engramsPath: '/tmp/plur-test-engrams.yaml',
     rootPath: '/tmp/plur-test',
@@ -60,8 +60,8 @@ function makeDeps(candidates: Engram[]): LearnAsyncDeps {
     isLlmAvailable: () => true,
     recordLlmSuccess: () => {},
     recordLlmFailure: () => {},
-    syncIndex: () => {},
-    offendingHitsForScope: () => [],
+    syncIndex: async () => {},
+    offendingHitsForScope: async () => [],
   }
 }
 
@@ -176,7 +176,7 @@ describe('learnAsync demote scans merged tags (#409)', () => {
       store: new YamlPrimaryStore(engramsPath),
       // Flag any scan text containing the sentinel — placed ONLY in a tag below,
       // so a hit proves the scan now includes the merged tags.
-      offendingHitsForScope: (text: string) =>
+      offendingHitsForScope: async (text: string) =>
         text.includes('LEAKTAG') ? ([{ pattern: 'fake_infra', match: 'LEAKTAG' }] as any) : [],
     }
   }

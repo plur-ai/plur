@@ -59,7 +59,7 @@ describe('SP2 MCP Tools', () => {
     })
 
     it('returns history for a specific engram', async () => {
-      const engram = plur.learn('Test history')
+      const engram = await plur.learn('Test history')
       await plur.feedback(engram.id, 'positive')
 
       const result = await getTool('plur_history').handler(
@@ -73,8 +73,8 @@ describe('SP2 MCP Tools', () => {
     })
 
     it('returns recent history when no engram_id specified', async () => {
-      plur.learn('First')
-      plur.learn('Second')
+      await plur.learn('First')
+      await plur.learn('Second')
 
       const result = await getTool('plur_history').handler({}, plur) as any
 
@@ -88,7 +88,7 @@ describe('SP2 MCP Tools', () => {
     })
 
     it('logs failure without LLM', async () => {
-      const engram = plur.learn('Run tests first', { type: 'procedural' })
+      const engram = await plur.learn('Run tests first', { type: 'procedural' })
 
       const result = await getTool('plur_report_failure').handler(
         { engram_id: engram.id, failure_context: 'Tests missed a bug' },
@@ -101,7 +101,7 @@ describe('SP2 MCP Tools', () => {
     })
 
     it('rejects non-procedural engrams', async () => {
-      const engram = plur.learn('Use camelCase', { type: 'behavioral' })
+      const engram = await plur.learn('Use camelCase', { type: 'behavioral' })
 
       await expect(
         getTool('plur_report_failure').handler(
@@ -114,7 +114,7 @@ describe('SP2 MCP Tools', () => {
 
   describe('plur_status (versioned count)', () => {
     it('includes versioned_engram_count', async () => {
-      plur.learn('Test')
+      await plur.learn('Test')
       const result = await getTool('plur_status').handler({}, plur) as any
       expect(result.versioned_engram_count).toBe(0)
     })
@@ -125,14 +125,14 @@ describe('SP2 MCP Tools', () => {
   // the schema bloat costs tokens every session). The features still work
   // at the Plur class level — these tests now assert that contract.
   describe('plur.learn() — memory_class + session_episode_id at Plur class level', () => {
-    it('Plur.learn accepts memory_class and stores it on the engram', () => {
-      const engram = plur.learn('An episodic memory', { memory_class: 'episodic' })
+    it('Plur.learn accepts memory_class and stores it on the engram', async () => {
+      const engram = await plur.learn('An episodic memory', { memory_class: 'episodic' })
       expect((engram as any).knowledge_type?.memory_class).toBe('episodic')
     })
 
-    it('Plur.learn accepts session_episode_id and pushes to episode_ids', () => {
+    it('Plur.learn accepts session_episode_id and pushes to episode_ids', async () => {
       const episode = plur.capture('Test session')
-      const engram = plur.learn('Learned in session', { session_episode_id: episode.id })
+      const engram = await plur.learn('Learned in session', { session_episode_id: episode.id })
       expect((engram as any).episode_ids).toContain(episode.id)
     })
 
@@ -152,7 +152,7 @@ describe('SP2 MCP Tools', () => {
   describe('plur_recall_hybrid (include_episodes)', () => {
     it('includes episodes when requested', async () => {
       const episode = plur.capture('Test session for anchoring')
-      plur.learn('Port 3000 for dev', { session_episode_id: episode.id })
+      await plur.learn('Port 3000 for dev', { session_episode_id: episode.id })
 
       const result = await getTool('plur_recall_hybrid').handler(
         { query: 'port', include_episodes: true },

@@ -224,7 +224,7 @@ describe('suggestScope() activates after persistScopeMetadata()', () => {
       const discoveries = await plur.discoverRemoteScopes()
       plur.persistScopeMetadata(discoveries)
 
-      const candidates = plur.suggestScope({ statement: 'deploy pipeline config', domain: 'plur.engineering' })
+      const candidates = await plur.suggestScope({ statement: 'deploy pipeline config', domain: 'plur.engineering' })
       expect(candidates.length).toBeGreaterThan(0)
       expect(candidates[0].scope).toBe('group:plur/engineering')
       expect(candidates[0].confidence).toBeGreaterThanOrEqual(0.5)
@@ -237,7 +237,7 @@ describe('suggestScope() activates after persistScopeMetadata()', () => {
     ])
     try {
       // No persistScopeMetadata call — covers never written
-      const candidates = plur.suggestScope({ statement: 'deploy pipeline config', domain: 'plur.engineering' })
+      const candidates = await plur.suggestScope({ statement: 'deploy pipeline config', domain: 'plur.engineering' })
       expect(candidates).toEqual([])
     } finally { rmSync(dir, { recursive: true, force: true }) }
   })

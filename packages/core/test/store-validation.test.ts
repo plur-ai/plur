@@ -278,17 +278,17 @@ describe('addStore validation (#93)', () => {
       utimesSync(cfgPath(), future, future)
     }
 
-    it('listStores picks up a store added by an external config edit (no restart)', () => {
+    it('listStores picks up a store added by an external config edit (no restart)', async () => {
       plur.addStore('', 'group:a', { url: 'https://a.example.com', token: 'tok' })
-      expect(plur.listStores().map(s => s.scope)).toContain('group:a')
-      expect(plur.listStores().map(s => s.scope)).not.toContain('group:b')
+      expect((await plur.listStores()).map(s => s.scope)).toContain('group:a')
+      expect((await plur.listStores()).map(s => s.scope)).not.toContain('group:b')
 
       externallyEdit(cfg => {
         cfg.stores.push({ url: 'https://b.example.com', token: 'tok', scope: 'group:b', shared: true, readonly: false })
       })
 
       // Same instance, no restart — the externally-added store is now visible.
-      expect(plur.listStores().map(s => s.scope)).toContain('group:b')
+      expect((await plur.listStores()).map(s => s.scope)).toContain('group:b')
     })
 
     it('listStoresAsync also reloads on an external edit', async () => {
@@ -301,12 +301,12 @@ describe('addStore validation (#93)', () => {
       expect(scopes).toContain('group:b')
     })
 
-    it('does not reload when the file is unchanged (mtime stable)', () => {
+    it('does not reload when the file is unchanged (mtime stable)', async () => {
       plur.addStore('', 'group:a', { url: 'https://a.example.com', token: 'tok' })
-      const before = plur.listStores().length
+      const before = (await plur.listStores()).length
       // No edit — repeated calls are stable, no spurious reload churn.
-      expect(plur.listStores().length).toBe(before)
-      expect(plur.listStores().map(s => s.scope)).toContain('group:a')
+      expect((await plur.listStores()).length).toBe(before)
+      expect((await plur.listStores()).map(s => s.scope)).toContain('group:a')
     })
   })
 })

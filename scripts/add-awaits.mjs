@@ -80,6 +80,11 @@ function lineStarts(src) {
   for (let i = 0; i < src.length; i++) if (src[i] === '\n') out.push(i + 1)
   return out
 }
+function lineStartOf(src, starts, idx) {
+  let lo = 0, hi = starts.length - 1
+  while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (starts[mid] <= idx) lo = mid; else hi = mid - 1 }
+  return starts[lo]
+}
 function lineTextAt(src, starts, idx) {
   let lo = 0, hi = starts.length - 1
   while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (starts[mid] <= idx) lo = mid; else hi = mid - 1 }
@@ -104,7 +109,23 @@ for (const root of roots) {
         const callStart = m.index + lead.length
         const pre = src.slice(Math.max(0, callStart - 220), callStart)
         if (/\b(await|yield|function|async)\s*$/.test(pre)) continue
+        // `new Plur({...}).getById(...)` — the receiver is a constructor call.
+        // Inserting after `new` yields `new await Plur(...)`, a parse error;
+        // the await belongs in front of the whole expression instead.
+        if (/\bnew\s*$/.test(pre)) continue
         if (/=>\s*$/.test(pre)) continue
+        // Never rewrite inside a string or template literal. Assertion messages
+        // routinely contain method names — `expect(x, `learn(shared) should
+        // demote`)` — and inserting `await` there corrupts the message and, in a
+        // template, can break the parse. Count unescaped quotes before the match
+        // on its own line: an odd count means we are inside one.
+        {
+          const ls = lineStartOf(src, starts, callStart)
+          const pre = src.slice(ls, callStart)
+          const stripped = pre.replace(/\\./g, '')
+          const odd = (ch) => (stripped.split(ch).length - 1) % 2 === 1
+          if (odd("'") || odd('"') || odd('`')) continue
+        }
         const lt = lineTextAt(src, starts, callStart).trim()
         if (lt.startsWith('//') || lt.startsWith('*') || lt.startsWith('/*')) continue
         if (DEF.test(lineTextAt(src, starts, callStart))) continue

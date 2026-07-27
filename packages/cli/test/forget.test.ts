@@ -26,15 +26,15 @@ describe('plur forget', () => {
     return JSON.parse(output).id as string
   }
 
-  it('retires an engram by ID and returns JSON', () => {
-    const id = learn('something to forget')
+  it('retires an engram by ID and returns JSON', async () => {
+    const id = await learn('something to forget')
     const output = JSON.parse(run(`forget ${id}`))
     expect(output.success).toBe(true)
     expect(output.retired.id).toBe(id)
   })
 
-  it('accepts --reason flag', () => {
-    const id = learn('something with reason')
+  it('accepts --reason flag', async () => {
+    const id = await learn('something with reason')
     const output = JSON.parse(run(`forget ${id} --reason "no longer relevant"`))
     expect(output.success).toBe(true)
     expect(output.retired.id).toBe(id)
