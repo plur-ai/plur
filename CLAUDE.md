@@ -65,6 +65,7 @@ pnpm --filter @plur-ai/core build
 12. `packages/python/pyproject.toml`
 13. `packages/python/plur_ai/bridge.py` — `_NPX_CLI_VERSION`
 14. `skills/plur-memory/SKILL.md` — frontmatter `version:` (standalone skills.sh copy)
+15. `server.json` — both top-level `version` and `packages[0].version` (MCP Registry / ClawHub listing)
 
 **Claw track** (independent — only bumped when `--claw <ver>` is passed to release.sh):
 
