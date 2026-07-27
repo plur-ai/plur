@@ -72,3 +72,28 @@ export function isScopeWithin(scope: string, queryScope: string): boolean {
     || scope.startsWith(queryScope + ':')
     || scope.startsWith(queryScope + '/')
 }
+
+/**
+ * Permitted-scope allow-list predicate — the in-memory twin of the SQL
+ * `scope = ANY($n)` pushdown (see `StorageFilter.scopes` in
+ * storage-adapter.ts).
+ *
+ * Returns a predicate so every read path — SQL-backed adapters and the
+ * in-memory YAML path alike — agrees on the same three cases:
+ *   - `undefined` → unrestricted (predicate always true)
+ *   - `[]`        → matches NOTHING (predicate always false). Security-
+ *                   relevant: a principal with no permitted scopes must see
+ *                   nothing. NEVER treat an empty list as "no filter".
+ *   - non-empty   → EXACT membership. No hierarchy expansion, no personal-
+ *                   family pass-through: the list is the fully-resolved
+ *                   authorization decision, so `['project:a']` does NOT admit
+ *                   `project:a:sub`, `global`, or `local`.
+ *
+ * The Set is built once so the per-engram check is O(1) — the caller may be
+ * filtering a whole corpus against a list of tens of scopes.
+ */
+export function scopeAllowFilter(scopes: readonly string[] | undefined): (scope: string) => boolean {
+  if (scopes === undefined) return () => true
+  const allowed = new Set(scopes)
+  return (scope: string) => allowed.has(scope)
+}
