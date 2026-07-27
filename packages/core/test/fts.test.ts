@@ -125,6 +125,41 @@ describe('BM25 term frequency saturation', () => {
   })
 })
 
+describe('BM25 reverse substring junk (#721)', () => {
+  it('does not match yin to deploying (reverse non-prefix substring)', () => {
+    const junkEngram = makeEngram({ id: 'ENG-2026-0330-001', statement: 'the yin and yang principle' })
+    const deployEngram = makeEngram({ id: 'ENG-2026-0330-002', statement: 'how to deploy services' })
+    const queryTokens = ftsTokenize('deploying')
+    const idf = computeIdf([junkEngram, deployEngram], queryTokens)
+
+    const junkScore = ftsScore(junkEngram, queryTokens, idf)
+    const deployScore = ftsScore(deployEngram, queryTokens, idf)
+
+    expect(junkScore).toBe(0)
+    expect(deployScore).toBeGreaterThan(0)
+  })
+
+  it('does not match res to postgres (reverse non-prefix substring)', () => {
+    const junkEngram = makeEngram({ id: 'ENG-2026-0330-001', statement: 'res configuration system' })
+    const pgEngram = makeEngram({ id: 'ENG-2026-0330-002', statement: 'connect to postgres database' })
+    const queryTokens = ftsTokenize('postgres')
+    const idf = computeIdf([junkEngram, pgEngram], queryTokens)
+
+    const junkScore = ftsScore(junkEngram, queryTokens, idf)
+    const pgScore = ftsScore(pgEngram, queryTokens, idf)
+
+    expect(junkScore).toBe(0)
+    expect(pgScore).toBeGreaterThan(0)
+  })
+
+  it('still matches deploy to deploying (legitimate prefix stem)', () => {
+    const engram = makeEngram({ id: 'ENG-2026-0330-001', statement: 'how to deploy services' })
+    const queryTokens = ftsTokenize('deploying')
+    const idf = computeIdf([engram], queryTokens)
+    expect(ftsScore(engram, queryTokens, idf)).toBeGreaterThan(0)
+  })
+})
+
 describe('BM25 document length normalization', () => {
   it('short doc with rare term beats long doc with same term', () => {
     const engrams = [
