@@ -345,6 +345,18 @@ describe('Plur', () => {
       expect(engram.temporal).toBeUndefined()
     })
 
+    it('learn rejects an invalid type', async () => {
+      await expect(plur.learn('Something', { type: 'preference' as any })).rejects.toThrow(/invalid type/)
+      await expect(plur.learn('Something', { type: 'unknown' as any })).rejects.toThrow(/invalid type/)
+    })
+
+    it('learn accepts all four valid types', async () => {
+      const types = ['behavioral', 'terminological', 'procedural', 'architectural'] as const
+      for (const t of types) {
+        await expect(plur.learn(`Type test ${t}`, { type: t })).resolves.toBeDefined()
+      }
+    })
+
     it('learn rejects malformed valid_until', async () => {
       await expect(plur.learn('Something', { valid_until: 'end of Q2' })).rejects.toThrow(/valid_until/)
       await expect(plur.learn('Something', { valid_until: '2026-02-30' })).rejects.toThrow(/valid_until/)
