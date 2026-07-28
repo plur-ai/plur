@@ -100,6 +100,34 @@ because it is a claim a caller may act on.
   tool's combinator/paren/template/optional-chaining scanning, `setPinned`'s
   fabricated remote return, the release smoke's authorization checks and its CI
   wiring, plus lean-tool/storage/ADR documentation drift.
+- **Independent pre-release audit fixes** (#752, #755): the migrate tool's ASI
+  hazard (a line-leading `(await ...)` after an unterminated statement parses
+  as a call on the previous expression — it now refuses), bracket-indexed
+  receivers it silently missed, and a combinator false positive from comment
+  text; recall's multi-store union is now scored with exact union corpus
+  statistics instead of primary-only ones (a term absent from the primary
+  corpus priced as maximally rare and buried the best match); vacuous fallback
+  paths in the migrate method-list guard now hard-fail in CI; `Plur`'s
+  constructor warns when a supplied store implements exactly one of
+  `loadByIds`/`updateMany` (safe via the call-site fallback, but almost
+  certainly an implementation mistake); the
+  `PostgresAdapter.close()` construction-race leak is actually documented
+  (#751); release.sh gained a working-tree preflight and canary-publish
+  recovery guidance; README states the Postgres-tier embeddings caveat.
+- **A `recall()` could delete the corpus on a partially-targeted store** (#749).
+  `loadByIds` and `updateMany` are independently optional on `PrimaryStore`;
+  with the targeted read present and the targeted write absent, reactivation's
+  whole-file fallback replaced the corpus with the current result page —
+  measured: 12 engrams in, `recall(limit 3)`, 3 left. Both paths are now gated
+  behind one capability check (the pair, or neither), and `updateEngram`'s
+  remote-store error path no longer takes down the MCP server.
+- **`recall()` returned the wrong rows on a pushdown store** (#750). Two bugs:
+  secondary-store and pack engrams were appended AFTER primary results, so a
+  team engram that was the single best match never appeared once the primary
+  store had `limit` hits — they are now ranked together; and the fixed 3x
+  over-fetch starved recall when residual filters (expiry, `min_strength`)
+  rejected more than two thirds of a page — the fetch now widens and re-queries,
+  bounded at three rounds (recoverable rejection ceiling 26/27 ≈ 96.3%).
 ### Fixed
 
 - **BM25 reverse-substring matches** (#721, #724): `qt.includes(t)` let any document token that was a non-prefix substring of the query score a hit — `deploying` matched an engram about *yin*, `postgres` matched one about *res*. Now `qt.startsWith(t)`, which keeps morphological prefixes (`deploy` → `deploying`) and drops the junk. Measured on a 3,930-engram store: no query loses results, and the reverse-substring matches it removes were never meaningful.

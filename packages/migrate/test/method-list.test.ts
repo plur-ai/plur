@@ -131,14 +131,32 @@ describe('the sync -> async claim, against the 0.15.0 source', () => {
     }
   }
 
-  it('every NEWLY_ASYNC method was sync in 0.15.0, except the documented few', () => {
-    const before = methodsAsyncAt0_15()
-    if (!before) {
-      // Not skipped silently: a skip is how this class of error hid in the
-      // first place. Fetch tags (`git fetch --tags`) to run the real check.
-      expect(alreadyAsyncAt0_15.size, 'cannot reach v0.15.0 — frozen expectation only').toBe(5)
-      return
+  /**
+   * When v0.15.0 is unreachable, these tests must not PASS — that is the
+   * vacuous-early-return class this file already fell to twice. The first
+   * version took a bare `return` (no assertion, reported green in every
+   * shallow clone); the second "fix" asserted the size of a hardcoded Set
+   * literal defined nine lines above — a tautology that can never fail, found
+   * by the 0.16.0 pre-release audit (#752). So:
+   *
+   *   - In CI, unreachable history is a hard FAILURE: both workflow checkouts
+   *     use `fetch-depth: 0` precisely so this check can run, and a regression
+   *     that drops it must break the build, not quietly disable the guard.
+   *   - Locally (a `--depth 1` clone, no tags), the tests SKIP — visible in
+   *     the report as not-run, unlike a pass. `git fetch --tags` runs them.
+   */
+  const requireHistory = (before: Set<string> | null, ctx: { skip: () => void }): before is Set<string> => {
+    if (before) return true
+    if (process.env.CI) {
+      expect.fail('v0.15.0 unreachable in CI — the checkout must fetch tags (fetch-depth: 0); this guard cannot run without them')
     }
+    ctx.skip()
+    return false
+  }
+
+  it('every NEWLY_ASYNC method was sync in 0.15.0, except the documented few', ctx => {
+    const before = methodsAsyncAt0_15()
+    if (!requireHistory(before, ctx)) return
     const unexpected = NEWLY_ASYNC.filter(n => before.has(n) && !alreadyAsyncAt0_15.has(n))
     expect(
       unexpected,
@@ -146,11 +164,11 @@ describe('the sync -> async claim, against the 0.15.0 source', () => {
     ).toEqual([])
   })
 
-  it('and the documented few really were async in 0.15.0', () => {
+  it('and the documented few really were async in 0.15.0', ctx => {
     // The other direction: if one of these was in fact sync, it belongs in the
     // BREAKING list and users are not being told to await it.
     const before = methodsAsyncAt0_15()
-    if (!before) return
+    if (!requireHistory(before, ctx)) return
     for (const m of alreadyAsyncAt0_15) {
       expect(before.has(m), `${m} was NOT async in 0.15.0 — it changed, and the notes omit it`).toBe(true)
     }

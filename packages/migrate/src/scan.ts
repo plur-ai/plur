@@ -176,6 +176,64 @@ function inSpans(spans: Array<[number, number]>, idx: number): boolean {
   return false
 }
 
+/**
+ * Characters after which a line-starting `(` cannot splice onto the previous
+ * statement: statement terminators (`;`), openers (`{ ( [`), separators
+ * (`, :`), and binary/prefix operator tails (`= > & | + - * % < ~ ^ ?`
+ * — `>` also covers `=>`). Everything else — `)`, `]`, `}`, quotes,
+ * identifier characters — can legally absorb a following `(` as a call or
+ * index, which is the ASI splice. See the guard in `scanSource`.
+ *
+ * Two characters that LOOK like dangling operators are deliberately absent,
+ * because both far more often END a complete expression (iteration 2 of the
+ * #752 audit reproduced runtime splices for each):
+ *
+ *   - `/` — the tail of a regex literal. `literalSpans` does not lex regexes,
+ *     so `const re = /foo/` reaches this check as a bare `/`, and a regex
+ *     followed by `(` is a CallExpression — no ASI. A genuine dangling
+ *     division at end of line effectively does not occur.
+ *   - `!` — TypeScript's non-null assertion (`map.get(k)!`), a standard
+ *     end-of-line idiom in exactly the no-semicolon TS codebases this tool
+ *     targets; `expr!(args)` is a call. A dangling prefix-`!` at end of line
+ *     effectively does not occur.
+ *
+ * Known caveat, documented rather than removed: `>` stays because dangling
+ * comparisons (`count >` at end of line) are real and the wrap there is both
+ * safe and wanted — but a TS 4.7+ instantiation expression tail
+ * (`const g = f<string>` at end of line) also ends in `>` and DOES splice,
+ * silently. That shape is rare enough that refusing every dangling comparison
+ * to block it would cost more than it saves.
+ */
+const ASI_SAFE_BEFORE_PAREN = new Set([
+  ';', '{', ',', '(', '[', ':', '=', '>', '&', '|', '+', '-', '*', '%', '<', '~', '^', '?',
+])
+
+/** The span containing `idx`, or null. */
+function spanAt(spans: Array<[number, number]>, idx: number): [number, number] | null {
+  for (const s of spans) if (idx >= s[0] && idx < s[1]) return s
+  return null
+}
+
+/**
+ * The last significant character at or before `from`: whitespace is skipped,
+ * COMMENT spans are skipped whole, and a string/template literal is
+ * significant — its closing quote/backtick is returned, because a string can
+ * absorb a following `(` as a call (`'s'(...)` / tagged template), so for the
+ * ASI guard it must count as hazardous, not vanish like a comment.
+ */
+function lastSignificantChar(src: string, from: number, spans: Array<[number, number]>): string | null {
+  for (let j = from; j >= 0; j--) {
+    const span = spanAt(spans, j)
+    if (span) {
+      if (src[span[0]] === '/') { j = span[0]; continue } // comment — skip whole
+      return src[j] // inside a string/template literal
+    }
+    if (/\s/.test(src[j])) continue
+    return src[j]
+  }
+  return null
+}
+
 /** Index of the line containing `idx`, and the column within it. */
 function positionOf(src: string, idx: number): { line: number; column: number; text: string } {
   const before = src.slice(0, idx)
@@ -222,7 +280,18 @@ function insideCombinatorArray(src: string, idx: number, spans: Array<[number, n
     if (c === '[') {
       if (square > 0) { square--; continue }
       // Unmatched `[` — the array we are directly inside. Is it a combinator's?
-      const before = src.slice(Math.max(0, i - 60), i)
+      //
+      // The lookback is built from SIGNIFICANT characters only — comment and
+      // string spans are skipped, exactly as the bracket walk above skips
+      // them. A raw `src.slice` here matched the literal text `Promise.all(`
+      // inside an adjacent COMMENT (`process(\n  // Promise.all(\n  [...]`)
+      // and refused two perfectly ordinary calls; the false positive fails
+      // safe but sends a human to investigate nothing.
+      let before = ''
+      for (let j = i - 1; j >= 0 && before.length < 60; j--) {
+        if (inSpans(spans, j)) continue
+        before = src[j] + before
+      }
       return /Promise\s*\.\s*(all|race|allSettled|any)\s*\(\s*$/.test(before)
     }
     if (c === '(') {
@@ -307,6 +376,17 @@ function isEsm(file: string, src: string): boolean {
  * `db.list()` too. That is the correct trade for a text tool: a false positive
  * costs a glance, a false negative ships a silent bug. The report says which
  * receiver it saw so the reader can dismiss it instantly.
+ *
+ * Receiver chains may include single-level bracket indexes — `stores[0]`,
+ * `byName['team']`, `pool[i + 1]`, `arr?.[0]` — because arrays/maps of stores
+ * are ordinary shapes for this API and a receiver the regex cannot see is a
+ * call the user is never told about (the 0.16.0 audit found `arr[0].learn(x)`
+ * scanned clean, #752; its second pass found `arr?.[0].learn(x)` still did).
+ * Two index shapes remain documented misses: a NESTED index
+ * (`m[a[0]].learn(x)`) and an index whose string key contains `]`
+ * (`m["a]b"].learn(x)`) — `[^\]]` cannot span the inner `]`, and every
+ * partial interpretation fails to reach the method dot, so both are missed —
+ * not misreported, and never rewritten at the wrong offset.
  */
 export function scanSource(file: string, src: string, methods: readonly string[] = NEWLY_ASYNC): Finding[] {
   const spans = literalSpans(src)
@@ -315,7 +395,7 @@ export function scanSource(file: string, src: string, methods: readonly string[]
   // `?.` on either side is the same call with the same hazard: `plur?.learn(x)`
   // and `plur.learn?.(x)` both return a promise nobody awaited. Requiring a
   // plain `.` missed both.
-  const re = new RegExp(String.raw`([A-Za-z_$][\w$]*(?:\??\.[A-Za-z_$][\w$]*)*)\??\.(${alt})\s*(?:\?\.)?\s*\(`, 'g')
+  const re = new RegExp(String.raw`([A-Za-z_$][\w$]*(?:\??\.[A-Za-z_$][\w$]*|(?:\?\.)?\[[^\]\n]*\])*)\??\.(${alt})\s*(?:\?\.)?\s*\(`, 'g')
 
   let m: RegExpExecArray | null
   while ((m = re.exec(src))) {
@@ -330,7 +410,15 @@ export function scanSource(file: string, src: string, methods: readonly string[]
 
     const after = src.slice(idx)
     // `.then(` / `.catch(` / `.finally(` immediately after the call: handled.
-    const callEnd = matchParen(after, src.indexOf('(', idx) - idx, spans, idx)
+    //
+    // The call's `(` is the LAST character of the regex match — taken from the
+    // match, not from `indexOf('(', idx)`, which finds the first paren after
+    // the receiver's start and therefore lands INSIDE a computed index like
+    // `arr[fn(1)].learn(x)`. Balancing from there ends the "call" mid-index,
+    // the `.length`-consumption check reads the wrong position, and the
+    // rewrite silently awaits the wrong expression — the failure class this
+    // tool exists to prevent.
+    const callEnd = matchParen(after, m[0].length - 1, spans, idx)
     if (callEnd > 0 && /^\s*\.(then|catch|finally)\s*\(/.test(after.slice(callEnd))) continue
 
     const pos = positionOf(src, idx)
@@ -371,6 +459,42 @@ export function scanSource(file: string, src: string, methods: readonly string[]
       // is reported for a human rather than rewritten blind.
       if (endPos.line === pos.line) wrapTo = endPos.column
       else { fixable = false; reason = 'result is consumed by a multi-line call — needs `(await ...)` by hand' }
+    }
+
+    // ASI hazard — the third failure class in the header comment, and the one
+    // that shipped without its guard until the 0.16.0 pre-release audit
+    // reproduced it (#752). A `wrapTo` rewrite starts the line with `(`. If
+    // the PREVIOUS statement never terminated, that `(` splices both lines
+    // into one expression:
+    //
+    //     const x = someFunc()          const x = someFunc()
+    //     plur.list().length      ->    (await plur.list()).length
+    //
+    // parses as `someFunc()(await plur.list()).length` — the previous line's
+    // result is CALLED, at runtime, with the awaited value as its argument.
+    // Only the paren-wrap form is exposed: a plain inserted `await` cannot
+    // continue the previous expression (`f() await` is invalid, so ASI still
+    // splits the lines exactly as it did before the rewrite).
+    //
+    // Applies only when the call starts its line; mid-line insertions sit
+    // inside an expression whose parsing is already fixed. The previous
+    // significant character decides: an operator, opener, `;`, `,` or `:`
+    // means the `(` either starts a fresh statement or continues an
+    // expression that was ALREADY continuing — while `)`, `]`, `}`, a quote,
+    // or an identifier tail can all legally absorb a following `(` as a call.
+    // `}` is refused even though it is usually a block end, because it is
+    // also how a function EXPRESSION ends, and `let f = function () {}`
+    // followed by `(await ...)` is the splice again. Refusal costs a glance;
+    // the splice costs a runtime failure in rewritten user source.
+    if (fixable && wrapTo !== undefined) {
+      const lineStart = idx - (pos.column - 1)
+      if (/^\s*$/.test(src.slice(lineStart, idx))) {
+        const prev = lastSignificantChar(src, lineStart - 1, spans)
+        if (prev !== null && !ASI_SAFE_BEFORE_PAREN.has(prev)) {
+          fixable = false
+          reason = 'previous line has no terminator — a leading `(await ...)` splices onto it (ASI); end it with `;` or add `(await ...)` by hand'
+        }
+      }
     }
 
     out.push({ file, line: pos.line, column: pos.column, method: m[2], text: pos.text, fixable, reason, wrapTo })

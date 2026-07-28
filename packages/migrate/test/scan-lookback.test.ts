@@ -198,3 +198,44 @@ describe('the multi-line-consumed guard', () => {
     expect(fix(ok)).toContain('await plur.learn(')
   })
 })
+
+describe('the combinator lookback reads code, not comments or strings', () => {
+  // The lookback slice used to be raw text. A COMMENT whose literal content
+  // was `Promise.all(` sitting immediately before an unrelated array made two
+  // perfectly ordinary calls "manual" — a fail-safe false positive, but exit
+  // code 2 in CI sends a human to investigate nothing. Found by the 0.16.0
+  // audit (#752).
+  it('a comment mentioning Promise.all( does not poison the array after it', () => {
+    const src = `async function go(plur) {
+  process(
+    // Promise.all(
+    [plur.learn('a'), plur.learn('b')],
+    'other',
+  )
+}`
+    const f = scan(src)
+    expect(f).toHaveLength(2)
+    expect(f.every(x => x.fixable)).toBe(true)
+  })
+
+  it('a string argument mentioning Promise.all( does not either', () => {
+    const src = `async function go(plur, f) {
+  f("Promise.all(", [plur.learn('a')])
+}`
+    const f = scan(src)
+    expect(f).toHaveLength(1)
+    expect(f[0].fixable).toBe(true)
+  })
+
+  it('a REAL combinator is still refused when a comment sits between it and the array', () => {
+    const src = `async function go(plur) {
+  await Promise.all( // settle both
+    [plur.learn('a'), plur.learn('b')],
+  )
+}`
+    const f = scan(src)
+    expect(f).toHaveLength(2)
+    expect(f.every(x => x.fixable === false)).toBe(true)
+    expect(f[0].reason).toMatch(/combinator/)
+  })
+})

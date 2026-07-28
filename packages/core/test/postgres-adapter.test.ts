@@ -19,7 +19,7 @@
  * Everything runs inside a per-run schema which is dropped in teardown, so this
  * can share a database with anything else without colliding.
  */
-import { describe, it, expect, beforeAll, afterAll } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
 import { mkdtempSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
@@ -27,6 +27,7 @@ import yaml from 'js-yaml'
 import { PostgresAdapter, HNSW_RECALL_TARGET } from '../src/storage-postgres.js'
 import { PGLiteAdapter } from '../src/storage-pglite.js'
 import { requiresIndexSync, asDerivedIndex, efSearchFor, PGVECTOR_DEFAULT_EF_SEARCH } from '../src/storage-adapter.js'
+import { logger } from '../src/logger.js'
 import type { Engram } from '../src/schemas/engram.js'
 
 const DSN = process.env.PLUR_TEST_POSTGRES_URL
@@ -109,10 +110,18 @@ describe.skipIf(!DSN)('PostgresAdapter (requires PLUR_TEST_POSTGRES_URL)', () =>
     it('identifies itself as a postgres-kind primary store with a credential-free location', () => {
       expect(adapter.kind).toBe('postgres')
       // `location` is what ends up in logs and status output, so the password
-      // from the DSN must not survive into it.
-      const password = new URL(DSN!).password
-      if (password) expect(adapter.location).not.toContain(password)
-      expect(adapter.location).toContain(new URL(DSN!).hostname)
+      // from the DSN must not survive into it. Checked in its credential
+      // position (`:pw@`), not as a bare substring: a password that happens
+      // to be a substring of the database or host name — `plur` inside
+      // `plurtest`, found by the 0.16.0 audit run — false-positived the bare
+      // check against a correctly masked URL, and a guard that cries wolf on
+      // legitimate setups is a guard people learn to ignore.
+      const url = new URL(DSN!)
+      if (url.password) {
+        expect(adapter.location).not.toContain(`:${url.password}@`)
+        expect(adapter.location, 'the credential slot must be masked, not merely dropped').toContain(':***@')
+      }
+      expect(adapter.location).toContain(url.hostname)
     })
   })
 
@@ -458,4 +467,41 @@ describe.skipIf(!DSN)('PGLite and Postgres answer the same filter identically', 
       expect(a).toEqual(b)
     }, TIMEOUT)
   }
+})
+
+describe.skipIf(!DSN)('the embeddings-gap warning at schema init (#752)', () => {
+  // The 0.16.0 release ships the Postgres tier WITHOUT core writing
+  // embeddings (ADR-0005 amendment): `engram_embeddings` stays empty and
+  // semantic recall silently falls back to in-memory scoring. The stated
+  // mitigation is a one-shot warning at schema init. That warning had zero
+  // test coverage — a refactor deleting it would strip the only runtime
+  // disclosure of the gap and nothing in CI would notice.
+  it('fires once for a non-exact vectorIndex, and not at all for exact', async () => {
+    const spy = vi.spyOn(logger, 'warning').mockImplementation(() => {})
+    const gapCalls = () => spy.mock.calls.filter(c => String(c[0]).includes('does not write embeddings'))
+    const auto = new PostgresAdapter({
+      connectionString: DSN!, schema: `${SCHEMA}_egap_a`, vectorDim: VECTOR_DIM,
+    })
+    const exact = new PostgresAdapter({
+      connectionString: DSN!, schema: `${SCHEMA}_egap_e`, vectorDim: VECTOR_DIM, vectorIndex: 'exact',
+    })
+    try {
+      await auto.save([])           // first schema init — warns
+      expect(gapCalls()).toHaveLength(1)
+      expect(String(gapCalls()[0][0])).toContain("vectorIndex:'exact' to silence")
+      await auto.load()             // second operation — no repeat
+      await auto.refreshVectorIndex()
+      expect(gapCalls()).toHaveLength(1)
+
+      await exact.save([])          // documented escape hatch — silent
+      await exact.load()
+      expect(gapCalls()).toHaveLength(1)
+    } finally {
+      await auto.dropSchema().catch(() => {})
+      await exact.dropSchema().catch(() => {})
+      await auto.close().catch(() => {})
+      await exact.close().catch(() => {})
+      spy.mockRestore()
+    }
+  }, TIMEOUT)
 })
