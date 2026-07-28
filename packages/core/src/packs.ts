@@ -1,6 +1,8 @@
 import * as fs from 'fs'
 import * as path from 'path'
 import * as crypto from 'crypto'
+import * as os from 'os'
+import { execFileSync } from 'child_process'
 import yaml from 'js-yaml'
 import { loadPack, loadEngrams, saveEngrams } from './engrams.js'
 import { detectSensitive, detectPromptInjection, truncateToScanLimit } from './secrets.js'
@@ -9,6 +11,98 @@ import type { PackManifest } from './schemas/pack.js'
 import { logger } from './logger.js'
 
 export { loadAllPacks } from './engrams.js'
+
+// --- URL download helpers ---
+
+/** Returns true if the source string looks like an http/https URL. */
+export function isPackUrl(source: string): boolean {
+  return source.startsWith('http://') || source.startsWith('https://')
+}
+
+/**
+ * Download a pack tar.gz from `url`, extract it to a temp directory, and
+ * return the path to the extracted pack directory.
+ *
+ * The caller is responsible for removing the returned temp directory when done.
+ * Use `cleanupDownloadedPack` for that.
+ *
+ * The archive must be a gzipped tar whose top-level directory is the pack
+ * (e.g. `my-pack/SKILL.md`, `my-pack/engrams.yaml`). A flat archive (files
+ * at the root without a subdirectory) is also accepted — in that case the
+ * extraction root itself is returned as the pack directory.
+ *
+ * No auth headers are added: signed-URL delivery means the URL is the
+ * credential and no Authorization header is needed.
+ */
+export async function downloadAndExtractPack(url: string): Promise<{ packDir: string; tmpRoot: string }> {
+  // Create a unique temp root for this download
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'plur-pack-dl-'))
+
+  // Download
+  let response: Response
+  try {
+    response = await fetch(url)
+  } catch (err: unknown) {
+    fs.rmSync(tmpRoot, { recursive: true, force: true })
+    const msg = err instanceof Error ? err.message : String(err)
+    throw new Error(`Failed to fetch pack from ${url}: ${msg}`)
+  }
+
+  if (!response.ok) {
+    fs.rmSync(tmpRoot, { recursive: true, force: true })
+    throw new Error(`Failed to fetch pack from ${url}: HTTP ${response.status} ${response.statusText}`)
+  }
+
+  // Save the response body to a .tar.gz file
+  const archivePath = path.join(tmpRoot, 'pack.tar.gz')
+  const buffer = await response.arrayBuffer()
+  fs.writeFileSync(archivePath, Buffer.from(buffer))
+
+  // Extract the archive
+  const extractDir = path.join(tmpRoot, 'extracted')
+  fs.mkdirSync(extractDir)
+  try {
+    execFileSync('tar', ['-xzf', archivePath, '-C', extractDir], { stdio: 'pipe' })
+  } catch (err: unknown) {
+    fs.rmSync(tmpRoot, { recursive: true, force: true })
+    const msg = err instanceof Error ? (err as NodeJS.ErrnoException).message : String(err)
+    throw new Error(`Failed to extract pack archive from ${url}: ${msg}`)
+  }
+
+  // Find the pack directory: either a single top-level subdirectory, or the
+  // extraction root itself (for flat archives).
+  const entries = fs.readdirSync(extractDir)
+  const subdirs = entries.filter(e => fs.statSync(path.join(extractDir, e)).isDirectory())
+
+  let packDir: string
+  if (subdirs.length === 1) {
+    // Standard layout: archive contains a single top-level directory
+    packDir = path.join(extractDir, subdirs[0])
+  } else {
+    // Flat layout: SKILL.md / engrams.yaml at archive root
+    const hasPackFiles = entries.some(e => e === 'SKILL.md' || e === 'engrams.yaml' || e === 'manifest.yaml')
+    if (hasPackFiles) {
+      packDir = extractDir
+    } else {
+      fs.rmSync(tmpRoot, { recursive: true, force: true })
+      throw new Error(
+        `Pack archive from ${url} has an unexpected layout — expected a single top-level directory or pack files at the root (SKILL.md / engrams.yaml).`,
+      )
+    }
+  }
+
+  return { packDir, tmpRoot }
+}
+
+/** Remove the temp directory created by downloadAndExtractPack. Safe to call even if the path no longer exists. */
+export function cleanupDownloadedPack(tmpRoot: string): void {
+  try {
+    fs.rmSync(tmpRoot, { recursive: true, force: true })
+  } catch {
+    // Best-effort cleanup — log but do not throw
+    logger.warning(`cleanupDownloadedPack: could not remove temp dir ${tmpRoot}`)
+  }
+}
 
 // --- Registry ---
 
@@ -64,7 +158,7 @@ export interface PreviewResult {
   warnings: string[]
 }
 
-export function previewPack(source: string): PreviewResult {
+function _previewPackDir(source: string): PreviewResult {
   if (!fs.existsSync(source)) throw new Error(`Pack source not found: ${source}`)
 
   const pack = loadPack(source)
@@ -98,6 +192,25 @@ export function previewPack(source: string): PreviewResult {
     security,
     warnings,
   }
+}
+
+/**
+ * Preview a pack before installing — shows manifest, engrams, and security scan.
+ *
+ * `source` may be a local directory path or an http/https URL pointing to a
+ * `.tar.gz` archive. URL packs are downloaded to a temp directory, previewed,
+ * and the temp directory is cleaned up before returning.
+ */
+export async function previewPack(source: string): Promise<PreviewResult> {
+  if (isPackUrl(source)) {
+    const { packDir, tmpRoot } = await downloadAndExtractPack(source)
+    try {
+      return _previewPackDir(packDir)
+    } finally {
+      cleanupDownloadedPack(tmpRoot)
+    }
+  }
+  return _previewPackDir(source)
 }
 
 // --- Install ---
@@ -191,7 +304,7 @@ function manifestToSkillMd(m: PackManifest): string {
   return `---\n${yaml.dump(fm)}---\n\n# ${m.name}\n\n${m.description ?? ''}\n`
 }
 
-export function installPack(
+function _installPackDir(
   packsDir: string,
   source: string,
   existingEngrams?: Engram[],
@@ -200,7 +313,7 @@ export function installPack(
   if (!fs.existsSync(source)) throw new Error(`Pack source not found: ${source}`)
 
   // Security scan BEFORE copying — always runs, not opt-out
-  const preview = previewPack(source)
+  const preview = _previewPackDir(source)
   const secretIssues = preview.security.issues.filter(i => i.type === 'secret')
   if (secretIssues.length > 0) {
     const details = secretIssues.map(i => `  ${i.engram_id}: ${i.detail}`).join('\n')
@@ -276,6 +389,38 @@ export function installPack(
   addToRegistry(packsDir, registryEntry)
 
   return { installed: newEngrams.length, name: sourceName, conflicts, security: preview.security, registry: registryEntry }
+}
+
+/**
+ * Install a pack from a local directory path or an http/https URL.
+ *
+ * When `source` is a URL, the archive is downloaded to a temp directory,
+ * extracted, passed through the existing security scan and install pipeline,
+ * then the temp directory is removed. The registry records the original URL
+ * as the source so it is visible in `plur packs list`.
+ */
+export async function installPack(
+  packsDir: string,
+  source: string,
+  existingEngrams?: Engram[],
+  opts: InstallOptions = {},
+): Promise<InstallResult> {
+  if (isPackUrl(source)) {
+    const { packDir, tmpRoot } = await downloadAndExtractPack(source)
+    try {
+      const result = _installPackDir(packsDir, packDir, existingEngrams, opts)
+      // Overwrite the registry source with the original URL so `plur packs list`
+      // shows where the pack came from, not an ephemeral /tmp path.
+      result.registry.source = source
+      const entries = loadRegistry(packsDir)
+      const idx = entries.findIndex(e => e.name === result.registry.name)
+      if (idx >= 0) { entries[idx].source = source; saveRegistry(packsDir, entries) }
+      return result
+    } finally {
+      cleanupDownloadedPack(tmpRoot)
+    }
+  }
+  return _installPackDir(packsDir, source, existingEngrams, opts)
 }
 
 // --- Uninstall ---

@@ -38,7 +38,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     if (!source) {
       exit(1, 'Usage: plur packs preview <source>')
     }
-    const preview = plur.previewPack(source)
+    const preview = await plur.previewPack(source)
     if (shouldOutputJson(flags)) {
       outputJson(preview)
     } else {
