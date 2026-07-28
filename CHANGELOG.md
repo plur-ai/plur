@@ -60,6 +60,14 @@ because it is a claim a caller may act on.
 
 ### Added
 
+- **Packs install from a URL** (#746): `plur packs install <url>` and
+  `plur packs preview <url>` fetch a pack over HTTP instead of requiring a local
+  directory, so a pack can be shared by link. Preview still runs the security
+  scan before anything is written, and the same scan gates install.
+- **The engram schema tolerates an unknown `commitment` value** (#744): parsing
+  passes through values it does not recognise rather than rejecting the engram,
+  so a store written by a newer or differently-configured deployment stays
+  readable instead of failing the whole load.
 - **`@plur-ai/mcp` exposes a side-effect-free `./tools` subpath** (#714, #717):
   `import { getToolDefinitions } from '@plur-ai/mcp/tools'` yields the tool
   definitions without starting a server or touching stdio, so another server can

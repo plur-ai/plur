@@ -78,7 +78,7 @@ describe('withAsyncLock keys on the resolved path', () => {
       concurrent--
     }
     const spellings = [target, './engrams.yaml', join(dir, 'sub', '..', 'engrams.yaml')]
-    await Promise.all(spellings.map(p => withAsyncLock(p, body, { maxRetries: 200, retryDelayMs: 5 })))
+    await Promise.all(spellings.map(p => withAsyncLock(p, body, { maxRetries: 200, baseDelay: 5 })))
     expect(maxConcurrent).toBe(1)
   })
 
@@ -89,13 +89,13 @@ describe('withAsyncLock keys on the resolved path', () => {
       order.push('abs-start')
       await new Promise(r => setTimeout(r, 40))
       order.push('abs-end')
-    }, { maxRetries: 200, retryDelayMs: 5 })
+    }, { maxRetries: 200, baseDelay: 5 })
     // Give the first a moment to take the lock, so this is a real queue test.
     await new Promise(r => setTimeout(r, 5))
     const b = withAsyncLock(rel, async () => {
       order.push('rel-start')
       order.push('rel-end')
-    }, { maxRetries: 200, retryDelayMs: 5 })
+    }, { maxRetries: 200, baseDelay: 5 })
     await Promise.all([a, b])
 
     // Interleaved would be abs-start, rel-start, ... — the whole point is that
@@ -117,8 +117,8 @@ describe('withAsyncLock keys on the resolved path', () => {
       concurrent--
     }
     await Promise.all([
-      withAsyncLock(target, body, { maxRetries: 200, retryDelayMs: 5 }),
-      withAsyncLock(other, body, { maxRetries: 200, retryDelayMs: 5 }),
+      withAsyncLock(target, body, { maxRetries: 200, baseDelay: 5 }),
+      withAsyncLock(other, body, { maxRetries: 200, baseDelay: 5 }),
     ])
     expect(maxConcurrent, 'unrelated files were serialised against each other').toBe(2)
   })
@@ -159,8 +159,8 @@ describe('what path.resolve does NOT normalise', () => {
       concurrent--
     }
     await Promise.all([
-      withAsyncLock(target, body, { maxRetries: 200, retryDelayMs: 5 }),
-      withAsyncLock(viaSymlink, body, { maxRetries: 200, retryDelayMs: 5 }),
+      withAsyncLock(target, body, { maxRetries: 200, baseDelay: 5 }),
+      withAsyncLock(viaSymlink, body, { maxRetries: 200, baseDelay: 5 }),
     ])
     expect(maxConcurrent, 'the file lock did not cover the symlinked spelling').toBe(1)
   })
