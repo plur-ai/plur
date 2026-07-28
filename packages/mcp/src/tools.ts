@@ -1284,28 +1284,28 @@ function getAllToolDefinitions(): ToolDefinition[] {
 
     {
       name: 'plur_packs_preview',
-      description: 'Preview a pack before installing — shows manifest, engram list, security scan, and warnings. Always call this before plur_packs_install to let the user review what they are importing.',
+      description: 'Preview a pack before installing — shows manifest, engram list, security scan, and warnings. Always call this before plur_packs_install to let the user review what they are importing. Accepts a local directory path or an https:// URL pointing to a .tar.gz archive.',
       annotations: { title: 'Preview pack', readOnlyHint: true, idempotentHint: true },
       inputSchema: {
         type: 'object',
         properties: {
-          source: { type: 'string', description: 'Path to the pack directory to preview' },
+          source: { type: 'string', description: 'Path to the pack directory, or an https:// URL to a .tar.gz pack archive' },
         },
         required: ['source'],
       },
       handler: async (args, plur) => {
-        return plur.previewPack(args.source as string)
+        return await plur.previewPack(args.source as string)
       },
     },
 
     {
       name: 'plur_packs_install',
-      description: 'Install an engram pack from a directory path. Runs a mandatory security scan (blocks if secrets found), detects conflicts with existing engrams, and records install metadata in the registry. Call plur_packs_preview first to show the user what the pack contains.',
+      description: 'Install an engram pack from a local directory path or an https:// URL pointing to a .tar.gz archive. Runs a mandatory security scan (blocks if secrets found), detects conflicts with existing engrams, and records install metadata in the registry. Call plur_packs_preview first to show the user what the pack contains.',
       annotations: { title: 'Install pack', destructiveHint: false, idempotentHint: true },
       inputSchema: {
         type: 'object',
         properties: {
-          source: { type: 'string', description: 'Path to the pack directory to install' },
+          source: { type: 'string', description: 'Path to the pack directory, or an https:// URL to a .tar.gz pack archive' },
         },
         required: ['source'],
       },
