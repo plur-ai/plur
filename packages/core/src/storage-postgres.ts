@@ -72,6 +72,7 @@ import {
   type StorageAdapter,
   type StorageFilter,
   type ScopeRestriction,
+  escapeLikePattern,
   type VectorElementFormat,
   type VectorIndexStrategy,
   type VectorSearchHit,
@@ -1170,13 +1171,18 @@ export function buildFilterClause(filter: StorageFilter): { where: string; param
   if (filter.scope) {
     conditions.push(
       `((NOT (scope LIKE 'group:%' OR scope LIKE 'project:%' OR scope LIKE 'space:%' OR scope LIKE 'team:%' OR scope LIKE 'org:%' OR scope = 'public' OR scope LIKE 'public:%' OR scope LIKE 'public/%'))`
-      + ` OR scope = $${i++} OR scope LIKE $${i++} || ':%' OR scope LIKE $${i++} || '/%')`,
+      + ` OR scope = $${i++} OR scope LIKE $${i++} || ':%' ESCAPE '\\' OR scope LIKE $${i++} || '/%' ESCAPE '\\')`,
     )
-    params.push(filter.scope, filter.scope, filter.scope)
+      // The caller's scope is escaped: an unescaped `%` here matches across
+      // unrelated namespaces, defeating the segment-aware containment guard
+      // this clause exists to implement (#383). Verified: `{ scope: '%' }`
+      // returned engrams from two unrelated groups.
+    params.push(filter.scope, escapeLikePattern(filter.scope), escapeLikePattern(filter.scope))
   }
   if (filter.domain) {
-    conditions.push(`domain LIKE $${i++} || '%'`)
-    params.push(filter.domain)
+    conditions.push(`domain LIKE $${i++} || '%' ESCAPE '\\'`)
+    // Same reason as scope: `{ domain: '%' }` returned every domain.
+    params.push(escapeLikePattern(filter.domain))
   }
   const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : ''
   return { where, params }

@@ -37,6 +37,7 @@ import type {
   VectorIndexStrategy,
   VectorSearchHit,
 } from './storage-adapter.js'
+import { escapeLikePattern } from './storage-adapter.js'
 
 /** Vector dimension used by the default BGE-small-en-v1.5 model. */
 const DEFAULT_VECTOR_DIM = 384
@@ -413,13 +414,16 @@ export class PGLiteAdapter implements DerivedIndexAdapter {
       //      descendant on a REAL delimiter (`:`/`/`) — never a sibling prefix.
       conditions.push(
         `((NOT (${col}scope LIKE 'group:%' OR ${col}scope LIKE 'project:%' OR ${col}scope LIKE 'space:%' OR ${col}scope LIKE 'team:%' OR ${col}scope LIKE 'org:%' OR ${col}scope = 'public' OR ${col}scope LIKE 'public:%' OR ${col}scope LIKE 'public/%'))`
-        + ` OR ${col}scope = $${i++} OR ${col}scope LIKE $${i++} || ':%' OR ${col}scope LIKE $${i++} || '/%')`,
+        + ` OR ${col}scope = $${i++} OR ${col}scope LIKE $${i++} || ':%' ESCAPE '\\' OR ${col}scope LIKE $${i++} || '/%' ESCAPE '\\')`,
       )
-      params.push(filter.scope, filter.scope, filter.scope)
+      // Escaped for the same reason as the Postgres copy — these two clauses
+      // must stay identical; they have drifted before, and that drift was an
+      // authorization bypass.
+      params.push(filter.scope, escapeLikePattern(filter.scope), escapeLikePattern(filter.scope))
     }
     if (filter.domain) {
-      conditions.push(`${col}domain LIKE $${i++} || '%'`)
-      params.push(filter.domain)
+      conditions.push(`${col}domain LIKE $${i++} || '%' ESCAPE '\\'`)
+      params.push(escapeLikePattern(filter.domain))
     }
     const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : ''
     return { where, params, nextIndex: i }
