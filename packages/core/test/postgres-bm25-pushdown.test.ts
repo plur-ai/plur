@@ -223,14 +223,40 @@ describe.skipIf(!PG_URL)('PostgresAdapter — scope restriction as an AUTHORIZAT
     // searchVector previously omitted the `opts` parameter entirely; TypeScript
     // accepted the narrower arity, so callers passing `scopes` got an
     // unrestricted search with no error.
+    //
+    // This test used to run against a fixture with NO embeddings stored, and
+    // asserted `searchVector(v, 10, { scopes: [] })` returned []. Of course it
+    // did — with no vectors in the table it returns [] whether or not the
+    // filter is applied. The assertion could not fail. Real embeddings are
+    // stored here so the restriction has something to exclude.
     const dim = 384
-    const v = new Float32Array(dim)
-    v[0] = 1
-    // No embeddings are stored in this fixture, so the assertion that matters
-    // is that the call ACCEPTS the restriction and returns nothing out of scope
-    // rather than ignoring it.
-    const hits = await adapter.searchVector(v, 10, { scopes: [] })
-    expect(hits).toEqual([])
+    const vec = (seed: number) => {
+      const v = new Float32Array(dim)
+      for (let i = 0; i < dim; i++) v[i] = Math.sin(seed + i) / 10
+      v[0] = 1
+      return v
+    }
+    const alpha = corpus.find(e => e.scope === 'project:alpha')!
+    const beta = corpus.find(e => e.scope === 'project:beta')!
+    const globals = corpus.filter(e => e.scope === 'global').slice(0, 3)
+    for (const [i, e] of [alpha, beta, ...globals].entries()) {
+      await adapter.upsertEmbedding(e.id, vec(i))
+    }
+
+    // Unrestricted: the neighbour list contains engrams from several scopes —
+    // without this the restricted assertions below would be vacuous again.
+    const all = await adapter.searchVector(vec(0), 10)
+    expect(new Set(all.map(h => h.engram.scope)).size).toBeGreaterThan(1)
+
+    // Restricted to one scope: only that scope comes back, and the in-scope
+    // engram is still reachable (i.e. it filtered rather than returned nothing).
+    const scoped = await adapter.searchVector(vec(0), 10, { scopes: ['project:alpha'] })
+    expect(scoped.length).toBeGreaterThan(0)
+    expect(scoped.every(h => h.engram.scope === 'project:alpha')).toBe(true)
+    expect(scoped.map(h => h.engram.id)).toContain(alpha.id)
+
+    // Empty allow-list means nothing, never everything.
+    expect(await adapter.searchVector(vec(0), 10, { scopes: [] })).toEqual([])
   }, TIMEOUT)
 
   it('corpusStats honours the allow-list even with no query tokens', async () => {

@@ -37,27 +37,44 @@
  * they were briefly async before release and were reverted.
  */
 export const NEWLY_ASYNC = [
-  'learn',
-  'learnRouted',
-  'learnBatch',
-  'recall',
-  'inject',
-  'feedback',
-  'forget',
+  // Derived from git, not from memory: these are the methods whose signature
+  // went sync -> async in 0.16. `packages/migrate/test/method-list.test.ts`
+  // re-derives the same set from `Plur` and fails if this drifts — the list was
+  // hand-written once and was wrong in both directions (it advised `await` on a
+  // synchronous `addStore`, and missed eight methods entirely).
+  'compact',
+  'episodeToEngram',
   'getById',
+  'ingest',
+  'inject',
+  'installPack',
+  'learn',
   'list',
   'listPinned',
-  'setPinned',
-  'updateEngram',
-  'status',
-  'ingest',
-  'sync',
-  'reindex',
-  'flushOutbox',
-  'purgeTensions',
-  'recordTensions',
-  'addStore',
   'listStores',
+  'outboxCount',
+  'purgeTensions',
+  'recall',
+  'receipt',
+  'recordTensions',
+  'reindex',
+  'rerankerEvalStatus',
+  'resolveTension',
+  'saveMetaEngrams',
+  'setPinned',
+  'status',
+  'sync',
+  'updateEngram',
+  // Already async before 0.16, so an un-awaited call was always a bug rather
+  // than migration fallout — but reporting it costs nothing and helps, and
+  // these were in the original list. `addStore` was too and is REMOVED: it is
+  // synchronous, so the tool was telling users to add an `await` that does not
+  // belong.
+  'feedback',
+  'flushOutbox',
+  'forget',
+  'learnBatch',
+  'learnRouted',
 ] as const
 
 export interface Finding {

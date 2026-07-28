@@ -38,10 +38,28 @@ const TIMEOUT = 180_000
 const NOISE = 400
 const WANTED = 5
 
+let ready = false
+
+/**
+ * Fail visibly rather than pass silently when the embedder is unavailable.
+ *
+ * Every test here used `if (!ready) return`, which reports PASS — so with no
+ * embedder the file announced "5 passed" while asserting nothing at all.
+ * Verified: forcing `ready = false` yields exactly that. A suite that reports
+ * success for having done nothing is worse than one that fails, because it is
+ * counted as coverage.
+ *
+ * `ctx.skip()` marks the test SKIPPED in the output, which is the honest
+ * signal: the environment could not run it, and nobody should read the run as
+ * evidence that the vector scope filter works.
+ */
+function requireEmbedder(ctx: { skip: (note?: string) => void }): void {
+  if (!ready) ctx.skip('embeddings unavailable — the vector leg cannot be exercised')
+}
+
 describe('vector recall applies the scope restriction in-query, not after', () => {
   let dir: string
   let plur: Plur
-  let ready = false
 
   const priorBackend = process.env.PLUR_BACKEND
 
@@ -64,8 +82,8 @@ describe('vector recall applies the scope restriction in-query, not after', () =
       await plur.learn(`the deployment pipeline runs database migrations, alpha ${i}`, { scope: 'project:alpha' })
     }
     // Embeddings are what this file is about; if they are unavailable the
-    // vector leg degrades to BM25 and these assertions would be measuring
-    // something else. Detect that and skip rather than assert on the wrong path.
+    // vector leg degrades to BM25 and these assertions would measure something
+    // else.
     const probe = await plur.recallSemantic('deployment pipeline migrations', { limit: 3 })
     ready = probe.length > 0
   }, TIMEOUT)
@@ -76,16 +94,16 @@ describe('vector recall applies the scope restriction in-query, not after', () =
     if (dir) rmSync(dir, { recursive: true, force: true })
   })
 
-  it('the fixture actually dilutes — an unrestricted top-50 contains no permitted engram', async () => {
+  it('the fixture actually dilutes — an unrestricted top-50 contains no permitted engram', async (ctx) => {
     // Guards the FIXTURE. If a future edit shrinks the corpus or the k-NN floor
     // rises, the assertions below stop testing anything and would still pass.
-    if (!ready) return
+    requireEmbedder(ctx)
     const unrestricted = await plur.recallSemantic('deployment pipeline migrations', { limit: 50 })
     expect(unrestricted.filter(e => e.scope === 'project:alpha').length).toBe(0)
   }, TIMEOUT)
 
-  it('recallSemantic returns a FULL page of permitted results, not a diluted one', async () => {
-    if (!ready) return
+  it('recallSemantic returns a FULL page of permitted results, not a diluted one', async (ctx) => {
+    requireEmbedder(ctx)
     // With the restriction in the query, all 5 permitted engrams are reachable.
     // Without it, measured: 0 of 5. The unrestricted top-50 of 405 contains no
     // permitted engram at all (asserted above), so the post-hoc intersection
@@ -98,8 +116,8 @@ describe('vector recall applies the scope restriction in-query, not after', () =
     expect(hits.every(e => e.scope === 'project:alpha')).toBe(true)
   }, TIMEOUT)
 
-  it('recallHybrid does the same on its vector leg', async () => {
-    if (!ready) return
+  it('recallHybrid does the same on its vector leg', async (ctx) => {
+    requireEmbedder(ctx)
     const hits = await plur.recallHybrid('deployment pipeline migrations', {
       limit: WANTED,
       scopes: ['project:alpha'],
@@ -108,14 +126,14 @@ describe('vector recall applies the scope restriction in-query, not after', () =
     expect(hits.every(e => e.scope === 'project:alpha')).toBe(true)
   }, TIMEOUT)
 
-  it('an empty allow-list still returns nothing', async () => {
-    if (!ready) return
+  it('an empty allow-list still returns nothing', async (ctx) => {
+    requireEmbedder(ctx)
     expect(await plur.recallSemantic('deployment pipeline migrations', { limit: 5, scopes: [] })).toEqual([])
     expect(await plur.recallHybrid('deployment pipeline migrations', { limit: 5, scopes: [] })).toEqual([])
   }, TIMEOUT)
 
-  it('an absent allow-list is unrestricted — existing behaviour unchanged', async () => {
-    if (!ready) return
+  it('an absent allow-list is unrestricted — existing behaviour unchanged', async (ctx) => {
+    requireEmbedder(ctx)
     const hits = await plur.recallSemantic('deployment pipeline migrations', { limit: 10 })
     expect(hits.length).toBe(10)
     expect(hits.some(e => e.scope === 'group:noise'), 'unrestricted recall should see the noise').toBe(true)
