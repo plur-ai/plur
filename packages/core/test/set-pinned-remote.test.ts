@@ -113,7 +113,6 @@ describe('setPinned() against a remote store', () => {
     expect(res!.pinned).toBeUndefined()
   })
 })
-<<<<<<< HEAD
 
 /**
  * `updateEngram()` had the same defect, and it was missed when `setPinned` was
@@ -180,5 +179,3 @@ describe('updateEngram() against a remote store', () => {
     expect(settled, 'returned before the write completed').toBe(true)
   })
 })
-=======
->>>>>>> origin/main
