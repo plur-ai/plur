@@ -121,9 +121,14 @@ generate_tweet() {
     return 1
   fi
   features=$(echo "$section" | grep "^- " | head -4 | sed 's/^- /✅ /')
-  # Headline: prefer "Tagline:" or "Tagline." pattern in first non-blank
-  # non-bullet line of the section, fall back to "Update:".
-  headline=$(echo "$section" | awk 'NF && !/^- / && !/^###/ {print; exit}')
+  # Headline: the first non-bullet, non-heading PARAGRAPH of the section.
+  # Joined across lines rather than taking only the first physical line: a
+  # hard-wrapped summary used to be truncated at the wrap point, which for
+  # 0.16.0 produced the fragment "one engine, two" — and that fragment would
+  # have been posted to X verbatim, since the length gate only checks the
+  # total. Reading the whole paragraph makes an over-long summary fail the
+  # gate (visible, fixable) instead of shipping as a cut-off sentence.
+  headline=$(echo "$section" | awk 'NF && !/^- / && !/^###/ {buf = buf (buf ? " " : "") $0; next} buf {print buf; buf = ""; exit} END {if (buf) print buf}')
   [ -z "$headline" ] && headline="Update:"
 
   TWEET="🚀 New release: PLUR $VERSION

@@ -2,12 +2,18 @@
 
 ## 0.16.0 (unreleased)
 
-Unified recall surface, and the convergence programme: one engine, two
-deployments.
+One engine, two deployments.
+
+- BREAKING: write path is async
+- npx @plur-ai/migrate adds awaits
+- Postgres as a primary store
+- scope allow-list + BM25 pushdown
+- cross-process write safety
+- unified recall surface — same engine local and server-side
 
 ### BREAKING — the write path is asynchronous
 
-`Plur`'s store interface and roughly twenty public methods now return promises
+`Plur`'s store interface and roughly twenty public methods now return promises (#728)
 (`learn`, `learnRouted`, `recall`, `recallHybrid`, `inject`, `injectHybrid`,
 `feedback`, `forget`, `getById`, `list`, `status`, `ingest`, `sync`, …).
 
@@ -44,27 +50,41 @@ because it is a claim a caller may act on.
 
 ### Added
 
+- **`@plur-ai/mcp` exposes a side-effect-free `./tools` subpath** (#714, #717):
+  `import { getToolDefinitions } from '@plur-ai/mcp/tools'` yields the tool
+  definitions without starting a server or touching stdio, so another server can
+  host PLUR's tools inside its own process.
 - **`npx @plur-ai/migrate`** — finds the un-awaited calls this release creates, and fixes the unambiguous ones. Reports by default; `--write` applies. It refuses to rewrite the three cases where inserting `await` changes program meaning rather than just adding a wait (inside a `Promise` combinator array, a concise arrow body, a result consumed across lines) and lists them for a human instead. Exit code 2 when anything needs attention, so it composes in CI. Every hazard it guards is one the codemods that migrated PLUR itself actually hit.
-- **Postgres as a primary store** (ADR-0005). `new Plur({ store: new PostgresAdapter({ connectionString }) })` runs the engine directly against server Postgres — the same engine, a different deployment. `pgvector` for vectors, exact or HNSW with the recall target declared rather than implied.
-- **Cross-process write safety.** `PrimaryStore.withExclusiveAccess?()` — the store decides how it is serialized, because the store is what knows what it shares. `PostgresAdapter` takes a session-scoped advisory lock; a local-file store keeps its file lock. Without this, two processes over one database silently overwrote each other, and a *read-only* `recall()` on one could delete an engram another had just committed (`recall` updates activation, so it is a whole-corpus write).
-- **Permitted-scope allow-list pushed into the query** — `scopes` on `RecallOptions` and now `InjectOptions`. An AUTHORIZATION filter, distinct from the `scope` visibility filter: absent = unrestricted, `[]` = matches nothing, non-empty = exact membership with no hierarchy expansion and no personal-family pass-through. `inject()` had no authorization filter at all before this, which for a multi-tenant caller meant every principal's personal engrams reached every other principal's context.
-- **BM25 narrowing pushed into Postgres** (#711) via `pg_trgm`, with corpus-wide statistics (`CorpusStats`: `N`, per-term `df`, `avgDocLength`) supplied by the store so narrowing cannot change the ranking. Tokens are computed in TypeScript at write time by the same `ftsTokenize` the scorer uses, so there is no second tokenizer free to drift.
+- **Postgres as a primary store** (ADR-0005) (#720). `new Plur({ store: new PostgresAdapter({ connectionString }) })` runs the engine directly against server Postgres — the same engine, a different deployment. `pgvector` for vectors, exact or HNSW with the recall target declared rather than implied.
+- **Cross-process write safety** (ADR-0004) (#719). `PrimaryStore.withExclusiveAccess?()` — the store decides how it is serialized, because the store is what knows what it shares. `PostgresAdapter` takes a session-scoped advisory lock; a local-file store keeps its file lock. Without this, two processes over one database silently overwrote each other, and a *read-only* `recall()` on one could delete an engram another had just committed (`recall` updates activation, so it is a whole-corpus write).
+- **Permitted-scope allow-list pushed into the query** (#715, #739, #743) — `scopes` on `RecallOptions` and now `InjectOptions`. An AUTHORIZATION filter, distinct from the `scope` visibility filter: absent = unrestricted, `[]` = matches nothing, non-empty = exact membership with no hierarchy expansion and no personal-family pass-through. `inject()` had no authorization filter at all before this, which for a multi-tenant caller meant every principal's personal engrams reached every other principal's context.
+- **BM25 narrowing pushed into Postgres** (#711, #732, #743) via `pg_trgm`, with corpus-wide statistics (`CorpusStats`: `N`, per-term `df`, `avgDocLength`) supplied by the store so narrowing cannot change the ranking. Tokens are computed in TypeScript at write time by the same `ftsTokenize` the scorer uses, so there is no second tokenizer free to drift.
 
 ### Fixed
 
-- **BM25 reverse-substring matches** (#721): `qt.includes(t)` let any document token that was a non-prefix substring of the query score a hit — `deploying` matched an engram about *yin*, `postgres` matched one about *res*. Now `qt.startsWith(t)`, which keeps morphological prefixes (`deploy` → `deploying`) and drops the junk. Measured on a 3,930-engram store: no query loses results, and the reverse-substring matches it removes were never meaningful.
+- **BM25 reverse-substring matches** (#721, #724): `qt.includes(t)` let any document token that was a non-prefix substring of the query score a hit — `deploying` matched an engram about *yin*, `postgres` matched one about *res*. Now `qt.startsWith(t)`, which keeps morphological prefixes (`deploy` → `deploying`) and drops the junk. Measured on a 3,930-engram store: no query loses results, and the reverse-substring matches it removes were never meaningful.
 - `pg` is externalized from the bundle — it is an `optionalDependency`, so it was being inlined into `dist` and the published `PostgresAdapter` would have thrown on first use.
 - `plur learn`'s 5s remote-write timeout was dead code (an `await` inside `Promise.race` resolved the call before the timer was armed).
 - `init-remote` silently ignored `--quiet` and printed prose under `--json`.
+- **MCP tool schemas silently dropped array items** (#705): a union item schema was
+  emitted without a usable `items` definition, so a client sending a well-formed
+  array had elements discarded on the way in. Union item schemas are now coerced,
+  and a partial drop is surfaced rather than passed through as a shorter array.
+- **`truncated` was reported wrong when `budget.max_results` capped a recall**
+  (#725, #726): the flag was computed before the budget cap applied, so a
+  truncated result set claimed to be complete and callers had no signal to page.
+- **`server.json` version drift** (#699): the MCP Registry manifest carried its
+  version in two places and only one was bumped, so the published listing could
+  disagree with the package. `release.sh` now writes both.
 
 ### Changed
 
-- **`plur_recall` is now the unified recall tool (#693)**: gains a `mode` parameter — `'hybrid'` (default, BM25 + local embeddings via RRF) or `'keyword'` (BM25-only). Existing callers that pass no `mode` get a quality upgrade without any API change. **Breaking for the lean/cursor profile**: `plur_recall_hybrid` is no longer a top-level lean tool — `plur_recall` takes its slot. Agents configured against the lean profile that call `plur_recall_hybrid` by name will still get results (the tool remains accessible via `plur_admin` dispatch), but should migrate to `plur_recall`.
+- **`plur_recall` is now the unified recall tool (#693, #702)**: gains a `mode` parameter — `'hybrid'` (default, BM25 + local embeddings via RRF) or `'keyword'` (BM25-only). Existing callers that pass no `mode` get a quality upgrade without any API change. **Breaking for the lean/cursor profile**: `plur_recall_hybrid` is no longer a top-level lean tool — `plur_recall` takes its slot. Agents configured against the lean profile that call `plur_recall_hybrid` by name will still get results (the tool remains accessible via `plur_admin` dispatch), but should migrate to `plur_recall`.
 - **`plur_recall_hybrid` is a deprecated alias** (#693): it invokes the canonical `plur_recall` handler with `{mode:'hybrid'}` and prepends a one-line `deprecated` notice — a real forwarder, so budget capping, episode expansion, the degraded-embeddings warning and reranker surfacing cannot drift between the two before the alias is removed. Removal target: 0.18. Accessible in both full and lean profiles (via `plur_admin`) to avoid breaking existing CLAUDE.md files and agent templates in the wild.
 
 ### Added
 
-- **`plur init` now prompts for anonymous usage statistics opt-in.** On interactive installs a single yes/no prompt asks "Enable anonymous usage statistics? (helps us improve PLUR — no code, no keys) [y/N]" and persists the answer to `~/.plur/telemetry.json`. Non-interactive installs (CI, piped stdin, `--no-prompt`) write `enabled:false` silently — they are never opted in without explicit consent. Already-configured installs skip the prompt entirely, as do installs with an explicit `PLUR_TELEMETRY` env var — env wins at runtime, so no contradictory config file is written. To enable after the fact: `PLUR_TELEMETRY=on` env var or edit `~/.plur/telemetry.json`. See [`docs/telemetry-design.md`](docs/telemetry-design.md) for what is collected (learn/recall counters only — no code, no keys, no content).
+- **`plur init` now prompts for anonymous usage statistics opt-in** (#701). On interactive installs a single yes/no prompt asks "Enable anonymous usage statistics? (helps us improve PLUR — no code, no keys) [y/N]" and persists the answer to `~/.plur/telemetry.json`. Non-interactive installs (CI, piped stdin, `--no-prompt`) write `enabled:false` silently — they are never opted in without explicit consent. Already-configured installs skip the prompt entirely, as do installs with an explicit `PLUR_TELEMETRY` env var — env wins at runtime, so no contradictory config file is written. To enable after the fact: `PLUR_TELEMETRY=on` env var or edit `~/.plur/telemetry.json`. See [`docs/telemetry-design.md`](docs/telemetry-design.md) for what is collected (learn/recall counters only — no code, no keys, no content).
 
 ## 0.15.0 (2026-07-21)
 
