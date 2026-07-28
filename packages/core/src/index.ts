@@ -2943,8 +2943,20 @@ export class Plur {
       // the lock rather than reusing the search results, so two concurrent
       // recalls cannot both increment from the same stale counter.
       const store = this._storeAt(this.paths.engrams)
-      const allEngrams = store.loadByIds
-        ? await store.loadByIds([...resultIds])
+      // `loadByIds` and `updateMany` are used as a PAIR, and the pair is what
+      // makes the optimisation safe.
+      //
+      // Both are optional on `PrimaryStore`. Taking the targeted READ without
+      // the targeted WRITE is catastrophic: `loadByIds` returns only the
+      // recalled handful, and the fallback below hands that subset to
+      // `_writeEngrams`, which is a FULL REPLACE — so a store implementing
+      // `loadByIds` alone (a perfectly reasonable thing to implement first)
+      // would delete its entire corpus except the current page of results, on
+      // an ordinary read. No in-tree store does that today; the interface
+      // invites it.
+      const canTarget = Boolean(store.loadByIds && store.updateMany)
+      const allEngrams = canTarget
+        ? await store.loadByIds!([...resultIds])
         : await this._primaryStore.load()
       const today = new Date().toISOString().slice(0, 10)
       // WHICH engrams changed, not merely whether any did.
@@ -3016,9 +3028,9 @@ export class Plur {
 
       if (touched.size === 0) return
 
-      if (store.updateMany) {
+      if (canTarget) {
         // Targeted: rewrites the handful of rows a recall actually touched.
-        await store.updateMany([...touched.values()])
+        await store.updateMany!([...touched.values()])
       } else {
         // A single-file store has no cheaper option — the whole file is
         // rewritten either way, so this is the same cost it always was.
