@@ -54,18 +54,19 @@ pnpm --filter @plur-ai/core build
 1. `packages/core/package.json`
 2. `packages/mcp/package.json`
 3. `packages/cli/package.json`
-4. `packages/mcp/src/version.ts` — `export const VERSION`
-5. `packages/mcp/src/index.ts` — `const VERSION`
-6. `packages/cli/src/index.ts` — `const VERSION`
-7. `packages/mcp/test/server.test.ts` — version assertions
-8. `packages/hermes/pyproject.toml`
-9. `packages/hermes/plugin.yaml` — top-level `version:` field
-10. `packages/hermes/plur_hermes/skills/plur-memory.SKILL.md` — frontmatter `version:`
-11. `packages/hermes/plur_hermes/bridge.py` — `_NPX_CLI_VERSION`
-12. `packages/python/pyproject.toml`
-13. `packages/python/plur_ai/bridge.py` — `_NPX_CLI_VERSION`
-14. `skills/plur-memory/SKILL.md` — frontmatter `version:` (standalone skills.sh copy)
-15. `server.json` — both top-level `version` and `packages[0].version` (MCP Registry / ClawHub listing)
+4. `packages/migrate/package.json` — ships with the release it migrates TO
+5. `packages/mcp/src/version.ts` — `export const VERSION`
+6. `packages/mcp/src/index.ts` — `const VERSION`
+7. `packages/cli/src/index.ts` — `const VERSION`
+8. `packages/mcp/test/server.test.ts` — version assertions
+9. `packages/hermes/pyproject.toml`
+10. `packages/hermes/plugin.yaml` — top-level `version:` field
+11. `packages/hermes/plur_hermes/skills/plur-memory.SKILL.md` — frontmatter `version:`
+12. `packages/hermes/plur_hermes/bridge.py` — `_NPX_CLI_VERSION`
+13. `packages/python/pyproject.toml`
+14. `packages/python/plur_ai/bridge.py` — `_NPX_CLI_VERSION`
+15. `skills/plur-memory/SKILL.md` — frontmatter `version:` (standalone skills.sh copy)
+16. `server.json` — both top-level `version` and `packages[0].version` (MCP Registry / ClawHub listing)
 
 **Claw track** (independent — only bumped when `--claw <ver>` is passed to release.sh):
 

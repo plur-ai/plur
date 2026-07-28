@@ -23,9 +23,13 @@ One engine, two deployments.
 `learnRouted`, `learnBatch`, `recallHybrid`, `injectHybrid`, `feedback`,
 `forget` and `flushOutbox` were ALREADY async before 0.16 and are unchanged
 here — an earlier draft of this section listed them as newly promise-returning,
-which would have sent you auditing call sites that never moved. `npx
-@plur-ai/migrate` still reports un-awaited calls to them, because such a call
-was a bug before this release too.
+which would have sent you auditing call sites that never moved.
+
+`npx @plur-ai/migrate` still reports un-awaited calls to `learnRouted`,
+`learnBatch`, `feedback`, `forget` and `flushOutbox`, because such a call was a
+bug before this release too. It does NOT report `recallHybrid` or
+`injectHybrid` — those are embedding-backed retrieval that callers have always
+awaited, so they are out of the tool's scope.
 
 **Every out-of-tree consumer must add `await`.** The failure mode is quiet: a
 call whose result is used without awaiting yields a `Promise`, and most
@@ -75,6 +79,17 @@ because it is a claim a caller may act on.
   host PLUR's tools inside its own process.
 - **`npx @plur-ai/migrate`** — finds the un-awaited calls this release creates, and fixes the unambiguous ones. Reports by default; `--write` applies. It refuses to rewrite the three cases where inserting `await` changes program meaning rather than just adding a wait (inside a `Promise` combinator array, a concise arrow body, a result consumed across lines) and lists them for a human instead. Exit code 2 when anything needs attention, so it composes in CI. Every hazard it guards is one the codemods that migrated PLUR itself actually hit.
 - **Postgres as a primary store** (ADR-0005) (#720). `new Plur({ store: new PostgresAdapter({ connectionString }) })` runs the engine directly against server Postgres — the same engine, a different deployment. `pgvector` for vectors, exact or HNSW with the recall target declared rather than implied.
+
+  **Vectors on this tier are not populated by the engine.** `upsertEmbedding`
+  and `searchVector` are implemented and work, but core's only caller of
+  `upsertEmbedding` runs for the PGLite derived index, never for a primary
+  store — so `engram_embeddings` stays empty unless your deployment writes to
+  it, and semantic recall falls back to loading engrams and scoring in memory.
+  Configuring `vectorIndex: 'hnsw'` now logs a warning saying so rather than
+  quietly indexing an empty table. Wiring the engine to fill it is follow-up
+  work: the existing auto-embed pass loads the whole corpus and probes each id
+  on every write, which at the 50,000-engram threshold that selects this tier
+  would cost more than the gap it closes.
 - **Cross-process write safety** (ADR-0004) (#719). `PrimaryStore.withExclusiveAccess?()` — the store decides how it is serialized, because the store is what knows what it shares. `PostgresAdapter` takes a session-scoped advisory lock; a local-file store keeps its file lock. Without this, two processes over one database silently overwrote each other, and a *read-only* `recall()` on one could delete an engram another had just committed (`recall` updates activation, so it is a whole-corpus write).
 - **Permitted-scope allow-list pushed into the query** (#715, #739, #743) — `scopes` on `RecallOptions` and now `InjectOptions`. An AUTHORIZATION filter, distinct from the `scope` visibility filter: absent = unrestricted, `[]` = matches nothing, non-empty = exact membership with no hierarchy expansion and no personal-family pass-through. `inject()` had no authorization filter at all before this, which for a multi-tenant caller meant every principal's personal engrams reached every other principal's context.
 - **BM25 narrowing pushed into Postgres** (#711, #732, #743) via `pg_trgm`, with corpus-wide statistics (`CorpusStats`: `N`, per-term `df`, `avgDocLength`) supplied by the store so narrowing cannot change the ranking. Tokens are computed in TypeScript at write time by the same `ftsTokenize` the scorer uses, so there is no second tokenizer free to drift.

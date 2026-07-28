@@ -46,6 +46,13 @@ jobs:
           --health-retries 10
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Tags, so packages/migrate/test/method-list.test.ts can read the
+          # 0.15.0 source and actually verify its sync -> async claim. Without
+          # them that test takes a no-assertion early return and passes
+          # vacuously — which is how a wrong claim about the past reached the
+          # CHANGELOG in the first place.
+          fetch-depth: 0
       - uses: pnpm/action-setup@v4
         with:
           version: 9
@@ -129,6 +136,13 @@ jobs:
           --health-retries 10
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Tags, so packages/migrate/test/method-list.test.ts can read the
+          # 0.15.0 source and actually verify its sync -> async claim. Without
+          # them that test takes a no-assertion early return and passes
+          # vacuously — which is how a wrong claim about the past reached the
+          # CHANGELOG in the first place.
+          fetch-depth: 0
       - uses: pnpm/action-setup@v4
         with:
           version: 9

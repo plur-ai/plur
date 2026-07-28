@@ -311,3 +311,32 @@ difference.
   check against the exact answer.
 - `PGLite × Postgres` filter parity across ten filter shapes, including the
   personal-family pass-through (#402) and sibling-prefix (#383) cases.
+
+
+## Amendment — 2026-07-28: the engine does not populate vectors on this tier
+
+This ADR reasons at length about the exact-vs-HNSW trade-off, and that analysis
+holds — but it assumed embeddings would be present. On a Postgres PRIMARY store
+they are not.
+
+`PostgresAdapter` implements `upsertEmbedding`, `hasEmbedding` and
+`searchVector`, and they work. What is missing is the caller: core's only
+`upsertEmbedding` call site is `_autoEmbedNewEngrams`, reached solely through
+the PGLite derived-index path. Measured on 0.16: five engrams learned through
+`Plur` against a `PostgresAdapter` leave `engram_embeddings` with zero rows.
+
+Consequences as shipped:
+
+- `vectorIndex: 'auto'` correctly builds nothing, since the row count is zero.
+- `vectorIndex: 'hnsw'` builds an ANN index over an empty table.
+- `recallSemantic` / `recallHybrid` still return correct results, via the
+  in-memory embedding path — which is the O(N) behaviour this tier was chosen
+  to escape.
+
+0.16 makes the gap loud (a warning at schema init) rather than closing it. The
+fix is not a one-liner: `_autoEmbedNewEngrams` loads the whole corpus and probes
+`hasEmbedding` per id on every write. That is acceptable for PGLite and would be
+a serious regression at the 50,000-engram threshold that selects Postgres. It
+needs a set-based "which active ids have no embedding" query, and a decision
+about whether a server tier should pay embedding cost on the write path at all —
+which is a deployment question, not just an implementation one.

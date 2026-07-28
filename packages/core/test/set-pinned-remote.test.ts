@@ -179,3 +179,61 @@ describe('updateEngram() against a remote store', () => {
     expect(settled, 'returned before the write completed').toBe(true)
   })
 })
+
+/**
+ * A refused DELETE must not be reported as a missing engram.
+ *
+ * `forget()`'s remote branch looked the engram up, called `remove()`, and if
+ * that returned false simply carried on — falling through to
+ * `Engram not found: <id>`. So a user whose token lacks delete rights for the
+ * scope is told the engram does not exist. They stop looking; it is still
+ * there. The two outcomes need different words because they need different
+ * actions.
+ */
+describe('forget() when the remote refuses the delete', () => {
+  let dir: string
+  let plur: Plur
+  let removeResult: boolean
+
+  beforeEach(async () => {
+    dir = mkdtempSync(join(tmpdir(), 'plur-forget-refuse-'))
+    writeFileSync(join(dir, 'engrams.yaml'), 'engrams: []\n')
+    writeFileSync(join(dir, 'config.yaml'),
+      'stores:\n  - scope: "group:acme/eng"\n    url: "https://example.invalid"\n    token: "t"\n')
+    plur = new Plur({ path: dir })
+    await plur.ready()
+    removeResult = false
+    ;(plur as unknown as { _getRemoteDriver: () => unknown })._getRemoteDriver = () => ({
+      getById: async () => serverEngram(false),   // the engram DOES exist there
+      remove: async () => removeResult,
+      patch: async () => serverEngram(false),
+    })
+  })
+
+  afterEach(() => rmSync(dir, { recursive: true, force: true }))
+
+  it('says the server refused, not that the engram is missing', async () => {
+    await expect(plur.forget('ENG-2026-0728-500', 'obsolete')).rejects.toThrow(/refused to retire/)
+  })
+
+  it('names the scope and says it was NOT removed', async () => {
+    await expect(plur.forget('ENG-2026-0728-500', 'obsolete')).rejects.toThrow(/group:acme\/eng/)
+    await expect(plur.forget('ENG-2026-0728-500', 'obsolete')).rejects.toThrow(/NOT removed/)
+  })
+
+  it('a genuinely missing engram still reports "not found"', async () => {
+    // The distinction only means something if the other branch still says the
+    // other thing.
+    ;(plur as unknown as { _getRemoteDriver: () => unknown })._getRemoteDriver = () => ({
+      getById: async () => null,
+      remove: async () => false,
+      patch: async () => null,
+    })
+    await expect(plur.forget('ENG-2026-0728-500', 'obsolete')).rejects.toThrow(/Engram not found/)
+  })
+
+  it('a successful remote retire still succeeds', async () => {
+    removeResult = true
+    await expect(plur.forget('ENG-2026-0728-500', 'obsolete')).resolves.toBeUndefined()
+  })
+})

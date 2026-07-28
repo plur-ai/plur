@@ -250,7 +250,7 @@ await plur.sync('git@github.com:you/plur-memory.git')
 |------|-------------|
 | `plur_learn` | Store a correction, preference, or convention |
 | `plur_learn_batch` | Store many engrams in one call (batch dedup + per-item failure isolation) |
-| `plur_recall_hybrid` | Retrieve relevant memories (BM25 + embeddings) |
+| `plur_recall` | Retrieve relevant memories — hybrid (BM25 + embeddings) by default; `mode:"keyword"` for BM25-only |
 | `plur_inject_hybrid` | Select engrams for current task within token budget |
 | `plur_feedback` | Rate relevance (trains quality over time) |
 | `plur_forget` | Retire a memory (activation decays, eventually pruned) |

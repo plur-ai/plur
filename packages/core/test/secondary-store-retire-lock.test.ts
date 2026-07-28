@@ -23,7 +23,7 @@
  * which is why the fixtures below write YAML directly.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'fs'
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import yaml from 'js-yaml'
@@ -129,5 +129,65 @@ describe('secondary-store retire holds the secondary lock', () => {
     await p1.ready()
     await p1.forget(ns(ids[0]), 'obsolete')
     expect(readStore().find(e => e.id === ids[0])?.status).toBe('retired')
+  }, TIMEOUT)
+})
+
+/**
+ * The same defect in installed PACKS.
+ *
+ * `_feedbackPack` did load -> mutate -> `packStore.save(engrams)` with no lock,
+ * and `save()` replaces the whole pack file. Packs are shared by every agent on
+ * the machine, so this is exactly the concurrency it misses: two processes
+ * rating different engrams in one pack, and whichever writes second drops the
+ * other's increment.
+ */
+describe('pack feedback holds the pack file lock', () => {
+  let dirA: string
+  let dirB: string
+  const ids = ['ENG-2026-0728-701', 'ENG-2026-0728-702']
+
+  function installPack(dir: string, packHome: string) {
+    const packDir = join(packHome, 'packs', 'teampack')
+    mkdirSync(packDir, { recursive: true })
+    writeFileSync(join(packDir, 'SKILL.md'), '---\nname: teampack\nversion: "1.0"\n---\n')
+    writeFileSync(join(packDir, 'engrams.yaml'),
+      yaml.dump({ engrams: ids.map((id, i) => makeEngram(id, `pack convention ${i}`)) }))
+    return join(packDir, 'engrams.yaml')
+  }
+
+  let packFile: string
+  let shared: string
+
+  beforeEach(() => {
+    shared = mkdtempSync(join(tmpdir(), 'plur-packshare-'))
+    dirA = shared
+    dirB = shared // one PLUR_PATH: packs live under it and are shared
+    writeFileSync(join(shared, 'engrams.yaml'), 'engrams: []\n')
+    packFile = installPack(shared, shared)
+  })
+
+  afterEach(() => { if (shared) rmSync(shared, { recursive: true, force: true }) })
+
+  it('two concurrent feedbacks on different pack engrams both land', async () => {
+    const p1 = new Plur({ path: dirA })
+    const p2 = new Plur({ path: dirB })
+    await p1.ready()
+    await p2.ready()
+
+    await Promise.all([p1.feedback(ids[0], 'positive'), p2.feedback(ids[1], 'positive')])
+
+    const after = (yaml.load(readFileSync(packFile, 'utf8')) as { engrams: Array<Record<string, any>> }).engrams
+    expect(
+      after.map(e => e.feedback_signals?.positive ?? 0),
+      'one increment was erased by the other whole-file write',
+    ).toEqual([1, 1])
+  }, TIMEOUT)
+
+  it('a single pack feedback still persists — the lock must not skip the write', async () => {
+    const p1 = new Plur({ path: dirA })
+    await p1.ready()
+    await p1.feedback(ids[0], 'positive')
+    const after = (yaml.load(readFileSync(packFile, 'utf8')) as { engrams: Array<Record<string, any>> }).engrams
+    expect(after.find(e => e.id === ids[0])?.feedback_signals?.positive).toBe(1)
   }, TIMEOUT)
 })

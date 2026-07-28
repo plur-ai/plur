@@ -30,10 +30,17 @@
  * (`test/postgres-primary-store.test.ts`). The adapter became injectable with
  * no changes here, exactly as planned.
  *
- * One caveat that is NOT stale: `Plur` still builds its query index on PGLite
- * even when the primary store is Postgres (`index.ts` forces the index tier),
- * so `searchBM25` / `corpusStats` on this class are reachable by driving the
- * adapter directly, not through `Plur.recall()`. Tracked separately.
+ * That caveat is now closed on both halves. `Plur` no longer forces the PGLite
+ * index tier when a primary query store is injected, and #743 wired the
+ * pushdown into the query path — so `searchBM25` / `corpusStats` on this class
+ * are what `Plur.recall()` actually calls, not just what a caller could reach
+ * by driving the adapter directly. `test/postgres-recall-quality.test.ts`
+ * exercises them through `Plur.recall()`.
+ *
+ * What IS still open: nothing in core writes embeddings to a Postgres primary
+ * store, so the vector half of this adapter is inert unless a deployment fills
+ * `engram_embeddings` itself. See `ensureVectorIndex` and ADR-0005's 2026-07-28
+ * amendment.
  *
  * ## Vector search is the one place behaviour can differ
  *
@@ -244,6 +251,8 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
    * the answer exists.
    */
   private trigramAvailable: boolean | undefined
+  /** One-shot latch for the embedding-gap warning — see ensureVectorIndex. */
+  private embeddingGapWarned = false
   private readonly vectorDim: number
   private readonly precision: VectorElementFormat | undefined
   private readonly indexMode: PostgresVectorIndexMode
@@ -605,6 +614,32 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
    * failed.
    */
   private async ensureVectorIndex(q: any = this.pool): Promise<void> {
+    // Say plainly that nothing in core populates this table.
+    //
+    // `upsertEmbedding` and `searchVector` are implemented here and work, but
+    // the engine's only caller of `upsertEmbedding` is `_autoEmbedNewEngrams`,
+    // which runs for the PGLite DERIVED index and never for a primary store.
+    // Measured: 5 engrams learned through `Plur` against this adapter leave
+    // `engram_embeddings` with 0 rows.
+    //
+    // So `vectorIndex: 'hnsw'` on this tier asks for an ANN index over an empty
+    // table, and semantic recall silently falls back to loading engrams and
+    // scoring in memory — correct, but the O(N) path this tier exists to avoid.
+    // A deployment that wants vectors here has to write them itself.
+    //
+    // Wiring the engine to populate them is deliberately NOT done as a
+    // late-release patch: `_autoEmbedNewEngrams` loads the whole corpus and
+    // probes `hasEmbedding` per id on every write, which at the 50,000-engram
+    // threshold that selects this tier would be a worse regression than the gap
+    // it closes. It needs a set-based "which ids lack embeddings" query first.
+    if (!this.embeddingGapWarned && this.indexMode !== 'exact') {
+      this.embeddingGapWarned = true
+      logger.warning(
+        `[postgres] vectorIndex='${this.indexMode}' is configured, but core does not write embeddings to a `
+        + `Postgres primary store — 'engram_embeddings' stays empty unless your deployment populates it, and `
+        + `semantic recall falls back to in-memory scoring. Set vectorIndex:'exact' to silence this.`,
+      )
+    }
     let want: boolean
     if (this.indexMode === 'exact') {
       want = false
@@ -1101,7 +1136,16 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
        ORDER BY id`,
       params,
     )
-    const candidates = rows.map((r: { data: Engram }) => r.data)
+    // Through `parseRow`, like every other read on this class.
+    //
+    // This was the one that took `r.data` raw. `parseRow` runs
+    // `EngramSchemaPassthrough.safeParse`, which fills schema defaults — so a
+    // row written before a field existed, or by a migration, or by any tool
+    // that talks to the table directly, arrives here without it. The scorer
+    // then reads `engram.activation.retrieval_strength` on an undefined
+    // `activation` and the whole recall throws. Every other read path was
+    // already immune; only the BM25 pushdown was not.
+    const candidates = rows.map((r: { data: Engram }) => parseRow(r as { data: any }))
     const stats = await this.corpusStats(queryTokens, opts)
     return searchEngrams(candidates, query, opts.limit, stats)
   }
