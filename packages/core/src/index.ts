@@ -8,7 +8,7 @@ import { PGLiteAdapter } from './storage-pglite.js'
 import { loadConfig } from './config.js'
 import { generateEngramId, loadAllPacks, storePrefix } from './engrams.js'
 import { logger } from './logger.js'
-import { searchEngrams } from './fts.js'
+import { searchEngrams, ftsTokenize } from './fts.js'
 import { selectAndSpread, scoreEngramsPublic, formatWithLayer, assignLayer } from './inject.js'
 import { reactivate } from './decay.js'
 import { captureEpisode, queryTimeline } from './episodes.js'
@@ -453,6 +453,15 @@ const INGEST_PATTERNS = [
  * indication that any were removed.
  */
 const PUSHDOWN_OVERFETCH = 3
+/**
+ * How many times `recall`'s pushdown may widen its fetch before giving up.
+ *
+ * 3 rounds at 3x is 27x the requested limit — enough for a corpus where the
+ * residual filters (expiry, min_strength) reject the overwhelming majority of
+ * matches, without letting a pathological filter turn one recall into an
+ * unbounded scan.
+ */
+const PUSHDOWN_MAX_ROUNDS = 3
 
 export class Plur {
   private paths: PlurPaths
@@ -2357,20 +2366,58 @@ export class Plur {
     // of them, so a row removed by expiry does not consume a slot.
     const adapter = this._primaryQueryAdapter()
     if (adapter) {
-      const narrowed = await adapter.searchBM25(query, {
-        // Over-fetch: post-filters below can remove rows, and a row dropped
-        // after a LIMIT is a result the caller silently never sees.
-        limit: Math.max(limit * PUSHDOWN_OVERFETCH, limit),
-        status: 'active',
+      const pushdownFilter = {
+        status: 'active' as const,
         scope: options?.scope,
         scopes: options?.scopes,
         domain: options?.domain,
-      })
-      const extra = await this._engramsOutsidePrimaryStore(options)
-      const merged = extra.length > 0
-        ? [...narrowed, ...searchEngrams(this._applyResidualFilters(extra, options), query, limit)]
-        : narrowed
-      const results = this._applyResidualFilters(merged, options).slice(0, limit)
+      }
+      // Widen and retry rather than trust a fixed multiplier.
+      //
+      // The over-fetch exists because the residual filters below (expiry,
+      // min_strength) remove rows the adapter cannot evaluate, and a row
+      // dropped after a LIMIT is a result the caller silently never sees. A
+      // FIXED 3x is only enough while those filters remove less than two
+      // thirds of the page; past that the caller asks for N, the store holds
+      // N matching rows, and recall quietly returns fewer.
+      //
+      // So: if filtering consumed the page AND the adapter returned a full one
+      // (meaning it was truncated, so more rows exist), widen and ask again.
+      // Bounded, because each round is a real query.
+      let narrowed: Engram[] = []
+      let surviving: Engram[] = []
+      let fetch = Math.max(limit * PUSHDOWN_OVERFETCH, limit)
+      for (let round = 0; round < PUSHDOWN_MAX_ROUNDS; round++) {
+        narrowed = await adapter.searchBM25(query, { ...pushdownFilter, limit: fetch })
+        surviving = this._applyResidualFilters(narrowed, options)
+        // Enough survivors, or the store has nothing more to give.
+        if (surviving.length >= limit || narrowed.length < fetch) break
+        fetch *= PUSHDOWN_OVERFETCH
+      }
+
+      const extra = this._applyResidualFilters(await this._engramsOutsidePrimaryStore(options), options)
+      let results: Engram[]
+      if (extra.length > 0) {
+        // Rank the union TOGETHER, rather than appending the outsiders.
+        //
+        // This used to be `[...narrowed, ...extra].slice(0, limit)`, which puts
+        // every secondary-store and pack engram after every primary one. With a
+        // primary store holding `limit` matches — the normal case — a team
+        // engram that is the single best match for the query never appeared at
+        // all. The bug is invisible from the primary store's side: results come
+        // back, they are just the wrong ones.
+        //
+        // Scored with the primary corpus's statistics so the ranking matches
+        // what the same query returns without a pushdown. The outsiders are not
+        // part of that corpus, so their IDF is an approximation — but one
+        // consistent ranking beats two ranked lists concatenated by origin.
+        const stats = adapter.corpusStats
+          ? await adapter.corpusStats(ftsTokenize(query), pushdownFilter)
+          : undefined
+        results = searchEngrams([...surviving, ...extra], query, limit, stats)
+      } else {
+        results = surviving.slice(0, limit)
+      }
       await this._reactivateResults(results)
       return results
     }
