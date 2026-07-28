@@ -38,7 +38,7 @@ function contentScore(e: Engram): number {
 function groundingScore(e: Engram): number {
   let score = 0
   if (e.knowledge_anchors.length > 0) score += 0.4
-  if (e.associations.length > 0) score += 0.3
+  if ((e.associations?.length ?? 0) > 0) score += 0.3
   if (e.source_patterns && e.source_patterns.length > 0) score += 0.15
   if (e.entities && e.entities.length > 0) score += 0.15
   return Math.min(1.0, score)

@@ -138,6 +138,8 @@ importers:
         specifier: ^25.5.0
         version: 25.5.0
 
+  packages/migrate: {}
+
 packages:
 
   '@agentclientprotocol/sdk@1.1.0':

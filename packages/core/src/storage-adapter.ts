@@ -264,6 +264,28 @@ export const DERIVED_INDEX_DEFAULTS = {
   vectorIndex: EXACT_VECTOR_INDEX,
 } as const satisfies { role: StorageAdapterRole; vectorIndex: VectorIndexStrategy }
 
+
+/**
+ * Escape LIKE metacharacters in a caller-supplied value.
+ *
+ * `buildFilterClause` puts `filter.scope` and `filter.domain` straight into
+ * LIKE patterns. Unescaped, a `%` from the caller widens the match instead of
+ * narrowing it — `{ domain: '%' }` returns every domain, and `{ scope: '%' }`
+ * returns engrams from unrelated groups, which is exactly the segment-aware
+ * containment the #383 guard exists to enforce. Both verified against a live
+ * database before this was added.
+ *
+ * Shared by every adapter on purpose: the scope rules have already drifted once
+ * between the Postgres and PGLite copies, and that drift was an authorization
+ * bypass. One implementation, or it happens again.
+ *
+ * Callers must pair this with `ESCAPE '\'` on the LIKE, so the escape
+ * character does not depend on the server's `standard_conforming_strings`.
+ */
+export function escapeLikePattern(value: string): string {
+  return value.replace(/[\\%_]/g, c => `\\${c}`)
+}
+
 /** Async-style storage adapter. */
 export interface StorageAdapter {
   /**

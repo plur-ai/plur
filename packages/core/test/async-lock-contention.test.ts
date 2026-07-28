@@ -10,7 +10,7 @@
  * has.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync } from 'fs'
+import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync, utimesSync } from 'fs'
 import { readFile, writeFile } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
@@ -190,5 +190,74 @@ describe('withAsyncLock — in-process contention', () => {
     })
 
     expect(await readFile(p, 'utf8')).toBe('2')
+  })
+})
+
+describe('a failed acquisition never runs the critical section', () => {
+  // The loop used to be able to RUN OUT rather than throw: the stale-cleanup
+  // and stat-failure branches skip the `attempt === maxRetries` check, so if
+  // either fell on the last iteration the loop exited normally, `fn()` ran with
+  // NO lock, and the `finally` unlinked the file belonging to whoever did hold
+  // it. Two processes in the critical section at once, and the real holder
+  // silently loses its lock.
+  it('throws instead of running unlocked when the lock is held throughout', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'plur-lock-fail-'))
+    const target = join(dir, 'engrams.yaml')
+    try {
+      // A held lock, freshly stamped so it never looks stale.
+      writeFileSync(target + '.lock', '99999')
+      let ran = false
+      await expect(
+        withAsyncLock(target, async () => { ran = true }, { maxRetries: 1, baseDelay: 1, staleThreshold: 60_000 }),
+      ).rejects.toThrow(/Failed to acquire lock/)
+      expect(ran, 'the critical section ran without the lock').toBe(false)
+      // And the holder's file is still there.
+      expect(existsSync(target + '.lock'), "the holder's lock file was deleted").toBe(true)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('throws when the retry budget is spent by a stale-lock cleanup', async () => {
+    // THE case the guard exists for, and the one the test above does NOT reach.
+    //
+    // With a fresh lock the loop hits `attempt === maxRetries` and throws on its
+    // own — so that test passes with or without the guard (verified by
+    // mutation). The hole is the `continue` branches, which skip that check: a
+    // stale-lock cleanup on the FINAL attempt ends the loop normally. Before the
+    // guard, execution simply fell through and ran the critical section having
+    // never acquired anything.
+    //
+    // `maxRetries: 0` makes the first attempt the final one, so the stale branch
+    // lands exactly there.
+    const dir = mkdtempSync(join(tmpdir(), 'plur-lock-stale-'))
+    const target = join(dir, 'engrams.yaml')
+    try {
+      writeFileSync(target + '.lock', '99999')
+      // Backdate it well past the threshold so the stale branch is taken.
+      const old = new Date(Date.now() - 120_000)
+      utimesSync(target + '.lock', old, old)
+
+      let ran = false
+      await expect(
+        withAsyncLock(target, async () => { ran = true }, { maxRetries: 0, baseDelay: 1, staleThreshold: 1_000 }),
+      ).rejects.toThrow(/Failed to acquire lock/)
+      expect(ran, 'ran the critical section without ever acquiring the lock').toBe(false)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('still acquires normally when the lock is free', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'plur-lock-ok-'))
+    const target = join(dir, 'engrams.yaml')
+    try {
+      let ran = false
+      await withAsyncLock(target, async () => { ran = true })
+      expect(ran).toBe(true)
+      expect(existsSync(target + '.lock'), 'the lock file was left behind').toBe(false)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 })

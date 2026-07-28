@@ -400,7 +400,21 @@ Everything is plain YAML. Open it, read it, edit it.
 
 `PLUR_PATH` overrides the default location.
 
-For large stores (>1k engrams), enable the SQLite read index for faster filtered queries. Add `index: true` to `config.yaml`. The YAML file stays the source of truth — the `.db` is a cache that rebuilds automatically. Delete it anytime.
+Indexing is on by default (`index: true`) and the backend is chosen from the
+size of your store, so there is normally nothing to configure:
+
+| Store size | Backend | What answers a query |
+|---|---|---|
+| under 5,000 engrams | `yaml` | in-memory BM25 + exact cosine |
+| 5,000 and up | `pglite` | embedded Postgres + pgvector |
+| 50,000 and up | `postgres` | a Postgres server you point it at |
+
+YAML stays the source of truth in every tier except `postgres` (ADR-0001,
+ADR-0005) — the index is a cache that rebuilds automatically, and you can delete
+it anytime. Set `backend:` in `config.yaml` to pin a tier explicitly.
+
+`sqlite` (`engrams.db`, via `better-sqlite3`) is the legacy index and is no
+longer selected automatically.
 
 ## Requirements
 

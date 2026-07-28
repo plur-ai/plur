@@ -69,9 +69,21 @@ async function withFileLock<T>(
   const baseDelay = options?.baseDelay ?? 100
   const staleThreshold = options?.staleThreshold ?? 10_000
 
+  // Whether we actually took the lock.
+  //
+  // Without this the loop could simply RUN OUT: the two `continue` branches
+  // below (stale-lock cleanup, and a `stat` that fails because another process
+  // released between the EEXIST and the check) skip the
+  // `attempt === maxRetries` throw. If either happened on the LAST iteration
+  // the loop ended normally, `fn()` ran with no lock at all, and the `finally`
+  // unlinked a lock file belonging to whoever did hold it — handing them a
+  // silent loss of mutual exclusion on top of ours.
+  let acquired = false
+
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
       await writeFile(lockPath, `${process.pid}`, { flag: constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL })
+      acquired = true
       break
     } catch (err: any) {
       if (err.code !== 'EEXIST') throw err
@@ -93,9 +105,17 @@ async function withFileLock<T>(
     }
   }
 
+  if (!acquired) {
+    throw new Error(
+      `Failed to acquire lock on ${filePath} after ${maxRetries} retries (contended throughout)`,
+    )
+  }
+
   try {
     return await fn()
   } finally {
+    // Only ours to remove. Guarded by `acquired` so a failed acquisition can
+    // never delete the holder's file.
     await unlink(lockPath).catch(() => {})
   }
 }

@@ -17,10 +17,33 @@
  * happen.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync } from 'fs'
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { Plur } from '../src/index.js'
+
+/** Install a pack whose engrams sit in `scope`. */
+async function installPackInScope(plur: Plur, dir: string, name: string, scope: string, statement: string) {
+  const src = join(dir, `${name}-source`)
+  mkdirSync(src, { recursive: true })
+  writeFileSync(join(src, 'SKILL.md'), `---\nname: ${name}\nversion: "1.0"\n---\n`)
+  writeFileSync(join(src, 'engrams.yaml'), `engrams:
+  - id: ENG-2026-0728-${name.length}0${scope.length}
+    statement: ${statement}
+    type: behavioral
+    scope: ${scope}
+    status: active
+    version: 2
+    domain: ops.deploy
+    tags: [deploy]
+    activation:
+      retrieval_strength: 0.9
+      storage_strength: 1.0
+      frequency: 0
+      last_accessed: "2026-07-28"
+`)
+  await plur.installPack(src)
+}
 
 describe('inject() — permitted-scope allow-list', () => {
   let dir: string
@@ -88,5 +111,78 @@ describe('inject() — permitted-scope allow-list', () => {
     // that way, since injectHybrid is the one a session actually calls.
     const res = await plur.injectHybrid('how do we deploy billing', { scopes: [] })
     expect(res.count).toBe(0)
+  })
+})
+
+/**
+ * The same allow-list, applied to PACKS.
+ *
+ * A pack is installed knowledge rather than user data, which makes exempting it
+ * tempting — but pack engrams carry scopes, they reach the same output, and an
+ * allow-list with an exemption is not an allow-list. This half of the filter
+ * shipped with no test at all, so nothing would have noticed it being dropped.
+ *
+ * One thing to know before adding tests here: `installPack` ALSO writes the
+ * pack's engrams into the primary store (`plur.list()` returns them), so every
+ * pack engram reaches `inject()` on both the engram path and the pack path.
+ * Two consequences, both found by mutation testing:
+ *
+ *   - Exempting packs from the filter DOES leak: the pack path carries the
+ *     engram past the engram path's filter. That is what these tests pin.
+ *   - Dropping the pack argument entirely is NOT observable in the output,
+ *     because the same statements still arrive via the engram path. So no
+ *     assertion here can prove the pack path is still wired up — do not write
+ *     one and believe it.
+ */
+describe('inject() — the allow-list applies to pack engrams', () => {
+  let dir: string
+  let plur: Plur
+
+  beforeEach(async () => {
+    dir = mkdtempSync(join(tmpdir(), 'plur-inject-pack-scopes-'))
+    mkdirSync(join(dir, 'packs'), { recursive: true })
+    writeFileSync(join(dir, 'engrams.yaml'), 'engrams: []\n')
+    plur = new Plur({ path: dir })
+    await plur.ready()
+    await installPackInScope(plur, dir, 'tenantpack', 'group:acme/eng', 'deploy billing using the tenantpack runbook')
+    await installPackInScope(plur, dir, 'otherpack', 'group:other/eng', 'deploy billing using the otherpack runbook')
+  })
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('excludes pack engrams whose scope is not permitted', async () => {
+    const res = await plur.inject('how do we deploy billing', { scopes: ['group:acme/eng'] })
+    const all = `${res.directives}\n${res.constraints}\n${res.consider}`
+    expect(all).toContain('tenantpack')
+    expect(all, 'a pack outside the allow-list reached the context').not.toContain('otherpack')
+  })
+
+  it('an EMPTY allow-list admits no pack content either', async () => {
+    const res = await plur.inject('how do we deploy billing', { scopes: [] })
+    const all = `${res.directives}\n${res.constraints}\n${res.consider}`
+    expect(all).not.toContain('runbook')
+    expect(res.count).toBe(0)
+  })
+
+  it('an ABSENT allow-list injects every pack — no blanket deny on the engram path', async () => {
+    // Scope check, stated exactly: this guards the ENGRAM path only. Because
+    // installPack also writes into the primary store, no assertion on inject()
+    // output can see the pack path at all — verified by mutation, both
+    // `packs = []` and `packs = [] when scopes is absent` leave this suite
+    // fully green. Whether the pack argument is still wired up is not something
+    // this file can tell you.
+    const res = await plur.inject('how do we deploy billing')
+    const all = `${res.directives}\n${res.constraints}\n${res.consider}`
+    expect(all).toContain('tenantpack')
+    expect(all).toContain('otherpack')
+  })
+
+  it('a pack left with no permitted engrams is dropped, not injected empty', async () => {
+    const res = await plur.inject('how do we deploy billing', { scopes: ['group:acme/eng'] })
+    // `otherpack` had exactly one engram and it was filtered out, so the pack
+    // itself must not survive as an empty shell in the output.
+    expect(`${res.directives}\n${res.constraints}\n${res.consider}`).not.toContain('otherpack')
   })
 })

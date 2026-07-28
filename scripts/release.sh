@@ -35,6 +35,7 @@
 #       undeclared in the CHANGELOG (issue #544; see RELEASING.md)
 #   3.7 Pre-flight: every target version must be publishable (not already taken)
 #   3.8 Website version pre-flight: index.html softwareVersion must == $VERSION
+#   3.9 Packaged-artefact smoke: pack tarballs, install clean, drive the public API
 #   4.  Commit + tag + push
 #   5a. Publish npm to @next (canary)
 #   5b. Smoke test (npx by exact version; retries on npm-propagation ETARGET)
@@ -121,9 +122,14 @@ generate_tweet() {
     return 1
   fi
   features=$(echo "$section" | grep "^- " | head -4 | sed 's/^- /✅ /')
-  # Headline: prefer "Tagline:" or "Tagline." pattern in first non-blank
-  # non-bullet line of the section, fall back to "Update:".
-  headline=$(echo "$section" | awk 'NF && !/^- / && !/^###/ {print; exit}')
+  # Headline: the first non-bullet, non-heading PARAGRAPH of the section.
+  # Joined across lines rather than taking only the first physical line: a
+  # hard-wrapped summary used to be truncated at the wrap point, which for
+  # 0.16.0 produced the fragment "one engine, two" — and that fragment would
+  # have been posted to X verbatim, since the length gate only checks the
+  # total. Reading the whole paragraph makes an over-long summary fail the
+  # gate (visible, fixable) instead of shipping as a cut-off sentence.
+  headline=$(echo "$section" | awk 'NF && !/^- / && !/^###/ {buf = buf (buf ? " " : "") $0; next} buf {print buf; buf = ""; exit} END {if (buf) print buf}')
   [ -z "$headline" ] && headline="Update:"
 
   TWEET="🚀 New release: PLUR $VERSION
@@ -184,8 +190,11 @@ echo "--- Step 1: Version bump ---"
 OLD_CORE=$(node -e "console.log(require('./packages/core/package.json').version)")
 echo "Current version: $OLD_CORE → $VERSION"
 
-# package.json files for core/mcp/cli (claw is handled separately below)
-for pkg in core mcp cli; do
+# package.json files for core/mcp/cli/migrate (claw is handled separately below).
+# `migrate` ships with the release it migrates TO: the CHANGELOG tells users to
+# run `npx @plur-ai/migrate`, so a release that does not publish it advertises a
+# command that 404s.
+for pkg in core mcp cli migrate; do
   node -e "
     const fs = require('fs');
     const path = './packages/$pkg/package.json';
@@ -455,7 +464,7 @@ preflight_check() {
   return 0
 }
 PREFLIGHT_OK=true
-for pkg in core cli mcp; do
+for pkg in core cli mcp migrate; do
   preflight_check "$pkg" "$VERSION" || PREFLIGHT_OK=false
 done
 if [ -n "$CLAW_VERSION" ]; then
@@ -490,6 +499,30 @@ if [ -f "$WEBSITE_PREFLIGHT_DIR/index.html" ]; then
   echo ""
 fi
 
+# --- Step 3.9: Packaged-artefact smoke ---
+# Every other test in this repo runs against the SOURCE tree, which is not what
+# users install. That gap has already shipped a defect: `pg` is an
+# optionalDependency and tsup only auto-externalizes dependencies +
+# peerDependencies, so the driver was inlined into core's dist and
+# `PostgresAdapter` threw on first use — in the published package, while every
+# in-repo test passed.
+#
+# `smoke-release.sh` packs real tarballs, installs them outside the workspace
+# (no node_modules to fall back on, no workspace: links) and drives the public
+# API. It existed but nothing called it, so it could only ever catch something
+# if a human remembered to run it. Here it is a gate, and it runs BEFORE the
+# irreversible git tag push and first publish.
+#
+# Set PLUR_SMOKE_POSTGRES_URL to include the Postgres store in the run.
+echo "--- Step 3.9: Packaged-artefact smoke ---"
+if ! bash "$REPO_ROOT/scripts/smoke-release.sh"; then
+  echo ""
+  echo "FAIL: the packaged artefacts do not work. Nothing has been published."
+  echo "  Reproduce with: pnpm smoke:release"
+  exit 1
+fi
+echo ""
+
 # --- 4. Commit + tag + push ---
 echo "--- Step 4: Git ---"
 git add -A
@@ -507,7 +540,7 @@ echo ""
 # but unflagged — npm's 72-hour unpublish rule means we can't delete; we ship
 # a 0.9.5 patch and deprecate 0.9.4 via `npm deprecate`).
 echo "--- Step 5a: Publish npm @next (canary) ---"
-for pkg in core cli mcp; do
+for pkg in core cli mcp migrate; do
   echo -n "  @plur-ai/$pkg@$VERSION → @next..."
   pnpm --filter "@plur-ai/$pkg" publish --access public --no-git-checks --tag next 2>&1 | tail -1
 done
@@ -615,7 +648,7 @@ echo ""
 # Past this point, @latest is updated. Users on @latest start receiving the
 # new version. PyPI publish + GH release + tweet follow.
 echo "--- Step 5c: Promote @next → @latest ---"
-for pkg in core cli mcp; do
+for pkg in core cli mcp migrate; do
   echo -n "  @plur-ai/$pkg@$VERSION → @latest..."
   npm dist-tag add "@plur-ai/$pkg@$VERSION" latest 2>&1 | tail -1
 done

@@ -1,6 +1,6 @@
 # ADR-0004: Concurrency correctness before the async flip
 
-Status: **Proposed**
+Status: **Accepted** — implemented in 0.16
 Date: 2026-07-27
 Authors: convergence programme, Phase 2
 Related: ADR-0003 (primary store capability)

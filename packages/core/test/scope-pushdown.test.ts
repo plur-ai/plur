@@ -16,6 +16,7 @@
  * pass-through).
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { buildFilterClause } from '../src/storage-postgres.js'
 import { mkdtempSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
@@ -242,4 +243,39 @@ describe('Plur read paths — permitted-scope pushdown', () => {
       })
     })
   }
+})
+
+describe('LIKE metacharacters in a caller-supplied scope or domain', () => {
+  // `buildFilterClause` puts `filter.scope` and `filter.domain` into LIKE
+  // patterns. Unescaped, a caller's `%` WIDENS the match instead of narrowing
+  // it — verified against a live database: `{ domain: '%' }` returned every
+  // domain, and `{ scope: '%' }` returned engrams from two unrelated groups,
+  // which is precisely the segment-aware containment the #383 guard exists to
+  // enforce.
+  //
+  // Both adapters are checked, because the scope rules have drifted between the
+  // Postgres and PGLite copies before and that drift was an authorization
+  // bypass.
+  it('a wildcard domain matches literally, not everything', () => {
+    const { where, params } = buildFilterClause({ status: 'active', domain: '%' })
+    expect(where).toMatch(/ESCAPE/)
+    expect(params).toContain('\\%')
+  })
+
+  it('a wildcard scope matches literally, not across namespaces', () => {
+    const { where, params } = buildFilterClause({ status: 'active', scope: '%' })
+    expect(where).toMatch(/ESCAPE/)
+    // The equality arm keeps the raw value; the two LIKE arms are escaped.
+    expect(params.filter(p => p === '\\%').length).toBe(2)
+  })
+
+  it('an underscore is escaped too — it is LIKE\'s single-character wildcard', () => {
+    const { params } = buildFilterClause({ status: 'active', domain: 'ops_deploy' })
+    expect(params).toContain('ops\\_deploy')
+  })
+
+  it('an ordinary scope is unchanged', () => {
+    const { params } = buildFilterClause({ status: 'active', domain: 'ops/deploy' })
+    expect(params).toContain('ops/deploy')
+  })
 })

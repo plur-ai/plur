@@ -8,7 +8,8 @@
     "test:smoke": "vitest run packages/core/test/remote-smoke.test.ts",
     "test:watch": "vitest",
     "bench:micro": "npx tsx benchmark/micro.ts",
-    "typecheck:tests": "tsc -p tsconfig.tests.json --noEmit"
+    "typecheck:tests": "tsc -p tsconfig.tests.json --noEmit",
+    "smoke:release": "bash scripts/smoke-release.sh"
   },
   "devDependencies": {
     "@types/node": "25.5.0",

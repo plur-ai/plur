@@ -82,6 +82,7 @@ export { generateGuardrails } from './guardrails.js'
 export type { MetaField, StructuralTemplate, EvidenceEntry, MetaConfidence, DomainCoverage, HierarchyPosition, Falsification } from './schemas/meta-engram.js'
 export { MetaFieldSchema, StructuralTemplateSchema, EvidenceEntrySchema, MetaConfidenceSchema, DomainCoverageSchema, HierarchyPositionSchema, FalsificationSchema } from './schemas/meta-engram.js'
 export { engramSearchText, termMatches, computeIdf, type CorpusStats } from './fts.js'
+export { EngramStoreUnreadableError } from './engrams.js'
 export { freshTailBoost } from './fresh-tail.js'
 export { autoSummary, generateSummary, needsSummary } from './summary.js'
 export { selectModel, selectModelForOperation, resolveOperationTier, type ModelTier, type LlmTierConfig } from './model-routing.js'
@@ -443,6 +444,16 @@ const INGEST_PATTERNS = [
   { re: /(?:important|note|remember):\s*(.+?)\.?$/gim, type: 'behavioral' as const },
 ]
 
+/**
+ * How many extra candidates a pushdown fetches per requested result.
+ *
+ * The store cannot evaluate expiry or `min_strength`, so those run after the
+ * SQL LIMIT. Without headroom a page of `limit` rows that are then filtered
+ * returns short — and short is invisible: the caller gets fewer results and no
+ * indication that any were removed.
+ */
+const PUSHDOWN_OVERFETCH = 3
+
 export class Plur {
   private paths: PlurPaths
   private config: PlurConfig
@@ -715,9 +726,30 @@ export class Plur {
    */
   private async _loadAllEngrams(): Promise<Engram[]> {
     const primary = await this._loadCached(this.paths.engrams)
-    const stores = this.config.stores ?? []
+    return [...primary, ...(await this._loadSecondaryAndPacks())]
+  }
 
-    const all: Engram[] = [...primary]
+  /**
+   * Everything that is NOT the primary store: configured secondary stores
+   * (file-path AND remote) plus installed packs, with the id namespacing, scope
+   * narrowing and containment guard applied.
+   *
+   * Extracted so the BM25 pushdown path can reach these rows without loading the
+   * primary corpus — the whole point of pushing the query into the store. An
+   * earlier version of that path re-implemented this loop and got three things
+   * wrong at once: it skipped `url` stores entirely (so an enterprise team store
+   * vanished from `recall()` while `list()` still showed it), and it returned
+   * rows RAW — no namespacing, no `global` narrowing, no `isScopeWithin` guard.
+   * The namespacing one had teeth beyond cosmetics: both stores mint
+   * `ENG-YYYY-MMDD-NNN` from a per-store daily sequence, so ids collide as the
+   * common case, and `feedback()` / `forget()` resolve by exact id against the
+   * primary store first — mutating an unrelated engram.
+   *
+   * One implementation, two callers. Duplicating it is what caused all three.
+   */
+  private async _loadSecondaryAndPacks(): Promise<Engram[]> {
+    const stores = this.config.stores ?? []
+    const all: Engram[] = []
     for (const store of stores) {
       const storeEngrams = store.url
         ? this._loadRemoteCached(store)
@@ -1156,8 +1188,13 @@ export class Plur {
 
     type PersistenceTarget = 'primary' | 'secondary' | 'in-memory'
     const primaryIdx = engrams.findIndex(e => e.id === hit.id)
-    let persistedTo: PersistenceTarget
-    let newRecurrence: number
+    // Definite-assignment asserted: every branch below assigns both, but one of
+    // those branches now runs inside the secondary store's lock callback, which
+    // TypeScript cannot prove is invoked. The alternative — threading both
+    // values out through the callback's return type — obscures the control flow
+    // for no benefit, since the callback is awaited on the same line.
+    let persistedTo!: PersistenceTarget
+    let newRecurrence!: number
 
     if (primaryIdx !== -1) {
       // Primary store: mutate the engram in the loaded array (symmetric with
@@ -1176,6 +1213,13 @@ export class Plur {
       // primaryIdx already proved this isn't in primary; only check writability.
       const storeInfo = await this._findEngramStore(hit.id)
       if (storeInfo && !storeInfo.readonly) {
+        // Under the SECONDARY store's own lock. This read-modify-write had none
+        // at all, while the identical operation on the primary store took one:
+        // two processes recording recurrence on the same team engram both
+        // loaded, both mutated, and both wrote — and because `_writeEngrams`
+        // replaces the whole file, whatever the other added in between was
+        // deleted outright, not merely overwritten.
+        await this._withStoreLock(storeInfo.path, async () => {
         const storeEngrams = await this._storeAt(storeInfo.path).load()
         const sidx = storeEngrams.findIndex(e => e.id === storeInfo.originalId)
         // Audit iter-5 defense (Critic low #3): _crossScopeRecurrenceDetect
@@ -1206,6 +1250,7 @@ export class Plur {
           newRecurrence = applyMutation(hit, sourceEntry, lockTimestamp)
           persistedTo = 'in-memory'
         }
+        })
       } else {
         // Readonly or remote — apply to hit only. Remote PATCH wiring tracked
         // separately; in-memory state is still returned to the caller.
@@ -2286,19 +2331,46 @@ export class Plur {
     // parity-tested against real Postgres but had ZERO call sites — built and
     // unreachable. This is the wiring.
     //
-    // The adapter is handed the SAME filter this method would have applied in
-    // memory, so scope, domain and the permitted-scope allow-list are enforced
-    // in the query rather than after it. That is the point: post-filtering
-    // measures `limit` against rows the caller may not be allowed to see.
+    // Scope, domain and the permitted-scope allow-list go INTO the query, so
+    // `limit` is not spent on rows the caller may not see.
+    //
+    // The rest of `_filterEngrams`'s work still has to happen, and an earlier
+    // version of this branch simply returned here — which silently dropped four
+    // things the in-memory path applies:
+    //
+    //   - temporal validity: an engram whose `valid_until` has passed was
+    //     returned as current. A fact explicitly withdrawn in 2020 was injected
+    //     into an agent's context by `recall()` while `list()` correctly
+    //     excluded it. Reproduced, not theorised.
+    //   - `min_strength`
+    //   - engrams merged in from `config.stores` (team/enterprise stores)
+    //   - pack engrams
+    //
+    // The last two are the ones that would have been reported as "recall is
+    // broken": on the Postgres tier `plur_recall` stopped returning the team
+    // store entirely, while `recallHybrid` on the SAME instance still did.
+    //
+    // The adapter cannot answer those — it queries one table and knows nothing
+    // about packs, secondary stores, or the caller's clock. So the pushdown is
+    // a NARROWING step, not a replacement: it returns a superset, and the
+    // remaining predicates are applied here. `limit` is applied last, after all
+    // of them, so a row removed by expiry does not consume a slot.
     const adapter = this._primaryQueryAdapter()
     if (adapter) {
-      const results = await adapter.searchBM25(query, {
-        limit,
+      const narrowed = await adapter.searchBM25(query, {
+        // Over-fetch: post-filters below can remove rows, and a row dropped
+        // after a LIMIT is a result the caller silently never sees.
+        limit: Math.max(limit * PUSHDOWN_OVERFETCH, limit),
         status: 'active',
         scope: options?.scope,
         scopes: options?.scopes,
         domain: options?.domain,
       })
+      const extra = await this._engramsOutsidePrimaryStore(options)
+      const merged = extra.length > 0
+        ? [...narrowed, ...searchEngrams(this._applyResidualFilters(extra, options), query, limit)]
+        : narrowed
+      const results = this._applyResidualFilters(merged, options).slice(0, limit)
       await this._reactivateResults(results)
       return results
     }
@@ -2732,6 +2804,65 @@ export class Plur {
   }
 
   /** Filter engrams by scope/domain/strength (shared by both modes) */
+  /**
+   * Predicates a store CANNOT answer, applied after a pushdown narrows.
+   *
+   * `searchBM25` filters status/scope/domain/scopes in SQL. Temporal validity
+   * and `min_strength` are not columns it can filter on — validity depends on
+   * the caller's clock, and strength lives inside the JSONB payload — so they
+   * have to run here, on the rows that came back.
+   *
+   * Deliberately a shared helper rather than a copy of the tail of
+   * `_filterEngrams`: two implementations of "which engrams count" is how the
+   * pushdown branch came to silently disagree with `list()` in the first place.
+   */
+  private _applyResidualFilters(engrams: Engram[], options?: RecallOptions & { include_expired?: boolean }): Engram[] {
+    let out = engrams
+    if (!options?.include_expired) {
+      const today = new Date().toISOString().slice(0, 10)
+      out = out.filter(e => {
+        if (e.temporal?.valid_until && e.temporal.valid_until < today) return false
+        if (e.temporal?.valid_from && e.temporal.valid_from > today) return false
+        return true
+      })
+    }
+    if (options?.min_strength !== undefined) {
+      out = out.filter(e => e.activation.retrieval_strength >= options.min_strength!)
+    }
+    return out
+  }
+
+  /**
+   * Engrams a primary-store pushdown cannot see: secondary (team/project)
+   * stores from `config.stores`, and installed packs.
+   *
+   * `searchBM25` queries ONE table. `_loadAllEngrams` merges these in, so
+   * without this the Postgres tier answered `recall()` from the primary store
+   * alone — an enterprise user's team store vanished from `plur_recall` while
+   * `recallHybrid` on the same instance still returned it. No error, no
+   * warning: just fewer results.
+   *
+   * Scope and domain are applied here to mirror what the SQL side does to the
+   * primary rows; the residual filters are applied by the caller.
+   */
+  private async _engramsOutsidePrimaryStore(options?: RecallOptions): Promise<Engram[]> {
+    // Delegates to the SAME loader `_loadAllEngrams` uses, so remote stores,
+    // id namespacing, scope narrowing and the containment guard cannot drift
+    // between the pushdown path and every other read path. This method used to
+    // re-implement that loop and got all four wrong.
+    let filtered = (await this._loadSecondaryAndPacks()).filter(e => e.status === 'active')
+    if (options?.scopes !== undefined) {
+      const allowed = scopeAllowFilter(options.scopes)
+      filtered = filtered.filter(e => allowed(e.scope))
+    }
+    if (options?.domain) filtered = filtered.filter(e => e.domain?.startsWith(options.domain!))
+    if (options?.scope) {
+      const scope = options.scope
+      filtered = filtered.filter(e => isScopeWithin(e.scope, scope) || isPersonalScope(e.scope))
+    }
+    return filtered
+  }
+
   private async _filterEngrams(options?: RecallOptions & { include_expired?: boolean }): Promise<Engram[]> {
     let engrams: Engram[]
     if (this.indexedStorage) {
@@ -2804,10 +2935,30 @@ export class Plur {
     const primaryResults = results.filter(e => !isStoreEngram(e))
     if (primaryResults.length === 0) return
     await this._withStoreLock(this.paths.engrams, async () => {
-      const allEngrams = await this._primaryStore.load()
       const resultIds = new Set(primaryResults.map(e => e.id))
+      // Read only the engrams this recall touched, when the store can.
+      // Everything below is keyed by id — the reactivation targets `resultIds`
+      // and the co-access edges only ever look up sources drawn from the
+      // results — so materialising the corpus was pure overhead. Re-read under
+      // the lock rather than reusing the search results, so two concurrent
+      // recalls cannot both increment from the same stale counter.
+      const store = this._storeAt(this.paths.engrams)
+      const allEngrams = store.loadByIds
+        ? await store.loadByIds([...resultIds])
+        : await this._primaryStore.load()
       const today = new Date().toISOString().slice(0, 10)
-      let modified = false
+      // WHICH engrams changed, not merely whether any did.
+      //
+      // This wrote the whole corpus back on every read — activation is updated
+      // on each recall, and `_writeEngrams` is a full replace. Measured on
+      // Postgres: 252ms for 2,000 engrams, extrapolating to ~6.3s at 50,000,
+      // which is the corpus size at which that tier is selected in the first
+      // place. All of it under the global write lock, so every writer queued
+      // behind every reader.
+      //
+      // A recall touches a handful of rows. Tracking them lets a store that
+      // supports targeted updates write only those.
+      const touched = new Map<string, Engram>()
 
       // Reactivate accessed engrams
       for (const e of allEngrams) {
@@ -2815,7 +2966,7 @@ export class Plur {
           e.activation.retrieval_strength = reactivate(e.activation.retrieval_strength)
           e.activation.last_accessed = today
           e.activation.frequency += 1
-          modified = true
+          touched.set(e.id, e)
         }
       }
 
@@ -2827,6 +2978,13 @@ export class Plur {
         for (const sourceId of topIds) {
           const source = allEngrams.find(e => e.id === sourceId)
           if (!source) continue
+          // Normalise before use. `associations` has a schema default, but a row
+          // that reaches here WITHOUT going through the schema — one written by
+          // an older version, a migration, or any tool that talks to the table
+          // directly — has no such guarantee, and `undefined.find(...)` takes
+          // down the whole recall. Reads should not be able to crash on a row
+          // they merely passed over.
+          if (!Array.isArray(source.associations)) source.associations = []
 
           for (const targetId of topIds) {
             if (targetId === sourceId) continue
@@ -2838,7 +2996,7 @@ export class Plur {
             if (existing) {
               existing.strength = Math.min(0.95, existing.strength + 0.05)
               existing.updated_at = today
-              modified = true
+              touched.set(source.id, source)
             } else {
               const coAccessCount = source.associations.filter(a => a.type === 'co_accessed').length
               if (coAccessCount < 5) {
@@ -2849,17 +3007,24 @@ export class Plur {
                   strength: 0.3,
                   updated_at: today,
                 })
-                modified = true
+                touched.set(source.id, source)
               }
             }
           }
         }
       }
 
-      if (modified) {
+      if (touched.size === 0) return
+
+      if (store.updateMany) {
+        // Targeted: rewrites the handful of rows a recall actually touched.
+        await store.updateMany([...touched.values()])
+      } else {
+        // A single-file store has no cheaper option — the whole file is
+        // rewritten either way, so this is the same cost it always was.
         await this._writeEngrams(this.paths.engrams, allEngrams)
-        await this._syncIndex()
       }
+      await this._syncIndex()
     })
   }
 
@@ -3149,6 +3314,14 @@ export class Plur {
       if (storeInfo.readonly) {
         throw new Error('Engram is in a readonly store')
       }
+      // Under the SECONDARY store's own lock — this had none, while the same
+      // operation on the primary store took one. Two processes rating the same
+      // team engram both loaded, both incremented, and both wrote back, so one
+      // increment vanished; and a whole-file replace also deletes anything the
+      // other process added in between.
+      // Returns whether the engram was found and handled here; a miss falls
+      // through to the remote-store search below.
+      const handled = await this._withStoreLock(storeInfo.path, async () => {
       // Must load fresh (not cached) since we're about to mutate and write back
       const storeEngrams = await this._storeAt(storeInfo.path).load()
       const engram = storeEngrams.find(e => e.id === storeInfo.originalId)
@@ -3170,8 +3343,11 @@ export class Plur {
         await this._writeEngrams(storeInfo.path, storeEngrams)
         await this._syncIndex()
         this._logInjectionOutcome(id, signal)
-        return
+        return true
       }
+      return false
+      })
+      if (handled) return
     }
 
     // Check remote stores — the engram may live on an enterprise server.
@@ -3397,7 +3573,12 @@ export class Plur {
 
   /**
    * Toggle the always-load (pinned) flag for an engram.
-   * Returns the updated engram on success, null if not found.
+   *
+   * Returns the updated engram on success, `null` if it is not found in the
+   * local primary store or in any writable remote. Since 0.16 the remote PATCH
+   * is awaited and its result returned, so the value is the real engram rather
+   * than a placeholder — {@link setPinnedAsync} is now equivalent and kept only
+   * for source compatibility.
    */
   async setPinned(id: string, pinned: boolean): Promise<Engram | null> {
     // Local primary first.
@@ -3421,15 +3602,20 @@ export class Plur {
       const serverId = this._stripRemotePrefix(id, entry.scope)
       const driver = this._getRemoteDriver({ url: entry.url, token: entry.token, scope: entry.scope })
       try {
-        // Note: PATCH is async but setPinned() preserves its sync API for
-        // backward compat. We block on a sync-bridge via deasync would be
-        // bad; instead we do a fire-and-forget mutation and let the next
-        // load() observe the change. The local cache invalidates on patch.
-        // Callers needing strict ordering should call setPinnedAsync (TODO).
-        void driver.patch(serverId, { pinned: pinned === true ? true : undefined })
-        // Return a synthesized view of the expected result so callers don't
-        // see null. The real engram comes back on next load() / getById().
-        return { id, pinned: pinned === true ? true : undefined } as unknown as Engram
+        // Awaited, and the SERVER's engram is returned.
+        //
+        // This used to fire-and-forget the PATCH and return
+        // `{ id, pinned } as unknown as Engram` — an object that is not an
+        // Engram at all (no statement, scope, status or activation), so
+        // `(await plur.setPinned(id, true)).statement` was `undefined`. It also
+        // reported success before the write had happened, and a rejected
+        // floating promise could not be caught by the `catch` below.
+        //
+        // The justification was that `setPinned` had to keep a synchronous
+        // signature. It is `async` since the 0.16 flip, so that reason is gone
+        // and the honest version costs nothing.
+        const patched = await driver.patch(serverId, { pinned: pinned === true ? true : undefined })
+        if (patched) return patched
       } catch {
         continue
       }
@@ -3438,9 +3624,8 @@ export class Plur {
   }
 
   /**
-   * Async variant of setPinned that awaits remote PATCH so callers can
-   * observe the post-write state. Use this when ordering matters
-   * (e.g. test assertions immediately after a pin call).
+   * @deprecated Equivalent to {@link setPinned} since 0.16 — that method now
+   * awaits the remote PATCH too. Kept so existing callers keep compiling.
    */
   async setPinnedAsync(id: string, pinned: boolean): Promise<Engram | null> {
     // Local primary first.
