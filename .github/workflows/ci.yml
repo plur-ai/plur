@@ -96,6 +96,16 @@ jobs:
             echo "::error::spec/*.json is out of sync with the Zod schemas. Run 'pnpm --filter @plur-ai/core gen:schemas' and commit."
             exit 1
           }
+      # Four suites (pr1-indexed-migration, read-side-scope-visibility,
+      # scope-pushdown, storage-indexed) gate themselves on
+      # `require('better-sqlite3')` inside try/catch and SKIP silently when the
+      # optionalDependency failed to build. Nothing asserted CI was actually in
+      # the ran-them state — a runner image change that breaks the native build
+      # would quietly shrink coverage with every job still green. Fail here
+      # instead, before the test step, with an unambiguous message.
+      - name: Assert better-sqlite3 built — the gated suites must run, not skip
+        run: node -e "require('better-sqlite3'); console.log('better-sqlite3 present — the sqlite-gated suites will run')"
+        working-directory: packages/core
       - run: pnpm test
         env:
           # Throwaway credentials for the ephemeral service container above —
@@ -137,11 +147,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          # Tags, so packages/migrate/test/method-list.test.ts can read the
-          # 0.15.0 source and actually verify its sync -> async claim. Without
-          # them that test takes a no-assertion early return and passes
-          # vacuously — which is how a wrong claim about the past reached the
-          # CHANGELOG in the first place.
+          # Full history so this job builds the same artefacts a release build
+          # would see (release.sh runs from a full clone with tags). The
+          # method-list.test.ts justification the `test` job carries does NOT
+          # apply here — this job never runs vitest; the comment used to be a
+          # copy-paste of that one, claiming a reason that was not this job's.
           fetch-depth: 0
       - uses: pnpm/action-setup@v4
         with:

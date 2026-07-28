@@ -14,7 +14,7 @@
  * the failure, so that the fix has something to be a fix OF.
  */
 import { describe, it, expect } from 'vitest'
-import { computeIdf, ftsTokenize, ftsScore, searchEngrams, termMatches, engramSearchText, type CorpusStats } from '../src/fts.js'
+import { computeIdf, ftsTokenize, ftsScore, searchEngrams, termMatches, engramSearchText, extendCorpusStats, type CorpusStats } from '../src/fts.js'
 import type { Engram } from '../src/schemas/engram.js'
 
 function makeEngram(id: string, statement: string): Engram {
@@ -296,5 +296,83 @@ describe('CorpusStats — length normalisation (#711)', () => {
     // deriving avgdl from the candidates reverses them.
     const naive = searchEngrams(candidates, QUERY, 10).map(e => e.id)
     expect(naive).not.toEqual(viaPushdown)
+  })
+})
+
+describe('extendCorpusStats — the union is scored with union statistics (#752)', () => {
+  // The multi-store shape from the audit's end-to-end demonstration, scaled
+  // verbatim: `widget` is common in the primary corpus (100 of 200 docs, one
+  // of them matching it 5x), `zephyr` never appears there but is common in
+  // the secondary store (195 of 196 docs). Primary-only stats price `zephyr`
+  // at df=0 → log(N/1) — maximally rare, unbounded in primary-corpus size —
+  // so every weak outsider row outranked the strongest on-topic primary
+  // match, which landed at rank 197.
+  function buildUnion() {
+    const primary: Engram[] = []
+    primary.push(makeEngram('ENG-2026-0728-500', 'widget widget widget widget widget'))
+    for (let i = 0; i < 99; i++) {
+      primary.push(makeEngram(`ENG-2026-0728-5${String(i + 1).padStart(2, '0')}`, `widget filler note ${i}`))
+    }
+    for (let i = 0; i < 100; i++) {
+      primary.push(makeEngram(`ENG-2026-0728-6${String(i).padStart(2, '0')}`, `plain filler note ${i}`))
+    }
+    const outsiders: Engram[] = []
+    for (let i = 0; i < 195; i++) {
+      outsiders.push(makeEngram(`ENG-2026-0728-7${String(i).padStart(2, '0')}`, `zephyr team note ${i}`))
+    }
+    outsiders.push(makeEngram('ENG-2026-0728-799', 'unrelated outsider entry'))
+    return { primary, outsiders }
+  }
+
+  const QUERY = 'widget zephyr'
+
+  it('folds outsider documents into N, df, and avgdl exactly', () => {
+    const { primary, outsiders } = buildUnion()
+    const tokens = ftsTokenize(QUERY)
+    const base = statsFrom(primary, tokens)
+    const union = extendCorpusStats(base, tokens, outsiders)
+
+    expect(union.N).toBe(base.N + outsiders.length)
+    // `zephyr` was invisible to the primary corpus; the union sees all 195.
+    expect(base.df.get('zephyr')).toBe(0)
+    expect(union.df.get('zephyr')).toBe(195)
+    // `widget` gains nothing — no outsider mentions it.
+    expect(union.df.get('widget')).toBe(base.df.get('widget'))
+    // avgdl is the length-weighted mean, not a copy of either side's.
+    const outsiderTotal = outsiders.reduce((s, e) => s + ftsTokenize(engramSearchText(e)).length, 0)
+    const want = (base.avgDocLength * base.N + outsiderTotal) / union.N
+    expect(union.avgDocLength).toBeCloseTo(want, 10)
+    // And the input object is not mutated.
+    expect(base.df.get('zephyr')).toBe(0)
+  })
+
+  it('returns the same stats object untouched when there are no outsiders', () => {
+    const { primary } = buildUnion()
+    const tokens = ftsTokenize(QUERY)
+    const base = statsFrom(primary, tokens)
+    expect(extendCorpusStats(base, tokens, [])).toBe(base)
+  })
+
+  it('a term absent from the primary corpus no longer buries the strongest primary match', () => {
+    const { primary, outsiders } = buildUnion()
+    const tokens = ftsTokenize(QUERY)
+    const base = statsFrom(primary, tokens)
+
+    // The candidate set recall() would rank: the strong match, a page of weak
+    // primary hits, and every outsider.
+    const strong = primary[0]
+    const candidates = [strong, ...primary.slice(1, 6), ...outsiders]
+
+    // With primary-only stats the inversion is real, not hypothetical — this
+    // is the failure the fix is a fix OF, pinned so it cannot quietly return.
+    const buried = searchEngrams(candidates, QUERY, 5, base)
+    expect(
+      buried.map(e => e.id),
+      'under primary-only stats the weak zephyr rows must outrank the strong match — if this fails, the fixture no longer reproduces the bug and proves nothing',
+    ).not.toContain(strong.id)
+
+    // With union stats the strong match is first.
+    const ranked = searchEngrams(candidates, QUERY, 5, extendCorpusStats(base, tokens, outsiders))
+    expect(ranked[0]?.id).toBe(strong.id)
   })
 })

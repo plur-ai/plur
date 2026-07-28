@@ -100,6 +100,22 @@ because it is a claim a caller may act on.
   tool's combinator/paren/template/optional-chaining scanning, `setPinned`'s
   fabricated remote return, the release smoke's authorization checks and its CI
   wiring, plus lean-tool/storage/ADR documentation drift.
+- **A `recall()` could delete the corpus on a partially-targeted store** (#749).
+  `loadByIds` and `updateMany` are independently optional on `PrimaryStore`;
+  with the targeted read present and the targeted write absent, reactivation's
+  whole-file fallback replaced the corpus with the current result page —
+  measured: 12 engrams in, `recall(limit 3)`, 3 left. Both paths are now gated
+  behind one capability check (the pair, or neither), and `updateEngram`'s
+  remote-store error path no longer takes down the MCP server. The same PR made
+  `pnpm smoke:release` a real gate: packed tarballs installed outside the
+  workspace, driven through the public API, Postgres included.
+- **`recall()` returned the wrong rows on a pushdown store** (#750). Two bugs:
+  secondary-store and pack engrams were appended AFTER primary results, so a
+  team engram that was the single best match never appeared once the primary
+  store had `limit` hits — they are now ranked together; and the fixed 3x
+  over-fetch starved recall when residual filters (expiry, `min_strength`)
+  rejected more than two thirds of a page — the fetch now widens and re-queries,
+  bounded at three rounds (recoverable rejection ceiling 26/27 ≈ 96.3%).
 ### Fixed
 
 - **BM25 reverse-substring matches** (#721, #724): `qt.includes(t)` let any document token that was a non-prefix substring of the query score a hit — `deploying` matched an engram about *yin*, `postgres` matched one about *res*. Now `qt.startsWith(t)`, which keeps morphological prefixes (`deploy` → `deploying`) and drops the junk. Measured on a 3,930-engram store: no query loses results, and the reverse-substring matches it removes were never meaningful.

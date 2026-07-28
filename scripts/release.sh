@@ -184,6 +184,40 @@ echo "=== PLUR Release $VERSION ==="
 echo "Dry run: $DRY_RUN"
 echo ""
 
+# --- Step 0: Working-tree preflight ---
+# Step 4 runs `git add -A` and commits WHATEVER is in the tree, then pushes to
+# main. Before this gate existed, any stray file present at release time — a
+# scratch script, an unrelated in-progress edit, another session's work — was
+# silently folded into "chore: release vX.Y.Z" and published to the world.
+# The 0.16.0 pre-release audit (#752) flagged it: every other irreversible
+# step in this script has a gate in front of it; the commit had none.
+# Skipped for --dry-run, which never commits and is legitimately run on a
+# feature branch while iterating.
+if [ "$DRY_RUN" = false ]; then
+  echo "--- Step 0: Working-tree preflight ---"
+  BRANCH=$(git rev-parse --abbrev-ref HEAD)
+  if [ "$BRANCH" != "main" ]; then
+    echo "✗ Releases ship from main; this is '$BRANCH'."
+    exit 1
+  fi
+  if [ -n "$(git status --porcelain)" ]; then
+    echo "✗ Working tree is not clean. Step 4 commits with 'git add -A', so anything"
+    echo "  listed below would be silently folded into the release commit:"
+    git status --short
+    echo "  Commit, stash, or remove it first."
+    exit 1
+  fi
+  git fetch origin main --quiet
+  if [ "$(git rev-parse HEAD)" != "$(git rev-parse origin/main)" ]; then
+    echo "✗ Local main is not origin/main ($(git rev-parse --short HEAD) vs $(git rev-parse --short origin/main))."
+    echo "  Pull or push first — releasing from a diverged main either loses the"
+    echo "  divergence or fails at the push AFTER npm has already published."
+    exit 1
+  fi
+  echo "  ✓ on main, clean tree, in sync with origin/main"
+  echo ""
+fi
+
 # --- 1. Version bump (11 locations) ---
 echo "--- Step 1: Version bump ---"
 
@@ -551,7 +585,24 @@ echo ""
 echo "--- Step 5a: Publish npm @next (canary) ---"
 for pkg in core cli mcp migrate; do
   echo -n "  @plur-ai/$pkg@$VERSION → @next..."
-  pnpm --filter "@plur-ai/$pkg" publish --access public --no-git-checks --tag next 2>&1 | tail -1
+  if ! pnpm --filter "@plur-ai/$pkg" publish --access public --no-git-checks --tag next 2>&1 | tail -1; then
+    # Every other failure branch in this script prints its recovery steps;
+    # this one aborted bare (set -euo pipefail) and left you to reconstruct
+    # which of the four packages made it out. Blast radius is small — @latest
+    # only moves in Step 5c — but a partial @next needs finishing BY HAND: a
+    # full re-run fails Step 3.7 for every package already published.
+    echo ""
+    echo "FAIL: @plur-ai/$pkg@$VERSION did not reach @next."
+    echo "  Published so far this run: the packages BEFORE '$pkg' in (core cli mcp migrate)."
+    echo "  @latest has not moved; users are unaffected. To recover:"
+    echo "    1. Fix the cause, then for '$pkg' and each remaining package:"
+    echo "       pnpm --filter @plur-ai/<pkg> publish --access public --no-git-checks --tag next"
+    echo "    2. Verify: npm view @plur-ai/<pkg>@$VERSION dist-tags"
+    echo "    3. Continue manually from Step 5b (smoke from @next, then promote via"
+    echo "       npm dist-tag add @plur-ai/<pkg>@$VERSION latest), or roll back with"
+    echo "       npm dist-tag rm @plur-ai/<pkg> next"
+    exit 1
+  fi
 done
 if [ -n "$CLAW_VERSION" ]; then
   echo -n "  @plur-ai/claw@$CLAW_VERSION → @next..."

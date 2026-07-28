@@ -698,6 +698,25 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
     return this.vectorIndex
   }
 
+  /**
+   * Tear down both pools and refuse further use.
+   *
+   * KNOWN LIMITATION (#751): `close()` racing construction leaks the pool.
+   * `const p = a.load(); await a.close(); await p` — `close()` runs while
+   * `getPool()` is still mid-flight, sees `this.pool === null`, and tears down
+   * nothing; the pool finishes constructing afterwards and its connection
+   * stays open, invisible to this method. Verified against a live server: the
+   * orphaned backend sits idle until node-postgres's own idle-timeout reclaims
+   * it — the process exits cleanly, nothing hangs, but the connection outlives
+   * `close()` by seconds. Subsequent calls on the adapter DO fail correctly
+   * (`[postgres] adapter is closed`).
+   *
+   * Deliberately not fixed in 0.16.0: two attempts turned the leaked
+   * connection into a hung process, which is strictly worse. The working fix
+   * needs a checkout-tracking set plus a refusal inside `acquire()` once
+   * closed — see #751. Until then: await construction (any first operation)
+   * before calling `close()`.
+   */
   async close(): Promise<void> {
     if (this.pool) {
       const pool = this.pool

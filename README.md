@@ -407,11 +407,19 @@ size of your store, so there is normally nothing to configure:
 |---|---|---|
 | under 5,000 engrams | `yaml` | in-memory BM25 + exact cosine |
 | 5,000 and up | `pglite` | embedded Postgres + pgvector |
-| 50,000 and up | `postgres` | a Postgres server you point it at |
+| 50,000 and up | `postgres` | a Postgres server you point it at — BM25 in SQL; semantic recall scores in memory (see below) |
 
 YAML stays the source of truth in every tier except `postgres` (ADR-0001,
 ADR-0005) — the index is a cache that rebuilds automatically, and you can delete
 it anytime. Set `backend:` in `config.yaml` to pin a tier explicitly.
+
+One caveat on the `postgres` tier, stated here because it is this table's
+headline row: **core does not write embeddings to a Postgres primary store**
+(ADR-0005 amendment). Keyword/BM25 recall runs in SQL, but `engram_embeddings`
+stays empty unless your deployment populates it, so semantic and hybrid recall
+fall back to loading engrams and scoring in memory — correct results, at the
+O(N) cost this tier otherwise avoids. The adapter says so once at schema init;
+`vectorIndex: 'exact'` acknowledges and silences it.
 
 `sqlite` (`engrams.db`, via `better-sqlite3`) is the legacy index and is no
 longer selected automatically.

@@ -28,6 +28,50 @@ describe('scanSource — what it finds', () => {
     expect(scan('this.memory.plur.feedback(id, "positive")')).toHaveLength(1)
   })
 
+  it('finds calls on bracket-indexed receivers — arrays and maps of stores are ordinary shapes', () => {
+    // These scanned CLEAN before the 0.16.0 audit (#752): the receiver
+    // pattern only knew dot-chains, and a clean exit is read as "this file is
+    // done" — the silent-omission failure the tool's own header warns about.
+    for (const src of [
+      'async function go(arr) { arr[0].learn("x") }',
+      'async function go(byName) { byName[\'team\'].recall(q) }',
+      'async function go(pool, i) { pool[i + 1].learn("x") }',
+      'async function go(app) { app.stores[0].plur.learn("x") }',
+    ]) {
+      const f = scan(src)
+      expect(f, src).toHaveLength(1)
+      expect(f[0].fixable, src).toBe(true)
+    }
+  })
+
+  it('wraps a bracket-indexed receiver correctly when the result is consumed', () => {
+    const src = 'async function go(byName) { const n = byName["team"].recall(q).length }'
+    const f = scan(src)
+    expect(f).toHaveLength(1)
+    expect(applyFixes(src, f).src).toBe(
+      'async function go(byName) { const n = (await byName["team"].recall(q)).length }',
+    )
+  })
+
+  it('a computed-call index does not derail the wrap — the call paren comes from the match, not indexOf', () => {
+    // `indexOf('(', idx)` lands on `fn(`'s paren, ends the "call" mid-index,
+    // and the rewrite awaits the wrong expression. The paren must be the
+    // match's own last character.
+    const src = 'async function go(arr) { const n = arr[fn(1)].recall(q).length }'
+    const f = scan(src)
+    expect(f).toHaveLength(1)
+    expect(applyFixes(src, f).src).toBe(
+      'async function go(arr) { const n = (await arr[fn(1)].recall(q)).length }',
+    )
+  })
+
+  it('a NESTED bracket index is missed, never misreported at an inner offset', () => {
+    // `[^\]]` cannot span the inner `]`; every partial interpretation fails to
+    // reach the method dot. A miss is the documented trade — what must never
+    // happen is a finding anchored inside the index (`m[await a[0]].learn`).
+    expect(scan('async function go(m, a) { m[a[0]].learn("x") }')).toEqual([])
+  })
+
   it('reports each occurrence separately', () => {
     expect(scan('plur.learn("a")\nplur.forget("b")\n')).toHaveLength(2)
   })

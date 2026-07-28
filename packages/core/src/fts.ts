@@ -151,6 +151,59 @@ export function computeIdf(
   return idf
 }
 
+/**
+ * Extend store-supplied corpus statistics with documents that live OUTSIDE
+ * that store, so a union of primary + outsider engrams is scored against the
+ * union's true statistics instead of the primary corpus's.
+ *
+ * Why this exists: scoring outsiders (secondary-store and pack engrams) with
+ * primary-only stats leaves any query term that is ABSENT from the primary
+ * corpus at `df = 0`, so `computeIdf` prices it as maximally rare —
+ * `log(N/1)`, unbounded in primary-corpus size and completely decoupled from
+ * the term's real prevalence among the outsiders. Measured before this
+ * function existed: a query mixing one primary-corpus term with one term
+ * common across a 196-engram secondary store ranked the single strongest
+ * primary match at position 197, below every weak outsider row. Team-specific
+ * jargon is exactly the vocabulary that is common in a team store and absent
+ * from a personal one, so the failure mode sat on the normal multi-store path,
+ * not an edge case.
+ *
+ * The outsiders are already fully materialised in memory by the time the
+ * union is ranked (that is how they got into the candidate list), so exact
+ * union figures cost one tokenisation pass — there is nothing to approximate.
+ * `df` counts under {@link termMatches}, the same rule `computeIdf`'s local
+ * path applies; see the CorpusStats.df doc for why drifting from that rule is
+ * worse than supplying no stats at all.
+ */
+export function extendCorpusStats(
+  stats: CorpusStats,
+  queryTokens: string[],
+  outsiders: Engram[],
+): CorpusStats {
+  if (outsiders.length === 0) return stats
+  const termSets: Array<Set<string>> = []
+  let totalLen = 0
+  for (const e of outsiders) {
+    const terms = ftsTokenize(engramSearchText(e))
+    totalLen += terms.length
+    termSets.push(new Set(terms))
+  }
+  const df = new Map(stats.df)
+  for (const qt of queryTokens) {
+    let added = 0
+    for (const set of termSets) {
+      if (set.has(qt) || Array.from(set).some(t => termMatches(t, qt))) added++
+    }
+    if (added > 0) df.set(qt, (df.get(qt) ?? 0) + added)
+  }
+  const N = stats.N + outsiders.length
+  return {
+    N,
+    df,
+    avgDocLength: N > 0 ? (stats.avgDocLength * stats.N + totalLen) / N : 0,
+  }
+}
+
 const BM25_K1 = 1.2
 const BM25_B = 0.75
 

@@ -81,6 +81,57 @@ describe.skipIf(!PG_URL)('recall() quality on a pushdown store', () => {
       hits.map(e => e.statement),
       'the best match lives in a secondary store and was appended after the primary page',
     ).toContain('kubernetes ingress autoscaling policy for the tenant cluster')
+    // Inclusion alone has no teeth: a mutation that includes outsiders but
+    // ranks them at a fixed low slot still lands them somewhere in the top 5
+    // of this fixture. The secondary engram matches every query term while
+    // each primary row matches one — it must be FIRST, not merely present
+    // (#752, audit finding on this very test).
+    expect(
+      hits[0]?.statement,
+      'ranked together means ranked correctly — the all-terms match must win, not just appear',
+    ).toBe('kubernetes ingress autoscaling policy for the tenant cluster')
+  }, TIMEOUT)
+
+  it('a term common in a secondary store does not bury the best primary match', async () => {
+    // The IDF direction of the union bug (#752). Outsiders used to be scored
+    // with primary-only corpus statistics, so a query term ABSENT from the
+    // primary corpus priced at df=0 → log(N/1): maximally rare, however
+    // common it is in the store it lives in. Team jargon is exactly that
+    // shape — common in the team store, absent from the personal one — and it
+    // made every weak jargon row outrank a strong on-topic primary match
+    // (measured: rank 197 of 297). Union statistics restore the order.
+    adapter = new PostgresAdapter({ connectionString: PG_URL!, schema: freshSchema(), vectorIndex: 'exact' })
+    const primary: Engram[] = [
+      makeEngram('ENG-2026-0728-400', 'widget widget widget widget widget'),
+    ]
+    for (let i = 0; i < 19; i++) {
+      primary.push(makeEngram(`ENG-2026-0728-4${String(i + 10)}`, `widget filler note ${i}`))
+    }
+    for (let i = 0; i < 20; i++) {
+      primary.push(makeEngram(`ENG-2026-0728-4${String(i + 40)}`, `plain filler note ${i}`))
+    }
+    await adapter.save(primary)
+
+    const storePath = join(storeDir, 'team.yaml')
+    writeFileSync(storePath, yaml.dump({
+      engrams: Array.from({ length: 19 }, (_, i) => ({
+        ...makeEngram(`ENG-2026-0728-8${String(i).padStart(2, '0')}`, `zephyr team note ${i}`),
+        activation: { retrieval_strength: 0.7, storage_strength: 1.0, frequency: 0, last_accessed: '2026-07-28' },
+        feedback_signals: { positive: 0, negative: 0, neutral: 0 }, associations: [], derivation_count: 1,
+      })),
+    }))
+    writeFileSync(join(dir, 'config.yaml'), yaml.dump({
+      stores: [{ path: storePath, scope: 'datafund', readonly: false }], index: false,
+    }))
+
+    const plur = new Plur({ path: dir, store: adapter })
+    await plur.ready()
+
+    const hits = await plur.recall('widget zephyr', { limit: 5 })
+    expect(
+      hits[0]?.statement,
+      'the 5x on-topic primary match lost to a row whose only merit is a term the primary corpus has never seen',
+    ).toBe('widget widget widget widget widget')
   }, TIMEOUT)
 
   it('returns a full page even when residual filters reject most of the corpus', async () => {

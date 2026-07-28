@@ -8,7 +8,7 @@ import { PGLiteAdapter } from './storage-pglite.js'
 import { loadConfig } from './config.js'
 import { generateEngramId, loadAllPacks, storePrefix } from './engrams.js'
 import { logger } from './logger.js'
-import { searchEngrams, ftsTokenize } from './fts.js'
+import { searchEngrams, ftsTokenize, extendCorpusStats } from './fts.js'
 import { selectAndSpread, scoreEngramsPublic, formatWithLayer, assignLayer } from './inject.js'
 import { reactivate } from './decay.js'
 import { captureEpisode, queryTimeline } from './episodes.js'
@@ -456,10 +456,23 @@ const PUSHDOWN_OVERFETCH = 3
 /**
  * How many times `recall`'s pushdown may widen its fetch before giving up.
  *
- * 3 rounds at 3x is 27x the requested limit — enough for a corpus where the
- * residual filters (expiry, min_strength) reject the overwhelming majority of
- * matches, without letting a pathological filter turn one recall into an
- * unbounded scan.
+ * 3 rounds at 3x is 27x the requested limit. Derived, not picked: the
+ * recoverable rejection ceiling is `1 - OVERFETCH^(-MAX_ROUNDS)` = 1 - 3⁻³ =
+ * 26/27 ≈ 96.3%. Residual filters (expiry, min_strength) may reject up to
+ * that fraction of every page and a full `limit` still comes back; past it
+ * the shortfall is bounded and deterministic — recall returns what the last
+ * 27x page yielded rather than escalating into an unbounded scan.
+ *
+ * Cost note, measured against the one shipping `role: 'primary'` adapter:
+ * `PostgresAdapter.searchBM25` deliberately computes the FULL candidate set
+ * regardless of the fetch limit (its trigram prefilter cannot rank, so SQL
+ * LIMIT before scoring would drop true positives). For that adapter a widening
+ * round therefore re-runs an identical query to take a longer slice of an
+ * answer it already computed — a 2–3x amplification exactly in the
+ * high-rejection case, correctness-preserving but wasteful. The loop cannot
+ * see this: `narrowed.length == fetch` is indistinguishable from "more rows
+ * exist". An adapter-side exhaustion signal (return fewer than `fetch` when
+ * the candidate set is complete) is the fix, tracked in #753.
  */
 const PUSHDOWN_MAX_ROUNDS = 3
 
@@ -568,6 +581,29 @@ export class Plur {
   constructor(options?: { path?: string; store?: AsyncPrimaryStore; autoDiscover?: boolean; cwd?: string }) {
     this.paths = detectPlurStorage(options?.path)
     this._primaryStore = options?.store ?? new YamlPrimaryStore(this.paths.engrams)
+    // `loadByIds` and `updateMany` are a capability PAIR: recall's targeted
+    // reactivation uses them together or not at all (`canTarget` in
+    // `_reactivateResults` — implementing only one silently falls back to the
+    // whole-corpus load/replace path). Historically, one-without-the-other was
+    // a data-loss hazard (#749: targeted read + whole-file write replaced a
+    // 12-engram corpus with the 3 recalled rows). The call-site guard makes the
+    // split SAFE now, but it is still almost certainly an implementation
+    // mistake — so say so at attachment time, where the implementor is looking,
+    // instead of leaving it to a JSDoc they may never read. A warning rather
+    // than a throw: a split store works correctly today, and construction is
+    // not the place to turn a performance mistake into an outage.
+    if (options?.store) {
+      const s = options.store as Partial<AsyncPrimaryStore>
+      const hasLoadByIds = typeof s.loadByIds === 'function'
+      const hasUpdateMany = typeof s.updateMany === 'function'
+      if (hasLoadByIds !== hasUpdateMany) {
+        logger.warning(
+          `[plur] the supplied primary store implements ${hasLoadByIds ? 'loadByIds' : 'updateMany'} but not `
+          + `${hasLoadByIds ? 'updateMany' : 'loadByIds'} — they are used as a pair, so recall falls back to `
+          + `whole-corpus reactivation. Implement both to enable targeted reads/writes.`,
+        )
+      }
+    }
     this.config = loadConfig(this.paths.config)
     this._autoDiscover = Plur.resolveAutoDiscover(options?.autoDiscover)
     // Auto-discover project stores from CWD (skips temp dirs for test safety).
@@ -2407,12 +2443,24 @@ export class Plur {
         // all. The bug is invisible from the primary store's side: results come
         // back, they are just the wrong ones.
         //
-        // Scored with the primary corpus's statistics so the ranking matches
-        // what the same query returns without a pushdown. The outsiders are not
-        // part of that corpus, so their IDF is an approximation — but one
-        // consistent ranking beats two ranked lists concatenated by origin.
-        const stats = adapter.corpusStats
-          ? await adapter.corpusStats(ftsTokenize(query), pushdownFilter)
+        // Scored with the UNION's statistics: the store supplies corpus-wide
+        // figures for the primary side, and `extendCorpusStats` folds the
+        // outsiders in exactly — they are already materialised in memory, so
+        // their `df`/length contributions cost one tokenisation pass.
+        //
+        // The first version of this ranking scored the union with primary-only
+        // stats and called the outsiders' IDF "an approximation". It was not a
+        // bounded one: a query term absent from the primary corpus priced at
+        // log(N/1) — maximally rare regardless of how common it is in the
+        // store it actually lives in — and team-store jargon is by nature
+        // common there and absent here. Measured: the single best primary
+        // match for a mixed query ranked 197th behind 196 weak outsider rows.
+        const queryTokens = ftsTokenize(query)
+        const primaryStats = adapter.corpusStats
+          ? await adapter.corpusStats(queryTokens, pushdownFilter)
+          : undefined
+        const stats = primaryStats
+          ? extendCorpusStats(primaryStats, queryTokens, extra)
           : undefined
         results = searchEngrams([...surviving, ...extra], query, limit, stats)
       } else {
