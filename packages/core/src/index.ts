@@ -3484,11 +3484,13 @@ export class Plur {
     })
   }
 
-  /** Update an existing engram in the store by ID. Returns true if found and updated.
+  /**
+   * Update an existing engram by ID. Returns true if it was found and written,
+   * false if no local or writable remote store holds it.
    *
-   * Sync path: only updates the local primary store. Use updateEngramAsync()
-   * to ensure remote-routed updates are awaited (used by promote of remote
-   * candidate engrams — closes the promote remainder of #86).
+   * Since 0.16 a remote-routed update is awaited and its outcome reported, so a
+   * `true` means the write happened. {@link updateEngramAsync} is now
+   * equivalent and kept only for source compatibility.
    */
   async updateEngram(updated: Engram): Promise<boolean> {
     // Local primary first.
@@ -3507,8 +3509,19 @@ export class Plur {
     })
     if (localResult) return true
 
-    // Remote routing — fire-and-forget patch with key fields. Callers needing
-    // strict ordering should use updateEngramAsync().
+    // Remote routing. Awaited, and the outcome reported.
+    //
+    // This used to `void driver.patch(...)` and `return true` on the next line
+    // — the same defect fixed in `setPinned`, missed here. Three consequences,
+    // all reproduced: a write that failed was reported as success; the promise
+    // had no catch, so a non-2xx (RemoteStore.patch throws on anything but 404)
+    // became an UNHANDLED REJECTION, which under Node's default
+    // `--unhandled-rejections=throw` terminates a long-lived MCP server; and a
+    // 404 returned `null` while the caller was told `true`.
+    //
+    // Verified against a stub remote returning 401: the old code logged
+    // `updateEngram RETURNED: true` alongside
+    // `UNHANDLED REJECTIONS: [Error: Remote patch failed: 401 token expired]`.
     for (const entry of (this.config.stores ?? [])) {
       if (!entry.url || entry.readonly === true) continue
       // Leak guard (#353): remote-resident, explicit update → THROW on a
@@ -3521,17 +3534,27 @@ export class Plur {
       // schema mirroring on the server and is not what enterprise PR #111
       // exposes. Send the fields most commonly mutated by the callers
       // (setPinned, promote, reportFailure).
-      void driver.patch(serverId, {
-        pinned: updated.pinned,
-        status: updated.status,
-        statement: updated.statement,
-      })
-      return true
+      try {
+        const patched = await driver.patch(serverId, {
+          pinned: updated.pinned,
+          status: updated.status,
+          statement: updated.statement,
+        })
+        // `null` is a 404 — this remote does not hold it, so keep looking.
+        if (patched) return true
+      } catch {
+        // This remote refused it (auth, validation, transport). Try the next
+        // writable store rather than reporting a success that did not happen.
+        continue
+      }
     }
     return false
   }
 
   /**
+   * @deprecated Equivalent to {@link updateEngram} since 0.16 — that method now
+   * awaits the remote PATCH too. Kept so existing callers keep compiling.
+   *
    * Async variant of updateEngram that awaits remote PATCH for ordering
    * guarantees. Returns the patched engram (server-authoritative view)
    * on remote success, null if not found locally or remotely.
@@ -3717,9 +3740,24 @@ export class Plur {
       if (storeInfo.readonly) {
         throw new Error('Cannot retire engram from readonly store')
       }
-      const storeEngrams = await this._storeAt(storeInfo.path).load()
-      const engram = storeEngrams.find(e => e.id === storeInfo.originalId)
-      if (engram) {
+      // Under the SECONDARY store's own lock, with the load INSIDE it.
+      //
+      // This was the last unlocked read-modify-write on a secondary store — the
+      // same defect already fixed in `feedback` and `_recordCrossScopeRecurrence`,
+      // missed here. `_writeEngrams` replaces the whole file, so two processes
+      // retiring different engrams in one team store did not merely lose a
+      // decrement: whichever wrote second deleted every engram the other had
+      // added in between.
+      //
+      // The load has to be inside the lock too. Loading first and locking only
+      // the write leaves the same race, just narrower.
+      //
+      // Keyed on `storeInfo.path`, which the guard above proves is not
+      // `this.paths.engrams`, so this cannot deadlock against a primary lock.
+      const handled = await this._withStoreLock(storeInfo.path, async () => {
+        const storeEngrams = await this._storeAt(storeInfo.path).load()
+        const engram = storeEngrams.find(e => e.id === storeInfo.originalId)
+        if (!engram) return false
         // Same legacy-engram migration as primary path (audit iter-2, Data).
         const currentCount = (engram as any).reference_count
           ?? Math.max(1, ((engram as any).sources?.length ?? 1))
@@ -3746,8 +3784,10 @@ export class Plur {
             routed_to: 'secondary-store',
           },
         })
-        return
-      }
+        return true
+      })
+      // Not found in the secondary store — fall through to the remote search.
+      if (handled) return
     }
 
     // Check remote stores — the engram may live on an enterprise server.
@@ -4786,9 +4826,15 @@ Generate an improved version of the procedure that prevents this failure. Return
     const storeInfo = await this._findEngramStore(id)
     if (storeInfo && storeInfo.path !== this.paths.engrams) {
       if (storeInfo.readonly) throw new Error('Cannot retire engram from readonly store')
-      const storeEngrams = await this._storeAt(storeInfo.path).load()
-      const engram = storeEngrams.find(e => e.id === storeInfo.originalId)
-      if (engram) {
+      // Under the secondary store's own lock, load included — same reasoning as
+      // `forget()`'s branch, which this one mirrors. Tension resolution retires
+      // the losing engram, so an unlocked whole-file replace here could delete a
+      // concurrent writer's engrams while resolving a contradiction between two
+      // others.
+      const handled = await this._withStoreLock(storeInfo.path, async () => {
+        const storeEngrams = await this._storeAt(storeInfo.path).load()
+        const engram = storeEngrams.find(e => e.id === storeInfo.originalId)
+        if (!engram) return false
         stamp(engram)
         await this._writeEngrams(storeInfo.path, storeEngrams)
         await this._syncIndex()
@@ -4799,7 +4845,8 @@ Generate an improved version of the procedure that prevents this failure. Return
           data: { reason },
         })
         return true
-      }
+      })
+      if (handled) return true
     }
     return false
   }

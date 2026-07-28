@@ -113,3 +113,69 @@ describe('setPinned() against a remote store', () => {
     expect(res!.pinned).toBeUndefined()
   })
 })
+
+/**
+ * `updateEngram()` had the same defect, and it was missed when `setPinned` was
+ * fixed. Its remote branch did `void driver.patch(...)` then `return true`.
+ *
+ * Worse than setPinned's version, because there was no try/catch around the
+ * floating promise: `RemoteStore.patch` returns null on 404 and THROWS on any
+ * other non-2xx, so an expired token produced an unhandled rejection. A
+ * long-lived MCP server runs under Node's default `--unhandled-rejections=throw`
+ * and there is no `process.on('unhandledRejection')` anywhere in core, mcp or
+ * cli — so the server process dies, having already told the agent the write
+ * succeeded.
+ */
+describe('updateEngram() against a remote store', () => {
+  let dir: string
+  let plur: Plur
+  let patchImpl: (id: string, body: Record<string, unknown>) => Promise<Engram | null>
+
+  beforeEach(async () => {
+    dir = mkdtempSync(join(tmpdir(), 'plur-updeng-'))
+    writeFileSync(join(dir, 'engrams.yaml'), 'engrams: []\n')
+    writeFileSync(join(dir, 'config.yaml'),
+      'stores:\n  - scope: "group:acme/eng"\n    url: "https://example.invalid"\n    token: "t"\n')
+    plur = new Plur({ path: dir })
+    await plur.ready()
+    patchImpl = async () => serverEngram(true)
+    ;(plur as unknown as { _getRemoteDriver: () => unknown })._getRemoteDriver = () => ({
+      patch: async (id: string, body: Record<string, unknown>) => patchImpl(id, body),
+    })
+  })
+
+  afterEach(() => rmSync(dir, { recursive: true, force: true }))
+
+  it('returns false when the remote rejects, instead of claiming success', async () => {
+    patchImpl = async () => { throw new Error('Remote patch failed: 401 token expired') }
+    expect(await plur.updateEngram(serverEngram(true))).toBe(false)
+  })
+
+  it('does not leave an unhandled rejection behind', async () => {
+    // The crash path. Collected across a macrotask so a floating rejection has
+    // time to surface.
+    const seen: unknown[] = []
+    const onUnhandled = (e: unknown) => seen.push(e)
+    process.on('unhandledRejection', onUnhandled)
+    try {
+      patchImpl = async () => { throw new Error('Remote patch failed: 401 token expired') }
+      await plur.updateEngram(serverEngram(true))
+      await new Promise(r => setTimeout(r, 50))
+    } finally {
+      process.off('unhandledRejection', onUnhandled)
+    }
+    expect(seen, 'a rejected PATCH escaped as an unhandled rejection').toEqual([])
+  })
+
+  it('returns false on a 404 rather than reporting a write that never happened', async () => {
+    patchImpl = async () => null
+    expect(await plur.updateEngram(serverEngram(true))).toBe(false)
+  })
+
+  it('returns true and awaits the write when the remote accepts', async () => {
+    let settled = false
+    patchImpl = async () => { await new Promise(r => setTimeout(r, 20)); settled = true; return serverEngram(true) }
+    expect(await plur.updateEngram(serverEngram(true))).toBe(true)
+    expect(settled, 'returned before the write completed').toBe(true)
+  })
+})
