@@ -253,6 +253,20 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
   private trigramAvailable: boolean | undefined
   /** One-shot latch for the embedding-gap warning — see ensureVectorIndex. */
   private embeddingGapWarned = false
+  /**
+   * Every client currently checked out of either pool.
+   *
+   * `close()` needs this because `pool.end()` DRAINS: it waits for checked-out
+   * clients to come back. Two sites hold one for a long time — `initSchema`
+   * for its DDL sequence, and `withExclusiveAccess` across arbitrary caller
+   * work — so a `close()` racing either of them waited forever. Measured: both
+   * a drain-based teardown and one that awaited `initPromise` hung the process
+   * rather than closing it.
+   *
+   * With the set, `close()` destroys outstanding clients instead of waiting for
+   * them, and `end()` then resolves immediately.
+   */
+  private readonly liveClients = new Set<any>()
   private readonly vectorDim: number
   private readonly precision: VectorElementFormat | undefined
   private readonly indexMode: PostgresVectorIndexMode
@@ -475,7 +489,7 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
    * for a second one deadlocks whenever `maxConnections` is 1.
    */
   private async initSchema(): Promise<void> {
-    const client = await this.pool.connect()
+    const client = await this.acquire(this.pool)
     const key = `plur:init:${this.schema}`
     let locked = false
     try {
@@ -699,44 +713,91 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
   }
 
   /**
-   * Tear down both pools and refuse further use.
+   * Check out a client and remember it until it is released.
    *
-   * KNOWN LIMITATION (#751): `close()` racing construction leaks the pool.
-   * `const p = a.load(); await a.close(); await p` — `close()` runs while
-   * `getPool()` is still mid-flight, sees `this.pool === null`, and tears down
-   * nothing; the pool finishes constructing afterwards and its connection
-   * stays open, invisible to this method. Verified against a live server: the
-   * orphaned backend sits idle until node-postgres's own idle-timeout reclaims
-   * it — the process exits cleanly, nothing hangs, but the connection outlives
-   * `close()` by seconds. Subsequent calls on the adapter DO fail correctly
-   * (`[postgres] adapter is closed`).
+   * Every `connect()` in this class goes through here, so `close()` can always
+   * account for what is outstanding. A site that calls `pool.connect()`
+   * directly is invisible to teardown and reintroduces the hang.
+   */
+  private async acquire(pool: any): Promise<any> {
+    const client = await pool.connect()
+    // A checkout that resolves AFTER close() began must not be handed out: it
+    // would not be in `liveClients` when close() drained the set, and
+    // `pool.end()` would then wait for a client nobody knows about. This is the
+    // same late-arrival race as the pool assignment itself, one level down —
+    // and it is why destroying tracked clients alone still hung.
+    if (this.closed) {
+      try { client.release(new Error('[postgres] adapter closed')) } catch { /* already gone */ }
+      throw new Error('[postgres] adapter is closed')
+    }
+    this.liveClients.add(client)
+    const release = client.release.bind(client)
+    let released = false
+    client.release = (err?: unknown) => {
+      if (released) return
+      released = true
+      this.liveClients.delete(client)
+      return release(err)
+    }
+    return client
+  }
+
+  /**
+   * Tear down both pools. After this resolves, no connection remains open.
    *
-   * Deliberately not fixed in 0.16.0: earlier attempts (three failed variants
-   * are recorded on the #751 fix branch — two drain-based, one
-   * destroy-tracked-clients) turned the leaked connection into a hung
-   * process, which is strictly worse. The working fix needs a
-   * checkout-tracking set plus a refusal inside `acquire()` once closed —
-   * see #751. Until then: await construction (any first operation) before
-   * calling `close()`.
+   * Two things make that harder than `pool.end()`.
+   *
+   * First, `createPool` assigns `this.pool` only AFTER awaiting the driver
+   * import, so a `close()` landing in that window used to see `null`, skip the
+   * teardown, and leave the pool that arrived a moment later with nothing
+   * holding a reference to end it. Reproduced: `const p = a.load(); await
+   * a.close(); await p` left a live connection. So construction in flight is
+   * adopted, not ignored.
+   *
+   * Second, `pool.end()` DRAINS — it waits for checked-out clients. `initSchema`
+   * holds one for its DDL, and `withExclusiveAccess` holds one across arbitrary
+   * caller work, so draining could wait forever. Two earlier attempts (awaiting
+   * `initPromise`, and awaiting only `poolPromise`) both hung the process
+   * instead of closing it. Outstanding clients are therefore DESTROYED:
+   * `release(err)` with a truthy argument makes pg-pool `_remove` the
+   * connection rather than return it to idle, so `end()` has nothing to wait
+   * for.
+   *
+   * A caller mid-`withExclusiveAccess` sees its connection die. That is the
+   * consequence of closing during exclusive work — a caller error either way —
+   * and it is strictly better than hanging.
    */
   async close(): Promise<void> {
+    // Refuse new work first, so nothing starts building behind the teardown.
+    this.closed = true
+
+    // Adopt construction already in flight. Only the POOL promises: awaiting
+    // `initPromise` is one of the two deadlocks described above.
+    for (const pending of [this.poolPromise, this.lockPoolPromise]) {
+      if (pending) await Promise.resolve(pending).catch(() => { /* nothing to tear down */ })
+    }
+
+    // Destroy what is checked out, so the drains below resolve.
+    const closeErr = new Error('[postgres] adapter closed')
+    for (const client of [...this.liveClients]) {
+      try { client.release(closeErr) } catch { /* already gone */ }
+    }
+    this.liveClients.clear()
+
     if (this.pool) {
       const pool = this.pool
       this.pool = null
-      this.poolPromise = undefined
-      this.initPromise = null
-      this.closed = true
-      await pool.end().catch(() => { /* pool already torn down */ })
+      await pool.end().catch(() => { /* already torn down */ })
     }
     this.poolPromise = undefined
+    this.initPromise = null
+
     if (this.lockPool) {
       const lp = this.lockPool
       this.lockPool = null
-      this.lockPoolPromise = undefined
       await lp.end().catch(() => { /* already torn down */ })
     }
     this.lockPoolPromise = undefined
-    this.closed = true
   }
 
   // ------------------------------------------------------- AsyncPrimaryStore
@@ -792,7 +853,7 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
   async updateMany(engrams: Engram[]): Promise<void> {
     if (engrams.length === 0) return
     const pool = await this.getPool()
-    const client = await pool.connect()
+    const client = await this.acquire(pool)
     try {
       await client.query('BEGIN')
       for (let i = 0; i < engrams.length; i += SAVE_CHUNK_SIZE) {
@@ -828,7 +889,7 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
 
   async save(engrams: Engram[]): Promise<void> {
     const pool = await this.getPool()
-    const client = await pool.connect()
+    const client = await this.acquire(pool)
     try {
       await client.query('BEGIN')
       for (let i = 0; i < engrams.length; i += SAVE_CHUNK_SIZE) {
@@ -950,7 +1011,7 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
     // The cost is up to `maxConnections` additional server connections, which
     // is the honest price of holding a session lock across arbitrary work.
     const pool = await this.getLockPool()
-    const client = await pool.connect()
+    const client = await this.acquire(pool)
     try {
       await client.query(`SELECT pg_advisory_lock(hashtext($1))`, [`plur:${this.schema}`])
       try {
@@ -1188,7 +1249,7 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
     const pool = await this.getPool()
     const t = this.activeVecType
     const literal = vectorLiteral(query)
-    const client = await pool.connect()
+    const client = await this.acquire(pool)
     try {
       await client.query('BEGIN')
       if (this.hnswActive) {
