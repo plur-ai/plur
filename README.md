@@ -4,6 +4,8 @@
 
 # PLUR — Your agents share the same memory
 
+[![MCP Toplist](https://mcptoplist.com/badge/io.github.plur-ai%2Fplur.svg)](https://mcptoplist.com/server/io.github.plur-ai%2Fplur)
+
 [![npm version](https://img.shields.io/npm/v/@plur-ai/core?logo=npm&color=cb3837)](https://www.npmjs.com/package/@plur-ai/core)
 [![CI](https://img.shields.io/github/actions/workflow/status/plur-ai/plur/ci.yml?branch=main&logo=github&label=CI)](https://github.com/plur-ai/plur/actions/workflows/ci.yml)
 [![License: Apache-2.0](https://img.shields.io/github/license/plur-ai/plur?color=blue)](LICENSE)
