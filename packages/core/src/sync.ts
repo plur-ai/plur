@@ -29,6 +29,15 @@ export interface SyncResult {
   files_changed: number
   /** Present when syncing to a remote — describes what the push set includes/excludes (#640). */
   warning?: string
+  /**
+   * Set when the commit succeeded but `git push` did NOT. The local repo is
+   * ahead of the remote and the engrams are not on the server.
+   *
+   * `action` stays `'synced'` because the local commit genuinely happened —
+   * the same split used for a failed outbox flush. A caller that cares whether
+   * the data reached the remote must read this field, not `action`.
+   */
+  push_error?: string
 }
 
 const GITIGNORE = `# PLUR — secrets (machine-local, NEVER synced)
@@ -398,10 +407,21 @@ export function sync(root: string, remote?: string, options?: { remoteType?: Syn
     pullRebase(root, remoteType)
   }
 
-  // Push if we have local commits
+  // Push if we have local commits.
+  //
+  // NOT via `gitSafe`: it swallows the error and returns null, and the return
+  // was discarded anyway, so a rejected push (expired credentials, no network,
+  // non-fast-forward) produced a result byte-identical to a successful one.
+  // For an agent caller that is the worst shape — it reports the sync worked
+  // and the engrams sit unpushed indefinitely with nobody looking.
+  let pushError: string | null = null
   const aheadAfter = countDiff(root, 'ahead')
   if (aheadAfter > 0) {
-    gitSafe(['push', 'origin'], root)
+    try {
+      git(['push', 'origin'], root)
+    } catch (err) {
+      pushError = ((err as Error).message || '').trim() || 'git push failed'
+    }
   }
 
   if (filesChanged === 0 && behind === 0 && aheadBefore === 0) {
@@ -412,6 +432,8 @@ export function sync(root: string, remote?: string, options?: { remoteType?: Syn
   if (filesChanged > 0) parts.push(`${filesChanged} file(s) committed`)
   if (behind > 0) parts.push(`pulled ${behind} remote commit(s)`)
   if (aheadAfter === 0 && aheadBefore > 0) parts.push('pushed')
+  // Say it in the message too — a caller reading only the text still sees it.
+  if (pushError) parts.push('NOT pushed — the commit is local only')
 
   return {
     action: 'synced',
@@ -419,6 +441,7 @@ export function sync(root: string, remote?: string, options?: { remoteType?: Syn
     remote: existingRemote,
     files_changed: filesChanged,
     warning: stripWarning(root, remoteType),
+    ...(pushError ? { push_error: pushError } : {}),
   }
 }
 

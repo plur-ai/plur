@@ -60,6 +60,7 @@ because it is a claim a caller may act on.
 
 ### Added
 
+- **MCP Toplist rank badge** (#748) in the README.
 - **Packs install from a URL** (#746): `plur packs install <url>` and
   `plur packs preview <url>` fetch a pack over HTTP instead of requiring a local
   directory, so a pack can be shared by link. Preview still runs the security
@@ -78,6 +79,12 @@ because it is a claim a caller may act on.
 - **Permitted-scope allow-list pushed into the query** (#715, #739, #743) — `scopes` on `RecallOptions` and now `InjectOptions`. An AUTHORIZATION filter, distinct from the `scope` visibility filter: absent = unrestricted, `[]` = matches nothing, non-empty = exact membership with no hierarchy expansion and no personal-family pass-through. `inject()` had no authorization filter at all before this, which for a multi-tenant caller meant every principal's personal engrams reached every other principal's context.
 - **BM25 narrowing pushed into Postgres** (#711, #732, #743) via `pg_trgm`, with corpus-wide statistics (`CorpusStats`: `N`, per-term `df`, `avgDocLength`) supplied by the store so narrowing cannot change the ranking. Tokens are computed in TypeScript at write time by the same `ftsTokenize` the scorer uses, so there is no second tokenizer free to drift.
 
+### Fixed
+
+- **Pre-release audit fixes** (#747): concurrent Postgres schema init, the migrate
+  tool's combinator/paren/template/optional-chaining scanning, `setPinned`'s
+  fabricated remote return, the release smoke's authorization checks and its CI
+  wiring, plus lean-tool/storage/ADR documentation drift.
 ### Fixed
 
 - **BM25 reverse-substring matches** (#721, #724): `qt.includes(t)` let any document token that was a non-prefix substring of the query score a hit — `deploying` matched an engram about *yin*, `postgres` matched one about *res*. Now `qt.startsWith(t)`, which keeps morphological prefixes (`deploy` → `deploying`) and drops the junk. Measured on a 3,930-engram store: no query loses results, and the reverse-substring matches it removes were never meaningful.
