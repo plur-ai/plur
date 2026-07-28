@@ -420,21 +420,83 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
     return this.pool
   }
 
+  /**
+   * SQLSTATEs that mean "another process created this object first".
+   *
+   * Postgres `CREATE ... IF NOT EXISTS` is check-then-act, not atomic: two
+   * sessions can both pass the existence check and one then fails on the
+   * catalog's unique index. Under the init lock below this should not happen,
+   * but a rolling upgrade can have an older adapter doing unlocked DDL at the
+   * same time, so the benign case is tolerated rather than fatal.
+   */
+  private static readonly DUPLICATE_OBJECT_CODES = new Set([
+    '23505', // unique_violation on a catalog index (pg_namespace, pg_type, pg_class, pg_extension)
+    '42P06', // duplicate_schema
+    '42P07', // duplicate_table
+    '42701', // duplicate_column
+    '42710', // duplicate_object
+  ])
+
+  /** Run one DDL statement, treating "someone else already made it" as success. */
+  private async ddl(client: any, sql: string): Promise<void> {
+    try {
+      await client.query(sql)
+    } catch (err) {
+      const code = (err as { code?: string }).code
+      if (code && PostgresAdapter.DUPLICATE_OBJECT_CODES.has(code)) return
+      throw err
+    }
+  }
+
+  /**
+   * Create the schema, serialised across processes by an advisory lock.
+   *
+   * Without the lock, N processes cold-starting against one fresh database all
+   * run `CREATE ... IF NOT EXISTS` at once and most of them die on a catalog
+   * unique violation. Measured on PostgreSQL 16 with 8 concurrent workers and
+   * an empty schema: 7 of 8 failed, and the pgvector failure surfaced as
+   * "install the extension as a superuser" — a permissions diagnosis for what
+   * is actually a race, sending the operator to fix the wrong thing.
+   *
+   * That is exactly the shape of a server deployment starting its replicas, so
+   * it would have shown up on the first multi-process boot.
+   *
+   * The lock is taken on ONE pooled client and every statement runs on that
+   * same client: holding a connection for the lock while the DDL asks the pool
+   * for a second one deadlocks whenever `maxConnections` is 1.
+   */
   private async initSchema(): Promise<void> {
-    const pool = this.pool
-    await pool.query(`CREATE SCHEMA IF NOT EXISTS "${this.schema}"`)
+    const client = await this.pool.connect()
+    const key = `plur:init:${this.schema}`
+    let locked = false
+    try {
+      await client.query('SELECT pg_advisory_lock(hashtext($1))', [key])
+      locked = true
+      await this.initSchemaLocked(client)
+    } finally {
+      if (locked) {
+        // Best-effort: the session ends on release anyway, and Postgres drops
+        // session advisory locks with the session.
+        try { await client.query('SELECT pg_advisory_unlock(hashtext($1))', [key]) } catch { /* released with the session */ }
+      }
+      client.release()
+    }
+  }
+
+  private async initSchemaLocked(client: any): Promise<void> {
+    await this.ddl(client, `CREATE SCHEMA IF NOT EXISTS "${this.schema}"`)
     // Extensions are per-database. Installing into `public` (the conventional
     // home) keeps one copy shared by every PLUR schema in the database; the
     // search_path above is what makes the type resolvable from ours.
     try {
-      await pool.query('CREATE EXTENSION IF NOT EXISTS vector SCHEMA public')
+      await this.ddl(client, 'CREATE EXTENSION IF NOT EXISTS vector SCHEMA public')
     } catch (err) {
       throw new Error(
         `[postgres] pgvector is required but could not be enabled: ${(err as Error).message}. `
         + `Install the extension (CREATE EXTENSION vector) as a superuser, or grant the PLUR role rights to create it.`,
       )
     }
-    await pool.query(`
+    await this.ddl(client, `
       CREATE TABLE IF NOT EXISTS "${this.schema}".engrams (
         id TEXT PRIMARY KEY,
         status TEXT NOT NULL,
@@ -445,10 +507,10 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
         source TEXT NOT NULL DEFAULT 'primary'
       )
     `)
-    await pool.query(`CREATE INDEX IF NOT EXISTS idx_engrams_status ON "${this.schema}".engrams(status)`)
-    await pool.query(`CREATE INDEX IF NOT EXISTS idx_engrams_scope ON "${this.schema}".engrams(scope)`)
-    await pool.query(`CREATE INDEX IF NOT EXISTS idx_engrams_domain ON "${this.schema}".engrams(domain)`)
-    await pool.query(`CREATE INDEX IF NOT EXISTS idx_engrams_source ON "${this.schema}".engrams(source)`)
+    await this.ddl(client, `CREATE INDEX IF NOT EXISTS idx_engrams_status ON "${this.schema}".engrams(status)`)
+    await this.ddl(client, `CREATE INDEX IF NOT EXISTS idx_engrams_scope ON "${this.schema}".engrams(scope)`)
+    await this.ddl(client, `CREATE INDEX IF NOT EXISTS idx_engrams_domain ON "${this.schema}".engrams(domain)`)
+    await this.ddl(client, `CREATE INDEX IF NOT EXISTS idx_engrams_source ON "${this.schema}".engrams(source)`)
 
     // --- BM25 pushdown (Phase 4, #711) ---
     //
@@ -466,10 +528,10 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
     //                               enumerable at query time because qt is
     //                               known, which is exactly what #721's change
     //                               from `qt.includes(t)` bought.
-    await pool.query(`ALTER TABLE "${this.schema}".engrams ADD COLUMN IF NOT EXISTS tokens TEXT[]`)
-    await pool.query(`ALTER TABLE "${this.schema}".engrams ADD COLUMN IF NOT EXISTS search_text TEXT`)
+    await this.ddl(client, `ALTER TABLE "${this.schema}".engrams ADD COLUMN IF NOT EXISTS tokens TEXT[]`)
+    await this.ddl(client, `ALTER TABLE "${this.schema}".engrams ADD COLUMN IF NOT EXISTS search_text TEXT`)
     try {
-      await pool.query('CREATE EXTENSION IF NOT EXISTS pg_trgm SCHEMA public')
+      await this.ddl(client, 'CREATE EXTENSION IF NOT EXISTS pg_trgm SCHEMA public')
       this.trigramAvailable = true
     } catch (err) {
       // Not fatal: without pg_trgm the adapter falls back to loading candidates
@@ -483,37 +545,37 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
       )
     }
     if (this.trigramAvailable) {
-      await pool.query(
+      await this.ddl(client,
         `CREATE INDEX IF NOT EXISTS idx_engrams_search_trgm
          ON "${this.schema}".engrams USING GIN (search_text gin_trgm_ops)`,
       )
     }
-    await pool.query(
+    await this.ddl(client,
       `CREATE INDEX IF NOT EXISTS idx_engrams_tokens ON "${this.schema}".engrams USING GIN (tokens)`,
     )
     // Partial index over exactly the rows the migration guard looks for. It is
     // empty on a fully-backfilled store, so the guard's probe is an index scan
     // that finds nothing rather than a sequential scan of the whole table —
     // which is what it was doing on every BM25 query.
-    await pool.query(
+    await this.ddl(client,
       `CREATE INDEX IF NOT EXISTS idx_engrams_tokens_missing
        ON "${this.schema}".engrams (id) WHERE tokens IS NULL`,
     )
 
     const wantType = this.precision === 'halfvec' ? 'halfvec' : 'vector'
-    await pool.query(`
+    await this.ddl(client, `
       CREATE TABLE IF NOT EXISTS "${this.schema}".engram_embeddings (
         engram_id TEXT PRIMARY KEY REFERENCES "${this.schema}".engrams(id) ON DELETE CASCADE,
         embedding ${wantType}(${this.vectorDim}) NOT NULL
       )
     `)
-    await this.readEmbeddingColumnInfo()
-    await this.ensureVectorIndex()
+    await this.readEmbeddingColumnInfo(client)
+    await this.ensureVectorIndex(client)
   }
 
   /** Read the actual type + dim of the embedding column from the catalog. */
-  private async readEmbeddingColumnInfo(): Promise<{ type: 'vector' | 'halfvec'; dim: number } | null> {
-    const res = await this.pool.query(
+  private async readEmbeddingColumnInfo(q: any = this.pool): Promise<{ type: 'vector' | 'halfvec'; dim: number } | null> {
+    const res = await q.query(
       `SELECT format_type(a.atttypid, a.atttypmod) AS t
        FROM pg_attribute a
        JOIN pg_class c ON c.oid = a.attrelid
@@ -542,20 +604,20 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
    * from what we asked for — `vectorIndex` must not claim HNSW if the CREATE
    * failed.
    */
-  private async ensureVectorIndex(): Promise<void> {
+  private async ensureVectorIndex(q: any = this.pool): Promise<void> {
     let want: boolean
     if (this.indexMode === 'exact') {
       want = false
     } else if (this.indexMode === 'hnsw') {
       want = true
     } else {
-      const res = await this.pool.query(`SELECT COUNT(*)::int AS c FROM "${this.schema}".engram_embeddings`)
+      const res = await q.query(`SELECT COUNT(*)::int AS c FROM "${this.schema}".engram_embeddings`)
       want = Number(res.rows[0].c) >= HNSW_MIN_ROWS
     }
     if (want) {
       const opclass = this.activeVecType === 'halfvec' ? 'halfvec_cosine_ops' : 'vector_cosine_ops'
       try {
-        await this.pool.query(
+        await q.query(
           `CREATE INDEX IF NOT EXISTS ${HNSW_INDEX_NAME}
            ON "${this.schema}".engram_embeddings
            USING hnsw (embedding ${opclass})
@@ -570,11 +632,11 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
         )
       }
     }
-    this.hnswActive = await this.hnswIndexExists()
+    this.hnswActive = await this.hnswIndexExists(q)
   }
 
-  private async hnswIndexExists(): Promise<boolean> {
-    const res = await this.pool.query(
+  private async hnswIndexExists(q: any = this.pool): Promise<boolean> {
+    const res = await q.query(
       `SELECT 1 FROM pg_index x
        JOIN pg_class i ON i.oid = x.indexrelid
        JOIN pg_class t ON t.oid = x.indrelid
