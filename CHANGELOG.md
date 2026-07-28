@@ -100,6 +100,17 @@ because it is a claim a caller may act on.
   tool's combinator/paren/template/optional-chaining scanning, `setPinned`'s
   fabricated remote return, the release smoke's authorization checks and its CI
   wiring, plus lean-tool/storage/ADR documentation drift.
+- **Independent pre-release audit fixes** (#752, #755): the migrate tool's ASI
+  hazard (a line-leading `(await ...)` after an unterminated statement parses
+  as a call on the previous expression — it now refuses), bracket-indexed
+  receivers it silently missed, and a combinator false positive from comment
+  text; recall's multi-store union is now scored with exact union corpus
+  statistics instead of primary-only ones (a term absent from the primary
+  corpus priced as maximally rare and buried the best match); vacuous fallback
+  paths in the migrate method-list guard now hard-fail in CI; the
+  `PostgresAdapter.close()` construction-race leak is actually documented
+  (#751); release.sh gained a working-tree preflight and canary-publish
+  recovery guidance; README states the Postgres-tier embeddings caveat.
 - **A `recall()` could delete the corpus on a partially-targeted store** (#749).
   `loadByIds` and `updateMany` are independently optional on `PrimaryStore`;
   with the targeted read present and the targeted write absent, reactivation's
