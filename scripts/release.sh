@@ -35,6 +35,7 @@
 #       undeclared in the CHANGELOG (issue #544; see RELEASING.md)
 #   3.7 Pre-flight: every target version must be publishable (not already taken)
 #   3.8 Website version pre-flight: index.html softwareVersion must == $VERSION
+#   3.9 Packaged-artefact smoke: pack tarballs, install clean, drive the public API
 #   4.  Commit + tag + push
 #   5a. Publish npm to @next (canary)
 #   5b. Smoke test (npx by exact version; retries on npm-propagation ETARGET)
@@ -497,6 +498,30 @@ if [ -f "$WEBSITE_PREFLIGHT_DIR/index.html" ]; then
   echo "  ✓ website index.html at softwareVersion=$VERSION"
   echo ""
 fi
+
+# --- Step 3.9: Packaged-artefact smoke ---
+# Every other test in this repo runs against the SOURCE tree, which is not what
+# users install. That gap has already shipped a defect: `pg` is an
+# optionalDependency and tsup only auto-externalizes dependencies +
+# peerDependencies, so the driver was inlined into core's dist and
+# `PostgresAdapter` threw on first use — in the published package, while every
+# in-repo test passed.
+#
+# `smoke-release.sh` packs real tarballs, installs them outside the workspace
+# (no node_modules to fall back on, no workspace: links) and drives the public
+# API. It existed but nothing called it, so it could only ever catch something
+# if a human remembered to run it. Here it is a gate, and it runs BEFORE the
+# irreversible git tag push and first publish.
+#
+# Set PLUR_SMOKE_POSTGRES_URL to include the Postgres store in the run.
+echo "--- Step 3.9: Packaged-artefact smoke ---"
+if ! bash "$REPO_ROOT/scripts/smoke-release.sh"; then
+  echo ""
+  echo "FAIL: the packaged artefacts do not work. Nothing has been published."
+  echo "  Reproduce with: pnpm smoke:release"
+  exit 1
+fi
+echo ""
 
 # --- 4. Commit + tag + push ---
 echo "--- Step 4: Git ---"

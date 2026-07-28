@@ -113,11 +113,20 @@ await plur2.ready()
 check('persists across a new instance', (await plur2.getById(e.id))?.id === e.id)
 
 // The authorization filter, on the packaged build.
-await plur.learn('alpha-only secret plan', { scope: 'project:alpha' })
+//
+// `every()` ALONE is vacuous: it returns true for an empty array, so a filter
+// that wrongly returns nothing scores identical to one that works. Both
+// directions have to be asserted — the permitted engram is present, and the
+// unpermitted one is not.
+const alpha = await plur.learn('alpha-only secret plan', { scope: 'project:alpha' })
+await plur.learn('beta-only secret plan', { scope: 'project:beta' })
 const scoped = await plur.recall('plan', { scopes: ['project:alpha'] })
-check('allow-list admits the permitted scope', scoped.every(h => h.scope === 'project:alpha'))
+check('allow-list returns the permitted engram', scoped.some(h => h.id === alpha.id))
+check('allow-list excludes every other scope', scoped.length > 0 && scoped.every(h => h.scope === 'project:alpha'))
 const none = await plur.recall('plan', { scopes: [] })
 check('empty allow-list returns nothing', Array.isArray(none) && none.length === 0)
+const unrestricted = await plur.recall('plan')
+check('an absent allow-list is unrestricted', unrestricted.length > scoped.length)
 
 rmSync(dir, { recursive: true, force: true })
 if (fails.length) { console.error('FAILED: ' + fails.join(', ')); process.exit(1) }
@@ -226,11 +235,15 @@ try {
   check('concurrent write A survived', ids.includes(a.id))
   check('concurrent write B survived', ids.includes(b.id))
 
-  // Authorization filter, pushed into SQL.
-  await plur.learn('alpha tenant only', { scope: 'project:alpha' })
+  // Authorization filter, pushed into SQL. Same vacuity trap as the YAML block
+  // above: assert presence as well as absence.
+  const alphaPg = await plur.learn('alpha tenant only', { scope: 'project:alpha' })
+  await plur.learn('beta tenant only', { scope: 'project:beta' })
   const scoped = await plur.recall('tenant', { scopes: ['project:alpha'] })
-  check('allow-list enforced in Postgres', scoped.every(h => h.scope === 'project:alpha'))
+  check('allow-list returns the permitted engram', scoped.some(h => h.id === alphaPg.id))
+  check('allow-list enforced in Postgres', scoped.length > 0 && scoped.every(h => h.scope === 'project:alpha'))
   check('empty allow-list returns nothing', (await plur.recall('tenant', { scopes: [] })).length === 0)
+  check('an absent allow-list is unrestricted', (await plur.recall('tenant')).length > scoped.length)
 
   await other.close().catch(() => {})
   rmSync(dir, { recursive: true, force: true })
