@@ -158,6 +158,50 @@ function positionOf(src: string, idx: number): { line: number; column: number; t
 /** Statement keywords that take a parenthesised head — not callable functions. */
 const CONTROL_KEYWORDS = new Set(['if', 'for', 'while', 'switch', 'catch', 'with', 'do'])
 
+
+/**
+ * Is `idx` directly inside a `Promise.all/race/allSettled/any([...])` array?
+ *
+ * Awaiting an element there resolves that call BEFORE the array is even
+ * constructed, so the combinator receives an already-settled promise. For
+ * `race` that silently disables a timeout; for `all` it serialises what the
+ * caller wrote to run concurrently. Both still parse and still pass tests —
+ * this is the bug the tool exists to prevent, so emitting it is the one
+ * unacceptable outcome.
+ *
+ * Detected by scanning outwards for an unmatched `[` rather than by looking
+ * back a fixed number of characters. The window version passed the obvious
+ * cases and missed anything with a long enough preceding element: verified
+ * against a three-element `Promise.all` where the combinator sat beyond the
+ * 80-character lookback, and the tool rewrote it.
+ */
+function insideCombinatorArray(src: string, idx: number, spans: Array<[number, number]>): boolean {
+  let square = 0, round = 0, curly = 0
+  for (let i = idx - 1; i >= 0; i--) {
+    if (inSpans(spans, i)) continue
+    const c = src[i]
+    if (c === ']') { square++; continue }
+    if (c === ')') { round++; continue }
+    if (c === '}') { curly++; continue }
+    if (c === ')' || c === '}') continue
+    if (c === '[') {
+      if (square > 0) { square--; continue }
+      // Unmatched `[` — the array we are directly inside. Is it a combinator's?
+      const before = src.slice(Math.max(0, i - 60), i)
+      return /Promise\s*\.\s*(all|race|allSettled|any)\s*\(\s*$/.test(before)
+    }
+    if (c === '(') {
+      if (round > 0) { round--; continue }
+      return false // an enclosing call, not an array literal
+    }
+    if (c === '{') {
+      if (curly > 0) { curly--; continue }
+      return false // an enclosing block or object
+    }
+  }
+  return false
+}
+
 /**
  * Whether the function enclosing `idx` is `async` — or `'top-level'` when the
  * call is not inside a function at all.
@@ -248,7 +292,7 @@ export function scanSource(file: string, src: string, methods: readonly string[]
 
     const after = src.slice(idx)
     // `.then(` / `.catch(` / `.finally(` immediately after the call: handled.
-    const callEnd = matchParen(after, after.indexOf('('))
+    const callEnd = matchParen(after, src.indexOf('(', idx) - idx, spans, idx)
     if (callEnd > 0 && /^\s*\.(then|catch|finally)\s*\(/.test(after.slice(callEnd))) continue
 
     const pos = positionOf(src, idx)
@@ -256,7 +300,7 @@ export function scanSource(file: string, src: string, methods: readonly string[]
     // Unambiguous cases only. Anything structural is reported, not rewritten.
     let fixable = true
     let reason: string | undefined
-    if (/(Promise\s*\.\s*(all|race|allSettled|any)\s*\(\s*\[[^\]]*)$/.test(before)) {
+    if (insideCombinatorArray(src, idx, spans)) {
       fixable = false
       reason = 'inside a Promise combinator array — awaiting here settles the call before the combinator sees it'
     } else if (/=>\s*$/.test(before)) {
@@ -277,7 +321,12 @@ export function scanSource(file: string, src: string, methods: readonly string[]
     // Does something consume the result directly? Then `await` must wrap the
     // whole call, not bind looser than the member access.
     let wrapTo: number | undefined
-    if (callEnd > 0 && /^\s*[.[]/.test(after.slice(callEnd))) {
+    if (callEnd < 0) {
+      // Could not find the closing paren, so whether the result is consumed is
+      // unknown. Guessing here is what produced the `.length`-of-a-promise bug.
+      fixable = false
+      reason = 'could not determine where the call ends — add `await` by hand'
+    } else if (callEnd > 0 && /^\s*[.[]/.test(after.slice(callEnd))) {
       const endIdx = idx + callEnd
       const endPos = positionOf(src, endIdx)
       // Only when the call starts and ends on the same line — a multi-line call
@@ -291,10 +340,22 @@ export function scanSource(file: string, src: string, methods: readonly string[]
   return out
 }
 
-function matchParen(s: string, open: number): number {
+/**
+ * Offset just past the `)` closing the `(` at `open`, or -1 if unbalanced.
+ *
+ * `s` is a suffix of the whole source starting at absolute offset `base`, so
+ * span membership is tested against `base + i`. Skipping string and comment
+ * spans is not cosmetic: a stray paren in a query string used to shift the
+ * match, `matchParen` returned -1, and `callEnd > 0` then read as "nothing
+ * consumes the result" — so `plur.recall('has a ( paren').length` was rewritten
+ * to `await plur.recall(...).length`, which awaits `.length` OF THE PROMISE and
+ * evaluates to undefined. It parses and it is silently wrong.
+ */
+function matchParen(s: string, open: number, spans: Array<[number, number]>, base: number): number {
   if (open < 0) return -1
   let d = 0
   for (let i = open; i < s.length; i++) {
+    if (inSpans(spans, base + i)) continue
     if (s[i] === '(') d++
     else if (s[i] === ')') { d--; if (d === 0) return i + 1 }
   }
