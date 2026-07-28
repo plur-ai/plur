@@ -286,6 +286,15 @@ echo "  ✓ packages/hermes/pyproject.toml"
 sed -i '' "s/^version: .*/version: $VERSION/" packages/hermes/plur_hermes/skills/plur-memory.SKILL.md
 echo "  ✓ packages/hermes/plur_hermes/skills/plur-memory.SKILL.md"
 
+# Two more locations CLAUDE.md mandates that nothing was bumping. Both shipped
+# at 0.14.0 while 0.15.0 was the published release — a plugin manifest and a
+# standalone skill file that tell users which version they are on, quietly two
+# releases behind. The checklist listed them; no code acted on it.
+sed -i '' "s/^version: .*/version: $VERSION/" packages/hermes/plugin.yaml
+echo "  ✓ packages/hermes/plugin.yaml"
+sed -i '' "s/^version: .*/version: $VERSION/" skills/plur-memory/SKILL.md
+echo "  ✓ skills/plur-memory/SKILL.md"
+
 # Hermes npx-fallback CLI pin (#1) — the npx-fallback write path runs
 # @plur-ai/cli@$_NPX_CLI_VERSION; if it lags the release it runs a PRE-FIX CLI
 # that bypasses every scope/leak-guard fix. Bump it to $VERSION so the fallback
@@ -871,6 +880,15 @@ echo ""
 echo "=== Release v$VERSION complete ==="
 echo ""
 echo "Published:"
-echo "  npm: @plur-ai/core@$VERSION @plur-ai/mcp@$VERSION @plur-ai/claw@$VERSION @plur-ai/cli@$VERSION"
+# Report what was ACTUALLY published. This line named claw at $VERSION
+# unconditionally — but claw is on its own version track and ships only with
+# --claw, so a release without it announced a version that was never published;
+# and it omitted `migrate`, which IS published every release. A summary nobody
+# can trust is worse than no summary.
+NPM_PUBLISHED="@plur-ai/core@$VERSION @plur-ai/mcp@$VERSION @plur-ai/cli@$VERSION @plur-ai/migrate@$VERSION"
+if [ -n "$CLAW_VERSION" ]; then
+  NPM_PUBLISHED="$NPM_PUBLISHED @plur-ai/claw@$CLAW_VERSION"
+fi
+echo "  npm: $NPM_PUBLISHED"
 echo "  PyPI: plur-hermes==$VERSION"
 echo "  GitHub: https://github.com/plur-ai/plur/releases/tag/v$VERSION"

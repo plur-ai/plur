@@ -3852,6 +3852,7 @@ export class Plur {
     // Check remote stores — the engram may live on an enterprise server.
     // See: https://github.com/plur-ai/plur/issues/84
     // Strip store prefix before querying remote. See: #86
+    let refusedBy: string | null = null
     for (const entry of (this.config.stores ?? [])) {
       if (!entry.url) continue
       const serverId = this._stripRemotePrefix(id, entry.scope)
@@ -3876,9 +3877,22 @@ export class Plur {
           })
           return
         }
+        // Found it, and the server declined to remove it. Remember where, so
+        // the error below can say what actually happened.
+        refusedBy = entry.scope ?? 'a remote store'
       }
     }
 
+    // A refused DELETE is not a missing engram and must not be reported as one.
+    // Both used to fall through to "Engram not found", so a user whose token
+    // lacked delete rights was told their engram did not exist — they stop
+    // looking, and it is still there.
+    if (refusedBy) {
+      throw new Error(
+        `Engram ${id} exists in ${refusedBy} but the server refused to retire it — it was NOT removed. `
+        + `Check that the token has delete rights for that scope.`,
+      )
+    }
     throw new Error(`Engram not found: ${id}`)
   }
 
@@ -4057,29 +4071,42 @@ export class Plur {
       const engramsPath = `${packDir}/engrams.yaml`
       if (!fs.existsSync(engramsPath)) continue
 
+      // Under the PACK file's own lock, load included.
+      //
+      // The last unlocked read-modify-write of this shape. `save()` replaces
+      // the whole pack file, so two processes rating different engrams in one
+      // installed pack did not merely lose an increment — whichever wrote
+      // second dropped the other's. Packs are shared by every agent on the
+      // machine, which is exactly the concurrency this misses.
+      //
+      // Keyed on the pack's own path, so it cannot collide with the primary
+      // store's lock; the caller holds none.
       const packStore = this._storeAt(engramsPath)
-      const engrams = await packStore.load()
-      const engram = engrams.find(e => e.id === id)
-      if (!engram) continue
+      const handled = await this._withStoreLock(engramsPath, async () => {
+        const engrams = await packStore.load()
+        const engram = engrams.find(e => e.id === id)
+        if (!engram) return false
 
-      if (!engram.feedback_signals) {
-        engram.feedback_signals = { positive: 0, negative: 0, neutral: 0 }
-      }
-      engram.feedback_signals[signal] += 1
+        if (!engram.feedback_signals) {
+          engram.feedback_signals = { positive: 0, negative: 0, neutral: 0 }
+        }
+        engram.feedback_signals[signal] += 1
 
-      if (signal === 'positive') {
-        engram.activation.retrieval_strength = Math.min(1.0, engram.activation.retrieval_strength + 0.05)
-      } else if (signal === 'negative') {
-        engram.activation.retrieval_strength = Math.max(0.0, engram.activation.retrieval_strength - 0.1)
-      }
-      // Re-anchor last_accessed so read-time decay doesn't swallow the bump
-      // (see the primary-path note in feedback()).
-      if (signal !== 'neutral') {
-        engram.activation.last_accessed = new Date().toISOString().slice(0, 10)
-      }
+        if (signal === 'positive') {
+          engram.activation.retrieval_strength = Math.min(1.0, engram.activation.retrieval_strength + 0.05)
+        } else if (signal === 'negative') {
+          engram.activation.retrieval_strength = Math.max(0.0, engram.activation.retrieval_strength - 0.1)
+        }
+        // Re-anchor last_accessed so read-time decay doesn't swallow the bump
+        // (see the primary-path note in feedback()).
+        if (signal !== 'neutral') {
+          engram.activation.last_accessed = new Date().toISOString().slice(0, 10)
+        }
 
-      await packStore.save(engrams)
-      return
+        await packStore.save(engrams)
+        return true
+      })
+      if (handled) return
     }
 
     throw new Error(`Engram not found: ${id}`)
