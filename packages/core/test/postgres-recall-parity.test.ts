@@ -120,7 +120,15 @@ describe.skipIf(!PG_URL)('recall() parity on the Postgres tier (#743 regression)
       await withTeam.learn('the billing deploy is nightly', { scope: 'global' })
 
       const hits = await withTeam.recall('kubernetes rollout', { limit: 20 })
-      expect(hits.map(h => h.id), 'the team store vanished from recall()').toContain(shared.id)
+      // Identified by STATEMENT, not by the raw team-store id: every read path
+      // namespaces a secondary store's ids (`ENG-` -> `ENG-GAC-`), so asserting
+      // on `shared.id` would be asserting the un-namespaced form — which is the
+      // bug the next test covers. This test is about the engram being reachable
+      // at all.
+      expect(
+        hits.map(h => h.statement),
+        'the team store vanished from recall()',
+      ).toContain(shared.statement)
     } finally {
       rmSync(teamDir, { recursive: true, force: true })
     }
@@ -148,5 +156,43 @@ describe.skipIf(!PG_URL)('recall() parity on the Postgres tier (#743 regression)
     const hits = await plur.recall('deploy target', { limit: 2 })
     expect(hits.length, 'expired rows consumed result slots').toBe(2)
     expect(hits.every(h => live.includes(h.id))).toBe(true)
+  }, TIMEOUT)
+
+  it('namespaces secondary-store ids exactly as every other read path does', async () => {
+    // Not cosmetic. Both stores mint `ENG-YYYY-MMDD-NNN` from a per-store daily
+    // sequence, so an un-namespaced team engram COLLIDES with a primary one as
+    // the common case — and `feedback()` / `forget()` resolve by exact id
+    // against the primary store first. A user rating a team engram returned by
+    // `plur_recall` would silently mutate an unrelated primary engram.
+    const teamDir = mkdtempSync(join(tmpdir(), 'plur-ns-'))
+    const teamYaml = join(teamDir, 'engrams.yaml')
+    try {
+      const team = new Plur({ path: teamDir })
+      await team.ready()
+      await team.learn('the kubernetes rollout is staged per region', { scope: 'group:acme/eng' })
+
+      writeFileSync(
+        join(dir, 'config.yaml'),
+        yaml.dump({ stores: [{ scope: 'group:acme/eng', shared: true, path: teamYaml }] }, { noRefs: true }),
+      )
+      const withTeam = new Plur({ path: dir, store: adapter })
+      await withTeam.ready()
+      await withTeam.learn('the billing deploy is nightly', { scope: 'global' })
+
+      const recalled = await withTeam.recall('kubernetes rollout', { limit: 20 })
+      const listed = await withTeam.list()
+
+      // No id appears twice.
+      const ids = recalled.map(e => e.id)
+      expect(new Set(ids).size, `duplicate ids across stores: ${ids.join(' ')}`).toBe(ids.length)
+
+      // And recall() reports the SAME id for a team engram that list() does.
+      const teamHit = recalled.find(e => e.scope === 'group:acme/eng')
+      expect(teamHit, 'the team engram was not returned at all').toBeDefined()
+      expect(listed.map(e => e.id)).toContain(teamHit!.id)
+      expect(teamHit!.id, 'id was not namespaced').toMatch(/^ENG-[A-Z]+-/)
+    } finally {
+      rmSync(teamDir, { recursive: true, force: true })
+    }
   }, TIMEOUT)
 })

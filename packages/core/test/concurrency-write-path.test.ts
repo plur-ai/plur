@@ -132,13 +132,24 @@ describe('Plur — concurrent writes', () => {
 
     const HOLD_MS = 200
     const TICK_MS = 10
-    // A starved event loop CANNOT reach this. Node coalesces a blocked
-    // `setInterval` into a SINGLE callback fired the moment the loop is
-    // released, so a spin-waiting writer scores exactly 1 tick no matter how
-    // long it blocked — which is why `toBeGreaterThan(0)` proved nothing here.
-    // A loop that keeps turning fires ~HOLD_MS / TICK_MS times; half of that
-    // is the bar.
-    const MIN_TICKS = HOLD_MS / TICK_MS / 2
+    // Set from measurement, not from the nominal rate.
+    //
+    // Node coalesces a blocked `setInterval` into a SINGLE callback fired the
+    // moment the loop is released, so a spin-waiting writer scores exactly 1
+    // tick no matter how long it blocked — measured, 3 runs of 3 against the
+    // old spinning lock. That is why the original `toBeGreaterThan(0)` proved
+    // nothing: 1 > 0.
+    //
+    // A healthy loop scores 15-18 here in isolation (measured over 10 runs)
+    // against a nominal ceiling of HOLD_MS / TICK_MS = 20. The previous bar of
+    // half-nominal (10) sat INSIDE the load-variance band: under a full
+    // parallel suite the count dips below it, which is why this test failed
+    // roughly one run in three there while passing 52 of 53 in isolation.
+    //
+    // 5 keeps a 5x margin over starvation and tolerates a 3x slowdown from the
+    // healthy figure. The gap between 1 and 15 is wide; the bar belongs near
+    // the bottom of it, not the middle.
+    const MIN_TICKS = 5
 
     const events: string[] = []
     let ticks = 0

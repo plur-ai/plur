@@ -24,21 +24,55 @@ import { mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { Plur } from '../src/index.js'
+import type { Engram } from '../src/schemas/engram.js'
 
 const TIMEOUT = 180_000
 
-// Every engram is about the same thing, so vector similarity cannot separate
-// them — only the scope filter can. That is deliberate: it makes the neighbour
-// list's composition depend purely on whether the restriction reached the
-// query.
-// Large enough that an unrestricted top-50 is swamped: the k-NN floor in
-// `_pgliteSemanticRecall` is `max(limit*3, 50)`, so with 400 noise engrams the
-// 5 permitted ones are statistically absent from it. Verified — the
-// unrestricted top-50 contains 0 of them.
-const NOISE = 400
+// The two groups are separated by SIMILARITY, not by count.
+//
+// The k-NN floor in `_pgliteSemanticRecall` is `max(limit*3, 50)`, so an
+// unrestricted neighbour list holds 50 rows. To show dilution, those 50 must
+// contain none of the permitted engrams. An earlier version got there by sheer
+// volume — 400 near-identical noise engrams so the 5 permitted were
+// statistically absent — but seeding that many through `learn()` with the
+// PGLite tier forced is O(N^2) in index syncs and timed out the hook at 180s
+// under a full suite.
+//
+// Ranking by similarity instead needs only enough noise to fill the window:
+// the noise engrams restate the query almost verbatim, the permitted ones are
+// on-topic but worded differently, so every noise engram outranks every
+// permitted one. Same demonstration, 65 engrams instead of 405.
+const NOISE = 60
 const WANTED = 5
+const QUERY = 'deployment pipeline database migrations'
 
 let ready = false
+
+/** A minimal valid engram — the corpus content is what matters here. */
+function makeEngram(id: string, statement: string, scope: string): Engram {
+  return {
+    id,
+    statement,
+    type: 'behavioral',
+    scope,
+    status: 'active',
+    visibility: 'private',
+    version: 1,
+    engram_version: 1,
+    consolidated: false,
+    reference_count: 0,
+    recurrence_count: 0,
+    episode_ids: [],
+    sources: [],
+    tags: [],
+    relations: { broader: [], narrower: [], related: [], conflicts: [], supersedes: [], superseded_by: [] },
+    activation: { retrieval_strength: 1, storage_strength: 1, last_accessed: null, decay_rate: 0 },
+    temporal: { learned_at: '2026-07-28' },
+    created_at: '2026-07-28T00:00:00Z',
+    updated_at: '2026-07-28T00:00:00Z',
+  } as unknown as Engram
+}
+
 
 /**
  * Fail visibly rather than pass silently when the embedder is unavailable.
@@ -75,16 +109,27 @@ describe('vector recall applies the scope restriction in-query, not after', () =
     plur = new Plur({ path: dir })
     await plur.ready()
 
+    // Seeded in ONE write, not 405 `learn()` calls.
+    //
+    // Every `learn()` is load -> mutate -> save-whole-corpus, so seeding N
+    // engrams one at a time is O(N^2) in engram writes — 405 calls came to
+    // ~82,000, and the hook timed out at 180s under a full parallel suite.
+    // The corpus content is all this test needs; how it got there is not under
+    // test, and `reindex()` builds the vector index from it exactly as
+    // incremental writes would have.
+    // Seeded through `learn()` so the embedding pass runs — a bulk
+    // `primaryStore.save()` writes the rows but generates no vectors, and this
+    // file is about the vector leg.
     for (let i = 0; i < NOISE; i++) {
-      await plur.learn(`the deployment pipeline runs database migrations, note ${i}`, { scope: 'group:noise' })
+      await plur.learn(`deployment pipeline database migrations, note ${i}`, { scope: 'group:noise' })
     }
     for (let i = 0; i < WANTED; i++) {
-      await plur.learn(`the deployment pipeline runs database migrations, alpha ${i}`, { scope: 'project:alpha' })
+      await plur.learn(`tenant cluster rollout policy for the alpha team, item ${i}`, { scope: 'project:alpha' })
     }
     // Embeddings are what this file is about; if they are unavailable the
     // vector leg degrades to BM25 and these assertions would measure something
     // else.
-    const probe = await plur.recallSemantic('deployment pipeline migrations', { limit: 3 })
+    const probe = await plur.recallSemantic(QUERY, { limit: 3 })
     ready = probe.length > 0
   }, TIMEOUT)
 
@@ -98,7 +143,7 @@ describe('vector recall applies the scope restriction in-query, not after', () =
     // Guards the FIXTURE. If a future edit shrinks the corpus or the k-NN floor
     // rises, the assertions below stop testing anything and would still pass.
     requireEmbedder(ctx)
-    const unrestricted = await plur.recallSemantic('deployment pipeline migrations', { limit: 50 })
+    const unrestricted = await plur.recallSemantic(QUERY, { limit: 50 })
     expect(unrestricted.filter(e => e.scope === 'project:alpha').length).toBe(0)
   }, TIMEOUT)
 
@@ -108,7 +153,7 @@ describe('vector recall applies the scope restriction in-query, not after', () =
     // Without it, measured: 0 of 5. The unrestricted top-50 of 405 contains no
     // permitted engram at all (asserted above), so the post-hoc intersection
     // has nothing to keep.
-    const hits = await plur.recallSemantic('deployment pipeline migrations', {
+    const hits = await plur.recallSemantic(QUERY, {
       limit: WANTED,
       scopes: ['project:alpha'],
     })
@@ -118,7 +163,7 @@ describe('vector recall applies the scope restriction in-query, not after', () =
 
   it('recallHybrid does the same on its vector leg', async (ctx) => {
     requireEmbedder(ctx)
-    const hits = await plur.recallHybrid('deployment pipeline migrations', {
+    const hits = await plur.recallHybrid(QUERY, {
       limit: WANTED,
       scopes: ['project:alpha'],
     })
@@ -128,13 +173,13 @@ describe('vector recall applies the scope restriction in-query, not after', () =
 
   it('an empty allow-list still returns nothing', async (ctx) => {
     requireEmbedder(ctx)
-    expect(await plur.recallSemantic('deployment pipeline migrations', { limit: 5, scopes: [] })).toEqual([])
-    expect(await plur.recallHybrid('deployment pipeline migrations', { limit: 5, scopes: [] })).toEqual([])
+    expect(await plur.recallSemantic(QUERY, { limit: 5, scopes: [] })).toEqual([])
+    expect(await plur.recallHybrid(QUERY, { limit: 5, scopes: [] })).toEqual([])
   }, TIMEOUT)
 
   it('an absent allow-list is unrestricted — existing behaviour unchanged', async (ctx) => {
     requireEmbedder(ctx)
-    const hits = await plur.recallSemantic('deployment pipeline migrations', { limit: 10 })
+    const hits = await plur.recallSemantic(QUERY, { limit: 10 })
     expect(hits.length).toBe(10)
     expect(hits.some(e => e.scope === 'group:noise'), 'unrestricted recall should see the noise').toBe(true)
   }, TIMEOUT)

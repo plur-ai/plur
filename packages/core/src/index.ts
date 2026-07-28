@@ -726,9 +726,30 @@ export class Plur {
    */
   private async _loadAllEngrams(): Promise<Engram[]> {
     const primary = await this._loadCached(this.paths.engrams)
-    const stores = this.config.stores ?? []
+    return [...primary, ...(await this._loadSecondaryAndPacks())]
+  }
 
-    const all: Engram[] = [...primary]
+  /**
+   * Everything that is NOT the primary store: configured secondary stores
+   * (file-path AND remote) plus installed packs, with the id namespacing, scope
+   * narrowing and containment guard applied.
+   *
+   * Extracted so the BM25 pushdown path can reach these rows without loading the
+   * primary corpus — the whole point of pushing the query into the store. An
+   * earlier version of that path re-implemented this loop and got three things
+   * wrong at once: it skipped `url` stores entirely (so an enterprise team store
+   * vanished from `recall()` while `list()` still showed it), and it returned
+   * rows RAW — no namespacing, no `global` narrowing, no `isScopeWithin` guard.
+   * The namespacing one had teeth beyond cosmetics: both stores mint
+   * `ENG-YYYY-MMDD-NNN` from a per-store daily sequence, so ids collide as the
+   * common case, and `feedback()` / `forget()` resolve by exact id against the
+   * primary store first — mutating an unrelated engram.
+   *
+   * One implementation, two callers. Duplicating it is what caused all three.
+   */
+  private async _loadSecondaryAndPacks(): Promise<Engram[]> {
+    const stores = this.config.stores ?? []
+    const all: Engram[] = []
     for (const store of stores) {
       const storeEngrams = store.url
         ? this._loadRemoteCached(store)
@@ -2812,23 +2833,11 @@ export class Plur {
    * primary rows; the residual filters are applied by the caller.
    */
   private async _engramsOutsidePrimaryStore(options?: RecallOptions): Promise<Engram[]> {
-    const out: Engram[] = []
-    for (const store of this.config.stores ?? []) {
-      if (!store.path || store.url) continue
-      if (store.path === this.paths.engrams) continue
-      try {
-        out.push(...(await this._loadCached(store.path)))
-      } catch {
-        // A secondary store that will not load must not take down a recall
-        // against the primary one. `loadEngrams` throws on an unreadable file
-        // (see EngramStoreUnreadableError) and that is the right default; here
-        // the primary result is still useful, so degrade rather than fail.
-        logger.warning(`[plur] secondary store ${store.path} could not be read; excluded from this recall`)
-      }
-    }
-    for (const pack of loadAllPacks(this.paths.packs)) out.push(...pack.engrams)
-
-    let filtered = out.filter(e => e.status === 'active')
+    // Delegates to the SAME loader `_loadAllEngrams` uses, so remote stores,
+    // id namespacing, scope narrowing and the containment guard cannot drift
+    // between the pushdown path and every other read path. This method used to
+    // re-implement that loop and got all four wrong.
+    let filtered = (await this._loadSecondaryAndPacks()).filter(e => e.status === 'active')
     if (options?.scopes !== undefined) {
       const allowed = scopeAllowFilter(options.scopes)
       filtered = filtered.filter(e => allowed(e.scope))
