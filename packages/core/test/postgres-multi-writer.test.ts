@@ -135,3 +135,48 @@ describe.skipIf(!PG_URL)('two Plur instances sharing one Postgres store', () => 
     expect((await a.load()).map(r => r.id)).toContain(e.id)
   }, TIMEOUT)
 })
+
+describe.skipIf(!PG_URL)('withExclusiveAccess under pool pressure', () => {
+  it('does not deadlock when concurrent writers exceed the pool size', async () => {
+    // The lock is held for the whole critical section and `fn()` needs its own
+    // connection. Taking both from ONE pool deadlocks the moment concurrent
+    // writers reach `maxConnections`: every connection is held by a lock holder
+    // waiting for a connection that can never be freed. No error, no timeout —
+    // the process just stops writing.
+    //
+    // Reproduced before the fix with pool=2 and three writers. A small pool is
+    // used here so the condition is reached in a test rather than at the
+    // default of 10, where it would need eleven concurrent writers.
+    const schema = 'plur_pool_deadlock_' + Math.random().toString(36).slice(2, 10)
+    const adapter = new PostgresAdapter({
+      connectionString: PG_URL!, schema, vectorIndex: 'exact', maxConnections: 2,
+    })
+    try {
+      await adapter.save([])
+      const work = () => adapter.withExclusiveAccess(async () => {
+        await adapter.load()
+        return 1
+      })
+      // 12 writers against a pool of 2. If the lock and the work share a pool
+      // this never settles and the test times out rather than failing.
+      const results = await Promise.all(Array.from({ length: 12 }, work))
+      expect(results).toHaveLength(12)
+      expect(results.every(r => r === 1)).toBe(true)
+    } finally {
+      await adapter.dropSchema().catch(() => { /* best effort */ })
+      await adapter.close().catch(() => { /* best effort */ })
+    }
+  }, 60_000)
+
+  it('close() tears down the lock pool too — no leaked connections', async () => {
+    const schema = 'plur_pool_close_' + Math.random().toString(36).slice(2, 10)
+    const adapter = new PostgresAdapter({ connectionString: PG_URL!, schema, vectorIndex: 'exact' })
+    await adapter.save([])
+    await adapter.withExclusiveAccess(async () => undefined)
+    await adapter.dropSchema().catch(() => { /* best effort */ })
+    await adapter.close()
+    // A second close must not throw, and the adapter must refuse further use.
+    await adapter.close()
+    await expect(adapter.load()).rejects.toThrow(/closed/)
+  }, 60_000)
+})

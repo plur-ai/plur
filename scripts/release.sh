@@ -184,8 +184,11 @@ echo "--- Step 1: Version bump ---"
 OLD_CORE=$(node -e "console.log(require('./packages/core/package.json').version)")
 echo "Current version: $OLD_CORE → $VERSION"
 
-# package.json files for core/mcp/cli (claw is handled separately below)
-for pkg in core mcp cli; do
+# package.json files for core/mcp/cli/migrate (claw is handled separately below).
+# `migrate` ships with the release it migrates TO: the CHANGELOG tells users to
+# run `npx @plur-ai/migrate`, so a release that does not publish it advertises a
+# command that 404s.
+for pkg in core mcp cli migrate; do
   node -e "
     const fs = require('fs');
     const path = './packages/$pkg/package.json';
@@ -455,7 +458,7 @@ preflight_check() {
   return 0
 }
 PREFLIGHT_OK=true
-for pkg in core cli mcp; do
+for pkg in core cli mcp migrate; do
   preflight_check "$pkg" "$VERSION" || PREFLIGHT_OK=false
 done
 if [ -n "$CLAW_VERSION" ]; then
@@ -507,7 +510,7 @@ echo ""
 # but unflagged — npm's 72-hour unpublish rule means we can't delete; we ship
 # a 0.9.5 patch and deprecate 0.9.4 via `npm deprecate`).
 echo "--- Step 5a: Publish npm @next (canary) ---"
-for pkg in core cli mcp; do
+for pkg in core cli mcp migrate; do
   echo -n "  @plur-ai/$pkg@$VERSION → @next..."
   pnpm --filter "@plur-ai/$pkg" publish --access public --no-git-checks --tag next 2>&1 | tail -1
 done
@@ -615,7 +618,7 @@ echo ""
 # Past this point, @latest is updated. Users on @latest start receiving the
 # new version. PyPI publish + GH release + tweet follow.
 echo "--- Step 5c: Promote @next → @latest ---"
-for pkg in core cli mcp; do
+for pkg in core cli mcp migrate; do
   echo -n "  @plur-ai/$pkg@$VERSION → @latest..."
   npm dist-tag add "@plur-ai/$pkg@$VERSION" latest 2>&1 | tail -1
 done

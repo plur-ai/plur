@@ -36,7 +36,7 @@ mkdir -p "$WORK/tarballs"
 # real version on pack/publish; npm does not, and the resulting tarball fails to
 # install with EUNSUPPORTEDPROTOCOL. Since releases go out via `pnpm publish`,
 # packing with pnpm is also the faithful mirror of what users receive.
-for pkg in core mcp cli claw; do
+for pkg in core mcp cli claw migrate; do
   ( cd "$ROOT/packages/$pkg" && pnpm pack --pack-destination "$WORK/tarballs" >/dev/null 2>&1 ) \
     && ok "packed @plur-ai/$pkg" || bad "pack $pkg"
 done
@@ -61,6 +61,7 @@ npm install --silent --no-audit --no-fund \
   "$WORK"/tarballs/plur-ai-core-*.tgz \
   "$WORK"/tarballs/plur-ai-mcp-*.tgz \
   "$WORK"/tarballs/plur-ai-cli-*.tgz \
+  "$WORK"/tarballs/plur-ai-migrate-*.tgz \
   pg >/dev/null 2>&1 && ok "npm install from tarballs" || { bad "npm install"; exit 1; }
 
 say "3. Packaging invariants"
@@ -147,6 +148,36 @@ else
   # Not every version ships the ./tools subpath; fall back to the main entry.
   node -e "import('@plur-ai/mcp').then(() => {})" 2>/dev/null \
     && ok "@plur-ai/mcp main entry imports" || bad "MCP import"
+fi
+
+say "6b. Migration tool (the CHANGELOG tells every user to run this)"
+# A breaking release that advertises `npx @plur-ai/migrate` and does not publish
+# it sends everyone to a 404. Packing and running it here is the check that the
+# advice is real.
+cat > mig-target.mjs <<'JS'
+async function ok(plur) {
+  plur.learn('should gain an await')
+}
+function notAsync(plur) {
+  plur.learn('must NOT gain one — await here does not parse')
+}
+export { ok, notAsync }
+JS
+if node node_modules/@plur-ai/migrate/dist/index.js mig-target.mjs --write >/dev/null 2>&1 || [ $? -eq 2 ]; then
+  ok "plur-migrate runs from the packaged tarball"
+else
+  bad "packaged plur-migrate failed to run"
+fi
+if node --check mig-target.mjs 2>/dev/null; then
+  ok "its output is valid syntax"
+else
+  bad "plur-migrate produced source that does not parse"
+fi
+if grep -q "await plur.learn('should gain an await')" mig-target.mjs \
+   && ! grep -q "await plur.learn('must NOT" mig-target.mjs; then
+  ok "fixed the async call, left the non-async one alone"
+else
+  bad "plur-migrate rewrote the wrong sites"
 fi
 
 if [ -n "${PLUR_SMOKE_POSTGRES_URL:-}" ]; then

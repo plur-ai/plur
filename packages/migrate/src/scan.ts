@@ -154,6 +154,72 @@ function positionOf(src: string, idx: number): { line: number; column: number; t
   }
 }
 
+
+/** Statement keywords that take a parenthesised head — not callable functions. */
+const CONTROL_KEYWORDS = new Set(['if', 'for', 'while', 'switch', 'catch', 'with', 'do'])
+
+/**
+ * Whether the function enclosing `idx` is `async` — or `'top-level'` when the
+ * call is not inside a function at all.
+ *
+ * `await` is a syntax error outside an async function, so inserting one without
+ * checking produces source that does not parse. The tool did exactly that:
+ * given `function saveIt(plur) { plur.learn('x') }` it emitted
+ * `await plur.learn('x')` inside a non-async function, and `node --check`
+ * rejected the file. A migration tool that breaks the build is worse than one
+ * that reports and leaves the edit to a human.
+ *
+ * Walks backwards tracking brace depth to find the nearest enclosing `{` that
+ * belongs to a function header, then inspects that header. String and comment
+ * spans are skipped by the caller's span list.
+ */
+function enclosingFunctionKind(src: string, idx: number, spans: Array<[number, number]>): 'async' | 'sync' | 'top-level' {
+  let depth = 0
+  for (let i = idx - 1; i >= 0; i--) {
+    if (inSpans(spans, i)) continue
+    const c = src[i]
+    if (c === '}') { depth++; continue }
+    if (c !== '{') continue
+    if (depth > 0) { depth--; continue }
+    // An unmatched `{` — the block we are directly inside. Is its header a
+    // function?
+    const header = src.slice(Math.max(0, i - 220), i)
+    // `function f(...)`, `async function f(...)`, `(...) =>`, method shorthand.
+    const fn = /(?:^|[^\w$])(async\s+)?function\s*\*?\s*[\w$]*\s*\([^()]*\)\s*$/.exec(header)
+    if (fn) return fn[1] ? 'async' : 'sync'
+    const arrow = /(?:^|[^\w$])(async\s*)?\([^()]*\)\s*=>\s*$/.exec(header)
+    if (arrow) return arrow[1] ? 'async' : 'sync'
+    const bareArrow = /(?:^|[^\w$])(async\s+)?[\w$]+\s*=>\s*$/.exec(header)
+    if (bareArrow) return bareArrow[1] ? 'async' : 'sync'
+    // Method shorthand in a class or object literal: `name(args) {`.
+    //
+    // The keyword guard is load-bearing: `if (...) {`, `for (...) {`,
+    // `while (...) {` and `catch (...) {` all match this shape, and treating
+    // one as a non-async function made every call inside a conditional or loop
+    // unfixable — even inside an async function. Caught by a test that put the
+    // call inside `if { for { ... } }`.
+    const method = /(?:^|[^\w$])(async\s+)?([\w$]+)\s*\([^()]*\)\s*$/.exec(header)
+    if (method && !CONTROL_KEYWORDS.has(method[2])) return method[1] ? 'async' : 'sync'
+    // Some other block (if/for/try/class body) — keep walking outwards.
+    depth = 0
+  }
+  return 'top-level'
+}
+
+/**
+ * True when the file can host a top-level `await`.
+ *
+ * TypeScript and `.mjs` are modules by default, so top-level await is valid
+ * there. `.cjs`/`.cts` never are. Plain `.js` is ambiguous — CommonJS unless the
+ * file shows module syntax — so evidence is required before rewriting, since a
+ * wrong guess emits source that does not parse.
+ */
+function isEsm(file: string, src: string): boolean {
+  if (/\.(mjs|mts|ts|tsx)$/.test(file)) return true
+  if (/\.(cjs|cts)$/.test(file)) return false
+  return /^\s*(import\s|export\s|import\()/m.test(src)
+}
+
 /**
  * Scan one file's source for un-awaited calls to newly-async methods.
  *
@@ -196,6 +262,16 @@ export function scanSource(file: string, src: string, methods: readonly string[]
     } else if (/=>\s*$/.test(before)) {
       fixable = false
       reason = 'concise arrow body — the enclosing function must become async first'
+    } else {
+      // `await` outside an async function does not parse. Report, do not rewrite.
+      const kind = enclosingFunctionKind(src, idx, spans)
+      if (kind === 'sync') {
+        fixable = false
+        reason = 'the enclosing function is not `async` — make it async first, then re-run'
+      } else if (kind === 'top-level' && !isEsm(file, src)) {
+        fixable = false
+        reason = 'top-level await needs an ES module — convert the file, or wrap the call in an async function'
+      }
     }
 
     // Does something consume the result directly? Then `await` must wrap the

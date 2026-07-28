@@ -57,6 +57,27 @@ export interface LearnAsyncDeps {
   offendingHitsForScope: (statement: string, scope: string) => SecretMatch[]
 }
 
+
+/**
+ * Run `fn` under exclusive access to the store — the store's own mechanism when
+ * it has one, the path-based file lock otherwise.
+ *
+ * Mirrors `Plur._withStoreLock`, and exists for the same reason. These writes
+ * are load -> mutate -> `store.save(all)`, which REPLACES the whole corpus, so
+ * two concurrent writers do not merely lose an update: the loser deletes rows
+ * the winner committed.
+ *
+ * This module locked on `deps.engramsPath` unconditionally — an `O_EXCL` file on
+ * the LOCAL disk. That is correct for a YAML store, where the path being locked
+ * IS the data, and worthless for a shared database: two processes share neither
+ * the mutex nor the file. So `learnAsync` and `learnBatch` bypassed the Postgres
+ * advisory lock that every other write path takes.
+ */
+async function withStoreLock<T>(deps: LearnAsyncDeps, fn: () => Promise<T>): Promise<T> {
+  if (deps.store.withExclusiveAccess) return await deps.store.withExclusiveAccess(fn)
+  return await withAsyncLock(deps.engramsPath, fn)
+}
+
 /**
  * Demote an engram in place when its (post-mutation) statement carries content
  * the engram's shared scope forbids. Local write, so demotion is coherent:
@@ -132,7 +153,7 @@ async function executeDedupDecision(
       if (targetId) {
         const existing = await deps.getById(targetId)
         if (existing && (existing as any).commitment !== 'locked') {
-          const result = await withAsyncLock(deps.engramsPath, async () => {
+          const result = await withStoreLock(deps, async () => {
             const engrams = await deps.store.load()
             const idx = engrams.findIndex(e => e.id === targetId)
             // Target gone — fall out of the lock and ADD; see the doc comment.
@@ -167,7 +188,7 @@ async function executeDedupDecision(
       if (targetId) {
         const existing = await deps.getById(targetId)
         if (existing && (existing as any).commitment !== 'locked') {
-          const result = await withAsyncLock(deps.engramsPath, async () => {
+          const result = await withStoreLock(deps, async () => {
             const engrams = await deps.store.load()
             const idx = engrams.findIndex(e => e.id === targetId)
             // Target gone — fall out of the lock and ADD; see the doc comment.

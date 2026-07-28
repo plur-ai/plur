@@ -144,3 +144,57 @@ describe('applyFixes', () => {
     expect(twice.src).toBe(once)
   })
 })
+
+describe('never emits source that cannot parse', () => {
+  // The tool rewrites a user's files. Emitting a syntax error is the one
+  // outcome that is strictly worse than doing nothing, and it shipped: given a
+  // call inside a non-async function it inserted `await` anyway and `node
+  // --check` rejected the result.
+  const scanJs = (src: string) => scanSource('t.mjs', src)
+
+  it('refuses a call inside a non-async function declaration', () => {
+    const f = scanJs('function saveIt(plur) {\n  plur.learn("x")\n}\n')
+    expect(f).toHaveLength(1)
+    expect(f[0].fixable).toBe(false)
+    expect(f[0].reason).toMatch(/not `async`/)
+  })
+
+  it('refuses a call inside a non-async function expression', () => {
+    const f = scanJs('const go = function (plur) { plur.forget("x") }\n')
+    expect(f[0].fixable).toBe(false)
+  })
+
+  it('refuses a call inside a non-async method shorthand', () => {
+    const f = scanJs('const o = {\n  save(plur) {\n    plur.learn("x")\n  }\n}\n')
+    expect(f[0].fixable).toBe(false)
+  })
+
+  it('DOES fix a call inside an async function', () => {
+    const src = 'async function ok(plur) {\n  plur.learn("x")\n}\n'
+    const f = scanJs(src)
+    expect(f[0].fixable).toBe(true)
+    expect(applyFixes(src, f).src).toContain('await plur.learn("x")')
+  })
+
+  it('DOES fix a call inside an async arrow', () => {
+    const src = 'const go = async (plur) => {\n  plur.learn("x")\n}\n'
+    expect(scanJs(src)[0].fixable).toBe(true)
+  })
+
+  it('allows top-level await in an ES module but not in CommonJS', () => {
+    expect(scanSource('t.mjs', 'plur.learn("x")\n')[0].fixable).toBe(true)
+    expect(scanSource('t.cjs', 'plur.learn("x")\n')[0].fixable).toBe(false)
+  })
+
+  it('nested blocks inside an async function are still fixable', () => {
+    // The enclosing-function walk must look THROUGH if/for/try blocks rather
+    // than stopping at the first `{` it meets.
+    const src = 'async function ok(plur) {\n  if (true) {\n    for (const x of []) {\n      plur.learn("x")\n    }\n  }\n}\n'
+    expect(scanJs(src)[0].fixable).toBe(true)
+  })
+
+  it('nested blocks inside a NON-async function are still refused', () => {
+    const src = 'function bad(plur) {\n  if (true) {\n    plur.learn("x")\n  }\n}\n'
+    expect(scanJs(src)[0].fixable).toBe(false)
+  })
+})

@@ -257,6 +257,14 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
    * but the last — see `getPool`.
    */
   private poolPromise: Promise<any> | undefined
+  /**
+   * Connections used ONLY to hold advisory locks — never for queries.
+   *
+   * Separate from the main pool so a lock holder can never be waiting on a
+   * connection that another lock holder is occupying. See `withExclusiveAccess`.
+   */
+  private lockPool: any = null
+  private lockPoolPromise: Promise<any> | undefined
   private initPromise: Promise<void> | null = null
   /** Actual element type of the embedding column after init. */
   private activeVecType: 'vector' | 'halfvec' = 'vector'
@@ -346,6 +354,32 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
       })
     }
     return await this.poolPromise
+  }
+
+  /** Pool dedicated to advisory-lock sessions. See `withExclusiveAccess`. */
+  private async getLockPool(): Promise<any> {
+    if (this.closed) throw new Error('[postgres] adapter is closed')
+    if (!this.lockPoolPromise) {
+      this.lockPoolPromise = (async () => {
+        // Ensure the schema exists (and `trigramAvailable` is resolved) before
+        // any lock is taken, so the two pools cannot race on initialisation.
+        await this.getPool()
+        const pg = await loadPg()
+        const Pool = pg.Pool ?? pg.default?.Pool
+        this.lockPool = new Pool({
+          connectionString: this.connectionString,
+          max: this.maxConnections,
+        })
+        this.lockPool.on('error', (err: unknown) => {
+          logger.warning(`[postgres] idle lock client error: ${(err as Error).message}`)
+        })
+        return this.lockPool
+      })().catch(err => {
+        this.lockPoolPromise = undefined
+        throw err
+      })
+    }
+    return await this.lockPoolPromise
   }
 
   private async createPool(): Promise<any> {
@@ -575,6 +609,13 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
       await pool.end().catch(() => { /* pool already torn down */ })
     }
     this.poolPromise = undefined
+    if (this.lockPool) {
+      const lp = this.lockPool
+      this.lockPool = null
+      this.lockPoolPromise = undefined
+      await lp.end().catch(() => { /* already torn down */ })
+    }
+    this.lockPoolPromise = undefined
     this.closed = true
   }
 
@@ -721,7 +762,20 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
    * CORRECT, which it was not.
    */
   async withExclusiveAccess<T>(fn: () => Promise<T>): Promise<T> {
-    const pool = await this.getPool()
+    // The lock connection comes from a SEPARATE pool.
+    //
+    // It used to come from the main pool, which deadlocks: the lock is held for
+    // the whole critical section, and `fn()` — a `save()` or a `load()` — needs
+    // its own connection from that same pool. With `maxConnections` writers in
+    // flight, every connection is held by a lock holder waiting for a
+    // connection that can never be freed. Reproduced with pool=2 and three
+    // writers: permanent hang, no error, no timeout.
+    //
+    // A second pool removes the circular wait by construction. Reserving
+    // headroom inside one pool would not: nothing enforces the reservation.
+    // The cost is up to `maxConnections` additional server connections, which
+    // is the honest price of holding a session lock across arbitrary work.
+    const pool = await this.getLockPool()
     const client = await pool.connect()
     try {
       await client.query(`SELECT pg_advisory_lock(hashtext($1))`, [`plur:${this.schema}`])
