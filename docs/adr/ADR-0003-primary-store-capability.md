@@ -1,6 +1,6 @@
 # ADR-0003: Primary store capability — separating "the store" from "the index"
 
-Status: **Proposed**
+Status: **Accepted** — implemented in 0.16
 Date: 2026-07-26
 Authors: convergence programme, Phase 1
 Related: ADR-0001 ([#226](https://github.com/plur-ai/plur/issues/226)), ADR-0002, `1-tracks/dev/2026-07-26-plur-convergence-plan.md`
@@ -48,14 +48,24 @@ side of the split it is on.**
 
 `packages/core/src/store/primary-store.ts`:
 
+As shipped in 0.16 (Phase 1 introduced this seam synchronously; Phase 2b made
+it asynchronous — see the amendment at the end of this ADR):
+
 ```ts
 export interface PrimaryStore {
-  readonly kind: PrimaryStoreKind      // 'yaml' | 'memory'
-  readonly location: string | null
-  load(): Engram[]                     // authoritative read, never cached
-  loadCached(): Engram[]               // cached read where the medium allows
-  save(engrams: Engram[]): void        // full replace, drops the read cache
+  readonly kind: PrimaryStoreKind          // 'yaml' | 'memory' | 'postgres' | …
+  readonly location: string | null         // credential-free, safe to log
+  load(): Promise<Engram[]>                // authoritative read, never cached
+  loadCached(): Promise<Engram[]>          // cached read where the medium allows
+  save(engrams: Engram[]): Promise<void>   // full replace, drops the read cache
   invalidate(): void
+
+  // Optional capabilities. Absent = the caller falls back to the general path,
+  // so a minimal store stays a valid store.
+  withExclusiveAccess?<T>(fn: () => Promise<T>): Promise<T>  // ADR-0004
+  updateMany?(engrams: Engram[]): Promise<void>              // targeted write
+  loadByIds?(ids: string[]): Promise<Engram[]>               // targeted read
+  estimateCount?(): number                                   // backend tiering
 }
 ```
 
@@ -198,3 +208,21 @@ repository and is not part of this change.
 - `test/storage-adapter-role.test.ts` pins `requiresIndexSync` /
   `asDerivedIndex` behaviour for both roles, including the malformed
   `role: 'index'` case.
+
+
+## Amendment — 2026-07-28: the interface is asynchronous
+
+This ADR was written with a synchronous `PrimaryStore`, which is what Phase 1
+shipped. Phase 2b (#728) made `load` / `loadCached` / `save` return promises,
+and that is what 0.16 releases.
+
+The reason is the one this ADR exists to serve: a network-backed store cannot
+satisfy a synchronous contract. There is no synchronous Postgres client for
+Node, and manufacturing one (sync-over-async, a worker with `Atomics.wait`)
+trades a documented limitation for an undocumented hazard. Keeping the seam
+synchronous would have meant the seam could never reach the deployment it was
+built for.
+
+The cost is a hard breaking change for `@plur-ai/core` consumers, since async is
+contagious across roughly twenty public `Plur` methods. `npx @plur-ai/migrate`
+exists to absorb it. The block above shows the interface as shipped.

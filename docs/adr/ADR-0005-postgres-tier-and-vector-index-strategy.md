@@ -1,6 +1,6 @@
 # ADR-0005: The Postgres tier, and what happens to exact search
 
-Status: **Proposed** — amended 2026-07-27, see
+Status: **Accepted** — implemented in 0.16; amended 2026-07-27, see
 [Update — Phases 2 and 4 have landed](#what-this-phase-does-not-do-and-why)
 Date: 2026-07-26
 Authors: convergence programme, Phase 5
