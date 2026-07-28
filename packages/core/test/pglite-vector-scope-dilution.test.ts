@@ -161,14 +161,37 @@ describe('vector recall applies the scope restriction in-query, not after', () =
     expect(hits.every(e => e.scope === 'project:alpha')).toBe(true)
   }, TIMEOUT)
 
-  it('recallHybrid does the same on its vector leg', async (ctx) => {
+  it('recallHybrid takes the pushdown path, and does not silently fall back', async (ctx) => {
     requireEmbedder(ctx)
-    const hits = await plur.recallHybrid(QUERY, {
+    // Choosing the observable, because the obvious one does not work here.
+    //
+    // Asserting `length === WANTED` and "every hit is in scope" CANNOT see the
+    // vector leg: remove `{ scopes }` from its `searchVector` call and this
+    // suite stays green (verified by mutation). The reason is the fallback in
+    // `_pgliteHybridRecall` — an unrestricted k-NN returns only out-of-scope
+    // neighbours, they are all dropped by the intersection with `filtered`,
+    // `pgHits` comes out empty, and the method falls back to the in-memory
+    // `hybridSearchWithMeta` over the already-scope-filtered set. That path is
+    // correct AND complete, so the answer is identical.
+    //
+    // Which means, precisely: in hybrid the restriction is not what makes the
+    // result correct — it is what stops a silent degradation to the in-memory
+    // path on every query. (In `recallSemantic` there is no such rescue, and
+    // the mutation there does fail the test above.)
+    //
+    // `topScore` is what separates them: the pushdown branch returns null,
+    // `hybridSearchWithMeta` returns a real RRF score.
+    const meta = await plur.recallHybridWithMeta(QUERY, {
       limit: WANTED,
       scopes: ['project:alpha'],
     })
-    expect(hits.length).toBe(WANTED)
-    expect(hits.every(e => e.scope === 'project:alpha')).toBe(true)
+    expect(meta.engrams.length).toBe(WANTED)
+    expect(meta.engrams.every(e => e.scope === 'project:alpha')).toBe(true)
+    expect(
+      meta.topScore,
+      'fell back to the in-memory hybrid — the vector leg returned nothing usable, '
+      + 'which is what an unrestricted k-NN does when the permitted scope is a small share of the corpus',
+    ).toBeNull()
   }, TIMEOUT)
 
   it('an empty allow-list still returns nothing', async (ctx) => {
