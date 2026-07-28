@@ -237,4 +237,24 @@ describe.skipIf(!PG_URL)('recall() parity on the Postgres tier (#743 regression)
       'the recall was not recorded on the engram it returned',
     ).toBeGreaterThan(before.activation.frequency)
   }, TIMEOUT)
+
+  it('a row missing an optional field does not crash the read', async () => {
+    // `PostgresAdapter` stores the engram as JSONB and used to return it
+    // verbatim, unlike the YAML loader which runs every entry through the schema
+    // and fills defaults. A row whose payload lacked `associations` therefore
+    // reached the co-access block as `undefined` and took down the entire
+    // recall with `Cannot read properties of undefined (reading 'find')`.
+    //
+    // Reachable without anything exotic: an older version, a migration, or any
+    // tool that writes the table directly. Nothing on the write path enforces
+    // the schema either. A read must not be able to crash on a row it merely
+    // passed over.
+    await plur.learn('deploy the billing service nightly', { scope: 'global' })
+    const rows = await adapter.load()
+    for (const r of rows) delete (r as { associations?: unknown }).associations
+    await adapter.save(rows)
+
+    const hits = await plur.recall('deploy billing', { limit: 5 })
+    expect(hits.length, 'the recall crashed or returned nothing').toBeGreaterThan(0)
+  }, TIMEOUT)
 })

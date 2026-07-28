@@ -1188,8 +1188,13 @@ export class Plur {
 
     type PersistenceTarget = 'primary' | 'secondary' | 'in-memory'
     const primaryIdx = engrams.findIndex(e => e.id === hit.id)
-    let persistedTo: PersistenceTarget
-    let newRecurrence: number
+    // Definite-assignment asserted: every branch below assigns both, but one of
+    // those branches now runs inside the secondary store's lock callback, which
+    // TypeScript cannot prove is invoked. The alternative — threading both
+    // values out through the callback's return type — obscures the control flow
+    // for no benefit, since the callback is awaited on the same line.
+    let persistedTo!: PersistenceTarget
+    let newRecurrence!: number
 
     if (primaryIdx !== -1) {
       // Primary store: mutate the engram in the loaded array (symmetric with
@@ -1208,6 +1213,13 @@ export class Plur {
       // primaryIdx already proved this isn't in primary; only check writability.
       const storeInfo = await this._findEngramStore(hit.id)
       if (storeInfo && !storeInfo.readonly) {
+        // Under the SECONDARY store's own lock. This read-modify-write had none
+        // at all, while the identical operation on the primary store took one:
+        // two processes recording recurrence on the same team engram both
+        // loaded, both mutated, and both wrote — and because `_writeEngrams`
+        // replaces the whole file, whatever the other added in between was
+        // deleted outright, not merely overwritten.
+        await this._withStoreLock(storeInfo.path, async () => {
         const storeEngrams = await this._storeAt(storeInfo.path).load()
         const sidx = storeEngrams.findIndex(e => e.id === storeInfo.originalId)
         // Audit iter-5 defense (Critic low #3): _crossScopeRecurrenceDetect
@@ -1238,6 +1250,7 @@ export class Plur {
           newRecurrence = applyMutation(hit, sourceEntry, lockTimestamp)
           persistedTo = 'in-memory'
         }
+        })
       } else {
         // Readonly or remote — apply to hit only. Remote PATCH wiring tracked
         // separately; in-memory state is still returned to the caller.
@@ -2965,6 +2978,13 @@ export class Plur {
         for (const sourceId of topIds) {
           const source = allEngrams.find(e => e.id === sourceId)
           if (!source) continue
+          // Normalise before use. `associations` has a schema default, but a row
+          // that reaches here WITHOUT going through the schema — one written by
+          // an older version, a migration, or any tool that talks to the table
+          // directly — has no such guarantee, and `undefined.find(...)` takes
+          // down the whole recall. Reads should not be able to crash on a row
+          // they merely passed over.
+          if (!Array.isArray(source.associations)) source.associations = []
 
           for (const targetId of topIds) {
             if (targetId === sourceId) continue
@@ -3294,6 +3314,14 @@ export class Plur {
       if (storeInfo.readonly) {
         throw new Error('Engram is in a readonly store')
       }
+      // Under the SECONDARY store's own lock — this had none, while the same
+      // operation on the primary store took one. Two processes rating the same
+      // team engram both loaded, both incremented, and both wrote back, so one
+      // increment vanished; and a whole-file replace also deletes anything the
+      // other process added in between.
+      // Returns whether the engram was found and handled here; a miss falls
+      // through to the remote-store search below.
+      const handled = await this._withStoreLock(storeInfo.path, async () => {
       // Must load fresh (not cached) since we're about to mutate and write back
       const storeEngrams = await this._storeAt(storeInfo.path).load()
       const engram = storeEngrams.find(e => e.id === storeInfo.originalId)
@@ -3315,8 +3343,11 @@ export class Plur {
         await this._writeEngrams(storeInfo.path, storeEngrams)
         await this._syncIndex()
         this._logInjectionOutcome(id, signal)
-        return
+        return true
       }
+      return false
+      })
+      if (handled) return
     }
 
     // Check remote stores — the engram may live on an enterprise server.

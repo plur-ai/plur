@@ -63,6 +63,7 @@
  * pay for a driver it will never open.
  */
 import type { Engram } from './schemas/engram.js'
+import { EngramSchemaPassthrough } from './schemas/engram.js'
 import { searchEngrams, ftsTokenize, engramSearchText, type CorpusStats } from './fts.js'
 import { logger } from './logger.js'
 import {
@@ -1243,8 +1244,29 @@ export function buildFilterClause(filter: StorageFilter): { where: string; param
 }
 
 /** node-postgres returns JSONB already parsed; tolerate a string anyway. */
+/**
+ * Turn a stored row into an `Engram`, applying schema defaults.
+ *
+ * The YAML path runs every entry through `EngramSchemaPassthrough.safeParse`,
+ * which fills in defaults for absent optional fields. This returned `r.data`
+ * verbatim, so the two loaders disagreed about what a valid engram looks like:
+ * a row whose JSONB lacked `associations` crashed `recall()` outright, in the
+ * co-access block (`source.associations.find(...)` on `undefined`).
+ *
+ * Reachable without anything exotic — a row written by an older version, by a
+ * migration, or by any tool that talks to the table directly. `save()` writes
+ * whatever object it is given, and nothing on the write path enforces the
+ * schema either.
+ *
+ * `passthrough` keeps unknown fields, so this normalises without discarding
+ * anything the schema does not know about. A row that cannot be parsed at all
+ * is returned as-is rather than dropped: losing an engram silently is worse
+ * than passing along one that is odd, and the caller's own guards still apply.
+ */
 function parseRow(row: { data: any }): Engram {
-  return typeof row.data === 'string' ? JSON.parse(row.data) : row.data
+  const raw = typeof row.data === 'string' ? JSON.parse(row.data) : row.data
+  const parsed = EngramSchemaPassthrough.safeParse(raw)
+  return parsed.success ? (parsed.data as Engram) : (raw as Engram)
 }
 
 function toRow(e: Engram): Record<string, unknown> {
