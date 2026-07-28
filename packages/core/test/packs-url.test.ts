@@ -31,6 +31,7 @@ const VALID_PACK_ARCHIVE = buildPackArchive({
     scope: global
     status: active
     version: 2
+    visibility: public
     domain: typescript.style
     tags: [typescript, types]
     activation:
