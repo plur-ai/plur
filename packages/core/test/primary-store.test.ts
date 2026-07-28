@@ -166,10 +166,17 @@ describe('YamlPrimaryStore — ADR-0001 compatibility', () => {
     expect((await store.load()).map(e => e.id)).toEqual(['ENG-2026-0701-106'])
   })
 
-  it('returns [] for an unparseable file rather than throwing', async () => {
+  it('THROWS for an unparseable file rather than reporting it as empty', async () => {
+    // This test previously asserted the opposite — that an unparseable store
+    // loads as `[]`. That assertion encoded a data-loss bug as intended
+    // behaviour: every write is load -> mutate -> save-whole-file, so a store
+    // read as empty is a store about to be overwritten by a one-engram file.
+    // Measured: 5 engrams, corrupt the YAML, one write, 1 engram left and the
+    // originals unrecoverable. A missing file is empty; an unreadable one is
+    // not. See unreadable-store-guard.test.ts.
     writeFileSync(path, ':\n  not: [valid', 'utf8')
     const store = new YamlPrimaryStore(path)
-    expect(await store.load()).toEqual([])
+    await expect(store.load()).rejects.toThrow(/refusing to read/)
   })
 })
 

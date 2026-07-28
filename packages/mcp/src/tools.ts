@@ -1425,9 +1425,18 @@ function getAllToolDefinitions(): ToolDefinition[] {
 
         // Flush outbox after git sync (issue #26)
         let outbox_result: { flushed: number; failed: number; expired_warnings: string[] } | undefined
+        let outbox_error: string | undefined
         try {
           outbox_result = await plur.flushOutbox()
-        } catch { /* logged inside flushOutbox */ }
+        } catch (err) {
+          // SURFACED, not swallowed. The `outbox` field below is only added when
+          // `outbox_result` is truthy, so a FAILED flush produced a response
+          // indistinguishable from one with nothing to flush. The caller here is
+          // an agent: it sees success, reports success, and the engrams routed
+          // to a remote store stay queued indefinitely. A log line inside
+          // `flushOutbox` is not a report to the caller.
+          outbox_error = (err as Error).message
+        }
 
         return {
           ...result,
@@ -1441,6 +1450,12 @@ function getAllToolDefinitions(): ToolDefinition[] {
               pending: outbox_result.failed,
               warnings: outbox_result.expired_warnings,
             },
+          } : {}),
+          ...(outbox_error ? {
+            outbox_error,
+            outbox_warning:
+              `The outbox flush failed — ${outbox_error}. Engrams routed to a remote store are `
+              + `still queued locally and were NOT pushed. They retry on the next session_start or plur_sync.`,
           } : {}),
         }
       },
@@ -1984,9 +1999,18 @@ function getAllToolDefinitions(): ToolDefinition[] {
 
         // Flush outbox — retry pending remote writes (issue #26)
         let outbox_result: { flushed: number; failed: number; expired_warnings: string[] } | undefined
+        let outbox_error: string | undefined
         try {
           outbox_result = await plur.flushOutbox()
-        } catch { /* logged inside flushOutbox */ }
+        } catch (err) {
+          // SURFACED, not swallowed. The `outbox` field below is only added when
+          // `outbox_result` is truthy, so a FAILED flush produced a response
+          // indistinguishable from one with nothing to flush. The caller here is
+          // an agent: it sees success, reports success, and the engrams routed
+          // to a remote store stay queued indefinitely. A log line inside
+          // `flushOutbox` is not a report to the caller.
+          outbox_error = (err as Error).message
+        }
 
         // Surface writable remote scopes so AI caller knows what's available (#229)
         // NOTE: we do NOT auto-set session scope FROM REMOTE STORES — the AI
@@ -2230,6 +2254,12 @@ function getAllToolDefinitions(): ToolDefinition[] {
               pending: outbox_result.failed,
               warnings: outbox_result.expired_warnings,
             },
+          } : {}),
+          ...(outbox_error ? {
+            outbox_error,
+            outbox_warning:
+              `The outbox flush failed — ${outbox_error}. Engrams routed to a remote store are `
+              + `still queued locally and were NOT pushed. They retry on the next session_start or plur_sync.`,
           } : {}),
           // Version staleness warning (issue #151)
           ...(version_warning ? { version_warning, version: VERSION } : {}),

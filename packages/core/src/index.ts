@@ -82,6 +82,7 @@ export { generateGuardrails } from './guardrails.js'
 export type { MetaField, StructuralTemplate, EvidenceEntry, MetaConfidence, DomainCoverage, HierarchyPosition, Falsification } from './schemas/meta-engram.js'
 export { MetaFieldSchema, StructuralTemplateSchema, EvidenceEntrySchema, MetaConfidenceSchema, DomainCoverageSchema, HierarchyPositionSchema, FalsificationSchema } from './schemas/meta-engram.js'
 export { engramSearchText, termMatches, computeIdf, type CorpusStats } from './fts.js'
+export { EngramStoreUnreadableError } from './engrams.js'
 export { freshTailBoost } from './fresh-tail.js'
 export { autoSummary, generateSummary, needsSummary } from './summary.js'
 export { selectModel, selectModelForOperation, resolveOperationTier, type ModelTier, type LlmTierConfig } from './model-routing.js'
@@ -442,6 +443,16 @@ const INGEST_PATTERNS = [
   { re: /(?:use|prefer)\s+(\w+)\s+(?:for|over|instead of)\s+(.+?)\.?$/gim, type: 'behavioral' as const },
   { re: /(?:important|note|remember):\s*(.+?)\.?$/gim, type: 'behavioral' as const },
 ]
+
+/**
+ * How many extra candidates a pushdown fetches per requested result.
+ *
+ * The store cannot evaluate expiry or `min_strength`, so those run after the
+ * SQL LIMIT. Without headroom a page of `limit` rows that are then filtered
+ * returns short — and short is invisible: the caller gets fewer results and no
+ * indication that any were removed.
+ */
+const PUSHDOWN_OVERFETCH = 3
 
 export class Plur {
   private paths: PlurPaths
@@ -2286,19 +2297,46 @@ export class Plur {
     // parity-tested against real Postgres but had ZERO call sites — built and
     // unreachable. This is the wiring.
     //
-    // The adapter is handed the SAME filter this method would have applied in
-    // memory, so scope, domain and the permitted-scope allow-list are enforced
-    // in the query rather than after it. That is the point: post-filtering
-    // measures `limit` against rows the caller may not be allowed to see.
+    // Scope, domain and the permitted-scope allow-list go INTO the query, so
+    // `limit` is not spent on rows the caller may not see.
+    //
+    // The rest of `_filterEngrams`'s work still has to happen, and an earlier
+    // version of this branch simply returned here — which silently dropped four
+    // things the in-memory path applies:
+    //
+    //   - temporal validity: an engram whose `valid_until` has passed was
+    //     returned as current. A fact explicitly withdrawn in 2020 was injected
+    //     into an agent's context by `recall()` while `list()` correctly
+    //     excluded it. Reproduced, not theorised.
+    //   - `min_strength`
+    //   - engrams merged in from `config.stores` (team/enterprise stores)
+    //   - pack engrams
+    //
+    // The last two are the ones that would have been reported as "recall is
+    // broken": on the Postgres tier `plur_recall` stopped returning the team
+    // store entirely, while `recallHybrid` on the SAME instance still did.
+    //
+    // The adapter cannot answer those — it queries one table and knows nothing
+    // about packs, secondary stores, or the caller's clock. So the pushdown is
+    // a NARROWING step, not a replacement: it returns a superset, and the
+    // remaining predicates are applied here. `limit` is applied last, after all
+    // of them, so a row removed by expiry does not consume a slot.
     const adapter = this._primaryQueryAdapter()
     if (adapter) {
-      const results = await adapter.searchBM25(query, {
-        limit,
+      const narrowed = await adapter.searchBM25(query, {
+        // Over-fetch: post-filters below can remove rows, and a row dropped
+        // after a LIMIT is a result the caller silently never sees.
+        limit: Math.max(limit * PUSHDOWN_OVERFETCH, limit),
         status: 'active',
         scope: options?.scope,
         scopes: options?.scopes,
         domain: options?.domain,
       })
+      const extra = await this._engramsOutsidePrimaryStore(options)
+      const merged = extra.length > 0
+        ? [...narrowed, ...searchEngrams(this._applyResidualFilters(extra, options), query, limit)]
+        : narrowed
+      const results = this._applyResidualFilters(merged, options).slice(0, limit)
       await this._reactivateResults(results)
       return results
     }
@@ -2732,6 +2770,77 @@ export class Plur {
   }
 
   /** Filter engrams by scope/domain/strength (shared by both modes) */
+  /**
+   * Predicates a store CANNOT answer, applied after a pushdown narrows.
+   *
+   * `searchBM25` filters status/scope/domain/scopes in SQL. Temporal validity
+   * and `min_strength` are not columns it can filter on — validity depends on
+   * the caller's clock, and strength lives inside the JSONB payload — so they
+   * have to run here, on the rows that came back.
+   *
+   * Deliberately a shared helper rather than a copy of the tail of
+   * `_filterEngrams`: two implementations of "which engrams count" is how the
+   * pushdown branch came to silently disagree with `list()` in the first place.
+   */
+  private _applyResidualFilters(engrams: Engram[], options?: RecallOptions & { include_expired?: boolean }): Engram[] {
+    let out = engrams
+    if (!options?.include_expired) {
+      const today = new Date().toISOString().slice(0, 10)
+      out = out.filter(e => {
+        if (e.temporal?.valid_until && e.temporal.valid_until < today) return false
+        if (e.temporal?.valid_from && e.temporal.valid_from > today) return false
+        return true
+      })
+    }
+    if (options?.min_strength !== undefined) {
+      out = out.filter(e => e.activation.retrieval_strength >= options.min_strength!)
+    }
+    return out
+  }
+
+  /**
+   * Engrams a primary-store pushdown cannot see: secondary (team/project)
+   * stores from `config.stores`, and installed packs.
+   *
+   * `searchBM25` queries ONE table. `_loadAllEngrams` merges these in, so
+   * without this the Postgres tier answered `recall()` from the primary store
+   * alone — an enterprise user's team store vanished from `plur_recall` while
+   * `recallHybrid` on the same instance still returned it. No error, no
+   * warning: just fewer results.
+   *
+   * Scope and domain are applied here to mirror what the SQL side does to the
+   * primary rows; the residual filters are applied by the caller.
+   */
+  private async _engramsOutsidePrimaryStore(options?: RecallOptions): Promise<Engram[]> {
+    const out: Engram[] = []
+    for (const store of this.config.stores ?? []) {
+      if (!store.path || store.url) continue
+      if (store.path === this.paths.engrams) continue
+      try {
+        out.push(...(await this._loadCached(store.path)))
+      } catch {
+        // A secondary store that will not load must not take down a recall
+        // against the primary one. `loadEngrams` throws on an unreadable file
+        // (see EngramStoreUnreadableError) and that is the right default; here
+        // the primary result is still useful, so degrade rather than fail.
+        logger.warning(`[plur] secondary store ${store.path} could not be read; excluded from this recall`)
+      }
+    }
+    for (const pack of loadAllPacks(this.paths.packs)) out.push(...pack.engrams)
+
+    let filtered = out.filter(e => e.status === 'active')
+    if (options?.scopes !== undefined) {
+      const allowed = scopeAllowFilter(options.scopes)
+      filtered = filtered.filter(e => allowed(e.scope))
+    }
+    if (options?.domain) filtered = filtered.filter(e => e.domain?.startsWith(options.domain!))
+    if (options?.scope) {
+      const scope = options.scope
+      filtered = filtered.filter(e => isScopeWithin(e.scope, scope) || isPersonalScope(e.scope))
+    }
+    return filtered
+  }
+
   private async _filterEngrams(options?: RecallOptions & { include_expired?: boolean }): Promise<Engram[]> {
     let engrams: Engram[]
     if (this.indexedStorage) {

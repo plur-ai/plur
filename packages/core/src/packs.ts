@@ -303,7 +303,12 @@ export function uninstallPack(packsDir: string, name: string): UninstallResult {
   // Count engrams and get manifest name before removal
   const engramsPath = path.join(packDir, 'engrams.yaml')
   let count = 0
-  try { count = loadEngrams(engramsPath).length } catch {}
+  // Legitimately best-effort: this number is only for the removal report, and a
+  // pack whose engrams.yaml is unreadable is still removable. `loadEngrams` now
+  // THROWS on an unreadable file rather than returning [] — deliberately, because
+  // the write path treats [] as "empty" and would then destroy the store — so
+  // this catch is the explicit opt-in to "unknown, and that is fine here".
+  try { count = loadEngrams(engramsPath).length } catch { count = 0 }
   let manifestName: string | undefined
   try { manifestName = loadPack(packDir).manifest.name } catch {}
 

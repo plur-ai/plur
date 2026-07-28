@@ -5,24 +5,89 @@ import { PackManifestSchema, type PackManifest } from './schemas/pack.js'
 import { logger } from './logger.js'
 import { atomicWrite } from './sync.js'
 
+/**
+ * Error thrown when the engram file exists but cannot be read as engrams.
+ *
+ * Distinct from "the store is empty" ON PURPOSE — see {@link loadEngrams}.
+ */
+export class EngramStoreUnreadableError extends Error {
+  constructor(readonly filePath: string, readonly cause: unknown) {
+    super(
+      `[plur] refusing to read ${filePath}: ${cause}\n` +
+      `The file exists but is not valid engram YAML, so PLUR cannot tell how many engrams it holds. ` +
+      `It is NOT being treated as empty: the write path replaces the whole file, so a write against an ` +
+      `"empty" store would destroy every engram in it.\n` +
+      `Common cause: a git merge conflict in engrams.yaml after 'plur sync' — look for <<<<<<< markers. ` +
+      `Fix the file (or restore it from git history) and retry.`,
+    )
+    this.name = 'EngramStoreUnreadableError'
+  }
+}
+
+/**
+ * Read engrams from a YAML store.
+ *
+ * ## Why a parse failure THROWS instead of returning []
+ *
+ * A missing file really is an empty store, so that returns `[]`. A file that
+ * exists but will not parse is a different fact, and conflating the two used to
+ * destroy data:
+ *
+ *   1. `engrams.yaml` becomes unparseable — most plausibly a git merge conflict
+ *      after `plur sync`, which puts `<<<<<<<` markers straight into the file.
+ *   2. This function caught the error, logged it, and returned `[]`.
+ *   3. Every `Plur` write is load -> mutate -> save, and `save` replaces the
+ *      WHOLE file. So the next `learn()` wrote a one-engram corpus.
+ *   4. Every prior engram was gone, unrecoverable from the file.
+ *
+ * Measured before the fix: a store with 5 engrams, corrupted, then one write —
+ * the file afterwards contained exactly 1 engram and none of the originals.
+ * The `logger.error` on the way past was visible, but the RETURN VALUE lied,
+ * and the caller acted on the return value.
+ *
+ * So: unreadable is not empty. Callers that genuinely want "treat unreadable as
+ * empty" — a diagnostic counter, a best-effort probe — must catch
+ * {@link EngramStoreUnreadableError} and say so at the call site.
+ *
+ * Individually invalid ENTRIES are still skipped rather than fatal: one bad
+ * engram among many is a partial-data problem, not an unreadable-store problem,
+ * and dropping it loses less than refusing to load the rest. That skip is
+ * counted and warned about.
+ */
 export function loadEngrams(filePath: string): Engram[] {
   if (!fs.existsSync(filePath)) return []
+  // A directory is a misconfiguration (`stores[].path` must name an
+  // engrams.yaml, since it is handed straight to this function) — but NOT a
+  // data-loss risk, which is what the throw below exists for. `saveEngrams`
+  // cannot write to a directory either, so there is no path where a directory
+  // read as "empty" leads to an overwrite. Treating it as empty preserves
+  // long-standing behaviour; the throw is reserved for the case that actually
+  // destroys data.
+  if (fs.statSync(filePath).isDirectory()) return []
+  let raw: any
   try {
-    const raw = yaml.load(fs.readFileSync(filePath, 'utf8')) as any
-    if (!raw?.engrams || !Array.isArray(raw.engrams)) return []
-    const valid: Engram[] = []
-    let skipped = 0
-    for (const entry of raw.engrams) {
-      const result = EngramSchemaPassthrough.safeParse(entry)
-      if (result.success) valid.push(result.data)
-      else skipped++
-    }
-    if (skipped > 0) logger.warning(`Skipped ${skipped} invalid engram(s) in ${filePath}`)
-    return valid
+    raw = yaml.load(fs.readFileSync(filePath, 'utf8'))
   } catch (err) {
-    logger.error(`Failed to parse engrams file ${filePath}: ${err}`)
+    throw new EngramStoreUnreadableError(filePath, err)
+  }
+  // A file that parses but has no `engrams` array is genuinely empty — a fresh
+  // store, or one whose only content is comments.
+  if (raw == null) return []
+  if (!raw.engrams || !Array.isArray(raw.engrams)) {
+    if (typeof raw !== 'object') {
+      throw new EngramStoreUnreadableError(filePath, new Error('top-level value is not a mapping'))
+    }
     return []
   }
+  const valid: Engram[] = []
+  let skipped = 0
+  for (const entry of raw.engrams) {
+    const result = EngramSchemaPassthrough.safeParse(entry)
+    if (result.success) valid.push(result.data)
+    else skipped++
+  }
+  if (skipped > 0) logger.warning(`Skipped ${skipped} invalid engram(s) in ${filePath}`)
+  return valid
 }
 
 export function saveEngrams(filePath: string, engrams: Engram[]): void {
