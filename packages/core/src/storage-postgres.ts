@@ -30,10 +30,17 @@
  * (`test/postgres-primary-store.test.ts`). The adapter became injectable with
  * no changes here, exactly as planned.
  *
- * One caveat that is NOT stale: `Plur` still builds its query index on PGLite
- * even when the primary store is Postgres (`index.ts` forces the index tier),
- * so `searchBM25` / `corpusStats` on this class are reachable by driving the
- * adapter directly, not through `Plur.recall()`. Tracked separately.
+ * That caveat is now closed on both halves. `Plur` no longer forces the PGLite
+ * index tier when a primary query store is injected, and #743 wired the
+ * pushdown into the query path — so `searchBM25` / `corpusStats` on this class
+ * are what `Plur.recall()` actually calls, not just what a caller could reach
+ * by driving the adapter directly. `test/postgres-recall-quality.test.ts`
+ * exercises them through `Plur.recall()`.
+ *
+ * What IS still open: nothing in core writes embeddings to a Postgres primary
+ * store, so the vector half of this adapter is inert unless a deployment fills
+ * `engram_embeddings` itself. See `ensureVectorIndex` and ADR-0005's 2026-07-28
+ * amendment.
  *
  * ## Vector search is the one place behaviour can differ
  *

@@ -122,10 +122,12 @@ describe('Plur — concurrent writes', () => {
    * prevents the holder from finishing, so it burned ~3.1s of blocked loop and
    * then threw `Failed to acquire lock`. The converted paths queue instead.
    *
-   * Scope note, deliberately narrow: `learnRouted`'s LOCAL route still delegates
-   * to the synchronous `learn()`, and `learn()` still takes the synchronous
-   * lock — so it still spins and still throws in this scenario. Flipping it is
-   * the remaining half of Phase 2 (see ADR-0004); this change does not claim it.
+   * That scope note is now closed. It used to read: `learnRouted`'s local route
+   * delegates to the synchronous `learn()`, which still takes the synchronous
+   * lock, so it still spins and still throws — flipping it being "the remaining
+   * half of Phase 2". Phase 2b (#728) flipped it: `learn()` is async and goes
+   * through `_withStoreLock` like everything else, so it queues rather than
+   * spinning. The comment outlived the work it described.
    */
   it('feedback waits out a lock held across an await instead of spinning', async () => {
     const target = await plur.learn('an engram whose feedback has to wait', { scope: 'global' })
