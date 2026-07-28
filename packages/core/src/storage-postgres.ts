@@ -653,6 +653,60 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
    * Atomic: one transaction, so a concurrent reader sees the old corpus or the
    * new one, never a half-applied replace.
    */
+  /** Targeted read by id. See `PrimaryStore.loadByIds`. */
+  async loadByIds(ids: string[]): Promise<Engram[]> {
+    if (ids.length === 0) return []
+    const pool = await this.getPool()
+    const res = await pool.query(
+      `SELECT data FROM "${this.schema}".engrams WHERE id = ANY($1::text[]) ORDER BY id`,
+      [ids],
+    )
+    return res.rows.map((r: any) => parseRow(r))
+  }
+
+  /**
+   * Targeted upsert — no prune. See `PrimaryStore.updateMany`.
+   *
+   * Identical to `save()`'s INSERT half, minus the `DELETE ... WHERE id NOT IN`
+   * that makes `save()` a whole-corpus replace.
+   */
+  async updateMany(engrams: Engram[]): Promise<void> {
+    if (engrams.length === 0) return
+    const pool = await this.getPool()
+    const client = await pool.connect()
+    try {
+      await client.query('BEGIN')
+      for (let i = 0; i < engrams.length; i += SAVE_CHUNK_SIZE) {
+        const chunk = engrams.slice(i, i + SAVE_CHUNK_SIZE)
+        await client.query(
+          `INSERT INTO "${this.schema}".engrams (id, status, scope, domain, last_accessed, data, source, tokens, search_text)
+           SELECT t.id, t.status, t.scope, t.domain, t.last_accessed, t.data, 'primary', t.tokens, t.search_text
+           FROM jsonb_to_recordset($1::jsonb)
+             AS t(id text, status text, scope text, domain text, last_accessed text, data jsonb,
+                  tokens text[], search_text text)
+           ON CONFLICT (id) DO UPDATE SET
+             status = EXCLUDED.status,
+             scope = EXCLUDED.scope,
+             domain = EXCLUDED.domain,
+             last_accessed = EXCLUDED.last_accessed,
+             data = EXCLUDED.data,
+             source = EXCLUDED.source,
+             tokens = EXCLUDED.tokens,
+             search_text = EXCLUDED.search_text`,
+          [JSON.stringify(chunk.map(toRow))],
+        )
+      }
+      await client.query('COMMIT')
+      // No cache to drop — `loadCached()` delegates to `load()` on this adapter
+      // precisely because another process may have written since.
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => { /* connection already broken */ })
+      throw err
+    } finally {
+      client.release()
+    }
+  }
+
   async save(engrams: Engram[]): Promise<void> {
     const pool = await this.getPool()
     const client = await pool.connect()

@@ -195,4 +195,46 @@ describe.skipIf(!PG_URL)('recall() parity on the Postgres tier (#743 regression)
       rmSync(teamDir, { recursive: true, force: true })
     }
   }, TIMEOUT)
+
+  it('does NOT rewrite the whole corpus to record a read', async () => {
+    // `recall()` updates activation on what it returned. That went through
+    // `save()` — a full replace — so every read rewrote every row while holding
+    // the global write lock. Measured before the fix: 252ms at 2,000 engrams,
+    // extrapolating to ~6.3s at 50,000, which is the corpus size at which this
+    // tier is selected. Every writer queued behind every reader.
+    //
+    // Asserted as "which method was used" rather than by timing: a duration
+    // threshold would be flaky on a loaded machine, and the property that
+    // matters is categorical — targeted write, not whole-corpus replace.
+    await plur.learn('deploy the billing service nightly', { scope: 'global' })
+    await plur.learn('unrelated note about invoicing', { scope: 'global' })
+
+    let saveCalls = 0
+    let updateManyCalls = 0
+    const realSave = adapter.save.bind(adapter)
+    const realUpdate = adapter.updateMany!.bind(adapter)
+    ;(adapter as unknown as { save: typeof adapter.save }).save = async (e) => { saveCalls++; return realSave(e) }
+    ;(adapter as unknown as { updateMany: typeof realUpdate }).updateMany = async (e) => { updateManyCalls++; return realUpdate(e) }
+    try {
+      const hits = await plur.recall('deploy billing', { limit: 5 })
+      expect(hits.length).toBeGreaterThan(0)
+      expect(updateManyCalls, 'the targeted write path was not used').toBeGreaterThan(0)
+      expect(saveCalls, 'a read rewrote the entire corpus').toBe(0)
+    } finally {
+      ;(adapter as unknown as { save: typeof adapter.save }).save = realSave
+      ;(adapter as unknown as { updateMany: typeof realUpdate }).updateMany = realUpdate
+    }
+  }, TIMEOUT)
+
+  it('still records the read — targeted does not mean skipped', async () => {
+    // The cheap way to make the assertion above pass is to stop writing at all.
+    const e = await plur.learn('deploy the billing service nightly', { scope: 'global' })
+    const before = (await adapter.load()).find(r => r.id === e.id)!
+    await plur.recall('deploy billing', { limit: 5 })
+    const after = (await adapter.load()).find(r => r.id === e.id)!
+    expect(
+      after.activation.frequency,
+      'the recall was not recorded on the engram it returned',
+    ).toBeGreaterThan(before.activation.frequency)
+  }, TIMEOUT)
 })

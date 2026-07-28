@@ -111,6 +111,37 @@ export interface PrimaryStore {
   withExclusiveAccess?<T>(fn: () => Promise<T>): Promise<T>
 
   /**
+   * Replace exactly these engrams, leaving every other row untouched.
+   * Optional; when absent the caller falls back to a whole-corpus `save()`.
+   *
+   * `save()` is a full replace — it rewrites every row and deletes anything
+   * absent from the array. That is the right contract for "here is the corpus",
+   * and the wrong one for "these three engrams changed".
+   *
+   * It matters most on the read path. `recall()` updates activation on the
+   * engrams it returned, which under `save()` meant rewriting the ENTIRE corpus
+   * on every read, while holding the global write lock: measured at 252ms for
+   * 2,000 engrams, extrapolating to ~6.3s at 50,000 — the corpus size at which
+   * this tier is selected in the first place. Every writer queues behind every
+   * reader.
+   *
+   * Implementations MUST NOT delete rows absent from `engrams`, and MUST be
+   * safe to call inside `withExclusiveAccess`.
+   */
+  updateMany?(engrams: Engram[]): Promise<void>
+
+  /**
+   * Load exactly these engrams by id. Optional; when absent the caller falls
+   * back to `load()` and filters in memory.
+   *
+   * The counterpart to {@link updateMany}, and needed for the same reason: a
+   * read-modify-write that touches a handful of rows should not have to
+   * materialise the corpus to find them. Ids absent from the store are simply
+   * not returned — a missing engram is not an error here.
+   */
+  loadByIds?(ids: string[]): Promise<Engram[]>
+
+  /**
    * Cheap, approximate size of the store — for choosing a backend, never for
    * reporting a count to a user.
    *

@@ -2922,10 +2922,30 @@ export class Plur {
     const primaryResults = results.filter(e => !isStoreEngram(e))
     if (primaryResults.length === 0) return
     await this._withStoreLock(this.paths.engrams, async () => {
-      const allEngrams = await this._primaryStore.load()
       const resultIds = new Set(primaryResults.map(e => e.id))
+      // Read only the engrams this recall touched, when the store can.
+      // Everything below is keyed by id — the reactivation targets `resultIds`
+      // and the co-access edges only ever look up sources drawn from the
+      // results — so materialising the corpus was pure overhead. Re-read under
+      // the lock rather than reusing the search results, so two concurrent
+      // recalls cannot both increment from the same stale counter.
+      const store = this._storeAt(this.paths.engrams)
+      const allEngrams = store.loadByIds
+        ? await store.loadByIds([...resultIds])
+        : await this._primaryStore.load()
       const today = new Date().toISOString().slice(0, 10)
-      let modified = false
+      // WHICH engrams changed, not merely whether any did.
+      //
+      // This wrote the whole corpus back on every read — activation is updated
+      // on each recall, and `_writeEngrams` is a full replace. Measured on
+      // Postgres: 252ms for 2,000 engrams, extrapolating to ~6.3s at 50,000,
+      // which is the corpus size at which that tier is selected in the first
+      // place. All of it under the global write lock, so every writer queued
+      // behind every reader.
+      //
+      // A recall touches a handful of rows. Tracking them lets a store that
+      // supports targeted updates write only those.
+      const touched = new Map<string, Engram>()
 
       // Reactivate accessed engrams
       for (const e of allEngrams) {
@@ -2933,7 +2953,7 @@ export class Plur {
           e.activation.retrieval_strength = reactivate(e.activation.retrieval_strength)
           e.activation.last_accessed = today
           e.activation.frequency += 1
-          modified = true
+          touched.set(e.id, e)
         }
       }
 
@@ -2956,7 +2976,7 @@ export class Plur {
             if (existing) {
               existing.strength = Math.min(0.95, existing.strength + 0.05)
               existing.updated_at = today
-              modified = true
+              touched.set(source.id, source)
             } else {
               const coAccessCount = source.associations.filter(a => a.type === 'co_accessed').length
               if (coAccessCount < 5) {
@@ -2967,17 +2987,24 @@ export class Plur {
                   strength: 0.3,
                   updated_at: today,
                 })
-                modified = true
+                touched.set(source.id, source)
               }
             }
           }
         }
       }
 
-      if (modified) {
+      if (touched.size === 0) return
+
+      if (store.updateMany) {
+        // Targeted: rewrites the handful of rows a recall actually touched.
+        await store.updateMany([...touched.values()])
+      } else {
+        // A single-file store has no cheaper option — the whole file is
+        // rewritten either way, so this is the same cost it always was.
         await this._writeEngrams(this.paths.engrams, allEngrams)
-        await this._syncIndex()
       }
+      await this._syncIndex()
     })
   }
 
