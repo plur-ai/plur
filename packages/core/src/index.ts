@@ -2431,7 +2431,8 @@ export class Plur {
         fetch *= PUSHDOWN_OVERFETCH
       }
 
-      const extra = this._applyResidualFilters(await this._engramsOutsidePrimaryStore(options), options)
+      const outsiders = await this._engramsOutsidePrimaryStore(options)
+      const extra = this._applyResidualFilters(outsiders, options)
       let results: Engram[]
       if (extra.length > 0) {
         // Rank the union TOGETHER, rather than appending the outsiders.
@@ -2455,12 +2456,20 @@ export class Plur {
         // store it actually lives in — and team-store jargon is by nature
         // common there and absent here. Measured: the single best primary
         // match for a mixed query ranked 197th behind 196 weak outsider rows.
+        // The fold takes the PRE-residual outsiders, deliberately asymmetric
+        // with the `extra` that gets ranked: the primary side's `corpusStats`
+        // counts every active row — SQL cannot evaluate expiry or
+        // min_strength — so folding only residual-surviving outsiders would
+        // describe a hybrid corpus (full primary + filtered outsiders) and
+        // under-weight outsider vocabulary whenever outsiders are expired or
+        // weak. Both sides now contribute the same population: post-scope,
+        // pre-residual (#752, iteration 2).
         const queryTokens = ftsTokenize(query)
         const primaryStats = adapter.corpusStats
           ? await adapter.corpusStats(queryTokens, pushdownFilter)
           : undefined
         const stats = primaryStats
-          ? extendCorpusStats(primaryStats, queryTokens, extra)
+          ? extendCorpusStats(primaryStats, queryTokens, outsiders)
           : undefined
         results = searchEngrams([...surviving, ...extra], query, limit, stats)
       } else {

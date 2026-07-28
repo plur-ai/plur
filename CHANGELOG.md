@@ -107,7 +107,10 @@ because it is a claim a caller may act on.
   text; recall's multi-store union is now scored with exact union corpus
   statistics instead of primary-only ones (a term absent from the primary
   corpus priced as maximally rare and buried the best match); vacuous fallback
-  paths in the migrate method-list guard now hard-fail in CI; the
+  paths in the migrate method-list guard now hard-fail in CI; `Plur`'s
+  constructor warns when a supplied store implements exactly one of
+  `loadByIds`/`updateMany` (safe via the call-site fallback, but almost
+  certainly an implementation mistake); the
   `PostgresAdapter.close()` construction-race leak is actually documented
   (#751); release.sh gained a working-tree preflight and canary-publish
   recovery guidance; README states the Postgres-tier embeddings caveat.
@@ -117,9 +120,7 @@ because it is a claim a caller may act on.
   whole-file fallback replaced the corpus with the current result page —
   measured: 12 engrams in, `recall(limit 3)`, 3 left. Both paths are now gated
   behind one capability check (the pair, or neither), and `updateEngram`'s
-  remote-store error path no longer takes down the MCP server. The same PR made
-  `pnpm smoke:release` a real gate: packed tarballs installed outside the
-  workspace, driven through the public API, Postgres included.
+  remote-store error path no longer takes down the MCP server.
 - **`recall()` returned the wrong rows on a pushdown store** (#750). Two bugs:
   secondary-store and pack engrams were appended AFTER primary results, so a
   team engram that was the single best match never appeared once the primary

@@ -711,11 +711,13 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
    * `close()` by seconds. Subsequent calls on the adapter DO fail correctly
    * (`[postgres] adapter is closed`).
    *
-   * Deliberately not fixed in 0.16.0: two attempts turned the leaked
-   * connection into a hung process, which is strictly worse. The working fix
-   * needs a checkout-tracking set plus a refusal inside `acquire()` once
-   * closed — see #751. Until then: await construction (any first operation)
-   * before calling `close()`.
+   * Deliberately not fixed in 0.16.0: earlier attempts (three failed variants
+   * are recorded on the #751 fix branch — two drain-based, one
+   * destroy-tracked-clients) turned the leaked connection into a hung
+   * process, which is strictly worse. The working fix needs a
+   * checkout-tracking set plus a refusal inside `acquire()` once closed —
+   * see #751. Until then: await construction (any first operation) before
+   * calling `close()`.
    */
   async close(): Promise<void> {
     if (this.pool) {

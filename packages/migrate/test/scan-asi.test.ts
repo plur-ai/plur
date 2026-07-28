@@ -102,4 +102,40 @@ describe('ASI splice — a leading `(await ...)` after an unterminated line', ()
     expect(f[0].fixable).toBe(true)
     expect(applyFixes(src, f).src).toBe('const ok = flag &&\n(await plur.list()).length\n')
   })
+
+  it('a dangling comparison `>` tail keeps the wrap — the documented trade', () => {
+    // `>` stays in the safe set for real dangling comparisons, at the
+    // documented cost of the rare TS instantiation-expression tail
+    // (`const g = f<string>`), which would splice. See ASI_SAFE_BEFORE_PAREN.
+    const src = 'const more = count >\nplur.list().length\n'
+    const f = scan(src)
+    expect(f[0].fixable).toBe(true)
+    expect(applyFixes(src, f).src).toBe('const more = count >\n(await plur.list()).length\n')
+  })
+
+  it('refuses after a regex-literal tail — `/` ends an expression, not a division (#752 iteration 2)', () => {
+    // literalSpans does not lex regex literals, so `const re = /foo/` reaches
+    // the guard as a bare `/`. A regex followed by `(` is a CALL — no ASI —
+    // and the first version of this guard listed `/` as a safe operator tail,
+    // emitting `const re = /foo/\n(await plur.list()).length`, which invokes
+    // the regex at runtime. A genuine dangling division at end of line
+    // effectively does not occur, so refusal here is free.
+    const src = 'const re = /foo/\nplur.list().length\n'
+    const f = scan(src)
+    expect(f).toHaveLength(1)
+    expect(f[0].fixable).toBe(false)
+    expect(f[0].reason).toMatch(/ASI/)
+    expect(applyFixes(src, f).src).toBe(src)
+  })
+
+  it('refuses after a TS non-null assertion tail — `expr!(...)` is a call (#752 iteration 2)', () => {
+    // `map.get(k)!` at end of line is a standard idiom in the no-semicolon
+    // TypeScript codebases this tool targets, and `!` far more often ends a
+    // complete expression there than dangles as a prefix operator.
+    const src = 'const s = map.get(k)!\nplur.list().length\n'
+    const f = scan(src)
+    expect(f).toHaveLength(1)
+    expect(f[0].fixable).toBe(false)
+    expect(applyFixes(src, f).src).toBe(src)
+  })
 })

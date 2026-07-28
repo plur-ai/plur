@@ -179,13 +179,33 @@ function inSpans(spans: Array<[number, number]>, idx: number): boolean {
 /**
  * Characters after which a line-starting `(` cannot splice onto the previous
  * statement: statement terminators (`;`), openers (`{ ( [`), separators
- * (`, :`), and binary/prefix operator tails (`= > & | + - * / % < ! ~ ^ ?`
+ * (`, :`), and binary/prefix operator tails (`= > & | + - * % < ~ ^ ?`
  * — `>` also covers `=>`). Everything else — `)`, `]`, `}`, quotes,
  * identifier characters — can legally absorb a following `(` as a call or
  * index, which is the ASI splice. See the guard in `scanSource`.
+ *
+ * Two characters that LOOK like dangling operators are deliberately absent,
+ * because both far more often END a complete expression (iteration 2 of the
+ * #752 audit reproduced runtime splices for each):
+ *
+ *   - `/` — the tail of a regex literal. `literalSpans` does not lex regexes,
+ *     so `const re = /foo/` reaches this check as a bare `/`, and a regex
+ *     followed by `(` is a CallExpression — no ASI. A genuine dangling
+ *     division at end of line effectively does not occur.
+ *   - `!` — TypeScript's non-null assertion (`map.get(k)!`), a standard
+ *     end-of-line idiom in exactly the no-semicolon TS codebases this tool
+ *     targets; `expr!(args)` is a call. A dangling prefix-`!` at end of line
+ *     effectively does not occur.
+ *
+ * Known caveat, documented rather than removed: `>` stays because dangling
+ * comparisons (`count >` at end of line) are real and the wrap there is both
+ * safe and wanted — but a TS 4.7+ instantiation expression tail
+ * (`const g = f<string>` at end of line) also ends in `>` and DOES splice,
+ * silently. That shape is rare enough that refusing every dangling comparison
+ * to block it would cost more than it saves.
  */
 const ASI_SAFE_BEFORE_PAREN = new Set([
-  ';', '{', ',', '(', '[', ':', '=', '>', '&', '|', '+', '-', '*', '/', '%', '<', '!', '~', '^', '?',
+  ';', '{', ',', '(', '[', ':', '=', '>', '&', '|', '+', '-', '*', '%', '<', '~', '^', '?',
 ])
 
 /** The span containing `idx`, or null. */
@@ -358,13 +378,15 @@ function isEsm(file: string, src: string): boolean {
  * receiver it saw so the reader can dismiss it instantly.
  *
  * Receiver chains may include single-level bracket indexes — `stores[0]`,
- * `byName['team']`, `pool[i + 1]` — because arrays/maps of stores are ordinary
- * shapes for this API and a receiver the regex cannot see is a call the user
- * is never told about (the 0.16.0 audit found `arr[0].learn(x)` scanned
- * clean, #752). A NESTED index (`m[a[0]].learn(x)`) still does not match:
- * `[^\]]` cannot span the inner `]`, and every partial interpretation fails
- * to reach the method dot, so the site is missed — not misreported, and
- * never rewritten at the wrong offset.
+ * `byName['team']`, `pool[i + 1]`, `arr?.[0]` — because arrays/maps of stores
+ * are ordinary shapes for this API and a receiver the regex cannot see is a
+ * call the user is never told about (the 0.16.0 audit found `arr[0].learn(x)`
+ * scanned clean, #752; its second pass found `arr?.[0].learn(x)` still did).
+ * Two index shapes remain documented misses: a NESTED index
+ * (`m[a[0]].learn(x)`) and an index whose string key contains `]`
+ * (`m["a]b"].learn(x)`) — `[^\]]` cannot span the inner `]`, and every
+ * partial interpretation fails to reach the method dot, so both are missed —
+ * not misreported, and never rewritten at the wrong offset.
  */
 export function scanSource(file: string, src: string, methods: readonly string[] = NEWLY_ASYNC): Finding[] {
   const spans = literalSpans(src)
@@ -373,7 +395,7 @@ export function scanSource(file: string, src: string, methods: readonly string[]
   // `?.` on either side is the same call with the same hazard: `plur?.learn(x)`
   // and `plur.learn?.(x)` both return a promise nobody awaited. Requiring a
   // plain `.` missed both.
-  const re = new RegExp(String.raw`([A-Za-z_$][\w$]*(?:\??\.[A-Za-z_$][\w$]*|\[[^\]\n]*\])*)\??\.(${alt})\s*(?:\?\.)?\s*\(`, 'g')
+  const re = new RegExp(String.raw`([A-Za-z_$][\w$]*(?:\??\.[A-Za-z_$][\w$]*|(?:\?\.)?\[[^\]\n]*\])*)\??\.(${alt})\s*(?:\?\.)?\s*\(`, 'g')
 
   let m: RegExpExecArray | null
   while ((m = re.exec(src))) {

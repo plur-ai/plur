@@ -207,7 +207,11 @@ if [ "$DRY_RUN" = false ]; then
     echo "  Commit, stash, or remove it first."
     exit 1
   fi
-  git fetch origin main --quiet
+  if ! git fetch origin main --quiet; then
+    echo "✗ Step 0: could not fetch origin/main — offline, or the remote is unreachable."
+    echo "  The sync check needs a fresh origin/main; restore connectivity and re-run."
+    exit 1
+  fi
   if [ "$(git rev-parse HEAD)" != "$(git rev-parse origin/main)" ]; then
     echo "✗ Local main is not origin/main ($(git rev-parse --short HEAD) vs $(git rev-parse --short origin/main))."
     echo "  Pull or push first — releasing from a diverged main either loses the"
@@ -568,6 +572,13 @@ echo ""
 
 # --- 4. Commit + tag + push ---
 echo "--- Step 4: Git ---"
+# The tree was verified clean at Step 0, but build + tests + smoke ran for
+# minutes since. `git add -A` cannot distinguish this script's own version
+# bumps from a file the toolchain dropped mid-run, so print exactly what is
+# being swept into the release commit — visible in the release log rather
+# than silently folded in.
+echo "Committing the following changes:"
+git status --short
 git add -A
 git commit -m "chore: release v$VERSION"
 git tag "v$VERSION"

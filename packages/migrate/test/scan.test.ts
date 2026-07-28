@@ -72,6 +72,23 @@ describe('scanSource — what it finds', () => {
     expect(scan('async function go(m, a) { m[a[0]].learn("x") }')).toEqual([])
   })
 
+  it('finds optional-chain bracket receivers — ?.[ is ordinary modern TS (#752 iteration 2)', () => {
+    // `arr?.[0].learn(x)` scanned clean after the first bracket-receiver fix:
+    // the index alternative had no `?.` prefix, while `arr[0]?.learn(x)`
+    // (optional on the METHOD dot) was already found. Both sides now match.
+    const src = 'async function go(arr) { arr?.[0].learn("x") }'
+    const f = scan(src)
+    expect(f).toHaveLength(1)
+    expect(f[0].fixable).toBe(true)
+    expect(applyFixes(src, f).src).toBe('async function go(arr) { await arr?.[0].learn("x") }')
+  })
+
+  it('an index key containing `]` is missed, never misreported', () => {
+    // Same character-class boundary as the nested case, same invariant: a
+    // clean miss, no finding anchored inside the string key.
+    expect(scan('async function go(m) { m["a]b"].learn("x") }')).toEqual([])
+  })
+
   it('reports each occurrence separately', () => {
     expect(scan('plur.learn("a")\nplur.forget("b")\n')).toHaveLength(2)
   })
