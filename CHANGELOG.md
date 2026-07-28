@@ -13,9 +13,19 @@ One engine, two deployments.
 
 ### BREAKING — the write path is asynchronous
 
-`Plur`'s store interface and roughly twenty public methods now return promises (#728)
-(`learn`, `learnRouted`, `recall`, `recallHybrid`, `inject`, `injectHybrid`,
-`feedback`, `forget`, `getById`, `list`, `status`, `ingest`, `sync`, …).
+`Plur`'s store interface and 23 public methods now return promises (#728):
+`compact`, `episodeToEngram`, `getById`, `ingest`, `inject`, `installPack`,
+`learn`, `list`, `listPinned`, `listStores`, `outboxCount`, `purgeTensions`,
+`recall`, `receipt`, `recordTensions`, `reindex`, `rerankerEvalStatus`,
+`resolveTension`, `saveMetaEngrams`, `setPinned`, `status`, `sync`,
+`updateEngram`.
+
+`learnRouted`, `learnBatch`, `recallHybrid`, `injectHybrid`, `feedback`,
+`forget` and `flushOutbox` were ALREADY async before 0.16 and are unchanged
+here — an earlier draft of this section listed them as newly promise-returning,
+which would have sent you auditing call sites that never moved. `npx
+@plur-ai/migrate` still reports un-awaited calls to them, because such a call
+was a bug before this release too.
 
 **Every out-of-tree consumer must add `await`.** The failure mode is quiet: a
 call whose result is used without awaiting yields a `Promise`, and most

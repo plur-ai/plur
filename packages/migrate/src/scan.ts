@@ -119,7 +119,7 @@ function literalSpans(src: string): Array<[number, number]> {
       i = end === -1 ? src.length : end + 2
       continue
     }
-    if (c === '"' || c === "'" || c === '`') {
+    if (c === '"' || c === "'") {
       const quote = c
       let j = i + 1
       while (j < src.length) {
@@ -128,6 +128,41 @@ function literalSpans(src: string): Array<[number, number]> {
         j++
       }
       spans.push([i, Math.min(j + 1, src.length)])
+      i = j + 1
+      continue
+    }
+    if (c === '`') {
+      // A template literal is only PARTLY a literal: everything inside `${...}`
+      // is ordinary code. Treating the whole thing as a string hid every call
+      // written as `${plur.recall(q)}` — which is the worst place to miss one,
+      // because an un-awaited promise there does not throw, it interpolates as
+      // the string "[object Promise]" and ships.
+      //
+      // So push a span for each literal CHUNK and step over the holes.
+      let j = i + 1
+      let chunkStart = i
+      while (j < src.length) {
+        if (src[j] === '\\') { j += 2; continue }
+        if (src[j] === '`') break
+        if (src[j] === '$' && src[j + 1] === '{') {
+          spans.push([chunkStart, j])
+          // Walk to the matching `}`, counting nested braces. Nested template
+          // literals inside the hole are handled by the outer loop when it
+          // reaches them, so only brace depth matters here.
+          let depth = 1
+          let k = j + 2
+          while (k < src.length && depth > 0) {
+            if (src[k] === '{') depth++
+            else if (src[k] === '}') depth--
+            k++
+          }
+          j = k
+          chunkStart = k
+          continue
+        }
+        j++
+      }
+      spans.push([chunkStart, Math.min(j + 1, src.length)])
       i = j + 1
       continue
     }
@@ -277,7 +312,10 @@ export function scanSource(file: string, src: string, methods: readonly string[]
   const spans = literalSpans(src)
   const out: Finding[] = []
   const alt = methods.join('|')
-  const re = new RegExp(String.raw`([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)\.(${alt})\s*\(`, 'g')
+  // `?.` on either side is the same call with the same hazard: `plur?.learn(x)`
+  // and `plur.learn?.(x)` both return a promise nobody awaited. Requiring a
+  // plain `.` missed both.
+  const re = new RegExp(String.raw`([A-Za-z_$][\w$]*(?:\??\.[A-Za-z_$][\w$]*)*)\??\.(${alt})\s*(?:\?\.)?\s*\(`, 'g')
 
   let m: RegExpExecArray | null
   while ((m = re.exec(src))) {

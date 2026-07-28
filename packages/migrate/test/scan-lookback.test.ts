@@ -126,3 +126,75 @@ describe('parens inside strings and comments do not break the wrap', () => {
     expect(f[0].reason).toMatch(/could not determine where the call ends/)
   })
 })
+
+/**
+ * Places the scanner used to look straight past.
+ *
+ * Each is an ordinary way to write the call, and each was invisible — the tool
+ * reported "no un-awaited PLUR calls found" and exited 0 on a file that had
+ * them. A migration tool that misses calls is worse than no tool, because the
+ * clean exit is taken as evidence the file is done.
+ */
+describe('call forms the scanner must not miss', () => {
+  it('finds a call inside a template-literal interpolation', () => {
+    // The worst one. `${promise}` does not throw — it interpolates as
+    // "[object Promise]" and ships. The whole template used to be treated as a
+    // string literal, so the hole was never examined.
+    const f = scan('async function g(plur) {\n  return `result: ${plur.recall("q")}`\n}')
+    expect(f).toHaveLength(1)
+    expect(f[0].method).toBe('recall')
+  })
+
+  it('still ignores a method name that is only MENTIONED in template text', () => {
+    // The literal chunks must stay literal — otherwise the fix would trade a
+    // false negative for a false positive.
+    expect(scan('const s = `call plur.learn(x) to remember`')).toHaveLength(0)
+  })
+
+  it('handles a template with several holes, and text between them', () => {
+    const f = scan('async function g(plur) {\n  return `${plur.recall("a")} and ${plur.getById("b")}`\n}')
+    expect(f.map(x => x.method).sort()).toEqual(['getById', 'recall'])
+  })
+
+  it('finds an optional-chained receiver — plur?.learn(x)', () => {
+    const f = scan('async function g(plur) {\n  plur?.learn("x")\n}')
+    expect(f).toHaveLength(1)
+    expect(f[0].fixable).toBe(true)
+  })
+
+  it('finds an optional call — plur.learn?.(x)', () => {
+    const f = scan('async function g(plur) {\n  plur.learn?.("x")\n}')
+    expect(f).toHaveLength(1)
+    expect(f[0].fixable).toBe(true)
+  })
+
+  it('rewrites both optional forms into parseable code', () => {
+    const src = 'async function g(plur) {\n  plur?.learn("a")\n  plur.learn?.("b")\n}'
+    const out = fix(src)
+    expect(out).toContain('await plur?.learn("a")')
+    expect(out).toContain('await plur.learn?.("b")')
+  })
+})
+
+describe('the multi-line-consumed guard', () => {
+  // Removing this guard makes --write emit `await plur.recall(\n ... \n).length`,
+  // which awaits `.length` of the promise. The guard shipped untested.
+  const src = 'async function g(plur) {\n  const n = plur.recall(\n    "q",\n  ).length\n  return n\n}'
+
+  it('refuses a consumed call that spans lines', () => {
+    const f = scan(src)
+    expect(f[0].fixable).toBe(false)
+    expect(f[0].reason).toMatch(/multi-line/)
+  })
+
+  it('and leaves the source alone', () => {
+    expect(fix(src)).toBe(src)
+  })
+
+  it('but a multi-line call whose result is NOT consumed is still fixed', () => {
+    // The guard is about the member access, not about spanning lines. Without
+    // this, "refuse anything multi-line" would pass the two tests above.
+    const ok = 'async function g(plur) {\n  plur.learn(\n    "a long statement",\n  )\n}'
+    expect(fix(ok)).toContain('await plur.learn(')
+  })
+})

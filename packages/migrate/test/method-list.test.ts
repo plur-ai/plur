@@ -17,18 +17,24 @@
  */
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'fs'
+import { execFileSync } from 'child_process'
 import { join } from 'path'
 import { NEWLY_ASYNC } from '../src/scan.js'
 
 const CORE_INDEX = join(__dirname, '..', '..', 'core', 'src', 'index.ts')
 
 /**
- * Async on `Plur` BEFORE 0.16, so an un-awaited call to one was always a bug
- * rather than migration fallout. Out of this tool's stated scope.
+ * Async on `Plur` BEFORE 0.16 and NOT reported by the tool.
  *
- * Membership here is a claim about history, so it is deliberately explicit:
- * adding a new async method to `Plur` fails the test until someone says which
- * side it belongs on.
+ * `NEWLY_ASYNC` also contains some already-async methods on purpose (see its
+ * comment) — reporting an un-awaited `feedback()` costs nothing and helps, even
+ * though it was a bug before 0.16 rather than fallout from it. So "already
+ * async" and "in NEWLY_ASYNC" are not opposites, and the two lists below are
+ * NOT a before/after partition. `alreadyAsyncAt0_15` is what pins the history.
+ *
+ * Membership here is still a claim about history, so it is deliberately
+ * explicit: adding a new async method to `Plur` fails the test until someone
+ * says which side it belongs on.
  */
 const ALWAYS_ASYNC = new Set([
   // The *Async family — the async twin of a sync method, named for it.
@@ -94,5 +100,59 @@ describe('NEWLY_ASYNC matches the real Plur class', () => {
   it('the method list is non-trivial — a guard against it being emptied', () => {
     // An empty list makes every test above pass and the tool report nothing.
     expect(NEWLY_ASYNC.length).toBeGreaterThan(20)
+  })
+})
+
+/**
+ * Which methods ACTUALLY changed in 0.16 — checked against the released source,
+ * not against the current class.
+ *
+ * Every test above reads `Plur` as it is today, so none of them can see a claim
+ * about the past being wrong. That gap was real: the CHANGELOG's BREAKING
+ * section listed `learnRouted`, `recallHybrid`, `injectHybrid`, `feedback` and
+ * `forget` as newly promise-returning when all five were already async in
+ * 0.15.0 — which sends a reader auditing call sites that never moved, and
+ * makes the rest of the list less believable.
+ */
+describe('the sync -> async claim, against the 0.15.0 source', () => {
+  /** Methods in NEWLY_ASYNC that were already async before this release. */
+  const alreadyAsyncAt0_15 = new Set(['feedback', 'flushOutbox', 'forget', 'learnBatch', 'learnRouted'])
+
+  function methodsAsyncAt0_15(): Set<string> | null {
+    try {
+      const src = execFileSync('git', ['show', 'v0.15.0:packages/core/src/index.ts'], {
+        cwd: join(__dirname, '..', '..', '..'), encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'],
+      })
+      const out = new Set<string>()
+      for (const m of src.matchAll(/^ {2}async ([a-zA-Z_][\w]*)\(/gm)) out.add(m[1])
+      return out.size > 0 ? out : null
+    } catch {
+      return null // shallow clone or no tags — see the assertion below
+    }
+  }
+
+  it('every NEWLY_ASYNC method was sync in 0.15.0, except the documented few', () => {
+    const before = methodsAsyncAt0_15()
+    if (!before) {
+      // Not skipped silently: a skip is how this class of error hid in the
+      // first place. Fetch tags (`git fetch --tags`) to run the real check.
+      expect(alreadyAsyncAt0_15.size, 'cannot reach v0.15.0 — frozen expectation only').toBe(5)
+      return
+    }
+    const unexpected = NEWLY_ASYNC.filter(n => before.has(n) && !alreadyAsyncAt0_15.has(n))
+    expect(
+      unexpected,
+      'already async in 0.15.0 but not listed as such — the release notes will claim it changed',
+    ).toEqual([])
+  })
+
+  it('and the documented few really were async in 0.15.0', () => {
+    // The other direction: if one of these was in fact sync, it belongs in the
+    // BREAKING list and users are not being told to await it.
+    const before = methodsAsyncAt0_15()
+    if (!before) return
+    for (const m of alreadyAsyncAt0_15) {
+      expect(before.has(m), `${m} was NOT async in 0.15.0 — it changed, and the notes omit it`).toBe(true)
+    }
   })
 })
