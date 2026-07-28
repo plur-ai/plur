@@ -3573,7 +3573,12 @@ export class Plur {
 
   /**
    * Toggle the always-load (pinned) flag for an engram.
-   * Returns the updated engram on success, null if not found.
+   *
+   * Returns the updated engram on success, `null` if it is not found in the
+   * local primary store or in any writable remote. Since 0.16 the remote PATCH
+   * is awaited and its result returned, so the value is the real engram rather
+   * than a placeholder — {@link setPinnedAsync} is now equivalent and kept only
+   * for source compatibility.
    */
   async setPinned(id: string, pinned: boolean): Promise<Engram | null> {
     // Local primary first.
@@ -3597,15 +3602,20 @@ export class Plur {
       const serverId = this._stripRemotePrefix(id, entry.scope)
       const driver = this._getRemoteDriver({ url: entry.url, token: entry.token, scope: entry.scope })
       try {
-        // Note: PATCH is async but setPinned() preserves its sync API for
-        // backward compat. We block on a sync-bridge via deasync would be
-        // bad; instead we do a fire-and-forget mutation and let the next
-        // load() observe the change. The local cache invalidates on patch.
-        // Callers needing strict ordering should call setPinnedAsync (TODO).
-        void driver.patch(serverId, { pinned: pinned === true ? true : undefined })
-        // Return a synthesized view of the expected result so callers don't
-        // see null. The real engram comes back on next load() / getById().
-        return { id, pinned: pinned === true ? true : undefined } as unknown as Engram
+        // Awaited, and the SERVER's engram is returned.
+        //
+        // This used to fire-and-forget the PATCH and return
+        // `{ id, pinned } as unknown as Engram` — an object that is not an
+        // Engram at all (no statement, scope, status or activation), so
+        // `(await plur.setPinned(id, true)).statement` was `undefined`. It also
+        // reported success before the write had happened, and a rejected
+        // floating promise could not be caught by the `catch` below.
+        //
+        // The justification was that `setPinned` had to keep a synchronous
+        // signature. It is `async` since the 0.16 flip, so that reason is gone
+        // and the honest version costs nothing.
+        const patched = await driver.patch(serverId, { pinned: pinned === true ? true : undefined })
+        if (patched) return patched
       } catch {
         continue
       }
@@ -3614,9 +3624,8 @@ export class Plur {
   }
 
   /**
-   * Async variant of setPinned that awaits remote PATCH so callers can
-   * observe the post-write state. Use this when ordering matters
-   * (e.g. test assertions immediately after a pin call).
+   * @deprecated Equivalent to {@link setPinned} since 0.16 — that method now
+   * awaits the remote PATCH too. Kept so existing callers keep compiling.
    */
   async setPinnedAsync(id: string, pinned: boolean): Promise<Engram | null> {
     // Local primary first.
