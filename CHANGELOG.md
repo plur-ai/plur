@@ -2,14 +2,21 @@
 
 ## 0.16.0 (2026-07-28)
 
-One engine, two deployments.
+The big memory update.
 
-- BREAKING: write path is async
+- BREAKING: async writes for shared memory
 - npx @plur-ai/migrate adds awaits
-- Postgres as a primary store
-- scope allow-list + BM25 pushdown
+- Postgres option: scale out
+- scope allow-list, BM25 in SQL
 - cross-process write safety
 - unified recall surface — same engine local and server-side
+
+One engine, two deployments: the same memory engine now spans a laptop YAML
+file and a shared Postgres server. That is why the write path went async —
+memory that several agents and processes share safely cannot pretend it is a
+synchronous local file. Postgres is an option for stores that outgrow local
+files, not a new requirement: YAML stays the default and the source of truth
+everywhere else.
 
 ### BREAKING — the write path is asynchronous
 
