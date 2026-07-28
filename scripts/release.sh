@@ -656,7 +656,7 @@ for pkg_check in "cli:$VERSION" "mcp:$VERSION"; do
     # Retry ONLY the transient propagation signature; any other failure is a real
     # defect (crash, wrong version) — stop retrying and report it below.
     if echo "$smoke_out" | grep -qiE 'ETARGET|No matching version|notarget'; then
-      [ "$attempt" -lt 6 ] && { echo -n "(propagating, retry $attempt) "; sleep 8; }
+      [ "$attempt" -lt 6 ] && { echo -n "(propagating, retry $attempt) "; sleep 20; }
       continue
     fi
     break
@@ -681,7 +681,7 @@ for attempt in 1 2 3 4 5 6; do
   core_install_out=$(npm install --no-save --no-audit --no-fund "@plur-ai/core@$VERSION" 2>&1) && core_exit=0 || core_exit=$?
   [ "$core_exit" -eq 0 ] && break
   if echo "$core_install_out" | grep -qiE 'ETARGET|No matching version|notarget'; then
-    [ "$attempt" -lt 6 ] && { echo -n "(propagating, retry $attempt) "; sleep 8; }
+    [ "$attempt" -lt 6 ] && { echo -n "(propagating, retry $attempt) "; sleep 20; }
     continue
   fi
   break
@@ -816,7 +816,11 @@ elif [ ! -f "$DEPLOY_KEY" ]; then
   echo "    Set DEPLOY_KEY env var to override"
 else
   echo "  Deploying $WEBSITE_DIR → $DEPLOY_TARGET"
-  rsync -avz -e "ssh -i $DEPLOY_KEY -o StrictHostKeyChecking=accept-new" \
+  # IdentitiesOnly: without it, an ssh-agent loaded with several keys offers
+  # them all before -i, and the server disconnects with "Too many
+  # authentication failures" — killed Step 8 of the 0.16.0 release on a
+  # machine whose agent carried a full keyring.
+  rsync -avz -e "ssh -i $DEPLOY_KEY -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new" \
     "$WEBSITE_DIR/" "$DEPLOY_TARGET" \
     --exclude='.git' --exclude='node_modules' --exclude='.DS_Store' \
     --exclude='.gstack' --exclude='CLAUDE.md' --exclude='.github' \
