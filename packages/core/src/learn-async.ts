@@ -2,28 +2,39 @@
  * Async learning with LLM-driven deduplication (Ideas 1+2+19).
  * Separated from index.ts to avoid merge conflicts with parallel SPs.
  */
-import { loadEngrams, saveEngrams } from './engrams.js'
 import { computeContentHash } from './content-hash.js'
 import { buildDedupPrompt, parseDedupResponse } from './dedup.js'
 import { appendHistory } from './history.js'
 import { logger } from './logger.js'
-import { withLock } from './sync.js'
+import { withAsyncLock } from './store/async-lock.js'
 import type { Engram } from './schemas/engram.js'
+import type { AsyncPrimaryStore } from './store/primary-store.js'
 import type { SecretMatch } from './secrets.js'
 import type { LearnContext, LearnAsyncContext, LearnAsyncResult, LearnBatchResult, LearnBatchFailure, DedupDecision, LlmFunction } from './types.js'
 
 export interface LearnAsyncDeps {
   /** Content hash dedup against all engrams. Scope-aware: only matches same scope. */
-  hashDedup: (statement: string, scope?: string) => Engram | null
+  hashDedup: (statement: string, scope?: string) => Promise<Engram | null>
   /** Hybrid recall for semantic similarity. */
   recallHybrid: (query: string, options?: { limit?: number }) => Promise<Engram[]>
   /** BM25 recall fallback. */
-  recall: (query: string, options?: { limit?: number }) => Engram[]
+  recall: (query: string, options?: { limit?: number }) => Promise<Engram[]>
   /** Sync learn for the ADD path. */
-  learn: (statement: string, context?: LearnContext) => Engram
+  learn: (statement: string, context?: LearnContext) => Promise<Engram>
   /** Get engram by ID. */
-  getById: (id: string) => Engram | null
-  /** Paths. */
+  getById: (id: string) => Promise<Engram | null>
+  /**
+   * Source of truth for primary engram state (convergence Phase 1). The
+   * UPDATE/MERGE paths below read and write through this rather than calling
+   * loadEngrams/saveEngrams on `engramsPath`, so a non-YAML primary store works
+   * here too.
+   */
+  store: AsyncPrimaryStore
+  /**
+   * Paths. `engramsPath` is still the LOCK KEY for `withAsyncLock` — file-based
+   * locking is Phase 2's problem, not this one — and is no longer used to read
+   * or write engram state.
+   */
   engramsPath: string
   rootPath: string
   /** Dedup config. */
@@ -35,7 +46,7 @@ export interface LearnAsyncDeps {
   /** Record LLM failure. */
   recordLlmFailure: () => void
   /** Sync index after write. */
-  syncIndex: () => void
+  syncIndex: () => Promise<void>
   /**
    * Leak guard predicate (#353). Returns the offending sensitivity hits when
    * `statement` carries content the SHARED `scope` forbids, else `[]` (always
@@ -89,31 +100,43 @@ function demoteIfSensitive(
 
 /**
  * Execute LLM-driven dedup decision.
+ *
+ * Async since convergence Phase 2: the UPDATE/MERGE writes take
+ * `withAsyncLock`, which queues concurrent in-process writers instead of making
+ * all but one of them retry an `EEXIST` and eventually throw.
+ *
+ * The "target vanished" fallback (`idx === -1`) now runs OUTSIDE the lock. It
+ * used to call `await deps.learn()` from inside it, and `Plur.learn()` takes the same
+ * lock on the same path — a self-deadlock that resolved only by the inner
+ * acquire exhausting its retries and throwing. Reachable whenever the target
+ * engram disappears between `getById` and the lock, which is exactly the
+ * concurrent case this phase is about.
  */
-function executeDedupDecision(
+async function executeDedupDecision(
   deps: LearnAsyncDeps,
   statement: string,
   context: LearnContext | undefined,
   decision: DedupDecision,
   targetId: string | null,
-): LearnAsyncResult {
+): Promise<LearnAsyncResult> {
   switch (decision) {
     case 'NOOP': {
       if (targetId) {
-        const existing = deps.getById(targetId)
+        const existing = await deps.getById(targetId)
         if (existing) return { engram: existing, decision: 'NOOP', existing_id: targetId }
       }
-      return { engram: deps.learn(statement, context), decision: 'ADD' }
+      return { engram: await deps.learn(statement, context), decision: 'ADD' }
     }
 
     case 'UPDATE': {
       if (targetId) {
-        const existing = deps.getById(targetId)
+        const existing = await deps.getById(targetId)
         if (existing && (existing as any).commitment !== 'locked') {
-          return withLock(deps.engramsPath, () => {
-            const engrams = loadEngrams(deps.engramsPath)
+          const result = await withAsyncLock(deps.engramsPath, async () => {
+            const engrams = await deps.store.load()
             const idx = engrams.findIndex(e => e.id === targetId)
-            if (idx === -1) return { engram: deps.learn(statement, context), decision: 'ADD' as DedupDecision }
+            // Target gone — fall out of the lock and ADD; see the doc comment.
+            if (idx === -1) return null
             const updated = { ...engrams[idx] } as any
             updated.statement = statement
             updated.content_hash = computeContentHash(statement)
@@ -124,8 +147,8 @@ function executeDedupDecision(
             // into an engram living at a shared scope. Demote before persisting.
             demoteIfSensitive(deps, updated, updated.statement)
             engrams[idx] = updated
-            saveEngrams(deps.engramsPath, engrams)
-            deps.syncIndex()
+            await deps.store.save(engrams)
+            await deps.syncIndex()
             appendHistory(deps.rootPath, {
               event: 'engram_updated',
               engram_id: targetId,
@@ -134,19 +157,21 @@ function executeDedupDecision(
             })
             return { engram: updated as Engram, decision: 'UPDATE' as DedupDecision, existing_id: targetId }
           })
+          if (result) return result
         }
       }
-      return { engram: deps.learn(statement, context), decision: 'ADD' }
+      return { engram: await deps.learn(statement, context), decision: 'ADD' }
     }
 
     case 'MERGE': {
       if (targetId) {
-        const existing = deps.getById(targetId)
+        const existing = await deps.getById(targetId)
         if (existing && (existing as any).commitment !== 'locked') {
-          return withLock(deps.engramsPath, () => {
-            const engrams = loadEngrams(deps.engramsPath)
+          const result = await withAsyncLock(deps.engramsPath, async () => {
+            const engrams = await deps.store.load()
             const idx = engrams.findIndex(e => e.id === targetId)
-            if (idx === -1) return { engram: deps.learn(statement, context), decision: 'ADD' as DedupDecision }
+            // Target gone — fall out of the lock and ADD; see the doc comment.
+            if (idx === -1) return null
             const merged = { ...engrams[idx] } as any
             merged.statement = `${merged.statement} ${statement}`
             merged.content_hash = computeContentHash(merged.statement)
@@ -159,8 +184,8 @@ function executeDedupDecision(
             // a shared scope. Demote before persisting.
             demoteIfSensitive(deps, merged, merged.statement)
             engrams[idx] = merged
-            saveEngrams(deps.engramsPath, engrams)
-            deps.syncIndex()
+            await deps.store.save(engrams)
+            await deps.syncIndex()
             appendHistory(deps.rootPath, {
               event: 'engram_merged',
               engram_id: targetId,
@@ -169,14 +194,15 @@ function executeDedupDecision(
             })
             return { engram: merged as Engram, decision: 'MERGE' as DedupDecision, existing_id: targetId }
           })
+          if (result) return result
         }
       }
-      return { engram: deps.learn(statement, context), decision: 'ADD' }
+      return { engram: await deps.learn(statement, context), decision: 'ADD' }
     }
 
     case 'ADD':
     default:
-      return { engram: deps.learn(statement, context), decision: 'ADD' }
+      return { engram: await deps.learn(statement, context), decision: 'ADD' }
   }
 }
 
@@ -190,7 +216,7 @@ export async function learnAsync(
   context?: LearnAsyncContext,
 ): Promise<LearnAsyncResult> {
   // Step 1: Content hash fast-path (scope-aware — issue #136)
-  const hashMatch = deps.hashDedup(statement, context?.scope)
+  const hashMatch = await deps.hashDedup(statement, context?.scope)
   if (hashMatch) {
     return { engram: hashMatch, decision: 'NOOP', existing_id: hashMatch.id }
   }
@@ -198,7 +224,7 @@ export async function learnAsync(
   // Step 2: Check dedup config
   const { enabled = true, threshold = 0.85, mode = 'llm' } = deps.dedupConfig
   if (!enabled || mode === 'off') {
-    return { engram: deps.learn(statement, context), decision: 'ADD' }
+    return { engram: await deps.learn(statement, context), decision: 'ADD' }
   }
 
   // Step 3: Semantic similarity search
@@ -206,12 +232,12 @@ export async function learnAsync(
   try {
     candidates = await deps.recallHybrid(statement, { limit: 5 })
   } catch {
-    candidates = deps.recall(statement, { limit: 5 })
+    candidates = await deps.recall(statement, { limit: 5 })
   }
   // Fallback to BM25 when hybrid returns empty (e.g. embedding model warmup on
   // cold CI runners makes embeddings return []; BM25 usually still matches).
   if (candidates.length === 0) {
-    candidates = deps.recall(statement, { limit: 5 })
+    candidates = await deps.recall(statement, { limit: 5 })
   }
   candidates = candidates.filter(c => c.status === 'active')
   // Mirror hashDedup scope-awareness (issue #359): only dedup against same-scope engrams.
@@ -222,7 +248,7 @@ export async function learnAsync(
   }
 
   if (candidates.length === 0) {
-    return { engram: deps.learn(statement, context), decision: 'ADD' }
+    return { engram: await deps.learn(statement, context), decision: 'ADD' }
   }
 
   // Step 4: LLM or cosine-only decision

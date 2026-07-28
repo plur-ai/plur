@@ -97,8 +97,8 @@ describe('embeddings opt-out', () => {
         'embeddings:\n  enabled: false\n',
       )
       const plur = new Plur({ path: dir })
-      plur.learn('The deploy script lives at scripts/deploy.sh', { type: 'procedural' })
-      plur.learn('Production runs on Fly.io with autoscaling enabled', { type: 'architectural' })
+      await plur.learn('The deploy script lives at scripts/deploy.sh', { type: 'procedural' })
+      await plur.learn('Production runs on Fly.io with autoscaling enabled', { type: 'architectural' })
 
       const results = await plur.recallHybrid('deploy')
       expect(Array.isArray(results)).toBe(true)
@@ -113,7 +113,7 @@ describe('embeddings opt-out', () => {
         'embeddings:\n  enabled: false\n',
       )
       const plur = new Plur({ path: dir })
-      plur.learn('Production deploy uses blue/green via Fly machines', { type: 'architectural' })
+      await plur.learn('Production deploy uses blue/green via Fly machines', { type: 'architectural' })
 
       const meta = await plur.recallHybridWithMeta('deploy')
       // Disabled = by design, not a fault. Must NOT be hybrid-degraded
@@ -128,7 +128,7 @@ describe('embeddings opt-out', () => {
       // env — both are acceptable here, but never 'bm25-only' which is
       // reserved for the explicit-opt-out path.
       const plur = new Plur({ path: dir })
-      plur.learn('Production deploy uses blue/green via Fly machines', { type: 'architectural' })
+      await plur.learn('Production deploy uses blue/green via Fly machines', { type: 'architectural' })
       const meta = await plur.recallHybridWithMeta('deploy')
       expect(['hybrid', 'hybrid-degraded']).toContain(meta.mode)
       expect(meta.mode).not.toBe('bm25-only')
@@ -142,7 +142,7 @@ describe('embeddings opt-out', () => {
         'embeddings:\n  enabled: false\n',
       )
       const plur = new Plur({ path: dir })
-      plur.learn('Anything that exercises the search path', { type: 'behavioral' })
+      await plur.learn('Anything that exercises the search path', { type: 'behavioral' })
       const meta = await plur.recallHybridWithMeta('anything')
       // Even if the model also could not load, disabled is the operative
       // truth — the user did not authorize a load attempt.

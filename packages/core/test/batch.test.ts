@@ -5,6 +5,7 @@ import { tmpdir } from 'os'
 import { Plur } from '../src/index.js'
 import { learnBatch } from '../src/learn-async.js'
 import type { LearnAsyncDeps } from '../src/learn-async.js'
+import { MemoryPrimaryStore } from '../src/store/memory-primary-store.js'
 import type { Engram } from '../src/schemas/engram.js'
 
 /**
@@ -44,7 +45,7 @@ describe('learnBatch: batch write', () => {
     expect(ids.every(id => typeof id === 'string' && id.length > 0)).toBe(true)
     expect(new Set(ids).size).toBe(3) // ids are unique
     // Every returned id is actually persisted and retrievable.
-    for (const id of ids) expect(plur.getById(id)).toBeTruthy()
+    for (const id of ids) expect(await plur.getById(id)).toBeTruthy()
   })
 })
 
@@ -83,21 +84,27 @@ describe('learnBatch: partial-failure isolation', () => {
   // A fake deps whose write throws for one statement, so we can assert the
   // batch keeps going and records the failure against its input index.
   const makeDeps = (): LearnAsyncDeps => ({
-    hashDedup: () => null,
+    hashDedup: async () => null,
     recallHybrid: async () => [],
-    recall: () => [],
-    learn: (statement: string) => {
+    recall: async () => [],
+    learn: async (statement: string) => {
       if (statement.includes('BOOM')) throw new Error('simulated write failure')
       return { id: 'ENG-2026-0101-777', statement } as unknown as Engram
     },
-    getById: () => null,
+    getById: async () => null,
+    store: new MemoryPrimaryStore(),
     engramsPath: '/tmp/plur-batch-fail-engrams.yaml',
     rootPath: '/tmp/plur-batch-fail',
     dedupConfig: { enabled: false }, // straight to deps.learn, no recall/LLM
     isLlmAvailable: () => false,
     recordLlmSuccess: () => {},
+    // No secrets in these fixtures, so nothing is ever demoted. Present because
+    // `demoteIfSensitive` calls it unconditionally on the dedup UPDATE/MERGE
+    // path: omitting it left the fake one routing decision away from a
+    // TypeError that would have read as a batch bug rather than a missing dep.
+    offendingHitsForScope: () => [],
     recordLlmFailure: () => {},
-    syncIndex: () => {},
+    syncIndex: async () => {},
   })
 
   // #281 — a partial-failure batch must let a caller map each INPUT to its

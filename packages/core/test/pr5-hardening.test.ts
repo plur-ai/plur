@@ -53,7 +53,7 @@ describe('MED-20 + LOW-9 — learnAsync UPDATE/MERGE demotion (real guard, share
   it('UPDATE that introduces a public IP into a SHARED-scope engram demotes + stamps _demoted', async () => {
     const plur = freshPlur({ dedup: { enabled: true, mode: 'llm' } })
     // Seed a CLEAN engram at the shared scope (no demotion at creation).
-    const seed = plur.learn('the deploy runbook lives in the wiki', { scope: SHARED_SCOPE, type: 'procedural' }) as Engram
+    const seed = await plur.learn('the deploy runbook lives in the wiki', { scope: SHARED_SCOPE, type: 'procedural' }) as Engram
     expect(seed.scope).toBe(SHARED_SCOPE)
 
     const llm = dedupLlm('UPDATE', seed.id)
@@ -73,7 +73,7 @@ describe('MED-20 + LOW-9 — learnAsync UPDATE/MERGE demotion (real guard, share
 
   it('MERGE that introduces a public IP into a SHARED-scope engram demotes + stamps _demoted', async () => {
     const plur = freshPlur({ dedup: { enabled: true, mode: 'llm' } })
-    const seed = plur.learn('the staging cluster is documented in the handbook', { scope: SHARED_SCOPE, type: 'procedural' }) as Engram
+    const seed = await plur.learn('the staging cluster is documented in the handbook', { scope: SHARED_SCOPE, type: 'procedural' }) as Engram
 
     const llm = dedupLlm('MERGE', seed.id)
     // "staging" is shared with the seed so BM25 finds the candidate even when
@@ -92,7 +92,7 @@ describe('MED-20 + LOW-9 — learnAsync UPDATE/MERGE demotion (real guard, share
   it('BOUNDARY: the SAME UPDATE into a PERSONAL (global) engram does NOT demote and does NOT stamp', async () => {
     const plur = freshPlur({ dedup: { enabled: true, mode: 'llm' } })
     // Personal scope — _offendingHitsForScope short-circuits (fast-path), so no demotion.
-    const seed = plur.learn('the deploy runbook lives in the wiki', { scope: 'global', type: 'procedural' }) as Engram
+    const seed = await plur.learn('the deploy runbook lives in the wiki', { scope: 'global', type: 'procedural' }) as Engram
     expect(seed.scope).toBe('global')
 
     const llm = dedupLlm('UPDATE', seed.id)
@@ -108,30 +108,30 @@ describe('MED-20 + LOW-9 — learnAsync UPDATE/MERGE demotion (real guard, share
 })
 
 describe('LOW-2 — _guardExplicitUpdate scans context fields', () => {
-  it('demotes an explicit update when a public IP is ONLY in a context field (source) at a shared scope', () => {
+  it('demotes an explicit update when a public IP is ONLY in a context field (source) at a shared scope', async () => {
     const plur = freshPlur()
     // Seed a clean engram at the shared scope.
-    const seed = plur.learn('the canonical pack format is SKILL.md', { scope: SHARED_SCOPE, type: 'architectural' }) as Engram
+    const seed = await plur.learn('the canonical pack format is SKILL.md', { scope: SHARED_SCOPE, type: 'architectural' }) as Engram
     expect(seed.scope).toBe(SHARED_SCOPE)
 
     // Explicit update: statement stays clean, but a sensitive IP hides in `source`.
     const updated = { ...seed, source: `pulled from ${PUBLIC_IP}` } as Engram
-    const ok = plur.updateEngram(updated)
+    const ok = await plur.updateEngram(updated)
     expect(ok).toBe(true)
 
-    const after = plur.list().find(e => e.id === seed.id) as (Engram & { visibility?: string }) | undefined
+    const after = (await plur.list()).find(e => e.id === seed.id) as (Engram & { visibility?: string }) | undefined
     expect(after).toBeDefined()
     // Demoted in place because the context field carried the credential.
     expect(after!.scope).toBe('local')
     expect(after!.visibility).toBe('private')
   })
 
-  it('does NOT demote a clean explicit update (no over-blocking)', () => {
+  it('does NOT demote a clean explicit update (no over-blocking)', async () => {
     const plur = freshPlur()
-    const seed = plur.learn('the canonical pack format is SKILL.md', { scope: SHARED_SCOPE, type: 'architectural' }) as Engram
+    const seed = await plur.learn('the canonical pack format is SKILL.md', { scope: SHARED_SCOPE, type: 'architectural' }) as Engram
     const updated = { ...seed, source: 'pulled from the team wiki', rationale: 'authoritative' } as Engram
-    plur.updateEngram(updated)
-    const after = plur.list().find(e => e.id === seed.id) as Engram | undefined
+    await plur.updateEngram(updated)
+    const after = (await plur.list()).find(e => e.id === seed.id) as Engram | undefined
     expect(after!.scope).toBe(SHARED_SCOPE)
   })
 })
@@ -150,9 +150,9 @@ describe('LOW-2 — _guardExplicitUpdate scans context fields', () => {
  * `if (!k.startsWith('_'))` guard must fail this test.
  */
 describe('R2-D #11 — underscore-strip protects internal bookkeeping from the infra detector', () => {
-  it('a remote-routed engram carrying _outbox.target_url (ipv4_port-shaped) is NOT demoted on a clean update', () => {
+  it('a remote-routed engram carrying _outbox.target_url (ipv4_port-shaped) is NOT demoted on a clean update', async () => {
     const plur = freshPlur()
-    const seed = plur.learn('the release runbook lives in the team wiki', { scope: SHARED_SCOPE, type: 'procedural' }) as Engram
+    const seed = await plur.learn('the release runbook lives in the team wiki', { scope: SHARED_SCOPE, type: 'procedural' }) as Engram
     expect(seed.scope).toBe(SHARED_SCOPE)
 
     // Simulate a remote-routed engram: internal bookkeeping carrying a loopback
@@ -164,10 +164,10 @@ describe('R2-D #11 — underscore-strip protects internal bookkeeping from the i
 
     // Clean update — the statement carries nothing sensitive.
     const updated = { ...routed, statement: 'the release runbook now lives in CONTRIBUTING.md' } as Engram
-    const ok = plur.updateEngram(updated)
+    const ok = await plur.updateEngram(updated)
     expect(ok).toBe(true)
 
-    const after = plur.list().find(e => e.id === seed.id) as (Engram & { visibility?: string }) | undefined
+    const after = (await plur.list()).find(e => e.id === seed.id) as (Engram & { visibility?: string }) | undefined
     expect(after).toBeDefined()
     // Scope UNCHANGED — the underscore-prefixed _outbox was stripped before the
     // scan, so the loopback host:port never reached the infra detector.
@@ -175,16 +175,16 @@ describe('R2-D #11 — underscore-strip protects internal bookkeeping from the i
     expect(after!.scope).not.toBe('local')
   })
 
-  it('a remote target_scope-shaped fqdn:port in _outbox is also NOT scanned (no false demotion)', () => {
+  it('a remote target_scope-shaped fqdn:port in _outbox is also NOT scanned (no false demotion)', async () => {
     const plur = freshPlur()
-    const seed = plur.learn('the deploy checklist is canonical', { scope: SHARED_SCOPE, type: 'procedural' }) as Engram
+    const seed = await plur.learn('the deploy checklist is canonical', { scope: SHARED_SCOPE, type: 'procedural' }) as Engram
     const routed = {
       ...seed,
       structured_data: { _outbox: { target_url: 'https://plur.datafund.io:443', target_scope: SHARED_SCOPE, queued_at: new Date().toISOString() } },
     } as unknown as Engram
     const updated = { ...routed, statement: 'the deploy checklist moved to the handbook' } as Engram
-    plur.updateEngram(updated)
-    const after = plur.list().find(e => e.id === seed.id) as Engram | undefined
+    await plur.updateEngram(updated)
+    const after = (await plur.list()).find(e => e.id === seed.id) as Engram | undefined
     expect(after!.scope).toBe(SHARED_SCOPE)
   })
 })
@@ -196,12 +196,12 @@ describe('LOW-1 — saveMetaEngrams runs the leak guard before persist', () => {
    * engram on a throwaway Plur, then overriding fields. Hand-built engrams miss
    * required fields (version/content_hash/…) and are silently dropped on reload.
    */
-  function meta(overrides: Partial<Engram> & { statement: string; scope: string }): Engram {
+  async function meta(overrides: Partial<Engram> & { statement: string; scope: string }): Promise<Engram> {
     const tmp = mkdtempSync(join(tmpdir(), 'plur-pr5-meta-'))
     dirs.push(tmp)
     writeFileSync(join(tmp, 'config.yaml'), yaml.dump({ stores: [], index: false }, { noRefs: true }))
-    const base = new (Plur as unknown as { new (o: { path: string }): Plur })({ path: tmp })
-      .learn('seed for meta shape', { scope: 'global' }) as Engram
+    const base = await (new (Plur as unknown as { new (o: { path: string }): Plur })({ path: tmp })
+      .learn('seed for meta shape', { scope: 'global' })) as Engram
     metaSeq += 1
     return {
       ...base,
@@ -211,12 +211,12 @@ describe('LOW-1 — saveMetaEngrams runs the leak guard before persist', () => {
     } as Engram
   }
 
-  it('demotes a SHARED-scope meta with a public IP (statement) to local/private + stamps _demoted', () => {
+  it('demotes a SHARED-scope meta with a public IP (statement) to local/private + stamps _demoted', async () => {
     const plur = freshPlur()
-    const m = meta({ statement: `infra note: prod box ${PUBLIC_IP}`, scope: SHARED_SCOPE })
-    const res = plur.saveMetaEngrams([m])
+    const m = await meta({ statement: `infra note: prod box ${PUBLIC_IP}`, scope: SHARED_SCOPE })
+    const res = await plur.saveMetaEngrams([m])
     expect(res.saved).toBe(1)
-    const saved = plur.list().find(e => e.id === m.id) as (Engram & { visibility?: string; structured_data?: { _demoted?: { from: string; patterns: string } } }) | undefined
+    const saved = (await plur.list()).find(e => e.id === m.id) as (Engram & { visibility?: string; structured_data?: { _demoted?: { from: string; patterns: string } } }) | undefined
     expect(saved).toBeDefined()
     expect(saved!.scope).toBe('local')
     expect(saved!.visibility).toBe('private')
@@ -224,39 +224,39 @@ describe('LOW-1 — saveMetaEngrams runs the leak guard before persist', () => {
     expect(saved!.structured_data?._demoted?.patterns).toMatch(/public_ipv4/)
   })
 
-  it('demotes a SHARED-scope meta whose sensitive content is in a CONTEXT field (source)', () => {
+  it('demotes a SHARED-scope meta whose sensitive content is in a CONTEXT field (source)', async () => {
     const plur = freshPlur()
-    const m = meta({ statement: 'a clean meta statement', source: `seen at ${PUBLIC_IP}`, scope: SHARED_SCOPE })
-    plur.saveMetaEngrams([m])
-    const saved = plur.list().find(e => e.id === m.id) as (Engram & { visibility?: string }) | undefined
+    const m = await meta({ statement: 'a clean meta statement', source: `seen at ${PUBLIC_IP}`, scope: SHARED_SCOPE })
+    await plur.saveMetaEngrams([m])
+    const saved = (await plur.list()).find(e => e.id === m.id) as (Engram & { visibility?: string }) | undefined
     expect(saved!.scope).toBe('local')
     expect(saved!.visibility).toBe('private')
   })
 
-  it('demotes a SHARED-scope meta whose sensitive content is in a TAG (pre-Crt audit — tags parity with #409)', () => {
+  it('demotes a SHARED-scope meta whose sensitive content is in a TAG (pre-Crt audit — tags parity with #409)', async () => {
     // Statement clean; the infra host:port rides ONLY in a tag. _engramContextFields
     // previously omitted `tags`, so saveMetaEngrams scanned a smaller surface than
     // learn-time and the tag reached the shared (git-synced) scope unguarded.
     const plur = freshPlur()
-    const m = meta({ statement: 'a clean meta statement', tags: ['db.internal:5432'], scope: SHARED_SCOPE })
-    plur.saveMetaEngrams([m])
-    const saved = plur.list().find(e => e.id === m.id) as (Engram & { visibility?: string }) | undefined
+    const m = await meta({ statement: 'a clean meta statement', tags: ['db.internal:5432'], scope: SHARED_SCOPE })
+    await plur.saveMetaEngrams([m])
+    const saved = (await plur.list()).find(e => e.id === m.id) as (Engram & { visibility?: string }) | undefined
     expect(saved!.scope).toBe('local')
     expect(saved!.visibility).toBe('private')
   })
 
-  it('THROWS on a raw secret in a SHARED-scope meta (HARD detectSecrets check)', () => {
+  it('THROWS on a raw secret in a SHARED-scope meta (HARD detectSecrets check)', async () => {
     const plur = freshPlur()
-    const m = meta({ statement: 'the api key is sk-aaaabbbbccccddddeeeeffffgggg', scope: SHARED_SCOPE })
-    expect(() => plur.saveMetaEngrams([m])).toThrow(/secret detected/i)
+    const m = await meta({ statement: 'the api key is sk-aaaabbbbccccddddeeeeffffgggg', scope: SHARED_SCOPE })
+    await expect(plur.saveMetaEngrams([m])).rejects.toThrow(/secret detected/i)
   })
 
-  it('leaves a clean PERSONAL-scope meta untouched (no-op for in-tree callers)', () => {
+  it('leaves a clean PERSONAL-scope meta untouched (no-op for in-tree callers)', async () => {
     const plur = freshPlur()
-    const m = meta({ statement: 'a perfectly clean meta', scope: 'global' })
-    const res = plur.saveMetaEngrams([m])
+    const m = await meta({ statement: 'a perfectly clean meta', scope: 'global' })
+    const res = await plur.saveMetaEngrams([m])
     expect(res.saved).toBe(1)
-    const saved = plur.list().find(e => e.id === m.id) as (Engram & { structured_data?: { _demoted?: unknown } }) | undefined
+    const saved = (await plur.list()).find(e => e.id === m.id) as (Engram & { structured_data?: { _demoted?: unknown } }) | undefined
     expect(saved!.scope).toBe('global')
     expect(saved!.structured_data?._demoted).toBeUndefined()
   })

@@ -49,6 +49,17 @@ export interface LearnContext {
    * intentional update is not a contradiction.
    */
   supersedes?: string[]
+  /**
+   * Session key this write belongs to (convergence Phase 2).
+   *
+   * Resolves the session default scope from the per-session registry instead of
+   * the process-wide slot. Supply it whenever one `Plur` instance serves more
+   * than one session concurrently — without it, `setSessionScope()` is a single
+   * shared field and one session's scope silently becomes another's (see
+   * `session-scopes.ts`). Never persisted on the engram; it selects a scope, it
+   * is not part of one.
+   */
+  session?: string
 }
 
 /** Extended context for async learn with LLM dedup. */
@@ -115,6 +126,21 @@ export interface RecallBudget {
 
 export interface RecallOptions {
   scope?: string
+  /**
+   * Permitted-scope allow-list — an AUTHORIZATION filter, distinct from the
+   * `scope` visibility filter above (see `ScopeRestriction` in
+   * storage-adapter.ts for the full contract).
+   *
+   * Absent = unrestricted. `[]` = matches NOTHING (a principal with no
+   * permitted scopes must see nothing — never widened to "no filter").
+   * Non-empty = EXACT membership: no hierarchy expansion, no personal-family
+   * pass-through, because the caller has already resolved identity to a
+   * complete set of permitted scopes.
+   *
+   * Pushed into the query on the indexed paths so `limit` counts permitted
+   * results rather than being spent on rows the caller may not see.
+   */
+  scopes?: string[]
   domain?: string
   limit?: number
   min_strength?: number
@@ -152,6 +178,21 @@ export interface BoundedRecallResult {
 export interface InjectOptions {
   budget?: number
   scope?: string
+  /**
+   * Permitted-scope allow-list — the AUTHORIZATION filter, same contract as
+   * {@link RecallOptions.scopes}: absent = unrestricted, `[]` = matches
+   * NOTHING, non-empty = exact membership with no hierarchy expansion.
+   *
+   * `RecallOptions` gained this in Phase 3 and `InjectOptions` did not, which
+   * left `inject()` — the surface a session actually calls on every prompt —
+   * with no way to be authorization-scoped at all. Its only scope input was
+   * `scope` above, a VISIBILITY filter that deliberately passes the entire
+   * personal family through (`local`, `global`, `user:*`, `agent:*`). For a
+   * multi-tenant caller that means every principal's personal engrams land in
+   * every other principal's context: the visibility filter is doing what it is
+   * designed to do, and there was simply no authorization filter above it.
+   */
+  scopes?: string[]
   boost_recent?: boolean
   /** Force a query intent for routing (#224); omitted → classifier decides. */
   intentOverride?: 'entity' | 'temporal' | 'event' | 'general'

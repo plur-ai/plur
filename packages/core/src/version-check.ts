@@ -14,11 +14,49 @@ export interface VersionCheckResult {
 /** Module-level cache: package name → result */
 const cache = new Map<string, VersionCheckResult>()
 
+/** Checks that have been started but have not yet written their result. */
+const inflight = new Set<Promise<VersionCheckResult>>()
+
+/**
+ * Wait for every in-flight check to finish writing to the cache.
+ *
+ * `checkForUpdate` is called fire-and-forget from server startup, so its write
+ * to the module-level cache lands at an arbitrary later point — including after
+ * the caller that started it has gone away. In a process that only ever starts
+ * one server that is harmless. In a test file that starts one per test it is
+ * not: a check started by test N resolves during test N+1 and overwrites the
+ * cache that test N+1 had just set up, so an assertion about staleness
+ * intermittently sees the real registry's answer instead of its own fixture.
+ *
+ * The failure is invisible in isolation and only appears under load, which is
+ * the worst shape a test failure can have — it reads as flake and gets retried
+ * away. This gives callers a way to say "let the background work land first"
+ * instead of hoping.
+ */
+export async function settleVersionChecks(): Promise<void> {
+  while (inflight.size > 0) await Promise.allSettled([...inflight])
+}
+
 /**
  * Check npm for a newer version. Fetches once, caches forever (process lifetime).
  * Fire-and-forget: call at startup, read later via getCachedUpdateCheck().
  */
-export async function checkForUpdate(
+export function checkForUpdate(
+  packageName: string,
+  currentVersion: string,
+  onResult?: (result: VersionCheckResult) => void,
+): Promise<VersionCheckResult> {
+  const p = runCheck(packageName, currentVersion, onResult)
+  inflight.add(p)
+  // `runCheck` swallows its own errors, so neither arm can reject here; both are
+  // supplied anyway so a future change cannot turn this into an unhandled
+  // rejection.
+  const done = () => { inflight.delete(p) }
+  p.then(done, done)
+  return p
+}
+
+async function runCheck(
   packageName: string,
   currentVersion: string,
   onResult?: (result: VersionCheckResult) => void,

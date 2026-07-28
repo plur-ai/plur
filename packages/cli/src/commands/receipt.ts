@@ -121,7 +121,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   }
 
   const plur = createPlur(flags)
-  const receipt = plur.receipt(days ? { days } : undefined)
+  const receipt = await plur.receipt(days ? { days } : undefined)
 
   if (shouldOutputJson(flags)) {
     outputJson(receipt)

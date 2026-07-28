@@ -32,8 +32,11 @@ pnpm --filter @plur-ai/examples all        # run all three
 
 ## Notes
 
-- The examples use the **synchronous, BM25** API (`recall`, `inject`) so they run
-  instantly with no model download. For semantic search, swap in the async
-  `recallHybrid` / `injectHybrid` — same arguments, plus local BGE embeddings.
+- The examples use the **BM25** API (`recall`, `inject`) so they run instantly
+  with no model download. For semantic search, swap in `recallHybrid` /
+  `injectHybrid` — same arguments, plus local BGE embeddings.
+- Every engine method here is **async** — note the `await` on each call. The
+  whole API returns promises so a `Plur` can be backed by a network store as
+  well as the default local YAML one.
 - These run in CI on every PR (`.github/workflows/ci.yml`) so they can't silently
   rot against API changes.

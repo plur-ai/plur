@@ -4,6 +4,8 @@
 
 # PLUR — Your agents share the same memory
 
+[![MCP Toplist](https://mcptoplist.com/badge/io.github.plur-ai%2Fplur.svg)](https://mcptoplist.com/server/io.github.plur-ai%2Fplur)
+
 [![npm version](https://img.shields.io/npm/v/@plur-ai/core?logo=npm&color=cb3837)](https://www.npmjs.com/package/@plur-ai/core)
 [![CI](https://img.shields.io/github/actions/workflow/status/plur-ai/plur/ci.yml?branch=main&logo=github&label=CI)](https://github.com/plur-ai/plur/actions/workflows/ci.yml)
 [![License: Apache-2.0](https://img.shields.io/github/license/plur-ai/plur?color=blue)](LICENSE)
@@ -202,8 +204,10 @@ import { Plur } from '@plur-ai/core'
 
 const plur = new Plur()
 
-// Learn from a correction
-plur.learn('toEqual() in Vitest is strict — use toMatchObject() for partial matching', {
+// Learn from a correction. The engine's read and write methods are async —
+// they return promises so a `Plur` can be backed by a network store as well
+// as by the default local YAML one.
+await plur.learn('toEqual() in Vitest is strict — use toMatchObject() for partial matching', {
   type: 'behavioral',
   scope: 'project:my-app',
   domain: 'dev/testing'
@@ -212,16 +216,22 @@ plur.learn('toEqual() in Vitest is strict — use toMatchObject() for partial ma
 // Recall (hybrid: BM25 + embeddings, zero cost)
 const results = await plur.recallHybrid('vitest assertion matching')
 
-// Inject relevant engrams into agent context
-const { engrams } = plur.inject('Write tests for the user service', {
+// Inject relevant engrams into agent context. You get context blocks ready to
+// paste into a prompt plus the IDs that went into them — not the engrams
+// themselves. `budget` is the ceiling in tokens; selection fills it by relevance.
+const injection = await plur.inject('Write tests for the user service', {
   scope: 'project:my-app',
-  limit: 15
+  budget: 2000
 })
+console.log(injection.directives)   // also .constraints, .consider
+console.log(`${injection.count} engrams, ${injection.tokens_used} tokens`)
 
-// Feedback trains the system
-plur.feedback(engram.id, 'positive')
+// Feedback trains the system — rate anything you have an ID for, whether it came
+// back from recall or went out in an injection (injection.injected_ids).
+if (results[0]) await plur.feedback(results[0].id, 'positive')
 
-// Capture an event (episode)
+// Capture an event (episode). Episode operations stay synchronous — they are
+// backed by episodes.yaml, not the engram primary store.
 plur.capture('Fixed CrashLoopBackOff on bee-3-4 by increasing memory limits', {
   agent: 'claude-code',
   channel: 'terminal'
@@ -231,7 +241,7 @@ plur.capture('Fixed CrashLoopBackOff on bee-3-4 by increasing memory limits', {
 const incidents = plur.timeline({ agent: 'claude-code' })
 
 // Sync across machines (use a private git remote — all engrams including private-visibility ones are pushed)
-plur.sync('git@github.com:you/plur-memory.git')
+await plur.sync('git@github.com:you/plur-memory.git')
 ```
 
 ## Tools

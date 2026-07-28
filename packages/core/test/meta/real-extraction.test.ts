@@ -17,7 +17,7 @@ import type { LlmFunction } from '../../src/types.js'
 import type { MetaField } from '../../src/schemas/meta-engram.js'
 
 // Load real engrams from user's personal collection
-function loadRealEngrams(): Engram[] {
+async function loadRealEngrams(): Promise<Engram[]> {
   const paths = [
     '/Users/gregor/Data/.datacore/learning/engrams.yaml',
     '/Users/gregor/Data/0-personal/.datacore/learning/engrams.yaml',
@@ -78,7 +78,7 @@ function createAnthropicLlm(): LlmFunction | null {
 
 describe.skipIf(!process.env.ANTHROPIC_API_KEY)('Real extraction pipeline', () => {
   it('extracts meta-engrams from 80 real engrams with validation', async () => {
-    const allEngrams = loadRealEngrams()
+    const allEngrams = await loadRealEngrams()
     console.log(`Loaded ${allEngrams.length} real user-created engrams`)
     expect(allEngrams.length).toBeGreaterThan(20)
 

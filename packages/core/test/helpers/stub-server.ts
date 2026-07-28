@@ -169,7 +169,9 @@ export class StubServer {
         const now = new Date().toISOString()
         const engram: StoredEngram = {
           id,
-          scope: scope ?? 'global',
+          // readBody yields Record<string, unknown>; narrow rather than trust
+          // the wire. A non-string scope falls back the same way a missing one does.
+          scope: typeof scope === 'string' ? scope : 'global',
           status: 'active',
           data: { statement, domain, type },
           created_at: now,

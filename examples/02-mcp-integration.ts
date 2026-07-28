@@ -31,17 +31,17 @@ const path = mkdtempSync(join(tmpdir(), 'plur-example-'))
 const plur = new Plur({ path })
 
 try {
-  plur.learn('Always run `pnpm build` before `pnpm test` — claw imports core dist', {
+  await plur.learn('Always run `pnpm build` before `pnpm test` — claw imports core dist', {
     type: 'procedural',
     domain: 'dev/build',
   })
-  plur.learn('Deploy with blue-green; never in-place restart prod', {
+  await plur.learn('Deploy with blue-green; never in-place restart prod', {
     type: 'architectural',
     domain: 'ops/deploy',
   })
 
   // This is the operation the MCP server exposes as the `plur_inject` tool:
-  const result = plur.inject('How do I run the test suite safely?', { budget: 2000 })
+  const result = await plur.inject('How do I run the test suite safely?', { budget: 2000 })
 
   console.log('Injected context for that task (what the agent receives):\n')
   // inject() sorts engrams into three sections — print whichever are non-empty

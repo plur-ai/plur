@@ -109,33 +109,33 @@ describe('session scope (#229)', () => {
 
   // --- learn() uses session scope as fallback ---
 
-  it('learn() uses session scope when no explicit scope provided', () => {
+  it('learn() uses session scope when no explicit scope provided', async () => {
     const plur = new Plur({ path: primaryDir })
     plur.setSessionScope('group:my-team')
-    const engram = plur.learn('session scope test')
+    const engram = await plur.learn('session scope test')
     expect(engram.scope).toBe('group:my-team')
   })
 
-  it('learn() uses explicit scope over session scope', () => {
+  it('learn() uses explicit scope over session scope', async () => {
     const plur = new Plur({ path: primaryDir })
     plur.setSessionScope('group:my-team')
-    const engram = plur.learn('explicit scope test', { scope: 'project:override' })
+    const engram = await plur.learn('explicit scope test', { scope: 'project:override' })
     expect(engram.scope).toBe('project:override')
   })
 
-  it('learn() falls back to unscoped_default (global, reverted 0.10.0 #353) when no session scope set', () => {
+  it('learn() falls back to unscoped_default (global, reverted 0.10.0 #353) when no session scope set', async () => {
     const plur = new Plur({ path: primaryDir })
-    const engram = plur.learn('global fallback test')
+    const engram = await plur.learn('global fallback test')
     expect(engram.scope).toBe('global')
   })
 
-  it('learn() falls back to local when unscoped_default is configured "local"', () => {
+  it('learn() falls back to local when unscoped_default is configured "local"', async () => {
     writeFileSync(
       join(primaryDir, 'config.yaml'),
       yaml.dump({ unscoped_default: 'local', index: false }, { noRefs: true }),
     )
     const plur = new Plur({ path: primaryDir })
-    const engram = plur.learn('local fallback test')
+    const engram = await plur.learn('local fallback test')
     expect(engram.scope).toBe('local')
   })
 
@@ -215,7 +215,7 @@ describe('session scope (#229)', () => {
     await plur.warmRemoteCaches()
 
     // After warming — remote engrams should be in the merged view
-    const all = (plur as any)._loadAllEngrams() as Array<{ id: string; statement?: string }>
+    const all = await (plur as any)._loadAllEngrams() as Array<{ id: string; statement?: string }>
     const remoteEngram = all.find(e => e.id.includes('WARM-001'))
     expect(remoteEngram).toBeDefined()
   })
@@ -245,7 +245,7 @@ describe('session scope (#229)', () => {
   // session_start calls. Without explicit reset, default_scope from session
   // A would leak into every subsequent session B that didn't pass its own.
 
-  it('setSessionScope(null) clears a previously-set scope (cross-session safety)', () => {
+  it('setSessionScope(null) clears a previously-set scope (cross-session safety)', async () => {
     // Scope value is incidental here — the subject is leakage, not the default.
     // Pin unscoped_default:'global' to keep the original assertion (Stage 3b, #351).
     writeFileSync(
@@ -262,7 +262,7 @@ describe('session scope (#229)', () => {
 
     // Subsequent learn() without explicit scope falls back to 'global', not the
     // previously-set group:session-a
-    const engram = plur.learn('no scope leakage')
+    const engram = await plur.learn('no scope leakage')
     expect(engram.scope).toBe('global')
   })
 

@@ -5,6 +5,8 @@ import { tmpdir } from 'os'
 import { learnAsync } from '../src/learn-async.js'
 import type { LearnAsyncDeps } from '../src/learn-async.js'
 import { loadEngrams, saveEngrams } from '../src/engrams.js'
+import { MemoryPrimaryStore } from '../src/store/memory-primary-store.js'
+import { YamlPrimaryStore } from '../src/store/yaml-primary-store.js'
 import type { Engram } from '../src/schemas/engram.js'
 
 /**
@@ -45,19 +47,20 @@ const globalCandidate: Engram = {
 
 function makeDeps(candidates: Engram[]): LearnAsyncDeps {
   return {
-    hashDedup: () => null,
+    hashDedup: async () => null,
     recallHybrid: async () => candidates,
-    recall: () => candidates,
-    learn: (statement: string, context?: any) =>
+    recall: async () => candidates,
+    learn: async (statement: string, context?: any) =>
       ({ id: 'ENG-2026-0619-001', statement, scope: context?.scope ?? 'global' } as unknown as Engram),
-    getById: (id: string) => candidates.find(c => c.id === id) ?? null,
+    getById: async (id: string) => candidates.find(c => c.id === id) ?? null,
+    store: new MemoryPrimaryStore(),
     engramsPath: '/tmp/plur-test-engrams.yaml',
     rootPath: '/tmp/plur-test',
     dedupConfig: { enabled: true, mode: 'llm' },
     isLlmAvailable: () => true,
     recordLlmSuccess: () => {},
     recordLlmFailure: () => {},
-    syncIndex: () => {},
+    syncIndex: async () => {},
     offendingHitsForScope: () => [],
   }
 }
@@ -124,7 +127,7 @@ describe('learnAsync UPDATE/MERGE increment engram_version not version (#484)', 
     dir = mkdtempSync(join(tmpdir(), 'plur-484-'))
     engramsPath = join(dir, 'engrams.yaml')
     saveEngrams(engramsPath, candidates)
-    return { ...makeDeps(candidates), engramsPath, rootPath: dir }
+    return { ...makeDeps(candidates), engramsPath, rootPath: dir, store: new YamlPrimaryStore(engramsPath) }
   }
 
   it('UPDATE increments engram_version and leaves version untouched', async () => {
@@ -170,6 +173,7 @@ describe('learnAsync demote scans merged tags (#409)', () => {
       ...makeDeps(candidates),
       engramsPath,
       rootPath: dir,
+      store: new YamlPrimaryStore(engramsPath),
       // Flag any scan text containing the sentinel — placed ONLY in a tag below,
       // so a hit proves the scan now includes the merged tags.
       offendingHitsForScope: (text: string) =>

@@ -9,7 +9,7 @@ describe('PLUR ContextEngine plugin', () => {
     expect(plugin.version).toBe('0.10.0')
   })
 
-  it('registers via plugin API', () => {
+  it('registers via plugin API', async () => {
     let registeredId: string | undefined
     let registeredFactory: (() => any) | undefined
     const mockApi = {
@@ -29,7 +29,9 @@ describe('PLUR ContextEngine plugin', () => {
     expect(registeredId).toBe('plur')
     expect(registeredFactory).toBeDefined()
 
-    const engine = registeredFactory!()
+    // The factory is async now — engine construction reaches core's async
+    // store path — so the plugin API hands back a promise for the engine.
+    const engine = await registeredFactory!()
     expect(engine).toBeInstanceOf(PlurContextEngine)
     expect(engine.info.id).toBe('plur-claw')
   })

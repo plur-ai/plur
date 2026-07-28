@@ -71,7 +71,7 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
     const projectConfig = readProjectConfig()
     const injectOpts = { budget: 3000, ...(projectConfig.scope ? { scope: projectConfig.scope } : {}) }
 
-    const result = plur.inject('general session start', injectOpts)
+    const result = await plur.inject('general session start', injectOpts)
     const count = result.count
     const context = count > 0 ? [result.directives, result.constraints, result.consider].filter(Boolean).join('\n') : ''
 

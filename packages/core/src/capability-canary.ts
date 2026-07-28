@@ -60,6 +60,8 @@ export class CapabilityCanary {
     })
   }
 
+  // Synchronous — `status()` is synchronous, so the `await` an automated pass
+  // added here was a no-op. See the note in index.ts on suggestScope.
   warnings(): string {
     return this.status()
       .filter((s) => !s.healthy && s.warning)

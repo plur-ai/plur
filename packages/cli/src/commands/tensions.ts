@@ -93,7 +93,13 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     else { i++ }
   }
 
-  const plur = createPlur(flags, { readonly: true })
+  // NOTE: this used to read `createPlur(flags, { readonly: true })`. `createPlur`
+  // takes one parameter and `Plur`'s constructor has no `readonly` option, so
+  // that argument was discarded — this command has always opened a normal
+  // read-write engine. Dropped rather than left in place: an argument that reads
+  // as a safety property but does nothing is worse than no argument at all.
+  // A real read-only mode is worth having; it does not exist yet.
+  const plur = createPlur(flags)
 
   // --- Lifecycle actions (#181) ---
   if (action) {
@@ -118,7 +124,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
           exit(1, `Usage: plur tensions resolve ${tensionId} --winner <engram-id>`)
           return
         }
-        const { record, retired_id } = plur.resolveTension(tensionId, winner)
+        const { record, retired_id } = await plur.resolveTension(tensionId, winner)
         if (shouldOutputJson(flags)) { outputJson({ record, retired: retired_id }) } else {
           outputText(`Resolved ${record.id}: ${winner} wins, ${retired_id} retired.`)
         }
@@ -129,7 +135,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     return
   }
 
-  const engrams = plur.list({ scope, domain })
+  const engrams = await plur.list({ scope, domain })
 
   if (scan) {
     const llm: LlmFunction | undefined =
@@ -170,7 +176,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
       temporal_discount: temporalDiscount ?? tensionsConfig.temporal_discount,
       ...(persist ? { exclude_pairs: new Set(plur.suppressedTensionPairKeys()) } : {}),
     })
-    const persisted = persist && result.tensions.length > 0 ? plur.recordTensions(result.tensions) : undefined
+    const persisted = persist && result.tensions.length > 0 ? await plur.recordTensions(result.tensions) : undefined
 
     if (shouldOutputJson(flags)) {
       outputJson({

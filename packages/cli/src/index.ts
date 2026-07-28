@@ -53,7 +53,7 @@ Commands:
                           [--reranker <name>] [--sample N] [--seed N] [--force]
   tensions [--scan]       List or scan for engram contradictions
   audit [--source X]      Audit working memory (claude-code|claw|hermes) for conflicts vs engrams
-  hook-inject             (internal) Hook handler for engram injection
+  hook-inject                   (internal) Hook handler for engram injection
   hook-observe            (internal) Hook handler for observation capture
   hook-learn-check        (internal) Hook handler for learning reflection
   hook-session-guard      (internal) Hook handler for session enforcement

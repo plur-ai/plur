@@ -46,7 +46,7 @@ export interface RunImportOptions {
 /** Max conflict links recorded per imported record. */
 const CONFLICT_CAP = 5
 
-export function runImport(plur: Plur, records: ImportRecord[], opts: RunImportOptions): MigrationReport {
+export async function runImport(plur: Plur, records: ImportRecord[], opts: RunImportOptions): Promise<MigrationReport> {
   const dryRun = opts.dryRun === true
   const now = new Date().toISOString()
 
@@ -55,14 +55,14 @@ export function runImport(plur: Plur, records: ImportRecord[], opts: RunImportOp
   // validity — a plain list() would drop already-expired engrams and make the
   // engine misreport their duplicates as fresh imports (re-patching temporal
   // metadata on the existing engram along the way).
-  const preExisting = plur.list({ include_expired: true })
+  const preExisting = await plur.list({ include_expired: true })
   const knownIds = new Set(preExisting.map(e => e.id))
   const hashToId = new Map<string, string>()
   for (const e of preExisting) {
     const hash = (e as any).content_hash ?? computeContentHash(e.statement)
     if (!hashToId.has(hash)) hashToId.set(hash, e.id)
   }
-  const allowSecrets = plur.status().config?.allow_secrets === true
+  const allowSecrets = (await plur.status()).config?.allow_secrets === true
 
   const results: ImportRecordResult[] = []
   let imported = 0
@@ -70,7 +70,7 @@ export function runImport(plur: Plur, records: ImportRecord[], opts: RunImportOp
   let conflicts = 0
   let errors = 0
 
-  for (const record of records) {
+  for(const record of records) {
     const statement = (record.statement ?? '').trim()
     if (!statement) {
       errors++
@@ -116,7 +116,7 @@ export function runImport(plur: Plur, records: ImportRecord[], opts: RunImportOp
       if (record.valid_until) context.valid_until = record.valid_until.slice(0, 10)
       if (record.pinned) context.pinned = true
 
-      const engram = plur.learn(statement, context)
+      const engram = await plur.learn(statement, context)
 
       if (knownIds.has(engram.id)) {
         // learn() resolved to an existing engram (hash dedup or cross-scope
@@ -129,7 +129,7 @@ export function runImport(plur: Plur, records: ImportRecord[], opts: RunImportOp
 
       const conflictIds = findConflicts(statement, scope, record.domain, preExisting)
       const patched = applyImportMetadata(engram, record, conflictIds, now)
-      if (patched) plur.updateEngram(patched)
+      if (patched) await plur.updateEngram(patched)
 
       imported++
       if (conflictIds.length > 0) conflicts++

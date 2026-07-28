@@ -21,7 +21,7 @@ const dirs: string[] = []
 afterEach(() => { while (dirs.length) rmSync(dirs.pop()!, { recursive: true, force: true }) })
 
 describe.skipIf(!hasSqlite)('PR-1 indexed-storage personal-column migration (#353)', () => {
-  it('migrates a pre-0.10.0 DB and makes a local engram visible under a project filter', () => {
+  it('migrates a pre-0.10.0 DB and makes a local engram visible under a project filter', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'plur-pr1-mig-'))
     dirs.push(dir)
     const dbPath = join(dir, 'engrams.db')
@@ -30,7 +30,7 @@ describe.skipIf(!hasSqlite)('PR-1 indexed-storage personal-column migration (#35
     // Seed schema-valid YAML via a real Plur (index:false so it writes only YAML).
     writeFileSync(join(dir, 'config.yaml'), 'index: false\n')
     const seed = new Plur({ path: dir })
-    const seeded = seed.learn('old local engram about widgets', { scope: 'local' })
+    const seeded = await seed.learn('old local engram about widgets', { scope: 'local' })
 
     // Build an OLD-schema engrams.db (no `personal` column) pointing at the YAML.
     if (existsSync(dbPath)) unlinkSync(dbPath)
@@ -46,7 +46,7 @@ describe.skipIf(!hasSqlite)('PR-1 indexed-storage personal-column migration (#35
 
     // Open via IndexedStorage — should ALTER TABLE ADD COLUMN personal + reindex.
     const store = new IndexedStorage(yamlPath, dbPath, [])
-    const visible = store.loadFiltered({ status: 'active', scope: 'project:myapp' })
+    const visible = await store.loadFiltered({ status: 'active', scope: 'project:myapp' })
     expect(visible.some(e => e.id === seeded.id)).toBe(true)
 
     // Column now exists and the local engram's flag is 1.
@@ -69,7 +69,7 @@ describe.skipIf(!hasSqlite)('PR-1 indexed-storage personal-column migration (#35
   // migration self-heal: any open observing user_version < 1 with stale rows
   // re-runs the backfill, so a purely read-only consumer is never stuck in the
   // transient personal-invisible window.
-  it('self-heals a crash-interrupted backfill (column present, rows at DEFAULT 0, sentinel unstamped)', () => {
+  it('self-heals a crash-interrupted backfill (column present, rows at DEFAULT 0, sentinel unstamped)', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'plur-pr1-crash-'))
     dirs.push(dir)
     const dbPath = join(dir, 'engrams.db')
@@ -78,8 +78,8 @@ describe.skipIf(!hasSqlite)('PR-1 indexed-storage personal-column migration (#35
     // Seed schema-valid YAML (a local + a global engram) via a real Plur.
     writeFileSync(join(dir, 'config.yaml'), 'index: false\n')
     const seed = new Plur({ path: dir })
-    const localE = seed.learn('crash-window local engram', { scope: 'local' })
-    const globalE = seed.learn('crash-window global engram', { scope: 'global' })
+    const localE = await seed.learn('crash-window local engram', { scope: 'local' })
+    const globalE = await seed.learn('crash-window global engram', { scope: 'global' })
 
     // Build a DB that simulates the post-crash state: the `personal` column
     // EXISTS (ALTER committed) but every row is at the DEFAULT 0 and the
@@ -101,7 +101,7 @@ describe.skipIf(!hasSqlite)('PR-1 indexed-storage personal-column migration (#35
 
     // Open via IndexedStorage — must detect the unstamped sentinel and re-backfill.
     const store = new IndexedStorage(yamlPath, dbPath, [])
-    const visible = store.loadFiltered({ status: 'active', scope: 'project:myapp' })
+    const visible = await store.loadFiltered({ status: 'active', scope: 'project:myapp' })
     // Both personal-family engrams are visible again under a project-scope filter.
     expect(visible.some(e => e.id === localE.id)).toBe(true)
     expect(visible.some(e => e.id === globalE.id)).toBe(true)

@@ -47,8 +47,8 @@ describe('plur_tensions lifecycle (#181)', () => {
   }
 
   it('scan persists new detections as tension records', async () => {
-    plur.learn('plur cli version is 0.3.0')
-    plur.learn('plur cli version is 0.8.2')
+    await plur.learn('plur cli version is 0.3.0')
+    await plur.learn('plur cli version is 0.8.2')
     mockYesLlm()
 
     const result = await tensionsTool.handler({ scan: true, ...LLM_ARGS }, plur) as any
@@ -66,8 +66,8 @@ describe('plur_tensions lifecycle (#181)', () => {
   })
 
   it('a second scan skips the recorded pair (no LLM calls)', async () => {
-    plur.learn('plur cli version is 0.3.0')
-    plur.learn('plur cli version is 0.8.2')
+    await plur.learn('plur cli version is 0.3.0')
+    await plur.learn('plur cli version is 0.8.2')
     mockYesLlm()
     await tensionsTool.handler({ scan: true, ...LLM_ARGS }, plur)
 
@@ -79,8 +79,8 @@ describe('plur_tensions lifecycle (#181)', () => {
   })
 
   it('persist:false is a dry run — nothing recorded, suppress-list ignored', async () => {
-    plur.learn('plur cli version is 0.3.0')
-    plur.learn('plur cli version is 0.8.2')
+    await plur.learn('plur cli version is 0.3.0')
+    await plur.learn('plur cli version is 0.8.2')
     mockYesLlm()
 
     const result = await tensionsTool.handler({ scan: true, persist: false, ...LLM_ARGS }, plur) as any
@@ -90,8 +90,8 @@ describe('plur_tensions lifecycle (#181)', () => {
   })
 
   it('confirm action marks the record confirmed', async () => {
-    plur.learn('plur cli version is 0.3.0')
-    plur.learn('plur cli version is 0.8.2')
+    await plur.learn('plur cli version is 0.3.0')
+    await plur.learn('plur cli version is 0.8.2')
     mockYesLlm()
     const scan = await tensionsTool.handler({ scan: true, ...LLM_ARGS }, plur) as any
     const id = scan.tensions[0].tension_id
@@ -102,8 +102,8 @@ describe('plur_tensions lifecycle (#181)', () => {
   })
 
   it('dismiss action suppresses the pair', async () => {
-    plur.learn('plur cli version is 0.3.0')
-    plur.learn('plur cli version is 0.8.2')
+    await plur.learn('plur cli version is 0.3.0')
+    await plur.learn('plur cli version is 0.8.2')
     mockYesLlm()
     const scan = await tensionsTool.handler({ scan: true, ...LLM_ARGS }, plur) as any
 
@@ -118,8 +118,8 @@ describe('plur_tensions lifecycle (#181)', () => {
   })
 
   it('resolve action retires the losing engram', async () => {
-    const a = plur.learn('plur cli version is 0.3.0')
-    const b = plur.learn('plur cli version is 0.8.2')
+    const a = await plur.learn('plur cli version is 0.3.0')
+    const b = await plur.learn('plur cli version is 0.8.2')
     mockYesLlm()
     const scan = await tensionsTool.handler({ scan: true, ...LLM_ARGS }, plur) as any
     const id = scan.tensions[0].tension_id
@@ -128,8 +128,8 @@ describe('plur_tensions lifecycle (#181)', () => {
     expect(result.record.status).toBe('resolved')
     expect(result.record.resolved_by).toBe(b.id)
     expect(result.retired).toBe(a.id)
-    expect(plur.getById(a.id)?.status).toBe('retired')
-    expect(plur.getById(b.id)?.status).toBe('active')
+    expect((await plur.getById(a.id))?.status).toBe('retired')
+    expect((await plur.getById(b.id))?.status).toBe('active')
   })
 
   it('resolve without winner and unknown actions fail loudly', async () => {
@@ -138,9 +138,9 @@ describe('plur_tensions lifecycle (#181)', () => {
   })
 
   it('plur_inject surfaces tension warnings for confirmed tensions', async () => {
-    const a = plur.learn('use tabs for indentation everywhere', { pinned: true })
-    const b = plur.learn('completely unrelated database fact')
-    const { records } = plur.recordTensions([{
+    const a = await plur.learn('use tabs for indentation everywhere', { pinned: true })
+    const b = await plur.learn('completely unrelated database fact')
+    const { records } = await plur.recordTensions([{
       id_a: a.id, id_b: b.id,
       statement_a: a.statement, statement_b: b.statement,
       confidence: 0.9, reason: 'Opposite.',
