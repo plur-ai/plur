@@ -4,7 +4,7 @@ import { existsSync, readFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
 import { Plur, checkForUpdate } from '@plur-ai/core'
-import { getToolDefinitions, mcpCanary, validateToolArgs, CURSOR_CORE_TOOL_NAMES, type ToolProfile } from './tools.js'
+import { getToolDefinitions, mcpCanary, validateToolArgs, CURSOR_CORE_TOOL_NAMES, type ToolProfile, resolveToolProfile } from './tools.js'
 import { registerFlushOnExit } from './telemetry.js'
 import { VERSION } from './version.js'
 
@@ -420,8 +420,10 @@ Please:
 }
 
 export async function runStdio(): Promise<void> {
-  const envProfile = process.env.PLUR_TOOL_PROFILE
-  const profile: ToolProfile = envProfile === 'full' ? 'full' : envProfile === 'cursor' ? 'cursor' : 'lean'
+  // Shared with describeToolSurface (#761) so the surface plur_doctor reports
+  // is resolved from the same rule the server exposes tools with — two copies
+  // of this ternary is how doctor comes to describe a profile nobody is running.
+  const profile: ToolProfile = resolveToolProfile()
   const server = await createServer(undefined, { profile })
   // Opt-in, content-free telemetry: ship any pending daily counter snapshot on
   // process exit (best-effort). Self-gates on telemetry opt-in — an opted-out
