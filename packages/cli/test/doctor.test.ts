@@ -176,9 +176,58 @@ describe('plur doctor', () => {
   // a fake MCP shim that starts but never completes the JSON-RPC initialize — the
   // handshake must fail and drive overall to 'fail'. Green today: overall gates on
   // handshake.ok when not skipped (doctor.ts:569-570).
+  it('probes the CONFIGURED server, not the shim it would have recommended (#764)', () => {
+    // Discriminating on purpose. The previous test points the config at the
+    // same shim `buildMcpServerEntry()` prefers, so both the old synthesised
+    // probe and the new config-first one spawn the identical script and no
+    // assertion can tell them apart — it passes either way and guards nothing.
+    //
+    // Here the two disagree: the shim is one script, the config names another.
+    // Only a probe that reads the config launches `configured`.
+    const binDir = join(home, '.plur', 'bin')
+    mkdirSync(binDir, { recursive: true })
+    const shim = join(binDir, 'plur-mcp')
+    writeFileSync(shim, '#!/bin/sh\nsleep 0.5\nexit 0\n', { mode: 0o755 })
+    chmodSync(shim, 0o755)
+
+    const configured = join(home, 'configured-server.sh')
+    writeFileSync(configured, '#!/bin/sh\nsleep 0.5\nexit 0\n', { mode: 0o755 })
+    chmodSync(configured, 0o755)
+
+    writeGlobalSettings({
+      hooks: {
+        UserPromptSubmit: [
+          { hooks: [{ type: 'command', command: 'npx @plur-ai/cli hook-inject' }] },
+        ],
+      },
+      mcpServers: { plur: { command: configured, args: [] } },
+    })
+
+    let stdout = ''
+    try {
+      stdout = execSync(`node ${CLI} doctor --json`, {
+        encoding: 'utf-8',
+        timeout: 30000,
+        env: { ...process.env, HOME: home, USERPROFILE: home, PLUR_DISABLE_EMBEDDINGS: '1' },
+        cwd: home,
+      })
+    } catch (err: any) {
+      stdout = err.stdout?.toString() ?? ''
+    }
+    const report = JSON.parse(stdout)
+
+    // The whole point: what got launched.
+    expect(report.handshake.command, 'must launch the configured server').toContain(configured)
+    expect(report.handshake.command, 'must NOT fall back to the recommended shim').not.toContain(shim)
+    expect(report.handshake.probed, 'the report must name the source').toBeTruthy()
+  }, 40000)
+
   it('fails overall when the live handshake is enabled and the server never completes initialize', () => {
-    // buildMcpServerEntry() prefers the local shim at ~/.plur/bin/plur-mcp, so
-    // installing a fake one here makes doctor's handshake spawn OUR script.
+    // doctor probes the entry the CONFIG declares (#764), so pointing
+    // mcpServers.plur at this fake script is what makes the handshake spawn it.
+    // Before #764 the probe was synthesised — it preferred the ~/.plur/bin
+    // shim, then npx — which meant this test passed for the wrong reason: it
+    // was exercising a launch path the config did not name.
     const binDir = join(home, '.plur', 'bin')
     mkdirSync(binDir, { recursive: true })
     const shim = join(binDir, 'plur-mcp')
@@ -194,7 +243,7 @@ describe('plur doctor', () => {
         ],
       },
       mcpServers: {
-        plur: { command: '/bin/sh', args: ['-lc', 'exec npx -y @plur-ai/mcp@latest'] },
+        plur: { command: shim, args: [] },
       },
     })
 
@@ -219,6 +268,11 @@ describe('plur doctor', () => {
     expect(report.handshake.ok).toBe(false)
     expect(report.handshake.error).toBeTruthy()
     expect(report.handshake.error).not.toContain('skipped') // it actually ran
+    // #764: the report must name what it launched, and it must be the
+    // configured command — not a synthesised npx fallback that would have
+    // reported healthy while the configured server was dead.
+    expect(report.handshake.command).toContain(shim)
+    expect(report.handshake.probed).toBeTruthy()
     expect(report.overall).toBe('fail')
     expect(status).toBe(1)
   }, 40000)
