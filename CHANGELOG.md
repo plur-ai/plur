@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.16.1 (2026-07-29)
+
+Engine primitives are importable, and feedback stops disagreeing with itself.
+
+- `rrfMergeEngrams` and `applyFeedbackSignal` are now exported
+- same engram, same thumbs-up, same result — wherever it is stored
+
+### Fixed
+
+- **Feedback no longer means different things in different stores** (#759): `Plur.feedback` wrote out the feedback rule three times — once for the primary store, once for secondary stores, once for packs — and the three had drifted. Only the primary copy promoted `commitment`. The same engram given the same positive signal advanced `leaning → decided` in your own store and stayed at `leaning` in a team store or an installed pack, silently. The rule now lives in one place and all three call it.
+
+### Added
+
+- **Engine primitives are exported** (#759): `rrfMergeEngrams` (the k=60 Reciprocal Rank Fusion used by hybrid search) and `applyFeedbackSignal` / `nextCommitment` (what a feedback signal does to an engram) are now part of the public surface, along with `POSITIVE_STRENGTH_DELTA` and `NEGATIVE_STRENGTH_DELTA`. These were reachable only by reimplementing them, and a reimplementation cannot report when it drifts — it keeps returning a plausible ordering and a plausible strength while quietly disagreeing. `applyFeedbackSignal` is a pure mutation with no I/O, so a server-side consumer can reuse it without inheriting the file-backed single-user machinery around it in `Plur`.
+
+### Changed
+
+- **The commitment ladder is stated once, completely** (#759): an unset `commitment` now seeds at `leaning` on positive feedback rather than staying unset — an engram that received a positive signal has demonstrably been retrieved and found useful, and leaving it unset let older engrams accumulate unlimited positive signal while still reading as though nobody had an opinion. `decided` remains the ceiling; reaching `locked` still requires explicit human intent. An unrecognised commitment is returned untouched, so a deployment that extends the enum — e.g. a `draft` staged in a review queue — is never promoted out of review by a thumbs-up.
+
 ## 0.16.0 (2026-07-28)
 
 The big memory update.
