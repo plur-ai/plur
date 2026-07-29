@@ -628,6 +628,40 @@ function buildAdminDispatchTool(all: ToolDefinition[]): ToolDefinition {
   }
 }
 
+/** Profile from the environment. The default when nobody says otherwise. */
+export function resolveToolProfile(env: NodeJS.ProcessEnv = process.env): ToolProfile {
+  const v = env.PLUR_TOOL_PROFILE
+  return v === 'full' ? 'full' : v === 'cursor' ? 'cursor' : 'lean'
+}
+
+/**
+ * The profile the running server was ACTUALLY built with.
+ *
+ * `createServer` takes an explicit `profile` option, so the environment is not
+ * the authority — `createServer(plur, { profile: 'full' })` with no env var set
+ * exposes 41 tools while `resolveToolProfile()` still says `lean`. Reporting
+ * the env-derived value would make plur_doctor describe a 12-tool surface to a
+ * client looking at 41: confidently wrong, in the one field the client has no
+ * way to check. Left unset it falls back to the environment, which is right for
+ * anything that has not gone through `createServer`.
+ */
+let activeProfile: ToolProfile | null = null
+
+/** Record the profile a server was constructed with. Called by `createServer`. */
+export function setActiveToolProfile(profile: ToolProfile): void {
+  activeProfile = profile
+}
+
+/** Test seam — forget the recorded profile. */
+export function _resetActiveToolProfile(): void {
+  activeProfile = null
+}
+
+/** The profile in force: what the server was built with, else the environment. */
+export function activeToolProfile(): ToolProfile {
+  return activeProfile ?? resolveToolProfile()
+}
+
 /**
  * The tool surface as the client actually sees it, for a given profile.
  *
@@ -638,18 +672,13 @@ function buildAdminDispatchTool(all: ToolDefinition[]): ToolDefinition {
  * It never calls the missing name, so the helpful "call it via plur_admin"
  * error on that path never fires.
  *
- * The observed failure (2026-07-29) is the sharp version of this: `plur_doctor`
- * reported **green** while the agent switched to an HTTP fallback, because
- * doctor answers "is the engine healthy" and the actual question was "what is
- * callable". Health and surface are different questions and only one of them
+ * The observed failure (2026-07-29) is the sharp version: `plur_doctor`
+ * reported green while the agent switched to an HTTP fallback, because doctor
+ * answers "is the engine healthy" and the actual question was "what is
+ * callable". Health and surface are different questions, and only one of them
  * was answerable in-band.
  */
-export function resolveToolProfile(env: NodeJS.ProcessEnv = process.env): ToolProfile {
-  const v = env.PLUR_TOOL_PROFILE
-  return v === 'full' ? 'full' : v === 'cursor' ? 'cursor' : 'lean'
-}
-
-export function describeToolSurface(profile: ToolProfile = resolveToolProfile()): {
+export function describeToolSurface(profile: ToolProfile = activeToolProfile()): {
   profile: ToolProfile
   standalone: string[]
   admin_actions: string[]
@@ -2061,7 +2090,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
         // plur_admin — and doctor is the one door that is name-stable across
         // profiles, so it is where that answer belongs. Without this, doctor
         // can report green while the caller concludes the MCP is gone.
-        const tool_surface = describeToolSurface(resolveToolProfile())
+        const tool_surface = describeToolSurface()
         return {
           ok: checks.every(c => c.ok),
           checks,

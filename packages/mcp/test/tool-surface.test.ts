@@ -17,11 +17,13 @@
  * report honest — a description that drifts from what is actually exposed is
  * worse than none, because it is the thing an agent would trust.
  */
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, afterEach } from 'vitest'
 import {
   describeToolSurface, resolveToolProfile, getToolDefinitions,
+  activeToolProfile, setActiveToolProfile, _resetActiveToolProfile,
   CURSOR_CORE_TOOL_NAMES,
 } from '../src/tools.js'
+import { createServer } from '../src/server.js'
 
 describe('resolveToolProfile', () => {
   it('defaults to lean, and only the documented values change it', () => {
@@ -32,6 +34,43 @@ describe('resolveToolProfile', () => {
     // exposing 41 tools because someone typoed the value.
     expect(resolveToolProfile({ PLUR_TOOL_PROFILE: 'FULL' } as NodeJS.ProcessEnv)).toBe('lean')
     expect(resolveToolProfile({ PLUR_TOOL_PROFILE: 'nonsense' } as NodeJS.ProcessEnv)).toBe('lean')
+  })
+})
+
+describe('the reported profile is the one actually in force', () => {
+  afterEach(() => _resetActiveToolProfile())
+
+  it('falls back to the environment when no server has been built', () => {
+    _resetActiveToolProfile()
+    expect(activeToolProfile()).toBe(resolveToolProfile())
+  })
+
+  it('follows createServer, not the environment', async () => {
+    // The bug this guards. `createServer` takes the profile as an OPTION, so
+    // the environment is not the authority: building with 'full' while
+    // PLUR_TOOL_PROFILE is unset exposes 41 tools, and an env-derived report
+    // would tell the client it has 12. That is confidently wrong in the one
+    // field the client cannot check for itself.
+    const before = process.env.PLUR_TOOL_PROFILE
+    delete process.env.PLUR_TOOL_PROFILE
+    try {
+      expect(resolveToolProfile()).toBe('lean')          // environment says lean
+      await createServer(undefined, { profile: 'full' }) // server says full
+      expect(activeToolProfile(), 'must follow the server, not the env').toBe('full')
+
+      const surface = describeToolSurface()
+      expect(surface.profile).toBe('full')
+      expect(surface.standalone).toEqual(getToolDefinitions('full').map(t => t.name).sort())
+      expect(surface.admin_actions, 'nothing is hidden under full').toEqual([])
+    } finally {
+      if (before === undefined) delete process.env.PLUR_TOOL_PROFILE
+      else process.env.PLUR_TOOL_PROFILE = before
+    }
+  }, 60_000)
+
+  it('an explicitly passed profile still wins over the recorded one', () => {
+    setActiveToolProfile('full')
+    expect(describeToolSurface('lean').profile).toBe('lean')
   })
 })
 
