@@ -14,6 +14,7 @@ import { reactivate } from './decay.js'
 import { captureEpisode, queryTimeline } from './episodes.js'
 import { agenticSearch } from './agentic-search.js'
 import { embeddingSearch, embeddingSearchWithScores, type SimilarityResult } from './embeddings.js'
+import { applyFeedbackSignal } from './feedback.js'
 import { hybridSearch, hybridSearchWithMeta, applyReranker, rrfMergeEngrams as pgliteRrfMerge, type HybridSearchResult, type RerankOptions } from './hybrid-search.js'
 import { getReranker, resolveRerankerName, isRerankerOff, rerankerStatus, resetRerankerStatus, _resetRerankerCache, checkRerankerFit, type RerankerAdapter, type RerankerRuntimeStatus, type RerankerName, type FitCheckResult } from './rerankers/index.js'
 import { runRerankerSelfEval, loadRerankerEvalCache, saveRerankerEvalResult, isRerankerEvalStale, logRerankerEvalAdvisory, type RerankerEvalResult } from './reranker-eval.js'
@@ -244,6 +245,22 @@ export {
   type MissSignalOpts,
   type MissSignalPayload,
 } from './telemetry-miss-signal.js'
+
+/**
+ * Engine primitives — the retrieval and mutation rules, without the file-backed
+ * single-user machinery that wraps them in `Plur`.
+ *
+ * Exported so a second deployment can run the SAME ranking and the SAME
+ * feedback arithmetic rather than reimplementing them. A reimplementation does
+ * not announce itself when it drifts: it returns a plausible ordering and a
+ * plausible strength, and the two deployments simply stop agreeing.
+ */
+export { rrfMergeEngrams } from './hybrid-search.js'
+export {
+  applyFeedbackSignal, nextCommitment,
+  POSITIVE_STRENGTH_DELTA, NEGATIVE_STRENGTH_DELTA,
+  type FeedbackSignal,
+} from './feedback.js'
 
 export * from './types.js'
 
@@ -3384,29 +3401,7 @@ export class Plur {
       const engram = engrams.find(e => e.id === id)
       if (!engram) return false
 
-      if (!engram.feedback_signals) {
-        engram.feedback_signals = { positive: 0, negative: 0, neutral: 0 }
-      }
-      engram.feedback_signals[signal] += 1
-
-      if (signal === 'positive') {
-        engram.activation.retrieval_strength = Math.min(1.0, engram.activation.retrieval_strength + 0.05)
-        // Idea 6: Positive feedback promotes commitment level
-        const e = engram as any
-        if (e.commitment === 'exploring') e.commitment = 'leaning'
-        else if (e.commitment === 'leaning') e.commitment = 'decided'
-      } else if (signal === 'negative') {
-        engram.activation.retrieval_strength = Math.max(0.0, engram.activation.retrieval_strength - 0.1)
-      }
-      // Re-anchor last_accessed when feedback adjusts stored strength. Read-time
-      // decay (inject.ts decayedStrength) is computed against last_accessed, so
-      // bumping strength without advancing the anchor lets elapsed-time decay
-      // immediately swallow the adjustment — a >4x distortion on stale engrams,
-      // exactly the ones where a fade-vs-keep signal matters most. Mirrors the
-      // strength+anchor pairing in _reactivateResults.
-      if (signal !== 'neutral') {
-        engram.activation.last_accessed = new Date().toISOString().slice(0, 10)
-      }
+      applyFeedbackSignal(engram, signal)
 
       await this._writeEngrams(this.paths.engrams, engrams)
       await this._syncIndex()
@@ -3442,20 +3437,7 @@ export class Plur {
       const storeEngrams = await this._storeAt(storeInfo.path).load()
       const engram = storeEngrams.find(e => e.id === storeInfo.originalId)
       if (engram) {
-        if (!engram.feedback_signals) {
-          engram.feedback_signals = { positive: 0, negative: 0, neutral: 0 }
-        }
-        engram.feedback_signals[signal] += 1
-        if (signal === 'positive') {
-          engram.activation.retrieval_strength = Math.min(1.0, engram.activation.retrieval_strength + 0.05)
-        } else if (signal === 'negative') {
-          engram.activation.retrieval_strength = Math.max(0.0, engram.activation.retrieval_strength - 0.1)
-        }
-        // Re-anchor last_accessed so read-time decay doesn't swallow the bump
-        // (see the primary-path note above).
-        if (signal !== 'neutral') {
-          engram.activation.last_accessed = new Date().toISOString().slice(0, 10)
-        }
+        applyFeedbackSignal(engram, signal)
         await this._writeEngrams(storeInfo.path, storeEngrams)
         await this._syncIndex()
         this._logInjectionOutcome(id, signal)
@@ -4144,21 +4126,7 @@ export class Plur {
         const engram = engrams.find(e => e.id === id)
         if (!engram) return false
 
-        if (!engram.feedback_signals) {
-          engram.feedback_signals = { positive: 0, negative: 0, neutral: 0 }
-        }
-        engram.feedback_signals[signal] += 1
-
-        if (signal === 'positive') {
-          engram.activation.retrieval_strength = Math.min(1.0, engram.activation.retrieval_strength + 0.05)
-        } else if (signal === 'negative') {
-          engram.activation.retrieval_strength = Math.max(0.0, engram.activation.retrieval_strength - 0.1)
-        }
-        // Re-anchor last_accessed so read-time decay doesn't swallow the bump
-        // (see the primary-path note in feedback()).
-        if (signal !== 'neutral') {
-          engram.activation.last_accessed = new Date().toISOString().slice(0, 10)
-        }
+        applyFeedbackSignal(engram, signal)
 
         await packStore.save(engrams)
         return true
