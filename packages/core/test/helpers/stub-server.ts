@@ -164,7 +164,10 @@ export class StubServer {
     // POST /api/v1/engrams — create
     if (method === 'POST' && path === '/api/v1/engrams') {
       this.readBody(req, (body) => {
-        const { statement, scope, domain, type } = body
+        // Scope is a top-level DB column; everything else goes into `data`.
+        // Previously only { statement, domain, type } were extracted, silently
+        // dropping pinned/rationale/commitment/tags (#768).
+        const { scope, ...rest } = body
         const id = `ENG-SRV-${String(++this.idCounter).padStart(3, '0')}`
         const now = new Date().toISOString()
         const engram: StoredEngram = {
@@ -173,7 +176,7 @@ export class StubServer {
           // the wire. A non-string scope falls back the same way a missing one does.
           scope: typeof scope === 'string' ? scope : 'global',
           status: 'active',
-          data: { statement, domain, type },
+          data: rest as Record<string, unknown>,
           created_at: now,
           updated_at: now,
         }

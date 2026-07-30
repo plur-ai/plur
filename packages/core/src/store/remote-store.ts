@@ -274,12 +274,22 @@ export class RemoteStore implements EngramStore {
    * the server's ID.
    */
   async appendAndGetServerId(engram: Engram): Promise<{ id: string }> {
-    const body = JSON.stringify({
-      statement: (engram as any).statement,
-      scope:     engram.scope,
-      domain:    (engram as any).domain,
-      type:      (engram as any).type,
-    })
+    // Include all user-settable fields at creation time. Fields omitted here
+    // are silently dropped server-side and cannot be recovered without a PATCH
+    // — the bug reported in #768 (pinned/rationale/commitment/tags missing).
+    const e = engram as any
+    const payload: Record<string, unknown> = {
+      statement:  e.statement,
+      scope:      engram.scope,
+      domain:     e.domain,
+      type:       e.type,
+    }
+    if (e.pinned     !== undefined) payload.pinned     = e.pinned
+    if (e.rationale  !== undefined) payload.rationale  = e.rationale
+    if (e.commitment !== undefined) payload.commitment = e.commitment
+    if (e.tags       !== undefined) payload.tags       = e.tags
+    if (e.summary    !== undefined) payload.summary    = e.summary
+    const body = JSON.stringify(payload)
     const r = await fetch(`${this.apiBase}/engrams`, {
       method: 'POST',
       headers: this.headers({ 'Content-Type': 'application/json' }),

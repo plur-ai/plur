@@ -68,6 +68,29 @@ describe('RemoteStore against stub server', () => {
     expect((all[0] as any).statement).toBe('hello world')
   })
 
+  it('#768 append roundtrips pinned, rationale, commitment, and tags to the server', async () => {
+    const store = new RemoteStore(baseUrl, TOKEN, 'group:test', { ttlMs: 0 })
+    await store.append({
+      id: 'tmp', scope: 'group:test', status: 'active',
+      statement: 'team policy rule',
+      pinned: true,
+      rationale: 'core operating principle, must always inject',
+      commitment: 'decided',
+      tags: ['policy', 'team'],
+    } as any)
+
+    const stored = server.getEngram('ENG-SRV-001')
+    expect((stored?.data as any)?.pinned).toBe(true)
+    expect((stored?.data as any)?.rationale).toBe('core operating principle, must always inject')
+    expect((stored?.data as any)?.commitment).toBe('decided')
+    expect((stored?.data as any)?.tags).toEqual(['policy', 'team'])
+
+    // Fields survive the load() → reshape() roundtrip too
+    const all = await store.load()
+    expect((all[0] as any).pinned).toBe(true)
+    expect((all[0] as any).rationale).toBe('core operating principle, must always inject')
+  })
+
   it('#404 rejects a malformed server-assigned id on append (does not trust it)', async () => {
     const store = new RemoteStore(baseUrl, TOKEN, 'group:test', { ttlMs: 0 })
     // A buggy/hostile server returns an id carrying a newline + forged log line.
