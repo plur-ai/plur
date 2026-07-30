@@ -6,7 +6,7 @@ import { detectPlurStorage, type PlurPaths } from './storage.js'
 import { IndexedStorage } from './storage-indexed.js'
 import { PGLiteAdapter } from './storage-pglite.js'
 import { loadConfig } from './config.js'
-import { generateEngramId, loadAllPacks, storePrefix, saveEngrams } from './engrams.js'
+import { generateEngramId, loadAllPacks, storePrefix, initFilesystemStore } from './engrams.js'
 import { logger } from './logger.js'
 import { searchEngrams, ftsTokenize, extendCorpusStats } from './fts.js'
 import { selectAndSpread, scoreEngramsPublic, formatWithLayer, assignLayer } from './inject.js'
@@ -5783,12 +5783,12 @@ Generate an improved version of the procedure that prevents this failure. Return
           readonly: options?.readonly ?? false,
         }
     // Filesystem stores: initialize the file now so the path materializes
-    // immediately. atomicWrite (used inside saveEngrams) creates parent dirs.
+    // immediately. atomicWrite (inside initFilesystemStore) creates parent dirs.
     // Fail loudly if the path is unwritable — better than silently landing
     // writes in the primary store when the file never exists (#766).
     if (!isRemote && !fs.existsSync(storePath)) {
       try {
-        saveEngrams(storePath, [])
+        initFilesystemStore(storePath)
       } catch (err) {
         throw new Error(
           `addStore: cannot initialize store at "${storePath}": ${(err as Error).message}`,

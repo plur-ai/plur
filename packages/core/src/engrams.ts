@@ -95,6 +95,13 @@ export function saveEngrams(filePath: string, engrams: Engram[]): void {
   atomicWrite(filePath, content)
 }
 
+/** Initialize an empty filesystem store file (creates parent dirs via atomicWrite).
+ * Use this from index.ts instead of calling saveEngrams directly — keeps
+ * the source-of-truth abstraction intact (#766). */
+export function initFilesystemStore(filePath: string): void {
+  saveEngrams(filePath, [])
+}
+
 export interface LoadedPack {
   manifest: PackManifest
   engrams: Engram[]
