@@ -1,10 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync } from 'fs'
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync, existsSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import yaml from 'js-yaml'
 import { Plur } from '../src/index.js'
-import { storePrefix } from '../src/engrams.js'
+import { storePrefix, loadEngrams } from '../src/engrams.js'
 
 /** Minimal valid engram for store YAML files */
 function makeEngram(overrides: Record<string, unknown> = {}) {
@@ -292,6 +292,19 @@ describe('Multi-store', () => {
     expect(storePrefix('ab')).toBe('ABA')
     // Edge: single char scope
     expect(storePrefix('x')).toBe('XXX')
+  })
+
+  it('addStore creates the filesystem file when path does not exist (#766)', async () => {
+    // Do NOT pre-create the file — addStore should initialize it
+    const newStorePath = join(storeDir, 'subdir', 'new-store.yaml')
+    const plur = createPlur()
+    const result = plur.addStore(newStorePath, 'group:new-scope', { shared: true })
+    expect(result.status).toBe('added')
+    // File must exist now (addStore initializes it)
+    expect(existsSync(newStorePath)).toBe(true)
+    // And it loads as empty
+    const content = loadEngrams(newStorePath)
+    expect(content).toEqual([])
   })
 
   it('cache invalidates after feedback, next recall reflects change', async () => {

@@ -6,7 +6,7 @@ import { detectPlurStorage, type PlurPaths } from './storage.js'
 import { IndexedStorage } from './storage-indexed.js'
 import { PGLiteAdapter } from './storage-pglite.js'
 import { loadConfig } from './config.js'
-import { generateEngramId, loadAllPacks, storePrefix } from './engrams.js'
+import { generateEngramId, loadAllPacks, storePrefix, saveEngrams } from './engrams.js'
 import { logger } from './logger.js'
 import { searchEngrams, ftsTokenize, extendCorpusStats } from './fts.js'
 import { selectAndSpread, scoreEngramsPublic, formatWithLayer, assignLayer } from './inject.js'
@@ -4152,13 +4152,21 @@ export class Plur {
     return all.filter(e => (e as any).pinned === true && e.status === 'active')
   }
 
-  /** Set engram status to 'retired'. Supports primary and store engrams. */
-  async forget(id: string, reason?: string): Promise<void> {
+  /** Set engram status to 'retired'. Supports primary and store engrams.
+   *
+   * options.force=true bypasses reference_count and retires immediately,
+   * regardless of how many sources reference the engram (#766). Use for
+   * explicit user-facing forget (MCP plur_forget), where one call = full
+   * retirement. The default decrement-until-zero behavior is for internal
+   * dedup tracking (two agents learned the same fact; one forgets — the
+   * other's reference should remain). */
+  async forget(id: string, reason?: string, options?: { force?: boolean }): Promise<void> {
     // Check primary first.
     // Reference-counted retirement (#107): decrement reference_count; only
     // physically retire when it reaches 0. forget() called N times on an
     // engram with reference_count=N retires it; called fewer times, the
     // engram stays active with a lower count.
+    // options.force=true overrides this: retires immediately (#766).
     const foundInPrimary = await this._withStoreLock(this.paths.engrams, async () => {
       const engrams = await this._primaryStore.load()
       const engram = engrams.find(e => e.id === id)
@@ -4172,13 +4180,21 @@ export class Plur {
       // don't get prematurely retired.
       const currentCount = (engram as any).reference_count
         ?? Math.max(1, ((engram as any).sources?.length ?? 1))
-      const newCount = Math.max(0, currentCount - 1)
+      const newCount = options?.force ? 0 : Math.max(0, currentCount - 1)
       ;(engram as any).reference_count = newCount
 
       if (newCount === 0) {
         engram.status = 'retired'
         if (reason && !engram.rationale) {
           engram.rationale = `Retired: ${reason}`
+        }
+        // Cancel any pending outbox push — a retired engram must not be
+        // resurrected on the remote by a queued flush (#766). Strip _outbox
+        // now so flushOutbox() never attempts to push this engram.
+        if ((engram as any).structured_data?._outbox) {
+          const sd = { ...((engram as any).structured_data as Record<string, unknown>) }
+          delete sd._outbox
+          ;(engram as any).structured_data = Object.keys(sd).length > 0 ? sd : undefined
         }
       }
 
@@ -4231,7 +4247,7 @@ export class Plur {
         // Same legacy-engram migration as primary path (audit iter-2, Data).
         const currentCount = (engram as any).reference_count
           ?? Math.max(1, ((engram as any).sources?.length ?? 1))
-        const newCount = Math.max(0, currentCount - 1)
+        const newCount = options?.force ? 0 : Math.max(0, currentCount - 1)
         ;(engram as any).reference_count = newCount
 
         if (newCount === 0) {
@@ -4659,7 +4675,13 @@ export class Plur {
    */
   async flushOutbox(): Promise<{ flushed: number; failed: number; expired_warnings: string[] }> {
     const engrams = await this._primaryStore.load()
-    const pending = engrams.filter(e => (e as any).structured_data?._outbox)
+    // #766: skip retired engrams — a retired engram must not be pushed to the
+    // remote and resurrected. The cancel-outbox path in forget() strips _outbox
+    // on retirement; this guard is belt-and-suspenders for any path that retires
+    // without explicitly cancelling (e.g. direct YAML edits, older client versions).
+    const pending = engrams.filter(e =>
+      (e as any).structured_data?._outbox && e.status !== 'retired'
+    )
     if (pending.length === 0) return { flushed: 0, failed: 0, expired_warnings: [] }
 
     let flushed = 0
@@ -5760,6 +5782,20 @@ Generate an improved version of the procedure that prevents this failure. Return
           shared:   options?.shared   ?? false,
           readonly: options?.readonly ?? false,
         }
+    // Filesystem stores: initialize the file now so the path materializes
+    // immediately. atomicWrite (used inside saveEngrams) creates parent dirs.
+    // Fail loudly if the path is unwritable — better than silently landing
+    // writes in the primary store when the file never exists (#766).
+    if (!isRemote && !fs.existsSync(storePath)) {
+      try {
+        saveEngrams(storePath, [])
+      } catch (err) {
+        throw new Error(
+          `addStore: cannot initialize store at "${storePath}": ${(err as Error).message}`,
+        )
+      }
+    }
+
     const stores = scopeConflict
       ? [...(config.stores ?? []).filter(s => s.scope !== scope), newEntry]
       : [...(config.stores ?? []), newEntry]
