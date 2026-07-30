@@ -444,8 +444,8 @@ describe('outbox pattern (issue #26)', () => {
     expect(result.flushed).toBe(0)
     expect(result.failed).toBe(0)
     // fetch was NOT called with POST (no push attempt)
-    const postCalls = fetchMock.mock.calls.filter(
-      ([, init]: [string, RequestInit]) => (init?.method ?? 'GET') === 'POST'
+    const postCalls = (fetchMock.mock.calls as [string, RequestInit][]).filter(
+      ([, init]) => (init?.method ?? 'GET') === 'POST'
     )
     expect(postCalls.length).toBe(0)
   })
@@ -483,8 +483,8 @@ describe('outbox pattern (issue #26)', () => {
 
     expect(result.flushed).toBe(0)
     expect(result.failed).toBe(0)
-    const postCalls = fetchMock.mock.calls.filter(
-      ([, init]: [string, RequestInit]) => (init?.method ?? 'GET') === 'POST'
+    const postCalls = (fetchMock.mock.calls as [string, RequestInit][]).filter(
+      ([, init]) => (init?.method ?? 'GET') === 'POST'
     )
     expect(postCalls.length).toBe(0)
   })
