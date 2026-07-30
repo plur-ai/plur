@@ -278,11 +278,25 @@ export class RemoteStore implements EngramStore {
    * the server's ID.
    */
   async appendAndGetServerId(engram: Engram): Promise<{ id: string }> {
+    // #768: transmit the full engram, not just the core four — pinned,
+    // rationale, tags, commitment, validity windows and supersedes were
+    // silently dropped, so team-scope pins never round-tripped. Optional
+    // fields are included only when set, so older servers that ignore
+    // unknown keys see no behavioral change.
+    const e = engram as any
     const body = JSON.stringify({
-      statement: (engram as any).statement,
+      statement: e.statement,
       scope:     engram.scope,
-      domain:    (engram as any).domain,
-      type:      (engram as any).type,
+      domain:    e.domain,
+      type:      e.type,
+      ...(Array.isArray(e.tags) && e.tags.length > 0 ? { tags: e.tags } : {}),
+      ...(e.pinned !== undefined            ? { pinned: e.pinned }             : {}),
+      ...(e.rationale != null               ? { rationale: e.rationale }       : {}),
+      ...(e.commitment !== undefined        ? { commitment: e.commitment }     : {}),
+      ...(e.valid_from != null              ? { valid_from: e.valid_from }     : {}),
+      ...(e.valid_until != null             ? { valid_until: e.valid_until }   : {}),
+      ...(Array.isArray(e.supersedes) && e.supersedes.length > 0 ? { supersedes: e.supersedes } : {}),
+      ...(e.locked_reason != null           ? { locked_reason: e.locked_reason } : {}),
     })
     const r = await fetch(`${this.apiBase}/engrams`, {
       method: 'POST',

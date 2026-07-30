@@ -68,6 +68,42 @@ describe('RemoteStore against stub server', () => {
     expect((all[0] as any).statement).toBe('hello world')
   })
 
+  it('#768 append transmits optional fields (pinned, rationale, tags, commitment, validity)', async () => {
+    const store = new RemoteStore(baseUrl, TOKEN, 'group:test', { ttlMs: 0 })
+    await store.append({
+      id: 'tmp',
+      scope: 'group:test',
+      status: 'active',
+      statement: 'a pinned team rule',
+      domain: 'team.policy',
+      type: 'behavioral',
+      pinned: true,
+      rationale: 'why this matters — enters the search corpus',
+      tags: ['policy', 'wire-test'],
+      commitment: 'decided',
+      valid_until: '2026-12-31',
+    } as any)
+
+    const sent = server.lastAppendBody
+    expect(sent).not.toBeNull()
+    expect(sent!.pinned).toBe(true)
+    expect(sent!.rationale).toBe('why this matters — enters the search corpus')
+    expect(sent!.tags).toEqual(['policy', 'wire-test'])
+    expect(sent!.commitment).toBe('decided')
+    expect(sent!.valid_until).toBe('2026-12-31')
+  })
+
+  it('#768 append omits optional fields that are not set (no null/undefined noise)', async () => {
+    const store = new RemoteStore(baseUrl, TOKEN, 'group:test', { ttlMs: 0 })
+    await store.append({ id: 'tmp', scope: 'group:test', status: 'active', statement: 'bare minimum' } as any)
+
+    const sent = server.lastAppendBody!
+    expect('pinned' in sent).toBe(false)
+    expect('rationale' in sent).toBe(false)
+    expect('tags' in sent).toBe(false)
+    expect('valid_until' in sent).toBe(false)
+  })
+
   it('#404 rejects a malformed server-assigned id on append (does not trust it)', async () => {
     const store = new RemoteStore(baseUrl, TOKEN, 'group:test', { ttlMs: 0 })
     // A buggy/hostile server returns an id carrying a newline + forged log line.
