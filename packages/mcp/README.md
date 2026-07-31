@@ -52,6 +52,7 @@ Your agent gets these tools automatically:
 |------|-------------|
 | `plur_session_start` | Start a session — injects relevant engrams for your task |
 | `plur_learn` | Store a memory — correction, preference, convention, or decision |
+| `plur_learn_batch` | Store MANY memories in one call — batch dedup + partial-failure tolerant. For orchestrators persisting consolidated findings (local store only) |
 | `plur_recall_hybrid` | **Best default** — BM25 + embeddings merged via RRF. Zero cost. |
 | `plur_recall` | Keyword search (BM25 only, instant) |
 | `plur_inject_hybrid` | Load relevant memories for the current task |

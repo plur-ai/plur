@@ -10,7 +10,7 @@ import { logger } from './logger.js'
 import { withLock } from './sync.js'
 import type { Engram } from './schemas/engram.js'
 import type { SecretMatch } from './secrets.js'
-import type { LearnContext, LearnAsyncContext, LearnAsyncResult, LearnBatchResult, DedupDecision, LlmFunction } from './types.js'
+import type { LearnContext, LearnAsyncContext, LearnAsyncResult, LearnBatchResult, LearnBatchFailure, DedupDecision, LlmFunction } from './types.js'
 
 export interface LearnAsyncDeps {
   /** Content hash dedup against all engrams. Scope-aware: only matches same scope. */
@@ -279,13 +279,15 @@ export async function learnBatch(
   opts: LearnBatchOptions = {},
 ): Promise<LearnBatchResult> {
   const results: LearnAsyncResult[] = []
-  const stats = { added: 0, updated: 0, merged: 0, noops: 0 }
+  const failures: LearnBatchFailure[] = []
+  const stats = { added: 0, updated: 0, merged: 0, noops: 0, failed: 0 }
 
   const maxLlmCalls = opts.maxLlmCalls ?? 50
   let llmCallsUsed = 0
   let capWarned = false
 
-  for (const { statement, context } of statements) {
+  for (let i = 0; i < statements.length; i++) {
+    const { statement, context } = statements[i]
     // Resolve the LLM for this statement (per-statement override wins), then
     // gate it on the remaining budget. The wrapper increments the counter only
     // when learnAsync actually invokes the LLM (Step 4), so cheap short-circuits
@@ -304,15 +306,26 @@ export async function learnBatch(
       }
     }
 
-    const ctx: LearnAsyncContext = { ...context, llm: effectiveLlm }
-    const result = await learnAsync(deps, statement, ctx)
-    results.push(result)
-    const key = result.decision.toLowerCase()
-    if (key === 'noop') stats.noops++
-    else if (key === 'update') stats.updated++
-    else if (key === 'merge') stats.merged++
-    else stats.added++
+    // Partial-failure tolerance (#281): a single bad statement (empty text,
+    // secret-in-statement, malformed validity window) must NOT abort the whole
+    // batch. Catch it, record the failure, and keep processing the rest — the
+    // caller gets both the successful writes and a per-item failure list.
+    try {
+      const ctx: LearnAsyncContext = { ...context, llm: effectiveLlm }
+      const result = await learnAsync(deps, statement, ctx)
+      results.push(result)
+      const key = result.decision.toLowerCase()
+      if (key === 'noop') stats.noops++
+      else if (key === 'update') stats.updated++
+      else if (key === 'merge') stats.merged++
+      else stats.added++
+    } catch (err) {
+      stats.failed++
+      const message = err instanceof Error ? err.message : String(err)
+      failures.push({ index: i, statement, error: message })
+      logger.warning(`learnBatch: statement ${i} failed — ${message}`)
+    }
   }
 
-  return { results, stats }
+  return { results, stats, failures }
 }

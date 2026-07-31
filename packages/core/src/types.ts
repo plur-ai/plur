@@ -72,9 +72,22 @@ export interface LearnAsyncResult {
   tensions?: string[]
 }
 
+/** One statement that threw during a batch — recorded, not fatal (#281). */
+export interface LearnBatchFailure {
+  /** Position of the offending statement in the input array. */
+  index: number
+  /** The statement text that failed (may be empty/invalid — that is often why). */
+  statement: string
+  /** The error message from the failed write. */
+  error: string
+}
+
 export interface LearnBatchResult {
+  /** One entry per statement that was written or deduplicated (successes only). */
   results: LearnAsyncResult[]
-  stats: { added: number; updated: number; merged: number; noops: number }
+  stats: { added: number; updated: number; merged: number; noops: number; failed: number }
+  /** Statements that threw. Empty when every statement succeeded. Partial-failure tolerant (#281). */
+  failures: LearnBatchFailure[]
 }
 
 /**

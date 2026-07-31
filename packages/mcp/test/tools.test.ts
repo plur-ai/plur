@@ -62,6 +62,63 @@ describe('MCP tools', () => {
     expect(result.statement).toBe('Test learning')
   })
 
+  // plur-ai/plur#281 — batch persistence via one MCP call.
+  describe('plur_learn_batch (#281)', () => {
+    it('is registered as a tool', () => {
+      expect(tools.map(t => t.name)).toContain('plur_learn_batch')
+    })
+
+    it('writes many engrams and returns an id per success', async () => {
+      const result = await callTool('plur_learn_batch', {
+        engrams: [
+          { statement: 'Batch alpha', scope: 'global' },
+          { statement: 'Batch beta', scope: 'global' },
+          { statement: 'Batch gamma', scope: 'global' },
+        ],
+      }) as any
+      expect(result.ids).toHaveLength(3)
+      result.ids.forEach((id: string) => expect(id).toMatch(/^ENG-/))
+      expect(result.stats.added).toBe(3)
+      expect(result.count).toBe(3)
+      // The writes are real — recall finds one of them.
+      const recalled = await callTool('plur_recall', { query: 'Batch beta', scope: 'global' }) as any
+      expect(recalled.results.some((e: any) => e.statement === 'Batch beta')).toBe(true)
+    })
+
+    it('deduplicates an identical statement within the same batch', async () => {
+      const result = await callTool('plur_learn_batch', {
+        engrams: [
+          { statement: 'Duplicated within batch', scope: 'global' },
+          { statement: 'Duplicated within batch', scope: 'global' },
+        ],
+      }) as any
+      expect(result.stats.added).toBe(1)
+      expect(result.stats.noops).toBe(1)
+    })
+
+    it('is partial-failure tolerant — a bad statement does not abort the batch', async () => {
+      const result = await callTool('plur_learn_batch', {
+        engrams: [
+          { statement: 'Survivor one', scope: 'global' },
+          { statement: '', scope: 'global' }, // empty → per-item failure
+          { statement: 'Survivor two', scope: 'global' },
+        ],
+      }) as any
+      expect(result.stats.added).toBe(2)
+      expect(result.stats.failed).toBe(1)
+      expect(result.ids).toHaveLength(2)
+      expect(result.failures).toHaveLength(1)
+      expect(result.failures[0].index).toBe(1)
+    })
+
+    it('rejects a missing or empty engrams array', async () => {
+      const empty = await callTool('plur_learn_batch', { engrams: [] }) as any
+      expect(empty.error).toMatch(/non-empty array/)
+      const missing = await callTool('plur_learn_batch', {}) as any
+      expect(missing.error).toMatch(/non-empty array/)
+    })
+  })
+
   // #347 — temporal validity params on the write path.
   describe('plur_learn temporal validity (#347)', () => {
     it('accepts explicit valid_until and echoes it back', async () => {

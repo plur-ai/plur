@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Feature: `plur_learn_batch` — persist many engrams in one MCP call (#281)
+
+New MCP tool `plur_learn_batch` exposes the existing core `learnBatch` over the Model Context Protocol. Built for orchestration: when a run fans out to several subagents and the parent session needs to record their consolidated findings, one `plur_learn_batch` replaces N `plur_learn` round-trips.
+
+- **Same dedup + policy as single learn.** Each item runs the full `learnAsync` path — exact-hash NOOP, semantic similarity, and LLM ADD/UPDATE/MERGE/NOOP decisions — plus the sensitive-content scope guard. Dedup applies *across* the batch too: a statement written earlier in the same call is visible to a later identical statement (NOOP, not a second ADD).
+- **Partial-failure tolerant.** `learnBatch` no longer aborts on the first bad statement. A statement that throws (empty text, secret-in-statement, malformed validity window) is caught, recorded in a new `failures[]` array (`{ index, statement, error }`), and counted in `stats.failed`; the rest of the batch still writes. `LearnBatchResult` gains `stats.failed` and `failures` (additive — existing fields unchanged).
+- **Returns** `ids[]`, a per-item `results[]` (with `decision` + `existing_id` on dedup), `stats`, and `failures[]` when any item failed.
+- **LLM dedup cost is bounded** by `max_llm_calls` (default 50), inherited from `learnBatch`.
+- **Limitation:** unlike `plur_learn`, batch writes do not route to remote/team stores (no `learnRouted`, no outbox, no server-assigned ids) — they land in the local store. For team-scoped knowledge that must reach a shared store, call `plur_learn` per engram. Remote-scope batching is a follow-up.
+
 ## 0.10.0 (2026-06-25)
 
 Security-hardening release, independently audited.
