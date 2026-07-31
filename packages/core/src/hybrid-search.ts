@@ -186,7 +186,7 @@ export async function hybridSearchWithMeta(
   // recall always returns something.
   const reranked = await applyReranker(ranked.map(s => s.engram), query, rerank)
   return {
-    engrams: reranked.engrams,
+    engrams: reranked.engrams.slice(0, limit),
     mode,
     embedderError,
     topScore,
