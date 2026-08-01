@@ -17,7 +17,11 @@
  * report honest — a description that drifts from what is actually exposed is
  * worse than none, because it is the thing an agent would trust.
  */
-import { describe, it, expect, afterEach } from 'vitest'
+import { describe, it, expect, vi, afterEach } from 'vitest'
+import { mkdtempSync, rmSync } from 'fs'
+import { join } from 'path'
+import { tmpdir } from 'os'
+import { Plur, settleVersionChecks, clearVersionCache } from '@plur-ai/core'
 import {
   describeToolSurface, resolveToolProfile, getToolDefinitions,
   activeToolProfile, setActiveToolProfile, _resetActiveToolProfile,
@@ -51,11 +55,20 @@ describe('the reported profile is the one actually in force', () => {
     // PLUR_TOOL_PROFILE is unset exposes 41 tools, and an env-derived report
     // would tell the client it has 12. That is confidently wrong in the one
     // field the client cannot check for itself.
+    // Hermetic per the server.test.ts pattern: a temp-dir Plur so the server
+    // never opens the real ~/.plur, and a stubbed fetch so `createServer`'s
+    // fire-and-forget npm version check never leaves the process — drained and
+    // its cache cleared before any assertion runs.
     const before = process.env.PLUR_TOOL_PROFILE
+    const realFetch = globalThis.fetch
+    const dir = mkdtempSync(join(tmpdir(), 'plur-mcp-tool-surface-'))
     delete process.env.PLUR_TOOL_PROFILE
+    globalThis.fetch = vi.fn().mockResolvedValue({ ok: false, json: () => Promise.resolve({}) }) as any
     try {
-      expect(resolveToolProfile()).toBe('lean')          // environment says lean
-      await createServer(undefined, { profile: 'full' }) // server says full
+      expect(resolveToolProfile()).toBe('lean')                       // environment says lean
+      await createServer(new Plur({ path: dir }), { profile: 'full' }) // server says full
+      await settleVersionChecks()
+      clearVersionCache()
       expect(activeToolProfile(), 'must follow the server, not the env').toBe('full')
 
       const surface = describeToolSurface()
@@ -63,6 +76,8 @@ describe('the reported profile is the one actually in force', () => {
       expect(surface.standalone).toEqual(getToolDefinitions('full').map(t => t.name).sort())
       expect(surface.admin_actions, 'nothing is hidden under full').toEqual([])
     } finally {
+      globalThis.fetch = realFetch
+      rmSync(dir, { recursive: true })
       if (before === undefined) delete process.env.PLUR_TOOL_PROFILE
       else process.env.PLUR_TOOL_PROFILE = before
     }
