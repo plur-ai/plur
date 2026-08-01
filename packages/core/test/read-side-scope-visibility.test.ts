@@ -188,6 +188,114 @@ describe('#383 isScopeWithin predicate', () => {
   })
 })
 
+// --- #775: mounted-scope visibility grants ---
+//
+// A project scope filter (e.g. `project:plur/plur-ai/enterprise` from
+// .plur.yaml) used to zero every `group:*` engram — team engrams from mounted
+// enterprise stores never survived injection or recall. Scopes explicitly
+// mounted in `config.yaml` `stores:` are VISIBILITY GRANTS: engrams in those
+// scopes (segment-aware) pass a project-scope visibility filter exactly like
+// the personal family. Strictly visibility-only — the `options.scopes`
+// authorization allow-list and the INJECT_GLOBAL_IS_TARGETED branch are
+// untouched (both pinned below and in inject-scopes.test.ts).
+//
+// Both read paths: indexed (SQLite `visibilityGrants` pushdown) and
+// non-indexed (makeVisibilityPredicate in the YAML arm of _filterEngrams).
+for (const indexed of [true, false]) {
+  const label = indexed ? 'indexed' : 'non-indexed'
+  const block = indexed ? describe.skipIf(!hasSqlite) : describe
+  block(`#775 mounted-scope visibility grants (${label} path)`, () => {
+    let dir: string
+    let plur: Plur
+
+    const storeEngram = (id: string, statement: string, scope: string) => ({
+      id,
+      statement,
+      type: 'behavioral',
+      scope,
+      status: 'active',
+      version: 2,
+      domain: 'ops.deploy',
+      tags: ['deploy'],
+      activation: {
+        retrieval_strength: 0.9,
+        storage_strength: 1.0,
+        frequency: 0,
+        last_accessed: '2026-07-28',
+      },
+    })
+
+    beforeEach(() => {
+      dir = mkdtempSync(join(tmpdir(), 'plur-775-'))
+      const teamPath = join(dir, 'team.yaml')
+      // The mounted team store — mounting it IS the visibility grant.
+      writeFileSync(teamPath, yaml.dump({
+        engrams: [
+          storeEngram('ENG-2026-0730-001', STMT('teamstore'), 'group:acme/eng'),
+          storeEngram('ENG-2026-0730-002', STMT('teamsub'), 'group:acme/eng/sub'),
+        ],
+      }, { noRefs: true }))
+      writeFileSync(join(dir, 'config.yaml'), yaml.dump({
+        index: indexed,
+        stores: [{ path: teamPath, scope: 'group:acme/eng' }],
+      }, { noRefs: true }))
+      plur = new Plur({ path: dir })
+    })
+    afterEach(() => { rmSync(dir, { recursive: true, force: true }) })
+
+    // Store engrams get namespaced ids on load, so match by statement.
+    async function recallSeesStmt(scope: string, marker: string): Promise<boolean> {
+      return (await plur.recall(QUERY, { scope })).some(e => e.statement.includes(marker))
+    }
+    async function injectSeesStmt(scope: string, marker: string): Promise<boolean> {
+      const res = await plur.inject(QUERY, { scope })
+      return `${res.directives}\n${res.constraints}\n${res.consider}`.includes(marker)
+    }
+
+    it('a mounted group: scope IS visible under project-scope recall AND inject', async () => {
+      expect(await recallSeesStmt(PROJECT, 'teamstore')).toBe(true)
+      expect(await injectSeesStmt(PROJECT, 'teamstore')).toBe(true)
+    })
+
+    it('a true descendant of the granted scope passes too (group:acme/eng/sub)', async () => {
+      expect(await recallSeesStmt(PROJECT, 'teamsub')).toBe(true)
+      expect(await injectSeesStmt(PROJECT, 'teamsub')).toBe(true)
+    })
+
+    it('sibling-prefix: the grant does NOT admit group:acme/eng-private (#383)', async () => {
+      // The sibling lives in the PRIMARY store — the grant is a scope-level
+      // decision, and a scope that merely shares a string prefix with the
+      // granted one must stay invisible.
+      await plur.learn(STMT('grpprivate'), { scope: 'group:acme/eng-private' })
+      expect(await recallSeesStmt(PROJECT, 'grpprivate')).toBe(false)
+      expect(await injectSeesStmt(PROJECT, 'grpprivate')).toBe(false)
+    })
+
+    it('an UNgranted shared scope is still excluded under a project-scope filter', async () => {
+      await plur.learn(STMT('grpother'), { scope: 'group:other/team' })
+      expect(await recallSeesStmt(PROJECT, 'grpother')).toBe(false)
+      expect(await injectSeesStmt(PROJECT, 'grpother')).toBe(false)
+    })
+
+    it('a granted-scope engram in the PRIMARY store passes too — the grant is per scope, not per source', async () => {
+      await plur.learn(STMT('primgrp'), { scope: 'group:acme/eng' })
+      expect(await recallSeesStmt(PROJECT, 'primgrp')).toBe(true)
+      expect(await injectSeesStmt(PROJECT, 'primgrp')).toBe(true)
+    })
+
+    it('D1 guard: explicit scope=global INJECT stays targeted — grants do NOT leak into it', async () => {
+      // INJECT_GLOBAL_IS_TARGETED is untouched by #775: a targeted global
+      // inject returns ONLY global-scoped engrams, mounted stores or not.
+      expect(await injectSeesStmt('global', 'teamstore')).toBe(false)
+    })
+
+    it('list({ scope }) sees the mounted scope as well (the _filterEngrams path)', async () => {
+      const stmts = (await plur.list({ scope: PROJECT })).map(e => e.statement)
+      expect(stmts.some(s => s.includes('teamstore'))).toBe(true)
+    })
+  })
+}
+
 // End-to-end isolation across BOTH read paths (indexed SQL + non-indexed filter)
 // and BOTH directions, asserting true descendants stay visible. (#383)
 for (const indexed of [true, false]) {

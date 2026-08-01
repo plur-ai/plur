@@ -1351,15 +1351,24 @@ export function buildFilterClause(filter: StorageFilter): { where: string; param
     params.push(filter.scopes)
   }
   if (filter.scope) {
-    conditions.push(
+    // Mounted-scope visibility grants (#775): one segment-aware containment
+    // triple per granted scope, appended to the visibility OR — identical to
+    // the PGLite copy above and the SQLite/in-memory arms; keep all four in
+    // lockstep. VISIBILITY ONLY: the `scopes` authorization clause is never
+    // widened by grants.
+    let clause =
       `((NOT (scope LIKE 'group:%' OR scope LIKE 'project:%' OR scope LIKE 'space:%' OR scope LIKE 'team:%' OR scope LIKE 'org:%' OR scope = 'public' OR scope LIKE 'public:%' OR scope LIKE 'public/%'))`
-      + ` OR scope = $${i++} OR scope LIKE $${i++} || ':%' ESCAPE '\\' OR scope LIKE $${i++} || '/%' ESCAPE '\\')`,
-    )
-      // The caller's scope is escaped: an unescaped `%` here matches across
-      // unrelated namespaces, defeating the segment-aware containment guard
-      // this clause exists to implement (#383). Verified: `{ scope: '%' }`
-      // returned engrams from two unrelated groups.
+      + ` OR scope = $${i++} OR scope LIKE $${i++} || ':%' ESCAPE '\\' OR scope LIKE $${i++} || '/%' ESCAPE '\\'`
+    // The caller's scope is escaped: an unescaped `%` here matches across
+    // unrelated namespaces, defeating the segment-aware containment guard
+    // this clause exists to implement (#383). Verified: `{ scope: '%' }`
+    // returned engrams from two unrelated groups.
     params.push(filter.scope, escapeLikePattern(filter.scope), escapeLikePattern(filter.scope))
+    for (const g of filter.visibilityGrants ?? []) {
+      clause += ` OR scope = $${i++} OR scope LIKE $${i++} || ':%' ESCAPE '\\' OR scope LIKE $${i++} || '/%' ESCAPE '\\'`
+      params.push(g, escapeLikePattern(g), escapeLikePattern(g))
+    }
+    conditions.push(clause + ')')
   }
   if (filter.domain) {
     conditions.push(`domain LIKE $${i++} || '%' ESCAPE '\\'`)

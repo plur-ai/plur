@@ -19,7 +19,7 @@
  * allowed to see.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
-import { mkdtempSync, rmSync } from 'fs'
+import { mkdtempSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { Plur } from '../src/index.js'
@@ -108,5 +108,71 @@ describe.skipIf(!PG_URL)('Plur.recall() through an injected Postgres adapter (#7
   it('composes scope with the allow-list — both narrow, neither widens', async () => {
     const hits = await plur.recall('deploy', { limit: 10, scope: 'project:alpha', scopes: ['project:beta'] })
     expect(hits, 'AND-ing two disjoint filters returned rows').toEqual([])
+  }, TIMEOUT)
+})
+
+/**
+ * Mounted-scope visibility grants through the Postgres pushdown (#775).
+ *
+ * The grant flows from `config.yaml` `stores:` into `pushdownFilter.
+ * visibilityGrants` and lands in `buildFilterClause` as extra segment-aware
+ * containment triples on the visibility clause. This is the fourth SQL arm's
+ * end-to-end proof — the mounted `group:` engram survives a project-scope
+ * recall on the Postgres tier, and the authorization allow-list is untouched.
+ */
+describe.skipIf(!PG_URL)('mounted-scope visibility grants through the Postgres pushdown (#775)', () => {
+  const GRANT_SCHEMA = 'plur_recall_grants_775'
+  let adapter: PostgresAdapter
+  let plur: Plur
+  let dir: string
+
+  beforeAll(async () => {
+    dir = mkdtempSync(join(tmpdir(), 'plur-recall-grants-'))
+    const teamPath = join(dir, 'team.yaml')
+    // The mount IS the grant — the granted engrams themselves live in the
+    // Postgres primary store, so the SQL clause is what admits them.
+    writeFileSync(teamPath, 'engrams: []\n')
+    writeFileSync(join(dir, 'config.yaml'), `stores:\n  - path: ${teamPath}\n    scope: "group:acme/eng"\n`)
+    adapter = new PostgresAdapter({ connectionString: PG_URL!, schema: GRANT_SCHEMA, vectorIndex: 'exact' })
+    await adapter.save([])
+    plur = new Plur({ path: dir, store: adapter })
+    await plur.ready()
+
+    await plur.learn('deploy the billing service with terraform', { scope: 'project:alpha' })
+    await plur.learn('deploy the billing service via the team pipeline', { scope: 'group:acme/eng' })
+    await plur.learn('deploy the billing service via the sub pipeline', { scope: 'group:acme/eng/sub' })
+    await plur.learn('deploy the billing service via the private pipeline', { scope: 'group:acme/eng-private' })
+    await plur.learn('deploy the billing service via the other pipeline', { scope: 'group:other/team' })
+  }, TIMEOUT)
+
+  afterAll(async () => {
+    await adapter?.dropSchema().catch(() => { /* best effort */ })
+    await adapter?.close().catch(() => { /* best effort */ })
+    if (dir) rmSync(dir, { recursive: true, force: true })
+  }, TIMEOUT)
+
+  it('the granted scope and its true descendant survive a project-scope recall', async () => {
+    const stmts = (await plur.recall('deploy billing', { limit: 10, scope: 'project:alpha' }))
+      .map(e => e.statement)
+    expect(stmts).toContain('deploy the billing service with terraform')
+    expect(stmts, 'the mounted group scope was zeroed').toContain('deploy the billing service via the team pipeline')
+    expect(stmts).toContain('deploy the billing service via the sub pipeline')
+  }, TIMEOUT)
+
+  it('the sibling string-prefix and ungranted scopes stay excluded', async () => {
+    const stmts = (await plur.recall('deploy billing', { limit: 10, scope: 'project:alpha' }))
+      .map(e => e.statement)
+    expect(stmts, 'sibling-prefix leak (#383)').not.toContain('deploy the billing service via the private pipeline')
+    expect(stmts, 'ungranted scope leak').not.toContain('deploy the billing service via the other pipeline')
+  }, TIMEOUT)
+
+  it('ADVERSARIAL: the grant does not widen the scopes allow-list', async () => {
+    const hits = await plur.recall('deploy billing', {
+      limit: 10,
+      scope: 'project:alpha',
+      scopes: ['project:alpha'],
+    })
+    expect(hits.map(e => e.statement)).toEqual(['deploy the billing service with terraform'])
+    expect(await plur.recall('deploy billing', { limit: 10, scopes: [] })).toEqual([])
   }, TIMEOUT)
 })

@@ -52,7 +52,7 @@ import type { AsyncPrimaryStore } from './store/primary-store.js'
 import { requiresIndexSync, asDerivedIndex } from './storage-adapter.js'
 import type { StorageAdapter } from './storage-adapter.js'
 import { resolveBackendTier, type BackendSelection } from './backend-selection.js'
-import { isSharedScope, isPersonalScope, isScopeWithin, scopeAllowFilter } from './scope-util.js'
+import { isSharedScope, isScopeWithin, scopeAllowFilter, makeVisibilityPredicate } from './scope-util.js'
 import type { Engram } from './schemas/engram.js'
 import type { Episode } from './schemas/episode.js'
 import type { PackManifest } from './schemas/pack.js'
@@ -107,7 +107,7 @@ export { rankScopes, SCOPE_MATCH_THRESHOLD, WEIGHT_TAG, SUGGEST_DISPLAY_MIN_CONF
 // importing it from here would form index → inject → index. They are imported
 // above for internal use and re-exported here so the public `@plur-ai/core` API
 // (`isSharedScope`, `isPersonalScope`, `SHARED_SCOPE_PREFIXES`) is unchanged.
-export { isSharedScope, isPersonalScope, SHARED_SCOPE_PREFIXES, scopeAllowFilter } from './scope-util.js'
+export { isSharedScope, isPersonalScope, SHARED_SCOPE_PREFIXES, scopeAllowFilter, makeVisibilityPredicate } from './scope-util.js'
 export { detectPlurStorage, type PlurPaths } from './storage.js'
 export { IndexedStorage } from './storage-indexed.js'
 export { PGLiteAdapter, type PGLiteAdapterOptions, type VectorPrecision } from './storage-pglite.js'
@@ -2423,6 +2423,10 @@ export class Plur {
         status: 'active' as const,
         scope: options?.scope,
         scopes: options?.scopes,
+        // Mounted-scope visibility grants (#775) go INTO the pushdown so
+        // `limit` counts granted team rows too. Visibility-only — widens the
+        // `scope` clause, never the `scopes` authorization clause.
+        visibilityGrants: this._grantedScopes(),
         domain: options?.domain,
       }
       // Widen and retry rather than trust a fixed multiplier.
@@ -2544,7 +2548,7 @@ export class Plur {
     const fetchLimit = Math.max(intentFetch, rerankFetch)
     let results: Engram[]
     if (this.pgliteAdapter) {
-      results = await this._pgliteSemanticRecall(query, fetchLimit, filtered, options?.scopes)
+      results = await this._pgliteSemanticRecall(query, fetchLimit, filtered, options)
     } else {
       results = await embeddingSearch(filtered, query, fetchLimit, this.paths.root)
     }
@@ -2588,7 +2592,7 @@ export class Plur {
     let result: HybridSearchResult
     if (intent) {
       result = this.pgliteAdapter
-        ? await this._pgliteHybridRecall(query, intentLimit, filtered, undefined, options?.scopes)
+        ? await this._pgliteHybridRecall(query, intentLimit, filtered, undefined, options)
         : await hybridSearchWithMeta(filtered, query, intentLimit, this.paths.root)
       let routed = applyIntentRouting(result.engrams, intent.profile)
       let rerankedCount = result.reranked
@@ -2599,7 +2603,7 @@ export class Plur {
       }
       result = { ...result, engrams: routed.slice(0, limit), reranked: rerankedCount }
     } else if (this.pgliteAdapter) {
-      result = await this._pgliteHybridRecall(query, limit, filtered, rerank, options?.scopes)
+      result = await this._pgliteHybridRecall(query, limit, filtered, rerank, options)
     } else {
       result = await hybridSearchWithMeta(filtered, query, limit, this.paths.root, rerank)
     }
@@ -2748,7 +2752,7 @@ export class Plur {
     limit: number,
     filtered: Engram[],
     rerank?: RerankOptions,
-    scopes?: string[],
+    restrict?: Pick<RecallOptions, 'scope' | 'scopes'>,
   ): Promise<HybridSearchResult> {
     if (!this.pgliteAdapter) {
       return hybridSearchWithMeta(filtered, query, limit, this.paths.root, rerank)
@@ -2776,7 +2780,17 @@ export class Plur {
     // with relevant permitted rows sitting just below the cut. The intersection
     // kept it CORRECT — nothing out of scope was ever returned — but it made it
     // INCOMPLETE, which is the harder failure to notice.
-      const hits = await this.pgliteAdapter.searchVector(queryVec, embLimit, { scopes })
+    //
+    // `scope` + mounted-scope visibilityGrants (#775) go in for the same
+    // reason: `filtered` already honours them, so a k-NN restricted to
+    // `scopes` alone spends `limit` on rows the intersection below is about
+    // to discard — and a granted team engram never surfaces via the vector
+    // leg. Same filter shape searchBM25/loadFiltered get.
+      const hits = await this.pgliteAdapter.searchVector(queryVec, embLimit, {
+        scopes: restrict?.scopes,
+        scope: restrict?.scope,
+        visibilityGrants: this._grantedScopes(),
+      })
       const allowed = new Map<string, Engram>(filtered.map(e => [e.id, e]))
       pgHits = hits.map(h => allowed.get(h.engram.id)).filter((e): e is Engram => !!e)
     } catch (err) {
@@ -2803,7 +2817,12 @@ export class Plur {
    * intersected with the YAML-rooted `filtered` set. Falls back to the JSON
    * cache on cold-start / embedder-unavailable / PGLite error.
    */
-  private async _pgliteSemanticRecall(query: string, limit: number, filtered: Engram[], scopes?: string[]): Promise<Engram[]> {
+  private async _pgliteSemanticRecall(
+    query: string,
+    limit: number,
+    filtered: Engram[],
+    restrict?: Pick<RecallOptions, 'scope' | 'scopes'>,
+  ): Promise<Engram[]> {
     if (!this.pgliteAdapter) return []
     const { embed } = await import('./embeddings.js')
     const queryVec = await embed(query, 'query')
@@ -2821,7 +2840,17 @@ export class Plur {
     // with relevant permitted rows sitting just below the cut. The intersection
     // kept it CORRECT — nothing out of scope was ever returned — but it made it
     // INCOMPLETE, which is the harder failure to notice.
-      const hits = await this.pgliteAdapter.searchVector(queryVec, Math.max(limit * 3, 50), { scopes })
+    //
+    // `scope` + mounted-scope visibilityGrants (#775) go in for the same
+    // reason: `filtered` already honours them, so a k-NN restricted to
+    // `scopes` alone spends `limit` on rows the intersection below is about
+    // to discard — and a granted team engram never surfaces via the vector
+    // leg. Same filter shape searchBM25/loadFiltered get.
+      const hits = await this.pgliteAdapter.searchVector(queryVec, Math.max(limit * 3, 50), {
+        scopes: restrict?.scopes,
+        scope: restrict?.scope,
+        visibilityGrants: this._grantedScopes(),
+      })
       if (hits.length === 0) {
         return embeddingSearch(filtered, query, limit, this.paths.root)
       }
@@ -2954,6 +2983,22 @@ export class Plur {
   }
 
   /**
+   * Mounted-scope visibility grants (#775): the deduplicated scopes of every
+   * `config.yaml` `stores:` entry — path AND url entries alike. Mounting a
+   * store with your own token is the consent act, so its scope passes a
+   * project-scope VISIBILITY filter exactly like the personal family (see
+   * `makeVisibilityPredicate` in scope-util.ts). Always on, no config knob.
+   *
+   * STRICTLY visibility-only: these are threaded into the `scope` visibility
+   * filter (in-memory predicate + `StorageFilter.visibilityGrants` SQL
+   * pushdown) and MUST NEVER be folded into `options.scopes` — that list is
+   * the authorization decision and grants never widen it.
+   */
+  private _grantedScopes(): string[] {
+    return [...new Set((this.config.stores ?? []).map(s => s.scope))]
+  }
+
+  /**
    * Engrams a primary-store pushdown cannot see: secondary (team/project)
    * stores from `config.stores`, and installed packs.
    *
@@ -2978,8 +3023,10 @@ export class Plur {
     }
     if (options?.domain) filtered = filtered.filter(e => e.domain?.startsWith(options.domain!))
     if (options?.scope) {
-      const scope = options.scope
-      filtered = filtered.filter(e => isScopeWithin(e.scope, scope) || isPersonalScope(e.scope))
+      // Visibility filter (#353/#775): scope containment, personal-family
+      // pass-through, and mounted-scope grants — the ONE shared predicate.
+      const visible = makeVisibilityPredicate(options.scope, this._grantedScopes())
+      filtered = filtered.filter(e => visible(e.scope))
     }
     return filtered
   }
@@ -2991,6 +3038,10 @@ export class Plur {
         status: 'active',
         scope: options?.scope,
         scopes: options?.scopes,
+        // Mounted-scope visibility grants (#775) — widen the `scope`
+        // VISIBILITY clause only; a no-op without `scope`, and never touches
+        // the `scopes` authorization pushdown above.
+        visibilityGrants: this._grantedScopes(),
         domain: options?.domain,
       })
     } else {
@@ -3014,18 +3065,18 @@ export class Plur {
         engrams = engrams.filter(e => e.domain?.startsWith(options.domain!))
       }
       if (options?.scope) {
-        const scope = options.scope
-        // Read-side scope filter (#353). Keep the `startsWith` arm so an explicit
-        // personal scope like `user:alice` still catches sub-scopes (e.g.
-        // `user:alice:notes`). `isPersonalScope` passes ALL personal-family
-        // scopes (local, global, user:*, agent:*), not just global — so a
-        // project-scope recall sees personal engrams. D1-ASYMMETRY: an explicit
-        // `global` recall therefore includes all personal-family engrams — wider
-        // than `global` inject, which is targeted to global-only (see inject.ts
-        // INJECT_GLOBAL_IS_TARGETED).
-        engrams = engrams.filter(e =>
-          isScopeWithin(e.scope, scope) || isPersonalScope(e.scope)
-        )
+        // Read-side scope filter (#353/#775) — the ONE shared visibility
+        // predicate. Segment-aware containment keeps the `startsWith` arm so
+        // an explicit personal scope like `user:alice` still catches
+        // sub-scopes (e.g. `user:alice:notes`). `isPersonalScope` passes ALL
+        // personal-family scopes (local, global, user:*, agent:*), not just
+        // global — so a project-scope recall sees personal engrams. Mounted
+        // store scopes (#775) pass the same way. D1-ASYMMETRY: an explicit
+        // `global` recall therefore includes all personal-family engrams —
+        // wider than `global` inject, which is targeted to global-only (see
+        // inject.ts INJECT_GLOBAL_IS_TARGETED).
+        const visible = makeVisibilityPredicate(options.scope, this._grantedScopes())
+        engrams = engrams.filter(e => visible(e.scope))
       }
     }
     // Temporal validity: exclude expired or not-yet-valid engrams.
@@ -3306,6 +3357,11 @@ export class Plur {
       {
         prompt: task,
         scope: options?.scope,
+        // Mounted-scope visibility grants (#775): scopes from config.stores
+        // pass the `scope` VISIBILITY filter inside scoreEngram like the
+        // personal family. Deliberately independent of the `permitted`
+        // authorization filter above — grants never widen `options.scopes`.
+        grantedScopes: this._grantedScopes(),
         maxTokens: budget,
       },
       engrams,

@@ -107,6 +107,26 @@ export interface StorageFilter extends ScopeRestriction {
    * Distinct from `scopes` — see {@link ScopeRestriction}.
    */
   scope?: string
+  /**
+   * Mounted-scope VISIBILITY grants (#775) — scopes explicitly mounted in
+   * `config.yaml` `stores:` (path and url entries alike). Each grant passes
+   * the `scope` visibility filter above exactly like the personal family:
+   * segment-aware containment (`scope = g OR scope LIKE g||':%' OR scope
+   * LIKE g||'/%'`), never a sibling string-prefix (#383).
+   *
+   * NOT AUTHORIZATION — read this twice before touching it. `scopes` (see
+   * {@link ScopeRestriction}) is the authorization allow-list: exact
+   * membership, AND-ed with everything, an empty list means NOTHING.
+   * `visibilityGrants` is the opposite kind of field: it only ever widens
+   * the `scope` VISIBILITY clause, is meaningless without `scope`, and MUST
+   * NEVER be consulted by (or OR-ed into) the `scopes` clause — an engram
+   * outside the `scopes` allow-list stays invisible no matter how many
+   * grants cover it. Confusing the two is a privilege escalation, not a
+   * styling choice.
+   *
+   * Absent and `[]` are equivalent: no extra scopes pass (prior behavior).
+   */
+  visibilityGrants?: readonly string[]
   domain?: string
 }
 

@@ -74,6 +74,48 @@ export function isScopeWithin(scope: string, queryScope: string): boolean {
 }
 
 /**
+ * Read-side VISIBILITY predicate under a scope filter (#775) — the ONE
+ * in-memory implementation every visibility call site uses (inject scoring,
+ * the YAML arm of `_filterEngrams`, `_engramsOutsidePrimaryStore`). The SQL
+ * arms (storage-indexed / storage-pglite / storage-postgres) inline the
+ * equivalent clause and must stay in lockstep with this.
+ *
+ * An engram passes a `scopeFilter` (e.g. `project:plur/plur-ai/enterprise`
+ * from .plur.yaml) when ANY of:
+ *   1. it falls within the filter itself (segment-aware, #383);
+ *   2. it is personal-family (`local`, `global`, `user:*`, `agent:*`, …) —
+ *      the #353 pass-through;
+ *   3. it falls within a GRANTED scope — a scope explicitly mounted in
+ *      `~/.plur/config.yaml` `stores:` (path AND url entries alike). Mounting
+ *      a store with your own token is the consent act, so its scope passes a
+ *      project-scope visibility filter exactly like the personal family.
+ *      Without this, a project scope filter zeroed every `group:*` engram and
+ *      team engrams from mounted enterprise stores never survived injection
+ *      or recall.
+ *
+ * Grant matching is segment-aware via `isScopeWithin`: a grant for
+ * `group:acme/eng` admits `group:acme/eng` and true descendants
+ * (`group:acme/eng/x`, `group:acme/eng:x`) but NEVER the sibling
+ * string-prefix `group:acme/eng-private` (#383).
+ *
+ * STRICTLY visibility-only. This predicate must NEVER be consulted by (or
+ * folded into) the `scopeAllowFilter` authorization allow-list below —
+ * grants widen what a scope filter shows, never what a principal is
+ * permitted to see. The `INJECT_GLOBAL_IS_TARGETED` branch in inject.ts is
+ * likewise untouched: an explicit `scope: 'global'` inject stays targeted to
+ * `global` only, grants or no grants (D1-ASYMMETRY).
+ */
+export function makeVisibilityPredicate(
+  scopeFilter: string,
+  grants?: readonly string[],
+): (engramScope: string) => boolean {
+  return (engramScope: string) =>
+    isScopeWithin(engramScope, scopeFilter)
+    || isPersonalScope(engramScope)
+    || (grants !== undefined && grants.some(g => isScopeWithin(engramScope, g)))
+}
+
+/**
  * Permitted-scope allow-list predicate — the in-memory twin of the SQL
  * `scope = ANY($n)` pushdown (see `StorageFilter.scopes` in
  * storage-adapter.ts).
