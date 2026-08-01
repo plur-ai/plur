@@ -271,7 +271,10 @@ function processDeferredWrapups(): string | null {
 
 // Self-watchdog ceiling for hook-inject. Hooks are fail-open — a silent
 // exit after the ceiling is always better than an immortal orphan process
-// when a background RemoteStore.load() hangs on a degraded network (#504).
+// (#504). The ceiling bounds OVERALL hook runtime: the floating background
+// RemoteStore.load() that originally motivated it is gone (#776 — the remote
+// leg is a budgeted, awaited call inside injectHybrid), but embedder loads,
+// filesystem stalls, or any future stray async work still need a hard stop.
 // Defaults to 55 s (within the 90 s harness timeout); override via env.
 // The timer is unref()ed so a normal clean exit isn't delayed.
 const HOOK_CEILING_MS = parseInt(process.env.PLUR_HOOK_CEILING_MS ?? '', 10) || 55_000
@@ -289,8 +292,10 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   // Lets hooks be installed globally without affecting non-plur projects.
   if (!isPlurConfigured()) return
 
-  // Watchdog: guarantee this process exits even if a background network call
-  // hangs (#504). Installed after isPlurConfigured() so it only fires for
+  // Watchdog: guarantee this process exits even if something in the hook run
+  // hangs (#504) — remote calls are individually budgeted since #776, so this
+  // is the ceiling on the WHOLE run (embedder load, fs stalls, stray async).
+  // Installed after isPlurConfigured() so it only fires for
   // sessions that actually do work. unref() prevents it from delaying clean exit.
   const watchdog = setTimeout(() => process.exit(0), HOOK_CEILING_MS)
   watchdog.unref()
@@ -407,7 +412,10 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   // is the org context for dialing). Personal/non-project sessions without a
   // project scope or remote_project dial nothing — the strict
   // scope-relevance rule keeps prompts from a CWD without an implicated
-  // remote store off the network entirely.
+  // remote store off the network entirely, with ONE exception: a store the
+  // user marked `dial: always` in config.yaml is dialed from any CWD. That
+  // is an explicit per-store opt-in to send (truncated) prompt text to that
+  // host, not something a project can turn on.
   const injectOpts = {
     source: 'hook' as const,
     remote_timeout_ms: REMOTE_TIMEOUT_MS,

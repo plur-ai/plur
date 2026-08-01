@@ -889,11 +889,11 @@ export class Plur {
    * RemoteStore holds its own internal TTL cache so repeated load()
    * within ttlMs returns the same array without a network call.
    *
-   * This method is synchronous, so it does not await `RemoteStore.load()`:
-   * it returns whatever is in the driver's cache and fires the real load
-   * into the background. The consequence is unchanged and still real — the
-   * first call after process start returns [] for that store, and only the
-   * call after the first refresh completes sees the data.
+   * `_loadRemoteCached` is a synchronous PEEK: it returns whatever the
+   * driver's in-memory cache currently holds and NEVER fires a load —
+   * background or otherwise. Until something explicitly warms the driver
+   * (`warmRemoteCaches()`, e.g. via session_start), it returns [] for that
+   * store every time, not just on the first call.
    *
    * #776 (server-authoritative recall): this peek is DEMOTED. Live recall now
    * reaches remote engrams through `remoteRecall` (`POST /api/v1/recall` per
@@ -3082,7 +3082,12 @@ export class Plur {
 
     const groups = new Map<string, { url: string; token?: string; entries: StoreEntry[] }>()
     for (const s of stores) {
-      const key = `${normalizeEndpointUrl(s.url!)} ${s.token ?? ''}`
+      // Same `::` composite-key convention as _getRemoteDriver (#394) — a
+      // printable separator (an earlier draft used a raw \x00, which made
+      // tooling treat this whole source file as binary). Normalized URLs and
+      // tokens don't contain `::` in practice, and a contrived collision only
+      // merges two entries into one endpoint group — same POST, same token.
+      const key = `${normalizeEndpointUrl(s.url!)}::${s.token ?? ''}`
       let g = groups.get(key)
       if (!g) { g = { url: s.url!, token: s.token, entries: [] }; groups.set(key, g) }
       g.entries.push(s)
@@ -5856,9 +5861,12 @@ Generate an improved version of the procedure that prevents this failure. Return
 
   /**
    * @deprecated Use {@link listStoresAsync} for accurate remote engram counts.
-   * The sync variant returns engram_count: 0 for remote stores on the first
-   * call after server start because the remote cache hasn't populated yet
-   * (issue #184). Retained for callers that cannot await.
+   * The sync variant reads only the remote drivers' in-memory peek cache,
+   * which no longer self-populates (#776 removed the background refresh): a
+   * remote store's engram_count stays 0 on EVERY call — not just the first
+   * (issue #184) — until something explicitly warms the cache
+   * (`warmRemoteCaches()`, e.g. via session_start). Retained for callers
+   * that cannot await.
    */
   async listStores(): Promise<Array<StoreSummary>> {
     this.reloadConfigIfChanged()  // pick up out-of-process config edits (#307)

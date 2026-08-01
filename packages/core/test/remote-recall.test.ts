@@ -177,6 +177,52 @@ describe('remoteRecall — failure table', () => {
     expect(res.outcomes[0].state).toBe('unreachable') // count restarted
   })
 
+  it('403 → 404 → 403 does NOT read as revocation — ANY observed non-403 breaks the streak', async () => {
+    const sp = statePath()
+    let clock = 1_000_000_000_000
+    const now = () => clock
+    server.recallStatus = 403
+    await remoteRecall([host()], 'x', { statePath: sp, now })
+    // A 404 between the two 403s breaks the consecutive-403 streak…
+    server.recallStatus = 404
+    await remoteRecall([host()], 'x', { statePath: sp, now })
+    // …so the next 403 (after the unsupported TTL re-probe) is again
+    // unconfirmed, not a revocation verdict built from non-consecutive 403s.
+    clock += UNSUPPORTED_TTL_MS + 1
+    server.recallStatus = 403
+    const res = await remoteRecall([host()], 'x', { statePath: sp, now })
+    expect(res.outcomes[0].state).toBe('unreachable')
+    expect(res.outcomes[0].detail).toBe('http_403_unconfirmed')
+  })
+
+  it('403 → 5xx → 403 and 403 → 429 → 403 stay unconfirmed too', async () => {
+    // 5xx (network class) breaks the streak.
+    const sp1 = statePath()
+    server.recallStatus = 403
+    await remoteRecall([host()], 'x', { statePath: sp1 })
+    server.recallStatus = 500
+    await remoteRecall([host()], 'x', { statePath: sp1 })
+    server.recallStatus = 403
+    const afterServerError = await remoteRecall([host()], 'x', { statePath: sp1 })
+    expect(afterServerError.outcomes[0].state).toBe('unreachable')
+    expect(afterServerError.outcomes[0].detail).toBe('http_403_unconfirmed')
+
+    // 429 breaks the streak (dial again past its cooldown).
+    const sp2 = statePath()
+    let clock = 1_000_000_000_000
+    const now = () => clock
+    server.recallStatus = 403
+    server.recallRetryAfter = '1'
+    await remoteRecall([host()], 'x', { statePath: sp2, now })
+    server.recallStatus = 429
+    await remoteRecall([host()], 'x', { statePath: sp2, now })
+    clock += 2000
+    server.recallStatus = 403
+    const afterRateLimit = await remoteRecall([host()], 'x', { statePath: sp2, now })
+    expect(afterRateLimit.outcomes[0].state).toBe('unreachable')
+    expect(afterRateLimit.outcomes[0].detail).toBe('http_403_unconfirmed')
+  })
+
   it('404 → unsupported for a TTL, not process lifetime', async () => {
     const sp = statePath()
     let clock = 1_000_000_000_000
@@ -304,6 +350,61 @@ describe('remoteRecall — circuit breaker', () => {
     const resumed = await remoteRecall([host()], 'x', { statePath: sp, now })
     expect(resumed.outcomes[0].state).toBe('ok')
     expect(server.recallCalls).toBe(4)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// remote-health.json lost-update protection (read-merge-write under lock)
+// ---------------------------------------------------------------------------
+
+describe('remote-health.json — concurrent writers', () => {
+  const URL_A = 'http://127.0.0.1:1'
+  const URL_B = 'http://127.0.0.1:2'
+  const refuse: typeof fetch = async () => { throw new Error('conn refused') }
+
+  it('a writer with a stale entry snapshot does not erase another writer\'s host update', async () => {
+    const sp = statePath()
+    // Writer A reads the (empty) health file at entry, then — while its own
+    // fetch is in flight — writer B runs a COMPLETE recall against another
+    // host and persists a breaker failure for it. Writer A's exit persist is
+    // based on its stale entry snapshot: a whole-file overwrite would erase
+    // B's host entry; the read-merge-write keeps both.
+    let bStarted = false
+    const fetchA: typeof fetch = async (...args) => {
+      if (!bStarted) {
+        bStarted = true
+        await remoteRecall([host({ url: URL_B })], 'x', { statePath: sp, fetchImpl: refuse, timeoutMs: 300 })
+      }
+      return refuse(...args)
+    }
+    await remoteRecall([host({ url: URL_A })], 'x', { statePath: sp, fetchImpl: fetchA, timeoutMs: 500 })
+
+    const persisted = readRemoteHealth(sp)
+    const entries = Object.values(persisted.hosts)
+    expect(Object.keys(persisted.hosts)).toHaveLength(2) // B's entry survived A's persist
+    for (const h of entries) {
+      expect(h.failures).toBe(1)
+      expect(h.last_state).toBe('unreachable')
+    }
+  })
+
+  it('a remoteRecall persist does not erase a concurrent hook-header claim', async () => {
+    const sp = statePath()
+    // The claim happens AFTER the recall's entry snapshot but BEFORE its exit
+    // persist — the exact interleaving that used to lose the suppression
+    // bookkeeping and double-print the header on the next prompt.
+    let claimed: string[] = []
+    const fetchImpl: typeof fetch = async (...args) => {
+      claimed = claimHookDegradationLines([{ host: URL_A, status: 'unreachable' }], { statePath: sp })
+      return refuse(...args)
+    }
+    await remoteRecall([host({ url: URL_A })], 'x', { statePath: sp, fetchImpl, timeoutMs: 500 })
+    expect(claimed).toHaveLength(1) // the mid-flight claim printed
+
+    // The persist finished after the claim; the (host, state) budget it
+    // consumed must still be consumed — same state stays silent.
+    const again = claimHookDegradationLines([{ host: URL_A, status: 'unreachable' }], { statePath: sp })
+    expect(again).toHaveLength(0)
   })
 })
 

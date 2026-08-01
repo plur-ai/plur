@@ -25,10 +25,11 @@
  * | breaker open         | `skipped_cooldown` | 3 straight failures → 5 min cooldown        |
  *
  * Breaker / cooldown / unsupported state is PERSISTED across processes in
- * `<plur root>/cache/remote-health.json` (atomic unique-tmp write): hooks are
- * one-shot processes at ~86% of recall volume, so in-memory state would reset
- * every prompt and an off-LAN host would burn the connect budget on every
- * prompt indefinitely.
+ * `<plur root>/cache/remote-health.json` (atomic unique-tmp write; mutations
+ * are read-merge-write under the shared file lock so concurrent processes
+ * don't lose each other's updates): hooks are one-shot processes at ~86% of
+ * recall volume, so in-memory state would reset every prompt and an off-LAN
+ * host would burn the connect budget on every prompt indefinitely.
  *
  * ## Dialing rule (strict scope relevance — user decision, plan rows 39/44)
  *
@@ -56,6 +57,7 @@ import { RemoteRowSchema, normalizeEndpointUrl } from './store/remote-store.js'
 import { isScopeWithin, isSharedScope } from './scope-util.js'
 import { storePrefix } from './engrams.js'
 import { logger } from './logger.js'
+import { withLock } from './sync.js'
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -233,8 +235,10 @@ export function readRemoteHealth(path: string): RemoteHealthFile {
 
 /**
  * Atomic unique-tmp write: two concurrent one-shot hook processes must never
- * interleave partial writes. Unique tmp name (pid + random) then rename —
- * last writer wins wholesale, which is acceptable for advisory health state.
+ * interleave partial writes. Unique tmp name (pid + random) then rename.
+ * Atomicity alone is not enough against LOST UPDATES — callers that mutate
+ * state they read earlier must go through {@link mergeWriteRemoteHealth} or
+ * {@link withRemoteHealthLock}, which re-read under the file lock.
  */
 function writeRemoteHealth(path: string, file: RemoteHealthFile): void {
   try {
@@ -243,6 +247,59 @@ function writeRemoteHealth(path: string, file: RemoteHealthFile): void {
     fs.writeFileSync(tmp, JSON.stringify(file))
     fs.renameSync(tmp, path)
   } catch { /* health persistence is best-effort — never break recall */ }
+}
+
+/** Lock options for remote-health.json — the critical section is a
+ *  read+merge+rename of a small JSON file (milliseconds), and withLock's
+ *  retry delay is a synchronous busy-wait, so keep the worst-case wait small
+ *  (25+50+100 = 175 ms) rather than the 3.1 s engrams.yaml default. */
+const HEALTH_LOCK_OPTS = { maxRetries: 3, baseDelay: 25 }
+
+/**
+ * Run `fn` holding the remote-health.json file lock (the same #685 F7
+ * `withLock` used for engrams.yaml/config.yaml persistence). Health state is
+ * ADVISORY — if the lock cannot be acquired, `fallback` runs unlocked rather
+ * than failing recall or dropping a degradation header.
+ */
+function withRemoteHealthLock<T>(statePath: string, fn: () => T, fallback: () => T): T {
+  try {
+    fs.mkdirSync(dirname(statePath), { recursive: true })
+    return withLock(statePath, fn, HEALTH_LOCK_OPTS)
+  } catch {
+    return fallback()
+  }
+}
+
+/**
+ * Merge-persist the host entries this process touched (lost-update fix).
+ *
+ * The naive end-of-call `writeRemoteHealth(path, healthReadAtEntry)` loses
+ * concurrent updates: two processes read the same base, each writes its
+ * whole in-memory copy, and the second write erases the first's breaker /
+ * cooldown / suppression progress. Instead: re-read the CURRENT file inside
+ * the lock and overlay only the entries in `touched`, so writers touching
+ * different hosts both survive. Same-host collisions resolve last-writer-wins
+ * at host granularity — acceptable for advisory state.
+ *
+ * The overlay deliberately KEEPS the current file's `printed_state` /
+ * `printed_at`: remoteRecall never modifies those fields, and clobbering
+ * them with the entry-time snapshot would undo a concurrent
+ * {@link claimHookDegradationLines} claim and double-print headers.
+ */
+function mergeWriteRemoteHealth(statePath: string, touched: Record<string, HostHealth>): void {
+  const readMergeWrite = (): void => {
+    const current = readRemoteHealth(statePath)
+    for (const [key, h] of Object.entries(touched)) {
+      const cur = current.hosts[key]
+      current.hosts[key] = cur
+        ? { ...h, printed_state: cur.printed_state, printed_at: cur.printed_at }
+        : h
+    }
+    writeRemoteHealth(statePath, current)
+  }
+  // Unlocked fallback is the same read-merge-write — still narrower than the
+  // old whole-file overwrite even when the lock is unavailable.
+  withRemoteHealthLock(statePath, readMergeWrite, readMergeWrite)
 }
 
 // ---------------------------------------------------------------------------
@@ -431,8 +488,10 @@ function parseRetryAfterMs(header: string | null, now: number): number | null {
  * Dial every host in parallel (`Promise.allSettled`), each within its own
  * AbortController budget (connect-phase budget shorter than total), and
  * return validated/namespaced rows + per-host outcomes. Never throws; never
- * blocks past the budget. Health state is read once at entry and written
- * once at exit (atomic).
+ * blocks past the budget. Health state is read once at entry; at exit only
+ * the touched host entries are persisted, read-merge-write under the file
+ * lock (see {@link mergeWriteRemoteHealth}) so concurrent processes don't
+ * lose each other's updates.
  */
 export async function remoteRecall(
   hosts: RemoteRecallHost[],
@@ -474,6 +533,9 @@ export async function remoteRecall(
     }
     const networkFailure = (state: 'timeout' | 'unreachable', detail?: string) => {
       h.failures = (h.failures ?? 0) + 1
+      // Any observed non-403 response/failure breaks a 403 streak — the
+      // forbidden threshold means 2 CONSECUTIVE 403s, not 2 total.
+      h.forbidden_count = 0
       if (h.failures >= BREAKER_FAILURE_THRESHOLD) {
         h.cooldown_until = now() + BREAKER_COOLDOWN_MS
         h.failures = 0
@@ -531,11 +593,13 @@ export async function remoteRecall(
       }
       if (res.status === 404) {
         h.failures = 0
+        h.forbidden_count = 0 // a non-403 breaks the consecutive-403 streak
         h.unsupported_until = now() + UNSUPPORTED_TTL_MS
         return finish('unsupported', { detail: 'http_404' })
       }
       if (res.status === 429) {
         h.failures = 0
+        h.forbidden_count = 0 // a non-403 breaks the consecutive-403 streak
         const retryMs = parseRetryAfterMs(res.headers.get('retry-after'), now())
         h.cooldown_until = now() + Math.min(retryMs ?? RATE_LIMIT_DEFAULT_COOLDOWN_MS, RATE_LIMIT_MAX_COOLDOWN_MS)
         return finish('rate_limited')
@@ -602,7 +666,15 @@ export async function remoteRecall(
       scores.set(e.id, sc)
     }
   }
-  writeRemoteHealth(statePath, health)
+  // Persist only the host entries this call touched, read-merge-write under
+  // the file lock — a concurrent process's updates to other hosts (or to the
+  // print-suppression fields) survive. See mergeWriteRemoteHealth.
+  const touched: Record<string, HostHealth> = {}
+  for (const host of hosts) {
+    const key = normalizeEndpointUrl(host.url)
+    if (health.hosts[key]) touched[key] = health.hosts[key]
+  }
+  mergeWriteRemoteHealth(statePath, touched)
   return { engrams, scores, outcomes }
 }
 
@@ -714,7 +786,10 @@ export function doctorRemoteRemediation(o: RemoteStoreStatusEntry): string | nul
  * `ok` resets the printed state (silently) so a recurrence prints again.
  *
  * "Claim" semantics: calling this consumes the print budget for the lines it
- * returns — callers must actually print them.
+ * returns — callers must actually print them. The read→claim→write runs
+ * under the remote-health file lock (read-merge-write), so two concurrent
+ * hook processes cannot both read the pre-claim state and double-print, and
+ * a claim cannot be erased by a concurrent whole-file persist.
  */
 export function claimHookDegradationLines(
   outcomes: RemoteStoreStatusEntry[],
@@ -722,36 +797,43 @@ export function claimHookDegradationLines(
 ): string[] {
   const statePath = opts.statePath ?? remoteHealthPath(opts.env ?? process.env)
   const now = (opts.now ?? Date.now)()
-  const health = readRemoteHealth(statePath)
-  const lines: string[] = []
-  let dirty = false
-  for (const o of outcomes) {
-    const key = normalizeEndpointUrl(o.host)
-    const h: HostHealth = health.hosts[key] ?? {}
-    health.hosts[key] = h
-    const line = hookRemoteHeaderLine(o)
-    // The suppression key distinguishes plain-ok (never prints) from
-    // ok-with-dropped-scopes (prints like a state).
-    const printKey = o.status === 'ok' && o.dropped_scopes?.length ? 'dropped_scopes' : o.status
-    if (line === null) {
-      // Recovery / never-print state: reset the printed marker on genuine
-      // recovery so the next degradation prints as a state change.
-      if (o.status === 'ok' && h.printed_state && h.printed_state !== 'ok') {
-        h.printed_state = 'ok'
+  const claim = (): string[] => {
+    // Read INSIDE the lock — claiming against a pre-lock snapshot would
+    // reintroduce the lost-update race the lock exists to close.
+    const health = readRemoteHealth(statePath)
+    const lines: string[] = []
+    let dirty = false
+    for (const o of outcomes) {
+      const key = normalizeEndpointUrl(o.host)
+      const h: HostHealth = health.hosts[key] ?? {}
+      health.hosts[key] = h
+      const line = hookRemoteHeaderLine(o)
+      // The suppression key distinguishes plain-ok (never prints) from
+      // ok-with-dropped-scopes (prints like a state).
+      const printKey = o.status === 'ok' && o.dropped_scopes?.length ? 'dropped_scopes' : o.status
+      if (line === null) {
+        // Recovery / never-print state: reset the printed marker on genuine
+        // recovery so the next degradation prints as a state change.
+        if (o.status === 'ok' && h.printed_state && h.printed_state !== 'ok') {
+          h.printed_state = 'ok'
+          h.printed_at = now
+          dirty = true
+        }
+        continue
+      }
+      const changed = h.printed_state !== printKey
+      const stale = now - (h.printed_at ?? 0) > HOOK_HEADER_REPEAT_MS
+      if (changed || stale) {
+        lines.push(line)
+        h.printed_state = printKey
         h.printed_at = now
         dirty = true
       }
-      continue
     }
-    const changed = h.printed_state !== printKey
-    const stale = now - (h.printed_at ?? 0) > HOOK_HEADER_REPEAT_MS
-    if (changed || stale) {
-      lines.push(line)
-      h.printed_state = printKey
-      h.printed_at = now
-      dirty = true
-    }
+    if (dirty) writeRemoteHealth(statePath, health)
+    return lines
   }
-  if (dirty) writeRemoteHealth(statePath, health)
-  return lines
+  // Fallback (lock unavailable): claim unlocked — a rare duplicate header
+  // beats silently dropping a degradation warning.
+  return withRemoteHealthLock(statePath, claim, claim)
 }
