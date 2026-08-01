@@ -30,7 +30,9 @@ let server: StubServer
 let baseUrl: string
 
 describe('hook-inject × remote recall (#776)', () => {
+  let root: string
   let dir: string
+  let home: string
   let runIdx = 0
 
   beforeAll(async () => {
@@ -44,7 +46,18 @@ describe('hook-inject × remote recall (#776)', () => {
   })
 
   beforeEach(() => {
-    dir = mkdtempSync(join(tmpdir(), 'plur-hook-rr-'))
+    // The spawned hook's HOME must NOT be the project cwd (#778):
+    // findProjectConfigPath deliberately refuses a `.plur.yaml` that sits
+    // directly in HOME (privacy guard), so a HOME==cwd harness reads an
+    // EMPTY project config — no scope, no remote_project, zero dialing.
+    // That shape only ever passed on macOS, where the /var→/private/var
+    // tmpdir symlink made the (pre-canonicalization) home comparison miss.
+    // Model the real deployment: project dir and home are separate.
+    root = mkdtempSync(join(tmpdir(), 'plur-hook-rr-'))
+    dir = join(root, 'project')
+    home = join(root, 'home')
+    mkdirSync(dir, { recursive: true })
+    mkdirSync(home, { recursive: true })
     server.reset()
     mkdirSync(join(dir, '.plur'), { recursive: true })
     writeFileSync(
@@ -61,7 +74,7 @@ describe('hook-inject × remote recall (#776)', () => {
   })
 
   afterEach(() => {
-    rmSync(dir, { recursive: true, force: true })
+    rmSync(root, { recursive: true, force: true })
   })
 
   // ASYNC spawn, deliberately: the StubServer lives in THIS process, and a
@@ -71,14 +84,14 @@ describe('hook-inject × remote recall (#776)', () => {
   function runHook(extraEnv: Record<string, string> = {}): Promise<{ stdout: string; status: number }> {
     // Fresh TMPDIR per invocation: the session marker is keyed on ppid, and a
     // reused marker turns the second run into a reminder no-op.
-    const tmp = join(dir, `tmp-${runIdx++}`)
+    const tmp = join(root, `tmp-${runIdx++}`)
     mkdirSync(tmp, { recursive: true })
     return new Promise((resolve, reject) => {
       const child = spawn('node', [CLI, 'hook-inject'], {
         env: {
           ...process.env,
-          HOME: dir,
-          USERPROFILE: dir,
+          HOME: home,
+          USERPROFILE: home,
           TMPDIR: tmp,
           PLUR_PATH: join(dir, '.plur'),
           ...extraEnv,

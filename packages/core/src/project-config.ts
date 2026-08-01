@@ -1,6 +1,22 @@
-import { existsSync, readFileSync } from 'fs'
+import { existsSync, readFileSync, realpathSync } from 'fs'
 import { dirname, join, resolve } from 'path'
 import { homedir } from 'os'
+
+/**
+ * Same #521 canonicalization as the CLI's `isPlurConfigured` guard:
+ * `process.cwd()` is kernel-canonical (getcwd resolves symlinks) while
+ * `homedir()` returns `$HOME` verbatim, so the same directory can spell two
+ * ways when a path component is a symlink (macOS `/var` → `/private/var`).
+ * The home-refusal below is a PRIVACY guard — a string-equality check that
+ * misses on spelling silently fails OPEN, and a stray `~/.plur.yaml` then
+ * intercepts every project (with `remote_url` set, that routes prompt text
+ * off-box). Canonicalize before comparing; returned paths keep the caller's
+ * spelling. (#778 — this mismatch also let the hook test's HOME==cwd setup
+ * pass on macOS while failing on Linux CI, where /tmp has no symlink.)
+ */
+function canonicalize(p: string): string {
+  try { return realpathSync(p) } catch { return resolve(p) }
+}
 
 /**
  * Project-level PLUR config (`.plur.yaml`) — read by both `hook-inject`
@@ -47,21 +63,23 @@ export interface ProjectConfig {
  * symlink components, and `..` segments.
  */
 export function findProjectConfigPath(startDir: string = process.cwd()): string | null {
-  const home = resolve(homedir())
+  const home = canonicalize(homedir())
   let dir = resolve(startDir)
   const MAX_DEPTH = 12  // hard ceiling — beyond ~12 dirs deep, give up
   for (let depth = 0; depth < MAX_DEPTH; depth++) {
     // Refuse to accept a .plur.yaml that lives directly in HOME.
     // That's the failure mode where a stray home-level config silently
-    // intercepts every project the user opens.
-    if (dir !== home) {
+    // intercepts every project the user opens. Canonical comparison so a
+    // symlinked spelling of HOME cannot bypass the guard (see canonicalize).
+    const atHome = canonicalize(dir) === home
+    if (!atHome) {
       const candidate = join(dir, '.plur.yaml')
       if (existsSync(candidate)) return candidate
     }
     // Stop at .git boundary — never escape the current project.
     if (existsSync(join(dir, '.git'))) return null
     // Hard ceilings: home, root, current-dir sentinel.
-    if (dir === home || dir === '/' || dir === '.') return null
+    if (atHome || dir === '/' || dir === '.') return null
     const parent = dirname(dir)
     if (parent === dir) return null
     dir = parent
