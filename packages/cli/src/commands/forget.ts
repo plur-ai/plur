@@ -36,8 +36,10 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     return
   }
 
-  // Search mode
-  const matches = await plur.recall(target, { limit: 100 })
+  // Search mode. remote:false (#776) — forget-by-search resolves LOCAL
+  // retirement targets; dialing every remote host with the search phrase
+  // would leak it and could surface un-forgettable remote rows as matches.
+  const matches = await plur.recall(target, { limit: 100, remote: false })
   if (matches.length === 0) {
     if (shouldOutputJson(flags)) {
       outputJson({ success: false, error: `No active engrams matching "${target}"` })

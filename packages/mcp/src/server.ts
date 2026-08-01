@@ -80,11 +80,13 @@ Do not ask permission to use these tools — they are your memory system.
 Setup: If this is a fresh install, suggest the user run: npx @plur-ai/mcp init
 This installs hooks for automatic injection + session management. One-time global setup.`
 
-const GUIDE_RESOURCE = `# PLUR — Agent Guide
+// Exported for the #776 description-honesty test (the guide once claimed
+// "fully local, zero API calls" while the recall path dials enterprise hosts).
+export const GUIDE_RESOURCE = `# PLUR — Agent Guide
 
 ## What is PLUR?
 
-Persistent memory for AI agents. Corrections, preferences, and conventions are stored as **engrams** — small assertions that strengthen with use and decay when irrelevant (ACT-R model). Storage is plain YAML on disk. Search is fully local (BM25 + embeddings). Zero API calls.
+Persistent memory for AI agents. Corrections, preferences, and conventions are stored as **engrams** — small assertions that strengthen with use and decay when irrelevant (ACT-R model). Storage is plain YAML on disk. Search runs locally (BM25 + embeddings); when an enterprise/remote store is configured AND relevant to the current project, recall additionally makes one live timeout-bounded call per remote host and merges the results — degradation is surfaced per host via a \`remote_stores\` block, never silent. With no remote store configured, search is fully local with zero API calls.
 
 ## Quick Start
 

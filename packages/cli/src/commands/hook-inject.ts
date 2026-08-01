@@ -5,27 +5,20 @@ import { randomUUID } from 'crypto'
 import { createPlur, type GlobalFlags } from '../plur.js'
 import { isPlurConfigured } from '../lib/plur-configured.js'
 
-// Hard cap on the prompt text sent to Enterprise. Engram retrieval only
-// needs enough signal to rank candidates; the rest is privacy bleed
-// (Taleb #5, critic #4). 1KB is generous for relevance and trivial for
-// the network.
-const MAX_REMOTE_TASK_CHARS = 1000
-
-// Hard cap on remote response body. Prevents OOM/stall from a misconfigured
-// or adversarial server returning multi-megabyte JSON (critic #9).
-const MAX_REMOTE_RESPONSE_BYTES = 128 * 1024  // 128 KB
-
-// AbortController timeout — keep low. The hook is on the hot path of
-// every prompt; slow networks make this a perceptible latency tax
-// (Taleb #4). 1500ms is the trade-off: long enough for healthy remote
-// round trips, short enough to be invisible when the network is fine.
+// Remote budget for the recall leg inside injectHybrid (#776). The hook is
+// on the hot path of every prompt; slow networks make this a perceptible
+// latency tax (Taleb #4). 1500ms is the trade-off: long enough for healthy
+// remote round trips, short enough to be invisible when the network is fine.
+// The leg runs in PARALLEL with the local pipeline, so effective added
+// latency is max(0, remote − local). PLUR_REMOTE_RECALL_TIMEOUT_MS overrides.
 const REMOTE_TIMEOUT_MS = 1500
 
-// Failure-log dir. tryRemoteInject is fail-open by design (it MUST
+// Failure-log dir. The remote recall leg is fail-open by design (it MUST
 // never block the user's prompt) — but silent fail-open is unfalsifiable
 // (Taleb #2): you cannot distinguish "Enterprise is working but had no
 // engrams for this query" from "Enterprise is unreachable and we
-// silently degraded to local." Each remote attempt writes ONE JSON LINE.
+// silently degraded to local." Each per-host recall outcome writes ONE
+// JSON LINE.
 //
 // File-per-day rotation avoids the truncation race the earlier size-
 // based scheme had (dijkstra DEF-1): two concurrent hooks could both
@@ -42,7 +35,10 @@ function remoteInjectLogPath(): string {
 function logRemoteAttempt(entry: {
   ts:        string
   url:       string
+  // #776: the recall leg's per-host states join the legacy outcome values so
+  // old log tooling keeps parsing the same field.
   outcome:   'ok' | 'http_error' | 'timeout' | 'network_error' | 'bad_response' | 'oversize'
+           | 'unreachable' | 'auth_expired' | 'forbidden' | 'rate_limited' | 'unsupported' | 'skipped_cooldown'
   ms:        number
   http?:     number
   engrams?:  number
@@ -88,112 +84,36 @@ const REMINDER_INTERVAL_MS = 10 * 60 * 1000 // 10 minutes
 // so both this hook AND the MCP server's session_start handler can use it
 // (the original duplication was the root cause of #177 — session_start
 // ignored .plur.yaml because the reader lived in this CLI-only file).
-import { findProjectConfigPath, readProjectConfig, type ProjectConfig } from '@plur-ai/core'
+import { readProjectConfig, claimHookDegradationLines, type Plur } from '@plur-ai/core'
 
 /**
- * POST to ${remote_url}/api/v1/inject — fire a fast HTTP injection.
- *
- * Returns the formatted context text on success, or null on any failure.
- * NEVER throws: hooks must degrade open or they break the user's prompt.
- *
- * Privacy:
- *   - Only the first MAX_REMOTE_TASK_CHARS of the task are sent (truncated
- *     locally before transmission). Engram ranking doesn't need the full
- *     prompt; truncation reduces inadvertent exfiltration of pasted
- *     secrets, credentials, or proprietary content (critic #4, taleb #5).
- *   - URL is normalized via the URL constructor — strips path/query/
- *     fragment cleanly so /api/v1/inject doesn't double up if the user
- *     wrote `remote_url: https://x.com/api` (data #EC07).
- *
- * Robustness:
- *   - AbortController stays live through the full request lifecycle
- *     (headers + body). Cleared in finally so the timer doesn't fire
- *     against a settled request (critic #1, cto #4, data #EC01, dijkstra #7).
- *   - Response body is capped at MAX_REMOTE_RESPONSE_BYTES via
- *     content-length check; oversize responses → null (critic #9).
- *   - data.text trimmed before truthy check; whitespace-only payloads
- *     are treated as empty (data #EC08).
+ * #776: the former `tryRemoteInject` remote-first POST /api/v1/inject path
+ * is REPLACED by the recall leg inside `injectHybrid` — the core dials each
+ * relevant host once (POST /api/v1/recall) in parallel with local search and
+ * merges the rows, so a prompt costs AT MOST ONE remote call per host (a
+ * degraded host must not cost two sequential remote budgets per prompt).
+ * The `.plur.yaml` `remote_url`/`remote_token` is passed through as
+ * `remote_project`: project config wins for the hook path — its presence IS
+ * the org context for dialing. Per-host outcomes land in the JSONL log below
+ * and, on state change, as ONE degradation header line via
+ * `claimHookDegradationLines` (suppression persisted in remote-health.json).
  */
-async function tryRemoteInject(
-  config: ProjectConfig,
-  task:   string,
-): Promise<{ text: string; count: number; injectedIds: string[] } | null> {
-  if (!config.remote_url || !config.remote_token) return null
-  const startTs = Date.now()
-
-  // Normalize the URL to the origin so /api/v1/inject can't double up
-  // on a misconfigured remote_url with a path component.
-  let base: string
+function surfaceRemoteOutcomes(plur: Plur): string[] {
   try {
-    base = new URL(config.remote_url).origin
+    const outcomes = plur.remoteStoreStatus()
+    if (outcomes.length === 0) return []
+    for (const o of outcomes) {
+      logRemoteAttempt({
+        ts: new Date().toISOString(),
+        url: o.host,
+        outcome: o.status,
+        ms: o.ms ?? 0,
+        engrams: o.count ?? 0,
+      })
+    }
+    return claimHookDegradationLines(outcomes, { statePath: plur.remoteHealthStatePath() })
   } catch {
-    logRemoteAttempt({ ts: new Date().toISOString(), url: config.remote_url ?? '?', outcome: 'bad_response', ms: 0, detail: 'invalid URL' })
-    return null  // bogus URL → silent local fallback
-  }
-  const url  = `${base}/api/v1/inject`
-
-  // Truncate task before it leaves the machine.
-  const truncatedTask = task.length > MAX_REMOTE_TASK_CHARS
-    ? task.slice(0, MAX_REMOTE_TASK_CHARS)
-    : task
-
-  const body: Record<string, unknown> = { task: truncatedTask }
-  if (config.remote_scopes && config.remote_scopes.length > 0) {
-    body.scopes = config.remote_scopes
-  }
-
-  const ctrl = new AbortController()
-  const t = setTimeout(() => ctrl.abort(), REMOTE_TIMEOUT_MS)
-  try {
-    const r = await fetch(url, {
-      method: 'POST',
-      signal: ctrl.signal,
-      headers: {
-        'authorization': `Bearer ${config.remote_token}`,
-        'content-type': 'application/json',
-      },
-      body: JSON.stringify(body),
-    })
-    if (!r.ok) {
-      logRemoteAttempt({ ts: new Date().toISOString(), url, outcome: 'http_error', ms: Date.now() - startTs, http: r.status })
-      return null
-    }
-
-    // Guard against oversized response. content-length is advisory but
-    // most servers set it correctly; for missing/chunked responses the
-    // AbortController still terminates the body read at timeout.
-    const contentLength = r.headers.get('content-length')
-    if (contentLength && parseInt(contentLength, 10) > MAX_REMOTE_RESPONSE_BYTES) {
-      logRemoteAttempt({ ts: new Date().toISOString(), url, outcome: 'oversize', ms: Date.now() - startTs, http: r.status, detail: `content-length=${contentLength}` })
-      return null
-    }
-
-    // r.json() reads the body — AbortController still live so a slow
-    // body trickle gets cut off at REMOTE_TIMEOUT_MS overall budget.
-    const data = await r.json() as { text?: string; count?: number; injected_ids?: string[] }
-    if (typeof data.text !== 'string' || !data.text.trim()) {
-      logRemoteAttempt({ ts: new Date().toISOString(), url, outcome: 'bad_response', ms: Date.now() - startTs, http: r.status, detail: 'empty or non-string text field' })
-      return null
-    }
-    const count = typeof data.count === 'number' ? data.count : 0
-    logRemoteAttempt({ ts: new Date().toISOString(), url, outcome: 'ok', ms: Date.now() - startTs, http: r.status, engrams: count })
-    return {
-      text:        data.text,
-      count,
-      injectedIds: Array.isArray(data.injected_ids) ? data.injected_ids : [],
-    }
-  } catch (err: unknown) {
-    const isAbort = err instanceof Error && err.name === 'AbortError'
-    logRemoteAttempt({
-      ts: new Date().toISOString(),
-      url,
-      outcome: isAbort ? 'timeout' : 'network_error',
-      ms: Date.now() - startTs,
-      detail: err instanceof Error ? err.message.slice(0, 120) : undefined,
-    })
-    return null
-  } finally {
-    clearTimeout(t)
+    return [] // surfacing must never break the prompt
   }
 }
 
@@ -481,55 +401,60 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   const plur = createPlur(flags)
   let injectSessionId: string | undefined
   try { injectSessionId = JSON.parse(readFileSync(marker, 'utf8')).sessionId } catch { /* fail-open */ }
+  // #776: the remote leg rides INSIDE injectHybrid — at most one remote call
+  // per host per prompt. `.plur.yaml`'s remote_url/remote_token pass through
+  // as remote_project (project config wins for the hook path; its presence
+  // is the org context for dialing). Personal/non-project sessions without a
+  // project scope or remote_project dial nothing — the strict
+  // scope-relevance rule keeps prompts from a CWD without an implicated
+  // remote store off the network entirely.
   const injectOpts = {
     source: 'hook' as const,
+    remote_timeout_ms: REMOTE_TIMEOUT_MS,
     ...(projectConfig.scope ? { scope: projectConfig.scope } : {}),
     ...(injectSessionId ? { session_id: injectSessionId } : {}),
+    ...(projectConfig.remote_url && projectConfig.remote_token
+      ? {
+          remote_project: {
+            url: projectConfig.remote_url,
+            token: projectConfig.remote_token,
+            ...(projectConfig.remote_scopes && projectConfig.remote_scopes.length > 0
+              ? { scopes: projectConfig.remote_scopes }
+              : {}),
+          },
+        }
+      : {}),
   }
   let context: string | null = null
   let count = 0
-  let remoteUsed = false
 
-  // Remote-first when the project has opted in (.plur.yaml has remote_url +
-  // remote_token). Personal/non-project sessions skip this entirely —
-  // findProjectConfigPath returns null and the config is empty, so the
-  // network call is never made. Privacy guarantee: prompts from a CWD
-  // without a .plur.yaml never reach Enterprise.
-  if (projectConfig.remote_url && projectConfig.remote_token) {
-    const remote = await tryRemoteInject(projectConfig, task)
-    if (remote && remote.count > 0) {
-      context = remote.text
-      count = remote.count
-      remoteUsed = true
+  try {
+    const result = await plur.injectHybrid(task, injectOpts)
+    if (result.count > 0) {
+      const parts: string[] = []
+      if (result.directives) parts.push(result.directives)
+      if (result.constraints) parts.push(result.constraints)
+      if (result.consider) parts.push(result.consider)
+      context = parts.join('\n')
+      count = result.count
     }
-    // If remote returned null or zero engrams, fall through to local so
-    // the user still gets personal-store context.
-  }
-
-  if (!remoteUsed) {
-    try {
-      const result = await plur.injectHybrid(task, injectOpts)
-      if (result.count > 0) {
-        const parts: string[] = []
-        if (result.directives) parts.push(result.directives)
-        if (result.constraints) parts.push(result.constraints)
-        if (result.consider) parts.push(result.consider)
-        context = parts.join('\n')
-        count = result.count
-      }
-    } catch {
-      // Fall back to BM25
-      const result = await plur.inject(task, injectOpts)
-      if (result.count > 0) {
-        const parts: string[] = []
-        if (result.directives) parts.push(result.directives)
-        if (result.constraints) parts.push(result.constraints)
-        if (result.consider) parts.push(result.consider)
-        context = parts.join('\n')
-        count = result.count
-      }
+  } catch {
+    // Fall back to BM25 (local-only by design — inject() never dials).
+    const result = await plur.inject(task, injectOpts)
+    if (result.count > 0) {
+      const parts: string[] = []
+      if (result.directives) parts.push(result.directives)
+      if (result.constraints) parts.push(result.constraints)
+      if (result.consider) parts.push(result.consider)
+      context = parts.join('\n')
+      count = result.count
     }
   }
+
+  // A4′ (#776): per-host recall outcomes → JSONL log + rate-limited
+  // degradation header lines (printed on state change, then ≤ once per 4h
+  // per (host, state); skipped_cooldown/unsupported never print).
+  const degradationLines = surfaceRemoteOutcomes(plur)
 
   // Build session header
   const parts: string[] = []
@@ -537,11 +462,10 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   // Session id for the label — already read above for injection attribution.
   const sessionId = injectSessionId
 
-  const sourceLabel = remoteUsed ? ' (Enterprise)' : ''
   if (isRehydrate) {
-    parts.push(`[PLUR Memory${sourceLabel} — rehydrated after compaction, ${count} engrams]`)
+    parts.push(`[PLUR Memory — rehydrated after compaction, ${count} engrams]`)
   } else {
-    parts.push(`[PLUR Memory${sourceLabel} — session started, ${count} engrams injected]`)
+    parts.push(`[PLUR Memory — session started, ${count} engrams injected]`)
     if (sessionId) parts.push(`Session ID: ${sessionId}`)
     if (projectConfig.domain) parts.push(`Project domain: ${projectConfig.domain}`)
     if (projectConfig.scope) parts.push(`Project scope: ${projectConfig.scope} — use this scope for plur_learn calls`)
@@ -550,6 +474,9 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     const deferredNotice = processDeferredWrapups()
     if (deferredNotice) parts.push('', deferredNotice)
   }
+
+  // A4′ (#776): degradation header — one line per (host, state) change.
+  for (const line of degradationLines) parts.push(line)
 
   if (context) {
     parts.push('')
