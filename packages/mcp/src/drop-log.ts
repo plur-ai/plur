@@ -1,0 +1,94 @@
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
+import { dirname, join } from 'path'
+
+/**
+ * Forensic log for MCP argument-payload drops (plur-ai/plur#772).
+ *
+ * The #772 failure signature — a tool call arriving with an EMPTY arguments
+ * object (`received_fields: []`) — is intermittent and originates client-side,
+ * before the frame reaches this server (the wire-protocol tests from #297/#301
+ * prove the server handles the same payloads correctly). That makes it
+ * impossible to reproduce on demand; the only way to progress the upstream
+ * report is to record each occurrence as it happens in the wild, with exactly
+ * the wire-level facts the report needs.
+ *
+ * Contract:
+ *  - NO VALUES, ever. Records carry field NAMES and frame metadata only. A
+ *    whole-payload drop has no values by definition; a partial drop does, and
+ *    those never enter this file — engram statements can contain anything.
+ *  - Bounded. The file is trimmed to the newest {@link PAYLOAD_DROP_LOG_MAX_ENTRIES}
+ *    records on every write, so a pathological client cannot grow it unbounded.
+ *  - Best-effort. A diagnostics write must never break the tool call it is
+ *    diagnosing — every failure path is swallowed.
+ */
+
+/** Newest-N cap applied on every write. */
+export const PAYLOAD_DROP_LOG_MAX_ENTRIES = 100
+
+export interface PayloadDropRecord {
+  /** ISO-8601 timestamp of the drop. */
+  ts: string
+  /** Tool the dropped call was addressed to. */
+  tool: string
+  /**
+   * How `params.arguments` looked on the wire — the one bit only this boundary
+   * can observe, and the first thing an upstream client report needs:
+   *  - 'absent'       — the `arguments` key was missing from the frame entirely
+   *  - 'empty_object' — the key arrived, carrying `{}`
+   *  - 'partial'      — some fields arrived, required ones (observed: trailing
+   *                     array-typed ones, #297) did not
+   */
+  arguments_wire: 'absent' | 'empty_object' | 'partial'
+  /** Top-level key NAMES of `request.params` (e.g. name, arguments, _meta). */
+  params_keys: string[]
+  /** Field NAMES that did arrive — never their values. */
+  received_fields: string[]
+  /** Schema-required field NAMES that were missing. */
+  missing_fields: string[]
+  /** JSON-RPC request id, when the SDK exposes it. */
+  request_id?: string | number
+  /** @plur-ai/mcp version that recorded the drop. */
+  server_version: string
+}
+
+export function payloadDropLogPath(storageRoot: string): string {
+  return join(storageRoot, 'logs', 'payload-drops.jsonl')
+}
+
+/**
+ * Append one record, keeping only the newest {@link PAYLOAD_DROP_LOG_MAX_ENTRIES}.
+ * Never throws.
+ */
+export function recordPayloadDrop(storageRoot: string, record: PayloadDropRecord): void {
+  try {
+    const path = payloadDropLogPath(storageRoot)
+    mkdirSync(dirname(path), { recursive: true })
+    let lines: string[] = []
+    if (existsSync(path)) {
+      lines = readFileSync(path, 'utf8').split('\n').filter(l => l.length > 0)
+    }
+    lines.push(JSON.stringify(record))
+    if (lines.length > PAYLOAD_DROP_LOG_MAX_ENTRIES) {
+      lines = lines.slice(-PAYLOAD_DROP_LOG_MAX_ENTRIES)
+    }
+    writeFileSync(path, lines.join('\n') + '\n')
+  } catch {
+    /* diagnostics must never break the tool call being diagnosed */
+  }
+}
+
+/** Read all records (newest last). Missing or corrupt file → []. */
+export function readPayloadDropLog(storageRoot: string): PayloadDropRecord[] {
+  try {
+    const path = payloadDropLogPath(storageRoot)
+    if (!existsSync(path)) return []
+    return readFileSync(path, 'utf8')
+      .split('\n')
+      .filter(l => l.length > 0)
+      .flatMap(l => {
+        try { return [JSON.parse(l) as PayloadDropRecord] } catch { return [] }
+      })
+  } catch {
+    return []
+  }
+}
