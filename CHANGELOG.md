@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **Sibling-file strip completes the shared-remote guarantee** (#686): #640/#678 stripped only `engrams.yaml`, but `episodes.yaml`, `candidates.yaml`, and `tensions.yaml` synced verbatim — a teammate cloning a `shared` remote could still receive statement text *derived* from private/personal engrams (a tension's statement snapshots, a failure-report episode) even though the engrams themselves were withheld. A sibling record is now pushed to a `shared` remote only when every engram id it references resolves to the shared push set; records referencing personal, private, or unresolvable engrams stay local (strip-on-doubt), the working tree keeps everything, and the strip is deterministic so the #396 no-infinite-dirty property holds. The sync `warning` reports the stripped sibling record count. `personal` remotes are unchanged.
+
 ## 0.16.1 (2026-07-29)
 
 Engine primitives are importable, and feedback stops disagreeing with itself.

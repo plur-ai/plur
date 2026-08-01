@@ -208,6 +208,34 @@ function packStorePaths(root: string): string[] {
 
 const YAML_DUMP_OPTS = { lineWidth: 120, noRefs: true, quotingType: '"' as const }
 
+/**
+ * Sibling store files that ride along with engrams.yaml in SYNC_PATHS and can
+ * embed engram-DERIVED text (#686): `episodes.yaml` (session summaries, e.g. the
+ * `plur_report_failure` episode quotes an engram's failure context),
+ * `candidates.yaml` (pending contradiction pairs — legacy, no in-core writer,
+ * but synced when present), and `tensions.yaml` (statement_a/statement_b are
+ * verbatim snapshots of the two engrams' statements). #678 stripped only
+ * engrams.yaml, so a `shared` remote could still receive private-derived text
+ * through these files even though the engrams themselves were withheld.
+ */
+const SIBLING_STRIP_FILES = ['episodes.yaml', 'candidates.yaml', 'tensions.yaml'] as const
+
+/**
+ * Canonical engram id token, matched anywhere inside a serialized record
+ * (schema: `/^(ENG|ABS|META)-[A-Za-z0-9-]+$/` in schemas/engram.ts). Greedy
+ * over the id charset, so a longer unknown token ("ENG-0011" around "ENG-001")
+ * extracts as itself and simply fails push-set membership — conservative.
+ */
+const ENGRAM_ID_TOKEN = /\b(?:ENG|ABS|META)-[A-Za-z0-9-]+/g
+
+/**
+ * Dump options matching the sibling-file writers (episodes.ts / tension-store.ts
+ * both use `{ lineWidth: 120, noRefs: true }`), so a stripped sibling blob is
+ * byte-identical to what the file would contain if it only ever held the kept
+ * records — the same determinism that keeps the #396 no-infinite-dirty property.
+ */
+const SIBLING_DUMP_OPTS = { lineWidth: 120, noRefs: true }
+
 interface EngramRecord { id?: string; scope?: string; visibility?: string; [k: string]: unknown }
 
 /**
@@ -249,18 +277,87 @@ function pushKeep(remoteType: SyncRemoteType): (e: EngramRecord) => boolean {
 }
 
 /**
+ * Ids of the engrams a `shared` remote actually receives — the membership set
+ * the sibling-file keep-predicate checks references against (#686). Empty when
+ * engrams.yaml is absent/unparseable: with no provable push set, every
+ * id-referencing sibling record is conservatively outside it.
+ */
+function sharedPushIds(root: string): Set<string> {
+  const parsed = readEngramList(root)
+  if (!parsed) return new Set()
+  const keep = pushKeep('shared')
+  return new Set(
+    parsed.list.filter(keep).map(e => String(e?.id ?? '')).filter(Boolean),
+  )
+}
+
+/**
+ * Read a sibling store file as a record array (the shape episodes.ts /
+ * tension-store.ts write). Returns null when absent, unparseable, or not an
+ * array — in which case the staged blob is left as-is, the same posture
+ * stageStrippedEngrams takes for an unrecognized engrams.yaml (#678).
+ */
+function readSiblingList(root: string, file: string): unknown[] | null {
+  const path = join(root, file)
+  if (!existsSync(path)) return null
+  try {
+    const raw = yaml.load(readFileSync(path, 'utf8'))
+    return Array.isArray(raw) ? raw : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Keep-predicate for sibling-file records on a `shared` remote (#686): a record
+ * is pushed only when EVERY engram id referenced anywhere in it resolves to the
+ * shared push set. Shape-agnostic by design — the id scan runs over the whole
+ * serialized record, so it covers structured fields (`engram_a`/`engram_b`/
+ * `resolved_by`) and ids embedded in free text (episode summaries) alike, and
+ * candidates.yaml needs no schema of its own. A referenced id that is personal/
+ * private (stripped from the push) OR unknown (deleted, foreign) fails the test
+ * — strip-on-doubt, because a false keep is a leak and a false drop is not.
+ * Records with no engram references are kept: they are not derived from any
+ * engram the filter withheld.
+ */
+function siblingKeep(pushedIds: Set<string>): (record: unknown) => boolean {
+  return (record: unknown) => {
+    const text = JSON.stringify(record) ?? ''
+    const refs = text.match(ENGRAM_ID_TOKEN)
+    if (!refs) return true
+    return refs.every(id => pushedIds.has(id))
+  }
+}
+
+/** Count of sibling records the `shared` strip withholds — for the sync warning. */
+function droppedSiblingCount(root: string): number {
+  const keep = siblingKeep(sharedPushIds(root))
+  let dropped = 0
+  for (const file of SIBLING_STRIP_FILES) {
+    const records = readSiblingList(root, file)
+    if (!records) continue
+    dropped += records.filter(r => !keep(r)).length
+  }
+  return dropped
+}
+
+/**
  * Warning shown when a remote is involved: states what the push set actually
- * includes/excludes for this remote type (#640). Returns undefined when there
- * is nothing noteworthy to say.
+ * includes/excludes for this remote type (#640, #686). Returns undefined when
+ * there is nothing noteworthy to say.
  */
 function stripWarning(root: string, remoteType: SyncRemoteType): string | undefined {
   const parsed = readEngramList(root)
-  if (!parsed) return undefined
   if (remoteType === 'shared') {
-    const stripped = parsed.list.filter(e => !pushKeep('shared')(e)).length
-    if (stripped === 0) return undefined
-    return `Shared remote: pushed only shared-scope, non-private engrams — ${stripped} personal-scope or private-visibility engram(s) stayed local.`
+    const strippedEngrams = parsed ? parsed.list.filter(e => !pushKeep('shared')(e)).length : 0
+    const strippedSiblings = droppedSiblingCount(root)
+    if (strippedEngrams === 0 && strippedSiblings === 0) return undefined
+    const parts: string[] = []
+    if (strippedEngrams > 0) parts.push(`${strippedEngrams} personal-scope or private-visibility engram(s)`)
+    if (strippedSiblings > 0) parts.push(`${strippedSiblings} episode/candidate/tension record(s) derived from non-pushed engrams`)
+    return `Shared remote: pushed only shared-scope, non-private engrams — ${parts.join(' and ')} stayed local.`
   }
+  if (!parsed) return undefined
   const count = parsed.list.filter(
     e => e?.scope !== 'local' && (e?.visibility ?? 'private') === 'private',
   ).length
@@ -269,18 +366,39 @@ function stripWarning(root: string, remoteType: SyncRemoteType): string | undefi
 }
 
 /**
- * Replace the *staged* engrams.yaml blob with one that keeps only the push set
- * for this remote type (#640; generalizes the scope:local strip of #380/#396),
- * using git plumbing (hash-object + update-index) so the working tree keeps
- * every engram while the commit (and therefore the remote) never sees the
- * excluded ones.
- *
- * Must be called after staging. Re-serializes with the same YAML options PLUR
- * uses everywhere, so the stripped blob is deterministic across runs — this is what
- * prevents an infinite-dirty-state loop (issue #396): a sync whose only change is to
- * a stripped engram produces the identical stripped blob and therefore no new commit.
+ * Replace a *staged* blob using git plumbing (hash-object + update-index) so the
+ * working tree keeps everything while the commit (and therefore the remote)
+ * never sees the excluded content. Must run after staging — the path is already
+ * in the index, put there by stageStoreFiles.
+ */
+function stageBlob(root: string, relPath: string, content: string): void {
+  const hash = execFileSync('git', ['hash-object', '-w', '--stdin'], {
+    cwd: root, input: content, encoding: 'utf8', timeout: 30_000,
+  }).trim()
+  git(['update-index', '--cacheinfo', `100644,${hash},${relPath}`], root)
+}
+
+/**
+ * Strip every staged store file down to this remote type's push set: the
+ * engrams.yaml scope/visibility filter (#640) plus the sibling-file
+ * derived-record filter (#686). Called on every commit path (init, commit,
+ * conflict resolution) so no path can stage verbatim content.
  */
 function stageStripped(root: string, remoteType: SyncRemoteType): void {
+  stageStrippedEngrams(root, remoteType)
+  stageStrippedSiblings(root, remoteType)
+}
+
+/**
+ * Replace the *staged* engrams.yaml blob with one that keeps only the push set
+ * for this remote type (#640; generalizes the scope:local strip of #380/#396).
+ *
+ * Re-serializes with the same YAML options PLUR uses everywhere, so the
+ * stripped blob is deterministic across runs — this is what prevents an
+ * infinite-dirty-state loop (issue #396): a sync whose only change is to a
+ * stripped engram produces the identical stripped blob and therefore no new commit.
+ */
+function stageStrippedEngrams(root: string, remoteType: SyncRemoteType): void {
   const parsed = readEngramList(root)
   if (!parsed) return
   const { raw, list } = parsed
@@ -290,10 +408,26 @@ function stageStripped(root: string, remoteType: SyncRemoteType): void {
   const out = Array.isArray(raw)
     ? yaml.dump(filtered, YAML_DUMP_OPTS)
     : yaml.dump({ ...(raw as object), engrams: filtered }, YAML_DUMP_OPTS)
-  const hash = execFileSync('git', ['hash-object', '-w', '--stdin'], {
-    cwd: root, input: out, encoding: 'utf8', timeout: 30_000,
-  }).trim()
-  git(['update-index', '--cacheinfo', `100644,${hash},engrams.yaml`], root)
+  stageBlob(root, 'engrams.yaml', out)
+}
+
+/**
+ * Replace the *staged* episodes/candidates/tensions blobs with ones that keep
+ * only records derived from the shared push set (#686 — completes the #640
+ * guarantee: "personal-family and private engrams never reach the remote"
+ * must also hold for their derived text in the sibling store files).
+ * `personal` remotes are untouched — the historical mirror-everything behavior.
+ */
+function stageStrippedSiblings(root: string, remoteType: SyncRemoteType): void {
+  if (remoteType !== 'shared') return
+  const keep = siblingKeep(sharedPushIds(root))
+  for (const file of SIBLING_STRIP_FILES) {
+    const records = readSiblingList(root, file)
+    if (!records) continue
+    const kept = records.filter(keep)
+    if (kept.length === records.length) continue
+    stageBlob(root, file, yaml.dump(kept, SIBLING_DUMP_OPTS))
+  }
 }
 
 function initRepo(root: string, remoteType: SyncRemoteType): void {

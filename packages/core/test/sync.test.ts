@@ -509,4 +509,212 @@ describe('sync', () => {
       expect(result.warning).toMatch(/remote_type/)
     })
   })
+
+  // #686 — sibling-file strip. #640/#678 stripped only engrams.yaml; episodes/
+  // candidates/tensions synced verbatim and could carry statement text DERIVED
+  // from private/personal engrams to a `shared` remote. A sibling record is now
+  // pushed only when every engram id it references resolves to the shared push
+  // set; `personal` remotes keep the historical mirror-everything behavior.
+  describe('sibling-file strip for shared remotes (#686)', () => {
+    let bareRemote: string
+
+    const MIXED = [
+      'engrams:',
+      '  - id: ENG-TEAM',
+      '    scope: "group:acme/engineering"',
+      '    visibility: public',
+      '    statement: team convention everyone should see',
+      '  - id: ENG-TEAM2',
+      '    scope: "group:acme/engineering"',
+      '    visibility: public',
+      '    statement: second team convention',
+      '  - id: ENG-GLOBAL',
+      '    scope: global',
+      '    statement: personal cross-project note',
+      '',
+    ].join('\n')
+
+    const EPISODES = [
+      '- id: EP-1',
+      '  summary: routed ENG-TEAM to the team store',
+      '  timestamp: "2026-07-30T10:00:00Z"',
+      '- id: EP-2',
+      '  summary: plain session summary with no engram references',
+      '  timestamp: "2026-07-30T11:00:00Z"',
+      '- id: EP-3',
+      '  summary: "Failure report for ENG-GLOBAL: personal cross-project note was wrong"',
+      '  timestamp: "2026-07-30T12:00:00Z"',
+      '- id: EP-4',
+      '  summary: cleaned up ENG-DELETED-001 last week',
+      '  timestamp: "2026-07-30T13:00:00Z"',
+      '',
+    ].join('\n')
+
+    const TENSIONS = [
+      '- id: T-2026-0730-001',
+      '  engram_a: ENG-TEAM',
+      '  engram_b: ENG-TEAM2',
+      '  statement_a: team convention everyone should see',
+      '  statement_b: second team convention',
+      '  confidence: 0.9',
+      '  reason: overlapping team guidance',
+      '  detected_at: "2026-07-30T10:00:00Z"',
+      '  status: detected',
+      '  resolved_by: null',
+      '  resolved_at: null',
+      '  category: factual',
+      '- id: T-2026-0730-002',
+      '  engram_a: ENG-TEAM',
+      '  engram_b: ENG-GLOBAL',
+      '  statement_a: team convention everyone should see',
+      '  statement_b: personal cross-project note',
+      '  confidence: 0.8',
+      '  reason: personal note contradicts the team convention',
+      '  detected_at: "2026-07-30T11:00:00Z"',
+      '  status: detected',
+      '  resolved_by: null',
+      '  resolved_at: null',
+      '  category: factual',
+      '',
+    ].join('\n')
+
+    // candidates.yaml has no in-core writer (legacy) — the filter must work
+    // shape-agnostically, off the engram ids embedded anywhere in a record.
+    const CANDIDATES = [
+      '- pair: "ENG-TEAM:ENG-TEAM2"',
+      '  statement_a: team convention everyone should see',
+      '  statement_b: second team convention',
+      '- pair: "ENG-TEAM:ENG-GLOBAL"',
+      '  statement_a: team convention everyone should see',
+      '  statement_b: personal cross-project note',
+      '',
+    ].join('\n')
+
+    beforeEach(() => {
+      writeFileSync(join(dir, 'engrams.yaml'), MIXED)
+      writeFileSync(join(dir, 'episodes.yaml'), EPISODES)
+      writeFileSync(join(dir, 'tensions.yaml'), TENSIONS)
+      writeFileSync(join(dir, 'candidates.yaml'), CANDIDATES)
+      bareRemote = mkdtempSync(join(tmpdir(), 'plur-remote-'))
+      execSync('git init --bare', { cwd: bareRemote })
+    })
+
+    afterEach(() => {
+      rmSync(bareRemote, { recursive: true, force: true })
+    })
+
+    it('shared: strips episodes referencing engrams outside the push set, keeps the rest', () => {
+      sync(dir, bareRemote, { remoteType: 'shared' })
+      const committed = git('show HEAD:episodes.yaml', dir)
+      // Pushed-engram reference and reference-free episodes ride along…
+      expect(committed).toContain('EP-1')
+      expect(committed).toContain('EP-2')
+      // …a personal-engram-derived episode is stripped (its text quoted the engram)…
+      expect(committed).not.toContain('EP-3')
+      expect(committed).not.toContain('personal cross-project note was wrong')
+      // …and an UNKNOWN engram reference is stripped too — strip-on-doubt.
+      expect(committed).not.toContain('EP-4')
+      // Working tree keeps everything (no data loss).
+      const onDisk = readFileSync(join(dir, 'episodes.yaml'), 'utf8')
+      expect(onDisk).toContain('EP-3')
+      expect(onDisk).toContain('EP-4')
+    })
+
+    it('shared: strips tensions whose pair includes a non-pushed engram (statement snapshots leak)', () => {
+      sync(dir, bareRemote, { remoteType: 'shared' })
+      const committed = git('show HEAD:tensions.yaml', dir)
+      expect(committed).toContain('T-2026-0730-001')
+      expect(committed).not.toContain('T-2026-0730-002')
+      // The tension embedded the personal engram's statement verbatim — must not leave.
+      expect(committed).not.toContain('personal cross-project note')
+      const onDisk = readFileSync(join(dir, 'tensions.yaml'), 'utf8')
+      expect(onDisk).toContain('T-2026-0730-002')
+    })
+
+    it('shared: strips candidate records by embedded engram references (shape-agnostic)', () => {
+      sync(dir, bareRemote, { remoteType: 'shared' })
+      const committed = git('show HEAD:candidates.yaml', dir)
+      expect(committed).toContain('ENG-TEAM:ENG-TEAM2')
+      expect(committed).not.toContain('ENG-GLOBAL')
+      expect(committed).not.toContain('personal cross-project note')
+      const onDisk = readFileSync(join(dir, 'candidates.yaml'), 'utf8')
+      expect(onDisk).toContain('ENG-GLOBAL')
+    })
+
+    it('shared: teammate clone round-trip carries no private-derived text in ANY store file', () => {
+      sync(dir, bareRemote, { remoteType: 'shared' })
+      const clone = mkdtempSync(join(tmpdir(), 'plur-clone-'))
+      try {
+        execSync(`git clone ${bareRemote} .`, { cwd: clone, stdio: 'pipe' })
+        for (const file of ['engrams.yaml', 'episodes.yaml', 'candidates.yaml', 'tensions.yaml']) {
+          const remoteCopy = readFileSync(join(clone, file), 'utf8')
+          expect(remoteCopy, file).not.toContain('personal cross-project note')
+          expect(remoteCopy, file).not.toContain('ENG-GLOBAL')
+        }
+        expect(readFileSync(join(clone, 'episodes.yaml'), 'utf8')).toContain('EP-1')
+        expect(readFileSync(join(clone, 'tensions.yaml'), 'utf8')).toContain('T-2026-0730-001')
+      } finally {
+        rmSync(clone, { recursive: true, force: true })
+      }
+    })
+
+    it('personal (default): sibling files still sync verbatim (regression)', () => {
+      sync(dir, bareRemote)
+      expect(git('show HEAD:episodes.yaml', dir)).toContain('EP-3')
+      expect(git('show HEAD:episodes.yaml', dir)).toContain('EP-4')
+      expect(git('show HEAD:tensions.yaml', dir)).toContain('T-2026-0730-002')
+      expect(git('show HEAD:candidates.yaml', dir)).toContain('ENG-GLOBAL')
+    })
+
+    it('shared: no new commit when only a stripped sibling record changes (deterministic blob, #396 property)', async () => {
+      sync(dir, bareRemote, { remoteType: 'shared' })
+      const countAfterFirst = parseInt(git('rev-list --count HEAD', dir), 10)
+      writeFileSync(
+        join(dir, 'episodes.yaml'),
+        EPISODES.replace('personal cross-project note was wrong', 'personal cross-project note was wrong EDITED'),
+      )
+      const result = await sync(dir, undefined, { remoteType: 'shared' })
+      expect(result.files_changed).toBe(0)
+      expect(result.action).toBe('up-to-date')
+      expect(parseInt(git('rev-list --count HEAD', dir), 10)).toBe(countAfterFirst)
+    })
+
+    it('shared: still commits when a pushable sibling record changes', async () => {
+      sync(dir, bareRemote, { remoteType: 'shared' })
+      writeFileSync(
+        join(dir, 'episodes.yaml'),
+        EPISODES.replace('routed ENG-TEAM to the team store', 'routed ENG-TEAM to the team store UPDATED'),
+      )
+      const result = await sync(dir, undefined, { remoteType: 'shared' })
+      expect(result.files_changed).toBeGreaterThan(0)
+      expect(git('show HEAD:episodes.yaml', dir)).toContain('UPDATED')
+    })
+
+    it('shared: warning also reports the stripped sibling record count', async () => {
+      const result = await sync(dir, bareRemote, { remoteType: 'shared' })
+      expect(result.warning).toBeDefined()
+      expect(result.warning).toMatch(/stayed local/)
+      expect(result.warning).toMatch(/episode\/candidate\/tension record/)
+    })
+
+    // Guard for the OTHER potential push path: packs are the only non-root
+    // store content sync stages, via the PACK_ALLOW_NAMES allowlist. Sibling
+    // store files inside a pack dir must never ride along — if a future pack
+    // format adds per-pack episodes/tensions, this fails until that path gets
+    // its own strip.
+    it('guard: sibling store files inside a pack dir are never staged', () => {
+      const packDir = join(dir, 'packs', 'some-pack')
+      mkdirSync(packDir, { recursive: true })
+      writeFileSync(join(packDir, 'SKILL.md'), '---\nname: some-pack\n---\n')
+      writeFileSync(join(packDir, 'episodes.yaml'), '- id: EP-PACK\n  summary: private session summary\n')
+      writeFileSync(join(packDir, 'candidates.yaml'), '- pair: "ENG-A:ENG-B"\n')
+      writeFileSync(join(packDir, 'tensions.yaml'), '- id: T-PACK\n  statement_a: private text\n')
+      sync(dir, bareRemote, { remoteType: 'shared' })
+      const tracked = git('ls-files', dir).split('\n')
+      expect(tracked).toContain('packs/some-pack/SKILL.md')
+      expect(tracked).not.toContain('packs/some-pack/episodes.yaml')
+      expect(tracked).not.toContain('packs/some-pack/candidates.yaml')
+      expect(tracked).not.toContain('packs/some-pack/tensions.yaml')
+    })
+  })
 })
