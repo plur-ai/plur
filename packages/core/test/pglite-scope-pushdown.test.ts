@@ -294,6 +294,78 @@ describe('PGLiteAdapter — permitted-scope pushdown', () => {
   })
 })
 
+describe('PGLiteAdapter — mounted-scope visibility grants (#775)', () => {
+  let dir: string
+  let yamlPath: string
+  let dbPath: string
+  let adapter: PGLiteAdapter
+
+  const GRANTS_CORPUS = [
+    mkEngram('ENG-2026-0730-201', 'project deploy row', { scope: 'project:a' }),
+    mkEngram('ENG-2026-0730-202', 'personal deploy row', { scope: 'global' }),
+    mkEngram('ENG-2026-0730-203', 'team deploy row', { scope: 'group:acme/eng' }),
+    mkEngram('ENG-2026-0730-204', 'team sub deploy row', { scope: 'group:acme/eng/sub' }),
+    mkEngram('ENG-2026-0730-205', 'sibling deploy row', { scope: 'group:acme/eng-private' }),
+    mkEngram('ENG-2026-0730-206', 'other team deploy row', { scope: 'group:other/team' }),
+  ]
+
+  beforeEach(async () => {
+    dir = mkdtempSync(join(tmpdir(), 'plur-775-pglite-'))
+    yamlPath = join(dir, 'engrams.yaml')
+    dbPath = join(dir, 'store.pglite')
+    seedYaml(yamlPath, GRANTS_CORPUS)
+    adapter = new PGLiteAdapter(yamlPath, dbPath, { vectorDim: DIM })
+    await adapter.reindex()
+  }, PGLITE_TIMEOUT)
+
+  afterEach(async () => {
+    if (adapter) await adapter.close()
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('loadFiltered: a granted scope and its true descendants pass the scope filter', async () => {
+    const ids = (await adapter.loadFiltered({
+      scope: 'project:a',
+      visibilityGrants: ['group:acme/eng'],
+    })).map(e => e.id)
+    expect(ids).toContain('ENG-2026-0730-201') // the filter scope
+    expect(ids).toContain('ENG-2026-0730-202') // personal pass-through
+    expect(ids).toContain('ENG-2026-0730-203') // granted scope
+    expect(ids).toContain('ENG-2026-0730-204') // true descendant
+    expect(ids, 'sibling string-prefix leaked through a grant (#383)').not.toContain('ENG-2026-0730-205')
+    expect(ids, 'an ungranted shared scope leaked').not.toContain('ENG-2026-0730-206')
+  }, PGLITE_TIMEOUT)
+
+  it('grants are inert without a scope filter', async () => {
+    const withGrants = (await adapter.loadFiltered({ visibilityGrants: ['group:acme/eng'] }))
+      .map(e => e.id).sort()
+    const without = (await adapter.loadFiltered({})).map(e => e.id).sort()
+    expect(withGrants).toEqual(without)
+  }, PGLITE_TIMEOUT)
+
+  it('SECURITY: grants never widen the scopes authorization allow-list', async () => {
+    const ids = (await adapter.loadFiltered({
+      scope: 'project:a',
+      scopes: ['project:a'],
+      visibilityGrants: ['group:acme/eng'],
+    })).map(e => e.id)
+    expect(ids).toEqual(['ENG-2026-0730-201'])
+    expect(await adapter.loadFiltered({ scopes: [], visibilityGrants: ['group:acme/eng'] })).toEqual([])
+  }, PGLITE_TIMEOUT)
+
+  it('searchBM25: the granted team row survives a scope-filtered search', async () => {
+    const hits = await adapter.searchBM25('deploy row', {
+      limit: 10,
+      scope: 'project:a',
+      visibilityGrants: ['group:acme/eng'],
+    })
+    const ids = hits.map(e => e.id)
+    expect(ids).toContain('ENG-2026-0730-203')
+    expect(ids).not.toContain('ENG-2026-0730-205')
+    expect(ids).not.toContain('ENG-2026-0730-206')
+  }, PGLITE_TIMEOUT)
+})
+
 describe('PGLiteAdapter — permitted-scope pushdown on the BYTEA fallback', () => {
   let dir: string
   let yamlPath: string

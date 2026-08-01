@@ -115,6 +115,96 @@ describe('inject() — permitted-scope allow-list', () => {
 })
 
 /**
+ * Mounted-scope visibility grants (#775) vs the allow-list.
+ *
+ * Mounting a store in `config.yaml` `stores:` grants its scope VISIBILITY
+ * under a project-scope filter — that is the whole feature. What it must NOT
+ * do is widen AUTHORIZATION: `options.scopes` is the fully-resolved
+ * permission decision of a layer above core, and a config file must never
+ * out-vote it. These are the adversarial tests for that boundary.
+ */
+describe('inject() — mounted-scope visibility grants (#775)', () => {
+  let dir: string
+  let plur: Plur
+
+  beforeEach(async () => {
+    dir = mkdtempSync(join(tmpdir(), 'plur-inject-grants-'))
+    const teamPath = join(dir, 'team.yaml')
+    // The mounted team store whose scope becomes the visibility grant.
+    writeFileSync(teamPath, `engrams:
+  - id: ENG-2026-0730-100
+    statement: the team deploys billing via the shared pipeline
+    type: behavioral
+    scope: group:acme/eng
+    status: active
+    version: 2
+    domain: ops.deploy
+    tags: [deploy]
+    activation:
+      retrieval_strength: 0.9
+      storage_strength: 1.0
+      frequency: 0
+      last_accessed: "2026-07-28"
+`)
+    writeFileSync(join(dir, 'config.yaml'), `stores:
+  - path: ${teamPath}
+    scope: group:acme/eng
+`)
+    plur = new Plur({ path: dir })
+    await plur.ready()
+    await plur.learn('alice deploys the billing service with terraform', { scope: 'user:acme:alice' })
+    await plur.learn('deploys are reviewed before release', { scope: 'global' })
+  })
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('the mounted scope passes a project-scope VISIBILITY filter', async () => {
+    // Pre-#775 this was zero: a project scope filter scored every `group:*`
+    // engram 0, so team engrams from mounted stores never survived.
+    const res = await plur.inject('how do we deploy billing', { scope: 'project:myapp' })
+    expect(`${res.directives}\n${res.constraints}\n${res.consider}`).toContain('shared pipeline')
+  })
+
+  it('ADVERSARIAL: the grant does NOT widen the options.scopes allow-list', async () => {
+    // The allow-list omits group:acme/eng. However granted for visibility,
+    // the team engram must stay out — authorization always wins.
+    const res = await plur.inject('how do we deploy billing', {
+      scope: 'project:myapp',
+      scopes: ['user:acme:alice', 'global'],
+    })
+    const all = `${res.directives}\n${res.constraints}\n${res.consider}`
+    expect(all, 'a visibility grant leaked past the authorization allow-list').not.toContain('shared pipeline')
+    // …while the permitted scopes still flow: the filter narrowed, it did not break.
+    expect(all).toContain('terraform')
+  })
+
+  it('ADVERSARIAL: an EMPTY allow-list still injects nothing, grants notwithstanding', async () => {
+    const res = await plur.inject('how do we deploy billing', {
+      scope: 'project:myapp',
+      scopes: [],
+    })
+    expect(res.count).toBe(0)
+    expect(res.injected_ids).toEqual([])
+  })
+
+  it('REGRESSION: without a mount the same group scope stays excluded', async () => {
+    // The old behavior is still the right behavior for un-mounted scopes.
+    const dir2 = mkdtempSync(join(tmpdir(), 'plur-inject-nogrant-'))
+    const p2 = new Plur({ path: dir2 })
+    try {
+      await p2.ready()
+      await p2.learn('the team deploys billing via the shared pipeline', { scope: 'group:acme/eng' })
+      const res = await p2.inject('how do we deploy billing', { scope: 'project:myapp' })
+      expect(`${res.directives}\n${res.constraints}\n${res.consider}`).not.toContain('shared pipeline')
+    } finally {
+      rmSync(dir2, { recursive: true, force: true })
+    }
+  })
+})
+
+/**
  * The same allow-list, applied to PACKS.
  *
  * A pack is installed knowledge rather than user data, which makes exempting it

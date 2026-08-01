@@ -458,6 +458,14 @@ describe.skipIf(!DSN)('PGLite and Postgres answer the same filter identically', 
     { domain: 'plur.storage' },
     { domain: 'plur' },
     { scope: 'project:plur', domain: 'plur.storage' },
+    // #775 mounted-scope visibility grants — the two SQL twins must answer
+    // grant-widened visibility identically too.
+    { scope: 'project:plur', visibilityGrants: ['group:plur/eng'] },
+    { scope: 'local', visibilityGrants: ['project:plur'] },
+    // A grant that is a string-prefix sibling of a corpus scope: must NOT
+    // admit project:plurality on either backend (#383).
+    { scope: 'group:plur/eng', visibilityGrants: ['project:plur'] },
+    { scope: 'project:plur', visibilityGrants: ['group:plur/eng'], status: 'active' },
   ]
 
   for (const filter of filters) {

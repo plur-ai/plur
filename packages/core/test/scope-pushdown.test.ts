@@ -181,6 +181,49 @@ describe.skipIf(!hasSqlite)('IndexedStorage.loadFiltered — permitted-scope pus
     expect(mine.length).toBe(20)
     expect(mine.every(e => e.scope === 'project:mine')).toBe(true)
   })
+
+  // --- #775: mounted-scope visibility grants ---
+
+  const GRANTS_CORPUS = [
+    mkEngram('ENG-2026-0730-101', 'project row', { scope: 'project:a' }),
+    mkEngram('ENG-2026-0730-102', 'personal row', { scope: 'global' }),
+    mkEngram('ENG-2026-0730-103', 'team row', { scope: 'group:acme/eng' }),
+    mkEngram('ENG-2026-0730-104', 'team sub row', { scope: 'group:acme/eng/sub' }),
+    mkEngram('ENG-2026-0730-105', 'team sibling row', { scope: 'group:acme/eng-private' }),
+    mkEngram('ENG-2026-0730-106', 'other team row', { scope: 'group:other/team' }),
+  ]
+
+  it('#775: visibilityGrants admit the granted scope AND its true descendants under a scope filter', async () => {
+    const s = await seedAndOpen(GRANTS_CORPUS)
+    const ids = (await s.loadFiltered({ scope: 'project:a', visibilityGrants: ['group:acme/eng'] }))
+      .map(e => e.id)
+    expect(ids).toContain('ENG-2026-0730-101') // the filter scope itself
+    expect(ids).toContain('ENG-2026-0730-102') // personal pass-through, unchanged
+    expect(ids).toContain('ENG-2026-0730-103') // the granted scope
+    expect(ids).toContain('ENG-2026-0730-104') // its true descendant
+    expect(ids, 'sibling string-prefix leaked through a grant (#383)').not.toContain('ENG-2026-0730-105')
+    expect(ids, 'an ungranted shared scope leaked').not.toContain('ENG-2026-0730-106')
+  })
+
+  it('#775: grants are inert without a scope filter — visibility only widens visibility', async () => {
+    const s = await seedAndOpen(GRANTS_CORPUS)
+    const withGrants = (await s.loadFiltered({ visibilityGrants: ['group:acme/eng'] })).map(e => e.id).sort()
+    const without = (await s.loadFiltered({})).map(e => e.id).sort()
+    expect(withGrants).toEqual(without)
+  })
+
+  it('#775 SECURITY: grants never widen the scopes authorization allow-list', async () => {
+    const s = await seedAndOpen(GRANTS_CORPUS)
+    // The allow-list omits the granted scope: the team row must stay out.
+    const ids = (await s.loadFiltered({
+      scope: 'project:a',
+      scopes: ['project:a'],
+      visibilityGrants: ['group:acme/eng'],
+    })).map(e => e.id)
+    expect(ids).toEqual(['ENG-2026-0730-101'])
+    // And the empty allow-list still matches NOTHING, grants or no grants.
+    expect(await s.loadFiltered({ scopes: [], visibilityGrants: ['group:acme/eng'] })).toEqual([])
+  })
 })
 
 describe('Plur read paths — permitted-scope pushdown', () => {
@@ -277,5 +320,44 @@ describe('LIKE metacharacters in a caller-supplied scope or domain', () => {
   it('an ordinary scope is unchanged', () => {
     const { params } = buildFilterClause({ status: 'active', domain: 'ops/deploy' })
     expect(params).toContain('ops/deploy')
+  })
+})
+
+describe('buildFilterClause — mounted-scope visibility grants (#775)', () => {
+  it('each grant appends one segment-aware containment triple to the visibility clause', () => {
+    const { where, params } = buildFilterClause({
+      scope: 'project:a',
+      visibilityGrants: ['group:acme/eng'],
+    })
+    // 3 params for the filter scope + 3 per grant, in order.
+    expect(params).toEqual([
+      'project:a', 'project:a', 'project:a',
+      'group:acme/eng', 'group:acme/eng', 'group:acme/eng',
+    ])
+    // Two LIKE arms per triple, all escaped.
+    expect((where.match(/LIKE \$\d+ \|\| ':%' ESCAPE/g) ?? []).length).toBe(2)
+    expect((where.match(/LIKE \$\d+ \|\| '\/%' ESCAPE/g) ?? []).length).toBe(2)
+  })
+
+  it('a wildcard grant matches literally, not across namespaces', () => {
+    const { params } = buildFilterClause({ scope: 'project:a', visibilityGrants: ['group:%'] })
+    // The equality arm keeps the raw grant; both LIKE arms are escaped.
+    expect(params.filter(p => p === 'group:%').length).toBe(1)
+    expect(params.filter(p => p === 'group:\\%').length).toBe(2)
+  })
+
+  it('grants without a scope filter contribute nothing', () => {
+    const bare = buildFilterClause({ status: 'active' })
+    const granted = buildFilterClause({ status: 'active', visibilityGrants: ['group:acme/eng'] })
+    expect(granted.where).toBe(bare.where)
+    expect(granted.params).toEqual(bare.params)
+  })
+
+  it('grants never touch the scopes authorization clause', () => {
+    const { where, params } = buildFilterClause({ scopes: [], visibilityGrants: ['group:acme/eng'] })
+    // The empty allow-list still compiles to `= ANY` over the empty array —
+    // matching nothing — and no grant parameter appears anywhere.
+    expect(where).toContain('= ANY')
+    expect(params).toEqual([[]])
   })
 })
