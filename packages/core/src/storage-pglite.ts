@@ -403,7 +403,7 @@ export class PGLiteAdapter implements DerivedIndexAdapter {
       params.push(filter.scopes)
     }
     if (filter.scope) {
-      // Read-side scope filter, two parts OR'd:
+      // Read-side scope filter, three parts OR'd:
       //  (1) personal-family pass-through — ALL non-shared scopes (local, global,
       //      user:*, agent:*, …), not just 'global'. The old `scope = 'global'`
       //      dropped local/user:/agent: under a project-scope recall (#402, the
@@ -412,14 +412,24 @@ export class PGLiteAdapter implements DerivedIndexAdapter {
       //      kept in sync with SHARED_SCOPE_PREFIXES in scope-util.ts.
       //  (2) segment-aware membership (#383): the requested scope, exactly or a
       //      descendant on a REAL delimiter (`:`/`/`) — never a sibling prefix.
-      conditions.push(
+      //  (3) mounted-scope visibility grants (#775): one segment-aware triple
+      //      per granted scope (config.stores), so team engrams in mounted
+      //      scopes pass a project-scope visibility filter like the personal
+      //      family. VISIBILITY ONLY — the `scopes` authorization clause above
+      //      is never widened by grants. SQL twin of makeVisibilityPredicate
+      //      (scope-util.ts); keep all four arms in lockstep.
+      let clause =
         `((NOT (${col}scope LIKE 'group:%' OR ${col}scope LIKE 'project:%' OR ${col}scope LIKE 'space:%' OR ${col}scope LIKE 'team:%' OR ${col}scope LIKE 'org:%' OR ${col}scope = 'public' OR ${col}scope LIKE 'public:%' OR ${col}scope LIKE 'public/%'))`
-        + ` OR ${col}scope = $${i++} OR ${col}scope LIKE $${i++} || ':%' ESCAPE '\\' OR ${col}scope LIKE $${i++} || '/%' ESCAPE '\\')`,
-      )
+        + ` OR ${col}scope = $${i++} OR ${col}scope LIKE $${i++} || ':%' ESCAPE '\\' OR ${col}scope LIKE $${i++} || '/%' ESCAPE '\\'`
       // Escaped for the same reason as the Postgres copy — these two clauses
       // must stay identical; they have drifted before, and that drift was an
       // authorization bypass.
       params.push(filter.scope, escapeLikePattern(filter.scope), escapeLikePattern(filter.scope))
+      for (const g of filter.visibilityGrants ?? []) {
+        clause += ` OR ${col}scope = $${i++} OR ${col}scope LIKE $${i++} || ':%' ESCAPE '\\' OR ${col}scope LIKE $${i++} || '/%' ESCAPE '\\'`
+        params.push(g, escapeLikePattern(g), escapeLikePattern(g))
+      }
+      conditions.push(clause + ')')
     }
     if (filter.domain) {
       conditions.push(`${col}domain LIKE $${i++} || '%' ESCAPE '\\'`)
@@ -554,10 +564,17 @@ export class PGLiteAdapter implements DerivedIndexAdapter {
    * `opts.scopes` is pushed into the candidate SELECT via loadFiltered, so the
    * BM25 scorer only ever sees permitted engrams — IDF and the top-N cut are
    * both computed over the in-scope corpus, not over the org's.
+   *
+   * The FULL StorageFilter is honoured (#775): this used to forward only
+   * `scopes` and silently drop a caller's `scope` visibility filter (and
+   * `domain`), which the interface doc explicitly calls a silent-wrong-results
+   * bug. The Postgres primary `searchBM25` already spreads the whole filter —
+   * this keeps the two in lockstep, `visibilityGrants` included.
    */
-  async searchBM25(query: string, opts: { limit: number } & ScopeRestriction): Promise<Engram[]> {
-    const candidates = await this.loadFiltered({ status: 'active', scopes: opts.scopes })
-    return searchEngrams(candidates, query, opts.limit)
+  async searchBM25(query: string, opts: { limit: number } & StorageFilter): Promise<Engram[]> {
+    const { limit, ...filter } = opts
+    const candidates = await this.loadFiltered({ ...filter, status: filter.status ?? 'active' })
+    return searchEngrams(candidates, query, limit)
   }
 
   /**

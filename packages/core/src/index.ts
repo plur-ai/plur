@@ -52,7 +52,7 @@ import type { AsyncPrimaryStore } from './store/primary-store.js'
 import { requiresIndexSync, asDerivedIndex } from './storage-adapter.js'
 import type { StorageAdapter } from './storage-adapter.js'
 import { resolveBackendTier, type BackendSelection } from './backend-selection.js'
-import { isSharedScope, isPersonalScope, isScopeWithin, scopeAllowFilter } from './scope-util.js'
+import { isSharedScope, isScopeWithin, scopeAllowFilter, makeVisibilityPredicate } from './scope-util.js'
 import type { Engram } from './schemas/engram.js'
 import type { Episode } from './schemas/episode.js'
 import type { PackManifest } from './schemas/pack.js'
@@ -107,7 +107,7 @@ export { rankScopes, SCOPE_MATCH_THRESHOLD, WEIGHT_TAG, SUGGEST_DISPLAY_MIN_CONF
 // importing it from here would form index → inject → index. They are imported
 // above for internal use and re-exported here so the public `@plur-ai/core` API
 // (`isSharedScope`, `isPersonalScope`, `SHARED_SCOPE_PREFIXES`) is unchanged.
-export { isSharedScope, isPersonalScope, SHARED_SCOPE_PREFIXES, scopeAllowFilter } from './scope-util.js'
+export { isSharedScope, isPersonalScope, SHARED_SCOPE_PREFIXES, scopeAllowFilter, makeVisibilityPredicate } from './scope-util.js'
 export { detectPlurStorage, type PlurPaths } from './storage.js'
 export { IndexedStorage } from './storage-indexed.js'
 export { PGLiteAdapter, type PGLiteAdapterOptions, type VectorPrecision } from './storage-pglite.js'
@@ -2423,6 +2423,10 @@ export class Plur {
         status: 'active' as const,
         scope: options?.scope,
         scopes: options?.scopes,
+        // Mounted-scope visibility grants (#775) go INTO the pushdown so
+        // `limit` counts granted team rows too. Visibility-only — widens the
+        // `scope` clause, never the `scopes` authorization clause.
+        visibilityGrants: this._grantedScopes(),
         domain: options?.domain,
       }
       // Widen and retry rather than trust a fixed multiplier.
@@ -2954,6 +2958,22 @@ export class Plur {
   }
 
   /**
+   * Mounted-scope visibility grants (#775): the deduplicated scopes of every
+   * `config.yaml` `stores:` entry — path AND url entries alike. Mounting a
+   * store with your own token is the consent act, so its scope passes a
+   * project-scope VISIBILITY filter exactly like the personal family (see
+   * `makeVisibilityPredicate` in scope-util.ts). Always on, no config knob.
+   *
+   * STRICTLY visibility-only: these are threaded into the `scope` visibility
+   * filter (in-memory predicate + `StorageFilter.visibilityGrants` SQL
+   * pushdown) and MUST NEVER be folded into `options.scopes` — that list is
+   * the authorization decision and grants never widen it.
+   */
+  private _grantedScopes(): string[] {
+    return [...new Set((this.config.stores ?? []).map(s => s.scope))]
+  }
+
+  /**
    * Engrams a primary-store pushdown cannot see: secondary (team/project)
    * stores from `config.stores`, and installed packs.
    *
@@ -2978,8 +2998,10 @@ export class Plur {
     }
     if (options?.domain) filtered = filtered.filter(e => e.domain?.startsWith(options.domain!))
     if (options?.scope) {
-      const scope = options.scope
-      filtered = filtered.filter(e => isScopeWithin(e.scope, scope) || isPersonalScope(e.scope))
+      // Visibility filter (#353/#775): scope containment, personal-family
+      // pass-through, and mounted-scope grants — the ONE shared predicate.
+      const visible = makeVisibilityPredicate(options.scope, this._grantedScopes())
+      filtered = filtered.filter(e => visible(e.scope))
     }
     return filtered
   }
@@ -2991,6 +3013,10 @@ export class Plur {
         status: 'active',
         scope: options?.scope,
         scopes: options?.scopes,
+        // Mounted-scope visibility grants (#775) — widen the `scope`
+        // VISIBILITY clause only; a no-op without `scope`, and never touches
+        // the `scopes` authorization pushdown above.
+        visibilityGrants: this._grantedScopes(),
         domain: options?.domain,
       })
     } else {
@@ -3014,18 +3040,18 @@ export class Plur {
         engrams = engrams.filter(e => e.domain?.startsWith(options.domain!))
       }
       if (options?.scope) {
-        const scope = options.scope
-        // Read-side scope filter (#353). Keep the `startsWith` arm so an explicit
-        // personal scope like `user:alice` still catches sub-scopes (e.g.
-        // `user:alice:notes`). `isPersonalScope` passes ALL personal-family
-        // scopes (local, global, user:*, agent:*), not just global — so a
-        // project-scope recall sees personal engrams. D1-ASYMMETRY: an explicit
-        // `global` recall therefore includes all personal-family engrams — wider
-        // than `global` inject, which is targeted to global-only (see inject.ts
-        // INJECT_GLOBAL_IS_TARGETED).
-        engrams = engrams.filter(e =>
-          isScopeWithin(e.scope, scope) || isPersonalScope(e.scope)
-        )
+        // Read-side scope filter (#353/#775) — the ONE shared visibility
+        // predicate. Segment-aware containment keeps the `startsWith` arm so
+        // an explicit personal scope like `user:alice` still catches
+        // sub-scopes (e.g. `user:alice:notes`). `isPersonalScope` passes ALL
+        // personal-family scopes (local, global, user:*, agent:*), not just
+        // global — so a project-scope recall sees personal engrams. Mounted
+        // store scopes (#775) pass the same way. D1-ASYMMETRY: an explicit
+        // `global` recall therefore includes all personal-family engrams —
+        // wider than `global` inject, which is targeted to global-only (see
+        // inject.ts INJECT_GLOBAL_IS_TARGETED).
+        const visible = makeVisibilityPredicate(options.scope, this._grantedScopes())
+        engrams = engrams.filter(e => visible(e.scope))
       }
     }
     // Temporal validity: exclude expired or not-yet-valid engrams.
@@ -3306,6 +3332,11 @@ export class Plur {
       {
         prompt: task,
         scope: options?.scope,
+        // Mounted-scope visibility grants (#775): scopes from config.stores
+        // pass the `scope` VISIBILITY filter inside scoreEngram like the
+        // personal family. Deliberately independent of the `permitted`
+        // authorization filter above — grants never widen `options.scopes`.
+        grantedScopes: this._grantedScopes(),
         maxTokens: budget,
       },
       engrams,

@@ -169,8 +169,23 @@ export class IndexedStorage {
       // engrams. Segment-aware membership (#383): a descendant matches only on a
       // real delimiter (`:`/`/`), so a sibling string-prefix (project:application
       // under a project:app query) does NOT leak. Mirrors isScopeWithin.
-      conditions.push("(personal = 1 OR scope = ? OR scope LIKE ? || ':%' OR scope LIKE ? || '/%')")
+      //
+      // Mounted-scope visibility grants (#775): each grant contributes the same
+      // segment-aware containment triple as `filter.scope`, so an engram in a
+      // granted scope (or a true descendant of one) passes the visibility
+      // filter like the personal family. The precomputed `personal` column is
+      // untouched — grants vary per query (they come from config.stores), so
+      // they must be OR-clauses, not an indexed flag. VISIBILITY ONLY: the
+      // `scopes` allow-list above is authorization and never widened by grants.
+      // SQL twin of makeVisibilityPredicate (scope-util.ts) — keep all four
+      // arms (in-memory / sqlite / pglite / postgres) in lockstep.
+      const clauses = ['personal = 1', "scope = ?", "scope LIKE ? || ':%'", "scope LIKE ? || '/%'"]
       params.push(filter.scope, filter.scope, filter.scope)
+      for (const g of filter.visibilityGrants ?? []) {
+        clauses.push("scope = ?", "scope LIKE ? || ':%'", "scope LIKE ? || '/%'")
+        params.push(g, g, g)
+      }
+      conditions.push(`(${clauses.join(' OR ')})`)
     }
     if (filter.domain) {
       conditions.push("domain LIKE ? || '%'")
