@@ -35,13 +35,21 @@ const n = plur.list().length      →  const n = (await plur.list()).length
 awaits `undefined` and yields `undefined`. Getting that wrong produces code
 that runs and returns a plausible value.
 
+Receiver chains are resolved whole, however they are laid out: split across
+lines (`plur\n  .recall(q)`), with comments inside the chain, through calls
+(`getPlur().recall(q)`, `plur.scoped(s).recall(q)`) and optional links
+(`plur?.recall(q)`). The `await` always lands at the head of the chain — the
+only position it may legally occupy.
+
 It reports, but refuses to rewrite:
 
 - **calls inside `Promise.race` / `Promise.all` arrays** — awaiting there
   settles the call *before* the combinator sees it. This silently disabled a 5s
   timeout guard in PLUR's own CLI, and the test suite stayed green.
 - **concise arrow bodies** — the enclosing function has to become `async` first.
-- **calls whose result is consumed across multiple lines.**
+- **calls whose result is consumed across multiple lines** — including a chain
+  whose consumer sits on its own line (`plur\n  .recall(q)\n  .length`): the
+  `(await ...)` wrap there is left to a human.
 
 It never touches string literals or comments. An early version of the codemod
 that migrated PLUR itself rewrote a CLI help string into `hook-await inject`

@@ -39,7 +39,9 @@ const SKIP_DIRS = new Set(['node_modules', 'dist', 'build', '.git', 'coverage', 
  * optimisation — the scanner is authoritative. Built from `NEWLY_ASYNC` so it
  * cannot fall behind it.
  */
-const PREFILTER = new RegExp(String.raw`\.(?:${NEWLY_ASYNC.join('|')})\s*\(`)
+// `\s*` after the dot mirrors the scanner: `plur.\n  recall(q)` is a chain
+// the scanner resolves, so the pre-filter must not skip the file it sits in.
+const PREFILTER = new RegExp(String.raw`\.\s*(?:${NEWLY_ASYNC.join('|')})\s*\(`)
 
 function walk(dir: string, exts: Set<string>, out: string[] = []): string[] {
   let entries
