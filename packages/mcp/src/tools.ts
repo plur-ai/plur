@@ -1,8 +1,8 @@
 import { existsSync, unlinkSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
-import { Plur, extractMetaEngrams, validateMetaEngram, confidenceBand, generateProfile, getProfileForInjection, markProfileDirty, selectModelForOperation, readHistoryForEngram, getCachedUpdateCheck, minorVersionsBehind, scanForTensions, CapabilityCanary, readProjectConfig, isSharedScope, resolveRerankerName, getReranker, classifyRerankerFailure, hfCacheDirName, SUGGEST_DISPLAY_MIN_CONFIDENCE } from '@plur-ai/core'
-import type { LlmFunction, MetaField, TensionStatus, RerankerEvalResult, HistoryEvent, Receipt } from '@plur-ai/core'
+import { Plur, extractMetaEngrams, validateMetaEngram, confidenceBand, generateProfile, getProfileForInjection, markProfileDirty, selectModelForOperation, readHistoryForEngram, getCachedUpdateCheck, minorVersionsBehind, scanForTensions, CapabilityCanary, readProjectConfig, isSharedScope, resolveRerankerName, getReranker, classifyRerankerFailure, hfCacheDirName, SUGGEST_DISPLAY_MIN_CONFIDENCE, mcpRemoteWarningLine, doctorRemoteRemediation } from '@plur-ai/core'
+import type { LlmFunction, MetaField, TensionStatus, RerankerEvalResult, HistoryEvent, Receipt, RemoteStoreStatusEntry } from '@plur-ai/core'
 import { recordTelemetry } from './telemetry.js'
 import { VERSION } from './version.js'
 import { z } from 'zod'
@@ -47,6 +47,33 @@ export interface ToolDefinition {
 }
 
 /**
+ * A4′ (#776): attach per-host remote degradation to a tool response — ONLY
+ * when a host is non-ok or was silently scope-narrowed (`dropped_scopes`).
+ * Structured block + ONE prose `warning` line (agent-directed strings from
+ * the shared core table — consequence + agent action), mirroring the
+ * hybrid-degraded warning pattern above it. Healthy hosts attach nothing.
+ */
+function attachRemoteStoreDegradation(response: Record<string, unknown>, plur: Plur): void {
+  let status: RemoteStoreStatusEntry[]
+  try {
+    status = plur.remoteStoreStatus()
+  } catch {
+    return // surfacing must never break the tool response
+  }
+  const degraded = status.filter(s => s.status !== 'ok' || (s.dropped_scopes?.length ?? 0) > 0)
+  if (degraded.length === 0) return
+  response.remote_stores = degraded.map(s => ({
+    host: s.host,
+    status: s.status,
+    ...(s.dropped_scopes && s.dropped_scopes.length > 0 ? { dropped_scopes: s.dropped_scopes } : {}),
+  }))
+  const line = `Remote store degradation — ${degraded.map(s => mcpRemoteWarningLine(s)).join(' ')}`
+  response.warning = typeof response.warning === 'string' && response.warning.length > 0
+    ? `${response.warning} ${line}`
+    : line
+}
+
+/**
  * The canonical `plur_recall` handler (#693).
  *
  * Hoisted out of the tool literal so the deprecated `plur_recall_hybrid`
@@ -65,8 +92,9 @@ const recallHandler: ToolDefinition['handler'] = async (args, plur) => {
       scope: args.scope as string | undefined,
       domain: args.domain as string | undefined,
       limit: args.limit as number | undefined,
+      remote_timeout_ms: 2000, // MCP recall remote budget (#776)
     })
-    return {
+    const response: Record<string, unknown> = {
       results: results.map(e => {
         const supersededBy = e.relations?.superseded_by
         const annotation = supersededBy?.length ? ` [superseded by ${supersededBy.join(', ')}]` : ''
@@ -82,6 +110,8 @@ const recallHandler: ToolDefinition['handler'] = async (args, plur) => {
       count: results.length,
       mode: 'keyword',
     }
+    attachRemoteStoreDegradation(response, plur)
+    return response
   }
   // mode === 'hybrid' (default)
   const budget = args.budget as { max_tokens?: number; max_results?: number; ttl_seconds?: number } | undefined
@@ -95,6 +125,7 @@ const recallHandler: ToolDefinition['handler'] = async (args, plur) => {
     scope: args.scope as string | undefined,
     domain: args.domain as string | undefined,
     limit: fetchLimit,
+    remote_timeout_ms: 2000, // MCP recall remote budget (#776)
   })
   // Opt-in, content-free engagement counter (default-off; no query text).
   recordTelemetry('recall')
@@ -162,6 +193,8 @@ const recallHandler: ToolDefinition['handler'] = async (args, plur) => {
       response.reranker_warning = `PLUR_RERANKER is set but the reranker did not engage — results are RRF-only (fusion order, no cross-encoder rerank).${corruptNote} Last error: ${rr.lastError}. Run plur_doctor for diagnosis.`
     }
   }
+  // A4′ (#776): per-host remote degradation — attached only when non-ok.
+  attachRemoteStoreDegradation(response, plur)
   return response
 }
 
@@ -925,7 +958,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
 
     {
       name: 'plur_recall',
-      description: 'Search engrams by topic. Default mode is hybrid (BM25 + local embeddings via RRF) — set mode:"keyword" for BM25-only. No API calls, fully local. Note: a project-scope filter also returns personal-family engrams (local, global, user:*, agent:*); an explicit scope=global recall returns ALL personal-family engrams — wider than scope=global INJECT, which is targeted to the global namespace only.',
+      description: 'Search engrams by topic. Default mode is hybrid (BM25 + local embeddings via RRF) — set mode:"keyword" for BM25-only. Local search plus, when a configured enterprise store is part of the current project/work, one live timeout-bounded recall per remote host merged in (a `remote_stores` block + warning appears when a host is degraded; no host configured or implicated = fully local). Note: a project-scope filter also returns personal-family engrams (local, global, user:*, agent:*); an explicit scope=global recall returns ALL personal-family engrams — wider than scope=global INJECT, which is targeted to the global namespace only.',
       annotations: { title: 'Recall', readOnlyHint: true, idempotentHint: true },
       inputSchema: {
         type: 'object',
@@ -946,7 +979,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
 
     {
       name: 'plur_recall_hybrid',
-      description: '[Deprecated since 0.16 — use plur_recall (mode defaults to hybrid). Alias kept for backwards compatibility; removal earliest 0.18.] Hybrid search — BM25 + local embeddings merged via Reciprocal Rank Fusion. No API calls, fully local.',
+      description: '[Deprecated since 0.16 — use plur_recall (mode defaults to hybrid). Alias kept for backwards compatibility; removal earliest 0.18.] Hybrid search — BM25 + local embeddings merged via Reciprocal Rank Fusion, plus the live enterprise-store recall leg when one is configured and project-relevant.',
       annotations: { title: 'Recall (hybrid) [deprecated alias]', readOnlyHint: true, idempotentHint: true },
       inputSchema: {
         type: 'object',
@@ -1028,7 +1061,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
           session_id,
         })
         _recordInjectionTelemetry(session_id, result.injected_packs)
-        return {
+        const response: Record<string, unknown> = {
           directives: result.directives,
           consider: result.consider,
           count: result.count,
@@ -1038,6 +1071,9 @@ function getAllToolDefinitions(): ToolDefinition[] {
           // #181: unresolved-tension warnings — flag contradicted context
           ...(result.warnings ? { warnings: result.warnings } : {}),
         }
+        // A4′ (#776): per-host remote degradation — only when non-ok.
+        attachRemoteStoreDegradation(response, plur)
+        return response
       },
     },
 
@@ -1161,7 +1197,9 @@ function getAllToolDefinitions(): ToolDefinition[] {
           return { success: true, retired: { id: args.id as string } }
         }
         if (args.search) {
-          const matches = await plur.recall(args.search as string, { limit: 100 })
+          // remote:false (#776) — forget-by-search resolves local retirement
+          // targets; it must not fan the search phrase out to remote hosts.
+          const matches = await plur.recall(args.search as string, { limit: 100, remote: false })
           if (matches.length === 0) return { success: false, error: `No active engrams matching "${args.search}"` }
           if (matches.length === 1) {
             await plur.forget(matches[0].id)
@@ -1946,6 +1984,35 @@ function getAllToolDefinitions(): ToolDefinition[] {
             }
           }
         } catch { /* best-effort — never let the remote probe break doctor */ }
+        // #776 A4′: live-recall leg status per host, fed by the last recall
+        // outcomes (not by a fresh probe) — this is what tells the user WHY
+        // recent recalls served local-only, including states /me can't see
+        // (rate_limited, unsupported, circuit-breaker cooldown, silent scope
+        // narrowing via dropped_scopes).
+        try {
+          for (const s of plur.remoteStoreStatus()) {
+            const fix = doctorRemoteRemediation(s)
+            const degraded = s.status !== 'ok' || (s.dropped_scopes?.length ?? 0) > 0
+            checks.push({
+              check: `remote recall: ${s.host}`,
+              ok: !degraded,
+              detail: degraded
+                ? `Last live recall: ${s.status}${s.dropped_scopes?.length ? ` (dropped scopes: ${s.dropped_scopes.join(', ')})` : ''} — recent recalls served local results only.`
+                : `Last live recall ok (${s.count} row(s) in ${s.ms}ms)`,
+            })
+            if (fix) remediation.push(fix)
+          }
+          // (url, token) fan-out sanity: differing tokens per endpoint mean
+          // one POST per token on every recall — a misconfiguration.
+          for (const c of plur.remoteEndpointTokenConflicts()) {
+            checks.push({
+              check: `remote store tokens: ${c.url}`,
+              ok: false,
+              detail: `${c.tokens} distinct tokens configured for this endpoint — recall dials once per (url, token).`,
+            })
+            remediation.push(`Remote ${c.url}: ${c.tokens} distinct tokens are configured across its store entries — consolidate to one token in ~/.plur/config.yaml so recall dials the host once.`)
+          }
+        } catch { /* best-effort — never let recall status break doctor */ }
         return {
           ok: checks.every(c => c.ok),
           checks,
@@ -2071,6 +2138,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
             scope: tags?.length ? `tags:${tags.join(',')}` : undefined,
             session_id, // stamped on the co_injection provenance event (#452)
             source: 'session_start',
+            remote_timeout_ms: 5000, // session_start warm budget (#776)
           })
           _recordInjectionTelemetry(session_id, result.injected_packs)
           if (result.count > 0) {
@@ -2231,7 +2299,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
           } catch { /* best-effort */ }
         }
 
-        return {
+        const sessionResponse: Record<string, unknown> = {
           session_id,
           engrams: engrams ?? [],
           store_stats,
@@ -2264,6 +2332,10 @@ function getAllToolDefinitions(): ToolDefinition[] {
           // Version staleness warning (issue #151)
           ...(version_warning ? { version_warning, version: VERSION } : {}),
         }
+        // A4′ (#776): per-host remote recall degradation from the injection
+        // above — attached only when a host is non-ok or scope-narrowed.
+        attachRemoteStoreDegradation(sessionResponse, plur)
+        return sessionResponse
       },
     },
 

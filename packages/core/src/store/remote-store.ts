@@ -12,8 +12,12 @@ import { ScopeMetadataSchema, type ScopeMetadata } from '../schemas/scope-metada
  * malicious remote could spread arbitrary / type-confused data (and instruction-
  * carrying `statement`s) into the local injection pool via `as unknown as Engram`.
  * `.passthrough()` keeps unmodeled fields; the point is to gate the meaningful ones.
+ *
+ * Exported (#776): the server-authoritative recall leg (remote-recall.ts)
+ * validates /api/v1/recall rows through the SAME schema — one trust boundary,
+ * not two that can drift.
  */
-const RemoteRowSchema = z.object({
+export const RemoteRowSchema = z.object({
   id: z.string().regex(/^(ENG|ABS|META)-[A-Za-z0-9-]+$/),
   scope: z.string().min(1),
   status: z.enum(['active', 'dormant', 'retired', 'candidate']),

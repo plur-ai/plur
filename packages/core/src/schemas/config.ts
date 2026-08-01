@@ -20,6 +20,17 @@ export const StoreEntrySchema = z.object({
   scope: z.string(),
   shared: z.boolean().default(false),
   readonly: z.boolean().default(false),
+  /**
+   * Per-store override for the server-authoritative recall dialing rule
+   * (#776). Optional and backward compatible — absent means the strict
+   * scope-relevance rule decides:
+   *   - `always` — this store's host is dialed on every recall, and this
+   *     store's scope is always in the dialed set, project context or not.
+   *   - `never`  — this store never participates in live remote recall
+   *     (its scope is excluded from dialing; other entries on the same host
+   *     still dial normally).
+   */
+  dial: z.enum(['always', 'never']).optional().catch(undefined),
   description: z.string().optional()
     .describe('Human-readable explanation of what this scope is for (#345). Surfaced in store/scope discovery.'),
   // `covers` and `sensitivity` are shape-tolerant (R2-D #7): a malformed SHAPE

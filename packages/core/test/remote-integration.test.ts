@@ -700,3 +700,115 @@ describe('Remote mutation routing — pin / promote / reportFailure (#185, #86)'
     expect((serverEngram?.data as any)?.pinned).toBeUndefined()
   })
 })
+
+// ---------------------------------------------------------------------------
+// #776 — server-authoritative recall merged into recall/inject
+// ---------------------------------------------------------------------------
+
+describe('server-authoritative recall integration (#776)', () => {
+  let dir: string
+  const SCOPE = 'group:test'
+  const PROJECT = 'project:test/app' // org 'test' → implicates the group:test store
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'plur-rr-integ-'))
+    server.reset()
+    writeFileSync(
+      join(dir, 'config.yaml'),
+      yaml.dump({
+        embeddings: { enabled: false },
+        stores: [{ url: baseUrl, token: TOKEN, scope: SCOPE, shared: true, readonly: false }],
+        index: false,
+      }, { lineWidth: 120, noRefs: true }),
+    )
+  })
+
+  const row = (id: string, statement: string, extra: Record<string, unknown> = {}) => ({
+    id, scope: SCOPE, status: 'active', statement, ...extra,
+  })
+
+  it('merge ordering: the server-best row beats a weak local match', async () => {
+    const plur = new Plur({ path: dir })
+    await plur.learn('deployment mentioned once in passing', { scope: PROJECT })
+    server.recallRows = [row('ENG-2026-0731-050', 'deployment checklist deployment runbook deployment', { score: 1 })]
+    const results = await plur.recall('deployment checklist', { scope: PROJECT })
+    expect(results.length).toBeGreaterThanOrEqual(2)
+    expect((results[0] as any)._originalId).toBe('ENG-2026-0731-050')
+  })
+
+  it('RRF consensus: a row in BOTH the peek path and the live leg dedups to ONE id and ranks first', async () => {
+    // Same engram reachable via the legacy peek cache (GET /engrams) AND the
+    // live recall leg (POST /recall). The two paths MUST produce identical
+    // namespaced ids — otherwise RRF splits the row and feedback misroutes.
+    server.seedEngram({
+      id: 'ENG-2026-0731-051',
+      scope: SCOPE,
+      status: 'active',
+      data: { statement: 'consensus fact about release automation', tags: [] },
+    })
+    server.recallRows = [row('ENG-2026-0731-051', 'consensus fact about release automation', { score: 1 })]
+
+    const plur = new Plur({ path: dir })
+    await plur.warmRemoteCaches() // fill the peek cache (legacy path)
+    await plur.learn('release automation local note', { scope: PROJECT })
+
+    const results = await plur.recall('release automation consensus', { scope: PROJECT })
+    const consensusRows = results.filter(e => (e as any)._originalId === 'ENG-2026-0731-051')
+    expect(consensusRows).toHaveLength(1) // deduped, not split
+    expect((results[0] as any)._originalId).toBe('ENG-2026-0731-051') // consensus wins
+  })
+
+  it('recallHybrid merges the server leg too (BM25-only local mode)', async () => {
+    const plur = new Plur({ path: dir })
+    server.recallRows = [row('ENG-2026-0731-052', 'hybrid merge target', { score: 0.9 })]
+    const meta = await plur.recallHybridWithMeta('hybrid merge target', { scope: PROJECT })
+    expect(meta.engrams.some(e => (e as any)._originalId === 'ENG-2026-0731-052')).toBe(true)
+  })
+
+  it('injectHybrid: server rows join the pool via the boost channel and inject', async () => {
+    const plur = new Plur({ path: dir })
+    server.recallRows = [row('ENG-2026-0731-053', 'always gate releases behind the canary suite', { score: 1 })]
+    const result = await plur.injectHybrid('preparing a release', { scope: PROJECT })
+    expect(server.recallCalls).toBe(1)
+    expect(result.count).toBeGreaterThan(0)
+    expect(result.injected_ids.some(id => id.endsWith('-2026-0731-053'))).toBe(true)
+  })
+
+  it('ADVERSARIAL: a max-scored out-of-authorization row does NOT inject via the boost channel', async () => {
+    const plur = new Plur({ path: dir })
+    server.recallRows = [row('ENG-2026-0731-054', 'malicious high-score row', { score: 1 })]
+    // options.scopes is the AUTHORIZATION allow-list — the server row's scope
+    // (group:test) is not in it. Without the filter-before-boost rule, the
+    // 0.55+ boost would resurrect it (raw = boost*2 > threshold).
+    const result = await plur.injectHybrid('malicious high-score row', {
+      scope: PROJECT,
+      scopes: [PROJECT],
+    })
+    expect(result.injected_ids.some(id => id.endsWith('-2026-0731-054'))).toBe(false)
+  })
+
+  it('ADVERSARIAL: a max-scored foreign-scope row is dropped by the scope guard before boosts exist', async () => {
+    const plur = new Plur({ path: dir })
+    server.recallRows = [
+      { id: 'ENG-2026-0731-055', scope: 'group:evil/exfil', status: 'active', statement: 'smuggled row', score: 1 },
+    ]
+    const result = await plur.injectHybrid('smuggled row', { scope: PROJECT })
+    expect(result.injected_ids.some(id => id.includes('0731-055'))).toBe(false)
+    const recalled = await plur.recall('smuggled row', { scope: PROJECT })
+    expect(recalled.some(e => (e as any)._originalId === 'ENG-2026-0731-055')).toBe(false)
+  })
+
+  it('learn-dedup makes ZERO remote recall calls (internal-caller opt-out)', async () => {
+    const plur = new Plur({ path: dir })
+    await plur.learnAsync('a brand new fact that must not fan out', { scope: PROJECT })
+    await plur.learnAsync('a brand new fact that must not fan out', { scope: PROJECT }) // dedup hit path
+    expect(server.recallCalls).toBe(0)
+  })
+
+  it('BM25-only inject() never dials', async () => {
+    const plur = new Plur({ path: dir })
+    server.recallRows = [row('ENG-2026-0731-056', 'bm25 inject should stay local', { score: 1 })]
+    await plur.inject('bm25 inject should stay local', { scope: PROJECT })
+    expect(server.recallCalls).toBe(0)
+  })
+})

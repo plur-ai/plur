@@ -124,6 +124,20 @@ export interface RecallBudget {
   ttl_seconds?: number
 }
 
+/**
+ * Project-level remote endpoint from `.plur.yaml` (#776). Its presence IS the
+ * org context for dialing on the hook path: the project explicitly names this
+ * host as part of the current work, so it is dialed even when the org-affinity
+ * heuristic alone would not implicate it. Project config wins over
+ * `config.stores` for the hook path (matching-URL group dials with the
+ * project's token when one is supplied).
+ */
+export interface RemoteProjectConfig {
+  url: string
+  token?: string
+  scopes?: string[]
+}
+
 export interface RecallOptions {
   scope?: string
   /**
@@ -167,6 +181,26 @@ export interface RecallOptions {
    * seconds-scale on CPU — offline/batch). Select via PLUR_RERANKER.
    */
   rerank?: boolean
+  /**
+   * Server-authoritative remote recall leg (#776). Default true: recall dials
+   * every configured remote host implicated by the current project/work (see
+   * the strict scope-relevance dialing rule in remote-recall.ts) in parallel
+   * with the local pipeline and RRF-merges the results.
+   *
+   * INTERNAL CALLERS MUST PASS false: learn-dedup, forget-by-search and
+   * self-eval probes derive queries from statements/prompts — without the
+   * opt-out every plur_learn fires prompt-derived POSTs to all hosts, and a
+   * namespaced remote row can silently suppress a local write as a "dedup
+   * match".
+   */
+  remote?: boolean
+  /** Per-call remote budget in ms (env PLUR_REMOTE_RECALL_TIMEOUT_MS wins).
+   *  Hook path passes 1500; MCP recall defaults to 2000; session_start warm
+   *  passes 5000. */
+  remote_timeout_ms?: number
+  /** `.plur.yaml` remote endpoint — establishes the org context for dialing
+   *  on the hook path (#776). See {@link RemoteProjectConfig}. */
+  remote_project?: RemoteProjectConfig
 }
 
 export interface BoundedRecallResult {
@@ -202,6 +236,17 @@ export interface InjectOptions {
   session_id?: string
   /** Which surface asked for this injection. Recorded on the co_injection event. */
   source?: InjectionSource
+  /**
+   * Server-authoritative remote recall leg for `injectHybrid` (#776).
+   * Default true. Same contract as {@link RecallOptions.remote}; BM25-only
+   * `inject()` NEVER dials regardless of this flag.
+   */
+  remote?: boolean
+  /** Per-call remote budget in ms — see {@link RecallOptions.remote_timeout_ms}. */
+  remote_timeout_ms?: number
+  /** `.plur.yaml` remote endpoint (hook path org context) — see
+   *  {@link RemoteProjectConfig}. */
+  remote_project?: RemoteProjectConfig
 }
 
 export interface InjectionResult {

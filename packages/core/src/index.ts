@@ -45,6 +45,10 @@ import { engramDate } from './tensions.js'
 import { resolveValidity, buildTemporal } from './expiry.js'
 import { decodeJwtExpiry } from './jwt.js'
 import { RemoteStore, normalizeEndpointUrl } from './store/remote-store.js'
+import {
+  remoteRecall, isRemoteRecallDisabled, resolveRemoteRecallTimeoutMs, scopeOrg,
+  type RemoteRecallHost, type RemoteRecallResult, type HostRecallOutcome, type RemoteStoreStatusEntry,
+} from './remote-recall.js'
 import { YamlPrimaryStore } from './store/yaml-primary-store.js'
 import { withAsyncLock } from './store/async-lock.js'
 import { SessionScopeRegistry } from './session-scopes.js'
@@ -70,6 +74,7 @@ import type {
   CaptureContext,
   TimelineQuery,
   LlmFunction,
+  RemoteProjectConfig,
 } from './types.js'
 
 export * from './meta/index.js'
@@ -256,6 +261,19 @@ export {
  * plausible strength, and the two deployments simply stop agreeing.
  */
 export { rrfMergeEngrams } from './hybrid-search.js'
+// Server-authoritative remote recall (#776) — client, health persistence,
+// degradation string table (A4′), and env knobs. The MCP server and CLI hook
+// consume these so all three surfaces share ONE state vocabulary + strings.
+export {
+  remoteRecall, isRemoteRecallDisabled, resolveRemoteRecallTimeoutMs,
+  remoteHealthPath, readRemoteHealth, scopeOrg,
+  mcpRemoteWarningLine, hookRemoteHeaderLine, doctorRemoteRemediation,
+  claimHookDegradationLines,
+  MAX_REMOTE_QUERY_CHARS, MAX_REMOTE_RESPONSE_BYTES, DEFAULT_REMOTE_RECALL_TIMEOUT_MS,
+  BREAKER_FAILURE_THRESHOLD, BREAKER_COOLDOWN_MS, UNSUPPORTED_TTL_MS, HOOK_HEADER_REPEAT_MS,
+  type RemoteRecallHost, type RemoteRecallResult, type HostRecallOutcome,
+  type RemoteHostState, type RemoteStoreStatusEntry, type RemoteRecallOptions,
+} from './remote-recall.js'
 export {
   applyFeedbackSignal, nextCommitment,
   POSITIVE_STRENGTH_DELTA, NEGATIVE_STRENGTH_DELTA,
@@ -871,33 +889,28 @@ export class Plur {
    * RemoteStore holds its own internal TTL cache so repeated load()
    * within ttlMs returns the same array without a network call.
    *
-   * This method is synchronous, so it does not await `RemoteStore.load()`:
-   * it returns whatever is in the driver's cache and fires the real load
-   * into the background. The consequence is unchanged and still real — the
-   * first call after process start returns [] for that store, and only the
-   * call after the first refresh completes sees the data.
+   * `_loadRemoteCached` is a synchronous PEEK: it returns whatever the
+   * driver's in-memory cache currently holds and NEVER fires a load —
+   * background or otherwise. Until something explicitly warms the driver
+   * (`warmRemoteCaches()`, e.g. via session_start), it returns [] for that
+   * store every time, not just on the first call.
    *
-   * The reason that USED to justify it no longer holds. It was written when
-   * `_loadAllEngrams` was synchronous and physically could not await a
-   * network load; convergence Phase 2 made `_loadAllEngrams` async, and its
-   * sibling branch already does `await this._loadCached(...)`. So this is now
-   * a workaround for a constraint that was removed — awaiting `driver.load()`
-   * here would be legal and would delete the cold-start hole outright.
-   *
-   * Left as-is deliberately: making it await changes when remote engrams
-   * appear and puts a network round-trip on the first recall of every
-   * session, which is a behavioural change that wants its own change and its
-   * own tests rather than a drive-by inside a docs fix. Follow-up: await the
-   * load and drop the private-cache peek (the `as unknown as { cache }` cast
-   * below is reaching past `RemoteStore`'s encapsulation to sustain it).
+   * #776 (server-authoritative recall): this peek is DEMOTED. Live recall now
+   * reaches remote engrams through `remoteRecall` (`POST /api/v1/recall` per
+   * host, merged at the call sites), so the peek serves only the non-recall
+   * duties that still route through `_loadSecondaryAndPacks` (stores_list
+   * counts, feedback/getById resolution) plus warm-site loads. The floating
+   * `void driver.load()` background refresh that used to fire here on EVERY
+   * read is gone with it — the refresh existed to make the NEXT recall less
+   * cold, and recall no longer feeds from this cache. Warm sites
+   * (`warmRemoteCaches`) still populate it explicitly.
    */
   private _remoteStores = new Map<string, RemoteStore>()
   private _loadRemoteCached(store: StoreEntry): Engram[] {
     const driver = this._getRemoteDriver({ url: store.url!, token: store.token, scope: store.scope })
-    // Synchronously read whatever the driver currently has cached.
-    // Trigger a refresh in the background; the next call sees fresh data.
+    // Synchronously read whatever the driver currently has cached — no
+    // background refresh (#776, see JSDoc above).
     const cached = (driver as unknown as { cache: { engrams: Engram[] } | null }).cache
-    void driver.load().catch(() => { /* errors logged inside RemoteStore */ })
     return cached?.engrams ?? []
   }
 
@@ -2343,8 +2356,12 @@ export class Plur {
   private async _learnAsyncDeps() {
     return {
       hashDedup: async (statement: string, scope?: string) => this._hashDedup(statement, await this._loadAllEngrams(), scope),
-      recallHybrid: (query: string, options?: { limit?: number }) => this.recallHybrid(query, options),
-      recall: (query: string, options?: { limit?: number }) => this.recall(query, options),
+      // remote:false (#776) — dedup queries are DERIVED FROM STATEMENTS. With
+      // the remote leg on, every plur_learn would fire statement-derived POSTs
+      // to all hosts, and a namespaced remote row could silently suppress a
+      // local write as a "dedup match". Dedup is a local decision.
+      recallHybrid: (query: string, options?: { limit?: number }) => this.recallHybrid(query, { ...options, remote: false }),
+      recall: (query: string, options?: { limit?: number }) => this.recall(query, { ...options, remote: false }),
       learn: (statement: string, context?: LearnContext) => this.learn(statement, context),
       getById: (id: string) => this.getById(id),
       store: this._primaryStore,
@@ -2381,9 +2398,17 @@ export class Plur {
    *   - 'fast' (default): BM25 keyword search, instant, no API calls
    *   - 'agentic': LLM-assisted semantic search, higher accuracy, requires llm function
    */
-  /** Search engrams using fast BM25 keyword matching. Sync, no API calls. */
+  /** Search engrams using fast BM25 keyword matching over the local corpus,
+   *  merged with the live server-authoritative remote leg (#776) when a
+   *  configured remote host is implicated by the current project/work.
+   *  `remote: false` (internal callers) or PLUR_REMOTE_RECALL=off keeps it
+   *  fully local. */
   async recall(query: string, options?: Omit<RecallOptions, 'mode' | 'llm'>): Promise<Engram[]> {
     const limit = options?.limit ?? 20
+
+    // #776: start the remote leg BEFORE the local pipeline so the effective
+    // added latency is max(0, remote − local), not remote + local.
+    const remotePromise = this._startRemoteRecall(query, options)
 
     // Push the search into the store when the store can answer it.
     //
@@ -2496,14 +2521,16 @@ export class Plur {
       } else {
         results = surviving.slice(0, limit)
       }
-      await this._reactivateResults(results)
-      return results
+      const merged = await this._mergeRemoteRecall(results, remotePromise, options, limit)
+      await this._reactivateResults(merged)
+      return merged
     }
 
     const filtered = await this._filterEngrams(options)
     const results = searchEngrams(filtered, query, limit)
-    await this._reactivateResults(results)
-    return results
+    const merged = await this._mergeRemoteRecall(results, remotePromise, options, limit)
+    await this._reactivateResults(merged)
+    return merged
   }
 
   /**
@@ -2580,6 +2607,9 @@ export class Plur {
     query: string,
     options?: Omit<RecallOptions, 'mode' | 'llm'>,
   ): Promise<HybridSearchResult> {
+    // #776: remote leg starts BEFORE the local pipeline (added latency =
+    // max(0, remote − local)); merged below via RRF.
+    const remotePromise = this._startRemoteRecall(query, options)
     const filtered = await this._filterEngrams(options)
     const limit = options?.limit ?? 20
     const rerank = await this._resolveRerankOptions(options?.rerank)
@@ -2607,6 +2637,9 @@ export class Plur {
     } else {
       result = await hybridSearchWithMeta(filtered, query, limit, this.paths.root, rerank)
     }
+    // #776: fold the server leg in (RRF) before reactivation so displaced
+    // local rows are not reactivated and server rows rank on merged order.
+    result = { ...result, engrams: await this._mergeRemoteRecall(result.engrams, remotePromise, options, limit) }
     await this._reactivateResults(result.engrams)
     // WS5 demand flywheel: a zero-result or low-top-score recall is a demand
     // signal. Emit an anonymized, content-free miss-signal (query fingerprint +
@@ -2998,6 +3031,248 @@ export class Plur {
     return [...new Set((this.config.stores ?? []).map(s => s.scope))]
   }
 
+  // -------------------------------------------------------------------------
+  // Server-authoritative remote recall (#776, plan A2′)
+  // -------------------------------------------------------------------------
+
+  /** Last per-host recall outcomes (in-process), keyed by normalized URL —
+   *  feeds `remoteStoreStatus()` (plan A4′). */
+  private _lastRemoteOutcomes = new Map<string, HostRecallOutcome>()
+
+  /** Where breaker/cooldown/unsupported state persists across processes.
+   *  Inside the store root so tests and PLUR_PATH overrides isolate it. */
+  remoteHealthStatePath(): string {
+    return join(this.paths.root, 'cache', 'remote-health.json')
+  }
+
+  /**
+   * Strict scope-relevance dialing (#776, user decision — plan rows 39/44).
+   *
+   * For each configured (url, token) endpoint group, the dialed scope set is
+   * the subset of its granted scopes relevant to the current project/work:
+   *   (a) shared (group:/project:/…) scopes sharing the ORG segment with the
+   *       session's project scope — org of `project:plur/plur-ai/enterprise`
+   *       is `plur`, so every `group:plur/…` + `project:plur/…` scope on that
+   *       host is relevant;
+   *   (b) the host's personal-family (`user:*`, …) scopes ONLY when an org
+   *       context exists implicating that host.
+   * No project/work context implicating a remote store → ZERO remote calls.
+   * A host whose relevant subset is empty is NOT dialed — a datafund-org host
+   * is never dialed from plur-org work (cross-org exfiltration solved by
+   * construction).
+   *
+   * Overrides: per-store `dial: never` removes the entry from dialing;
+   * `dial: always` forces its host to be dialed with that entry's scope,
+   * context or not. A `.plur.yaml` `remote_url`/`remote_token`
+   * (`options.remote_project`, hook path) IS the org context for its host —
+   * project config wins: a matching mounted group dials with the project's
+   * token when one is supplied, and an unmounted project endpoint dials
+   * standalone with the project's `remote_scopes`.
+   *
+   * Grouping is by (url, token), not url alone — `_distinctRemoteEndpoints`'s
+   * "tokens should be identical" assumption is unchecked, and differing
+   * tokens per host mean one POST per token. `remoteEndpointTokenConflicts`
+   * feeds the doctor warning for that misconfiguration.
+   */
+  private _remoteRecallHosts(options?: { scope?: string; remote_project?: RemoteProjectConfig }): RemoteRecallHost[] {
+    const stores = (this.config.stores ?? []).filter(s => s.url)
+    const rp = options?.remote_project
+    const rpKey = rp ? normalizeEndpointUrl(rp.url) : null
+    const sessionOrg = scopeOrg(options?.scope)
+
+    const groups = new Map<string, { url: string; token?: string; entries: StoreEntry[] }>()
+    for (const s of stores) {
+      // Same `::` composite-key convention as _getRemoteDriver (#394) — a
+      // printable separator (an earlier draft used a raw \x00, which made
+      // tooling treat this whole source file as binary). Normalized URLs and
+      // tokens don't contain `::` in practice, and a contrived collision only
+      // merges two entries into one endpoint group — same POST, same token.
+      const key = `${normalizeEndpointUrl(s.url!)}::${s.token ?? ''}`
+      let g = groups.get(key)
+      if (!g) { g = { url: s.url!, token: s.token, entries: [] }; groups.set(key, g) }
+      g.entries.push(s)
+    }
+
+    const hosts: RemoteRecallHost[] = []
+    for (const g of groups.values()) {
+      const dialable = g.entries.filter(e => e.dial !== 'never')
+      if (dialable.length === 0) continue
+      const always = dialable.filter(e => e.dial === 'always')
+      const shared = dialable.filter(e => isSharedScope(e.scope))
+      const personal = dialable.filter(e => !isSharedScope(e.scope))
+      const orgAffine = sessionOrg ? shared.filter(e => scopeOrg(e.scope) === sessionOrg) : []
+      const projectImplicated = rpKey !== null && rpKey === normalizeEndpointUrl(g.url)
+      const orgContext = orgAffine.length > 0 || projectImplicated
+      if (!orgContext && always.length === 0) continue
+      const selected = new Set<StoreEntry>(orgAffine)
+      if (projectImplicated) for (const e of shared) selected.add(e)
+      for (const e of always) selected.add(e)
+      if (orgContext) for (const e of personal) selected.add(e)
+      // Config order preserved — row→entry mapping must be deterministic.
+      const dialEntries = dialable.filter(e => selected.has(e))
+      if (dialEntries.length === 0) continue
+      hosts.push({
+        url: g.url,
+        token: (projectImplicated && rp?.token) ? rp.token : (g.token ?? ''),
+        scopes: [...new Set(dialEntries.map(e => e.scope))],
+        entries: dialEntries.map(e => ({ scope: e.scope })),
+      })
+    }
+
+    // Standalone `.plur.yaml` endpoint not mounted in config.stores: dial it
+    // with the project's own remote_scopes (the scope guard needs a scope set
+    // to admit rows against; without one there is nothing safe to accept).
+    if (rp?.token && rpKey && !stores.some(s => normalizeEndpointUrl(s.url!) === rpKey)) {
+      const scopes = [...new Set(rp.scopes ?? [])]
+      if (scopes.length > 0) {
+        hosts.push({ url: rp.url, token: rp.token, scopes, entries: scopes.map(scope => ({ scope })) })
+      }
+    }
+    return hosts
+  }
+
+  /**
+   * Start the remote recall leg — called BEFORE the local pipeline so the
+   * effective added latency is max(0, remote − local). Returns null (zero
+   * fetches, zero new latency) when: the caller opted out (`remote: false` —
+   * learn-dedup, forget-by-search, self-eval), the `PLUR_REMOTE_RECALL`
+   * kill-switch is set, the query is empty, or no host is implicated by the
+   * current project/work. The returned promise NEVER rejects.
+   */
+  private _startRemoteRecall(
+    query: string,
+    options?: { scope?: string; remote?: boolean; remote_timeout_ms?: number; remote_project?: RemoteProjectConfig; limit?: number },
+  ): Promise<RemoteRecallResult> | null {
+    if (options?.remote === false) return null
+    if (isRemoteRecallDisabled()) return null
+    if (!query || !query.trim()) return null
+    const hosts = this._remoteRecallHosts(options)
+    if (hosts.length === 0) return null
+    return remoteRecall(hosts, query, {
+      timeoutMs: resolveRemoteRecallTimeoutMs(options?.remote_timeout_ms),
+      limit: options?.limit,
+      statePath: this.remoteHealthStatePath(),
+    }).then(result => {
+      for (const o of result.outcomes) this._lastRemoteOutcomes.set(normalizeEndpointUrl(o.url), o)
+      return result
+    }).catch((): RemoteRecallResult => ({ engrams: [], scores: new Map(), outcomes: [] }))
+  }
+
+  /**
+   * Apply the SAME read-side filters to server rows that every local read
+   * path applies: `options.scopes` authorization (exact membership),
+   * `options.scope` visibility (with grants — server rows sit in granted
+   * scopes by construction after the scope guard's global admission +
+   * narrowing), domain, and the residual temporal/strength filters.
+   */
+  private _filterRemoteRows(rows: Engram[], options?: RecallOptions & { include_expired?: boolean }): Engram[] {
+    let filtered = rows.filter(e => e.status === 'active')
+    if (options?.scopes !== undefined) {
+      const allowed = scopeAllowFilter(options.scopes)
+      filtered = filtered.filter(e => allowed(e.scope))
+    }
+    if (options?.domain) filtered = filtered.filter(e => e.domain?.startsWith(options.domain!))
+    if (options?.scope) {
+      const visible = makeVisibilityPredicate(options.scope, this._grantedScopes())
+      filtered = filtered.filter(e => visible(e.scope))
+    }
+    return this._applyResidualFilters(filtered, options)
+  }
+
+  /**
+   * Merge the remote leg into a local result set via RRF. Server rows go
+   * FIRST so the server copy wins object identity for ids present in both
+   * sets (the local set can hold a stale peek-cache copy of the same remote
+   * row); RRF scoring itself is order-independent, so this affects identity
+   * only, not ranking.
+   */
+  private async _mergeRemoteRecall(
+    local: Engram[],
+    remotePromise: Promise<RemoteRecallResult> | null,
+    options: (RecallOptions & { include_expired?: boolean }) | undefined,
+    limit: number,
+  ): Promise<Engram[]> {
+    if (!remotePromise) return local
+    const remote = await remotePromise
+    const rows = this._filterRemoteRows(remote.engrams, options)
+    if (rows.length === 0) return local
+    return pgliteRrfMerge([rows, local]).slice(0, limit)
+  }
+
+  /**
+   * Server rows for the injection path (#776): filtered for authorization +
+   * visibility BEFORE boosts are assigned — the boost channel resurrects
+   * scope-zeroed rows otherwise (`scoreEngram` returns 0 for both
+   * no-keyword-hits and scope-excluded, and `raw = embBoost*2` revives
+   * anything > 0.5). Boost = 0.55 + 0.45·score, so every server-ranked row
+   * clears the 0.5 semantic threshold and the server's top row maps to 1.0.
+   */
+  private async _remoteInjectCandidates(
+    remotePromise: Promise<RemoteRecallResult> | null,
+    options?: InjectOptions,
+  ): Promise<{ engrams: Engram[]; boosts: Map<string, number> } | undefined> {
+    if (!remotePromise) return undefined
+    const remote = await remotePromise
+    if (remote.engrams.length === 0) return undefined
+    const permitted = options?.scopes
+    let rows = remote.engrams.filter(e => e.status === 'active')
+    if (permitted !== undefined) rows = rows.filter(e => permitted.includes(e.scope))
+    if (options?.scope) {
+      if (options.scope === 'global') {
+        // INJECT_GLOBAL_IS_TARGETED (D1-ASYMMETRY): explicit global inject is
+        // targeted to the global namespace only. Server rows are namespaced —
+        // global rows were narrowed to their store scope — so none pass here,
+        // by design; grants do not reach the targeted-global branch.
+        rows = rows.filter(e => e.scope === 'global')
+      } else {
+        const visible = makeVisibilityPredicate(options.scope, this._grantedScopes())
+        rows = rows.filter(e => visible(e.scope))
+      }
+    }
+    if (rows.length === 0) return undefined
+    const boosts = new Map<string, number>()
+    for (const e of rows) {
+      const s = remote.scores.get(e.id) ?? 0
+      boosts.set(e.id, 0.55 + 0.45 * Math.max(0, Math.min(1, s)))
+    }
+    return { engrams: rows, boosts }
+  }
+
+  /**
+   * Per-host remote recall degradation status (plan A4′), fed by the last
+   * outcomes this process observed — NOT by driver caches or fresh probes.
+   * MCP surfaces attach a `remote_stores` block from this when any host is
+   * non-ok (or silently scope-narrowed); plur_doctor renders remediation.
+   */
+  remoteStoreStatus(): RemoteStoreStatusEntry[] {
+    return [...this._lastRemoteOutcomes.values()].map(o => ({
+      host: normalizeEndpointUrl(o.url),
+      status: o.state,
+      ...(o.dropped_scopes && o.dropped_scopes.length > 0 ? { dropped_scopes: o.dropped_scopes } : {}),
+      ms: o.ms,
+      count: o.count,
+    }))
+  }
+
+  /**
+   * Endpoints configured with more than one distinct token (#776). The
+   * (url, token) fan-out dials once per token, so this is a misconfiguration
+   * worth a doctor warning — same user, same instance should mean one token.
+   */
+  remoteEndpointTokenConflicts(): Array<{ url: string; tokens: number }> {
+    const byUrl = new Map<string, { url: string; tokens: Set<string> }>()
+    for (const s of this.config.stores ?? []) {
+      if (!s.url) continue
+      const key = normalizeEndpointUrl(s.url)
+      let rec = byUrl.get(key)
+      if (!rec) { rec = { url: s.url, tokens: new Set() }; byUrl.set(key, rec) }
+      rec.tokens.add(s.token ?? '')
+    }
+    return [...byUrl.values()]
+      .filter(r => r.tokens.size > 1)
+      .map(r => ({ url: r.url, tokens: r.tokens.size }))
+  }
+
   /**
    * Engrams a primary-store pushdown cannot see: secondary (team/project)
    * stores from `config.stores`, and installed packs.
@@ -3219,6 +3494,16 @@ export class Plur {
 
   /** Scored injection with embedding boost when available. Falls back to BM25 if embeddings not installed. */
   async injectHybrid(task: string, options?: InjectOptions): Promise<InjectionResult> {
+    // #776: the remote leg starts FIRST — it runs in parallel with the local
+    // embedding work below and REPLACES the old hook `tryRemoteInject`
+    // remote-first POST /inject path, so a prompt costs at most ONE remote
+    // call per host.
+    const remotePromise = this._startRemoteRecall(task, {
+      scope: options?.scope,
+      remote: options?.remote,
+      remote_timeout_ms: options?.remote_timeout_ms,
+      remote_project: options?.remote_project,
+    })
     // Use actual cosine similarity scores as boosts so the 0.5 threshold in
     // selectAndSpread is meaningful. (Pre-0.9.4 used rank-based 1/(1+i*0.1)
     // which gave the top result boost=1.0 even when its cosine was 0.4 —
@@ -3318,12 +3603,43 @@ export class Plur {
     } catch {
       // Embeddings unavailable — continue without boosts
     }
-    return await this._formatInjection(task, options, embeddingBoosts)
+    // #776: server rows join the candidate pool + boost channel. Visibility/
+    // authorization run over them INSIDE _remoteInjectCandidates, before any
+    // boost exists to resurrect a scope-excluded row.
+    const remote = await this._remoteInjectCandidates(remotePromise, options)
+    return await this._formatInjection(task, options, embeddingBoosts, remote)
   }
 
-  private async _formatInjection(task: string, options?: InjectOptions, embeddingBoosts?: Map<string, number>): Promise<InjectionResult> {
-    const allEngrams = await this._loadAllEngrams()
+  private async _formatInjection(
+    task: string,
+    options?: InjectOptions,
+    embeddingBoosts?: Map<string, number>,
+    // #776: pre-filtered server rows + their score-derived boosts. Only
+    // injectHybrid supplies this — the BM25-only inject() path NEVER makes a
+    // remote call.
+    remote?: { engrams: Engram[]; boosts: Map<string, number> },
+  ): Promise<InjectionResult> {
+    let allEngrams = await this._loadAllEngrams()
     const allPacks = loadAllPacks(this.paths.packs)
+
+    if (remote && remote.engrams.length > 0) {
+      // Candidate-pool dedup by namespaced id — the SERVER copy wins (fresher
+      // than any peek-cache copy of the same remote row that
+      // _loadSecondaryAndPacks may have merged in).
+      const serverIds = new Set(remote.engrams.map(e => e.id))
+      allEngrams = [...allEngrams.filter(e => !serverIds.has(e.id)), ...remote.engrams]
+      // Boost-channel entry. The map is SHARED with the local cosine/reranker
+      // writes — collision rule is max-merge, so neither channel can lower
+      // the other's signal.
+      if (embeddingBoosts) {
+        for (const [id, boost] of remote.boosts) {
+          const cur = embeddingBoosts.get(id)
+          embeddingBoosts.set(id, cur === undefined ? boost : Math.max(cur, boost))
+        }
+      } else {
+        embeddingBoosts = remote.boosts
+      }
+    }
 
     // Permitted-scope allow-list — AUTHORIZATION, applied before selection.
     //
@@ -5545,9 +5861,12 @@ Generate an improved version of the procedure that prevents this failure. Return
 
   /**
    * @deprecated Use {@link listStoresAsync} for accurate remote engram counts.
-   * The sync variant returns engram_count: 0 for remote stores on the first
-   * call after server start because the remote cache hasn't populated yet
-   * (issue #184). Retained for callers that cannot await.
+   * The sync variant reads only the remote drivers' in-memory peek cache,
+   * which no longer self-populates (#776 removed the background refresh): a
+   * remote store's engram_count stays 0 on EVERY call — not just the first
+   * (issue #184) — until something explicitly warms the cache
+   * (`warmRemoteCaches()`, e.g. via session_start). Retained for callers
+   * that cannot await.
    */
   async listStores(): Promise<Array<StoreSummary>> {
     this.reloadConfigIfChanged()  // pick up out-of-process config edits (#307)
@@ -5675,8 +5994,14 @@ Generate an improved version of the procedure that prevents this failure. Return
    * per spelling and split its registered-scope view across the copies. The
    * FIRST configured spelling is what gets reported/queried; stored values are
    * never rewritten.
+   *
+   * Public since #776 (was private) so the remote-recall leg's callers and
+   * tests can enumerate endpoint identity — but note recall dialing groups by
+   * (url, token) via `_remoteRecallHosts`, NOT by url alone: this method's
+   * first-token-wins collapse is only safe for probes (`/me`, health) where
+   * any of the tokens answers the identity question.
    */
-  private _distinctRemoteEndpoints(): Array<{ url: string; token?: string }> {
+  _distinctRemoteEndpoints(): Array<{ url: string; token?: string }> {
     const byUrl = new Map<string, { url: string; token?: string }>()
     for (const s of this.config.stores ?? []) {
       if (!s.url) continue
@@ -5688,8 +6013,9 @@ Generate an improved version of the procedure that prevents this failure. Return
 
   /** All store entries registered against `url` under ANY spelling of that
    *  endpoint (scope-audit 2026-07-24) — the identity-normalized counterpart of
-   *  `stores.filter(s => s.url === url)`. */
-  private _storesForEndpoint(url: string): StoreEntry[] {
+   *  `stores.filter(s => s.url === url)`. Public since #776 (was private) for
+   *  the remote-recall leg's callers and tests. */
+  _storesForEndpoint(url: string): StoreEntry[] {
     const key = normalizeEndpointUrl(url)
     return (this.config.stores ?? []).filter(s => s.url !== undefined && normalizeEndpointUrl(s.url) === key)
   }

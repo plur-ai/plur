@@ -180,9 +180,10 @@ describe('adversarial leak-guard fuzzer (#353 round-3)', () => {
     }) as any)
   }
 
+  // #776: reads no longer fire a background refresh — warm explicitly, the
+  // same path session_start uses.
   async function primedRemoteId(plur: Plur, serverId: string): Promise<string> {
-    await plur.list()
-    await new Promise(r => setTimeout(r, 50))
+    await plur.warmRemoteCaches()
     const found = (await plur.list()).find(e => (e as any)._originalId === serverId || e.id.endsWith(serverId))
     if (!found) throw new Error(`remote engram ${serverId} not in cache after prime`)
     return found.id

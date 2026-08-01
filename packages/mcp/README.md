@@ -42,7 +42,7 @@ Next session starts     →  relevant ones injected →  agent remembers
 You rate the result     →  engram strengthens    →  quality improves
 ```
 
-Knowledge is stored as **engrams** — small assertions that strengthen with use and decay when irrelevant. Search is fully local (BM25 + embeddings), so memory recall costs nothing and works offline. [Benchmark methodology →](https://plur.ai/benchmark.html)
+Knowledge is stored as **engrams** — small assertions that strengthen with use and decay when irrelevant. Search runs locally (BM25 + embeddings); with a PLUR Enterprise store configured, recall also makes one live, timeout-bounded call per relevant remote host and merges the team's engrams in — and tells you, per host, when that leg is degraded instead of failing silently. Without a remote store it is fully local, costs nothing, and works offline. [Benchmark methodology →](https://plur.ai/benchmark.html)
 
 ## Tools
 

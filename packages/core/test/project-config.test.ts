@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'fs'
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, symlinkSync, realpathSync, unlinkSync } from 'fs'
 import { join } from 'path'
 import { tmpdir, homedir } from 'os'
 import { findProjectConfigPath, readProjectConfig } from '../src/project-config.js'
@@ -66,6 +66,53 @@ describe('project-config (#177)', () => {
       // HOME's .plur.yaml by starting the walk AT HOME with no .plur.yaml
       // present — should return null without crashing.
       expect(findProjectConfigPath(homedir())).toBeNull()
+    })
+
+    it('refuses a .plur.yaml directly in an env-overridden HOME that HAS one (#778)', () => {
+      // The real thing this guard exists for: a config file actually present
+      // in HOME must be refused when the walk starts there.
+      const fakeHome = mkdtempSync(join(tmpdir(), 'plur-home-'))
+      writeFileSync(join(fakeHome, '.plur.yaml'), 'scope: project:should-not-load\n')
+      const savedHome = process.env.HOME
+      const savedProfile = process.env.USERPROFILE
+      process.env.HOME = fakeHome
+      process.env.USERPROFILE = fakeHome
+      try {
+        expect(findProjectConfigPath(fakeHome)).toBeNull()
+      } finally {
+        if (savedHome === undefined) delete process.env.HOME; else process.env.HOME = savedHome
+        if (savedProfile === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = savedProfile
+        rmSync(fakeHome, { recursive: true, force: true })
+      }
+    })
+
+    it('home refusal survives a symlinked HOME spelling — guard must not fail open (#778)', () => {
+      // process.cwd() is kernel-canonical while $HOME is verbatim env, so on
+      // a symlinked path (macOS /var → /private/var) the same directory
+      // spells two ways. Before canonicalization the equality guard missed,
+      // FAILED OPEN, and a home-level .plur.yaml was silently honored —
+      // which is also exactly why the #776 hook test passed on macOS while
+      // failing on Linux CI. Pin: canonical start dir + symlinked HOME env
+      // still refuse the home-level config.
+      const realHome = realpathSync(mkdtempSync(join(tmpdir(), 'plur-home-real-')))
+      const linkHome = `${realHome}-link`
+      symlinkSync(realHome, linkHome)
+      writeFileSync(join(realHome, '.plur.yaml'), 'scope: project:should-not-load\n')
+      const savedHome = process.env.HOME
+      const savedProfile = process.env.USERPROFILE
+      process.env.HOME = linkHome // symlinked spelling, as a login env may carry
+      process.env.USERPROFILE = linkHome
+      try {
+        // Walk starts at the CANONICAL spelling — the shape process.cwd()
+        // reports. Both spellings are the same directory: refuse.
+        expect(findProjectConfigPath(realHome)).toBeNull()
+        expect(findProjectConfigPath(linkHome)).toBeNull()
+      } finally {
+        if (savedHome === undefined) delete process.env.HOME; else process.env.HOME = savedHome
+        if (savedProfile === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = savedProfile
+        unlinkSync(linkHome) // rmSync follows a dir symlink; unlink removes the link itself
+        rmSync(realHome, { recursive: true, force: true })
+      }
     })
 
     it('respects MAX_DEPTH ceiling on path traversal', () => {
