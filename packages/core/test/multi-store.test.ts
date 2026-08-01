@@ -159,6 +159,27 @@ describe('Multi-store', () => {
     expect(found!.id).toBe(NS_ID)
   })
 
+  // #771: store namespacing must be id-format agnostic — server-assigned
+  // full-date ids (ENG-YYYY-MM-DD-NNN) and legacy compact ids
+  // (ENG-YYYY-MMDD-NNN, the makeEngram default used across this file) both
+  // get the same `ENG-{PREFIX}-` head and stay resolvable.
+  it('namespaces server-assigned full-date IDs identically to compact IDs (#771)', async () => {
+    writeStoreEngrams([
+      makeEngram({ id: 'ENG-2026-07-30-032', statement: 'Server-assigned full-date id' }),
+      makeEngram({ statement: 'Legacy compact id' }), // ENG-2026-0401-001
+    ])
+    writeConfig([{ path: storePath, scope: 'datafund' }])
+    const plur = createPlur()
+
+    const full = await plur.getById('ENG-DFD-2026-07-30-032')
+    expect(full).not.toBeNull()
+    expect(full!.statement).toBe('Server-assigned full-date id')
+
+    const compact = await plur.getById(NS_ID)
+    expect(compact).not.toBeNull()
+    expect(compact!.statement).toBe('Legacy compact id')
+  })
+
   it('status counts across stores', async () => {
     // 2 primary engrams
     const plur0 = new Plur({ path: primaryDir })

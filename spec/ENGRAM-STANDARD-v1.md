@@ -108,7 +108,7 @@ sequence of engram objects:
 
 ```yaml
 engrams:
-  - id: ENG-2026-0506-001
+  - id: ENG-2026-05-06-001
     statement: "toEqual() in Vitest is strict — use toMatchObject() for partial matching"
     type: behavioral
     status: active
@@ -175,30 +175,70 @@ As a regular expression (the reference validator):
 ### 3.3 Canonical concrete form
 
 While the grammar permits any `[A-Za-z0-9-]+` body, the RECOMMENDED canonical
-form for a freshly minted concrete engram is date-sequenced:
+form for a freshly minted concrete engram is date-sequenced with full ISO-8601
+date separators — the SAME form whether the id is minted locally or assigned
+by a server (plur-ai/plur#771):
 
 ```
-ENG-YYYY-MMDD-NNN
+ENG-YYYY-MM-DD-NNN
 ```
 
-- `YYYY` four-digit year, `MMDD` month+day, `NNN` a zero-padded per-day
-  sequence number starting at `001`.
-- Example: `ENG-2026-0506-003`.
+- `YYYY-MM-DD` ISO-8601 calendar date (UTC at mint time), `NNN` a zero-padded
+  per-day sequence number starting at `001`.
+- Example: `ENG-2026-05-06-003`.
+
+#### 3.3.1 Legacy compact form
+
+Reference releases before the #771 convergence minted *local* ids with a
+compact date while servers assigned the full-date form above, producing two
+shapes for the same logical scheme:
+
+```
+ENG-YYYY-MMDD-NNN                 e.g.  ENG-2026-0506-003   (legacy, local)
+```
+
+Compact ids remain VALID forever — they match the §3.1 grammar, existing
+stores containing them need NO migration, and consumers MUST accept both the
+full-date and compact forms wherever a date-sequenced id is parsed (e.g. the
+reference's `engramDate()` treats the day separator as optional).
+Implementations MUST NOT mint new compact ids.
+
+#### 3.3.2 Pack form
+
+Engrams shipped in curated packs use a dateless, human-assigned form:
+
+```
+ENG-PACK-{NAME}-NNN               e.g.  ENG-PACK-EM-006
+```
+
+where `{NAME}` is a short uppercase abbreviation of the pack name. This is an
+INTENTIONAL exemption from the date-sequenced scheme: pack content is
+versioned by the pack manifest, not by mint date, and ids must stay stable
+across pack releases so installs and upgrades can be diffed. Pack ids match
+the §3.1 grammar. The `ABS-` and `META-` class prefixes (§3.2) combine with
+every form in this section the same way (e.g. `ABS-PACK-EM-001`,
+`META-2026-05-06-001`).
 
 ### 3.4 Store-namespaced form
 
 When engrams from multiple stores are merged, an implementation MAY namespace an
-ID with a short store **PREFIX** to avoid collisions:
+ID with a short store **PREFIX** to avoid collisions. The prefix is inserted
+directly after the class prefix; the rest of the id — whichever §3.3 form the
+source store minted — is preserved verbatim:
 
 ```
-ENG-{PREFIX}-YYYY-MMDD-NNN        e.g.  ENG-DF-2026-0401-001
+ENG-{PREFIX}-YYYY-MM-DD-NNN       e.g.  ENG-GPL-2026-07-30-032
+ENG-{PREFIX}-YYYY-MMDD-NNN        e.g.  ENG-DF-2026-0401-001   (legacy source id)
 ```
 
-`PREFIX` is a SHORT uppercase token derived from the source scope. The
-namespaced form still matches the grammar in §3.1. Implementations MUST treat
-the namespaced and bare forms as referring to *different* logical engrams once
-namespacing has been applied (the prefix is part of the identity in a merged
-view). Pack producers SHOULD export *bare* IDs.
+`PREFIX` is a SHORT uppercase token derived from the source scope (the
+reference derives exactly three characters via `storePrefix()`, e.g.
+`group:plur/engineering` → `GPL`-style abbreviations, and detects namespaced
+ids with `^(ENG|ABS|META)-[A-Z]{3}-`). The namespaced form still matches the
+grammar in §3.1. Implementations MUST treat the namespaced and bare forms as
+referring to *different* logical engrams once namespacing has been applied
+(the prefix is part of the identity in a merged view). Pack producers SHOULD
+export *bare* IDs.
 
 ### 3.5 Uniqueness
 
@@ -382,7 +422,7 @@ ignore the values.
 A minimally conformant engram is exactly:
 
 ```yaml
-id: ENG-2026-0506-001         # §3 grammar
+id: ENG-2026-05-06-001         # §3 grammar
 statement: "…"                # non-empty
 type: behavioral              # enum §4.2
 status: active                # enum §4.2

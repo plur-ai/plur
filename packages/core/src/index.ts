@@ -821,7 +821,8 @@ export class Plur {
    * vanished from `recall()` while `list()` still showed it), and it returned
    * rows RAW — no namespacing, no `global` narrowing, no `isScopeWithin` guard.
    * The namespacing one had teeth beyond cosmetics: both stores mint
-   * `ENG-YYYY-MMDD-NNN` from a per-store daily sequence, so ids collide as the
+   * date-sequenced ids (`ENG-YYYY-MM-DD-NNN`, legacy `ENG-YYYY-MMDD-NNN`)
+   * from a per-store daily sequence, so ids collide as the
    * common case, and `feedback()` / `forget()` resolve by exact id against the
    * primary store first — mutating an unrelated engram.
    *

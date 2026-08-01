@@ -60,8 +60,9 @@ const SUPERSEDED_PATTERN = /\(\s*not\s+[^)]+\)/i
 
 /**
  * Recorded date of an engram: `temporal.learned_at`, falling back to the
- * date embedded in canonical ids (ENG-YYYY-MMDD-NNN, ENG-PREFIX-YYYY-MMDD-NNN,
- * server-assigned ENG-YYYY-MM-DD-NNN). Undefined when underivable.
+ * date embedded in the id — canonical ENG-YYYY-MM-DD-NNN (also what servers
+ * assign, #771), legacy compact ENG-YYYY-MMDD-NNN, and either form behind a
+ * store prefix (ENG-{PREFIX}-...). Undefined when underivable.
  */
 function recordedDate(e: Engram): string | undefined {
   const learned = e.temporal?.learned_at
