@@ -224,6 +224,46 @@ describe.skipIf(!hasSqlite)('IndexedStorage.loadFiltered — permitted-scope pus
     // And the empty allow-list still matches NOTHING, grants or no grants.
     expect(await s.loadFiltered({ scopes: [], visibilityGrants: ['group:acme/eng'] })).toEqual([])
   })
+
+  it('#775 SECURITY: LIKE metacharacters in a grant match literally on the SQLite arm', async () => {
+    // Same treatment as the pglite/postgres arms (escapeLikePattern +
+    // ESCAPE '\'): SQLite's LIKE has NO default escape character, so without
+    // the explicit clause a `_` in a grant is a single-character wildcard and
+    // a `%` matches across namespaces — a grant of `group:acme/e_g` would
+    // admit `group:acme/eXg:*`, and `group:%` would admit every group.
+    const s = await seedAndOpen([
+      mkEngram('ENG-2026-0731-301', 'exact underscore', { scope: 'group:acme/e_g' }),
+      mkEngram('ENG-2026-0731-302', 'true descendant', { scope: 'group:acme/e_g:sub' }),
+      mkEngram('ENG-2026-0731-303', 'wildcard victim', { scope: 'group:acme/eXg:sub' }),
+      mkEngram('ENG-2026-0731-304', 'percent victim', { scope: 'group:evil/team:sub' }),
+    ])
+    const underscore = (await s.loadFiltered({
+      scope: 'project:a',
+      visibilityGrants: ['group:acme/e_g'],
+    })).map(e => e.id)
+    expect(underscore).toContain('ENG-2026-0731-301') // equality arm keeps the raw value
+    expect(underscore).toContain('ENG-2026-0731-302') // escaped containment still matches literally
+    expect(underscore, 'unescaped `_` widened a grant into a sibling namespace')
+      .not.toContain('ENG-2026-0731-303')
+    const percent = (await s.loadFiltered({
+      scope: 'project:a',
+      visibilityGrants: ['group:%'],
+    })).map(e => e.id)
+    expect(percent, 'unescaped `%` in a grant matched across namespaces')
+      .not.toContain('ENG-2026-0731-304')
+    expect(percent).not.toContain('ENG-2026-0731-303')
+  })
+
+  it('#775 SECURITY: LIKE metacharacters in the filter scope match literally too', async () => {
+    const s = await seedAndOpen([
+      mkEngram('ENG-2026-0731-310', 'literal target', { scope: 'project:a_b:sub' }),
+      mkEngram('ENG-2026-0731-311', 'wildcard victim', { scope: 'project:aXb:sub' }),
+    ])
+    const ids = (await s.loadFiltered({ scope: 'project:a_b' })).map(e => e.id)
+    expect(ids).toContain('ENG-2026-0731-310')
+    expect(ids, 'unescaped `_` in the filter scope crossed namespaces')
+      .not.toContain('ENG-2026-0731-311')
+  })
 })
 
 describe('Plur read paths — permitted-scope pushdown', () => {

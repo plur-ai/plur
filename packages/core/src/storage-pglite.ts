@@ -586,13 +586,29 @@ export class PGLiteAdapter implements DerivedIndexAdapter {
    * the dilution bug: `LIMIT` would be spent on engrams the caller may not
    * see, so asking for N in-scope results would silently return fewer.
    * Filtering in the query means `limit` counts permitted rows only.
+   *
+   * `opts.scope` + `opts.visibilityGrants` (#775) ride the same filter: the
+   * k-NN WHERE gets the full visibility clause (personal pass-through,
+   * segment-aware containment, escaped grant triples) via buildFilterClause,
+   * exactly like searchBM25/loadFiltered. Without them the vector leg spent
+   * `limit` on rows the visibility filter was about to discard, so a granted
+   * team engram could never surface through vector search.
    */
-  async searchVector(query: Float32Array, limit: number, opts?: ScopeRestriction): Promise<VectorSearchHit[]> {
+  async searchVector(
+    query: Float32Array,
+    limit: number,
+    opts?: ScopeRestriction & Pick<StorageFilter, 'scope' | 'visibilityGrants'>,
+  ): Promise<VectorSearchHit[]> {
     const db = await this.getDb()
     const totalRes = await db.query('SELECT COUNT(*)::int AS c FROM engram_embeddings')
     if (Number(totalRes.rows[0].c) === 0) return []
     // status defaults to 'active' (historical behaviour) but stays overridable.
-    const filter: StorageFilter = { status: 'active', scopes: opts?.scopes }
+    const filter: StorageFilter = {
+      status: 'active',
+      scopes: opts?.scopes,
+      scope: opts?.scope,
+      visibilityGrants: opts?.visibilityGrants,
+    }
     if (this.hasVector) {
       // pgvector path. Cosine distance = 1 - cosine similarity. The query
       // param is cast to the column's ACTUAL type (#223) — pgvector's <=>

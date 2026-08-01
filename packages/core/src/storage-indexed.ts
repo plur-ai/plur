@@ -4,7 +4,7 @@ import { loadEngrams, storePrefix } from './engrams.js'
 import { isPersonalScope, isScopeWithin } from './scope-util.js'
 import type { Engram } from './schemas/engram.js'
 import type { StoreEntry } from './schemas/config.js'
-import type { StorageFilter } from './storage-adapter.js'
+import { escapeLikePattern, type StorageFilter } from './storage-adapter.js'
 
 const require = createRequire(import.meta.url)
 
@@ -179,11 +179,18 @@ export class IndexedStorage {
       // `scopes` allow-list above is authorization and never widened by grants.
       // SQL twin of makeVisibilityPredicate (scope-util.ts) — keep all four
       // arms (in-memory / sqlite / pglite / postgres) in lockstep.
-      const clauses = ['personal = 1', "scope = ?", "scope LIKE ? || ':%'", "scope LIKE ? || '/%'"]
-      params.push(filter.scope, filter.scope, filter.scope)
+      //
+      // The two LIKE arms of each triple are escaped (escapeLikePattern +
+      // ESCAPE '\'), same as the pglite/postgres copies: a `%`/`_` in a
+      // caller-supplied scope or grant must match literally, not widen the
+      // containment into unrelated namespaces. The equality arm keeps the
+      // raw value. SQLite has NO default LIKE escape character, so the
+      // explicit ESCAPE clause is load-bearing, not style.
+      const clauses = ['personal = 1', "scope = ?", "scope LIKE ? || ':%' ESCAPE '\\'", "scope LIKE ? || '/%' ESCAPE '\\'"]
+      params.push(filter.scope, escapeLikePattern(filter.scope), escapeLikePattern(filter.scope))
       for (const g of filter.visibilityGrants ?? []) {
-        clauses.push("scope = ?", "scope LIKE ? || ':%'", "scope LIKE ? || '/%'")
-        params.push(g, g, g)
+        clauses.push("scope = ?", "scope LIKE ? || ':%' ESCAPE '\\'", "scope LIKE ? || '/%' ESCAPE '\\'")
+        params.push(g, escapeLikePattern(g), escapeLikePattern(g))
       }
       conditions.push(`(${clauses.join(' OR ')})`)
     }

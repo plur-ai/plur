@@ -2548,7 +2548,7 @@ export class Plur {
     const fetchLimit = Math.max(intentFetch, rerankFetch)
     let results: Engram[]
     if (this.pgliteAdapter) {
-      results = await this._pgliteSemanticRecall(query, fetchLimit, filtered, options?.scopes)
+      results = await this._pgliteSemanticRecall(query, fetchLimit, filtered, options)
     } else {
       results = await embeddingSearch(filtered, query, fetchLimit, this.paths.root)
     }
@@ -2592,7 +2592,7 @@ export class Plur {
     let result: HybridSearchResult
     if (intent) {
       result = this.pgliteAdapter
-        ? await this._pgliteHybridRecall(query, intentLimit, filtered, undefined, options?.scopes)
+        ? await this._pgliteHybridRecall(query, intentLimit, filtered, undefined, options)
         : await hybridSearchWithMeta(filtered, query, intentLimit, this.paths.root)
       let routed = applyIntentRouting(result.engrams, intent.profile)
       let rerankedCount = result.reranked
@@ -2603,7 +2603,7 @@ export class Plur {
       }
       result = { ...result, engrams: routed.slice(0, limit), reranked: rerankedCount }
     } else if (this.pgliteAdapter) {
-      result = await this._pgliteHybridRecall(query, limit, filtered, rerank, options?.scopes)
+      result = await this._pgliteHybridRecall(query, limit, filtered, rerank, options)
     } else {
       result = await hybridSearchWithMeta(filtered, query, limit, this.paths.root, rerank)
     }
@@ -2752,7 +2752,7 @@ export class Plur {
     limit: number,
     filtered: Engram[],
     rerank?: RerankOptions,
-    scopes?: string[],
+    restrict?: Pick<RecallOptions, 'scope' | 'scopes'>,
   ): Promise<HybridSearchResult> {
     if (!this.pgliteAdapter) {
       return hybridSearchWithMeta(filtered, query, limit, this.paths.root, rerank)
@@ -2780,7 +2780,17 @@ export class Plur {
     // with relevant permitted rows sitting just below the cut. The intersection
     // kept it CORRECT — nothing out of scope was ever returned — but it made it
     // INCOMPLETE, which is the harder failure to notice.
-      const hits = await this.pgliteAdapter.searchVector(queryVec, embLimit, { scopes })
+    //
+    // `scope` + mounted-scope visibilityGrants (#775) go in for the same
+    // reason: `filtered` already honours them, so a k-NN restricted to
+    // `scopes` alone spends `limit` on rows the intersection below is about
+    // to discard — and a granted team engram never surfaces via the vector
+    // leg. Same filter shape searchBM25/loadFiltered get.
+      const hits = await this.pgliteAdapter.searchVector(queryVec, embLimit, {
+        scopes: restrict?.scopes,
+        scope: restrict?.scope,
+        visibilityGrants: this._grantedScopes(),
+      })
       const allowed = new Map<string, Engram>(filtered.map(e => [e.id, e]))
       pgHits = hits.map(h => allowed.get(h.engram.id)).filter((e): e is Engram => !!e)
     } catch (err) {
@@ -2807,7 +2817,12 @@ export class Plur {
    * intersected with the YAML-rooted `filtered` set. Falls back to the JSON
    * cache on cold-start / embedder-unavailable / PGLite error.
    */
-  private async _pgliteSemanticRecall(query: string, limit: number, filtered: Engram[], scopes?: string[]): Promise<Engram[]> {
+  private async _pgliteSemanticRecall(
+    query: string,
+    limit: number,
+    filtered: Engram[],
+    restrict?: Pick<RecallOptions, 'scope' | 'scopes'>,
+  ): Promise<Engram[]> {
     if (!this.pgliteAdapter) return []
     const { embed } = await import('./embeddings.js')
     const queryVec = await embed(query, 'query')
@@ -2825,7 +2840,17 @@ export class Plur {
     // with relevant permitted rows sitting just below the cut. The intersection
     // kept it CORRECT — nothing out of scope was ever returned — but it made it
     // INCOMPLETE, which is the harder failure to notice.
-      const hits = await this.pgliteAdapter.searchVector(queryVec, Math.max(limit * 3, 50), { scopes })
+    //
+    // `scope` + mounted-scope visibilityGrants (#775) go in for the same
+    // reason: `filtered` already honours them, so a k-NN restricted to
+    // `scopes` alone spends `limit` on rows the intersection below is about
+    // to discard — and a granted team engram never surfaces via the vector
+    // leg. Same filter shape searchBM25/loadFiltered get.
+      const hits = await this.pgliteAdapter.searchVector(queryVec, Math.max(limit * 3, 50), {
+        scopes: restrict?.scopes,
+        scope: restrict?.scope,
+        visibilityGrants: this._grantedScopes(),
+      })
       if (hits.length === 0) {
         return embeddingSearch(filtered, query, limit, this.paths.root)
       }
