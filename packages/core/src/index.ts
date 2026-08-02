@@ -1081,7 +1081,27 @@ export class Plur {
     engrams: Engram[],
     opts?: { allowShrink?: boolean },
   ): Promise<void> {
-    await this._storeAt(path).save(engrams, opts)
+    const store = this._storeAt(path)
+    // Backend-independent floor (audit #794, issue #802). The YAML writer has
+    // its own shrink guard, but that guard lives in `saveEngrams` and so only
+    // covers YAML. `save()` is a whole-corpus replace on EVERY backend, and on
+    // Postgres it ends in `DELETE FROM engrams WHERE id NOT IN (…)` — with an
+    // empty array, an unqualified `DELETE FROM engrams`.
+    //
+    // Emptying the corpus is never an incidental outcome: `compact`, `forget`,
+    // the outbox handoff and pack uninstall all declare `allowShrink`. An
+    // undeclared empty save means the caller read nothing and is about to make
+    // that permanent, which is the whole shape of this audit.
+    if (!opts?.allowShrink && engrams.length === 0) {
+      throw new Error(
+        `[plur] refusing to write an empty corpus to ${path}.\n` +
+        `A store write replaces the whole corpus, so this would delete every engram in it. ` +
+        `Operations that legitimately empty a store declare it; this one did not, which means the ` +
+        `caller most likely read the store as empty when it is not.\n` +
+        `If the store really should be emptied, use the operation that says so (compact/forget).`,
+      )
+    }
+    await store.save(engrams, opts)
   }
 
   /**

@@ -360,7 +360,9 @@ export function validateToolArgs(
       : 'Received no fields (the arguments object was empty).'
     const disposition = wholePayloadDrop
       ? 'The request reached the server but its arguments did not — do not abandon the call, and do ' +
-        'not rewrite the payload: it was never evaluated.'
+        'not rewrite the payload: it was never evaluated. Retry the IDENTICAL call; it usually ' +
+        'succeeds. If you issued several tool calls in one message, send them one per message — ' +
+        'batching is the strongest correlate of this drop (#772).'
       : 'The call reached the server — this is a malformed-arguments error, not a transport failure. ' +
         'Fix the field(s) named above and retry; do not abandon the call.'
     return {

@@ -55,6 +55,37 @@ export interface SaveOptions {
   allowShrink?: boolean
 }
 
+/**
+ * ## Implementer contract: what the engine cannot protect you from
+ *
+ * The engine guards the write path in three places (audit #794): the YAML
+ * loader refuses an unreadable file, `saveEngrams` refuses an undeclared
+ * shrink, and `_writeEngrams` refuses an undeclared *empty* corpus on any
+ * backend. All three rest on the same assumption — that SOMETHING the store
+ * says can be trusted.
+ *
+ * An implementation whose `load()` under-reports (returns `[]`, or a partial
+ * set, for a store that is not actually empty) and which implements neither
+ * `append`/`updateMany` nor a truthful count defeats every one of them by
+ * construction: read-modify-write is the only shape available, the engine has
+ * no second opinion to check the read against, and the resulting `save()`
+ * legitimately looks like "the corpus is now this small". Probe
+ * `probe/p10-seam-capability.ts` demonstrates exactly this with a deliberately
+ * lying store, and it still loses rows — not because a guard is missing, but
+ * because there is nothing left to guard with.
+ *
+ * So an implementation MUST do at least one of:
+ *
+ *   - implement `append` and `updateMany`, so single-engram changes never
+ *     become whole-corpus replaces (what `PostgresAdapter` and
+ *     `MemoryPrimaryStore` do); or
+ *   - make `load()` fail loudly rather than under-report, so the engine can
+ *     refuse instead of persisting a lie (what `YamlPrimaryStore` does via
+ *     `EngramStoreUnreadableError`).
+ *
+ * Every store shipped in this package satisfies one or both. A custom store
+ * that satisfies neither is outside what the engine can defend.
+ */
 export interface PrimaryStore {
   /** Backing medium — for diagnostics and `status()` reporting. */
   readonly kind: PrimaryStoreKind
