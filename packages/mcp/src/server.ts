@@ -121,7 +121,8 @@ Persistent memory for AI agents. Corrections, preferences, and conventions are s
 - **plur_recall** — hybrid search by default (BM25 + embeddings); pass mode:"keyword" for BM25-only
 - **plur_feedback** — rate an engram (trains relevance)
 - **plur_forget** — retire an outdated engram
-- **plur_promote** — activate a candidate engram
+- **plur_promote** — activate a candidate engram (status only — never changes scope)
+- **plur_rescope** — move an engram to another scope (e.g. promote a local engram into a team store)
 
 ### Context Injection
 - **plur_inject** — select engrams for a task (BM25)

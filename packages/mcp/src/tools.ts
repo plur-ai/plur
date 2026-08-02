@@ -3045,7 +3045,7 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
 
     {
       name: 'plur_promote',
-      description: 'Activate candidate engrams so they appear in injection results',
+      description: 'Activate candidate engrams so they appear in injection results. Status change only — it does NOT move an engram to another scope; to promote an engram into a team/shared scope use plur_rescope (#676).',
       annotations: { title: 'Promote', destructiveHint: false, idempotentHint: true },
       inputSchema: {
         type: 'object',
@@ -3076,6 +3076,36 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
         }
 
         return { promoted, errors, success: errors.length === 0 }
+      },
+    },
+
+    {
+      name: 'plur_rescope',
+      description: 'Move existing engram(s) to a different scope (#676) — e.g. promote a personal/local engram into a team scope so it reaches the shared store. Bypasses the content-hash dedup that makes a plur_learn re-emit a silent no-op: rescope matches by id and moves the engram. Remote targets (a configured writable store scope): a copy is pushed via the routed write path (the server assigns the id, provenance is kept in the copy\'s source field) and the local original is soft-retired with a superseded_by link — set keep_local:true to keep it active. Local targets (local, global, project:*): the scope is rewritten in place, preserving id and activation. The target must be local/global/project:* or a scope with a configured writable store — anything else fails early (typo protection). Content is re-scanned for secrets/sensitive material before any shared/remote target and a hit blocks the move. Batch via ids; dry_run:true previews every decision without mutating anything. NOT candidate activation — that is plur_promote.',
+      annotations: { title: 'Rescope', destructiveHint: false, idempotentHint: true },
+      inputSchema: {
+        type: 'object',
+        properties: {
+          id: { type: 'string', description: 'Single engram ID to move' },
+          ids: { type: 'array', items: { type: 'string' }, description: 'Multiple engram IDs to move to the same target scope (batch)' },
+          target_scope: { type: 'string', description: 'Destination scope: local, global, project:<name>, or a scope with a configured writable store (e.g. group:org/team)' },
+          keep_local: { type: 'boolean', description: 'Remote targets only: keep the local original active after the push (default false — it is retired with a superseded_by link so it stops injecting)' },
+          dry_run: { type: 'boolean', description: 'Preview the per-engram outcome without mutating anything, local or remote' },
+        },
+        required: ['target_scope'],
+      },
+      handler: async (args, plur) => {
+        const targetIds = (args.ids as string[] | undefined) ?? (args.id ? [args.id as string] : [])
+        if (targetIds.length === 0) throw new Error('Provide id or ids')
+        const { results, success } = await plur.rescope(targetIds, args.target_scope as string, {
+          keep_local: args.keep_local as boolean | undefined,
+          dry_run: args.dry_run as boolean | undefined,
+        })
+        return {
+          results,
+          success,
+          ...(args.dry_run === true ? { dry_run: true, note: 'Dry run — nothing was changed.' } : {}),
+        }
       },
     },
 
