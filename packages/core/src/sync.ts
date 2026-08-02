@@ -53,6 +53,12 @@ embeddings/
 *.sqlite
 store.pglite/
 exchange/
+
+# PLUR — local backups (#799). Machine-local by design: a snapshot is a
+# whole-corpus copy INCLUDING scope:local engrams, so pushing one would leak
+# exactly the engrams the scope strip exists to hold back.
+backups/
+*.superseded-*
 `
 
 /**

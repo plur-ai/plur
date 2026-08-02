@@ -25,6 +25,7 @@ Commands:
   inject <task>           Get relevant engrams for a task
   list                    List all engrams
   forget <id>             Retire an engram
+  restore [--list|--yes]  Inspect or restore a daily store snapshot (#799)
   ingest <content>        Extract and save engrams from content
   import                  Import memories from another system (issue #441)
                           --from <generic|gp-engram|mem0> --path <input-file>
@@ -102,6 +103,7 @@ const COMMANDS: Record<string, string> = {
   status: './commands/status.js',
   receipt: './commands/receipt.js',
   sync: './commands/sync.js',
+  restore: './commands/restore.js',
   packs: './commands/packs.js',
   ingest: './commands/ingest.js',
   import: './commands/import.js',
