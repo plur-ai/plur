@@ -1,10 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync } from 'fs'
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync, existsSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import yaml from 'js-yaml'
 import { Plur } from '../src/index.js'
-import { storePrefix } from '../src/engrams.js'
+import { storePrefix, loadEngrams } from '../src/engrams.js'
 
 /** Minimal valid engram for store YAML files */
 function makeEngram(overrides: Record<string, unknown> = {}) {
@@ -292,6 +292,51 @@ describe('Multi-store', () => {
     expect(storePrefix('ab')).toBe('ABA')
     // Edge: single char scope
     expect(storePrefix('x')).toBe('XXX')
+  })
+
+  it('addStore creates the filesystem file when path does not exist (#766)', async () => {
+    // Do NOT pre-create the file — addStore should initialize it
+    const newStorePath = join(storeDir, 'subdir', 'new-store.yaml')
+    const plur = createPlur()
+    const result = plur.addStore(newStorePath, 'group:new-scope', { shared: true })
+    expect(result.status).toBe('added')
+    // File must exist now (addStore initializes it)
+    expect(existsSync(newStorePath)).toBe(true)
+    // And it loads as empty
+    const content = loadEngrams(newStorePath)
+    expect(content).toEqual([])
+  })
+
+  it('addStore heals a pre-fix registration: already_registered re-add materializes the missing file (#766)', async () => {
+    // A store registered BEFORE the materialization fix is in exactly the
+    // broken state: config entry exists, file absent. Re-running stores_add
+    // with the same path (the natural post-upgrade repair) must run the init
+    // block on the sameEntry path too — not return early with the file still
+    // missing.
+    const brokenPath = join(storeDir, 'pre-fix-store.yaml')
+    writeConfig([{ path: brokenPath, scope: 'group:pre-fix', shared: true }])
+    expect(existsSync(brokenPath)).toBe(false)
+
+    const plur = createPlur()
+    const result = plur.addStore(brokenPath, 'group:pre-fix', { shared: true })
+    expect(result.status).toBe('already_registered')
+    expect(result.scope).toBe('group:pre-fix')
+    // The heal: the file now exists and loads as empty
+    expect(existsSync(brokenPath)).toBe(true)
+    expect(loadEngrams(brokenPath)).toEqual([])
+  })
+
+  it('addStore already_registered re-add does NOT clobber an existing file (#766 heal is init-if-absent only)', async () => {
+    writeStoreEngrams([makeEngram({ statement: 'Pre-existing store content survives re-add' })])
+    writeConfig([{ path: storePath, scope: 'datafund' }])
+
+    const plur = createPlur()
+    const result = plur.addStore(storePath, 'datafund')
+    expect(result.status).toBe('already_registered')
+    // Content untouched
+    const content = loadEngrams(storePath)
+    expect(content).toHaveLength(1)
+    expect((content[0] as any).statement).toBe('Pre-existing store content survives re-add')
   })
 
   it('cache invalidates after feedback, next recall reflects change', async () => {

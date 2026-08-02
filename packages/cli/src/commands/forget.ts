@@ -27,7 +27,11 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     const engram = await plur.getById(target)
     if (!engram) exit(1, `Engram not found: ${target}`)
     if (engram.status === 'retired') exit(1, `Already retired: ${target}`)
-    await plur.forget(target, reason)
+    // force (#766): `plur forget` is an explicit user-facing forget — same
+    // surface as MCP plur_forget. Without force, a multiply-learned engram
+    // (reference_count > 1) only decrements and stays active, and a later
+    // learn() at a different scope re-matches it and inherits the old scope.
+    await plur.forget(target, reason, { force: true })
     if (shouldOutputJson(flags)) {
       outputJson({ success: true, retired: { id: target, statement: engram.statement } })
     } else {
@@ -49,7 +53,9 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     return
   }
   if (matches.length === 1) {
-    await plur.forget(matches[0].id, reason)
+    // force (#766): explicit user-facing forget — full retirement, not a
+    // ref-count decrement (see the direct-ID branch above).
+    await plur.forget(matches[0].id, reason, { force: true })
     if (shouldOutputJson(flags)) {
       outputJson({ success: true, retired: { id: matches[0].id, statement: matches[0].statement } })
     } else {

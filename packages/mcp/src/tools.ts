@@ -1259,13 +1259,16 @@ function getAllToolDefinitions(): ToolDefinition[] {
           const engram = await plur.getById(args.id as string)
           if (engram) {
             if (engram.status === 'retired') return { success: false, error: `Already retired: ${args.id}` }
-            await plur.forget(args.id as string)
+            // force:true — explicit user forget always fully retires, ignoring
+            // reference_count. The ref-count decrement path is for internal
+            // multi-agent dedup; one plur_forget call = full retirement (#766).
+            await plur.forget(args.id as string, undefined, { force: true })
             return { success: true, retired: { id: engram.id, statement: engram.statement } }
           }
           // Not in local store — fall through to plur.forget() which routes to
           // remote stores (with prefix stripping per #86 / PR #186). Throws
           // "Engram not found" if it's nowhere.
-          await plur.forget(args.id as string)
+          await plur.forget(args.id as string, undefined, { force: true })
           return { success: true, retired: { id: args.id as string } }
         }
         if (args.search) {
@@ -1274,7 +1277,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
           const matches = await plur.recall(args.search as string, { limit: 100, remote: false })
           if (matches.length === 0) return { success: false, error: `No active engrams matching "${args.search}"` }
           if (matches.length === 1) {
-            await plur.forget(matches[0].id)
+            await plur.forget(matches[0].id, undefined, { force: true })
             return { success: true, retired: { id: matches[0].id, statement: matches[0].statement } }
           }
           return {
@@ -2584,6 +2587,14 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
             note: `This path is already registered under scope "${result.scope}". A local store is keyed by its path, so the requested scope "${requestedScope}" was NOT added. Use a separate store file for a different scope, or remove the existing entry first.`,
           } : {}),
           kind: url ? 'remote' : 'filesystem',
+          // Filesystem stores are read sources — plur_learn writes to the
+          // primary engrams.yaml and carries the scope label there (#766).
+          // Pre-populate the file via plur_packs_export or direct YAML edit
+          // to inject team engrams; plur_learn with this scope will land them
+          // in your primary store tagged with the scope.
+          ...(path && !scopeDropped && !url ? {
+            note: `Store initialized at ${path}. plur_learn calls with scope "${result.scope}" are tagged with that scope but stored in your primary engrams.yaml. To share engrams across machines via this file, populate it via plur_packs_export or direct YAML and commit it to your repo.`,
+          } : {}),
         }
       },
     },

@@ -409,4 +409,113 @@ describe('outbox pattern (issue #26)', () => {
     expect(result.failed).toBe(1)
     expect(result.expired_warnings.some(w => w.includes('no matching remote store'))).toBe(true)
   })
+
+  it('flushOutbox() skips retired engrams — no remote push, no resurrection (#766)', async () => {
+    // 1. Create an engram in the outbox (remote push fails)
+    mockRemoteFailure('connection refused')
+    writeStoresConfig(primaryDir, storeConfig())
+    const plur = new Plur({ path: primaryDir })
+
+    await plur.learnRouted('pinned team rule', {
+      scope: REMOTE_SCOPE,
+      type: 'behavioral',
+    })
+    await new Promise(r => setTimeout(r, 50))
+
+    const localBefore = await readLocalEngrams(primaryDir)
+    const queued = localBefore.find((e: any) => e.statement === 'pinned team rule')
+    expect(queued).toBeDefined()
+    expect(queued.structured_data._outbox).toBeDefined()
+
+    // 2. Retire the engram locally — simulates user calling plur_forget before flush
+    await plur.forget(queued.id, undefined, { force: true })
+
+    const localAfterForget = await readLocalEngrams(primaryDir)
+    const retired = localAfterForget.find((e: any) => e.id === queued.id)
+    expect(retired?.status).toBe('retired')
+    // _outbox metadata is stripped on retirement (#766 cancel-outbox)
+    expect(retired?.structured_data?._outbox).toBeUndefined()
+
+    // 3. flushOutbox must NOT push the retired engram
+    fetchMock.mockClear()
+    mockRemoteSuccess()
+    const result = await plur.flushOutbox()
+
+    expect(result.flushed).toBe(0)
+    expect(result.failed).toBe(0)
+    // fetch was NOT called with POST (no push attempt)
+    const postCalls = (fetchMock.mock.calls as [string, RequestInit][]).filter(
+      ([, init]) => (init?.method ?? 'GET') === 'POST'
+    )
+    expect(postCalls.length).toBe(0)
+  })
+
+  it('flushOutbox() skips retired engrams even when _outbox is present (YAML edited without cancel, #766)', async () => {
+    // Simulate a retired engram that still has _outbox (e.g. older client, direct YAML edit)
+    const engramsPath = join(primaryDir, 'engrams.yaml')
+    writeFileSync(
+      engramsPath,
+      yaml.dump({
+        engrams: [{
+          id: 'ENG-LEGACY-RETIRED',
+          statement: 'legacy stale outbox engram',
+          scope: REMOTE_SCOPE,
+          status: 'retired',
+          structured_data: {
+            _outbox: {
+              target_url: REMOTE_URL,
+              target_scope: REMOTE_SCOPE,
+              queued_at: new Date().toISOString(),
+              last_attempt: new Date().toISOString(),
+              attempt_count: 0,
+              last_error: '',
+            },
+          },
+        }],
+      }, { lineWidth: 120, noRefs: true })
+    )
+    writeStoresConfig(primaryDir, storeConfig())
+    const plur = new Plur({ path: primaryDir })
+
+    fetchMock.mockClear()
+    mockRemoteSuccess()
+    const result = await plur.flushOutbox()
+
+    expect(result.flushed).toBe(0)
+    expect(result.failed).toBe(0)
+    const postCalls = (fetchMock.mock.calls as [string, RequestInit][]).filter(
+      ([, init]) => (init?.method ?? 'GET') === 'POST'
+    )
+    expect(postCalls.length).toBe(0)
+  })
+
+  it('outboxCount() excludes retired engrams still carrying _outbox — no permanent phantom pending (#766)', async () => {
+    // A retired engram with a stale _outbox marker (direct YAML edit, older
+    // client — retirement without the cancel path) is skipped by flushOutbox
+    // forever. outboxCount must mirror the flush filter, or the count reports
+    // "pending" entries no flush will ever clear.
+    mockRemoteFailure('connection refused')
+    writeStoresConfig(primaryDir, storeConfig())
+    const plur = new Plur({ path: primaryDir })
+
+    await plur.learnRouted('phantom pending one', { scope: REMOTE_SCOPE, type: 'behavioral' })
+    await plur.learnRouted('phantom pending two', { scope: REMOTE_SCOPE, type: 'behavioral' })
+    await new Promise(r => setTimeout(r, 50))
+
+    const engramsPath = join(primaryDir, 'engrams.yaml')
+    const queued = await readLocalEngrams(primaryDir)
+    expect(queued.filter((e: any) => e.structured_data?._outbox)).toHaveLength(2)
+
+    // Retire one WITHOUT the cancel path: flip status in the YAML directly,
+    // leaving the stale _outbox marker in place.
+    const doc = yaml.load(readFileSync(engramsPath, 'utf-8')) as { engrams: any[] }
+    const victim = doc.engrams.find((e: any) => e.statement === 'phantom pending one')
+    victim.status = 'retired'
+    writeFileSync(engramsPath, yaml.dump(doc, { lineWidth: 120, noRefs: true }))
+
+    // Fresh instance (no stale cache): only the active engram counts — the
+    // retired one is invisible to flush and must be invisible to the count.
+    const plur2 = new Plur({ path: primaryDir })
+    expect(await plur2.outboxCount()).toBe(1)
+  })
 })
