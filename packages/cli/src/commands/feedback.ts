@@ -1,5 +1,5 @@
 import { createPlur, type GlobalFlags } from '../plur.js'
-import { shouldOutputJson, outputJson, outputText, exit } from '../output.js'
+import { shouldOutputJson, outputJson, outputInfo, exit } from '../output.js'
 
 const VALID_SIGNALS = ['positive', 'negative', 'neutral'] as const
 type Signal = (typeof VALID_SIGNALS)[number]
@@ -38,7 +38,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     if (shouldOutputJson(flags)) {
       outputJson({ mode: 'batch', results, summary })
     } else {
-      outputText(`Batch feedback: ${summary.positive} positive, ${summary.negative} negative, ${summary.neutral} neutral`)
+      outputInfo(`Batch feedback: ${summary.positive} positive, ${summary.negative} negative, ${summary.neutral} neutral`, flags)
     }
     return
   }
@@ -68,6 +68,6 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   if (shouldOutputJson(flags)) {
     outputJson({ id, signal, status: 'recorded' })
   } else {
-    outputText(`Feedback recorded: ${signal} for ${id}`)
+    outputInfo(`Feedback recorded: ${signal} for ${id}`, flags)
   }
 }

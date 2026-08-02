@@ -1,5 +1,5 @@
 import { createPlur, type GlobalFlags } from '../plur.js'
-import { shouldOutputJson, outputJson, outputText } from '../output.js'
+import { shouldOutputJson, outputJson, outputText, outputInfo } from '../output.js'
 
 export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   const plur = createPlur(flags)
@@ -64,6 +64,6 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
         : e.statement
       outputText(`${e.id.padEnd(20)} ${e.type.padEnd(14)} ${e.scope.padEnd(20)} ${stmt}`)
     }
-    outputText(`\nTotal: ${engrams.length}`)
+    outputInfo(`\nTotal: ${engrams.length}`, flags)
   }
 }

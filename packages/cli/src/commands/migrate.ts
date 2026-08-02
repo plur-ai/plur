@@ -1,6 +1,6 @@
 import { runMigrations, rollbackMigrations, getSchemaVersion, CURRENT_SCHEMA_VERSION } from '@plur-ai/core'
 import { createPlur, type GlobalFlags } from '../plur.js'
-import { shouldOutputJson, outputJson, outputText, exit } from '../output.js'
+import { shouldOutputJson, outputJson, outputText, outputInfo, exit } from '../output.js'
 import { detectPlurStorage } from '@plur-ai/core'
 
 export async function run(args: string[], flags: GlobalFlags): Promise<void> {
@@ -34,16 +34,17 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
       if (shouldOutputJson(flags)) {
         outputJson(result)
       } else {
+        // Confirmation of a requested mutation → suppressed by --quiet (#730).
         if (result.applied.length === 0) {
-          outputText('Already up to date.')
+          outputInfo('Already up to date.', flags)
         } else {
-          outputText(`Applied ${result.applied.length} migration(s):`)
+          outputInfo(`Applied ${result.applied.length} migration(s):`, flags)
           for (const id of result.applied) {
-            outputText(`  - ${id}`)
+            outputInfo(`  - ${id}`, flags)
           }
-          outputText(`Schema version: ${result.schema_version}`)
+          outputInfo(`Schema version: ${result.schema_version}`, flags)
           if (result.backup_path) {
-            outputText(`Backup: ${result.backup_path}`)
+            outputInfo(`Backup: ${result.backup_path}`, flags)
           }
         }
       }
@@ -68,13 +69,13 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
         outputJson(result)
       } else {
         if (result.applied.length === 0) {
-          outputText('Nothing to roll back.')
+          outputInfo('Nothing to roll back.', flags)
         } else {
-          outputText(`Rolled back ${result.applied.length} migration(s):`)
+          outputInfo(`Rolled back ${result.applied.length} migration(s):`, flags)
           for (const id of result.applied) {
-            outputText(`  - ${id}`)
+            outputInfo(`  - ${id}`, flags)
           }
-          outputText(`Schema version: ${result.schema_version}`)
+          outputInfo(`Schema version: ${result.schema_version}`, flags)
         }
       }
     } catch (err: any) {

@@ -1,4 +1,4 @@
-import { shouldOutputJson, outputJson, exit } from './output.js'
+import { shouldOutputJson, outputJson, setQuiet, exit } from './output.js'
 import { parseGlobalFlags, createPlur } from './plur.js'
 
 export type { GlobalFlags } from './plur.js'
@@ -71,13 +71,19 @@ Global flags:
   --json       Force JSON output (auto-detected when piped)
   --path <dir> Override storage path (default: ~/.plur)
   --fast       Use BM25-only search (skip embeddings)
-  --quiet      Suppress non-essential output
+  --quiet      Suppress non-essential output (progress, confirmations, hints;
+               results, warnings and errors still print)
   --version    Print version
   --help       Show this help`)
   process.exit(0)
 }
 
 const { flags, args } = parseGlobalFlags(argv)
+// Arm --quiet globally (#730) so no output site can forget it. Commands still
+// pass `flags` to outputInfo where available; this covers the ones that don't.
+// hook-* commands are unaffected: their stdout is protocol JSON written
+// directly, never through outputInfo.
+setQuiet(flags.quiet === true)
 const command = args[0]
 const commandArgs = args.slice(1)
 

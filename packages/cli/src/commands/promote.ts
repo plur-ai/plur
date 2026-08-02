@@ -1,5 +1,5 @@
 import { createPlur, type GlobalFlags } from '../plur.js'
-import { shouldOutputJson, outputJson, outputText, exit } from '../output.js'
+import { shouldOutputJson, outputJson, outputInfo, exit } from '../output.js'
 
 export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   const plur = createPlur(flags)
@@ -18,7 +18,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     if (shouldOutputJson(flags)) {
       outputJson({ success: true, id, status: 'already_active' })
     } else {
-      outputText(`Engram ${id} is already active`)
+      outputInfo(`Engram ${id} is already active`, flags)
     }
     return
   }
@@ -36,6 +36,6 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   if (shouldOutputJson(flags)) {
     outputJson({ success: true, id, statement: engram.statement, status: 'promoted' })
   } else {
-    outputText(`Promoted engram: ${id}`)
+    outputInfo(`Promoted engram: ${id}`, flags)
   }
 }

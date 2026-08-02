@@ -2,7 +2,7 @@ import { existsSync, readFileSync, writeFileSync, appendFileSync } from 'fs'
 import { dirname, join, resolve } from 'path'
 import { homedir } from 'os'
 import { type GlobalFlags } from '../plur.js'
-import { outputText } from '../output.js'
+import { outputText, outputInfo, outputError } from '../output.js'
 
 /**
  * plur init-remote — opt this project into recall-from-Enterprise.
@@ -314,13 +314,13 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
 
   const parsed = parseArgs(args)
   if ('error' in parsed) {
-    outputText(`Error: ${parsed.error}\n\n${HELP}`, flags)
+    outputError(`Error: ${parsed.error}\n\n${HELP}`)
     process.exit(1)
   }
   const opts = parsed
 
   if (opts.help) {
-    outputText(HELP, flags)
+    outputText(HELP) // explicitly requested — never suppressed
     return
   }
 
@@ -334,16 +334,17 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     const verifyPath = findExistingConfigPath() ?? configPath
     const cfg = readRemoteFromConfig(verifyPath)
     if (!cfg.url || !cfg.token) {
-      outputText(`No remote config found (walked upward from ${process.cwd()}). Run \`plur init-remote --url <url> --token <key>\` first.`, flags)
+      outputError(`No remote config found (walked upward from ${process.cwd()}). Run \`plur init-remote --url <url> --token <key>\` first.`)
       process.exit(1)
     }
-    outputText(`Using config at ${verifyPath}`, flags)
+    outputInfo(`Using config at ${verifyPath}`, flags)
     try {
       const me = await verifyConnectivity(cfg.url, cfg.token)
-      outputText(`✓ Connected to ${cfg.url} as ${me.username} (org: ${me.org_id})`, flags)
-      outputText(`  readable scopes: ${me.scopes.length === 0 ? '(none)' : me.scopes.join(', ')}`, flags)
+      // The verify result IS the requested output — never suppressed.
+      outputText(`✓ Connected to ${cfg.url} as ${me.username} (org: ${me.org_id})`)
+      outputText(`  readable scopes: ${me.scopes.length === 0 ? '(none)' : me.scopes.join(', ')}`)
     } catch (err) {
-      outputText(`✗ Connection failed: ${(err as Error).message}`, flags)
+      outputError(`✗ Connection failed: ${(err as Error).message}`)
       process.exit(2)
     }
     return
@@ -351,14 +352,14 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
 
   // Setup mode — validate inputs
   if (!opts.url || !opts.token) {
-    outputText(`Missing required flags.\n${HELP}`, flags)
+    outputError(`Missing required flags.\n${HELP}`)
     process.exit(1)
   }
 
   // Reject control characters in the token — they corrupt the YAML write
   // and silently break the parser (data #EC09).
   if (/[\n\r\t]/.test(opts.token)) {
-    outputText(`Error: token contains newline/tab characters. Refusing to write a corrupt config.`, flags)
+    outputError(`Error: token contains newline/tab characters. Refusing to write a corrupt config.`)
     process.exit(1)
   }
 
@@ -366,24 +367,24 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   try {
     const u = new URL(opts.url)
     if (u.protocol !== 'http:' && u.protocol !== 'https:') {
-      outputText(`Error: remote_url must be http:// or https:// (got ${u.protocol})`, flags)
+      outputError(`Error: remote_url must be http:// or https:// (got ${u.protocol})`)
       process.exit(1)
     }
   } catch {
-    outputText(`Error: remote_url is not a valid URL: ${opts.url}`, flags)
+    outputError(`Error: remote_url is not a valid URL: ${opts.url}`)
     process.exit(1)
   }
 
   // Test connectivity before writing the config — fail-fast saves the user
   // from a confusing "hook is silent" mystery if the token is wrong.
-  outputText(`Testing connectivity to ${opts.url}...`, flags)
+  outputInfo(`Testing connectivity to ${opts.url}...`, flags)
   try {
     const me = await verifyConnectivity(opts.url, opts.token)
-    outputText(`✓ Authenticated as ${me.username} (org: ${me.org_id})`, flags)
-    outputText(`  readable scopes: ${me.scopes.length === 0 ? '(none)' : me.scopes.join(', ')}`, flags)
+    outputInfo(`✓ Authenticated as ${me.username} (org: ${me.org_id})`, flags)
+    outputInfo(`  readable scopes: ${me.scopes.length === 0 ? '(none)' : me.scopes.join(', ')}`, flags)
   } catch (err) {
-    outputText(`✗ Connection failed: ${(err as Error).message}`, flags)
-    outputText(`  Refusing to write a broken config. Fix the URL/token and re-run.`, flags)
+    outputError(`✗ Connection failed: ${(err as Error).message}`)
+    outputError(`  Refusing to write a broken config. Fix the URL/token and re-run.`)
     process.exit(2)
   }
 
@@ -391,33 +392,35 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   const existing = existsSync(configPath) ? readFileSync(configPath, 'utf8') : ''
   const next = buildConfigBody(existing, opts.url, opts.token, opts.scopes)
   writeFileSync(configPath, next)
-  outputText(`✓ Wrote ${configPath}`, flags)
+  outputInfo(`✓ Wrote ${configPath}`, flags)
   if (opts.scopes && opts.scopes.length > 0) {
-    outputText(`  scope whitelist: ${opts.scopes.join(', ')}`, flags)
+    outputInfo(`  scope whitelist: ${opts.scopes.join(', ')}`, flags)
   } else {
-    outputText(`  scope whitelist: (none — hook will query all readable scopes)`, flags)
+    outputInfo(`  scope whitelist: (none — hook will query all readable scopes)`, flags)
   }
 
   // Ensure .gitignore
   if (!opts.noGitignore) {
     const gi = ensureGitignore()
-    if (gi.action === 'added') outputText(`✓ Added .plur.yaml to ${gi.path}`, flags)
-    else if (gi.action === 'created') outputText(`✓ Created ${gi.path} with .plur.yaml entry`, flags)
-    else outputText(`✓ ${gi.path} already excludes .plur.yaml`, flags)
+    if (gi.action === 'added') outputInfo(`✓ Added .plur.yaml to ${gi.path}`, flags)
+    else if (gi.action === 'created') outputInfo(`✓ Created ${gi.path} with .plur.yaml entry`, flags)
+    else outputInfo(`✓ ${gi.path} already excludes .plur.yaml`, flags)
   } else {
-    outputText(`⚠ Skipped .gitignore (--no-gitignore). The token in .plur.yaml is sensitive.`, flags)
+    // The token is now committed-able — outcome differs from the safe default;
+    // never suppressed (#730).
+    outputText(`⚠ Skipped .gitignore (--no-gitignore). The token in .plur.yaml is sensitive.`)
   }
 
-  outputText(`\nDone. The UserPromptSubmit hook will now query ${opts.url} on every prompt`, flags)
-  outputText(`from this directory tree (bounded by the nearest .git). Personal/non-project`, flags)
-  outputText(`sessions (without a .plur.yaml in the path) stay local-only.`, flags)
-  outputText(``, flags)
-  outputText(`⚠ Token sensitivity:`, flags)
-  outputText(`  .plur.yaml now contains an API token in plaintext.`, flags)
-  outputText(`  - .gitignore protects against git commits but NOT against cloud sync`, flags)
-  outputText(`    (iCloud Drive, Dropbox, Google Drive). If this project lives in a`, flags)
-  outputText(`    synced folder, the token will leave your machine.`, flags)
-  outputText(`  - Also not protected: \`cp -r\`, \`zip\`, \`rsync\`, archived backups.`, flags)
-  outputText(`  - Consider moving the token to an env var if your project ships with`, flags)
-  outputText(`    others (future: env-var substitution in .plur.yaml).`, flags)
+  outputInfo(`\nDone. The UserPromptSubmit hook will now query ${opts.url} on every prompt`, flags)
+  outputInfo(`from this directory tree (bounded by the nearest .git). Personal/non-project`, flags)
+  outputInfo(`sessions (without a .plur.yaml in the path) stay local-only.`, flags)
+  outputInfo(``, flags)
+  outputInfo(`⚠ Token sensitivity:`, flags)
+  outputInfo(`  .plur.yaml now contains an API token in plaintext.`, flags)
+  outputInfo(`  - .gitignore protects against git commits but NOT against cloud sync`, flags)
+  outputInfo(`    (iCloud Drive, Dropbox, Google Drive). If this project lives in a`, flags)
+  outputInfo(`    synced folder, the token will leave your machine.`, flags)
+  outputInfo(`  - Also not protected: \`cp -r\`, \`zip\`, \`rsync\`, archived backups.`, flags)
+  outputInfo(`  - Consider moving the token to an env var if your project ships with`, flags)
+  outputInfo(`    others (future: env-var substitution in .plur.yaml).`, flags)
 }

@@ -99,16 +99,50 @@ export function outputJson(data: unknown): void {
   process.stdout.write(JSON.stringify(redactSecrets(data)) + '\n')
 }
 
-/** Write human-readable text to stdout. */
+// ── --quiet policy (#730) ───────────────────────────────────────────────────
+//
+// `--quiet` means "suppress non-essential output". "Non-essential" is defined
+// here, once, not per command:
+//
+//   SUPPRESSED  progress lines ("Testing connectivity…"), confirmations of a
+//               mutation the user explicitly requested ("Learned: …",
+//               "Feedback recorded"), banners/titles, hints and next-step
+//               suggestions, summary footers ("Total: 5").
+//   PRESERVED   the primary output — the thing the user asked for (recall
+//               results, listings, status fields, reports); warnings that the
+//               outcome DIFFERS from what was requested (scope demotion,
+//               index failure, partial results); errors (stderr, always);
+//               exit codes; all `--json` output; hook-* protocol stdout.
+//
+// Mechanics: the entry point calls {@link setQuiet} once from the parsed
+// global flags, so quiet cannot be forgotten by a command that never threads
+// options (the failure mode of the pre-#730 design, where only init-remote
+// passed flags and the other ~350 call sites silently ignored the flag).
+// Call sites still pass `flags` explicitly where available — that keeps
+// commands testable in-process without touching module state, and the
+// per-call value overrides the global one.
+//
+// Ambiguous lines default to {@link outputText} (printing): a too-chatty
+// `--quiet` is an annoyance, a suppressed result is data loss.
+
+let globalQuiet = false
+
+/** Set once by the CLI entry point from `parseGlobalFlags` (see policy above). */
+export function setQuiet(quiet: boolean): void {
+  globalQuiet = quiet
+}
+
+/** Whether informational output is currently suppressed. Per-call `options.quiet` overrides the global flag. */
+export function isQuiet(options?: OutputOptions): boolean {
+  return options?.quiet ?? globalQuiet
+}
+
 /**
- * Write a line of human-readable output, honouring `--quiet`.
+ * Write a line of PRIMARY human-readable output to stdout.
  *
- * The `options` parameter is not decorative. `init-remote` has been calling
- * `outputText(text, flags)` at 35 sites since it was written, believing that was
- * how output got routed; the one-parameter signature silently discarded the
- * second argument, so `--quiet` did nothing there. Nothing caught it: esbuild
- * strips types without checking them, and the test suites were not typechecked
- * at all until `tsconfig.tests.json` was added.
+ * Never suppressed — this is the thing the user asked for (see the --quiet
+ * policy above). For progress/confirmation/decoration lines use
+ * {@link outputInfo}; for errors use {@link outputError} or {@link exit}.
  *
  * `--json` is deliberately NOT handled here. There is no correct automatic
  * translation from a line of prose to a machine-readable record, and inventing
@@ -117,9 +151,30 @@ export function outputJson(data: unknown): void {
  * one that cannot should say so rather than emit prose to a caller that asked
  * for JSON.
  */
-export function outputText(text: string, options?: OutputOptions): void {
-  if (options?.quiet) return
+export function outputText(text: string): void {
   process.stdout.write(text + '\n')
+}
+
+/**
+ * Write an INFORMATIONAL line to stdout — suppressed by `--quiet`.
+ *
+ * Use for progress, confirmations of requested mutations, banners, hints,
+ * and summary footers (see the --quiet policy above). Pass the command's
+ * `flags` when in scope so behaviour is explicit and testable in-process;
+ * the global flag set by the entry point covers call sites that don't.
+ */
+export function outputInfo(text: string, options?: OutputOptions): void {
+  if (isQuiet(options)) return
+  process.stdout.write(text + '\n')
+}
+
+/**
+ * Write an error line to stderr. NEVER suppressed — `--quiet` silences
+ * chatter, not failures. Prefer {@link exit} when the command terminates
+ * immediately; use this when it reports and continues (or exits later).
+ */
+export function outputError(text: string): void {
+  process.stderr.write(text + '\n')
 }
 
 /** Exit with code. 0 = success, 1 = error, 2 = no results. */
