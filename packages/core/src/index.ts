@@ -1239,12 +1239,25 @@ export class Plur {
    */
   private async _withStoreLock<T>(path: string, fn: () => Promise<T>): Promise<T> {
     const store = this._storeAt(path)
+    // Lock the store's PHYSICAL location, not the conventional path (#813,
+    // audit finding 11). `paths.engrams` is where a store would live by
+    // convention; an INJECTED store can own bytes somewhere else entirely, and
+    // `location` is the interface's answer to "where are they". Locking the
+    // convention meant two Plur instances with different roots but the same
+    // injected YamlPrimaryStore took DIFFERENT lock files while doing
+    // read-modify-write against the SAME file — so one write could overwrite
+    // the other with both reporting success.
+    //
+    // Falls back to `path` when the store reports no location: an in-memory
+    // store has no file to contend over, and a network store answers with
+    // `withExclusiveAccess` before this line is reached.
+    const lockKey = store.location ?? path
     const guarded = async (): Promise<T> => {
       this._maybeDailyBackup(path)
       return await fn()
     }
     if (store.withExclusiveAccess) return await store.withExclusiveAccess(guarded)
-    return await withAsyncLock(path, guarded)
+    return await withAsyncLock(lockKey, guarded)
   }
 
   /**
@@ -1267,8 +1280,13 @@ export class Plur {
     if (this._readonly) return
     if (path !== this.paths.engrams) return
     if (this._primaryStore.kind !== 'yaml') return
+    // Snapshot the file the store ACTUALLY owns. Backing up the conventional
+    // path meant an injected store's real corpus received no backup at all,
+    // while a possibly non-existent conventional path was snapshotted in its
+    // place (#813, audit finding 11).
+    const target = this._primaryStore.location ?? path
     try {
-      maybeDailyBackup(this.paths.root, path)
+      maybeDailyBackup(this.paths.root, target)
     } catch {
       /* maybeDailyBackup already logs; a backup must never fail a write */
     }
@@ -2552,16 +2570,10 @@ export class Plur {
         _routed: guarded.routed,
       }
     }
+    let serverEngram: Engram
     try {
       const { id: serverId } = await remoteDriver.appendAndGetServerId(localPlaceholder)
-      const serverEngram: Engram = { ...localPlaceholder, id: serverId }
-      appendHistory(this.paths.root, {
-        event: 'engram_created',
-        engram_id: serverId,
-        timestamp: now,
-        data: { type: serverEngram.type, scope: serverEngram.scope, source: serverEngram.source, routed_to: 'remote' },
-      })
-      return serverEngram
+      serverEngram = { ...localPlaceholder, id: serverId }
     } catch (err) {
       // Remote failed — save locally with outbox metadata for retry.
       // Audit iter-1 fix (Dijkstra): defensive lookup; the catch is the
@@ -2606,6 +2618,28 @@ export class Plur {
         return localPlaceholder
       })
     }
+
+    // History is appended OUTSIDE the try that guards the remote write (#813,
+    // audit finding 13). It used to sit inside it, so a history failure —
+    // EACCES, disk full — after the server had already persisted the engram was
+    // caught as a REMOTE failure: the fallback then created a second local
+    // engram plus an outbox entry, and the next flush duplicated it remotely.
+    // A bookkeeping write must never be able to undo, or appear to undo, a
+    // commit that succeeded.
+    try {
+      appendHistory(this.paths.root, {
+        event: 'engram_created',
+        engram_id: serverEngram.id,
+        timestamp: now,
+        data: { type: serverEngram.type, scope: serverEngram.scope, source: serverEngram.source, routed_to: 'remote' },
+      })
+    } catch (err) {
+      logger.warning(
+        `[plur] engram ${serverEngram.id} was stored remotely but its history record could not be ` +
+        `written: ${(err as Error).message}. The engram is safe; the local audit trail is incomplete.`,
+      )
+    }
+    return serverEngram
   }
 
   /**
@@ -4239,12 +4273,22 @@ export class Plur {
       // Incremental write (#740): only the rated engram changed.
       await this._updateEngrams(engrams, [engram])
       await this._syncIndex()
-      appendHistory(this.paths.root, {
-        event: 'feedback_received',
-        engram_id: id,
-        timestamp: new Date().toISOString(),
-        data: { signal },
-      })
+      // The counter has already changed on disk. A history failure here used to
+      // reject the call, and a retry then applied the signal a SECOND time
+      // (#813, audit finding 13). Log and continue: the mutation committed.
+      try {
+        appendHistory(this.paths.root, {
+          event: 'feedback_received',
+          engram_id: id,
+          timestamp: new Date().toISOString(),
+          data: { signal },
+        })
+      } catch (err) {
+        logger.warning(
+          `[plur] feedback on ${id} was applied but its history record could not be written: ` +
+          `${(err as Error).message}. Do not retry — the signal is already counted.`,
+        )
+      }
       return true
     })
 
@@ -4299,12 +4343,20 @@ export class Plur {
       const found = await driver.getById(serverId)
       if (found) {
         await driver.feedback(serverId, signal)
-        appendHistory(this.paths.root, {
-          event: 'feedback_received',
-          engram_id: id,
-          timestamp: new Date().toISOString(),
-          data: { signal, routed_to: 'remote' },
-        })
+        // Same reasoning as the local path: the remote already counted it.
+        try {
+          appendHistory(this.paths.root, {
+            event: 'feedback_received',
+            engram_id: id,
+            timestamp: new Date().toISOString(),
+            data: { signal, routed_to: 'remote' },
+          })
+        } catch (err) {
+          logger.warning(
+            `[plur] feedback on ${id} was applied remotely but its history record could not be ` +
+            `written: ${(err as Error).message}. Do not retry — the signal is already counted.`,
+          )
+        }
         this._logInjectionOutcome(id, signal)
         return
       }

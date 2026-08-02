@@ -15,6 +15,14 @@ export { loadAllPacks } from './engrams.js'
 // --- URL download helpers ---
 
 /** Returns true if the source string looks like an http/https URL. */
+/**
+ * Directory name a downloaded archive is extracted into. For a FLAT archive
+ * (pack files at the archive root) this also becomes the source basename, which
+ * is why installPack overrides it with the manifest name — otherwise every flat
+ * archive would install to `packs/extracted` (#813).
+ */
+export const FLAT_ARCHIVE_DIRNAME = 'extracted'
+
 export function isPackUrl(source: string): boolean {
   return source.startsWith('http://') || source.startsWith('https://')
 }
@@ -59,7 +67,7 @@ export async function downloadAndExtractPack(url: string): Promise<{ packDir: st
   fs.writeFileSync(archivePath, Buffer.from(buffer))
 
   // Extract the archive
-  const extractDir = path.join(tmpRoot, 'extracted')
+  const extractDir = path.join(tmpRoot, FLAT_ARCHIVE_DIRNAME)
   fs.mkdirSync(extractDir)
   try {
     execFileSync('tar', ['-xzf', archivePath, '-C', extractDir], { stdio: 'pipe' })
@@ -329,16 +337,34 @@ function _installPackDir(
     )
   }
 
-  const sourceName = path.basename(source)
+  // Destination name is the source basename, EXCEPT for a flat URL archive
+  // (#813, audit finding 12). Those extract to a directory literally called
+  // `extracted`, so every flat archive installed to `packs/extracted` and
+  // silently overwrote the previous one. Only that generic name is overridden,
+  // and only with a manifest name safe to use as a directory — every other
+  // pack keeps the basename it has always had.
+  const rawName = path.basename(source)
+  const manifestName = preview.manifest.name?.trim()
+  const sourceName = rawName === FLAT_ARCHIVE_DIRNAME && manifestName && /^[A-Za-z0-9._-]+$/.test(manifestName)
+    ? manifestName
+    : rawName
   const destDir = resolveInside(packsDir, sourceName, 'install')
 
-  // Copy pack directory
-  if (!fs.existsSync(destDir)) fs.mkdirSync(destDir, { recursive: true })
+  // STAGE the whole install, then swap it in (#813, audit finding 12).
+  //
+  // Copying file-by-file into the live destination meant a copy error, a crash,
+  // or a concurrent install left a HYBRID of the old and new pack — half of one
+  // version's engrams beside half of another's, with an integrity hash matching
+  // neither. Everything below builds the pack in a staging directory; the live
+  // directory is not touched until the content is complete and sanitized.
+  const staging = `${destDir}.installing-${process.pid}-${Date.now()}`
+  fs.rmSync(staging, { recursive: true, force: true })
+  fs.mkdirSync(staging, { recursive: true })
 
   const files = fs.readdirSync(source)
   for (const file of files) {
     const srcPath = path.join(source, file)
-    const destPath = path.join(destDir, file)
+    const destPath = path.join(staging, file)
     if (fs.statSync(srcPath).isFile()) {
       fs.copyFileSync(srcPath, destPath)
     }
@@ -349,8 +375,8 @@ function _installPackDir(
   // warning), but the managed copy is normalized to the canonical SKILL.md so
   // the integrity hash below is computed over SKILL.md + engrams.yaml. Done
   // before computePackHash so the recorded integrity reflects the upgrade.
-  const destSkillMd = path.join(destDir, 'SKILL.md')
-  const destManifestYaml = path.join(destDir, 'manifest.yaml')
+  const destSkillMd = path.join(staging, 'SKILL.md')
+  const destManifestYaml = path.join(staging, 'manifest.yaml')
   if (!fs.existsSync(destSkillMd) && fs.existsSync(destManifestYaml)) {
     fs.writeFileSync(destSkillMd, manifestToSkillMd(preview.manifest))
     fs.rmSync(destManifestYaml)
@@ -362,7 +388,7 @@ function _installPackDir(
   // Load engrams, then clamp host-overriding fields (pinned / locked commitment)
   // before they can reach injection. Re-save the sanitized copy so the on-disk
   // pack AND the integrity hash reflect the clamped content.
-  const engramsPath = path.join(destDir, 'engrams.yaml')
+  const engramsPath = path.join(staging, 'engrams.yaml')
   let newEngrams = fs.existsSync(engramsPath) ? loadEngrams(engramsPath) : []
   const sanitized = sanitizePackEngrams(newEngrams)
   if (sanitized.changed) {
@@ -376,8 +402,32 @@ function _installPackDir(
   // Detect conflicts with existing engrams
   const conflicts = existingEngrams ? detectConflicts(newEngrams, existingEngrams) : []
 
-  // Compute integrity and record in registry (over the sanitized on-disk content)
-  const integrity = `sha256:${computePackHash(destDir)}`
+  // Compute integrity over the STAGED, sanitized content — the bytes that are
+  // about to become the pack. Hashing the live directory before the swap would
+  // record the hash of the previous install.
+  const integrity = `sha256:${computePackHash(staging)}`
+
+  // Swap the staged pack in. Two renames, each atomic: the live directory is
+  // moved aside and the staged one takes its place, so a reader never sees a
+  // partially-copied pack. If the second rename fails, the previous install is
+  // put back rather than leaving nothing there.
+  const displaced = `${destDir}.replacing-${process.pid}-${Date.now()}`
+  let movedAside = false
+  try {
+    if (fs.existsSync(destDir)) {
+      fs.renameSync(destDir, displaced)
+      movedAside = true
+    }
+    fs.renameSync(staging, destDir)
+  } catch (err) {
+    if (movedAside && !fs.existsSync(destDir)) {
+      try { fs.renameSync(displaced, destDir) } catch { /* best-effort restore */ }
+    }
+    fs.rmSync(staging, { recursive: true, force: true })
+    throw err
+  }
+  fs.rmSync(displaced, { recursive: true, force: true })
+
   const registryEntry: RegistryEntry = {
     name: preview.manifest.name,
     installed_at: new Date().toISOString(),
