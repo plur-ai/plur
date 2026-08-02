@@ -176,7 +176,7 @@ Tracked in #794. Remediation, with the measured before/after for each:
 | F10 | MED | Open | #804 | Sync busy-wait starves the async holder. Its stale threshold was raised with F9, but its retry budget deliberately was NOT — waiting longer in a busy-wait blocks the event loop |
 | F11 | MED | Open | #805 | packs/registry.yaml integrity baseline destroyed silently |
 | F12 | MED | Open | #805 | `setSchemaVersion` lock bypass — measured lost update |
-| F13 | LOW-MED | Fixed incidentally | #795 / PR #800 | Quarantine means pack install no longer drops invalid pack engrams |
+| F13 | LOW-MED | Fixed incidentally | #795 / PR #800 | Quarantine covers the pack path too — it is the same `loadEngrams`/`saveEngrams` pair. Verified: pack file with 4 entries (1 schema-invalid) → loader returns 3, 1 quarantined, **4 back on disk after re-save**, malformed entry intact. The integrity hash is therefore computed over the full file, not a reduced one |
 | F14 | LOW | Fixed | PR #800 | `YamlStore` and `loadEngrams` now share one parser |
 | F15 | LOW | Open | #805 | MCP drop-log unlocked (diagnostics only) |
 
