@@ -613,6 +613,42 @@ describe('dialing — strict scope relevance', () => {
     expect(scopeOrg('global')).toBeNull()
     expect(scopeOrg(undefined)).toBeNull()
   })
+
+  // #243: the SESSION default scope is the dialing context when no explicit
+  // recall scope is passed — a mid-session scope switch redirects which org's
+  // hosts subsequent recalls dial.
+  const TWO_ORG_STORES =
+    `  - url: "https://plur.example.com"\n    token: "t1"\n    scope: "group:plur/plur-ai/engineering"\n` +
+    `  - url: "https://df.example.com"\n    token: "t2"\n    scope: "group:datafund/igea"\n`
+
+  it('session default scope establishes the dialing org context; switching it redials the other org (#243)', () => {
+    const plur = plurWith(TWO_ORG_STORES)
+    // No session scope, no explicit scope: nothing dialed (pre-#243 behavior).
+    expect(hostsOf(plur)).toHaveLength(0)
+    // Session scoped to plur-org work → plur host only.
+    plur.setSessionScope('project:plur/plur-ai/enterprise')
+    expect(hostsOf(plur).map(h => h.url)).toEqual(['https://plur.example.com'])
+    // Mid-session switch to the other org's project → THAT org's host only.
+    plur.adjustSessionScope('group:datafund/igea', { trigger: 'set' })
+    expect(hostsOf(plur).map(h => h.url)).toEqual(['https://df.example.com'])
+  })
+
+  it('per-session dialing isolation: each keyed session dials its own org (#243, ADR-0004)', () => {
+    const plur = plurWith(TWO_ORG_STORES)
+    plur.setSessionScope('project:plur/plur-ai/enterprise', { session: 's-plur' })
+    plur.setSessionScope('group:datafund/igea', { session: 's-df' })
+    expect(hostsOf(plur, { session: 's-plur' }).map(h => h.url)).toEqual(['https://plur.example.com'])
+    expect(hostsOf(plur, { session: 's-df' }).map(h => h.url)).toEqual(['https://df.example.com'])
+    // A session with no registration inherits the process slot — here unset.
+    expect(hostsOf(plur, { session: 's-ghost' })).toHaveLength(0)
+  })
+
+  it('an explicit recall scope beats the session scope for dialing (#243)', () => {
+    const plur = plurWith(TWO_ORG_STORES)
+    plur.setSessionScope('group:datafund/igea')
+    const hosts = hostsOf(plur, { scope: 'project:plur/x' })
+    expect(hosts.map(h => h.url)).toEqual(['https://plur.example.com'])
+  })
 })
 
 // ---------------------------------------------------------------------------

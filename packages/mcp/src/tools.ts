@@ -93,6 +93,10 @@ const recallHandler: ToolDefinition['handler'] = async (args, plur) => {
       domain: args.domain as string | undefined,
       limit: args.limit as number | undefined,
       remote_timeout_ms: 2000, // MCP recall remote budget (#776)
+      // #243: session default scope (incl. mid-session plur_session_scope
+      // changes) establishes the remote dialing org context when no explicit
+      // scope filter is passed.
+      session: _resolveInjectionSession(args),
     })
     const response: Record<string, unknown> = {
       results: results.map(e => {
@@ -126,6 +130,10 @@ const recallHandler: ToolDefinition['handler'] = async (args, plur) => {
     domain: args.domain as string | undefined,
     limit: fetchLimit,
     remote_timeout_ms: 2000, // MCP recall remote budget (#776)
+    // #243: session default scope (incl. mid-session plur_session_scope
+    // changes) establishes the remote dialing org context when no explicit
+    // scope filter is passed.
+    session: _resolveInjectionSession(args),
   })
   // Opt-in, content-free engagement counter (default-off; no query text).
   recordTelemetry('recall')
@@ -425,16 +433,33 @@ interface SessionTelemetry {
   injection_calls: number
   /** ISO timestamp of session_start — used for TTL cleanup. */
   started_at: string
+  /**
+   * Session-start default write scope (#243) — what `plur_session_scope`
+   * op:"clear" reverts to. Recorded here (the existing session-keyed state)
+   * rather than in a new process-global, per ADR-0004.
+   */
+  default_scope?: string | null
+  /** How the session-start default was derived (#243). */
+  default_scope_source?: 'caller' | 'project-config' | 'none'
+  /** True while a mid-session plur_session_scope op:"set" is in effect (#243). */
+  scope_adjusted?: boolean
 }
 const _sessionTelemetry = new Map<string, SessionTelemetry>()
 
 /** TTL for unclosed sessions: 8 hours. Prevents unbounded memory if session_end is never called. */
 const SESSION_TTL_MS = 8 * 60 * 60 * 1000
 
-function _cleanExpiredSessions(): void {
+function _cleanExpiredSessions(plur?: Plur): void {
   const cutoff = Date.now() - SESSION_TTL_MS
   for (const [id, state] of _sessionTelemetry) {
-    if (new Date(state.started_at).getTime() < cutoff) _sessionTelemetry.delete(id)
+    if (new Date(state.started_at).getTime() < cutoff) {
+      _sessionTelemetry.delete(id)
+      // #243: evict the expired session's keyed scope registration alongside
+      // its telemetry (only when a caller with a Plur instance triggered the
+      // sweep — the id-only helpers pass nothing and the entry is cleared on
+      // the next plur-bearing sweep or session_end).
+      try { plur?.clearSessionScope({ session: id }) } catch { /* best-effort */ }
+    }
   }
 }
 
@@ -480,6 +505,29 @@ function _resolveInjectionSession(args: Record<string, unknown>): string | undef
   const explicit = args.session_id
   if (typeof explicit === 'string' && explicit.length > 0) return explicit
   return _implicitSessionId()
+}
+
+/**
+ * Resolve the session a `plur_session_scope` operation targets (#243).
+ *
+ * Same derivation contract as `_implicitSessionId`: explicit `session_id`
+ * always wins; with exactly one session open the implicit answer is
+ * unambiguous; with none the process-default slot is the target (the
+ * pre-session_start / hookless deployment). With SEVERAL open and no
+ * explicit id there is no right answer — `ambiguous` is surfaced so writes
+ * (set/clear) can refuse instead of silently landing in the process slot,
+ * where one session's scope change would decide another session's writes
+ * (the exact ADR-0004 failure).
+ */
+function _resolveScopeSession(args: Record<string, unknown>): { session?: string; ambiguous: boolean; open: number } {
+  const explicit = args.session_id
+  if (typeof explicit === 'string' && explicit.length > 0) {
+    return { session: explicit, ambiguous: false, open: _sessionTelemetry.size }
+  }
+  _cleanExpiredSessions()
+  const open = _sessionTelemetry.size
+  if (open === 1) return { session: _sessionTelemetry.keys().next().value, ambiguous: false, open }
+  return { session: undefined, ambiguous: open > 1, open }
 }
 
 /** Record pack counts from an InjectionResult into the active session's telemetry. */
@@ -690,6 +738,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
           valid_from: { type: 'string', description: 'ISO date (YYYY-MM-DD) the knowledge becomes valid — inject/recall skip the engram before this date (#347)' },
           valid_until: { type: 'string', description: 'ISO date (YYYY-MM-DD) the knowledge expires — inject/recall skip the engram after this date. Set this for any time-bound fact (offers, deadlines, temporary endpoints). When omitted, an explicit expiry phrase in the statement ("valid until 31 May 2026") is auto-parsed and echoed back (#347)' },
           supersedes: { type: 'array', items: { type: 'string' }, description: 'Engram IDs this statement intentionally replaces (#240). Writes relations.supersedes on the new engram and the reverse superseded_by edge on each local target. Supersedes-linked pairs are skipped by tension scans — an intentional update is not a contradiction. Use when updating a standing fact (new version, changed rule) rather than contradicting it.' },
+          session_id: { type: 'string', description: 'Session this write belongs to (from plur_session_start). Resolves the session default scope (incl. mid-session plur_session_scope changes) when no explicit scope is passed. Optional when one session is open; pass it when several are (#243).' },
         },
         required: ['statement'],
       },
@@ -714,6 +763,11 @@ function getAllToolDefinitions(): ToolDefinition[] {
           valid_from: args.valid_from as string | undefined,
           valid_until: args.valid_until as string | undefined,
           supersedes: args.supersedes as string[] | undefined,
+          // #243: resolve which session's default scope governs this write —
+          // explicit session_id first, else the lone open session. Never
+          // persisted on the engram (LearnContext.session selects a scope, it
+          // is not part of one).
+          session: _resolveInjectionSession(args),
           llm,
         }
         // Route through learnRouted FIRST so remote-scope writes get
@@ -971,6 +1025,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
           budget: { type: 'object', description: 'Budget constraints for sub-agents. Hybrid mode only — ignored when mode:"keyword".', properties: { max_tokens: { type: 'number' }, max_results: { type: 'number' }, ttl_seconds: { type: 'number' } } },
           caller_session_id: { type: 'string', description: 'Session ID of calling agent for budget enforcement. Hybrid mode only — ignored when mode:"keyword".' },
           include_episodes: { type: 'boolean', description: 'If true, include linked episode summaries for each engram (SP2 episodic anchoring). Hybrid mode only — ignored when mode:"keyword".' },
+          session_id: { type: 'string', description: 'Session this recall belongs to (from plur_session_start). Its default scope (incl. mid-session plur_session_scope changes) sets the remote dialing context when no explicit scope filter is passed. Optional when one session is open (#243).' },
         },
         required: ['query'],
       },
@@ -991,6 +1046,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
           budget: { type: 'object', description: 'Budget constraints for sub-agents', properties: { max_tokens: { type: 'number' }, max_results: { type: 'number' }, ttl_seconds: { type: 'number' } } },
           caller_session_id: { type: 'string', description: 'Session ID of calling agent for budget enforcement' },
           include_episodes: { type: 'boolean', description: 'If true, include linked episode summaries for each engram (SP2 episodic anchoring)' },
+          session_id: { type: 'string', description: 'Session this recall belongs to (from plur_session_start). Its default scope sets the remote dialing context when no explicit scope filter is passed (#243).' },
         },
         required: ['query'],
       },
@@ -2055,7 +2111,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
         // Initialize session telemetry — tracks per-pack injection counts for
         // activation-rate validation (target: 25-80 sessions/month per user).
         // TTL cleanup runs here to evict any unclosed sessions from prior starts.
-        _cleanExpiredSessions()
+        _cleanExpiredSessions(plur)
         _sessionTelemetry.set(session_id, {
           pack_counts: {},
           injection_calls: 0,
@@ -2118,6 +2174,22 @@ function getAllToolDefinitions(): ToolDefinition[] {
         // without this reset, a default_scope set in session A leaks into every
         // subsequent session that didn't pass its own default_scope.
         plur.setSessionScope(default_scope)
+        // #243: ALSO register the default under this session's own key, so a
+        // caller that threads session_id through plur_learn / plur_recall /
+        // plur_session_scope keeps its scope even when another session starts
+        // later and resets the process slot above (ADR-0004 per-session
+        // isolation). Cleared at plur_session_end / TTL eviction.
+        plur.setSessionScope(default_scope, { session: session_id })
+        {
+          // Record the start default + its provenance in the session-keyed
+          // telemetry record: plur_session_scope op:"clear" reverts to it and
+          // op:"show" reports how the effective scope was derived.
+          const t = _sessionTelemetry.get(session_id)
+          if (t) {
+            t.default_scope = default_scope
+            t.default_scope_source = scope_source as 'caller' | 'project-config' | 'none'
+          }
+        }
 
         // Get store stats for context
         const status = await plur.status()
@@ -2340,6 +2412,137 @@ function getAllToolDefinitions(): ToolDefinition[] {
     },
 
     {
+      name: 'plur_session_scope',
+      description:
+        'Adjust or inspect the session default write scope MID-session — narrow, expand, or switch context without ' +
+        'restarting the session (#243). op:"set" replaces the default scope used by unscoped plur_learn calls for the ' +
+        'rest of the session AND the org context that decides which enterprise hosts plur_recall dials; op:"show" ' +
+        'reports the effective scope and how it was derived (project config, session_start default, or a mid-session ' +
+        'set); op:"clear" reverts to the scope the session started with. Use when the conversation genuinely pivots — ' +
+        'a focused bug fix surfacing a team-wide architecture insight, or switching to another org\'s project. Do NOT ' +
+        'oscillate scope call-by-call: for a one-off write to a different scope, pass scope explicitly on that ' +
+        'plur_learn instead (explicit per-call scope always beats the session default). Every change is logged as a ' +
+        'session_scope_changed history event.',
+      annotations: { title: 'Session scope', destructiveHint: false, idempotentHint: true },
+      inputSchema: {
+        type: 'object',
+        properties: {
+          op: {
+            type: 'string',
+            enum: ['set', 'show', 'clear'],
+            description: 'set: replace the session default write scope; show: report the effective scope and its derivation; clear: revert to the session-start default.',
+          },
+          scope: {
+            type: 'string',
+            description: 'New session default scope (op:"set" only), e.g. "project:myapp" or "group:org/team". Must match a configured store scope to route writes to a remote store — other strings stay local under that namespace.',
+          },
+          reason: {
+            type: 'string',
+            description: 'Optional one-line explanation of why the scope is changing — logged on the session_scope_changed event for retrospective debugging.',
+          },
+          session_id: {
+            type: 'string',
+            description: 'Session to target (from plur_session_start). Optional when one session is open; REQUIRED when several are — a scope change must never decide another session\'s writes.',
+          },
+        },
+        required: ['op'],
+      },
+      handler: async (args, plur) => {
+        const op = args.op as string
+        if (op !== 'set' && op !== 'show' && op !== 'clear') {
+          throw new Error(`plur_session_scope: op must be "set", "show" or "clear", got ${JSON.stringify(args.op)}`)
+        }
+        const reason = args.reason as string | undefined
+        const { session, ambiguous, open } = _resolveScopeSession(args)
+        const record = session ? _sessionTelemetry.get(session) : undefined
+        const remote_scopes = plur.getWritableRemoteScopes()
+        const withCommon = (body: Record<string, unknown>): Record<string, unknown> => ({
+          op,
+          ...body,
+          ...(session ? { session_id: session } : {}),
+          ...(remote_scopes.length > 0 ? { remote_scopes } : {}),
+        })
+
+        if (op === 'show') {
+          const scope = plur.getSessionScope({ session })
+          const source = record
+            ? (record.scope_adjusted
+                ? 'session-adjusted'
+                : record.default_scope_source === 'caller'
+                  ? 'session-start'
+                  : record.default_scope_source ?? 'none')
+            : scope == null ? 'none' : 'process-default'
+          return withCommon({
+            scope,
+            source,
+            ...(ambiguous ? {
+              warning: `${open} sessions are open — this is the process-default slot, not a specific session's scope. Pass session_id (from plur_session_start) to inspect one.`,
+            } : {}),
+            guide: scope == null
+              ? 'No session default scope is set: unscoped plur_learn writes auto-route on a confident covers match or land at the unscoped default. Explicit per-call scope always wins.'
+              : `Unscoped plur_learn calls this session default to "${scope}"; recall dialing follows the same org context. Explicit per-call scope always wins.`,
+          })
+        }
+
+        // Writes (set/clear) refuse ambiguity — landing in the process slot
+        // would let this session's change decide another session's writes.
+        if (ambiguous) {
+          throw new Error(
+            `plur_session_scope: ${open} sessions are open on this server — pass session_id (from plur_session_start) ` +
+            `so the scope change targets the right session and cannot bleed into another one.`,
+          )
+        }
+
+        if (op === 'set') {
+          const scope = args.scope
+          if (typeof scope !== 'string' || scope.trim().length === 0) {
+            throw new Error('plur_session_scope: op:"set" requires a non-empty string "scope" (use op:"clear" to revert to the session-start default)')
+          }
+          if (!/^\S+$/.test(scope) || scope.length > 200) {
+            throw new Error(`plur_session_scope: invalid scope ${JSON.stringify(scope)} — a scope is a single token without whitespace (e.g. "project:myapp", "group:org/team"), max 200 chars`)
+          }
+          const { previous, next } = plur.adjustSessionScope(scope, { session, reason, trigger: 'set' })
+          if (record) record.scope_adjusted = true
+          // Guard (#243): a shared/team default means every unscoped write for
+          // the rest of the session carries team-visible scope — say so at the
+          // moment it becomes true, not per-write. The per-write secrets/
+          // sensitivity guard is unchanged and still scans every learn.
+          const remoteEntry = remote_scopes.find(s => s.scope === scope)
+          const warning = isSharedScope(scope)
+            ? (remoteEntry
+                ? `"${scope}" routes to the shared remote store at ${remoteEntry.url}: every unscoped plur_learn for the rest of this session defaults there, visible to everyone with read access to that scope. The per-write secrets/sensitivity guard still scans each write (offending content is demoted to local), but relevance is your call — clear or narrow the scope when the conversation leaves team context.`
+                : `"${scope}" is a shared-family scope but matches no configured remote store scope, so writes stay on this machine under that namespace. The write-time sensitivity guard treats it as shared (scans + demotes offending content). If you expected a team store, check the remote_scopes list.`)
+            : undefined
+          return withCommon({
+            previous_scope: previous,
+            new_scope: next,
+            ...(reason ? { reason } : {}),
+            ...(warning ? { warning } : {}),
+          })
+        }
+
+        // op === 'clear' — revert to the session-start default. With a live
+        // session record that is the recorded default (robust even if another
+        // session_start reset the process slot since); otherwise fall back to
+        // the project config, the same source session_start derives from.
+        const restored = record !== undefined
+          ? (record.default_scope ?? null)
+          : (readProjectConfig().scope ?? null)
+        const restored_source = record !== undefined
+          ? (record.default_scope_source === 'caller' ? 'session-start' : record.default_scope_source ?? 'none')
+          : (restored != null ? 'project-config' : 'none')
+        const { previous, next } = plur.adjustSessionScope(restored, { session, reason, trigger: 'clear' })
+        if (record) record.scope_adjusted = false
+        return withCommon({
+          previous_scope: previous,
+          new_scope: next,
+          restored_source,
+          ...(reason ? { reason } : {}),
+        })
+      },
+    },
+
+    {
       name: 'plur_session_end',
       description: `End a session. BEFORE calling this tool, review the conversation and extract learnings:
 
@@ -2426,6 +2629,10 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
         // Clean up session telemetry
         if (session_id) {
           _sessionTelemetry.delete(session_id)
+          // #243: drop this session's keyed scope registration too — a
+          // long-lived server would otherwise retain one registry entry per
+          // session it has ever served (see SessionScopeRegistry.clear).
+          plur.clearSessionScope({ session: session_id })
         }
 
         // Clean up session checkpoint (#215) — session ended cleanly
