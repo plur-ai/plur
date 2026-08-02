@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { Plur } from '../src/index.js'
-import { setEmbeddingsEnabled } from '../src/embeddings.js'
+import { embedderStatus, setEmbeddingsEnabled } from '../src/embeddings.js'
 
 describe('hybrid search (BM25 + embeddings via RRF)', () => {
   let dir: string
@@ -101,8 +101,11 @@ describe('hybrid search limit — 50-floor regression (#770)', () => {
   // directly (bypassing the outer slice guard in recallHybrid).
   let dir: string
   let plur: Plur
+  let priorEmbeddings: { disabled: boolean; disabledReason: string | null }
 
   beforeAll(async () => {
+    const status = embedderStatus()
+    priorEmbeddings = { disabled: status.disabled, disabledReason: status.disabledReason }
     setEmbeddingsEnabled(false, 'limit regression test — BM25-only for speed')
     dir = mkdtempSync(join(tmpdir(), 'plur-limit-floor-'))
     plur = new Plur({ path: dir })
@@ -121,7 +124,9 @@ describe('hybrid search limit — 50-floor regression (#770)', () => {
   }, 120_000)
 
   afterAll(() => {
-    setEmbeddingsEnabled(true)
+    // Restore whatever state the suite found, not force-enable — another
+    // suite (or the environment) may have disabled embeddings deliberately.
+    setEmbeddingsEnabled(!priorEmbeddings.disabled, priorEmbeddings.disabledReason ?? undefined)
     rmSync(dir, { recursive: true })
   })
 
