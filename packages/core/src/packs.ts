@@ -330,7 +330,7 @@ function _installPackDir(
   }
 
   const sourceName = path.basename(source)
-  const destDir = path.join(packsDir, sourceName)
+  const destDir = resolveInside(packsDir, sourceName, 'install')
 
   // Copy pack directory
   if (!fs.existsSync(destDir)) fs.mkdirSync(destDir, { recursive: true })
@@ -423,6 +423,41 @@ export async function installPack(
   return _installPackDir(packsDir, source, existingEngrams, opts)
 }
 
+/**
+ * Resolve `name` as a direct child of `packsDir`, or throw.
+ *
+ * A pack name is a caller-supplied string that reaches here from `plur packs
+ * uninstall <name>` and from the `plur_packs_uninstall` MCP tool. It used to be
+ * joined straight onto `packsDir`, which made `..` resolve to the PLUR ROOT —
+ * and `uninstallPack` ends in `fs.rmSync(packDir, { recursive: true })`.
+ *
+ * Demonstrated before this guard: `uninstallPack(packsDir, '..')` deleted
+ * engrams.yaml, config.yaml and the whole root, and returned `{removed: true}`.
+ * `../..` reached the parent. The install path had the mirror flaw, since a
+ * source ending in `/..` has basename `..`, so pack files were copied over a
+ * live engrams.yaml before any write guard could see them (#811).
+ *
+ * Containment is checked on the RESOLVED path rather than by pattern-matching
+ * the name: `a/../..`, an absolute path, and a name with embedded separators
+ * all normalise away, and a denylist of shapes would have to enumerate them.
+ * Resolution answers the only question that matters — does this end up inside
+ * the packs directory.
+ */
+function resolveInside(packsDir: string, name: string, op: string): string {
+  const base = path.resolve(packsDir)
+  const candidate = path.resolve(base, name)
+  const contained = candidate !== base && candidate.startsWith(base + path.sep)
+  if (!contained || name.includes('/') || name.includes('\\')) {
+    throw new Error(
+      `[plur] refusing to ${op} pack "${name}": a pack name must be a single directory ` +
+      `inside ${packsDir}, and this one resolves to ${candidate}.\n` +
+      `Names containing path separators or ".." are rejected — they would let this operation ` +
+      `read or delete outside the packs directory.`,
+    )
+  }
+  return candidate
+}
+
 // --- Uninstall ---
 
 export interface UninstallResult {
@@ -433,7 +468,7 @@ export interface UninstallResult {
 
 export function uninstallPack(packsDir: string, name: string): UninstallResult {
   // Find the pack — try exact name, then case-insensitive
-  let packDir = path.join(packsDir, name)
+  let packDir = resolveInside(packsDir, name, 'uninstall')
   if (!fs.existsSync(packDir)) {
     // Try case-insensitive scan
     const entries = fs.existsSync(packsDir) ? fs.readdirSync(packsDir) : []

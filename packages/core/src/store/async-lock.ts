@@ -221,13 +221,21 @@ async function withFileLock<T>(
           readFile(lockPath, 'utf8').catch(() => ''),
         ])
         holder = contents.trim()
+        const alive = holderIsAlive(holder)
         // (1) The holder's process is gone. Definitive, and immediate — this is
         //     what keeps crash recovery fast despite the long stale threshold.
-        if (holderIsAlive(holder) === false) abandoned = true
-        // (2) Nothing has touched it for longer than any legitimate hold. The
-        //     fallback for holders we cannot probe: another host, or a pid we
-        //     cannot reason about.
-        else if (Date.now() - s.mtimeMs > staleThreshold) abandoned = true
+        if (alive === false) abandoned = true
+        // (2) We cannot probe this holder — another host, or a pid we cannot
+        //     reason about — so age is the only signal left.
+        //
+        //     Age is deliberately NOT consulted when liveness came back TRUE.
+        //     An `else if` here would steal from a writer we have just
+        //     confirmed is running, purely for being slow, and a 50k-engram
+        //     save legitimately holds the lock for seconds. Stealing from a
+        //     live writer corrupts the corpus; waiting on a wedged one is a
+        //     visible error after `acquireTimeout` that names the lock file.
+        //     A loud stall beats silent corruption.
+        else if (alive === undefined && Date.now() - s.mtimeMs > staleThreshold) abandoned = true
       } catch {
         // Vanished between the EEXIST and the check — the holder released.
         // Retry immediately; there is nothing to steal.

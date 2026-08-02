@@ -731,9 +731,23 @@ export function withLock<T>(
 
   const token = makeToken()
 
+  // Whether we actually took the lock.
+  //
+  // Without this the loop can simply RUN OUT: both `continue` branches below —
+  // a stale lock stolen, and a stat that fails because the holder released
+  // between the EEXIST and the check — skip the give-up throw. If either lands
+  // on the FINAL attempt the loop ends normally, `fn()` runs holding nothing,
+  // and the `finally` deletes a lock belonging to whoever does hold it. The
+  // async implementation has carried this guard (and a regression test) since
+  // the F9 work; porting the liveness check here without it left the sync twin
+  // exposed. Reachable through public options — `maxRetries: 0` makes the first
+  // attempt the final one.
+  let acquired = false
+
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
       writeFileSync(lockPath, token, { flag: 'wx' })
+      acquired = true
       break
     } catch (err: any) {
       if (err.code !== 'EEXIST') throw err
@@ -742,17 +756,23 @@ export function withLock<T>(
         // Liveness is what pays for the raised stale threshold, and it has to
         // be here as well as on the async lock. Raising the threshold to 60s
         // without it would take crash recovery on THESE paths (episodes,
-        // tensions, config) from 10s to 60s — a regression introduced by the
-        // F9 fix if only half of it is applied.
-        //
-        // `undefined` means "cannot tell" — a token from another host, or the
-        // bare pid an older client wrote — and must be read as "assume alive",
-        // falling back to the mtime threshold. Guessing "dead" would steal a
-        // lock from a live writer.
+        // tensions, config) from 10s to 60s.
         const holder = readFileSync(lockPath, 'utf8').trim()
-        const dead = holderIsAlive(holder) === false
-        if (dead || Date.now() - stat.mtimeMs > staleThreshold) {
-          unlinkSync(lockPath)
+        const alive = holderIsAlive(holder)
+        // Age is consulted ONLY when liveness is unknown — another host, or the
+        // bare pid an older client wrote. A confirmed-live holder is never
+        // stolen from for being slow: that corrupts the artifact it is midway
+        // through writing, whereas waiting on a wedged holder surfaces as a
+        // loud failure the operator can act on.
+        const steal = alive === false
+          || (alive === undefined && Date.now() - stat.mtimeMs > staleThreshold)
+        if (steal) {
+          // Re-read and compare before unlinking: between the inspection above
+          // and this call the holder may have released and a THIRD party
+          // acquired, and deleting by pathname would take the newcomer's lock.
+          try {
+            if (readFileSync(lockPath, 'utf8').trim() === holder) unlinkSync(lockPath)
+          } catch { /* already gone — nothing to steal */ }
           continue
         }
       } catch {
@@ -765,6 +785,12 @@ export function withLock<T>(
       const end = Date.now() + delay
       while (Date.now() < end) { /* busy wait — sync context */ }
     }
+  }
+
+  if (!acquired) {
+    throw new Error(
+      `Failed to acquire lock on ${filePath} after ${maxRetries} retries (contended throughout)`,
+    )
   }
 
   try {

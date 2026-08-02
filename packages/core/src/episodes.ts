@@ -3,6 +3,7 @@ import yaml from 'js-yaml'
 import type { Episode } from './schemas/episode.js'
 import type { CaptureContext, TimelineQuery } from './types.js'
 import { atomicWrite, withLock } from './sync.js'
+import { parseRecordArrayFile } from './engrams.js'
 
 function generateEpisodeId(): string {
   const ts = Date.now()
@@ -43,9 +44,11 @@ export function captureEpisode(path: string, summary: string, context?: CaptureC
     timestamp: new Date().toISOString(),
   }
   withLock(path, () => {
-    const episodes = loadEpisodes(path)
-    episodes.push(episode)
-    atomicWrite(path, yaml.dump(episodes, { lineWidth: 120, noRefs: true }))
+    // Quarantined records ride along so a malformed episode is withheld from
+    // queries without being deleted by the next capture.
+    const { valid, quarantined } = loadEpisodesWithQuarantine(path)
+    const out = [...valid, episode, ...(quarantined as Episode[])]
+    atomicWrite(path, yaml.dump(out, { lineWidth: 120, noRefs: true }))
   })
   return episode
 }
@@ -63,12 +66,23 @@ export function queryTimeline(path: string, query?: TimelineQuery): Episode[] {
   return episodes
 }
 
+/**
+ * Read the episode log, or throw when it is unreadable.
+ *
+ * Returned `[]` for a corrupt or wrongly-shaped file until the #811 audit —
+ * and since `captureEpisode` rewrites the whole array, the next capture then
+ * wrote a one-episode file over everything. Same shape as the engram-store
+ * wipe (#794 F1), in an artifact the original sweep listed but never fixed.
+ */
+function loadEpisodesWithQuarantine(path: string): { valid: Episode[]; quarantined: unknown[] } {
+  return parseRecordArrayFile<Episode>(path, entry =>
+    // Episodes have no Zod schema; the shape contract is an object with an id.
+    entry !== null && typeof entry === 'object' && typeof (entry as Episode).id === 'string'
+      ? entry as Episode
+      : null,
+  )
+}
+
 function loadEpisodes(path: string): Episode[] {
-  if (!existsSync(path)) return []
-  try {
-    const raw = yaml.load(readFileSync(path, 'utf8'))
-    return Array.isArray(raw) ? raw : []
-  } catch {
-    return []
-  }
+  return loadEpisodesWithQuarantine(path).valid
 }

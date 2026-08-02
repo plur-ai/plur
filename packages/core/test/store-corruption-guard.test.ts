@@ -108,10 +108,15 @@ describe('loadEngrams — refuses unreadable stores instead of reporting empty (
     expect(loadEngrams(storePath)).toEqual([])
   })
 
-  it('accepts a null engrams key as empty rather than throwing', () => {
-    // `engrams:` with nothing after it is what a hand-edited file looks like.
+  it('refuses a null engrams key — only `engrams: []` is an empty store', () => {
+    // This test used to assert the opposite, on the reasoning that `engrams:`
+    // is what a hand-edited file looks like. That was wrong and it blessed a
+    // hole: PLUR only ever writes `engrams: []`, so a null-valued key is a
+    // truncation that stopped after the key. Demonstrated with the old
+    // behaviour: 5 engrams, truncate to `engrams:\n`, one learn -> 1 engram on
+    // disk, corruption normalised into a valid file (#811 audit, finding 4).
     fs.writeFileSync(storePath, 'engrams:\n')
-    expect(loadEngrams(storePath)).toEqual([])
+    expect(() => loadEngrams(storePath)).toThrow(EngramStoreUnreadableError)
   })
 })
 
