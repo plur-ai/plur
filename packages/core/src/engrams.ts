@@ -179,13 +179,27 @@ export function storePrefix(scope: string): string {
   return (w[0] + (w[1] || w[0]) + (w[2] || w[0])).toUpperCase()
 }
 
+/**
+ * Generate the next local engram id.
+ *
+ * Canonical format (#771): `ENG-YYYY-MM-DD-NNN` — full ISO-8601 date
+ * separators, identical to the id shape the enterprise server assigns, so an
+ * engram gets the same id whether it is minted locally or server-side.
+ * Releases before this minted a compact date (`ENG-YYYY-MMDD-NNN`); those ids
+ * remain valid forever — every parser accepts both forms (see
+ * spec/ENGRAM-STANDARD-v1.md §3.3) — but new ids are no longer minted compact.
+ *
+ * The per-day sequence counts BOTH forms, so a store upgraded mid-day
+ * continues numbering after its compact-form ids instead of restarting at 001.
+ */
 export function generateEngramId(existing: Engram[]): string {
-  const now = new Date()
-  const date = now.toISOString().slice(0, 10).replace(/-/g, '')
-  const prefix = `ENG-${date.slice(0, 4)}-${date.slice(4)}-`
+  const day = new Date().toISOString().slice(0, 10) // YYYY-MM-DD
+  const prefix = `ENG-${day}-`
+  // Legacy compact form minted by earlier releases: ENG-YYYYMMDD → ENG-YYYY-MMDD-
+  const legacyPrefix = `ENG-${day.slice(0, 4)}-${day.slice(5, 7)}${day.slice(8, 10)}-`
   const existingNums = existing
-    .filter(e => e.id.startsWith(prefix))
-    .map(e => parseInt(e.id.slice(prefix.length), 10))
+    .filter(e => e.id.startsWith(prefix) || e.id.startsWith(legacyPrefix))
+    .map(e => parseInt(e.id.slice(e.id.startsWith(prefix) ? prefix.length : legacyPrefix.length), 10))
     .filter(n => !isNaN(n))
   const next = existingNums.length > 0 ? Math.max(...existingNums) + 1 : 1
   return `${prefix}${String(next).padStart(3, '0')}`

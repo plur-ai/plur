@@ -3,7 +3,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/server/stdio'
 import { existsSync, readFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
-import { Plur, checkForUpdate } from '@plur-ai/core'
+import { Plur, checkForUpdate, VERSION_CHECK_SUCCESS_TTL_MS } from '@plur-ai/core'
 import { getToolDefinitions, mcpCanary, validateToolArgs, CURSOR_CORE_TOOL_NAMES, type ToolProfile, resolveToolProfile, setActiveToolProfile } from './tools.js'
 import { payloadDropLogPath, recordPayloadDrop } from './drop-log.js'
 import { registerFlushOnExit } from './telemetry.js'
@@ -168,6 +168,10 @@ Use \`scope\` to namespace engrams per project:
 Override with \`PLUR_PATH\` environment variable.
 `
 
+// One periodic version re-check per process, however many servers are created
+// (tests create one per case — stacking an interval per server would leak).
+let versionRecheckTimer: ReturnType<typeof setInterval> | undefined
+
 export async function createServer(plur?: Plur, options?: { profile?: ToolProfile }): Promise<Server> {
   const instance = plur ?? new Plur()
   const profile = options?.profile ?? 'lean'
@@ -177,12 +181,25 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
   setActiveToolProfile(profile)
   const tools = getToolDefinitions(profile)
 
-  // Non-blocking version check — fire and forget
-  checkForUpdate('@plur-ai/mcp', VERSION, (r) => {
+  // Non-blocking version check — fire and forget at startup, then re-checked
+  // periodically (#760). Without the periodic re-check a long-lived server
+  // process that started while current would cache "no update" for its entire
+  // lifetime and never surface releases published after startup — which is
+  // exactly how the 0.14.x regression report happened. The timer is unref'd so
+  // it never keeps the process alive, and the TTL-driven refresh-on-read in
+  // version-check.ts covers processes whose timers are throttled.
+  const announceUpdate = (r: { updateAvailable: boolean; current: string; latest: string | null }) => {
     if (r.updateAvailable) {
       console.error(`[plur] Update available: ${r.current} → ${r.latest}. Run: npx @plur-ai/mcp@latest`)
     }
-  })
+  }
+  checkForUpdate('@plur-ai/mcp', VERSION, announceUpdate)
+  if (!versionRecheckTimer) {
+    versionRecheckTimer = setInterval(() => {
+      checkForUpdate('@plur-ai/mcp', VERSION, announceUpdate)
+    }, VERSION_CHECK_SUCCESS_TTL_MS)
+    versionRecheckTimer.unref?.()
+  }
 
   const server = new Server(
     { name: 'plur-mcp', version: VERSION },

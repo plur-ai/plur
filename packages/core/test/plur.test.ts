@@ -23,6 +23,35 @@ describe('Plur', () => {
     expect(results[0].statement).toContain('snake_case')
   })
 
+  // #771: existing stores hold legacy compact ids (ENG-YYYY-MMDD-NNN). They
+  // need no migration — recall/feedback/forget keep working on them while new
+  // learns mint the canonical full-date form (ENG-YYYY-MM-DD-NNN).
+  it('legacy compact IDs stay valid alongside canonical full-date IDs (#771)', async () => {
+    const engramsPath = join(dir, 'engrams.yaml')
+    writeFileSync(engramsPath, yaml.dump({
+      engrams: [{
+        id: 'ENG-2026-0720-026',
+        statement: 'Legacy engram about widget calibration',
+        type: 'behavioral',
+        scope: 'global',
+        status: 'active',
+        activation: { retrieval_strength: 0.7, storage_strength: 1.0, frequency: 0, last_accessed: '2026-07-20' },
+      }],
+    }))
+
+    // New learns mint the canonical server-shaped id
+    const fresh = await plur.learn('Canonical engram about sprocket alignment', { scope: 'global' })
+    expect(fresh.id).toMatch(/^ENG-\d{4}-\d{2}-\d{2}-\d{3}$/)
+
+    // The legacy engram is still recallable and mutable by its old id
+    const recalled = await plur.recall('widget calibration')
+    expect(recalled.some(e => e.id === 'ENG-2026-0720-026')).toBe(true)
+    await plur.feedback('ENG-2026-0720-026', 'positive')
+    await plur.forget('ENG-2026-0720-026', 'test cleanup')
+    const after = yaml.load(readFileSync(engramsPath, 'utf8')) as any
+    expect(after.engrams.find((e: any) => e.id === 'ENG-2026-0720-026').status).toBe('retired')
+  })
+
   it('inject returns scored engrams within budget', async () => {
     await plur.learn('Always use blue-green deploy strategies', { scope: 'global' })
     await plur.learn('Database for myapp is PostgreSQL', { scope: 'project:myapp' })

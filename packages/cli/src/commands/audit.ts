@@ -185,11 +185,15 @@ function classify(
 
 /** Extract entity-like tokens: capitalized multi-word phrases, identifiers
  *  with mixed case or underscores, IPs, dotted paths, URLs, version-prefixed
- *  IDs. These are the high-information atoms that drive conflict detection. */
-function extractEntities(s: string): Set<string> {
+ *  IDs. These are the high-information atoms that drive conflict detection.
+ *  Exported for tests (#771 id-format tolerance). */
+export function extractEntities(s: string): Set<string> {
   const out = new Set<string>()
   // Capitalized words and CamelCase/snake_case identifiers
-  const re = /\b(?:[A-Z][a-zA-Z0-9]+(?:[-_/.][A-Za-z0-9]+)*|[a-z0-9]+(?:_[a-z0-9]+)+|ENG-\d{4}-\d{4}-\d+|\d+\.\d+\.\d+\.\d+|[a-z0-9-]+\.(?:org|com|local|io|ai|md|py|ts|js|json|yaml))\b/g
+  // Engram ids: canonical ENG-YYYY-MM-DD-NNN and legacy compact
+  // ENG-YYYY-MMDD-NNN both match (#771 — the `-?` makes the day separator
+  // optional).
+  const re = /\b(?:[A-Z][a-zA-Z0-9]+(?:[-_/.][A-Za-z0-9]+)*|[a-z0-9]+(?:_[a-z0-9]+)+|ENG-\d{4}-\d{2}-?\d{2}-\d+|\d+\.\d+\.\d+\.\d+|[a-z0-9-]+\.(?:org|com|local|io|ai|md|py|ts|js|json|yaml))\b/g
   let m
   while ((m = re.exec(s)) !== null) {
     const tok = m[0]

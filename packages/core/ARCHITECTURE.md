@@ -99,7 +99,7 @@ not silently coerced.
 A minimal engram (everything optional defaults applied):
 
 ```yaml
-id: ENG-2026-0506-001
+id: ENG-2026-05-06-001
 statement: "toEqual() in Vitest is strict — use toMatchObject() for partial matching"
 type: behavioral
 status: active

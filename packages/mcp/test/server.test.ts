@@ -4,7 +4,7 @@ import { join } from 'path'
 import { tmpdir } from 'os'
 import { Client } from '@modelcontextprotocol/client'
 import { InMemoryTransport } from '@modelcontextprotocol/server'
-import { Plur, checkForUpdate, clearVersionCache, settleVersionChecks } from '@plur-ai/core'
+import { Plur, checkForUpdate, clearVersionCache, settleVersionChecks, VERSION_CHECK_SUCCESS_TTL_MS } from '@plur-ai/core'
 import { createServer } from '../src/server.js'
 import { payloadDropLogPath, readPayloadDropLog } from '../src/drop-log.js'
 
@@ -660,6 +660,51 @@ describe('MCP server (wire protocol)', () => {
       const result = await client.callTool({ name: 'plur_status', arguments: {} })
       const data = JSON.parse((result.content as any)[0].text)
       expect(data.update_available).toBeUndefined()
+    })
+
+    // Regression test for #760: the process started while current, cached
+    // "no update", and a newer version was published while it kept running.
+    // Before the cache TTL, that process stayed silent forever — 0.14.0
+    // installs never surfaced 0.15/0.16.
+    it('surfaces a release published after a long-lived process started (#760)', async () => {
+      // Startup: current version IS the latest — check caches "no update"
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve({ version: '0.9.8' }),
+      }) as any
+      await checkForUpdate('@plur-ai/mcp', '0.9.8')
+
+      let result = await client.callTool({ name: 'plur_status', arguments: {} })
+      let data = JSON.parse((result.content as any)[0].text)
+      expect(data.update_available).toBeUndefined()
+
+      // A newer version is published while the process keeps running,
+      // and the success TTL elapses
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve({ version: '99.0.0' }),
+      }) as any
+      const base = Date.now()
+      const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => base + VERSION_CHECK_SUCCESS_TTL_MS + 1)
+      try {
+        // First read after expiry stays zero-cost (may still serve the stale
+        // answer) but triggers the background refresh
+        await client.callTool({ name: 'plur_status', arguments: {} })
+        await settleVersionChecks()
+
+        // The next read sees the new release on both surfaces
+        result = await client.callTool({ name: 'plur_status', arguments: {} })
+        data = JSON.parse((result.content as any)[0].text)
+        expect(data.update_available).toBeDefined()
+        expect(data.update_available.latest).toBe('99.0.0')
+
+        const session = await client.callTool({ name: 'plur_session_start', arguments: { task: 'test' } })
+        const sessionData = JSON.parse((session.content as any)[0].text)
+        expect(sessionData.version_warning).toBeDefined()
+        expect(sessionData.version_warning).toContain('99.0.0')
+      } finally {
+        nowSpy.mockRestore()
+      }
     })
   })
 })

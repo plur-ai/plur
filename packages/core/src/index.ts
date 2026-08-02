@@ -189,7 +189,7 @@ export {
 } from './reranker-eval.js'
 export type { SimilarityResult } from './embeddings.js'
 export type { SyncResult, SyncStatus, SyncRemoteType } from './sync.js'
-export { checkForUpdate, settleVersionChecks, getCachedUpdateCheck, clearVersionCache, minorVersionsBehind, type VersionCheckResult } from './version-check.js'
+export { checkForUpdate, settleVersionChecks, getCachedUpdateCheck, clearVersionCache, minorVersionsBehind, VERSION_CHECK_SUCCESS_TTL_MS, VERSION_CHECK_FAILURE_TTL_MS, type VersionCheckResult } from './version-check.js'
 export { scanForTensions, getCandidatePairs, scopesOverlap, domainSegmentsOverlap, subjectsOverlap, statementOverlap, buildContradictionPrompt, parseContradictionResponse, buildBatchContradictionPrompt, parseBatchContradictionResponse, engramDate, daysApart, inTemporalDomain, temporalDiscountFactor, SNAPSHOT_CONFIDENCE_CAP, type ContradictionVerdict, type TensionPair, type TensionScanResult, type TensionScanOptions, type TemporalGateOptions, type CandidatePairOptions, type JudgeStatement } from './tensions.js'
 // Tension lifecycle persistence (#181)
 export { loadTensions, saveTensions, generateTensionId, tensionPairKey, categorizeTension } from './tension-store.js'
@@ -834,7 +834,8 @@ export class Plur {
    * vanished from `recall()` while `list()` still showed it), and it returned
    * rows RAW — no namespacing, no `global` narrowing, no `isScopeWithin` guard.
    * The namespacing one had teeth beyond cosmetics: both stores mint
-   * `ENG-YYYY-MMDD-NNN` from a per-store daily sequence, so ids collide as the
+   * date-sequenced ids (`ENG-YYYY-MM-DD-NNN`, legacy `ENG-YYYY-MMDD-NNN`)
+   * from a per-store daily sequence, so ids collide as the
    * common case, and `feedback()` / `forget()` resolve by exact id against the
    * primary store first — mutating an unrelated engram.
    *
