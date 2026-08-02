@@ -5,6 +5,34 @@ import { tmpdir } from 'os'
 import yaml from 'js-yaml'
 import { Plur } from '../src/index.js'
 
+/**
+ * Poll until `predicate` holds, instead of sleeping a fixed interval.
+ *
+ * These tests assert on state written by a FIRE-AND-FORGET task: `learn()`
+ * writes the outbox entry with `last_error: ''` and `attempt_count: 0`, then a
+ * background IIFE takes the store lock and updates it. A fixed 50ms sleep is a
+ * bet that the lock acquisition plus two store writes finish in 50ms, which
+ * holds on an idle machine and loses under parallel suite load — observed as
+ * `expected '' to be 'connection refused'` in one full run out of five, while
+ * the same file passed in isolation every time.
+ *
+ * A flaky gate is worse than a slow one: it trains everyone to re-run instead
+ * of read. This waits for the condition it is about to assert, so it is fast
+ * when the machine is fast and correct when it is not.
+ */
+async function waitFor(
+  predicate: () => boolean | Promise<boolean>,
+  { timeoutMs = 5000, label = 'condition' }: { timeoutMs?: number; label?: string } = {},
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  for (;;) {
+    if (await predicate()) return
+    if (Date.now() >= deadline) throw new Error(`waitFor timed out after ${timeoutMs}ms waiting for ${label}`)
+    await new Promise(r => setTimeout(r, 10))
+  }
+}
+
+
 function writeStoresConfig(dir: string, stores: Array<Record<string, unknown>>) {
   writeFileSync(
     join(dir, 'config.yaml'),
@@ -94,8 +122,12 @@ describe('outbox pattern (issue #26)', () => {
     expect(engram.statement).toBe('outbox test engram')
     expect(engram.scope).toBe(REMOTE_SCOPE)
 
-    // Wait for async fire-and-forget to settle
-    await new Promise(r => setTimeout(r, 50))
+    // Wait for the background push to record its failure on the outbox entry.
+    await waitFor(async () => {
+      const cur = await readLocalEngrams(primaryDir)
+      const e = cur.find((x: any) => x.statement === 'outbox test engram')
+      return !!e?.structured_data?._outbox?.last_error
+    }, { label: 'outbox last_error to be recorded' })
 
     // Engram should be in local store with outbox metadata
     const local = await readLocalEngrams(primaryDir)
@@ -118,10 +150,12 @@ describe('outbox pattern (issue #26)', () => {
       type: 'behavioral',
     })
 
-    // Wait for async push + cleanup
-    await new Promise(r => setTimeout(r, 100))
+    // Wait for async push + cleanup to remove the local copy.
+    await waitFor(async () => {
+      const cur = await readLocalEngrams(primaryDir)
+      return !cur.find((x: any) => x.statement === 'success test engram')
+    }, { label: 'local copy to be removed after a successful push' })
 
-    // Local store should NOT contain the engram (removed after success)
     const local = await readLocalEngrams(primaryDir)
     const found = local.find((e: any) => e.statement === 'success test engram')
     expect(found).toBeUndefined()
@@ -420,7 +454,10 @@ describe('outbox pattern (issue #26)', () => {
       scope: REMOTE_SCOPE,
       type: 'behavioral',
     })
-    await new Promise(r => setTimeout(r, 50))
+    await waitFor(async () => {
+      const cur = await readLocalEngrams(primaryDir)
+      return !!cur.find((x: any) => x.statement === 'pinned team rule')?.structured_data?._outbox
+    }, { label: 'the engram to be queued in the outbox' })
 
     const localBefore = await readLocalEngrams(primaryDir)
     const queued = localBefore.find((e: any) => e.statement === 'pinned team rule')
@@ -500,7 +537,10 @@ describe('outbox pattern (issue #26)', () => {
 
     await plur.learnRouted('phantom pending one', { scope: REMOTE_SCOPE, type: 'behavioral' })
     await plur.learnRouted('phantom pending two', { scope: REMOTE_SCOPE, type: 'behavioral' })
-    await new Promise(r => setTimeout(r, 50))
+    await waitFor(async () => {
+      const cur = await readLocalEngrams(primaryDir)
+      return cur.filter((x: any) => x.structured_data?._outbox).length === 2
+    }, { label: 'both engrams to be queued in the outbox' })
 
     const engramsPath = join(primaryDir, 'engrams.yaml')
     const queued = await readLocalEngrams(primaryDir)
