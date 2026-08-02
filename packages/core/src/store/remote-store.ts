@@ -335,6 +335,11 @@ export class RemoteStore implements EngramStore {
       ...(valid_until != null               ? { valid_until }                  : {}),
       ...(Array.isArray(supersedes) && supersedes.length > 0 ? { supersedes } : {}),
       ...(e.locked_reason != null           ? { locked_reason: e.locked_reason } : {}),
+      // Provenance rides the wire when present (#676 rescope: the pushed copy
+      // carries "rescoped from <original id>" in `source`). Additive — servers
+      // that don't model `source` ignore the field, and it is omitted entirely
+      // when unset so the historical body is byte-identical without it.
+      ...(e.source != null                  ? { source: e.source }             : {}),
     })
     const r = await fetch(`${this.apiBase}/engrams`, {
       method: 'POST',

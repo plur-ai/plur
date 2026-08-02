@@ -257,7 +257,7 @@ export class StubServer {
     if (method === 'POST' && path === '/api/v1/engrams') {
       this.readBody(req, (body) => {
         this.lastAppendBody = body
-        const { statement, scope, domain, type } = body
+        const { statement, scope, domain, type, source } = body
         const id = `ENG-SRV-${String(++this.idCounter).padStart(3, '0')}`
         const now = new Date().toISOString()
         const engram: StoredEngram = {
@@ -266,7 +266,9 @@ export class StubServer {
           // the wire. A non-string scope falls back the same way a missing one does.
           scope: typeof scope === 'string' ? scope : 'global',
           status: 'active',
-          data: { statement, domain, type },
+          // `source` carries rescope provenance over the wire (#676) — keep it
+          // so tests can assert the pushed shape.
+          data: { statement, domain, type, ...(source !== undefined ? { source } : {}) },
           created_at: now,
           updated_at: now,
         }

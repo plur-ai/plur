@@ -426,6 +426,50 @@ export interface RegisterDiscoveredResult {
   error?: string
 }
 
+/** Options for {@link Plur.rescope} (#676). */
+export interface RescopeOptions {
+  /**
+   * After a successful REMOTE push, keep the local source engram active
+   * instead of retiring it. Default false: the source is soft-retired with a
+   * `superseded_by` link to the server copy, so it stops injecting and its
+   * content hash cannot resurrect it (`_hashDedup` only matches active rows).
+   * Ignored for local (in-place) rescopes — those move the row, nothing to keep.
+   */
+  keep_local?: boolean
+  /** Report what WOULD happen without mutating anything, local or remote. */
+  dry_run?: boolean
+}
+
+/** Per-engram outcome of {@link Plur.rescope} (#676). */
+export interface RescopeResult {
+  /** Source engram id the caller passed. */
+  id: string
+  /**
+   * 'rescoped'  — moved (or, with dry_run, would move).
+   * 'deduped'   — an identical engram (content-hash + scope match) already
+   *               exists at the target: idempotent success, nothing pushed;
+   *               the source is still retired per keep_local (constraint 5).
+   * 'noop'      — source already carries the target scope.
+   * 'error'     — nothing was changed for this id; see `error`.
+   */
+  status: 'rescoped' | 'deduped' | 'noop' | 'error'
+  /** Which path handled it: push to a configured remote store, or in-place scope rewrite. */
+  action?: 'remote_push' | 'local_rewrite'
+  from_scope?: string
+  to_scope?: string
+  /**
+   * Where the engram lives after the rescope: the SERVER-assigned id for a
+   * remote push, the unchanged id for a local rewrite, or the pre-existing
+   * target engram's id on a dedup hit.
+   */
+  new_id?: string
+  /** True when the local source stayed active (keep_local remote push). */
+  kept_local?: boolean
+  /** Echoed when options.dry_run was set — nothing was mutated. */
+  dry_run?: boolean
+  error?: string
+}
+
 /**
  * Sanitize a remote-served `forbid` list to the known SENSITIVITY_CATEGORIES
  * (scope-audit 2026-07-24). Belt-and-braces behind the /me schema validation:
@@ -4384,6 +4428,297 @@ export class Plur {
       )
     }
     throw new Error(`Engram not found: ${id}`)
+  }
+
+  /**
+   * Move existing engram(s) to `targetScope` (#676) — the missing primitive
+   * between `learn()` (whose content-hash dedup silently no-ops a re-emit
+   * under a new scope) and candidate promotion (`plur_promote` ACTIVATES a
+   * candidate — it never changes scope).
+   *
+   * Routing by target:
+   *  - REMOTE-backed scope (a writable `stores:` url entry): push a copy via
+   *    the routed write path (`appendAndGetServerId` — the server assigns the
+   *    id; its own content-hash dedup is relied on, not fought), with
+   *    provenance stamped in the copy's `source` field ("rescoped from <id>")
+   *    and `structured_data._rescoped_from`. Then, unless `keep_local`,
+   *    soft-retire the local source with a `superseded_by` link so it stops
+   *    injecting; retired rows are invisible to `_hashDedup`, so the source's
+   *    hash cannot resurrect it. Deliberately NO outbox fallback: an explicit
+   *    move either lands or fails loud — on push failure the source stays
+   *    untouched (atomic semantics, #676 constraint 2).
+   *  - LOCAL-family target (`local`, `global`, `project:*`, or the scope of a
+   *    configured path store): rewrite `scope` in place under the store lock —
+   *    the same incremental update path as `updateEngram`'s local branch — so
+   *    id, activation, feedback and history stay attached to the same row.
+   *
+   * Guards:
+   *  - Target validation (#676 constraint 4): a scope that is neither
+   *    local-family nor backed by a configured store fails EARLY with a
+   *    structured error — never a silent success that strands the engram
+   *    un-synced (the `group:plur-ai/engineering` typo case).
+   *  - Authorization: the same client-side rule as the learnRouted write path —
+   *    a readonly store entry is refused.
+   *  - Sensitivity (mirrors `_guardExplicitUpdate`'s remote arm): a rescope to
+   *    a shared/remote scope re-scans the FULL content (statement + context
+   *    fields via `_engramContextFields`). An offending hit BLOCKS that id —
+   *    an explicit move must fail loud, never silently demote.
+   *  - Dedup on target (#676 constraint 5): an identical ACTIVE engram already
+   *    at the target (content-hash AND scope match) is idempotent success —
+   *    nothing pushed, and the source is still retired per `keep_local`, so
+   *    re-running a partially-failed batch converges.
+   *
+   * Batch-first (#676 constraint 3): `idOrIds` accepts one id or an array;
+   * outcomes are per-id and one failure never blocks the rest. `dry_run`
+   * reports every decision without mutating anything, local or remote.
+   */
+  async rescope(
+    idOrIds: string | string[],
+    targetScope: string,
+    options?: RescopeOptions,
+  ): Promise<{ results: RescopeResult[]; success: boolean }> {
+    const ids = Array.isArray(idOrIds) ? idOrIds : [idOrIds]
+    if (ids.length === 0) throw new TypeError('plur.rescope: provide at least one engram id')
+    if (typeof targetScope !== 'string' || targetScope.trim() === '') {
+      throw new TypeError('plur.rescope: target scope must be a non-empty string')
+    }
+    const target = targetScope.trim()
+    // Pick up out-of-process config edits (#307) so a store registered after
+    // startup is a valid target without a restart — mirrors _resolveUnscopedScope.
+    this.reloadConfigIfChanged()
+
+    // --- Resolve the target route ONCE, before touching any engram, so an
+    // invalid target fails the whole batch early (#676 constraint 4). ---
+    const remoteDriver = this._resolveRemoteStoreForScope(target)
+    const storeEntry = (this.config.stores ?? []).find(s => s.scope === target)
+    const isLocalFamily = target === 'local' || target === 'global' || target.startsWith('project:')
+    let route: 'remote' | 'local'
+    if (remoteDriver) {
+      route = 'remote'
+    } else if (storeEntry?.url && storeEntry.readonly === true) {
+      // Authorization: same rule the learnRouted write path applies — a
+      // readonly entry never receives writes. Refuse rather than leave the
+      // engram stranded somewhere it can never sync from.
+      throw new Error(
+        `Cannot rescope to "${target}": the configured store for that scope is readonly for this client. `
+        + `Ask for write access or pick another scope.`,
+      )
+    } else if (isLocalFamily || storeEntry) {
+      route = 'local'
+    } else {
+      const configured = (this.config.stores ?? []).map(s => s.scope)
+      throw new Error(
+        `Cannot rescope to "${target}": no configured store matches that scope. `
+        + `Valid targets: local, global, project:*`
+        + (configured.length ? `, or a configured store scope (${configured.join(', ')})` : '')
+        + `. Check for typos — an unmatched shared scope would never reach a team store (#676).`,
+      )
+    }
+
+    const opts = { dryRun: options?.dry_run === true, keepLocal: options?.keep_local === true }
+    const results: RescopeResult[] = []
+    for (const id of ids) {
+      results.push(await this._rescopeOne(id, target, route, remoteDriver, opts))
+    }
+    return { results, success: results.every(r => r.status !== 'error') }
+  }
+
+  /** One engram's rescope — see {@link rescope} for the contract. */
+  private async _rescopeOne(
+    id: string,
+    target: string,
+    route: 'remote' | 'local',
+    remoteDriver: RemoteStore | null,
+    opts: { dryRun: boolean; keepLocal: boolean },
+  ): Promise<RescopeResult> {
+    const action = route === 'remote' ? ('remote_push' as const) : ('local_rewrite' as const)
+    // The source must live in the local primary store: that is where stranded
+    // wrong-scope engrams sit (#676), and the only place this client can
+    // atomically retire from. A namespaced secondary/remote row gets a pointed
+    // error instead of a half-move.
+    const engrams = await this._loadCached(this.paths.engrams)
+    const source = engrams.find(e => e.id === id)
+    if (!source) {
+      const elsewhere = await this.getById(id)
+      return {
+        id, status: 'error', action,
+        error: elsewhere
+          ? `Engram ${id} lives in a secondary/remote store (scope ${elsewhere.scope}) — rescope supports engrams in the local primary store`
+          : `Engram not found: ${id}`,
+      }
+    }
+    if (source.status === 'retired') {
+      return { id, status: 'error', action, from_scope: source.scope, error: `Cannot rescope retired engram ${id}` }
+    }
+    if (source.scope === target) {
+      return { id, status: 'noop', action, from_scope: source.scope, to_scope: target, new_id: id }
+    }
+
+    // Sensitivity guard: a target where content can leave the machine or be
+    // read by others re-scans the FULL content (statement + context fields —
+    // the same surface as _guardExplicitUpdate, LOW-2 #353). Explicit rescope
+    // BLOCKS on a hit — no silent demote.
+    const ctx = this._engramContextFields(source)
+    const scanText = ctx ? `${source.statement}\n${JSON.stringify(ctx)}` : source.statement
+    const offending = this._offendingHitsForScope(scanText, target)
+    if (offending.length > 0) {
+      const patterns = [...new Set(offending.map(h => h.pattern))].join(', ')
+      return {
+        id, status: 'error', action, from_scope: source.scope, to_scope: target,
+        error: `Blocked: sensitive content (${patterns}) must not reach shared scope "${target}". `
+          + `Remove the sensitive material (or allow the category via the scope's sensitivity policy) and retry.`,
+      }
+    }
+
+    // Dedup on target (#676 constraint 5): identical content already AT the
+    // target scope is idempotent success — never a duplicate. _loadAllEngrams
+    // sees the primary store plus the cached remote view; for a cold remote
+    // cache the server's own content-hash dedup is the backstop.
+    const hash = (source as any).content_hash ?? computeContentHash(source.statement)
+    const all = await this._loadAllEngrams()
+    const existing = all.find(e =>
+      e.id !== id && e.status === 'active' && (e as any).content_hash === hash && e.scope === target)
+    if (existing) {
+      const targetId = ((existing as any)._originalId as string | undefined) ?? existing.id
+      const retire = route === 'local' || !opts.keepLocal
+      if (!opts.dryRun && retire) {
+        await this._retireRescopedSource(id, target, targetId)
+      }
+      return {
+        id, status: 'deduped', action, from_scope: source.scope, to_scope: target,
+        new_id: targetId,
+        ...(route === 'remote' ? { kept_local: opts.keepLocal } : {}),
+        ...(opts.dryRun ? { dry_run: true } : {}),
+      }
+    }
+
+    if (opts.dryRun) {
+      return {
+        id, status: 'rescoped', action, from_scope: source.scope, to_scope: target,
+        ...(route === 'remote' ? { kept_local: opts.keepLocal } : { new_id: id }),
+        dry_run: true,
+      }
+    }
+
+    const now = new Date().toISOString()
+    if (route === 'remote') {
+      // Build the pushed copy: scope rewritten, provenance in `source` (rides
+      // the wire — see appendAndGetServerId) and in structured_data, with
+      // PLUR-internal bookkeeping keys (_outbox, _routed, …) stripped.
+      const provenance = `rescoped from ${id} (${source.scope})`
+      const copy: Engram = {
+        ...source,
+        scope: target,
+        source: source.source ? `${source.source} — ${provenance}` : provenance,
+      }
+      const sd = (source as any).structured_data
+      const cleanSd = sd && typeof sd === 'object' && !Array.isArray(sd)
+        ? Object.fromEntries(Object.entries(sd as Record<string, unknown>).filter(([k]) => !k.startsWith('_')))
+        : {}
+      ;(copy as any).structured_data = {
+        ...cleanSd,
+        _rescoped_from: { id, scope: source.scope, at: now },
+      }
+      let serverId: string
+      try {
+        ;({ id: serverId } = await remoteDriver!.appendAndGetServerId(copy))
+      } catch (err) {
+        // Atomic semantics (#676 constraint 2): the push did not land, so the
+        // source stays exactly as it was. Deliberately NO outbox fallback — an
+        // explicit move reports failure instead of becoming a maybe-later.
+        const msg = (err as Error).message
+        const authHint = /\b40[13]\b/.test(msg)
+          ? ' The store token was refused (401/403) — re-authenticate and retry.'
+          : ''
+        return {
+          id, status: 'error', action, from_scope: source.scope, to_scope: target,
+          error: `Remote push failed — source engram left untouched: ${msg}.${authHint}`,
+        }
+      }
+      if (!opts.keepLocal) {
+        await this._retireRescopedSource(id, target, serverId)
+      }
+      appendHistory(this.paths.root, {
+        event: 'engram_rescoped',
+        engram_id: id,
+        timestamp: now,
+        data: { from_scope: source.scope, to_scope: target, new_id: serverId, routed_to: 'remote', kept_local: opts.keepLocal },
+      })
+      return {
+        id, status: 'rescoped', action, from_scope: source.scope, to_scope: target,
+        new_id: serverId, kept_local: opts.keepLocal,
+      }
+    }
+
+    // Local route: rewrite scope IN PLACE under the store lock — the same
+    // incremental update path as updateEngram's local branch. Id, activation,
+    // feedback, relations and history all stay attached to the same row.
+    const rewritten = await this._withStoreLock(this.paths.engrams, async () => {
+      const fresh = await this._primaryStore.load()
+      const t = fresh.find(e => e.id === id)
+      if (!t || t.status === 'retired') return false
+      const from = t.scope
+      t.scope = target
+      const tsd = (t as any).structured_data
+      ;(t as any).structured_data = {
+        ...(tsd && typeof tsd === 'object' && !Array.isArray(tsd) ? tsd : {}),
+        _rescoped: { from_scope: from, at: now },
+      }
+      await this._writeEngrams(this.paths.engrams, fresh)
+      await this._syncIndex()
+      return true
+    })
+    if (!rewritten) {
+      return {
+        id, status: 'error', action, from_scope: source.scope, to_scope: target,
+        error: `Engram ${id} changed underneath the rescope (retired or removed concurrently) — nothing written`,
+      }
+    }
+    appendHistory(this.paths.root, {
+      event: 'engram_rescoped',
+      engram_id: id,
+      timestamp: now,
+      data: { from_scope: source.scope, to_scope: target, new_id: id, routed_to: 'local' },
+    })
+    return { id, status: 'rescoped', action, from_scope: source.scope, to_scope: target, new_id: id }
+  }
+
+  /**
+   * Soft-retire the local source of a successful rescope, with a
+   * supersedes-style link to the copy now living at the target (#676).
+   * UNCONDITIONAL retirement — deliberately NOT the reference-counted
+   * `forget()` path: the engram did not lose one referent, it MOVED, so a
+   * reference_count > 1 must not leave a still-active local duplicate
+   * injecting alongside the team copy. Retired rows are excluded from
+   * `_hashDedup` (the hash cannot resurrect the source) and from every
+   * injection/list surface (status filters).
+   */
+  private async _retireRescopedSource(id: string, toScope: string, newId: string): Promise<void> {
+    const now = new Date().toISOString()
+    await this._withStoreLock(this.paths.engrams, async () => {
+      const fresh = await this._primaryStore.load()
+      const t = fresh.find(e => e.id === id)
+      if (!t) return
+      t.status = 'retired'
+      if (!t.rationale) t.rationale = `Retired: rescoped to ${toScope} as ${newId}`
+      const rel = t.relations ?? { broader: [], narrower: [], related: [], conflicts: [], supersedes: [], superseded_by: [] }
+      rel.superseded_by = rel.superseded_by ?? []
+      if (!rel.superseded_by.includes(newId)) rel.superseded_by.push(newId)
+      t.relations = rel
+      const tsd = (t as any).structured_data
+      ;(t as any).structured_data = {
+        ...(tsd && typeof tsd === 'object' && !Array.isArray(tsd) ? tsd : {}),
+        _rescoped: { to_scope: toScope, to_id: newId, at: now },
+      }
+      await this._writeEngrams(this.paths.engrams, fresh)
+      await this._syncIndex()
+    })
+    appendHistory(this.paths.root, {
+      event: 'engram_retired',
+      engram_id: id,
+      timestamp: now,
+      data: { reason: `rescoped to ${toScope}`, rescoped_to: newId, routed_to: 'rescope' },
+    })
   }
 
   /** Remove retired engrams from storage. Returns count of removed and remaining. */
