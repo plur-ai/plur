@@ -41,7 +41,12 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   engram.activation.retrieval_strength = 0.7
   engram.activation.storage_strength = 1.0
   engram.activation.last_accessed = new Date().toISOString().split('T')[0]
-  await plur.updateEngram(engram)
+  // updateEngram reports whether a row was actually written; ignoring it
+  // printed "promoted" for a write that never landed (#813, audit finding 17).
+  const written = await plur.updateEngram(engram)
+  if (!written) {
+    exit(1, `Not persisted: ${id} — the engram may have been removed, or its store is read-only`)
+  }
 
   if (shouldOutputJson(flags)) {
     outputJson({ success: true, id, statement: engram.statement, status: 'promoted' })
