@@ -2,7 +2,8 @@ import { createPlur, type GlobalFlags } from '../plur.js'
 import { shouldOutputJson, outputJson, outputText, outputInfo } from '../output.js'
 
 export async function run(args: string[], flags: GlobalFlags): Promise<void> {
-  const plur = createPlur(flags)
+  // Pure query — a read-only engine guarantees no lazy write side-effects.
+  const plur = createPlur(flags, { readonly: true })
 
   let domain: string | undefined
   let type: string | undefined

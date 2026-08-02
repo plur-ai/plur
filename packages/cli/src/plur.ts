@@ -22,8 +22,15 @@ export function parseGlobalFlags(argv: string[]): { flags: GlobalFlags; args: st
   return { flags, args }
 }
 
-/** Create Plur instance from flags. */
-export function createPlur(flags: GlobalFlags): Plur {
+/**
+ * Create Plur instance from flags.
+ *
+ * `readonly: true` opens a write-guarded engine (#731): reads work, every
+ * mutation throws `ReadonlyStoreError`, and recall skips its activation
+ * refresh. Read-only commands (`list`, `status`, `tensions` list mode) pass it
+ * so lazy engine side-effects cannot mutate the store from a pure query.
+ */
+export function createPlur(flags: GlobalFlags, options?: { readonly?: boolean }): Plur {
   const path = flags.path || process.env.PLUR_PATH || undefined
-  return new Plur({ path })
+  return new Plur({ path, readonly: options?.readonly })
 }
