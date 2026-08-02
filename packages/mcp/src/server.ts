@@ -47,7 +47,7 @@ export const INSTRUCTIONS = `PLUR is your persistent memory. Corrections, prefer
 
 PLUR is a GLOBAL tool — one MCP server, one engram store (~/.plur/), available in every project. Multi-project scoping uses domain/scope fields on engrams, not separate installations.
 
-TOOL PROFILE: by default only the core session tools are exposed directly (lean profile). Every other plur_* operation is reachable via plur_admin: { action: "<tool name>", args: {...} } — same arguments and validation as a direct call. PLUR_TOOL_PROFILE=full exposes everything directly.
+TOOL PROFILE: by default only the core session tools are exposed directly (lean profile). Every other plur_* operation is reachable via plur_admin: { action: "<tool name>", args: {...} } — same arguments and validation as a direct call. A plur_* name missing from tools/list means it MOVED behind plur_admin, not that the MCP is down — never conclude the server is unavailable from a name-lookup miss. Discover the live surface with plur_admin { action: "help" } (every action with description + argument schema) or plur_doctor (tool_surface). PLUR_TOOL_PROFILE=full exposes everything directly.
 
 SESSION LIFECYCLE:
 - With hooks installed (plur init): engrams are injected automatically on first message. You do NOT need to call plur_session_start — it happens via hooks. Just call plur_session_end before the conversation ends.

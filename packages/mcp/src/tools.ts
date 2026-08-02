@@ -552,17 +552,68 @@ export const CURSOR_CORE_TOOL_NAMES: ReadonlySet<string> = new Set([
   'plur_tensions_purge',
 ])
 
+/**
+ * One line of a tool's description, for plur_admin's `help` action (#761).
+ * Cuts at the first newline, then backs off to a sentence boundary when the
+ * line runs long — the full detail stays on the tool definition itself.
+ */
+function summarizeToolDescription(description: string): string {
+  const line = description.split('\n', 1)[0].trim()
+  if (line.length <= 200) return line
+  const cut = line.lastIndexOf('. ', 200)
+  return cut > 40 ? line.slice(0, cut + 1) : `${line.slice(0, 199)}…`
+}
+
+/**
+ * The action inventory clause for plur_admin's tool description, grouped by
+ * name family (the token after `plur_`) so ~30 names scan as a categorized
+ * list instead of a wall. GENERATED from the same action list the dispatcher
+ * routes on — never hand-maintained (#761): hand-kept text is exactly what
+ * drifts silently the moment a tool is added or renamed, and this description
+ * is the one place a client that only reads tools/list can learn the surface.
+ *
+ * If the registry ever outgrows what a description can reasonably carry, the
+ * clause degrades to family names + counts and points at `help` — a truncated
+ * enumeration reads as complete, which is worse than an honest summary.
+ */
+function describeActionInventory(actions: string[]): string {
+  const families = new Map<string, string[]>()
+  for (const name of actions) {
+    const family = name.replace(/^plur_/, '').split('_', 1)[0]
+    families.set(family, [...(families.get(family) ?? []), name])
+  }
+  const sorted = [...families.entries()].sort((a, b) => a[0].localeCompare(b[0]))
+  const grouped: string[] = []
+  const misc: string[] = []
+  for (const [family, members] of sorted) {
+    if (members.length > 1) grouped.push(`${family}: ${members.join(', ')}`)
+    else misc.push(members[0])
+  }
+  if (misc.length > 0) grouped.push(`other: ${misc.join(', ')}`)
+  const full = `Actions, grouped — ${grouped.join(' · ')}.`
+  if (full.length <= 1500) return full
+  const counted = sorted.map(([family, members]) => `${family} (${members.length})`).join(', ')
+  return `${actions.length} actions in groups ${counted} — the full list is in { action: "help" }.`
+}
+
 function buildAdminDispatchTool(all: ToolDefinition[]): ToolDefinition {
   const byName = new Map(all.map(t => [t.name, t] as const))
   const adminActions = all.map(t => t.name).filter(n => !CURSOR_CORE_TOOL_NAMES.has(n)).sort()
+  // The example an agent copies must be a real, currently-dispatchable action —
+  // prefer the one from the #761 incident report, fall back to whatever exists.
+  const exampleAction = adminActions.includes('plur_recall_hybrid') ? 'plur_recall_hybrid' : adminActions[0]
+  const exampleArgs = exampleAction === 'plur_recall_hybrid' ? '{ query: "deploy checklist" }' : '{}'
 
   return {
     name: 'plur_admin',
     description:
-      'Dispatch for less-common PLUR operations (packs, sync, tensions, stores, timeline, ' +
-      "ingest, and more), collapsed into one tool so Cursor's ~40-tool-per-workspace limit " +
-      'is not exhausted by PLUR alone. Set "action" to the underlying tool name and "args" ' +
-      `to that tool's normal arguments. Valid actions: ${adminActions.join(', ')}.`,
+      `Gateway to the ${adminActions.length} PLUR operations that are not top-level tools under the ` +
+      "current profile (collapsed into one dispatch tool so Cursor's ~40-tool-per-workspace limit is " +
+      'not exhausted by PLUR alone). A plur_* name missing from tools/list means it moved HERE — not ' +
+      'that the MCP is unavailable. Calling convention: { action: "<tool name>", args: { ...that ' +
+      "tool's normal arguments } } — same arguments, same validation, same result as a direct call. " +
+      `Example: { action: "${exampleAction}", args: ${exampleArgs} }. Send { action: "help" } for ` +
+      `every action's one-line description and argument schema. ${describeActionInventory(adminActions)}`,
     annotations: { title: 'Admin dispatch', readOnlyHint: false },
     inputSchema: {
       type: 'object',
@@ -574,16 +625,37 @@ function buildAdminDispatchTool(all: ToolDefinition[]): ToolDefinition {
         // CallToolRequestSchema handler's Zod validation would reject
         // unknown actions before this handler's `if (!target)` branch ever
         // ran.
-        action: { type: 'string', description: 'Which underlying plur_* tool to invoke' },
+        action: { type: 'string', description: 'Which underlying plur_* tool to invoke, or "help" to list every action with its description and argument schema' },
         args: { type: 'object', description: "Arguments for the chosen action, matching that tool's normal input schema", additionalProperties: true },
       },
       required: ['action'],
     },
     handler: async (args, plur) => {
       const action = args.action as string
+      // #761: the runtime discovery surface. The tool description carries the
+      // action NAMES; this returns what each one does and what it takes, so an
+      // agent that only knows "plur_admin exists" can learn the whole surface
+      // in one call instead of guessing names against the Unknown-action error.
+      if (action === 'help') {
+        return {
+          calling_convention:
+            'plur_admin { action: "<tool name>", args: { ... } } — same arguments, same validation, ' +
+            'same result as calling that tool directly. A tools/list miss on one of these names means ' +
+            'it is consolidated here, NOT that the MCP is unavailable.',
+          actions: adminActions.map(name => {
+            const t = byName.get(name)!
+            return { action: name, description: summarizeToolDescription(t.description), args_schema: t.inputSchema }
+          }),
+          standalone_tools: all.map(t => t.name).filter(n => CURSOR_CORE_TOOL_NAMES.has(n)).sort(),
+          standalone_note:
+            'standalone_tools are exposed as top-level tools in every profile — call them directly, ' +
+            'never through plur_admin (destructive ones are refused here so their risk annotations ' +
+            'stay visible to your client).',
+        }
+      }
       const target = byName.get(action)
       if (!target) {
-        return { error: `Unknown action "${action}". Valid actions: ${adminActions.join(', ')}`, success: false, _isError: true }
+        return { error: `Unknown action "${action}". Valid actions: help, ${adminActions.join(', ')}`, success: false, _isError: true }
       }
       // #625 audit: ENFORCE the annotation-visibility guarantee the module
       // comment documents. Destructive tools must never execute through this
@@ -696,7 +768,7 @@ export function describeToolSurface(profile: ToolProfile = activeToolProfile()):
     admin_actions,
     note: admin_actions.length === 0
       ? 'All tools are exposed directly under this profile.'
-      : `Only the ${standalone.length} tools in "standalone" are callable by name. Everything in "admin_actions" is reachable as plur_admin { action: "<name>", args: {...} } — same arguments, same validation, same result. A name-lookup miss on one of those means it moved, NOT that the MCP is unavailable. Set PLUR_TOOL_PROFILE=full to expose all tools directly.`,
+      : `Only the ${standalone.length} tools in "standalone" are callable by name. Everything in "admin_actions" is reachable as plur_admin { action: "<name>", args: {...} } — same arguments, same validation, same result. A name-lookup miss on one of those means it moved, NOT that the MCP is unavailable. Call plur_admin { action: "help" } for each action's description and argument schema. Set PLUR_TOOL_PROFILE=full to expose all tools directly.`,
   }
 }
 
@@ -1770,8 +1842,21 @@ function getAllToolDefinitions(): ToolDefinition[] {
           created_after: args.created_after as string | undefined,
         })
         const versionCheck = getCachedUpdateCheck('@plur-ai/mcp')
+        // #761: name the profile + gateway in the other name-stable diagnostic
+        // door. status is where agents look when "tools seem missing" — one
+        // line here turns a lookup miss into a plur_admin call instead of a
+        // false "MCP is down" conclusion. Full inventory: plur_doctor's
+        // tool_surface, or plur_admin { action: "help" }.
+        const tool_profile = activeToolProfile()
         return {
           version: VERSION,
+          tool_profile,
+          ...(tool_profile !== 'full' ? {
+            tool_surface_note:
+              `Tool profile "${tool_profile}": most plur_* operations are not top-level tools — call them ` +
+              'as plur_admin { action: "<name>", args: {...} }; send { action: "help" } for the list. ' +
+              'A name-lookup miss means a tool moved there, not that the MCP is down.',
+          } : {}),
           engram_count: status.engram_count,
           episode_count: status.episode_count,
           pack_count: status.pack_count,
@@ -2379,6 +2464,17 @@ function getAllToolDefinitions(): ToolDefinition[] {
               }
             }
           } catch { /* best-effort */ }
+        }
+
+        // #761: the lean surface is invisible in tools/list, and session_start
+        // is the first tool an agent calls — one line here tells it the
+        // gateway exists BEFORE it ever misses a name and concludes the MCP
+        // is down. Silent under 'full', where nothing is hidden.
+        const session_tool_profile = activeToolProfile()
+        if (session_tool_profile !== 'full') {
+          guide += `\n\nTool profile "${session_tool_profile}": most plur_* tools are not exposed by name — ` +
+            'call them via plur_admin { action: "<tool name>", args: {...} } ' +
+            '(send { action: "help" } for the full action list).'
         }
 
         const sessionResponse: Record<string, unknown> = {
