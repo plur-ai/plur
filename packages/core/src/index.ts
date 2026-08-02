@@ -471,6 +471,8 @@ const TYPE_TO_COGNITIVE: Record<string, string> = {
   architectural: 'evaluate',
 }
 
+const VALID_ENGRAM_TYPES = new Set<string>(['behavioral', 'terminological', 'procedural', 'architectural'])
+
 const INGEST_PATTERNS = [
   { re: /(?:we decided|the decision is|agreed to)\s+(.+?)\.?$/gim, type: 'architectural' as const },
   { re: /(?:always|never|must|should)\s+(.+?)\.?$/gim, type: 'behavioral' as const },
@@ -1833,6 +1835,11 @@ export class Plur {
     if (typeof statement !== 'string' || statement.length === 0) {
       throw new TypeError(`plur.learn: statement must be a non-empty string, got ${typeof statement}`)
     }
+    if (context?.type !== undefined && !VALID_ENGRAM_TYPES.has(context.type)) {
+      throw new TypeError(
+        `plur.learn: invalid type '${context.type}'. Must be one of: behavioral, terminological, procedural, architectural`
+      )
+    }
     if (!this.config.allow_secrets) {
       // Scan statement AND the caller-supplied fields that are exported verbatim /
       // rendered into agent context — `domain`, `tags`, `abstract` (#381, #389).
@@ -2134,6 +2141,11 @@ export class Plur {
    * forget that pretends success and leaves the user with a phantom ID).
    */
   async learnRouted(statement: string, context?: LearnContext): Promise<Engram> {
+    if (context?.type !== undefined && !VALID_ENGRAM_TYPES.has(context.type)) {
+      throw new TypeError(
+        `plur.learnRouted: invalid type '${context.type}'. Must be one of: behavioral, terminological, procedural, architectural`
+      )
+    }
     if (!this.config.allow_secrets) {
       // Scan statement AND the caller-supplied fields that are exported verbatim /
       // rendered into agent context — `domain`, `tags`, `abstract` (#381, #389).
