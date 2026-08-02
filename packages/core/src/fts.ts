@@ -8,11 +8,20 @@ const STOP_WORDS = new Set([
 
 /** Tokenize text into searchable terms */
 export function ftsTokenize(text: string): string[] {
-  return text.toLowerCase()
+  const lower = text.toLowerCase()
+  const tokens = lower
     .replace(/[^\w\s]/g, ' ')
     .split(/\s+/)
     .filter(w => w.length > 2)
     .filter(w => !STOP_WORDS.has(w))
+  // CJK: \w is ASCII-only ([A-Za-z0-9_]), so Han runs are stripped by the
+  // replace above and pure-Chinese text tokenizes to nothing. Chinese has no
+  // whitespace-delimited words — re-extract Han runs from the source and index
+  // them as character bigrams so non-English text survives BM25. (plur-ai#782)
+  for (const run of lower.match(/\p{Script=Han}{2,}/gu) ?? []) {
+    for (let i = 0; i < run.length - 1; i++) tokens.push(run.slice(i, i + 2))
+  }
+  return tokens
 }
 
 /** Build searchable text from all engram fields */

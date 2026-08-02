@@ -20,6 +20,30 @@ describe('ftsTokenize', () => {
     expect(tokens).toContain('jumps')
     expect(tokens).not.toContain('the')
   })
+
+  it('keeps ASCII behavior unchanged when text contains no CJK', () => {
+    const tokens = ftsTokenize('docker compose deployment')
+    expect(tokens).toEqual(['docker', 'compose', 'deployment'])
+  })
+
+  it('indexes pure-Chinese text as character bigrams (was: empty tokens)', () => {
+    const tokens = ftsTokenize('测试部署应该用')
+    expect(tokens).toContain('测试')
+    expect(tokens).toContain('试部')
+    expect(tokens).toContain('部署')
+    expect(tokens).toContain('应该')
+    expect(tokens).toContain('该用')
+    // every Han char participates in two bigrams (except run edges)
+    expect(tokens.length).toBeGreaterThanOrEqual(4)
+  })
+
+  it('mixed Chinese + English keeps both term kinds', () => {
+    const tokens = ftsTokenize('测试部署应该用 docker compose')
+    expect(tokens).toContain('docker')
+    expect(tokens).toContain('compose')
+    expect(tokens).toContain('部署')
+    expect(tokens).toContain('该用')
+  })
 })
 
 describe('computeIdf', () => {
@@ -167,5 +191,24 @@ describe('BM25 document length normalization', () => {
     const results = searchEngrams(engrams, 'kubernetes')
     // Short doc should rank higher — same term match but normalized by length
     expect(results[0].id).toBe('ENG-2026-0330-001')
+  })
+})
+
+describe('CJK search (Chinese engrams)', () => {
+  const engrams = [
+    makeEngram({ id: 'ENG-2026-0330-001', statement: '测试部署应该用 docker compose' }),
+    makeEngram({ id: 'ENG-2026-0330-002', statement: 'unit tests must run before commit' }),
+  ]
+
+  it('retrieves a Chinese engram for a Chinese query', () => {
+    const results = searchEngrams(engrams, '部署流程')
+    expect(results.length).toBeGreaterThan(0)
+    expect(results[0].id).toBe('ENG-2026-0330-001')
+  })
+
+  it('does not retrieve a Chinese engram for an unrelated Chinese query', () => {
+    const results = searchEngrams(engrams, '单位不要')
+    // zero term overlap → empty result (no noise from unrelated CJK queries)
+    expect(results).toHaveLength(0)
   })
 })
