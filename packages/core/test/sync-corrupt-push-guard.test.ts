@@ -98,11 +98,16 @@ describe('sync refuses an unreadable store instead of pushing it verbatim (F5)',
     sync(root, remote)
     // Manufacture a genuine unmerged index entry by conflicting two real
     // commits — the state an autostash pop or a failed merge actually leaves.
+    //
+    // The starting branch is read rather than assumed: `git init`'s default is
+    // `master` on git older than 2.28 and wherever `init.defaultBranch` is
+    // unset, so hardcoding `main` here passes locally and fails on CI runners.
+    const base = git(['rev-parse', '--abbrev-ref', 'HEAD'], root)
     git(['checkout', '-b', 'other'], root)
     writeStore([record(1), record(9)])
     git(['add', '-f', 'engrams.yaml'], root)
     git(['commit', '-m', 'other side'], root)
-    git(['checkout', 'main'], root)
+    git(['checkout', base], root)
     writeStore([record(1), record(8)])
     git(['add', '-f', 'engrams.yaml'], root)
     git(['commit', '-m', 'this side'], root)
@@ -117,14 +122,16 @@ describe('sync refuses an unreadable store instead of pushing it verbatim (F5)',
 describe('sync reports what actually happened (F6)', () => {
   it('does not claim a pull that did not happen', () => {
     sync(root, remote)
+    // Branch name is read, not assumed — see the note in the unmerged test.
+    const branch = git(['rev-parse', '--abbrev-ref', 'HEAD'], root)
     // A second clone pushes a commit, so `root` falls behind.
     const other = mkdtempSync(join(tmpdir(), 'plur-sync-other-'))
     try {
-      git(['clone', remote, other], tmpdir())
+      git(['clone', '--branch', branch, remote, other], tmpdir())
       writeFileSync(join(other, 'engrams.yaml'), yaml.dump({ engrams: [record(1), record(2), record(3), record(4)] }))
       git(['add', '-f', 'engrams.yaml'], other)
       git(['commit', '-m', 'remote side'], other)
-      git(['push', 'origin', 'main'], other)
+      git(['push', 'origin', branch], other)
 
       const result = sync(root)
       // Whatever the outcome, the message must not assert a pull that left us
