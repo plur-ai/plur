@@ -582,6 +582,33 @@ const PUSHDOWN_MAX_ROUNDS = 3
  */
 const PRIMARY_AUTO_EMBED_BATCH = 100
 
+/**
+ * True when a background-pass error means "the store was torn down under
+ * us", not "something is wrong" (#762 follow-up, caught by smoke-packaged).
+ *
+ * The auto-embed pass is fire-and-track, so a short-lived process — the
+ * packaged smoke, a CLI invocation, any script that closes or drops its
+ * store when its work is done — can legitimately tear the store down while
+ * a pass is mid-flight. That is a benign cancellation: there is nothing to
+ * fix, nothing to retry, and the next engine over a live store converges.
+ * Reporting it as a background FAILURE (warning + `lastIndexError`) is
+ * noise at best; at worst the stray warning lands after the process's real
+ * output, which is exactly how the release smoke's last-line gate caught it.
+ *
+ * Patterns, each tied to a specific teardown path:
+ *   - Postgres `42P01` (undefined_table) / `3F000` (invalid_schema_name):
+ *     `dropSchema()` won the race against the pass's next query.
+ *   - "adapter is closed": `close()` beat the pass's next `getPool()`.
+ *   - "after calling end": node-postgres's "Cannot use a pool after calling
+ *     end on the pool" — same race, seen from a checkout already in flight.
+ */
+function isStoreTeardownError(err: unknown): boolean {
+  const code = (err as { code?: string }).code
+  if (code === '42P01' || code === '3F000') return true
+  const msg = (err as Error)?.message ?? ''
+  return msg.includes('adapter is closed') || msg.includes('after calling end')
+}
+
 export class Plur {
   private paths: PlurPaths
   private config: PlurConfig
@@ -5163,6 +5190,14 @@ export class Plur {
         if (batch.length < PRIMARY_AUTO_EMBED_BATCH) return
       }
     } catch (err) {
+      // A store torn down mid-pass (close()/dropSchema() in a short-lived
+      // process) is a cancellation, not a failure — stay quiet and do NOT
+      // record it, or the stray warning outlives the process's real output
+      // (the release smoke's last-line gate caught exactly that).
+      if (isStoreTeardownError(err)) {
+        logger.debug('[plur] primary-store auto-embed stopped: the store was closed or dropped mid-pass.')
+        return
+      }
       this._recordIndexError('auto-embed', err)
       logger.warning(`[plur] primary-store auto-embed failed: ${(err as Error).message}`)
     }

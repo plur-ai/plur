@@ -30,13 +30,14 @@
  * Gate follows the house rule: skip when PLUR_TEST_POSTGRES_URL is unset,
  * fail loudly when it is set and the database is broken.
  */
-import { describe, it, expect, beforeAll, afterAll } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
 import { mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { Plur } from '../src/index.js'
 import { PostgresAdapter } from '../src/storage-postgres.js'
 import { _setCachedEmbedder, resetEmbedder, setEmbeddingsEnabled, embed } from '../src/embeddings.js'
+import { logger } from '../src/logger.js'
 
 const PG_URL = process.env.PLUR_TEST_POSTGRES_URL
 const SCHEMA = 'plur_auto_embed_762'
@@ -255,5 +256,52 @@ describe.skipIf(!PG_URL)('Postgres primary-store auto-embed (#762)', () => {
     expect(await plur.recallSemantic('solar panel cooling', { limit: 5, scopes: [] })).toEqual([])
     const scoped = await plur.recallSemantic('solar panel cooling', { limit: 5, scopes: ['global'] })
     expect(scoped.every(e => e.scope === 'global')).toBe(true)
+  }, TIMEOUT)
+
+  it('a store torn down mid-pass is a cancellation, not a failure — smoke-packaged regression', async () => {
+    // The release smoke caught this: its pg step drops the schema and closes
+    // the adapter when its work is done, and the still-in-flight auto-embed
+    // pass then failed LOUDLY — a stray "auto-embed failed: relation ...
+    // does not exist" warning after the process's real output, which broke
+    // the smoke's last-line gate. Teardown-under-a-background-pass must be
+    // classified as benign: no warning, no lastIndexError.
+    const SCHEMA2 = `${SCHEMA}_teardown`
+    const a3 = new PostgresAdapter({ connectionString: PG_URL!, schema: SCHEMA2, vectorIndex: 'exact' })
+    await a3.save([])
+    const dir3 = mkdtempSync(join(tmpdir(), 'plur-auto-embed-td-'))
+    const plur3 = new Plur({ path: dir3, store: a3 })
+    await plur3.ready()
+
+    // Gate the embedder so the pass is PROVABLY mid-flight when the store is
+    // dropped: embed() signals arrival, then blocks until released. Without
+    // the gate the pass usually wins the race and the test proves nothing.
+    let arrived!: () => void
+    const arrival = new Promise<void>(r => { arrived = r })
+    let release!: () => void
+    const gate = new Promise<void>(r => { release = r })
+    _setCachedEmbedder({
+      name: 'bge-small-en-v1.5',
+      dim: DIM,
+      modelId: 'stub-762-gate',
+      embed: async t => { arrived(); await gate; return stubVec(t) },
+      embedBatch: async ts => ts.map(stubVec),
+    })
+    const warnSpy = vi.spyOn(logger, 'warning')
+    try {
+      await plur3.learn('teardown race probe', { scope: 'global' }) // kicks the pass
+      await arrival                                                 // pass is inside embed()
+      await a3.dropSchema()                                         // teardown wins the race
+      release()                                                     // pass resumes into a dropped schema (42P01)
+      await plur3.waitForIndex()                                    // resolves — the pass never rejects
+
+      expect(plur3.lastIndexError(), 'teardown was recorded as a background failure').toBeNull()
+      const loud = warnSpy.mock.calls.filter(c => String(c[0]).includes('auto-embed failed'))
+      expect(loud, 'teardown produced a loud auto-embed warning').toEqual([])
+    } finally {
+      warnSpy.mockRestore()
+      installStubEmbedder() // drop the gated stub before any other test embeds
+      await a3.close().catch(() => { /* best effort */ })
+      rmSync(dir3, { recursive: true, force: true })
+    }
   }, TIMEOUT)
 })
