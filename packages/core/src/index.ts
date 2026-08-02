@@ -200,6 +200,13 @@ export {
 } from './reranker-eval.js'
 export type { SimilarityResult } from './embeddings.js'
 export type { SyncResult, SyncStatus, SyncRemoteType } from './sync.js'
+/**
+ * File-write primitives, exported so packages OUTSIDE core write files the same
+ * way core does (#805). `@plur-ai/mcp` had its own read-modify-write with
+ * neither a lock nor an atomic replace; re-implementing them per package is how
+ * the two drift, and the drift is always in the unsafe direction.
+ */
+export { atomicWrite, withLock } from './sync.js'
 export { checkForUpdate, settleVersionChecks, getCachedUpdateCheck, clearVersionCache, minorVersionsBehind, VERSION_CHECK_SUCCESS_TTL_MS, VERSION_CHECK_FAILURE_TTL_MS, type VersionCheckResult } from './version-check.js'
 export { scanForTensions, getCandidatePairs, scopesOverlap, domainSegmentsOverlap, subjectsOverlap, statementOverlap, buildContradictionPrompt, parseContradictionResponse, buildBatchContradictionPrompt, parseBatchContradictionResponse, engramDate, daysApart, inTemporalDomain, temporalDiscountFactor, SNAPSHOT_CONFIDENCE_CAP, type ContradictionVerdict, type TensionPair, type TensionScanResult, type TensionScanOptions, type TemporalGateOptions, type CandidatePairOptions, type JudgeStatement } from './tensions.js'
 // Tension lifecycle persistence (#181)

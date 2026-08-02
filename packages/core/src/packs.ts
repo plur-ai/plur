@@ -5,6 +5,7 @@ import * as os from 'os'
 import { execFileSync } from 'child_process'
 import yaml from 'js-yaml'
 import { loadPack, loadEngrams, saveEngrams } from './engrams.js'
+import { atomicWrite } from './sync.js'
 import { detectSensitive, detectPromptInjection, truncateToScanLimit } from './secrets.js'
 import type { Engram } from './schemas/engram.js'
 import type { PackManifest } from './schemas/pack.js'
@@ -127,20 +128,78 @@ function registryPath(packsDir: string): string {
   return path.join(packsDir, 'registry.yaml')
 }
 
+/**
+ * The pack registry exists but cannot be read as a registry (#805, audit F11).
+ *
+ * Mirrors `EngramStoreUnreadableError`, and for the same reason: the writer is
+ * a whole-file replace, so treating an unreadable file as "no packs recorded"
+ * means the next install rewrites it with a single entry and every other pack's
+ * integrity baseline is gone. Unlike the engram store, what is destroyed is not
+ * the data — the packs are still on disk — but the ability to tell whether that
+ * data has been tampered with, which fails silent.
+ */
+export class PackRegistryUnreadableError extends Error {
+  constructor(readonly filePath: string, readonly detail: string) {
+    super(
+      `[plur] refusing to read ${filePath}: ${detail}\n` +
+      `The file exists but is not a valid pack registry, so PLUR cannot tell which packs were installed ` +
+      `or what they hashed to at install time. It is NOT being treated as empty: the write path replaces ` +
+      `the whole file, so an install against an "empty" registry would erase the integrity baseline for ` +
+      `every other installed pack — after which a tampered pack reports its integrity as UNKNOWN rather ` +
+      `than MODIFIED.\n` +
+      `Fix the file (or delete it and re-run 'plur packs install' for each pack to rebuild the baseline) ` +
+      `and retry.`,
+    )
+    this.name = 'PackRegistryUnreadableError'
+  }
+}
+
+/**
+ * Read the registry, refusing rather than guessing (#805, F11).
+ *
+ * The old body ended in `catch { return [] }`, with the same shape for a file
+ * that parsed to something other than `{packs: [...]}`. Measured consequence
+ * (probe p08b): truncate the registry, run ONE install, and the surviving entry
+ * is that install alone — `integrity_ok` for a previously installed pack goes
+ * `true` -> `undefined`, and tampering with its engrams then still reports
+ * `undefined`, never `false`. The check that exists to catch a modified pack had
+ * degraded to "unknown" without anything saying so.
+ */
 function loadRegistry(packsDir: string): RegistryEntry[] {
   const p = registryPath(packsDir)
-  if (!fs.existsSync(p)) return []
+  if (!fs.existsSync(p)) return [] // never installed anything — genuinely empty
+  const raw = fs.readFileSync(p, 'utf8')
+  if (raw.trim().length === 0) throw new PackRegistryUnreadableError(p, 'the file is empty')
+  let parsed: unknown
   try {
-    const raw = yaml.load(fs.readFileSync(p, 'utf8')) as any
-    return Array.isArray(raw?.packs) ? raw.packs : []
-  } catch {
-    return []
+    parsed = yaml.load(raw)
+  } catch (err) {
+    throw new PackRegistryUnreadableError(p, `YAML parse failed: ${(err as Error).message}`)
   }
+  if (parsed === null || parsed === undefined) {
+    throw new PackRegistryUnreadableError(p, 'the file parsed to nothing')
+  }
+  if (typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new PackRegistryUnreadableError(p, `expected a mapping with a "packs" key, got ${Array.isArray(parsed) ? 'a list' : typeof parsed}`)
+  }
+  const packs = (parsed as { packs?: unknown }).packs
+  if (packs === undefined || packs === null) {
+    throw new PackRegistryUnreadableError(p, 'no "packs" key')
+  }
+  if (!Array.isArray(packs)) {
+    throw new PackRegistryUnreadableError(p, `"packs" is ${typeof packs}, expected a list`)
+  }
+  return packs as RegistryEntry[]
 }
 
 function saveRegistry(packsDir: string, entries: RegistryEntry[]): void {
   const content = yaml.dump({ packs: entries }, { lineWidth: 120, noRefs: true, quotingType: '"' })
-  fs.writeFileSync(registryPath(packsDir), content)
+  // Atomic + fsynced (#805, F11). A plain writeFileSync truncates in place, so
+  // a crash or a full disk mid-write leaves a half-written registry — which the
+  // loader above now refuses, but refusing is only the second line of defence.
+  // `atomicWrite` writes to a unique temp file, fsyncs it, renames, then fsyncs
+  // the directory, so the registry is either the old one or the new one.
+  atomicWrite(registryPath(packsDir), content)
 }
 
 function addToRegistry(packsDir: string, entry: RegistryEntry): void {
@@ -319,6 +378,14 @@ function _installPackDir(
   opts: InstallOptions = {},
 ): InstallResult {
   if (!fs.existsSync(source)) throw new Error(`Pack source not found: ${source}`)
+
+  // Preflight the registry BEFORE doing any filesystem work (#805, F11). The
+  // registry is only WRITTEN at the end of this function, so without this check
+  // an unreadable registry aborts the install after the pack directory is
+  // already live — leaving it installed but unrecorded, which then reports
+  // `integrity_status: 'unverified'`. That is precisely the ambiguous state
+  // this finding is about, so failing early is part of the fix, not a nicety.
+  loadRegistry(packsDir)
 
   // Security scan BEFORE copying — always runs, not opt-out
   const preview = _previewPackDir(source)
@@ -563,6 +630,22 @@ export interface PackInfo {
   installed_at?: string
   source?: string
   integrity_ok?: boolean
+  /**
+   * Explicit integrity verdict (#805, F11) — the reason `integrity_ok` alone is
+   * not enough to act on.
+   *
+   *   'ok'          the pack hashes to what the registry recorded at install
+   *   'modified'    it does not — the contents changed after install
+   *   'unverified'  there is NO registry entry, so the question cannot be answered
+   *
+   * `integrity_ok === undefined` carried the third case, and every consumer
+   * treated it as "nothing to report" — the CLI printed a warning only for an
+   * explicit `false`. So a pack whose baseline had been destroyed looked exactly
+   * like a pack that was fine. A verdict that cannot be reached must be as
+   * visible as a verdict that failed, because the two have the same cause more
+   * often than not: something tampered with the pack directory.
+   */
+  integrity_status?: 'ok' | 'modified' | 'unverified'
 }
 
 export function listPacks(packsDir: string): PackInfo[] {
@@ -589,6 +672,7 @@ export function listPacks(packsDir: string): PackInfo[] {
         installed_at: reg?.installed_at,
         source: reg?.source,
         integrity_ok: reg ? reg.integrity === currentIntegrity : undefined,
+        integrity_status: reg ? (reg.integrity === currentIntegrity ? 'ok' : 'modified') : 'unverified',
       })
     } catch {
       const engramsPath = path.join(packDir, 'engrams.yaml')
@@ -600,6 +684,9 @@ export function listPacks(packsDir: string): PackInfo[] {
         engram_count: engrams.length,
         installed_at: reg?.installed_at,
         source: reg?.source,
+        // The manifest would not load, so no hash was computed and the question
+        // cannot be answered — which is a state to report, not to omit (#805).
+        integrity_status: 'unverified',
       })
     }
   }
