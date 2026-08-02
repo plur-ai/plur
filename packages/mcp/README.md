@@ -65,6 +65,8 @@ By default (lean profile), your agent gets 12 tools. Everything else is reachabl
 
 Less commonly needed tools (`plur_recall_hybrid`, `plur_inject_hybrid`, `plur_learn_batch`, `plur_ingest`, `plur_sync`, `plur_packs_install`, `plur_packs_list`, `plur_capture`, `plur_timeline`, and more) are all reachable via `plur_admin`. Set `PLUR_TOOL_PROFILE=full` to expose all 40 tools directly.
 
+A `plur_*` name missing from `tools/list` means it moved behind the gateway, not that the server is down. `plur_admin { action: "help" }` returns every action with a one-line description and its argument schema; `plur_doctor` reports the same inventory as `tool_surface`.
+
 ## Sync across machines
 
 Your agent can sync memory to any git remote:
