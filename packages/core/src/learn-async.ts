@@ -73,6 +73,35 @@ export interface LearnAsyncDeps {
  * the mutex nor the file. So `learnAsync` and `learnBatch` bypassed the Postgres
  * advisory lock that every other write path takes.
  */
+/**
+ * Persist exactly one changed engram (audit #794 F3 remainder, issue #802).
+ *
+ * The dedup UPDATE and MERGE branches used to call `deps.store.save(engrams)`
+ * directly, which bypasses the incremental write seam and is a WHOLE-CORPUS
+ * REPLACE on every backend. That is a correctness bug, not just a slow path:
+ * `PostgresAdapter.save()` finishes with
+ *
+ *   DELETE FROM engrams WHERE id NOT IN (<the ids being saved>)
+ *
+ * so every row absent from the array this call happened to load is deleted —
+ * and an empty array deletes the table outright. It fires on ordinary
+ * `plur_learn` calls, since UPDATE/MERGE is what LLM dedup returns whenever the
+ * statement resembles something already stored.
+ *
+ * `updateMany` is the seam's "these rows changed, leave the rest alone"
+ * primitive; a store that implements it gets a single-row UPDATE. A store
+ * without it falls back to the whole-corpus save it always had — no worse than
+ * before, and on YAML that save is itself guarded against an unexpected shrink.
+ */
+async function persistOne(deps: LearnAsyncDeps, corpus: Engram[], changed: Engram): Promise<void> {
+  if (deps.store.updateMany) {
+    await deps.store.updateMany([changed])
+    deps.store.invalidate()
+    return
+  }
+  await deps.store.save(corpus)
+}
+
 async function withStoreLock<T>(deps: LearnAsyncDeps, fn: () => Promise<T>): Promise<T> {
   if (deps.store.withExclusiveAccess) return await deps.store.withExclusiveAccess(fn)
   return await withAsyncLock(deps.engramsPath, fn)
@@ -168,7 +197,7 @@ async function executeDedupDecision(
             // into an engram living at a shared scope. Demote before persisting.
             demoteIfSensitive(deps, updated, updated.statement)
             engrams[idx] = updated
-            await deps.store.save(engrams)
+            await persistOne(deps, engrams, updated)
             await deps.syncIndex()
             appendHistory(deps.rootPath, {
               event: 'engram_updated',
@@ -205,7 +234,7 @@ async function executeDedupDecision(
             // a shared scope. Demote before persisting.
             demoteIfSensitive(deps, merged, merged.statement)
             engrams[idx] = merged
-            await deps.store.save(engrams)
+            await persistOne(deps, engrams, merged)
             await deps.syncIndex()
             appendHistory(deps.rootPath, {
               event: 'engram_merged',

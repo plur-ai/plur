@@ -35,10 +35,27 @@ class LyingPlainStore implements PrimaryStore {
   realCount(): number { return this.engrams.length }
 }
 
-for (const [label, store] of [['capability store (append+updateMany)', new LyingMemoryStore()], ['plain store (save only) = the YAML shape', new LyingPlainStore()]] as const) {
+// The plain store is now REFUSED at construction (audit #794 / #802): a store
+// that can under-report on load() and cannot write single rows defeats every
+// write-path guard at once, so it is rejected at wiring time rather than
+// allowed to lose data later. It is still exercised here — with the explicit
+// `allowUnprotectedStore` opt-out — to show what that opt-out costs.
+for (const [label, store, unsafe] of [
+  ['capability store (append+updateMany)', new LyingMemoryStore(), false],
+  ['plain store (save only), attached WITHOUT the opt-out', new LyingPlainStore(), false],
+  ['plain store (save only), attached WITH allowUnprotectedStore', new LyingPlainStore(), true],
+] as const) {
   const root = fs.mkdtempSync(join(os.tmpdir(), 'plur-p10-'))
   process.env.PLUR_PATH = root
-  const plur = new Plur({ path: root, autoDiscover: false, store: store as unknown as PrimaryStore })
+  let plur: Plur
+  try {
+    plur = new Plur({ path: root, autoDiscover: false, store: store as unknown as PrimaryStore, allowUnprotectedStore: unsafe })
+  } catch (e) {
+    console.log(`${label}: REFUSED AT ATTACHMENT — ${(e as Error).message.split('\n')[0]}`)
+    console.log('   SAFE — the unprotectable store never got to hold data')
+    fs.rmSync(root, { recursive: true, force: true })
+    continue
+  }
   for (let i = 0; i < 5; i++) await plur.learn(`fact number ${i}`, { scope: 'local' })
   const before = (store as any).realCount()
   ;(store as any).lying = true                       // read now returns [] (corrupt/empty)

@@ -27,6 +27,13 @@ import type { Engram } from '../src/schemas/engram.js'
 /** Delegating wrapper that counts calls without adding any capabilities. */
 class CountingYamlStore implements PrimaryStore {
   readonly kind = 'yaml' as const
+  /**
+   * Delegates every read to a real `YamlPrimaryStore`, so an unreadable store
+   * throws here exactly as it does there. That is what makes a capability-less
+   * whole-corpus save safe, and what the attachment check requires it to
+   * declare (audit #794 / #802).
+   */
+  readonly refusesUnreadable = true
   loads = 0
   cachedLoads = 0
   saves = 0

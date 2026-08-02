@@ -41,6 +41,9 @@ export class ReadonlyStoreGuard implements PrimaryStore {
   readonly kind: PrimaryStoreKind
   readonly location: string | null
 
+  /** Mirrors the inner store: wrapping does not change how its reads fail. */
+  readonly refusesUnreadable?: boolean
+
   /** Present only when the inner store implements it — see file header. */
   readonly loadByIds?: (ids: string[]) => Promise<Engram[]>
   /** Present only when the inner store implements it — see file header. */
@@ -53,6 +56,7 @@ export class ReadonlyStoreGuard implements PrimaryStore {
   constructor(private readonly _inner: PrimaryStore) {
     this.kind = _inner.kind
     this.location = _inner.location
+    this.refusesUnreadable = _inner.refusesUnreadable
     if (_inner.loadByIds) this.loadByIds = ids => _inner.loadByIds!(ids)
     if (_inner.estimateCount) this.estimateCount = () => _inner.estimateCount!()
     if (_inner.append) this.append = () => Promise.reject(new ReadonlyStoreError())
