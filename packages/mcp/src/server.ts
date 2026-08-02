@@ -5,6 +5,7 @@ import { join } from 'path'
 import { homedir } from 'os'
 import { Plur, checkForUpdate } from '@plur-ai/core'
 import { getToolDefinitions, mcpCanary, validateToolArgs, CURSOR_CORE_TOOL_NAMES, type ToolProfile, resolveToolProfile, setActiveToolProfile } from './tools.js'
+import { payloadDropLogPath, recordPayloadDrop } from './drop-log.js'
 import { registerFlushOnExit } from './telemetry.js'
 import { VERSION } from './version.js'
 
@@ -236,9 +237,43 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
     // `threshold` turns without an expected signal flags the capability.
     mcpCanary.tick()
     try {
-      let args = request.params.arguments ?? {}
+      // #772: capture whether the frame carried `arguments` at all BEFORE the
+      // `?? {}` default erases the distinction. "Key absent" vs "arrived as {}"
+      // is the one wire-level fact only this boundary can observe, and it is
+      // the first thing the upstream client report needs.
+      const rawArguments = request.params.arguments
+      let args = rawArguments ?? {}
       const validated = validateToolArgs(tool, args)
       if (!validated.ok) {
+        const drop = validated.errorPayload.drop
+        if (drop) {
+          // Forensic record of the dropped frame (#772) — bounded, field NAMES
+          // only, never values. Written only at this top-level wire boundary:
+          // plur_admin's inner `args` travel INSIDE a delivered payload, so an
+          // inner-validation failure there is not a wire drop.
+          recordPayloadDrop(instance.storageRoot, {
+            ts: new Date().toISOString(),
+            tool: request.params.name,
+            arguments_wire: drop === 'whole_payload'
+              ? (rawArguments === undefined ? 'absent' : 'empty_object')
+              : 'partial',
+            params_keys: Object.keys((request.params ?? {}) as Record<string, unknown>),
+            received_fields: validated.errorPayload.received_fields,
+            missing_fields: validated.errorPayload.missing_fields,
+            request_id: (request as { id?: string | number }).id,
+            server_version: VERSION,
+          })
+          // Guarded sync AND async: a logging failure must never replace the
+          // diagnostic error response with a generic one via the outer catch.
+          try {
+            void Promise.resolve(server.sendLoggingMessage({
+              level: 'warning',
+              data: `Payload drop (#772) on ${request.params.name}: arguments ` +
+                `${rawArguments === undefined ? 'key absent from frame' : `arrived with fields [${validated.errorPayload.received_fields.join(', ')}]`}. ` +
+                `Recorded in ${payloadDropLogPath(instance.storageRoot)}.`,
+            })).catch(() => { /* logging must not break the error response */ })
+          } catch { /* ditto for synchronous throws */ }
+        }
         return {
           content: [{ type: 'text', text: JSON.stringify(validated.errorPayload) }],
           isError: true,

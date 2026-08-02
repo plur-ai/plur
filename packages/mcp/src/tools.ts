@@ -281,7 +281,14 @@ export function validateToolArgs(
   rawArgs: Record<string, unknown>,
 ): { ok: true; data: Record<string, unknown> } | {
   ok: false
-  errorPayload: { error: string; success: false; received_fields: string[]; _isError: true }
+  errorPayload: {
+    error: string
+    success: false
+    received_fields: string[]
+    missing_fields: string[]
+    drop?: 'whole_payload' | 'partial'
+    _isError: true
+  }
 } {
   const schema = tool.inputSchema as any
   if (!schema?.properties) return { ok: true, data: rawArgs }
@@ -298,44 +305,74 @@ export function validateToolArgs(
     const hasArrayParam = Object.values((schema.properties ?? {}) as Record<string, any>)
       .some((p: any) => p?.type === 'array')
 
-    // #297 has TWO shapes, not one. The original (total drop) loses the whole
-    // arguments object. The partial drop keeps the early scalar fields and
-    // silently discards trailing ones — observed on a large payload where a
-    // ~700-char `summary` plus a 5-element `engram_suggestions` array arrived
-    // as `{summary}` alone. Gating the hint on `receivedFields.length === 0`
-    // meant the partial case — the one that actually looks like a schema bug
-    // to the caller — got a bare "Required" with no workaround. Fire the hint
-    // whenever a *missing* field is itself array-typed.
-    const missingArrayParams = parsed.error.issues
+    // Field NAMES the schema expected but that did not arrive at all.
+    const missingFields = parsed.error.issues
       .filter((i: any) => i.code === 'invalid_type' && i.received === 'undefined')
       .map((i: any) => String(i.path[0] ?? ''))
+      .filter((k: string) => k.length > 0)
+
+    // The drop has TWO shapes. The partial drop keeps the early scalar fields
+    // and silently discards trailing ones — observed on a large payload where a
+    // ~700-char `summary` plus a 5-element `engram_suggestions` array arrived
+    // as `{summary}` alone (#297); that shape genuinely correlates with
+    // array-typed fields, so the array-workaround hint stays on it.
+    //
+    // The WHOLE-payload drop was reclassified by #772 (refining #297): on
+    // v0.16.1 field evidence it is NOT array-specific — scalar-only calls drop
+    // too, an array-carrying call succeeds moments later, and the strongest
+    // correlation is multiple tool_use blocks batched into one client message.
+    // It is transient: retrying the IDENTICAL call succeeds. So the empty
+    // branch no longer keys on the tool having an array param, and its
+    // guidance is "retry the same payload, alone in the message" — not
+    // "reshape your arrays": the payload was never evaluated, so there is
+    // nothing in it to fix.
+    const missingArrayParams = missingFields
       .filter((k: string) => (schema.properties as any)?.[k]?.type === 'array')
 
-    const totalDrop = receivedFields.length === 0 && hasArrayParam
-    const partialDrop = missingArrayParams.length > 0
+    const wholePayloadDrop = receivedFields.length === 0
+    const partialDrop = !wholePayloadDrop && missingArrayParams.length > 0
 
-    const arrayBugHint = totalDrop || partialDrop
-      ? ' Known client-side bug (plur-ai/plur#297): some MCP clients drop ' +
-        (partialDrop
-          ? `array-typed parameters from a large arguments payload while keeping the earlier fields ` +
-            `(here: ${missingArrayParams.join(', ')}). This is size-sensitive — the same call often ` +
-            `succeeds with a shorter payload, so shrink the other fields (e.g. a briefer summary) as well. `
-          : 'the entire arguments payload when an array-typed parameter is included. ') +
+    let dropHint = ''
+    if (wholePayloadDrop) {
+      dropHint = ' Known intermittent client-side issue (plur-ai/plur#772, refines #297): some MCP ' +
+        'clients transiently drop the ENTIRE arguments payload — most often when several tool calls ' +
+        'are batched into a single message. Nothing was stored or evaluated. Retry the IDENTICAL ' +
+        'call with the full payload, as the ONLY tool call in that message — identical retries ' +
+        'typically succeed. If two identical retries fail the same way, the arguments really are ' +
+        'absent from your call — re-issue it with the intended fields.' +
+        (hasArrayParam
+          ? ' If retries keep failing specifically on array parameters, pass them as a JSON string ' +
+            '(e.g. tags: "[\\"a\\",\\"b\\"]") or a comma-separated string (tags: "a, b") — the server ' +
+            'coerces both back into arrays.'
+          : '')
+    } else if (partialDrop) {
+      dropHint = ' Known client-side bug (plur-ai/plur#297): some MCP clients drop ' +
+        `array-typed parameters from a large arguments payload while keeping the earlier fields ` +
+        `(here: ${missingArrayParams.join(', ')}). This is size-sensitive — the same call often ` +
+        `succeeds with a shorter payload, so shrink the other fields (e.g. a briefer summary) as well. ` +
         'Retry passing array parameters as a JSON string ' +
         '(e.g. tags: "[\\"a\\",\\"b\\"]") or a comma-separated string (tags: "a, b") — the server coerces ' +
         'both back into arrays.'
-      : ''
+    }
+
     const receivedNote = receivedFields.length > 0
       ? `Received fields: [${receivedFields.join(', ')}].`
       : 'Received no fields (the arguments object was empty).'
+    const disposition = wholePayloadDrop
+      ? 'The request reached the server but its arguments did not — do not abandon the call, and do ' +
+        'not rewrite the payload: it was never evaluated.'
+      : 'The call reached the server — this is a malformed-arguments error, not a transport failure. ' +
+        'Fix the field(s) named above and retry; do not abandon the call.'
     return {
       ok: false,
       errorPayload: {
-        error: `Invalid arguments: ${details}. ${receivedNote} ` +
-          'The call reached the server — this is a malformed-arguments error, not a transport failure. ' +
-          'Fix the field(s) named above and retry; do not abandon the call.' + arrayBugHint,
+        error: `Invalid arguments: ${details}. ${receivedNote} ${disposition}${dropHint}`,
         success: false,
         received_fields: receivedFields,
+        missing_fields: missingFields,
+        ...(wholePayloadDrop
+          ? { drop: 'whole_payload' as const }
+          : partialDrop ? { drop: 'partial' as const } : {}),
         _isError: true,
       },
     }

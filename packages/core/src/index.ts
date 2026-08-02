@@ -747,6 +747,17 @@ export class Plur {
   }
 
   /**
+   * Root directory of this instance's store (`~/.plur`, `PLUR_PATH`, or the
+   * explicit constructor `path`). Synchronous mirror of `status().storage_root`
+   * for callers that need the location without an async round-trip — e.g. the
+   * MCP server's payload-drop forensic log (plur-ai/plur#772), which must write
+   * next to the store the dropped call was aimed at.
+   */
+  get storageRoot(): string {
+    return this.paths.root
+  }
+
+  /**
    * Resolve the active storage tier. Order:
    *   1. `PLUR_BACKEND` env var (yaml|sqlite|pglite|postgres)
    *   2. config.yaml `backend` field
