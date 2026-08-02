@@ -3,6 +3,7 @@ import * as path from 'path'
 import * as yaml from 'js-yaml'
 import { join } from 'path'
 import { loadEngrams, saveEngrams } from '../engrams.js'
+import { atomicWrite, withLock } from '../sync.js'
 import { logger } from '../logger.js'
 import type { Migration } from './types.js'
 
@@ -37,15 +38,38 @@ export function getSchemaVersion(configPath: string): number {
   }
 }
 
-/** Write schema_version to config.yaml, preserving other fields. */
+/**
+ * Write schema_version to config.yaml, preserving other fields.
+ *
+ * Under the SAME `withLock(configPath)` every other config writer takes (#805,
+ * audit F12). This was the one config write that skipped it, and skipping it is
+ * not a style point: probe p09b measured `setSchemaVersion wrote while the
+ * config lock was held: true`, after which the lock holder's own read-modify-
+ * write — begun before this one landed — wrote back its stale copy and erased
+ * `schema_version`. A store that HAS been migrated then reads as version 0, so
+ * the next run re-applies every migration to already-migrated data.
+ *
+ * The read is no longer `catch {}`. Swallowing every error meant an EACCES or a
+ * momentary failure on an EXISTING config started the merge from `{}`, writing
+ * a schema-version-only file and dropping stores, auto_learn, embeddings and
+ * every other top-level key. Only ENOENT is safe to treat as "start empty" —
+ * matching `persistStores`, which rethrows for exactly this reason.
+ */
 export function setSchemaVersion(configPath: string, version: number): void {
-  let configData: Record<string, unknown> = {}
-  try {
-    const raw = fs.readFileSync(configPath, 'utf8')
-    if (raw) configData = (yaml.load(raw) as Record<string, unknown>) ?? {}
-  } catch { /* file may not exist */ }
-  configData.schema_version = version
-  fs.writeFileSync(configPath, yaml.dump(configData, { lineWidth: 120, noRefs: true }))
+  withLock(configPath, () => {
+    let configData: Record<string, unknown> = {}
+    try {
+      const raw = fs.readFileSync(configPath, 'utf8')
+      if (raw) configData = (yaml.load(raw) as Record<string, unknown>) ?? {}
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') throw err
+    }
+    configData.schema_version = version
+    // Atomic + fsynced for the same reason persistStores is: loadConfig turns a
+    // parse failure into DEFAULT config, so a crash mid-write does not fail
+    // loudly — it silently reverts settings.
+    atomicWrite(configPath, yaml.dump(configData, { lineWidth: 120, noRefs: true }))
+  })
 }
 
 /** Create a backup of engrams.yaml before migration. Returns backup path. */
@@ -125,36 +149,55 @@ export function runMigrations(
     return { applied: [], schema_version: currentVersion, backup_path: null }
   }
 
-  // Create backup before any changes
-  const backupPath = options?.dryRun ? null : createBackup(engramsPath, currentVersion)
-
-  // Load engrams as raw objects (passthrough mode — we use the passthrough schema)
-  let engrams = loadEngrams(engramsPath)
-
   const applied: string[] = []
 
-  for (const migration of pending) {
-    logger.info(`Running migration: ${migration.id} — ${migration.description}`)
-    try {
-      engrams = migration.up(engrams)
-      applied.push(migration.id)
-    } catch (err) {
-      logger.error(`Migration ${migration.id} failed: ${err}`)
-      // Restore from backup
-      if (backupPath) {
-        restoreBackup(engramsPath, backupPath)
-        logger.info(`Restored engrams.yaml from backup: ${backupPath}`)
+  /**
+   * Backup, load, migrate and save under the store lock (#805, audit F12).
+   *
+   * This is a read-modify-write over the WHOLE corpus that ran with no lock at
+   * all, so a `learn()` landing between the load and the save was overwritten
+   * by the migrated copy of the pre-learn corpus — the plainest form of lost
+   * update, on the one code path whose entire job is rewriting every engram.
+   *
+   * The backup is taken inside the lock too. Outside it, a write could land
+   * between `createBackup` and `loadEngrams`, so the file we restore on failure
+   * would not be the file we migrated — a rollback to a state that never
+   * existed. `withLock` is NOT reentrant, and `saveEngrams`/`loadEngrams` do
+   * not lock internally (their callers do), so this is the only holder.
+   */
+  let backupPath: string | null = null
+  withLock(engramsPath, () => {
+    backupPath = options?.dryRun ? null : createBackup(engramsPath, currentVersion)
+
+    // Load engrams as raw objects (passthrough mode — we use the passthrough schema)
+    let engrams = loadEngrams(engramsPath)
+
+    for (const migration of pending) {
+      logger.info(`Running migration: ${migration.id} — ${migration.description}`)
+      try {
+        engrams = migration.up(engrams)
+        applied.push(migration.id)
+      } catch (err) {
+        logger.error(`Migration ${migration.id} failed: ${err}`)
+        // Restore from backup
+        if (backupPath) {
+          restoreBackup(engramsPath, backupPath)
+          logger.info(`Restored engrams.yaml from backup: ${backupPath}`)
+        }
+        throw new Error(`Migration ${migration.id} failed: ${err}. Engrams restored from backup.`)
       }
-      throw new Error(`Migration ${migration.id} failed: ${err}. Engrams restored from backup.`)
     }
-  }
+
+    // Migrations rewrite the entire corpus by design, and a migration that
+    // legitimately drops records would otherwise trip the save-side shrink
+    // guard (#801). Declaring it here keeps the guard armed everywhere else.
+    if (!options?.dryRun) saveEngrams(engramsPath, engrams, { allowShrink: true })
+  })
 
   if (!options?.dryRun) {
-    // Save migrated engrams
-    saveEngrams(engramsPath, engrams)
-    // Update schema version
-    const newVersion = currentVersion + applied.length
-    setSchemaVersion(configPath, newVersion)
+    // Outside the engrams lock: this takes the CONFIG lock, a different file.
+    // Kept sequential rather than nested so the two lock scopes stay disjoint.
+    setSchemaVersion(configPath, currentVersion + applied.length)
   }
 
   return {
@@ -183,29 +226,40 @@ export function rollbackMigrations(
     throw new Error('Target version cannot be negative')
   }
 
-  const backupPath = createBackup(engramsPath, currentVersion)
-  let engrams = loadEngrams(engramsPath)
-
   const rolledBack: string[] = []
   // Apply down() in reverse order
   const toRollback = ALL_MIGRATIONS.slice(targetVersion, currentVersion).reverse()
 
-  for (const migration of toRollback) {
-    logger.info(`Rolling back migration: ${migration.id}`)
-    try {
-      engrams = migration.down(engrams)
-      rolledBack.push(migration.id)
-    } catch (err) {
-      logger.error(`Rollback of ${migration.id} failed: ${err}`)
-      if (backupPath) {
-        restoreBackup(engramsPath, backupPath)
-        logger.info(`Restored engrams.yaml from backup: ${backupPath}`)
-      }
-      throw new Error(`Rollback of ${migration.id} failed: ${err}. Engrams restored from backup.`)
-    }
-  }
+  // Same store lock as runMigrations, for the same reason (#805, F12): this is
+  // a whole-corpus read-modify-write, and rolling back is if anything the worse
+  // moment to lose a concurrent write — the operator is already recovering from
+  // something. Backup taken inside the lock so the rollback target matches the
+  // state actually rolled back.
+  let backupPath: string | null = null
+  withLock(engramsPath, () => {
+    backupPath = createBackup(engramsPath, currentVersion)
+    let engrams = loadEngrams(engramsPath)
 
-  saveEngrams(engramsPath, engrams)
+    for (const migration of toRollback) {
+      logger.info(`Rolling back migration: ${migration.id}`)
+      try {
+        engrams = migration.down(engrams)
+        rolledBack.push(migration.id)
+      } catch (err) {
+        logger.error(`Rollback of ${migration.id} failed: ${err}`)
+        if (backupPath) {
+          restoreBackup(engramsPath, backupPath)
+          logger.info(`Restored engrams.yaml from backup: ${backupPath}`)
+        }
+        throw new Error(`Rollback of ${migration.id} failed: ${err}. Engrams restored from backup.`)
+      }
+    }
+
+    // A down() migration legitimately removes fields and can remove records;
+    // the shrink guard must not veto a deliberate rollback.
+    saveEngrams(engramsPath, engrams, { allowShrink: true })
+  })
+
   setSchemaVersion(configPath, targetVersion)
 
   return {

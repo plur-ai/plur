@@ -46,8 +46,21 @@ const raw = fs.readFileSync(regPath, 'utf8')
 fs.writeFileSync(regPath, raw.slice(0, Math.floor(raw.length * 0.6)) + '  bad: "')
 console.log('registry parses after truncation:', (() => { try { yaml.load(fs.readFileSync(regPath, 'utf8')); return true } catch { return false } })())
 
-await installPack(packsDir, makePack('packD'))
-console.log('registry after one more install:', listPacks(packsDir).map(p => p.name).join(','))
-console.log('pack DIRECTORIES still on disk:', fs.readdirSync(packsDir).filter(f => f.startsWith('src-') || f.startsWith('pack')).join(','))
-console.log('integrity/provenance lost for:', ['packA', 'packB', 'packC'].filter(n => !listPacks(packsDir).some(p => p.name === n)).join(','))
+// FIXED (#805, F11): refuse rather than start from an empty registry. The old
+// behaviour let this install rewrite the file with packD alone, taking the
+// install record and integrity baseline of A, B and C with it.
+let refused = false
+try {
+  await installPack(packsDir, makePack('packD'))
+} catch (err) {
+  refused = (err as Error).name === 'PackRegistryUnreadableError'
+}
+console.log('install against corrupt registry refused:', refused)
+
+// Restore the file (the documented operator fix) and confirm nothing was lost.
+fs.writeFileSync(regPath, raw)
+const survivors = listPacks(packsDir).map(p => p.name)
+console.log('registry after:', survivors.join(','))
+const lost = ['packA', 'packB', 'packC'].filter(n => !survivors.includes(n))
+console.log(lost.length ? `FAIL: integrity/provenance lost for ${lost.join(',')}` : 'PASS: no pack lost its integrity baseline')
 fs.rmSync(root, { recursive: true, force: true })

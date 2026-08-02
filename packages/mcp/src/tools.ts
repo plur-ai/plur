@@ -1637,6 +1637,11 @@ function getAllToolDefinitions(): ToolDefinition[] {
             engram_count: p.engram_count,
             integrity: p.integrity,
             integrity_ok: p.integrity_ok,
+            // 'ok' | 'modified' | 'unverified' (#805, F11). `integrity_ok`
+            // collapses "cannot be checked" into the same `undefined` an absent
+            // field has, so a caller reading only that cannot distinguish a
+            // clean pack from one whose baseline was destroyed.
+            integrity_status: p.integrity_status,
             installed_at: p.installed_at,
             source: p.source,
           })),

@@ -21,7 +21,15 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
         const version = p.manifest?.version ?? 'unknown'
         const creator = p.manifest?.creator ? ` by ${p.manifest.creator}` : ''
         const hash = p.integrity ? ` [${p.integrity.slice(0, 16)}]` : ''
-        const integrityFlag = p.integrity_ok === false ? ' ⚠️ MODIFIED' : ''
+        // 'unverified' used to print NOTHING, so a pack whose integrity baseline
+        // had been destroyed looked identical to one that verified clean (#805,
+        // F11). An unanswerable integrity question is reported as loudly as a
+        // failed one — the two usually have the same cause.
+        const integrityFlag = p.integrity_status === 'modified'
+          ? ' ⚠️  MODIFIED — contents changed since install'
+          : p.integrity_status === 'unverified'
+            ? ' ⚠️  UNVERIFIED — no registry entry, integrity cannot be checked'
+            : ''
         outputText(`${p.name} v${version}${creator} (${p.engram_count} engrams)${hash}${integrityFlag}`)
         if (p.installed_at) {
           const date = p.installed_at.slice(0, 10)

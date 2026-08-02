@@ -1,5 +1,6 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
+import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'fs'
 import { dirname, join } from 'path'
+import { atomicWrite, withLock } from '@plur-ai/core'
 
 /**
  * Forensic log for MCP argument-payload drops (plur-ai/plur#772).
@@ -63,15 +64,30 @@ export function recordPayloadDrop(storageRoot: string, record: PayloadDropRecord
   try {
     const path = payloadDropLogPath(storageRoot)
     mkdirSync(dirname(path), { recursive: true })
-    let lines: string[] = []
-    if (existsSync(path)) {
-      lines = readFileSync(path, 'utf8').split('\n').filter(l => l.length > 0)
-    }
-    lines.push(JSON.stringify(record))
+
+    // Append, rather than read-all-and-rewrite (#805, audit F15). The old body
+    // read the file, pushed one record, and wrote the whole thing back with a
+    // plain writeFileSync and no lock — so two MCP servers (a CLI session and
+    // an editor session are the normal case, not the exotic one) each wrote
+    // back a copy that predated the other's record, losing it, and a crash
+    // mid-rewrite left a truncated file that took the earlier records with it.
+    // A single short line through O_APPEND is atomic, so a concurrent server
+    // never loses a record even without holding the lock.
+    appendFileSync(path, JSON.stringify(record) + '\n')
+
+    // Trimming IS a read-modify-write and does need the lock — it is the only
+    // step that can destroy records. Bounded work: the file is at most
+    // PAYLOAD_DROP_LOG_MAX_ENTRIES lines plus whatever raced in.
+    const lines = readFileSync(path, 'utf8').split('\n').filter(l => l.length > 0)
     if (lines.length > PAYLOAD_DROP_LOG_MAX_ENTRIES) {
-      lines = lines.slice(-PAYLOAD_DROP_LOG_MAX_ENTRIES)
+      withLock(path, () => {
+        const current = readFileSync(path, 'utf8').split('\n').filter(l => l.length > 0)
+        if (current.length <= PAYLOAD_DROP_LOG_MAX_ENTRIES) return // another server trimmed first
+        // durable: false — this is diagnostics, and an fsync per dropped
+        // payload buys nothing a forensic log needs.
+        atomicWrite(path, current.slice(-PAYLOAD_DROP_LOG_MAX_ENTRIES).join('\n') + '\n', { durable: false })
+      })
     }
-    writeFileSync(path, lines.join('\n') + '\n')
   } catch {
     /* diagnostics must never break the tool call being diagnosed */
   }
