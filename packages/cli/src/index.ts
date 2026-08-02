@@ -48,6 +48,7 @@ Commands:
   scopes register <scope> Register one; scopes dismiss <scope>; scopes --reoffer
   init                    Install Claude Code hooks + register plur MCP server
   init-remote             Opt this project into recall from a PLUR Enterprise server
+  login --status          Enterprise token validity per host (probe + expiry) (#587)
   doctor                  Diagnose Claude Code / Claude Desktop integration
   rerank-eval             Per-store reranker self-eval gate (advisory, #451)
                           [--reranker <name>] [--sample N] [--seed N] [--force]
@@ -109,11 +110,12 @@ const COMMANDS: Record<string, string> = {
   migrate: './commands/migrate.js',
   init: './commands/init.js',
   'init-remote': './commands/init-remote.js',
-  // `login` (enterprise OAuth device flow, #532) is intentionally NOT registered
-  // yet — the implementation in ./commands/login.js is complete but happy-path
-  // only (no paste-token fallback, hard dependency on server device-flow
-  // endpoints, no refresh tokens). Deactivated pending that hardening; re-add
-  // this line to activate. See #300.
+  // `login` is registered for `--status` (#587: token validity per host). The
+  // OAuth device flow itself (#532) stays GATED INSIDE the command — it is
+  // happy-path only (no paste-token fallback, no refresh tokens) and targets
+  // device-flow endpoints enterprise servers don't expose yet; attempting it
+  // prints the sign-in-URL + plur_stores_add path instead. See #300.
+  login: './commands/login.js',
   doctor: './commands/doctor.js',
   'rerank-eval': './commands/rerank-eval.js',
   tensions: './commands/tensions.js',

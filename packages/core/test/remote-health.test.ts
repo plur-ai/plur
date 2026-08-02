@@ -84,6 +84,75 @@ describe('Plur.checkRemoteHealth()', () => {
     const plur = writeConfig([])
     expect(await plur.checkRemoteHealth()).toEqual([])
   })
+
+  it('probes each distinct (url, token) group separately (#587)', async () => {
+    // Two credentials on ONE host: the old per-URL first-token-wins collapse
+    // reported this config healthy while the second token was dead.
+    const plur = writeConfig([
+      { url: baseUrl, token: TOKEN, scope: 'group:test', shared: true, readonly: false },
+      { url: baseUrl, token: 'dead-second-token', scope: 'group:other', shared: true, readonly: false },
+    ])
+    const rows = await plur.checkRemoteHealth()
+    expect(rows).toHaveLength(2)
+    const ok = rows.find(r => r.status === 'ok')
+    const dead = rows.find(r => r.status === 'auth_expired')
+    expect(ok?.scopes).toEqual(['group:test'])
+    expect(dead?.scopes).toEqual(['group:other'])
+    expect(dead?.reason).toMatch(/401/)
+  })
+
+  it('collapses same (url, token) across scopes and URL spellings into one probe (#587)', async () => {
+    const plur = writeConfig([
+      { url: baseUrl, token: TOKEN, scope: 'group:test', shared: true, readonly: false },
+      { url: `${baseUrl}/`, token: TOKEN, scope: 'group:second', shared: true, readonly: false },
+    ])
+    const rows = await plur.checkRemoteHealth()
+    expect(rows).toHaveLength(1)
+    expect(rows[0].scopes).toEqual(['group:test', 'group:second'])
+  })
+
+  it('reports server-confirmed identity + granted scope count on ok (#587)', async () => {
+    server.setMe({ username: 'crtahlin', org_id: 'plur', role: 'developer', scopes: ['group:a', 'group:b', 'group:c'] })
+    const plur = writeConfig([{ url: baseUrl, token: TOKEN, scope: 'group:a', shared: true, readonly: false }])
+    const [h] = await plur.checkRemoteHealth()
+    expect(h.status).toBe('ok')
+    expect(h.username).toBe('crtahlin')
+    expect(h.orgId).toBe('plur')
+    expect(h.grantedScopes).toBe(3)
+  })
+
+  it('surfaces display-only JWT subject/org claims even when the server rejects the token (#587)', async () => {
+    const exp = Math.floor(Date.now() / 1000) + 20 * 86_400
+    const b64 = (o: object) => Buffer.from(JSON.stringify(o)).toString('base64url')
+    const revokedJwt = `${b64({ alg: 'HS256', typ: 'JWT' })}.${b64({ sub: 'gregor', orgId: 'igea', exp })}.sig`
+    const plur = writeConfig([{ url: baseUrl, token: revokedJwt, scope: 'group:igea/gis', shared: true, readonly: false }])
+    const [h] = await plur.checkRemoteHealth()
+    expect(h.status).toBe('auth_expired') // stub 401s any token it did not mint
+    expect(h.tokenSubject).toBe('gregor')
+    expect(h.tokenOrg).toBe('igea')
+    expect(h.tokenExpiresInDays).toBeGreaterThan(18)
+  })
+})
+
+describe('Plur.remoteEndpointTokenGroups() (#587)', () => {
+  it('groups by (normalized url, token) preserving config order of scopes', () => {
+    const plur = writeConfig([
+      { url: 'https://x.example.com', token: 't1', scope: 'group:a', shared: true, readonly: false },
+      { url: 'https://x.example.com/', token: 't1', scope: 'group:b', shared: true, readonly: false },
+      { url: 'https://x.example.com', token: 't2', scope: 'group:c', shared: true, readonly: false },
+      { url: 'https://y.example.com', token: 't1', scope: 'group:d', shared: true, readonly: false },
+    ])
+    const groups = plur.remoteEndpointTokenGroups()
+    expect(groups).toHaveLength(3)
+    expect(groups[0]).toEqual({ url: 'https://x.example.com', token: 't1', scopes: ['group:a', 'group:b'] })
+    expect(groups[1]).toEqual({ url: 'https://x.example.com', token: 't2', scopes: ['group:c'] })
+    expect(groups[2]).toEqual({ url: 'https://y.example.com', token: 't1', scopes: ['group:d'] })
+  })
+
+  it('ignores filesystem stores', () => {
+    const plur = writeConfig([{ path: '/tmp/some-store', scope: 'user:me', shared: false, readonly: false }])
+    expect(plur.remoteEndpointTokenGroups()).toEqual([])
+  })
 })
 
 describe('Plur.remoteTokenExpiries()', () => {

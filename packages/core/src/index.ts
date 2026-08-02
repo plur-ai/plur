@@ -43,7 +43,7 @@ import type { TensionRecord, TensionStatus } from './schemas/tension.js'
 import type { TensionPair } from './tensions.js'
 import { engramDate } from './tensions.js'
 import { resolveValidity, buildTemporal } from './expiry.js'
-import { decodeJwtExpiry } from './jwt.js'
+import { decodeJwtExpiry, decodeJwtPayload } from './jwt.js'
 import { RemoteStore, normalizeEndpointUrl } from './store/remote-store.js'
 import {
   remoteRecall, isRemoteRecallDisabled, resolveRemoteRecallTimeoutMs, scopeOrg,
@@ -279,6 +279,11 @@ export {
   POSITIVE_STRENGTH_DELTA, NEGATIVE_STRENGTH_DELTA,
   type FeedbackSignal,
 } from './feedback.js'
+// Client-side token inspection (#295/#587) — expiry + display-only payload
+// claims, no signature verification — and the endpoint-identity normalizer,
+// so CLI surfaces (login --status) compare hosts the same way the core does.
+export { decodeJwtExpiry, decodeJwtPayload, type JwtExpiry } from './jwt.js'
+export { normalizeEndpointUrl } from './store/remote-store.js'
 
 export * from './types.js'
 
@@ -384,7 +389,7 @@ export interface RemoteScopeDiscovery {
  */
 export interface RemoteHealth {
   url: string
-  /** Scopes registered locally for this URL (for the report). */
+  /** Scopes registered locally for this (url, token) group (for the report). */
   scopes: string[]
   /** 'ok' = /me succeeded; 'auth_expired' = 401/403 or JWT exp passed; 'unreachable' = network/timeout/5xx. */
   status: 'ok' | 'auth_expired' | 'unreachable'
@@ -396,6 +401,16 @@ export interface RemoteHealth {
   tokenExpiresAt?: string
   /** Whole days until token expiry (negative if past), or null if unknown. */
   tokenExpiresInDays?: number | null
+  /** JWT `sub` claim — UNVERIFIED, display only (#587). Absent for opaque keys. */
+  tokenSubject?: string
+  /** JWT org claim (`orgId`/`org_id`/`org`) — UNVERIFIED, display only (#587). */
+  tokenOrg?: string
+  /** Server-confirmed identity from the live `/me` probe (status 'ok' only). */
+  username?: string
+  /** Server-confirmed org from the live `/me` probe (status 'ok' only). */
+  orgId?: string
+  /** Number of scopes the server reports granted to this token (status 'ok' only). */
+  grantedScopes?: number
 }
 
 /** Outcome of registering discovered scopes for one URL (#292). */
@@ -6133,6 +6148,28 @@ Generate an improved version of the procedure that prevents this failure. Return
   }
 
   /**
+   * Distinct (url, token) groups among the configured remote stores (#587) —
+   * the AUTH-identity counterpart of {@link _distinctRemoteEndpoints}. Same
+   * `::` composite key as `_remoteRecallHosts` (#776): two entries on one URL
+   * with DIFFERENT tokens are two distinct credentials with independent
+   * validity, so token-status surfaces must report them separately rather
+   * than letting first-token-wins mask a dead second token. URL identity is
+   * normalized ({@link normalizeEndpointUrl}); the first-configured spelling
+   * is reported. `scopes` lists the group's registered scopes in config order.
+   */
+  remoteEndpointTokenGroups(): Array<{ url: string; token?: string; scopes: string[] }> {
+    const groups = new Map<string, { url: string; token?: string; scopes: string[] }>()
+    for (const s of this.config.stores ?? []) {
+      if (!s.url) continue
+      const key = `${normalizeEndpointUrl(s.url)}::${s.token ?? ''}`
+      let g = groups.get(key)
+      if (!g) { g = { url: s.url, token: s.token, scopes: [] }; groups.set(key, g) }
+      if (!g.scopes.includes(s.scope)) g.scopes.push(s.scope)
+    }
+    return [...groups.values()]
+  }
+
+  /**
    * Discover which scopes each configured remote token is authorized for, via
    * `GET /api/v1/me` (#292). For each distinct remote URL, reports the
    * server-authorized scope set and which of those are not yet registered
@@ -6215,22 +6252,35 @@ Generate an improved version of the procedure that prevents this failure. Return
   }
 
   /**
-   * Probe each configured remote endpoint's auth/reachability (#295) by calling
-   * `GET /api/v1/me` (raced against a timeout), combined with a local JWT-expiry
-   * read. Distinguishes 'auth_expired' (token rejected or JWT exp passed →
-   * reauth) from 'unreachable' (network/timeout/5xx). Read-only; one bad
-   * endpoint never affects the others. Powers `plur_doctor`'s remote check so
-   * the doctor stops reporting "healthy" when the remote auth is dead.
+   * Probe each configured remote credential's auth/reachability (#295) by
+   * calling `GET /api/v1/me` (raced against a timeout), combined with a local
+   * JWT-expiry read. Distinguishes 'auth_expired' (token rejected or JWT exp
+   * passed → reauth) from 'unreachable' (network/timeout/5xx). Read-only; one
+   * bad endpoint never affects the others. Powers `plur_doctor`'s remote check
+   * and `plur login --status` (#587), so neither reports "healthy" when the
+   * remote auth is dead.
+   *
+   * Probes per distinct (url, token) group ({@link remoteEndpointTokenGroups}),
+   * not per URL (#587): each token's validity is independent, and the old
+   * first-token-wins collapse reported a URL as ok while its second configured
+   * token was expired. Also surfaces display-only JWT claims (`tokenSubject`,
+   * `tokenOrg` — unverified) and, on a successful probe, the server-confirmed
+   * `username`/`orgId`/`grantedScopes` from `/me`.
    */
   async checkRemoteHealth(opts?: { timeoutMs?: number }): Promise<RemoteHealth[]> {
     const timeoutMs = opts?.timeoutMs ?? 5000
-    const endpoints = this._distinctRemoteEndpoints()
-    return Promise.all(endpoints.map(async ({ url, token }) => {
-      const scopes = this._storesForEndpoint(url).map(s => s.scope)
+    const groups = this.remoteEndpointTokenGroups()
+    return Promise.all(groups.map(async ({ url, token, scopes }) => {
       const exp = decodeJwtExpiry(token)
+      const payload = decodeJwtPayload(token)
+      const subject = typeof payload?.sub === 'string' ? payload.sub : undefined
+      const orgClaim = [payload?.orgId, payload?.org_id, payload?.org]
+        .find((v): v is string => typeof v === 'string')
       const expiryFields = {
         tokenExpiresAt: exp.expiresAt ? exp.expiresAt.toISOString() : undefined,
         tokenExpiresInDays: exp.expiresInDays,
+        ...(subject !== undefined ? { tokenSubject: subject } : {}),
+        ...(orgClaim !== undefined ? { tokenOrg: orgClaim } : {}),
       }
       // A JWT we can already see is expired → don't bother probing; it's auth_expired.
       if (exp.expired) {
@@ -6240,13 +6290,17 @@ Generate an improved version of the procedure that prevents this failure. Return
       try {
         const driver = this._getRemoteDriver({ url, token, scope: scopes[0] ?? '' })
         let timeoutHandle: ReturnType<typeof setTimeout> | undefined
-        await Promise.race([
+        const me = await Promise.race([
           driver.me().finally(() => { if (timeoutHandle) clearTimeout(timeoutHandle) }),
           new Promise<never>((_, reject) => {
             timeoutHandle = setTimeout(() => reject(new Error(`/me timeout (${timeoutMs}ms)`)), timeoutMs)
           }),
         ])
-        return { url, scopes, status: 'ok' as const, ok: true, ...expiryFields }
+        return { url, scopes, status: 'ok' as const, ok: true,
+          ...(me.username ? { username: me.username } : {}),
+          ...(me.org_id ? { orgId: me.org_id } : {}),
+          grantedScopes: me.scopes.length,
+          ...expiryFields }
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)
         const isAuth = /\b40[13]\b/.test(msg)
