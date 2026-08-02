@@ -1,7 +1,8 @@
 # ADR-0005: The Postgres tier, and what happens to exact search
 
 Status: **Accepted** — implemented in 0.16; amended 2026-07-28, see
-[Update — Phases 2 and 4 have landed](#what-this-phase-does-not-do-and-why)
+[Update — Phases 2 and 4 have landed](#what-this-phase-does-not-do-and-why);
+the amendment's embeddings gap is closed by #762 (see its Closure note)
 Date: 2026-07-26
 Authors: convergence programme, Phase 5
 Related: ADR-0001 ([#226](https://github.com/plur-ai/plur/issues/226)), ADR-0003,
@@ -340,3 +341,31 @@ a serious regression at the 50,000-engram threshold that selects Postgres. It
 needs a set-based "which active ids have no embedding" query, and a decision
 about whether a server tier should pay embedding cost on the write path at all —
 which is a deployment question, not just an implementation one.
+
+### Closure — #762
+
+The gap above is closed, on exactly the terms this amendment demanded:
+
+- **The set-based query exists.** `PostgresAdapter.listEngramsMissingEmbeddings`
+  is one bounded anti-join between the two tables' primary keys (active rows
+  with no embedding row, `ORDER BY id LIMIT n`). Cost scales with the gap, not
+  the corpus; the `LIMIT 1` shape doubles as a completeness probe.
+- **The write path does NOT pay embedding cost.** Every primary-store write
+  kicks a fire-and-track background pass (`_syncIndex` → the coalescing
+  `_kickPrimaryAutoEmbed`) that drains the anti-join in bounded batches.
+  Back-to-back writes coalesce into one follow-up sweep instead of stacking
+  passes. Failures land in `lastIndexError()` / `status().index_error`, never
+  in the write.
+- **Backfill needs no operator step.** The first semantic recall probes
+  completeness; a store migrated in with rows but no embeddings starts the
+  backfill from the read side and converges without a single write.
+- **`recallSemantic` reads the table** — `_primarySemanticRecall` pushes the
+  k-NN into `searchVector` (scope allow-list, visibility scope, and mounted
+  grants all inside the query) once the table is complete, and degrades to the
+  in-memory path while it fills — partial vector answers are never served.
+- **Opt-outs hold.** `PLUR_DISABLE_EMBEDDINGS` / `embeddings.enabled: false`
+  skips the pass before any query (one loud notice per instance), and an
+  embedder/column dimension mismatch skips rather than persist wrong-shape
+  vectors (#335). The schema-init warning this amendment introduced is gone —
+  the condition it warned about no longer exists when the engine drives the
+  adapter.

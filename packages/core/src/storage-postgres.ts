@@ -37,10 +37,12 @@
  * by driving the adapter directly. `test/postgres-recall-quality.test.ts`
  * exercises them through `Plur.recall()`.
  *
- * What IS still open: nothing in core writes embeddings to a Postgres primary
- * store, so the vector half of this adapter is inert unless a deployment fills
- * `engram_embeddings` itself. See `ensureVectorIndex` and ADR-0005's 2026-07-28
- * amendment.
+ * The last half of that story closed in #762: core now populates
+ * `engram_embeddings` on this tier. Every primary-store write kicks a
+ * background auto-embed pass that finds un-embedded rows with the set-based
+ * {@link listEngramsMissingEmbeddings} anti-join (never a per-id probe), and
+ * the first semantic recall backfills a store migrated in with existing rows.
+ * See ADR-0005's 2026-07-28 amendment and its #762 closure note.
  *
  * ## Vector search is the one place behaviour can differ
  *
@@ -251,8 +253,6 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
    * the answer exists.
    */
   private trigramAvailable: boolean | undefined
-  /** One-shot latch for the embedding-gap warning — see ensureVectorIndex. */
-  private embeddingGapWarned = false
   /**
    * Every client currently checked out of either pool.
    *
@@ -628,32 +628,13 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
    * failed.
    */
   private async ensureVectorIndex(q: any = this.pool): Promise<void> {
-    // Say plainly that nothing in core populates this table.
-    //
-    // `upsertEmbedding` and `searchVector` are implemented here and work, but
-    // the engine's only caller of `upsertEmbedding` is `_autoEmbedNewEngrams`,
-    // which runs for the PGLite DERIVED index and never for a primary store.
-    // Measured: 5 engrams learned through `Plur` against this adapter leave
-    // `engram_embeddings` with 0 rows.
-    //
-    // So `vectorIndex: 'hnsw'` on this tier asks for an ANN index over an empty
-    // table, and semantic recall silently falls back to loading engrams and
-    // scoring in memory — correct, but the O(N) path this tier exists to avoid.
-    // A deployment that wants vectors here has to write them itself.
-    //
-    // Wiring the engine to populate them is deliberately NOT done as a
-    // late-release patch: `_autoEmbedNewEngrams` loads the whole corpus and
-    // probes `hasEmbedding` per id on every write, which at the 50,000-engram
-    // threshold that selects this tier would be a worse regression than the gap
-    // it closes. It needs a set-based "which ids lack embeddings" query first.
-    if (!this.embeddingGapWarned && this.indexMode !== 'exact') {
-      this.embeddingGapWarned = true
-      logger.warning(
-        `[postgres] vectorIndex='${this.indexMode}' is configured, but core does not write embeddings to a `
-        + `Postgres primary store — 'engram_embeddings' stays empty unless your deployment populates it, and `
-        + `semantic recall falls back to in-memory scoring. Set vectorIndex:'exact' to silence this.`,
-      )
-    }
+    // Until #762 this method warned that nothing in core populated
+    // `engram_embeddings` on a primary store. That gap is closed: `Plur` runs
+    // a background auto-embed pass after every primary-store write and a
+    // backfill on the first semantic recall, both fed by the set-based
+    // `listEngramsMissingEmbeddings` anti-join below — never a per-id probe.
+    // A deployment driving this adapter WITHOUT the engine still has to write
+    // embeddings itself; that is a deployment choice, not a core gap.
     let want: boolean
     if (this.indexMode === 'exact') {
       want = false
@@ -1277,40 +1258,53 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
    * `SET LOCAL` scopes the setting to the transaction, so a pooled connection
    * is never left with another query's tuning on it.
    */
-  async searchVector(query: Float32Array, limit: number, opts?: ScopeRestriction): Promise<VectorSearchHit[]> {
+  async searchVector(
+    query: Float32Array,
+    limit: number,
+    opts?: ScopeRestriction & Pick<StorageFilter, 'scope' | 'visibilityGrants'>,
+  ): Promise<VectorSearchHit[]> {
     const pool = await this.getPool()
     const t = this.activeVecType
     const literal = vectorLiteral(query)
+    // EVERY restriction goes IN the k-NN predicate, never on the rows that
+    // come back. Post-filtering measures LIMIT against the unrestricted
+    // neighbour list, so a principal permitted a small share of the corpus
+    // asks for N and silently gets far fewer, with permitted rows sitting
+    // just below the cut.
+    //
+    // This method previously omitted the `opts` parameter entirely. TypeScript
+    // accepts a narrower arity than the interface declares, so a caller
+    // passing `scopes` compiled, ran, and got an unrestricted search with no
+    // error — on an authorization filter.
+    //
+    // `scope` + `visibilityGrants` (#775) joined `scopes` when the semantic
+    // pushdown landed (#762), for the dilution reason above — and through
+    // `buildFilterClause`, the ONE copy of the scope rules, rather than a
+    // hand-rolled second WHERE. The filter's columns are unambiguous in this
+    // join: `engram_embeddings` carries only `engram_id` and `embedding`.
+    const { where, params } = buildFilterClause({
+      status: 'active',
+      scopes: opts?.scopes,
+      scope: opts?.scope,
+      visibilityGrants: opts?.visibilityGrants,
+    })
+    const vecIdx = params.length + 1
+    const limitIdx = params.length + 2
+    // #751: every checkout goes through acquire() so close() can destroy it.
     const client = await this.acquire(pool)
     try {
       await client.query('BEGIN')
       if (this.hnswActive) {
         await client.query(`SET LOCAL hnsw.ef_search = ${this.efSearchForLimit(limit)}`)
       }
-      // The scope restriction goes IN the k-NN predicate, never on the rows
-      // that come back. Post-filtering measures LIMIT against the unrestricted
-      // neighbour list, so a principal permitted a small share of the corpus
-      // asks for N and silently gets far fewer, with permitted rows sitting
-      // just below the cut.
-      //
-      // This method previously omitted the `opts` parameter entirely. TypeScript
-      // accepts a narrower arity than the interface declares, so a caller
-      // passing `scopes` compiled, ran, and got an unrestricted search with no
-      // error — on an authorization filter.
-      const params: unknown[] = [literal, limit]
-      let scopeClause = ''
-      if (opts?.scopes !== undefined) {
-        params.push(opts.scopes)
-        scopeClause = ` AND e.scope = ANY($${params.length}::text[])`
-      }
       const res = await client.query(
-        `SELECT e.data, 1 - (em.embedding <=> $1::${t}) AS score
+        `SELECT e.data, 1 - (em.embedding <=> $${vecIdx}::${t}) AS score
          FROM "${this.schema}".engram_embeddings em
          JOIN "${this.schema}".engrams e ON e.id = em.engram_id
-         WHERE e.status = 'active'${scopeClause}
-         ORDER BY em.embedding <=> $1::${t}
-         LIMIT $2`,
-        params,
+         ${where}
+         ORDER BY em.embedding <=> $${vecIdx}::${t}
+         LIMIT $${limitIdx}`,
+        [...params, literal, limit],
       )
       await client.query('COMMIT')
       return res.rows.map((r: any) => ({ engram: parseRow(r), score: Number(r.score) }))
@@ -1346,6 +1340,35 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
        ON CONFLICT (engram_id) DO UPDATE SET embedding = EXCLUDED.embedding`,
       [engramId, vectorLiteral(vector)],
     )
+  }
+
+  /**
+   * Active engrams with no row in `engram_embeddings`, up to `limit` (#762).
+   *
+   * ONE set-based anti-join, which is the whole reason primary-store
+   * auto-embed exists at all: the PGLite-era shape — load the corpus, probe
+   * `hasEmbedding` per id — is O(N) round trips on every write, and at the
+   * 50,000-engram threshold that selects this tier that would be a worse
+   * regression than the missing embeddings (ADR-0005 amendment). Both sides
+   * of the join are the tables' primary keys, so `LIMIT 1` — the completeness
+   * probe the semantic read path issues — is an index-only anti-join, the
+   * same probe shape `corpusStats` uses for NULL-token rows.
+   *
+   * `ORDER BY e.id` so concurrent auto-embed passes in different processes
+   * walk the gap in the same order and converge instead of thrashing.
+   */
+  async listEngramsMissingEmbeddings(limit: number): Promise<Engram[]> {
+    assertPositiveInt(limit, 'limit')
+    const pool = await this.getPool()
+    const res = await pool.query(
+      `SELECT e.data FROM "${this.schema}".engrams e
+       LEFT JOIN "${this.schema}".engram_embeddings em ON em.engram_id = e.id
+       WHERE e.status = 'active' AND em.engram_id IS NULL
+       ORDER BY e.id
+       LIMIT $1`,
+      [limit],
+    )
+    return res.rows.map((r: any) => parseRow(r))
   }
 
   // ------------------------------------------------------------- diagnostics
