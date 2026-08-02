@@ -1517,7 +1517,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
           remote_type: {
             type: 'string',
             enum: ['personal', 'shared'],
-            description: 'What the sync remote is for (#640). personal (default): mirror everything non-local, private included — a solo user\'s own backup. shared: push ONLY shared-scope, non-private engrams — personal-family and private engrams never reach the remote. Persist the choice in config.yaml as sync.remote_type instead of passing it per call.',
+            description: 'What the sync remote is for (#640). personal (default): mirror everything non-local, private included — a solo user\'s own backup. shared: push ONLY shared-scope, non-private engrams — personal-family and private engrams never reach the remote, and episode/candidate/tension records derived from non-pushed engrams are stripped too (#686). Persist the choice in config.yaml as sync.remote_type instead of passing it per call.',
           },
         },
       },
