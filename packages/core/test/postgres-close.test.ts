@@ -12,11 +12,12 @@
  *    one for its DDL and `withExclusiveAccess` holds one across arbitrary
  *    caller work, so draining could wait forever.
  *
- * Three attempts are recorded in `close()`'s JSDoc because each failed in a way
- * worth remembering: awaiting `initPromise` deadlocked, awaiting only
- * `poolPromise` deadlocked, and destroying tracked clients STILL hung — because
- * a checkout that resolves after close() began was never in the tracking set.
- * That last one is why `acquire()` refuses once closed.
+ * The failed attempts are recorded in `close()`'s JSDoc because each failed in
+ * a way worth remembering: drain-based teardowns deadlocked on held clients
+ * (whichever promise they awaited first — an in-flight `createPool` transitively
+ * awaits `initSchema` anyway), and destroying tracked clients STILL hung —
+ * because a checkout that resolves after close() began was never in the
+ * tracking set. That last one is why `acquire()` refuses once closed.
  *
  * These tests fail by TIMING OUT rather than asserting, which is the honest
  * shape: the bug is a hang.

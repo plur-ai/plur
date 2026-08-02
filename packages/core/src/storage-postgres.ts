@@ -259,9 +259,9 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
    * `close()` needs this because `pool.end()` DRAINS: it waits for checked-out
    * clients to come back. Two sites hold one for a long time — `initSchema`
    * for its DDL sequence, and `withExclusiveAccess` across arbitrary caller
-   * work — so a `close()` racing either of them waited forever. Measured: both
-   * a drain-based teardown and one that awaited `initPromise` hung the process
-   * rather than closing it.
+   * work — so a `close()` racing either of them waited forever. Measured:
+   * drain-based teardowns (including one that first awaited `initPromise`)
+   * hung the process rather than closing it.
    *
    * With the set, `close()` destroys outstanding clients instead of waiting for
    * them, and `end()` then resolves immediately.
@@ -756,12 +756,18 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
    *
    * Second, `pool.end()` DRAINS — it waits for checked-out clients. `initSchema`
    * holds one for its DDL, and `withExclusiveAccess` holds one across arbitrary
-   * caller work, so draining could wait forever. Two earlier attempts (awaiting
-   * `initPromise`, and awaiting only `poolPromise`) both hung the process
-   * instead of closing it. Outstanding clients are therefore DESTROYED:
-   * `release(err)` with a truthy argument makes pg-pool `_remove` the
-   * connection rather than return it to idle, so `end()` has nothing to wait
-   * for.
+   * caller work, so draining could wait forever. Earlier drain-based teardown
+   * attempts (with and without first awaiting the init/pool promises) hung the
+   * process instead of closing it. Outstanding clients are therefore
+   * DESTROYED: `release(err)` with a truthy argument makes the pg driver's
+   * pool internals `_remove` the connection rather than return it to idle, so
+   * `end()` has nothing to wait for.
+   *
+   * One wait IS accepted: adopting in-flight construction transitively awaits
+   * schema init — `createPool` resolves only after `initSchema` settles — so a
+   * `close()` that lands during a cold start blocks until the adapter's own
+   * DDL completes or rejects. That is bounded, adapter-owned work, unlike a
+   * caller-held client.
    *
    * A caller mid-`withExclusiveAccess` sees its connection die. That is the
    * consequence of closing during exclusive work — a caller error either way —
@@ -771,8 +777,11 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
     // Refuse new work first, so nothing starts building behind the teardown.
     this.closed = true
 
-    // Adopt construction already in flight. Only the POOL promises: awaiting
-    // `initPromise` is one of the two deadlocks described above.
+    // Adopt construction already in flight so a pool assigned after this line
+    // cannot outlive the teardown. On a cold start this transitively awaits
+    // `initSchema` (`createPool` resolves only once init settles), so close()
+    // waits for the adapter's own DDL to finish — bounded work, unlike the
+    // caller-held clients that made drain-based teardowns hang.
     for (const pending of [this.poolPromise, this.lockPoolPromise]) {
       if (pending) await Promise.resolve(pending).catch(() => { /* nothing to tear down */ })
     }
