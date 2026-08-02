@@ -32,14 +32,14 @@ import { installPack, uninstallPack, listPacks, exportPack, scanPrivacy, compute
 // SP5 imports (deferred — vault-export, registry not yet merged)
 // import { exportVault, type VaultExportOptions, type VaultExportResult } from './vault-export.js'
 // import { fetchRegistry, discoverPacks, verifyPackIntegrity, DEFAULT_REGISTRY_URL, type PackRegistry, type RegistryPack } from './registry.js'
-import { sync as gitSync, getSyncStatus, withLock, type SyncResult, type SyncStatus, type SyncRemoteType } from './sync.js'
+import { atomicWrite, sync as gitSync, getSyncStatus, withLock, type SyncResult, type SyncStatus, type SyncRemoteType } from './sync.js'
 import { detectSecrets, detectSensitive, sensitivityCategory, SCAN_TRUNCATED } from './secrets.js'
 import type { SecretMatch } from './secrets.js'
 import { SENSITIVITY_CATEGORIES, type ScopeMetadata, type SensitivityCategory } from './schemas/scope-metadata.js'
 import { rankScopes, SCOPE_MATCH_THRESHOLD, type ScopeSignals, type ScopeCandidate } from './scope-routing.js'
 import { appendHistory, readHistoryForEngram, generateEventId, generateInjectionId, computeQueryHash, findLatestInjectionFor, countInjectionEvents, type InjectionEventCounts } from './history.js'
 import { computeContentHash } from './content-hash.js'
-import { loadTensions, saveTensions, generateTensionId, tensionPairKey, categorizeTension } from './tension-store.js'
+import { loadTensions, loadTensionsWithQuarantine, saveTensions, generateTensionId, tensionPairKey, categorizeTension } from './tension-store.js'
 import type { TensionRecord, TensionStatus } from './schemas/tension.js'
 import type { TensionPair } from './tensions.js'
 import { engramDate } from './tensions.js'
@@ -1239,12 +1239,25 @@ export class Plur {
    */
   private async _withStoreLock<T>(path: string, fn: () => Promise<T>): Promise<T> {
     const store = this._storeAt(path)
+    // Lock the store's PHYSICAL location, not the conventional path (#813,
+    // audit finding 11). `paths.engrams` is where a store would live by
+    // convention; an INJECTED store can own bytes somewhere else entirely, and
+    // `location` is the interface's answer to "where are they". Locking the
+    // convention meant two Plur instances with different roots but the same
+    // injected YamlPrimaryStore took DIFFERENT lock files while doing
+    // read-modify-write against the SAME file — so one write could overwrite
+    // the other with both reporting success.
+    //
+    // Falls back to `path` when the store reports no location: an in-memory
+    // store has no file to contend over, and a network store answers with
+    // `withExclusiveAccess` before this line is reached.
+    const lockKey = store.location ?? path
     const guarded = async (): Promise<T> => {
       this._maybeDailyBackup(path)
       return await fn()
     }
     if (store.withExclusiveAccess) return await store.withExclusiveAccess(guarded)
-    return await withAsyncLock(path, guarded)
+    return await withAsyncLock(lockKey, guarded)
   }
 
   /**
@@ -1267,8 +1280,13 @@ export class Plur {
     if (this._readonly) return
     if (path !== this.paths.engrams) return
     if (this._primaryStore.kind !== 'yaml') return
+    // Snapshot the file the store ACTUALLY owns. Backing up the conventional
+    // path meant an injected store's real corpus received no backup at all,
+    // while a possibly non-existent conventional path was snapshotted in its
+    // place (#813, audit finding 11).
+    const target = this._primaryStore.location ?? path
     try {
-      maybeDailyBackup(this.paths.root, path)
+      maybeDailyBackup(this.paths.root, target)
     } catch {
       /* maybeDailyBackup already logs; a backup must never fail a write */
     }
@@ -2552,16 +2570,10 @@ export class Plur {
         _routed: guarded.routed,
       }
     }
+    let serverEngram: Engram
     try {
       const { id: serverId } = await remoteDriver.appendAndGetServerId(localPlaceholder)
-      const serverEngram: Engram = { ...localPlaceholder, id: serverId }
-      appendHistory(this.paths.root, {
-        event: 'engram_created',
-        engram_id: serverId,
-        timestamp: now,
-        data: { type: serverEngram.type, scope: serverEngram.scope, source: serverEngram.source, routed_to: 'remote' },
-      })
-      return serverEngram
+      serverEngram = { ...localPlaceholder, id: serverId }
     } catch (err) {
       // Remote failed — save locally with outbox metadata for retry.
       // Audit iter-1 fix (Dijkstra): defensive lookup; the catch is the
@@ -2606,6 +2618,28 @@ export class Plur {
         return localPlaceholder
       })
     }
+
+    // History is appended OUTSIDE the try that guards the remote write (#813,
+    // audit finding 13). It used to sit inside it, so a history failure —
+    // EACCES, disk full — after the server had already persisted the engram was
+    // caught as a REMOTE failure: the fallback then created a second local
+    // engram plus an outbox entry, and the next flush duplicated it remotely.
+    // A bookkeeping write must never be able to undo, or appear to undo, a
+    // commit that succeeded.
+    try {
+      appendHistory(this.paths.root, {
+        event: 'engram_created',
+        engram_id: serverEngram.id,
+        timestamp: now,
+        data: { type: serverEngram.type, scope: serverEngram.scope, source: serverEngram.source, routed_to: 'remote' },
+      })
+    } catch (err) {
+      logger.warning(
+        `[plur] engram ${serverEngram.id} was stored remotely but its history record could not be ` +
+        `written: ${(err as Error).message}. The engram is safe; the local audit trail is incomplete.`,
+      )
+    }
+    return serverEngram
   }
 
   /**
@@ -4239,12 +4273,22 @@ export class Plur {
       // Incremental write (#740): only the rated engram changed.
       await this._updateEngrams(engrams, [engram])
       await this._syncIndex()
-      appendHistory(this.paths.root, {
-        event: 'feedback_received',
-        engram_id: id,
-        timestamp: new Date().toISOString(),
-        data: { signal },
-      })
+      // The counter has already changed on disk. A history failure here used to
+      // reject the call, and a retry then applied the signal a SECOND time
+      // (#813, audit finding 13). Log and continue: the mutation committed.
+      try {
+        appendHistory(this.paths.root, {
+          event: 'feedback_received',
+          engram_id: id,
+          timestamp: new Date().toISOString(),
+          data: { signal },
+        })
+      } catch (err) {
+        logger.warning(
+          `[plur] feedback on ${id} was applied but its history record could not be written: ` +
+          `${(err as Error).message}. Do not retry — the signal is already counted.`,
+        )
+      }
       return true
     })
 
@@ -4299,12 +4343,20 @@ export class Plur {
       const found = await driver.getById(serverId)
       if (found) {
         await driver.feedback(serverId, signal)
-        appendHistory(this.paths.root, {
-          event: 'feedback_received',
-          engram_id: id,
-          timestamp: new Date().toISOString(),
-          data: { signal, routed_to: 'remote' },
-        })
+        // Same reasoning as the local path: the remote already counted it.
+        try {
+          appendHistory(this.paths.root, {
+            event: 'feedback_received',
+            engram_id: id,
+            timestamp: new Date().toISOString(),
+            data: { signal, routed_to: 'remote' },
+          })
+        } catch (err) {
+          logger.warning(
+            `[plur] feedback on ${id} was applied remotely but its history record could not be ` +
+            `written: ${(err as Error).message}. Do not retry — the signal is already counted.`,
+          )
+        }
         this._logInjectionOutcome(id, signal)
         return
       }
@@ -6176,11 +6228,15 @@ Generate an improved version of the procedure that prevents this failure. Return
   /** Locked mutation of a single tension record by id. */
   private _mutateTension(id: string, mutate: (r: TensionRecord) => void): TensionRecord {
     return withLock(this.paths.tensions, () => {
-      const all = loadTensions(this.paths.tensions)
-      const record = all.find(r => r.id === id)
+      // Quarantined records ride along — loadTensions withholds schema-invalid
+      // entries, so saving without them would delete them on an unrelated
+      // mutation. That is the F2 shape, and this call site is how it would
+      // have reappeared after tension-store gained quarantine.
+      const { valid, quarantined } = loadTensionsWithQuarantine(this.paths.tensions)
+      const record = valid.find(r => r.id === id)
       if (!record) throw new Error(`Tension ${id} not found`)
       mutate(record)
-      saveTensions(this.paths.tensions, all)
+      saveTensions(this.paths.tensions, valid, quarantined)
       return record
     })
   }
@@ -6212,23 +6268,62 @@ Generate an improved version of the procedure that prevents this failure. Return
    * resolved_at set.
    */
   async resolveTension(id: string, winnerId: string): Promise<{ record: TensionRecord; retired_id: string }> {
-    const existing = this.listTensions().find(r => r.id === id)
-    if (!existing) throw new Error(`Tension ${id} not found`)
-    if (existing.status === 'resolved') throw new Error(`Tension ${id} is already resolved`)
-    if (existing.status === 'dismissed') throw new Error(`Tension ${id} is dismissed`)
-    if (winnerId !== existing.engram_a && winnerId !== existing.engram_b) {
-      throw new Error(`Winner ${winnerId} is not part of tension ${id} (${existing.engram_a} vs ${existing.engram_b})`)
-    }
-    const loserId = winnerId === existing.engram_a ? existing.engram_b : existing.engram_a
-    // Retire the loser FIRST — if retirement fails, the record stays
-    // unresolved and the operation can be retried.
-    const retired = await this._retireEngramForResolution(loserId, `tension ${id} resolved in favor of ${winnerId}`)
-    if (!retired) throw new Error(`Cannot retire losing engram ${loserId} (not found in a writable local store)`)
-    const record = this._mutateTension(id, r => {
+    // CLAIM the resolution atomically before retiring anything (#813, audit
+    // finding 5). The validation used to be a PRE-LOCK read via listTensions(),
+    // and the retire and the tension update were separate critical sections
+    // with no revalidation. Two concurrent calls picking OPPOSITE winners both
+    // read "unresolved", one retired B and the other retired A, both then wrote
+    // a resolved record — and the last write merely chose which of the two
+    // RETIRED engrams was labelled the winner.
+    //
+    // Reproduced before this fix: calls-succeeded=2, active-engrams=0, and the
+    // recorded winner was itself retired.
+    //
+    // Marking the record resolved inside the lock is what makes the claim
+    // exclusive: the loser of the race now sees status 'resolved' and throws
+    // before touching an engram. Deliberately NOT nested inside the engram
+    // lock — claim, then act, then roll back on failure — so this introduces no
+    // lock-ordering dependency between the tension and engram locks.
+    let loserId = ''
+    let previous: Pick<TensionRecord, 'status' | 'resolved_by' | 'resolved_at'> | null = null
+    const record = withLock(this.paths.tensions, () => {
+      const { valid, quarantined } = loadTensionsWithQuarantine(this.paths.tensions)
+      const r = valid.find(x => x.id === id)
+      if (!r) throw new Error(`Tension ${id} not found`)
+      if (r.status === 'resolved') throw new Error(`Tension ${id} is already resolved`)
+      if (r.status === 'dismissed') throw new Error(`Tension ${id} is dismissed`)
+      if (winnerId !== r.engram_a && winnerId !== r.engram_b) {
+        throw new Error(`Winner ${winnerId} is not part of tension ${id} (${r.engram_a} vs ${r.engram_b})`)
+      }
+      loserId = winnerId === r.engram_a ? r.engram_b : r.engram_a
+      previous = { status: r.status, resolved_by: r.resolved_by, resolved_at: r.resolved_at }
       r.status = 'resolved'
       r.resolved_by = winnerId
       r.resolved_at = new Date().toISOString()
+      saveTensions(this.paths.tensions, valid, quarantined)
+      return { ...r }
     })
+
+    // Retire the loser. If that fails, release the claim so the operation can
+    // be retried rather than leaving a resolved tension whose loser is alive.
+    try {
+      const retired = await this._retireEngramForResolution(loserId, `tension ${id} resolved in favor of ${winnerId}`)
+      if (!retired) throw new Error(`Cannot retire losing engram ${loserId} (not found in a writable local store)`)
+    } catch (err) {
+      // Cast: TS cannot see that the closure above ran before this catch, so
+      // it narrows `previous` to never.
+      const prev = previous as Pick<TensionRecord, 'status' | 'resolved_by' | 'resolved_at'> | null
+      if (prev) {
+        try {
+          this._mutateTension(id, r => {
+            r.status = prev.status
+            r.resolved_by = prev.resolved_by
+            r.resolved_at = prev.resolved_at
+          })
+        } catch { /* the rollback is best-effort; the original error is what matters */ }
+      }
+      throw err
+    }
     return { record, retired_id: loserId }
   }
 
@@ -6523,7 +6618,12 @@ Generate an improved version of the procedure that prevents this failure. Return
         if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') throw err
       }
       configData.stores = this.mergeStoresForWriteback(configData.stores, stores, opts?.serverSensitivityScopes)
-      fs.writeFileSync(this.paths.config, yaml.dump(configData, { lineWidth: 120, noRefs: true }))
+      // Atomic + fsynced (#813, audit finding 16). A plain writeFileSync
+      // truncates in place, and loadConfig turns a parse failure into DEFAULT
+      // config — so a crash mid-write silently erases store registrations and
+      // routes later writes to the local default store. atomicWrite is
+      // tmp + fsync + rename, so a crash leaves the previous complete config.
+      atomicWrite(this.paths.config, yaml.dump(configData, { lineWidth: 120, noRefs: true }))
     })
     this.config = loadConfig(this.paths.config)
     this.configMtimeMs = this.statConfigMtime()
@@ -7402,7 +7502,12 @@ Generate an improved version of the procedure that prevents this failure. Return
         if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') throw err
       }
       configData.dismissed_scopes = deduped.sort()
-      fs.writeFileSync(this.paths.config, yaml.dump(configData, { lineWidth: 120, noRefs: true }))
+      // Atomic + fsynced (#813, audit finding 16). A plain writeFileSync
+      // truncates in place, and loadConfig turns a parse failure into DEFAULT
+      // config — so a crash mid-write silently erases store registrations and
+      // routes later writes to the local default store. atomicWrite is
+      // tmp + fsync + rename, so a crash leaves the previous complete config.
+      atomicWrite(this.paths.config, yaml.dump(configData, { lineWidth: 120, noRefs: true }))
     })
     this.config = loadConfig(this.paths.config)
     this.configMtimeMs = this.statConfigMtime()

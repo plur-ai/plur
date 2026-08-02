@@ -78,10 +78,29 @@ export class SqliteStore implements EngramStore {
 
   async append(engram: Engram): Promise<void> {
     const db = this.getDb()
-    db.prepare(`
-      INSERT OR REPLACE INTO engrams (id, status, scope, domain, last_accessed, data)
+    // `append` means "this row is NEW". INSERT OR REPLACE silently overwrote an
+    // existing row instead, turning an intended insert into a destructive
+    // replace of an unrelated engram that happened to share the id (#813, audit
+    // finding 21) — while YamlStore appended a duplicate and PostgresAdapter
+    // refuses. Three implementations, three outcomes, so no caller could rely
+    // on any of them. Surfacing the collision is the only one that lets a
+    // caller decide; updateMany is the upsert.
+    const db2 = db.prepare(`
+      INSERT INTO engrams (id, status, scope, domain, last_accessed, data)
       VALUES (?, ?, ?, ?, ?, ?)
-    `).run(engram.id, engram.status, engram.scope, engram.domain ?? null, engram.activation.last_accessed, JSON.stringify(engram))
+    `)
+    try {
+      db2.run(engram.id, engram.status, engram.scope, engram.domain ?? null, engram.activation.last_accessed, JSON.stringify(engram))
+    } catch (err) {
+      const msg = (err as Error).message ?? ''
+      if (/UNIQUE constraint failed|PRIMARY KEY/i.test(msg)) {
+        throw new Error(
+          `append: engram ${engram.id} already exists — use updateMany to replace it. ` +
+          `append is for new rows; overwriting here would destroy the existing engram.`,
+        )
+      }
+      throw err
+    }
   }
 
   async getById(id: string): Promise<Engram | null> {

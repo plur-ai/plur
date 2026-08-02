@@ -7,6 +7,7 @@ import { buildDedupPrompt, parseDedupResponse } from './dedup.js'
 import { appendHistory } from './history.js'
 import { logger } from './logger.js'
 import { withAsyncLock } from './store/async-lock.js'
+import { maybeDailyBackup } from './backup.js'
 import type { Engram } from './schemas/engram.js'
 import type { AsyncPrimaryStore } from './store/primary-store.js'
 import type { SecretMatch } from './secrets.js'
@@ -103,8 +104,22 @@ async function persistOne(deps: LearnAsyncDeps, corpus: Engram[], changed: Engra
 }
 
 async function withStoreLock<T>(deps: LearnAsyncDeps, fn: () => Promise<T>): Promise<T> {
-  if (deps.store.withExclusiveAccess) return await deps.store.withExclusiveAccess(fn)
-  return await withAsyncLock(deps.engramsPath, fn)
+  // Take the daily snapshot here too (#813, audit finding 15). Plur's own
+  // `_withStoreLock` does this, but the dedup paths lock through this helper
+  // instead — so when the first mutation of the day was an UPDATE or a MERGE,
+  // the pre-mutation corpus was never snapshotted and the statement being
+  // overwritten had no copy anywhere.
+  //
+  // Same ordering as the engine's hook and for the same reasons: inside the
+  // lock, before `fn` reads or writes, so the copy is of the on-disk bytes as
+  // they were. Never throws — a backup is a safety net for the write, not a
+  // precondition of it.
+  const guarded = async (): Promise<T> => {
+    try { maybeDailyBackup(deps.rootPath, deps.engramsPath) } catch { /* backup logs its own failures */ }
+    return await fn()
+  }
+  if (deps.store.withExclusiveAccess) return await deps.store.withExclusiveAccess(guarded)
+  return await withAsyncLock(deps.engramsPath, guarded)
 }
 
 /**

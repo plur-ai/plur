@@ -1,4 +1,5 @@
 import * as fs from 'fs'
+import * as path from 'path'
 import * as yaml from 'js-yaml'
 import { join } from 'path'
 import { loadEngrams, saveEngrams } from '../engrams.js'
@@ -51,12 +52,37 @@ export function setSchemaVersion(configPath: string, version: number): void {
 function createBackup(engramsPath: string, version: number): string | null {
   if (!fs.existsSync(engramsPath)) return null
   const backupPath = `${engramsPath}.bak.${version}`
+  // Do not clobber an existing backup for this version (#813, audit finding
+  // 18). The name is fixed, and it was overwritten BEFORE the live store was
+  // validated — so a second migration attempt against a store that had since
+  // become corrupt replaced a known-good backup with the corrupt copy, and the
+  // rollback target was gone. An existing backup is by definition from an
+  // earlier, better state; keep it.
+  if (fs.existsSync(backupPath)) return backupPath
   fs.copyFileSync(engramsPath, backupPath)
   // A backup that is not on disk is not a backup. copyFileSync leaves the copy
   // in the page cache, so a power cut during a migration could take the corpus
   // AND the rollback target with it (audit #794, F4).
   flushFile(backupPath)
+  // The rename/create is directory metadata: without flushing the directory a
+  // crash can lose the backup's PATHNAME even when its blocks reached disk.
+  flushDir(path.dirname(backupPath))
   return backupPath
+}
+
+/** fsync a directory so a file created in it survives a crash. Best-effort. */
+function flushDir(dir: string): void {
+  let fd: number | undefined
+  try {
+    fd = fs.openSync(dir, 'r')
+    fs.fsyncSync(fd)
+  } catch {
+    /* not supported on this platform/filesystem — the file's own fsync stands */
+  } finally {
+    if (fd !== undefined) {
+      try { fs.closeSync(fd) } catch { /* ignore */ }
+    }
+  }
 }
 
 /** fsync a path that was just written by a non-atomic helper. Best-effort — see atomicWrite. */

@@ -28,7 +28,23 @@ export function appendHistory(root: string, event: HistoryEvent): void {
   const date = event.timestamp.slice(0, 7) // YYYY-MM
   const filePath = join(historyDir, `${date}.jsonl`)
   const line = JSON.stringify(event) + '\n'
-  fs.appendFileSync(filePath, line, 'utf8')
+  // fsync the append (#813, audit finding 20). O_APPEND makes the write atomic
+  // against concurrent writers, but not durable: a committed engram mutation
+  // could survive a power cut while its history record did not. That matters
+  // beyond bookkeeping — `plur restore` reads this log to NAME the engrams a
+  // restore cannot recover, so a lost record makes restore UNDER-report the
+  // loss, which is the one thing it exists not to do.
+  //
+  // Best-effort on the fsync itself: the append already succeeded, and failing
+  // the caller's mutation because a diagnostic log could not be flushed would
+  // trade a small durability gap for a large availability one.
+  const fd = fs.openSync(filePath, 'a')
+  try {
+    fs.writeSync(fd, line)
+    try { fs.fsyncSync(fd) } catch { /* append landed; durability is best-effort */ }
+  } finally {
+    fs.closeSync(fd)
+  }
 }
 
 /**

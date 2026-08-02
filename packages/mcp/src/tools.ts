@@ -3073,7 +3073,15 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
           engram.activation.retrieval_strength = 0.7
           engram.activation.storage_strength = 1.0
           engram.activation.last_accessed = new Date().toISOString().split('T')[0]
-          await plur.updateEngram(engram)
+          // updateEngram returns whether a row was actually written. Ignoring
+          // it reported a promotion that never happened — for an engram that
+          // vanished, changed concurrently, or lives in a read-only store
+          // (#813, audit finding 17).
+          const written = await plur.updateEngram(engram)
+          if (!written) {
+            errors.push({ id, error: 'Not persisted — the engram may have been removed or its store is read-only' })
+            continue
+          }
           promoted.push({ id, statement: engram.statement })
         }
 

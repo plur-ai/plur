@@ -4,7 +4,7 @@ import { join } from 'path'
 import { tmpdir } from 'os'
 import { Plur } from '../src/index.js'
 import { getCandidatePairs, scanForTensions, type TensionPair } from '../src/tensions.js'
-import { generateTensionId, tensionPairKey, categorizeTension } from '../src/tension-store.js'
+import { generateTensionId, tensionPairKey, categorizeTension, saveTensions, loadTensions } from '../src/tension-store.js'
 import { readHistory } from '../src/history.js'
 import type { Engram } from '../src/schemas/engram.js'
 
@@ -375,5 +375,66 @@ describe('lock-escalation gate (#181, audit item 3)', () => {
     await plur.resolveTension(records[0].id, e.id)            // engram wins
     await plur.learn(STMT, { scope: 'project:e' })            // next hit locks
     expect((await plur.getById(e.id) as any).commitment).toBe('locked')
+  })
+})
+
+describe('concurrent resolution cannot retire both engrams (#813, audit finding 5)', () => {
+  let dir: string
+  beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'plur-tension-race-')) })
+  afterEach(() => { rmSync(dir, { recursive: true, force: true }) })
+
+  it('lets exactly one opposite-winner resolution win, and the winner stays active', async () => {
+    // Before the fix, validation was a PRE-LOCK read via listTensions() and the
+    // retire and the tension update were separate critical sections with no
+    // revalidation. Two concurrent calls picking opposite winners both read
+    // "unresolved", each retired the other's choice, and the last tension write
+    // merely chose which of two RETIRED engrams was labelled the winner.
+    // Reproduced: calls-succeeded=2, active-engrams=0, winner RETIRED.
+    const plur = new Plur({ path: dir, autoDiscover: false })
+    const a = await plur.learn('deploys happen on fridays', { scope: 'local' })
+    const b = await plur.learn('deploys never happen on fridays', { scope: 'local' })
+
+    saveTensions(join(dir, 'tensions.yaml'), [{
+      id: 'T-2026-0802-001',
+      engram_a: a.id, engram_b: b.id,
+      statement_a: a.statement, statement_b: b.statement,
+      confidence: 0.9, reason: 'test', detected_at: new Date().toISOString(),
+      status: 'detected', resolved_by: null, resolved_at: null, category: 'factual',
+    } as never])
+
+    const results = await Promise.allSettled([
+      plur.resolveTension('T-2026-0802-001', a.id),
+      plur.resolveTension('T-2026-0802-001', b.id),
+    ])
+    const succeeded = results.filter(r => r.status === 'fulfilled').length
+    expect(succeeded, 'both opposite-winner resolutions succeeded').toBe(1)
+
+    const active = (await plur.list()).filter(e => (e.id === a.id || e.id === b.id) && e.status === 'active')
+    expect(active, 'both engrams were retired').toHaveLength(1)
+
+    const record = loadTensions(join(dir, 'tensions.yaml'))[0]
+    expect(record.status).toBe('resolved')
+    expect(active[0].id, 'the recorded winner is not the engram that survived').toBe(record.resolved_by)
+  }, 30_000)
+
+  it('carries quarantined tension records through an unrelated mutation', async () => {
+    // _mutateTension loaded valid-only and saved without the quarantined set,
+    // which would have deleted schema-invalid records on any confirm/dismiss.
+    const plur = new Plur({ path: dir, autoDiscover: false })
+    const a = await plur.learn('one statement', { scope: 'local' })
+    const b = await plur.learn('another statement', { scope: 'local' })
+    const path = join(dir, 'tensions.yaml')
+    saveTensions(path, [{
+      id: 'T-2026-0802-002',
+      engram_a: a.id, engram_b: b.id,
+      statement_a: a.statement, statement_b: b.statement,
+      confidence: 0.9, reason: 'test', detected_at: new Date().toISOString(),
+      status: 'detected', resolved_by: null, resolved_at: null, category: 'factual',
+    } as never], [{ id: 'T-BROKEN', nonsense: true }])
+
+    plur.confirmTension('T-2026-0802-002')
+
+    const raw = readFileSync(path, 'utf8')
+    expect(raw, 'the quarantined record was deleted by an unrelated mutation').toContain('T-BROKEN')
   })
 })

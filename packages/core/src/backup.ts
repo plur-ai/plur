@@ -266,7 +266,20 @@ export function maybeDailyBackup(root: string, storePath: string, now = new Date
       return { taken: false, skipped: 'already-today' }
     }
 
-    const validity = validateStore(storePath, state.last_good_count)
+    // A corrupt or missing .state.json used to mean "no baseline", so the shrink
+    // gate silently stopped applying and a same-day snapshot could be replaced
+    // by a weaker one (#813, audit finding 14): valid 100-row snapshot, crash
+    // leaves partial state, live corpus becomes a valid 1-row file, restart
+    // overwrites the 100-row backup with 1 row. Fall back to the strongest
+    // existing snapshot's own count, which is on disk in its sidecar and does
+    // not depend on the state file at all.
+    const existing = listBackups(root)
+    const strongest = existing.reduce<number | undefined>(
+      (max, b) => (typeof b.count === 'number' && (max === undefined || b.count > max) ? b.count : max),
+      undefined,
+    )
+    const baseline = state.last_good_count ?? strongest
+    const validity = validateStore(storePath, baseline)
     if (!validity.ok) {
       // Deliberately NOT marked done: if the user repairs the store later
       // today, the next write should snapshot the repaired copy.
@@ -279,6 +292,20 @@ export function maybeDailyBackup(root: string, storePath: string, now = new Date
 
     const bytes = fs.readFileSync(storePath)
     const dest = snapshotPath(root, stamp)
+    // Never replace an existing same-day snapshot with a weaker one. The
+    // validity gate above compares against the last known-good count; this
+    // compares against the file we would be overwriting, which is the one
+    // actually at risk.
+    const sameDay = existing.find(b => b.stamp === stamp)
+    if (sameDay && typeof sameDay.count === 'number' && (validity.count ?? 0) < sameDay.count) {
+      logger.warning(
+        `[plur:backup] keeping today's existing snapshot (${sameDay.count} engrams) — the live store ` +
+        `holds ${validity.count}, and replacing a stronger snapshot with a weaker one would discard ` +
+        `the better copy. Run 'plur restore --list' to inspect.`,
+      )
+      doneThisProcess.add(key)
+      return { taken: false, skipped: 'invalid', validity }
+    }
     fs.mkdirSync(path.dirname(dest), { recursive: true })
     writeFileDurable(dest, bytes)
     // Sidecar is what makes a restore verifiable rather than hopeful.
