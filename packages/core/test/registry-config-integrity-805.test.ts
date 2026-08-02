@@ -218,3 +218,44 @@ describe('#805 F12 — setSchemaVersion respects the config lock', () => {
     expect(() => setSchemaVersion(join(root, 'adir'), 4)).toThrow()
   })
 })
+
+/**
+ * Follow-up to F11's fix, not to F11 itself.
+ *
+ * Making `loadRegistry` refuse-on-corrupt is right for the INSTALL path: an
+ * install that proceeds from a phantom-empty registry destroys every other
+ * pack's integrity baseline. But the same throw reaches `status()`, and
+ * `status()` is the command an operator runs to find out what is wrong. A
+ * diagnostic that dies on the fault it exists to report is a worse failure than
+ * the one it replaced — silent degradation at least still answered.
+ */
+describe('#805 follow-up — status() reports a broken registry instead of dying on it', () => {
+  let root: string
+
+  beforeEach(() => { root = mkdtempSync(join(tmpdir(), 'plur-805-status-')) })
+  afterEach(() => rmSync(root, { recursive: true, force: true }))
+
+  it('returns a status with the registry error attached', async () => {
+    const { Plur } = await import('../src/index.js')
+    const plur = new Plur({ path: root })
+    await plur.ready()
+
+    mkdirSync(join(root, 'packs'), { recursive: true })
+    writeFileSync(join(root, 'packs', 'registry.yaml'), 'packs:\n  - name: a\n bad: "')
+
+    const status = await plur.status()
+    expect(status.pack_registry_error).toBeDefined()
+    expect(status.pack_registry_error).toContain('registry.yaml')
+    // The rest of the report is still usable — that is the whole point.
+    expect(typeof status.engram_count).toBe('number')
+    expect(status.pack_count).toBe(0)
+  })
+
+  it('leaves the field unset when the registry is fine', async () => {
+    const { Plur } = await import('../src/index.js')
+    const plur = new Plur({ path: root })
+    await plur.ready()
+    const status = await plur.status()
+    expect(status.pack_registry_error).toBeUndefined()
+  })
+})

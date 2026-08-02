@@ -348,6 +348,17 @@ export interface StatusResult {
   index_error?: IndexSyncError
   /** Injection-provenance event/label counts (#452) — feeds #202's volume gate. */
   history_events?: InjectionEventCounts
+  /**
+   * Set when the pack registry could not be read (#805 follow-up).
+   *
+   * `status()` is the command an operator reaches for WHEN something is wrong,
+   * so it must report a broken registry rather than die on it. Making
+   * `loadRegistry` refuse-on-corrupt was right for the install path — an
+   * install that proceeds from a phantom-empty registry destroys the integrity
+   * baseline — but propagating that throw out of `status()` would take the
+   * diagnostic down along with the thing being diagnosed.
+   */
+  pack_registry_error?: string
 }
 
 /**
@@ -6089,7 +6100,16 @@ Generate an improved version of the procedure that prevents this failure. Return
   async status(options?: { created_after?: string; domain?: string }): Promise<StatusResult> {
     const engrams = await this._loadAllEngrams()
     const episodes = queryTimeline(this.paths.episodes)
-    const packs = listPacks(this.paths.packs)
+    // A corrupt registry is something to REPORT here, not to die on: this is
+    // the command run to find out what is wrong (#805 follow-up). The install
+    // path still refuses, which is where refusing actually protects something.
+    let packs: ReturnType<typeof listPacks> = []
+    let packRegistryError: string | undefined
+    try {
+      packs = listPacks(this.paths.packs)
+    } catch (err) {
+      packRegistryError = (err as Error).message
+    }
 
     let active = engrams.filter(e => e.status !== 'retired')
     if (options?.domain) {
@@ -6124,6 +6144,7 @@ Generate an improved version of the procedure that prevents this failure. Return
       outbox_count: await this.outboxCount(),
       history_events: countInjectionEvents(this.paths.root),
       ...(this._lastIndexError ? { index_error: this._lastIndexError } : {}),
+      ...(packRegistryError ? { pack_registry_error: packRegistryError } : {}),
     }
   }
 
