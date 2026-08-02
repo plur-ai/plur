@@ -119,7 +119,21 @@ export function parseEngramFile(
       new Error('mapping has no "engrams" key — the file is not an engram store, or is truncated'),
     )
   }
-  if (raw.engrams == null) return { valid: [], quarantined: [] }
+  // `engrams:` with a null value is NOT an empty store. PLUR only ever writes
+  // `engrams: []` — initFilesystemStore included — so a null-valued key is a
+  // hand-edit or, far more likely, a truncation that happened to stop right
+  // after the key. Accepting it as empty normalises the corruption: the next
+  // write turns a truncated 5,000-engram store into a valid 1-engram one, which
+  // then syncs and can replace subsequent backups. Demonstrated: 5 engrams,
+  // file truncated to `engrams:\n`, one learn -> 1 engram on disk (#811 audit,
+  // finding 4). An earlier version of this parser accepted it, and a test
+  // blessed the behaviour.
+  if (raw.engrams == null) {
+    throw new EngramStoreUnreadableError(
+      filePath,
+      new Error('"engrams" key is present but has no value — an empty store is written as `engrams: []`'),
+    )
+  }
   if (!Array.isArray(raw.engrams)) {
     throw new EngramStoreUnreadableError(filePath, new Error('"engrams" is present but is not a list'))
   }
@@ -134,6 +148,74 @@ export function parseEngramFile(
     logger.warning(
       `Quarantined ${quarantined.length} invalid engram(s) in ${filePath} — ` +
       `they are excluded from recall but PRESERVED in the file. Run 'plur doctor' to inspect them.`,
+    )
+  }
+  return { valid, quarantined }
+}
+
+/**
+ * Error thrown when a sibling record file (episodes, tensions) is unreadable.
+ *
+ * Same doctrine as {@link EngramStoreUnreadableError}, for the artifacts that
+ * are a bare YAML array rather than an `engrams:` mapping.
+ */
+export class RecordStoreUnreadableError extends Error {
+  constructor(readonly filePath: string, readonly cause: unknown) {
+    super(
+      `[plur] refusing to read ${filePath}: ${cause}\n` +
+      `The file exists but is not a valid record list, so PLUR cannot tell how many records it holds. ` +
+      `It is NOT being treated as empty: these files are rewritten whole, so a write against an ` +
+      `"empty" store would destroy every record in it.\n` +
+      `Fix the file (or restore it) and retry.`,
+    )
+    this.name = 'RecordStoreUnreadableError'
+  }
+}
+
+/**
+ * Read a bare-array record file (episodes.yaml, tensions.yaml), or throw.
+ *
+ * These carried the same defect the engram store did (audit #794 F1/F2, still
+ * live after the first remediation and re-found by the #811 audit): an
+ * unparseable or wrongly-shaped file returned `[]`, and since every writer
+ * rewrites the whole array, the next capture persisted that emptiness. A
+ * corrupt episodes.yaml became a one-episode file; a tensions.yaml with
+ * schema-invalid entries silently lost them.
+ *
+ * Missing file is still `[]` — that is a genuinely empty store. An EXISTING
+ * file that says nothing intelligible is an error. Individually invalid entries
+ * are QUARANTINED and handed back to the caller so they can be written out
+ * again, never dropped.
+ */
+export function parseRecordArrayFile<T>(
+  filePath: string,
+  validate: (entry: unknown) => T | null,
+): { valid: T[]; quarantined: unknown[] } {
+  if (!fs.existsSync(filePath)) return { valid: [], quarantined: [] }
+  const stat = fs.statSync(filePath)
+  if (stat.isDirectory()) return { valid: [], quarantined: [] }
+  if (stat.size === 0) throw new RecordStoreUnreadableError(filePath, new Error('file is empty (0 bytes)'))
+  let raw: unknown
+  try {
+    raw = yaml.load(fs.readFileSync(filePath, 'utf8'))
+  } catch (err) {
+    throw new RecordStoreUnreadableError(filePath, err)
+  }
+  // An empty list serialises as `[]`, so `null` here means the bytes said
+  // nothing — a truncation, not an empty store.
+  if (raw == null) throw new RecordStoreUnreadableError(filePath, new Error('file has content but parses to nothing'))
+  if (!Array.isArray(raw)) throw new RecordStoreUnreadableError(filePath, new Error('top-level value is not a list'))
+  const valid: T[] = []
+  const quarantined: unknown[] = []
+  for (const entry of raw) {
+    const ok = validate(entry)
+    if (ok !== null) valid.push(ok)
+    else quarantined.push(entry)
+  }
+  if (quarantined.length > 0) {
+    logger.warning(
+      `Quarantined ${quarantined.length} invalid record(s) in ${filePath} — ` +
+      `excluded from queries but PRESERVED in the file.`,
     )
   }
   return { valid, quarantined }

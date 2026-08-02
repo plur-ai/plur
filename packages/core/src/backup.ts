@@ -52,6 +52,7 @@ import { createHash } from 'crypto'
 import * as yaml from 'js-yaml'
 import { EngramSchemaPassthrough } from './schemas/engram.js'
 import { logger } from './logger.js'
+import { atomicWrite, withLock } from './sync.js'
 
 /** Directory under the plur root holding snapshots and their state. */
 export const BACKUP_DIR = 'backups'
@@ -309,6 +310,21 @@ export function maybeDailyBackup(root: string, storePath: string, now = new Date
   }
 }
 
+/** fsync a file written by a non-atomic helper (copyFileSync). Best-effort. */
+function flushFileAt(filePath: string): void {
+  let fd: number | undefined
+  try {
+    fd = fs.openSync(filePath, 'r+')
+    fs.fsyncSync(fd)
+  } catch {
+    /* nothing actionable — the copy itself succeeded */
+  } finally {
+    if (fd !== undefined) {
+      try { fs.closeSync(fd) } catch { /* ignore */ }
+    }
+  }
+}
+
 /**
  * Write and fsync — a backup that is only in the page cache is not a backup,
  * which is the same reasoning as the store's own atomicWrite (audit #794, F4).
@@ -529,9 +545,29 @@ export function restoreBackup(
     }
   }
 
+  // Under the store lock, and atomic (#811 audit, finding 10).
+  //
+  // Restoring is a whole-corpus overwrite — the exact operation the rest of
+  // this audit constrains — and it was doing it unlocked, through a truncating
+  // open on the LIVE file. Two consequences:
+  //
+  //   - a writer committing between the superseded copy and the overwrite left
+  //     its engram in NEITHER file, with both calls reporting success
+  //   - a crash mid-write left the live corpus partial, which is precisely the
+  //     input the loader now refuses
+  //
+  // `withLock` here is the synchronous variant, which shares the `<path>.lock`
+  // file protocol with `withAsyncLock` — so a restore run from the CLI waits
+  // for an MCP server mid-write, which is the case that matters.
   const superseded = `${storePath}.superseded-${Date.now()}`
-  if (fs.existsSync(storePath)) fs.copyFileSync(storePath, superseded)
-  writeFileDurable(storePath, fs.readFileSync(plan.backup.path))
+  withLock(storePath, () => {
+    if (fs.existsSync(storePath)) {
+      fs.copyFileSync(storePath, superseded)
+      flushFileAt(superseded)
+    }
+    // tmp + fsync + rename, rather than truncating the live file in place.
+    atomicWrite(storePath, fs.readFileSync(plan.backup.path, 'utf8'))
+  })
 
   if (plan.wouldLose.length > 0) {
     logger.warning(

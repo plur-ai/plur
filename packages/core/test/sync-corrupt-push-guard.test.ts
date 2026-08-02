@@ -21,6 +21,8 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 import * as yaml from 'js-yaml'
 import { sync, SyncStoreUnreadableError } from '../src/sync.js'
+import { Plur } from '../src/index.js'
+import { withAsyncLock } from '../src/store/async-lock.js'
 
 let root: string
 let remote: string
@@ -175,4 +177,33 @@ describe('sync tells the truth about what it backs up (F7)', () => {
     const result = sync(root, remote)
     expect(result.warning).toBeUndefined()
   })
+})
+
+describe('sync serializes against the store lock (#811 audit, finding 2)', () => {
+  it('waits for a writer holding the store lock instead of racing it', async () => {
+    // git pull --rebase REPLACES engrams.yaml, so an unlocked sync races the
+    // write path and the race is invisible to the shrink guard:
+    //   writer reads N -> sync pulls R (file is N+R) -> writer saves N+L
+    //   the guard sees the same COUNT before and after, so it passes
+    //   the next sync commits and pushes the deletion of R
+    // Both report success and R is gone. Measured before the fix, this test
+    // produced "sync-done -> writer-released"; it now produces the reverse.
+    const dir = mkdtempSync(join(tmpdir(), 'plur-sync-serialize-'))
+    try {
+      const plur = new Plur({ path: dir, autoDiscover: false })
+      await plur.learn('a seed engram so the store exists', { scope: 'local' })
+
+      const order: string[] = []
+      const holder = withAsyncLock(join(dir, 'engrams.yaml'), async () => {
+        await new Promise(r => setTimeout(r, 400))
+        order.push('writer-released')
+      })
+      const syncing = plur.sync().then(() => order.push('sync-done'), () => order.push('sync-failed'))
+      await Promise.all([holder, syncing])
+
+      expect(order[0], 'sync ran while a writer held the store lock').toBe('writer-released')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  }, 30_000)
 })

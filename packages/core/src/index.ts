@@ -5530,7 +5530,36 @@ export class Plur {
     // mirror-everything default — `shared` is an explicit opt-in that filters
     // the push set to shared-scope, non-private engrams).
     const remoteType = options?.remoteType ?? this.config.sync?.remote_type ?? 'personal'
-    const result = gitSync(this.paths.root, remote, { remoteType })
+    // Git sync REPLACES engrams.yaml on the pull/rebase path, so it has to
+    // serialize against the write path or it races it (#811 audit, finding 2):
+    //
+    //   1. writer A takes the store lock and reads corpus N
+    //   2. sync B, holding nothing, pulls remote engram R -> the file is N+R
+    //   3. writer A appends L to its stale N and saves N+L
+    //   4. the shrink guard sees the same COUNT before and after, so it passes
+    //   5. the next sync commits and pushes the deletion of R
+    //
+    // Both operations report success and R is gone. The count-based guard
+    // cannot catch this by construction — one row arrived while one row was
+    // added — which is why the fix has to be mutual exclusion rather than
+    // another validity check.
+    //
+    // `gitSync` takes no lock of its own (nothing in sync.ts calls withLock),
+    // so this cannot self-deadlock against a non-reentrant lock. Held across
+    // the network calls deliberately: a waiter blocked for the duration of a
+    // fetch is a delay, while a lost engram is permanent. Liveness keeps this
+    // lock from being stolen while we hold it, however long the fetch takes.
+    //
+    // CALLER CONTRACT: `sync()` now acquires the store lock, so it must NOT be
+    // called from inside `_withStoreLock`. The in-process queue is FIFO with no
+    // timeout — unlike the file lock, which has `acquireTimeout` — so nesting
+    // hangs the process rather than erroring. Today's only callers are the
+    // `plur_sync` MCP tool and the `plur sync` CLI command, both top-level.
+    // (Found by writing this fix's first regression test as a nested call and
+    // watching it hang; see async-lock's "NOT REENTRANT" header.)
+    const result = await this._withStoreLock(this.paths.engrams, async () => {
+      return gitSync(this.paths.root, remote, { remoteType })
+    })
     // `git pull --rebase` may have REPLACED engrams.yaml underneath us, so any
     // cached snapshot the store is holding now describes a file that no longer
     // exists in that form. `invalidate()` exists precisely for this and had no

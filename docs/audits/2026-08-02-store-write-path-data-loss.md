@@ -187,6 +187,35 @@ it worse, but only a backup restores them. Note also that snapshots are DAILY: e
 a given day's snapshot are not in it. `plur restore` therefore reads the append-only history log and
 NAMES the engrams a restore cannot recover, rather than rolling the user back silently.
 
+
+## Follow-up: what this audit missed (2026-08-03)
+
+An independent whole-repository adversarial audit (gpt-5.6-sol via Codex CLI), run as the 0.17
+release gate, reported 21 findings. Ten were fixed in #811/PR #814; the rest are tracked in #812 and
+#813.
+
+The two CRITICAL ones were in paths **this report never examined**:
+
+- `uninstallPack(packsDir, '..')` resolved to the PLUR root and `fs.rmSync`'d it recursively —
+  demonstrated deleting `engrams.yaml`, `config.yaml` and the whole root while returning
+  `{removed: true}`. Reachable from the CLI and from the `plur_packs_uninstall` MCP tool.
+- `Plur.sync()` called `gitSync` with no lock while `git pull --rebase` replaces `engrams.yaml`,
+  racing the write path in a way the count-based shrink guard cannot detect.
+
+**The scope framing was the blind spot.** This report swept *every writer of engrams* —
+`saveEngrams`, `_writeEngrams`, `atomicWrite` callers. A recursive delete reached through a path
+component is not a writer. Neither is git sync. Neither is `restore`, which turned out to be
+unlocked and non-atomic — the recovery path itself.
+
+Two findings were worse than a miss. The per-writer sweep above **lists** `captureEpisode` and
+`recordTensions` as `corrupt → [] → wipe`. The remediation fixed only the episodes *locking* (F8)
+and then reported the corrupt-read class closed. Shared sync had the same shape: F5 was fixed for
+`engrams.yaml` while the sibling artifacts kept pushing corrupt, private-derived text verbatim.
+
+**Lesson for the next audit of this kind:** enumerate the OPERATIONS that can cause the failure —
+write, delete, replace, restore, sync — not the functions that look like writers. And audit the
+recovery path, because a broken restore turns a survivable incident into a permanent one.
+
 ## Provenance
 
 Audit run 2026-08-02 against merged 0.17 main (`4b815ed`) in a detached scratch worktree; the main

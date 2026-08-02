@@ -26,7 +26,21 @@ export class YamlStore implements EngramStore {
 
   async save(engrams: Engram[]): Promise<void> {
     await withAsyncLock(this.filePath, async () => {
-      const content = yaml.dump({ engrams }, { lineWidth: 120, noRefs: true, quotingType: '"' })
+      // Carry quarantined entries through, exactly as append/remove do.
+      // Without this, `save(await load())` — the most natural way to use this
+      // class — permanently deletes every schema-invalid record, because
+      // `load()` withholds them by design. The preservation claim in the class
+      // docs was true of append/remove and false here (#811 audit, finding 8).
+      const { quarantined } = await this._read()
+      const ids = new Set(engrams.map(e => e.id))
+      const carried = (quarantined as Engram[]).filter(q => {
+        const id = (q as { id?: unknown })?.id
+        // A record the caller has since re-added properly must not come back
+        // as a malformed duplicate.
+        return !(typeof id === 'string' && ids.has(id))
+      })
+      const out = carried.length > 0 ? [...engrams, ...carried] : engrams
+      const content = yaml.dump({ engrams: out }, { lineWidth: 120, noRefs: true, quotingType: '"' })
       await asyncAtomicWrite(this.filePath, content)
     })
   }
