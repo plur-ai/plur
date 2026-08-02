@@ -32,6 +32,29 @@ function base64UrlDecode(segment: string): string | null {
 }
 
 /**
+ * Decode a JWT's payload WITHOUT verifying the signature — display-only
+ * identity hints (`sub`, `orgId`, …) for status readouts (#587). Returns null
+ * for anything that is not a three-part JWT with a JSON object payload (e.g.
+ * opaque `plur_sk_…` API keys). Never trust these claims for authorization;
+ * the server verifies — this is purely "whose token does this LOOK like".
+ */
+export function decodeJwtPayload(token: string | undefined | null): Record<string, unknown> | null {
+  if (!token || typeof token !== 'string') return null
+  const parts = token.split('.')
+  if (parts.length !== 3) return null
+  const json = base64UrlDecode(parts[1])
+  if (!json) return null
+  try {
+    const payload: unknown = JSON.parse(json)
+    return payload !== null && typeof payload === 'object' && !Array.isArray(payload)
+      ? payload as Record<string, unknown>
+      : null
+  } catch {
+    return null
+  }
+}
+
+/**
  * Read the `exp` claim from a JWT without verifying it. Returns all-null for
  * anything that is not a three-part JWT carrying a numeric `exp` (e.g. opaque
  * API keys), so callers can cleanly skip expiry reasoning for those.
@@ -39,18 +62,8 @@ function base64UrlDecode(segment: string): string | null {
  * @param now epoch millis to compare against (injectable for tests; defaults to Date.now()).
  */
 export function decodeJwtExpiry(token: string | undefined | null, now: number = Date.now()): JwtExpiry {
-  if (!token || typeof token !== 'string') return UNKNOWN
-  const parts = token.split('.')
-  if (parts.length !== 3) return UNKNOWN
-  const json = base64UrlDecode(parts[1])
-  if (!json) return UNKNOWN
-  let payload: { exp?: unknown }
-  try {
-    payload = JSON.parse(json)
-  } catch {
-    return UNKNOWN
-  }
-  if (typeof payload.exp !== 'number' || !Number.isFinite(payload.exp)) return UNKNOWN
+  const payload = decodeJwtPayload(token)
+  if (!payload || typeof payload.exp !== 'number' || !Number.isFinite(payload.exp)) return UNKNOWN
   const expiresAt = new Date(payload.exp * 1000)
   const msLeft = expiresAt.getTime() - now
   return {
