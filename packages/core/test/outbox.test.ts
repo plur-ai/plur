@@ -488,4 +488,34 @@ describe('outbox pattern (issue #26)', () => {
     )
     expect(postCalls.length).toBe(0)
   })
+
+  it('outboxCount() excludes retired engrams still carrying _outbox — no permanent phantom pending (#766)', async () => {
+    // A retired engram with a stale _outbox marker (direct YAML edit, older
+    // client — retirement without the cancel path) is skipped by flushOutbox
+    // forever. outboxCount must mirror the flush filter, or the count reports
+    // "pending" entries no flush will ever clear.
+    mockRemoteFailure('connection refused')
+    writeStoresConfig(primaryDir, storeConfig())
+    const plur = new Plur({ path: primaryDir })
+
+    await plur.learnRouted('phantom pending one', { scope: REMOTE_SCOPE, type: 'behavioral' })
+    await plur.learnRouted('phantom pending two', { scope: REMOTE_SCOPE, type: 'behavioral' })
+    await new Promise(r => setTimeout(r, 50))
+
+    const engramsPath = join(primaryDir, 'engrams.yaml')
+    const queued = await readLocalEngrams(primaryDir)
+    expect(queued.filter((e: any) => e.structured_data?._outbox)).toHaveLength(2)
+
+    // Retire one WITHOUT the cancel path: flip status in the YAML directly,
+    // leaving the stale _outbox marker in place.
+    const doc = yaml.load(readFileSync(engramsPath, 'utf-8')) as { engrams: any[] }
+    const victim = doc.engrams.find((e: any) => e.statement === 'phantom pending one')
+    victim.status = 'retired'
+    writeFileSync(engramsPath, yaml.dump(doc, { lineWidth: 120, noRefs: true }))
+
+    // Fresh instance (no stale cache): only the active engram counts — the
+    // retired one is invisible to flush and must be invisible to the count.
+    const plur2 = new Plur({ path: primaryDir })
+    expect(await plur2.outboxCount()).toBe(1)
+  })
 })

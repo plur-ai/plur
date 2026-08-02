@@ -4659,10 +4659,15 @@ export class Plur {
     return getSyncStatus(this.paths.root)
   }
 
-  /** Count engrams pending remote sync (outbox entries). */
+  /** Count engrams pending remote sync (outbox entries). Must mirror
+   *  flushOutbox()'s filter exactly: a retired engram still carrying `_outbox`
+   *  (direct YAML edit, older client) is skipped by the flush forever, so
+   *  counting it would report a permanent phantom "pending" (#766). */
   async outboxCount(): Promise<number> {
     const engrams = await this._loadCached(this.paths.engrams)
-    return engrams.filter(e => (e as any).structured_data?._outbox).length
+    return engrams.filter(e =>
+      (e as any).structured_data?._outbox && e.status !== 'retired'
+    ).length
   }
 
   /**
@@ -5749,6 +5754,13 @@ Generate an improved version of the procedure that prevents this failure. Return
         logger.info(`[plur:addStore] rotated token for ${options.url} (scope "${sameEntry.scope}")`)
         return { status: 'token_rotated', scope: sameEntry.scope }
       }
+      // #766 heal: a local store registered BEFORE the materialization fix can
+      // sit in exactly the broken state this fix closes — config entry exists,
+      // file absent — and re-running stores_add with the same path is the
+      // natural post-upgrade repair. Run the same init block on the idempotent
+      // re-add so it actually heals (and the MCP "Store initialized" note is
+      // truthful on this path too). Idempotent and cheap when the file exists.
+      if (!isRemote) this._materializeLocalStore(storePath)
       return { status: 'already_registered', scope: sameEntry.scope }
     }
 
@@ -5783,24 +5795,40 @@ Generate an improved version of the procedure that prevents this failure. Return
           readonly: options?.readonly ?? false,
         }
     // Filesystem stores: initialize the file now so the path materializes
-    // immediately. atomicWrite (inside initFilesystemStore) creates parent dirs.
-    // Fail loudly if the path is unwritable — better than silently landing
-    // writes in the primary store when the file never exists (#766).
-    if (!isRemote && !fs.existsSync(storePath)) {
-      try {
-        initFilesystemStore(storePath)
-      } catch (err) {
-        throw new Error(
-          `addStore: cannot initialize store at "${storePath}": ${(err as Error).message}`,
-        )
-      }
-    }
+    // immediately. Fail loudly if the path is unwritable — better than
+    // silently landing writes in the primary store when the file never
+    // exists (#766).
+    if (!isRemote) this._materializeLocalStore(storePath)
 
     const stores = scopeConflict
       ? [...(config.stores ?? []).filter(s => s.scope !== scope), newEntry]
       : [...(config.stores ?? []), newEntry]
     this.persistStores(stores)
     return { status: scopeConflict ? 'overwritten' : 'added', scope }
+  }
+
+  /**
+   * Materialize a filesystem store file if absent — the existsSync→write
+   * sequence runs under the store's own `<path>.lock` file so it cannot race
+   * a concurrent writer or a second registration and clobber their content
+   * (store-write convention; see `_withStoreLock`). `addStore` is sync and
+   * reachable from the constructor via `autoDiscoverStores`, so this takes
+   * the SAME lock file via the sync `withLock` rather than the async
+   * `_withStoreLock`. Parent dirs are created up front — the lock file lives
+   * next to the store file (this used to be atomicWrite's job).
+   */
+  private _materializeLocalStore(storePath: string): void {
+    try {
+      const dir = dirname(storePath)
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
+      withLock(storePath, () => {
+        if (!fs.existsSync(storePath)) initFilesystemStore(storePath)
+      })
+    } catch (err) {
+      throw new Error(
+        `addStore: cannot initialize store at "${storePath}": ${(err as Error).message}`,
+      )
+    }
   }
 
   /**
