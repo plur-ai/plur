@@ -424,11 +424,35 @@ export interface StorageAdapter {
     limit: number,
     opts?: ScopeRestriction & Pick<StorageFilter, 'scope' | 'visibilityGrants'>,
   ): Promise<VectorSearchHit[]>
-  /** Upsert an embedding for a specific engram. */
-  upsertEmbedding(engramId: string, vector: Float32Array): Promise<void>
   /**
-   * Active engrams that have no stored embedding, up to `limit`, as ONE
-   * set-based query (#762). OPTIONAL — and the enabling contract for
+   * Upsert an embedding for a specific engram.
+   *
+   * `contentHash` is `embeddingContentHash(engram)` for the engram the vector
+   * was computed from — the store persists it beside the vector so it can
+   * later tell a current vector from a stale one (#812). Optional only for
+   * back-compatibility with callers that predate staleness tracking; omitting
+   * it stores a NULL hash, which reads as "unknown" and makes the engram a
+   * candidate for one re-embed.
+   */
+  upsertEmbedding(engramId: string, vector: Float32Array, contentHash?: string): Promise<void>
+  /**
+   * Active engrams with no stored embedding, up to `limit`, as ONE set-based
+   * query (#762). With `includeStale`, also those whose stored vector was
+   * computed from text the engram no longer has (#812).
+   *
+   * The two callers want different questions and must not be merged:
+   *
+   *   - the BACKFILL passes `includeStale: true` — a stale vector is work to do.
+   *   - the semantic read path's completeness gate does NOT. It asks whether
+   *     any engram is INVISIBLE to the vector leg, because that is what makes a
+   *     vector search silently partial. A stale vector still returns the engram,
+   *     just ranked by older text. Letting staleness open that gate would drop
+   *     every semantic recall onto the O(N) in-memory path corpus-wide until the
+   *     backfill caught up — one edited engram, whole-store cliff, which is the
+   *     regression this tier exists to avoid (ADR-0005's 2026-07-28 amendment).
+   *     Edits kick the backfill via the write path anyway, so nothing is missed.
+   *
+   * OPTIONAL — and the enabling contract for
    * primary-store auto-embed: core only wires the write-path/backfill
    * embedding pass into an adapter that can answer "which rows lack
    * embeddings" without loading the corpus. The alternative shape — load
@@ -441,7 +465,7 @@ export interface StorageAdapter {
    * Called with `limit: 1` as a completeness probe on the semantic read path,
    * so the implementation should be an indexed anti-join, not a scan-and-diff.
    */
-  listEngramsMissingEmbeddings?(limit: number): Promise<Engram[]>
+  listEngramsMissingEmbeddings?(limit: number, opts?: { includeStale?: boolean }): Promise<Engram[]>
   /** Release resources. */
   close(): Promise<void>
 }

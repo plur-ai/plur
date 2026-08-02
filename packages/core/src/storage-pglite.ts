@@ -263,6 +263,14 @@ export class PGLiteAdapter implements DerivedIndexAdapter {
         );
       `)
     }
+    // #812: the text this vector was computed from, so a changed engram gets a
+    // changed vector. Additive + idempotent, so an existing store gains it on
+    // next open. Deliberately NOT a foreign key to `engrams`: `reindex()`
+    // deletes every engram row and re-inserts it, and ON DELETE CASCADE would
+    // therefore discard the whole embedding table on every reindex — the exact
+    // cache the comment there says is preserved on purpose. Orphans left by
+    // real removals are swept set-wise in `syncFromYaml` instead.
+    await db.exec('ALTER TABLE engram_embeddings ADD COLUMN IF NOT EXISTS content_hash TEXT;')
     // AGE engram graph (#200 lands the actual edges; we just create the
     // graph here so the schema is ready).
     if (this.hasAge) {
@@ -515,6 +523,16 @@ export class PGLiteAdapter implements DerivedIndexAdapter {
         } else {
           await db.exec("DELETE FROM engrams WHERE source = 'primary'")
         }
+        // #812: sweep vectors whose engram is gone. `engram_embeddings` has no
+        // cascading FK on this tier (see the schema comment — a cascade would
+        // empty the table on every `reindex()`), so a removal used to leave the
+        // vector behind indefinitely. That mattered beyond wasted space:
+        // `generateEngramId` mints `max(same-day id) + 1`, so compacting the
+        // highest engram of a day frees that id for the next `learn()`, and the
+        // new, unrelated engram inherited the dead vector — recall ranking it as
+        // whatever the removed engram used to say. Set-based and inside the same
+        // transaction as the deletes above, so it costs one statement per sync.
+        await db.exec('DELETE FROM engram_embeddings WHERE engram_id NOT IN (SELECT id FROM engrams)')
         await db.exec('COMMIT')
       } catch (err) {
         await db.exec('ROLLBACK').catch(() => {})
@@ -650,7 +668,7 @@ export class PGLiteAdapter implements DerivedIndexAdapter {
     return scored.slice(0, limit)
   }
 
-  async upsertEmbedding(engramId: string, vector: Float32Array): Promise<void> {
+  async upsertEmbedding(engramId: string, vector: Float32Array, contentHash?: string): Promise<void> {
     return this.mutex.run(async () => {
       const db = await this.getDb()
       // #335 storage-boundary contract: a wrong-shape vector must never be
@@ -672,18 +690,20 @@ export class PGLiteAdapter implements DerivedIndexAdapter {
         // "[...]" literal and rounds to fp16 on write.
         const literal = vectorLiteral(vector)
         await db.query(
-          `INSERT INTO engram_embeddings (engram_id, embedding)
-           VALUES ($1, $2::${this.activeVecType})
-           ON CONFLICT (engram_id) DO UPDATE SET embedding = EXCLUDED.embedding`,
-          [engramId, literal],
+          `INSERT INTO engram_embeddings (engram_id, embedding, content_hash)
+           VALUES ($1, $2::${this.activeVecType}, $3)
+           ON CONFLICT (engram_id) DO UPDATE
+             SET embedding = EXCLUDED.embedding, content_hash = EXCLUDED.content_hash`,
+          [engramId, literal, contentHash ?? null],
         )
       } else {
         const buf = float32ToBytes(vector)
         await db.query(
-          `INSERT INTO engram_embeddings (engram_id, embedding)
-           VALUES ($1, $2)
-           ON CONFLICT (engram_id) DO UPDATE SET embedding = EXCLUDED.embedding`,
-          [engramId, buf],
+          `INSERT INTO engram_embeddings (engram_id, embedding, content_hash)
+           VALUES ($1, $2, $3)
+           ON CONFLICT (engram_id) DO UPDATE
+             SET embedding = EXCLUDED.embedding, content_hash = EXCLUDED.content_hash`,
+          [engramId, buf, contentHash ?? null],
         )
       }
     })
@@ -695,6 +715,26 @@ export class PGLiteAdapter implements DerivedIndexAdapter {
     const res = await db.query(
       'SELECT 1 FROM engram_embeddings WHERE engram_id = $1 LIMIT 1',
       [engramId],
+    )
+    return res.rows.length > 0
+  }
+
+  /**
+   * True when `engramId` has an embedding computed from exactly `contentHash`
+   * (#812) — the skip condition the auto-embed pass needs instead of
+   * `hasEmbedding`, which only ever asked whether SOME vector existed and so
+   * let an edited engram keep the vector of its previous text indefinitely.
+   *
+   * Both sides are hashed in JS by `embeddingContentHash`, since this tier's
+   * `engrams` table has no `search_text` column for SQL to hash. A row stored
+   * before content hashing carries NULL and reports false, so it is re-embedded
+   * once and correct from then on.
+   */
+  async embeddingIsCurrent(engramId: string, contentHash: string): Promise<boolean> {
+    const db = await this.getDb()
+    const res = await db.query(
+      'SELECT 1 FROM engram_embeddings WHERE engram_id = $1 AND content_hash = $2 LIMIT 1',
+      [engramId, contentHash],
     )
     return res.rows.length > 0
   }
