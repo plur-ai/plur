@@ -172,11 +172,11 @@ Tracked in #794. Remediation, with the measured before/after for each:
 | F6 | MED-HIGH | Fixed | #798 / PR #801 | Reports "NOT pulled — still N commit(s) behind" instead of a false success |
 | F7 | MED-HIGH | Fixed | #798 / PR #801 | Warning names the scope:local count that is NOT backed up |
 | F8 | MED-HIGH | Fixed | #797 / PR #800 | P02: 70% loss → **0%** (100/100), no leftover tmp |
-| F9 | MED | Open | #804 | Stale-lock stealing has no pid liveness check and cascades |
-| F10 | MED | Open | #804 | Sync busy-wait starves the async holder |
+| F9 | MED | Fixed | #804 | Stale threshold 10s → 60s (measured worst case ~6.3s); waiter deadline now EXCEEDS it, so a live holder is waited for rather than failed against; pid+host liveness steals from a dead holder immediately; ownership tokens end the release cascade. Probe p05b: `THIEF ENTERED while holder still inside` `true` → **`false`** |
+| F10 | MED | Open | #804 | Sync busy-wait starves the async holder. Its stale threshold was raised with F9, but its retry budget deliberately was NOT — waiting longer in a busy-wait blocks the event loop |
 | F11 | MED | Open | #805 | packs/registry.yaml integrity baseline destroyed silently |
 | F12 | MED | Open | #805 | `setSchemaVersion` lock bypass — measured lost update |
-| F13 | LOW-MED | Fixed incidentally | #795 / PR #800 | Quarantine means pack install no longer drops invalid pack engrams |
+| F13 | LOW-MED | Fixed incidentally | #795 / PR #800 | Quarantine covers the pack path too — it is the same `loadEngrams`/`saveEngrams` pair. Verified: pack file with 4 entries (1 schema-invalid) → loader returns 3, 1 quarantined, **4 back on disk after re-save**, malformed entry intact. The integrity hash is therefore computed over the full file, not a reduced one |
 | F14 | LOW | Fixed | PR #800 | `YamlStore` and `loadEngrams` now share one parser |
 | F15 | LOW | Open | #805 | MCP drop-log unlocked (diagnostics only) |
 
