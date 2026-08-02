@@ -1,5 +1,5 @@
 import { createPlur, type GlobalFlags } from '../plur.js'
-import { shouldOutputJson, outputJson, outputText } from '../output.js'
+import { shouldOutputJson, outputJson, outputText, outputInfo } from '../output.js'
 
 export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
   const plur = createPlur(flags)
@@ -8,8 +8,10 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
   if (shouldOutputJson(flags)) {
     outputJson(result)
   } else {
-    outputText('Plur Status')
-    outputText('===========')
+    // Banner is decoration → suppressed by --quiet; the fields below are the
+    // primary output and always print (#730).
+    outputInfo('Plur Status', flags)
+    outputInfo('===========', flags)
     outputText(`  Engrams:      ${result.engram_count}`)
     outputText(`  Episodes:     ${result.episode_count}`)
     outputText(`  Packs:        ${result.pack_count}`)

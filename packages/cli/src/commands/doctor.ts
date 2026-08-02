@@ -3,7 +3,7 @@ import { existsSync, readFileSync, realpathSync, statSync, accessSync, constants
 import { join, extname } from 'path'
 import { homedir, platform } from 'os'
 import { createPlur, type GlobalFlags } from '../plur.js'
-import { outputText, outputJson, shouldOutputJson } from '../output.js'
+import { outputText, outputInfo, outputJson, shouldOutputJson } from '../output.js'
 import {
   type ConfigFile,
   buildMcpServerEntry,
@@ -594,11 +594,20 @@ function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<Doctor
   })
 }
 
-function printText(report: DoctorReport): void {
+/**
+ * Render the report. Exported for tests (#730): text mode cannot be exercised
+ * through a spawned CLI (piped stdout auto-selects JSON), and calling run()
+ * in-process would spawn the embedder probe against the test runner's argv.
+ *
+ * --quiet (#730): only the title banner is suppressed — everything else in
+ * this report IS the diagnosis the user asked for, including the ✓ lines
+ * (absence of a ✓ would read as "not checked", not "healthy").
+ */
+export function printText(report: DoctorReport, flags?: GlobalFlags): void {
   const tick = (b: boolean) => (b ? '✓' : '✗')
 
-  outputText('plur doctor — Claude Code / Claude Desktop / Cursor diagnostic')
-  outputText('')
+  outputInfo('plur doctor — Claude Code / Claude Desktop / Cursor diagnostic', flags)
+  outputInfo('', flags)
   outputText('Config files:')
   for (const c of report.configs) {
     if (!c.exists) {
@@ -763,7 +772,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   if (shouldOutputJson(flags)) {
     outputJson(report)
   } else {
-    printText(report)
+    printText(report, flags)
   }
 
   process.exit(report.overall === 'ok' ? 0 : 1)

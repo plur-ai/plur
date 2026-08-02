@@ -2,7 +2,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
 import { type GlobalFlags } from '../plur.js'
-import { outputText } from '../output.js'
+import { outputText, outputInfo, outputError, isQuiet } from '../output.js'
 
 /**
  * plur login <host> — mint an enterprise token via OAuth device flow,
@@ -380,7 +380,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   const parsed = parseArgs(args)
 
   if (parsed.error) {
-    outputText(`Error: ${parsed.error}\n\n${HELP}`)
+    outputError(`Error: ${parsed.error}\n\n${HELP}`)
     process.exit(1)
   }
 
@@ -407,7 +407,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   }
 
   if (!parsed.host) {
-    outputText(`Missing required argument: <host>\n\n${HELP}`)
+    outputError(`Missing required argument: <host>\n\n${HELP}`)
     process.exit(1)
   }
 
@@ -415,28 +415,28 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   try {
     origin = normaliseHost(parsed.host)
   } catch (err) {
-    outputText(`Error: ${(err as Error).message}`)
+    outputError(`Error: ${(err as Error).message}`)
     process.exit(1)
   }
 
   const timeoutSecs = parsed.timeoutSecs ?? 300
 
-  outputText(`Authenticating with ${origin}...`)
+  outputInfo(`Authenticating with ${origin}...`, flags)
 
   // Step 1: request device code
   let deviceResp: DeviceCodeResponse
   try {
     deviceResp = await requestDeviceCode(origin)
   } catch (err) {
-    outputText(`Error: ${(err as Error).message}`)
+    outputError(`Error: ${(err as Error).message}`)
     process.exit(1)
   }
 
   // Step 2: present code + URL to user
-  outputText('')
+  outputInfo('', flags)
   outputText(`Your one-time code:  ${deviceResp.user_code}`)
   outputText(`Visit:               ${deviceResp.verification_uri}`)
-  outputText('')
+  outputInfo('', flags)
 
   if (parsed.noOpen) {
     outputText('Open the URL above in your browser, enter the code, and approve the request.')
@@ -448,8 +448,8 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
       outputText('Could not open browser. Visit the URL above manually.')
     }
   }
-  outputText('')
-  outputText(`Waiting for approval (timeout: ${timeoutSecs}s)...`)
+  outputInfo('', flags)
+  outputInfo(`Waiting for approval (timeout: ${timeoutSecs}s)...`, flags)
 
   // Step 3: poll for token
   let tokenResp: TokenResponse
@@ -462,7 +462,9 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
       timeoutSecs,
       () => {
         // Progress indicator — write dots without newlines while polling.
-        // Use process.stdout.write directly (not outputText) to stay on-line.
+        // Raw stdout writes (not outputText) to stay on-line; gated on
+        // --quiet like any other progress output (#730).
+        if (isQuiet(flags)) return
         process.stdout.write('.')
         dots++
         if (dots % 40 === 0) process.stdout.write('\n')
@@ -470,7 +472,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     )
   } catch (err) {
     if (dots > 0) process.stdout.write('\n')
-    outputText(`\nError: ${(err as Error).message}`)
+    outputError(`\nError: ${(err as Error).message}`)
     process.exit(1)
   }
   if (dots > 0) process.stdout.write('\n')
@@ -488,15 +490,15 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     authed_at: new Date().toISOString(),
   }
   writePlurConfig(cfg)
-  outputText(`\nLogged in as ${me.username} — token written to ${plurConfigPath()}`)
+  outputInfo(`\nLogged in as ${me.username} — token written to ${plurConfigPath()}`, flags)
 
   // Step 6: signal hot-reload to running MCP server
   const reloadResult = signalReload()
-  outputText(`Server: ${reloadResult}`)
+  outputInfo(`Server: ${reloadResult}`, flags)
 
-  outputText('')
-  outputText('Done. Your enterprise token is active.')
+  outputInfo('', flags)
+  outputInfo('Done. Your enterprise token is active.', flags)
   if (me.scopes && me.scopes.length > 0) {
-    outputText(`  readable scopes: ${me.scopes.join(', ')}`)
+    outputInfo(`  readable scopes: ${me.scopes.join(', ')}`, flags)
   }
 }

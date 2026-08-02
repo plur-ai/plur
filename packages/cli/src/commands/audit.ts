@@ -1,5 +1,5 @@
 import { createPlur, type GlobalFlags } from '../plur.js'
-import { shouldOutputJson, outputJson, outputText, exit } from '../output.js'
+import { shouldOutputJson, outputJson, outputText, outputInfo, exit } from '../output.js'
 import { readdirSync, readFileSync, statSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
@@ -237,9 +237,11 @@ function sharedKeyTerms(a: string, b: string): number {
   return count
 }
 
-function printText(report: AuditReport): void {
-  outputText(`plur audit — content-layer health for ${report.source}`)
-  outputText('')
+function printText(report: AuditReport, flags?: GlobalFlags): void {
+  // --quiet (#730): banner and next-step hints are suppressed; the findings
+  // themselves are the primary output and always print.
+  outputInfo(`plur audit — content-layer health for ${report.source}`, flags)
+  outputInfo('', flags)
   outputText(`Scanned: ${report.scanned} entries`)
   for (const [k, v] of Object.entries(report.counts)) {
     outputText(`  ${k}: ${v}`)
@@ -259,12 +261,12 @@ function printText(report: AuditReport): void {
     }
     outputText('')
   }
-  outputText('Next steps:')
-  outputText('  CONFLICT  → resolve (which is true now?), update or retire engram, fix auto-memory')
-  outputText('  DUPLICATE → delete auto-memory file (engram covers it)')
-  outputText('  SNAPSHOT  → verify against live source (git/gh/package.json), retire if stale')
-  outputText('  ORPHAN    → confirm still relevant, migrate durable rules to engram')
-  outputText('  DURABLE   → leave alone (active project state OR unique to auto-memory)')
+  outputInfo('Next steps:', flags)
+  outputInfo('  CONFLICT  → resolve (which is true now?), update or retire engram, fix auto-memory', flags)
+  outputInfo('  DUPLICATE → delete auto-memory file (engram covers it)', flags)
+  outputInfo('  SNAPSHOT  → verify against live source (git/gh/package.json), retire if stale', flags)
+  outputInfo('  ORPHAN    → confirm still relevant, migrate durable rules to engram', flags)
+  outputInfo('  DURABLE   → leave alone (active project state OR unique to auto-memory)', flags)
 }
 
 export async function run(args: string[], flags: GlobalFlags): Promise<void> {
@@ -325,5 +327,5 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   const report: AuditReport = { source, scanned: entries.length, findings, counts }
 
   if (shouldOutputJson(flags)) outputJson(report)
-  else printText(report)
+  else printText(report, flags)
 }

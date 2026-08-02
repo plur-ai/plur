@@ -1,6 +1,6 @@
 import type { IndexSyncError } from '@plur-ai/core'
 import { createPlur, type GlobalFlags } from '../plur.js'
-import { shouldOutputJson, outputJson, outputText } from '../output.js'
+import { shouldOutputJson, outputJson, outputText, outputInfo } from '../output.js'
 
 /**
  * `plur sync [remote] [--full]`
@@ -43,11 +43,13 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   if (shouldOutputJson(flags)) {
     outputJson({ ...result, full, ...(indexError ? { index_error: indexError } : {}) })
   } else {
-    outputText(`Sync: ${result.action}${full ? ' (full reindex)' : ''}`)
-    if (result.message) outputText(`  ${result.message}`)
-    if (result.files_changed > 0) outputText(`  Files changed: ${result.files_changed}`)
-    if (full) outputText('  Index rebuilt from YAML.')
+    // Status/confirmation lines → suppressed by --quiet (#730)…
+    outputInfo(`Sync: ${result.action}${full ? ' (full reindex)' : ''}`, flags)
+    if (result.message) outputInfo(`  ${result.message}`, flags)
+    if (result.files_changed > 0) outputInfo(`  Files changed: ${result.files_changed}`, flags)
+    if (full) outputInfo('  Index rebuilt from YAML.', flags)
     if (indexError) {
+      // …but a failed index pass is an outcome-differs warning — never suppressed.
       outputText(`  Warning: index ${indexError.op} failed — ${indexError.message}`)
       outputText("  YAML is still the source of truth. Run 'plur sync --full' to rebuild the index.")
     }

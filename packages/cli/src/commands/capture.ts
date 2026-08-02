@@ -1,5 +1,5 @@
 import { createPlur, type GlobalFlags } from '../plur.js'
-import { shouldOutputJson, outputJson, outputText, exit } from '../output.js'
+import { shouldOutputJson, outputJson, outputInfo, exit } from '../output.js'
 
 export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   const plur = createPlur(flags)
@@ -33,8 +33,8 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   if (shouldOutputJson(flags)) {
     outputJson({ id: episode.id, summary: episode.summary, timestamp: episode.timestamp })
   } else {
-    outputText(`Captured episode: ${episode.id}`)
-    outputText(`  Summary: ${episode.summary}`)
-    outputText(`  Timestamp: ${episode.timestamp}`)
+    outputInfo(`Captured episode: ${episode.id}`, flags)
+    outputInfo(`  Summary: ${episode.summary}`, flags)
+    outputInfo(`  Timestamp: ${episode.timestamp}`, flags)
   }
 }

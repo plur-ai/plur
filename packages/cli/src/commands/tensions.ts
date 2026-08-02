@@ -1,5 +1,5 @@
 import { createPlur, type GlobalFlags } from '../plur.js'
-import { shouldOutputJson, outputJson, outputText, exit } from '../output.js'
+import { shouldOutputJson, outputJson, outputText, outputInfo, exit } from '../output.js'
 import type { LlmFunction } from '@plur-ai/core'
 
 /** Create an OpenAI-compatible LLM function from base URL + key + model. */
@@ -111,13 +111,13 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
       if (action === 'confirm') {
         const record = plur.confirmTension(tensionId)
         if (shouldOutputJson(flags)) { outputJson({ record }) } else {
-          outputText(`Confirmed ${record.id} as a real conflict.`)
-          outputText(`Resolve it with: plur tensions resolve ${record.id} --winner <engram-id>`)
+          outputInfo(`Confirmed ${record.id} as a real conflict.`, flags)
+          outputInfo(`Resolve it with: plur tensions resolve ${record.id} --winner <engram-id>`, flags)
         }
       } else if (action === 'dismiss') {
         const record = plur.dismissTension(tensionId)
         if (shouldOutputJson(flags)) { outputJson({ record }) } else {
-          outputText(`Dismissed ${record.id} — the pair is suppressed from future scans.`)
+          outputInfo(`Dismissed ${record.id} — the pair is suppressed from future scans.`, flags)
         }
       } else {
         if (!winner) {
@@ -126,7 +126,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
         }
         const { record, retired_id } = await plur.resolveTension(tensionId, winner)
         if (shouldOutputJson(flags)) { outputJson({ record, retired: retired_id }) } else {
-          outputText(`Resolved ${record.id}: ${winner} wins, ${retired_id} retired.`)
+          outputInfo(`Resolved ${record.id}: ${winner} wins, ${retired_id} retired.`, flags)
         }
       }
     } catch (err) {
@@ -153,11 +153,12 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     }
 
     if (!shouldOutputJson(flags)) {
-      outputText(`Scanning ${engrams.length} engrams for contradictions…`)
-      if (scope) outputText(`  scope: ${scope}`)
-      if (domain) outputText(`  domain: ${domain}`)
-      outputText(`  min-confidence: ${minConfidence}  max-pairs: ${maxPairs}  batch-size: ${batchSize}`)
-      outputText('')
+      // Progress banner → suppressed by --quiet (#730).
+      outputInfo(`Scanning ${engrams.length} engrams for contradictions…`, flags)
+      if (scope) outputInfo(`  scope: ${scope}`, flags)
+      if (domain) outputInfo(`  domain: ${domain}`, flags)
+      outputInfo(`  min-confidence: ${minConfidence}  max-pairs: ${maxPairs}  batch-size: ${batchSize}`, flags)
+      outputInfo('', flags)
     }
 
     const { scanForTensions } = await import('@plur-ai/core')
@@ -217,10 +218,11 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
       outputText('')
     })
 
-    outputText('Next steps:')
-    outputText('  plur tensions confirm <T-id>                       # real conflict')
-    outputText('  plur tensions dismiss <T-id>                       # false positive, suppress')
-    outputText('  plur tensions resolve <T-id> --winner <engram-id>  # keep winner, retire loser')
+    // Next-step hints → suppressed by --quiet; the findings above stay (#730).
+    outputInfo('Next steps:', flags)
+    outputInfo('  plur tensions confirm <T-id>                       # real conflict', flags)
+    outputInfo('  plur tensions dismiss <T-id>                       # false positive, suppress', flags)
+    outputInfo('  plur tensions resolve <T-id> --winner <engram-id>  # keep winner, retire loser', flags)
     return
   }
 

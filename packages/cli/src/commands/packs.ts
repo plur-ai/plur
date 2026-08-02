@@ -1,7 +1,7 @@
 import { join } from 'path'
 import { homedir } from 'os'
 import { createPlur, type GlobalFlags } from '../plur.js'
-import { shouldOutputJson, outputJson, outputText, exit } from '../output.js'
+import { shouldOutputJson, outputJson, outputText, outputInfo, exit } from '../output.js'
 
 export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   const plur = createPlur(flags)
@@ -144,11 +144,14 @@ Options:
         name,
       })
     } else {
-      outputText(`Exported pack "${name}":`)
-      outputText(`  Engrams:    ${result.engram_count}`)
-      outputText(`  Path:       ${result.path}`)
-      outputText(`  Integrity:  ${result.integrity}`)
-      outputText(`  Match terms: ${result.match_terms.join(', ') || '(none)'}`)
+      // Export confirmation → suppressed by --quiet; the privacy findings
+      // below (blocked/warned engrams) stay loud — the pack differs from
+      // what was requested (#730).
+      outputInfo(`Exported pack "${name}":`, flags)
+      outputInfo(`  Engrams:    ${result.engram_count}`, flags)
+      outputInfo(`  Path:       ${result.path}`, flags)
+      outputInfo(`  Integrity:  ${result.integrity}`, flags)
+      outputInfo(`  Match terms: ${result.match_terms.join(', ') || '(none)'}`, flags)
 
       if (!result.privacy.clean) {
         const blocked = result.privacy.issues.filter(i => i.type === 'secret' || i.type === 'private_visibility')
@@ -181,9 +184,11 @@ Options:
     if (shouldOutputJson(flags)) {
       outputJson(result)
     } else {
-      outputText(`Installed pack "${result.name}": ${result.installed} engrams`)
+      // Install confirmation → suppressed by --quiet; security warnings and
+      // conflicts below stay loud (#730).
+      outputInfo(`Installed pack "${result.name}": ${result.installed} engrams`, flags)
       if (result.registry) {
-        outputText(`  Integrity: ${result.registry.integrity}`)
+        outputInfo(`  Integrity: ${result.registry.integrity}`, flags)
       }
 
       if (!result.security.clean) {
@@ -224,7 +229,7 @@ Use 'plur packs list' to see installed packs.`)
     if (shouldOutputJson(flags)) {
       outputJson(result)
     } else {
-      outputText(`Uninstalled pack "${result.name}": ${result.engram_count} engrams removed`)
+      outputInfo(`Uninstalled pack "${result.name}": ${result.engram_count} engrams removed`, flags)
     }
     return
   }

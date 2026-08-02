@@ -1,5 +1,5 @@
 import { createPlur, type GlobalFlags } from '../plur.js'
-import { shouldOutputJson, outputJson, outputText, exit } from '../output.js'
+import { shouldOutputJson, outputJson, outputText, outputInfo, exit } from '../output.js'
 
 /**
  * `plur scopes` (#647) — the user-facing surface for authorized-but-unregistered
@@ -23,9 +23,9 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     const cleared = plur.getDismissedScopes()
     await plur.reofferScopes()
     if (json) return outputJson({ success: true, action: 'reoffer', cleared })
-    return outputText(cleared.length
+    return outputInfo(cleared.length
       ? `Re-offering ${cleared.length} previously dismissed scope(s): ${cleared.join(', ')}`
-      : 'No dismissed scopes to re-offer.')
+      : 'No dismissed scopes to re-offer.', flags)
   }
 
   const subcommand = args[0]
@@ -37,7 +37,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
       const { url, status } = await plur.registerScope(scope)
       if (json) return outputJson({ success: true, action: 'register', scope, url, status })
       const verb = status === 'added' ? 'Registered' : status === 'token_rotated' ? 'Rotated token for' : 'Already registered'
-      return outputText(`${verb} scope "${scope}" (${url}).`)
+      return outputInfo(`${verb} scope "${scope}" (${url}).`, flags)
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       if (json) return outputJson({ success: false, action: 'register', scope, error: msg })
@@ -50,7 +50,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     if (!scope) exit(1, 'Usage: plur scopes dismiss <scope>')
     await plur.dismissScope(scope)
     if (json) return outputJson({ success: true, action: 'dismiss', scope })
-    return outputText(`Dismissed "${scope}" — it won't be offered again. Run \`plur scopes --reoffer\` to undo.`)
+    return outputInfo(`Dismissed "${scope}" — it won't be offered again. Run \`plur scopes --reoffer\` to undo.`, flags)
   }
 
   // Default (or `list`): show the offerable set.
@@ -81,6 +81,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   if (failures.length > 0) {
     outputText(`\n(warning: could not reach ${failures.map(f => f.url).join(', ')} — that store's scopes may be missing above.)`)
   }
-  outputText(`\nRegister one:  plur scopes register <scope>`)
-  outputText(`Dismiss one:   plur scopes dismiss <scope>`)
+  // Next-step hints → suppressed by --quiet (#730); the listing above stays.
+  outputInfo(`\nRegister one:  plur scopes register <scope>`, flags)
+  outputInfo(`Dismiss one:   plur scopes dismiss <scope>`, flags)
 }

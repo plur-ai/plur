@@ -1,5 +1,5 @@
 import { createPlur, type GlobalFlags } from '../plur.js'
-import { shouldOutputJson, outputJson, outputText, exit } from '../output.js'
+import { shouldOutputJson, outputJson, outputText, outputInfo, exit } from '../output.js'
 
 // Note: the supersedes rule assumes the consumer has PLUR MCP tools available
 // (plur_learn). Consumers without MCP tooling can opt out via
@@ -65,6 +65,6 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
       outputText('## ALSO CONSIDER')
       outputText(result.consider)
     }
-    outputText(`\nInjected ${result.count} engrams (${result.tokens_used} tokens)`)
+    outputInfo(`\nInjected ${result.count} engrams (${result.tokens_used} tokens)`, flags)
   }
 }
