@@ -573,6 +573,42 @@ const PUSHDOWN_OVERFETCH = 3
  */
 const PUSHDOWN_MAX_ROUNDS = 3
 
+/**
+ * Rows per `listEngramsMissingEmbeddings` batch in the primary-store
+ * auto-embed pass (#762). Bounds how much of the corpus is ever held in
+ * memory by the pass — the pass itself runs to convergence, one batch at a
+ * time, in the background. Each batch is a fresh anti-join, so concurrent
+ * writers and a mid-pass crash both converge on the next pass.
+ */
+const PRIMARY_AUTO_EMBED_BATCH = 100
+
+/**
+ * True when a background-pass error means "the store was torn down under
+ * us", not "something is wrong" (#762 follow-up, caught by smoke-packaged).
+ *
+ * The auto-embed pass is fire-and-track, so a short-lived process — the
+ * packaged smoke, a CLI invocation, any script that closes or drops its
+ * store when its work is done — can legitimately tear the store down while
+ * a pass is mid-flight. That is a benign cancellation: there is nothing to
+ * fix, nothing to retry, and the next engine over a live store converges.
+ * Reporting it as a background FAILURE (warning + `lastIndexError`) is
+ * noise at best; at worst the stray warning lands after the process's real
+ * output, which is exactly how the release smoke's last-line gate caught it.
+ *
+ * Patterns, each tied to a specific teardown path:
+ *   - Postgres `42P01` (undefined_table) / `3F000` (invalid_schema_name):
+ *     `dropSchema()` won the race against the pass's next query.
+ *   - "adapter is closed": `close()` beat the pass's next `getPool()`.
+ *   - "after calling end": node-postgres's "Cannot use a pool after calling
+ *     end on the pool" — same race, seen from a checkout already in flight.
+ */
+function isStoreTeardownError(err: unknown): boolean {
+  const code = (err as { code?: string }).code
+  if (code === '42P01' || code === '3F000') return true
+  const msg = (err as Error)?.message ?? ''
+  return msg.includes('adapter is closed') || msg.includes('after calling end')
+}
+
 export class Plur {
   private paths: PlurPaths
   private config: PlurConfig
@@ -589,6 +625,16 @@ export class Plur {
    */
   private pgliteAdapter: PGLiteAdapter | null = null
   private _pgliteInitPromise: Promise<void> | null = null
+  /**
+   * In-flight primary-store auto-embed pass (#762), or null. One pass at a
+   * time: a write landing while a pass runs sets `_primaryEmbedRerun` instead
+   * of starting a second pass, so back-to-back writes coalesce into one
+   * follow-up sweep rather than N overlapping ones re-embedding the same gap.
+   */
+  private _primaryEmbedPass: Promise<void> | null = null
+  private _primaryEmbedRerun = false
+  /** One-shot latch for the embeddings-disabled notice on the primary-store auto-embed path. */
+  private _primaryEmbedDisabledNoticeDone = false
   /**
    * Last background index failure (#272). Set by the .catch of the
    * fire-and-forget index chains (initial sync, syncFromYaml, reindex,
@@ -2752,9 +2798,8 @@ export class Plur {
     return results
   }
 
-  /** Search engrams using local embeddings. Async, no API calls. Routes through PGLite/pgvector when active (#226), with optional intent routing (#224) + cross-encoder rerank (#220). */
+  /** Search engrams using local embeddings. Async, no API calls. Routes through PGLite/pgvector when active (#226) or a Postgres primary store's vector index (#762), with optional intent routing (#224) + cross-encoder rerank (#220). */
   async recallSemantic(query: string, options?: Omit<RecallOptions, 'mode' | 'llm'>): Promise<Engram[]> {
-    const filtered = await this._filterEngrams(options)
     const limit = options?.limit ?? 20
     const rerank = await this._resolveRerankOptions(options?.rerank)
     const intent = this._resolveIntentProfile(query, options?.intentOverride)
@@ -2765,9 +2810,14 @@ export class Plur {
     const rerankFetch = rerank ? Math.max(limit, rerank.topK ?? 50) : limit
     const fetchLimit = Math.max(intentFetch, rerankFetch)
     let results: Engram[]
+    const primaryAdapter = this._primaryQueryAdapter()
     if (this.pgliteAdapter) {
+      const filtered = await this._filterEngrams(options)
       results = await this._pgliteSemanticRecall(query, fetchLimit, filtered, options)
+    } else if (primaryAdapter) {
+      results = await this._primarySemanticRecall(primaryAdapter, query, fetchLimit, options)
     } else {
+      const filtered = await this._filterEngrams(options)
       results = await embeddingSearch(filtered, query, fetchLimit, this.paths.root)
     }
     if (intent) {
@@ -3100,6 +3150,80 @@ export class Plur {
     } catch (err) {
       logger.warning(`[plur] PGLite searchVector failed: ${(err as Error).message}. Falling back to JSON cache.`)
       return embeddingSearch(filtered, query, limit, this.paths.root)
+    }
+  }
+
+  /**
+   * Semantic recall pushed into a primary query store's vector index (#762) —
+   * the `recall()` pushdown's vector twin. Until this existed the Postgres
+   * tier answered `recallSemantic` by loading the corpus and embedding it in
+   * memory: the O(N) path the tier exists to escape, silently, because
+   * nothing populated `engram_embeddings` and nothing read it.
+   *
+   * Shape mirrors `recall()`'s BM25 pushdown:
+   *   - scope/scopes/visibilityGrants go INTO the k-NN query (dilution guard —
+   *     see `_pgliteSemanticRecall`'s comment; same reasoning).
+   *   - residual filters (expiry, min_strength) run here on the rows that
+   *     came back — SQL cannot evaluate them.
+   *   - secondary-store and pack engrams cannot be in the store's table, so
+   *     they are scored in memory (they are small and already file-backed)
+   *     and merged BY SCORE: both sides are cosine similarity from the same
+   *     embedder — the store computes `1 - cosine_distance`, clamped here to
+   *     [0,1] exactly as `embeddingSearchWithScores` clamps its side — so the
+   *     merge is the same metric, not an approximation.
+   *
+   * Completeness gate: one `listEngramsMissingEmbeddings(1)` anti-join probe
+   * per call. While ANY active engram lacks an embedding, vector hits would
+   * be drawn from whatever subset happens to be embedded — correct-looking,
+   * silently incomplete — so this degrades to the in-memory path for THIS
+   * query and kicks the background backfill instead of waiting for it. The
+   * probe is also what makes a store migrated in with existing rows converge:
+   * the first semantic recall starts the backfill even if nothing was ever
+   * written through this instance.
+   */
+  private async _primarySemanticRecall(
+    adapter: StorageAdapter,
+    query: string,
+    limit: number,
+    options?: Omit<RecallOptions, 'mode' | 'llm'>,
+  ): Promise<Engram[]> {
+    const fallback = async () =>
+      embeddingSearch(await this._filterEngrams(options), query, limit, this.paths.root)
+    const { embed } = await import('./embeddings.js')
+    const queryVec = await embed(query, 'query')
+    // Embedder disabled or unavailable: exactly the degraded path this method
+    // replaced — embeddingSearch reports [] without an embedder, never throws.
+    if (!queryVec) return fallback()
+    try {
+      if (typeof adapter.listEngramsMissingEmbeddings === 'function') {
+        const gap = await adapter.listEngramsMissingEmbeddings(1)
+        if (gap.length > 0) {
+          this._kickPrimaryAutoEmbed(adapter)
+          return fallback()
+        }
+      }
+      const hits = await adapter.searchVector(queryVec, Math.max(limit * 3, 50), {
+        scopes: options?.scopes,
+        scope: options?.scope,
+        visibilityGrants: this._grantedScopes(),
+      })
+      const surviving = new Set(this._applyResidualFilters(hits.map(h => h.engram), options).map(e => e.id))
+      const primaryScored: SimilarityResult[] = hits
+        .filter(h => surviving.has(h.engram.id))
+        .map(h => ({ engram: h.engram, score: Math.max(0, Math.min(1, h.score)) }))
+      const outsiders = this._applyResidualFilters(await this._engramsOutsidePrimaryStore(options), options)
+      const outsiderScored = outsiders.length > 0
+        ? await embeddingSearchWithScores(outsiders, query, limit, this.paths.root)
+        : []
+      return [...primaryScored, ...outsiderScored]
+        .sort((a, b) => b.score - a.score)
+        .slice(0, limit)
+        .map(s => s.engram)
+    } catch (err) {
+      logger.warning(
+        `[plur] primary-store searchVector failed: ${(err as Error).message}. Falling back to in-memory semantic recall.`,
+      )
+      return fallback()
     }
   }
 
@@ -4968,6 +5092,117 @@ export class Plur {
     }
   }
 
+  /**
+   * Kick (or coalesce into) the background primary-store auto-embed pass
+   * (#762). Fire-and-track: callers never await it — a write must not pay
+   * embedding latency, and a semantic recall must not block on a backfill.
+   * The pass is tracked on `_pgliteInitPromise` so `waitForIndex()` covers it
+   * exactly like the PGLite background chains.
+   */
+  private _kickPrimaryAutoEmbed(adapter: StorageAdapter): void {
+    if (this._primaryEmbedPass) {
+      // A pass is mid-flight. It re-queries the anti-join per batch, but a
+      // write landing after its final query would be missed — request one
+      // follow-up sweep instead of stacking a second concurrent pass.
+      this._primaryEmbedRerun = true
+      return
+    }
+    const pass = (async () => {
+      do {
+        this._primaryEmbedRerun = false
+        await this._autoEmbedPrimaryStore(adapter) // never throws — errors land in lastIndexError()
+      } while (this._primaryEmbedRerun)
+    })().finally(() => {
+      if (this._primaryEmbedPass === pass) this._primaryEmbedPass = null
+    })
+    this._primaryEmbedPass = pass
+    this._pgliteInitPromise = pass
+  }
+
+  /**
+   * Embed active engrams missing a row in the primary store's embedding table
+   * (#762) — the Postgres-primary counterpart of `_autoEmbedNewEngrams`.
+   *
+   * Deliberately NOT that method: `_autoEmbedNewEngrams` loads the whole
+   * corpus and probes `hasEmbedding` per id, which is fine for a local PGLite
+   * index and a serious per-write regression at the corpus size that selects
+   * a server tier. This pass asks the store the set-based question instead —
+   * `listEngramsMissingEmbeddings` is one anti-join per batch — so its cost
+   * scales with the GAP, not with the corpus.
+   *
+   * Failure posture, in order:
+   *   - embeddings disabled (PLUR_DISABLE_EMBEDDINGS / config): skip before
+   *     touching the database, with a once-per-instance notice — the table
+   *     staying empty is then a configuration choice, not a silent gap.
+   *   - embedder dim ≠ the store's embedding column: skip (debug log), same
+   *     as the PGLite pass — writing wrong-dim vectors is worse than none.
+   *   - embedder unavailable mid-pass: stop quietly; the next write or
+   *     semantic recall retries.
+   *   - anything else: recorded via `lastIndexError()` and logged. Never
+   *     thrown — a background embed must not be able to fail a write.
+   */
+  private async _autoEmbedPrimaryStore(adapter: StorageAdapter): Promise<void> {
+    if (typeof adapter.listEngramsMissingEmbeddings !== 'function') return
+    try {
+      const { embed, embedderStatus } = await import('./embeddings.js')
+      const status = embedderStatus()
+      if (status.disabled) {
+        if (!this._primaryEmbedDisabledNoticeDone) {
+          this._primaryEmbedDisabledNoticeDone = true
+          logger.info(
+            `[plur] embeddings are disabled (${status.disabledReason}) — the primary store's embedding table `
+            + `will not be populated and semantic recall stays on the non-vector fallback path.`,
+          )
+        }
+        return
+      }
+      // #335 dim guard, mirroring _autoEmbedNewEngrams: an embedder/column
+      // mismatch must skip, not persist wrong-shape vectors.
+      const withDim = adapter as Partial<{ getVectorColumnDim(): Promise<number | null> }>
+      const indexedDim = typeof withDim.getVectorColumnDim === 'function'
+        ? await withDim.getVectorColumnDim()
+        : null
+      if (indexedDim !== null && getEmbedder(resolveEmbedderName()).dim !== indexedDim) {
+        logger.debug(
+          `[plur] primary-store auto-embed skip: active embedder dim differs from the store's embedding `
+          + `column (${indexedDim}). Re-create the store's embedding column or switch PLUR_EMBEDDER to migrate.`,
+        )
+        return
+      }
+      const { engramSearchText } = await import('./fts.js')
+      for (;;) {
+        const batch = await adapter.listEngramsMissingEmbeddings(PRIMARY_AUTO_EMBED_BATCH)
+        if (batch.length === 0) return
+        for (const engram of batch) {
+          const vec = await embed(engramSearchText(engram))
+          if (!vec) {
+            // Embedder became unavailable mid-pass — stop; retried on the
+            // next write or semantic recall. Debug, not warning: the embed
+            // failure itself is already surfaced via embedderStatus().
+            logger.debug('[plur] primary-store auto-embed paused: embedder unavailable.')
+            return
+          }
+          await adapter.upsertEmbedding(engram.id, vec)
+        }
+        // A full batch means the anti-join may hold more; a short one is the
+        // tail. Progress is guaranteed: every upsert removes a row from the
+        // next batch's answer, so this cannot loop on the same gap.
+        if (batch.length < PRIMARY_AUTO_EMBED_BATCH) return
+      }
+    } catch (err) {
+      // A store torn down mid-pass (close()/dropSchema() in a short-lived
+      // process) is a cancellation, not a failure — stay quiet and do NOT
+      // record it, or the stray warning outlives the process's real output
+      // (the release smoke's last-line gate caught exactly that).
+      if (isStoreTeardownError(err)) {
+        logger.debug('[plur] primary-store auto-embed stopped: the store was closed or dropped mid-pass.')
+        return
+      }
+      this._recordIndexError('auto-embed', err)
+      logger.warning(`[plur] primary-store auto-embed failed: ${(err as Error).message}`)
+    }
+  }
+
   /** Record a background index failure for later surfacing (#272). */
   private _recordIndexError(op: IndexSyncError['op'], err: unknown): void {
     this._lastIndexError = {
@@ -5012,6 +5247,17 @@ export class Plur {
           this._recordIndexError('sync-from-yaml', err)
           logger.warning(`[plur] PGLite syncFromYaml failed (YAML is still source of truth): ${(err as Error).message}`)
         })
+      return
+    }
+    // Primary query store (#762): the write already landed in the engine that
+    // answers queries — no index delta — but its EMBEDDING has not. Kick the
+    // background auto-embed pass so `engram_embeddings` tracks the corpus and
+    // semantic recall gets to use the vector index instead of falling back to
+    // the O(N) in-memory path. Fire-and-track: the write path never waits.
+    const primary = this._primaryQueryAdapter()
+    if (primary && typeof primary.listEngramsMissingEmbeddings === 'function') {
+      this._lastIndexError = null // new pass — stale failures cleared on success
+      this._kickPrimaryAutoEmbed(primary)
       return
     }
     if (this.indexedStorage) {

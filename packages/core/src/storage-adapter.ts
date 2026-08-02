@@ -414,11 +414,34 @@ export interface StorageAdapter {
    * `opts.scopes` must be applied IN the query (as part of the k-NN
    * predicate), not to the returned rows — otherwise `limit` is measured
    * against the unrestricted neighbour list and in-scope results are diluted
-   * away. See {@link ScopeRestriction}.
+   * away. See {@link ScopeRestriction}. The `scope` visibility filter and
+   * `visibilityGrants` (#775) ride the same rule for the same reason: a
+   * caller that honours them post-hoc spends `limit` on rows it is about to
+   * discard, and a granted team engram never surfaces through the vector leg.
    */
-  searchVector(query: Float32Array, limit: number, opts?: ScopeRestriction): Promise<VectorSearchHit[]>
+  searchVector(
+    query: Float32Array,
+    limit: number,
+    opts?: ScopeRestriction & Pick<StorageFilter, 'scope' | 'visibilityGrants'>,
+  ): Promise<VectorSearchHit[]>
   /** Upsert an embedding for a specific engram. */
   upsertEmbedding(engramId: string, vector: Float32Array): Promise<void>
+  /**
+   * Active engrams that have no stored embedding, up to `limit`, as ONE
+   * set-based query (#762). OPTIONAL — and the enabling contract for
+   * primary-store auto-embed: core only wires the write-path/backfill
+   * embedding pass into an adapter that can answer "which rows lack
+   * embeddings" without loading the corpus. The alternative shape — load
+   * everything, probe `hasEmbedding` per id — is O(N) round trips on every
+   * write, which at the corpus size that selects a server tier is a worse
+   * regression than the missing embeddings (see ADR-0005's 2026-07-28
+   * amendment). An adapter that cannot answer this as a set must leave the
+   * method undefined; core then skips auto-embed rather than degrade writes.
+   *
+   * Called with `limit: 1` as a completeness probe on the semantic read path,
+   * so the implementation should be an indexed anti-join, not a scan-and-diff.
+   */
+  listEngramsMissingEmbeddings?(limit: number): Promise<Engram[]>
   /** Release resources. */
   close(): Promise<void>
 }
