@@ -194,6 +194,33 @@ export function hasPlurMcp(config: Record<string, unknown>): boolean {
 }
 
 /**
+ * The `plur` MCP entry a config file actually declares, if any.
+ *
+ * `hasPlurMcp` answers whether one exists; this returns the thing itself, so a
+ * caller can launch what the user launches instead of a reconstruction of it
+ * (#764). `buildMcpServerEntry` synthesises a *recommended* entry — the shim,
+ * else npx — which is right for `plur init` writing a config and wrong for
+ * doctor verifying one: an install that runs the server some other way gets
+ * diagnosed on a path it never uses.
+ *
+ * Returns null when the entry exists but has no `command`, since there is
+ * nothing runnable to probe and guessing would defeat the purpose.
+ */
+export function readPlurMcpEntry(config: Record<string, unknown>): McpServerEntry | null {
+  const servers = (config.mcpServers ?? {}) as Record<string, unknown>
+  const entry = servers.plur as { command?: unknown; args?: unknown; env?: unknown } | undefined
+  if (!entry || typeof entry.command !== 'string' || entry.command.length === 0) return null
+  const args = Array.isArray(entry.args) ? entry.args.filter((a): a is string => typeof a === 'string') : []
+  const env = entry.env && typeof entry.env === 'object'
+    ? Object.fromEntries(
+        Object.entries(entry.env as Record<string, unknown>)
+          .filter(([, v]) => typeof v === 'string') as [string, string][],
+      )
+    : undefined
+  return { command: entry.command, args, ...(env && Object.keys(env).length > 0 ? { env } : {}) }
+}
+
+/**
  * Detect a `datacore` MCP server entry — used by doctor to surface the
  * "plur ≠ datacore" collision warning that has confused users in the wild.
  */

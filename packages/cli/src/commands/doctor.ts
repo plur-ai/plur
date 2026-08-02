@@ -7,6 +7,8 @@ import { outputText, outputJson, shouldOutputJson } from '../output.js'
 import {
   type ConfigFile,
   buildMcpServerEntry,
+  readPlurMcpEntry,
+  type McpServerEntry,
   cursorProjectMcpConfigPath,
   hasDatacoreMcp,
   hasPlurMcp,
@@ -249,16 +251,50 @@ function inspectConfigs(): ConfigFileReport[] {
  * Times out after 20 seconds — first-run npx fetches the @plur-ai/mcp package
  * (and its native deps), which can take 10-15s. Subsequent runs respond in ~1s.
  */
+/**
+ * The MCP entry doctor should actually launch.
+ *
+ * Prefers whatever a config file declares, in `knownConfigFiles()` order, so
+ * the probe exercises the server the user runs. Falls back to the synthesised
+ * recommendation only when nothing declares one — an install that has not been
+ * wired yet, where "would the recommended entry work" is the useful question.
+ *
+ * This distinction is the whole point of #764. Probing the synthesised entry on
+ * a configured install fails BOTH ways: a working local build reported a 20s
+ * timeout because the cold `npx` fallback takes longer than that, and — worse —
+ * a configured server that crashes on startup reports healthy, because npx
+ * fetched a good copy of a package the user is not running. The crash that
+ * motivated this (a stale dist importing a dependency removed in the SDK v2
+ * migration) is invisible to the old probe by construction.
+ */
+function resolveProbeTarget(): { entry: McpServerEntry; source: string } {
+  for (const cf of knownConfigFiles()) {
+    if (!cf.exists || cf.kind === 'cursor-hooks') continue
+    const declared = readPlurMcpEntry(readConfig(cf.path))
+    if (declared) return { entry: declared, source: cf.label }
+  }
+  return { entry: buildMcpServerEntry(), source: 'recommended default (no config declares a plur server)' }
+}
+
 async function mcpHandshake(
   timeoutMs = 20000,
   envOverride?: Record<string, string>,
-): Promise<{ ok: boolean; serverName?: string; serverVersion?: string; toolCount?: number; error?: string }> {
-  const entry = buildMcpServerEntry()
-  const spawnEnv = envOverride ? { ...process.env, ...envOverride } : undefined
+): Promise<{ ok: boolean; serverName?: string; serverVersion?: string; toolCount?: number; error?: string; probed?: string; command?: string }> {
+  const { entry, source } = resolveProbeTarget()
+  // The entry's own env matters: a config pinning PLUR_TOOL_PROFILE=full gets a
+  // different tool surface, and probing without it would report a count the
+  // user never sees. envOverride still wins — it is how the cursor-profile
+  // probe asks a deliberate what-if.
+  const spawnEnv = (entry.env || envOverride)
+    ? { ...process.env, ...(entry.env ?? {}), ...(envOverride ?? {}) }
+    : undefined
 
   return new Promise((resolve) => {
     let resolved = false
     const finish = (result: { ok: boolean; serverName?: string; serverVersion?: string; toolCount?: number; error?: string }) => {
+      // Always say WHAT was probed — a handshake verdict with no subject is how
+      // a green result on the wrong server gets trusted.
+      result = { ...result, probed: source, command: [entry.command, ...entry.args].join(' ') } as typeof result
       if (resolved) return
       resolved = true
       try { proc.kill() } catch { /* ignore */ }
