@@ -91,19 +91,33 @@ describe('unreadable engram store', () => {
     expect(loadEngrams(join(dir, 'does-not-exist.yaml'))).toEqual([])
   })
 
-  it('an empty or comment-only file is still an empty store', () => {
+  // The two cases below used to assert `[]`. Audit #794 (finding F1) measured
+  // that contract destroying corpora: neither shape is something PLUR ever
+  // writes, both are what a truncated or half-written file looks like, and
+  // reporting them as "empty" meant the next write persisted the emptiness.
+  // A comment-only store is a hypothetical; a truncated one is a Tuesday.
+  it('a comment-only file is unreadable, not empty — PLUR never writes one', () => {
     writeFileSync(path, '# nothing here yet\n')
-    expect(loadEngrams(path)).toEqual([])
+    expect(() => loadEngrams(path)).toThrow(EngramStoreUnreadableError)
   })
 
-  it('a file with a valid shape but no engrams key is an empty store', () => {
+  it('a file with a valid shape but no engrams key is unreadable, not empty', () => {
     writeFileSync(path, 'something_else: true\n')
+    expect(() => loadEngrams(path)).toThrow(EngramStoreUnreadableError)
+  })
+
+  it('an EXPLICITLY empty store still loads as empty', () => {
+    // The shape `initFilesystemStore` writes. This is the one that has to keep
+    // working, and it is unambiguous in a way the two above are not.
+    writeFileSync(path, 'engrams: []\n')
     expect(loadEngrams(path)).toEqual([])
   })
 
-  it('one malformed ENTRY among many is skipped, not fatal', () => {
+  it('one malformed ENTRY among many is withheld, not fatal — and not deleted', () => {
     // Partial data is a different problem from an unreadable store: dropping a
-    // single bad engram loses less than refusing to load the other four.
+    // single bad engram loses less than refusing to load the other four. But it
+    // must not be DELETED either — see the quarantine tests in
+    // store-corruption-guard.test.ts (audit #794, F2).
     const parsed = readFileSync(path, 'utf8')
     writeFileSync(path, parsed + '  - not_an_engram: true\n')
     const engrams = loadEngrams(path)

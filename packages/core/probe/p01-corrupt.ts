@@ -85,6 +85,12 @@ for (const c of corruptors) {
     const ids = (await plur.list()).map(e => e.id)
     const before = diskCount(enPath)
     c.apply(enPath)
+    // Baseline AFTER the corruptor ran. Without this the report cannot tell
+    // "the corruptor destroyed 5 engrams" from "PLUR destroyed 5 engrams" — a
+    // zero-length corruptor leaves 0 on disk by construction, so `after <
+    // before` is true no matter how correctly the write path behaves. The
+    // question the guards must answer is whether PLUR made it WORSE.
+    const corrupted = diskCount(enPath)
     // Fresh instance — the realistic case: a new process picks up the corrupt file.
     const plur2 = new Plur({ storagePath: root, autoDiscover: false })
     let outcome = 'ok'
@@ -98,9 +104,14 @@ for (const c of corruptors) {
     const after = diskCount(enPath)
     let loaderSays: string
     try { loaderSays = String(loadEngrams(enPath).length) } catch (e) { loaderSays = `throws ${(e as Error).name}` }
-    const lost = typeof before === 'number' && typeof after === 'number' && after < before
+    // The finding is PLUR-caused loss: fewer engrams after the operation than
+    // the corrupted file already held. Loss caused by the corruptor alone is
+    // reported as DAMAGE — real, but not something the write path can undo.
+    const plurLost = typeof corrupted === 'number' && typeof after === 'number' && after < corrupted
+    const corruptorLost = typeof before === 'number' && typeof corrupted === 'number' && corrupted < before
+    const label = plurLost ? 'LOSS  ' : corruptorLost ? 'DAMAGE' : '      '
     console.log(
-      `${lost ? 'LOSS ' : '     '} [${c.name}] ${op.name}: disk ${before} -> ${after} | loader: ${loaderSays} | ${outcome}`,
+      `${label} [${c.name}] ${op.name}: disk ${before} -> (corrupt) ${corrupted} -> ${after} | loader: ${loaderSays} | ${outcome}`,
     )
     fs.rmSync(root, { recursive: true, force: true })
   }

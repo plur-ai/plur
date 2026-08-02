@@ -52,7 +52,26 @@ function createBackup(engramsPath: string, version: number): string | null {
   if (!fs.existsSync(engramsPath)) return null
   const backupPath = `${engramsPath}.bak.${version}`
   fs.copyFileSync(engramsPath, backupPath)
+  // A backup that is not on disk is not a backup. copyFileSync leaves the copy
+  // in the page cache, so a power cut during a migration could take the corpus
+  // AND the rollback target with it (audit #794, F4).
+  flushFile(backupPath)
   return backupPath
+}
+
+/** fsync a path that was just written by a non-atomic helper. Best-effort — see atomicWrite. */
+function flushFile(filePath: string): void {
+  let fd: number | undefined
+  try {
+    fd = fs.openSync(filePath, 'r+')
+    fs.fsyncSync(fd)
+  } catch {
+    /* nothing actionable — the copy itself succeeded */
+  } finally {
+    if (fd !== undefined) {
+      try { fs.closeSync(fd) } catch { /* ignore */ }
+    }
+  }
 }
 
 /** Restore engrams.yaml from backup. */

@@ -1,5 +1,5 @@
 import { execFileSync } from 'child_process'
-import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync, unlinkSync, statSync, readdirSync } from 'fs'
+import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync, unlinkSync, statSync, readdirSync, openSync, closeSync, fsyncSync } from 'fs'
 import { join, dirname, relative } from 'path'
 import * as yaml from 'js-yaml'
 import { isSharedScope } from './scope-util.js'
@@ -627,11 +627,94 @@ export function withLock<T>(
   }
 }
 
-/** Atomic write: write to temp file then rename (prevents corruption on crash). */
-export function atomicWrite(filePath: string, content: string): void {
+/** Options for {@link atomicWrite}. */
+export interface AtomicWriteOptions {
+  /**
+   * fsync the file and its parent directory before returning. Default `true`.
+   *
+   * Pass `false` ONLY for derived, rebuildable state (embedding cache,
+   * reranker-eval cache, telemetry counters). Never for a store file: see the
+   * durability note on {@link atomicWrite}.
+   */
+  durable?: boolean
+}
+
+/** Counter making each tmp name unique within a process (pid makes it unique across them). */
+let tmpCounter = 0
+
+/**
+ * Atomic write: write to a temp file, flush it, then rename over the target.
+ *
+ * ## Why the fsync (audit #794, F4)
+ *
+ * write + rename alone is atomic with respect to a dying *process* — the page
+ * cache outlives it, so a reader either sees the old file or the new one. It is
+ * NOT atomic with respect to a dying *kernel*. On power loss the rename can
+ * reach disk before the data does, and the canonical artifact is a zero-length
+ * or truncated file.
+ *
+ * That artifact is precisely the input to the corrupt-read wipe (#795): a
+ * zero-length engrams.yaml used to read as an empty corpus, and the next write
+ * persisted it. The two compose into total corpus loss, which is why this is
+ * fsync-by-default rather than fsync-on-request.
+ *
+ * The parent directory is flushed too, because the rename itself is directory
+ * metadata — without that flush the durable file can still be reachable only
+ * under its temp name after a crash.
+ *
+ * ## Why the tmp name is unique
+ *
+ * It used to be a fixed `<path>.tmp`, which let two concurrent writers clobber
+ * each other's partial file and rename it into place — measured in probe P02 as
+ * a hard `ENOENT: rename '…/episodes.yaml.tmp'` crash when the loser's tmp had
+ * already been renamed away. Unique names make concurrent writers independent;
+ * the last rename wins cleanly instead of publishing a half-written blend.
+ */
+export function atomicWrite(filePath: string, content: string, opts: AtomicWriteOptions = {}): void {
+  const durable = opts.durable !== false
   const dir = dirname(filePath)
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
-  const tmp = filePath + '.tmp'
-  writeFileSync(tmp, content)
-  renameSync(tmp, filePath)
+  const tmp = `${filePath}.${process.pid}.${tmpCounter++}.tmp`
+  try {
+    if (durable) {
+      const fd = openSync(tmp, 'w')
+      try {
+        writeFileSync(fd, content)
+        fsyncSync(fd)
+      } finally {
+        closeSync(fd)
+      }
+    } else {
+      writeFileSync(tmp, content)
+    }
+    renameSync(tmp, filePath)
+    if (durable) fsyncDir(dir)
+  } catch (err) {
+    // Never leave the tmp behind on a failed write — it would accumulate, and
+    // with a unique name nothing would ever clean it up.
+    try { unlinkSync(tmp) } catch { /* already gone, or never created */ }
+    throw err
+  }
+}
+
+/**
+ * fsync a directory so a rename into it is durable.
+ *
+ * Best-effort by design: directory fds cannot be opened for sync on Windows,
+ * and some filesystems reject the fsync outright. A failure here means the
+ * rename may not survive power loss — it does NOT mean the write failed, and
+ * throwing would turn a working write into a spurious error.
+ */
+function fsyncDir(dir: string): void {
+  let fd: number | undefined
+  try {
+    fd = openSync(dir, 'r')
+    fsyncSync(fd)
+  } catch {
+    /* platform does not support it — the file's own fsync still happened */
+  } finally {
+    if (fd !== undefined) {
+      try { closeSync(fd) } catch { /* ignore */ }
+    }
+  }
 }

@@ -1066,8 +1066,12 @@ export class Plur {
    * created. Invalidating on write removes the filesystem as a source of cache
    * freshness and closes the race. See issue #25.
    */
-  private async _writeEngrams(path: string, engrams: Engram[]): Promise<void> {
-    await this._storeAt(path).save(engrams)
+  private async _writeEngrams(
+    path: string,
+    engrams: Engram[],
+    opts?: { allowShrink?: boolean },
+  ): Promise<void> {
+    await this._storeAt(path).save(engrams, opts)
   }
 
   /**
@@ -2299,7 +2303,9 @@ export class Plur {
               const idx = fresh.findIndex(e => e.id === engram.id)
               if (idx !== -1) {
                 fresh.splice(idx, 1)
-                await this._writeEngrams(this.paths.engrams, fresh)
+                // Deliberate removal: the remote accepted this engram, so the
+                // local copy is redundant by design (audit #794 shrink guard).
+                await this._writeEngrams(this.paths.engrams, fresh, { allowShrink: true })
                 await this._syncIndex()
               }
             })
@@ -4992,7 +4998,8 @@ export class Plur {
       const active = engrams.filter(e => e.status !== 'retired')
       const removed = engrams.length - active.length
       if (removed > 0) {
-        await this._writeEngrams(this.paths.engrams, active)
+        // Removing retired engrams IS this method (audit #794 shrink guard).
+        await this._writeEngrams(this.paths.engrams, active, { allowShrink: true })
         await this._syncIndex()
       }
       return { removed, remaining: active.length }
@@ -5596,7 +5603,9 @@ export class Plur {
           .filter(e => !(consideredIds.has(e.id) && !survivorsById.has(e.id)))
           // Apply updated outbox metadata / demotions to the ones that stayed.
           .map(e => (survivorsById.get(e.id) ?? e))
-        await this._writeEngrams(this.paths.engrams, merged)
+        // The dropped engrams are the ones the remote accepted — a deliberate
+        // handoff, not a loss (audit #794 shrink guard).
+        await this._writeEngrams(this.paths.engrams, merged, { allowShrink: true })
       })
       await this._syncIndex()
     }
