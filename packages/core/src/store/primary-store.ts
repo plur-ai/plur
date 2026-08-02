@@ -43,6 +43,18 @@ import type { Engram } from '../schemas/engram.js'
 /** Identifier for the backing medium of a primary store. */
 export type PrimaryStoreKind = 'yaml' | 'memory' | 'postgres'
 
+/** Options for {@link PrimaryStore.save}. */
+export interface SaveOptions {
+  /**
+   * This write is expected to remove engrams — suppress the shrink guard.
+   *
+   * Only the deliberate removers set it: compact, forget, retire, outbox
+   * merge-back, pack uninstall. Everything else leaves it unset so that an
+   * unexpectedly short corpus is refused rather than persisted (audit #794).
+   */
+  allowShrink?: boolean
+}
+
 export interface PrimaryStore {
   /** Backing medium — for diagnostics and `status()` reporting. */
   readonly kind: PrimaryStoreKind
@@ -68,8 +80,15 @@ export interface PrimaryStore {
    */
   loadCached(): Promise<Engram[]>
 
-  /** Replace the entire contents of the store, and drop any read cache. */
-  save(engrams: Engram[]): Promise<void>
+  /**
+   * Replace the entire contents of the store, and drop any read cache.
+   *
+   * File-backed implementations refuse a write that would shrink the corpus by
+   * more than a tolerance unless `opts.allowShrink` is set — see the guard on
+   * `saveEngrams` (audit #794). Row stores have no equivalent exposure and may
+   * ignore the option.
+   */
+  save(engrams: Engram[], opts?: SaveOptions): Promise<void>
 
   /** Drop any read cache without writing. Synchronous — see the note above. */
   invalidate(): void

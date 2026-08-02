@@ -16,7 +16,7 @@
 import * as fs from 'fs'
 import { loadEngrams, saveEngrams } from '../engrams.js'
 import type { Engram } from '../schemas/engram.js'
-import type { AsyncPrimaryStore, PrimaryStoreKind } from './primary-store.js'
+import type { AsyncPrimaryStore, PrimaryStoreKind, SaveOptions } from './primary-store.js'
 
 /**
  * Mean serialized size of one engram in `engrams.yaml`, in bytes.
@@ -61,8 +61,8 @@ export class YamlPrimaryStore implements AsyncPrimaryStore {
     return engrams
   }
 
-  async save(engrams: Engram[]): Promise<void> {
-    saveEngrams(this.filePath, engrams)
+  async save(engrams: Engram[], opts?: SaveOptions): Promise<void> {
+    saveEngrams(this.filePath, engrams, { allowShrink: opts?.allowShrink })
     this.cache = null
   }
 

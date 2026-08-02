@@ -195,8 +195,11 @@ describe('cross-scope recurrence (#176)', () => {
       // write to the right store path (not silently drop).
       const secondaryDir = mkdtempSync(join(tmpdir(), 'plur-secondary-'))
       const secondaryPath = join(secondaryDir, 'engrams.yaml')
-      // Initialize an empty store file so saveEngrams can be called
-      writeFileSync(secondaryPath, '[]\n')
+      // Initialize an empty store file so saveEngrams can be called. This must
+      // be the shape PLUR actually writes — a mapping with an `engrams` key.
+      // A bare `[]` is a top-level sequence, which the loader now rejects
+      // rather than silently reading as an empty corpus (audit #794, F1).
+      writeFileSync(secondaryPath, 'engrams: []\n')
       try {
         plur.addStore(secondaryPath, 'project:secondary-a', { shared: true, readonly: false })
 
