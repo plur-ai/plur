@@ -201,6 +201,15 @@ export interface RecallOptions {
   /** `.plur.yaml` remote endpoint — establishes the org context for dialing
    *  on the hook path (#776). See {@link RemoteProjectConfig}. */
   remote_project?: RemoteProjectConfig
+  /**
+   * Session key this recall belongs to (#243). Used ONLY to resolve the
+   * session default scope as the dialing context for the remote leg when no
+   * explicit `scope` is passed: a session whose default scope names org X
+   * dials org-X hosts (see `_remoteRecallHosts`). An explicit `scope` always
+   * wins. Same registry key as {@link LearnContext.session} — thread the same
+   * value through both when one `Plur` serves concurrent sessions.
+   */
+  session?: string
 }
 
 export interface BoundedRecallResult {

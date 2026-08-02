@@ -3085,11 +3085,19 @@ export class Plur {
    * tokens per host mean one POST per token. `remoteEndpointTokenConflicts`
    * feeds the doctor warning for that misconfiguration.
    */
-  private _remoteRecallHosts(options?: { scope?: string; remote_project?: RemoteProjectConfig }): RemoteRecallHost[] {
+  private _remoteRecallHosts(options?: { scope?: string; session?: string; remote_project?: RemoteProjectConfig }): RemoteRecallHost[] {
     const stores = (this.config.stores ?? []).filter(s => s.url)
     const rp = options?.remote_project
     const rpKey = rp ? normalizeEndpointUrl(rp.url) : null
-    const sessionOrg = scopeOrg(options?.scope)
+    // Dialing context (#243): an explicit recall scope wins; otherwise the
+    // SESSION default scope establishes the org context — a session whose
+    // default write scope names org X is doing org-X work, so its recalls
+    // dial org-X hosts. Resolved per-session via the same registry the write
+    // path uses (`options.session` — ADR-0004), so a mid-session scope
+    // switch redirects subsequent recall dialing too. No session scope set
+    // (the pre-#243 state) leaves dialing exactly as before.
+    const dialScope = options?.scope ?? this._sessionScopes.get(options?.session) ?? undefined
+    const sessionOrg = scopeOrg(dialScope)
 
     const groups = new Map<string, { url: string; token?: string; entries: StoreEntry[] }>()
     for (const s of stores) {
@@ -3152,7 +3160,7 @@ export class Plur {
    */
   private _startRemoteRecall(
     query: string,
-    options?: { scope?: string; remote?: boolean; remote_timeout_ms?: number; remote_project?: RemoteProjectConfig; limit?: number },
+    options?: { scope?: string; session?: string; remote?: boolean; remote_timeout_ms?: number; remote_project?: RemoteProjectConfig; limit?: number },
   ): Promise<RemoteRecallResult> | null {
     if (options?.remote === false) return null
     if (isRemoteRecallDisabled()) return null
@@ -3511,6 +3519,11 @@ export class Plur {
     // call per host.
     const remotePromise = this._startRemoteRecall(task, {
       scope: options?.scope,
+      // #243: the inject's session (same id plur_session_start minted for
+      // co_injection provenance) doubles as the dialing-context key — the
+      // session default scope drives org-affinity when no explicit scope is
+      // given, so a mid-session scope switch redials the right org's hosts.
+      session: options?.session_id,
       remote: options?.remote,
       remote_timeout_ms: options?.remote_timeout_ms,
       remote_project: options?.remote_project,
@@ -6553,6 +6566,41 @@ Generate an improved version of the procedure that prevents this failure. Return
    */
   setSessionScope(scope: string | null, opts?: { session?: string }): void {
     this._sessionScopes.set(scope, opts?.session)
+  }
+
+  /**
+   * Adjust the session default scope MID-session (#243) — `setSessionScope`
+   * plus observability: appends a `session_scope_changed` history event so the
+   * scope active at any point in a session can be reconstructed retrospectively
+   * (which scope routed a given engram, whether an agent oscillates scopes).
+   *
+   * `setSessionScope` stays the raw, silent primitive — session bootstrap
+   * (every `plur_session_start`) uses it without flooding history; deliberate
+   * mid-session changes go through here. Same registry, same keying rules:
+   * omit `session` for the process slot, pass it for per-session isolation
+   * (ADR-0004 — one `Plur` serving concurrent sessions MUST key).
+   *
+   * Returns the previous and new effective scope for the targeted slot.
+   */
+  adjustSessionScope(
+    scope: string | null,
+    opts?: { session?: string; reason?: string; trigger?: 'set' | 'clear' },
+  ): { previous: string | null; next: string | null } {
+    const previous = this._sessionScopes.get(opts?.session)
+    this._sessionScopes.set(scope, opts?.session)
+    appendHistory(this.paths.root, {
+      event: 'session_scope_changed',
+      engram_id: '', // session-level event — no engram (see HistoryEvent doc)
+      timestamp: new Date().toISOString(),
+      data: {
+        previous,
+        next: scope,
+        ...(opts?.trigger ? { trigger: opts.trigger } : {}),
+        ...(opts?.reason ? { reason: opts.reason } : {}),
+        ...(opts?.session ? { session_id: opts.session } : {}),
+      },
+    })
+    return { previous, next: scope }
   }
 
   /**
