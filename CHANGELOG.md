@@ -2,7 +2,78 @@
 
 ## Unreleased
 
+### Changed — operations that used to succeed can now refuse
+
+An adversarial data-loss audit of every store write path (#794) found that a corrupt store was
+being read as an *empty* one, and that the next write then persisted the emptiness. Measured: 5
+engrams → 0, including through `recall()` alone, because reactivation writes activation back. The
+fix is to refuse rather than guess, which means a small number of operations now throw where they
+previously returned quietly. Each throw replaces a silent corpus deletion.
+
+- **An existing store file that says nothing intelligible is an error, not an empty store**
+  (#795): a zero-length `engrams.yaml`, a mapping with no `engrams` key, and a top-level sequence
+  now raise `EngramStoreUnreadableError`. A **missing** file is still an empty store — that is the
+  only way a first run can work — and an explicitly empty `engrams: []` still loads as empty. If
+  you hit this, the file is damaged; `plur restore` (below) is the way back.
+- **A write that would shrink the corpus by more than 10% is refused** unless it declares itself
+  (#795). `compact`, `forget`, the outbox handoff and pack uninstall declare it; nothing else does,
+  so an unexpectedly short corpus is refused rather than written. Raises `EngramStoreShrinkError`.
+- **`plur sync` refuses to run against an unparseable store** (#798) instead of committing and
+  pushing it verbatim. See Fixed below — this one was also a privacy leak.
+
+### Added
+
+- **Validity-gated daily backups and `plur restore`** (#799): PLUR previously had no backup line at
+  all, which is why every finding in #794 that ended "the corpus is gone" ended there. A snapshot
+  is now taken on the first store write of each day — but only if the store passes a validity gate
+  (parses, no schema-invalid entries, no unexplained shrink, unique ids, no truncation). Backing up
+  an already-corrupt store is worse than not backing up, so a store that fails the gate warns and
+  leaves the previous snapshot untouched.
+
+  `plur restore --list` shows snapshots; `plur restore` shows what restoring *would* do without
+  doing it; `plur restore --yes` performs it. Restore verifies the snapshot independently (sha256
+  sidecar plus the same validity gate), **names the engrams it cannot recover** by reading the
+  append-only history log, and keeps the pre-restore store aside so a mistaken restore is itself
+  reversible.
+
+  Snapshots are daily, so engrams learned after a given day's snapshot are not in it — this turns
+  silent total loss into partial, *named* loss. `backups/` is never synced: a snapshot is a
+  whole-corpus copy including `scope:local` engrams.
+
 ### Fixed
+
+- **`plur sync` no longer pushes a corrupt store, and no longer leaks `scope:local` engrams doing
+  it** (#798): an unparseable `engrams.yaml` silently disabled the scope strip, and the verbatim
+  blob — conflict markers and local-only engrams alike — was committed *and pushed*. Measured: the
+  pushed blob contained both, while sync returned `{action:'synced'}`. Sync now refuses, and
+  refuses separately to stage an unmerged store file (`git add -A -f` on a conflicted path marks it
+  "resolved" with the markers still in it). Both errors name `git stash list`, because after an
+  autostash pop conflict the only complete copy of your corpus may be in `stash@{0}` — check it
+  before `git stash drop` or `git reset --hard`.
+- **`plur sync` stops reporting pulls it did not make** (#798): the pull result was discarded and
+  the message reported the commits it *meant* to pull. It said `"pulled 1 remote commit(s)"` while
+  still one commit behind. It now says `"NOT pulled — still N commit(s) behind"`.
+- **The sync warning no longer claims to back up everything** (#798): it said the remote "receives
+  all engrams" while `scope:local` engrams were stripped — measured at 3 of 5 reaching a fresh
+  clone. It now names the count that is **not** backed up, and says plainly when a remote backs up
+  nothing at all.
+- **Invalid engrams are quarantined instead of deleted** (#795): `loadEngrams` skipped entries that
+  failed schema validation, and the next unrelated write persisted the filtered array as the whole
+  corpus — a silent permanent delete. Measured: 5 on disk, 2 invalid, one ordinary `learn()` and
+  both were gone. They are now withheld from callers but preserved in the file.
+- **Store writes are fsynced** (#796): `grep fsync` across the TypeScript packages returned zero
+  hits. write+rename survives a dying process but not a dying kernel, and the artifact it leaves is
+  a zero-length file — exactly the input to the corrupt-read wipe above. Both atomic writers now
+  fsync the file and its parent directory, and use unique temp names so concurrent writers cannot
+  rename each other's partial file. Derived caches (embeddings, reranker-eval) opt out.
+- **Episode capture is no longer lossy under concurrency** (#797): `captureEpisode` was
+  load/push/write with no lock, reachable from `plur_capture`, `plur_session_end` and
+  `reportFailure` — i.e. from every MCP server open at once. Measured: 4 processes × 25 episodes,
+  **30 of 100 survived**. Now 100 of 100.
+- **The exported `YamlStore` had drifted back to pre-#766 behaviour** (#794 F14): it kept its own
+  copy of the parse rules, which still caught errors and returned `[]`, after which
+  `append`/`remove` rewrote the file from that empty list. Both readers now share one parser, so
+  the copies cannot drift again.
 
 - **Sibling-file strip completes the shared-remote guarantee** (#686): #640/#678 stripped only `engrams.yaml`, but `episodes.yaml`, `candidates.yaml`, and `tensions.yaml` synced verbatim — a teammate cloning a `shared` remote could still receive statement text *derived* from private/personal engrams (a tension's statement snapshots, a failure-report episode) even though the engrams themselves were withheld. A sibling record is now pushed to a `shared` remote only when every engram id it references resolves to the shared push set; records referencing personal, private, or unresolvable engrams stay local (strip-on-doubt), the working tree keeps everything, and the strip is deterministic so the #396 no-infinite-dirty property holds. The sync `warning` reports the stripped sibling record count. `personal` remotes are unchanged.
 
