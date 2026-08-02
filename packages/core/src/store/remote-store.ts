@@ -100,7 +100,7 @@ export class RemoteStore implements EngramStore {
    * Authoritative columns (id/scope/status) win over anything in `data`. Returns
    * null (and logs) for malformed rows so callers can drop them. (finding #3)
    */
-  private reshape(raw: { id?: unknown; scope?: unknown; status?: unknown; data?: unknown }): Engram | null {
+  private reshape(raw: { id?: unknown; scope?: unknown; status?: unknown; data?: unknown; created_at?: unknown }): Engram | null {
     const d = raw.data && typeof raw.data === 'object' ? raw.data as Record<string, unknown> : {}
     const candidate = { ...d, id: raw.id, scope: raw.scope, status: raw.status }
     const parsed = RemoteRowSchema.safeParse(candidate)
@@ -114,7 +114,32 @@ export class RemoteStore implements EngramStore {
       logger.warning(`[plur:remote-store] ${this.url} returned a malformed engram (id="${safeId}") — dropped: ${why}`)
       return null
     }
-    return parsed.data as unknown as Engram
+    // #768 round-trip: the server stores the validity window FLAT in row data
+    // (valid_from / valid_until — enterprise#627), while every local consumer
+    // reads the nested `temporal` block (inject's expiry gate, decay). Map
+    // flat → nested on ingest so remote validity windows actually drive local
+    // expiry. Nested values win; only well-typed strings are mapped.
+    const out = parsed.data as Record<string, unknown>
+    const nested = out.temporal && typeof out.temporal === 'object'
+      ? out.temporal as Record<string, unknown>
+      : {}
+    const flatFrom  = typeof out.valid_from  === 'string' ? out.valid_from  : undefined
+    const flatUntil = typeof out.valid_until === 'string' ? out.valid_until : undefined
+    const mapFrom  = flatFrom  !== undefined && typeof nested.valid_from  !== 'string'
+    const mapUntil = flatUntil !== undefined && typeof nested.valid_until !== 'string'
+    if (mapFrom || mapUntil) {
+      out.temporal = {
+        ...nested,
+        // `temporal.learned_at` is required by the schema — prefer what the
+        // row carries, then the row's created_at, then "now" as a last resort.
+        learned_at: typeof nested.learned_at === 'string' ? nested.learned_at
+          : typeof raw.created_at === 'string' ? raw.created_at
+          : new Date().toISOString(),
+        ...(mapFrom  ? { valid_from: flatFrom }   : {}),
+        ...(mapUntil ? { valid_until: flatUntil } : {}),
+      }
+    }
+    return out as unknown as Engram
   }
 
   private headers(extra: Record<string, string> = {}): Record<string, string> {
@@ -258,7 +283,9 @@ export class RemoteStore implements EngramStore {
 
   /**
    * Append a single engram to the remote store. POST /api/v1/engrams
-   * carries statement + scope + domain + type — the server handles
+   * carries the core four (statement + scope + domain + type) plus every
+   * optional field that is set — pinned, rationale, tags, commitment,
+   * validity window, supersedes, locked_reason (#768). The server handles
    * ID assignment, content_hash, status.
    *
    * Returns void to satisfy the EngramStore interface contract. Callers
@@ -278,11 +305,36 @@ export class RemoteStore implements EngramStore {
    * the server's ID.
    */
   async appendAndGetServerId(engram: Engram): Promise<{ id: string }> {
+    // #768: transmit the full engram, not just the core four — pinned,
+    // rationale, tags, commitment, validity windows and supersedes were
+    // silently dropped, so team-scope pins never round-tripped. Optional
+    // fields are included only when set, so older servers that ignore
+    // unknown keys see no behavioral change.
+    const e = engram as any
+    // Canonical engrams carry the validity window nested under `temporal`
+    // (temporal.valid_from / temporal.valid_until, #347) and supersession
+    // under `relations.supersedes` (#240) — the wire contract
+    // (POST /api/v1/engrams, enterprise#627) takes them as FLAT top-level
+    // keys, so flatten here. Top-level reads are kept as a fallback for
+    // non-canonical shapes; they are always undefined on production engrams.
+    const valid_from  = e.temporal?.valid_from  ?? e.valid_from
+    const valid_until = e.temporal?.valid_until ?? e.valid_until
+    const supersedes  = Array.isArray(e.relations?.supersedes) && e.relations.supersedes.length > 0
+      ? e.relations.supersedes
+      : e.supersedes
     const body = JSON.stringify({
-      statement: (engram as any).statement,
+      statement: e.statement,
       scope:     engram.scope,
-      domain:    (engram as any).domain,
-      type:      (engram as any).type,
+      domain:    e.domain,
+      type:      e.type,
+      ...(Array.isArray(e.tags) && e.tags.length > 0 ? { tags: e.tags } : {}),
+      ...(e.pinned !== undefined            ? { pinned: e.pinned }             : {}),
+      ...(e.rationale != null               ? { rationale: e.rationale }       : {}),
+      ...(e.commitment !== undefined        ? { commitment: e.commitment }     : {}),
+      ...(valid_from != null                ? { valid_from }                   : {}),
+      ...(valid_until != null               ? { valid_until }                  : {}),
+      ...(Array.isArray(supersedes) && supersedes.length > 0 ? { supersedes } : {}),
+      ...(e.locked_reason != null           ? { locked_reason: e.locked_reason } : {}),
     })
     const r = await fetch(`${this.apiBase}/engrams`, {
       method: 'POST',

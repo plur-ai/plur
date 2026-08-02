@@ -77,6 +77,10 @@ export class StubServer {
    *  echoes this value as the {engram: ...} body — to simulate a server whose
    *  echoed row fails RemoteRowSchema validation (#327). */
   badPatchEcho: unknown = null
+  /** Raw JSON body of the most recent POST /engrams — lets tests assert what
+   *  the client actually transmits on the wire (#768: optional fields like
+   *  pinned/rationale/tags were silently never sent). */
+  lastAppendBody: Record<string, unknown> | null = null
 
   // --- POST /api/v1/recall (#776 server-authoritative recall envelope) ---
   /** Rows served in the envelope's `results` (top-level engram shape, each
@@ -175,6 +179,7 @@ export class StubServer {
     this.recallEnvelope = {}
     this.recallCalls = 0
     this.lastRecallBody = null
+    this.lastAppendBody = null
   }
 
   private handleRequest(req: IncomingMessage, res: ServerResponse): void {
@@ -251,6 +256,7 @@ export class StubServer {
     // POST /api/v1/engrams — create
     if (method === 'POST' && path === '/api/v1/engrams') {
       this.readBody(req, (body) => {
+        this.lastAppendBody = body
         const { statement, scope, domain, type } = body
         const id = `ENG-SRV-${String(++this.idCounter).padStart(3, '0')}`
         const now = new Date().toISOString()
