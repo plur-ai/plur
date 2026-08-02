@@ -80,7 +80,11 @@ describe('PrimaryStore contract (shared by every implementation)', () => {
       it('save() replaces the whole contents rather than appending', async () => {
         const store = make()
         await store.save([engram('ENG-2026-0701-003'), engram('ENG-2026-0701-004')])
-        await store.save([engram('ENG-2026-0701-005')])
+        // A replace that SHRINKS the corpus must declare itself (audit #794):
+        // an undeclared shrink is indistinguishable from the corrupt-read wipe
+        // the guard exists to stop. The replace semantic is unchanged — the
+        // caller just has to mean it.
+        await store.save([engram('ENG-2026-0701-005')], { allowShrink: true })
         expect((await store.load()).map(e => e.id)).toEqual(['ENG-2026-0701-005'])
       })
 

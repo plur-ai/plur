@@ -7,8 +7,8 @@
 import { existsSync } from 'fs'
 import { readFile, stat } from 'fs/promises'
 import * as yaml from 'js-yaml'
-import { EngramSchemaPassthrough, type Engram } from '../schemas/engram.js'
-import { logger } from '../logger.js'
+import { type Engram } from '../schemas/engram.js'
+import { parseEngramFile } from '../engrams.js'
 import { asyncAtomicWrite } from './async-fs.js'
 import { withAsyncLock } from './async-lock.js'
 import type { EngramStore } from './types.js'
@@ -21,24 +21,7 @@ export class YamlStore implements EngramStore {
   }
 
   async load(): Promise<Engram[]> {
-    if (!existsSync(this.filePath)) return []
-    try {
-      const content = await readFile(this.filePath, 'utf8')
-      const raw = yaml.load(content) as any
-      if (!raw?.engrams || !Array.isArray(raw.engrams)) return []
-      const valid: Engram[] = []
-      let skipped = 0
-      for (const entry of raw.engrams) {
-        const result = EngramSchemaPassthrough.safeParse(entry)
-        if (result.success) valid.push(result.data)
-        else skipped++
-      }
-      if (skipped > 0) logger.warning(`Skipped ${skipped} invalid engram(s) in ${this.filePath}`)
-      return valid
-    } catch (err) {
-      logger.error(`Failed to parse engrams file ${this.filePath}: ${err}`)
-      return []
-    }
+    return (await this._read()).valid
   }
 
   async save(engrams: Engram[]): Promise<void> {
@@ -51,8 +34,8 @@ export class YamlStore implements EngramStore {
   async append(engram: Engram): Promise<void> {
     await withAsyncLock(this.filePath, async () => {
       // YAML cannot be truly appended — load, append, save
-      const engrams = await this._loadRaw()
-      engrams.push(engram)
+      const { valid, quarantined } = await this._read()
+      const engrams = [...valid, engram, ...(quarantined as Engram[])]
       const content = yaml.dump({ engrams }, { lineWidth: 120, noRefs: true, quotingType: '"' })
       await asyncAtomicWrite(this.filePath, content)
     })
@@ -65,10 +48,11 @@ export class YamlStore implements EngramStore {
 
   async remove(id: string): Promise<boolean> {
     return await withAsyncLock(this.filePath, async () => {
-      const engrams = await this._loadRaw()
-      const idx = engrams.findIndex(e => e.id === id)
+      const { valid, quarantined } = await this._read()
+      const idx = valid.findIndex(e => e.id === id)
       if (idx === -1) return false
-      engrams.splice(idx, 1)
+      valid.splice(idx, 1)
+      const engrams = [...valid, ...(quarantined as Engram[])]
       const content = yaml.dump({ engrams }, { lineWidth: 120, noRefs: true, quotingType: '"' })
       await asyncAtomicWrite(this.filePath, content)
       return true
@@ -87,21 +71,25 @@ export class YamlStore implements EngramStore {
     // No resources to close for YAML
   }
 
-  /** Raw load without validation — for internal mutate-and-save operations. */
-  private async _loadRaw(): Promise<Engram[]> {
-    if (!existsSync(this.filePath)) return []
-    try {
-      const content = await readFile(this.filePath, 'utf8')
-      const raw = yaml.load(content) as any
-      if (!raw?.engrams || !Array.isArray(raw.engrams)) return []
-      const valid: Engram[] = []
-      for (const entry of raw.engrams) {
-        const result = EngramSchemaPassthrough.safeParse(entry)
-        if (result.success) valid.push(result.data)
-      }
-      return valid
-    } catch {
-      return []
-    }
+  /**
+   * Read and validate the store, throwing when it is unreadable.
+   *
+   * This class used to carry its own copy of the parse rules, and the copy went
+   * stale: #766 hardened `loadEngrams` to throw on an unparseable file, and
+   * this one kept catching and returning `[]` — after which `append`/`remove`
+   * rewrote the file from that empty list (audit #794, F14). There is now one
+   * definition of the rules, in `parseEngramFile`, and both readers use it.
+   *
+   * Quarantined entries are returned alongside the valid ones so the mutating
+   * methods can write them back instead of dropping them.
+   */
+  private async _read(): Promise<{ valid: Engram[]; quarantined: unknown[] }> {
+    if (!existsSync(this.filePath)) return { valid: [], quarantined: [] }
+    const [content, info] = await Promise.all([
+      readFile(this.filePath, 'utf8'),
+      stat(this.filePath),
+    ])
+    if (info.isDirectory()) return { valid: [], quarantined: [] }
+    return parseEngramFile(this.filePath, content, info.size)
   }
 }

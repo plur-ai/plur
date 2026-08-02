@@ -79,31 +79,34 @@ export class EngramStoreUnreadableError extends Error {
  * back. A malformed engram is a partial-data problem; deleting it to tidy up
  * the file is a data-loss problem, and the second is worse.
  */
-export function loadEngrams(filePath: string): Engram[] {
-  if (!fs.existsSync(filePath)) return []
-  // A directory is a misconfiguration (`stores[].path` must name an
-  // engrams.yaml, since it is handed straight to this function) — but NOT a
-  // data-loss risk, which is what the throw below exists for. `saveEngrams`
-  // cannot write to a directory either, so there is no path where a directory
-  // read as "empty" leads to an overwrite. Treating it as empty preserves
-  // long-standing behaviour; the throw is reserved for the case that actually
-  // destroys data.
-  const stat = fs.statSync(filePath)
-  if (stat.isDirectory()) return []
-  // An existing but zero-length file is never something PLUR wrote:
-  // `initFilesystemStore` writes `engrams: []`, which is 12 bytes. It is a
-  // truncation artifact, and yaml.load() would hand back `undefined` for it.
-  if (stat.size === 0) {
+/**
+ * Parse store bytes into valid and quarantined entries, or throw.
+ *
+ * The single definition of "is this a readable engram store". It exists as a
+ * standalone function because the rules were previously written out twice —
+ * once in {@link loadEngrams} and once in `YamlStore` — and the copies drifted:
+ * #766 hardened the first and left the second returning `[]` for a file it
+ * could not parse (audit #794, F14). Anything that reads a store file goes
+ * through here so that cannot recur.
+ *
+ * `byteLength` is passed separately because the caller may have read the file
+ * with either the sync or async API, and the zero-length check must be made on
+ * the bytes actually read rather than a second stat that could race.
+ */
+export function parseEngramFile(
+  filePath: string,
+  content: string,
+  byteLength: number,
+): { valid: Engram[]; quarantined: unknown[] } {
+  if (byteLength === 0) {
     throw new EngramStoreUnreadableError(filePath, new Error('file is empty (0 bytes)'))
   }
   let raw: any
   try {
-    raw = yaml.load(fs.readFileSync(filePath, 'utf8'))
+    raw = yaml.load(content)
   } catch (err) {
     throw new EngramStoreUnreadableError(filePath, err)
   }
-  // Non-empty bytes that parse to nothing: a comments-only or whitespace-only
-  // file. PLUR never writes one, so this is a truncation, not a fresh store.
   if (raw == null) {
     throw new EngramStoreUnreadableError(filePath, new Error('file has content but parses to nothing'))
   }
@@ -116,7 +119,7 @@ export function loadEngrams(filePath: string): Engram[] {
       new Error('mapping has no "engrams" key — the file is not an engram store, or is truncated'),
     )
   }
-  if (raw.engrams == null) return []
+  if (raw.engrams == null) return { valid: [], quarantined: [] }
   if (!Array.isArray(raw.engrams)) {
     throw new EngramStoreUnreadableError(filePath, new Error('"engrams" is present but is not a list'))
   }
@@ -133,6 +136,22 @@ export function loadEngrams(filePath: string): Engram[] {
       `they are excluded from recall but PRESERVED in the file. Run 'plur doctor' to inspect them.`,
     )
   }
+  return { valid, quarantined }
+}
+
+export function loadEngrams(filePath: string): Engram[] {
+  if (!fs.existsSync(filePath)) return []
+  // A directory is a misconfiguration (`stores[].path` must name an
+  // engrams.yaml, since it is handed straight to this function) — but NOT a
+  // data-loss risk, which is what the throw below exists for. `saveEngrams`
+  // cannot write to a directory either, so there is no path where a directory
+  // read as "empty" leads to an overwrite. Treating it as empty preserves
+  // long-standing behaviour; the throw is reserved for the case that actually
+  // destroys data.
+  const stat = fs.statSync(filePath)
+  if (stat.isDirectory()) return []
+  const content = fs.readFileSync(filePath, 'utf8')
+  const { valid, quarantined } = parseEngramFile(filePath, content, stat.size)
   setQuarantine(filePath, quarantined)
   return valid
 }
