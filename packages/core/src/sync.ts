@@ -372,13 +372,27 @@ function sharedPushIds(root: string): Set<string> {
  */
 function readSiblingList(root: string, file: string): unknown[] | null {
   const path = join(root, file)
+  // ABSENT is the only "nothing to strip" answer. Unparseable and wrongly
+  // shaped are refusals, matching what readEngramList does.
+  //
+  // These used to collapse into the same `null`, and `stageStrippedSiblings`
+  // responded by skipping the filter and leaving the already force-staged blob
+  // untouched — so a malformed episodes.yaml carrying text DERIVED from private
+  // engrams was pushed verbatim to a shared remote. That is the F5 leak in the
+  // sibling artifacts (#811 audit, finding 9). The old comment here claimed it
+  // matched the engrams posture; that stopped being true when unreadable
+  // engrams began aborting the sync, and nothing updated the siblings to match.
   if (!existsSync(path)) return null
+  let raw: unknown
   try {
-    const raw = yaml.load(readFileSync(path, 'utf8'))
-    return Array.isArray(raw) ? raw : null
+    raw = yaml.load(readFileSync(path, 'utf8'))
   } catch {
-    return null
+    throw new SyncStoreUnreadableError(path)
   }
+  // An empty list serialises as `[]`; null means the bytes said nothing.
+  if (raw == null) throw new SyncStoreUnreadableError(path)
+  if (!Array.isArray(raw)) throw new SyncStoreUnreadableError(path)
+  return raw
 }
 
 /**
