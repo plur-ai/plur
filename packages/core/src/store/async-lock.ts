@@ -124,7 +124,7 @@ let tokenCounter = 0
  * on the machine that owns it, and `~/.plur` on a synced or networked volume can
  * hold a lock written by a different host.
  */
-function makeToken(): string {
+export function makeToken(): string {
   return `${hostname()}:${process.pid}:${Date.now()}:${tokenCounter++}`
 }
 
@@ -136,7 +136,7 @@ function makeToken(): string {
  * "dead" would steal a lock from a live writer, which is the corpus-corruption
  * outcome the whole mechanism exists to prevent.
  */
-function holderIsAlive(token: string): boolean | undefined {
+export function holderIsAlive(token: string): boolean | undefined {
   const parts = token.split(':')
   if (parts.length < 2) return undefined
   const [host, pidRaw] = parts

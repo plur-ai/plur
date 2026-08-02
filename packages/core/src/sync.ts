@@ -3,7 +3,7 @@ import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync, unlinkS
 import { join, dirname, relative } from 'path'
 import * as yaml from 'js-yaml'
 import { isSharedScope } from './scope-util.js'
-import { DEFAULT_STALE_THRESHOLD } from './store/async-lock.js'
+import { DEFAULT_STALE_THRESHOLD, holderIsAlive, makeToken } from './store/async-lock.js'
 
 export interface SyncStatus {
   initialized: boolean
@@ -729,15 +729,29 @@ export function withLock<T>(
   const baseDelay = options?.baseDelay ?? 100
   const staleThreshold = options?.staleThreshold ?? DEFAULT_STALE_THRESHOLD
 
+  const token = makeToken()
+
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
-      writeFileSync(lockPath, `${process.pid}`, { flag: 'wx' })
+      writeFileSync(lockPath, token, { flag: 'wx' })
       break
     } catch (err: any) {
       if (err.code !== 'EEXIST') throw err
       try {
         const stat = statSync(lockPath)
-        if (Date.now() - stat.mtimeMs > staleThreshold) {
+        // Liveness is what pays for the raised stale threshold, and it has to
+        // be here as well as on the async lock. Raising the threshold to 60s
+        // without it would take crash recovery on THESE paths (episodes,
+        // tensions, config) from 10s to 60s — a regression introduced by the
+        // F9 fix if only half of it is applied.
+        //
+        // `undefined` means "cannot tell" — a token from another host, or the
+        // bare pid an older client wrote — and must be read as "assume alive",
+        // falling back to the mtime threshold. Guessing "dead" would steal a
+        // lock from a live writer.
+        const holder = readFileSync(lockPath, 'utf8').trim()
+        const dead = holderIsAlive(holder) === false
+        if (dead || Date.now() - stat.mtimeMs > staleThreshold) {
           unlinkSync(lockPath)
           continue
         }
@@ -756,7 +770,12 @@ export function withLock<T>(
   try {
     return fn()
   } finally {
-    try { unlinkSync(lockPath) } catch { /* lock already gone */ }
+    // Only ours to remove. Without the token comparison, a holder whose lock
+    // was stolen deletes the THIEF's lock on its way out and a third writer
+    // walks in mid-write — the cascade fixed on the async lock (audit #794 F9).
+    try {
+      if (readFileSync(lockPath, 'utf8').trim() === token) unlinkSync(lockPath)
+    } catch { /* already gone */ }
   }
 }
 
