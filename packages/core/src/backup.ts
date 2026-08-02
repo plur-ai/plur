@@ -56,7 +56,22 @@ import { logger } from './logger.js'
 /** Directory under the plur root holding snapshots and their state. */
 export const BACKUP_DIR = 'backups'
 
-/** Keep this many day-granularity snapshots. */
+/**
+ * Keep this many day-granularity snapshots.
+ *
+ * ## Disk cost
+ *
+ * Snapshots are uncompressed copies of the whole store, so the retained set
+ * costs up to `(KEEP_DAILY + KEEP_WEEKLY) x store size`. Measured against real
+ * stores: a 10 MB store (~5,000 engrams) retains ~113 MB; a 39 MB store
+ * (50,000 engrams) retains ~431 MB.
+ *
+ * Uncompressed is the deliberate choice at these sizes: a backup you can read,
+ * diff and hand to `git` beats one that needs tooling to inspect, and the whole
+ * point of the validity gate is that a human can check what was kept. If the
+ * footprint becomes a problem it is the WEEKLY tier to shorten first — the
+ * daily window is what actually gets restored from.
+ */
 const KEEP_DAILY = 7
 
 /** Keep this many week-granularity snapshots beyond the daily window. */

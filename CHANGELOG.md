@@ -40,6 +40,10 @@ previously returned quietly. Each throw replaces a silent corpus deletion.
   silent total loss into partial, *named* loss. `backups/` is never synced: a snapshot is a
   whole-corpus copy including `scope:local` engrams.
 
+  **Disk cost:** snapshots are uncompressed copies, retained 7 daily + 4 weekly, so the set costs up
+  to 11× your store size — about 113 MB for a 10 MB store, about 431 MB for a 39 MB one. That is the
+  deliberate trade for backups you can read, diff, and verify by eye rather than through tooling.
+
 ### Fixed
 
 - **`plur sync` no longer pushes a corrupt store, and no longer leaks `scope:local` engrams doing
