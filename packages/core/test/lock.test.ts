@@ -4,6 +4,7 @@ import { join } from 'path'
 import { tmpdir } from 'os'
 import { execSync } from 'child_process'
 import { withLock } from '../src/sync.js'
+import { DEFAULT_STALE_THRESHOLD } from '../src/store/async-lock.js'
 
 describe('withLock', () => {
   let dir: string
@@ -38,14 +39,34 @@ describe('withLock', () => {
     expect(existsSync(lockPath)).toBe(false)
   })
 
-  it('detects and removes stale locks older than 10 seconds', () => {
+  it('detects and removes locks older than the stale threshold', () => {
     const lockPath = filePath + '.lock'
     writeFileSync(lockPath, 'stale')
-    const past = new Date(Date.now() - 20_000)
+    // The threshold was raised from 10s (audit #794, F9): a 50k-engram store
+    // legitimately holds the lock ~6.3s, and stealing from a process that is
+    // still writing corrupts the store. Written relative to the constant so a
+    // future raise cannot silently turn this into a test of nothing.
+    const past = new Date(Date.now() - DEFAULT_STALE_THRESHOLD - 5_000)
     utimesSync(lockPath, past, past)
     const result = withLock(filePath, () => 'success')
     expect(result).toBe('success')
     expect(existsSync(lockPath)).toBe(false)
+  })
+
+  it('does not steal a lock that is younger than the threshold', () => {
+    // The other half: a recently-touched lock belongs to a holder that may
+    // still be writing, so the sync variant must fail rather than steal. Its
+    // retry budget is deliberately short — it busy-waits (F10) — so a caller
+    // that needs to wait one out belongs on withAsyncLock.
+    const lockPath = filePath + '.lock'
+    writeFileSync(lockPath, 'active')
+    const recent = new Date(Date.now() - 1_000)
+    utimesSync(lockPath, recent, recent)
+    let ran = false
+    expect(() => withLock(filePath, () => { ran = true }, { maxRetries: 1, baseDelay: 5 })).toThrow(/lock/)
+    expect(ran).toBe(false)
+    expect(existsSync(lockPath)).toBe(true)
+    unlinkSync(lockPath)
   })
 
   it('throws after max retries on active lock', () => {

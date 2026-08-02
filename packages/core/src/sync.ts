@@ -3,6 +3,7 @@ import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync, unlinkS
 import { join, dirname, relative } from 'path'
 import * as yaml from 'js-yaml'
 import { isSharedScope } from './scope-util.js'
+import { DEFAULT_STALE_THRESHOLD } from './store/async-lock.js'
 
 export interface SyncStatus {
   initialized: boolean
@@ -698,7 +699,26 @@ export interface LockOptions {
   staleThreshold?: number
 }
 
-/** File-based exclusive lock using O_EXCL. Retries with exponential backoff. */
+/**
+ * File-based exclusive lock using O_EXCL. Retries with exponential backoff.
+ *
+ * ## Why this one keeps a short retry budget (audit #794, F9 vs F10)
+ *
+ * The async lock raised BOTH its stale threshold and its acquire deadline, so a
+ * waiter never abandons a holder the protocol still considers alive. Only half
+ * of that is safe to copy here.
+ *
+ * The stale threshold is raised, for the same reason: stealing a lock from a
+ * process that is still writing corrupts the store, and 10 s was too close to a
+ * legitimate hold.
+ *
+ * The retry budget is deliberately NOT raised, because this implementation
+ * busy-waits on `Date.now()` — it blocks the event loop for the whole delay
+ * (F10). Waiting longer here would make a long-lived MCP server less responsive,
+ * not more correct. Callers that need to wait out a slow holder belong on
+ * `withAsyncLock`; this variant exists for the remaining synchronous callers
+ * (tensions, config, episode capture), whose holds are short.
+ */
 export function withLock<T>(
   filePath: string,
   fn: () => T,
@@ -707,7 +727,7 @@ export function withLock<T>(
   const lockPath = filePath + '.lock'
   const maxRetries = options?.maxRetries ?? 5
   const baseDelay = options?.baseDelay ?? 100
-  const staleThreshold = options?.staleThreshold ?? 10_000
+  const staleThreshold = options?.staleThreshold ?? DEFAULT_STALE_THRESHOLD
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {

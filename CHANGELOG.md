@@ -70,6 +70,20 @@ previously returned quietly. Each throw replaces a silent corpus deletion.
   load/push/write with no lock, reachable from `plur_capture`, `plur_session_end` and
   `reportFailure` — i.e. from every MCP server open at once. Measured: 4 processes × 25 episodes,
   **30 of 100 survived**. Now 100 of 100.
+- **A slow writer no longer causes other processes to fail, or to steal its lock** (#804): the lock
+  had its budgets inverted — a waiter gave up after ~3.1 s while a holder was not considered
+  abandoned until 10 s, so a legitimately slow write failed everyone waiting on it, and for MCP
+  `plur_learn` that meant the engram was silently never stored. The stale threshold is now 60 s
+  (a 50,000-engram store legitimately holds the lock ~6.3 s, and the daily backup adds ~1.4 s once
+  per day), and the waiter's deadline always exceeds it, so a live holder is waited for rather than
+  abandoned.
+
+  Two things keep that from being simply slower. A lock whose owning process is **gone** is stolen
+  immediately rather than waited out, so crash recovery did not get slower — the check is scoped to
+  the host that wrote the lock, since a pid means nothing on another machine and `~/.plur` can live
+  on a synced volume. And a holder now removes the lock only if it still carries its own token:
+  previously, once a lock was stolen the original holder's cleanup deleted the *thief's* lock, and a
+  third process walked in while the thief was still writing.
 - **The exported `YamlStore` had drifted back to pre-#766 behaviour** (#794 F14): it kept its own
   copy of the parse rules, which still caught errors and returned `[]`, after which
   `append`/`remove` rewrote the file from that empty list. Both readers now share one parser, so
