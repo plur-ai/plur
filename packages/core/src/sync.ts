@@ -157,6 +157,7 @@ export function getSyncStatus(root: string): SyncStatus {
  * Returns the number of files staged (added/modified/deleted).
  */
 function stageStoreFiles(root: string): number {
+  assertNoUnmergedStoreFiles(root)
   for (const secret of SECRET_PATHS) {
     gitSafe(['rm', '--cached', '--ignore-unmatch', '--quiet', '--', secret], root)
   }
@@ -171,6 +172,38 @@ function stageStoreFiles(root: string): number {
   }
   const staged = gitSafe(['diff', '--cached', '--name-only'], root)
   return staged ? staged.split('\n').filter(Boolean).length : 0
+}
+
+/**
+ * Refuse to stage while any store file is in an unmerged (conflicted) state.
+ *
+ * `git add -A -f` on an unmerged path does not resolve the conflict — it marks
+ * it resolved and stages the bytes as they are, conflict markers included
+ * (audit #794, F5; probe P06b measured the resulting blob being committed AND
+ * pushed). Since staging is the step that turns a conflicted working tree into
+ * a commit, this is the right place to stop.
+ *
+ * `--diff-filter=U` is checked against the store allowlist only: an unrelated
+ * conflicted file elsewhere in the repo is not sync's business, which is the
+ * over-broad behaviour `hasConflictMarkers` (a `git grep` across ALL tracked
+ * files) still has.
+ */
+function assertNoUnmergedStoreFiles(root: string): void {
+  const unmerged = gitSafe(['diff', '--name-only', '--diff-filter=U'], root)
+  if (!unmerged) return
+  const conflicted = unmerged
+    .split('\n')
+    .map(f => f.trim())
+    .filter(Boolean)
+    .filter(f => SYNC_PATHS.some(p => f === p || f.startsWith(`${p}/`)))
+  if (conflicted.length === 0) return
+  throw new Error(
+    `[plur] refusing to sync: ${conflicted.join(', ')} ${conflicted.length === 1 ? 'is' : 'are'} unmerged.\n` +
+    `Staging an unmerged file would mark the conflict "resolved" with its markers still in it, and commit ` +
+    `(and push) that as your engram store.\n` +
+    `Resolve the conflict first. If a previous sync left an autostash behind, your complete copy may be in ` +
+    `'git stash list' — check it BEFORE running 'git stash drop' or 'git reset --hard'.`,
+  )
 }
 
 /**
@@ -243,6 +276,37 @@ interface EngramRecord { id?: string; scope?: string; visibility?: string; [k: s
  * `{ engrams: [...] }` shape and a bare top-level array. Returns null when the
  * file is absent, unparseable, or not in a recognized engram shape.
  */
+/**
+ * Error thrown when sync finds an engrams.yaml it cannot parse.
+ *
+ * Sync MUST fail loudly here rather than continue (audit #794, F5). The strip
+ * that keeps `scope:local` engrams off the remote is driven by parsing this
+ * file; a parse failure used to disable the strip silently, and the verbatim
+ * blob — conflict markers, private engrams and all — was committed and pushed.
+ */
+export class SyncStoreUnreadableError extends Error {
+  constructor(readonly filePath: string) {
+    super(
+      `[plur] refusing to sync: cannot parse ${filePath}.\n` +
+      `The scope filter that keeps private and scope:local engrams off the remote is derived from this ` +
+      `file. With it unreadable, PLUR cannot tell which engrams must NOT be pushed, so continuing would ` +
+      `commit the file verbatim — publishing private engrams and any conflict markers along with them.\n` +
+      `Common cause: a merge conflict in engrams.yaml — look for <<<<<<< markers. If a previous sync left ` +
+      `an autostash behind, your complete copy may be in 'git stash list' — check it BEFORE running ` +
+      `'git stash drop' or 'git reset --hard'.\n` +
+      `Fix the file, then retry.`,
+    )
+    this.name = 'SyncStoreUnreadableError'
+  }
+}
+
+/**
+ * Read engrams.yaml as a record list for the strip filters.
+ *
+ * `null` means ABSENT — there is nothing to strip and nothing to protect. It no
+ * longer doubles as "unparseable": conflating the two is what let F5 push a
+ * corrupt, unstripped store. Unparseable throws.
+ */
 function readEngramList(root: string): { raw: unknown; list: EngramRecord[] } | null {
   const path = join(root, 'engrams.yaml')
   if (!existsSync(path)) return null
@@ -250,13 +314,15 @@ function readEngramList(root: string): { raw: unknown; list: EngramRecord[] } | 
   try {
     raw = yaml.load(readFileSync(path, 'utf8'))
   } catch {
-    return null
+    throw new SyncStoreUnreadableError(path)
   }
   if (Array.isArray(raw)) return { raw, list: raw as EngramRecord[] }
   if (raw && typeof raw === 'object' && Array.isArray((raw as any).engrams)) {
     return { raw, list: (raw as any).engrams as EngramRecord[] }
   }
-  return null
+  // Parses, but is not a shape we recognise as an engram store — so we cannot
+  // derive the push set from it either. Same refusal, same reason.
+  throw new SyncStoreUnreadableError(path)
 }
 
 /**
@@ -358,11 +424,30 @@ function stripWarning(root: string, remoteType: SyncRemoteType): string | undefi
     return `Shared remote: pushed only shared-scope, non-private engrams — ${parts.join(' and ')} stayed local.`
   }
   if (!parsed) return undefined
-  const count = parsed.list.filter(
+  // Audit #794, F7: this used to say the remote "receives all engrams". It does
+  // not — `pushKeep('personal')` strips every scope:local engram, and the
+  // sensitivity guard auto-demotes engrams to local, so the excluded set grows
+  // silently over time. Measured: 5 engrams on disk, a fresh clone of the remote
+  // saw 3, while the warning called it a complete backup.
+  //
+  // A backup warning that overstates coverage is worse than none: it is read
+  // exactly once, when deciding whether other backups are needed.
+  const privateCount = parsed.list.filter(
     e => e?.scope !== 'local' && (e?.visibility ?? 'private') === 'private',
   ).length
-  if (count === 0) return undefined
-  return `Note: sync remote receives all engrams including ${count} private-visibility one(s) — use a private git remote. For a team remote, set sync.remote_type: shared to exclude them.`
+  const localCount = parsed.list.filter(e => e?.scope === 'local').length
+  const parts: string[] = []
+  if (localCount > 0) {
+    parts.push(
+      `${localCount} scope:local engram(s) are NOT pushed and are NOT backed up by sync` +
+      (localCount === parsed.list.length ? ' — this remote backs up nothing' : ''),
+    )
+  }
+  if (privateCount > 0) {
+    parts.push(`${privateCount} private-visibility engram(s) ARE pushed — use a private git remote`)
+  }
+  if (parts.length === 0) return undefined
+  return `Note: ${parts.join('. ')}. For a team remote, set sync.remote_type: shared to exclude private engrams too.`
 }
 
 /**
@@ -480,8 +565,17 @@ function pullRebase(root: string, remoteType: SyncRemoteType): boolean {
   // engrams.yaml VERBATIM — scope:local engrams rode into the remote on this
   // path. Strip the staged blob exactly like every other commit path.
   stageStripped(root, remoteType)
-  gitSafe(['commit', '-m', 'plur sync: merge conflict resolved (kept both)'], root)
-  return true
+  const committed = gitSafe(['commit', '-m', 'plur sync: merge conflict resolved (kept both)'], root)
+  // Audit #794, F6: this used to `return true` unconditionally. When the rebase
+  // refused (dirty tree), the merge fallback aborted, and there were no conflict
+  // markers to catch, sync reported `{action:'synced', message:'pulled 1 remote
+  // commit(s)'}` while HEAD..origin/main was still 1. The remote changes were
+  // never integrated and the user was told they were.
+  //
+  // The honest test is the ledger, not the exit code of the last command: if we
+  // are still behind the upstream, the pull did not happen.
+  if (committed === null) return false
+  return countDiff(root, 'behind') === 0
 }
 
 export function sync(root: string, remote?: string, options?: { remoteType?: SyncRemoteType }): SyncResult {
@@ -537,9 +631,16 @@ export function sync(root: string, remote?: string, options?: { remoteType?: Syn
   const behind = countDiff(root, 'behind')
   const aheadBefore = countDiff(root, 'ahead')
 
+  // Audit #794, F6: the return value used to be discarded here, so a pull that
+  // silently failed still reported `synced`. Capture it, and re-measure rather
+  // than trusting it — `behind` below is the count BEFORE pulling, i.e. what we
+  // meant to pull, not what we actually got.
+  let pullFailed = false
   if (behind > 0) {
-    pullRebase(root, remoteType)
+    pullFailed = !pullRebase(root, remoteType)
   }
+  const behindAfter = behind > 0 ? countDiff(root, 'behind') : 0
+  const pulled = behind - behindAfter
 
   // Push if we have local commits.
   //
@@ -564,7 +665,13 @@ export function sync(root: string, remote?: string, options?: { remoteType?: Syn
 
   const parts: string[] = []
   if (filesChanged > 0) parts.push(`${filesChanged} file(s) committed`)
-  if (behind > 0) parts.push(`pulled ${behind} remote commit(s)`)
+  // Report what was actually integrated, and say so plainly when it was not.
+  // Claiming a pull that did not happen is how a user ends up believing two
+  // machines agree when they do not.
+  if (pulled > 0) parts.push(`pulled ${pulled} remote commit(s)`)
+  if (pullFailed || behindAfter > 0) {
+    parts.push(`NOT pulled — still ${behindAfter} commit(s) behind the remote; resolve locally and retry`)
+  }
   if (aheadAfter === 0 && aheadBefore > 0) parts.push('pushed')
   // Say it in the message too — a caller reading only the text still sees it.
   if (pushError) parts.push('NOT pushed — the commit is local only')
