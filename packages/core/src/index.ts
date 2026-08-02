@@ -744,7 +744,21 @@ export class Plur {
    *   {@link ReadonlyStoreError}; reads work unchanged, except that recall's
    *   activation refresh is silently skipped (see `_reactivateResults`).
    */
-  constructor(options?: { path?: string; store?: AsyncPrimaryStore; autoDiscover?: boolean; cwd?: string; readonly?: boolean }) {
+  constructor(options?: {
+    path?: string
+    store?: AsyncPrimaryStore
+    autoDiscover?: boolean
+    cwd?: string
+    readonly?: boolean
+    /**
+     * Attach a store that satisfies neither half of the implementer contract.
+     *
+     * An explicit acceptance that the store can lose data — see the throw in
+     * the constructor. Exists so the check can be a hard failure without
+     * stranding anyone who genuinely knows what their store does.
+     */
+    allowUnprotectedStore?: boolean
+  }) {
     this.paths = detectPlurStorage(options?.path)
     this._readonly = options?.readonly === true
     const baseStore = options?.store ?? new YamlPrimaryStore(this.paths.engrams)
@@ -762,6 +776,36 @@ export class Plur {
     // not the place to turn a performance mistake into an outage.
     if (options?.store) {
       const s = options.store as Partial<AsyncPrimaryStore>
+      // Contract check (audit #794, issue #802). Every write-path guard rests
+      // on SOMETHING the store says being trustworthy. A store that can
+      // under-report on `load()` and offers no per-row write primitive defeats
+      // all of them at once: read-modify-write is the only shape available, the
+      // engine has no second opinion to check the read against, and the
+      // resulting whole-corpus `save()` is indistinguishable from "the corpus
+      // really is this small now". Probe p10 demonstrates it losing rows with
+      // every guard in place.
+      //
+      // This one THROWS where the pair check below only warns, because the two
+      // are different in kind: a split loadByIds/updateMany is a performance
+      // mistake that still writes correctly, while this is an unprotectable
+      // data-loss path. Failing at construction puts it in front of the
+      // implementor, seconds after they wired it, instead of in front of the
+      // user after their corpus is gone.
+      const canWriteRows = typeof s.append === 'function' && typeof s.updateMany === 'function'
+      if (!canWriteRows && !s.refusesUnreadable && !options.allowUnprotectedStore) {
+        throw new Error(
+          `[plur] refusing to attach this primary store: it can neither write single rows ` +
+          `(append + updateMany) nor guarantee that a failed read throws rather than returning a ` +
+          `short array (refusesUnreadable).\n` +
+          `With both absent, every write is a whole-corpus replace derived from a read the engine ` +
+          `cannot verify — so a bad read silently becomes permanent data loss, and no guard can ` +
+          `catch it.\n` +
+          `Fix by implementing append + updateMany (as PostgresAdapter and MemoryPrimaryStore do), ` +
+          `or by making load() throw on an unreadable store and setting refusesUnreadable ` +
+          `(as YamlPrimaryStore does).\n` +
+          `Pass { allowUnprotectedStore: true } only if you accept that this store can lose data.`,
+        )
+      }
       const hasLoadByIds = typeof s.loadByIds === 'function'
       const hasUpdateMany = typeof s.updateMany === 'function'
       if (hasLoadByIds !== hasUpdateMany) {

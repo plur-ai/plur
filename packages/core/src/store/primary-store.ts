@@ -91,6 +91,25 @@ export interface PrimaryStore {
   readonly kind: PrimaryStoreKind
 
   /**
+   * This store's `load()` FAILS rather than under-reporting.
+   *
+   * Set it only if a read that cannot see the whole corpus throws instead of
+   * returning a short array — `YamlPrimaryStore` qualifies because
+   * `loadEngrams` raises {@link EngramStoreUnreadableError} rather than
+   * treating an unparseable file as empty.
+   *
+   * It is the second of the two ways to satisfy the implementer contract above,
+   * and it is checked at attachment: a store that declares neither this nor the
+   * `append`/`updateMany` pair is refused, because nothing the engine can
+   * observe would distinguish a genuinely small corpus from a bad read.
+   *
+   * Declaring it falsely is worse than not declaring it — it tells the engine a
+   * short read can be trusted, which is precisely the assumption that destroys
+   * corpora.
+   */
+  readonly refusesUnreadable?: boolean
+
+  /**
    * Human-readable location of the store (a file path for YAML, a schema
    * identifier for Postgres). Used for diagnostics and for lock keys while
    * locking is still path-based. `null` when the store has no such location.

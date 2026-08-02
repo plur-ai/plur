@@ -33,6 +33,14 @@ export const AVG_YAML_BYTES_PER_ENGRAM = 2400
 
 export class YamlPrimaryStore implements AsyncPrimaryStore {
   readonly kind: PrimaryStoreKind = 'yaml'
+
+  /**
+   * `loadEngrams` throws `EngramStoreUnreadableError` rather than reporting an
+   * unreadable file as an empty corpus, so a short read from this store is
+   * always a real one. That is what lets a whole-corpus `save()` be safe here
+   * despite the absence of `append`/`updateMany`.
+   */
+  readonly refusesUnreadable = true
   private readonly filePath: string
   private cache: { mtime: bigint; engrams: Engram[] } | null = null
 

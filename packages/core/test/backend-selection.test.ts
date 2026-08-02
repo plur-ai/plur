@@ -220,7 +220,13 @@ describe('Plur.backendSelection — the instance can say which tier it is on, an
       save: async () => {},
       invalidate: () => {},
     }
-    const tier: BackendTier = new Plur({ path: dir, store: noEstimate }).backendSelection().tier
+    // `allowUnprotectedStore` rather than a `refusesUnreadable` claim, because
+    // this stub genuinely under-reports — `load()` always returns [] — and the
+    // flag must never be declared falsely (audit #794 / #802). Tier selection
+    // is a read-path question; nothing here writes, so accepting the unsafe
+    // store is honest and sufficient.
+    const tier: BackendTier = new Plur({ path: dir, store: noEstimate, allowUnprotectedStore: true })
+      .backendSelection().tier
     expect(tier).toBe('yaml')
   })
 })
