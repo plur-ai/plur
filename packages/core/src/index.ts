@@ -50,6 +50,7 @@ import {
   type RemoteRecallHost, type RemoteRecallResult, type HostRecallOutcome, type RemoteStoreStatusEntry,
 } from './remote-recall.js'
 import { YamlPrimaryStore } from './store/yaml-primary-store.js'
+import { ReadonlyStoreGuard, ReadonlyStoreError } from './store/readonly-store-guard.js'
 import { withAsyncLock } from './store/async-lock.js'
 import { SessionScopeRegistry } from './session-scopes.js'
 import type { AsyncPrimaryStore } from './store/primary-store.js'
@@ -157,7 +158,7 @@ export {
   type BackendSelectionReason,
 } from './backend-selection.js'
 export { YamlStore, SqliteStore, createStore, migrateStore, type EngramStore, type StorageBackend, type StorageConfig } from './store/index.js'
-export { YamlPrimaryStore, MemoryPrimaryStore, type PrimaryStore, type AsyncPrimaryStore, type PrimaryStoreKind } from './store/index.js'
+export { YamlPrimaryStore, MemoryPrimaryStore, ReadonlyStoreGuard, ReadonlyStoreError, type PrimaryStore, type AsyncPrimaryStore, type PrimaryStoreKind } from './store/index.js'
 export { withAsyncLock, asyncAtomicWrite } from './store/index.js'
 // Embedding primitive — public so alternative store backends can compute
 // vectors identically to core's hybrid search (same model + EMBED_DIM). The
@@ -660,6 +661,15 @@ export class Plur {
   private configMtimeMs = 0
   /** Whether constructor-time cwd store discovery is enabled for this instance. */
   private _autoDiscover = true
+  /**
+   * Read-only instance (#731). Guards THREE write surfaces, because the
+   * primary-store guard alone covers only one of them:
+   *   1. the primary store — wrapped in {@link ReadonlyStoreGuard};
+   *   2. secondary file stores — wrapped lazily in `_storeAt`;
+   *   3. remote stores — HTTP writes never touch a PrimaryStore, so the
+   *      public mutators gate on {@link _assertWritable} before routing.
+   */
+  private readonly _readonly: boolean = false
 
   /**
    * @param options.path  Root directory for this instance (defaults to
@@ -673,10 +683,16 @@ export class Plur {
    *   without touching call sites). See {@link autoDiscoveryEnabled}.
    * @param options.cwd Directory discovery walks up from. Defaults to
    *   `process.cwd()`.
+   * @param options.readonly Open the instance read-only (#731). Every mutation
+   *   — local, secondary-store, and remote-routed — throws
+   *   {@link ReadonlyStoreError}; reads work unchanged, except that recall's
+   *   activation refresh is silently skipped (see `_reactivateResults`).
    */
-  constructor(options?: { path?: string; store?: AsyncPrimaryStore; autoDiscover?: boolean; cwd?: string }) {
+  constructor(options?: { path?: string; store?: AsyncPrimaryStore; autoDiscover?: boolean; cwd?: string; readonly?: boolean }) {
     this.paths = detectPlurStorage(options?.path)
-    this._primaryStore = options?.store ?? new YamlPrimaryStore(this.paths.engrams)
+    this._readonly = options?.readonly === true
+    const baseStore = options?.store ?? new YamlPrimaryStore(this.paths.engrams)
+    this._primaryStore = this._readonly ? new ReadonlyStoreGuard(baseStore) : baseStore
     // `loadByIds` and `updateMany` are a capability PAIR: recall's targeted
     // reactivation uses them together or not at all (`canTarget` in
     // `_reactivateResults` — implementing only one silently falls back to the
@@ -858,6 +874,10 @@ export class Plur {
   }
 
   private async _autoPurgeLegacyTensions(): Promise<void> {
+    // A read-only instance must not run a write migration — and must not stamp
+    // the sentinel either, or the purge would be recorded as done without ever
+    // having happened. Left for the next writable instance to perform (#731).
+    if (this._readonly) return
     const sentinel = join(this.paths.root, '.tensions-purged')
     if (fs.existsSync(sentinel)) return
     try {
@@ -1005,6 +1025,66 @@ export class Plur {
   }
 
   /**
+   * Persist one brand-NEW engram to the primary store (#740).
+   *
+   * `corpus` is the caller's already-loaded primary corpus, held under
+   * `_withStoreLock`; the engram is pushed into it here so the caller's view
+   * and the fallback write stay consistent by construction. A store with the
+   * `append` capability gets a true single-row INSERT; every other store gets
+   * exactly the write `learn()` has always done — one `save()` of the corpus
+   * in hand. The corpus is REUSED, never re-loaded: re-parsing a file the
+   * caller just parsed (under the same lock) was the #745 regression this
+   * shape exists to rule out.
+   */
+  private async _appendEngram(corpus: Engram[], engram: Engram): Promise<void> {
+    corpus.push(engram)
+    if (this._primaryStore.append) {
+      await this._primaryStore.append(engram)
+    } else {
+      await this._writeEngrams(this.paths.engrams, corpus)
+    }
+  }
+
+  /**
+   * Persist mutations to EXISTING primary-store engrams (#740).
+   *
+   * `changed` are rows from `corpus` (the caller's already-loaded primary
+   * corpus, held under `_withStoreLock`) that the caller has mutated in place.
+   * A store with `updateMany` gets a targeted write of just those rows — the
+   * same machinery recall's activation refresh uses (#749/#755), so there is
+   * ONE incremental-update seam, not two. Every other store gets the
+   * whole-corpus `save()` it always got, reusing the corpus in hand.
+   *
+   * Missing-id policy: this cannot silently drop a mutation. `updateMany` is
+   * an upsert on every capability store (Postgres `ON CONFLICT DO UPDATE`,
+   * MemoryPrimaryStore mirrors it), so a row that vanished between the
+   * caller's locked load and this write is re-inserted rather than lost; the
+   * fallback writes the corpus, which contains the mutation by construction.
+   * There is deliberately no found/not-found boolean here — a signal every
+   * call site would have to remember to check (and #745's `update(): false`
+   * showed they don't) is worse than semantics that cannot lose the write.
+   */
+  private async _updateEngrams(corpus: Engram[], changed: Engram[]): Promise<void> {
+    if (changed.length === 0) return
+    if (this._primaryStore.updateMany) {
+      await this._primaryStore.updateMany(changed)
+    } else {
+      await this._writeEngrams(this.paths.engrams, corpus)
+    }
+  }
+
+  /**
+   * Throw {@link ReadonlyStoreError} when this instance was opened with
+   * `readonly: true`. Called at the top of every public mutator, BEFORE any
+   * routing: remote-routed writes (learnRouted's server POST, outbox flush,
+   * remote feedback/forget) never touch the guarded PrimaryStore, so the
+   * store guard alone cannot stop them — this gate is what does (#731).
+   */
+  private _assertWritable(): void {
+    if (this._readonly) throw new ReadonlyStoreError()
+  }
+
+  /**
    * Resolve the `PrimaryStore` that owns `path`.
    *
    * `paths.engrams` maps to the configured primary store — which may be
@@ -1044,6 +1124,11 @@ export class Plur {
     let store = this._secondaryStores.get(path)
     if (!store) {
       store = new YamlPrimaryStore(path)
+      // Read-only instances guard SECONDARY stores too (#731): forget/feedback/
+      // recurrence on a store engram write through `_storeAt(storeInfo.path)`,
+      // not through the primary store, so wrapping only the primary would leave
+      // every `stores:` file writable from a "read-only" engine.
+      if (this._readonly) store = new ReadonlyStoreGuard(store)
       this._secondaryStores.set(path, store)
     }
     return store
@@ -1219,7 +1304,8 @@ export class Plur {
     // `target` is then `hit` itself and the mutation is returned to the caller
     // without a write, which is the documented v1 behaviour.
     if (idx !== -1) {
-      await this._writeEngrams(this.paths.engrams, engrams)
+      // Incremental write (#740): only the duplicate-counted engram changed.
+      await this._updateEngrams(engrams, [target])
       await this._syncIndex()
     }
     return target
@@ -1349,7 +1435,8 @@ export class Plur {
       // secondary path — both mutate the on-disk-bound object, not hit).
       const target = engrams[primaryIdx]
       newRecurrence = applyMutation(target, sourceEntry, lockTimestamp)
-      await this._writeEngrams(this.paths.engrams, engrams)
+      // Incremental write (#740): only the recurrence-escalated engram changed.
+      await this._updateEngrams(engrams, [target])
       await this._syncIndex()
       persistedTo = 'primary'
       // Audit iter-5 fix (Data finding 1): explicit identity guard makes the
@@ -1903,6 +1990,7 @@ export class Plur {
   }
 
   async learn(statement: string, context?: LearnContext): Promise<Engram> {
+    this._assertWritable()
     if (typeof statement !== 'string' || statement.length === 0) {
       throw new TypeError(`plur.learn: statement must be a non-empty string, got ${typeof statement}`)
     }
@@ -2037,10 +2125,13 @@ export class Plur {
       // reverse superseded_by edge on each target found in the local primary
       // store (best-effort; targets living in other stores are not patched).
       // The tension scanner skips supersedes-linked pairs: an intentional
-      // update is not a contradiction.
-      if (context?.supersedes?.length) {
-        this._writeSupersededByEdges(engrams, context.supersedes, id)
-      }
+      // update is not a contradiction. The mutated targets are collected so
+      // the incremental write path below can persist them explicitly — on a
+      // store with `append`, writing only the new engram would silently drop
+      // these back-edges (the CI failure ffe04e0 fixed on #745).
+      const supersededTargets = context?.supersedes?.length
+        ? this._writeSupersededByEdges(engrams, context.supersedes, id)
+        : []
 
       // Stamp the extraction marker (#347) so the plur_learn MCP response can
       // echo the parsed expiry date back for confirmation — extraction must
@@ -2109,8 +2200,13 @@ export class Plur {
             },
           }
         }
-        engrams.push(engram)
-        await this._writeEngrams(this.paths.engrams, engrams)
+        // Incremental write (#740): append the new engram; on a store without
+        // `append` this saves the corpus in hand, which already carries the
+        // superseded_by back-edges — so the second write below is skipped.
+        await this._appendEngram(engrams, engram)
+        if (this._primaryStore.append) {
+          await this._updateEngrams(engrams, supersededTargets)
+        }
         await this._syncIndex()
 
         // Fire-and-forget: attempt immediate push, clean up on success.
@@ -2141,7 +2237,8 @@ export class Plur {
               if (target?.structured_data?._outbox) {
                 target.structured_data._outbox.last_error = (err as Error).message
                 target.structured_data._outbox.attempt_count = 1
-                await this._writeEngrams(this.paths.engrams, fresh)
+                // Incremental write (#740): only the outbox bookkeeping changed.
+                await this._updateEngrams(fresh, [target as Engram])
               }
             })
             return
@@ -2179,8 +2276,13 @@ export class Plur {
         return engram
       }
 
-      engrams.push(engram)
-      await this._writeEngrams(this.paths.engrams, engrams)
+      // Incremental write (#740): same shape as the outbox path above — append
+      // the new engram, then persist superseded_by back-edges when the append
+      // was targeted (a fallback save already wrote them with the corpus).
+      await this._appendEngram(engrams, engram)
+      if (this._primaryStore.append) {
+        await this._updateEngrams(engrams, supersededTargets)
+      }
       await this._syncIndex()
       appendHistory(this.paths.root, {
         event: 'engram_created',
@@ -2212,6 +2314,9 @@ export class Plur {
    * forget that pretends success and leaves the user with a phantom ID).
    */
   async learnRouted(statement: string, context?: LearnContext): Promise<Engram> {
+    this._assertWritable()
+    // #729: validate type BEFORE the secrets scan — a bad type must fail
+    // loudly even when the statement would also trip the secret detector.
     if (context?.type !== undefined && !VALID_ENGRAM_TYPES.has(context.type)) {
       throw new TypeError(
         `plur.learnRouted: invalid type '${context.type}'. Must be one of: behavioral, terminological, procedural, architectural`
@@ -2330,8 +2435,9 @@ export class Plur {
         } else {
           logger.warning(`[plur:learnRouted] no writable store for scope=${scope} — saving locally without outbox marker`)
         }
-        engrams.push(localPlaceholder)
-        await this._writeEngrams(this.paths.engrams, engrams)
+        // Incremental write (#740): the fallback engram is new by construction
+        // (its id was just minted above).
+        await this._appendEngram(engrams, localPlaceholder)
         await this._syncIndex()
         appendHistory(this.paths.root, {
           event: 'engram_created',
@@ -2461,6 +2567,7 @@ export class Plur {
 
   /** Async learn with LLM-driven deduplication (Ideas 1+2+19). */
   async learnAsync(statement: string, context?: LearnAsyncContext): Promise<LearnAsyncResult> {
+    this._assertWritable()
     const { learnAsync: learnAsyncImpl } = await import('./learn-async.js')
     return learnAsyncImpl(await this._learnAsyncDeps(), statement, context)
   }
@@ -2471,6 +2578,7 @@ export class Plur {
     llm?: LlmFunction,
     opts?: { maxLlmCalls?: number },
   ): Promise<LearnBatchResult> {
+    this._assertWritable()
     const { learnBatch: learnBatchImpl } = await import('./learn-async.js')
     return learnBatchImpl(await this._learnAsyncDeps(), statements, llm, opts)
   }
@@ -3476,6 +3584,16 @@ export class Plur {
 
   /** Reactivate accessed engrams and update co-access associations */
   private async _reactivateResults(results: Engram[]): Promise<void> {
+    // Read-only instance: SKIP the activation refresh, silently (#731). Recall
+    // is a read and must succeed on a read-only engine; the write it piggy-
+    // backs (retrieval_strength / last_accessed / frequency / co-access edges)
+    // is freshness bookkeeping, not the answer. Refusing the whole recall
+    // because the bookkeeping is forbidden would make the read wrong — exactly
+    // the failure mode #731 warned about — so the results are returned as-is
+    // and the refresh is deferred to the next writable instance that recalls
+    // them. Returning before the lock also keeps a pure read from creating
+    // `.lock` files.
+    if (this._readonly) return
     if (results.length === 0) return
     // Filter out store engrams — they're managed by their source.
     // Via YAML path: store engrams have _originalId. Via SQLite path: namespaced IDs (ENG-XX-...).
@@ -3874,6 +3992,7 @@ export class Plur {
 
   /** Update feedback_signals and adjust retrieval_strength. Searches primary, stores, then packs. */
   async feedback(id: string, signal: 'positive' | 'negative' | 'neutral'): Promise<void> {
+    this._assertWritable()
     // Try primary engrams first
     const found = await this._withStoreLock(this.paths.engrams, async () => {
       const engrams = await this._primaryStore.load()
@@ -3882,7 +4001,8 @@ export class Plur {
 
       applyFeedbackSignal(engram, signal)
 
-      await this._writeEngrams(this.paths.engrams, engrams)
+      // Incremental write (#740): only the rated engram changed.
+      await this._updateEngrams(engrams, [engram])
       await this._syncIndex()
       appendHistory(this.paths.root, {
         event: 'feedback_received',
@@ -4005,6 +4125,7 @@ export class Plur {
    * if a future caller passes a shared-scope meta.
    */
   async saveMetaEngrams(metas: Engram[]): Promise<{ saved: number; skipped: number }> {
+    this._assertWritable()
     return await this._withStoreLock(this.paths.engrams, async () => {
       const engrams = await this._primaryStore.load()
       const existingIds = new Set(engrams.map(e => e.id))
@@ -4070,6 +4191,7 @@ export class Plur {
    * equivalent and kept only for source compatibility.
    */
   async updateEngram(updated: Engram): Promise<boolean> {
+    this._assertWritable()
     // Local primary first.
     const localResult = await this._withStoreLock(this.paths.engrams, async () => {
       const engrams = await this._primaryStore.load()
@@ -4080,7 +4202,8 @@ export class Plur {
       const demote = this._guardExplicitUpdate(updated.statement, updated.scope, false, this._engramContextFields(updated))
       const toWrite = demote ? { ...updated, ...demote } : updated
       engrams[idx] = toWrite
-      await this._writeEngrams(this.paths.engrams, engrams)
+      // Incremental write (#740): only the updated engram row changed.
+      await this._updateEngrams(engrams, [toWrite])
       await this._syncIndex()
       return true
     })
@@ -4137,6 +4260,7 @@ export class Plur {
    * on remote success, null if not found locally or remotely.
    */
   async updateEngramAsync(updated: Engram): Promise<Engram | null> {
+    this._assertWritable()
     // Local primary first.
     const localResult = await this._withStoreLock(this.paths.engrams, async () => {
       const engrams = await this._primaryStore.load()
@@ -4147,7 +4271,8 @@ export class Plur {
       const demote = this._guardExplicitUpdate(updated.statement, updated.scope, false, this._engramContextFields(updated))
       const toWrite = demote ? { ...updated, ...demote } : updated
       engrams[idx] = toWrite
-      await this._writeEngrams(this.paths.engrams, engrams)
+      // Incremental write (#740): only the updated engram row changed.
+      await this._updateEngrams(engrams, [toWrite])
       await this._syncIndex()
       return toWrite
     })
@@ -4181,6 +4306,7 @@ export class Plur {
    * for source compatibility.
    */
   async setPinned(id: string, pinned: boolean): Promise<Engram | null> {
+    this._assertWritable()
     // Local primary first.
     const localResult = await this._withStoreLock(this.paths.engrams, async () => {
       const engrams = await this._primaryStore.load()
@@ -4189,7 +4315,8 @@ export class Plur {
       const e = engrams[idx]
       const updated: Engram = { ...e, pinned: pinned === true ? true : undefined }
       engrams[idx] = updated
-      await this._writeEngrams(this.paths.engrams, engrams)
+      // Incremental write (#740): only the (un)pinned engram row changed.
+      await this._updateEngrams(engrams, [updated])
       await this._syncIndex()
       return updated
     })
@@ -4228,6 +4355,7 @@ export class Plur {
    * awaits the remote PATCH too. Kept so existing callers keep compiling.
    */
   async setPinnedAsync(id: string, pinned: boolean): Promise<Engram | null> {
+    this._assertWritable()
     // Local primary first.
     const localResult = await this._withStoreLock(this.paths.engrams, async () => {
       const engrams = await this._primaryStore.load()
@@ -4236,7 +4364,8 @@ export class Plur {
       const e = engrams[idx]
       const updated: Engram = { ...e, pinned: pinned === true ? true : undefined }
       engrams[idx] = updated
-      await this._writeEngrams(this.paths.engrams, engrams)
+      // Incremental write (#740): only the (un)pinned engram row changed.
+      await this._updateEngrams(engrams, [updated])
       await this._syncIndex()
       return updated
     })
@@ -4268,6 +4397,7 @@ export class Plur {
    * dedup tracking (two agents learned the same fact; one forgets — the
    * other's reference should remain). */
   async forget(id: string, reason?: string, options?: { force?: boolean }): Promise<void> {
+    this._assertWritable()
     // Check primary first.
     // Reference-counted retirement (#107): decrement reference_count; only
     // physically retire when it reaches 0. forget() called N times on an
@@ -4305,7 +4435,10 @@ export class Plur {
         }
       }
 
-      await this._writeEngrams(this.paths.engrams, engrams)
+      // Incremental write (#740): retirement is a status flip on one row —
+      // the engram is soft-retired in place, never deleted, so this is an
+      // update, not a removal.
+      await this._updateEngrams(engrams, [engram])
       await this._syncIndex()
       appendHistory(this.paths.root, {
         event: newCount === 0 ? 'engram_retired' : 'engram_decremented',
@@ -4477,6 +4610,10 @@ export class Plur {
     targetScope: string,
     options?: RescopeOptions,
   ): Promise<{ results: RescopeResult[]; success: boolean }> {
+    // Public mutator (#731): both routes mutate — the remote push retires the
+    // local source, the local route rewrites scope in place — so gate before
+    // any routing, like every other mutator.
+    this._assertWritable()
     const ids = Array.isArray(idOrIds) ? idOrIds : [idOrIds]
     if (ids.length === 0) throw new TypeError('plur.rescope: provide at least one engram id')
     if (typeof targetScope !== 'string' || targetScope.trim() === '') {
@@ -4664,7 +4801,8 @@ export class Plur {
         ...(tsd && typeof tsd === 'object' && !Array.isArray(tsd) ? tsd : {}),
         _rescoped: { from_scope: from, at: now },
       }
-      await this._writeEngrams(this.paths.engrams, fresh)
+      // Incremental write (#740): only the rescoped row changed.
+      await this._updateEngrams(fresh, [t])
       await this._syncIndex()
       return true
     })
@@ -4710,7 +4848,8 @@ export class Plur {
         ...(tsd && typeof tsd === 'object' && !Array.isArray(tsd) ? tsd : {}),
         _rescoped: { to_scope: toScope, to_id: newId, at: now },
       }
-      await this._writeEngrams(this.paths.engrams, fresh)
+      // Incremental write (#740): only the retired source row changed.
+      await this._updateEngrams(fresh, [t])
       await this._syncIndex()
     })
     appendHistory(this.paths.root, {
@@ -4723,6 +4862,7 @@ export class Plur {
 
   /** Remove retired engrams from storage. Returns count of removed and remaining. */
   async compact(): Promise<{ removed: number; remaining: number }> {
+    this._assertWritable()
     return await this._withStoreLock(this.paths.engrams, async () => {
       const engrams = await this._primaryStore.load()
       const active = engrams.filter(e => e.status !== 'retired')
@@ -5077,6 +5217,7 @@ export class Plur {
    * After 7 days: includes warning in expired_warnings.
    */
   async flushOutbox(): Promise<{ flushed: number; failed: number; expired_warnings: string[] }> {
+    this._assertWritable()
     const engrams = await this._primaryStore.load()
     // #766: skip retired engrams — a retired engram must not be pushed to the
     // remote and resurrected. The cancel-outbox path in forget() strips _outbox
@@ -5263,6 +5404,7 @@ export class Plur {
     failureContext: string,
     llm?: LlmFunction,
   ): Promise<{ engram: Engram; episode: Episode; evolved: boolean; blocked?: boolean }> {
+    this._assertWritable()
     const engram = await this.getById(engramId)
     if (!engram) throw new Error(`Engram not found: ${engramId}`)
 
@@ -5822,10 +5964,14 @@ Generate an improved version of the procedure that prevents this failure. Return
    * Write the reverse `relations.superseded_by` edge on each supersede
    * target present in the (already-loaded, lock-held) local engram list
    * (#240). Unknown targets are skipped silently — the forward edge on the
-   * new engram still records the intent. Mutates in place; the caller's
-   * subsequent _writeEngrams persists the change.
+   * new engram still records the intent. Mutates in place and RETURNS the
+   * targets it actually changed: on the incremental write path (#740) the
+   * new engram is appended on its own, so the caller must persist these
+   * mutated rows explicitly via `_updateEngrams` — a whole-corpus fallback
+   * save carries them implicitly, a targeted `append` does not.
    */
-  private _writeSupersededByEdges(engrams: Engram[], targetIds: string[], newId: string): void {
+  private _writeSupersededByEdges(engrams: Engram[], targetIds: string[], newId: string): Engram[] {
+    const mutated: Engram[] = []
     for (const targetId of targetIds) {
       const target = engrams.find(e => e.id === targetId)
       if (!target) continue
@@ -5835,8 +5981,10 @@ Generate an improved version of the procedure that prevents this failure. Return
       target.relations.superseded_by = target.relations.superseded_by ?? []
       if (!target.relations.superseded_by.includes(newId)) {
         target.relations.superseded_by.push(newId)
+        mutated.push(target)
       }
     }
+    return mutated
   }
 
   /**
@@ -5844,6 +5992,7 @@ Generate an improved version of the procedure that prevents this failure. Return
    * Used after tension-detection redesign to clear accumulated false positives.
    */
   async purgeTensions(): Promise<{ purged_count: number; engrams_modified: number; stores_cleaned: number }> {
+    this._assertWritable()
     // Collect all filesystem store paths (primary + project-scoped + pack stores)
     const storePaths = new Set<string>()
     storePaths.add(this.paths.engrams)

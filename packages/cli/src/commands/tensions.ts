@@ -93,13 +93,15 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     else { i++ }
   }
 
-  // NOTE: this used to read `createPlur(flags, { readonly: true })`. `createPlur`
-  // takes one parameter and `Plur`'s constructor has no `readonly` option, so
-  // that argument was discarded — this command has always opened a normal
-  // read-write engine. Dropped rather than left in place: an argument that reads
-  // as a safety property but does nothing is worse than no argument at all.
-  // A real read-only mode is worth having; it does not exist yet.
-  const plur = createPlur(flags)
+  // List mode (no --scan, no lifecycle action) is read-only: the command only
+  // reads persisted tensions and engrams, so a write-guarded engine prevents
+  // lazy engine side-effects from mutating the store as a side-effect of a
+  // query. Scan and lifecycle actions (confirm / dismiss / resolve) mutate
+  // state and get a standard writable engine. (An earlier version passed
+  // `{ readonly: true }` here before the option existed and it was silently
+  // discarded — #731 is the real implementation.)
+  const isListMode = !scan && !action
+  const plur = createPlur(flags, { readonly: isListMode })
 
   // --- Lifecycle actions (#181) ---
   if (action) {

@@ -131,6 +131,30 @@ export interface PrimaryStore {
   updateMany?(engrams: Engram[]): Promise<void>
 
   /**
+   * Insert exactly one NEW engram, leaving every other row untouched.
+   * Optional; when absent the caller falls back to a whole-corpus `save()` of
+   * the corpus it already holds — never a fresh load-and-reparse.
+   *
+   * The companion to {@link updateMany} for the write path (#740): `learn()`
+   * constructs a brand-new engram, and on a row store that should be a
+   * single-row INSERT, not a corpus replace. It is deliberately NOT expressed
+   * as `updateMany([engram])`: `updateMany` is an upsert, so a duplicate id
+   * would silently overwrite an unrelated existing row. `append` carries the
+   * "this row is new" intent, and an implementation SHOULD surface an id
+   * collision as an error rather than absorb it.
+   *
+   * `YamlPrimaryStore` intentionally does not implement it. A single-file
+   * store rewrites the whole file either way, and every in-engine caller
+   * already holds a freshly loaded corpus under the store lock — the fallback
+   * reuses that corpus, so implementing `append` here would only add a second
+   * full parse of a file the caller just parsed (the #745 regression).
+   *
+   * Implementations with a read cache MUST invalidate it after writing, and
+   * MUST be safe to call inside `withExclusiveAccess`.
+   */
+  append?(engram: Engram): Promise<void>
+
+  /**
    * Load exactly these engrams by id. Optional; when absent the caller falls
    * back to `load()` and filters in memory.
    *

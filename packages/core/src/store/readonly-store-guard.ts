@@ -1,0 +1,72 @@
+/**
+ * ReadonlyStoreGuard — wraps a `PrimaryStore` and blocks every write.
+ *
+ * Used when `Plur` is opened for a read-only command (`plur list`, `plur
+ * status`, `plur tensions` list mode, `new Plur({ readonly: true })`) so that
+ * lazy engine writes — index sync side-effects, cache refresh, migration
+ * fix-ups — are caught rather than silently mutating the store (#731).
+ *
+ * Design rules, each load-bearing:
+ *
+ * - **Reads delegate unchanged** (`load`, `loadCached`, `invalidate`, and
+ *   `loadByIds` when the inner store has it).
+ * - **Optional capabilities mirror the inner store.** `estimateCount` and
+ *   `loadByIds` are only present when the inner store implements them — a
+ *   guard must not invent an estimate of 0 for a store that declined to give
+ *   one (backend selection has its own "treat as small" fallback and must see
+ *   the absence, not a fabricated number). Likewise the write capabilities
+ *   `append`/`updateMany` are only declared when the inner store declares
+ *   them, so capability probes (`store.updateMany && store.loadByIds`) see
+ *   the same shape as the unwrapped store.
+ * - **`withExclusiveAccess` runs the callback WITHOUT acquiring anything.**
+ *   Exclusive access exists to serialize read-modify-write cycles; on a store
+ *   that cannot be written there is no write to serialize, and acquiring the
+ *   fallback file lock would create `.lock` files on a pure read path — a
+ *   disk write from a read-only engine. Any write attempted inside the
+ *   callback still rejects at the store method itself.
+ * - **All writes reject with the same typed error**, so callers can
+ *   distinguish "this instance is read-only" from a real store failure.
+ */
+import type { Engram } from '../schemas/engram.js'
+import type { PrimaryStore, PrimaryStoreKind } from './primary-store.js'
+
+export class ReadonlyStoreError extends Error {
+  constructor() {
+    super('This Plur instance is read-only — use a writable instance for mutations.')
+    this.name = 'ReadonlyStoreError'
+  }
+}
+
+export class ReadonlyStoreGuard implements PrimaryStore {
+  readonly kind: PrimaryStoreKind
+  readonly location: string | null
+
+  /** Present only when the inner store implements it — see file header. */
+  readonly loadByIds?: (ids: string[]) => Promise<Engram[]>
+  /** Present only when the inner store implements it — see file header. */
+  readonly estimateCount?: () => number
+  /** Present (and rejecting) only when the inner store implements it. */
+  readonly append?: (engram: Engram) => Promise<void>
+  /** Present (and rejecting) only when the inner store implements it. */
+  readonly updateMany?: (engrams: Engram[]) => Promise<void>
+
+  constructor(private readonly _inner: PrimaryStore) {
+    this.kind = _inner.kind
+    this.location = _inner.location
+    if (_inner.loadByIds) this.loadByIds = ids => _inner.loadByIds!(ids)
+    if (_inner.estimateCount) this.estimateCount = () => _inner.estimateCount!()
+    if (_inner.append) this.append = () => Promise.reject(new ReadonlyStoreError())
+    if (_inner.updateMany) this.updateMany = () => Promise.reject(new ReadonlyStoreError())
+  }
+
+  load(): Promise<Engram[]> { return this._inner.load() }
+  loadCached(): Promise<Engram[]> { return this._inner.loadCached() }
+  invalidate(): void { this._inner.invalidate() }
+
+  /** No lock acquisition — nothing can write, so there is nothing to serialize. */
+  async withExclusiveAccess<T>(fn: () => Promise<T>): Promise<T> {
+    return await fn()
+  }
+
+  save(_engrams: Engram[]): Promise<void> { return Promise.reject(new ReadonlyStoreError()) }
+}

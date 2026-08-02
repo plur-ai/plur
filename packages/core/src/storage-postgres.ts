@@ -896,6 +896,29 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
     }
   }
 
+  /**
+   * Single-row INSERT of one NEW engram. See `PrimaryStore.append`.
+   *
+   * A plain INSERT, deliberately NOT `ON CONFLICT DO UPDATE`: `append` carries
+   * the caller's claim that the row is new, and a duplicate id is a bug that
+   * should surface as a unique-violation error rather than silently overwrite
+   * an unrelated existing row. Replacements go through {@link updateMany},
+   * which is the upsert. No advisory lock needed — a single-row INSERT is
+   * atomic on its own.
+   */
+  async append(engram: Engram): Promise<void> {
+    const pool = await this.getPool()
+    await pool.query(
+      `INSERT INTO "${this.schema}".engrams (id, status, scope, domain, last_accessed, data, source, tokens, search_text)
+       SELECT t.id, t.status, t.scope, t.domain, t.last_accessed, t.data, 'primary', t.tokens, t.search_text
+       FROM jsonb_to_recordset($1::jsonb)
+         AS t(id text, status text, scope text, domain text, last_accessed text, data jsonb,
+              tokens text[], search_text text)`,
+      [JSON.stringify([toRow(engram)])],
+    )
+    // No cache to drop — `loadCached()` delegates to `load()` on this adapter.
+  }
+
   async save(engrams: Engram[]): Promise<void> {
     const pool = await this.getPool()
     const client = await this.acquire(pool)
