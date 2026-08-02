@@ -7,6 +7,7 @@ import { IndexedStorage } from './storage-indexed.js'
 import { PGLiteAdapter } from './storage-pglite.js'
 import { loadConfig } from './config.js'
 import { generateEngramId, loadAllPacks, storePrefix, initFilesystemStore } from './engrams.js'
+import { maybeDailyBackup } from './backup.js'
 import { logger } from './logger.js'
 import { searchEngrams, ftsTokenize, extendCorpusStats } from './fts.js'
 import { selectAndSpread, scoreEngramsPublic, formatWithLayer, assignLayer } from './inject.js'
@@ -89,7 +90,16 @@ export { generateGuardrails } from './guardrails.js'
 export type { MetaField, StructuralTemplate, EvidenceEntry, MetaConfidence, DomainCoverage, HierarchyPosition, Falsification } from './schemas/meta-engram.js'
 export { MetaFieldSchema, StructuralTemplateSchema, EvidenceEntrySchema, MetaConfidenceSchema, DomainCoverageSchema, HierarchyPositionSchema, FalsificationSchema } from './schemas/meta-engram.js'
 export { engramSearchText, termMatches, computeIdf, type CorpusStats } from './fts.js'
-export { EngramStoreUnreadableError } from './engrams.js'
+export { EngramStoreUnreadableError, EngramStoreShrinkError } from './engrams.js'
+export {
+  maybeDailyBackup,
+  listBackups,
+  planRestore,
+  restoreBackup,
+  validateStore,
+  BACKUP_DIR,
+} from './backup.js'
+export type { BackupEntry, BackupOutcome, RestorePlan, RestoreResult, StoreValidity } from './backup.js'
 export { freshTailBoost } from './fresh-tail.js'
 export { autoSummary, generateSummary, needsSummary } from './summary.js'
 export { selectModel, selectModelForOperation, resolveOperationTier, type ModelTier, type LlmTierConfig } from './model-routing.js'
@@ -1165,8 +1175,39 @@ export class Plur {
    */
   private async _withStoreLock<T>(path: string, fn: () => Promise<T>): Promise<T> {
     const store = this._storeAt(path)
-    if (store.withExclusiveAccess) return await store.withExclusiveAccess(fn)
-    return await withAsyncLock(path, fn)
+    const guarded = async (): Promise<T> => {
+      this._maybeDailyBackup(path)
+      return await fn()
+    }
+    if (store.withExclusiveAccess) return await store.withExclusiveAccess(guarded)
+    return await withAsyncLock(path, guarded)
+  }
+
+  /**
+   * Snapshot the primary store once per process per day (#799).
+   *
+   * Called from INSIDE the lock and BEFORE `fn` runs, which is the whole point:
+   * the copy must be of the on-disk bytes as they were before any write path
+   * could replace them, and it must be under the lock so it cannot catch a
+   * half-written file.
+   *
+   * Only the primary store, and only when writable. A read-only instance must
+   * not have write side effects (#731), and secondary stores are the remote's
+   * or the pack's to protect — snapshotting them here would silently multiply
+   * disk use for data this instance does not own.
+   *
+   * Never throws: the backup is a safety net for the write, not a precondition
+   * of it. A failed snapshot warns and lets the write proceed.
+   */
+  private _maybeDailyBackup(path: string): void {
+    if (this._readonly) return
+    if (path !== this.paths.engrams) return
+    if (this._primaryStore.kind !== 'yaml') return
+    try {
+      maybeDailyBackup(this.paths.root, path)
+    } catch {
+      /* maybeDailyBackup already logs; a backup must never fail a write */
+    }
   }
 
   private _storeAt(path: string): AsyncPrimaryStore {

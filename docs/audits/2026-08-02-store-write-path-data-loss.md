@@ -158,6 +158,35 @@ The one thing `sync.ts` does right here: it never issues `checkout` or `reset --
 
 ---
 
+## Status
+
+Tracked in #794. Remediation, with the measured before/after for each:
+
+| # | Sev | Status | Where | Measured after |
+|---|---|---|---|---|
+| F1 | CRITICAL | Fixed | #795 / PR #800 | P01: zero PLUR-caused loss; every write path refuses |
+| F2 | CRITICAL | Fixed | #795 / PR #800 | P03: "no loss" — both previously-deleted engrams survive |
+| F3 | HIGH | Partly fixed | #795 / PR #800; remainder #802 | The YAML-fallback wipe is closed by F1/F2. `learn-async`'s direct `store.save(all)` on row backends is NOT yet routed through the seam — tracked as #802 |
+| F4 | HIGH | Fixed | #796 / PR #800 | fsync on file + parent dir in both writers; unique tmp names |
+| F5 | HIGH | Fixed | #798 / PR #801 | P06b: markers-committed, scope:local-leaked, remote-has-markers all `true` → `false`; sync refuses |
+| F6 | MED-HIGH | Fixed | #798 / PR #801 | Reports "NOT pulled — still N commit(s) behind" instead of a false success |
+| F7 | MED-HIGH | Fixed | #798 / PR #801 | Warning names the scope:local count that is NOT backed up |
+| F8 | MED-HIGH | Fixed | #797 / PR #800 | P02: 70% loss → **0%** (100/100), no leftover tmp |
+| F9 | MED | Open | — | Stale-lock stealing |
+| F10 | MED | Open | — | Sync busy-wait starves the async holder |
+| F11 | MED | Open | — | packs/registry.yaml integrity baseline |
+| F12 | MED | Open | — | `setSchemaVersion` lock bypass |
+| F13 | LOW-MED | Fixed incidentally | #795 / PR #800 | Quarantine means pack install no longer drops invalid pack engrams |
+| F14 | LOW | Fixed | PR #800 | `YamlStore` and `loadEngrams` now share one parser |
+| F15 | LOW | Open | — | MCP drop-log (diagnostics only) |
+
+Backups (#799) add the recovery half that none of the refusals above can provide.
+
+**What refusals cannot fix.** A mid-document truncation destroys bytes; the guards stop PLUR making
+it worse, but only a backup restores them. Note also that snapshots are DAILY: engrams learned after
+a given day's snapshot are not in it. `plur restore` therefore reads the append-only history log and
+NAMES the engrams a restore cannot recover, rather than rolling the user back silently.
+
 ## Provenance
 
 Audit run 2026-08-02 against merged 0.17 main (`4b815ed`) in a detached scratch worktree; the main
