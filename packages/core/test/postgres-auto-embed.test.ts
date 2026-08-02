@@ -305,3 +305,82 @@ describe.skipIf(!PG_URL)('Postgres primary-store auto-embed (#762)', () => {
     }
   }, TIMEOUT)
 })
+
+/**
+ * Embedding staleness on the Postgres tier (#812).
+ *
+ * The anti-join used to ask only `em.engram_id IS NULL`, so an engram whose
+ * text changed kept the vector of its previous text forever — the store had no
+ * column that could even express the question. These pin the `content_hash`
+ * comparison end to end against a real Postgres: the PGLite tier answers it in
+ * JS, this one answers it in SQL (`content_hash IS DISTINCT FROM
+ * md5(search_text)`), and the two derivations have to agree or the backfill
+ * loop's exit condition is unsatisfiable.
+ */
+describe.skipIf(!PG_URL)('Postgres embedding staleness (#812)', () => {
+  let adapter: PostgresAdapter
+  let plur: Plur
+  let dir: string
+
+  beforeAll(async () => {
+    process.env.PLUR_INTENT_ROUTING = 'off'
+    installStubEmbedder()
+    dir = mkdtempSync(join(tmpdir(), 'plur-staleness-812-'))
+    adapter = new PostgresAdapter({ connectionString: PG_URL!, schema: `${SCHEMA}_812`, vectorIndex: 'exact' })
+    await adapter.save([])
+    plur = new Plur({ path: dir, store: adapter })
+    await plur.ready()
+  }, TIMEOUT)
+
+  afterAll(async () => {
+    resetEmbedder()
+    delete process.env.PLUR_INTENT_ROUTING
+    if (adapter) {
+      await adapter.dropSchema().catch(() => { /* best effort */ })
+      await adapter.close().catch(() => { /* best effort */ })
+    }
+    if (dir) rmSync(dir, { recursive: true, force: true })
+  }, TIMEOUT)
+
+  it('re-embeds an engram whose text changed, and stops once it has', async () => {
+    const e = await plur.learn('cats are excellent pets', { scope: 'global', type: 'behavioral' })
+    await plur.waitForIndex()
+    expect(await adapter.listEngramsMissingEmbeddings(1)).toEqual([])
+    const before = await adapter.searchVector(await embed('cats are excellent pets', 'query') as Float32Array, 5)
+    const beforeScore = before.find(h => h.engram.id === e.id)!.score
+
+    // Rewrite the statement in place — same id, different meaning. This is the
+    // dedup UPDATE/MERGE shape from learn-async.ts.
+    const stored = (await adapter.load()).find(x => x.id === e.id)!
+    await adapter.updateMany([{ ...stored, statement: 'databases are excellent stores' }])
+
+    // The store must now volunteer it as needing work (the backfill's question:
+    // the read path's completeness gate deliberately does NOT ask about staleness).
+    const stale = await adapter.listEngramsMissingEmbeddings(10, { includeStale: true })
+    expect(stale.map(s => s.id)).toContain(e.id)
+
+    // ...and one pass must clear it, not report it forever.
+    await (plur as any)._autoEmbedPrimaryStore(adapter)
+    expect(await adapter.listEngramsMissingEmbeddings(1, { includeStale: true })).toEqual([])
+
+    // The vector actually moved: it no longer answers to the OLD text as well.
+    const after = await adapter.searchVector(await embed('cats are excellent pets', 'query') as Float32Array, 5)
+    const afterScore = after.find(h => h.engram.id === e.id)?.score ?? 0
+    expect(afterScore).toBeLessThan(beforeScore)
+  }, TIMEOUT)
+
+  it('re-embeds a legacy row stored without a content hash exactly once', async () => {
+    const e = await plur.learn('written before content hashing existed', { scope: 'global' })
+    await plur.waitForIndex()
+
+    // Simulate a row written by a version predating the column.
+    const pool = await (adapter as any).getPool()
+    await pool.query(`UPDATE "${SCHEMA}_812".engram_embeddings SET content_hash = NULL WHERE engram_id = $1`, [e.id])
+    expect((await adapter.listEngramsMissingEmbeddings(50, { includeStale: true })).map(s => s.id)).toContain(e.id)
+
+    await (plur as any)._autoEmbedPrimaryStore(adapter)
+
+    // Converged — a NULL hash must not mean "stale on every pass forever".
+    expect(await adapter.listEngramsMissingEmbeddings(1, { includeStale: true })).toEqual([])
+  }, TIMEOUT)
+})

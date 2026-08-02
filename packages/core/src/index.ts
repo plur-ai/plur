@@ -3325,6 +3325,13 @@ export class Plur {
    * probe is also what makes a store migrated in with existing rows converge:
    * the first semantic recall starts the backfill even if nothing was ever
    * written through this instance.
+   *
+   * Deliberately WITHOUT `includeStale` (#812): a stale vector still returns
+   * its engram, merely ranked by older text, so it is not the silent
+   * incompleteness this gate is about. Opening the gate on staleness would put
+   * every semantic recall on the O(N) fallback until the backfill drained —
+   * one edited engram degrading the whole store. Edits kick the backfill from
+   * the write path, so they converge without this gate's help.
    */
   private async _primarySemanticRecall(
     adapter: StorageAdapter,
@@ -5243,12 +5250,17 @@ export class Plur {
       }
       const active = (await this._loadAllEngrams()).filter(e => e.status === 'active' && !(e as any)._originalId && !(e as any)._pack)
       if (active.length === 0) return
-      const { engramSearchText } = await import('./fts.js')
+      const { engramSearchText, embeddingContentHash } = await import('./fts.js')
       for (const engram of active) {
-        if (await adapter.hasEmbedding(engram.id)) continue
+        // #812: skip on "already embedded FROM THIS TEXT", not on "already has
+        // some vector". The latter is what `hasEmbedding` answered, which meant
+        // a dedup UPDATE/MERGE could rewrite an engram and its vector would
+        // never be recomputed — semantic recall kept ranking it by the old text.
+        const hash = embeddingContentHash(engram)
+        if (await adapter.embeddingIsCurrent(engram.id, hash)) continue
         const vec = await embed(engramSearchText(engram))
         if (!vec) return // embedder unavailable — next cycle retries
-        await adapter.upsertEmbedding(engram.id, vec)
+        await adapter.upsertEmbedding(engram.id, vec, hash)
       }
     } catch (err) {
       this._recordIndexError('auto-embed', err)
@@ -5333,11 +5345,29 @@ export class Plur {
         )
         return
       }
-      const { engramSearchText } = await import('./fts.js')
+      const { engramSearchText, embeddingContentHash } = await import('./fts.js')
+      // #812: the loop's exit condition is "the store stops returning rows",
+      // and the store's predicate now includes a hash comparison. If the hash
+      // this side writes ever stopped matching the one the store's SQL derives,
+      // every batch would return the same rows and the pass would spin forever
+      // — a background task pinning a core. The two agree by construction (see
+      // `embeddingContentHash`), and this set makes that a warning instead of a
+      // hang if they ever stop agreeing.
+      const embeddedThisPass = new Set<string>()
       for (;;) {
-        const batch = await adapter.listEngramsMissingEmbeddings(PRIMARY_AUTO_EMBED_BATCH)
+        const batch = await adapter.listEngramsMissingEmbeddings(PRIMARY_AUTO_EMBED_BATCH, { includeStale: true })
         if (batch.length === 0) return
-        for (const engram of batch) {
+        const fresh = batch.filter(e => !embeddedThisPass.has(e.id))
+        if (fresh.length === 0) {
+          logger.warning(
+            `[plur] primary-store auto-embed stopped: ${batch.length} engram(s) still report a stale `
+            + `embedding after being re-embedded in this pass (first: ${batch[0].id}). The stored content `
+            + `hash disagrees with the store's — semantic recall may be ranking stale text. Please report this.`,
+          )
+          return
+        }
+        for (const engram of fresh) {
+          const hash = embeddingContentHash(engram)
           const vec = await embed(engramSearchText(engram))
           if (!vec) {
             // Embedder became unavailable mid-pass — stop; retried on the
@@ -5346,7 +5376,8 @@ export class Plur {
             logger.debug('[plur] primary-store auto-embed paused: embedder unavailable.')
             return
           }
-          await adapter.upsertEmbedding(engram.id, vec)
+          await adapter.upsertEmbedding(engram.id, vec, hash)
+          embeddedThisPass.add(engram.id)
         }
         // A full batch means the anti-join may hold more; a short one is the
         // tail. Progress is guaranteed: every upsert removes a row from the

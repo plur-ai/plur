@@ -592,6 +592,13 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
         embedding ${wantType}(${this.vectorDim}) NOT NULL
       )
     `)
+    // #812: which text this vector was computed from. Additive and idempotent,
+    // exactly like the `tokens` / `search_text` columns above — an existing
+    // deployment gains the column on next connect with no migration step. Rows
+    // written before it existed carry NULL, which the staleness predicate in
+    // `listEngramsMissingEmbeddings` reads as "unknown", so each is re-embedded
+    // once by the background pass and is stable from then on.
+    await this.ddl(client, `ALTER TABLE "${this.schema}".engram_embeddings ADD COLUMN IF NOT EXISTS content_hash TEXT`)
     await this.readEmbeddingColumnInfo(client)
     await this.ensureVectorIndex(client)
   }
@@ -1324,7 +1331,7 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
    * embedder and the store disagree — rather than surfacing pgvector's own
    * error.
    */
-  async upsertEmbedding(engramId: string, vector: Float32Array): Promise<void> {
+  async upsertEmbedding(engramId: string, vector: Float32Array, contentHash?: string): Promise<void> {
     const pool = await this.getPool()
     const expectedDim = this.activeVecDim ?? this.vectorDim
     if (vector.length !== expectedDim) {
@@ -1335,15 +1342,31 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
       )
     }
     await pool.query(
-      `INSERT INTO "${this.schema}".engram_embeddings (engram_id, embedding)
-       VALUES ($1, $2::${this.activeVecType})
-       ON CONFLICT (engram_id) DO UPDATE SET embedding = EXCLUDED.embedding`,
-      [engramId, vectorLiteral(vector)],
+      `INSERT INTO "${this.schema}".engram_embeddings (engram_id, embedding, content_hash)
+       VALUES ($1, $2::${this.activeVecType}, $3)
+       ON CONFLICT (engram_id) DO UPDATE
+         SET embedding = EXCLUDED.embedding, content_hash = EXCLUDED.content_hash`,
+      [engramId, vectorLiteral(vector), contentHash ?? null],
     )
   }
 
   /**
-   * Active engrams with no row in `engram_embeddings`, up to `limit` (#762).
+   * Active engrams whose embedding is missing or stale, up to `limit` (#762, #812).
+   *
+   * Staleness is `content_hash IS DISTINCT FROM md5(search_text)`. Both sides
+   * are evaluated by Postgres over the same column, and `embeddingContentHash`
+   * — what the writer stores — is md5 over the identical derivation
+   * (`ftsTokenize(engramSearchText(e)).join(' ')`, which is exactly what
+   * `deriveRow` writes to `search_text`). That agreement is load-bearing: this
+   * method is the loop condition of the backfill pass, so a predicate that
+   * never goes false for a row would spin on it forever. `_autoEmbedPrimaryStore`
+   * additionally refuses to revisit an id within one pass, so a future drift
+   * degrades to a logged warning rather than an infinite loop.
+   *
+   * `search_text IS NOT NULL` guards the same hazard from the other side: a row
+   * written before that column existed hashes to NULL, and NULL IS DISTINCT
+   * FROM a real hash is TRUE — permanently. Such rows embed once via the
+   * `em.engram_id IS NULL` arm and are then left alone.
    *
    * ONE set-based anti-join, which is the whole reason primary-store
    * auto-embed exists at all: the PGLite-era shape — load the corpus, probe
@@ -1357,13 +1380,21 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
    * `ORDER BY e.id` so concurrent auto-embed passes in different processes
    * walk the gap in the same order and converge instead of thrashing.
    */
-  async listEngramsMissingEmbeddings(limit: number): Promise<Engram[]> {
+  async listEngramsMissingEmbeddings(limit: number, opts?: { includeStale?: boolean }): Promise<Engram[]> {
     assertPositiveInt(limit, 'limit')
     const pool = await this.getPool()
+    // `search_text IS NOT NULL` guards a row written before that column
+    // existed: it hashes to NULL, and NULL IS DISTINCT FROM a real hash is
+    // TRUE — permanently. Such a row embeds once through the `IS NULL` arm and
+    // is then left alone, rather than being re-embedded on every pass forever.
+    const staleArm = opts?.includeStale
+      ? `OR (e.search_text IS NOT NULL AND em.content_hash IS DISTINCT FROM md5(e.search_text))`
+      : ''
     const res = await pool.query(
       `SELECT e.data FROM "${this.schema}".engrams e
        LEFT JOIN "${this.schema}".engram_embeddings em ON em.engram_id = e.id
-       WHERE e.status = 'active' AND em.engram_id IS NULL
+       WHERE e.status = 'active'
+         AND (em.engram_id IS NULL ${staleArm})
        ORDER BY e.id
        LIMIT $1`,
       [limit],
