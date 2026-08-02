@@ -204,6 +204,28 @@ describe('saveEngrams — shrink guard (F1/F2/F3 choke point)', () => {
     expect(loadEngrams(storePath)).toHaveLength(1)
   })
 
+  it('still refuses a 50% shrink on a store large enough to take the fast path', () => {
+    // Regression for a hole introduced while making the guard cheap. The exact
+    // count is a full YAML parse, which measured +388ms on a 419ms save — and
+    // since _reactivateResults turns every recall() into a save, that taxed the
+    // READ path of the largest stores. The first fix estimated the record count
+    // from a bytes-per-engram constant; measured engrams average 785 bytes
+    // against an assumed 2400, so a 20k store estimated as 6.5k and a genuine
+    // 50% shrink skipped the guard entirely. The pre-check now compares
+    // serialized bytes to on-disk bytes, which needs no constant.
+    const engrams = seed(200)
+    expect(() => saveEngrams(storePath, engrams.slice(0, 100))).toThrow(EngramStoreShrinkError)
+    expect(loadEngrams(storePath)).toHaveLength(200)
+  })
+
+  it('takes the fast path for a same-size rewrite — no exact count needed', () => {
+    // The common case: recall() rewrites the corpus it just read. Must not pay
+    // for a full re-parse.
+    const engrams = seed(200)
+    expect(() => saveEngrams(storePath, engrams)).not.toThrow()
+    expect(loadEngrams(storePath)).toHaveLength(200)
+  })
+
   it('counts quarantined entries toward the outgoing total', () => {
     // 10 on disk, 2 invalid -> loader returns 8. Writing those 8 back is a 20%
     // shrink by naive counting, but the 2 quarantined entries are re-appended,
