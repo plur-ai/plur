@@ -22,13 +22,21 @@ import {
   EngramStoreUnreadableError,
   EngramStoreShrinkError,
 } from '../src/engrams.js'
-import type { Engram } from '../src/schemas/engram.js'
+import { EngramSchemaPassthrough, type Engram } from '../src/schemas/engram.js'
 
 let root: string
 let storePath: string
 
+/**
+ * Build a real, fully-defaulted Engram.
+ *
+ * Parsed through the schema rather than cast, so the fixture cannot drift out
+ * of shape: a hand-written object literal with an `as Engram` cast compiles
+ * only by lying, and a lying fixture is worthless in tests whose entire subject
+ * is what does and does not pass validation.
+ */
 function engram(n: number): Engram {
-  return {
+  return EngramSchemaPassthrough.parse({
     id: `ENG-2026-08-02-${String(n).padStart(3, '0')}`,
     statement: `fact number ${n} about the system`,
     type: 'behavioral',
@@ -36,7 +44,7 @@ function engram(n: number): Engram {
     confidence: 0.5,
     created: '2026-08-02',
     scope: 'local',
-  } as Engram
+  }) as Engram
 }
 
 function seed(count: number): Engram[] {
