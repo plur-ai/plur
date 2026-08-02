@@ -4,7 +4,7 @@ import { existsSync, readFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
 import { Plur, checkForUpdate } from '@plur-ai/core'
-import { getToolDefinitions, mcpCanary, validateToolArgs, CURSOR_CORE_TOOL_NAMES, type ToolProfile } from './tools.js'
+import { getToolDefinitions, mcpCanary, validateToolArgs, CURSOR_CORE_TOOL_NAMES, type ToolProfile, resolveToolProfile, setActiveToolProfile } from './tools.js'
 import { registerFlushOnExit } from './telemetry.js'
 import { VERSION } from './version.js'
 
@@ -169,7 +169,12 @@ Override with \`PLUR_PATH\` environment variable.
 
 export async function createServer(plur?: Plur, options?: { profile?: ToolProfile }): Promise<Server> {
   const instance = plur ?? new Plur()
-  const tools = getToolDefinitions(options?.profile ?? 'lean')
+  const profile = options?.profile ?? 'lean'
+  // #761: record what we actually exposed, so plur_doctor reports THIS surface
+  // rather than re-deriving one from the environment — which is not the
+  // authority here, since the profile arrives as an option.
+  setActiveToolProfile(profile)
+  const tools = getToolDefinitions(profile)
 
   // Non-blocking version check — fire and forget
   checkForUpdate('@plur-ai/mcp', VERSION, (r) => {
@@ -420,8 +425,10 @@ Please:
 }
 
 export async function runStdio(): Promise<void> {
-  const envProfile = process.env.PLUR_TOOL_PROFILE
-  const profile: ToolProfile = envProfile === 'full' ? 'full' : envProfile === 'cursor' ? 'cursor' : 'lean'
+  // Shared with describeToolSurface (#761) so the surface plur_doctor reports
+  // is resolved from the same rule the server exposes tools with — two copies
+  // of this ternary is how doctor comes to describe a profile nobody is running.
+  const profile: ToolProfile = resolveToolProfile()
   const server = await createServer(undefined, { profile })
   // Opt-in, content-free telemetry: ship any pending daily counter snapshot on
   // process exit (best-effort). Self-gates on telemetry opt-in — an opted-out
