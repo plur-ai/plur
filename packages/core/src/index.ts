@@ -2594,8 +2594,9 @@ export class Plur {
 
   /** Hybrid search: BM25 + embeddings merged via Reciprocal Rank Fusion. Async, no API calls. Delegates to recallHybridWithMeta so it gets intent/rerank/PGLite routing too. */
   async recallHybrid(query: string, options?: Omit<RecallOptions, 'mode' | 'llm'>): Promise<Engram[]> {
+    const limit = options?.limit ?? 20
     const result = await this.recallHybridWithMeta(query, options)
-    return result.engrams
+    return result.engrams.slice(0, limit)
   }
 
   /**
@@ -2640,6 +2641,16 @@ export class Plur {
     // #776: fold the server leg in (RRF) before reactivation so displaced
     // local rows are not reactivated and server rows rank on merged order.
     result = { ...result, engrams: await this._mergeRemoteRecall(result.engrams, remotePromise, options, limit) }
+    // Belt-and-suspenders: all inner paths apply slice(0, limit) before
+    // returning, but recallHybridWithMeta is called directly by the MCP layer
+    // (#770) and lacks the outer guard that recallHybrid() adds. Note
+    // _mergeRemoteRecall only slices when the remote leg returned rows — on the
+    // common local-only path it returns the local result unsliced. Enforce here
+    // so no over-fetch floor (Math.max(N, 50) for reranker/aggregation paths)
+    // can leak through to callers.
+    if (result.engrams.length > limit) {
+      result = { ...result, engrams: result.engrams.slice(0, limit) }
+    }
     await this._reactivateResults(result.engrams)
     // WS5 demand flywheel: a zero-result or low-top-score recall is a demand
     // signal. Emit an anonymized, content-free miss-signal (query fingerprint +
