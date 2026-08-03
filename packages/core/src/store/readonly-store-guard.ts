@@ -15,9 +15,9 @@
  *   guard must not invent an estimate of 0 for a store that declined to give
  *   one (backend selection has its own "treat as small" fallback and must see
  *   the absence, not a fabricated number). Likewise the write capabilities
- *   `append`/`updateMany` are only declared when the inner store declares
- *   them, so capability probes (`store.updateMany && store.loadByIds`) see
- *   the same shape as the unwrapped store.
+ *   `append`/`updateMany`/`nextEngramId` are only declared when the inner store
+ *   declares them, so capability probes (`store.updateMany && store.loadByIds`)
+ *   see the same shape as the unwrapped store.
  * - **`withExclusiveAccess` runs the callback WITHOUT acquiring anything.**
  *   Exclusive access exists to serialize read-modify-write cycles; on a store
  *   that cannot be written there is no write to serialize, and acquiring the
@@ -52,6 +52,20 @@ export class ReadonlyStoreGuard implements PrimaryStore {
   readonly append?: (engram: Engram) => Promise<void>
   /** Present (and rejecting) only when the inner store implements it. */
   readonly updateMany?: (engrams: Engram[]) => Promise<void>
+  /**
+   * A READ — present and delegating, like `loadByIds`. It answers "is this
+   * statement already stored here", which a read-only instance may ask.
+   */
+  readonly findActiveByContentHash?: (hash: string, scope: string) => Promise<Engram | null>
+  /**
+   * Present (and rejecting) only when the inner store implements it.
+   *
+   * Unlike `findActiveByContentHash` this is NOT a read: an implementation that
+   * makes allocation collision-safe does so by CONSUMING the id (a sequence
+   * bump, a reservation row), which is a mutation of the store. Delegating it
+   * from a read-only guard would burn ids on a path that can never write one.
+   */
+  readonly nextEngramId?: (datePrefix: string) => Promise<string>
 
   constructor(private readonly _inner: PrimaryStore) {
     this.kind = _inner.kind
@@ -61,6 +75,10 @@ export class ReadonlyStoreGuard implements PrimaryStore {
     if (_inner.estimateCount) this.estimateCount = () => _inner.estimateCount!()
     if (_inner.append) this.append = () => Promise.reject(new ReadonlyStoreError())
     if (_inner.updateMany) this.updateMany = () => Promise.reject(new ReadonlyStoreError())
+    if (_inner.findActiveByContentHash) {
+      this.findActiveByContentHash = (hash, scope) => _inner.findActiveByContentHash!(hash, scope)
+    }
+    if (_inner.nextEngramId) this.nextEngramId = () => Promise.reject(new ReadonlyStoreError())
   }
 
   load(): Promise<Engram[]> { return this._inner.load() }

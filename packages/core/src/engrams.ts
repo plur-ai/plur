@@ -622,6 +622,19 @@ export function storePrefix(scope: string): string {
  * The per-day sequence counts BOTH forms, so a store upgraded mid-day
  * continues numbering after its compact-form ids instead of restarting at 001.
  */
+/**
+ * The canonical id prefix for today, `ENG-YYYY-MM-DD-`.
+ *
+ * Exported so the one place that mints ids from a corpus
+ * ({@link generateEngramId}) and the one that delegates minting to the store
+ * (`PrimaryStore.nextEngramId`) cannot drift apart on the format — a store
+ * queried with a prefix the engine does not itself use would allocate ids in a
+ * namespace nothing else counts.
+ */
+export function engramIdDatePrefix(now: Date = new Date()): string {
+  return `ENG-${now.toISOString().slice(0, 10)}-`
+}
+
 export function generateEngramId(existing: Engram[]): string {
   const day = new Date().toISOString().slice(0, 10) // YYYY-MM-DD
   const prefix = `ENG-${day}-`
