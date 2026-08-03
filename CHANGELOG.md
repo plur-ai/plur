@@ -2,6 +2,42 @@
 
 ## 0.17.0 (2026-08-03)
 
+Your memory now backs itself up.
+
+- Daily backups + `plur restore`
+- Move engrams between scopes
+- Switch scope mid-session
+- Faster writes at scale
+
+### Added — new capabilities
+
+- **Validity-gated daily backups and `plur restore`** (#799): a snapshot on the first store write
+  of each day, taken only if the store passes a validity gate — parses, no schema-invalid entries,
+  no unexplained shrink, unique ids, no truncation. Backing up an already-damaged store is worse
+  than not backing up. `plur restore` lists snapshots, verifies against a sha256 sidecar, and names
+  exactly which engrams a restore would drop before it touches anything.
+- **`plur_rescope`** (#676): move an existing engram to another scope, instead of forgetting it and
+  re-learning it somewhere else.
+- **`plur_session_scope`** (#243): change the session's default scope mid-session, so a session
+  that starts personal and turns into team work does not have to be restarted.
+- **`plur login --status`** (#587): reports whether the enterprise token is actually valid, rather
+  than echoing whatever is in the config file.
+- **Read-only mode and an incremental write seam** (#731, #740): `learn()` appends instead of
+  rewriting the whole corpus on backends that support it, which is the difference between a
+  constant-cost write and one that grows with the store. Read-only mode makes a `Plur` instance
+  refuse every mutation, for analysis tooling that must not touch the corpus.
+- **Postgres semantic recall uses the vector index** (#762): `engram_embeddings` now tracks the
+  corpus on the server tier, so `recallSemantic` queries the index instead of loading the corpus
+  and scoring it in memory. Previously the table stayed empty and the fallback was silent —
+  correct results, wrong performance, no error.
+- **`plur_admin` is discoverable** (#761): the gateway that reaches every non-core tool is now
+  visible to clients rather than something you had to know about.
+- **Pack integrity is reported, not implied** (#805): `plur packs list` distinguishes `ok`,
+  `modified` and `unverified`. It previously printed nothing at all for a pack whose integrity
+  could not be checked, which looked identical to a pack that verified clean.
+- **`plur status` reports unreadable artifacts** (#821) through `store_errors`, instead of failing
+  or silently reporting zero.
+
 ### Changed — operations that used to succeed can now refuse
 
 An adversarial data-loss audit of every store write path (#794) found that a corrupt store was
