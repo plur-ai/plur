@@ -383,7 +383,7 @@ describe('#827 feedback() fetches by id', () => {
     const raw = structuredClone(store.peek().find(e => e.id === teamEngram.id)!)
     writeFileSync(teamPath, dump({ engrams: [raw] }), 'utf8')
     await plur.forget(teamEngram.id, undefined, { force: true })
-    plur.config.stores = [{ scope: 'group:team', path: teamPath }]
+    plur.addStore(teamPath, 'group:team', { shared: true, readonly: false })
 
     const all = await plur.list()
     const namespaced = all.find(e => (e as any)._originalId === raw.id)!
