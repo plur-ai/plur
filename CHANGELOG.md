@@ -201,9 +201,9 @@ Smaller changes that ship with 0.17.0, grouped by what they touch.
   retired engrams instead of resurrecting them remotely (#766, #767).
 - Optional engram fields are transmitted on remote append (#769); previously they were dropped.
 - The dedup path no longer full-replaces the corpus on every backend (#802, #807).
-- Private-derived episode, candidate and tension records are stripped for `shared` remotes (#686,
-  #789) — a teammate cloning a shared remote could otherwise receive text derived from private
-  engrams even though the engrams themselves were withheld.
+- Private-derived episode, candidate and tension records are stripped for `shared` remotes
+  (#686, #789) — a teammate cloning a shared remote could otherwise receive text derived from
+  private engrams even though the engrams themselves were withheld.
 - `close()` no longer leaks a connection pool or hangs on a held client (#751).
 
 **CLI and diagnostics**
@@ -215,9 +215,9 @@ Smaller changes that ship with 0.17.0, grouped by what they touch.
 - `plur migrate` resolves receiver chains split across lines, anchored at the chain head (#758, #783).
 
 **The audit series**
-- Store write-path hardening: #800, #801, #806, #809, #810.
-- The independent whole-repository audit and its fixes: #814, #815, #817.
-- The audit of the fixes, and the human review that followed: #820, #822, #826.
+- Store write-path hardening (#800, #801, #806, #809, #810).
+- The independent whole-repository audit and its fixes (#814, #815, #817).
+- The audit of the fixes, and the human review that followed (#820, #822, #826).
 
 
 ## 0.16.1 (2026-07-29)
