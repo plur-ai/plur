@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.17.0 (2026-08-03)
 
 ### Changed — operations that used to succeed can now refuse
 
@@ -94,6 +94,60 @@ previously returned quietly. Each throw replaces a silent corpus deletion.
   the copies cannot drift again.
 
 - **Sibling-file strip completes the shared-remote guarantee** (#686): #640/#678 stripped only `engrams.yaml`, but `episodes.yaml`, `candidates.yaml`, and `tensions.yaml` synced verbatim — a teammate cloning a `shared` remote could still receive statement text *derived* from private/personal engrams (a tension's statement snapshots, a failure-report episode) even though the engrams themselves were withheld. A sibling record is now pushed to a `shared` remote only when every engram id it references resolves to the shared push set; records referencing personal, private, or unresolvable engrams stay local (strip-on-doubt), the working tree keeps everything, and the strip is deterministic so the #396 no-infinite-dirty property holds. The sync `warning` reports the stripped sibling record count. `personal` remotes are unchanged.
+
+### Fixed — the audits of the fixes
+
+The first audit (#794) hardened the store write paths. Two further independent passes then audited
+that work — a whole-repository adversarial audit (#811) and an audit of the fix diff itself (#821)
+— on the reasoning that fixes written under release pressure have their own defect rate. They did:
+#821 found sixteen, every one introduced by an earlier fix. An independent human review (#823)
+cleared the result and added one more.
+
+- **The shrink guard had a bypass, and it was the guard's own optimisation** (#821): the exact
+  record count ran only when the outgoing document was >5% smaller than the file on disk. That
+  encoded an assumption engrams do not satisfy — a bare statement and one carrying `rationale`,
+  `dual_coding` and `knowledge_anchors` differ by an order of magnitude — so a write dropping 11 of
+  100 records moved the count 11% and the bytes under 5%, and the guard never ran. The count is now
+  unconditional, and cheap enough to afford it: counting scans for record-start lines instead of
+  parsing (62ms on a 20,000-engram/19.1MB save, against 246ms for the parse it replaced).
+- **The shrink guard now protects every whole-corpus writer** (#824): it lived in `saveEngrams`,
+  while `YamlStore.save()` — the `EngramStore` backend — replaced the whole file without it.
+- **A corrupt sibling store no longer takes down the session** (#821): `status()` is a diagnostic
+  and now reports unreadable artifacts through `store_errors` instead of throwing — including the
+  corpus itself. MCP `session_start` awaits `status()`, so a truncated `episodes.yaml` previously
+  meant no session could start at all. One damaged pack no longer hides the others.
+- **Atomic writes preserve file permissions** (#821): replace-by-rename creates a new inode, so a
+  `0600` `config.yaml` — bearer tokens, Postgres DSNs — came back `0644` under the usual umask.
+  Config files are also created `0600` rather than inheriting it.
+- **An engram's embedding now follows its text** (#812): nothing invalidated a vector when the text
+  changed, so a dedup UPDATE could rewrite a statement and semantic recall would rank it by the old
+  wording indefinitely. Both tiers store the hash of the text actually embedded.
+- **Migrations hold the corpus lock across plan, apply and version stamp** (#821): a concurrent run
+  and rollback could leave the store reporting a schema version it did not have.
+- **The pack registry is atomic, locked, and refuses to be read as empty** (#805): a truncated
+  registry destroyed every installed pack's integrity baseline, after which a tampered pack
+  reported its integrity as *unknown* rather than *modified*. `plur packs list` now distinguishes
+  `ok` / `modified` / `unverified` instead of printing nothing for the last two.
+- **Stale-lock recovery can no longer delete a live lock** (#821): the steal is an atomic
+  `rename` claim, so a contender can only remove a file it has already moved aside.
+- **Tension records, config writes, restore planning, pack installs and the MCP drop log** all
+  gained the locking, atomicity or quarantine-carrying they were missing (#805, #821).
+
+### Added — invariants that fail the build
+
+The recurring cause was invariants documented in prose. Prose does not fail a build, so each change
+re-derived them by hand and hand-derivation kept missing a call site.
+
+- **Property tests for the shrink guard**: random heterogeneous corpora and random writes against
+  the stated invariant, rather than fixtures. Both historical bypasses reproduce against them.
+- **A corruption matrix**: every store artifact, damaged eight ways, against every entry point —
+  asserting both that diagnostics survive and that write paths still refuse.
+
+### Security
+
+- All seven open Dependabot advisories cleared (#818), with bounded version ranges so a patch-level
+  advisory can no longer pull in a new major.
+
 
 ## 0.16.1 (2026-07-29)
 
