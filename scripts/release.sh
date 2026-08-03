@@ -942,6 +942,86 @@ else
   " "$TWEET" "$REPLY"
 fi
 
+# --- 9b. Post-release pin verification ---
+#
+# Asserts, against the LIVE registry, that every published package is actually
+# reachable at the version just released. Two real misses on 2026-08-03 motivate
+# each half:
+#
+#   dist-tags — @plur-ai/claw was published by hand with `pnpm publish`, which
+#     writes `latest` and leaves `next` alone. Its `next` tag sat on 0.10.0 for
+#     two months, so `npm install @plur-ai/claw@next` served a build from before
+#     the whole data-loss audit series. The pipeline's publish -> smoke ->
+#     promote flow moves both tags; a manual publish silently does not.
+#
+#   resolved deps — `workspace:*` is rewritten at publish time, so a package
+#     that is NOT republished keeps pointing at whatever core it was last built
+#     against. claw@0.10.0 depended on @plur-ai/core@0.10.0, which meant every
+#     OpenClaw user ran a core without any of the protections this release
+#     exists to ship. Nothing anywhere flagged it.
+#
+# Warn-only by design: the release has already happened by this point, so
+# failing hard would report a disaster that is not one. The point is to say
+# plainly what still needs fixing while the operator is still looking.
+echo ""
+echo "--- Step 9b: Post-release pin verification ---"
+
+PIN_PROBLEMS=0
+verify_pins() {
+  local pkg="$1" want="$2"
+  local tags latest next deps
+  tags=$(npm view "$pkg" dist-tags --json 2>/dev/null) || {
+    echo "  ? $pkg — could not read dist-tags (registry unreachable?)"; return
+  }
+  latest=$(printf '%s' "$tags" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{console.log(JSON.parse(s).latest||"")}catch{console.log("")}})')
+  next=$(printf '%s' "$tags" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{console.log(JSON.parse(s).next||"")}catch{console.log("")}})')
+
+  if [ "$latest" = "$want" ]; then echo "  ✓ $pkg latest=$want"; else
+    echo "  ✗ $pkg latest=$latest (expected $want)"; PIN_PROBLEMS=$((PIN_PROBLEMS+1)); fi
+
+  # `next` only matters when it exists; a package that never used the tag is fine.
+  if [ -n "$next" ] && [ "$next" != "$want" ]; then
+    echo "  ✗ $pkg next=$next (expected $want) — run: npm dist-tag add $pkg@$want next"
+    PIN_PROBLEMS=$((PIN_PROBLEMS+1))
+  elif [ -n "$next" ]; then echo "  ✓ $pkg next=$want"; fi
+
+  # Published dependency on core must be the core we just shipped.
+  if [ "$pkg" != "@plur-ai/core" ]; then
+    deps=$(npm view "$pkg@$want" dependencies --json 2>/dev/null | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const d=JSON.parse(s)||{};console.log(d["@plur-ai/core"]||"")}catch{console.log("")}})')
+    if [ -n "$deps" ]; then
+      case "$deps" in
+        *"$VERSION"*) echo "  ✓ $pkg -> @plur-ai/core $deps" ;;
+        *) echo "  ✗ $pkg -> @plur-ai/core $deps (expected $VERSION) — republish it"
+           PIN_PROBLEMS=$((PIN_PROBLEMS+1)) ;;
+      esac
+    fi
+  fi
+}
+
+for pkg in @plur-ai/core @plur-ai/mcp @plur-ai/cli @plur-ai/migrate; do
+  verify_pins "$pkg" "$VERSION"
+done
+if [ -n "$CLAW_VERSION" ]; then
+  verify_pins "@plur-ai/claw" "$CLAW_VERSION"
+else
+  # Not released this run — but if its published core dep is stale, say so.
+  claw_core=$(npm view @plur-ai/claw dependencies --json 2>/dev/null | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const d=JSON.parse(s)||{};console.log(d["@plur-ai/core"]||"")}catch{console.log("")}})')
+  claw_ver=$(npm view @plur-ai/claw version 2>/dev/null || echo "?")
+  case "$claw_core" in
+    ""|*"$VERSION"*) echo "  ✓ @plur-ai/claw@$claw_ver -> @plur-ai/core $claw_core (not released this run)" ;;
+    *) echo "  ! @plur-ai/claw@$claw_ver still depends on @plur-ai/core $claw_core"
+       echo "    OpenClaw users are on that core, not $VERSION. Re-run with --claw <ver> to realign."
+       PIN_PROBLEMS=$((PIN_PROBLEMS+1)) ;;
+  esac
+fi
+
+if [ "$PIN_PROBLEMS" -gt 0 ]; then
+  echo ""
+  echo "  ⚠ $PIN_PROBLEMS pin problem(s) above. The release shipped; these are follow-ups."
+else
+  echo "  All pins verified."
+fi
+
 echo ""
 echo "=== Release v$VERSION complete ==="
 echo ""
