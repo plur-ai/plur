@@ -22,5 +22,16 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
       outputText(`  Events:       co_injection ${ev.co_injection} · outcomes ${ev.injection_outcome} (+${ev.outcome_positive}/-${ev.outcome_negative})`)
     }
     outputText(`  Storage root: ${result.storage_root}`)
+    // A store PLUR could not read must be visible here above all places (audit
+    // 2026-08-03, finding 14). Core reports these and the text surface dropped
+    // them, so a corrupt registry printed as a healthy `Packs: 0` — the same
+    // silence the refuse-on-corrupt work exists to remove.
+    if (result.store_errors) {
+      outputText('')
+      for (const [name, message] of Object.entries(result.store_errors)) {
+        outputText(`  ⚠️  ${name}: unreadable`)
+        for (const line of String(message).split('\n')) outputText(`      ${line}`)
+      }
+    }
   }
 }

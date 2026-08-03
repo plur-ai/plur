@@ -84,8 +84,26 @@ export const DEFAULT_STALE_THRESHOLD = 60_000
  *
  * With the deadline above the threshold, a waiter facing a genuinely stuck
  * holder always reaches the stale check and steals the lock rather than failing.
+ *
+ * Raised from 90s to clear the longest legitimate hold (audit 2026-08-03,
+ * finding 10). `Plur.sync()` holds the store lock across `git fetch`,
+ * `pull`/`rebase` and `push` — deliberately, because releasing it between the
+ * pull and the local write reintroduces the lost-engram race that holding it
+ * was added to close (#811 finding 2). Each git command has its own 30s
+ * timeout, so a sync against an unresponsive remote can legitimately hold the
+ * lock for ~90s plus local staging.
+ *
+ * Against a 90s budget that is not a delay, it is a FAILURE: a concurrent
+ * `plur_learn` exhausts its wait and the engram is silently never stored, which
+ * is precisely the F9 harm. The budget must therefore exceed the maximum honest
+ * hold, not merely the typical one.
+ *
+ * The cost is bounded, and paid only by a waiter behind a LIVE holder — a dead
+ * one is stolen from immediately by the liveness check, and a wedged one is
+ * stolen after `DEFAULT_STALE_THRESHOLD`. Anything that raises git's per-command
+ * timeout must raise this too, or reopen the same hole.
  */
-export const DEFAULT_ACQUIRE_TIMEOUT = 90_000
+export const DEFAULT_ACQUIRE_TIMEOUT = 180_000
 
 /**
  * In-process lock queue, keyed by resolved path.

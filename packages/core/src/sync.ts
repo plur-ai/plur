@@ -974,7 +974,7 @@ export function atomicWrite(filePath: string, content: string, opts: AtomicWrite
  * rename may not survive power loss — it does NOT mean the write failed, and
  * throwing would turn a working write into a spurious error.
  */
-function fsyncDir(dir: string): void {
+export function fsyncDir(dir: string): void {
   let fd: number | undefined
   try {
     fd = openSync(dir, 'r')

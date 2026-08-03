@@ -1974,6 +1974,10 @@ function getAllToolDefinitions(): ToolDefinition[] {
           },
           // Last background index/reembed failure (#272) — absent when healthy.
           ...(status.index_error ? { index_error: status.index_error } : {}),
+          // Artifacts that could not be read (audit 2026-08-03, finding 14).
+          // Core reports these; this hand-built response dropped them, so an
+          // agent asking for status saw a healthy-looking `pack_count: 0`.
+          ...(status.store_errors ? { store_errors: status.store_errors } : {}),
           // Version check (issue #151)
           ...(versionCheck?.updateAvailable && versionCheck.latest ? {
             update_available: {

@@ -57,36 +57,34 @@ export function engramSearchText(engram: Engram): string {
  * Stored beside the vector so a store can answer "is this vector still the
  * right one for this engram?" — a question nothing could ask before, because
  * `engram_embeddings` held only `(engram_id, embedding)`. Without it a dedup
- * UPDATE/MERGE could rewrite an engram's statement from "cats" to "databases"
- * and semantic recall would go on ranking it as "cats" forever, since the
- * backfill's anti-join only asked whether an id had *any* vector.
+ * UPDATE/MERGE could rewrite a statement and semantic recall would go on
+ * ranking it by the old text forever.
  *
- * Three properties this deliberately has:
+ * Hashes the RAW `engramSearchText` — the string actually passed to `embed()` —
+ * NOT its tokenization (audit 2026-08-03, finding 9). Hashing the tokenized
+ * form was lossy in exactly the direction that matters: `ftsTokenize` drops
+ * stop words, drops tokens under three characters, strips punctuation and
+ * lowercases. So "use X" -> "do not use X" produced an IDENTICAL hash — `do` is
+ * too short, `not` is a stop word — while the embedded text, and therefore the
+ * correct vector, had changed completely. A meaning-inverting edit is precisely
+ * the edit this mechanism exists to catch.
  *
- * 1. It hashes `ftsTokenize(engramSearchText(e)).join(' ')` — byte-identical
- *    to the `search_text` column `deriveRow` writes on the Postgres tier. That
- *    lets that tier compare `content_hash` against `md5(search_text)` inside
- *    one set-based anti-join instead of probing per id, which is the whole
- *    reason primary-store auto-embed exists (ADR-0005's 2026-07-28 amendment).
+ * md5, not the sha256 used by the file-backed cache in `embeddings.ts`. Not a
+ * security boundary — a change detector. The two hashes never meet.
  *
- * 2. md5, not the sha256 used by the file-backed cache in `embeddings.ts`.
- *    Not a security boundary — a change detector that Postgres must be able
- *    to compute with a builtin. The two hashes never meet.
- *
- * 3. The WRITER hashes the text it actually embedded, rather than the store
- *    re-deriving it at write time. An engram updated between the backfill's
- *    batch read and its upsert would otherwise get a hash of the NEW text
- *    attached to a vector of the OLD text — permanently stale while claiming
- *    to be current. Hashing what we embedded makes that case self-healing:
- *    the stored hash simply won't match, so the next pass re-embeds.
+ * The WRITER hashes the text it actually embedded, rather than the store
+ * re-deriving it at write time. An engram updated between the backfill's batch
+ * read and its upsert would otherwise get a hash of the NEW text attached to a
+ * vector of the OLD text — permanently stale while claiming to be current.
+ * Hashing what we embedded makes that case self-healing.
  */
 export function embeddingContentHash(engram: Engram): string {
-  return hashEmbeddedText(ftsTokenize(engramSearchText(engram)).join(' '))
+  return hashEmbeddedText(engramSearchText(engram))
 }
 
-/** md5 of an already-derived search text. Exported for stores that hold the derived form. */
-export function hashEmbeddedText(searchText: string): string {
-  return createHash('md5').update(searchText).digest('hex')
+/** md5 of an already-derived string. Exported so stores can hash the same way. */
+export function hashEmbeddedText(text: string): string {
+  return createHash('md5').update(text).digest('hex')
 }
 
 /**

@@ -5,7 +5,7 @@ import * as os from 'os'
 import { execFileSync } from 'child_process'
 import yaml from 'js-yaml'
 import { loadPack, loadEngrams, saveEngrams } from './engrams.js'
-import { atomicWrite, withLock } from './sync.js'
+import { atomicWrite, fsyncDir, withLock } from './sync.js'
 import { detectSensitive, detectPromptInjection, truncateToScanLimit } from './secrets.js'
 import type { Engram } from './schemas/engram.js'
 import type { PackManifest } from './schemas/pack.js'
@@ -405,6 +405,30 @@ function manifestToSkillMd(m: PackManifest): string {
   return `---\n${yaml.dump(fm)}---\n\n# ${m.name}\n\n${m.description ?? ''}\n`
 }
 
+/**
+ * fsync every file in a staged pack, then the directory itself (audit
+ * 2026-08-03, finding 11).
+ *
+ * Best-effort per entry, like `fsyncDir`: a filesystem that cannot fsync a
+ * directory must not fail an otherwise good install. Packs are small — a
+ * manifest and an engrams file — so this is a handful of syscalls, paid once
+ * per install, to stop a crash leaving a durable registry entry pointing at
+ * content that never reached the disk.
+ */
+function fsyncTree(dir: string): void {
+  let entries: string[]
+  try { entries = fs.readdirSync(dir) } catch { return }
+  for (const name of entries) {
+    const p = path.join(dir, name)
+    try {
+      if (fs.statSync(p).isDirectory()) { fsyncTree(p); continue }
+      const fd = fs.openSync(p, 'r')
+      try { fs.fsyncSync(fd) } finally { fs.closeSync(fd) }
+    } catch { /* unreadable or unsupported — skip */ }
+  }
+  try { fsyncDir(dir) } catch { /* not a syncable directory */ }
+}
+
 function _installPackDir(
   packsDir: string,
   source: string,
@@ -508,6 +532,16 @@ function _installPackDir(
   // record the hash of the previous install.
   const integrity = `sha256:${computePackHash(staging)}`
 
+  // Make the staged content durable BEFORE it becomes the live pack (audit
+  // 2026-08-03, finding 11). Every file was copied with plain writes and the
+  // staging directory was never fsynced, while the registry entry written
+  // afterwards IS durable — so a power loss could leave a durable registry
+  // pointing at a pack that is missing, truncated or half-copied, with the
+  // previous version already deleted. Atomic-to-readers is not the same
+  // property as crash-durable, and the registry's durability made the gap worse
+  // rather than better.
+  fsyncTree(staging)
+
   // Swap the staged pack in. Two renames, each atomic: the live directory is
   // moved aside and the staged one takes its place, so a reader never sees a
   // partially-copied pack. If the second rename fails, the previous install is
@@ -527,6 +561,9 @@ function _installPackDir(
     fs.rmSync(staging, { recursive: true, force: true })
     throw err
   }
+  // The renames themselves are metadata operations on the PARENT directory;
+  // without this the swap can be lost even though the contents were flushed.
+  try { fsyncDir(path.dirname(destDir)) } catch { /* best-effort, as elsewhere */ }
   fs.rmSync(displaced, { recursive: true, force: true })
 
   const registryEntry: RegistryEntry = {
@@ -678,6 +715,12 @@ export interface PackInfo {
    * often than not: something tampered with the pack directory.
    */
   integrity_status?: 'ok' | 'modified' | 'unverified'
+  /**
+   * Why this pack could not be read, when it could not (audit 2026-08-03,
+   * finding 13). A damaged pack is listed with what is known about it rather
+   * than aborting the listing or appearing as a healthy pack with 0 engrams.
+   */
+  load_error?: string
 }
 
 export function listPacks(packsDir: string): PackInfo[] {
@@ -706,19 +749,34 @@ export function listPacks(packsDir: string): PackInfo[] {
         integrity_ok: reg ? reg.integrity === currentIntegrity : undefined,
         integrity_status: reg ? (reg.integrity === currentIntegrity ? 'ok' : 'modified') : 'unverified',
       })
-    } catch {
+    } catch (manifestErr) {
+      // Per-pack fallback: the manifest would not load, so report what can
+      // still be established rather than dropping the pack from the listing.
+      //
+      // `loadEngrams` THROWS on an unreadable corpus by design, and this call
+      // used to sit outside any try — so one pack with a corrupt engrams.yaml
+      // aborted the ENTIRE listing (audit 2026-08-03, finding 13). A fallback
+      // that is itself capable of throwing is not a fallback; the whole point
+      // of this branch is that this pack is already known to be damaged.
       const engramsPath = path.join(packDir, 'engrams.yaml')
-      const engrams = fs.existsSync(engramsPath) ? loadEngrams(engramsPath) : []
+      let count = 0
+      let loadError = (manifestErr as Error).message
+      try {
+        if (fs.existsSync(engramsPath)) count = loadEngrams(engramsPath).length
+      } catch (corpusErr) {
+        loadError = (corpusErr as Error).message
+      }
       const reg = registryMap.get(entry)
       result.push({
         name: entry,
         path: packDir,
-        engram_count: engrams.length,
+        engram_count: count,
         installed_at: reg?.installed_at,
         source: reg?.source,
-        // The manifest would not load, so no hash was computed and the question
-        // cannot be answered — which is a state to report, not to omit (#805).
+        // No manifest loaded means no hash was computed, so the integrity
+        // question cannot be answered — a state to report, not to omit (#805).
         integrity_status: 'unverified',
+        load_error: loadError,
       })
     }
   }
