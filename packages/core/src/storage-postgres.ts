@@ -1352,34 +1352,37 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
         + `The active embedder (PLUR_EMBEDDER) and the store must agree.`,
       )
     }
-    const client = await pool.connect()
-    try {
-      await client.query('BEGIN')
-      await client.query(
-        `INSERT INTO "${this.schema}".engram_embeddings (engram_id, embedding, content_hash)
-         VALUES ($1, $2::${this.activeVecType}, $3)
-         ON CONFLICT (engram_id) DO UPDATE
-           SET embedding = EXCLUDED.embedding, content_hash = EXCLUDED.content_hash`,
-        [engramId, vectorLiteral(vector), contentHash ?? null],
+    await pool.query(
+      `INSERT INTO "${this.schema}".engram_embeddings (engram_id, embedding, content_hash)
+       VALUES ($1, $2::${this.activeVecType}, $3)
+       ON CONFLICT (engram_id) DO UPDATE
+         SET embedding = EXCLUDED.embedding, content_hash = EXCLUDED.content_hash`,
+      [engramId, vectorLiteral(vector), contentHash ?? null],
+    )
+    // Backfill the ENGRAM row's hash if it predates the column (finding 8).
+    //
+    // `IS NULL` guarded: `deriveRow` owns this value on every real write, and
+    // overwriting it here would erase the evidence of an edit and make the
+    // engram look permanently current.
+    //
+    // Two SEPARATE statements, deliberately NOT one transaction. Wrapping them
+    // was the obvious-looking choice and it deadlocked: a transaction spanning
+    // `engram_embeddings` and `engrams` holds locks on both, and the background
+    // auto-embed pass then deadlocks against anything acquiring them the other
+    // way round — CI caught 40P01 against `dropSchema` in teardown.
+    //
+    // It buys nothing, because a partial application is already self-healing in
+    // BOTH directions. Embedding written, backfill lost: `e.content_hash IS
+    // NULL` still selects the row next pass. Backfill written, embedding lost:
+    // the embedding row is missing or carries the old hash, so the missing arm
+    // or the mismatch arm selects it. Either way the next pass finishes the job,
+    // which is the property the whole staleness design already relies on.
+    if (contentHash !== undefined) {
+      await pool.query(
+        `UPDATE "${this.schema}".engrams SET content_hash = $2
+         WHERE id = $1 AND content_hash IS NULL`,
+        [engramId, contentHash],
       )
-      // Backfill the ENGRAM row's hash if it predates the column (finding 8).
-      // `IS NULL` guarded: `deriveRow` owns this value on every real write, and
-      // overwriting it here would erase the evidence of an edit and make the
-      // engram look permanently current. Same transaction, so a legacy row can
-      // never end up with an embedding hash and no engram hash to compare it to.
-      if (contentHash !== undefined) {
-        await client.query(
-          `UPDATE "${this.schema}".engrams SET content_hash = $2
-           WHERE id = $1 AND content_hash IS NULL`,
-          [engramId, contentHash],
-        )
-      }
-      await client.query('COMMIT')
-    } catch (err) {
-      await client.query('ROLLBACK').catch(() => { /* connection already broken */ })
-      throw err
-    } finally {
-      client.release()
     }
   }
 
