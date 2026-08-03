@@ -5,7 +5,7 @@ import * as os from 'os'
 import { execFileSync } from 'child_process'
 import yaml from 'js-yaml'
 import { loadPack, loadEngrams, saveEngrams } from './engrams.js'
-import { atomicWrite } from './sync.js'
+import { atomicWrite, withLock } from './sync.js'
 import { detectSensitive, detectPromptInjection, truncateToScanLimit } from './secrets.js'
 import type { Engram } from './schemas/engram.js'
 import type { PackManifest } from './schemas/pack.js'
@@ -202,17 +202,51 @@ function saveRegistry(packsDir: string, entries: RegistryEntry[]): void {
   atomicWrite(registryPath(packsDir), content)
 }
 
+/**
+ * Serialize a registry read-modify-write (audit 2026-08-03, finding 3).
+ *
+ * Making `saveRegistry` atomic fixed torn files but not lost updates, and those
+ * are the more likely failure: two processes installing different packs each
+ * read the same registry, each add their own entry, and each rename a COMPLETE
+ * but different snapshot. Both packs end up installed on disk, the last rename
+ * wins, and the other pack's integrity baseline is simply gone — after which it
+ * reports `unverified` and a tampered copy of it can no longer be detected.
+ * That is finding F11's harm arriving by a different road.
+ *
+ * Two MCP servers, or an MCP server and a CLI, is the ordinary case rather than
+ * an exotic one, so atomicity alone was never enough.
+ */
+function withRegistryLock<T>(packsDir: string, fn: () => T): T {
+  // The lock file must live next to the registry, and the directory may not
+  // exist yet on a first install.
+  if (!fs.existsSync(packsDir)) fs.mkdirSync(packsDir, { recursive: true })
+  return withLock(registryPath(packsDir), fn)
+}
+
 function addToRegistry(packsDir: string, entry: RegistryEntry): void {
-  const entries = loadRegistry(packsDir)
-  const idx = entries.findIndex(e => e.name === entry.name)
-  if (idx >= 0) entries[idx] = entry
-  else entries.push(entry)
-  saveRegistry(packsDir, entries)
+  withRegistryLock(packsDir, () => {
+    const entries = loadRegistry(packsDir)
+    const idx = entries.findIndex(e => e.name === entry.name)
+    if (idx >= 0) entries[idx] = entry
+    else entries.push(entry)
+    saveRegistry(packsDir, entries)
+  })
 }
 
 function removeFromRegistry(packsDir: string, name: string): void {
-  const entries = loadRegistry(packsDir).filter(e => e.name !== name)
-  saveRegistry(packsDir, entries)
+  withRegistryLock(packsDir, () => {
+    const entries = loadRegistry(packsDir).filter(e => e.name !== name)
+    saveRegistry(packsDir, entries)
+  })
+}
+
+/** Rewrite one entry's `source` under the same lock — the URL-install path. */
+function setRegistrySource(packsDir: string, name: string, source: string): void {
+  withRegistryLock(packsDir, () => {
+    const entries = loadRegistry(packsDir)
+    const idx = entries.findIndex(e => e.name === name)
+    if (idx >= 0) { entries[idx].source = source; saveRegistry(packsDir, entries) }
+  })
 }
 
 // --- Preview ---
@@ -529,9 +563,7 @@ export async function installPack(
       // Overwrite the registry source with the original URL so `plur packs list`
       // shows where the pack came from, not an ephemeral /tmp path.
       result.registry.source = source
-      const entries = loadRegistry(packsDir)
-      const idx = entries.findIndex(e => e.name === result.registry.name)
-      if (idx >= 0) { entries[idx].source = source; saveRegistry(packsDir, entries) }
+      setRegistrySource(packsDir, result.registry.name, source)
       return result
     } finally {
       cleanupDownloadedPack(tmpRoot)

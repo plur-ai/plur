@@ -27,7 +27,7 @@
  * mutex would wait on a lock its own caller is holding. Nesting on a
  * *different* path works but is a lock-ordering hazard; don't.
  */
-import { writeFile, unlink, stat, readFile } from 'fs/promises'
+import { writeFile, unlink, stat, readFile, rename, open } from 'fs/promises'
 import { constants } from 'fs'
 import { hostname } from 'os'
 import * as path from 'path'
@@ -269,14 +269,52 @@ async function withFileLock<T>(
   }
 }
 
-/** Remove a lock believed abandoned, but only if it is still the same one. */
+/**
+ * Remove a lock believed abandoned — by CLAIMING it first (audit 2026-08-03,
+ * finding 1).
+ *
+ * The previous shape was read-compare-unlink, which closed the case where the
+ * holder released and a third party acquired between the inspection and the
+ * steal (F9), but left a narrower window open: between the compare and the
+ * `unlink` itself. Two contenders that both judge the same lock stale can both
+ * pass the compare; the first unlinks and acquires, the second then unlinks the
+ * pathname — now the FIRST one's live lock — and acquires too. Both run the
+ * critical section, and on a whole-corpus writer that is a lost update.
+ *
+ * `rename` is the atomic primitive that fixes it. Only one process can
+ * successfully rename a given path; the loser gets ENOENT. So a contender can
+ * only ever delete a file it has already moved out of the way, and can never
+ * delete a lock another process created at `lockPath` — because the file it
+ * deletes is not at `lockPath` any more.
+ *
+ * Losing the claim is not a failure: the caller loops, finds either a fresh
+ * lock or none, and takes the normal `O_EXCL` path. Mutual exclusion is still
+ * decided by that create, not by this function.
+ */
 async function stealLock(lockPath: string, expected: string): Promise<void> {
+  const claim = `${lockPath}.steal.${makeToken().replace(/[^\w.-]/g, '_')}`
   try {
-    const current = (await readFile(lockPath, 'utf8')).trim()
-    if (current !== expected) return
-    await unlink(lockPath)
+    await rename(lockPath, claim)
   } catch {
-    /* already gone, or replaced — either way not ours to remove */
+    return // another contender claimed it, or the holder released — re-evaluate
+  }
+  try {
+    const current = (await readFile(claim, 'utf8')).trim()
+    if (current === expected) {
+      await unlink(claim) // confirmed the one we judged stale
+      return
+    }
+    // Not the lock we judged stale — a live holder's. Put it back, but never on
+    // top of a lock someone has since acquired: `wx` fails rather than clobber.
+    try {
+      const fd = await open(lockPath, 'wx')
+      try { await fd.writeFile(current) } finally { await fd.close() }
+    } catch { /* someone acquired meanwhile — theirs wins, drop ours */ }
+    await unlink(claim).catch(() => {})
+  } catch {
+    // Never leave the claim file behind: it is uniquely named, so nothing else
+    // would ever clean it up.
+    await unlink(claim).catch(() => {})
   }
 }
 

@@ -1,5 +1,5 @@
 import { execFileSync } from 'child_process'
-import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync, unlinkSync, statSync, readdirSync, openSync, closeSync, fsyncSync } from 'fs'
+import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync, unlinkSync, statSync, readdirSync, openSync, closeSync, fsyncSync, chmodSync } from 'fs'
 import { join, dirname, relative } from 'path'
 import * as yaml from 'js-yaml'
 import { isSharedScope } from './scope-util.js'
@@ -733,6 +733,47 @@ export interface LockOptions {
  * `withAsyncLock`; this variant exists for the remaining synchronous callers
  * (tensions, config, episode capture), whose holds are short.
  */
+/**
+ * Remove a lock believed abandoned — by CLAIMING it first (audit 2026-08-03,
+ * finding 1). Synchronous twin of `stealLock` in `store/async-lock.ts`; see the
+ * reasoning there.
+ *
+ * Read-compare-unlink left a window between the compare and the `unlink`: two
+ * contenders judging the same lock stale can both pass the compare, the first
+ * unlinks and acquires, and the second then unlinks the pathname — the first
+ * one's LIVE lock — and acquires too. Both run the critical section.
+ *
+ * `rename` is atomic and single-winner, so a contender can only ever delete a
+ * file it has already moved aside, never a lock another process created at
+ * `lockPath`. Losing the claim is normal: the caller loops and takes the usual
+ * O_EXCL path, which is what actually decides who holds the lock.
+ */
+function stealLockSync(lockPath: string, expected: string, token: string): void {
+  const claim = `${lockPath}.steal.${token.replace(/[^\w.-]/g, '_')}`
+  try {
+    renameSync(lockPath, claim)
+  } catch {
+    return // another contender claimed it, or the holder released — re-evaluate
+  }
+  try {
+    const current = readFileSync(claim, 'utf8').trim()
+    if (current === expected) {
+      unlinkSync(claim) // confirmed the one we judged stale
+      return
+    }
+    // A live holder's lock, not the stale one. Put it back — but never over a
+    // lock someone has since acquired, so create exclusively and accept EEXIST.
+    try {
+      const fd = openSync(lockPath, 'wx')
+      try { writeFileSync(fd, current) } finally { closeSync(fd) }
+    } catch { /* someone acquired meanwhile — theirs wins */ }
+    try { unlinkSync(claim) } catch { /* already gone */ }
+  } catch {
+    // The claim file is uniquely named; nothing else would ever clean it up.
+    try { unlinkSync(claim) } catch { /* already gone */ }
+  }
+}
+
 export function withLock<T>(
   filePath: string,
   fn: () => T,
@@ -781,12 +822,7 @@ export function withLock<T>(
         const steal = alive === false
           || (alive === undefined && Date.now() - stat.mtimeMs > staleThreshold)
         if (steal) {
-          // Re-read and compare before unlinking: between the inspection above
-          // and this call the holder may have released and a THIRD party
-          // acquired, and deleting by pathname would take the newcomer's lock.
-          try {
-            if (readFileSync(lockPath, 'utf8').trim() === holder) unlinkSync(lockPath)
-          } catch { /* already gone — nothing to steal */ }
+          stealLockSync(lockPath, holder, token)
           continue
         }
       } catch {
@@ -819,8 +855,25 @@ export function withLock<T>(
   }
 }
 
+/**
+ * Mode for files that carry credentials — `config.yaml` holds remote bearer
+ * tokens and Postgres DSNs (audit 2026-08-03, finding 7). Owner-only.
+ */
+export const CONFIG_FILE_MODE = 0o600
+
 /** Options for {@link atomicWrite}. */
 export interface AtomicWriteOptions {
+  /**
+   * Mode for a file this write CREATES. Ignored when the destination already
+   * exists — an existing file's mode is preserved instead, which is the more
+   * important half (audit 2026-08-03, finding 7).
+   *
+   * Pass `0o600` for anything credential-bearing. Without it a new
+   * `config.yaml` — bearer tokens, Postgres DSNs — is born world-readable under
+   * the default umask, and the preservation path then faithfully keeps it that
+   * way forever.
+   */
+  mode?: number
   /**
    * fsync the file and its parent directory before returning. Default `true`.
    *
@@ -867,6 +920,25 @@ export function atomicWrite(filePath: string, content: string, opts: AtomicWrite
   const dir = dirname(filePath)
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
   const tmp = `${filePath}.${process.pid}.${tmpCounter++}.tmp`
+  // Preserve the destination's permissions (audit 2026-08-03, finding 7).
+  //
+  // A replace-by-rename creates a NEW inode, so the result carries the tmp
+  // file's mode — `0666 & ~umask`, i.e. 0644 under the common umask 022 — not
+  // the mode the file had. `config.yaml` holds remote bearer tokens and
+  // Postgres DSNs and is expected to be 0600; every config writer now routes
+  // through here, so store registration, scope persistence and migrations were
+  // each quietly widening it to world-readable on POSIX.
+  //
+  // Read the mode BEFORE writing, and apply it to the tmp file BEFORE the
+  // rename, so the file is never briefly visible at the wrong mode at its final
+  // path. A missing destination means there is nothing to preserve — a first
+  // write keeps the platform default, which is what created it today.
+  let destMode: number | undefined = opts.mode
+  try {
+    // An EXISTING file's own mode wins over opts.mode: the operator may have
+    // tightened it further, and a write must never loosen what it found.
+    if (existsSync(filePath)) destMode = statSync(filePath).mode & 0o7777
+  } catch { /* unreadable stat — fall through and keep opts.mode/default */ }
   try {
     if (durable) {
       const fd = openSync(tmp, 'w')
@@ -878,6 +950,11 @@ export function atomicWrite(filePath: string, content: string, opts: AtomicWrite
       }
     } else {
       writeFileSync(tmp, content)
+    }
+    if (destMode !== undefined) {
+      // Best-effort: a filesystem without POSIX modes (some Windows/network
+      // mounts) must not fail an otherwise good write over cosmetics.
+      try { chmodSync(tmp, destMode) } catch { /* not a mode-bearing filesystem */ }
     }
     renameSync(tmp, filePath)
     if (durable) fsyncDir(dir)

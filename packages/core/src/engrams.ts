@@ -342,12 +342,32 @@ export function saveEngrams(filePath: string, engrams: Engram[], opts: SaveEngra
       outgoing.push(entry as Engram)
     }
   }
-  // Serialize first: the cheap shrink pre-check compares the outgoing document's
-  // byte length against the one on disk, and we need the bytes to do that.
   const content = yaml.dump({ engrams: outgoing }, { lineWidth: 120, noRefs: true, quotingType: '"' })
-  // Two-stage on purpose: a `stat` rules out the common case, and only a write
-  // that might genuinely be shrinking pays for the exact count. See mightShrink.
-  if (!opts.allowShrink && mightShrink(filePath, content)) {
+  // The count check is UNCONDITIONAL (audit 2026-08-03, finding 5).
+  //
+  // It used to sit behind a byte-size pre-check: only a write whose serialized
+  // length was >5% smaller than the file on disk paid for an exact count. That
+  // pre-check encoded an assumption its own comment stated out loud — "records
+  // are broadly similar in size" — and engrams are not. One carrying
+  // `rationale`, `dual_coding` and `knowledge_anchors` outweighs a bare
+  // statement several times over. So a write that dropped 11 of 100 records
+  // moved the COUNT 11% (past this guard) while moving BYTES under 5%, the
+  // pre-check returned false, and the guard never ran at all. A data-loss write
+  // succeeded through the very check that exists to stop it.
+  //
+  // The reason for gating it was real — the exact count was a full YAML parse,
+  // on a path `_reactivateResults` makes every recall() take. The fix is to make
+  // counting cheap rather than to skip it: `countEngramsOnDisk` now scans for
+  // record-start lines instead of parsing, falling back to the parse only when
+  // the structure is not recognisable.
+  //
+  // Measured, 20,000 engrams / 19.1 MB, median of 5 (probe/bench-shrink-count.ts):
+  //   save with the guard      432ms
+  //   save with allowShrink    370ms   -> the guard costs 62ms
+  //   the old parse-based count would have added 246ms to that same save.
+  // So the guard now runs on every write for a quarter of what it used to cost
+  // on the rare writes it actually ran on.
+  if (!opts.allowShrink) {
     const before = countEngramsOnDisk(filePath)
     if (before !== null && outgoing.length < before * (1 - SHRINK_TOLERANCE)) {
       throw new EngramStoreShrinkError(filePath, before, outgoing.length)
@@ -370,7 +390,16 @@ function countEngramsOnDisk(filePath: string): number | null {
     if (!fs.existsSync(filePath)) return null
     const stat = fs.statSync(filePath)
     if (stat.isDirectory() || stat.size === 0) return null
-    const raw: any = yaml.load(fs.readFileSync(filePath, 'utf8'))
+    const text = fs.readFileSync(filePath, 'utf8')
+    const scanned = countRecordStarts(text)
+    // The scan recognised the document's shape — trust it. It is exact for any
+    // block-sequence `engrams:` list, which is what `yaml.dump` emits and what
+    // every store file in the wild is.
+    if (scanned !== null) return scanned
+    // Unrecognised shape (flow sequence `engrams: [...]`, anchors, an exotic
+    // hand edit). Fall back to the authoritative parse rather than guess: this
+    // number can REFUSE a write, so it is never allowed to be an approximation.
+    const raw: any = yaml.load(text)
     if (raw == null || typeof raw !== 'object' || !Array.isArray(raw.engrams)) return null
     return raw.engrams.length
   } catch {
@@ -379,41 +408,73 @@ function countEngramsOnDisk(filePath: string): number | null {
 }
 
 /**
- * Could writing `content` over `filePath` be a large shrink?
+ * Exact number of records in an `engrams:` block sequence, by scanning for
+ * record-start lines — no YAML parse (audit 2026-08-03, finding 5).
  *
- * A cheap `stat` answers "obviously not" for the overwhelming majority of
- * writes, which matters because the exact count is a FULL YAML PARSE of the
- * whole corpus. Measured on a 20,000-engram / 15.7 MB store: parsing to count
- * added 388 ms to a 419 ms save — it nearly doubled it. That cost lands on
- * every guarded write, and `_reactivateResults` turns every `recall()` into a
- * write, so a naive exact-count taxes the READ path of exactly the large stores
- * that are already slowest.
+ * Counting has to be cheap because it now runs on EVERY guarded write, and
+ * `_reactivateResults` makes every `recall()` a write. A full parse cost 388ms
+ * on a 20,000-engram / 15.7MB store; this reads the same file and never builds
+ * an object graph.
  *
- * The comparison is BYTES, not an estimated record count. A first attempt at
- * this used a bytes-per-engram constant to guess the count, and that constant
- * is not merely imprecise, it is unsafe: measured engrams here average 785
- * bytes against an assumed 2400, so the guess under-reported a 20,000-engram
- * store as 6,500 and a genuine 50% shrink would have skipped the guard
- * entirely. Serialized length against on-disk length needs no constant and
- * calibrates itself to whatever the engrams actually weigh.
+ * Exactness matters more than speed here — the result can refuse a write — so
+ * this returns `null` rather than a guess whenever the document is not a shape
+ * it fully understands, and the caller parses instead:
  *
- * Only ever used to SKIP work. When it says a shrink is possible the caller
- * still parses for an exact count before refusing, so no write is ever rejected
- * on the strength of an approximation.
+ *   - the top-level `engrams:` key must be present as a block key;
+ *   - its items are the lines at the sequence's own indent starting with `- `;
+ *   - a `- ` appearing inside a nested list or a multi-line scalar is NOT a
+ *     record start, so both are skipped explicitly rather than counted.
  */
-function mightShrink(filePath: string, content: string): boolean {
-  try {
-    if (!fs.existsSync(filePath)) return false
-    const stat = fs.statSync(filePath)
-    if (stat.isDirectory() || stat.size === 0) return false
-    // Byte length of the outgoing document vs the document on disk. Records are
-    // broadly similar in size, so a corpus that lost 10% of its records loses
-    // roughly 10% of its bytes. Compare with a margin so ordinary edits — an
-    // engram shortened, a field dropped — never trip the slow path.
-    return Buffer.byteLength(content, 'utf8') < stat.size * (1 - SHRINK_TOLERANCE / 2)
-  } catch {
-    return true
+function countRecordStarts(text: string): number | null {
+  const lines = text.split('\n')
+  let i = 0
+  // Find the top-level `engrams:` key (column 0, nothing but the key on it).
+  while (i < lines.length && !/^engrams:\s*$/.test(lines[i])) {
+    // A flow sequence (`engrams: [...]`) or an anchor is not a shape this
+    // understands — hand it to the parser.
+    if (/^engrams:\s*\S/.test(lines[i])) return null
+    i++
   }
+  if (i >= lines.length) return null // no block `engrams:` key at all
+  i++
+
+  let itemIndent: number | null = null
+  let count = 0
+  let blockScalarIndent: number | null = null
+
+  for (; i < lines.length; i++) {
+    const line = lines[i]
+    if (line.trim() === '') continue
+
+    const indent = line.length - line.trimStart().length
+
+    // Inside a block scalar (`|`/`>`): every line more-indented than its key
+    // belongs to the value, and may contain anything at all — including a
+    // leading `- `. Skip until the indentation says it ended.
+    if (blockScalarIndent !== null) {
+      if (indent > blockScalarIndent) continue
+      blockScalarIndent = null
+    }
+
+    // Dedent to column 0 ends the sequence (a sibling top-level key).
+    if (indent === 0) break
+
+    if (itemIndent === null) {
+      if (!/^\s*-\s/.test(line)) return null // first entry is not a sequence item
+      itemIndent = indent
+    }
+
+    if (indent === itemIndent && /^\s*-\s/.test(line)) {
+      count++
+    } else if (indent < itemIndent) {
+      break // dedented out of the sequence
+    }
+
+    // Note a block-scalar header so its body cannot be miscounted.
+    if (/:\s*[|>][-+0-9]*\s*$/.test(line)) blockScalarIndent = indent
+  }
+
+  return itemIndent === null ? null : count
 }
 
 /** Initialize an empty filesystem store file (creates parent dirs via atomicWrite).
