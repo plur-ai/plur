@@ -8,7 +8,7 @@ import { existsSync } from 'fs'
 import { readFile, stat } from 'fs/promises'
 import * as yaml from 'js-yaml'
 import { type Engram } from '../schemas/engram.js'
-import { parseEngramFile } from '../engrams.js'
+import { parseEngramFile, assertShrinkAllowedAsync } from '../engrams.js'
 import { asyncAtomicWrite } from './async-fs.js'
 import { withAsyncLock } from './async-lock.js'
 import type { EngramStore } from './types.js'
@@ -54,6 +54,14 @@ export class YamlStore implements EngramStore {
         return !(typeof id === 'string' && ids.has(id))
       })
       const out = carried.length > 0 ? [...engrams, ...carried] : engrams
+      // The SAME wipe protection `saveEngrams` applies (#824, from Črt's
+      // independent review). This method is a parallel whole-corpus writer —
+      // it replaces the entire file — and it reached the disk without the
+      // shrink guard, so an `EngramStore` backend used as the corpus had the
+      // F2/F3 protection silently absent on `save()`. The default primary is
+      // `YamlPrimaryStore` (which routes through `saveEngrams`), which is why
+      // it went unnoticed: the guarded path was the one everyone exercised.
+      await assertShrinkAllowedAsync(this.filePath, out.length)
       const content = yaml.dump({ engrams: out }, { lineWidth: 120, noRefs: true, quotingType: '"' })
       await asyncAtomicWrite(this.filePath, content)
     })

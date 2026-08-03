@@ -284,3 +284,66 @@ describe('corruption matrix — one damaged pack must not hide the others', () =
     expect(fs.existsSync(join(packsDir, 'src-packB'))).toBe(false)
   })
 })
+
+/**
+ * The shrink guard must protect EVERY whole-corpus writer, not just the one
+ * everybody exercises (#824, from Črt's independent review of #822).
+ *
+ * `saveEngrams` had the guard; `YamlStore.save()` — the `EngramStore` backend
+ * from `createStore`/`factory.ts` — replaced the whole file by `yaml.dump` and
+ * never reached it. It went unnoticed because the DEFAULT primary is
+ * `YamlPrimaryStore`, which routes through `saveEngrams`: the guarded path was
+ * the one under test.
+ *
+ * Same failure shape as the quarantine bug — a cross-cutting rule enforced by
+ * convention, missed at a parallel call site. These pin both writers against
+ * the same invariant so a third one cannot quietly diverge.
+ */
+describe('every whole-corpus writer honours the shrink guard', () => {
+  async function seedStore(path: string, n: number) {
+    const { YamlStore } = await import('../src/store/yaml-store.js')
+    const store = new YamlStore(path)
+    const engrams = Array.from({ length: n }, (_, i) => ({
+      id: `ENG-2026-08-03-${String(i).padStart(3, '0')}`,
+      statement: `store fact ${i}`, type: 'behavioral', status: 'active',
+      scope: 'global', tags: [],
+      activation: { retrieval_strength: 1, storage_strength: 1, frequency: 0, last_accessed: '2026-08-03' },
+      feedback_signals: { positive: 0, negative: 0, neutral: 0 },
+    })) as any[]
+    await store.save(engrams)
+    return { store, engrams }
+  }
+
+  it('YamlStore.save refuses to drop most of the corpus', async () => {
+    const path = join(root, 'engrams.yaml')
+    const { store, engrams } = await seedStore(path, 40)
+    const { EngramStoreShrinkError } = await import('../src/engrams.js')
+
+    await expect(store.save(engrams.slice(0, 4)), 'a 90% drop went through unguarded')
+      .rejects.toThrow(EngramStoreShrinkError)
+    // And refusing means not writing.
+    expect(loadEngrams(path)).toHaveLength(40)
+  })
+
+  it('YamlStore.save still allows ordinary edits and growth', async () => {
+    const path = join(root, 'engrams.yaml')
+    const { store, engrams } = await seedStore(path, 40)
+
+    await expect(store.save(engrams.slice(0, 38))).resolves.toBeUndefined() // 5% — within tolerance
+    expect(loadEngrams(path)).toHaveLength(38)
+  })
+
+  it('agrees with saveEngrams about where the boundary is', async () => {
+    // Two writers, one rule: the same corpus and the same outgoing count must
+    // produce the same verdict, whichever path is taken.
+    const a = join(root, 'a.yaml')
+    const b = join(root, 'b.yaml')
+    const { store, engrams } = await seedStore(a, 30)
+    const { saveEngrams, EngramStoreShrinkError } = await import('../src/engrams.js')
+    saveEngrams(b, engrams as any, { allowShrink: true })
+
+    const tooFew = engrams.slice(0, 20) // 33% drop — past tolerance for both
+    await expect(store.save(tooFew)).rejects.toThrow(EngramStoreShrinkError)
+    expect(() => saveEngrams(b, tooFew as any)).toThrow(EngramStoreShrinkError)
+  })
+})

@@ -367,13 +367,61 @@ export function saveEngrams(filePath: string, engrams: Engram[], opts: SaveEngra
   //   the old parse-based count would have added 246ms to that same save.
   // So the guard now runs on every write for a quarter of what it used to cost
   // on the rare writes it actually ran on.
-  if (!opts.allowShrink) {
-    const before = countEngramsOnDisk(filePath)
-    if (before !== null && outgoing.length < before * (1 - SHRINK_TOLERANCE)) {
-      throw new EngramStoreShrinkError(filePath, before, outgoing.length)
-    }
-  }
+  if (!opts.allowShrink) assertShrinkAllowed(filePath, outgoing.length)
   atomicWrite(filePath, content)
+}
+
+/**
+ * Refuse a whole-corpus write that drops more than {@link SHRINK_TOLERANCE} of
+ * the records on disk.
+ *
+ * Extracted so it is a SHARED FUNCTION rather than a step inside one writer
+ * (#824, found in Črt's independent review). The guard lived only in
+ * `saveEngrams`, and `YamlStore.save()` — the `EngramStore` backend from
+ * `createStore`/`factory.ts` — is a parallel whole-corpus writer that
+ * `yaml.dump`s straight to disk, so the F2/F3 wipe protection was silently
+ * absent there. Same shape as the quarantine bug: a cross-cutting rule enforced
+ * by convention and missed at a parallel call site.
+ *
+ * Sharing the function does not make the rule structural — a third writer could
+ * still forget to call it — but it removes the copy, which is the part that
+ * drifts. #824 tracks making it a type every writer must pass through.
+ */
+export function assertShrinkAllowed(filePath: string, outgoingCount: number): void {
+  const before = countEngramsOnDisk(filePath)
+  if (before !== null && outgoingCount < before * (1 - SHRINK_TOLERANCE)) {
+    throw new EngramStoreShrinkError(filePath, before, outgoingCount)
+  }
+}
+
+/**
+ * Async twin of {@link assertShrinkAllowed}, for the async store backends.
+ *
+ * Shares `countRecordStarts` — the counting RULE has exactly one definition, so
+ * the two paths cannot disagree about what a record is. Only the read differs,
+ * because blocking the event loop on a multi-megabyte corpus is precisely what
+ * the async store exists to avoid.
+ */
+export async function assertShrinkAllowedAsync(filePath: string, outgoingCount: number): Promise<void> {
+  let before: number | null = null
+  try {
+    const { readFile, stat } = await import('fs/promises')
+    const info = await stat(filePath)
+    if (!info.isDirectory() && info.size > 0) {
+      const text = await readFile(filePath, 'utf8')
+      const scanned = countRecordStarts(text)
+      if (scanned !== null) before = scanned
+      else {
+        const raw: any = yaml.load(text)
+        before = raw && typeof raw === 'object' && Array.isArray(raw.engrams) ? raw.engrams.length : null
+      }
+    }
+  } catch {
+    before = null // no baseline — nothing to guard against
+  }
+  if (before !== null && outgoingCount < before * (1 - SHRINK_TOLERANCE)) {
+    throw new EngramStoreShrinkError(filePath, before, outgoingCount)
+  }
 }
 
 /**
