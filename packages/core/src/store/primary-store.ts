@@ -235,6 +235,94 @@ export interface PrimaryStore {
   loadByIds?(ids: string[]): Promise<Engram[]>
 
   /**
+   * The engram carrying this content hash IN THIS SCOPE with
+   * `status === 'active'`, or `null`. Optional; when absent the caller falls
+   * back to scanning the loaded corpus.
+   *
+   * The status filter is the predicate, not a nicety: re-learning a RETIRED
+   * statement must create a fresh engram rather than resurrect the retired one
+   * (#107), and the local half of a completed rescope is retired precisely so
+   * its hash cannot pull the statement back (#676). An implementation that
+   * matches retired rows undoes both.
+   *
+   * `learn()` asks one question before it writes anything: "do we already have
+   * this exact statement in this scope?" On a single YAML file, answering it by
+   * scanning the parsed corpus is free — the file was parsed either way. On a
+   * row store it is a full table scan standing in for an index lookup on
+   * `(content_hash, scope)`, paid on every learn, at the corpus size where a row
+   * store gets selected in the first place (see {@link updateMany}: 252ms at
+   * 2,000 engrams, ~6.3s at 50,000).
+   *
+   * ### Scope-bound, deliberately
+   *
+   * A hash match in ANOTHER scope is a different engram, and returning it would
+   * disclose it. Implementations MUST restrict the lookup to `scope` exactly —
+   * not a prefix, not a parent, not "any scope this caller could read".
+   *
+   * That has a consequence worth stating plainly rather than discovering:
+   * `learn()`'s CROSS-scope recurrence check (#176 — the same statement
+   * re-learned under a different scope graduates the existing engram toward
+   * `global` + `locked` instead of creating a second row) asks the opposite
+   * question, and this seam is defined so it cannot answer it. So when a store
+   * implements this method, the primary-store half of cross-scope recurrence is
+   * SKIPPED: a same-hash engram in another scope is not found, and the new
+   * statement becomes a new engram in its own scope. Secondary stores and packs
+   * are unaffected — they are scanned in memory either way.
+   *
+   * That is the intended outcome, not a tolerated loss. A store that wants this
+   * seam is one where scopes are a permission boundary; silently broadening one
+   * tenant's engram to `global` because another tenant learned the same
+   * sentence is precisely what such a store must not do. A store that wants
+   * cross-scope graduation should not implement this method, and pays the
+   * corpus scan that makes it possible.
+   *
+   * @see nextEngramId — the other half of the `learn()` seam; both are required
+   *   before the engine will skip the corpus load.
+   */
+  findActiveByContentHash?(hash: string, scope: string): Promise<Engram | null>
+
+  /**
+   * The next unused engram id for `datePrefix` (e.g. `'ENG-2026-08-03-'`).
+   * Optional; when absent the caller falls back to deriving it from the loaded
+   * corpus.
+   *
+   * The performance half is the obvious one — `generateEngramId` scans the
+   * whole corpus for the maximum suffix, which a row store answers with
+   * `SELECT MAX(...) WHERE id LIKE '<datePrefix>%'`.
+   *
+   * ### The sharper half is collision safety
+   *
+   * `generateEngramId` derives its suffix from a SNAPSHOT and the engine then
+   * calls {@link append}. Those are the same concern from opposite ends:
+   * `append` says an implementation *SHOULD surface an id collision as an error
+   * rather than absorb it*, which is the last line of defence for an id that
+   * was already stale when it was minted. A store whose `append` is really an
+   * upsert has no such defence and silently overwrites the loser of a race.
+   * The engine's store lock contains this within one process; it is not a
+   * property callers should have to rely on, and it does not survive two
+   * processes sharing one database.
+   *
+   * `nextEngramId` moves allocation to the party that can make it atomic —
+   * for a row store, a sequence or an `INSERT ... RETURNING` in the same
+   * transaction. Implementations SHOULD make allocation collision-safe under
+   * concurrency rather than returning a value derived from a stale read.
+   *
+   * ### Contract
+   *
+   * - The returned id MUST begin with `datePrefix` and MUST be unused in this
+   *   store.
+   * - The engine passes the canonical `ENG-YYYY-MM-DD-` form. A store also
+   *   holding legacy `ENG-YYYY-MMDD-` ids may account for them but need not:
+   *   the two forms cannot collide as strings.
+   * - Allocation is scoped to the PRIMARY store. Unlike the fallback, ids held
+   *   by installed packs are not consulted — `append`'s collision check is the
+   *   backstop.
+   *
+   * @see findActiveByContentHash — the other half of the `learn()` seam.
+   */
+  nextEngramId?(datePrefix: string): Promise<string>
+
+  /**
    * Cheap, approximate size of the store — for choosing a backend, never for
    * reporting a count to a user.
    *

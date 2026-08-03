@@ -226,3 +226,74 @@ built for.
 The cost is a hard breaking change for `@plur-ai/core` consumers, since async is
 contagious across roughly twenty public `Plur` methods. `npx @plur-ai/migrate`
 exists to absorb it. The block above shows the interface as shipped.
+
+## Amendment — 2026-08-03: the write path gets the same seams ([#827](https://github.com/plur-ai/plur/issues/827), [#828](https://github.com/plur-ai/plur/issues/828))
+
+0.16 and 0.17 gave a row store everything it needed on the **read** side —
+`role: 'primary'` + `searchBM25` to answer queries from its own indexes,
+`loadByIds` + `updateMany` to write back only the rows a recall touched. The
+write path kept the shape this ADR set out to remove: `learn()` materialised the
+corpus twice (once to look for a duplicate statement, once to derive the next
+id) and `feedback()` materialised it to fetch one row by primary key. A store
+could serve reads entirely from its indexes and then pay a full corpus load the
+moment anyone learned something — `updateMany`'s own note puts that at 252ms at
+2,000 engrams and ~6.3s at 50,000, which is the tier where a row store is
+selected at all.
+
+Two optional methods close it, in the same additive shape as the rest:
+
+```ts
+findActiveByContentHash?(hash: string, scope: string): Promise<Engram | null>
+nextEngramId?(datePrefix: string): Promise<string>
+```
+
+Both are read off the same materialised corpus today, so they are jointly
+required: delegating one still pays the full load for the other. They are gated
+together with the 0.17 write seams (`append` + `updateMany` + `loadByIds`),
+because every fallback in `learn()` takes "the corpus in hand" and turns it into
+a whole-corpus `save()` when no row-level write exists — a targeted read without
+a targeted write would hand a one-row array to a full replace, which is the #749
+defect from the other side. `YamlPrimaryStore` and `MemoryPrimaryStore`
+deliberately implement neither: their `load()` is free, so the seam would buy
+nothing and cost the trade-off below.
+
+### Two decisions worth stating rather than leaving to be discovered
+
+**1. Cross-scope recurrence is skipped when dedup is delegated.**
+`findActiveByContentHash` is scope-bound by contract — a hash match in another
+scope is a different engram, and returning it would disclose it. That is exactly
+the query cross-scope recurrence (#176) asks, so the seam cannot answer it and
+the primary-store half of that check is not performed. The statement becomes its
+own engram in its own scope instead of graduating an existing one toward
+`global` + `locked`. Secondary stores and packs are unaffected; they are scanned
+in memory either way.
+
+This is the intended outcome rather than a tolerated loss. A store that wants
+the seam is one where scopes are a permission boundary, and silently broadening
+one scope's engram to `global` because another scope learned the same sentence
+is what such a store must not do. A deployment that wants graduation declines
+the seam and keeps the corpus scan. Pinned by test, not just by prose:
+`test/write-path-seams.test.ts` asserts the graduation on the corpus-scanning
+path and its absence on the delegated one.
+
+**2. Id allocation and `append`'s collision check are one concern from two
+ends.** `generateEngramId` derives a suffix from a snapshot and the engine then
+calls `append`, whose contract says an implementation *SHOULD surface an id
+collision as an error rather than absorb it* — the last line of defence for an
+id that was already stale when minted. A store whose `append` is an upsert has
+no such defence and silently overwrites the loser of a race; the engine's store
+lock contains this within one process but not across two sharing a database.
+`nextEngramId` moves allocation to the party that can make it atomic.
+
+### Also folded in
+
+The same `load()`-then-`find(id)` shape existed at seven other sites
+(`feedback`, `updateEngram`, `updateEngramAsync`, `setPinned`, `setPinnedAsync`,
+`forget`, `rescope`'s local branch, `_retireRescopedSource`, and the outbox
+failure bookkeeping). All now go through one `_loadTargeted(ids)` helper that
+checks `loadByIds` and `updateMany` as a pair, so the subset it returns is only
+ever produced when the write consuming it is itself targeted. The one site left
+alone is the outbox's local-copy REMOVAL: the only removal primitive
+`PrimaryStore` has is a whole-corpus save of the array without the row, so a
+targeted read there would be a full replace by an empty array. It stays a full
+load until there is a `remove`/`deleteMany` seam.

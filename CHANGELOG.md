@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.17.1 (2026-08-03)
+
+Learning something no longer reads your whole memory first.
+
+### Changed — performance
+
+- **`learn()` and `feedback()` stop loading the whole corpus** (#827, #828, (#829)): `learn()` read every
+  engram twice before writing one — once to check for a duplicate statement, once to work out the
+  next id — and `feedback()` read every engram to fetch the single one you rated. On a plain YAML
+  store that costs nothing, because the file is parsed either way; on a database-backed store it is
+  a full table scan standing in for an index lookup, on every write. Two optional store methods
+  (`findActiveByContentHash`, `nextEngramId`) let a store answer both questions directly, and the
+  same targeted-read treatment now covers `updateEngram`, `setPinned`, `forget` and `rescope`.
+  Nothing changes for the default YAML store, which keeps the behaviour it had.
+
+  One deliberate trade-off for stores that opt in: the dedup lookup is scope-**bound**, so it cannot
+  see — and must not disclose — a matching statement in a *different* scope. Cross-scope recurrence
+  (the rule that re-learning the same sentence under a second scope graduates the original toward
+  `global`) is therefore skipped on such stores, and the statement becomes its own engram instead.
+  This is the point rather than a side effect: where scopes are a permission boundary, one tenant's
+  engram must not be broadened because another tenant learned the same sentence. See
+  [ADR-0003](docs/adr/ADR-0003-primary-store-capability.md).
+
 ## 0.17.0 (2026-08-03)
 
 Your memory now backs itself up.

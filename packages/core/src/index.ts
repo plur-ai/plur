@@ -6,7 +6,7 @@ import { detectPlurStorage, type PlurPaths } from './storage.js'
 import { IndexedStorage } from './storage-indexed.js'
 import { PGLiteAdapter } from './storage-pglite.js'
 import { loadConfig } from './config.js'
-import { generateEngramId, loadAllPacks, storePrefix, initFilesystemStore } from './engrams.js'
+import { generateEngramId, engramIdDatePrefix, loadAllPacks, storePrefix, initFilesystemStore } from './engrams.js'
 import { maybeDailyBackup } from './backup.js'
 import { logger } from './logger.js'
 import { searchEngrams, ftsTokenize, extendCorpusStats } from './fts.js'
@@ -844,6 +844,27 @@ export class Plur {
           + `whole-corpus reactivation. Implement both to enable targeted reads/writes.`,
         )
       }
+      // The `learn()` seams (#828) are a SET, and a partial set is silent:
+      // `canDelegate` in `learn()` is a single boolean, so a store missing one
+      // member keeps paying two full corpus loads per write with nothing to
+      // indicate why. Say so where the implementor is looking. A warning, not a
+      // throw — a partial set is a performance mistake, not a data-loss one.
+      const hasFindByHash = typeof s.findActiveByContentHash === 'function'
+      const hasNextId = typeof s.nextEngramId === 'function'
+      if (hasFindByHash !== hasNextId) {
+        logger.warning(
+          `[plur] the supplied primary store implements ${hasFindByHash ? 'findActiveByContentHash' : 'nextEngramId'} `
+          + `but not ${hasFindByHash ? 'nextEngramId' : 'findActiveByContentHash'} — learn() needs both to skip the `
+          + `whole-corpus load, so it still loads the corpus. Implement both.`,
+        )
+      } else if (hasFindByHash && !(canWriteRows && hasLoadByIds)) {
+        logger.warning(
+          `[plur] the supplied primary store implements the learn() derive seams `
+          + `(findActiveByContentHash + nextEngramId) but not the targeted-write seams `
+          + `(append + updateMany + loadByIds) — learn() still loads the corpus, because a whole-corpus `
+          + `save() is the only write available. Implement all five to enable targeted learns.`,
+        )
+      }
     }
     this.config = loadConfig(this.paths.config)
     this._autoDiscover = Plur.resolveAutoDiscover(options?.autoDiscover)
@@ -1217,6 +1238,37 @@ export class Plur {
    * call site would have to remember to check (and #745's `update(): false`
    * showed they don't) is worse than semantics that cannot lose the write.
    */
+  /**
+   * Read the primary-store rows for `ids` — targeted when the store can, a
+   * whole-corpus load when it cannot (#827).
+   *
+   * Every caller is the same shape: load, find one row by id, mutate it, hand
+   * it to {@link _updateEngrams}. The WRITE has been targeted since 0.17; the
+   * READ was not, so a store that implements the 0.17 pair still paid a full
+   * table scan to fetch a row by primary key on every feedback signal, pin
+   * toggle, update and forget. `_reactivateResults` already took the targeted
+   * branch for exactly this shape — these call sites were simply missed.
+   *
+   * `loadByIds` and `updateMany` are checked as a PAIR, and the pair is what
+   * makes the return value safe to use as "the corpus in hand". Callers pass
+   * the array straight on to `_updateEngrams`, which falls back to a FULL
+   * REPLACE of whatever it is given when `updateMany` is absent. Taking the
+   * targeted read alone would therefore hand a one-row array to a whole-corpus
+   * save and delete everything else — the #749 defect, from the write side.
+   * Requiring both means the subset is only ever produced when the write that
+   * consumes it is itself targeted.
+   *
+   * Ids absent from the store are simply not returned, so a caller's
+   * `find(...)` miss keeps its existing meaning and its existing fall-through
+   * to the secondary stores.
+   */
+  private async _loadTargeted(ids: string[]): Promise<Engram[]> {
+    const store = this._primaryStore
+    return store.loadByIds && store.updateMany
+      ? await store.loadByIds(ids)
+      : await store.load()
+  }
+
   private async _updateEngrams(corpus: Engram[], changed: Engram[]): Promise<void> {
     if (changed.length === 0) return
     if (this._primaryStore.updateMany) {
@@ -2221,24 +2273,83 @@ export class Plur {
     // into an existing engram below.
     const validity = resolveValidity(statement, context)
     return await this._withStoreLock(this.paths.engrams, async () => {
-      const engrams = await this._primaryStore.load()
-      const allEngrams = await this._loadAllEngrams()
-
       const scope = guarded.scope
+      const ps = this._primaryStore
+      // Can the store answer BOTH derived facts `learn()` needs — "is this
+      // statement already here in this scope" and "what is the next id" —
+      // without the corpus, AND take every write `learn()` performs as a
+      // targeted row operation? (#828)
+      //
+      // It is a capability SET, not a pair, and every member is load-bearing.
+      // The derive seams are jointly required because each of the two facts is
+      // otherwise read off the SAME materialised corpus — delegating one still
+      // pays the full load for the other. The write seams are required because
+      // every fallback below (`_appendEngram`, `_updateEngrams`,
+      // `_writeSupersededByEdges`) takes "the corpus in hand" and, absent a
+      // row-level write, turns it into a whole-corpus `save()`. Taking the
+      // targeted READ without the targeted WRITE would hand a stand-in array
+      // of one or two rows to a FULL REPLACE — the #749 shape that deleted a
+      // corpus on an ordinary recall, and the reason `_reactivateResults`
+      // checks its pair rather than each half.
+      const canDelegate = Boolean(
+        ps.findActiveByContentHash && ps.nextEngramId
+        && ps.append && ps.updateMany && ps.loadByIds,
+      )
+      // The primary corpus, or an empty stand-in when nothing below will read
+      // or rewrite it. Safe ONLY under `canDelegate` — see above.
+      const engrams = canDelegate ? [] : await ps.load()
+      // Secondary stores and packs are NOT the primary corpus. They are small,
+      // separately loaded, and no seam speaks for them, so they are scanned in
+      // memory in both modes; only the primary half moves into the store.
+      const allEngrams = canDelegate
+        ? await this._loadSecondaryAndPacks()
+        : await this._loadAllEngrams()
 
       // Idea 29: Content hash fast-path dedup (scope-aware — issue #136).
       // On dedup hit, mutate: increment reference_count, append source (#107).
-      const hashMatch = this._hashDedup(statement, allEngrams, scope)
-      if (hashMatch) return await this._recordDuplicate(hashMatch, engrams, scope, context)
+      //
+      // The store is asked first, matching the corpus order it replaces
+      // (`_loadAllEngrams` puts primary rows ahead of secondary ones, so a
+      // primary match has always won).
+      const primaryHashMatch = canDelegate
+        ? await ps.findActiveByContentHash!(computeContentHash(statement), scope)
+        : null
+      const hashMatch = primaryHashMatch ?? this._hashDedup(statement, allEngrams, scope)
+      if (hashMatch) {
+        // `_recordDuplicate` persists only when the hit is IN the array it is
+        // given — a match from a secondary store or a pack is counted in
+        // memory and not written, which is the documented v1 behaviour. The
+        // store-served hit is a freshly-read row under this same lock, so it
+        // is the corpus in hand for exactly one row.
+        const corpusInHand = primaryHashMatch ? [primaryHashMatch] : engrams
+        return await this._recordDuplicate(hashMatch, corpusInHand, scope, context)
+      }
 
       // #176: cross-scope recurrence — same statement, different scope.
       // Treated as evidence of universal applicability: graduates the
       // existing engram toward 'global' + 'locked' commitment instead of
       // creating a new scope-bound duplicate.
+      //
+      // Under `canDelegate` this sees secondary stores and packs but NOT the
+      // primary store, and that is deliberate rather than an oversight of the
+      // seam: `findActiveByContentHash` is scope-bound by contract precisely so
+      // it cannot disclose another scope's engram, which is the same query
+      // cross-scope recurrence needs. A store that opts into the seam is one
+      // where scopes are a permission boundary, and broadening one scope's
+      // engram to `global` because another scope learned the same sentence is
+      // what such a store must not do. So the primary half is skipped, the new
+      // statement becomes its own engram, and a deployment that wants
+      // graduation declines the seam and keeps the corpus scan.
+      // See `PrimaryStore.findActiveByContentHash`.
       const crossMatch = this._crossScopeRecurrenceDetect(statement, allEngrams, scope)
+      // `engrams` is empty under delegation, so `_recordCrossScopeRecurrence`
+      // takes its secondary-store branch — which is where every match it can
+      // still see actually lives.
       if (crossMatch) return await this._recordCrossScopeRecurrence(crossMatch, engrams, scope, context)
 
-      const id = generateEngramId(allEngrams)
+      const id = canDelegate
+        ? await ps.nextEngramId!(engramIdDatePrefix())
+        : generateEngramId(allEngrams)
       const now = new Date().toISOString()
       const type = context?.type ?? 'behavioral'
       const cogLevel = TYPE_TO_COGNITIVE[type] ?? 'remember'
@@ -2331,8 +2442,18 @@ export class Plur {
       // the incremental write path below can persist them explicitly — on a
       // store with `append`, writing only the new engram would silently drop
       // these back-edges (the CI failure ffe04e0 fixed on #745).
+      //
+      // Under delegation `engrams` is empty, so the targets are fetched by id.
+      // Dropping the back-edges instead would be the quiet kind of regression:
+      // `supersedes` would still be recorded on the new engram and the reverse
+      // edge would simply never appear, which reads as data corruption rather
+      // than as a disabled feature.
       const supersededTargets = context?.supersedes?.length
-        ? this._writeSupersededByEdges(engrams, context.supersedes, id)
+        ? this._writeSupersededByEdges(
+            canDelegate ? await ps.loadByIds!(context.supersedes) : engrams,
+            context.supersedes,
+            id,
+          )
         : []
 
       // Stamp the extraction marker (#347) so the plur_learn MCP response can
@@ -2434,7 +2555,8 @@ export class Plur {
             // Already saved locally with outbox metadata — will be retried.
             logger.warning(`[plur:outbox] immediate push failed for ${engram.id}, queued for retry: ${(err as Error).message}`)
             await this._withStoreLock(this.paths.engrams, async () => {
-              const fresh = await this._primaryStore.load()
+              // Targeted read (#827): only this engram's outbox bookkeeping.
+              const fresh = await this._loadTargeted([engram.id])
               const target = fresh.find(e => e.id === engram.id) as any
               if (target?.structured_data?._outbox) {
                 target.structured_data._outbox.last_error = (err as Error).message
@@ -2451,6 +2573,11 @@ export class Plur {
           // rather than re-queueing something already accepted.
           try {
             await this._withStoreLock(this.paths.engrams, async () => {
+              // NOT `_loadTargeted` (#827): this REMOVES a row, and the only
+              // removal primitive `PrimaryStore` has is a whole-corpus save of
+              // the array without it. A one-row targeted read here would be a
+              // full replace by an empty array — the corpus, deleted. It stays
+              // a full load until there is a `remove`/`deleteMany` seam.
               const fresh = await this._primaryStore.load()
               const idx = fresh.findIndex(e => e.id === engram.id)
               if (idx !== -1) {
@@ -4300,7 +4427,10 @@ export class Plur {
     this._assertWritable()
     // Try primary engrams first
     const found = await this._withStoreLock(this.paths.engrams, async () => {
-      const engrams = await this._primaryStore.load()
+      // Targeted read (#827): rating one engram is a lookup by primary key,
+      // not a reason to materialise the corpus. A miss still means "not in the
+      // primary store" and still falls through to the secondary stores below.
+      const engrams = await this._loadTargeted([id])
       const engram = engrams.find(e => e.id === id)
       if (!engram) return false
 
@@ -4517,7 +4647,8 @@ export class Plur {
     this._assertWritable()
     // Local primary first.
     const localResult = await this._withStoreLock(this.paths.engrams, async () => {
-      const engrams = await this._primaryStore.load()
+      // Targeted read (#827): resolving one engram by id.
+      const engrams = await this._loadTargeted([updated.id])
       const idx = engrams.findIndex(e => e.id === updated.id)
       if (idx === -1) return false
       // Leak guard (#353): local-resident → demote a sensitive update in place.
@@ -4586,7 +4717,8 @@ export class Plur {
     this._assertWritable()
     // Local primary first.
     const localResult = await this._withStoreLock(this.paths.engrams, async () => {
-      const engrams = await this._primaryStore.load()
+      // Targeted read (#827): resolving one engram by id.
+      const engrams = await this._loadTargeted([updated.id])
       const idx = engrams.findIndex(e => e.id === updated.id)
       if (idx === -1) return null
       // Leak guard (#353): local-resident → demote a sensitive update in place.
@@ -4632,7 +4764,8 @@ export class Plur {
     this._assertWritable()
     // Local primary first.
     const localResult = await this._withStoreLock(this.paths.engrams, async () => {
-      const engrams = await this._primaryStore.load()
+      // Targeted read (#827): resolving one engram by id.
+      const engrams = await this._loadTargeted([id])
       const idx = engrams.findIndex(e => e.id === id)
       if (idx === -1) return null
       const e = engrams[idx]
@@ -4681,7 +4814,8 @@ export class Plur {
     this._assertWritable()
     // Local primary first.
     const localResult = await this._withStoreLock(this.paths.engrams, async () => {
-      const engrams = await this._primaryStore.load()
+      // Targeted read (#827): resolving one engram by id.
+      const engrams = await this._loadTargeted([id])
       const idx = engrams.findIndex(e => e.id === id)
       if (idx === -1) return null
       const e = engrams[idx]
@@ -4728,7 +4862,9 @@ export class Plur {
     // engram stays active with a lower count.
     // options.force=true overrides this: retires immediately (#766).
     const foundInPrimary = await this._withStoreLock(this.paths.engrams, async () => {
-      const engrams = await this._primaryStore.load()
+      // Targeted read (#827): a miss still means "not in the primary store"
+      // and still falls through to the secondary stores below.
+      const engrams = await this._loadTargeted([id])
       const engram = engrams.find(e => e.id === id)
       if (!engram) return false
 
@@ -5114,7 +5250,8 @@ export class Plur {
     // incremental update path as updateEngram's local branch. Id, activation,
     // feedback, relations and history all stay attached to the same row.
     const rewritten = await this._withStoreLock(this.paths.engrams, async () => {
-      const fresh = await this._primaryStore.load()
+      // Targeted read (#827): resolving one engram by id.
+      const fresh = await this._loadTargeted([id])
       const t = fresh.find(e => e.id === id)
       if (!t || t.status === 'retired') return false
       const from = t.scope
@@ -5157,7 +5294,8 @@ export class Plur {
   private async _retireRescopedSource(id: string, toScope: string, newId: string): Promise<void> {
     const now = new Date().toISOString()
     await this._withStoreLock(this.paths.engrams, async () => {
-      const fresh = await this._primaryStore.load()
+      // Targeted read (#827): resolving one engram by id.
+      const fresh = await this._loadTargeted([id])
       const t = fresh.find(e => e.id === id)
       if (!t) return
       t.status = 'retired'
