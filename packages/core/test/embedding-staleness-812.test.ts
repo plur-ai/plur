@@ -34,7 +34,7 @@ import { join } from 'path'
 import { tmpdir } from 'os'
 import yaml from 'js-yaml'
 import { PGLiteAdapter } from '../src/storage-pglite.js'
-import { embeddingContentHash, engramSearchText, ftsTokenize, hashEmbeddedText } from '../src/fts.js'
+import { embeddingContentHash, engramSearchText, hashEmbeddedText } from '../src/fts.js'
 import { Plur } from '../src/index.js'
 import { logger } from '../src/logger.js'
 import type { Engram } from '../src/schemas/engram.js'
@@ -101,16 +101,30 @@ describe('#812 — content hash identifies the text a vector was built from', ()
   })
 
   /**
-   * The Postgres tier compares `content_hash` against `md5(search_text)` inside
-   * its anti-join, and `search_text` is written by `deriveRow` as
-   * `ftsTokenize(engramSearchText(e)).join(' ')`. If this equality broke, the
-   * backfill's exit condition would never be satisfiable — every batch would
-   * return the same rows forever. This is that equality, asserted directly.
+   * It hashes the RAW text handed to `embed()`, not its tokenization (audit
+   * 2026-08-03, finding 9). Both tiers store this value, so it is the single
+   * definition of "which text is this vector for".
    */
-  it('equals md5 of the derived search_text the Postgres tier stores', () => {
-    const e = mkEngram('ENG-2026-0803-001', 'the derived form must agree across tiers')
-    const derivedSearchText = ftsTokenize(engramSearchText(e)).join(' ')
-    expect(embeddingContentHash(e)).toBe(hashEmbeddedText(derivedSearchText))
+  it('equals the hash of the raw search text that gets embedded', () => {
+    const e = mkEngram('ENG-2026-0803-001', 'the embedded string is what is hashed')
+    expect(embeddingContentHash(e)).toBe(hashEmbeddedText(engramSearchText(e)))
+  })
+
+  /**
+   * The regression finding 9 named. `ftsTokenize` drops stop words, drops
+   * tokens under three characters, strips punctuation and lowercases — so a
+   * hash of the TOKENIZED form could not see a meaning-inverting edit, which is
+   * exactly the edit worth catching.
+   */
+  it.each([
+    ['negation via stop word + short token', 'use the legacy adapter', 'do not use the legacy adapter'],
+    ['punctuation-only change', 'ship it', 'ship it?'],
+    ['case-only change', 'Use HTTPS', 'use https'],
+    ['short-token change', 'set ttl to 60', 'set ttl to 90'],
+  ])('detects a %s that the tokenized form erased', (_label, before, after) => {
+    const a = mkEngram('ENG-2026-0803-001', before)
+    const b = mkEngram('ENG-2026-0803-001', after)
+    expect(embeddingContentHash(a)).not.toBe(embeddingContentHash(b))
   })
 })
 

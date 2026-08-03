@@ -3,7 +3,7 @@ import * as path from 'path'
 import * as yaml from 'js-yaml'
 import { join } from 'path'
 import { loadEngrams, saveEngrams } from '../engrams.js'
-import { atomicWrite, withLock } from '../sync.js'
+import { atomicWrite, withLock, CONFIG_FILE_MODE } from '../sync.js'
 import { logger } from '../logger.js'
 import type { Migration } from './types.js'
 
@@ -68,7 +68,7 @@ export function setSchemaVersion(configPath: string, version: number): void {
     // Atomic + fsynced for the same reason persistStores is: loadConfig turns a
     // parse failure into DEFAULT config, so a crash mid-write does not fail
     // loudly — it silently reverts settings.
-    atomicWrite(configPath, yaml.dump(configData, { lineWidth: 120, noRefs: true }))
+    atomicWrite(configPath, yaml.dump(configData, { lineWidth: 120, noRefs: true }), { mode: CONFIG_FILE_MODE })
   })
 }
 
@@ -142,31 +142,42 @@ export function runMigrations(
   configPath: string,
   options?: { dryRun?: boolean },
 ): MigrationResult {
-  const currentVersion = getSchemaVersion(configPath)
-  const pending = ALL_MIGRATIONS.slice(currentVersion)
-
-  if (pending.length === 0) {
-    return { applied: [], schema_version: currentVersion, backup_path: null }
-  }
-
   const applied: string[] = []
+  let currentVersion = 0
+  let backupPath: string | null = null
 
   /**
-   * Backup, load, migrate and save under the store lock (#805, audit F12).
+   * EVERYTHING under the corpus lock — reading the version, planning, backing
+   * up, migrating, saving, and stamping the new version (#805 F12; audit
+   * 2026-08-03 finding 2).
    *
-   * This is a read-modify-write over the WHOLE corpus that ran with no lock at
-   * all, so a `learn()` landing between the load and the save was overwritten
-   * by the migrated copy of the pre-learn corpus — the plainest form of lost
-   * update, on the one code path whose entire job is rewriting every engram.
+   * The first fix wrapped only the corpus read-modify-write, leaving the
+   * version read before it and the version stamp after it. That gap is enough:
+   * a concurrent `run` and `rollback` both read version 2, rollback strips the
+   * v1/v2 fields, and run — planned from 2 — applies only v3-v5. The store then
+   * reports schema 5 while lacking `commitment` and `content_hash`, or reports
+   * 0 over a partially upgraded corpus, depending on which stamp lands last.
+   * Nothing detects either state; the next run just migrates from a lie.
    *
-   * The backup is taken inside the lock too. Outside it, a write could land
-   * between `createBackup` and `loadEngrams`, so the file we restore on failure
-   * would not be the file we migrated — a rollback to a state that never
-   * existed. `withLock` is NOT reentrant, and `saveEngrams`/`loadEngrams` do
-   * not lock internally (their callers do), so this is the only holder.
+   * LOCK ORDER is corpus -> config. `setSchemaVersion` takes the config lock
+   * itself, so this nests. That direction is safe because nothing acquires them
+   * the other way round: `addStore` materializes its store file (store lock)
+   * and only THEN calls `persistStores` (config lock), sequentially rather than
+   * nested. Anything added later must keep that order or reintroduce a deadlock.
+   *
+   * `withLock` is NOT reentrant, and `loadEngrams`/`saveEngrams` do not lock
+   * internally — their callers do — so this is the only holder of the corpus
+   * lock for the duration.
    */
-  let backupPath: string | null = null
   withLock(engramsPath, () => {
+    currentVersion = getSchemaVersion(configPath)
+    const pending = ALL_MIGRATIONS.slice(currentVersion)
+    if (pending.length === 0) return
+
+    // The backup is taken inside the lock too. Outside it, a write could land
+    // between `createBackup` and `loadEngrams`, so the file restored on failure
+    // would not be the file that was migrated — a rollback to a state that
+    // never existed.
     backupPath = options?.dryRun ? null : createBackup(engramsPath, currentVersion)
 
     // Load engrams as raw objects (passthrough mode — we use the passthrough schema)
@@ -188,17 +199,16 @@ export function runMigrations(
       }
     }
 
-    // Migrations rewrite the entire corpus by design, and a migration that
-    // legitimately drops records would otherwise trip the save-side shrink
-    // guard (#801). Declaring it here keeps the guard armed everywhere else.
-    if (!options?.dryRun) saveEngrams(engramsPath, engrams, { allowShrink: true })
+    if (!options?.dryRun) {
+      // Migrations rewrite the entire corpus by design, and a migration that
+      // legitimately drops records would otherwise trip the save-side shrink
+      // guard (#801). Declaring it here keeps the guard armed everywhere else.
+      saveEngrams(engramsPath, engrams, { allowShrink: true })
+      // Inside the corpus lock: the corpus and the version it claims to be at
+      // must become visible together, or they can disagree.
+      setSchemaVersion(configPath, currentVersion + applied.length)
+    }
   })
-
-  if (!options?.dryRun) {
-    // Outside the engrams lock: this takes the CONFIG lock, a different file.
-    // Kept sequential rather than nested so the two lock scopes stay disjoint.
-    setSchemaVersion(configPath, currentVersion + applied.length)
-  }
 
   return {
     applied,
@@ -216,27 +226,27 @@ export function rollbackMigrations(
   configPath: string,
   targetVersion: number,
 ): MigrationResult {
-  const currentVersion = getSchemaVersion(configPath)
-
-  if (targetVersion >= currentVersion) {
-    return { applied: [], schema_version: currentVersion, backup_path: null }
-  }
-
   if (targetVersion < 0) {
     throw new Error('Target version cannot be negative')
   }
 
   const rolledBack: string[] = []
-  // Apply down() in reverse order
-  const toRollback = ALL_MIGRATIONS.slice(targetVersion, currentVersion).reverse()
+  let currentVersion = 0
+  let noop = false
 
-  // Same store lock as runMigrations, for the same reason (#805, F12): this is
-  // a whole-corpus read-modify-write, and rolling back is if anything the worse
-  // moment to lose a concurrent write — the operator is already recovering from
-  // something. Backup taken inside the lock so the rollback target matches the
-  // state actually rolled back.
+  // Same corpus lock as runMigrations, held across the version read, the
+  // rewrite and the version stamp, in the same order (corpus -> config) and for
+  // the same reasons — see the comment there (#805 F12; audit 2026-08-03
+  // finding 2). Rolling back is if anything the worse moment to lose a
+  // concurrent write, since the operator is already recovering from something.
   let backupPath: string | null = null
   withLock(engramsPath, () => {
+    currentVersion = getSchemaVersion(configPath)
+    if (targetVersion >= currentVersion) { noop = true; return }
+
+    // Apply down() in reverse order
+    const toRollback = ALL_MIGRATIONS.slice(targetVersion, currentVersion).reverse()
+
     backupPath = createBackup(engramsPath, currentVersion)
     let engrams = loadEngrams(engramsPath)
 
@@ -258,9 +268,12 @@ export function rollbackMigrations(
     // A down() migration legitimately removes fields and can remove records;
     // the shrink guard must not veto a deliberate rollback.
     saveEngrams(engramsPath, engrams, { allowShrink: true })
+    setSchemaVersion(configPath, targetVersion)
   })
 
-  setSchemaVersion(configPath, targetVersion)
+  if (noop) {
+    return { applied: [], schema_version: currentVersion, backup_path: null }
+  }
 
   return {
     applied: rolledBack,

@@ -1974,6 +1974,10 @@ function getAllToolDefinitions(): ToolDefinition[] {
           },
           // Last background index/reembed failure (#272) — absent when healthy.
           ...(status.index_error ? { index_error: status.index_error } : {}),
+          // Artifacts that could not be read (audit 2026-08-03, finding 14).
+          // Core reports these; this hand-built response dropped them, so an
+          // agent asking for status saw a healthy-looking `pack_count: 0`.
+          ...(status.store_errors ? { store_errors: status.store_errors } : {}),
           // Version check (issue #151)
           ...(versionCheck?.updateAvailable && versionCheck.latest ? {
             update_available: {
@@ -2402,13 +2406,23 @@ function getAllToolDefinitions(): ToolDefinition[] {
           }
         }
 
-        // Get store stats for context
-        const status = await plur.status()
+        // Get store stats for context.
+        //
+        // Belt and braces (audit 2026-08-03, finding 6). `status()` now reports
+        // unreadable artifacts instead of throwing, but starting a session is
+        // not worth failing over STATISTICS under any circumstance: this is a
+        // decorative field, and a throw here used to mean no session could start
+        // at all. Whatever went wrong is surfaced through `store_errors` below
+        // rather than by refusing to start.
+        const status = await plur.status().catch(() => null)
         const store_stats = {
-          engram_count: status.engram_count,
-          episode_count: status.episode_count,
-          pack_count: status.pack_count,
+          engram_count: status?.engram_count ?? 0,
+          episode_count: status?.episode_count ?? 0,
+          pack_count: status?.pack_count ?? 0,
         }
+        // Surface a broken artifact where the operator will actually see it —
+        // the session opener — rather than only in `plur status`.
+        const store_errors = status?.store_errors
 
         // Warm remote store caches before injection (#235)
         // Ensures enterprise engrams are available for the first injectHybrid call.
@@ -2597,6 +2611,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
           session_id,
           engrams: engrams ?? [],
           store_stats,
+          ...(store_errors ? { store_errors } : {}),
           guide,
           // Remote scope routing info (#229)
           ...(remote_scopes.length > 0 ? { remote_scopes } : {}),

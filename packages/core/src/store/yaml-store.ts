@@ -15,6 +15,20 @@ import type { EngramStore } from './types.js'
 
 export class YamlStore implements EngramStore {
   private filePath: string
+  /**
+   * Last `_read()` result, keyed by the file identity it was read from (audit
+   * 2026-08-03, finding 16).
+   *
+   * `save()` has to know the quarantined entries or it deletes them — that is
+   * the #811 finding 8 bug and it is not negotiable. But the natural usage is
+   * `save(await load())`, so the file had just been parsed and `save` parsed it
+   * again, roughly doubling the work on every write.
+   *
+   * The cache is validated against mtime AND size, so any change to the file —
+   * including one by another process — invalidates it and the read happens.
+   * Correctness is unchanged; only the redundant second parse is skipped.
+   */
+  private lastRead: { mtimeMs: number; size: number; quarantined: unknown[] } | null = null
 
   constructor(filePath: string) {
     this.filePath = filePath
@@ -31,7 +45,7 @@ export class YamlStore implements EngramStore {
       // class — permanently deletes every schema-invalid record, because
       // `load()` withholds them by design. The preservation claim in the class
       // docs was true of append/remove and false here (#811 audit, finding 8).
-      const { quarantined } = await this._read()
+      const quarantined = await this._quarantinedForSave()
       const ids = new Set(engrams.map(e => e.id))
       const carried = (quarantined as Engram[]).filter(q => {
         const id = (q as { id?: unknown })?.id
@@ -98,12 +112,36 @@ export class YamlStore implements EngramStore {
    * methods can write them back instead of dropping them.
    */
   private async _read(): Promise<{ valid: Engram[]; quarantined: unknown[] }> {
-    if (!existsSync(this.filePath)) return { valid: [], quarantined: [] }
+    if (!existsSync(this.filePath)) {
+      this.lastRead = null
+      return { valid: [], quarantined: [] }
+    }
     const [content, info] = await Promise.all([
       readFile(this.filePath, 'utf8'),
       stat(this.filePath),
     ])
     if (info.isDirectory()) return { valid: [], quarantined: [] }
-    return parseEngramFile(this.filePath, content, info.size)
+    const parsed = parseEngramFile(this.filePath, content, info.size)
+    this.lastRead = { mtimeMs: info.mtimeMs, size: info.size, quarantined: parsed.quarantined }
+    return parsed
+  }
+
+  /**
+   * Quarantined entries for a write, reusing the last parse when the file has
+   * not changed since (audit 2026-08-03, finding 16).
+   *
+   * Falls through to a full read whenever the file is different, absent, or was
+   * never read by this instance — never guesses "none", because guessing wrong
+   * deletes the entries this exists to preserve.
+   */
+  private async _quarantinedForSave(): Promise<unknown[]> {
+    if (!existsSync(this.filePath)) return []
+    try {
+      const info = await stat(this.filePath)
+      if (this.lastRead && this.lastRead.mtimeMs === info.mtimeMs && this.lastRead.size === info.size) {
+        return this.lastRead.quarantined
+      }
+    } catch { /* stat failed — do the real read below */ }
+    return (await this._read()).quarantined
   }
 }

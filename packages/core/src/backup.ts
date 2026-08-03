@@ -551,27 +551,6 @@ export function restoreBackup(
   storePath: string,
   opts: { stamp?: string; force?: boolean } = {},
 ): RestoreResult {
-  const plan = planRestore(root, storePath, opts.stamp)
-  if (!opts.force) {
-    const problems: string[] = []
-    if (!plan.validity.ok) problems.push(...plan.validity.reasons)
-    if (!plan.integrityOk) {
-      problems.push(
-        plan.backup.sha256 === undefined
-          ? 'no sha256 sidecar — cannot verify the backup is intact'
-          : 'sha256 does not match the sidecar — the backup itself is damaged',
-      )
-    }
-    if (problems.length > 0) {
-      throw new Error(
-        `[plur] refusing to restore ${plan.backup.path}: ${problems.join('; ')}.\n` +
-        `Restoring is a whole-corpus overwrite; doing it from a backup that does not verify would ` +
-        `replace a damaged store with a differently damaged one.\n` +
-        `Pass force to override if you have inspected the file yourself.`,
-      )
-    }
-  }
-
   // Under the store lock, and atomic (#811 audit, finding 10).
   //
   // Restoring is a whole-corpus overwrite — the exact operation the rest of
@@ -586,8 +565,38 @@ export function restoreBackup(
   // `withLock` here is the synchronous variant, which shares the `<path>.lock`
   // file protocol with `withAsyncLock` — so a restore run from the CLI waits
   // for an MCP server mid-write, which is the case that matters.
+  //
+  // PLANNING happens inside the lock too (audit 2026-08-03, finding 12). Read
+  // outside it, `wouldLose` and `unrecoverable` describe a corpus that may have
+  // changed before the overwrite lands: an engram learned in between is copied
+  // aside and then replaced, while the result — whose entire contract is to
+  // NAME what it removes — never mentions it. The data is still recoverable
+  // from the superseded copy, but the operator was told it was not at risk.
+  // The refusal checks move in with it, so a plan can never be validated
+  // against one state and applied to another.
+  let plan!: RestorePlan
   const superseded = `${storePath}.superseded-${Date.now()}`
   withLock(storePath, () => {
+    plan = planRestore(root, storePath, opts.stamp)
+    if (!opts.force) {
+      const problems: string[] = []
+      if (!plan.validity.ok) problems.push(...plan.validity.reasons)
+      if (!plan.integrityOk) {
+        problems.push(
+          plan.backup.sha256 === undefined
+            ? 'no sha256 sidecar — cannot verify the backup is intact'
+            : 'sha256 does not match the sidecar — the backup itself is damaged',
+        )
+      }
+      if (problems.length > 0) {
+        throw new Error(
+          `[plur] refusing to restore ${plan.backup.path}: ${problems.join('; ')}.\n` +
+          `Restoring is a whole-corpus overwrite; doing it from a backup that does not verify would ` +
+          `replace a damaged store with a differently damaged one.\n` +
+          `Pass force to override if you have inspected the file yourself.`,
+        )
+      }
+    }
     if (fs.existsSync(storePath)) {
       fs.copyFileSync(storePath, superseded)
       flushFileAt(superseded)

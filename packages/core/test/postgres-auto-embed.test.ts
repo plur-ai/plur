@@ -369,6 +369,33 @@ describe.skipIf(!PG_URL)('Postgres embedding staleness (#812)', () => {
     expect(afterScore).toBeLessThan(beforeScore)
   }, TIMEOUT)
 
+  /**
+   * Finding 8: a row predating the columns has BOTH hashes NULL. The old
+   * predicate compared `content_hash` to `md5(search_text)`, and with
+   * search_text NULL the stale arm could never be satisfied — the vector stayed
+   * stale forever with nothing to report it. The engram-row hash is now
+   * backfilled in the same transaction as the embedding, so one pass converges.
+   */
+  it('converges a row that predates BOTH hash columns', async () => {
+    const e = await plur.learn('written before either content_hash column existed', { scope: 'global' })
+    await plur.waitForIndex()
+
+    const pool = await (adapter as any).getPool()
+    const schema = `${SCHEMA}_812`
+    await pool.query(`UPDATE "${schema}".engram_embeddings SET content_hash = NULL WHERE engram_id = $1`, [e.id])
+    await pool.query(`UPDATE "${schema}".engrams SET content_hash = NULL, search_text = NULL WHERE id = $1`, [e.id])
+
+    // Selected despite already having an embedding row.
+    expect((await adapter.listEngramsMissingEmbeddings(50, { includeStale: true })).map(s => s.id)).toContain(e.id)
+
+    await (plur as any)._autoEmbedPrimaryStore(adapter)
+
+    // Converged in ONE pass, and stays converged — not stale on every pass.
+    expect(await adapter.listEngramsMissingEmbeddings(1, { includeStale: true })).toEqual([])
+    const row = await pool.query(`SELECT content_hash FROM "${schema}".engrams WHERE id = $1`, [e.id])
+    expect(row.rows[0].content_hash).toBeTruthy()
+  }, TIMEOUT)
+
   it('re-embeds a legacy row stored without a content hash exactly once', async () => {
     const e = await plur.learn('written before content hashing existed', { scope: 'global' })
     await plur.waitForIndex()

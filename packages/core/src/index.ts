@@ -32,7 +32,7 @@ import { installPack, uninstallPack, listPacks, exportPack, scanPrivacy, compute
 // SP5 imports (deferred — vault-export, registry not yet merged)
 // import { exportVault, type VaultExportOptions, type VaultExportResult } from './vault-export.js'
 // import { fetchRegistry, discoverPacks, verifyPackIntegrity, DEFAULT_REGISTRY_URL, type PackRegistry, type RegistryPack } from './registry.js'
-import { atomicWrite, sync as gitSync, getSyncStatus, withLock, type SyncResult, type SyncStatus, type SyncRemoteType } from './sync.js'
+import { atomicWrite, CONFIG_FILE_MODE, sync as gitSync, getSyncStatus, withLock, type SyncResult, type SyncStatus, type SyncRemoteType } from './sync.js'
 import { detectSecrets, detectSensitive, sensitivityCategory, SCAN_TRUNCATED } from './secrets.js'
 import type { SecretMatch } from './secrets.js'
 import { SENSITIVITY_CATEGORIES, type ScopeMetadata, type SensitivityCategory } from './schemas/scope-metadata.js'
@@ -349,15 +349,26 @@ export interface StatusResult {
   /** Injection-provenance event/label counts (#452) — feeds #202's volume gate. */
   history_events?: InjectionEventCounts
   /**
-   * Set when the pack registry could not be read (#805 follow-up).
+   * Artifacts `status()` could not read, by name (#805 follow-up; audit
+   * 2026-08-03 finding 6).
    *
    * `status()` is the command an operator reaches for WHEN something is wrong,
-   * so it must report a broken registry rather than die on it. Making
-   * `loadRegistry` refuse-on-corrupt was right for the install path — an
-   * install that proceeds from a phantom-empty registry destroys the integrity
-   * baseline — but propagating that throw out of `status()` would take the
-   * diagnostic down along with the thing being diagnosed.
+   * so it must REPORT a broken artifact rather than die on it. The refuse-on-
+   * corrupt loaders are right for the write paths they protect — a write that
+   * proceeds from a phantom-empty store destroys data — but propagating those
+   * throws out of the diagnostic takes it down along with the thing being
+   * diagnosed.
+   *
+   * The first version of this covered only the pack registry, which left
+   * `episodes.yaml` and `tensions.yaml` able to do exactly the same thing. That
+   * mattered more than it looks: MCP `session_start` awaits `status()`, so a
+   * truncated episodes file meant no session could start at all.
+   *
+   * Keys are artifact names (`packs`, `episodes`, `tensions`); values are the
+   * loader's message, which already carries the repair instructions.
    */
+  store_errors?: Record<string, string>
+  /** @deprecated Use `store_errors.packs`. Kept so existing readers still work. */
   pack_registry_error?: string
 }
 
@@ -6098,18 +6109,33 @@ Generate an improved version of the procedure that prevents this failure. Return
 
   /** Return system health info. */
   async status(options?: { created_after?: string; domain?: string }): Promise<StatusResult> {
-    const engrams = await this._loadAllEngrams()
-    const episodes = queryTimeline(this.paths.episodes)
-    // A corrupt registry is something to REPORT here, not to die on: this is
-    // the command run to find out what is wrong (#805 follow-up). The install
-    // path still refuses, which is where refusing actually protects something.
-    let packs: ReturnType<typeof listPacks> = []
-    let packRegistryError: string | undefined
-    try {
-      packs = listPacks(this.paths.packs)
-    } catch (err) {
-      packRegistryError = (err as Error).message
+    // Every artifact this diagnostic reads is behind a refuse-on-corrupt loader,
+    // and a diagnostic must REPORT a broken artifact rather than die on it
+    // (audit 2026-08-03, finding 6). Each is isolated so one bad file cannot
+    // suppress the rest of the report — which is the information an operator
+    // needs precisely when one file IS bad.
+    const storeErrors: Record<string, string> = {}
+    const readOr = <T>(name: string, read: () => T, fallback: T): T => {
+      try {
+        return read()
+      } catch (err) {
+        storeErrors[name] = (err as Error).message
+        return fallback
+      }
     }
+    const readOrAsync = async <T>(name: string, read: () => Promise<T>, fallback: T): Promise<T> => {
+      try {
+        return await read()
+      } catch (err) {
+        storeErrors[name] = (err as Error).message
+        return fallback
+      }
+    }
+    // The corpus itself included: if engrams.yaml is the broken file, a thrown
+    // status is the least useful possible response to "what is wrong?".
+    const engrams = await readOrAsync('engrams', () => this._loadAllEngrams(), [] as Engram[])
+    const episodes = readOr('episodes', () => queryTimeline(this.paths.episodes), [] as ReturnType<typeof queryTimeline>)
+    const packs = readOr('packs', () => listPacks(this.paths.packs), [] as ReturnType<typeof listPacks>)
 
     let active = engrams.filter(e => e.status !== 'retired')
     if (options?.domain) {
@@ -6124,7 +6150,11 @@ Generate an improved version of the procedure that prevents this failure. Return
     // tension records — the LLM-validated detector's output — instead of
     // relations.conflicts, which post-#138 holds only unvalidated importer
     // heuristics (or nothing, post-purge).
-    const unresolvedTensions = this.listTensions({ status: ['detected', 'confirmed'] }).length
+    const unresolvedTensions = readOr(
+      'tensions',
+      () => this.listTensions({ status: ['detected', 'confirmed'] }).length,
+      0,
+    )
 
     // Count engrams with version > 1 (SP2 Idea 8)
     const versionedCount = engrams.filter(e => {
@@ -6141,10 +6171,12 @@ Generate an improved version of the procedure that prevents this failure. Return
       locked_count: lockedCount,
       tension_count: unresolvedTensions,
       versioned_engram_count: versionedCount,
-      outbox_count: await this.outboxCount(),
-      history_events: countInjectionEvents(this.paths.root),
+      outbox_count: await readOrAsync('outbox', () => this.outboxCount(), 0),
+      history_events: readOr('history', () => countInjectionEvents(this.paths.root), undefined as any),
       ...(this._lastIndexError ? { index_error: this._lastIndexError } : {}),
-      ...(packRegistryError ? { pack_registry_error: packRegistryError } : {}),
+      ...(Object.keys(storeErrors).length > 0 ? { store_errors: storeErrors } : {}),
+      // Back-compat alias for the field this replaced.
+      ...(storeErrors.packs ? { pack_registry_error: storeErrors.packs } : {}),
     }
   }
 
@@ -6229,7 +6261,13 @@ Generate an improved version of the procedure that prevents this failure. Return
     if (pairs.length === 0) return { records: [], new_count: 0, existing_count: 0 }
     const engramById = new Map((await this._loadAllEngrams()).map(e => [e.id, e]))
     return withLock(this.paths.tensions, () => {
-      const all = loadTensions(this.paths.tensions)
+      // Quarantined records ride along (audit 2026-08-03, finding 4).
+      // `loadTensions` withholds schema-invalid entries by design, and this
+      // function rewrites the WHOLE file — so loading valid-only and saving
+      // that back permanently deleted them on an unrelated scan. Exactly the F2
+      // shape, and exactly the bug `_mutateTension` was fixed for; this call
+      // site was missed because the regression test only covered that one.
+      const { valid: all, quarantined } = loadTensionsWithQuarantine(this.paths.tensions)
       const byKey = new Map(all.map(r => [tensionPairKey(r.engram_a, r.engram_b), r]))
       const out: TensionRecord[] = []
       let newCount = 0
@@ -6279,7 +6317,7 @@ Generate an improved version of the procedure that prevents this failure. Return
           })
         } catch { /* best-effort — history failure must not lose the record */ }
       }
-      if (newCount > 0) saveTensions(this.paths.tensions, all)
+      if (newCount > 0) saveTensions(this.paths.tensions, all, quarantined)
       return { records: out, new_count: newCount, existing_count: existingCount }
     })
   }
@@ -6682,7 +6720,7 @@ Generate an improved version of the procedure that prevents this failure. Return
       // config — so a crash mid-write silently erases store registrations and
       // routes later writes to the local default store. atomicWrite is
       // tmp + fsync + rename, so a crash leaves the previous complete config.
-      atomicWrite(this.paths.config, yaml.dump(configData, { lineWidth: 120, noRefs: true }))
+      atomicWrite(this.paths.config, yaml.dump(configData, { lineWidth: 120, noRefs: true }), { mode: CONFIG_FILE_MODE })
     })
     this.config = loadConfig(this.paths.config)
     this.configMtimeMs = this.statConfigMtime()
@@ -7566,7 +7604,7 @@ Generate an improved version of the procedure that prevents this failure. Return
       // config — so a crash mid-write silently erases store registrations and
       // routes later writes to the local default store. atomicWrite is
       // tmp + fsync + rename, so a crash leaves the previous complete config.
-      atomicWrite(this.paths.config, yaml.dump(configData, { lineWidth: 120, noRefs: true }))
+      atomicWrite(this.paths.config, yaml.dump(configData, { lineWidth: 120, noRefs: true }), { mode: CONFIG_FILE_MODE })
     })
     this.config = loadConfig(this.paths.config)
     this.configMtimeMs = this.statConfigMtime()

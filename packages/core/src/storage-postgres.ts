@@ -73,7 +73,7 @@
  */
 import type { Engram } from './schemas/engram.js'
 import { EngramSchemaPassthrough } from './schemas/engram.js'
-import { searchEngrams, ftsTokenize, engramSearchText, type CorpusStats } from './fts.js'
+import { searchEngrams, ftsTokenize, engramSearchText, embeddingContentHash, type CorpusStats } from './fts.js'
 import { logger } from './logger.js'
 import {
   EXACT_VECTOR_INDEX,
@@ -553,6 +553,15 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
     //                               from `qt.includes(t)` bought.
     await this.ddl(client, `ALTER TABLE "${this.schema}".engrams ADD COLUMN IF NOT EXISTS tokens TEXT[]`)
     await this.ddl(client, `ALTER TABLE "${this.schema}".engrams ADD COLUMN IF NOT EXISTS search_text TEXT`)
+    // The hash of the text an engram's embedding SHOULD be computed from
+    // (audit 2026-08-03, findings 8 + 9). Kept on the engram row and written by
+    // `deriveRow` on every write, so staleness is a comparison of two stored
+    // hashes rather than of a hash against `md5(search_text)`. That removed two
+    // problems at once: `search_text` is the TOKENIZED form, so a stop-word or
+    // short-token edit changed the embedded text without changing the hash; and
+    // a row predating `search_text` hashed to NULL, which made the stale arm
+    // unsatisfiable and left its vector stale forever.
+    await this.ddl(client, `ALTER TABLE "${this.schema}".engrams ADD COLUMN IF NOT EXISTS content_hash TEXT`)
     try {
       await this.ddl(client, 'CREATE EXTENSION IF NOT EXISTS pg_trgm SCHEMA public')
       this.trigramAvailable = true
@@ -856,11 +865,11 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
       for (let i = 0; i < engrams.length; i += SAVE_CHUNK_SIZE) {
         const chunk = engrams.slice(i, i + SAVE_CHUNK_SIZE)
         await client.query(
-          `INSERT INTO "${this.schema}".engrams (id, status, scope, domain, last_accessed, data, source, tokens, search_text)
-           SELECT t.id, t.status, t.scope, t.domain, t.last_accessed, t.data, 'primary', t.tokens, t.search_text
+          `INSERT INTO "${this.schema}".engrams (id, status, scope, domain, last_accessed, data, source, tokens, search_text, content_hash)
+           SELECT t.id, t.status, t.scope, t.domain, t.last_accessed, t.data, 'primary', t.tokens, t.search_text, t.content_hash
            FROM jsonb_to_recordset($1::jsonb)
              AS t(id text, status text, scope text, domain text, last_accessed text, data jsonb,
-                  tokens text[], search_text text)
+                  tokens text[], search_text text, content_hash text)
            ON CONFLICT (id) DO UPDATE SET
              status = EXCLUDED.status,
              scope = EXCLUDED.scope,
@@ -869,7 +878,8 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
              data = EXCLUDED.data,
              source = EXCLUDED.source,
              tokens = EXCLUDED.tokens,
-             search_text = EXCLUDED.search_text`,
+             search_text = EXCLUDED.search_text,
+             content_hash = EXCLUDED.content_hash`,
           [JSON.stringify(chunk.map(toRow))],
         )
       }
@@ -897,11 +907,11 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
   async append(engram: Engram): Promise<void> {
     const pool = await this.getPool()
     await pool.query(
-      `INSERT INTO "${this.schema}".engrams (id, status, scope, domain, last_accessed, data, source, tokens, search_text)
-       SELECT t.id, t.status, t.scope, t.domain, t.last_accessed, t.data, 'primary', t.tokens, t.search_text
+      `INSERT INTO "${this.schema}".engrams (id, status, scope, domain, last_accessed, data, source, tokens, search_text, content_hash)
+       SELECT t.id, t.status, t.scope, t.domain, t.last_accessed, t.data, 'primary', t.tokens, t.search_text, t.content_hash
        FROM jsonb_to_recordset($1::jsonb)
          AS t(id text, status text, scope text, domain text, last_accessed text, data jsonb,
-              tokens text[], search_text text)`,
+              tokens text[], search_text text, content_hash text)`,
       [JSON.stringify([toRow(engram)])],
     )
     // No cache to drop — `loadCached()` delegates to `load()` on this adapter.
@@ -915,11 +925,11 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
       for (let i = 0; i < engrams.length; i += SAVE_CHUNK_SIZE) {
         const chunk = engrams.slice(i, i + SAVE_CHUNK_SIZE)
         await client.query(
-          `INSERT INTO "${this.schema}".engrams (id, status, scope, domain, last_accessed, data, source, tokens, search_text)
-           SELECT t.id, t.status, t.scope, t.domain, t.last_accessed, t.data, 'primary', t.tokens, t.search_text
+          `INSERT INTO "${this.schema}".engrams (id, status, scope, domain, last_accessed, data, source, tokens, search_text, content_hash)
+           SELECT t.id, t.status, t.scope, t.domain, t.last_accessed, t.data, 'primary', t.tokens, t.search_text, t.content_hash
            FROM jsonb_to_recordset($1::jsonb)
              AS t(id text, status text, scope text, domain text, last_accessed text, data jsonb,
-                  tokens text[], search_text text)
+                  tokens text[], search_text text, content_hash text)
            ON CONFLICT (id) DO UPDATE SET
              status = EXCLUDED.status,
              scope = EXCLUDED.scope,
@@ -928,7 +938,8 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
              data = EXCLUDED.data,
              source = EXCLUDED.source,
              tokens = EXCLUDED.tokens,
-             search_text = EXCLUDED.search_text`,
+             search_text = EXCLUDED.search_text,
+             content_hash = EXCLUDED.content_hash`,
           [JSON.stringify(chunk.map(toRow))],
         )
       }
@@ -1348,6 +1359,31 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
          SET embedding = EXCLUDED.embedding, content_hash = EXCLUDED.content_hash`,
       [engramId, vectorLiteral(vector), contentHash ?? null],
     )
+    // Backfill the ENGRAM row's hash if it predates the column (finding 8).
+    //
+    // `IS NULL` guarded: `deriveRow` owns this value on every real write, and
+    // overwriting it here would erase the evidence of an edit and make the
+    // engram look permanently current.
+    //
+    // Two SEPARATE statements, deliberately NOT one transaction. Wrapping them
+    // was the obvious-looking choice and it deadlocked: a transaction spanning
+    // `engram_embeddings` and `engrams` holds locks on both, and the background
+    // auto-embed pass then deadlocks against anything acquiring them the other
+    // way round — CI caught 40P01 against `dropSchema` in teardown.
+    //
+    // It buys nothing, because a partial application is already self-healing in
+    // BOTH directions. Embedding written, backfill lost: `e.content_hash IS
+    // NULL` still selects the row next pass. Backfill written, embedding lost:
+    // the embedding row is missing or carries the old hash, so the missing arm
+    // or the mismatch arm selects it. Either way the next pass finishes the job,
+    // which is the property the whole staleness design already relies on.
+    if (contentHash !== undefined) {
+      await pool.query(
+        `UPDATE "${this.schema}".engrams SET content_hash = $2
+         WHERE id = $1 AND content_hash IS NULL`,
+        [engramId, contentHash],
+      )
+    }
   }
 
   /**
@@ -1387,8 +1423,24 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
     // existed: it hashes to NULL, and NULL IS DISTINCT FROM a real hash is
     // TRUE — permanently. Such a row embeds once through the `IS NULL` arm and
     // is then left alone, rather than being re-embedded on every pass forever.
+    // Two STORED hashes, both written in JS by `embeddingContentHash` — the
+    // engram row's by `deriveRow` on every write, the embedding row's by the
+    // pass that embedded it (audit 2026-08-03, findings 8 + 9).
+    //
+    // This replaced `content_hash IS DISTINCT FROM md5(search_text)`, which had
+    // two defects. `search_text` is the TOKENIZED form, so an edit that only
+    // touched stop words or sub-three-character tokens ("use X" -> "do not use
+    // X") changed the embedded text and the correct vector while leaving the
+    // hash identical. And a row written before `search_text` existed hashes to
+    // NULL, making the comparison unsatisfiable — its vector stayed stale for
+    // good, which is finding 8.
+    //
+    // `e.content_hash IS NULL` is its own arm so a legacy engram row converges:
+    // it is selected once, and `upsertEmbedding` backfills the engram row's
+    // hash in the same transaction, after which the two agree.
     const staleArm = opts?.includeStale
-      ? `OR (e.search_text IS NOT NULL AND em.content_hash IS DISTINCT FROM md5(e.search_text))`
+      ? `OR e.content_hash IS NULL
+         OR em.content_hash IS DISTINCT FROM e.content_hash`
       : ''
     const res = await pool.query(
       `SELECT e.data FROM "${this.schema}".engrams e
@@ -1575,6 +1627,10 @@ function toRow(e: Engram): Record<string, unknown> {
     // equivalent to a substring test over this string because query tokens
     // never contain the separator — `ftsTokenize` splits on it.
     search_text: tokens.join(' '),
+    // Derived once, on write, from the RAW search text — the same string the
+    // embedder is given. This is the authority the embedding table is compared
+    // against (#812; audit 2026-08-03 findings 8 + 9).
+    content_hash: embeddingContentHash(e),
   }
 }
 

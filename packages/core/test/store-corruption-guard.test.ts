@@ -206,16 +206,69 @@ describe('saveEngrams — shrink guard (F1/F2/F3 choke point)', () => {
 
   it('still refuses a 50% shrink on a store large enough to take the fast path', () => {
     // Regression for a hole introduced while making the guard cheap. The exact
-    // count is a full YAML parse, which measured +388ms on a 419ms save — and
-    // since _reactivateResults turns every recall() into a save, that taxed the
-    // READ path of the largest stores. The first fix estimated the record count
-    // from a bytes-per-engram constant; measured engrams average 785 bytes
-    // against an assumed 2400, so a 20k store estimated as 6.5k and a genuine
-    // 50% shrink skipped the guard entirely. The pre-check now compares
-    // serialized bytes to on-disk bytes, which needs no constant.
+    // count was a full YAML parse — and since _reactivateResults turns every
+    // recall() into a save, that taxed the READ path of the largest stores. The
+    // first fix estimated the record count from a bytes-per-engram constant;
+    // measured engrams average 785 bytes against an assumed 2400, so a 20k
+    // store estimated as 6.5k and a genuine 50% shrink skipped the guard.
     const engrams = seed(200)
     expect(() => saveEngrams(storePath, engrams.slice(0, 100))).toThrow(EngramStoreShrinkError)
     expect(loadEngrams(storePath)).toHaveLength(200)
+  })
+
+  /**
+   * The SECOND hole in the same optimisation (audit 2026-08-03, finding 5).
+   *
+   * Replacing the bytes-per-engram constant with a serialized-bytes comparison
+   * removed the bad constant but kept the assumption underneath it — stated in
+   * the code as "records are broadly similar in size". Engrams are not: one
+   * carrying `rationale` and `dual_coding` outweighs a bare statement several
+   * times over.
+   *
+   * So a write could drop a large FRACTION OF RECORDS while moving few BYTES,
+   * the pre-check would report "not shrinking", and the exact count — the only
+   * thing that can actually refuse — never ran. Every other test in this file
+   * uses uniform generated engrams, where count and bytes move together, so
+   * none of them could catch it.
+   *
+   * The guard is now unconditional; these pin that it stays that way.
+   */
+  it('refuses a record-count shrink that barely moves the byte count', () => {
+    const big = (i: number) => ({ ...engram(i), rationale: 'r'.repeat(4000) })
+    const small = (i: number) => engram(i)
+    // 89 large + 11 small. Dropping the 11 small ones is an 11% record loss
+    // (past the 10% tolerance) but well under a 1% byte change.
+    const heavy = Array.from({ length: 89 }, (_, i) => big(i))
+    const light = Array.from({ length: 11 }, (_, i) => small(100 + i))
+    saveEngrams(storePath, [...heavy, ...light], { allowShrink: true })
+    expect(loadEngrams(storePath)).toHaveLength(100)
+
+    expect(() => saveEngrams(storePath, heavy)).toThrow(EngramStoreShrinkError)
+    expect(loadEngrams(storePath)).toHaveLength(100)
+  })
+
+  it('refuses a record-count shrink even when the outgoing document is LARGER', () => {
+    // The byte pre-check could not see this at all: records were removed AND
+    // the survivors grew, so the file gets bigger while the corpus shrinks.
+    const engrams = seed(100)
+    const fewerButFatter = engrams.slice(0, 50).map(e => ({ ...e, rationale: 'r'.repeat(5000) }))
+    expect(() => saveEngrams(storePath, fewerButFatter)).toThrow(EngramStoreShrinkError)
+    expect(loadEngrams(storePath)).toHaveLength(100)
+  })
+
+  it('counts records exactly without parsing, including multi-line scalars', () => {
+    // The fast counter scans for record-start lines. A block scalar's body can
+    // contain anything — including a line starting with "- " — and must not be
+    // counted as a record.
+    const withBlock = Array.from({ length: 20 }, (_, i) => ({
+      ...engram(i),
+      rationale: 'line one\n- line two looks like a list item\n- so does this\n',
+    }))
+    saveEngrams(storePath, withBlock, { allowShrink: true })
+    expect(loadEngrams(storePath)).toHaveLength(20)
+    // 20 -> 17 is 15%, past tolerance. If the scalar bodies were miscounted the
+    // baseline would be wrong and this would not throw.
+    expect(() => saveEngrams(storePath, withBlock.slice(0, 17))).toThrow(EngramStoreShrinkError)
   })
 
   it('takes the fast path for a same-size rewrite — no exact count needed', () => {
