@@ -1,7 +1,26 @@
 name: PR Issue Guard
 
+# `pull_request_target`, NOT `pull_request` (#835).
+#
+# On a `pull_request` event raised from a FORK, GitHub forces GITHUB_TOKEN to
+# read-only regardless of the `permissions:` block below — the block can only
+# ever narrow the token, never restore what the fork rule took away. So
+# `addAssignees` returned 403 and this workflow failed on EVERY external
+# contribution, which is precisely the population whose duplicate-effort it
+# exists to prevent. Internal branches are the ones that never needed it.
+#
+# `pull_request_target` runs in the context of the BASE repository, so the token
+# is write-capable for fork PRs too.
+#
+# SECURITY — the rule that makes this safe:
+#   This workflow must NEVER check out, build, or execute the head ref.
+#   `pull_request_target` grants a privileged token to a workflow evaluated
+#   against the base branch; adding `actions/checkout` with the PR's ref would
+#   hand that token to attacker-controlled code. The only untrusted input read
+#   here is the PR body, and it is used solely as a regex source for issue
+#   numbers, each parsed through parseInt before it reaches an API call.
 on:
-  pull_request:
+  pull_request_target:
     types: [opened, edited, reopened]
 
 # Only needs to comment on PRs and assign issues — no code access needed.
@@ -43,12 +62,32 @@ jobs:
               const assignees = (issue.assignees || []).map(a => a.login);
 
               if (assignees.length === 0) {
-                await github.rest.issues.addAssignees({
-                  owner, repo,
-                  issue_number: issueNumber,
-                  assignees: [prAuthor],
-                });
-                core.info(`Auto-assigned #${issueNumber} to @${prAuthor}`);
+                // Degrade gracefully rather than failing the run (#835).
+                // Even with a write-capable token, GitHub only permits
+                // assigning users with repo access or prior interaction on the
+                // issue — a brand-new contributor may simply not be assignable.
+                // That is a fact about the account, not a fault in the PR, and
+                // it must not put a red X on someone's first contribution.
+                try {
+                  await github.rest.issues.addAssignees({
+                    owner, repo,
+                    issue_number: issueNumber,
+                    assignees: [prAuthor],
+                  });
+                  core.info(`Auto-assigned #${issueNumber} to @${prAuthor}`);
+                } catch (e) {
+                  core.warning(
+                    `Could not auto-assign #${issueNumber} to @${prAuthor}: ${e.message}. `
+                    + `A maintainer should assign it manually so the claim is recorded.`,
+                  );
+                  await github.rest.issues.createComment({
+                    owner, repo,
+                    issue_number: prNumber,
+                    body: `ℹ️ Could not auto-assign #${issueNumber} to @${prAuthor} — `
+                      + `GitHub only allows assigning users with repo access or prior interaction on the issue. `
+                      + `Maintainer: please assign it manually so the claim is recorded. This is not a problem with the PR.`,
+                  }).catch(err => core.warning(`Fallback comment failed: ${err.message}`));
+                }
               } else if (!assignees.includes(prAuthor)) {
                 const list = assignees.map(a => `@${a}`).join(', ');
                 await github.rest.issues.createComment({
