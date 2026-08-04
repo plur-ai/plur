@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.17.2 (2026-08-04)
+
+Chinese search works — found and fixed by a contributor.
+
+- Chinese text is searchable
+- BM25 indexed no Han before
+- Fixed by @skyeryg
+- Postgres guards stale tokens
+
+### Fixed
+
+- **Chinese text is now indexed for BM25** (#780, #782): `ftsTokenize` discarded every Han
+  character, because JavaScript's `\w` is ASCII-only (`[A-Za-z0-9_]`). Pure-Chinese queries
+  tokenized to zero terms, so BM25 contributed nothing for non-English stores — hybrid recall
+  silently degenerated to embedding-only, and under `bm25-only` degradation a Chinese query
+  returned nothing at all. Han runs are now indexed as overlapping character bigrams: the standard
+  approach for scripts without word boundaries, no new dependency, and deterministic across
+  runtimes in a way a locale-dependent segmenter is not. ASCII behaviour is unchanged, at a
+  measured 4.50µs → 4.78µs per tokenization. Reported and fixed by
+  [@skyeryg](https://github.com/skyeryg), who hit it integrating PLUR into a Chinese-language
+  workflow. Chinese only — Japanese kana, Korean, Cyrillic, Arabic, Indic scripts and accented
+  Latin are still dropped or mangled, tracked in #833.
+- **Postgres stores detect tokens written by an older tokenizer** (#834, #837): `PostgresAdapter`
+  derives tokens at write time and persists them, which is what lets the BM25 pushdown claim
+  exactness — `df` counted in SQL and `tf` counted in JS agree because one tokenizer produced both.
+  Changing the tokenizer breaks that for rows already written, and breaks it silently: pre-#782
+  rows contain no Han, so a Chinese query never matches them and the corpus reports it does not
+  hold an engram it does hold. Rows now carry the tokenizer version that produced them, and
+  `corpusStats` refuses rather than answering from a corpus it cannot vouch for, naming the
+  re-save that fixes it. Without this, the fix above would have reached only engrams written
+  *after* the upgrade.
+
 ## 0.17.1 (2026-08-03)
 
 Learning something no longer reads your whole memory first.
