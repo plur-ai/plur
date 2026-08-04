@@ -299,6 +299,9 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
 
   /** One-shot latch for the stale-tokenizer warning (#834). */
   private staleTokensWarned = false
+
+  /** In-flight token backfill, so concurrent queries kick at most one (#840). */
+  private tokenBackfill: Promise<void> | null = null
   /** Actual dim of the embedding column after init; writes are checked against reality. */
   private activeVecDim: number | null = null
   /** Whether an HNSW index exists after init — what `vectorIndex` reports. */
@@ -1128,6 +1131,87 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
    * it, so the next change to the token floor cannot silently under-count `df`.
    */
   /**
+   * Re-derive `tokens` / `search_text` for rows written by an older tokenizer
+   * (#840).
+   *
+   * Needed because nothing else does it. `save()` re-derives the whole corpus,
+   * but a row store does not take that path in ordinary use: `learn()` prefers
+   * the `append` seam and `feedback()` prefers `updateMany`, each touching one
+   * row and leaving every other row's version untouched. So a store upgraded
+   * across a tokenizer change would sit on the local-scoring fallback
+   * indefinitely — correct, but having permanently lost the pushdown, and
+   * visible only as a log line. That is the whole reason the marker could not
+   * simply be a warning.
+   *
+   * Set-based per batch, and `toRow` is the single derivation used by every
+   * write path, so a backfilled row is byte-identical to a freshly saved one.
+   *
+   * Returns the number of rows re-derived, so a caller (the CLI) can report it.
+   */
+  async backfillTokens(batchSize = 500): Promise<number> {
+    const pool = await this.getPool()
+    let total = 0
+    for (;;) {
+      const { rows } = await pool.query(
+        `SELECT data FROM "${this.schema}".engrams
+         WHERE tokens_version IS DISTINCT FROM $1 LIMIT $2`,
+        [TOKENIZER_VERSION, batchSize],
+      )
+      if (rows.length === 0) break
+      const engrams = rows.map(parseRow)
+      const updated = await pool.query(
+        `UPDATE "${this.schema}".engrams AS e
+         SET tokens = t.tokens, search_text = t.search_text, tokens_version = t.tokens_version
+         FROM jsonb_to_recordset($1::jsonb)
+           AS t(id text, tokens text[], search_text text, tokens_version int)
+         WHERE e.id = t.id`,
+        [JSON.stringify(engrams.map((e: Engram) => {
+          const r = toRow(e)
+          return { id: r.id, tokens: r.tokens, search_text: r.search_text, tokens_version: r.tokens_version }
+        }))],
+      )
+      // Progress, not attempts, is the loop condition. The UPDATE joins on
+      // `e.id = t.id` where `t.id` comes from the engram's OWN data, so a row
+      // whose `id` column disagrees with `data->>'id'` matches nothing, keeps
+      // its stale version, and is selected again by the identical next query —
+      // a tight infinite loop holding a pool connection. Bounding on the
+      // SELECT alone would not catch it, because that batch stays full.
+      if (updated.rowCount === 0) {
+        logger.warning(
+          `[postgres] token backfill stalled: ${rows.length} row(s) reported stale but none could be `
+          + `updated, which means their id column disagrees with data->>'id'. Skipping the backfill; `
+          + `the local-scoring fallback keeps results correct.`,
+        )
+        break
+      }
+      total += updated.rowCount ?? 0
+      if (rows.length < batchSize) break
+    }
+    if (total > 0) {
+      logger.info(`[postgres] re-derived tokens for ${total} engram(s) after a tokenizer change`)
+    }
+    return total
+  }
+
+  /**
+   * Start a backfill without blocking the query that noticed the staleness.
+   *
+   * Fire-and-forget, mirroring the embedding backfill: the caller has already
+   * been routed to a correct-but-slower path, so waiting would trade a wrong
+   * answer for a slow one twice over. At most one runs per adapter; failures
+   * are logged and the latch clears so a later query can retry.
+   */
+  private kickTokenBackfill(): void {
+    if (this.tokenBackfill) return
+    this.tokenBackfill = this.backfillTokens()
+      .then(() => { /* logged inside */ })
+      .catch(err => {
+        logger.warning(`[postgres] token backfill failed: ${(err as Error).message}`)
+      })
+      .finally(() => { this.tokenBackfill = null })
+  }
+
+  /**
    * Whether any in-scope active row was tokenized by a different tokenizer than
    * the one now in force (#834).
    *
@@ -1163,10 +1247,11 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
       logger.warning(
         `[postgres] some active engrams were tokenized by an older tokenizer than the current one `
         + `(v${TOKENIZER_VERSION}); their stored tokens no longer match how query terms are tokenized. `
-        + `BM25 is falling back to loading candidates and scoring in core — correct, but slower, and it `
-        + `forfeits the pushdown. Re-save the store (PostgresAdapter.save) to re-derive tokens.`,
+        + `BM25 is falling back to loading candidates and scoring in core — correct, but slower. `
+        + `Re-deriving them in the background; \`plur reindex-tokens\` forces it synchronously.`,
       )
     }
+    this.kickTokenBackfill()
     return true
   }
 

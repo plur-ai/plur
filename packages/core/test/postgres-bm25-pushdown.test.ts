@@ -528,6 +528,73 @@ describe.skipIf(!PG_URL)('CJK pushdown parity and tokenizer staleness (#834)', (
     }
   }, TIMEOUT)
 
+  it('auto-backfill restores the pushdown without an operator step (#839)', async () => {
+    // The gap this closes: `learn()` uses the `append` seam and `feedback()`
+    // uses `updateMany`, each touching ONE row. Neither re-derives the rest of
+    // the corpus, so ordinary use never clears staleness and the store would
+    // sit on the local-scoring fallback indefinitely.
+    const pool = (await (adapter as any).getPool())
+    const oldTokenize = (t: string) => t.toLowerCase()
+      .replace(/[^\w\s]/g, ' ').split(/\s+/).filter(w => w.length > 2)
+    for (const e of corpus) {
+      const toks = oldTokenize(e.statement)
+      await pool.query(
+        `UPDATE "${CJK_SCHEMA}".engrams SET tokens = $1, search_text = $2, tokens_version = NULL WHERE id = $3`,
+        [toks, toks.join(' '), e.id],
+      )
+    }
+
+    // The query that notices staleness answers from the fallback AND kicks the
+    // backfill; it must not block on it.
+    const during = await adapter.searchBM25('部署流程', { limit: 10 })
+    expect(during.length).toBeGreaterThan(0)
+
+    // Deterministic wait — the kick is fire-and-forget, so poll the marker
+    // rather than sleeping on a guess.
+    for (let i = 0; i < 100; i++) {
+      const { rows } = await pool.query(
+        `SELECT 1 FROM "${CJK_SCHEMA}".engrams WHERE tokens_version IS DISTINCT FROM $1 LIMIT 1`,
+        [TOKENIZER_VERSION],
+      )
+      if (rows.length === 0) break
+      await new Promise(r => setTimeout(r, 50))
+    }
+
+    // Pushdown is live again: corpusStats answers instead of declining.
+    const stats = await adapter.corpusStats(ftsTokenize('部署流程'))
+    expect(stats).toBeDefined()
+    expect(stats!.N).toBe(corpus.length)
+
+    // And the rows carry real bigrams now, not the pre-#782 empty tokenization.
+    const { rows: tok } = await pool.query(
+      `SELECT search_text FROM "${CJK_SCHEMA}".engrams WHERE id = $1`, ['ENG-2026-0804-004'])
+    expect(tok[0].search_text).toContain('部署')
+  }, TIMEOUT)
+
+  it('backfill stops instead of looping when a row cannot be updated (#840)', async () => {
+    // The UPDATE joins on `e.id = t.id` where `t.id` comes from the engram's
+    // own data. Desynchronise the two and the row stays stale forever while
+    // being re-selected by an identical query — an infinite loop holding a
+    // pool connection. Bounding on the SELECT alone would not catch it.
+    const pool = (await (adapter as any).getPool())
+    await pool.query(
+      `UPDATE "${CJK_SCHEMA}".engrams SET tokens_version = NULL, data = jsonb_set(data, '{id}', '"ENG-9999-9999-999"') WHERE id = $1`,
+      ['ENG-2026-0804-002'],
+    )
+    try {
+      // The assertion that matters is that this RETURNS at all.
+      const n = await adapter.backfillTokens()
+      expect(n).toBe(0)
+    } finally {
+      await adapter.save(corpus)
+    }
+  }, TIMEOUT)
+
+  it('backfillTokens is idempotent and reports zero on a current store', async () => {
+    await adapter.save(corpus)
+    expect(await adapter.backfillTokens()).toBe(0)
+  }, TIMEOUT)
+
   it('a re-save restores the pushdown', async () => {
     const pool = (await (adapter as any).getPool())
     await pool.query(`UPDATE "${CJK_SCHEMA}".engrams SET tokens_version = NULL`)
