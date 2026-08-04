@@ -2,7 +2,7 @@
 
 ## 0.17.2 (2026-08-04)
 
-Chinese search works — found and fixed by skyeryg.
+🇨🇳 Chinese search works — found and fixed by skyeryg.
 
 - Chinese text is searchable
 - BM25 saw no Han at all
