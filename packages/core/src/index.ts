@@ -125,6 +125,11 @@ export { rankScopes, SCOPE_MATCH_THRESHOLD, WEIGHT_TAG, SUGGEST_DISPLAY_MIN_CONF
 // (`isSharedScope`, `isPersonalScope`, `SHARED_SCOPE_PREFIXES`) is unchanged.
 export { isSharedScope, isPersonalScope, SHARED_SCOPE_PREFIXES, scopeAllowFilter, makeVisibilityPredicate } from './scope-util.js'
 export { detectPlurStorage, type PlurPaths } from './storage.js'
+// Exported so the CLI resolves the Postgres DSN and schema exactly as the
+// engine does (#840). A second, divergent resolution in the CLI is how
+// `plur reindex-tokens` came to report a false all-clear on a store whose
+// connection lived in config.yaml rather than the environment.
+export { loadConfig } from './config.js'
 export { IndexedStorage } from './storage-indexed.js'
 export { PGLiteAdapter, type PGLiteAdapterOptions, type VectorPrecision } from './storage-pglite.js'
 export type {

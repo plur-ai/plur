@@ -16,7 +16,7 @@
  * to work.
  */
 import type { GlobalFlags } from '../plur.js'
-import { PostgresAdapter } from '@plur-ai/core'
+import { PostgresAdapter, detectPlurStorage, loadConfig } from '@plur-ai/core'
 import { shouldOutputJson, outputJson, outputText, exit } from '../output.js'
 
 function usage(): never {
@@ -32,7 +32,13 @@ function usage(): never {
 export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   if (args.includes('--help') || args.includes('-h')) usage()
 
-  const url = process.env.PLUR_POSTGRES_URL
+  // Resolve EXACTLY as the engine does (index.ts `_postgresUrl`): environment
+  // first, then config.yaml. Reading only the env var made this command report
+  // "no Postgres store configured" for a deployment that had one — a false
+  // negative on the very question it exists to answer.
+  const paths = detectPlurStorage(flags.path || process.env.PLUR_PATH || undefined)
+  const config = loadConfig(paths.config) as { postgres?: { url?: string, schema?: string } }
+  const url = process.env.PLUR_POSTGRES_URL || config.postgres?.url
   if (!url) {
     // Not an error: it is the correct and common state. Saying so plainly
     // beats a stack trace for someone following an upgrade note.
@@ -46,7 +52,15 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     return
   }
 
-  const adapter = new PostgresAdapter({ connectionString: url })
+  // The schema MUST come from config too. Omitting it does not fail loudly —
+  // `initSchema` runs CREATE SCHEMA IF NOT EXISTS, so a store on a custom
+  // schema would get a spurious empty default schema created, find zero stale
+  // rows in it, and print "Tokens are already current". A false all-clear is
+  // worse than no command at all.
+  const adapter = new PostgresAdapter({
+    connectionString: url,
+    ...(config.postgres?.schema ? { schema: config.postgres.schema } : {}),
+  })
   try {
     const started = Date.now()
     const count = await adapter.backfillTokens()

@@ -1159,7 +1159,7 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
       )
       if (rows.length === 0) break
       const engrams = rows.map(parseRow)
-      await pool.query(
+      const updated = await pool.query(
         `UPDATE "${this.schema}".engrams AS e
          SET tokens = t.tokens, search_text = t.search_text, tokens_version = t.tokens_version
          FROM jsonb_to_recordset($1::jsonb)
@@ -1170,10 +1170,21 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
           return { id: r.id, tokens: r.tokens, search_text: r.search_text, tokens_version: r.tokens_version }
         }))],
       )
-      total += rows.length
-      // A batch that cannot shrink the remaining set would loop forever. This
-      // cannot happen while the UPDATE stamps the current version, but the
-      // cost of being wrong here is an infinite loop holding a pool client.
+      // Progress, not attempts, is the loop condition. The UPDATE joins on
+      // `e.id = t.id` where `t.id` comes from the engram's OWN data, so a row
+      // whose `id` column disagrees with `data->>'id'` matches nothing, keeps
+      // its stale version, and is selected again by the identical next query —
+      // a tight infinite loop holding a pool connection. Bounding on the
+      // SELECT alone would not catch it, because that batch stays full.
+      if (updated.rowCount === 0) {
+        logger.warning(
+          `[postgres] token backfill stalled: ${rows.length} row(s) reported stale but none could be `
+          + `updated, which means their id column disagrees with data->>'id'. Skipping the backfill; `
+          + `the local-scoring fallback keeps results correct.`,
+        )
+        break
+      }
+      total += updated.rowCount ?? 0
       if (rows.length < batchSize) break
     }
     if (total > 0) {

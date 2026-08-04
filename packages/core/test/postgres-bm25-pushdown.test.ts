@@ -571,6 +571,25 @@ describe.skipIf(!PG_URL)('CJK pushdown parity and tokenizer staleness (#834)', (
     expect(tok[0].search_text).toContain('部署')
   }, TIMEOUT)
 
+  it('backfill stops instead of looping when a row cannot be updated (#840)', async () => {
+    // The UPDATE joins on `e.id = t.id` where `t.id` comes from the engram's
+    // own data. Desynchronise the two and the row stays stale forever while
+    // being re-selected by an identical query — an infinite loop holding a
+    // pool connection. Bounding on the SELECT alone would not catch it.
+    const pool = (await (adapter as any).getPool())
+    await pool.query(
+      `UPDATE "${CJK_SCHEMA}".engrams SET tokens_version = NULL, data = jsonb_set(data, '{id}', '"ENG-9999-9999-999"') WHERE id = $1`,
+      ['ENG-2026-0804-002'],
+    )
+    try {
+      // The assertion that matters is that this RETURNS at all.
+      const n = await adapter.backfillTokens()
+      expect(n).toBe(0)
+    } finally {
+      await adapter.save(corpus)
+    }
+  }, TIMEOUT)
+
   it('backfillTokens is idempotent and reports zero on a current store', async () => {
     await adapter.save(corpus)
     expect(await adapter.backfillTokens()).toBe(0)
