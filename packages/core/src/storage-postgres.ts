@@ -300,7 +300,7 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
   /** One-shot latch for the stale-tokenizer warning (#834). */
   private staleTokensWarned = false
 
-  /** In-flight token backfill, so concurrent queries kick at most one (#839). */
+  /** In-flight token backfill, so concurrent queries kick at most one (#840). */
   private tokenBackfill: Promise<void> | null = null
   /** Actual dim of the embedding column after init; writes are checked against reality. */
   private activeVecDim: number | null = null
@@ -1132,7 +1132,7 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
    */
   /**
    * Re-derive `tokens` / `search_text` for rows written by an older tokenizer
-   * (#839).
+   * (#840).
    *
    * Needed because nothing else does it. `save()` re-derives the whole corpus,
    * but a row store does not take that path in ordinary use: `learn()` prefers

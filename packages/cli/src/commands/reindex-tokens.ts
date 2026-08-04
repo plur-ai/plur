@@ -1,6 +1,6 @@
 /**
  * `plur reindex-tokens` — re-derive BM25 tokens on a Postgres-backed store
- * after a tokenizer change (#839).
+ * after a tokenizer change (#840).
  *
  * The adapter kicks this in the background the first time it notices stale
  * rows, so most deployments never need to run it. It exists for the cases
