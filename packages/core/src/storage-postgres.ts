@@ -73,7 +73,10 @@
  */
 import type { Engram } from './schemas/engram.js'
 import { EngramSchemaPassthrough } from './schemas/engram.js'
-import { searchEngrams, ftsTokenize, engramSearchText, embeddingContentHash, type CorpusStats } from './fts.js'
+import {
+  searchEngrams, ftsTokenize, engramSearchText, embeddingContentHash,
+  MIN_TOKEN_LENGTH, TOKENIZER_VERSION, type CorpusStats,
+} from './fts.js'
 import { logger } from './logger.js'
 import {
   EXACT_VECTOR_INDEX,
@@ -553,6 +556,15 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
     //                               from `qt.includes(t)` bought.
     await this.ddl(client, `ALTER TABLE "${this.schema}".engrams ADD COLUMN IF NOT EXISTS tokens TEXT[]`)
     await this.ddl(client, `ALTER TABLE "${this.schema}".engrams ADD COLUMN IF NOT EXISTS search_text TEXT`)
+    // Which tokenizer produced `tokens` / `search_text` for this row (#834).
+    //
+    // Deliberately NOT defaulted. A row that predates this column was written
+    // by an unknown tokenizer, and "unknown" must read as stale rather than as
+    // current — the conservative direction is the only safe one here, because
+    // the failure it guards against is silent. Every store existing at the time
+    // this shipped was written pre-#782 and genuinely IS stale for Han text, so
+    // NULL is not merely conservative, it is accurate.
+    await this.ddl(client, `ALTER TABLE "${this.schema}".engrams ADD COLUMN IF NOT EXISTS tokens_version INT`)
     // The hash of the text an engram's embedding SHOULD be computed from
     // (audit 2026-08-03, findings 8 + 9). Kept on the engram row and written by
     // `deriveRow` on every write, so staleness is a comparison of two stored
@@ -592,6 +604,22 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
     await this.ddl(client,
       `CREATE INDEX IF NOT EXISTS idx_engrams_tokens_missing
        ON "${this.schema}".engrams (id) WHERE tokens IS NULL`,
+    )
+    // Same trick for the tokenizer-version guard (#834), and the same reason:
+    // the probe runs on every BM25 call and must not degrade into a sequential
+    // scan on a healthy store, where the answer is always "no rows".
+    //
+    // The version is baked into both the predicate and the index NAME, because
+    // `CREATE INDEX IF NOT EXISTS` matches on name alone — an unversioned name
+    // would keep the OLD predicate forever after a bump while reporting
+    // success, which is precisely the class of silent staleness this whole
+    // change exists to eliminate. Bumping TOKENIZER_VERSION creates a fresh
+    // index; the superseded one is dead weight and can be dropped once every
+    // writer is past the bump.
+    await this.ddl(client,
+      `CREATE INDEX IF NOT EXISTS idx_engrams_tokens_stale_v${TOKENIZER_VERSION}
+       ON "${this.schema}".engrams (id)
+       WHERE tokens_version IS DISTINCT FROM ${TOKENIZER_VERSION}`,
     )
 
     const wantType = this.precision === 'halfvec' ? 'halfvec' : 'vector'
@@ -865,11 +893,11 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
       for (let i = 0; i < engrams.length; i += SAVE_CHUNK_SIZE) {
         const chunk = engrams.slice(i, i + SAVE_CHUNK_SIZE)
         await client.query(
-          `INSERT INTO "${this.schema}".engrams (id, status, scope, domain, last_accessed, data, source, tokens, search_text, content_hash)
-           SELECT t.id, t.status, t.scope, t.domain, t.last_accessed, t.data, 'primary', t.tokens, t.search_text, t.content_hash
+          `INSERT INTO "${this.schema}".engrams (id, status, scope, domain, last_accessed, data, source, tokens, search_text, content_hash, tokens_version)
+           SELECT t.id, t.status, t.scope, t.domain, t.last_accessed, t.data, 'primary', t.tokens, t.search_text, t.content_hash, t.tokens_version
            FROM jsonb_to_recordset($1::jsonb)
              AS t(id text, status text, scope text, domain text, last_accessed text, data jsonb,
-                  tokens text[], search_text text, content_hash text)
+                  tokens text[], search_text text, content_hash text, tokens_version int)
            ON CONFLICT (id) DO UPDATE SET
              status = EXCLUDED.status,
              scope = EXCLUDED.scope,
@@ -878,6 +906,7 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
              data = EXCLUDED.data,
              source = EXCLUDED.source,
              tokens = EXCLUDED.tokens,
+             tokens_version = EXCLUDED.tokens_version,
              search_text = EXCLUDED.search_text,
              content_hash = EXCLUDED.content_hash`,
           [JSON.stringify(chunk.map(toRow))],
@@ -907,11 +936,11 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
   async append(engram: Engram): Promise<void> {
     const pool = await this.getPool()
     await pool.query(
-      `INSERT INTO "${this.schema}".engrams (id, status, scope, domain, last_accessed, data, source, tokens, search_text, content_hash)
-       SELECT t.id, t.status, t.scope, t.domain, t.last_accessed, t.data, 'primary', t.tokens, t.search_text, t.content_hash
+      `INSERT INTO "${this.schema}".engrams (id, status, scope, domain, last_accessed, data, source, tokens, search_text, content_hash, tokens_version)
+       SELECT t.id, t.status, t.scope, t.domain, t.last_accessed, t.data, 'primary', t.tokens, t.search_text, t.content_hash, t.tokens_version
        FROM jsonb_to_recordset($1::jsonb)
          AS t(id text, status text, scope text, domain text, last_accessed text, data jsonb,
-              tokens text[], search_text text, content_hash text)`,
+              tokens text[], search_text text, content_hash text, tokens_version int)`,
       [JSON.stringify([toRow(engram)])],
     )
     // No cache to drop — `loadCached()` delegates to `load()` on this adapter.
@@ -925,11 +954,11 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
       for (let i = 0; i < engrams.length; i += SAVE_CHUNK_SIZE) {
         const chunk = engrams.slice(i, i + SAVE_CHUNK_SIZE)
         await client.query(
-          `INSERT INTO "${this.schema}".engrams (id, status, scope, domain, last_accessed, data, source, tokens, search_text, content_hash)
-           SELECT t.id, t.status, t.scope, t.domain, t.last_accessed, t.data, 'primary', t.tokens, t.search_text, t.content_hash
+          `INSERT INTO "${this.schema}".engrams (id, status, scope, domain, last_accessed, data, source, tokens, search_text, content_hash, tokens_version)
+           SELECT t.id, t.status, t.scope, t.domain, t.last_accessed, t.data, 'primary', t.tokens, t.search_text, t.content_hash, t.tokens_version
            FROM jsonb_to_recordset($1::jsonb)
              AS t(id text, status text, scope text, domain text, last_accessed text, data jsonb,
-                  tokens text[], search_text text, content_hash text)
+                  tokens text[], search_text text, content_hash text, tokens_version int)
            ON CONFLICT (id) DO UPDATE SET
              status = EXCLUDED.status,
              scope = EXCLUDED.scope,
@@ -938,6 +967,7 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
              data = EXCLUDED.data,
              source = EXCLUDED.source,
              tokens = EXCLUDED.tokens,
+             tokens_version = EXCLUDED.tokens_version,
              search_text = EXCLUDED.search_text,
              content_hash = EXCLUDED.content_hash`,
           [JSON.stringify(chunk.map(toRow))],
@@ -1082,14 +1112,21 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
    * Prefixes of a query token that could legally match a document token under
    * the reverse arm (`qt.startsWith(t)`).
    *
-   * Bounded below by 3 because `ftsTokenize` discards anything shorter, so no
-   * stored token can be 1 or 2 characters and testing for them would be dead
-   * work. `qt` itself is included — a token equal to the query is a prefix of
-   * it, and that is the exact-match case.
+   * Bounded below by {@link MIN_TOKEN_LENGTH} — the shortest token
+   * `ftsTokenize` can actually emit — so shorter prefixes are not enumerated as
+   * dead work. `qt` itself is included: a token equal to the query is a prefix
+   * of it, and that is the exact-match case.
+   *
+   * This used to be a literal `3`, justified by "the tokenizer discards
+   * anything shorter". #782 made that false — Han bigrams are exactly two
+   * characters — without breaking anything, because Han and ASCII alphabets are
+   * disjoint, so no Latin query token can have a Han bigram as a prefix. The
+   * bound is now derived from the tokenizer instead of restating a property of
+   * it, so the next change to the token floor cannot silently under-count `df`.
    */
   private static reversePrefixes(qt: string): string[] {
     const out: string[] = []
-    for (let n = 3; n <= qt.length; n++) out.push(qt.slice(0, n))
+    for (let n = MIN_TOKEN_LENGTH; n <= qt.length; n++) out.push(qt.slice(0, n))
     return out
   }
 
@@ -1156,6 +1193,35 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
         `[postgres] some active engrams have no tokens column populated, so corpus statistics would `
         + `undercount document frequency. Re-save the store (PostgresAdapter.save) to backfill before `
         + `using BM25 pushdown.`,
+      )
+    }
+
+    // Rows whose tokens were derived by a DIFFERENT tokenizer than the one
+    // about to count `tf` (#834).
+    //
+    // The NULL check above catches rows written before the column existed. It
+    // cannot catch this: these rows have perfectly well-formed tokens, just
+    // from an older contract. #782 is the worked example — pre-#782 rows carry
+    // no Han at all, so `search_text LIKE '%<han>%'` never matches and the
+    // engram is absent from the candidate set entirely. The query returns
+    // fewer rows and reports no problem, which is the worst available
+    // behaviour for a search index: indistinguishable from the data not being
+    // there.
+    //
+    // Refuse, exactly as the NULL guard does. An approximate corpus is worse
+    // than no pushdown — see the CorpusStats contract.
+    const verF = buildFilterClause({ ...(opts ?? {}), status: 'active' })
+    const { rows: mismatched } = await pool.query(
+      `SELECT 1 FROM "${this.schema}".engrams ${verF.where}
+         AND tokens_version IS DISTINCT FROM $${verF.params.length + 1} LIMIT 1`,
+      [...verF.params, TOKENIZER_VERSION],
+    )
+    if (mismatched.length > 0) {
+      throw new Error(
+        `[postgres] some active engrams were tokenized by a different tokenizer version than the `
+        + `current one (v${TOKENIZER_VERSION}), so their stored tokens no longer match how query terms `
+        + `are tokenized — they would be silently unreachable rather than merely mis-ranked. `
+        + `Re-save the store (PostgresAdapter.save) to re-derive tokens before using BM25 pushdown.`,
       )
     }
 
@@ -1627,6 +1693,11 @@ function toRow(e: Engram): Record<string, unknown> {
     // equivalent to a substring test over this string because query tokens
     // never contain the separator — `ftsTokenize` splits on it.
     search_text: tokens.join(' '),
+    // Which tokenizer produced the two fields above (#834). Stamped by the
+    // writer for the same reason `content_hash` is: the row records what was
+    // actually done to it, so a later reader can tell whether it still agrees
+    // with the tokenizer now in force instead of assuming it must.
+    tokens_version: TOKENIZER_VERSION,
     // Derived once, on write, from the RAW search text — the same string the
     // embedder is given. This is the authority the embedding table is compared
     // against (#812; audit 2026-08-03 findings 8 + 9).

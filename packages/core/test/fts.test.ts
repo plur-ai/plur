@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest'
-import { ftsTokenize, ftsScore, searchEngrams, computeIdf, engramSearchText } from '../src/fts.js'
+import {
+  ftsTokenize, ftsScore, searchEngrams, computeIdf, engramSearchText,
+  MIN_TOKEN_LENGTH, TOKENIZER_VERSION,
+} from '../src/fts.js'
 import { EngramSchema } from '../src/schemas/engram.js'
 
 const makeEngram = (overrides: Partial<any> = {}) => EngramSchema.parse({
@@ -210,5 +213,61 @@ describe('CJK search (Chinese engrams)', () => {
     const results = searchEngrams(engrams, '单位不要')
     // zero term overlap → empty result (no noise from unrelated CJK queries)
     expect(results).toHaveLength(0)
+  })
+})
+
+/**
+ * The tokenizer's contract with everything that persists its output (#834).
+ *
+ * `MIN_TOKEN_LENGTH` and `TOKENIZER_VERSION` are consumed by PostgresAdapter,
+ * which bakes them into a WHERE clause and an index predicate respectively.
+ * Both are claims ABOUT `ftsTokenize` made in another file, which is the shape
+ * of assertion that rots silently — `reversePrefixes` carried exactly such a
+ * claim as a literal `3` and #782 falsified it without a single test failing.
+ *
+ * So assert the claims against the tokenizer itself, not against a constant.
+ */
+describe('tokenizer contract (#834)', () => {
+  const SAMPLES = [
+    'deploy kubernetes to the staging cluster',
+    '测试部署应该用 docker compose',
+    '测试部署应该用',
+    'snake_case and CamelCase identifiers',
+    'a bc def ghij',
+    'transferWithAuthorization(address,address,uint256)',
+    '部署 docker 到 kubernetes 集群里面去',
+    '',
+  ]
+
+  it('MIN_TOKEN_LENGTH is the true shortest token the tokenizer can emit', () => {
+    const lengths = SAMPLES.flatMap(s => ftsTokenize(s)).map(t => t.length)
+    expect(lengths.length).toBeGreaterThan(0)
+    expect(Math.min(...lengths)).toBe(MIN_TOKEN_LENGTH)
+  })
+
+  it('no token is ever shorter than MIN_TOKEN_LENGTH', () => {
+    for (const s of SAMPLES) {
+      for (const t of ftsTokenize(s)) {
+        expect(t.length).toBeGreaterThanOrEqual(MIN_TOKEN_LENGTH)
+      }
+    }
+  })
+
+  /**
+   * A canary, not a behaviour test. It pins the CURRENT output so that any edit
+   * to `ftsTokenize` which changes what it emits fails here — and the fix is to
+   * bump TOKENIZER_VERSION, not to update this fixture in place. Stores persist
+   * these exact strings; changing them without bumping the version is what
+   * makes already-written rows silently unreachable.
+   */
+  it('output is pinned to TOKENIZER_VERSION — bump the version if this fails', () => {
+    expect(TOKENIZER_VERSION).toBe(2)
+    expect(ftsTokenize('测试部署应该用 docker compose')).toEqual([
+      'docker', 'compose',
+      '测试', '试部', '部署', '署应', '应该', '该用',
+    ])
+    expect(ftsTokenize('deploy kubernetes to the staging cluster')).toEqual([
+      'deploy', 'kubernetes', 'staging', 'cluster',
+    ])
   })
 })

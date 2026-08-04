@@ -15,7 +15,7 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { PostgresAdapter } from '../src/storage-postgres.js'
-import { searchEngrams, ftsTokenize, computeIdf, termMatches } from '../src/fts.js'
+import { searchEngrams, ftsTokenize, computeIdf, termMatches, engramSearchText, TOKENIZER_VERSION } from '../src/fts.js'
 import type { Engram } from '../src/schemas/engram.js'
 
 const PG_URL = process.env.PLUR_TEST_POSTGRES_URL
@@ -410,5 +410,98 @@ describe.skipIf(!PG_URL)('searchBM25 scores with the RESTRICTED corpus statistic
       got.map(e => e.id),
       'ranked with corpus-wide statistics — IDF is leaking from scopes the caller cannot see',
     ).toEqual(expected)
+  }, TIMEOUT)
+})
+
+/**
+ * Tokenizer-version staleness and sub-three-character tokens (#834).
+ *
+ * The pushdown's exactness rests on one tokenizer producing BOTH the stored
+ * `tokens`/`search_text` and the live query terms. #782 changed that tokenizer,
+ * which made two latent assumptions false at once:
+ *
+ *   1. Rows written by the OLD tokenizer contain no Han, so a Chinese query
+ *      cannot match them — they vanish from the candidate set entirely rather
+ *      than ranking badly. Silent, and in the one direction a search index must
+ *      never fail.
+ *   2. `reversePrefixes` enumerated prefixes from length 3, justified by "no
+ *      stored token can be shorter". Han bigrams are exactly 2.
+ *
+ * The ASCII fixtures above exercise the matching rule but never with a token
+ * under three characters, which is why neither showed up.
+ */
+describe.skipIf(!PG_URL)('CJK pushdown parity and tokenizer staleness (#834)', () => {
+  const CJK_SCHEMA = 'plur_phase4_cjk'
+  let adapter: PostgresAdapter
+  let corpus: Engram[]
+
+  beforeAll(async () => {
+    corpus = [
+      makeEngram('ENG-2026-0804-001', '测试部署应该用 docker compose'),
+      makeEngram('ENG-2026-0804-002', '每天早上先看邮件再写代码'),
+      makeEngram('ENG-2026-0804-003', 'deploy the billing service to kubernetes'),
+      makeEngram('ENG-2026-0804-004', '部署流程需要自动化回滚步骤'),
+    ]
+    adapter = new PostgresAdapter({ connectionString: PG_URL!, schema: CJK_SCHEMA, vectorIndex: 'exact' })
+    await adapter.save(corpus)
+  }, TIMEOUT)
+
+  afterAll(async () => {
+    if (adapter) {
+      await adapter.dropSchema().catch(() => { /* best effort */ })
+      await adapter.close().catch(() => { /* best effort */ })
+    }
+  }, TIMEOUT)
+
+  it('a Chinese query pushed down ranks identically to the local path', async () => {
+    const QUERY = '部署流程'
+    const tokens = ftsTokenize(QUERY)
+    expect(tokens.length).toBeGreaterThan(0)
+
+    const stats = await adapter.corpusStats(tokens)
+    const pushed = await adapter.searchBM25(QUERY, { limit: 10 })
+    const local = searchEngrams(corpus, QUERY, 10)
+
+    expect(pushed.map(e => e.id)).toEqual(local.map(e => e.id))
+    expect(stats.N).toBe(corpus.length)
+  }, TIMEOUT)
+
+  it('df for a two-character Han token matches the local count under termMatches', async () => {
+    const tokens = ftsTokenize('部署')
+    expect(tokens).toEqual(['部署'])
+
+    const stats = await adapter.corpusStats(tokens)
+    const localDf = corpus.filter(e => {
+      const terms = new Set(ftsTokenize(engramSearchText(e)))
+      return Array.from(terms).some(t => termMatches(t, '部署'))
+    }).length
+
+    expect(stats.df.get('部署')).toBe(localDf)
+    expect(localDf).toBeGreaterThan(0)
+  }, TIMEOUT)
+
+  it('refuses corpusStats when stored tokens came from a different tokenizer version', async () => {
+    const pool = (await (adapter as any).getPool())
+    await pool.query(`UPDATE "${CJK_SCHEMA}".engrams SET tokens_version = 1 WHERE id = $1`, ['ENG-2026-0804-001'])
+    try {
+      await expect(adapter.corpusStats(ftsTokenize('部署流程')))
+        .rejects.toThrow(/different tokenizer version/)
+    } finally {
+      await pool.query(
+        `UPDATE "${CJK_SCHEMA}".engrams SET tokens_version = $1 WHERE id = $2`,
+        [TOKENIZER_VERSION, 'ENG-2026-0804-001'],
+      )
+    }
+  }, TIMEOUT)
+
+  it('a re-save clears the staleness refusal', async () => {
+    const pool = (await (adapter as any).getPool())
+    await pool.query(`UPDATE "${CJK_SCHEMA}".engrams SET tokens_version = NULL`)
+    await expect(adapter.corpusStats(ftsTokenize('部署流程')))
+      .rejects.toThrow(/different tokenizer version/)
+
+    await adapter.save(corpus)
+    const stats = await adapter.corpusStats(ftsTokenize('部署流程'))
+    expect(stats.N).toBe(corpus.length)
   }, TIMEOUT)
 })
