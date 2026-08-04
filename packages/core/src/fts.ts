@@ -7,6 +7,46 @@ const STOP_WORDS = new Set([
   'can', 'will', 'should', 'would', 'could', 'may', 'might',
 ])
 
+/**
+ * Shortest token `ftsTokenize` can emit.
+ *
+ * NOT the same number as the word-path length filter below, and the two parted
+ * company in #782. The whitespace path still discards anything under three
+ * characters; the Han bigram path emits tokens of exactly two.
+ *
+ * Anything reasoning about the shortest STORED token must read this constant
+ * rather than restate the word-path floor. `PostgresAdapter.reversePrefixes`
+ * did restate it — as a literal `3`, under a docstring asserting no stored
+ * token could be shorter — and #782 silently made that assertion false. It did
+ * not misbehave only because Han and ASCII alphabets are disjoint, so the arm
+ * it feeds could never fire on a bigram. An invariant that holds by accident
+ * is one refactor away from holding not at all.
+ */
+export const MIN_TOKEN_LENGTH = 2
+
+/**
+ * Version of `ftsTokenize`'s output contract. Bump on ANY change that can alter
+ * the token list produced for the same input.
+ *
+ * Exists because a store may derive tokens at WRITE time and compare them
+ * against freshly-tokenized query terms at READ time — `PostgresAdapter` does
+ * exactly that, and it is what lets the BM25 pushdown claim exactness: `df`
+ * counted in SQL over stored tokens, `tf` counted in JS over live text,
+ * guaranteed to agree because one tokenizer produced both.
+ *
+ * The guarantee holds only while the tokenizer that wrote the rows and the one
+ * asking the question are the same tokenizer. When they are not, nothing
+ * throws. Rows written before #782 contain no Han at all, so a Chinese query
+ * simply never matches them — the corpus reports that it does not contain the
+ * engram, which is indistinguishable from the engram not existing. Silent, and
+ * wrong in the one direction a search index must never be wrong.
+ *
+ * History:
+ *   1 — original. `\w`-based word split, three-character floor, stop words.
+ *   2 — #782. Han runs additionally indexed as overlapping character bigrams.
+ */
+export const TOKENIZER_VERSION = 2
+
 /** Tokenize text into searchable terms */
 export function ftsTokenize(text: string): string[] {
   const lower = text.toLowerCase()
