@@ -22,6 +22,12 @@ Chinese search works — found and fixed by skyeryg.
   [@skyeryg](https://github.com/skyeryg), who hit it integrating PLUR into a Chinese-language
   workflow. Chinese only — Japanese kana, Korean, Cyrillic, Arabic, Indic scripts and accented
   Latin are still dropped or mangled, tracked in #833.
+- **Security: SSRF-relevant dependency upgrades** (#841): `ip-address` to >=10.3.1 and `hono` to
+  >=4.12.34, raised as floors in the existing `pnpm.overrides` block. Both reach users: they arrive
+  through `@modelcontextprotocol/core` as runtime dependencies of the published `@plur-ai/mcp`.
+  The high-severity one (GHSA-mwp4-54f8-5fhr) decodes leading-zero octets as decimal while
+  resolvers decode them as octal, which bypasses SSRF and trust-boundary checks; the others cover
+  CIDR-suffix and IPv4-mapped/NAT64 misclassification, plus a ReDoS in Hono's CORS middleware.
 - **Stale tokens re-derive themselves, and `plur reindex-tokens` forces it** (#840, #839): the
   detection above named a remedy — re-save the store — that nothing in ordinary use performs.
   `PostgresAdapter` implements the targeted `append` / `updateMany` seams, so `learn()` and
