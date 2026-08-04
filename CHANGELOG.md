@@ -2,12 +2,12 @@
 
 ## 0.17.2 (2026-08-04)
 
-Chinese search works — found and fixed by a contributor.
+Chinese search works — found and fixed by skyeryg.
 
 - Chinese text is searchable
-- BM25 indexed no Han before
-- Fixed by @skyeryg
+- BM25 saw no Han at all
 - Postgres guards stale tokens
+- Stale stores degrade safely
 
 ### Fixed
 
