@@ -7,7 +7,7 @@ Chinese search works — found and fixed by skyeryg.
 - Chinese text is searchable
 - BM25 saw no Han at all
 - Postgres guards stale tokens
-- Stale stores degrade safely
+- Stale stores self-heal
 
 ### Fixed
 
@@ -22,6 +22,14 @@ Chinese search works — found and fixed by skyeryg.
   [@skyeryg](https://github.com/skyeryg), who hit it integrating PLUR into a Chinese-language
   workflow. Chinese only — Japanese kana, Korean, Cyrillic, Arabic, Indic scripts and accented
   Latin are still dropped or mangled, tracked in #833.
+- **Stale tokens re-derive themselves, and `plur reindex-tokens` forces it** (#840, #839): the
+  detection above named a remedy — re-save the store — that nothing in ordinary use performs.
+  `PostgresAdapter` implements the targeted `append` / `updateMany` seams, so `learn()` and
+  `feedback()` each touch one row and leave every other row's version untouched; an upgraded store
+  would sit on the correct-but-slower fallback indefinitely, having permanently lost the pushdown,
+  visible only as a log line. Stale rows are now re-derived in the background the first time they
+  are noticed, and `plur reindex-tokens` forces the same pass synchronously with a count for
+  operators who want the pushdown back before the first user query rather than after it.
 - **Postgres stores detect tokens written by an older tokenizer** (#834, #837): `PostgresAdapter`
   derives tokens at write time and persists them, which is what lets the BM25 pushdown claim
   exactness — `df` counted in SQL and `tf` counted in JS agree because one tokenizer produced both.
