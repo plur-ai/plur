@@ -374,7 +374,7 @@ export interface StorageAdapter {
    * @param queryTokens Tokens from `ftsTokenize` — already lowercased and
    *   stop-word filtered, so the store must not re-tokenize.
    */
-  corpusStats?(queryTokens: string[], opts?: ScopeRestriction): Promise<CorpusStats>
+  corpusStats?(queryTokens: string[], opts?: ScopeRestriction): Promise<CorpusStats | undefined>
   /**
    * Corpus-wide `N` and per-term `df` for BM25 scoring (convergence Phase 4,
    * #711). OPTIONAL — a store that cannot compute these exactly must leave it
@@ -407,7 +407,7 @@ export interface StorageAdapter {
    * @param queryTokens Tokens from `ftsTokenize` — already lowercased and
    *   stop-word filtered, so the store must not re-tokenize.
    */
-  corpusStats?(queryTokens: string[], opts?: ScopeRestriction): Promise<CorpusStats>
+  corpusStats?(queryTokens: string[], opts?: ScopeRestriction): Promise<CorpusStats | undefined>
   /**
    * Vector similarity search (cosine).
    *

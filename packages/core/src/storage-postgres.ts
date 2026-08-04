@@ -296,6 +296,9 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
   private initPromise: Promise<void> | null = null
   /** Actual element type of the embedding column after init. */
   private activeVecType: 'vector' | 'halfvec' = 'vector'
+
+  /** One-shot latch for the stale-tokenizer warning (#834). */
+  private staleTokensWarned = false
   /** Actual dim of the embedding column after init; writes are checked against reality. */
   private activeVecDim: number | null = null
   /** Whether an HNSW index exists after init — what `vectorIndex` reports. */
@@ -1124,6 +1127,49 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
    * bound is now derived from the tokenizer instead of restating a property of
    * it, so the next change to the token floor cannot silently under-count `df`.
    */
+  /**
+   * Whether any in-scope active row was tokenized by a different tokenizer than
+   * the one now in force (#834).
+   *
+   * DEGRADES rather than throwing, unlike the NULL-tokens guard beside it, and
+   * the difference is blast radius. NULL tokens mean a row predating the
+   * column — a narrow, already-broken population. A version mismatch describes
+   * EVERY row of EVERY existing store the moment the tokenizer changes, so
+   * throwing would take `recall()` down completely on upgrade, including for
+   * ASCII-only stores that contain nothing this affects and have nothing wrong
+   * with them. Trading a silent wrong answer for a total outage is not a fix.
+   *
+   * Returning `undefined` and taking the local path is what the StorageAdapter
+   * contract already prescribes: "an implementation that cannot reproduce the
+   * rule should return `undefined` rather than a best effort". The local path
+   * re-derives tokens from `data` with the current tokenizer, so its answers
+   * are correct — merely slower — and a `save()` restores the pushdown with no
+   * further intervention.
+   *
+   * Warned once per adapter, not per query: on a stale store this is true of
+   * every call, and an operator needs the instruction once, not in a loop.
+   */
+  private async tokensAreStale(opts?: StorageFilter): Promise<boolean> {
+    const pool = await this.getPool()
+    const f = buildFilterClause({ ...(opts ?? {}), status: 'active' })
+    const { rows } = await pool.query(
+      `SELECT 1 FROM "${this.schema}".engrams ${f.where}
+         AND tokens_version IS DISTINCT FROM $${f.params.length + 1} LIMIT 1`,
+      [...f.params, TOKENIZER_VERSION],
+    )
+    if (rows.length === 0) return false
+    if (!this.staleTokensWarned) {
+      this.staleTokensWarned = true
+      logger.warning(
+        `[postgres] some active engrams were tokenized by an older tokenizer than the current one `
+        + `(v${TOKENIZER_VERSION}); their stored tokens no longer match how query terms are tokenized. `
+        + `BM25 is falling back to loading candidates and scoring in core — correct, but slower, and it `
+        + `forfeits the pushdown. Re-save the store (PostgresAdapter.save) to re-derive tokens.`,
+      )
+    }
+    return true
+  }
+
   private static reversePrefixes(qt: string): string[] {
     const out: string[] = []
     for (let n = MIN_TOKEN_LENGTH; n <= qt.length; n++) out.push(qt.slice(0, n))
@@ -1147,7 +1193,7 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
    * be answered exactly. Per the interface contract, an approximate df is worse
    * than the local fallback.
    */
-  async corpusStats(queryTokens: string[], opts?: StorageFilter): Promise<CorpusStats> {
+  async corpusStats(queryTokens: string[], opts?: StorageFilter): Promise<CorpusStats | undefined> {
     const pool = await this.getPool()
     if (queryTokens.length === 0) {
       // Still honours `scopes`: an empty token list is "no query terms", not
@@ -1197,33 +1243,9 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
     }
 
     // Rows whose tokens were derived by a DIFFERENT tokenizer than the one
-    // about to count `tf` (#834).
-    //
-    // The NULL check above catches rows written before the column existed. It
-    // cannot catch this: these rows have perfectly well-formed tokens, just
-    // from an older contract. #782 is the worked example — pre-#782 rows carry
-    // no Han at all, so `search_text LIKE '%<han>%'` never matches and the
-    // engram is absent from the candidate set entirely. The query returns
-    // fewer rows and reports no problem, which is the worst available
-    // behaviour for a search index: indistinguishable from the data not being
-    // there.
-    //
-    // Refuse, exactly as the NULL guard does. An approximate corpus is worse
-    // than no pushdown — see the CorpusStats contract.
-    const verF = buildFilterClause({ ...(opts ?? {}), status: 'active' })
-    const { rows: mismatched } = await pool.query(
-      `SELECT 1 FROM "${this.schema}".engrams ${verF.where}
-         AND tokens_version IS DISTINCT FROM $${verF.params.length + 1} LIMIT 1`,
-      [...verF.params, TOKENIZER_VERSION],
-    )
-    if (mismatched.length > 0) {
-      throw new Error(
-        `[postgres] some active engrams were tokenized by a different tokenizer version than the `
-        + `current one (v${TOKENIZER_VERSION}), so their stored tokens no longer match how query terms `
-        + `are tokenized — they would be silently unreachable rather than merely mis-ranked. `
-        + `Re-save the store (PostgresAdapter.save) to re-derive tokens before using BM25 pushdown.`,
-      )
-    }
+    // about to count `tf` (#834). Degrades rather than throwing — see
+    // `tokensAreStale`.
+    if (await this.tokensAreStale(opts)) return undefined
 
     // SAME filter as the candidate query, not just `scopes`. Statistics scoped
     // differently from the candidates they describe is the subtler form of the
@@ -1282,7 +1304,13 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
     // differs.
     const pool = await this.getPool()
 
-    if (this.trigramAvailable !== true) {
+    // Stale stored tokens make the PUSHDOWN wrong, not merely its statistics
+    // (#834): narrowing runs `search_text LIKE`, and a pre-#782 `search_text`
+    // holds no Han at all, so a Chinese engram never enters the candidate set.
+    // Degrading `corpusStats` alone would only fix the ranking of rows that
+    // were never selected. The local path re-tokenizes from `data` with the
+    // CURRENT tokenizer, so it is immune to whatever happens to be stored.
+    if (this.trigramAvailable !== true || await this.tokensAreStale(opts)) {
       const candidates = await this.loadFiltered({ ...opts, status: 'active' })
       return searchEngrams(candidates, query, opts.limit)
     }
