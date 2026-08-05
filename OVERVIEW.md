@@ -1,6 +1,6 @@
 # PLUR monorepo
 
-*Last updated: 2026-08-03*
+*Last updated: 2026-08-04*
 
 ## Purpose
 
@@ -17,6 +17,7 @@ pnpm monorepo, seven packages (four npm, three PyPI) — see `CLAUDE.md` for the
 | `PrimaryStore` split from `StorageAdapter` (ADR-0003) | A row-backed store needs its own persistence contract distinct from the query index — the split lets core stop hard-coding "the source of truth is a YAML file at this path." |
 | Optional store capabilities gated as *sets*, not individual methods | A store either implements a whole fallback-sharing group or none of it. Partial implementation of a shared-state group silently turns a targeted optimization into a full-corpus write — see Pitfalls. |
 | Cross-scope recurrence intentionally skipped when dedup is delegated to a store | `findActiveByContentHash` is scope-bound by contract; answering the cross-scope check (#176) would disclose another tenant's engram. Deliberate trade-off, documented in ADR-0003's 2026-08-03 amendment and the 0.17.1 CHANGELOG entry. |
+| Rejected Intl.Segmenter for Chinese tokenization in the Postgres store (#833) despite better output quality | Segmenter output tracks the host Node/ICU version; `PostgresAdapter` persists tokens at write time and recomputes at read time, so a version-skewed deployment would silently corrupt search results. A directly-worse-but-stable bigram tokenizer fails predictably; a better-but-drifting one fails invisibly. |
 
 ## Pitfalls
 
@@ -24,7 +25,7 @@ pnpm monorepo, seven packages (four npm, three PyPI) — see `CLAUDE.md` for the
 - **A scope-bound lookup silently disables the feature built on the wider query**: `findActiveByContentHash(hash, scope)` cannot answer the cross-scope recurrence check (#176) by design — it would disclose another tenant's engram if it did. Any store implementing the dedup seam loses that feature's primary-store half without an error; it's a deliberate trade-off, not a bug, but it has to be documented at every layer (JSDoc, call site, ADR, CHANGELOG) or it gets "discovered" later as a regression.
 - **A latency assertion is not a structural assertion**: "zero full-corpus loads" is the right acceptance test; a timing threshold for the same claim will flake. If you build a counting spy store, don't layer it on an existing store whose "targeted" methods call `load()` internally — the counter will report a full load per query and prove nothing.
 - **A benchmark nobody runs rots silently**: `benchmark/micro.ts` was broken on main since #794 hardened the YAML loader (it seeds `engrams.yaml` with a bare `[]`, which the loader now refuses). Nothing failed CI because nothing runs it in CI — always baseline on main before attributing a benchmark break to your own change.
-- **`release.sh` step 5b can false-positive on npm propagation lag**: `npx` returning `ETARGET` after all 6 retries doesn't always mean the publish failed — `npm view` may already show the version live under the `@next` dist-tag. Verify by hand before burning a version number on a "fix." Recovery documented in `RELEASING.md`; this has now happened twice (0.14.0, 0.17.1) — treat a third occurrence as a signal to fix the retry logic itself.
+- **`release.sh` step 5b can false-positive on npm propagation lag**: `npx` returning `ETARGET` after all 6 retries doesn't always mean the publish failed — `npm view` may already show the version live under the `@next` dist-tag. Verify by hand before burning a version number on a "fix." Recovery documented in `RELEASING.md`. This happened a third time on 0.17.2 (2026-08-04) — PR #842 adds Step 5a.5, which waits for `@plur-ai/core@VERSION` via `npm view` before any smoke check runs (the cli package smokes first and pins core exactly, so it absorbs the whole propagation wait) and sharpens the abort message to distinguish lag from a real defect. **Unproven**: no real publish has exercised this fix yet — watch the next release closely before considering it resolved.
 
 ## Getting Started
 
