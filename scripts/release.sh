@@ -734,6 +734,9 @@ if [ "$core_exit" -eq 0 ] && [ "$core_inst" = "$VERSION" ]; then
 else
   echo "✗"
   echo "      Expected core@$VERSION to import with a Plur export (exit=$core_exit, installed=$core_inst): ${core_out:-}"
+  # Install resolved but import/version still failed → a real defect, not lag.
+  # (Pure install-ETARGET exhaustion leaves core_inst="?" — that stays as lag.)
+  [ "$core_inst" = "$VERSION" ] && SMOKE_ONLY_PROPAGATION=false
   SMOKE_OK=false
 fi
 popd > /dev/null
