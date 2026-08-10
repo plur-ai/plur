@@ -80,3 +80,7 @@ Meta-engrams are the highest-value knowledge: principles that transfer across do
 - Patterns: "This codebase uses repository pattern for data access"
 - Decisions: "We chose PostgreSQL for ACID compliance"
 - Conventions: "Always run lint before committing"
+
+## Related Skills
+
+- **[geo-visibility](../geo-visibility/SKILL.md)** — run GEO visibility scans weekly via nightshift and store findings as engrams; PLUR injects the current Share-of-Voice baseline, per-model mention rates, and open content gaps into future sessions automatically.
