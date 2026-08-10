@@ -8,6 +8,7 @@ import { appendHistory } from './history.js'
 import { logger } from './logger.js'
 import { withAsyncLock } from './store/async-lock.js'
 import { maybeDailyBackup } from './backup.js'
+import { searchTextFrom } from './fts.js'
 import type { Engram } from './schemas/engram.js'
 import type { AsyncPrimaryStore } from './store/primary-store.js'
 import type { SecretMatch } from './secrets.js'
@@ -298,12 +299,27 @@ export async function learnAsync(
   }
 
   // Step 2: Check dedup config
-  // threshold default raised 0.85 -> 0.95 when it was first actually WIRED
-  // (#854). It sat unread for four months, so 0.85 was never exercised against
-  // real writes and carries no evidence. It now gates an automatic NOOP, and a
-  // false NOOP silently discards a memory — the worst failure class here — so
-  // the untested value is not the one to start from. An explicit config value
-  // still wins.
+  // 0.95, chosen from measurement rather than from the declared default.
+  //
+  // The old default was 0.85 and was never read, so it carries no evidence.
+  // Measured with the shipped BGE-small embedder, comparing ENRICHED text on
+  // both sides (see the query construction below — that symmetry is what makes
+  // these numbers usable at all):
+  //
+  //   0.8512  DISTINCT  staging port 8080 vs 8081
+  //   0.8826  DISTINCT  "Always rebase before pushing" vs "Never ..."
+  //   0.9878  DUPLICATE the #854 pair that prompted this
+  //
+  // Bare, those same pairs sit at 0.9749 / 0.9637 / 0.9689 — the distinct ones
+  // score HIGHER than the duplicate and no threshold can separate them. With
+  // context they separate cleanly, and 0.95 sits in the empty band between.
+  //
+  // The negation case is why the bar is not lower. A correction is usually the
+  // previous statement with one thing negated, and corrections are the most
+  // valuable engrams this system stores; a bar under ~0.89 would start
+  // suppressing them. Anything below the bar is still REPORTED via
+  // `dedup.near_duplicates` — high similarity is a reason to look, and cosine
+  // cannot tell a duplicate from a supersede from a sibling fact.
   const { enabled = true, threshold = 0.95, mode = 'llm' } = deps.dedupConfig
   if (!enabled || mode === 'off') {
     return { engram: await deps.learn(statement, context), decision: 'ADD' }
@@ -370,7 +386,22 @@ export async function learnAsync(
   // property core is supposed to hold. Runs when no LLM decided above.
   if (dedupMode !== 'llm' && deps.similarityScores) {
     try {
-      const scores = (await deps.similarityScores(statement, candidates))
+      // Enrich the incoming side the SAME way stored engrams are enriched, so
+      // this is a like-for-like comparison. Stored engrams embed
+      // `engramSearchText` output; embedding a bare statement against that
+      // compares a fragment to fully-contexted records, and measurably
+      // collapses the two classes together (distinct pair 0.9749 bare ->
+      // 0.8512 enriched; real duplicate 0.9689 -> 0.9878).
+      const query = searchTextFrom({
+        statement,
+        domain: context?.domain,
+        tags: context?.tags,
+        rationale: context?.rationale,
+        source: context?.source,
+        dual_coding: context?.dual_coding as never,
+        knowledge_anchors: context?.knowledge_anchors as never,
+      })
+      const scores = (await deps.similarityScores(query, candidates))
         .slice()
         .sort((a, b) => b.score - a.score)
       if (scores.length > 0) {

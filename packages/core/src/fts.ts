@@ -65,6 +65,46 @@ export function ftsTokenize(text: string): string[] {
   return tokens
 }
 
+/**
+ * The context fields that enrich a statement into searchable text.
+ *
+ * Named separately from `Engram` so a not-yet-stored write can be turned into
+ * the SAME text an existing engram would produce (#854). Dedup compares an
+ * incoming statement against stored engrams; embedding the bare statement on
+ * one side and enriched text on the other is not a like-for-like comparison,
+ * and it measurably destroys the signal — a distinct pair (staging port 8080 vs
+ * 8081) scores 0.9749 bare and 0.8512 enriched, while a genuine duplicate goes
+ * 0.9689 -> 0.9878. Context pushes the two classes APART; dropping it from one
+ * side collapses them together.
+ */
+export interface SearchTextFields {
+  statement: string
+  domain?: string | null
+  tags?: string[] | null
+  entities?: Engram['entities']
+  temporal?: Engram['temporal']
+  rationale?: string | null
+  source?: string | null
+  dual_coding?: Engram['dual_coding']
+  knowledge_anchors?: Engram['knowledge_anchors']
+}
+
+/**
+ * Build searchable text from context fields. Single definition so the stored
+ * and incoming sides cannot drift apart.
+ */
+export function searchTextFrom(fields: SearchTextFields): string {
+  // `engramSearchText` reads `engram.tags.length` unguarded — fine for a
+  // schema-validated Engram, a crash for a partial write. Normalise first.
+  return engramSearchText({
+    ...fields,
+    tags: fields.tags ?? [],
+    domain: fields.domain ?? undefined,
+    rationale: fields.rationale ?? undefined,
+    source: fields.source ?? undefined,
+  } as unknown as Engram)
+}
+
 /** Build searchable text from all engram fields */
 export function engramSearchText(engram: Engram): string {
   const parts = [engram.statement]

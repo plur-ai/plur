@@ -121,6 +121,31 @@ describe('cosine dedup without an LLM (#854)', () => {
     expect(result.dedup?.mode).toBe('hash-only')
   })
 
+  // The comparison must be like-for-like. Stored engrams are embedded as
+  // `engramSearchText` output — statement PLUS domain, tags, rationale and the
+  // rest — so embedding a bare statement on the incoming side compares a
+  // fragment against fully-contexted engrams. Measured, that is not a small
+  // effect: a distinct pair (staging port 8080 vs 8081) scores 0.9749 bare and
+  // 0.8512 enriched, while a real duplicate goes 0.9689 -> 0.9878. Context
+  // separates the classes; dropping it from one side collapses them.
+  it('compares enriched text, not the bare statement', async () => {
+    let seen = ''
+    const deps = makeDeps([{ id: candidate.id, score: 0.1 }], {
+      similarityScores: async (text: string) => { seen = text; return [] },
+    })
+
+    await learnAsync(deps, 'Use port 8081 for staging', {
+      domain: 'infrastructure.deploy',
+      tags: ['staging', 'ports'],
+      rationale: 'Moved off 8080 after the metrics sidecar claimed it',
+    })
+
+    expect(seen).toContain('Use port 8081 for staging')
+    expect(seen).toContain('infrastructure deploy')
+    expect(seen).toContain('staging ports')
+    expect(seen).toContain('metrics sidecar')
+  })
+
   it('an available LLM still decides — cosine does not pre-empt it', async () => {
     const llm = vi.fn().mockResolvedValue('ADD')
     const deps = makeDeps([{ id: candidate.id, score: 0.99 }], { isLlmAvailable: () => true })
