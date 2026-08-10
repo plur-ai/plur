@@ -4900,27 +4900,6 @@ export class Plur {
       // resolution rather than failing on a scope that may name a local store.
     }
 
-    // Ambiguity guard: refuse an unqualified id that a warmed remote cache also
-    // holds. Cold cache keeps the historical first-match-wins path, so this
-    // cannot break callers that never warm (backward compatible, matching #851).
-    if (!targetScope) {
-      // AMBIGUOUS means it resolves in more than one place — so the local hit is
-      // part of the condition, not an assumption. A remote-only id (including a
-      // namespaced/prefixed one, #86) is not ambiguous and must keep routing
-      // straight through; guarding on the remote cache alone broke exactly that.
-      const localHit = (await this._loadTargeted([id])).some(e => e.id === id)
-      for (const entry of (localHit ? (this.config.stores ?? []) : [])) {
-        if (!entry.url) continue
-        const serverId = this._stripRemotePrefix(id, entry.scope)
-        if (this._loadRemoteCached(entry).some(e => e.id === serverId)) {
-          throw new Error(
-            `Ambiguous engram ID "${id}": exists in both the local store and remote scope "${entry.scope}". `
-            + `Retiring is destructive and irreversible from here, so it will not guess. `
-            + `Pass scope: "primary" to retire the local engram, or scope: "${entry.scope}" to retire the remote one.`,
-          )
-        }
-      }
-    }
     // Check primary first.
     // Reference-counted retirement (#107): decrement reference_count; only
     // physically retire when it reaches 0. forget() called N times on an
@@ -4933,6 +4912,29 @@ export class Plur {
       const engrams = await this._loadTargeted([id])
       const engram = engrams.find(e => e.id === id)
       if (!engram) return false
+
+      // Ambiguity guard (#831). Sits HERE, past the not-found return, so the
+      // local hit is established by control flow — "ambiguous" means it resolves
+      // in more than one place, and a remote-only id (including a namespaced one,
+      // #86) is not ambiguous and must keep routing straight through. Matches the
+      // placement in #851 rather than re-deriving the local hit with a second
+      // targeted read, which is what an earlier version of this did.
+      //
+      // Cold remote cache keeps the historical first-match-wins path, so callers
+      // that never warm are unaffected.
+      if (!targetScope) {
+        for (const entry of (this.config.stores ?? [])) {
+          if (!entry.url) continue
+          const serverId = this._stripRemotePrefix(id, entry.scope)
+          if (this._loadRemoteCached(entry).some(e => e.id === serverId)) {
+            throw new Error(
+              `Ambiguous engram ID "${id}": exists in both the local store and remote scope "${entry.scope}". `
+              + `Retiring is destructive and irreversible from here, so it will not guess. `
+              + `Pass scope: "primary" to retire the local engram, or scope: "${entry.scope}" to retire the remote one.`,
+            )
+          }
+        }
+      }
 
       // Audit iter-2 fix (Data): for legacy engrams created before #107
       // landed, `reference_count` is missing. Defaulting to 1 means the
