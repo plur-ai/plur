@@ -650,7 +650,10 @@ describe('feedback() — cross-store ID collision guard (issue #850)', () => {
     // With scope: "primary" — must succeed and NOT call remote
     await plur.feedback(collidingId, 'positive', 'primary')
     const posts = fetchMock.mock.calls.filter(
-      ([url, init]: [string, { method?: string }]) =>
+      // `mock.calls` is any[][]; a fixed-length tuple is not assignable to it,
+      // which is what broke `typecheck:tests`. Destructure untyped and guard
+      // with `typeof`, as the rest of this file does.
+      ([url, init]) =>
         (init as any)?.method === 'POST' && typeof url === 'string' && url.includes('/feedback'),
     )
     expect(posts.length).toBe(0)
@@ -677,7 +680,10 @@ describe('feedback() — cross-store ID collision guard (issue #850)', () => {
     // With scope: "group:test" — must POST to remote
     await plur.feedback(collidingId, 'negative', 'group:test')
     const posts = fetchMock.mock.calls.filter(
-      ([url, init]: [string, { method?: string }]) =>
+      // `mock.calls` is any[][]; a fixed-length tuple is not assignable to it,
+      // which is what broke `typecheck:tests`. Destructure untyped and guard
+      // with `typeof`, as the rest of this file does.
+      ([url, init]) =>
         (init as any)?.method === 'POST' && typeof url === 'string' && url.includes('/feedback'),
     )
     expect(posts.length).toBe(1)
