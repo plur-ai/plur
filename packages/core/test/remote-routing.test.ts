@@ -550,3 +550,160 @@ describe('feedback() — remote routing (issue #85)', () => {
     await expect(plur.feedback('ENG-SRV-ERR', 'positive')).rejects.toThrow('Remote feedback failed')
   })
 })
+
+/**
+ * Issue #850 — plur_feedback must refuse with an error (not silently pick
+ * one) when the same bare ID exists in both the local primary store and a
+ * warmed remote cache. A scope parameter lets callers route explicitly.
+ */
+describe('feedback() — cross-store ID collision guard (issue #850)', () => {
+  let primaryDir: string
+  let fetchMock: ReturnType<typeof vi.fn>
+  let originalFetch: typeof globalThis.fetch
+
+  beforeEach(() => {
+    primaryDir = mkdtempSync(join(tmpdir(), 'plur-850-'))
+    originalFetch = globalThis.fetch
+    fetchMock = vi.fn()
+    globalThis.fetch = fetchMock as any
+  })
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch
+    rmSync(primaryDir, { recursive: true, force: true })
+  })
+
+  function mockRemoteWithId(id: string) {
+    fetchMock.mockImplementation((async (url: string, init?: { method?: string }) => {
+      const method = init?.method ?? 'GET'
+      // GET /engrams/:id — found (used for scope-targeted routing)
+      if (method === 'GET' && typeof url === 'string' && url.includes(`/engrams/${id}`)) {
+        return {
+          ok: true, status: 200,
+          json: async () => ({ id, scope: 'group:test', status: 'active', data: { statement: 'remote engram' } }),
+          text: async () => '',
+        } as Response
+      }
+      // POST /engrams/:id/feedback — success
+      if (method === 'POST' && typeof url === 'string' && url.includes(`/engrams/${id}/feedback`)) {
+        return { ok: true, status: 200, json: async () => ({ success: true }), text: async () => '' } as Response
+      }
+      // GET /engrams?scope=... (load / warm cache) — return the colliding engram
+      if (method === 'GET' && typeof url === 'string' && url.includes('engrams')) {
+        return {
+          ok: true, status: 200,
+          json: async () => ({ rows: [{ id, scope: 'group:test', status: 'active', data: { statement: 'remote engram' } }], total_count: 1 }),
+          text: async () => '',
+        } as Response
+      }
+      return { ok: false, status: 404, text: async () => 'not found' } as Response
+    }) as any)
+  }
+
+  it('throws on bare-ID collision when remote cache is warmed', async () => {
+    const collidingId = 'ENG-2026-08-09-002'
+    mockRemoteWithId(collidingId)
+
+    writeStoresConfig(primaryDir, [
+      { url: 'https://plur.example.com/sse', token: 'tok', scope: 'group:test', shared: true, readonly: false },
+    ])
+    const plur = new Plur({ path: primaryDir })
+
+    // Learn locally — creates the same ID in the primary store
+    // (We inject it directly to simulate the collision without minting the same ID)
+    const localEngram = await plur.learn('local engram with colliding id', { scope: 'global' })
+    // Override the ID to simulate a collision with the remote
+    const yaml_ = await import('js-yaml')
+    const engramPath = join(primaryDir, 'engrams.yaml')
+    const content = readFileSync(engramPath, 'utf-8')
+    const data = yaml_.load(content) as { engrams: Array<{ id: string }> }
+    data.engrams.find(e => e.id === localEngram.id)!.id = collidingId
+    writeFileSync(engramPath, yaml_.dump(data))
+
+    // Warm the remote cache so the collision is visible
+    await plur.warmRemoteCaches()
+
+    // Without scope: must refuse, not pick silently
+    await expect(plur.feedback(collidingId, 'positive')).rejects.toThrow(/Ambiguous engram ID/)
+  })
+
+  it('scope: "primary" routes to local store, skips remote', async () => {
+    const collidingId = 'ENG-2026-08-09-003'
+    mockRemoteWithId(collidingId)
+
+    writeStoresConfig(primaryDir, [
+      { url: 'https://plur.example.com/sse', token: 'tok', scope: 'group:test', shared: true, readonly: false },
+    ])
+    const plur = new Plur({ path: primaryDir })
+
+    // Inject the colliding ID into the primary store
+    const localEngram = await plur.learn('local engram for scope test', { scope: 'global' })
+    const yaml_ = await import('js-yaml')
+    const engramPath = join(primaryDir, 'engrams.yaml')
+    const content = readFileSync(engramPath, 'utf-8')
+    const data = yaml_.load(content) as { engrams: Array<{ id: string }> }
+    data.engrams.find(e => e.id === localEngram.id)!.id = collidingId
+    writeFileSync(engramPath, yaml_.dump(data))
+
+    await plur.warmRemoteCaches()
+
+    // With scope: "primary" — must succeed and NOT call remote
+    await plur.feedback(collidingId, 'positive', 'primary')
+    const posts = fetchMock.mock.calls.filter(
+      ([url, init]: [string, { method?: string }]) =>
+        (init as any)?.method === 'POST' && typeof url === 'string' && url.includes('/feedback'),
+    )
+    expect(posts.length).toBe(0)
+  })
+
+  it('scope: <remote-scope> routes to remote, skips local', async () => {
+    const collidingId = 'ENG-2026-08-09-004'
+    mockRemoteWithId(collidingId)
+
+    writeStoresConfig(primaryDir, [
+      { url: 'https://plur.example.com/sse', token: 'tok', scope: 'group:test', shared: true, readonly: false },
+    ])
+    const plur = new Plur({ path: primaryDir })
+
+    // Inject the colliding ID into the primary store
+    const localEngram = await plur.learn('local engram for remote-scope test', { scope: 'global' })
+    const yaml_ = await import('js-yaml')
+    const engramPath = join(primaryDir, 'engrams.yaml')
+    const content = readFileSync(engramPath, 'utf-8')
+    const data = yaml_.load(content) as { engrams: Array<{ id: string }> }
+    data.engrams.find(e => e.id === localEngram.id)!.id = collidingId
+    writeFileSync(engramPath, yaml_.dump(data))
+
+    // With scope: "group:test" — must POST to remote
+    await plur.feedback(collidingId, 'negative', 'group:test')
+    const posts = fetchMock.mock.calls.filter(
+      ([url, init]: [string, { method?: string }]) =>
+        (init as any)?.method === 'POST' && typeof url === 'string' && url.includes('/feedback'),
+    )
+    expect(posts.length).toBe(1)
+    expect(posts[0][0]).toContain(`/engrams/${collidingId}/feedback`)
+  })
+
+  it('does not throw when remote cache is cold (backward compatible)', async () => {
+    // If warmRemoteCaches() was never called, remote cache is empty.
+    // Existing first-match-wins behaviour should still apply.
+    const collidingId = 'ENG-2026-08-09-005'
+    mockRemoteWithId(collidingId)
+
+    writeStoresConfig(primaryDir, [
+      { url: 'https://plur.example.com/sse', token: 'tok', scope: 'group:test', shared: true, readonly: false },
+    ])
+    const plur = new Plur({ path: primaryDir })
+
+    const localEngram = await plur.learn('local engram cold cache test', { scope: 'global' })
+    const yaml_ = await import('js-yaml')
+    const engramPath = join(primaryDir, 'engrams.yaml')
+    const content = readFileSync(engramPath, 'utf-8')
+    const data = yaml_.load(content) as { engrams: Array<{ id: string }> }
+    data.engrams.find(e => e.id === localEngram.id)!.id = collidingId
+    writeFileSync(engramPath, yaml_.dump(data))
+
+    // Do NOT warm the cache — collision not detectable, falls through to local
+    await expect(plur.feedback(collidingId, 'positive')).resolves.not.toThrow()
+  })
+})
