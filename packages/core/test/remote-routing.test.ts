@@ -361,6 +361,100 @@ describe('forget() — remote routing (issue #84)', () => {
     await expect(plur.forget('ENG-NONEXISTENT-001')).rejects.toThrow('Engram not found')
   })
 
+  // #831 — ids are minted per store, so one bare id can name several unrelated
+  // engrams. `forget` resolved primary-first and retired whichever it reached,
+  // reporting success and echoing a statement the caller never wrote. In real
+  // use that destroyed the wrong engram: plur_history for ENG-2026-08-03-008
+  // shows three creations across three scopes; the retire hit the 11:32 one
+  // when the caller meant the 19:15 one.
+  //
+  // Mirrors the feedback disambiguation in #850/#851: an unqualified id that
+  // resolves in more than one place is an ERROR, not a coin flip. Destructive
+  // ambiguity has to refuse rather than pick.
+  describe('ambiguous ids across stores (#831)', () => {
+    /**
+     * Seed the LOCAL primary store with a chosen id. `learn()` cannot do this —
+     * `LearnContext` has no `id` and the store mints its own — and a generated
+     * id would never collide, which is the entire condition under test.
+     */
+    function seedLocal(id: string, statement: string) {
+      writeFileSync(join(primaryDir, 'engrams.yaml'), yaml.dump({
+        engrams: [{
+          id, version: 2, status: 'active', consolidated: false,
+          type: 'behavioral', scope: 'global', visibility: 'private', statement,
+          activation: { retrieval_strength: 0.7, storage_strength: 1, frequency: 0, last_accessed: '2026-08-10' },
+          feedback_signals: { positive: 0, negative: 0, neutral: 0 },
+          knowledge_type: { memory_class: 'semantic', cognitive_level: 'remember' },
+          knowledge_anchors: [], associations: [], derivation_count: 1, tags: [], pack: null,
+          abstract: null, derived_from: null, polarity: null, content_hash: `h-${id}`,
+          commitment: 'leaning', reference_count: 1, sources: [], recurrence_count: 0,
+          summary: statement, engram_version: 1, episode_ids: [],
+        }],
+      }), 'utf8')
+    }
+
+    async function warmedCollision(id: string) {
+      writeStoresConfig(primaryDir, [
+        { url: 'https://plur.example.com/sse', token: 'tok', scope: 'group:test', shared: true, readonly: false },
+      ])
+      // Remote holds `id`; the load endpoint returns it so warming the cache
+      // makes the collision observable without a live per-call fetch.
+      fetchMock.mockImplementation((async (url: string, init?: { method?: string }) => {
+        const method = init?.method ?? 'GET'
+        if (method === 'DELETE') {
+          return { ok: true, status: 200, json: async () => ({ id, status: 'retired' }), text: async () => '' } as Response
+        }
+        if (method === 'GET' && typeof url === 'string' && url.includes(`/engrams/${id}`)) {
+          return {
+            ok: true, status: 200,
+            json: async () => ({ id, scope: 'group:test', status: 'active', data: { statement: 'the remote one' } }),
+            text: async () => '',
+          } as Response
+        }
+        return {
+          ok: true, status: 200,
+          json: async () => ({ rows: [{ id, scope: 'group:test', status: 'active', data: { statement: 'the remote one' } }], total_count: 1 }),
+          text: async () => '',
+        } as Response
+      }) as any)
+      seedLocal(id, 'the local one')
+      const plur = new Plur({ path: primaryDir })
+      await plur.warmRemoteCaches()
+      return plur
+    }
+
+    it('refuses an unqualified id that exists locally AND on a warmed remote', async () => {
+      const plur = await warmedCollision('ENG-COLLIDE-001')
+
+      await expect(plur.forget('ENG-COLLIDE-001')).rejects.toThrow(/Ambiguous engram ID/)
+
+      // and nothing was retired on either side
+      expect(deleteCalls().length).toBe(0)
+      const local = await plur.getById('ENG-COLLIDE-001')
+      expect(local!.status).toBe('active')
+    })
+
+    it('scope "primary" retires the local engram and never touches the remote', async () => {
+      const plur = await warmedCollision('ENG-COLLIDE-002')
+
+      await plur.forget('ENG-COLLIDE-002', 'local is stale', { scope: 'primary' })
+
+      expect(deleteCalls().length).toBe(0)
+      const local = await plur.getById('ENG-COLLIDE-002')
+      expect(local!.status).toBe('retired')
+    })
+
+    it('an explicit remote scope retires there, leaving the local engram alone', async () => {
+      const plur = await warmedCollision('ENG-COLLIDE-003')
+
+      await plur.forget('ENG-COLLIDE-003', 'remote is stale', { scope: 'group:test' })
+
+      expect(deleteCalls().length).toBe(1)
+      const local = await plur.getById('ENG-COLLIDE-003')
+      expect(local!.status).toBe('active')
+    })
+  })
+
   it('forget handles remote server error gracefully', async () => {
     // getById throws a network error
     fetchMock.mockImplementation((async () => {
