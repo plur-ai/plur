@@ -161,6 +161,10 @@ jobs:
           fi
       - uses: pnpm/action-setup@v4
         if: steps.relevant.outputs.run == 'true'
+        with:
+          # Required: package.json carries no `packageManager` key, so the
+          # action cannot infer it. Same pin as the other two jobs.
+          version: 9
       - uses: actions/setup-node@v4
         if: steps.relevant.outputs.run == 'true'
         with:
