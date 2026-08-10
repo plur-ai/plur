@@ -148,15 +148,36 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 2
+          # Full history: the comparison below needs the PR base commit, which a
+          # shallow clone does not have.
+          fetch-depth: 0
       - name: Did this diff touch the embedder, the enrichment, or the bar?
         id: relevant
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: |
-          CHANGED=$(git diff --name-only HEAD^ HEAD || true)
+          # Compare against the PR BASE, not HEAD^.
+          #
+          # `git diff HEAD^ HEAD` sees only the most recent commit, so a PR that
+          # changed learn-async.ts and then pushed a docs-only follow-up would
+          # skip calibration and report green — a check that silently declines to
+          # run is indistinguishable from one that passed, which is the failure
+          # this job exists to catch elsewhere.
+          BASE="$BASE_SHA"
+          if [ -z "$BASE" ] || [ "$BASE" = "0000000000000000000000000000000000000000" ] \
+             || ! git cat-file -e "$BASE^{commit}" 2>/dev/null; then
+            # New branch, or a base we cannot resolve: fail OPEN and calibrate.
+            echo "base '$BASE' unusable — running calibration rather than assuming it is unnecessary"
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          CHANGED=$(git diff --name-only "$BASE" HEAD)
+          echo "changed files vs $BASE:"
           echo "$CHANGED"
           if echo "$CHANGED" | grep -qE 'packages/core/src/(embeddings|fts|learn-async)\.ts|dedup-threshold-calibration'; then
             echo "run=true" >> "$GITHUB_OUTPUT"
           else
+            echo "SKIPPING: no change to the embedder, the enrichment fields, or the bar."
             echo "run=false" >> "$GITHUB_OUTPUT"
           fi
       - uses: pnpm/action-setup@v4
