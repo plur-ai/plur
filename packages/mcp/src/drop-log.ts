@@ -61,8 +61,14 @@ export interface PayloadDropRecord {
    * ordinary caller error. Both are recorded — recording only the former made
    * "every partial drop involves an array" true by construction and so unable
    * to test the hypothesis it appeared to confirm. Empty array = scalar-only.
+   *
+   * OPTIONAL because records predating the discriminator do not carry it, and
+   * `readPayloadDropLog` returns those too. `undefined` is not `[]`: it means
+   * "unknown, and array-shaped by construction" — the old gate could not record
+   * anything else — whereas `[]` is a measured scalar-only drop. Anything
+   * computing the ratio must exclude `undefined` rather than count it as zero.
    */
-  missing_array_params: string[]
+  missing_array_params?: string[]
   /** JSON-RPC request id, when the SDK exposes it. */
   request_id?: string | number
   /** @plur-ai/mcp version that recorded the drop. */
