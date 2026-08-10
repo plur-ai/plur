@@ -713,11 +713,20 @@ done
 # Plur class is actually exported at the promoted version, before @latest moves.
 echo -n "  @plur-ai/core@$VERSION install + import → "
 core_exit=0
+# Whether the INSTALL itself ever resolved, tracked separately because
+# `core_exit` is reused by the import check below and so cannot answer that
+# question afterwards. It is the whole distinction the classifier rests on:
+# "core never installed" is propagation lag, "core installed and is broken" is
+# a defect. Losing it is what let a broken core be advised for promotion.
+core_installed=false
 # Same propagation-retry as the --version checks above: the install can ETARGET
 # while @next is still propagating.
 for attempt in 1 2 3 4 5 6; do
   core_install_out=$(npm install --no-save --no-audit --no-fund "@plur-ai/core@$VERSION" 2>&1) && core_exit=0 || core_exit=$?
-  [ "$core_exit" -eq 0 ] && break
+  if [ "$core_exit" -eq 0 ]; then
+    core_installed=true
+    break
+  fi
   if echo "$core_install_out" | grep -qiE 'ETARGET|No matching version|notarget'; then
     [ "$attempt" -lt 6 ] && { echo -n "(propagating, retry $attempt) "; sleep 20; }
     continue
@@ -734,9 +743,18 @@ if [ "$core_exit" -eq 0 ] && [ "$core_inst" = "$VERSION" ]; then
 else
   echo "✗"
   echo "      Expected core@$VERSION to import with a Plur export (exit=$core_exit, installed=$core_inst): ${core_out:-}"
-  # Install resolved but import/version still failed → a real defect, not lag.
-  # (Pure install-ETARGET exhaustion leaves core_inst="?" — that stays as lag.)
-  [ "$core_inst" = "$VERSION" ] && SMOKE_ONLY_PROPAGATION=false
+  # The install resolved and core STILL failed — it either crashed on import or
+  # is present at the wrong version. Both are genuine defects, and both are the
+  # exact class this check exists to catch (#584, #64). Clearing the flag stops
+  # the abort from advising "resume → promote core@latest" over a broken core.
+  #
+  # Guarding on `core_installed` rather than on `core_inst = $VERSION` matters:
+  # a version MISMATCH is itself one of the two defects, so keying on the
+  # version would misfile it as lag — the same hole one level down.
+  # A pure ETARGET exhaustion never sets `core_installed`, so it stays lag.
+  if [ "$core_installed" = true ]; then
+    SMOKE_ONLY_PROPAGATION=false
+  fi
   SMOKE_OK=false
 fi
 popd > /dev/null
