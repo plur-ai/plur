@@ -126,6 +126,54 @@ jobs:
   # scripts/smoke-release.sh covered exactly that and nothing invoked it, so it
   # could only catch anything when someone remembered to run it by hand. One
   # Node version is enough: this checks packaging, not runtime compatibility.
+  # Calibration for the #854 cosine dedup bar. Loads the real BGE-small model,
+  # so it is NOT part of the default suite (offline-safe) and NOT part of the
+  # test matrix (model download per Node version would be three downloads for
+  # one answer).
+  #
+  # Path-filtered on purpose. The threshold rests on an empirical claim —
+  # enriched duplicates land above 0.95, enriched DISTINCT statements below —
+  # and that claim can only be invalidated by changing the embedder, the
+  # enrichment fields, or the bar itself. Those are exactly the paths below.
+  # A code-path regression (comparing bare text again) is caught by the fast
+  # stubbed test in dedup-cosine.test.ts, which runs on every PR.
+  #
+  # Non-blocking: a model fetch is a network dependency, and a check that goes
+  # red for reasons unrelated to the diff trains people to ignore red.
+  dedup-calibration:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - name: Did this diff touch the embedder, the enrichment, or the bar?
+        id: relevant
+        run: |
+          CHANGED=$(git diff --name-only HEAD^ HEAD || true)
+          echo "$CHANGED"
+          if echo "$CHANGED" | grep -qE 'packages/core/src/(embeddings|fts|learn-async)\.ts|dedup-threshold-calibration'; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: pnpm/action-setup@v4
+        if: steps.relevant.outputs.run == 'true'
+      - uses: actions/setup-node@v4
+        if: steps.relevant.outputs.run == 'true'
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+        if: steps.relevant.outputs.run == 'true'
+      - name: Calibrate the dedup threshold against the real embedder
+        if: steps.relevant.outputs.run == 'true'
+        env:
+          PLUR_EMBEDDER_NETWORK_TESTS: '1'
+        run: npx vitest run --project @plur-ai/core packages/core/test/dedup-threshold-calibration.test.ts --reporter=verbose
+
   smoke-packaged:
     runs-on: ubuntu-latest
     permissions:
