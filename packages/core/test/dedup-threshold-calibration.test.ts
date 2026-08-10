@@ -24,21 +24,29 @@ import { searchTextFrom } from '../src/fts.js'
  * what the threshold assumes.
  *
  * GATED, matching `embeddings-cache-dim.test.ts`: loading BGE-small needs model
- * access, so the default suite stays offline-safe. It therefore does NOT run in
- * CI as configured today.
+ * access, so the default suite stays offline-safe.
  *
  *   PLUR_EMBEDDER_NETWORK_TESTS=1 npx vitest run --project @plur-ai/core \
  *     packages/core/test/dedup-threshold-calibration.test.ts
  *
- * Baseline measured 2026-08-10, BGE-small-en-v1.5, enriched both sides:
+ * In CI it runs from the `dedup-calibration` job, path-filtered to the files
+ * that can invalidate the claim (embeddings.ts, fts.ts, learn-async.ts, these
+ * fixtures) and non-blocking, since it depends on a model fetch.
  *
- *   0.8512  DISTINCT   staging port 8080 vs 8081
- *   0.8826  DISTINCT   "Always rebase before pushing" vs "Never ..."
- *   0.9878  DUPLICATE  the #854 pair
+ * Baseline from THESE fixtures, 2026-08-10, BGE-small-en-v1.5, enriched both
+ * sides:
  *
- * Bare — the bug this replaced — those same pairs sat at 0.9749 / 0.9637 /
- * 0.9689: the DISTINCT pairs scored HIGHER than the duplicate, and no threshold
- * could separate them. That inversion is the thing worth never reintroducing.
+ *   0.7962  DISTINCT   one token apart: staging port 8080 vs 8081
+ *   0.8437  DISTINCT   negation — a correction of an existing engram
+ *   0.8570  DISTINCT   same rule, different host
+ *   0.9797  DUPLICATE  reordered clauses, same claim
+ *   0.9830  DUPLICATE  the #854 pair
+ *
+ * Separation 0.123, with the 0.95 bar inside the band rather than at an edge.
+ *
+ * Bare — the bug this replaced — the worst DISTINCT pair sat at 0.9749, ABOVE
+ * both duplicates. No threshold could separate them. That inversion is the
+ * thing worth never reintroducing, and the second test below pins it.
  */
 
 const NETWORK = process.env.PLUR_EMBEDDER_NETWORK_TESTS === '1'
@@ -148,10 +156,22 @@ async function score(f: Fixture): Promise<number> {
 
 describe.skipIf(!NETWORK)('dedup threshold calibration (#854, real embedder)', () => {
   it('reports the measured separation', async () => {
+    // `available` only means "not disabled, and the library imported" — it is
+    // true before any model has loaded. Asserting it alone would let this whole
+    // file pass without ever embedding anything, which is the exact shape of
+    // check this test exists to replace. `loaded` is asserted after scoring,
+    // below, once a real pipeline must exist.
     expect(embedderStatus().available).toBe(true)
 
     const distinct = await Promise.all(DISTINCT.map(async f => [f.label, await score(f)] as const))
     const duplicate = await Promise.all(DUPLICATE.map(async f => [f.label, await score(f)] as const))
+
+    // Proof the numbers above came from a real model rather than from a
+    // short-circuit. `score()` throws on a null embedding, so this is belt and
+    // braces — but a calibration that cannot tell you whether it calibrated is
+    // worth nothing, and that has to be visible in the file, not inferred from
+    // a CI log.
+    expect(embedderStatus().loaded, 'embedder never loaded — these scores are not real').toBe(true)
 
     const rows = [
       ...distinct.map(([l, s]) => `  ${s.toFixed(4)}  DISTINCT   ${l}`),
