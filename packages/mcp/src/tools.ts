@@ -1109,7 +1109,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
               required: ['statement'],
             },
           },
-          max_llm_calls: { type: 'number', description: 'Max LLM dedup calls across the whole batch (default 50). Once spent, remaining items use the cheap hash/cosine path. Pass a large number to opt out.' },
+          max_llm_calls: { type: 'number', description: 'Max LLM dedup calls across the whole batch (default 50). Once spent, remaining items fall back to the local cosine path (no API cost); the dedup.mode on each result says which ran. Pass a large number to opt out.' },
         },
         required: ['engrams'],
       },

@@ -40,6 +40,17 @@ export interface LearnAsyncDeps {
   rootPath: string
   /** Dedup config. */
   dedupConfig: { enabled?: boolean; threshold?: number; mode?: string }
+  /**
+   * Local similarity scores for `statement` against `candidates` (#854).
+   *
+   * OPTIONAL: when absent — embedder disabled, or a caller constructing deps by
+   * hand — dedup degrades to hash-only and says so, rather than silently taking
+   * the ADD default as it did before.
+   */
+  similarityScores?: (
+    statement: string,
+    candidates: Engram[],
+  ) => Promise<Array<{ id: string; score: number }>>
   /** Circuit breaker check. */
   isLlmAvailable: () => boolean
   /** Record LLM success. */
@@ -287,7 +298,13 @@ export async function learnAsync(
   }
 
   // Step 2: Check dedup config
-  const { enabled = true, threshold = 0.85, mode = 'llm' } = deps.dedupConfig
+  // threshold default raised 0.85 -> 0.95 when it was first actually WIRED
+  // (#854). It sat unread for four months, so 0.85 was never exercised against
+  // real writes and carries no evidence. It now gates an automatic NOOP, and a
+  // false NOOP silently discards a memory — the worst failure class here — so
+  // the untested value is not the one to start from. An explicit config value
+  // still wins.
+  const { enabled = true, threshold = 0.95, mode = 'llm' } = deps.dedupConfig
   if (!enabled || mode === 'off') {
     return { engram: await deps.learn(statement, context), decision: 'ADD' }
   }
@@ -316,12 +333,21 @@ export async function learnAsync(
     return { engram: await deps.learn(statement, context), decision: 'ADD' }
   }
 
-  // Step 4: LLM or cosine-only decision
+  // Step 4: decide — LLM if one is available, otherwise local cosine (#854).
+  //
+  // This branch used to fall straight through to the `ADD` default when no LLM
+  // was configured, discarding the candidates fetched above unread. The
+  // comments claimed a cosine fallback; none was ever written, and `threshold`
+  // was destructured and never read. On any install without an LLM key that
+  // made dedup exact-hash-only, so every reworded near-duplicate was written.
   const llm = context?.llm
   let decision: DedupDecision = 'ADD'
   let targetId: string | null = null
+  let dedupMode: 'llm' | 'cosine' | 'hash-only' = 'hash-only'
+  let nearDuplicates: Array<{ id: string; score: number }> | undefined
 
   if (mode === 'llm' && llm && deps.isLlmAvailable()) {
+    dedupMode = 'llm'
     try {
       const prompt = buildDedupPrompt(
         statement,
@@ -333,15 +359,53 @@ export async function learnAsync(
       targetId = parsed.target_id
       deps.recordLlmSuccess()
     } catch (err) {
-      logger.warning(`LLM dedup failed, falling back to cosine: ${err}`)
+      logger.warning(`LLM dedup failed, falling back to local similarity: ${err}`)
       deps.recordLlmFailure()
       decision = 'ADD'
+      dedupMode = 'hash-only'
     }
   }
-  // cosine mode: conservative ADD (hash-only NOOP already handled)
+
+  // Local similarity path — zero API calls, works offline, which is the
+  // property core is supposed to hold. Runs when no LLM decided above.
+  if (dedupMode !== 'llm' && deps.similarityScores) {
+    try {
+      const scores = (await deps.similarityScores(statement, candidates))
+        .slice()
+        .sort((a, b) => b.score - a.score)
+      if (scores.length > 0) {
+        dedupMode = 'cosine'
+        nearDuplicates = scores.slice(0, 3)
+        const top = scores[0]
+        // A false NOOP silently discards a memory, which is a worse outcome
+        // than a duplicate — so the bar is deliberately high. 0.85 was the
+        // declared default for four months while nothing read it, so it was
+        // never validated against real writes; a measured duplicate pair from
+        // #854 sat at 0.928. Anything below the bar is still reported.
+        if (top.score >= threshold) {
+          const existing = candidates.find(c => c.id === top.id)
+          if (existing) {
+            return {
+              engram: existing,
+              decision: 'NOOP',
+              existing_id: existing.id,
+              dedup: { mode: 'cosine', near_duplicates: nearDuplicates },
+            }
+          }
+        }
+      }
+    } catch (err) {
+      // Similarity is an optimisation, never a gate on writing. Falling back
+      // to ADD is correct; claiming a cosine decision we did not make is not.
+      logger.warning(`local similarity dedup unavailable, adding without it: ${err}`)
+      dedupMode = 'hash-only'
+      nearDuplicates = undefined
+    }
+  }
 
   // Step 5: Execute
-  return executeDedupDecision(deps, statement, context, decision, targetId)
+  const executed = await executeDedupDecision(deps, statement, context, decision, targetId)
+  return { ...executed, dedup: { mode: dedupMode, ...(nearDuplicates ? { near_duplicates: nearDuplicates } : {}) } }
 }
 
 /** Options for learnBatch. */
@@ -389,7 +453,7 @@ export async function learnBatch(
       if (llmCallsUsed >= maxLlmCalls) {
         effectiveLlm = undefined
         if (!capWarned) {
-          logger.warning(`learnBatch: maxLlmCalls (${maxLlmCalls}) reached — remaining statements use cosine/ADD dedup`)
+          logger.warning(`learnBatch: maxLlmCalls (${maxLlmCalls}) reached — remaining statements fall back to local cosine dedup (see each result's dedup.mode)`)
           capWarned = true
         }
       } else {

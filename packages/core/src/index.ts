@@ -2909,6 +2909,22 @@ export class Plur {
       engramsPath: this.paths.engrams,
       rootPath: this.paths.root,
       dedupConfig: this.config.dedup ?? {},
+      // Local similarity for the no-LLM dedup path (#854). Scores the already
+      // fetched candidates rather than the corpus, and reuses the embedding
+      // cache, so this costs one query embedding and no API call. Returns []
+      // when the embedder is unavailable, which the caller reads as
+      // "similarity did not run" rather than "nothing was similar".
+      similarityScores: async (statement: string, candidates: Engram[]) => {
+        if (candidates.length === 0) return []
+        const { embeddingSearchWithScores } = await import('./embeddings.js')
+        const scored = await embeddingSearchWithScores(
+          candidates,
+          statement,
+          candidates.length,
+          this.paths.root,
+        )
+        return scored.map(s => ({ id: s.engram.id, score: s.score }))
+      },
       isLlmAvailable: () => this._isLlmDedupAvailable(),
       recordLlmSuccess: () => this._recordLlmSuccess(),
       recordLlmFailure: () => this._recordLlmFailure(),
