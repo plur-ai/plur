@@ -68,18 +68,37 @@ jobs:
                 // issue — a brand-new contributor may simply not be assignable.
                 // That is a fact about the account, not a fault in the PR, and
                 // it must not put a red X on someone's first contribution.
+                //
+                // addAssignees returns HTTP 201 and silently drops non-permitted
+                // logins — no exception is raised (#861). Verify via the response.
+                let needsFallback = false;
                 try {
-                  await github.rest.issues.addAssignees({
+                  const { data: updated } = await github.rest.issues.addAssignees({
                     owner, repo,
                     issue_number: issueNumber,
                     assignees: [prAuthor],
                   });
-                  core.info(`Auto-assigned #${issueNumber} to @${prAuthor}`);
+                  const assigned = (updated.assignees || []).some(
+                    a => a.login.toLowerCase() === prAuthor.toLowerCase()
+                  );
+                  if (assigned) {
+                    core.info(`Auto-assigned #${issueNumber} to @${prAuthor}`);
+                  } else {
+                    needsFallback = true;
+                    core.warning(
+                      `Could not auto-assign #${issueNumber} to @${prAuthor}: `
+                      + `assignee silently dropped (no repo access or prior issue interaction). `
+                      + `A maintainer should assign it manually so the claim is recorded.`,
+                    );
+                  }
                 } catch (e) {
+                  needsFallback = true;
                   core.warning(
                     `Could not auto-assign #${issueNumber} to @${prAuthor}: ${e.message}. `
                     + `A maintainer should assign it manually so the claim is recorded.`,
                   );
+                }
+                if (needsFallback) {
                   await github.rest.issues.createComment({
                     owner, repo,
                     issue_number: prNumber,
