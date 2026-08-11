@@ -1,0 +1,79 @@
+name: Issue Mention Guard
+
+# Flags issues that @-mention a user with an action ask but have no assignee.
+# Mirrors the claim-before-you-code convention already enforced on the PR path
+# by pr-issue-guard.yml (#593 / #835).
+#
+# SECURITY: this workflow reads only event payload fields (title, body,
+# assignees) and the @-mentions derived from them. No untrusted code is
+# checked out or executed. Issue body content is used solely as a regex
+# source; matched usernames are passed directly to the REST API, not to
+# any shell.
+
+on:
+  issues:
+    types: [opened, edited]
+
+permissions:
+  issues: write
+
+jobs:
+  mention-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const body  = context.payload.issue.body  || '';
+            const title = context.payload.issue.title || '';
+            const issueNumber = context.payload.issue.number;
+            const issueAuthor = context.payload.issue.user.login;
+            const { owner, repo } = context.repo;
+
+            // Skip if already assigned — the convention is already satisfied.
+            const existingAssignees = (context.payload.issue.assignees || []).map(a => a.login);
+            if (existingAssignees.length > 0) return;
+
+            // Extract @mentions from body + title, excluding the issue author.
+            const combined = title + '\n' + body;
+            const mentionRe = /@([a-zA-Z0-9](?:[a-zA-Z0-9]|-(?=[a-zA-Z0-9])){0,38})/g;
+            const mentions = new Set();
+            let m;
+            while ((m = mentionRe.exec(combined)) !== null) {
+              if (m[1].toLowerCase() !== issueAuthor.toLowerCase()) {
+                mentions.add(m[1]);
+              }
+            }
+            if (mentions.size === 0) return;
+
+            // Require an explicit action ask alongside the mention.
+            // Keyword list from the issue proposal (#858).
+            const ACTION_ASK = /\b(audit|review|please|can you|requesting|need you to|assign|check|look at|investigate|evaluate|approve)\b/i;
+            if (!ACTION_ASK.test(combined)) return;
+
+            // All three conditions met: mention + action ask + no assignee.
+            // Auto-assign the mentioned user(s), mirroring the PR guard (#593 / #835).
+            for (const login of mentions) {
+              try {
+                await github.rest.issues.addAssignees({
+                  owner, repo,
+                  issue_number: issueNumber,
+                  assignees: [login],
+                });
+                core.info(`Auto-assigned #${issueNumber} to @${login}`);
+              } catch (e) {
+                // GitHub only permits assigning users with repo access or prior
+                // interaction on the issue — a new contributor mention may simply
+                // not be assignable. Degrade gracefully rather than failing the run.
+                core.warning(`Could not auto-assign #${issueNumber} to @${login}: ${e.message}`);
+                await github.rest.issues.createComment({
+                  owner, repo,
+                  issue_number: issueNumber,
+                  body: `ℹ️ **Contribution convention:** @-mentions are FYI only — `
+                    + `assignment creates the expectation that work will happen `
+                    + `([CONTRIBUTING.md, #614](https://github.com/${owner}/${repo}/issues/614)). `
+                    + `This issue @-mentions @${login} with an action ask but has no assignee. `
+                    + `Maintainer: please assign it explicitly so the claim is recorded.`,
+                }).catch(err => core.warning(`Fallback comment failed: ${err.message}`));
+              }
+            }
