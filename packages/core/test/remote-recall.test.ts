@@ -21,14 +21,14 @@
  *     skipped_cooldown/unsupported never print)
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'fs'
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, utimesSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { Plur } from '../src/index.js'
 import {
   remoteRecall, claimHookDegradationLines, readRemoteHealth,
-  BREAKER_FAILURE_THRESHOLD, HOOK_HEADER_REPEAT_MS, UNSUPPORTED_TTL_MS,
-  scopeOrg,
+  BREAKER_FAILURE_THRESHOLD, HOOK_HEADER_REPEAT_MS, UNSUPPORTED_TTL_MS, REMOTE_STATUS_TTL_MS,
+  scopeOrg, startBudgetTimer,
   type RemoteRecallHost, type HostRecallOutcome,
 } from '../src/remote-recall.js'
 import { StubServer } from './helpers/stub-server.js'
@@ -794,5 +794,267 @@ describe('claimHookDegradationLines — suppression policy', () => {
     expect(lines).toHaveLength(1)
     // And the rewrite produced a valid file.
     expect(() => JSON.parse(readFileSync(sp, 'utf8'))).not.toThrow()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// #864 — a cached outcome is evidence about WHEN it was taken
+//
+// `_lastRemoteOutcomes` is written only by hosts a recall actually dialed. A
+// recall that dials nothing (no org context, `remote: false`, kill-switch,
+// empty query) leaves the previous entry untouched, so before this fix one
+// early failure was re-reported as the live state for the whole life of the
+// process — on a workstation, days — and accused the server of a client-side
+// fault inside the operator's own diagnostics.
+// ---------------------------------------------------------------------------
+
+describe('#864 remote status freshness', () => {
+  function plurWithDeadHost(): { plur: Plur; dir: string } {
+    const dir = tmp('plur-864-dead-')
+    writeFileSync(
+      join(dir, 'config.yaml'),
+      `embeddings:\n  enabled: false\nstores:\n  - url: "http://127.0.0.1:1"\n    token: "t"\n    scope: "${TEAM_SCOPE}"\n`,
+    )
+    return { plur: new Plur({ path: dir }), dir }
+  }
+
+  async function recordFailure(plur: Plur): Promise<void> {
+    await plur.recall('anything', { scope: 'project:plur/anything', remote_timeout_ms: 300 })
+  }
+
+  it('stamps observed_at and age_ms on every entry', async () => {
+    const { plur } = plurWithDeadHost()
+    const before = Date.now()
+    await recordFailure(plur)
+    const [s] = plur.remoteStoreStatus()
+    expect(s).toBeDefined()
+    expect(s.observed_at).toBeGreaterThanOrEqual(before)
+    expect(s.age_ms).toBeGreaterThanOrEqual(0)
+    expect(s.age_ms).toBeLessThan(60_000)
+  })
+
+  it('freshOnly hides an observation older than the TTL; the historical read keeps it', async () => {
+    const { plur } = plurWithDeadHost()
+    await recordFailure(plur)
+    expect(plur.remoteStoreStatus({ freshOnly: true })).toHaveLength(1)
+
+    const later = Date.now() + REMOTE_STATUS_TTL_MS + 1
+    // Present-tense surfaces must fall silent...
+    expect(plur.remoteStoreStatus({ freshOnly: true, now: later })).toHaveLength(0)
+    // ...while doctor can still report it as history, with its age.
+    const historical = plur.remoteStoreStatus({ now: later })
+    expect(historical).toHaveLength(1)
+    expect(historical[0].age_ms).toBeGreaterThan(REMOTE_STATUS_TTL_MS)
+  })
+
+  it('a later recall that dials NOTHING does not refresh the stale entry', async () => {
+    const { plur } = plurWithDeadHost()
+    await recordFailure(plur)
+    const first = plur.remoteStoreStatus()[0].observed_at
+
+    // No project/org context → zero remote calls (the strict dialing rule).
+    await plur.recall('anything at all')
+    const second = plur.remoteStoreStatus()[0].observed_at
+    expect(second).toBe(first) // untouched — nothing re-observed it
+
+    // Which is exactly why the present-tense surface must age it out.
+    const later = Date.now() + REMOTE_STATUS_TTL_MS + 1
+    expect(plur.remoteStoreStatus({ freshOnly: true, now: later })).toHaveLength(0)
+  })
+
+  it('a successful /me probe clears a cached network-class failure', async () => {
+    const dir = tmp('plur-864-probe-')
+    writeFileSync(
+      join(dir, 'config.yaml'),
+      `embeddings:\n  enabled: false\nstores:\n  - url: "${baseUrl}"\n    token: "${TOKEN}"\n    scope: "${TEAM_SCOPE}"\n`,
+    )
+    const plur = new Plur({ path: dir })
+
+    server.recallStatus = 500 // network-class → 'unreachable'
+    await plur.recall('anything', { scope: 'project:plur/anything' })
+    server.recallStatus = null
+    expect(plur.remoteStoreStatus()[0].status).toBe('unreachable')
+
+    // The host answers /me — it is demonstrably not unreachable.
+    const health = await plur.checkRemoteHealth({ timeoutMs: 5000 })
+    expect(health[0].status).toBe('ok')
+    expect(plur.remoteStoreStatus()).toHaveLength(0)
+  })
+
+  it('a successful probe does NOT clear an endpoint-support failure', async () => {
+    const dir = tmp('plur-864-unsupported-')
+    writeFileSync(
+      join(dir, 'config.yaml'),
+      `embeddings:\n  enabled: false\nstores:\n  - url: "${baseUrl}"\n    token: "${TOKEN}"\n    scope: "${TEAM_SCOPE}"\n`,
+    )
+    const plur = new Plur({ path: dir })
+
+    server.recallStatus = 404 // the recall route is absent; /me says nothing about that
+    await plur.recall('anything', { scope: 'project:plur/anything' })
+    server.recallStatus = null
+    expect(plur.remoteStoreStatus()[0].status).toBe('unsupported')
+
+    await plur.checkRemoteHealth({ timeoutMs: 5000 })
+    // Still reported — masking this would trade a false alarm for a silent failure.
+    expect(plur.remoteStoreStatus()[0].status).toBe('unsupported')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// #864 — a rotated credential must reach the next dial, not the next restart
+//
+// The constructor's only re-read compares `stores.length`, so rotating a token
+// in place (same store count) left the process dialing with the credential it
+// read at spawn. On a 13-day-old MCP server that is a 13-day-old token.
+// ---------------------------------------------------------------------------
+
+describe('#864 config staleness on the dial path', () => {
+  function writeConfig(dir: string, token: string): void {
+    writeFileSync(
+      join(dir, 'config.yaml'),
+      `embeddings:\n  enabled: false\nstores:\n  - url: "${baseUrl}"\n    token: "${token}"\n    scope: "${TEAM_SCOPE}"\n`,
+    )
+    // Guarantee a visible mtime change even if both writes land in the same
+    // millisecond — the reload trigger is mtime, and the test must not race it.
+    const t = new Date(Date.now() + 2000)
+    utimesSync(join(dir, 'config.yaml'), t, t)
+  }
+
+  it('picks up a rotated token without reconstructing Plur', async () => {
+    const dir = tmp('plur-864-rotate-')
+    writeConfig(dir, 'stale-token')
+    const plur = new Plur({ path: dir })
+
+    server.recallRows = [serverRow('ENG-2026-0812-101')]
+    await plur.recall('remote statement', { scope: 'project:plur/anything' })
+    // The stub rejects the wrong bearer outright.
+    expect(plur.remoteStoreStatus()[0].status).toBe('auth_expired')
+
+    // Operator rotates the credential on disk. Same store count as before.
+    writeConfig(dir, TOKEN)
+
+    server.recallRows = [serverRow('ENG-2026-0812-102')]
+    const results = await plur.recall('remote statement', { scope: 'project:plur/anything' })
+    expect(plur.remoteStoreStatus()[0].status).toBe('ok')
+    expect(results.some(e => (e as any)._originalId === 'ENG-2026-0812-102')).toBe(true)
+  })
+
+  it('checkRemoteHealth decodes the token on disk, not the one read at construction', async () => {
+    const dir = tmp('plur-864-rotate-health-')
+    writeConfig(dir, 'stale-token')
+    const plur = new Plur({ path: dir })
+    expect((await plur.checkRemoteHealth({ timeoutMs: 5000 }))[0].status).toBe('auth_expired')
+
+    writeConfig(dir, TOKEN)
+    expect((await plur.checkRemoteHealth({ timeoutMs: 5000 }))[0].status).toBe('ok')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// #864 — a response may not contradict itself
+//
+// The report that opened the issue returned remote-only records while calling
+// the remote unreachable. Self-contradiction is the cheapest possible signal
+// that a cache is stale, so the invariant is asserted rather than assumed: a
+// host that contributed rows to THIS recall reports ok, and nothing degraded
+// is attached alongside those rows.
+// ---------------------------------------------------------------------------
+
+describe('#864 status/result self-consistency', () => {
+  it('a host that served rows is never reported degraded in the same breath', async () => {
+    const dir = tmp('plur-864-consistency-')
+    writeFileSync(
+      join(dir, 'config.yaml'),
+      `embeddings:\n  enabled: false\nstores:\n  - url: "${baseUrl}"\n    token: "${TOKEN}"\n    scope: "${TEAM_SCOPE}"\n`,
+    )
+    const plur = new Plur({ path: dir })
+
+    server.recallRows = [serverRow('ENG-2026-0812-201', { score: 1 })]
+    const results = await plur.recall('remote statement', { scope: 'project:plur/anything' })
+    const servedRemote = results.some(e => (e as any)._originalId === 'ENG-2026-0812-201')
+    expect(servedRemote).toBe(true)
+
+    for (const s of plur.remoteStoreStatus()) {
+      if ((s.count ?? 0) > 0) expect(s.status).toBe('ok')
+    }
+    // Nothing for a present-tense surface to warn about.
+    const degraded = plur.remoteStoreStatus({ freshOnly: true })
+      .filter(s => s.status !== 'ok' || (s.dropped_scopes?.length ?? 0) > 0)
+    expect(degraded).toHaveLength(0)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// #864 follow-up — the cold-start race
+//
+// The remote leg starts before the local pipeline so its latency overlaps.
+// The first recall in a process then loads the BGE embedder, which blocks the
+// single event loop; a wall-clock timer keeps counting through the block and
+// aborts a request the loop never serviced. Measured against production: cold
+// call aborted at ~1335ms (the connect budget) against a server answering in
+// ~600ms, while the next call on the same process succeeded in ~1.1s. Hooks
+// are one-shot processes at ~86% of recall volume, so for most of the fleet
+// EVERY call is a cold call.
+// ---------------------------------------------------------------------------
+
+/** Block the event loop for `ms`, the way a synchronous model load does. */
+function starveLoop(ms: number): void {
+  const until = Date.now() + ms
+  while (Date.now() < until) { /* deliberate busy-wait */ }
+}
+
+describe('#864 starvation-aware budget', () => {
+  it('does not expire when the loop was blocked for longer than the budget', async () => {
+    let expired = false
+    const cancel = startBudgetTimer(150, () => { expired = true })
+    starveLoop(400) // 400ms of wall time in which nothing could be serviced
+    await new Promise(r => setTimeout(r, 60))
+    expect(expired).toBe(false) // the time was credited, not charged
+    cancel()
+  })
+
+  it('still expires on time when the loop is healthy (a slow host must fail)', async () => {
+    let expired = false
+    const cancel = startBudgetTimer(120, () => { expired = true })
+    await new Promise(r => setTimeout(r, 400)) // loop free the whole time
+    expect(expired).toBe(true)
+    cancel()
+  })
+
+  it('honors the absolute credit ceiling — a starved process still terminates', async () => {
+    let expired = false
+    const cancel = startBudgetTimer(100, () => { expired = true }, { maxCreditMs: 150 })
+    starveLoop(500) // far beyond budget + credit
+    await new Promise(r => setTimeout(r, 60))
+    expect(expired).toBe(true)
+    cancel()
+  })
+
+  it('cancel() stops the sampler', async () => {
+    let expired = false
+    startBudgetTimer(50, () => { expired = true })()
+    await new Promise(r => setTimeout(r, 200))
+    expect(expired).toBe(false)
+  })
+
+  it('a live host survives a cold-start block that would have aborted it', async () => {
+    server.recallRows = [serverRow('ENG-2026-0812-301')]
+    const p = remoteRecall([host()], 'cold start', {
+      statePath: statePath(),
+      timeoutMs: 300, // connect budget 200ms — far less than the block below
+    })
+    starveLoop(700) // the embedder-load equivalent, while the request is in flight
+    const result = await p
+    expect(result.outcomes[0].state).toBe('ok')
+    expect(result.outcomes[0].count).toBe(1)
+  })
+
+  it('a dead host still fails at its budget, starvation or not', async () => {
+    const p = remoteRecall([host({ url: 'http://127.0.0.1:1' })], 'dead host', {
+      statePath: statePath(),
+      timeoutMs: 300,
+    })
+    const result = await p
+    expect(['unreachable', 'timeout']).toContain(result.outcomes[0].state)
   })
 })
