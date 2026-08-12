@@ -35,7 +35,7 @@ function engram(id: string, statement = 'a statement'): Engram {
     abstract: null,
     derived_from: null,
     derivation_count: 0,
-    reference_count: 0,
+    write_count: 0,
     recurrence_count: 0,
     sources: [],
     engram_version: 1,

@@ -682,7 +682,7 @@ describe('Remote mutation routing — pin / promote / reportFailure (#185, #86)'
       polarity: null,
       engram_version: 1,
       episode_ids: [],
-      reference_count: 1,
+      write_count: 1,
       sources: [],
     } as any
     const result = await plur.updateEngramAsync(fakeEngram)

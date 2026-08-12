@@ -368,7 +368,8 @@ ignore the values.
 | `commitment` | string | `exploring` \| `leaning` \| `decided` \| `locked` | Epistemic commitment level. |
 | `locked_at` | string | | When commitment became `locked`. |
 | `locked_reason` | string | | Why locked. |
-| `reference_count` | integer | ≥0, default 1 | Same-scope re-learn count. Engram retires only at 0. |
+| `write_count` | integer | ≥0, default 1 | Same-scope re-learn count. Engram retires only at 0. Renamed from `reference_count` (#866); implementations MUST backfill on first parse. |
+| `injection_count` | integer | ≥0, default 0 | Number of times this engram was selected into a session's injection context. Distinct from `activation.frequency` (recall events). High injection_count + low positive feedback_signals is an efficacy-failure signal (#865, #866). |
 | `sources` | object[] | each: `scope` (R), `session_id?` (string\|null), `stored_at` (R, instant) | One entry per write attempt. |
 | `recurrence_count` | integer | ≥0, default 0 | Different-scope re-learn count (universality evidence). |
 | `engram_version` | integer | ≥1, default 1 | Content-evolution version. |

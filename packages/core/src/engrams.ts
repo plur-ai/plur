@@ -13,7 +13,20 @@ export function loadEngrams(filePath: string): Engram[] {
     const valid: Engram[] = []
     let skipped = 0
     for (const entry of raw.engrams) {
-      const result = EngramSchemaPassthrough.safeParse(entry)
+      // Backward compat (#866): migrate 'reference_count' (pre-866 field name) to
+      // 'write_count' on first parse. Strip the old key so it is not re-serialised
+      // via passthrough and the YAML stays clean after the next write.
+      let normalized = entry
+      if (
+        entry &&
+        typeof entry === 'object' &&
+        !('write_count' in entry) &&
+        'reference_count' in entry
+      ) {
+        const { reference_count, ...rest } = entry as Record<string, unknown>
+        normalized = { ...rest, write_count: reference_count }
+      }
+      const result = EngramSchemaPassthrough.safeParse(normalized)
       if (result.success) valid.push(result.data)
       else skipped++
     }

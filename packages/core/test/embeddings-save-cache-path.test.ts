@@ -41,7 +41,7 @@ function makeEngram(id: string, statement: string): Engram {
     polarity: null,
     content_hash: 'h',
     commitment: 'leaning',
-    reference_count: 1,
+    write_count: 1,
     sources: [],
     recurrence_count: 0,
     summary: '',

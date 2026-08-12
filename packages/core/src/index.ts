@@ -1005,7 +1005,7 @@ export class Plur {
     }
   }
 
-  /** Apply a duplicate-write to an existing engram: increment reference_count,
+  /** Apply a duplicate-write to an existing engram: increment write_count,
    * append source, persist to primary store if that's where the engram lives.
    * Mutates the engram and (best-effort) writes back. See issue #107. */
   private async _recordDuplicate(
@@ -1029,9 +1029,10 @@ export class Plur {
     const target = idx !== -1 ? engrams[idx] : hit
 
     // Use defaults for engrams migrated without these fields.
-    const currentCount = (target as any).reference_count ?? 1
+    // write_count was named reference_count before #866.
+    const currentCount = target.write_count ?? 1
     const currentSources = (target as any).sources ?? []
-    ;(target as any).reference_count = currentCount + 1
+    target.write_count = currentCount + 1
     ;(target as any).sources = [...currentSources, this._buildSourceEntry(scope, context)]
 
     // Persist if the engram is in the primary store. Cross-store duplicates
@@ -1112,7 +1113,7 @@ export class Plur {
     const applyMutation = (e: Engram, source: typeof sourceEntry, lockedAt: string): number => {
       const newRecurrence = ((e as any).recurrence_count ?? 0) + 1
       ;(e as any).recurrence_count = newRecurrence
-      ;(e as any).reference_count = ((e as any).reference_count ?? 1) + 1
+      e.write_count = (e.write_count ?? 1) + 1
       ;(e as any).sources = [...((e as any).sources ?? []), source]
 
       if (newRecurrence >= 2) {
@@ -1148,7 +1149,7 @@ export class Plur {
       hit.scope = mutated.scope
       hit.commitment = mutated.commitment
       ;(hit as any).recurrence_count = (mutated as any).recurrence_count
-      ;(hit as any).reference_count = (mutated as any).reference_count
+      hit.write_count = mutated.write_count
       ;(hit as any).sources = (mutated as any).sources
       if (mutated.locked_at !== undefined) hit.locked_at = mutated.locked_at
       if (mutated.locked_reason !== undefined) hit.locked_reason = mutated.locked_reason
@@ -1739,7 +1740,7 @@ export class Plur {
       const scope = guarded.scope
 
       // Idea 29: Content hash fast-path dedup (scope-aware — issue #136).
-      // On dedup hit, mutate: increment reference_count, append source (#107).
+      // On dedup hit, mutate: increment write_count, append source (#107).
       const hashMatch = this._hashDedup(statement, allEngrams, scope)
       if (hashMatch) return await this._recordDuplicate(hashMatch, engrams, scope, context)
 
@@ -1818,7 +1819,8 @@ export class Plur {
         commitment,
         locked_at: commitment === 'locked' ? now : undefined,
         locked_reason: commitment === 'locked' ? context?.locked_reason : undefined,
-        reference_count: 1,
+        write_count: 1,
+        injection_count: 0,
         sources: [this._buildSourceEntry(scope, context)],
         recurrence_count: 0,
         summary: autoSummary(statement, undefined),
@@ -2207,7 +2209,8 @@ export class Plur {
       commitment,
       locked_at: commitment === 'locked' ? now : undefined,
       locked_reason: commitment === 'locked' ? context?.locked_reason : undefined,
-      reference_count: 1,
+      write_count: 1,
+      injection_count: 0,
       sources: [this._buildSourceEntry(scope, context)],
       recurrence_count: 0,
       summary: autoSummary(statement, undefined),
@@ -3077,6 +3080,26 @@ export class Plur {
         })
         for (const id of injected_ids) this._lastInjectionByEngram.set(id, injection_id)
       } catch { /* best-effort */ }
+
+      // #866: increment injection_count on primary-store engrams selected for context.
+      // Distinct from activation.frequency (recall events) — this tracks actual
+      // injection into the model's context window. Best-effort: never breaks injection.
+      try {
+        await this._withStoreLock(this.paths.engrams, async () => {
+          const primaryEngrams = await this._primaryStore.load()
+          const injectedSet = new Set(injected_ids)
+          let modified = false
+          for (const e of primaryEngrams) {
+            if (injectedSet.has(e.id)) {
+              e.injection_count = (e.injection_count ?? 0) + 1
+              modified = true
+            }
+          }
+          if (modified) {
+            await this._writeEngrams(this.paths.engrams, primaryEngrams)
+          }
+        })
+      } catch { /* best-effort */ }
     }
 
     // #181: surface persisted tensions touching this injection — flag,
@@ -3477,9 +3500,9 @@ export class Plur {
   /** Set engram status to 'retired'. Supports primary and store engrams. */
   async forget(id: string, reason?: string): Promise<void> {
     // Check primary first.
-    // Reference-counted retirement (#107): decrement reference_count; only
+    // Reference-counted retirement (#107): decrement write_count; only
     // physically retire when it reaches 0. forget() called N times on an
-    // engram with reference_count=N retires it; called fewer times, the
+    // engram with write_count=N retires it; called fewer times, the
     // engram stays active with a lower count.
     const foundInPrimary = await this._withStoreLock(this.paths.engrams, async () => {
       const engrams = await this._primaryStore.load()
@@ -3487,15 +3510,14 @@ export class Plur {
       if (!engram) return false
 
       // Audit iter-2 fix (Data): for legacy engrams created before #107
-      // landed, `reference_count` is missing. Defaulting to 1 means the
-      // first forget() retires them even if they have multiple sources
-      // (i.e., the engram was learned multiple times pre-feature). Infer
-      // from sources[] length when available so legacy cross-store dups
-      // don't get prematurely retired.
-      const currentCount = (engram as any).reference_count
+      // landed, `write_count` is missing (was `reference_count` before #866).
+      // Defaulting to 1 means the first forget() retires them even if they
+      // have multiple sources. Infer from sources[] length when available so
+      // legacy cross-store dups don't get prematurely retired.
+      const currentCount = engram.write_count
         ?? Math.max(1, ((engram as any).sources?.length ?? 1))
       const newCount = Math.max(0, currentCount - 1)
-      ;(engram as any).reference_count = newCount
+      engram.write_count = newCount
 
       if (newCount === 0) {
         engram.status = 'retired'
@@ -3512,8 +3534,8 @@ export class Plur {
         timestamp: new Date().toISOString(),
         data: {
           reason: reason ?? null,
-          reference_count_before: currentCount,
-          reference_count_after: newCount,
+          write_count_before: currentCount,
+          write_count_after: newCount,
         },
       })
       return true
@@ -3522,10 +3544,10 @@ export class Plur {
     if (foundInPrimary) return
 
     // Check stores for namespaced IDs.
-    // Audit iter-1 fix (Taleb): apply same reference-count decrement as
+    // Audit iter-1 fix (Taleb): apply same write-count decrement as
     // primary store. The original implementation retired secondary-store
     // engrams unconditionally on the first forget() call regardless of
-    // reference_count — asymmetric with primary-store behavior and breaks
+    // write_count — asymmetric with primary-store behavior and breaks
     // the #107 contract for cross-store engrams.
     const storeInfo = await this._findEngramStore(id)
     if (storeInfo && storeInfo.path !== this.paths.engrams) {
@@ -3536,10 +3558,10 @@ export class Plur {
       const engram = storeEngrams.find(e => e.id === storeInfo.originalId)
       if (engram) {
         // Same legacy-engram migration as primary path (audit iter-2, Data).
-        const currentCount = (engram as any).reference_count
+        const currentCount = engram.write_count
           ?? Math.max(1, ((engram as any).sources?.length ?? 1))
         const newCount = Math.max(0, currentCount - 1)
-        ;(engram as any).reference_count = newCount
+        engram.write_count = newCount
 
         if (newCount === 0) {
           engram.status = 'retired'
@@ -3556,8 +3578,8 @@ export class Plur {
           timestamp: new Date().toISOString(),
           data: {
             reason: reason ?? null,
-            reference_count_before: currentCount,
-            reference_count_after: newCount,
+            write_count_before: currentCount,
+            write_count_after: newCount,
             routed_to: 'secondary-store',
           },
         })
@@ -4570,7 +4592,7 @@ Generate an improved version of the procedure that prevents this failure. Return
 
   /**
    * Unconditional retirement for tension resolution. Unlike forget(), does
-   * NOT decrement reference_count — the user explicitly adjudicated this
+   * NOT decrement write_count — the user explicitly adjudicated this
    * engram as the losing side, so a multiply-learned loser must still die
    * (audit #213 §2: "a user who resolved a tension by forgetting the loser
    * may find it still active").

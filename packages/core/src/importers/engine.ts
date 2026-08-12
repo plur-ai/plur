@@ -2,7 +2,7 @@
  * Import engine (issue #441) — routes normalized ImportRecords through
  * `plur.learn()` so every existing write gate applies:
  *
- *   - content-hash fast-path dedup (same scope → reference_count bump),
+ *   - content-hash fast-path dedup (same scope → write_count bump),
  *   - cross-scope recurrence (same statement, different scope → graduation),
  *   - secret detection and the sensitive-scope guard.
  *
