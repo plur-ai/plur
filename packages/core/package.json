@@ -19,16 +19,19 @@
   },
   "optionalDependencies": {
     "@huggingface/transformers": "^3.8.1",
-    "better-sqlite3": "^11.0.0",
+    "better-sqlite3": "^12.0.0",
     "pg": "^8.16.3"
   },
   "devDependencies": {
-    "@types/better-sqlite3": "^7.6.0",
+    "@types/better-sqlite3": "^9.0.0",
     "@types/js-yaml": "^4.0.0",
     "@types/pg": "^8.15.6",
     "@types/node": "^25.5.0",
     "tsx": "^4.22.4",
     "zod-to-json-schema": "^3.25.2"
+  },
+  "engines": {
+    "node": ">=20"
   },
   "license": "Apache-2.0",
   "description": "Shared memory engine for AI agents — learn, recall, forget, feedback",
