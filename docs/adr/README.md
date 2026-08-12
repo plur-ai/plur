@@ -15,6 +15,7 @@ open a PR. Link the issue that prompted the decision in the `Related:` field.
 | 0003 | [Primary store capability — separating "the store" from "the index"](ADR-0003-primary-store-capability.md) | Accepted | 2026-07-26 | — |
 | 0004 | [Concurrency correctness before the async flip](ADR-0004-concurrency-correctness-before-the-async-flip.md) | Accepted | 2026-07-27 | — |
 | 0005 | [The Postgres tier, and what happens to exact search](ADR-0005-postgres-tier-and-vector-index-strategy.md) | Accepted | 2026-07-26 | — |
+| 0006 | [Report only what was confirmed](ADR-0006-report-only-what-was-confirmed.md) | Proposed | 2026-08-12 | — |
 
 ## Notes
 
