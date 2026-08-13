@@ -38,8 +38,37 @@ async function loadPipeline(modelId: string, dtype: TransformersAdapterConfig['d
       // producing corrupt models ("Protobuf parsing failed") that silently
       // degrade recall to fallback. Never use Xet. (#340)
       process.env.HF_HUB_DISABLE_XET ??= '1'
-      const { pipeline } = await import('@huggingface/transformers')
-      return pipeline('feature-extraction', modelId, dtype ? { dtype } : undefined)
+      const transformers = await import('@huggingface/transformers')
+
+      // Let the caller place the model cache (#845).
+      //
+      // transformers.js v3 derives its cache directory from the PACKAGE
+      // LOCATION (`<package>/.cache`) and reads no environment variable —
+      // HF_HOME and TRANSFORMERS_CACHE are both ignored (see its src/env.js).
+      // The only lever is `env.cacheDir`, set before the first pipeline() call,
+      // and that call site is HERE, in core. So for any consumer installing
+      // from npm the model lives inside node_modules, and every `npm ci`
+      // destroys it: a server running from a git checkout re-downloaded ~128MB
+      // per deploy, and an air-gapped host could not work at all.
+      //
+      // That failure is quiet, which is what made it expensive. embed()
+      // returning null is a DELIBERATE degradation — hybrid recall drops to
+      // BM25-only and new records are written without vectors, with nothing
+      // raised. enterprise#662 reached production that way: every "hybrid"
+      // recall on a containerised deployment had been BM25-only since the
+      // feature shipped, and not one engram had ever been embedded.
+      //
+      // Precedence: explicit PLUR var, then the HF convention (honoured here
+      // even though the library ignores it, because operators reasonably expect
+      // it to work), then the library default.
+      const cacheDir = process.env.PLUR_MODEL_CACHE_DIR || process.env.HF_HOME
+      if (cacheDir) {
+        // Assigned before pipeline() — after the first load the value is
+        // already baked into the resolved paths and changing it does nothing.
+        ;(transformers as { env?: { cacheDir?: string } }).env!.cacheDir = cacheDir
+      }
+
+      return transformers.pipeline('feature-extraction', modelId, dtype ? { dtype } : undefined)
     })()
     pipelineCache.set(key, pending)
   }
