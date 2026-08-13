@@ -20,11 +20,20 @@ jobs:
     permissions:
       contents: read
     strategy:
-      # Don't let one node's failure cancel the other — we want the full signal
-      # from both Node versions, not a fail-fast cancellation (#311).
+      # Don't let one node's failure cancel the others — we want the full signal
+      # from every Node version, not a fail-fast cancellation (#311).
       fail-fast: false
       matrix:
-        node-version: [20, 22, 24]
+        # 26 is here because its ABSENCE cost a day (#876). The matrix topped out
+        # at 24, so #874 — better-sqlite3@11 has no ABI-147 prebuild and its
+        # source uses V8 APIs removed in Node 26 — shipped fully green and then
+        # failed ENTIRELY on the workstation it was written on: 55 tests across 8
+        # files, all module-load errors. A native-ABI break is invisible to a
+        # matrix that does not run the version people develop on, and "green CI,
+        # broken locally" is the worst possible signal because the suite stops
+        # being trusted. Track the current Node release here, not just the LTS
+        # line, and expect this list to keep moving.
+        node-version: [20, 22, 24, 26]
     # Real Postgres + pgvector for the PostgresAdapter suite (ADR-0005). The
     # suite skips when PLUR_TEST_POSTGRES_URL is unset, so without this service
     # it would be permanently skipped and permanently unproven — which is worse
