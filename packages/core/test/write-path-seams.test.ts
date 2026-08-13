@@ -188,7 +188,7 @@ describe('#828 learn() write-path seams', () => {
     expect(store.nextIdCalls).toBe(2)
   })
 
-  it('deduplicates through the store and persists the reference_count increment', async () => {
+  it('deduplicates through the store and persists the write_count increment', async () => {
     const store = new CountingStore()
     const plur = new Plur({ path: tempDir(), store, autoDiscover: false })
     await plur.ready()
@@ -203,7 +203,7 @@ describe('#828 learn() write-path seams', () => {
     expect(store.findByHashCalls).toBe(1)
     // The increment landed on the row, not just on the returned object.
     const stored = store.peek().find(e => e.id === original.id)!
-    expect((stored as any).reference_count).toBe(2)
+    expect((stored as any).write_count).toBe(2)
     expect(store.peek().filter(e => e.status === 'active')).toHaveLength(1)
     // No new id was allocated for a duplicate.
     expect(store.nextIdCalls).toBe(0)
@@ -306,7 +306,7 @@ describe('#828 YamlPrimaryStore behaviour is unchanged', () => {
     // Exact dedup in the same scope.
     const dup = await plur.learn('rollbacks are always announced in the channel', { scope: 'global' })
     expect(dup.id).toBe(first.id)
-    expect((dup as any).reference_count).toBe(2)
+    expect((dup as any).write_count).toBe(2)
 
     // Sequential allocation continues from the corpus.
     const second = await plur.learn('a different statement entirely', { scope: 'global' })

@@ -28,7 +28,7 @@ function makeEngram(id: string, statement: string): Engram {
     version: 1,
     engram_version: 1,
     consolidated: false,
-    reference_count: 0,
+    write_count: 0,
     recurrence_count: 0,
     episode_ids: [],
     sources: [],

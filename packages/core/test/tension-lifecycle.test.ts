@@ -241,7 +241,7 @@ describe('confirm / dismiss / resolve (#181)', () => {
 
   it('resolve retires a multiply-learned loser outright (no reference-count games)', async () => {
     const a = await plur.learn('plur cli version is 0.3.0')
-    await plur.learn('plur cli version is 0.3.0', { scope: 'project:other' }) // bump reference_count
+    await plur.learn('plur cli version is 0.3.0', { scope: 'project:other' }) // bump write_count
     const b = await plur.learn('plur cli version is 0.8.2')
     const aStored = await plur.getById(a.id)
     assert(aStored !== null, 'seed engram a was not stored')

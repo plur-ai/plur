@@ -115,7 +115,7 @@ describe('formulateMetaEngram', () => {
       visibility: 'private',
       // Written once by a previous extraction run, never re-learned — the shape
       // formulateMetaEngram() persists for a freshly stored meta-engram.
-      reference_count: 1,
+      write_count: 1, injection_count: 0,
       sources: [{ scope: 'global', session_id: null, stored_at: '2026-03-29T00:00:00.000Z' }],
       recurrence_count: 0,
       engram_version: 1,

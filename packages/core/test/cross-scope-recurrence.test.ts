@@ -13,9 +13,9 @@ import { EngramSchema } from '../src/schemas/engram.js'
  *
  * Contract:
  *   - First learn of statement S at scope X: creates engram with
- *     reference_count: 1, recurrence_count: 0, scope: X
+ *     write_count: 1, recurrence_count: 0, scope: X
  *   - Re-learn of S at SAME scope X: scope-aware hash dedup hit
- *     (the #107 path) → reference_count++, recurrence_count unchanged
+ *     (the #107 path) → write_count++, recurrence_count unchanged
  *   - Re-learn of S at DIFFERENT scope Y: cross-scope recurrence
  *     → recurrence_count goes 0→1, scope unchanged (no broadening yet,
  *       1 cross-scope hit isn't enough evidence)
@@ -116,7 +116,7 @@ describe('cross-scope recurrence (#176)', () => {
       const secondaryDir = mkdtempSync(join(tmpdir(), 'plur-secondary-legacy-'))
       const secondaryPath = join(secondaryDir, 'engrams.yaml')
       const legacyStmt = 'legacy rule that pre-dates ref-counting'
-      // Build a legacy engram via schema defaults — no reference_count, no
+      // Build a legacy engram via schema defaults — no write_count, no
       // sources, no recurrence_count in the input → all defaulted on parse.
       const legacy = EngramSchema.parse({
         id: 'ENG-LEGACY-001',
@@ -238,7 +238,7 @@ describe('cross-scope recurrence (#176)', () => {
 
       expect(second.id).toBe(first.id)
       expect(second.recurrence_count).toBe(0)   // unchanged — not a cross-scope event
-      expect(second.reference_count).toBe(2)    // #107 path bumped this
+      expect(second.write_count).toBe(2)    // #107 path bumped this
       expect(second.scope).toBe('project:a')    // no broadening
     })
 
@@ -263,21 +263,21 @@ describe('cross-scope recurrence (#176)', () => {
       expect(fresh.recurrence_count).toBe(0)
     })
 
-    it('force forget (#766): cross-scope recurrence bumps reference_count to 2; force=true retires in one call', async () => {
+    it('force forget (#766): cross-scope recurrence bumps write_count to 2; force=true retires in one call', async () => {
       // Learn at global — simulates a prior session's engram
       const eng = await plur.learn('comms rule', { scope: 'global' })
-      expect((eng as any).reference_count).toBe(1)
+      expect((eng as any).write_count).toBe(1)
 
-      // Cross-scope relearn → reference_count=2, same engram returned
+      // Cross-scope relearn → write_count=2, same engram returned
       const relearned = await plur.learn('comms rule', { scope: 'group:team/comms' })
       expect(relearned.id).toBe(eng.id)  // cross-scope recurrence matched, same ID
-      expect((relearned as any).reference_count).toBe(2)
+      expect((relearned as any).write_count).toBe(2)
 
       // Without force: one forget only decrements → still active
       await plur.forget(eng.id)
       const afterDecrement = await plur.getById(eng.id)
       expect(afterDecrement?.status).toBe('active')
-      expect((afterDecrement as any).reference_count).toBe(1)
+      expect((afterDecrement as any).write_count).toBe(1)
 
       // With force: one call retires completely (#766 fix)
       await plur.forget(eng.id, undefined, { force: true })

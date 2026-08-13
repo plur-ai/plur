@@ -18,7 +18,7 @@
   },
   "devDependencies": {
     "@types/node": "^25.5.0",
-    "better-sqlite3": "^11.0.0"
+    "better-sqlite3": "^12.0.0"
   },
   "peerDependencies": {
     "@plur-ai/core": ">=0.3.0"
@@ -27,6 +27,9 @@
     "@plur-ai/core": {
       "optional": false
     }
+  },
+  "engines": {
+    "node": ">=20"
   },
   "license": "Apache-2.0",
   "description": "PLUR CLI — persistent memory for AI agents from the command line",

@@ -647,11 +647,17 @@
       "type": "string",
       "description": "Why this engram was locked."
     },
-    "reference_count": {
+    "write_count": {
       "type": "integer",
       "minimum": 0,
       "default": 1,
-      "description": "Number of write attempts that resolved to this engram (same-scope re-learns). Engram retires only when this reaches 0."
+      "description": "Number of learn() write attempts that resolved to this engram (same-scope re-learns). Engram retires only when this reaches 0. Renamed from reference_count (#866)."
+    },
+    "injection_count": {
+      "type": "integer",
+      "minimum": 0,
+      "default": 0,
+      "description": "Number of times this engram was injected into session context. Distinct from activation.frequency (recall events). Use with feedback_signals for efficacy auditing (#866)."
     },
     "sources": {
       "type": "array",

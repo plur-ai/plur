@@ -22,7 +22,7 @@ describe('progressive disclosure', () => {
     // Schema defaults, spelled out because WireEngram requires them.
     // `associations` is deliberately absent — stripAssociations() removes it
     // before anything reaches these formatters.
-    reference_count: 1, sources: [], recurrence_count: 0,
+    write_count: 1, injection_count: 0, sources: [], recurrence_count: 0,
     engram_version: 1, episode_ids: [],
     ...overrides,
   })

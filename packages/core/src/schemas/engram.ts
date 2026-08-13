@@ -347,12 +347,20 @@ export const EngramSchema = z.object({
   locked_at: z.string().optional().describe("Timestamp when commitment reached 'locked'."),
   locked_reason: z.string().optional().describe('Why this engram was locked.'),
 
-  // === SP1: Reference counting (issue #107) ===
-  /** Number of write attempts that resolved to this engram.
+  // === SP1: Reference counting (issue #107, renamed #866) ===
+  /** Number of learn() write attempts that resolved to this engram.
    * Incremented on every hash-dedup hit; decremented by forget().
-   * Engram physically retires only when this reaches 0. */
-  reference_count: z.number().int().min(0).default(1)
-    .describe('Number of write attempts that resolved to this engram (same-scope re-learns). Engram retires only when this reaches 0.'),
+   * Engram physically retires only when this reaches 0.
+   * Renamed from reference_count (#866) — backfill runs on first parse of old stores. */
+  write_count: z.number().int().min(0).default(1)
+    .describe('Number of learn() write attempts that resolved to this engram (same-scope re-learns). Engram retires only when this reaches 0. Renamed from reference_count (#866).'),
+
+  /** Number of times this engram was selected into a session's injection context.
+   * Distinct from activation.frequency (which counts recall() retrieval events, not
+   * inject() selections). High injection_count + low feedback_signals.positive is a
+   * signal for #865 efficacy detection. Incremented in the inject path (#866). */
+  injection_count: z.number().int().min(0).default(0)
+    .describe('Number of times this engram was injected into session context. Distinct from activation.frequency (recall events). Use with feedback_signals for efficacy auditing (#866).'),
   /** Provenance of each write attempt. One entry per write (including the
    * first). Migrated old engrams without this field start with []. */
   sources: z.array(z.object({
@@ -364,7 +372,7 @@ export const EngramSchema = z.object({
   // === SP1: Cross-scope recurrence (issue #176) ===
   /** Number of times this engram's content was re-learned at a DIFFERENT
    * scope than the original. Triggers auto-broadening + commitment
-   * escalation when threshold is crossed. Distinct from reference_count
+   * escalation when threshold is crossed. Distinct from write_count
    * (which counts re-learns in the SAME scope) — recurrence_count is
    * evidence of universal applicability, not just repetition. */
   recurrence_count: z.number().int().min(0).default(0)

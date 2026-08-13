@@ -8,7 +8,7 @@ import { getToolDefinitions } from '../src/tools.js'
 
 /**
  * A meta-engram as the extraction pipeline persists it: written once by the run
- * that produced it, never re-learned, so reference_count is 1 against a single
+ * that produced it, never re-learned, so write_count is 1 against a single
  * source entry and the recurrence/version/episode counters are all at their
  * freshly-stored values.
  */
@@ -22,7 +22,7 @@ function makeMeta(id: string, statement: string, overrides: Partial<Engram> = {}
     feedback_signals: { positive: 0, negative: 0, neutral: 0 },
     knowledge_anchors: [], associations: [], derivation_count: 1,
     pack: null, abstract: null, derived_from: null, polarity: null,
-    reference_count: 1,
+    write_count: 1, injection_count: 0,
     sources: [{ scope: 'global', session_id: null, stored_at: '2026-03-29T00:00:00.000Z' }],
     recurrence_count: 0,
     engram_version: 1,
