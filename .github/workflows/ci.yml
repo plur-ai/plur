@@ -126,6 +126,79 @@ jobs:
   # scripts/smoke-release.sh covered exactly that and nothing invoked it, so it
   # could only catch anything when someone remembered to run it by hand. One
   # Node version is enough: this checks packaging, not runtime compatibility.
+  # Calibration for the #854 cosine dedup bar. Loads the real BGE-small model,
+  # so it is NOT part of the default suite (offline-safe) and NOT part of the
+  # test matrix (model download per Node version would be three downloads for
+  # one answer).
+  #
+  # Path-filtered on purpose. The threshold rests on an empirical claim —
+  # enriched duplicates land above 0.95, enriched DISTINCT statements below —
+  # and that claim can only be invalidated by changing the embedder, the
+  # enrichment fields, or the bar itself. Those are exactly the paths below.
+  # A code-path regression (comparing bare text again) is caught by the fast
+  # stubbed test in dedup-cosine.test.ts, which runs on every PR.
+  #
+  # Non-blocking: a model fetch is a network dependency, and a check that goes
+  # red for reasons unrelated to the diff trains people to ignore red.
+  dedup-calibration:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history: the comparison below needs the PR base commit, which a
+          # shallow clone does not have.
+          fetch-depth: 0
+      - name: Did this diff touch the embedder, the enrichment, or the bar?
+        id: relevant
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          # Compare against the PR BASE, not HEAD^.
+          #
+          # `git diff HEAD^ HEAD` sees only the most recent commit, so a PR that
+          # changed learn-async.ts and then pushed a docs-only follow-up would
+          # skip calibration and report green — a check that silently declines to
+          # run is indistinguishable from one that passed, which is the failure
+          # this job exists to catch elsewhere.
+          BASE="$BASE_SHA"
+          if [ -z "$BASE" ] || [ "$BASE" = "0000000000000000000000000000000000000000" ] \
+             || ! git cat-file -e "$BASE^{commit}" 2>/dev/null; then
+            # New branch, or a base we cannot resolve: fail OPEN and calibrate.
+            echo "base '$BASE' unusable — running calibration rather than assuming it is unnecessary"
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          CHANGED=$(git diff --name-only "$BASE" HEAD)
+          echo "changed files vs $BASE:"
+          echo "$CHANGED"
+          if echo "$CHANGED" | grep -qE 'packages/core/src/(embeddings|fts|learn-async)\.ts|packages/core/src/embedders/|packages/core/src/schemas/config\.ts|dedup-threshold-calibration'; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "SKIPPING: no change to the embedder, the enrichment fields, or the bar."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: pnpm/action-setup@v4
+        if: steps.relevant.outputs.run == 'true'
+        with:
+          # Required: package.json carries no `packageManager` key, so the
+          # action cannot infer it. Same pin as the other two jobs.
+          version: 9
+      - uses: actions/setup-node@v4
+        if: steps.relevant.outputs.run == 'true'
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+        if: steps.relevant.outputs.run == 'true'
+      - name: Calibrate the dedup threshold against the real embedder
+        if: steps.relevant.outputs.run == 'true'
+        env:
+          PLUR_EMBEDDER_NETWORK_TESTS: '1'
+        run: npx vitest run --project @plur-ai/core packages/core/test/dedup-threshold-calibration.test.ts --reporter=verbose
+
   smoke-packaged:
     runs-on: ubuntu-latest
     permissions:

@@ -8,10 +8,21 @@ import { appendHistory } from './history.js'
 import { logger } from './logger.js'
 import { withAsyncLock } from './store/async-lock.js'
 import { maybeDailyBackup } from './backup.js'
+import { searchTextFrom } from './fts.js'
 import type { Engram } from './schemas/engram.js'
 import type { AsyncPrimaryStore } from './store/primary-store.js'
 import type { SecretMatch } from './secrets.js'
 import type { LearnContext, LearnAsyncContext, LearnAsyncResult, LearnBatchResult, LearnBatchFailure, DedupDecision, LlmFunction } from './types.js'
+
+/**
+ * Similarity below which a near-duplicate observation is not worth recording.
+ *
+ * Deliberately below every measured duplicate AND every measured distinct pair
+ * (lowest observed: 0.8339), so the recorded distribution spans the whole band
+ * where a future write gate might sit. Raising this narrows the evidence the
+ * decision will eventually be made from — the mistake this pass is undoing.
+ */
+export const NEAR_DUPLICATE_OBSERVATION_FLOOR = 0.75
 
 export interface LearnAsyncDeps {
   /** Content hash dedup against all engrams. Scope-aware: only matches same scope. */
@@ -40,6 +51,17 @@ export interface LearnAsyncDeps {
   rootPath: string
   /** Dedup config. */
   dedupConfig: { enabled?: boolean; threshold?: number; mode?: string }
+  /**
+   * Local similarity scores for `statement` against `candidates` (#854).
+   *
+   * OPTIONAL: when absent — embedder disabled, or a caller constructing deps by
+   * hand — dedup degrades to hash-only and says so, rather than silently taking
+   * the ADD default as it did before.
+   */
+  similarityScores?: (
+    statement: string,
+    candidates: Engram[],
+  ) => Promise<Array<{ id: string; score: number }>>
   /** Circuit breaker check. */
   isLlmAvailable: () => boolean
   /** Record LLM success. */
@@ -287,6 +309,25 @@ export async function learnAsync(
   }
 
   // Step 2: Check dedup config
+  //
+  // `threshold` is a REPORTING floor, not a write gate. Cosine similarity never
+  // suppresses a write — see the reporting block in step 4 for why the gate was
+  // removed rather than tuned.
+  //
+  // Measured with the shipped BGE-small embedder, comparing ENRICHED text on
+  // both sides:
+  //
+  //   0.8512  DISTINCT   staging port 8080 vs 8081
+  //   0.8826  DISTINCT   "Always rebase before pushing" vs "Never ..."
+  //   0.9878  DUPLICATE  the #854 pair, fixtures contexted on BOTH sides
+  //   0.8339  DUPLICATE  the SAME pair as actually written (twin had no
+  //                      domain, no rationale) — below every candidate bar
+  //
+  // That last row is the one that matters: the real duplicates are the
+  // under-contexted ones, and they score below the distinct pairs. There is no
+  // value of `threshold` that separates them, which is why this reports rather
+  // than decides. 0.85 is a deliberately low floor chosen to capture the
+  // distribution around the interesting band, not to assert a duplicate.
   const { enabled = true, threshold = 0.85, mode = 'llm' } = deps.dedupConfig
   if (!enabled || mode === 'off') {
     return { engram: await deps.learn(statement, context), decision: 'ADD' }
@@ -316,12 +357,21 @@ export async function learnAsync(
     return { engram: await deps.learn(statement, context), decision: 'ADD' }
   }
 
-  // Step 4: LLM or cosine-only decision
+  // Step 4: decide — LLM if one is available, otherwise local cosine (#854).
+  //
+  // This branch used to fall straight through to the `ADD` default when no LLM
+  // was configured, discarding the candidates fetched above unread. The
+  // comments claimed a cosine fallback; none was ever written, and `threshold`
+  // was destructured and never read. On any install without an LLM key that
+  // made dedup exact-hash-only, so every reworded near-duplicate was written.
   const llm = context?.llm
   let decision: DedupDecision = 'ADD'
   let targetId: string | null = null
+  let dedupMode: 'llm' | 'cosine' | 'hash-only' = 'hash-only'
+  let nearDuplicates: Array<{ id: string; score: number }> | undefined
 
   if (mode === 'llm' && llm && deps.isLlmAvailable()) {
+    dedupMode = 'llm'
     try {
       const prompt = buildDedupPrompt(
         statement,
@@ -333,15 +383,101 @@ export async function learnAsync(
       targetId = parsed.target_id
       deps.recordLlmSuccess()
     } catch (err) {
-      logger.warning(`LLM dedup failed, falling back to cosine: ${err}`)
+      logger.warning(`LLM dedup failed, falling back to local similarity: ${err}`)
       deps.recordLlmFailure()
       decision = 'ADD'
+      dedupMode = 'hash-only'
     }
   }
-  // cosine mode: conservative ADD (hash-only NOOP already handled)
+
+  // Local similarity path — zero API calls, works offline, which is the
+  // property core is supposed to hold. Runs when no LLM decided above.
+  if (dedupMode !== 'llm' && deps.similarityScores) {
+    try {
+      // Enrich the incoming side the SAME way stored engrams are enriched, so
+      // this is a like-for-like comparison. Stored engrams embed
+      // `engramSearchText` output; embedding a bare statement against that
+      // compares a fragment to fully-contexted records, and measurably
+      // collapses the two classes together (distinct pair 0.9749 bare ->
+      // 0.8512 enriched; real duplicate 0.9689 -> 0.9878).
+      const query = searchTextFrom({
+        statement,
+        domain: context?.domain,
+        tags: context?.tags,
+        rationale: context?.rationale,
+        source: context?.source,
+        dual_coding: context?.dual_coding as never,
+        knowledge_anchors: context?.knowledge_anchors as never,
+      })
+      const scores = (await deps.similarityScores(query, candidates))
+        .slice()
+        .sort((a, b) => b.score - a.score)
+      if (scores.length > 0) {
+        dedupMode = 'cosine'
+        nearDuplicates = scores.slice(0, 3)
+        // REPORTING ONLY — cosine never gates a write (#856 audit).
+        //
+        // The gate was removed rather than retuned, because the audit showed
+        // the bar could not have worked at any value. The fixtures that
+        // justified 0.95 gave both sides an identical domain, tags and
+        // rationale; the ten pairs from #854 did NOT — their second copy had no
+        // domain and no rationale, which is defect 2 of that same issue. Scored
+        // as actually written the pair sits at 0.8339, below 0.95 and below even
+        // the old 0.85, so NONE of the reported duplicates would have been
+        // caught. Production enriches only the incoming side from the write's
+        // own context, so an under-contexted write is structurally compared
+        // against a fully-contexted stored engram, and the symmetry the design
+        // rested on does not hold for exactly the writes that produce duplicates.
+        //
+        // A bar guessed from paired fixtures would therefore have bought a real
+        // false-NOOP risk — a memory silently not stored, the worst outcome this
+        // product has — while not fixing #854. So: emit the observation, build a
+        // distribution from real writes, and set a bar from that if the data
+        // supports one. `threshold` is retained as the REPORTING floor below,
+        // not as a write gate.
+        //
+        // This also disposes of the cross-scope hazard the audit raised: an
+        // unscoped write that auto-routes to a team scope can no longer NOOP
+        // against a `global` near-duplicate, because nothing NOOPs.
+        const top = scores[0]
+        if (top.score >= NEAR_DUPLICATE_OBSERVATION_FLOOR) {
+          // History is what makes the distribution measurable after the fact.
+          // Without it, "measure over the real store" means re-embedding the
+          // corpus and guessing which pairs were writes.
+          try {
+            appendHistory(deps.rootPath, {
+              event: 'dedup_near_duplicate',
+              engram_id: top.id,
+              timestamp: new Date().toISOString(),
+              data: {
+                statement: statement.slice(0, 200),
+                top_score: Number(top.score.toFixed(4)),
+                reporting_threshold: threshold,
+                above_reporting_threshold: top.score >= threshold,
+                scope: context?.scope ?? null,
+                // The asymmetry that broke the bar. Recorded per write so the
+                // distribution can be split by it instead of averaging over it.
+                incoming_has_domain: Boolean(context?.domain),
+                incoming_has_rationale: Boolean(context?.rationale),
+              },
+            })
+          } catch (err) {
+            logger.warning(`could not record near-duplicate observation: ${err}`)
+          }
+        }
+      }
+    } catch (err) {
+      // Similarity is an optimisation, never a gate on writing. Falling back
+      // to ADD is correct; claiming a cosine decision we did not make is not.
+      logger.warning(`local similarity dedup unavailable, adding without it: ${err}`)
+      dedupMode = 'hash-only'
+      nearDuplicates = undefined
+    }
+  }
 
   // Step 5: Execute
-  return executeDedupDecision(deps, statement, context, decision, targetId)
+  const executed = await executeDedupDecision(deps, statement, context, decision, targetId)
+  return { ...executed, dedup: { mode: dedupMode, ...(nearDuplicates ? { near_duplicates: nearDuplicates } : {}) } }
 }
 
 /** Options for learnBatch. */
@@ -389,7 +525,7 @@ export async function learnBatch(
       if (llmCallsUsed >= maxLlmCalls) {
         effectiveLlm = undefined
         if (!capWarned) {
-          logger.warning(`learnBatch: maxLlmCalls (${maxLlmCalls}) reached — remaining statements use cosine/ADD dedup`)
+          logger.warning(`learnBatch: maxLlmCalls (${maxLlmCalls}) reached — remaining statements fall back to local cosine dedup (see each result's dedup.mode)`)
           capWarned = true
         }
       } else {
