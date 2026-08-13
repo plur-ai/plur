@@ -1419,7 +1419,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
         properties: {
           id: { type: 'string', description: 'Exact engram ID to retire' },
           search: { type: 'string', description: 'Search term to find engram to retire' },
-          scope: { type: 'string', description: 'Which store holds it (#831). Ids are minted per store, so one id can name several unrelated engrams. Pass "primary" for the local store, or a remote scope (e.g. "group:plur/plur-ai/engineering"). Omit it and an id resolving in two places is refused rather than guessed.' },
+          scope: { type: 'string', description: 'Which store holds it (#831). Ids are minted per store, so one id can name several unrelated engrams. Pass "primary" to stay on disk — the local primary store and any local secondary stores, never a remote — or a remote scope (e.g. "group:plur/plur-ai/engineering") to target that server. A scope matching no configured store is rejected, not guessed at. Omit it and an id resolving in two places is refused.' },
         },
       },
       handler: async (args, plur) => {
