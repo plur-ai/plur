@@ -2671,6 +2671,13 @@ export class Plur {
     context?: LearnContext,
     excludeId?: string,
   ): Promise<{ mode: 'cosine' | 'hash-only'; near_duplicates?: Array<{ id: string; score: number }> }> {
+    // Respect the existing dedup switches. This costs a bounded recall plus one
+    // query embedding on every learn, which is a real addition to a hot path —
+    // so `dedup.enabled: false` or `mode: 'off'` must turn it off, exactly as
+    // they turn off the batch path's similarity pass. Reporting is worth paying
+    // for by default; it should not be unavoidable.
+    const dedupCfg = this.config.dedup ?? {}
+    if (dedupCfg.enabled === false || dedupCfg.mode === 'off') return { mode: 'hash-only' }
     try {
       let candidates: Engram[] = []
       try {
