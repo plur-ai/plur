@@ -174,7 +174,7 @@ jobs:
           CHANGED=$(git diff --name-only "$BASE" HEAD)
           echo "changed files vs $BASE:"
           echo "$CHANGED"
-          if echo "$CHANGED" | grep -qE 'packages/core/src/(embeddings|fts|learn-async)\.ts|dedup-threshold-calibration'; then
+          if echo "$CHANGED" | grep -qE 'packages/core/src/(embeddings|fts|learn-async)\.ts|packages/core/src/embedders/|packages/core/src/schemas/config\.ts|dedup-threshold-calibration'; then
             echo "run=true" >> "$GITHUB_OUTPUT"
           else
             echo "SKIPPING: no change to the embedder, the enrichment fields, or the bar."

@@ -73,13 +73,33 @@ describe('cosine dedup without an LLM (#854)', () => {
   const restatement =
     'Time Machine does not exclude node_modules or reinstallable build artifacts; clean them first'
 
-  it('NOOPs a near-duplicate instead of adding a second copy', async () => {
+  // Was 'NOOPs a near-duplicate instead of adding a second copy'.
+  //
+  // Cosine no longer suppresses a write (#856 audit). The gate was removed
+  // rather than retuned because the fixtures that justified a bar contexted
+  // both sides identically, and the duplicates that actually occur do not —
+  // the #854 pair as really written scores ~0.83, below the DISTINCT pairs, so
+  // no bar separates the classes. A gate would therefore have carried a real
+  // false-NOOP risk (a memory silently not stored) while still missing the
+  // duplicates it was built for.
+  it('REPORTS a near-duplicate at high similarity but still writes it', async () => {
     const deps = makeDeps([{ id: candidate.id, score: 0.96 }])
 
     const result = await learnAsync(deps, restatement)
 
-    expect(result.decision).toBe('NOOP')
-    expect(result.existing_id).toBe(candidate.id)
+    expect(result.decision).toBe('ADD')
+    expect(result.existing_id).toBeUndefined()
+    expect(result.engram.id).toBe('ENG-NEW-001')
+    expect(result.dedup?.mode).toBe('cosine')
+    expect(result.dedup?.near_duplicates?.[0]).toMatchObject({ id: candidate.id, score: 0.96 })
+  })
+
+  it('never suppresses a write, however similar the closest candidate is', async () => {
+    const deps = makeDeps([{ id: candidate.id, score: 0.999 }])
+
+    const result = await learnAsync(deps, restatement)
+
+    expect(result.decision).toBe('ADD')
   })
 
   it('still ADDs when nothing is close enough', async () => {

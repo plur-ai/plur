@@ -919,6 +919,10 @@ function getAllToolDefinitions(): ToolDefinition[] {
       name: 'plur_learn',
       description:
         'Create an engram — record a reusable learning, preference, or correction. ' +
+        'A write is never suppressed by similarity: exact content-hash duplicates NOOP, and anything merely SIMILAR ' +
+        'is written and reported back in `dedup.near_duplicates` (closest existing engrams and their cosine scores) ' +
+        'so you can supersede or merge deliberately. High similarity is a reason to look, not a decision — cosine ' +
+        'cannot tell a duplicate from a correction of it. ' +
         'Multi-agent note: in an orchestration that spawns subagents, have the PARENT session own plur_learn writes — ' +
         'spawned subagents should return their findings as text for the parent to persist, rather than each calling ' +
         'plur_learn (tool availability is not guaranteed in every subagent context). See plur-ai/plur#281.',
@@ -1058,11 +1062,21 @@ function getAllToolDefinitions(): ToolDefinition[] {
           mcpCanary.signal('learn_activity')
           // Opt-in, content-free engagement counter (default-off; no statement text).
           recordTelemetry('learn')
+          // Near-duplicate REPORTING (#856). This path only ever had exact
+          // content-hash dedup — learnAsync, and with it the similarity pass,
+          // is reachable solely from plur_learn_batch — so the dominant write
+          // path had no near-duplicate visibility, which is how #854 happened
+          // on it. Reporting only: never blocks or alters the write, and runs
+          // after it so a reporting failure cannot cost a memory.
+          const dedup = isOutbox
+            ? undefined
+            : await plur.nearDuplicates(statement, context, engram.id)
           return {
             id: engram.id, statement: engram.statement,
             scope: engram.scope, type: engram.type,
             pinned: (engram as any).pinned === true,
             decision: 'ADD',
+            ...(dedup?.near_duplicates?.length ? { dedup } : {}),
             ...temporalEcho(engram),
             ...scopeHint(engram.scope, !!routed),
             ...domainHint(!!routed),
@@ -1097,8 +1111,11 @@ function getAllToolDefinitions(): ToolDefinition[] {
       description:
         'Create many engrams in one call — the batch form of plur_learn. Accepts an array of engram objects and ' +
         'writes them sequentially through the SAME dedup + policy pipeline as plur_learn (content-hash NOOP → semantic ' +
-        'recall → LLM ADD/UPDATE/MERGE decision). Dedup also applies WITHIN the batch: a statement duplicating an ' +
-        'earlier item in the same array resolves to NOOP against it. Returns `ids` aligned 1:1 with the input array ' +
+        'recall → LLM ADD/UPDATE/MERGE decision, or local cosine REPORTING when no LLM is configured). Exact-hash dedup ' +
+        'also applies WITHIN the batch: a statement duplicating an earlier item in the same array resolves to NOOP ' +
+        'against it. Similarity never suppresses a write — each result carries `dedup.mode` (llm | cosine | hash-only) ' +
+        'and, when similarity ran, `dedup.near_duplicates`. Read dedup.mode before trusting an ADD: hash-only means ' +
+        '"not identical", NOT "not a duplicate". Returns `ids` aligned 1:1 with the input array ' +
         '(ids[i] is the engram id for input i, or null if input i failed), the per-item decisions (each carrying its ' +
         'input_index), aggregate stats, and any per-item failures (each with its input index) — a single bad item ' +
         'does not abort the batch. Use this when an orchestration fans out and wants to persist consolidated findings without N ' +
@@ -1205,6 +1222,10 @@ function getAllToolDefinitions(): ToolDefinition[] {
             type: r.engram.type,
             decision: r.decision,
             ...(r.existing_id ? { existing_id: r.existing_id } : {}),
+            // #856 audit: `dedup` was computed and then dropped here, so the
+            // reporting it exists for reached no caller — "anything below the
+            // bar is still reported" was not observable anywhere.
+            ...(r.dedup ? { dedup: r.dedup } : {}),
           })),
           stats,
           ...batchDomainHint,

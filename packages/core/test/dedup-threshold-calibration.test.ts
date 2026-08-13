@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { embed, cosineSimilarity, embedderStatus } from '../src/embeddings.js'
 import { searchTextFrom } from '../src/fts.js'
+import { NEAR_DUPLICATE_OBSERVATION_FLOOR } from '../src/learn-async.js'
 
 /**
  * Calibration for the #854 cosine dedup bar. Runs the REAL embedder.
@@ -51,8 +52,12 @@ import { searchTextFrom } from '../src/fts.js'
 
 const NETWORK = process.env.PLUR_EMBEDDER_NETWORK_TESTS === '1'
 
-/** The default the dedup path uses. Kept here so a drift shows up as a failure. */
-const THRESHOLD = 0.95
+/**
+ * Imported, NOT re-declared. The previous revision hardcoded its own copy of
+ * the bar and claimed "kept here so a drift shows up as a failure" — which was
+ * false: changing the production value would not have failed this test.
+ */
+const FLOOR = NEAR_DUPLICATE_OBSERVATION_FLOOR
 
 interface Fixture {
   label: string
@@ -179,31 +184,88 @@ describe.skipIf(!NETWORK)('dedup threshold calibration (#854, real embedder)', (
     ]
     // Printed unconditionally: the point of running this is to READ the numbers,
     // not merely to see it pass.
-    console.log(`\nthreshold = ${THRESHOLD}\n${rows.join('\n')}\n`)
+    console.log(`\nobservation floor = ${FLOOR}\n${rows.join('\n')}\n`)
 
     const worstDistinct = Math.max(...distinct.map(([, s]) => s))
     const bestDistinctLabel = distinct.find(([, s]) => s === worstDistinct)![0]
     const weakestDuplicate = Math.min(...duplicate.map(([, s]) => s))
 
-    // 1. No DISTINCT pair may be suppressed. This is the data-loss direction:
-    //    a false NOOP silently declines to store a memory.
-    expect(
-      worstDistinct,
-      `"${bestDistinctLabel}" scores ${worstDistinct.toFixed(4)} >= threshold ${THRESHOLD} — it would be silently suppressed`,
-    ).toBeLessThan(THRESHOLD)
-
-    // 2. Every DUPLICATE must still be caught, or the bar does nothing.
+    // WHAT THIS ASSERTS NOW, and why it changed (#856 audit).
+    //
+    // The previous revision asserted a SEPARATING bar: no distinct pair above
+    // 0.95, every duplicate at or above it. Those assertions passed, and were
+    // still not evidence that a gate would work — because every fixture gave
+    // both sides an identical domain, tags and rationale, and the duplicates
+    // that actually occur do not. See the ASYMMETRIC test below: the very pair
+    // from #854, scored as it was really written, lands at ~0.83 — beneath the
+    // distinct pairs. No single bar separates the real classes, so the gate was
+    // removed and this file now calibrates REPORTING instead.
+    //
+    // 1. Every duplicate must clear the observation floor, or it is never even
+    //    reported and the pass is decorative.
     expect(
       weakestDuplicate,
-      `weakest duplicate scores ${weakestDuplicate.toFixed(4)} < threshold ${THRESHOLD} — the bar no longer catches known duplicates`,
-    ).toBeGreaterThanOrEqual(THRESHOLD)
+      `weakest duplicate scores ${weakestDuplicate.toFixed(4)} < floor ${FLOOR} — it would not be reported at all`,
+    ).toBeGreaterThanOrEqual(FLOOR)
 
-    // 3. The classes must not merely straddle the bar, they must be SEPARATED.
-    //    A gap this small would mean the bar is luck rather than a decision.
+    // 2. The floor must stay below the distinct pairs' scores too — reporting
+    //    is meant to capture the whole interesting band, including the pairs a
+    //    future gate would have to NOT suppress. A floor above them would hide
+    //    exactly the evidence needed to decide whether a gate is possible.
     expect(
-      weakestDuplicate - worstDistinct,
-      `separation is ${(weakestDuplicate - worstDistinct).toFixed(4)} — too narrow to justify any threshold`,
-    ).toBeGreaterThan(0.03)
+      FLOOR,
+      `floor ${FLOOR} is above the distinct pair "${bestDistinctLabel}" at ${worstDistinct.toFixed(4)} — the recorded distribution would be truncated`,
+    ).toBeLessThan(worstDistinct)
+  }, 180_000)
+
+  // The measurement that removed the gate. Pinned as a test so the reasoning
+  // cannot quietly stop being true — if a future embedder closes this gap, a
+  // write gate becomes arguable again, and this is where that shows up.
+  it('asymmetric context defeats any fixed bar — this is why nothing is suppressed', async () => {
+    // The #854 pair AS ACTUALLY WRITTEN. The twin was generated from the
+    // statements alone, so it carries no domain and no rationale — that is
+    // defect 2 of the same issue. Production enriches the incoming side from
+    // the write's own context only, so an under-contexted write is compared
+    // against a fully-contexted stored engram.
+    const stored = searchTextFrom({
+      statement: 'Time Machine does not exclude node_modules or other reinstallable build artifacts',
+      domain: 'infrastructure.backup',
+      tags: ['timemachine', 'backup'],
+      rationale: 'Backups balloon because reinstallable trees are treated as user data.',
+    })
+    const incomingBare = searchTextFrom({
+      statement: 'Time Machine does not exclude node_modules or reinstallable build artifacts; clean them first',
+    })
+    const ea = await embed(stored)
+    const eb = await embed(incomingBare)
+    if (!ea || !eb) throw new Error('embedder returned null — cannot calibrate')
+    const asymmetric = cosineSimilarity(ea, eb)
+
+    const symmetric = await score(DUPLICATE[0])
+    const worstDistinct = Math.max(...(await Promise.all(DISTINCT.map(score))))
+
+    console.log(
+      `\n#854 pair, both sides contexted : ${symmetric.toFixed(4)}  (a bar would catch this)` +
+      `\n#854 pair, as actually written  : ${asymmetric.toFixed(4)}  (a bar would MISS this)` +
+      `\nworst DISTINCT pair             : ${worstDistinct.toFixed(4)}\n`,
+    )
+
+    // A real duplicate scoring BELOW a genuinely-distinct pair is the whole
+    // argument: the two classes overlap, so no threshold separates them and
+    // any gate would both miss duplicates and risk suppressing corrections.
+    expect(
+      asymmetric,
+      `asymmetric duplicate ${asymmetric.toFixed(4)} no longer sits below the worst distinct pair ` +
+      `${worstDistinct.toFixed(4)} — the classes may have become separable, so a write gate is worth re-deriving`,
+    ).toBeLessThan(worstDistinct)
+
+    // …and it must still clear the reporting floor, or the pairs that actually
+    // occur would be invisible in the recorded distribution.
+    expect(
+      asymmetric,
+      `asymmetric duplicate ${asymmetric.toFixed(4)} is below the reporting floor ${FLOOR} — ` +
+      `the real duplicates would not even be observed`,
+    ).toBeGreaterThanOrEqual(FLOOR)
   }, 180_000)
 
   it('enrichment is what creates the separation — bare statements invert it', async () => {

@@ -77,6 +77,14 @@ export const ProfileConfigSchema = z.object({
 
 export const DedupConfigSchema = z.object({
   enabled: z.boolean().default(true),
+  /**
+   * Similarity at or above which a near-duplicate is flagged in the write
+   * result. REPORTING ONLY — it does not suppress a write (#856). Kept in sync
+   * with the runtime default in learn-async.ts, which is the value that
+   * actually applies when this key is absent (`.partial()` suppresses the Zod
+   * default, so a mismatch here is invisible at runtime and misleads whoever
+   * reads the schema to find out what the default is).
+   */
   threshold: z.number().min(0).max(1).default(0.85),
   mode: z.enum(['llm', 'cosine', 'off']).default('llm'),
 }).partial()

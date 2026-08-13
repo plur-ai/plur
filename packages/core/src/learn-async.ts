@@ -14,6 +14,16 @@ import type { AsyncPrimaryStore } from './store/primary-store.js'
 import type { SecretMatch } from './secrets.js'
 import type { LearnContext, LearnAsyncContext, LearnAsyncResult, LearnBatchResult, LearnBatchFailure, DedupDecision, LlmFunction } from './types.js'
 
+/**
+ * Similarity below which a near-duplicate observation is not worth recording.
+ *
+ * Deliberately below every measured duplicate AND every measured distinct pair
+ * (lowest observed: 0.8339), so the recorded distribution spans the whole band
+ * where a future write gate might sit. Raising this narrows the evidence the
+ * decision will eventually be made from — the mistake this pass is undoing.
+ */
+export const NEAR_DUPLICATE_OBSERVATION_FLOOR = 0.75
+
 export interface LearnAsyncDeps {
   /** Content hash dedup against all engrams. Scope-aware: only matches same scope. */
   hashDedup: (statement: string, scope?: string) => Promise<Engram | null>
@@ -299,28 +309,26 @@ export async function learnAsync(
   }
 
   // Step 2: Check dedup config
-  // 0.95, chosen from measurement rather than from the declared default.
   //
-  // The old default was 0.85 and was never read, so it carries no evidence.
+  // `threshold` is a REPORTING floor, not a write gate. Cosine similarity never
+  // suppresses a write — see the reporting block in step 4 for why the gate was
+  // removed rather than tuned.
+  //
   // Measured with the shipped BGE-small embedder, comparing ENRICHED text on
-  // both sides (see the query construction below — that symmetry is what makes
-  // these numbers usable at all):
+  // both sides:
   //
-  //   0.8512  DISTINCT  staging port 8080 vs 8081
-  //   0.8826  DISTINCT  "Always rebase before pushing" vs "Never ..."
-  //   0.9878  DUPLICATE the #854 pair that prompted this
+  //   0.8512  DISTINCT   staging port 8080 vs 8081
+  //   0.8826  DISTINCT   "Always rebase before pushing" vs "Never ..."
+  //   0.9878  DUPLICATE  the #854 pair, fixtures contexted on BOTH sides
+  //   0.8339  DUPLICATE  the SAME pair as actually written (twin had no
+  //                      domain, no rationale) — below every candidate bar
   //
-  // Bare, those same pairs sit at 0.9749 / 0.9637 / 0.9689 — the distinct ones
-  // score HIGHER than the duplicate and no threshold can separate them. With
-  // context they separate cleanly, and 0.95 sits in the empty band between.
-  //
-  // The negation case is why the bar is not lower. A correction is usually the
-  // previous statement with one thing negated, and corrections are the most
-  // valuable engrams this system stores; a bar under ~0.89 would start
-  // suppressing them. Anything below the bar is still REPORTED via
-  // `dedup.near_duplicates` — high similarity is a reason to look, and cosine
-  // cannot tell a duplicate from a supersede from a sibling fact.
-  const { enabled = true, threshold = 0.95, mode = 'llm' } = deps.dedupConfig
+  // That last row is the one that matters: the real duplicates are the
+  // under-contexted ones, and they score below the distinct pairs. There is no
+  // value of `threshold` that separates them, which is why this reports rather
+  // than decides. 0.85 is a deliberately low floor chosen to capture the
+  // distribution around the interesting band, not to assert a duplicate.
+  const { enabled = true, threshold = 0.85, mode = 'llm' } = deps.dedupConfig
   if (!enabled || mode === 'off') {
     return { engram: await deps.learn(statement, context), decision: 'ADD' }
   }
@@ -407,21 +415,54 @@ export async function learnAsync(
       if (scores.length > 0) {
         dedupMode = 'cosine'
         nearDuplicates = scores.slice(0, 3)
+        // REPORTING ONLY — cosine never gates a write (#856 audit).
+        //
+        // The gate was removed rather than retuned, because the audit showed
+        // the bar could not have worked at any value. The fixtures that
+        // justified 0.95 gave both sides an identical domain, tags and
+        // rationale; the ten pairs from #854 did NOT — their second copy had no
+        // domain and no rationale, which is defect 2 of that same issue. Scored
+        // as actually written the pair sits at 0.8339, below 0.95 and below even
+        // the old 0.85, so NONE of the reported duplicates would have been
+        // caught. Production enriches only the incoming side from the write's
+        // own context, so an under-contexted write is structurally compared
+        // against a fully-contexted stored engram, and the symmetry the design
+        // rested on does not hold for exactly the writes that produce duplicates.
+        //
+        // A bar guessed from paired fixtures would therefore have bought a real
+        // false-NOOP risk — a memory silently not stored, the worst outcome this
+        // product has — while not fixing #854. So: emit the observation, build a
+        // distribution from real writes, and set a bar from that if the data
+        // supports one. `threshold` is retained as the REPORTING floor below,
+        // not as a write gate.
+        //
+        // This also disposes of the cross-scope hazard the audit raised: an
+        // unscoped write that auto-routes to a team scope can no longer NOOP
+        // against a `global` near-duplicate, because nothing NOOPs.
         const top = scores[0]
-        // A false NOOP silently discards a memory, which is a worse outcome
-        // than a duplicate — so the bar is deliberately high. 0.85 was the
-        // declared default for four months while nothing read it, so it was
-        // never validated against real writes; a measured duplicate pair from
-        // #854 sat at 0.928. Anything below the bar is still reported.
-        if (top.score >= threshold) {
-          const existing = candidates.find(c => c.id === top.id)
-          if (existing) {
-            return {
-              engram: existing,
-              decision: 'NOOP',
-              existing_id: existing.id,
-              dedup: { mode: 'cosine', near_duplicates: nearDuplicates },
-            }
+        if (top.score >= NEAR_DUPLICATE_OBSERVATION_FLOOR) {
+          // History is what makes the distribution measurable after the fact.
+          // Without it, "measure over the real store" means re-embedding the
+          // corpus and guessing which pairs were writes.
+          try {
+            appendHistory(deps.rootPath, {
+              event: 'dedup_near_duplicate',
+              engram_id: top.id,
+              timestamp: new Date().toISOString(),
+              data: {
+                statement: statement.slice(0, 200),
+                top_score: Number(top.score.toFixed(4)),
+                reporting_threshold: threshold,
+                above_reporting_threshold: top.score >= threshold,
+                scope: context?.scope ?? null,
+                // The asymmetry that broke the bar. Recorded per write so the
+                // distribution can be split by it instead of averaging over it.
+                incoming_has_domain: Boolean(context?.domain),
+                incoming_has_rationale: Boolean(context?.rationale),
+              },
+            })
+          } catch (err) {
+            logger.warning(`could not record near-duplicate observation: ${err}`)
           }
         }
       }
