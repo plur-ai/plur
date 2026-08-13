@@ -60,17 +60,30 @@ describe.skipIf(!PG_URL)('Plur.recall() through an injected Postgres adapter (#7
   it('actually routes through the adapter, not the in-memory path', async () => {
     // Without this the rest of the file would pass on the old code path and
     // prove nothing about the wiring. Counts a real query against the store.
+    //
+    // Spies on BOTH entry points (#753): core prefers `searchBM25Exhaustive`
+    // when the adapter offers it, so watching only `searchBM25` counted zero
+    // and reported "did not go through the adapter" for a recall that did.
+    // What this test means is "exactly one real query hit the store", which is
+    // independent of which method core picked.
     let calls = 0
-    const real = adapter.searchBM25.bind(adapter)
-    ;(adapter as unknown as { searchBM25: typeof adapter.searchBM25 }).searchBM25 = async (q, o) => {
-      calls++
-      return await real(q, o)
+    type A = typeof adapter
+    const realBM25 = adapter.searchBM25.bind(adapter)
+    const realExhaustive = adapter.searchBM25Exhaustive?.bind(adapter)
+    const patch = adapter as unknown as {
+      searchBM25: A['searchBM25']
+      searchBM25Exhaustive?: NonNullable<A['searchBM25Exhaustive']>
+    }
+    patch.searchBM25 = async (q, o) => { calls++; return await realBM25(q, o) }
+    if (realExhaustive) {
+      patch.searchBM25Exhaustive = async (q, o) => { calls++; return await realExhaustive(q, o) }
     }
     try {
       await plur.recall('deploy kubernetes')
       expect(calls, 'recall() did not go through the adapter').toBe(1)
     } finally {
-      ;(adapter as unknown as { searchBM25: typeof adapter.searchBM25 }).searchBM25 = real
+      patch.searchBM25 = realBM25
+      if (realExhaustive) patch.searchBM25Exhaustive = realExhaustive
     }
   }, TIMEOUT)
 
