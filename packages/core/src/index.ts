@@ -1552,6 +1552,9 @@ export class Plur {
     engrams: Engram[],
     scope: string,
     context: LearnContext | undefined,
+    /** The incoming statement this write carried — logged (truncated) so a
+     *  MISDIRECTED absorption is visible, which is the whole point of #852. */
+    statement = '',
   ): Promise<Engram> {
     // Apply the increment to the row from the CALLER'S array, not to `hit`.
     //
@@ -1573,6 +1576,26 @@ export class Plur {
     const currentSources = (target as any).sources ?? []
     target.write_count = currentCount + 1
     ;(target as any).sources = [...currentSources, this._buildSourceEntry(scope, context)]
+    // #852: an absorbed write left NO trace — no engram_created, no
+    // recurrence_detected, nothing. That silence is why a misdirected
+    // absorption could run for months without anyone seeing it, and it is the
+    // difference between "a duplicate was counted" and "my memory vanished".
+    // The caller is handed an engram it did not write; the log should say so.
+    try {
+      appendHistory(this.paths.root, {
+        event: 'engram_duplicate_absorbed',
+        engram_id: target.id,
+        timestamp: new Date().toISOString(),
+        data: {
+          matched_on: 'content_hash',
+          write_count_after: target.write_count,
+          scope,
+          // Enough to spot a misdirected absorption without storing the
+          // incoming statement verbatim.
+          incoming_preview: statement.slice(0, 120),
+        },
+      })
+    } catch { /* history is an audit trail, never a gate on the write */ }
 
     // Persist if the engram is in the primary store. Cross-store duplicates
     // (same scope across stores) are deduplicated but not persisted in v1 —
@@ -2357,7 +2380,7 @@ export class Plur {
         // store-served hit is a freshly-read row under this same lock, so it
         // is the corpus in hand for exactly one row.
         const corpusInHand = primaryHashMatch ? [primaryHashMatch] : engrams
-        return await this._recordDuplicate(hashMatch, corpusInHand, scope, context)
+        return await this._recordDuplicate(hashMatch, corpusInHand, scope, context, statement)
       }
 
       // #176: cross-scope recurrence — same statement, different scope.
@@ -2825,7 +2848,7 @@ export class Plur {
       // Mutate + persist if local; otherwise return mutated (best-effort)
       return await this._withStoreLock(this.paths.engrams, async () => {
         const engrams = await this._primaryStore.load()
-        return await this._recordDuplicate(hashMatch, engrams, scope, context)
+        return await this._recordDuplicate(hashMatch, engrams, scope, context, statement)
       })
     }
     // #176: cross-scope recurrence (same semantics as the local learn() path).
@@ -6763,6 +6786,19 @@ Generate an improved version of the procedure that prevents this failure. Return
             const oldVersion = raw.engram_version ?? 1
 
             raw.statement = improved.trim()
+            // #852: the hash MUST follow the statement.
+            //
+            // This was the one statement-mutation path that did not recompute
+            // it — learn-async's UPDATE and MERGE both do. A stale hash is not
+            // cosmetic: `_hashDedup` matches on `content_hash`, so an engram
+            // whose hash still describes its PRE-evolution text becomes an
+            // attractor. A later write matching that old text hash-matches this
+            // engram, which now says something else, and `_recordDuplicate`
+            // absorbs the write into it — silently, since the engram is
+            // returned as if it were the write's own. Measured on a real store:
+            // 38 engrams carrying a hash that no longer matched their
+            // statement, and one pair of distinct engrams sharing a hash.
+            raw.content_hash = computeContentHash(raw.statement)
             // Leak guard (#353): the LLM-improved statement can introduce
             // sensitive content. This is a local write, so demotion is coherent:
             // hold it back from the shared scope by demoting to local/private.
