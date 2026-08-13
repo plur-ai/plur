@@ -63,7 +63,7 @@ By default (lean profile), your agent gets 12 tools. Everything else is reachabl
 | `plur_tensions_purge` | Clear stale/resolved tensions |
 | `plur_admin` | Dispatch to any other tool: `{ action: "plur_packs_install", args: {...} }` |
 
-Less commonly needed tools (`plur_recall_hybrid`, `plur_inject_hybrid`, `plur_learn_batch`, `plur_ingest`, `plur_sync`, `plur_packs_install`, `plur_packs_list`, `plur_capture`, `plur_timeline`, and more) are all reachable via `plur_admin`. Set `PLUR_TOOL_PROFILE=full` to expose all 42 tools directly.
+Less commonly needed tools (`plur_recall_hybrid`, `plur_inject_hybrid`, `plur_learn_batch`, `plur_ingest`, `plur_sync`, `plur_packs_install`, `plur_packs_list`, `plur_capture`, `plur_timeline`, and more) are all reachable via `plur_admin`. Set `PLUR_TOOL_PROFILE=full` to expose all 43 tools directly.
 
 A `plur_*` name missing from `tools/list` means it moved behind the gateway, not that the server is down. `plur_admin { action: "help" }` returns every action with a one-line description and its argument schema; `plur_doctor` reports the same inventory as `tool_surface`.
 

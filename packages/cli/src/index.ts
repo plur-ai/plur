@@ -49,6 +49,8 @@ Commands:
   stores add <path>       Add a knowledge store
   scopes                  List authorized-but-unregistered shared scopes (#647)
   scopes register <scope> Register one; scopes dismiss <scope>; scopes --reoffer
+  outbox                  Show team-scoped writes queued for an unreachable store
+                          [--flush] to retry them now (#667)
   reindex-tokens          Re-derive BM25 tokens after a tokenizer change (Postgres only)
   reindex-hashes          Repair engrams whose content_hash is stale or missing (#852)
   init                    Install Claude Code hooks + register plur MCP server
@@ -114,6 +116,7 @@ const COMMANDS: Record<string, string> = {
   'similarity-search': './commands/similarity-search.js',
   stores: './commands/stores.js',
   scopes: './commands/scopes.js',
+  outbox: './commands/outbox.js',
   'reindex-tokens': './commands/reindex-tokens.js',
   'reindex-hashes': './commands/reindex-hashes.js',
   migrate: './commands/migrate.js',

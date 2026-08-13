@@ -6447,6 +6447,55 @@ export class Plur {
   }
 
   /**
+   * The outbox, as inspectable entries (#667).
+   *
+   * The outbox works and is effectively invisible: it is not a file or a
+   * queue directory, it is `structured_data._outbox` nested inside ordinary
+   * engrams in `engrams.yaml`. So a user whose team store was unreachable has
+   * queued writes with no supported way to see them — diagnosing meant
+   * reverse-engineering the storage model, and the only prose describing the
+   * pattern lived inside an engram.
+   *
+   * `target_url` is DELIBERATELY not returned. It is the one field here that
+   * identifies a credentialed endpoint, the entry is rendered into agent
+   * context and CLI output, and `target_scope` already answers the question a
+   * human is asking ("which store is behind?"). Omitting it at the source
+   * beats redacting it at each of the several call sites that print it.
+   */
+  async listOutbox(): Promise<Array<{
+    id: string
+    target_scope: string
+    queued_at: string
+    attempt_count: number
+    last_error?: string
+    age_days: number
+  }>> {
+    const engrams = await this._loadCached(this.paths.engrams)
+    const now = Date.now()
+    const out = []
+    for (const e of engrams) {
+      const ob = (e as any).structured_data?._outbox as {
+        target_scope?: string; queued_at?: string; attempt_count?: number; last_error?: string
+      } | undefined
+      if (!ob || e.status === 'retired') continue
+      const queued_at = typeof ob.queued_at === 'string' ? ob.queued_at : ''
+      const queuedMs = queued_at ? Date.parse(queued_at) : NaN
+      out.push({
+        id: e.id,
+        target_scope: ob.target_scope ?? '(unknown)',
+        queued_at,
+        attempt_count: typeof ob.attempt_count === 'number' ? ob.attempt_count : 0,
+        ...(ob.last_error ? { last_error: ob.last_error } : {}),
+        // A malformed or missing timestamp reports 0, not NaN: this number is
+        // rendered, and NaN in a report reads as a bug in the reporter rather
+        // than as the missing data it actually is.
+        age_days: Number.isFinite(queuedMs) ? Math.floor((now - queuedMs) / 86_400_000) : 0,
+      })
+    }
+    return out
+  }
+
+  /**
    * Flush the outbox — retry pushing pending engrams to their target remote
    * stores. Called automatically on session_start and plur_sync.
    *

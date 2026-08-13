@@ -1796,7 +1796,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
 
     {
       name: 'plur_sync',
-      description: 'Sync engrams via git AND refresh the derived index from YAML. Initializes repo on first call, commits and pushes/pulls on subsequent calls. Provide a remote URL on first call to enable cross-device sync. Pass full=true to drop-and-rebuild the index from YAML (recovery path; YAML stays untouched).',
+      description: 'Sync engrams via git AND refresh the derived index from YAML. Initializes repo on first call, commits and pushes/pulls on subsequent calls. Provide a remote URL on first call to enable cross-device sync. Pass full=true to drop-and-rebuild the index from YAML (recovery path; YAML stays untouched). Also flushes the remote-write outbox — retries team-scoped writes that were queued while their remote store was unreachable; use plur_outbox to inspect what is queued.',
       annotations: { title: 'Sync', openWorldHint: true, destructiveHint: false, idempotentHint: true },
       inputSchema: {
         type: 'object',
@@ -1862,6 +1862,37 @@ function getAllToolDefinitions(): ToolDefinition[] {
               `The outbox flush failed — ${outbox_error}. Engrams routed to a remote store are `
               + `still queued locally and were NOT pushed. They retry on the next session_start or plur_sync.`,
           } : {}),
+        }
+      },
+    },
+
+    {
+      name: 'plur_outbox',
+      description: 'Inspect the remote-write outbox — team-scoped writes queued locally because their remote store was unreachable. Read-only by default; pass flush:true to retry them now. Entries never include the target URL or token.',
+      annotations: { title: 'Outbox', readOnlyHint: false, idempotentHint: false },
+      inputSchema: {
+        type: 'object',
+        properties: {
+          flush: { type: 'boolean', description: 'Retry every queued write now, instead of only reporting them. Defaults to false.' },
+        },
+      },
+      handler: async (args, plur) => {
+        // Read first, ALWAYS — including on a flush. The entries a flush
+        // consumed are the interesting ones ("what was stuck, and for how
+        // long"), and after a successful flush they are gone from the store,
+        // so reading afterwards would report an empty outbox and tell the
+        // caller nothing about what just moved.
+        const before = await plur.listOutbox()
+        if (args.flush !== true) {
+          return { pending: before.length, entries: before }
+        }
+        const result = await plur.flushOutbox()
+        return {
+          pending: await plur.outboxCount(),
+          flushed: result.flushed,
+          failed: result.failed,
+          ...(result.expired_warnings.length > 0 ? { expired_warnings: result.expired_warnings } : {}),
+          attempted: before,
         }
       },
     },
@@ -2708,7 +2739,13 @@ function getAllToolDefinitions(): ToolDefinition[] {
             const failures = discoveries.filter(d => !d.ok)
             if (failures.length > 0) {
               const authExpired = failures.some(f => /\b40[13]\b/.test(f.error ?? ''))
-              const pending = outbox_result?.failed ?? 0
+              // The count is what is QUEUED, not what this flush failed on
+              // (#667). `outbox_result.failed` counts only entries this flush
+              // attempted and lost — so when the host is in breaker cooldown
+              // the flush attempts nothing, `failed` is 0, and the warning
+              // said nothing at all while N team writes sat queued. The
+              // pending total is the number the user needs to act on.
+              const pending = await plur.outboxCount().catch(() => outbox_result?.failed ?? 0)
               const urls = [...new Set(failures.map(f => f.url))].join(', ')
               guide += authExpired
                 ? `\n\n⚠️ ENTERPRISE STORE AUTH FAILED (token expired/invalid): ${urls}. ` +
@@ -2717,7 +2754,8 @@ function getAllToolDefinitions(): ToolDefinition[] {
                   `~/.plur/config.yaml, then restart Claude/MCP. Queued engrams flush on the next session_start.`
                 : `\n\n⚠️ ENTERPRISE STORE UNREACHABLE: ${urls}. ` +
                   `Reads fall back to local; team-scoped writes queue in the outbox` +
-                  (pending > 0 ? ` (${pending} pending)` : '') + ` until it recovers. Check connectivity/VPN.`
+                  (pending > 0 ? ` (${pending} pending — inspect with plur_outbox, retry with plur_outbox {flush:true})` : '') +
+                  ` until it recovers. Check connectivity/VPN.`
             }
             // #647: a QUIET, per-scope-aware hint. `d.unregistered` already
             // excludes dismissed scopes; also drop personal-family (they can't be

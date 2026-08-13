@@ -262,6 +262,26 @@ await plur.sync('git@github.com:you/plur-memory.git')
 | `plur_sync` | Sync via git. `personal` remotes mirror everything (use a private repo); `shared` remotes receive only shared-scope, non-private engrams |
 | `plur_status` | Check system health and engram counts |
 | `plur_receipt` | Counted, local report of what your memory retrieved for you |
+| `plur_outbox` | Inspect (and retry) team writes queued while their store was unreachable |
+
+### The outbox
+
+A write to a team scope goes to that team's remote store. When the store cannot
+be reached — VPN off, server down, token expired — the engram is **not lost and
+not silently dropped**: it is written locally with queue metadata and retried on
+the next session start, on `plur sync`, or on demand.
+
+The queue is not a directory. It lives as `structured_data._outbox` inside the
+affected engrams in `engrams.yaml`, which is why it needs a command to see:
+
+```
+plur outbox            # what is queued, for which scope, how long, last error
+plur outbox --flush    # retry now
+```
+
+The same thing is available to agents as `plur_outbox` (`{flush: true}` to
+retry), and `plur status` reports the pending count. Neither surface prints the
+target URL or the token.
 
 ## The memory receipt
 
