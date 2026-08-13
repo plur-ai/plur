@@ -1,0 +1,151 @@
+# GEO visibility prompt set — a WORKED EXAMPLE, configured for PLUR.ai.
+# Replace `brand`, `competitors` and `prompts` with your own; the prompt set is
+# the measurement instrument, so it is the part worth the most thought.
+#
+# `brand.patterns` + `competitors` drive deterministic scoring in
+# geo_visibility.py. `brand.name` is additionally matched on a word boundary, so
+# a short name like "PLUR" will not false-positive inside "plural".
+
+brand:
+  name: PLUR
+  # Substring matches, case-insensitive.
+  patterns: ["plur.ai", "plur-ai", "plur_ai", "@plur_ai"]
+  # Used only by --judge, to tell the judge model what the product actually is.
+  description: an open-source, local-first memory layer for AI agents
+  # Domains counted as "ours" in the citation map. Omit and any pattern that
+  # looks like a domain is used instead.
+  domains: ["plur.ai", "docs.plur.ai", "github.com/plur-ai"]
+
+# A bare name is matched on a word boundary. Use `patterns` when the name is
+# ambiguous in free text — see Engram below.
+competitors:
+  - Mem0
+  - Letta
+  - MemGPT
+  - Zep
+  - Cognee
+  - LangMem
+  - Graphiti
+  - Supermemory
+  # The company Engram (ex-stealth 2026-06-23, $98M Series A @ $600M, Kleiner
+  # Perkins) shares its name with the common noun "engram" — which is our own
+  # term of art and appears in nearly every answer we score. Matching the bare
+  # name scored a hit on all 36/36 rows of the 2026-06-26 run. Only unambiguous
+  # company markers are matched; the cited-domain table is the better signal.
+  - name: Engram
+    patterns:
+      - 'engram\.(com|ai)'
+      - 'Engram[,]? (a|the) (startup|company)'
+      - 'Engram (Labs|Inc|AI)\b'
+  # DeepSeek open-sourced an "Engram" conditional-memory MODULE (Jan 2026). It is
+  # not a product competitor, but it now dominates the meaning of the term.
+  - name: DeepSeek Engram
+    patterns:
+      - 'DeepSeek.{0,40}Engram'
+      - 'Engram.{0,40}DeepSeek'
+  - name: Weaviate Engram
+    patterns:
+      - 'Weaviate.{0,40}Engram'
+
+# ILLUSTRATIVE, NOT AUTHORITATIVE. Model IDs churn faster than any checked-in
+# list, and a skill that measures what CURRENT models know is the artifact that
+# ages worst when its own IDs are stale. Verify before every run:
+#
+#   curl -s https://openrouter.ai/api/v1/models | \
+#     python3 -c "import json,sys;[print(m['id']) for m in json.load(sys.stdin)['data']]" | sort
+#
+# Keep a spread of frontier + open-weight, since GEO recall differs by model.
+# A retired ID fails loudly (OpenRouter 404s), so a stale entry costs you a run,
+# not a silently wrong number — but check anyway.
+# Verified against the live catalogue 2026-08-13.
+models:
+  - openai/gpt-5.2
+  - anthropic/claude-sonnet-5
+  - google/gemini-3.1-pro-preview
+  - meta-llama/llama-4-maverick
+  - deepseek/deepseek-chat-v3.1
+  # qwen/qwen-2.5-72b-instruct — DROPPED 2026-07-15: unreliable via OpenRouter
+  # (13/50 errors in the 07-15 run). Its retry storm (90s x 3 + backoff per fail)
+  # blew past the systemd timeout before the grounded phase could finish. The
+  # other 5 completed 50/50 with 0 errors. Re-add only if it stabilizes.
+
+judge_model: openai/gpt-5-mini   # used only with --judge
+
+prompts:
+  category:
+    - What are the best tools for giving AI agents long-term memory?
+    - What's the best open-source memory layer for LLM agents?
+    - Recommend a memory system for autonomous AI agents.
+    - What is the best way to stop an AI agent forgetting context between sessions?
+    - What tools let me give a coding assistant persistent memory?
+
+  problem:
+    - My AI agent forgets everything between sessions. How do I fix that?
+    - I keep re-explaining the same context to my coding assistant. What can I do?
+    - How do I store and recall facts an AI agent has learned over time?
+    - How do I make my agent's memory editable and auditable?
+    - How can I make an AI delete specific things it remembers about me?
+
+  comparison:
+    - What are the best open-source alternatives to Mem0?
+    - Mem0 vs Letta vs Zep — which should I use for agent memory?
+    - What are alternatives to Letta or MemGPT for long-term agent memory?
+    - Compare the leading open-source AI memory frameworks.
+    - Which agent-memory tools let me inspect and delete what the AI remembers?
+
+  runtime:
+    - How do I add persistent memory to Claude Code?
+    - How do I give a Hermes agent long-term memory?
+    - How do I add memory to an OpenClaw agent?
+    - What memory layer works with Cursor or Codex?
+    - Best memory solution for a CrewAI multi-agent system?
+    - Is there an MCP server for AI agent memory?
+
+  definitional:
+    - What is agent memory?
+    - What is an engram in the context of AI agents?
+    - What's the difference between RAG and agent memory?
+    - Is fine-tuning or memory better for teaching an AI new facts?
+    - What does "local-first AI memory" mean?
+
+  second_brain:
+    - How do I use AI memory to build a second brain?
+    - Can I connect AI agent memory to my notes or knowledge base?
+    - How do I use memory in long-running agent loops?
+    - What's a good memory system for a personal AI assistant?
+
+  brand:
+    - What is PLUR.ai?
+    - What is PLUR engram memory?
+    - Is PLUR a good tool for AI agent memory?
+    - Who makes PLUR.ai and what does it do?
+    - How does PLUR compare to Mem0?
+
+  # Term-ownership battle: does PLUR's OPEN engram format surface vs a closed vendor?
+  # Neutral phrasing so a PLUR mention is a real organic signal, not brand-led.
+  engram_term:
+    - What is an engram in AI memory?
+    - Are AI agent engrams open source or proprietary?
+    - What is the open engram format?
+    - Is there an open standard for AI agent memory engrams?
+    - Should AI memory be stored as open engrams or baked into model weights?
+    - What's the difference between open engrams and model-native memory?
+
+  # Model-native memory vs agent memory — emerging query category as of mid-2026.
+  # ChatGPT, Claude (Projects), and Gemini now all ship built-in memory.
+  # PLUR's position: model-native memory is session-scoped, vendor-locked, not portable.
+  # Engram memory is agent-owned, tool-portable, auditable. Different jobs.
+  model_native:
+    - Do I still need an agent memory layer if ChatGPT already has memory?
+    - How does Claude Projects memory compare to agent memory?
+    - What's the difference between model memory and agent memory?
+    - ChatGPT vs Mem0 vs PLUR for AI memory — what should I use?
+    - Can I use agent memory alongside a model's built-in memory?
+
+  # Privacy / deletion — growing compliance and trust query cluster.
+  # EU AI Act, GDPR, and user trust drive "right to be forgotten" queries.
+  privacy:
+    - How can I make an AI delete specific things it remembers about me?
+    - Which agent-memory tools let me inspect and delete what the AI remembers?
+    - How do I implement the right to be forgotten in an AI agent?
+    - Is AI agent memory GDPR compliant?
