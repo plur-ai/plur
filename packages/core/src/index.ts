@@ -38,7 +38,9 @@ import type { SecretMatch } from './secrets.js'
 import { SENSITIVITY_CATEGORIES, type ScopeMetadata, type SensitivityCategory } from './schemas/scope-metadata.js'
 import { rankScopes, SCOPE_MATCH_THRESHOLD, type ScopeSignals, type ScopeCandidate } from './scope-routing.js'
 import { appendHistory, readHistoryForEngram, generateEventId, generateInjectionId, computeQueryHash, findLatestInjectionFor, countInjectionEvents, type InjectionEventCounts } from './history.js'
-import { computeContentHash } from './content-hash.js'
+import { computeContentHash, isHashable } from './content-hash.js'
+import { isLocalOnlyScope, assertScopeNamesATarget } from './scope-target.js'
+import { orderBySupersedes } from './outbox-order.js'
 import { loadTensions, loadTensionsWithQuarantine, saveTensions, generateTensionId, tensionPairKey, categorizeTension } from './tension-store.js'
 import type { TensionRecord, TensionStatus } from './schemas/tension.js'
 import type { TensionPair } from './tensions.js'
@@ -118,7 +120,9 @@ export { computeReceipt } from './receipt.js'
 export type { Receipt, ReceiptInput, ReceiptTopEntry } from './receipt.js'
 import type { Receipt } from './receipt.js'
 import { gatherReceipt } from './receipt-io.js'
-export { computeContentHash, normalizeStatement } from './content-hash.js'
+export { computeContentHash, normalizeStatement, isHashable } from './content-hash.js'
+export { isLocalOnlyScope, assertScopeNamesATarget } from './scope-target.js'
+export { orderBySupersedes } from './outbox-order.js'
 export { parseDedupResponse, buildDedupPrompt, buildBatchDedupPrompt } from './dedup.js'
 export { runMigrations, rollbackMigrations, getSchemaVersion, setSchemaVersion, ALL_MIGRATIONS, CURRENT_SCHEMA_VERSION, type Migration, type MigrationResult } from './migrations/index.js'
 export { detectSecrets, detectSensitive, sensitivityCategory } from './secrets.js'
@@ -585,6 +589,15 @@ export const COMMITMENT_MULTIPLIER: Record<string, number> = {
  * (5 min) that three failures inside it still mean "the LLM is broken", and
  * short enough that three failures spread across an afternoon do not.
  */
+/**
+ * Cap on the persisted outbox local→server id map.
+ *
+ * One row per remote write, forever, unless bounded. Sized so a busy install
+ * keeps months of mappings while the file stays well under a megabyte —
+ * comfortably more history than the queued-correction case that needs it.
+ */
+const OUTBOX_ID_MAP_MAX = 5000
+
 const LLM_BREAKER_THRESHOLD = 3
 const LLM_BREAKER_WINDOW_MS = 5 * 60 * 1000
 const LLM_BREAKER_COOLDOWN_MS = 60 * 60 * 1000
@@ -1528,8 +1541,17 @@ export class Plur {
 
   /** Content hash fast-path dedup. Scope-aware: same statement in a different
    * scope is a promotion, not a duplicate. Retired engrams are excluded —
-   * re-learning a retired statement creates a fresh engram (issue #107). */
+   * re-learning a retired statement creates a fresh engram (issue #107).
+   *
+   * A statement with no hashable content never matches (#896). Every such
+   * statement hashes to the SHA-256 of the empty string, so matching on it
+   * declares unrelated facts to be the same fact — which is exactly how the
+   * non-Latin collapse absorbed four distinct memories into one row. The
+   * normalizer no longer produces that for real prose; this is the belt to its
+   * braces, and it fails in the safe direction (a missed dedup costs a
+   * duplicate row, a false dedup costs the memory). */
   private _hashDedup(statement: string, engrams: Engram[], scope?: string): Engram | null {
+    if (!isHashable(statement)) return null
     const hash = computeContentHash(statement)
     for (const e of engrams) {
       if (e.status === 'active' && (e as any).content_hash === hash) {
@@ -1625,6 +1647,11 @@ export class Plur {
     engrams: Engram[],
     currentScope: string,
   ): Engram | null {
+    // Same guard as `_hashDedup` (#896): an unhashable statement would report
+    // every other unhashable statement as the same fact recurring, and this
+    // path ESCALATES on a hit — broadening scope to global and hardening
+    // commitment. A false positive here is louder than a missed one.
+    if (!isHashable(statement)) return null
     const hash = computeContentHash(statement)
     for (const e of engrams) {
       if (e.status === 'active'
@@ -2376,7 +2403,10 @@ export class Plur {
       // The store is asked first, matching the corpus order it replaces
       // (`_loadAllEngrams` puts primary rows ahead of secondary ones, so a
       // primary match has always won).
-      const primaryHashMatch = canDelegate
+      // Unhashable statements skip the store lookup entirely (#896) — the
+      // delegated query has the same collapse the in-memory scan does, and
+      // this is the branch a Postgres/PGLite install actually takes.
+      const primaryHashMatch = canDelegate && isHashable(statement)
         ? await ps.findActiveByContentHash!(computeContentHash(statement), scope)
         : null
       const hashMatch = primaryHashMatch ?? this._hashDedup(statement, allEngrams, scope)
@@ -3868,6 +3898,64 @@ export class Plur {
   }
 
   /**
+   * Where local→server id mappings survive between outbox flushes (#863
+   * follow-up, 2026-08-13 panel).
+   *
+   * `flushOutbox` builds a `localToServer` map as it goes so a correction
+   * queued alongside the engram it supersedes can point at the server id. That
+   * map was per-flush, and the local row is SPLICED OUT on a successful push —
+   * so once the target left in flush N, a correction that missed that flush
+   * could never resolve its edge again. It failed identically on every
+   * subsequent flush, printing "flush again once X has been pushed" when X had
+   * already been pushed and no future flush could change that. The panel
+   * measured three consecutive flushes producing the same unfollowable
+   * warning.
+   *
+   * Derived state, not truth: losing this file costs a supersedes edge on a
+   * pathological ordering, never an engram. Every read and write is
+   * best-effort for that reason.
+   */
+  outboxIdMapPath(): string {
+    return join(this.paths.root, 'cache', 'outbox-id-map.json')
+  }
+
+  /** Read the persisted local→server map. Never throws; `{}` on any problem. */
+  private _readOutboxIdMap(): Record<string, { server_id: string; url: string; at: number }> {
+    try {
+      const raw = JSON.parse(fs.readFileSync(this.outboxIdMapPath(), 'utf8')) as unknown
+      if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+        return raw as Record<string, { server_id: string; url: string; at: number }>
+      }
+    } catch { /* absent or corrupt — a cache miss, not an error */ }
+    return {}
+  }
+
+  /**
+   * Persist local→server mappings recorded during a flush. Never throws.
+   *
+   * Bounded at {@link OUTBOX_ID_MAP_MAX} entries, oldest dropped first: this
+   * grows by one row per remote write forever otherwise, and an unbounded
+   * cache file in the store root is its own defect. Dropping the oldest is
+   * safe because the edges that need it are queued corrections, which are
+   * resolved within a flush or two of the target.
+   */
+  private _writeOutboxIdMap(entries: Record<string, { server_id: string; url: string; at: number }>): void {
+    try {
+      const ids = Object.keys(entries)
+      if (ids.length > OUTBOX_ID_MAP_MAX) {
+        const keep = ids
+          .sort((a, b) => (entries[b].at ?? 0) - (entries[a].at ?? 0))
+          .slice(0, OUTBOX_ID_MAP_MAX)
+        const trimmed: typeof entries = {}
+        for (const id of keep) trimmed[id] = entries[id]
+        entries = trimmed
+      }
+      fs.mkdirSync(dirname(this.outboxIdMapPath()), { recursive: true })
+      fs.writeFileSync(this.outboxIdMapPath(), JSON.stringify(entries), 'utf8')
+    } catch { /* derived state — a failed write must never fail a flush */ }
+  }
+
+  /**
    * Strict scope-relevance dialing (#776, user decision — plan rows 39/44).
    *
    * For each configured (url, token) endpoint group, the dialed scope set is
@@ -4651,22 +4739,50 @@ export class Plur {
       // #866: increment injection_count on primary-store engrams selected for context.
       // Distinct from activation.frequency (recall events) — this tracks actual
       // injection into the model's context window. Best-effort: never breaks injection.
+      //
+      // TARGETED, via the `_loadTargeted`/`_updateEngrams` pair (2026-08-13
+      // panel). This first loaded the whole corpus and wrote the whole corpus
+      // back, on a path that runs at EVERY session start. Measured cost of the
+      // block, with and without:
+      //
+      //     corpus     with      without   overhead
+      //        200     48 ms      11 ms      4.4x
+      //      2,000    442 ms      42 ms     10.5x
+      //     10,000  2,804 ms     142 ms     19.7x
+      //
+      // …all of it inside the global store lock, so it is not just this call
+      // that pays, it is every concurrent writer waiting behind it. Counting
+      // injections is worth a row update; it is not worth rewriting the store.
+      // On YAML (no `updateMany`) the pair still falls back to a corpus write,
+      // but the corpus is the one loaded under this lock, so the fallback is
+      // the same shape it always was.
       try {
         await this._withStoreLock(this.paths.engrams, async () => {
-          const primaryEngrams = await this._primaryStore.load()
+          const primaryEngrams = await this._loadTargeted(injected_ids)
           const injectedSet = new Set(injected_ids)
-          let modified = false
+          const touched: Engram[] = []
           for (const e of primaryEngrams) {
             if (injectedSet.has(e.id)) {
               e.injection_count = (e.injection_count ?? 0) + 1
-              modified = true
+              touched.push(e)
             }
           }
-          if (modified) {
-            await this._writeEngrams(this.paths.engrams, primaryEngrams)
-          }
+          await this._updateEngrams(primaryEngrams, touched)
         })
-      } catch { /* best-effort */ }
+      } catch (err) {
+        // Best-effort, but not SILENT. `EngramStoreShrinkError` and
+        // `EngramStoreUnreadableError` are the #795/#800 guards telling us the
+        // store is degrading; swallowing them on the most frequently run write
+        // path means the user gets no signal from the operation they run most.
+        // Everything else stays quiet — a counter is not worth a warning.
+        const name = (err as Error)?.constructor?.name
+        if (name === 'EngramStoreShrinkError' || name === 'EngramStoreUnreadableError') {
+          logger.warning(
+            `[plur] injection counters were not recorded: ${(err as Error).message}. `
+            + `The injection itself succeeded — this is a store-integrity signal, not an injection failure.`,
+          )
+        }
+      }
     }
 
     // #181: surface persisted tensions touching this injection — flag,
@@ -4739,17 +4855,7 @@ export class Plur {
       // forget()'s, one severity band down — a mis-targeted signal is
       // recoverable where a retire is not — but the same guard, so the same
       // rule: validate that the scope names something, following rescope().
-      const storeEntry = (this.config.stores ?? []).find(s => s.scope === scope)
-      const isLocalFamily = scope === 'local' || scope === 'global' || scope.startsWith('project:')
-      if (!isLocalFamily && !storeEntry) {
-        const configured = (this.config.stores ?? []).map(s => s.scope).filter(Boolean)
-        throw new Error(
-          `Cannot rate in "${scope}": no configured store matches that scope. `
-          + `Valid targets: primary, local, global, project:*`
-          + (configured.length ? `, or a configured store scope (${configured.join(', ')})` : '')
-          + `. Check for typos — an unmatched scope would silently rate the LOCAL engram instead (#831).`,
-        )
-      }
+      assertScopeNamesATarget(scope, this.config.stores ?? [], 'rate in', 'rate the LOCAL engram')
     }
 
     // Try primary engrams first
@@ -4873,6 +4979,19 @@ export class Plur {
 
     // Check remote stores — the engram may live on an enterprise server.
     // See: https://github.com/plur-ai/plur/issues/85
+    //
+    // Same local-only guard as forget()'s, and it was missing here entirely —
+    // not even the `primary` case was covered, so `feedback(id, signal,
+    // 'primary')` on an id absent locally rated a REMOTE engram. One severity
+    // band below the retire (a mis-targeted signal is recoverable), same
+    // defect, same predicate.
+    if (scope && isLocalOnlyScope(scope)) {
+      throw new Error(
+        `Engram not found in the local store: ${id} (scope: "${scope}"). `
+        + `That scope names a local target, so no remote store was searched. `
+        + `Omit scope to search everywhere, or pass the remote scope to target it directly.`,
+      )
+    }
     // The ID may be prefixed (ENG-GPL-...) from _loadAllEngrams namespacing.
     // Strip the prefix before querying the remote server. See: #86
     for (const entry of (this.config.stores ?? [])) {
@@ -5224,6 +5343,93 @@ export class Plur {
     return all.filter(e => (e as any).pinned === true && e.status === 'active')
   }
 
+  /**
+   * Recompute `content_hash` for primary-store engrams whose hash no longer
+   * describes their statement (#852).
+   *
+   * ## Why this lives in core rather than in the CLI
+   *
+   * The first cut of `plur reindex-hashes` did a raw load → mutate → save
+   * against `paths.engrams` in the command itself. That is a whole-corpus
+   * read-modify-write on an UNLOCKED snapshot, and the 2026-08-13 data-loss
+   * audit reproduced the loss 6/6 on a 4,642-engram store: a correctly-locked
+   * concurrent writer appends between the load and the save, and the save puts
+   * the pre-append snapshot back. The engram is gone with no error — and the
+   * shrink guard cannot see it, because the same count goes out that came in.
+   *
+   * Nothing about that was specific to the CLI. Any caller reaching for the
+   * exported `loadEngrams`/`saveEngrams` primitives can reintroduce it, so the
+   * repair belongs behind the same seam every other write uses:
+   * `_withStoreLock` (which also fires the #799 daily backup) and the
+   * `_loadTargeted`/`_updateEngrams` capability pair, so a store that can do a
+   * targeted UPDATE is not asked to replace its whole corpus to rewrite one
+   * field.
+   *
+   * ## Why the primary store, not `list()`
+   *
+   * `list()` merges packs in and drops inactive/expired rows. Measured against
+   * one real store it gave 5,388 scanned / 1 stale / 1,805 missing where the
+   * primary store itself holds 4,642 / 38 / 961: it counted pack entries this
+   * repair does not own, and hid stale hashes on retired engrams. A retired
+   * engram with a stale hash still matters — `findActiveByContentHash` is not
+   * the only reader, and a resurrected row carries the bad hash with it.
+   *
+   * STALE and MISSING are reported separately because they are different
+   * conditions: a stale hash is actively wrong and absorbs unrelated writes
+   * today, a missing one predates the field and is inert until something
+   * matches on it.
+   *
+   * UNHASHABLE is the third category, and it is a refusal rather than a
+   * finding. A statement that normalizes to nothing hashes to the SHA-256 of
+   * the empty string — the same value every other such statement gets — so
+   * writing it does not record a fact about that engram, it enrols the engram
+   * in a mutual-absorption set. Before #896 that was every non-Latin statement
+   * in the store, and a `--apply` run would have stamped the shared value onto
+   * exactly the rows the report called "inert". These are listed and skipped.
+   *
+   * Read-only unless `apply` is set.
+   */
+  async repairContentHashes(opts: { apply?: boolean } = {}): Promise<{
+    scanned: number
+    stale: Array<{ id: string; statement: string }>
+    missing: Array<{ id: string; statement: string }>
+    unhashable: Array<{ id: string; statement: string }>
+    repaired: number
+  }> {
+    const apply = opts.apply === true
+    if (apply) this._assertWritable()
+    return await this._withStoreLock(this.paths.engrams, async () => {
+      const engrams = await this._primaryStore.load()
+      const stale: Array<{ id: string; statement: string }> = []
+      const missing: Array<{ id: string; statement: string }> = []
+      const unhashable: Array<{ id: string; statement: string }> = []
+      const changed: Engram[] = []
+      for (const e of engrams) {
+        if (!e.statement) continue
+        const current = (e as { content_hash?: string }).content_hash
+        if (!isHashable(e.statement)) {
+          unhashable.push({ id: e.id, statement: e.statement })
+          continue
+        }
+        const correct = computeContentHash(e.statement)
+        if (!current) missing.push({ id: e.id, statement: e.statement })
+        else if (current !== correct) stale.push({ id: e.id, statement: e.statement })
+        else continue
+        if (apply) {
+          ;(e as { content_hash?: string }).content_hash = correct
+          changed.push(e)
+        }
+      }
+      if (apply && changed.length > 0) {
+        // `engrams` was loaded INSIDE this lock, so the fallback whole-corpus
+        // write is of a current snapshot — that is the whole point of the move.
+        await this._updateEngrams(engrams, changed)
+        await this._syncIndex()
+      }
+      return { scanned: engrams.length, stale, missing, unhashable, repaired: changed.length }
+    })
+  }
+
   /** Set engram status to 'retired'. Supports primary and store engrams.
    *
    * options.force=true bypasses write_count and retires immediately,
@@ -5290,19 +5496,9 @@ export class Plur {
       // disambiguation signal. Same rule and same wording as rescope(), which
       // documents this as typo protection — a scope that reaches neither a
       // local family nor a configured store is a caller error, not a hint.
-      const storeEntry = (this.config.stores ?? []).find(s => s.scope === targetScope)
-      const isLocalFamily = targetScope === 'local'
-        || targetScope === 'global'
-        || targetScope.startsWith('project:')
-      if (!isLocalFamily && !storeEntry) {
-        const configured = (this.config.stores ?? []).map(s => s.scope).filter(Boolean)
-        throw new Error(
-          `Cannot retire from "${targetScope}": no configured store matches that scope. `
-          + `Valid targets: primary, local, global, project:*`
-          + (configured.length ? `, or a configured store scope (${configured.join(', ')})` : '')
-          + `. Check for typos — an unmatched scope would silently retire the LOCAL engram instead (#831).`,
-        )
-      }
+      assertScopeNamesATarget(
+        targetScope, this.config.stores ?? [], 'retire from', 'retire the LOCAL engram',
+      )
       // Past this point the scope names a local-family or non-URL store, so it
       // is a genuine disambiguation signal and the ambiguity guard is
       // deliberately skipped: the caller has already said which side they mean.
@@ -5506,12 +5702,25 @@ export class Plur {
 
     // Check remote stores — the engram may live on an enterprise server.
     // See: https://github.com/plur-ai/plur/issues/84
-    // scope: "primary" is an explicit local-only request (#831). Falling
-    // through to the remote walk here would retire a remote engram the caller
-    // just said they did not mean — the exact wrong-target retire this guard
-    // exists to prevent, arrived at from the opposite direction.
-    if (targetScope === 'primary') {
-      throw new Error(`Engram not found in the local primary store: ${id}`)
+    //
+    // An explicit LOCAL-family scope is a local-only request (#831). Falling
+    // through to the remote walk here retires a remote engram the caller just
+    // said they did not mean — the exact wrong-target retire this guard exists
+    // to prevent, arrived at from the opposite direction.
+    //
+    // This used to check `targetScope === 'primary'` alone, so the other three
+    // targets the error message above advertises — `local`, `global`,
+    // `project:*` — passed the validation as legitimate and then issued a
+    // remote DELETE, reporting success. Measured on the 2026-08-13 panel: 1
+    // remote DELETE each for global/local/project:foo, 0 for primary. The
+    // predicate is shared with `feedback` now precisely so the two cannot
+    // drift again — the drift was the bug (#855).
+    if (targetScope && isLocalOnlyScope(targetScope)) {
+      throw new Error(
+        `Engram not found in the local store: ${id} (scope: "${targetScope}"). `
+        + `That scope names a local target, so no remote store was searched. `
+        + `Omit scope to search everywhere, or pass the remote scope to target it directly.`,
+      )
     }
 
     // Strip store prefix before querying remote. See: #86
@@ -6460,26 +6669,48 @@ export class Plur {
     //
     // Both engrams in the reported case were written in one session and queued
     // together, so the mapping is available within this flush — provided the
-    // target goes first. One stable partial ordering is enough for that; a
-    // deeper chain resolves across successive flushes.
+    // target goes first.
+    //
+    // A TOPOLOGICAL SORT, not a comparator — see `orderBySupersedes`, which
+    // exists as its own module because the defect it replaces was a property
+    // of the ALGORITHM (`sort` with a non-transitive comparator) rather than
+    // of any store state, and so has to be testable as one.
     const pendingIds = new Set(pending.map(e => e.id))
     const supersedesTargets = (e: Engram): string[] => {
       const rel = (e as any).relations?.supersedes
       return Array.isArray(rel) ? rel.filter((x: unknown): x is string => typeof x === 'string') : []
     }
-    pending.sort((a, b) => {
-      const aDependsOnB = supersedesTargets(a).includes(b.id) ? 1 : 0
-      const bDependsOnA = supersedesTargets(b).includes(a.id) ? 1 : 0
-      return aDependsOnB - bDependsOnA
-    })
-    /** local id -> server-assigned id, built as this flush proceeds. */
+    const ordered = orderBySupersedes(pending, supersedesTargets)
+    pending.length = 0
+    pending.push(...ordered)
+    /**
+     * local id -> server-assigned id.
+     *
+     * Seeded from the PERSISTED map so an edge whose target left in an earlier
+     * flush still resolves; a mapping is only trusted for the host that
+     * produced it, since server ids are per-store. Grown as this flush
+     * proceeds, and written back at the end.
+     */
+    const persistedIdMap = this._readOutboxIdMap()
     const localToServer = new Map<string, string>()
+    let idMapDirty = false
 
     let flushed = 0
     let failed = 0
     let skipped = 0
     /** Warn once per host, not once per queued engram (#785). */
     const cooldownSkippedHosts = new Set<string>()
+    /**
+     * Engrams this flush DEMOTED to local/private on a policy change.
+     *
+     * Tracked explicitly because the merge-back applies fields, not rows: a
+     * demotion changes `scope` and `visibility` as well as the structured-data
+     * markers, and those two are ordinary engram fields that a concurrent
+     * `rescope` also writes. Carrying them for every survivor would revert
+     * that; carrying them only for the ids this flush actually demoted does
+     * not.
+     */
+    const demotedIds = new Set<string>()
     const expired_warnings: string[] = []
     const now = new Date()
     const TTL_MS = 7 * 24 * 60 * 60 * 1000
@@ -6518,7 +6749,19 @@ export class Plur {
       // Skipping leaves the engrams queued: the outbox already retries on the
       // next flush, and the breaker's own cooldown is what decides when that
       // becomes worth attempting.
-      const cooldown = isHostInCooldown(storeEntry.url!)
+      // `remoteHealthStatePath()`, explicitly — NOT the default (2026-08-13
+      // panel). The default is `remoteHealthPath()`, which resolves from
+      // PLUR_PATH; the recall leg passes `this.remoteHealthStatePath()`, which
+      // resolves from `paths.root`. For `new Plur({ path })`, `plur --path`,
+      // and every embedded consumer those are DIFFERENT FILES, so the two legs
+      // kept two independent opinions about whether a host is reachable —
+      // which is exactly the split #785 exists to close, reintroduced one
+      // level down. Measured: recall wrote plur-store-…/cache/remote-health.json
+      // while the write leg wrote plur-env-…/cache/remote-health.json. #785's
+      // test set PLUR_PATH and `path` to the same directory, the one
+      // configuration in which the bug is invisible.
+      const healthPath = this.remoteHealthStatePath()
+      const cooldown = isHostInCooldown(storeEntry.url!, Date.now(), healthPath)
       if (cooldown.inCooldown) {
         if (!cooldownSkippedHosts.has(storeEntry.url!)) {
           cooldownSkippedHosts.add(storeEntry.url!)
@@ -6569,6 +6812,7 @@ export class Plur {
           local.structured_data = lsd
           local.scope = 'local'
           local.visibility = 'private'
+          demotedIds.add(engram.id)
         }
         expired_warnings.push(
           `${engram.id}: sensitive content (${patterns}) now forbidden by scope ${outbox.target_scope}'s policy — demoted to local/private, not pushed`,
@@ -6596,6 +6840,7 @@ export class Plur {
         let refuse: string | null = null
         for (const t of targets) {
           const server = localToServer.get(t)
+            ?? (persistedIdMap[t]?.url === storeEntry.url ? persistedIdMap[t].server_id : undefined)
           if (server) { remapped.push(server); continue }
           const localTarget = engrams.find(e => e.id === t)
           if (localTarget && !pendingIds.has(t)) {
@@ -6626,9 +6871,13 @@ export class Plur {
         const pushed = await driver.appendAndGetServerId(cleanEngram)
         // #863: remember the mapping so a later engram in this same flush can
         // point at the server id rather than the local one.
-        if (pushed?.id) localToServer.set(engram.id, pushed.id)
+        if (pushed?.id) {
+          localToServer.set(engram.id, pushed.id)
+          persistedIdMap[engram.id] = { server_id: pushed.id, url: storeEntry.url!, at: Date.now() }
+          idMapDirty = true
+        }
         // #785: a write success clears the host's failure count for BOTH legs.
-        recordWriteOutcome(storeEntry.url!, true)
+        recordWriteOutcome(storeEntry.url!, true, Date.now(), this.remoteHealthStatePath())
         // Success: remove from local store
         const idx = engrams.findIndex(e => e.id === engram.id)
         if (idx !== -1) engrams.splice(idx, 1)
@@ -6645,7 +6894,7 @@ export class Plur {
         outbox.last_error = (err as Error).message
         // #785: and a write failure counts toward the same breaker, so a host
         // that only ever fails on writes still opens one.
-        recordWriteOutcome(storeEntry.url!, false)
+        recordWriteOutcome(storeEntry.url!, false, Date.now(), this.remoteHealthStatePath())
         failed++
         logger.warning(`[plur:outbox] retry failed for ${engram.id}: ${(err as Error).message}`)
       }
@@ -6663,6 +6912,15 @@ export class Plur {
     // Only engrams that were in the outbox are touched: `pending` is exactly
     // the set this method considered, so anything outside it is carried through
     // from the fresh read untouched.
+    //
+    // And within those, only the FIELDS this flush changed are applied — the
+    // survivor row is not swapped in wholesale (2026-08-13 data-loss audit,
+    // F4). The survivor is a snapshot taken before the network round-trips, so
+    // replacing the fresh row with it reverts anything that happened to that
+    // engram meanwhile: a feedback counter, an activation bump from a recall,
+    // a pin, a local rescope. The flush only ever mutates outbox metadata, the
+    // demotion marker, and (for a demotion) scope/visibility — so those are
+    // what it writes back, and nothing else.
     if (flushed > 0 || failed > 0) {
       const consideredIds = new Set(pending.map(e => e.id))
       const survivorsById = new Map(
@@ -6673,14 +6931,39 @@ export class Plur {
         const merged = fresh
           // Drop the ones this flush successfully pushed (remote now owns them).
           .filter(e => !(consideredIds.has(e.id) && !survivorsById.has(e.id)))
-          // Apply updated outbox metadata / demotions to the ones that stayed.
-          .map(e => (survivorsById.get(e.id) ?? e))
+          .map(e => {
+            const survivor = survivorsById.get(e.id)
+            if (!survivor) return e
+            const sSd = (survivor as any).structured_data as Record<string, unknown> | undefined
+            const fSd = { ...((e as any).structured_data as Record<string, unknown> | undefined ?? {}) }
+            // `_outbox` and `_demoted` are the flush's own bookkeeping: copy
+            // them across (including their ABSENCE, which is how a cancelled
+            // or demoted queue entry is expressed), and leave every other key
+            // of the fresh row alone.
+            for (const key of ['_outbox', '_demoted'] as const) {
+              if (sSd && key in sSd) fSd[key] = sSd[key]
+              else delete fSd[key]
+            }
+            return {
+              ...e,
+              // A demotion is the one case where the flush changes ordinary
+              // engram fields, so those are carried for exactly those ids.
+              ...(demotedIds.has(e.id) ? { scope: 'local', visibility: 'private' } : {}),
+              structured_data: Object.keys(fSd).length > 0 ? fSd : undefined,
+            } as Engram
+          })
         // The dropped engrams are the ones the remote accepted — a deliberate
         // handoff, not a loss (audit #794 shrink guard).
         await this._writeEngrams(this.paths.engrams, merged, { allowShrink: true })
       })
       await this._syncIndex()
     }
+
+    // Persist the id map LAST, and only if something was pushed. Writing it
+    // before the store write-back would leave a mapping for an engram whose
+    // local removal had not landed; writing it unconditionally would rewrite
+    // the file on every no-op flush.
+    if (idMapDirty) this._writeOutboxIdMap(persistedIdMap)
 
     return { flushed, failed, expired_warnings }
   }

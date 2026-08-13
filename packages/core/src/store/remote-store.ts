@@ -442,9 +442,37 @@ export class RemoteStore implements EngramStore {
    * Returns false ONLY on an authoritative 404. Anything else — transport
    * failure, 5xx, auth rejection — throws, so the caller must decide what an
    * unknown means rather than inheriting a silent "no".
+   *
+   * BOUNDED, and that is not a nicety (2026-08-13 data-loss audit, F2). Both
+   * callers — `forget()` and `feedback()` — run this INSIDE the primary store
+   * lock, one probe per configured remote. An unbounded `fetch` inherits
+   * undici's 300s `headersTimeout`, so a host that completes its handshake and
+   * then stalls holds the lock every other write path needs for five minutes,
+   * past the 180s `DEFAULT_ACQUIRE_TIMEOUT` — waiting `plur_learn` calls throw
+   * "Failed to acquire lock" and the engram is silently never stored. The
+   * budget is the same one `load()` uses, for the same reason.
    */
   async existsById(id: string): Promise<boolean> {
-    const r = await fetch(`${this.apiBase}/engrams/${encodeURIComponent(id)}`, { headers: this.headers() })
+    const ctrl = new AbortController()
+    const timer = setTimeout(() => ctrl.abort(), LOAD_FETCH_TIMEOUT_MS)
+    let r: Response
+    try {
+      r = await fetch(`${this.apiBase}/engrams/${encodeURIComponent(id)}`, {
+        headers: this.headers(),
+        signal: ctrl.signal,
+      })
+    } catch (err) {
+      // An abort is "cannot tell", not "absent" — the whole point of this
+      // method — so it must surface as a throw like any other transport
+      // failure, with a message that says which it was.
+      throw new Error(
+        ctrl.signal.aborted
+          ? `existence probe for ${id} timed out after ${LOAD_FETCH_TIMEOUT_MS}ms against ${this.apiBase}`
+          : `existence probe for ${id} failed against ${this.apiBase}: ${(err as Error).message}`,
+      )
+    } finally {
+      clearTimeout(timer)
+    }
     if (r.status === 404) return false
     if (!r.ok) throw new Error(`HTTP ${r.status} from ${this.apiBase}`)
     // A 200 is not on its own proof of existence — confirm the body actually

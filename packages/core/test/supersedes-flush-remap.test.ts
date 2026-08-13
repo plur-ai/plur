@@ -156,3 +156,158 @@ describe('supersedes survives the flush (#863)', () => {
     expect(res.expired_warnings.some(w => w.includes('lives only in the local store'))).toBe(true)
   })
 })
+
+/**
+ * Chains deeper than two, and edges whose target left in an EARLIER flush.
+ *
+ * Both were asserted rather than tested. #863 claimed "one stable partial
+ * ordering is enough … a deeper chain resolves across successive flushes";
+ * all four of its fixtures used exactly two pending engrams, and the
+ * 2026-08-13 panel showed both halves of the claim to be false:
+ *
+ *   - the comparator `aDependsOnB - bDependsOnA` is non-transitive, so a
+ *     three-node chain could be ordered arbitrarily, and
+ *   - a target flushed in an earlier run has no local row and no entry in the
+ *     per-flush map, so its dependent failed identically on every subsequent
+ *     flush while being told to "flush again once X has been pushed".
+ */
+describe('supersedes ordering for chains and across flushes (#863 follow-up)', () => {
+  let dir: string
+  let originalFetch: typeof globalThis.fetch
+  let posted: Array<Record<string, unknown>>
+  let serverSeq: number
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'plur-863-chain-'))
+    originalFetch = globalThis.fetch
+    posted = []
+    serverSeq = 0
+    writeFileSync(join(dir, 'config.yaml'), yaml.dump({
+      stores: [{ url: REMOTE, token: 'tok', scope: SCOPE, shared: true, readonly: false }],
+      index: false,
+    }))
+  })
+  afterEach(() => { globalThis.fetch = originalFetch; rmSync(dir, { recursive: true, force: true }) })
+
+  const down = () => { globalThis.fetch = vi.fn(async () => { throw new Error('fetch failed') }) as never }
+  const up = () => {
+    const res = (status: number, body: unknown): Response => ({
+      ok: true, status,
+      json: async (): Promise<unknown> => body,
+      text: async (): Promise<string> => '',
+    } as unknown as Response)
+    globalThis.fetch = vi.fn(async (_url: string, init?: { method?: string; body?: string }) => {
+      if ((init?.method ?? 'GET') === 'POST') {
+        posted.push(JSON.parse(init!.body as string))
+        serverSeq++
+        return res(201, { id: `ENG-GDA-2026-08-11-${String(serverSeq).padStart(3, '0')}` })
+      }
+      return res(200, { rows: [], total_count: 0 })
+    }) as never
+  }
+
+  it('orders a three-deep chain so every edge resolves in one flush', async () => {
+    // A supersedes B supersedes C. The correct push order is C, B, A — the
+    // REVERSE of the order they sit in the store, which is what makes this the
+    // discriminating case. The edges are wired after creation because a
+    // supersedes target must already exist, and wiring them at creation time
+    // would put the store in topological order already and let any comparator
+    // pass.
+    down()
+    const plur = new Plur({ path: dir })
+    const a = await plur.learn('the final word on the timer claim', { scope: SCOPE, type: 'behavioral' })
+    const b = await plur.learn('a first correction to the timer claim', { scope: SCOPE, type: 'behavioral' })
+    const c = await plur.learn('the original claim about the timer', { scope: SCOPE, type: 'behavioral' })
+    await new Promise(r => setTimeout(r, 60))
+    for (const [from, to] of [[a, b], [b, c]] as const) {
+      const row = (await plur.getById(from.id))!
+      ;(row as unknown as { relations: Record<string, unknown> }).relations = {
+        ...((row as unknown as { relations?: Record<string, unknown> }).relations ?? {}),
+        supersedes: [to.id],
+      }
+      await plur.updateEngram(row)
+    }
+
+    up()
+    const res = await plur.flushOutbox()
+
+    expect(res.failed, `chain stalled: ${res.expired_warnings.join(' | ')}`).toBe(0)
+    expect(posted.length).toBe(3)
+    expect(posted.map(p => p.statement)).toEqual([c.statement, b.statement, a.statement])
+    // Every pushed edge points at a SERVER id, never a local one.
+    for (const p of posted.slice(1)) {
+      const sup = (p.supersedes as string[] | undefined) ?? []
+      expect(sup.length, 'the correction lost its supersedes entirely').toBeGreaterThan(0)
+      for (const t of sup) expect(t).toMatch(/^ENG-GDA-/)
+    }
+  })
+
+  it('resolves an edge whose target was pushed in an EARLIER flush', async () => {
+    down()
+    const plur = new Plur({ path: dir })
+    const target = await plur.learn('the statement that will be corrected later', { scope: SCOPE, type: 'behavioral' })
+    // A local-only engram, minted AFTER the target, purely to hold the id
+    // sequence up. Without it the target's local row is spliced out on flush,
+    // the store is empty again, and the correction is minted the SAME id the
+    // target had — which is #816 (ids are derived from the store's high-water
+    // mark, and the mark is not persisted) and would make this test assert
+    // something other than what it is about.
+    await plur.learn('an unrelated local note', { scope: 'global', type: 'behavioral' })
+    await new Promise(r => setTimeout(r, 60))
+
+    // Flush 1: the target goes, and its local row is spliced out.
+    up()
+    await plur.flushOutbox()
+    expect(posted.length).toBe(1)
+    const serverId = 'ENG-GDA-2026-08-11-001'
+
+    // Flush 2: a correction queued afterwards still names the LOCAL id.
+    down()
+    const correction = await plur.learn('the corrected statement', {
+      scope: SCOPE, type: 'behavioral', supersedes: [target.id],
+    })
+    await new Promise(r => setTimeout(r, 60))
+    expect(correction.id).not.toBe(target.id)
+
+    up()
+    const res = await plur.flushOutbox()
+
+    expect(
+      res.failed,
+      `permanently stalled — the remediation "flush again once ${target.id} has been pushed" `
+      + `cannot be followed, because it already was: ${res.expired_warnings.join(' | ')}`,
+    ).toBe(0)
+    expect(posted.length).toBe(2)
+    // The wire shape flattens `relations.supersedes` to a top-level field.
+    expect(posted[1].supersedes, 'the edge still names a dead local id').toEqual([serverId])
+  })
+
+  it('a mutual supersedes is refused and reported, not silently dropped', async () => {
+    // A cycle has no valid order. The engrams must still be ATTEMPTED — a
+    // node that never enters the loop disappears from the flush entirely,
+    // which is worse than a loud refusal.
+    down()
+    const plur = new Plur({ path: dir })
+    const x = await plur.learn('one side of a mutual correction', { scope: SCOPE, type: 'behavioral' })
+    const y = await plur.learn('the other side of a mutual correction', {
+      scope: SCOPE, type: 'behavioral', supersedes: [x.id],
+    })
+    await new Promise(r => setTimeout(r, 60))
+    // Close the cycle by hand — nothing in the API creates one.
+    const stored = (await plur.getById(x.id))!
+    ;(stored as unknown as { relations: Record<string, unknown> }).relations = {
+      ...((stored as unknown as { relations?: Record<string, unknown> }).relations ?? {}),
+      supersedes: [y.id],
+    }
+    await plur.updateEngram(stored)
+
+    up()
+    const res = await plur.flushOutbox()
+
+    // One of the two cannot resolve its edge; it must be reported, and the
+    // other must still get through.
+    expect(res.flushed + res.failed, 'a cycle member vanished from the flush').toBe(2)
+    expect(res.failed).toBeGreaterThan(0)
+    expect(res.expired_warnings.some(w => w.includes('NOT pushed'))).toBe(true)
+  })
+})

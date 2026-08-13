@@ -44,8 +44,16 @@ export const MIN_TOKEN_LENGTH = 2
  * History:
  *   1 — original. `\w`-based word split, three-character floor, stop words.
  *   2 — #782. Han runs additionally indexed as overlapping character bigrams.
+ *   3 — #833. Unicode character class (`\p{L}\p{N}\p{M}`), space-less-run
+ *       bigrams widened past Han, two-character floor for dense scripts.
+ *   4 — 2026-08-13 panel. `Script_Extensions` rather than `Script` for the
+ *       space-less run, so characters that belong to a script without BEING
+ *       that script join their run instead of splitting it.
+ *
+ * (Entry 3 is retrospective: #833 bumped the constant to 3 and did not record
+ * why, which is the one thing this ledger exists to prevent.)
  */
-export const TOKENIZER_VERSION = 3
+export const TOKENIZER_VERSION = 4
 
 /** Tokenize text into searchable terms */
 /**
@@ -54,15 +62,30 @@ export const TOKENIZER_VERSION = 3
  * #782 covered Han only. These are indexed as character BIGRAMS rather than
  * words, because there is no whitespace to split on and a per-language
  * segmenter is a dependency this package will not take.
+ *
+ * `Script_Extensions`, NOT `Script` (2026-08-13 panel). A character's `Script`
+ * is its single primary script; its `Script_Extensions` is every script that
+ * USES it. The difference is not academic — U+30FC ー, the prolonged sound mark
+ * in essentially every Japanese loanword, has `Script=Common`, so under
+ * `Script` it terminated the run:
+ *
+ *     ftsTokenize('コンピューター')  →  ["ーター","コン","ンピ","ピュ"]
+ *
+ * …which indexes fragments split at the wrong place, so a query for ベース did
+ * not match a document containing it. `Script_Extensions=Katakana` includes
+ * U+30FC, and the same correction covers the Han iteration mark 々, the
+ * Japanese/Korean iteration and repetition marks, and Thai's THANTHAKHAT.
+ * #833's before/after table happened to use テストデプロイ, which contains no
+ * prolonged mark, so the hole survived the review that introduced it.
  */
-const SPACELESS_RUN = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Thai}\p{Script=Khmer}\p{Script=Lao}\p{Script=Myanmar}]{2,}/gu
+const SPACELESS_RUN = /[\p{Script_Extensions=Han}\p{Script_Extensions=Hiragana}\p{Script_Extensions=Katakana}\p{Script_Extensions=Thai}\p{Script_Extensions=Khmer}\p{Script_Extensions=Lao}\p{Script_Extensions=Myanmar}]{2,}/gu
 
 /**
  * Scripts whose words are routinely one or two characters, so the Latin-shaped
  * `length > 2` floor erases them (#833). Korean is the reported case:
  * 도커 ("docker") is two syllable blocks and vanished entirely.
  */
-const DENSE_SCRIPT = /[\p{Script=Hangul}\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]/u
+const DENSE_SCRIPT = /[\p{Script_Extensions=Hangul}\p{Script_Extensions=Han}\p{Script_Extensions=Hiragana}\p{Script_Extensions=Katakana}]/u
 
 export function ftsTokenize(text: string): string[] {
   const lower = text.toLowerCase()
