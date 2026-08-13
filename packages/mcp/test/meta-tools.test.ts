@@ -22,7 +22,7 @@ function makeMeta(id: string, statement: string, overrides: Partial<Engram> = {}
     feedback_signals: { positive: 0, negative: 0, neutral: 0 },
     knowledge_anchors: [], associations: [], derivation_count: 1,
     pack: null, abstract: null, derived_from: null, polarity: null,
-    write_count: 1,
+    write_count: 1, injection_count: 0,
     sources: [{ scope: 'global', session_id: null, stored_at: '2026-03-29T00:00:00.000Z' }],
     recurrence_count: 0,
     engram_version: 1,
