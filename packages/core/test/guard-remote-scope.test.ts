@@ -206,4 +206,31 @@ describe('remote-backed (non-shared) leak guard', () => {
     // And it reached the remote.
     expect(postCalls().length).toBe(1)
   })
+
+  // (f) An explicit empty `forbid: []` must not disable sensitive-content detection.
+  // The only realistic origin of an empty array is a normalizer or UI that cleared
+  // all checkboxes — it should be treated the same as no policy (fall through to the
+  // full default set), not as "forbid nothing". (#847)
+  // Uses an infra hit (public IP) because classic secrets (API keys, passwords) are
+  // caught by an earlier guard that throws before _offendingHitsForScope runs.
+  it('(f) remote user: scope with sensitivity.forbid:[] still demotes on an infra hit', async () => {
+    mockEmptyRemote()
+    writeStoresConfig(dir, remoteUserStore({
+      sensitivity: { forbid: [] },
+    }))
+    const plur = new Plur({ path: dir })
+
+    // public_ipv4 pattern — classified as 'infra', not caught by the early secrets guard
+    const engram = await plur.learn(`prod box lives at ${PUBLIC_IP}`, {
+      scope: REMOTE_USER_SCOPE,
+      type: 'behavioral',
+    }) as { scope: string }
+
+    // Empty forbid must be treated as full default → demoted to local.
+    expect(engram.scope).toBe('local')
+
+    await new Promise(r => setTimeout(r, 50))
+    // Never reached the remote.
+    expect(postCalls().length).toBe(0)
+  })
 })

@@ -1437,7 +1437,12 @@ export class Plur {
     const hits = detectSensitive(statement)
     if (hits.length === 0) return []
     const policy = this.getScopeMetadata(scope)?.sensitivity
-    const forbid = new Set<SensitivityCategory>(policy?.forbid ?? ['secrets', 'infra'])
+    // Treat empty forbid array as "not configured" — an empty array is not a
+    // meaningful policy (it disables detection), so fall back to the full default
+    // category set. See #847.
+    const forbid = new Set<SensitivityCategory>(
+      (policy?.forbid != null && policy.forbid.length > 0) ? policy.forbid : ['secrets', 'infra'],
+    )
     const allow = new Set<string>(policy?.allow ?? [])
     return hits.filter(h => {
       // Fail-closed (#386): a truncated-scan signal is always offending — the
