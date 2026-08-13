@@ -37,7 +37,7 @@ import { detectSecrets, detectSensitive, sensitivityCategory, SCAN_TRUNCATED } f
 import type { SecretMatch } from './secrets.js'
 import { SENSITIVITY_CATEGORIES, type ScopeMetadata, type SensitivityCategory } from './schemas/scope-metadata.js'
 import { rankScopes, SCOPE_MATCH_THRESHOLD, type ScopeSignals, type ScopeCandidate } from './scope-routing.js'
-import { appendHistory, readHistoryForEngram, generateEventId, generateInjectionId, computeQueryHash, findLatestInjectionFor, countInjectionEvents, type InjectionEventCounts } from './history.js'
+import { mintedIdsWithPrefix, appendHistory, readHistoryForEngram, generateEventId, generateInjectionId, computeQueryHash, findLatestInjectionFor, countInjectionEvents, type InjectionEventCounts } from './history.js'
 import { computeContentHash, isHashable } from './content-hash.js'
 import { isLocalOnlyScope, assertScopeNamesATarget } from './scope-target.js'
 import { orderBySupersedes } from './outbox-order.js'
@@ -1417,6 +1417,20 @@ export class Plur {
     }
   }
 
+  /**
+   * Ids this store has minted today that are no longer in the corpus (#816).
+   *
+   * Read from the append-only history log, which — unlike the corpus — never
+   * forgets. See `mintedIdsWithPrefix` for why an incomplete answer is safe.
+   */
+  private _mintedTodayIds(): string[] {
+    const day = new Date().toISOString().slice(0, 10)
+    return mintedIdsWithPrefix(this.paths.root, day.slice(0, 7), [
+      `ENG-${day}-`,
+      `ENG-${day.slice(0, 4)}-${day.slice(5, 7)}${day.slice(8, 10)}-`,
+    ])
+  }
+
   private _storeAt(path: string): AsyncPrimaryStore {
     if (path === this.paths.engrams) return this._primaryStore
     let store = this._secondaryStores.get(path)
@@ -2448,7 +2462,7 @@ export class Plur {
 
       const id = canDelegate
         ? await ps.nextEngramId!(engramIdDatePrefix())
-        : generateEngramId(allEngrams)
+        : generateEngramId(allEngrams, this._mintedTodayIds())
       const now = new Date().toISOString()
       const type = context?.type ?? 'behavioral'
       const cogLevel = TYPE_TO_COGNITIVE[type] ?? 'remember'
@@ -2926,7 +2940,7 @@ export class Plur {
       return await this._withStoreLock(this.paths.engrams, async () => {
         const engrams = await this._primaryStore.load()
         // Replace placeholder ID with a real local ID
-        localPlaceholder.id = generateEngramId([...engrams, ...allEngrams])
+        localPlaceholder.id = generateEngramId([...engrams, ...allEngrams], this._mintedTodayIds())
         if (storeEntry) {
           ;(localPlaceholder as any).structured_data = {
             ...((localPlaceholder as any).structured_data ?? {}),

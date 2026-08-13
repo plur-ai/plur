@@ -69,6 +69,48 @@ export function readHistory(root: string, yearMonth: string): HistoryEvent[] {
 }
 
 /**
+ * Ids this store has ever MINTED whose prefix matches one of `prefixes` (#816).
+ *
+ * `generateEngramId` allocates by scanning the corpus for the highest same-day
+ * suffix, so the corpus is the only record of what has been handed out — and
+ * `compact()` removes rows, which frees their ids for reuse. Two different
+ * engrams then share an id, and everything keyed by id that outlives the corpus
+ * entry (history itself, backups and restore diffs, `supersedes` edges, outbox
+ * rows, remote store rows) silently merges two lives into one.
+ *
+ * The repair needs a record of allocation that survives removal. That record
+ * already exists: this log is append-only, keyed by engram id, and written on
+ * every create — nothing is ever deleted from it, which is exactly the property
+ * the corpus lacks. No new state, no store-format change, no migration.
+ *
+ * ## Why this is safe even though history writes are best-effort
+ *
+ * Several call sites wrap `appendHistory` in try/catch, deliberately: a failed
+ * history write must not fail the write it describes. So this can UNDER-report.
+ * That is tolerable because the failure is one-directional — a missed record
+ * leaves allocation exactly where it is today, while every record found can
+ * only push the next suffix higher. Reading more allocation history can never
+ * create a collision, only avoid one.
+ *
+ * Reads a single month (allocation is per-day, so only the current month can
+ * hold same-day ids) and never throws: an unreadable log degrades to today's
+ * corpus-only behaviour rather than blocking a write.
+ */
+export function mintedIdsWithPrefix(root: string, yearMonth: string, prefixes: string[]): string[] {
+  try {
+    const out: string[] = []
+    for (const ev of readHistory(root, yearMonth)) {
+      if (ev.event !== 'engram_created') continue
+      const id = ev.engram_id
+      if (typeof id === 'string' && prefixes.some(p => id.startsWith(p))) out.push(id)
+    }
+    return out
+  } catch {
+    return []
+  }
+}
+
+/**
  * List all available history months (YYYY-MM format).
  */
 export function listHistoryMonths(root: string): string[] {
