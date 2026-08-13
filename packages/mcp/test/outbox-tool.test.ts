@@ -9,7 +9,6 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { mkdtempSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
-import yaml from 'js-yaml'
 import { Plur } from '@plur-ai/core'
 import { getToolDefinitions } from '../src/tools.js'
 
@@ -33,7 +32,11 @@ describe('plur_outbox (#667)', () => {
     dir = mkdtempSync(join(tmpdir(), 'plur-outbox-tool-'))
     originalFetch = globalThis.fetch
     globalThis.fetch = vi.fn(async () => { throw new Error('fetch failed') }) as never
-    writeFileSync(join(dir, 'config.yaml'), yaml.dump({
+    // JSON is valid YAML — avoids a js-yaml devDependency in this package,
+    // which `@plur-ai/mcp` does not declare. It resolves locally through pnpm
+    // hoisting and fails under CI's strict install, so the convention here
+    // (see session-scope-tool.test.ts) is to write config as JSON.
+    writeFileSync(join(dir, 'config.yaml'), JSON.stringify({
       stores: [{ url: REMOTE, token: TOKEN, scope: SCOPE, shared: true, readonly: false }],
       index: false,
     }))
@@ -91,11 +94,14 @@ describe('plur_outbox (#667)', () => {
       flushed: number; failed: number; pending: number; attempted: unknown[]
     }
     expect(res.attempted, 'the flush reported nothing about what it tried').toHaveLength(2)
-    // The remote is still down in this fixture, so nothing flushes — the
-    // point of the assertion is the SHAPE, and that a failed flush is
-    // reported as failure rather than as an empty success.
-    expect(res.flushed + res.failed).toBe(2)
-    expect(res.pending).toBe(2)
+    // Deliberately NOT asserting `flushed + failed === 2`. The queueing writes
+    // already failed against this host, so the #785 breaker may be open by the
+    // time the flush runs — and an open breaker attempts NOTHING, reporting
+    // flushed 0 / failed 0. That is correct, and it is precisely why
+    // session_start now reports the PENDING count rather than
+    // `outbox_result.failed`: the two diverge exactly here.
+    expect(res.flushed).toBe(0)
+    expect(res.pending, 'a skipped flush must leave the queue intact').toBe(2)
   })
 
   it('reports an empty outbox as empty rather than erroring', async () => {
