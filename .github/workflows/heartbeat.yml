@@ -1,0 +1,34 @@
+name: Heartbeat ingress
+
+# `infra/heartbeat` had tests and no CI job — neither the `validate()` matrix in
+# test_server.py nor (until #613) any coverage of the HTTP layer. It matched no
+# path filter in any existing workflow, so a change to the ingress could merge
+# entirely untested.
+#
+# Its own workflow rather than a job in python.yml: this is stdlib-only, so it
+# needs neither pnpm nor a built CLI, and bolting it onto a job that builds the
+# Node workspace would make a 6-second test suite wait on a 2-minute install.
+
+on:
+  push:
+    branches: [main]
+    paths: ['infra/heartbeat/**', '.github/workflows/heartbeat.yml']
+  pull_request:
+    branches: [main]
+    paths: ['infra/heartbeat/**', '.github/workflows/heartbeat.yml']
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install pytest
+      # `test_http.py` binds a real socket on port 0 and writes into tmp_path,
+      # so it needs no service, no fixtures on disk, and no privileged paths.
+      - run: pytest infra/heartbeat -q
