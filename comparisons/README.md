@@ -64,12 +64,12 @@ verify:
 
 ---
 
-## Recall quality: 97.6% R@5, fully local
+## Recall quality: 97.6% R@5, fully local (hybrid + BGE-reranker)
 
 We're not shy about the number — we just won't run a scores race. Our own, reproducible measurement (no competitor stacking):
 
-- **97.6% R@5 on LongMemEval-S** (n=500, chunk granularity, **fully local, no API**).
-- **Locality is not a downgrade.** In the *same* harness, on the same 500 questions, our fully-local stack (97.6%) is **on par** with the same-style pipeline run on a frontier *cloud* embedder (97.0%) — retrieval here is deterministic, so this is a paired point-estimate, not a sampling estimate. The honest takeaway: going local is not a downgrade; sovereignty costs you nothing measurable on quality.
+- **97.6% R@5 on LongMemEval-S** (n=500, chunk granularity, **fully local, no API**) — hybrid plus the opt-in BGE-reranker. The zero-config default, with no reranker, is 95.6%; BM25 alone is 92.2%.
+- **Locality is not a downgrade.** In the *same* harness, on the same 500 questions, our fully-local stack (97.6%, hybrid + BGE-reranker) is **on par** with the same-style pipeline run on a frontier *cloud* embedder (97.0%) — retrieval here is deterministic, so this is a paired point-estimate, not a sampling estimate. The honest takeaway: going local is not a downgrade; sovereignty costs you nothing measurable on quality.
 - **Our own harness.** The number comes from plur-bench and is regression-checked in our CI — a process figure, not a hand-picked marketing screenshot.
 
 > **Disclaimer (applies wherever this number appears):** LongMemEval-S · 500 questions · per-question protocol · canonical-doc scoring · chunk granularity. R@5 = ground-truth evidence lands in the top-5 retrieved — *not* end-to-end answer accuracy. Measured with our own plur-bench harness (no published third-party audit).[^gbrain]
