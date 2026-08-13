@@ -45,21 +45,71 @@ export const MIN_TOKEN_LENGTH = 2
  *   1 — original. `\w`-based word split, three-character floor, stop words.
  *   2 — #782. Han runs additionally indexed as overlapping character bigrams.
  */
-export const TOKENIZER_VERSION = 2
+export const TOKENIZER_VERSION = 3
 
 /** Tokenize text into searchable terms */
+/**
+ * Scripts written without spaces between words (#833).
+ *
+ * #782 covered Han only. These are indexed as character BIGRAMS rather than
+ * words, because there is no whitespace to split on and a per-language
+ * segmenter is a dependency this package will not take.
+ */
+const SPACELESS_RUN = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Thai}\p{Script=Khmer}\p{Script=Lao}\p{Script=Myanmar}]{2,}/gu
+
+/**
+ * Scripts whose words are routinely one or two characters, so the Latin-shaped
+ * `length > 2` floor erases them (#833). Korean is the reported case:
+ * 도커 ("docker") is two syllable blocks and vanished entirely.
+ */
+const DENSE_SCRIPT = /[\p{Script=Hangul}\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]/u
+
 export function ftsTokenize(text: string): string[] {
   const lower = text.toLowerCase()
-  const tokens = lower
-    .replace(/[^\w\s]/g, ' ')
+
+  // PART 1 — the character class must keep MARKS, not just letters and digits.
+  //
+  // `\w` is ASCII-only, so every non-Latin script was stripped here and
+  // tokenized to nothing, and accented Latin was cut at each accent
+  // (déploiement -> ["ploiement","fran","ais"]). The obvious repair,
+  // `\p{L}\p{N}`, is NOT sufficient and this was measured: Devanagari vowel
+  // signs and Thai tone marks are NONSPACING MARKS (\p{Mn}), so Hindi still
+  // returned [] and Thai came back shattered into fragments the length filter
+  // then ate. \p{M} is what makes those scripts survive.
+  const wordSource = lower
+    // PART 2a — remove space-less runs BEFORE splitting on whitespace.
+    //
+    // Ordering dependency, also measured: with part 1 applied the Unicode class
+    // now PRESERVES a Han run as a single "word", so leaving it in the word
+    // path indexes the whole run AND all its bigrams — 测试部署应该用 came back
+    // as the run plus all six bigrams. Strip here, re-add as bigrams below.
+    .replace(SPACELESS_RUN, ' ')
+    .replace(/[^\p{L}\p{N}\p{M}_\s]/gu, ' ')
+
+  const tokens = wordSource
     .split(/\s+/)
-    .filter(w => w.length > 2)
+    // PART 3 — the length floor is Latin-centric.
+    //
+    // `length > 2` silently kills two-character words, which are ordinary in
+    // dense scripts: 도커 ("docker") vanished entirely. Relaxed to two for those
+    // scripts only, so English stop-noise ("a", "of") is filtered exactly as
+    // before.
+    //
+    // Deliberately NOT relaxed to one. #833's table lists a lone 猫 as a failing
+    // case, and it stays failing: MIN_TOKEN_LENGTH = 2 is load-bearing —
+    // `PostgresAdapter.reversePrefixes` reads it, and this file records that
+    // #782 already broke a RESTATED copy of that invariant once and only got
+    // away with it because Han and ASCII alphabets are disjoint. Emitting
+    // length-1 tokens would make the constant wrong again, this time for real,
+    // and widening it is a change to the pushdown's contract rather than to the
+    // tokenizer's. A single character also cannot be bigram-indexed, so it has
+    // no route into the index either way.
+    .filter(w => w.length > 2 || (w.length === 2 && DENSE_SCRIPT.test(w)))
     .filter(w => !STOP_WORDS.has(w))
-  // CJK: \w is ASCII-only ([A-Za-z0-9_]), so Han runs are stripped by the
-  // replace above and pure-Chinese text tokenizes to nothing. Chinese has no
-  // whitespace-delimited words — re-extract Han runs from the source and index
-  // them as character bigrams so non-English text survives BM25. (plur-ai#782)
-  for (const run of lower.match(/\p{Script=Han}{2,}/gu) ?? []) {
+
+  // Space-less scripts, indexed as character bigrams (#782, widened in #833).
+  // Read from `lower`, not from wordSource — the runs were stripped there.
+  for (const run of lower.match(SPACELESS_RUN) ?? []) {
     for (let i = 0; i < run.length - 1; i++) tokens.push(run.slice(i, i + 2))
   }
   return tokens
