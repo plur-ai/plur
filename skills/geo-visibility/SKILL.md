@@ -36,7 +36,7 @@ Measure your brand's presence inside AI-generated answers. Find out which models
 ## Prerequisites
 
 ```bash
-# One-time: OpenRouter account (openrouter.ai) — covers GPT-4o, Claude, Gemini, Llama in one API
+# One-time: OpenRouter account (openrouter.ai) — one API key across every frontier model
 export OPENROUTER_API_KEY=sk-or-...
 
 # One-time: Python + pyyaml
@@ -47,11 +47,25 @@ No other dependencies. The script uses Python's built-in `urllib` — no `reques
 
 ## Quickstart
 
-### Step 1: Download the script and prompt file
+### Step 1: Get the script and prompt file
+
+Both ship alongside this document, in the same directory:
+
+```
+geo-visibility/
+├── SKILL.md            ← you are here
+├── geo_visibility.py   ← the scanner
+└── geo_prompts.yaml    ← prompts, brand patterns, competitors, model list
+```
+
+Copy the two files into a working directory and run from there — the script
+writes `results/` relative to the current directory:
 
 ```bash
-# Save geo_visibility.py and geo_prompts.yaml from this skill's repository
-# or copy them from the examples below into your working directory
+mkdir -p ~/geo-audit && cd ~/geo-audit
+cp /path/to/geo-visibility/geo_visibility.py .
+cp /path/to/geo-visibility/geo_prompts.yaml .
+python3 geo_visibility.py --help
 ```
 
 ### Step 2: Customize the prompt file
@@ -62,6 +76,8 @@ Edit `geo_prompts.yaml` — this is the core intellectual work of a GEO audit:
 brand:
   name: YourBrand
   patterns: ["yourbrand.com", "yourbrand-ai", "@yourbrand"]
+  description: what your product actually is   # used only by --judge
+  domains: ["yourbrand.com", "docs.yourbrand.com"]   # marked "⬅ us" in the citation map
 
 competitors:
   - Competitor1
@@ -71,12 +87,15 @@ competitors:
       - 'AmbiguousName\.(com|ai)'
       - 'AmbiguousName (Inc|Labs)\b'
 
+# Illustrative only — verify against OpenRouter's live catalogue before each run:
+#   curl -s https://openrouter.ai/api/v1/models | \
+#     python3 -c "import json,sys;[print(m['id']) for m in json.load(sys.stdin)['data']]" | sort
 models:
-  - openai/gpt-4o
-  - anthropic/claude-sonnet-4
-  - google/gemini-2.5-pro
-  - meta-llama/llama-3.3-70b-instruct
-  - deepseek/deepseek-chat
+  - openai/gpt-5.2
+  - anthropic/claude-sonnet-5
+  - google/gemini-3.1-pro-preview
+  - meta-llama/llama-4-maverick
+  - deepseek/deepseek-chat-v3.1
 
 prompts:
   category:
@@ -104,7 +123,7 @@ prompts:
 python3 geo_visibility.py
 ```
 
-Progress prints as each model×prompt pair is scored. Typical run: 5 models × 30 prompts = 150 calls, ~5 minutes.
+Progress prints as each model×prompt pair is scored. Typical run with the shipped set: 5 models × 50 prompts = 250 calls, ~8 minutes.
 
 ### Step 4: Run grounded scan (what live retrieval cites)
 
@@ -116,12 +135,16 @@ This appends `:online` to the model IDs via OpenRouter, activating real-time web
 
 ### Step 5: Read the summary
 
-The script writes a Markdown summary to `results/summary-<timestamp>.md`:
+The script writes a Markdown summary to `results/summary-<timestamp>.md`. The
+sample below is a real run from 2026-08-03 over a 30-prompt subset (`--groups`),
+so it names the models current at that date rather than the defaults above, and
+its scale is smaller than a full 50-prompt sweep. The per-model table is
+truncated to three of the five rows:
 
 ```markdown
 # GEO visibility — run 20260803T031118Z (grounded mode)
 
-- Prompt×model answers scored: 150 (errors excluded)
+- Prompt×model answers scored: 148 of 150 (errors excluded)
 - Share of Voice (YourBrand mentioned): 24.0%
 
 ## Per-model mention rate
@@ -130,6 +153,7 @@ The script writes a Markdown summary to `results/summary-<timestamp>.md`:
 | openai/gpt-4o                | 8/30      | 27%  |
 | anthropic/claude-sonnet-4    | 12/30     | 40%  |
 | google/gemini-2.5-pro        | 2/30      | 7%   |
+| …                            | …         | …    |
 
 ## Co-occurrence — who the LLMs name
 | Brand        | Appearances |
@@ -163,6 +187,28 @@ For each answer that mentions your brand, an LLM judge evaluates:
 
 Useful for catching "mentioned but described wrongly" — a silent brand damage pattern.
 
+### What a run costs
+
+The scan is `prompts × models` chat completions, so cost scales with your prompt set. For the shipped 50-prompt set across 5 models:
+
+| Mode | Calls | Notes |
+|---|---|---|
+| `parametric` (default) | 250 | Short answers, no retrieval. The cheap baseline. |
+| `--mode grounded` | 250 | Adds `:online`, which bills a web-search surcharge per call on top of tokens — materially more than parametric. |
+| `--judge` | + up to 250 | One extra judge call per answer that mentions the brand, on the smaller `judge_model`. |
+
+A full weekly cycle (parametric + grounded + judge) is therefore roughly 500–750 calls. Exact spend depends entirely on which models you pick and OpenRouter's current pricing, which moves — **price it before a wide sweep** rather than trusting a figure checked into a document:
+
+```bash
+curl -s https://openrouter.ai/api/v1/models | python3 -c "
+import json,sys
+want={'openai/gpt-5.2','anthropic/claude-sonnet-5','google/gemini-3.1-pro-preview'}
+for m in json.load(sys.stdin)['data']:
+    if m['id'] in want: print(m['id'], m['pricing'])"
+```
+
+Start with `--models` set to one cheap model and a trimmed prompt set to confirm your brand patterns match before spending on the full grid.
+
 ## Reading the Results
 
 ### Share of Voice (SoV)
@@ -180,7 +226,14 @@ Most products in growing categories start at 0–10%. The content backlog tells 
 
 ### Per-model variance matters
 
-Gemini, GPT-4o, Claude, and Llama often have very different recall for the same brand. A 0% on Gemini usually means: no YouTube content, no Google-indexed content, weak Google-property citations. A 0% on Claude often means: not well-indexed by Brave Search. Per-model gaps point to channel-specific actions.
+Frontier models often have very different recall for the same brand, and the gaps are the actionable part — they point to channel-specific work rather than generic "make more content".
+
+Two patterns we have observed across our own weekly runs, offered as hypotheses to test rather than as claims about how these systems work internally:
+
+- Low **Gemini** recall has tracked with an absence of YouTube content and weak presence on Google-indexed properties.
+- Low **Claude** recall has tracked with thin coverage on the sources its web search surfaces.
+
+Neither vendor publishes its retrieval architecture, so treat these as correlations from one brand's data. The useful move is to check whether the same correlation holds for you: change one channel, re-run, and see whether that model's rate moves.
 
 ### The citation map is your SEO roadmap
 
@@ -253,6 +306,4 @@ results/
 
 ## Built With
 
-This methodology was developed and battle-tested by the [PLUR](https://plur.ai) team as part of the PLUR agent coordination framework — an open-source, local-first memory layer for AI agents. The scan has been running weekly since 2026-06-01, tracking five frontier models across 134 prompt×model pairs.
-
-Pair with **plur-memory** to persist your GEO findings across sessions: your agent will remember your SoV baseline, which models know you, and which content gaps you have already addressed — without re-reading the reports.
+This methodology was developed and battle-tested by the [PLUR](https://plur.ai) team as part of the PLUR agent coordination framework — an open-source, local-first memory layer for AI agents. The scan has been running weekly since 2026-06-01 across five frontier models and a 50-prompt set — 250 pairs per run, of which the scored count varies as errored calls are excluded.
