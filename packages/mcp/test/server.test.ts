@@ -325,15 +325,39 @@ describe('MCP server (wire protocol)', () => {
       expect(readPayloadDropLog(dir)).toEqual([])
     })
 
-    it('an ordinary caller error (fields present, non-array missing) is NOT logged as a drop', async () => {
+    // Contract change (#772): this case used to be excluded from the log on the
+    // reasoning that a non-array miss is an ordinary caller error, not a client
+    // drop. True — but the exclusion made the log unfalsifiable. Recording a
+    // partial drop ONLY when a missing field is array-typed guarantees that
+    // 100% of recorded partial drops involve an array, whatever the truth is,
+    // so the log could never test #297's array hypothesis — the one question
+    // #772 exists to answer. Both populations are now recorded and separated by
+    // `missing_array_params`, which is what makes the ratio measurable.
+    it('a scalar-only partial drop is recorded, so the array correlation can be falsified (#772)', async () => {
       const result = await client.callTool({
         name: 'plur_learn',
         arguments: { scope: 'global', type: 'behavioral' },
       })
       expect(result.isError).toBe(true)
       const parsed = JSON.parse((result.content as any)[0].text)
-      expect(parsed.drop).toBeUndefined()
-      expect(readPayloadDropLog(dir)).toEqual([])
+      expect(parsed.drop).toBe('partial')
+      const records = readPayloadDropLog(dir)
+      expect(records.length).toBe(1)
+      expect(records[0].arguments_wire).toBe('partial')
+      expect(records[0].missing_fields).toContain('statement')
+      // No array among the missing fields — this is the population the old gate
+      // could not see.
+      expect(records[0].missing_array_params).toEqual([])
+    })
+
+    it('missing_array_params separates the #297 shape from a scalar-only miss', async () => {
+      await client.callTool({ name: 'plur_learn', arguments: { scope: 'global' } })
+      await client.callTool({ name: 'plur_session_end', arguments: { summary: 'x' } })
+
+      const records = readPayloadDropLog(dir)
+      expect(records.length).toBe(2)
+      expect(records[0].missing_array_params).toEqual([])
+      expect(records[1].missing_array_params).toEqual(['engram_suggestions'])
     })
 
     // Server-side exoneration pin: #772's strongest observed correlation is

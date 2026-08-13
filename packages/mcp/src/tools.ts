@@ -281,6 +281,12 @@ export function validateToolArgs(
   rawArgs: Record<string, unknown>,
 ): { ok: true; data: Record<string, unknown> } | {
   ok: false
+  /**
+   * Missing field NAMES that are array-typed. Sits OUTSIDE `errorPayload` so
+   * the forensic log can separate the #297 array shape from a scalar-only miss
+   * without adding a field to the client-visible error response.
+   */
+  missingArrayParams: string[]
   errorPayload: {
     error: string
     success: false
@@ -330,7 +336,22 @@ export function validateToolArgs(
       .filter((k: string) => (schema.properties as any)?.[k]?.type === 'array')
 
     const wholePayloadDrop = receivedFields.length === 0
-    const partialDrop = !wholePayloadDrop && missingArrayParams.length > 0
+    // Any partial arrival is recorded, not only one missing an array param.
+    //
+    // Gating on `missingArrayParams.length > 0` meant every partial drop in the
+    // log involved an array BY CONSTRUCTION, so the log agreed with #297's
+    // array hypothesis no matter what was true and could never test it — and
+    // testing it is what #772 asks for. A scalar-only miss is usually an
+    // ordinary caller error rather than a client drop, so the two populations
+    // are separated by `missingArrayParams` on the record instead of by
+    // excluding one of them from the evidence.
+    const partialDrop = !wholePayloadDrop && missingFields.length > 0
+    // What gets RECORDED and what gets EXPLAINED are now different questions.
+    // The #297 hint tells a caller to reshape array params, which is wrong (and
+    // misleading) advice for a scalar-only miss — that caller simply omitted a
+    // field. So the hint stays keyed on an array actually being missing, while
+    // the log records both populations.
+    const arrayShapedDrop = partialDrop && missingArrayParams.length > 0
 
     let dropHint = ''
     if (wholePayloadDrop) {
@@ -345,7 +366,7 @@ export function validateToolArgs(
             '(e.g. tags: "[\\"a\\",\\"b\\"]") or a comma-separated string (tags: "a, b") — the server ' +
             'coerces both back into arrays.'
           : '')
-    } else if (partialDrop) {
+    } else if (arrayShapedDrop) {
       dropHint = ' Known client-side bug (plur-ai/plur#297): some MCP clients drop ' +
         `array-typed parameters from a large arguments payload while keeping the earlier fields ` +
         `(here: ${missingArrayParams.join(', ')}). This is size-sensitive — the same call often ` +
@@ -367,6 +388,7 @@ export function validateToolArgs(
         'Fix the field(s) named above and retry; do not abandon the call.'
     return {
       ok: false,
+      missingArrayParams,
       errorPayload: {
         error: `Invalid arguments: ${details}. ${receivedNote} ${disposition}${dropHint}`,
         success: false,
