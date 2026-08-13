@@ -1993,7 +1993,21 @@ export class Plur {
     const hits = detectSensitive(statement)
     if (hits.length === 0) return []
     const policy = this.getScopeMetadata(scope)?.sensitivity
-    const forbid = new Set<SensitivityCategory>(policy?.forbid ?? ['secrets', 'infra'])
+    // An EMPTY forbid list means "not configured", not "forbid nothing" (#847).
+    //
+    // `??` supplies the default only for null/undefined, so an explicit `[]`
+    // used to forbid nothing and switch this scope's scan off entirely. Nobody
+    // declares a sensitivity block in order to forbid nothing — omitting the
+    // block already says that, and more clearly. The realistic origin is a
+    // layer that normalises a partial policy into a complete object by filling
+    // absent keys with empty arrays, which is the obvious way to write one.
+    //
+    // The failure ran in the dangerous direction: the scope then looked MORE
+    // governed than a scope with no policy at all, while being the only one
+    // with no scan. Length check rather than `??`, so both shapes default.
+    const forbid = new Set<SensitivityCategory>(
+      policy?.forbid && policy.forbid.length > 0 ? policy.forbid : ['secrets', 'infra'],
+    )
     const allow = new Set<string>(policy?.allow ?? [])
     return hits.filter(h => {
       // Fail-closed (#386): a truncated-scan signal is always offending — the
