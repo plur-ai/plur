@@ -608,6 +608,48 @@ describe('MCP tools', () => {
     expect(past.engram_count).toBe(1)
   })
 
+  it('plur_status composes domain and created_after — the headline use case (#547)', async () => {
+    // #524 tested each axis alone. The scenario that motivated the filters
+    // (#522) is the two TOGETHER — "what has this domain learned since the
+    // engagement started" — and composition is exactly where a filter chain
+    // breaks, by overwriting rather than narrowing.
+    await callTool('plur_learn', { statement: 'Meridian uses a 60/40 split', scope: 'global', domain: 'meridian.strategy' })
+    await callTool('plur_learn', { statement: 'Forge lists ship on Tuesdays', scope: 'global', domain: 'forge.ops' })
+    const past = '2000-01-01'
+    const tomorrow = new Date(Date.now() + 86400000).toISOString().slice(0, 10)
+
+    const both = await callTool('plur_status', { domain: 'meridian', created_after: past }) as any
+    expect(both.engram_count, 'the domain filter must still apply when a date is passed too').toBe(1)
+
+    // …and the date must still apply when a domain is passed: a composition
+    // that silently kept only the last filter would pass the assertion above.
+    const noneInWindow = await callTool('plur_status', { domain: 'meridian', created_after: tomorrow }) as any
+    expect(noneInWindow.engram_count, 'the date filter was dropped when combined').toBe(0)
+  })
+
+  it.each(['2026-13-99', 'last week', '2026-02-30', '26-01-01'])(
+    'plur_status rejects the malformed created_after %p instead of miscounting (#547)',
+    async bad => {
+      // Dates are compared LEXICOGRAPHICALLY against a YYYY-MM-DD stamp, so a
+      // malformed value does not error — it sorts after every real date and
+      // returns a confident 0. A wrong number from a diagnostic is worse than
+      // an error from one.
+      await callTool('plur_learn', { statement: 'a fact that exists', scope: 'global' })
+      await expect(callTool('plur_status', { created_after: bad })).rejects.toThrow(/ISO date/)
+    },
+  )
+
+  it('plur_status treats an EMPTY created_after as no filter, not as an error', async () => {
+    // Deliberately excluded from the rejection list above. An empty string is
+    // how a caller spells "unset" when it is threading an optional value
+    // through, and every other optional string in this surface reads falsy as
+    // absent. Rejecting it would turn a common no-op into an error; the
+    // malformed cases above are the ones that produce a wrong NUMBER.
+    await callTool('plur_learn', { statement: 'a fact that exists', scope: 'global' })
+    const res = await callTool('plur_status', { created_after: '' }) as any
+    expect(res.engram_count).toBe(1)
+  })
+
   // #452 — injection-provenance event/label counts feed #202's volume gate.
   it('plur_status surfaces injection event and label counts', async () => {
     const empty = await callTool('plur_status', {}) as any
