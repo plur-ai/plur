@@ -26,6 +26,26 @@
  *   callback still rejects at the store method itself.
  * - **All writes reject with the same typed error**, so callers can
  *   distinguish "this instance is read-only" from a real store failure.
+ * - **The query-adapter surface delegates unchanged** (`role`, `searchBM25`,
+ *   `searchVector`, `vectorIndex`). These are reads, so they need no guarding —
+ *   exactly like `loadByIds`. Omitting them was #830: `_primaryQueryAdapter()`
+ *   keys on `role === 'primary' && typeof searchBM25 === 'function'`, so a
+ *   guarded store failed that check, `recall()` fell back to `_filterEngrams()`,
+ *   and for a store that answers queries ITSELF — which therefore has no
+ *   `indexedStorage`, since `indexTier` resolves to 'none' when a primary query
+ *   store is present — that path had nothing to read and threw. Readonly is the
+ *   documented way to say "this recall must not write", and it was unusable
+ *   exactly where it is most wanted: shared multi-tenant storage, where core's
+ *   per-read activation write is a real cost.
+ *
+ * A note on the shape, since it looks like the wrong one: this is a WHITELIST,
+ * and a whitelist is why #830 happened — a new read member is silently dropped
+ * until someone remembers to add it. A Proxy forwarding everything except a
+ * write deny-list would not have this failure mode. It is still the right shape
+ * HERE, because the two failure modes are not symmetric: a missed entry on a
+ * whitelist loses functionality and is discovered; a missed entry on a
+ * deny-list PERMITS A WRITE on a path whose entire purpose is that it cannot
+ * write. On a safety guard, fail closed.
  */
 import type { Engram } from '../schemas/engram.js'
 import type { PrimaryStore, PrimaryStoreKind } from './primary-store.js'
@@ -67,6 +87,18 @@ export class ReadonlyStoreGuard implements PrimaryStore {
    */
   readonly nextEngramId?: (datePrefix: string) => Promise<string>
 
+  /**
+   * Query-adapter surface (#830). All READS, all delegating unchanged.
+   *
+   * `role` is what `_primaryQueryAdapter()` keys on, so dropping it silently
+   * disabled search pushdown for every read-only instance over a primary query
+   * store — and then crashed, because the fallback path has no index to read.
+   */
+  readonly role?: string
+  readonly searchBM25?: (query: string, opts: { limit: number } & Record<string, unknown>) => Promise<Engram[]>
+  readonly searchVector?: (...args: unknown[]) => Promise<unknown>
+  readonly vectorIndex?: unknown
+
   constructor(private readonly _inner: PrimaryStore) {
     this.kind = _inner.kind
     this.location = _inner.location
@@ -79,6 +111,18 @@ export class ReadonlyStoreGuard implements PrimaryStore {
       this.findActiveByContentHash = (hash, scope) => _inner.findActiveByContentHash!(hash, scope)
     }
     if (_inner.nextEngramId) this.nextEngramId = () => Promise.reject(new ReadonlyStoreError())
+
+    // Query-adapter surface (#830) — reads, forwarded verbatim like loadByIds.
+    const inner = _inner as unknown as {
+      role?: string
+      searchBM25?: (q: string, o: { limit: number } & Record<string, unknown>) => Promise<Engram[]>
+      searchVector?: (...a: unknown[]) => Promise<unknown>
+      vectorIndex?: unknown
+    }
+    if (inner.role !== undefined) this.role = inner.role
+    if (inner.searchBM25) this.searchBM25 = (q, o) => inner.searchBM25!(q, o)
+    if (inner.searchVector) this.searchVector = (...a: unknown[]) => inner.searchVector!(...a)
+    if (inner.vectorIndex !== undefined) this.vectorIndex = inner.vectorIndex
   }
 
   load(): Promise<Engram[]> { return this._inner.load() }
