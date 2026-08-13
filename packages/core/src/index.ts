@@ -515,6 +515,19 @@ export interface RescopeResult {
   kept_local?: boolean
   /** Echoed when options.dry_run was set — nothing was mutated. */
   dry_run?: boolean
+  /**
+   * Set when the source carried a PENDING outbox delivery that the rescope
+   * cancelled (#848).
+   *
+   * A failed remote write queues the engram with `structured_data._outbox`
+   * naming the target url + scope. Rescoping used to rewrite the scope and
+   * leave that entry untouched, so when the original store recovered the
+   * engram was delivered to the store the user explicitly moved it away from —
+   * silently undoing the rescope, arbitrarily later. Reported rather than done
+   * quietly, because the caller cannot otherwise tell a rescope that cancelled
+   * a queued delivery from one that did not.
+   */
+  cancelled_outbox?: { target_url: string; target_scope: string }
   error?: string
 }
 
@@ -5644,9 +5657,20 @@ export class Plur {
     }
 
     if (opts.dryRun) {
+      // #848: a dry run has to disclose the queued delivery too, or it does not
+      // describe what the real call would do.
+      const pendingOutbox = route === 'local'
+        ? ((source as any).structured_data?._outbox as { target_url?: string; target_scope?: string } | undefined)
+        : undefined
       return {
         id, status: 'rescoped', action, from_scope: source.scope, to_scope: target,
         ...(route === 'remote' ? { kept_local: opts.keepLocal } : { new_id: id }),
+        ...(pendingOutbox?.target_url
+          ? { cancelled_outbox: {
+              target_url: pendingOutbox.target_url,
+              target_scope: pendingOutbox.target_scope ?? source.scope,
+            } }
+          : {}),
         dry_run: true,
       }
     }
@@ -5704,6 +5728,7 @@ export class Plur {
     // Local route: rewrite scope IN PLACE under the store lock — the same
     // incremental update path as updateEngram's local branch. Id, activation,
     // feedback, relations and history all stay attached to the same row.
+    let cancelledOutbox: { target_url: string; target_scope: string } | undefined
     const rewritten = await this._withStoreLock(this.paths.engrams, async () => {
       // Targeted read (#827): resolving one engram by id.
       const fresh = await this._loadTargeted([id])
@@ -5712,10 +5737,31 @@ export class Plur {
       const from = t.scope
       t.scope = target
       const tsd = (t as any).structured_data
-      ;(t as any).structured_data = {
+      const nextSd: Record<string, unknown> = {
         ...(tsd && typeof tsd === 'object' && !Array.isArray(tsd) ? tsd : {}),
         _rescoped: { from_scope: from, at: now },
       }
+      // #848: CANCEL any pending delivery to the store we are moving away from.
+      //
+      // A failed remote write leaves `_outbox` naming the original url + scope.
+      // Rewriting the scope and leaving that entry queued meant the engram was
+      // delivered to the old store whenever it came back — silently reverting
+      // the rescope, arbitrarily later, with hand-editing engrams.yaml as the
+      // only reliable fix. The window is unbounded, because the queue only
+      // flushes when the store recovers.
+      //
+      // Dropping is correct on THIS branch specifically: `route === 'local'`
+      // means the target matched no URL-backed store, so the user has said the
+      // engram does not belong in a shared store at all. (A target that maps to
+      // a different remote takes the `remote` branch, which builds a fresh copy
+      // with the bookkeeping keys stripped and retires the source — and
+      // flushOutbox already skips retired rows, so that path is not exposed.)
+      const ob = nextSd._outbox as { target_url?: string; target_scope?: string } | undefined
+      if (ob?.target_url) {
+        cancelledOutbox = { target_url: ob.target_url, target_scope: ob.target_scope ?? from }
+        delete nextSd._outbox
+      }
+      ;(t as any).structured_data = nextSd
       // Incremental write (#740): only the rescoped row changed.
       await this._updateEngrams(fresh, [t])
       await this._syncIndex()
@@ -5731,9 +5777,22 @@ export class Plur {
       event: 'engram_rescoped',
       engram_id: id,
       timestamp: now,
-      data: { from_scope: source.scope, to_scope: target, new_id: id, routed_to: 'local' },
+      data: {
+        from_scope: source.scope, to_scope: target, new_id: id, routed_to: 'local',
+        ...(cancelledOutbox ? { cancelled_outbox: cancelledOutbox } : {}),
+      },
     })
-    return { id, status: 'rescoped', action, from_scope: source.scope, to_scope: target, new_id: id }
+    if (cancelledOutbox) {
+      logger.warning(
+        `[plur] rescope of ${id} cancelled a pending delivery to ${cancelledOutbox.target_url} ` +
+        `(scope "${cancelledOutbox.target_scope}"). That queued write would have re-delivered the engram to the ` +
+        `store it was moved away from once the host recovered (#848).`,
+      )
+    }
+    return {
+      id, status: 'rescoped', action, from_scope: source.scope, to_scope: target, new_id: id,
+      ...(cancelledOutbox ? { cancelled_outbox: cancelledOutbox } : {}),
+    }
   }
 
   /**
