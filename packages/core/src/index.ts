@@ -6418,6 +6418,33 @@ export class Plur {
     )
     if (pending.length === 0) return { flushed: 0, failed: 0, expired_warnings: [] }
 
+    // #863: push supersedes TARGETS before the engrams that supersede them.
+    //
+    // The server assigns its own id on flush, so a `supersedes` pointing at a
+    // LOCAL id means nothing there and was silently dropped — a correction and
+    // the thing it corrected both landed as independent, equally-authoritative
+    // records. Worse than a broken link: per the tool contract,
+    // supersedes-linked pairs are SKIPPED by tension scans, so dropping the
+    // edge both keeps the stale statement live at equal weight AND makes the
+    // pair look like a genuine contradiction to the scanner.
+    //
+    // Both engrams in the reported case were written in one session and queued
+    // together, so the mapping is available within this flush — provided the
+    // target goes first. One stable partial ordering is enough for that; a
+    // deeper chain resolves across successive flushes.
+    const pendingIds = new Set(pending.map(e => e.id))
+    const supersedesTargets = (e: Engram): string[] => {
+      const rel = (e as any).relations?.supersedes
+      return Array.isArray(rel) ? rel.filter((x: unknown): x is string => typeof x === 'string') : []
+    }
+    pending.sort((a, b) => {
+      const aDependsOnB = supersedesTargets(a).includes(b.id) ? 1 : 0
+      const bDependsOnA = supersedesTargets(b).includes(a.id) ? 1 : 0
+      return aDependsOnB - bDependsOnA
+    })
+    /** local id -> server-assigned id, built as this flush proceeds. */
+    const localToServer = new Map<string, string>()
+
     let flushed = 0
     let failed = 0
     let skipped = 0
@@ -6523,8 +6550,53 @@ export class Plur {
         continue
       }
 
+      // #863: rewrite supersedes to the DESTINATION's ids before pushing.
+      //
+      // Three cases, and they are not the same:
+      //   - target already flushed in THIS run -> remap to its server id.
+      //   - target is a live LOCAL engram that was never destined for this
+      //     remote -> the edge is inherently unrepresentable there. Strip it and
+      //     say so, rather than blocking a legitimate write forever.
+      //   - target is neither -> refuse. Pushing a half-record is what produced
+      //     two live contradictory statements in the first place, and the issue
+      //     asks for a loud failure over a silent drop.
+      const targets = supersedesTargets(cleanEngram as Engram)
+      if (targets.length > 0) {
+        const remapped: string[] = []
+        let refuse: string | null = null
+        for (const t of targets) {
+          const server = localToServer.get(t)
+          if (server) { remapped.push(server); continue }
+          const localTarget = engrams.find(e => e.id === t)
+          if (localTarget && !pendingIds.has(t)) {
+            expired_warnings.push(
+              `${engram.id}: supersedes ${t}, which lives only in the local store — that edge cannot be `
+              + `represented on ${storeEntry.url} and was dropped from the pushed copy. The local record keeps it.`,
+            )
+            continue
+          }
+          refuse = t
+          break
+        }
+        if (refuse) {
+          expired_warnings.push(
+            `${engram.id}: NOT pushed — it supersedes ${refuse}, which could not be resolved in `
+            + `"${outbox.target_scope}". Pushing it would create two live, equally-authoritative records `
+            + `for the same fact, and tension scans skip supersedes-linked pairs so nothing would flag it. `
+            + `Still queued; flush again once ${refuse} has been pushed.`,
+          )
+          failed++
+          continue
+        }
+        const sd = (cleanEngram as any).relations ?? {}
+        ;(cleanEngram as any).relations = { ...sd, supersedes: remapped }
+      }
+
       try {
-        await driver.appendAndGetServerId(cleanEngram)
+        const pushed = await driver.appendAndGetServerId(cleanEngram)
+        // #863: remember the mapping so a later engram in this same flush can
+        // point at the server id rather than the local one.
+        if (pushed?.id) localToServer.set(engram.id, pushed.id)
         // #785: a write success clears the host's failure count for BOTH legs.
         recordWriteOutcome(storeEntry.url!, true)
         // Success: remove from local store
