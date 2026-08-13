@@ -48,7 +48,8 @@ export const MIN_TOKEN_LENGTH = 2
  *       bigrams widened past Han, two-character floor for dense scripts.
  *   4 — 2026-08-13 panel. `Script_Extensions` rather than `Script` for the
  *       space-less run, so characters that belong to a script without BEING
- *       that script join their run instead of splitting it.
+ *       that script join their run instead of splitting it. Also caps
+ *       bigram emission per run at {@link MAX_SPACELESS_RUN_CHARS} (#899).
  *
  * (Entry 3 is retrospective: #833 bumped the constant to 3 and did not record
  * why, which is the one thing this ledger exists to prevent.)
@@ -85,6 +86,21 @@ const SPACELESS_RUN = /[\p{Script_Extensions=Han}\p{Script_Extensions=Hiragana}\
  * `length > 2` floor erases them (#833). Korean is the reported case:
  * 도커 ("docker") is two syllable blocks and vanished entirely.
  */
+/**
+ * Longest space-less run that gets fully bigram-indexed (#899).
+ *
+ * 512 characters is far above any real statement in a space-less script — a
+ * Japanese or Chinese engram statement runs to tens of characters, not
+ * hundreds — and far below the scale at which a single pasted document starts
+ * to dominate a shared GIN index. Chosen to be a no-op for every engram the
+ * store is meant to hold, and a bound for the ones it is not.
+ *
+ * Changing this alters the token list for long runs, so it is covered by
+ * {@link TOKENIZER_VERSION}: bump the version and reindex, or stored tokens
+ * and query tokens stop agreeing.
+ */
+export const MAX_SPACELESS_RUN_CHARS = 512
+
 const DENSE_SCRIPT = /[\p{Script_Extensions=Hangul}\p{Script_Extensions=Han}\p{Script_Extensions=Hiragana}\p{Script_Extensions=Katakana}]/u
 
 export function ftsTokenize(text: string): string[] {
@@ -133,7 +149,19 @@ export function ftsTokenize(text: string): string[] {
   // Space-less scripts, indexed as character bigrams (#782, widened in #833).
   // Read from `lower`, not from wordSource — the runs were stripped there.
   for (const run of lower.match(SPACELESS_RUN) ?? []) {
-    for (let i = 0; i < run.length - 1; i++) tokens.push(run.slice(i, i + 2))
+    // Capped (#899). A run of length n emits n-1 bigrams, and every one becomes
+    // a row in Postgres's GIN index — so a 5,000-character CJK engram writes
+    // ~5,000 index entries where English prose of the same length writes a few
+    // hundred. Uncapped, one pasted document can dominate the index for the
+    // whole store.
+    //
+    // The cap is per RUN, not per engram, so ordinary statements — which are
+    // assertions, not documents — are untouched: nothing here changes for a run
+    // under the limit, which is essentially all of them. A run over it is
+    // TRUNCATED rather than dropped: its opening is the part a query is most
+    // likely to share, and indexing a prefix beats indexing nothing.
+    const span = Math.min(run.length, MAX_SPACELESS_RUN_CHARS)
+    for (let i = 0; i < span - 1; i++) tokens.push(run.slice(i, i + 2))
   }
   return tokens
 }
