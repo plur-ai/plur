@@ -14,6 +14,7 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 import { Plur } from '../src/index.js'
 import { SessionScopeRegistry } from '../src/session-scopes.js'
+import { readHistory } from '../src/history.js'
 
 describe('SessionScopeRegistry', () => {
   it('isolates registered sessions from each other and from the process slot', () => {
@@ -172,5 +173,62 @@ describe('Plur — concurrent session scopes', () => {
     expect((e as unknown as Record<string, unknown>).session).toBeUndefined()
     const reloaded = await plur.getById(e.id)
     expect((reloaded as unknown as Record<string, unknown>).session).toBeUndefined()
+  })
+})
+
+// #243: adjustSessionScope = setSessionScope + observability. Same registry,
+// same keying — plus a session_scope_changed history event per change.
+describe('Plur.adjustSessionScope (#243)', () => {
+  let dir: string
+  let plur: Plur
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'plur-adjust-scope-'))
+    plur = new Plur({ path: dir })
+  })
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  const events = () => readHistory(dir, new Date().toISOString().slice(0, 7))
+    .filter(e => e.event === 'session_scope_changed')
+
+  it('returns {previous, next} and updates the registry slot it targets', () => {
+    expect(plur.adjustSessionScope('group:plur/eng')).toEqual({ previous: null, next: 'group:plur/eng' })
+    expect(plur.getSessionScope()).toBe('group:plur/eng')
+    expect(plur.adjustSessionScope('project:core')).toEqual({ previous: 'group:plur/eng', next: 'project:core' })
+  })
+
+  it('keyed adjustment isolates sessions and leaves the process slot alone (ADR-0004)', () => {
+    plur.setSessionScope('global')
+    plur.adjustSessionScope('project:alpha', { session: 's1' })
+    plur.adjustSessionScope('project:beta', { session: 's2' })
+    expect(plur.getSessionScope({ session: 's1' })).toBe('project:alpha')
+    expect(plur.getSessionScope({ session: 's2' })).toBe('project:beta')
+    expect(plur.getSessionScope()).toBe('global')
+  })
+
+  it('appends a session_scope_changed history event with previous/next/trigger/reason/session_id', () => {
+    plur.adjustSessionScope('group:plur/eng', { session: 's1', reason: 'pivot to team-wide insight', trigger: 'set' })
+    plur.adjustSessionScope(null, { session: 's1', trigger: 'clear' })
+    const evs = events()
+    expect(evs).toHaveLength(2)
+    // Session-level event — no engram behind it.
+    expect(evs[0].engram_id).toBe('')
+    expect(evs[0].data).toMatchObject({
+      previous: null,
+      next: 'group:plur/eng',
+      trigger: 'set',
+      reason: 'pivot to team-wide insight',
+      session_id: 's1',
+    })
+    expect(evs[1].data).toMatchObject({ previous: 'group:plur/eng', next: null, trigger: 'clear', session_id: 's1' })
+  })
+
+  it('the adjusted scope governs subsequent unscoped writes, exactly like setSessionScope', async () => {
+    plur.adjustSessionScope('project:adjusted', { session: 's1' })
+    const e = await plur.learnRouted('adjust routes the same as set', { session: 's1' })
+    expect(e.scope).toBe('project:adjusted')
   })
 })

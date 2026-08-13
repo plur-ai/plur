@@ -37,10 +37,12 @@
  * by driving the adapter directly. `test/postgres-recall-quality.test.ts`
  * exercises them through `Plur.recall()`.
  *
- * What IS still open: nothing in core writes embeddings to a Postgres primary
- * store, so the vector half of this adapter is inert unless a deployment fills
- * `engram_embeddings` itself. See `ensureVectorIndex` and ADR-0005's 2026-07-28
- * amendment.
+ * The last half of that story closed in #762: core now populates
+ * `engram_embeddings` on this tier. Every primary-store write kicks a
+ * background auto-embed pass that finds un-embedded rows with the set-based
+ * {@link listEngramsMissingEmbeddings} anti-join (never a per-id probe), and
+ * the first semantic recall backfills a store migrated in with existing rows.
+ * See ADR-0005's 2026-07-28 amendment and its #762 closure note.
  *
  * ## Vector search is the one place behaviour can differ
  *
@@ -71,7 +73,10 @@
  */
 import type { Engram } from './schemas/engram.js'
 import { EngramSchemaPassthrough } from './schemas/engram.js'
-import { searchEngrams, ftsTokenize, engramSearchText, type CorpusStats } from './fts.js'
+import {
+  searchEngrams, ftsTokenize, engramSearchText, embeddingContentHash,
+  MIN_TOKEN_LENGTH, TOKENIZER_VERSION, type CorpusStats,
+} from './fts.js'
 import { logger } from './logger.js'
 import {
   EXACT_VECTOR_INDEX,
@@ -251,8 +256,20 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
    * the answer exists.
    */
   private trigramAvailable: boolean | undefined
-  /** One-shot latch for the embedding-gap warning — see ensureVectorIndex. */
-  private embeddingGapWarned = false
+  /**
+   * Every client currently checked out of either pool.
+   *
+   * `close()` needs this because `pool.end()` DRAINS: it waits for checked-out
+   * clients to come back. Two sites hold one for a long time — `initSchema`
+   * for its DDL sequence, and `withExclusiveAccess` across arbitrary caller
+   * work — so a `close()` racing either of them waited forever. Measured:
+   * drain-based teardowns (including one that first awaited `initPromise`)
+   * hung the process rather than closing it.
+   *
+   * With the set, `close()` destroys outstanding clients instead of waiting for
+   * them, and `end()` then resolves immediately.
+   */
+  private readonly liveClients = new Set<any>()
   private readonly vectorDim: number
   private readonly precision: VectorElementFormat | undefined
   private readonly indexMode: PostgresVectorIndexMode
@@ -279,6 +296,12 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
   private initPromise: Promise<void> | null = null
   /** Actual element type of the embedding column after init. */
   private activeVecType: 'vector' | 'halfvec' = 'vector'
+
+  /** One-shot latch for the stale-tokenizer warning (#834). */
+  private staleTokensWarned = false
+
+  /** In-flight token backfill, so concurrent queries kick at most one (#840). */
+  private tokenBackfill: Promise<void> | null = null
   /** Actual dim of the embedding column after init; writes are checked against reality. */
   private activeVecDim: number | null = null
   /** Whether an HNSW index exists after init — what `vectorIndex` reports. */
@@ -475,7 +498,7 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
    * for a second one deadlocks whenever `maxConnections` is 1.
    */
   private async initSchema(): Promise<void> {
-    const client = await this.pool.connect()
+    const client = await this.acquire(this.pool)
     const key = `plur:init:${this.schema}`
     let locked = false
     try {
@@ -539,6 +562,24 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
     //                               from `qt.includes(t)` bought.
     await this.ddl(client, `ALTER TABLE "${this.schema}".engrams ADD COLUMN IF NOT EXISTS tokens TEXT[]`)
     await this.ddl(client, `ALTER TABLE "${this.schema}".engrams ADD COLUMN IF NOT EXISTS search_text TEXT`)
+    // Which tokenizer produced `tokens` / `search_text` for this row (#834).
+    //
+    // Deliberately NOT defaulted. A row that predates this column was written
+    // by an unknown tokenizer, and "unknown" must read as stale rather than as
+    // current — the conservative direction is the only safe one here, because
+    // the failure it guards against is silent. Every store existing at the time
+    // this shipped was written pre-#782 and genuinely IS stale for Han text, so
+    // NULL is not merely conservative, it is accurate.
+    await this.ddl(client, `ALTER TABLE "${this.schema}".engrams ADD COLUMN IF NOT EXISTS tokens_version INT`)
+    // The hash of the text an engram's embedding SHOULD be computed from
+    // (audit 2026-08-03, findings 8 + 9). Kept on the engram row and written by
+    // `deriveRow` on every write, so staleness is a comparison of two stored
+    // hashes rather than of a hash against `md5(search_text)`. That removed two
+    // problems at once: `search_text` is the TOKENIZED form, so a stop-word or
+    // short-token edit changed the embedded text without changing the hash; and
+    // a row predating `search_text` hashed to NULL, which made the stale arm
+    // unsatisfiable and left its vector stale forever.
+    await this.ddl(client, `ALTER TABLE "${this.schema}".engrams ADD COLUMN IF NOT EXISTS content_hash TEXT`)
     try {
       await this.ddl(client, 'CREATE EXTENSION IF NOT EXISTS pg_trgm SCHEMA public')
       this.trigramAvailable = true
@@ -570,6 +611,22 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
       `CREATE INDEX IF NOT EXISTS idx_engrams_tokens_missing
        ON "${this.schema}".engrams (id) WHERE tokens IS NULL`,
     )
+    // Same trick for the tokenizer-version guard (#834), and the same reason:
+    // the probe runs on every BM25 call and must not degrade into a sequential
+    // scan on a healthy store, where the answer is always "no rows".
+    //
+    // The version is baked into both the predicate and the index NAME, because
+    // `CREATE INDEX IF NOT EXISTS` matches on name alone — an unversioned name
+    // would keep the OLD predicate forever after a bump while reporting
+    // success, which is precisely the class of silent staleness this whole
+    // change exists to eliminate. Bumping TOKENIZER_VERSION creates a fresh
+    // index; the superseded one is dead weight and can be dropped once every
+    // writer is past the bump.
+    await this.ddl(client,
+      `CREATE INDEX IF NOT EXISTS idx_engrams_tokens_stale_v${TOKENIZER_VERSION}
+       ON "${this.schema}".engrams (id)
+       WHERE tokens_version IS DISTINCT FROM ${TOKENIZER_VERSION}`,
+    )
 
     const wantType = this.precision === 'halfvec' ? 'halfvec' : 'vector'
     await this.ddl(client, `
@@ -578,6 +635,13 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
         embedding ${wantType}(${this.vectorDim}) NOT NULL
       )
     `)
+    // #812: which text this vector was computed from. Additive and idempotent,
+    // exactly like the `tokens` / `search_text` columns above — an existing
+    // deployment gains the column on next connect with no migration step. Rows
+    // written before it existed carry NULL, which the staleness predicate in
+    // `listEngramsMissingEmbeddings` reads as "unknown", so each is re-embedded
+    // once by the background pass and is stable from then on.
+    await this.ddl(client, `ALTER TABLE "${this.schema}".engram_embeddings ADD COLUMN IF NOT EXISTS content_hash TEXT`)
     await this.readEmbeddingColumnInfo(client)
     await this.ensureVectorIndex(client)
   }
@@ -614,32 +678,13 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
    * failed.
    */
   private async ensureVectorIndex(q: any = this.pool): Promise<void> {
-    // Say plainly that nothing in core populates this table.
-    //
-    // `upsertEmbedding` and `searchVector` are implemented here and work, but
-    // the engine's only caller of `upsertEmbedding` is `_autoEmbedNewEngrams`,
-    // which runs for the PGLite DERIVED index and never for a primary store.
-    // Measured: 5 engrams learned through `Plur` against this adapter leave
-    // `engram_embeddings` with 0 rows.
-    //
-    // So `vectorIndex: 'hnsw'` on this tier asks for an ANN index over an empty
-    // table, and semantic recall silently falls back to loading engrams and
-    // scoring in memory — correct, but the O(N) path this tier exists to avoid.
-    // A deployment that wants vectors here has to write them itself.
-    //
-    // Wiring the engine to populate them is deliberately NOT done as a
-    // late-release patch: `_autoEmbedNewEngrams` loads the whole corpus and
-    // probes `hasEmbedding` per id on every write, which at the 50,000-engram
-    // threshold that selects this tier would be a worse regression than the gap
-    // it closes. It needs a set-based "which ids lack embeddings" query first.
-    if (!this.embeddingGapWarned && this.indexMode !== 'exact') {
-      this.embeddingGapWarned = true
-      logger.warning(
-        `[postgres] vectorIndex='${this.indexMode}' is configured, but core does not write embeddings to a `
-        + `Postgres primary store — 'engram_embeddings' stays empty unless your deployment populates it, and `
-        + `semantic recall falls back to in-memory scoring. Set vectorIndex:'exact' to silence this.`,
-      )
-    }
+    // Until #762 this method warned that nothing in core populated
+    // `engram_embeddings` on a primary store. That gap is closed: `Plur` runs
+    // a background auto-embed pass after every primary-store write and a
+    // backfill on the first semantic recall, both fed by the set-based
+    // `listEngramsMissingEmbeddings` anti-join below — never a per-id probe.
+    // A deployment driving this adapter WITHOUT the engine still has to write
+    // embeddings itself; that is a deployment choice, not a core gap.
     let want: boolean
     if (this.indexMode === 'exact') {
       want = false
@@ -699,44 +744,100 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
   }
 
   /**
-   * Tear down both pools and refuse further use.
+   * Check out a client and remember it until it is released.
    *
-   * KNOWN LIMITATION (#751): `close()` racing construction leaks the pool.
-   * `const p = a.load(); await a.close(); await p` — `close()` runs while
-   * `getPool()` is still mid-flight, sees `this.pool === null`, and tears down
-   * nothing; the pool finishes constructing afterwards and its connection
-   * stays open, invisible to this method. Verified against a live server: the
-   * orphaned backend sits idle until node-postgres's own idle-timeout reclaims
-   * it — the process exits cleanly, nothing hangs, but the connection outlives
-   * `close()` by seconds. Subsequent calls on the adapter DO fail correctly
-   * (`[postgres] adapter is closed`).
+   * Every `connect()` in this class goes through here, so `close()` can always
+   * account for what is outstanding. A site that calls `pool.connect()`
+   * directly is invisible to teardown and reintroduces the hang.
+   */
+  private async acquire(pool: any): Promise<any> {
+    const client = await pool.connect()
+    // A checkout that resolves AFTER close() began must not be handed out: it
+    // would not be in `liveClients` when close() drained the set, and
+    // `pool.end()` would then wait for a client nobody knows about. This is the
+    // same late-arrival race as the pool assignment itself, one level down —
+    // and it is why destroying tracked clients alone still hung.
+    if (this.closed) {
+      try { client.release(new Error('[postgres] adapter closed')) } catch { /* already gone */ }
+      throw new Error('[postgres] adapter is closed')
+    }
+    this.liveClients.add(client)
+    const release = client.release.bind(client)
+    let released = false
+    client.release = (err?: unknown) => {
+      if (released) return
+      released = true
+      this.liveClients.delete(client)
+      return release(err)
+    }
+    return client
+  }
+
+  /**
+   * Tear down both pools. After this resolves, no connection remains open.
    *
-   * Deliberately not fixed in 0.16.0: earlier attempts (three failed variants
-   * are recorded on the #751 fix branch — two drain-based, one
-   * destroy-tracked-clients) turned the leaked connection into a hung
-   * process, which is strictly worse. The working fix needs a
-   * checkout-tracking set plus a refusal inside `acquire()` once closed —
-   * see #751. Until then: await construction (any first operation) before
-   * calling `close()`.
+   * Two things make that harder than `pool.end()`.
+   *
+   * First, `createPool` assigns `this.pool` only AFTER awaiting the driver
+   * import, so a `close()` landing in that window used to see `null`, skip the
+   * teardown, and leave the pool that arrived a moment later with nothing
+   * holding a reference to end it. Reproduced: `const p = a.load(); await
+   * a.close(); await p` left a live connection. So construction in flight is
+   * adopted, not ignored.
+   *
+   * Second, `pool.end()` DRAINS — it waits for checked-out clients. `initSchema`
+   * holds one for its DDL, and `withExclusiveAccess` holds one across arbitrary
+   * caller work, so draining could wait forever. Earlier drain-based teardown
+   * attempts (with and without first awaiting the init/pool promises) hung the
+   * process instead of closing it. Outstanding clients are therefore
+   * DESTROYED: `release(err)` with a truthy argument makes the pg driver's
+   * pool internals `_remove` the connection rather than return it to idle, so
+   * `end()` has nothing to wait for.
+   *
+   * One wait IS accepted: adopting in-flight construction transitively awaits
+   * schema init — `createPool` resolves only after `initSchema` settles — so a
+   * `close()` that lands during a cold start blocks until the adapter's own
+   * DDL completes or rejects. That is bounded, adapter-owned work, unlike a
+   * caller-held client.
+   *
+   * A caller mid-`withExclusiveAccess` sees its connection die. That is the
+   * consequence of closing during exclusive work — a caller error either way —
+   * and it is strictly better than hanging.
    */
   async close(): Promise<void> {
+    // Refuse new work first, so nothing starts building behind the teardown.
+    this.closed = true
+
+    // Adopt construction already in flight so a pool assigned after this line
+    // cannot outlive the teardown. On a cold start this transitively awaits
+    // `initSchema` (`createPool` resolves only once init settles), so close()
+    // waits for the adapter's own DDL to finish — bounded work, unlike the
+    // caller-held clients that made drain-based teardowns hang.
+    for (const pending of [this.poolPromise, this.lockPoolPromise]) {
+      if (pending) await Promise.resolve(pending).catch(() => { /* nothing to tear down */ })
+    }
+
+    // Destroy what is checked out, so the drains below resolve.
+    const closeErr = new Error('[postgres] adapter closed')
+    for (const client of [...this.liveClients]) {
+      try { client.release(closeErr) } catch { /* already gone */ }
+    }
+    this.liveClients.clear()
+
     if (this.pool) {
       const pool = this.pool
       this.pool = null
-      this.poolPromise = undefined
-      this.initPromise = null
-      this.closed = true
-      await pool.end().catch(() => { /* pool already torn down */ })
+      await pool.end().catch(() => { /* already torn down */ })
     }
     this.poolPromise = undefined
+    this.initPromise = null
+
     if (this.lockPool) {
       const lp = this.lockPool
       this.lockPool = null
-      this.lockPoolPromise = undefined
       await lp.end().catch(() => { /* already torn down */ })
     }
     this.lockPoolPromise = undefined
-    this.closed = true
   }
 
   // ------------------------------------------------------- AsyncPrimaryStore
@@ -792,17 +893,17 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
   async updateMany(engrams: Engram[]): Promise<void> {
     if (engrams.length === 0) return
     const pool = await this.getPool()
-    const client = await pool.connect()
+    const client = await this.acquire(pool)
     try {
       await client.query('BEGIN')
       for (let i = 0; i < engrams.length; i += SAVE_CHUNK_SIZE) {
         const chunk = engrams.slice(i, i + SAVE_CHUNK_SIZE)
         await client.query(
-          `INSERT INTO "${this.schema}".engrams (id, status, scope, domain, last_accessed, data, source, tokens, search_text)
-           SELECT t.id, t.status, t.scope, t.domain, t.last_accessed, t.data, 'primary', t.tokens, t.search_text
+          `INSERT INTO "${this.schema}".engrams (id, status, scope, domain, last_accessed, data, source, tokens, search_text, content_hash, tokens_version)
+           SELECT t.id, t.status, t.scope, t.domain, t.last_accessed, t.data, 'primary', t.tokens, t.search_text, t.content_hash, t.tokens_version
            FROM jsonb_to_recordset($1::jsonb)
              AS t(id text, status text, scope text, domain text, last_accessed text, data jsonb,
-                  tokens text[], search_text text)
+                  tokens text[], search_text text, content_hash text, tokens_version int)
            ON CONFLICT (id) DO UPDATE SET
              status = EXCLUDED.status,
              scope = EXCLUDED.scope,
@@ -811,7 +912,9 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
              data = EXCLUDED.data,
              source = EXCLUDED.source,
              tokens = EXCLUDED.tokens,
-             search_text = EXCLUDED.search_text`,
+             tokens_version = EXCLUDED.tokens_version,
+             search_text = EXCLUDED.search_text,
+             content_hash = EXCLUDED.content_hash`,
           [JSON.stringify(chunk.map(toRow))],
         )
       }
@@ -826,19 +929,42 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
     }
   }
 
+  /**
+   * Single-row INSERT of one NEW engram. See `PrimaryStore.append`.
+   *
+   * A plain INSERT, deliberately NOT `ON CONFLICT DO UPDATE`: `append` carries
+   * the caller's claim that the row is new, and a duplicate id is a bug that
+   * should surface as a unique-violation error rather than silently overwrite
+   * an unrelated existing row. Replacements go through {@link updateMany},
+   * which is the upsert. No advisory lock needed — a single-row INSERT is
+   * atomic on its own.
+   */
+  async append(engram: Engram): Promise<void> {
+    const pool = await this.getPool()
+    await pool.query(
+      `INSERT INTO "${this.schema}".engrams (id, status, scope, domain, last_accessed, data, source, tokens, search_text, content_hash, tokens_version)
+       SELECT t.id, t.status, t.scope, t.domain, t.last_accessed, t.data, 'primary', t.tokens, t.search_text, t.content_hash, t.tokens_version
+       FROM jsonb_to_recordset($1::jsonb)
+         AS t(id text, status text, scope text, domain text, last_accessed text, data jsonb,
+              tokens text[], search_text text, content_hash text, tokens_version int)`,
+      [JSON.stringify([toRow(engram)])],
+    )
+    // No cache to drop — `loadCached()` delegates to `load()` on this adapter.
+  }
+
   async save(engrams: Engram[]): Promise<void> {
     const pool = await this.getPool()
-    const client = await pool.connect()
+    const client = await this.acquire(pool)
     try {
       await client.query('BEGIN')
       for (let i = 0; i < engrams.length; i += SAVE_CHUNK_SIZE) {
         const chunk = engrams.slice(i, i + SAVE_CHUNK_SIZE)
         await client.query(
-          `INSERT INTO "${this.schema}".engrams (id, status, scope, domain, last_accessed, data, source, tokens, search_text)
-           SELECT t.id, t.status, t.scope, t.domain, t.last_accessed, t.data, 'primary', t.tokens, t.search_text
+          `INSERT INTO "${this.schema}".engrams (id, status, scope, domain, last_accessed, data, source, tokens, search_text, content_hash, tokens_version)
+           SELECT t.id, t.status, t.scope, t.domain, t.last_accessed, t.data, 'primary', t.tokens, t.search_text, t.content_hash, t.tokens_version
            FROM jsonb_to_recordset($1::jsonb)
              AS t(id text, status text, scope text, domain text, last_accessed text, data jsonb,
-                  tokens text[], search_text text)
+                  tokens text[], search_text text, content_hash text, tokens_version int)
            ON CONFLICT (id) DO UPDATE SET
              status = EXCLUDED.status,
              scope = EXCLUDED.scope,
@@ -847,7 +973,9 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
              data = EXCLUDED.data,
              source = EXCLUDED.source,
              tokens = EXCLUDED.tokens,
-             search_text = EXCLUDED.search_text`,
+             tokens_version = EXCLUDED.tokens_version,
+             search_text = EXCLUDED.search_text,
+             content_hash = EXCLUDED.content_hash`,
           [JSON.stringify(chunk.map(toRow))],
         )
       }
@@ -950,7 +1078,7 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
     // The cost is up to `maxConnections` additional server connections, which
     // is the honest price of holding a session lock across arbitrary work.
     const pool = await this.getLockPool()
-    const client = await pool.connect()
+    const client = await this.acquire(pool)
     try {
       await client.query(`SELECT pg_advisory_lock(hashtext($1))`, [`plur:${this.schema}`])
       try {
@@ -990,14 +1118,146 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
    * Prefixes of a query token that could legally match a document token under
    * the reverse arm (`qt.startsWith(t)`).
    *
-   * Bounded below by 3 because `ftsTokenize` discards anything shorter, so no
-   * stored token can be 1 or 2 characters and testing for them would be dead
-   * work. `qt` itself is included — a token equal to the query is a prefix of
-   * it, and that is the exact-match case.
+   * Bounded below by {@link MIN_TOKEN_LENGTH} — the shortest token
+   * `ftsTokenize` can actually emit — so shorter prefixes are not enumerated as
+   * dead work. `qt` itself is included: a token equal to the query is a prefix
+   * of it, and that is the exact-match case.
+   *
+   * This used to be a literal `3`, justified by "the tokenizer discards
+   * anything shorter". #782 made that false — Han bigrams are exactly two
+   * characters — without breaking anything, because Han and ASCII alphabets are
+   * disjoint, so no Latin query token can have a Han bigram as a prefix. The
+   * bound is now derived from the tokenizer instead of restating a property of
+   * it, so the next change to the token floor cannot silently under-count `df`.
    */
+  /**
+   * Re-derive `tokens` / `search_text` for rows written by an older tokenizer
+   * (#840).
+   *
+   * Needed because nothing else does it. `save()` re-derives the whole corpus,
+   * but a row store does not take that path in ordinary use: `learn()` prefers
+   * the `append` seam and `feedback()` prefers `updateMany`, each touching one
+   * row and leaving every other row's version untouched. So a store upgraded
+   * across a tokenizer change would sit on the local-scoring fallback
+   * indefinitely — correct, but having permanently lost the pushdown, and
+   * visible only as a log line. That is the whole reason the marker could not
+   * simply be a warning.
+   *
+   * Set-based per batch, and `toRow` is the single derivation used by every
+   * write path, so a backfilled row is byte-identical to a freshly saved one.
+   *
+   * Returns the number of rows re-derived, so a caller (the CLI) can report it.
+   */
+  async backfillTokens(batchSize = 500): Promise<number> {
+    const pool = await this.getPool()
+    let total = 0
+    for (;;) {
+      const { rows } = await pool.query(
+        `SELECT data FROM "${this.schema}".engrams
+         WHERE tokens_version IS DISTINCT FROM $1 LIMIT $2`,
+        [TOKENIZER_VERSION, batchSize],
+      )
+      if (rows.length === 0) break
+      const engrams = rows.map(parseRow)
+      const updated = await pool.query(
+        `UPDATE "${this.schema}".engrams AS e
+         SET tokens = t.tokens, search_text = t.search_text, tokens_version = t.tokens_version
+         FROM jsonb_to_recordset($1::jsonb)
+           AS t(id text, tokens text[], search_text text, tokens_version int)
+         WHERE e.id = t.id`,
+        [JSON.stringify(engrams.map((e: Engram) => {
+          const r = toRow(e)
+          return { id: r.id, tokens: r.tokens, search_text: r.search_text, tokens_version: r.tokens_version }
+        }))],
+      )
+      // Progress, not attempts, is the loop condition. The UPDATE joins on
+      // `e.id = t.id` where `t.id` comes from the engram's OWN data, so a row
+      // whose `id` column disagrees with `data->>'id'` matches nothing, keeps
+      // its stale version, and is selected again by the identical next query —
+      // a tight infinite loop holding a pool connection. Bounding on the
+      // SELECT alone would not catch it, because that batch stays full.
+      if (updated.rowCount === 0) {
+        logger.warning(
+          `[postgres] token backfill stalled: ${rows.length} row(s) reported stale but none could be `
+          + `updated, which means their id column disagrees with data->>'id'. Skipping the backfill; `
+          + `the local-scoring fallback keeps results correct.`,
+        )
+        break
+      }
+      total += updated.rowCount ?? 0
+      if (rows.length < batchSize) break
+    }
+    if (total > 0) {
+      logger.info(`[postgres] re-derived tokens for ${total} engram(s) after a tokenizer change`)
+    }
+    return total
+  }
+
+  /**
+   * Start a backfill without blocking the query that noticed the staleness.
+   *
+   * Fire-and-forget, mirroring the embedding backfill: the caller has already
+   * been routed to a correct-but-slower path, so waiting would trade a wrong
+   * answer for a slow one twice over. At most one runs per adapter; failures
+   * are logged and the latch clears so a later query can retry.
+   */
+  private kickTokenBackfill(): void {
+    if (this.tokenBackfill) return
+    this.tokenBackfill = this.backfillTokens()
+      .then(() => { /* logged inside */ })
+      .catch(err => {
+        logger.warning(`[postgres] token backfill failed: ${(err as Error).message}`)
+      })
+      .finally(() => { this.tokenBackfill = null })
+  }
+
+  /**
+   * Whether any in-scope active row was tokenized by a different tokenizer than
+   * the one now in force (#834).
+   *
+   * DEGRADES rather than throwing, unlike the NULL-tokens guard beside it, and
+   * the difference is blast radius. NULL tokens mean a row predating the
+   * column — a narrow, already-broken population. A version mismatch describes
+   * EVERY row of EVERY existing store the moment the tokenizer changes, so
+   * throwing would take `recall()` down completely on upgrade, including for
+   * ASCII-only stores that contain nothing this affects and have nothing wrong
+   * with them. Trading a silent wrong answer for a total outage is not a fix.
+   *
+   * Returning `undefined` and taking the local path is what the StorageAdapter
+   * contract already prescribes: "an implementation that cannot reproduce the
+   * rule should return `undefined` rather than a best effort". The local path
+   * re-derives tokens from `data` with the current tokenizer, so its answers
+   * are correct — merely slower — and a `save()` restores the pushdown with no
+   * further intervention.
+   *
+   * Warned once per adapter, not per query: on a stale store this is true of
+   * every call, and an operator needs the instruction once, not in a loop.
+   */
+  private async tokensAreStale(opts?: StorageFilter): Promise<boolean> {
+    const pool = await this.getPool()
+    const f = buildFilterClause({ ...(opts ?? {}), status: 'active' })
+    const { rows } = await pool.query(
+      `SELECT 1 FROM "${this.schema}".engrams ${f.where}
+         AND tokens_version IS DISTINCT FROM $${f.params.length + 1} LIMIT 1`,
+      [...f.params, TOKENIZER_VERSION],
+    )
+    if (rows.length === 0) return false
+    if (!this.staleTokensWarned) {
+      this.staleTokensWarned = true
+      logger.warning(
+        `[postgres] some active engrams were tokenized by an older tokenizer than the current one `
+        + `(v${TOKENIZER_VERSION}); their stored tokens no longer match how query terms are tokenized. `
+        + `BM25 is falling back to loading candidates and scoring in core — correct, but slower. `
+        + `Re-deriving them in the background; \`plur reindex-tokens\` forces it synchronously.`,
+      )
+    }
+    this.kickTokenBackfill()
+    return true
+  }
+
   private static reversePrefixes(qt: string): string[] {
     const out: string[] = []
-    for (let n = 3; n <= qt.length; n++) out.push(qt.slice(0, n))
+    for (let n = MIN_TOKEN_LENGTH; n <= qt.length; n++) out.push(qt.slice(0, n))
     return out
   }
 
@@ -1018,7 +1278,7 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
    * be answered exactly. Per the interface contract, an approximate df is worse
    * than the local fallback.
    */
-  async corpusStats(queryTokens: string[], opts?: StorageFilter): Promise<CorpusStats> {
+  async corpusStats(queryTokens: string[], opts?: StorageFilter): Promise<CorpusStats | undefined> {
     const pool = await this.getPool()
     if (queryTokens.length === 0) {
       // Still honours `scopes`: an empty token list is "no query terms", not
@@ -1066,6 +1326,11 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
         + `using BM25 pushdown.`,
       )
     }
+
+    // Rows whose tokens were derived by a DIFFERENT tokenizer than the one
+    // about to count `tf` (#834). Degrades rather than throwing — see
+    // `tokensAreStale`.
+    if (await this.tokensAreStale(opts)) return undefined
 
     // SAME filter as the candidate query, not just `scopes`. Statistics scoped
     // differently from the candidates they describe is the subtler form of the
@@ -1124,7 +1389,13 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
     // differs.
     const pool = await this.getPool()
 
-    if (this.trigramAvailable !== true) {
+    // Stale stored tokens make the PUSHDOWN wrong, not merely its statistics
+    // (#834): narrowing runs `search_text LIKE`, and a pre-#782 `search_text`
+    // holds no Han at all, so a Chinese engram never enters the candidate set.
+    // Degrading `corpusStats` alone would only fix the ranking of rows that
+    // were never selected. The local path re-tokenizes from `data` with the
+    // CURRENT tokenizer, so it is immune to whatever happens to be stored.
+    if (this.trigramAvailable !== true || await this.tokensAreStale(opts)) {
       const candidates = await this.loadFiltered({ ...opts, status: 'active' })
       return searchEngrams(candidates, query, opts.limit)
     }
@@ -1184,40 +1455,53 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
    * `SET LOCAL` scopes the setting to the transaction, so a pooled connection
    * is never left with another query's tuning on it.
    */
-  async searchVector(query: Float32Array, limit: number, opts?: ScopeRestriction): Promise<VectorSearchHit[]> {
+  async searchVector(
+    query: Float32Array,
+    limit: number,
+    opts?: ScopeRestriction & Pick<StorageFilter, 'scope' | 'visibilityGrants'>,
+  ): Promise<VectorSearchHit[]> {
     const pool = await this.getPool()
     const t = this.activeVecType
     const literal = vectorLiteral(query)
-    const client = await pool.connect()
+    // EVERY restriction goes IN the k-NN predicate, never on the rows that
+    // come back. Post-filtering measures LIMIT against the unrestricted
+    // neighbour list, so a principal permitted a small share of the corpus
+    // asks for N and silently gets far fewer, with permitted rows sitting
+    // just below the cut.
+    //
+    // This method previously omitted the `opts` parameter entirely. TypeScript
+    // accepts a narrower arity than the interface declares, so a caller
+    // passing `scopes` compiled, ran, and got an unrestricted search with no
+    // error — on an authorization filter.
+    //
+    // `scope` + `visibilityGrants` (#775) joined `scopes` when the semantic
+    // pushdown landed (#762), for the dilution reason above — and through
+    // `buildFilterClause`, the ONE copy of the scope rules, rather than a
+    // hand-rolled second WHERE. The filter's columns are unambiguous in this
+    // join: `engram_embeddings` carries only `engram_id` and `embedding`.
+    const { where, params } = buildFilterClause({
+      status: 'active',
+      scopes: opts?.scopes,
+      scope: opts?.scope,
+      visibilityGrants: opts?.visibilityGrants,
+    })
+    const vecIdx = params.length + 1
+    const limitIdx = params.length + 2
+    // #751: every checkout goes through acquire() so close() can destroy it.
+    const client = await this.acquire(pool)
     try {
       await client.query('BEGIN')
       if (this.hnswActive) {
         await client.query(`SET LOCAL hnsw.ef_search = ${this.efSearchForLimit(limit)}`)
       }
-      // The scope restriction goes IN the k-NN predicate, never on the rows
-      // that come back. Post-filtering measures LIMIT against the unrestricted
-      // neighbour list, so a principal permitted a small share of the corpus
-      // asks for N and silently gets far fewer, with permitted rows sitting
-      // just below the cut.
-      //
-      // This method previously omitted the `opts` parameter entirely. TypeScript
-      // accepts a narrower arity than the interface declares, so a caller
-      // passing `scopes` compiled, ran, and got an unrestricted search with no
-      // error — on an authorization filter.
-      const params: unknown[] = [literal, limit]
-      let scopeClause = ''
-      if (opts?.scopes !== undefined) {
-        params.push(opts.scopes)
-        scopeClause = ` AND e.scope = ANY($${params.length}::text[])`
-      }
       const res = await client.query(
-        `SELECT e.data, 1 - (em.embedding <=> $1::${t}) AS score
+        `SELECT e.data, 1 - (em.embedding <=> $${vecIdx}::${t}) AS score
          FROM "${this.schema}".engram_embeddings em
          JOIN "${this.schema}".engrams e ON e.id = em.engram_id
-         WHERE e.status = 'active'${scopeClause}
-         ORDER BY em.embedding <=> $1::${t}
-         LIMIT $2`,
-        params,
+         ${where}
+         ORDER BY em.embedding <=> $${vecIdx}::${t}
+         LIMIT $${limitIdx}`,
+        [...params, literal, limit],
       )
       await client.query('COMMIT')
       return res.rows.map((r: any) => ({ engram: parseRow(r), score: Number(r.score) }))
@@ -1237,7 +1521,7 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
    * embedder and the store disagree — rather than surfacing pgvector's own
    * error.
    */
-  async upsertEmbedding(engramId: string, vector: Float32Array): Promise<void> {
+  async upsertEmbedding(engramId: string, vector: Float32Array, contentHash?: string): Promise<void> {
     const pool = await this.getPool()
     const expectedDim = this.activeVecDim ?? this.vectorDim
     if (vector.length !== expectedDim) {
@@ -1248,11 +1532,105 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
       )
     }
     await pool.query(
-      `INSERT INTO "${this.schema}".engram_embeddings (engram_id, embedding)
-       VALUES ($1, $2::${this.activeVecType})
-       ON CONFLICT (engram_id) DO UPDATE SET embedding = EXCLUDED.embedding`,
-      [engramId, vectorLiteral(vector)],
+      `INSERT INTO "${this.schema}".engram_embeddings (engram_id, embedding, content_hash)
+       VALUES ($1, $2::${this.activeVecType}, $3)
+       ON CONFLICT (engram_id) DO UPDATE
+         SET embedding = EXCLUDED.embedding, content_hash = EXCLUDED.content_hash`,
+      [engramId, vectorLiteral(vector), contentHash ?? null],
     )
+    // Backfill the ENGRAM row's hash if it predates the column (finding 8).
+    //
+    // `IS NULL` guarded: `deriveRow` owns this value on every real write, and
+    // overwriting it here would erase the evidence of an edit and make the
+    // engram look permanently current.
+    //
+    // Two SEPARATE statements, deliberately NOT one transaction. Wrapping them
+    // was the obvious-looking choice and it deadlocked: a transaction spanning
+    // `engram_embeddings` and `engrams` holds locks on both, and the background
+    // auto-embed pass then deadlocks against anything acquiring them the other
+    // way round — CI caught 40P01 against `dropSchema` in teardown.
+    //
+    // It buys nothing, because a partial application is already self-healing in
+    // BOTH directions. Embedding written, backfill lost: `e.content_hash IS
+    // NULL` still selects the row next pass. Backfill written, embedding lost:
+    // the embedding row is missing or carries the old hash, so the missing arm
+    // or the mismatch arm selects it. Either way the next pass finishes the job,
+    // which is the property the whole staleness design already relies on.
+    if (contentHash !== undefined) {
+      await pool.query(
+        `UPDATE "${this.schema}".engrams SET content_hash = $2
+         WHERE id = $1 AND content_hash IS NULL`,
+        [engramId, contentHash],
+      )
+    }
+  }
+
+  /**
+   * Active engrams whose embedding is missing or stale, up to `limit` (#762, #812).
+   *
+   * Staleness is `content_hash IS DISTINCT FROM md5(search_text)`. Both sides
+   * are evaluated by Postgres over the same column, and `embeddingContentHash`
+   * — what the writer stores — is md5 over the identical derivation
+   * (`ftsTokenize(engramSearchText(e)).join(' ')`, which is exactly what
+   * `deriveRow` writes to `search_text`). That agreement is load-bearing: this
+   * method is the loop condition of the backfill pass, so a predicate that
+   * never goes false for a row would spin on it forever. `_autoEmbedPrimaryStore`
+   * additionally refuses to revisit an id within one pass, so a future drift
+   * degrades to a logged warning rather than an infinite loop.
+   *
+   * `search_text IS NOT NULL` guards the same hazard from the other side: a row
+   * written before that column existed hashes to NULL, and NULL IS DISTINCT
+   * FROM a real hash is TRUE — permanently. Such rows embed once via the
+   * `em.engram_id IS NULL` arm and are then left alone.
+   *
+   * ONE set-based anti-join, which is the whole reason primary-store
+   * auto-embed exists at all: the PGLite-era shape — load the corpus, probe
+   * `hasEmbedding` per id — is O(N) round trips on every write, and at the
+   * 50,000-engram threshold that selects this tier that would be a worse
+   * regression than the missing embeddings (ADR-0005 amendment). Both sides
+   * of the join are the tables' primary keys, so `LIMIT 1` — the completeness
+   * probe the semantic read path issues — is an index-only anti-join, the
+   * same probe shape `corpusStats` uses for NULL-token rows.
+   *
+   * `ORDER BY e.id` so concurrent auto-embed passes in different processes
+   * walk the gap in the same order and converge instead of thrashing.
+   */
+  async listEngramsMissingEmbeddings(limit: number, opts?: { includeStale?: boolean }): Promise<Engram[]> {
+    assertPositiveInt(limit, 'limit')
+    const pool = await this.getPool()
+    // `search_text IS NOT NULL` guards a row written before that column
+    // existed: it hashes to NULL, and NULL IS DISTINCT FROM a real hash is
+    // TRUE — permanently. Such a row embeds once through the `IS NULL` arm and
+    // is then left alone, rather than being re-embedded on every pass forever.
+    // Two STORED hashes, both written in JS by `embeddingContentHash` — the
+    // engram row's by `deriveRow` on every write, the embedding row's by the
+    // pass that embedded it (audit 2026-08-03, findings 8 + 9).
+    //
+    // This replaced `content_hash IS DISTINCT FROM md5(search_text)`, which had
+    // two defects. `search_text` is the TOKENIZED form, so an edit that only
+    // touched stop words or sub-three-character tokens ("use X" -> "do not use
+    // X") changed the embedded text and the correct vector while leaving the
+    // hash identical. And a row written before `search_text` existed hashes to
+    // NULL, making the comparison unsatisfiable — its vector stayed stale for
+    // good, which is finding 8.
+    //
+    // `e.content_hash IS NULL` is its own arm so a legacy engram row converges:
+    // it is selected once, and `upsertEmbedding` backfills the engram row's
+    // hash in the same transaction, after which the two agree.
+    const staleArm = opts?.includeStale
+      ? `OR e.content_hash IS NULL
+         OR em.content_hash IS DISTINCT FROM e.content_hash`
+      : ''
+    const res = await pool.query(
+      `SELECT e.data FROM "${this.schema}".engrams e
+       LEFT JOIN "${this.schema}".engram_embeddings em ON em.engram_id = e.id
+       WHERE e.status = 'active'
+         AND (em.engram_id IS NULL ${staleArm})
+       ORDER BY e.id
+       LIMIT $1`,
+      [limit],
+    )
+    return res.rows.map((r: any) => parseRow(r))
   }
 
   // ------------------------------------------------------------- diagnostics
@@ -1351,15 +1729,24 @@ export function buildFilterClause(filter: StorageFilter): { where: string; param
     params.push(filter.scopes)
   }
   if (filter.scope) {
-    conditions.push(
+    // Mounted-scope visibility grants (#775): one segment-aware containment
+    // triple per granted scope, appended to the visibility OR — identical to
+    // the PGLite copy above and the SQLite/in-memory arms; keep all four in
+    // lockstep. VISIBILITY ONLY: the `scopes` authorization clause is never
+    // widened by grants.
+    let clause =
       `((NOT (scope LIKE 'group:%' OR scope LIKE 'project:%' OR scope LIKE 'space:%' OR scope LIKE 'team:%' OR scope LIKE 'org:%' OR scope = 'public' OR scope LIKE 'public:%' OR scope LIKE 'public/%'))`
-      + ` OR scope = $${i++} OR scope LIKE $${i++} || ':%' ESCAPE '\\' OR scope LIKE $${i++} || '/%' ESCAPE '\\')`,
-    )
-      // The caller's scope is escaped: an unescaped `%` here matches across
-      // unrelated namespaces, defeating the segment-aware containment guard
-      // this clause exists to implement (#383). Verified: `{ scope: '%' }`
-      // returned engrams from two unrelated groups.
+      + ` OR scope = $${i++} OR scope LIKE $${i++} || ':%' ESCAPE '\\' OR scope LIKE $${i++} || '/%' ESCAPE '\\'`
+    // The caller's scope is escaped: an unescaped `%` here matches across
+    // unrelated namespaces, defeating the segment-aware containment guard
+    // this clause exists to implement (#383). Verified: `{ scope: '%' }`
+    // returned engrams from two unrelated groups.
     params.push(filter.scope, escapeLikePattern(filter.scope), escapeLikePattern(filter.scope))
+    for (const g of filter.visibilityGrants ?? []) {
+      clause += ` OR scope = $${i++} OR scope LIKE $${i++} || ':%' ESCAPE '\\' OR scope LIKE $${i++} || '/%' ESCAPE '\\'`
+      params.push(g, escapeLikePattern(g), escapeLikePattern(g))
+    }
+    conditions.push(clause + ')')
   }
   if (filter.domain) {
     conditions.push(`domain LIKE $${i++} || '%' ESCAPE '\\'`)
@@ -1419,6 +1806,15 @@ function toRow(e: Engram): Record<string, unknown> {
     // equivalent to a substring test over this string because query tokens
     // never contain the separator — `ftsTokenize` splits on it.
     search_text: tokens.join(' '),
+    // Which tokenizer produced the two fields above (#834). Stamped by the
+    // writer for the same reason `content_hash` is: the row records what was
+    // actually done to it, so a later reader can tell whether it still agrees
+    // with the tokenizer now in force instead of assuming it must.
+    tokens_version: TOKENIZER_VERSION,
+    // Derived once, on write, from the RAW search text — the same string the
+    // embedder is given. This is the authority the embedding table is compared
+    // against (#812; audit 2026-08-03 findings 8 + 9).
+    content_hash: embeddingContentHash(e),
   }
 }
 

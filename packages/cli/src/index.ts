@@ -1,10 +1,10 @@
-import { shouldOutputJson, outputJson, exit } from './output.js'
+import { shouldOutputJson, outputJson, setQuiet, exit } from './output.js'
 import { parseGlobalFlags, createPlur } from './plur.js'
 
 export type { GlobalFlags } from './plur.js'
 export { parseGlobalFlags, createPlur } from './plur.js'
 
-const VERSION = '0.16.1'
+const VERSION = '0.17.2'
 
 // --- Main ---
 const argv = process.argv.slice(2)
@@ -25,6 +25,7 @@ Commands:
   inject <task>           Get relevant engrams for a task
   list                    List all engrams
   forget <id>             Retire an engram
+  restore [--list|--yes]  Inspect or restore a daily store snapshot (#799)
   ingest <content>        Extract and save engrams from content
   import                  Import memories from another system (issue #441)
                           --from <generic|gp-engram|mem0> --path <input-file>
@@ -41,13 +42,17 @@ Commands:
   packs export <name>     Export engrams as a pack
   similarity-search <q>   Search by cosine similarity with scores
   promote <id>            Promote an engram to active
+  rescope <id...> --to <scope>  Move engram(s) to another scope (#676)
+                          [--keep-local] [--dry-run]; also: promote <id> --to <scope>
   migrate [up|down|status] Run schema migrations
   stores list             List configured stores
   stores add <path>       Add a knowledge store
   scopes                  List authorized-but-unregistered shared scopes (#647)
   scopes register <scope> Register one; scopes dismiss <scope>; scopes --reoffer
+  reindex-tokens          Re-derive BM25 tokens after a tokenizer change (Postgres only)
   init                    Install Claude Code hooks + register plur MCP server
   init-remote             Opt this project into recall from a PLUR Enterprise server
+  login --status          Enterprise token validity per host (probe + expiry) (#587)
   doctor                  Diagnose Claude Code / Claude Desktop integration
   rerank-eval             Per-store reranker self-eval gate (advisory, #451)
                           [--reranker <name>] [--sample N] [--seed N] [--force]
@@ -71,13 +76,19 @@ Global flags:
   --json       Force JSON output (auto-detected when piped)
   --path <dir> Override storage path (default: ~/.plur)
   --fast       Use BM25-only search (skip embeddings)
-  --quiet      Suppress non-essential output
+  --quiet      Suppress non-essential output (progress, confirmations, hints;
+               results, warnings and errors still print)
   --version    Print version
   --help       Show this help`)
   process.exit(0)
 }
 
 const { flags, args } = parseGlobalFlags(argv)
+// Arm --quiet globally (#730) so no output site can forget it. Commands still
+// pass `flags` to outputInfo where available; this covers the ones that don't.
+// hook-* commands are unaffected: their stdout is protocol JSON written
+// directly, never through outputInfo.
+setQuiet(flags.quiet === true)
 const command = args[0]
 const commandArgs = args.slice(1)
 
@@ -93,21 +104,25 @@ const COMMANDS: Record<string, string> = {
   status: './commands/status.js',
   receipt: './commands/receipt.js',
   sync: './commands/sync.js',
+  restore: './commands/restore.js',
   packs: './commands/packs.js',
   ingest: './commands/ingest.js',
   import: './commands/import.js',
   promote: './commands/promote.js',
+  rescope: './commands/rescope.js',
   'similarity-search': './commands/similarity-search.js',
   stores: './commands/stores.js',
   scopes: './commands/scopes.js',
+  'reindex-tokens': './commands/reindex-tokens.js',
   migrate: './commands/migrate.js',
   init: './commands/init.js',
   'init-remote': './commands/init-remote.js',
-  // `login` (enterprise OAuth device flow, #532) is intentionally NOT registered
-  // yet — the implementation in ./commands/login.js is complete but happy-path
-  // only (no paste-token fallback, hard dependency on server device-flow
-  // endpoints, no refresh tokens). Deactivated pending that hardening; re-add
-  // this line to activate. See #300.
+  // `login` is registered for `--status` (#587: token validity per host). The
+  // OAuth device flow itself (#532) stays GATED INSIDE the command — it is
+  // happy-path only (no paste-token fallback, no refresh tokens) and targets
+  // device-flow endpoints enterprise servers don't expose yet; attempting it
+  // prints the sign-in-URL + plur_stores_add path instead. See #300.
+  login: './commands/login.js',
   doctor: './commands/doctor.js',
   'rerank-eval': './commands/rerank-eval.js',
   tensions: './commands/tensions.js',

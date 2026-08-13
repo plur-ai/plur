@@ -1,5 +1,5 @@
 import { createPlur, type GlobalFlags } from '../plur.js'
-import { shouldOutputJson, outputJson, outputText, exit } from '../output.js'
+import { shouldOutputJson, outputJson, outputText, outputInfo, exit } from '../output.js'
 
 export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   const plur = createPlur(flags)
@@ -43,7 +43,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
       outputText('No engram candidates found in content.')
       return
     }
-    outputText(`${extractOnly ? 'Extracted' : 'Ingested'} ${candidates.length} engram(s):`)
+    outputInfo(`${extractOnly ? 'Extracted' : 'Ingested'} ${candidates.length} engram(s):`, flags)
     candidates.forEach(c => outputText(`  [${c.type}] ${c.statement}`))
   }
 }

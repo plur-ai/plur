@@ -65,11 +65,17 @@ describe('scanSource — what it finds', () => {
     )
   })
 
-  it('a NESTED bracket index is missed, never misreported at an inner offset', () => {
-    // `[^\]]` cannot span the inner `]`; every partial interpretation fails to
-    // reach the method dot. A miss is the documented trade — what must never
-    // happen is a finding anchored inside the index (`m[await a[0]].learn`).
-    expect(scan('async function go(m, a) { m[a[0]].learn("x") }')).toEqual([])
+  it('a NESTED bracket index resolves, anchored at the chain head — never an inner offset', () => {
+    // A documented miss until #758: `[^\]]` could not span the inner `]`, so
+    // this scanned clean. The backward receiver walk matches brackets by
+    // depth, so the index resolves — and the invariant that always held still
+    // must: the finding anchors at `m`, never inside the index
+    // (`m[await a[0]].learn` is the misreport that may not happen).
+    const src = 'async function go(m, a) { m[a[0]].learn("x") }'
+    const f = scan(src)
+    expect(f).toHaveLength(1)
+    expect(f[0].fixable).toBe(true)
+    expect(applyFixes(src, f).src).toBe('async function go(m, a) { await m[a[0]].learn("x") }')
   })
 
   it('finds optional-chain bracket receivers — ?.[ is ordinary modern TS (#752 iteration 2)', () => {
@@ -83,10 +89,15 @@ describe('scanSource — what it finds', () => {
     expect(applyFixes(src, f).src).toBe('async function go(arr) { await arr?.[0].learn("x") }')
   })
 
-  it('an index key containing `]` is missed, never misreported', () => {
-    // Same character-class boundary as the nested case, same invariant: a
-    // clean miss, no finding anchored inside the string key.
-    expect(scan('async function go(m) { m["a]b"].learn("x") }')).toEqual([])
+  it('an index key containing `]` resolves — the walk reads spans, not characters', () => {
+    // The other documented miss until #758. The backward walk skips the
+    // string span whole, so the `]` inside the key cannot end the index —
+    // and the finding anchors at `m`, never inside the string.
+    const src = 'async function go(m) { m["a]b"].learn("x") }'
+    const f = scan(src)
+    expect(f).toHaveLength(1)
+    expect(f[0].fixable).toBe(true)
+    expect(applyFixes(src, f).src).toBe('async function go(m) { await m["a]b"].learn("x") }')
   })
 
   it('reports each occurrence separately', () => {

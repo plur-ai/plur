@@ -5,6 +5,7 @@ import * as os from 'os'
 import { execFileSync } from 'child_process'
 import yaml from 'js-yaml'
 import { loadPack, loadEngrams, saveEngrams } from './engrams.js'
+import { atomicWrite, fsyncDir, withLock } from './sync.js'
 import { detectSensitive, detectPromptInjection, truncateToScanLimit } from './secrets.js'
 import type { Engram } from './schemas/engram.js'
 import type { PackManifest } from './schemas/pack.js'
@@ -15,6 +16,14 @@ export { loadAllPacks } from './engrams.js'
 // --- URL download helpers ---
 
 /** Returns true if the source string looks like an http/https URL. */
+/**
+ * Directory name a downloaded archive is extracted into. For a FLAT archive
+ * (pack files at the archive root) this also becomes the source basename, which
+ * is why installPack overrides it with the manifest name — otherwise every flat
+ * archive would install to `packs/extracted` (#813).
+ */
+export const FLAT_ARCHIVE_DIRNAME = 'extracted'
+
 export function isPackUrl(source: string): boolean {
   return source.startsWith('http://') || source.startsWith('https://')
 }
@@ -59,7 +68,7 @@ export async function downloadAndExtractPack(url: string): Promise<{ packDir: st
   fs.writeFileSync(archivePath, Buffer.from(buffer))
 
   // Extract the archive
-  const extractDir = path.join(tmpRoot, 'extracted')
+  const extractDir = path.join(tmpRoot, FLAT_ARCHIVE_DIRNAME)
   fs.mkdirSync(extractDir)
   try {
     execFileSync('tar', ['-xzf', archivePath, '-C', extractDir], { stdio: 'pipe' })
@@ -119,33 +128,125 @@ function registryPath(packsDir: string): string {
   return path.join(packsDir, 'registry.yaml')
 }
 
+/**
+ * The pack registry exists but cannot be read as a registry (#805, audit F11).
+ *
+ * Mirrors `EngramStoreUnreadableError`, and for the same reason: the writer is
+ * a whole-file replace, so treating an unreadable file as "no packs recorded"
+ * means the next install rewrites it with a single entry and every other pack's
+ * integrity baseline is gone. Unlike the engram store, what is destroyed is not
+ * the data — the packs are still on disk — but the ability to tell whether that
+ * data has been tampered with, which fails silent.
+ */
+export class PackRegistryUnreadableError extends Error {
+  constructor(readonly filePath: string, readonly detail: string) {
+    super(
+      `[plur] refusing to read ${filePath}: ${detail}\n` +
+      `The file exists but is not a valid pack registry, so PLUR cannot tell which packs were installed ` +
+      `or what they hashed to at install time. It is NOT being treated as empty: the write path replaces ` +
+      `the whole file, so an install against an "empty" registry would erase the integrity baseline for ` +
+      `every other installed pack — after which a tampered pack reports its integrity as UNKNOWN rather ` +
+      `than MODIFIED.\n` +
+      `Fix the file (or delete it and re-run 'plur packs install' for each pack to rebuild the baseline) ` +
+      `and retry.`,
+    )
+    this.name = 'PackRegistryUnreadableError'
+  }
+}
+
+/**
+ * Read the registry, refusing rather than guessing (#805, F11).
+ *
+ * The old body ended in `catch { return [] }`, with the same shape for a file
+ * that parsed to something other than `{packs: [...]}`. Measured consequence
+ * (probe p08b): truncate the registry, run ONE install, and the surviving entry
+ * is that install alone — `integrity_ok` for a previously installed pack goes
+ * `true` -> `undefined`, and tampering with its engrams then still reports
+ * `undefined`, never `false`. The check that exists to catch a modified pack had
+ * degraded to "unknown" without anything saying so.
+ */
 function loadRegistry(packsDir: string): RegistryEntry[] {
   const p = registryPath(packsDir)
-  if (!fs.existsSync(p)) return []
+  if (!fs.existsSync(p)) return [] // never installed anything — genuinely empty
+  const raw = fs.readFileSync(p, 'utf8')
+  if (raw.trim().length === 0) throw new PackRegistryUnreadableError(p, 'the file is empty')
+  let parsed: unknown
   try {
-    const raw = yaml.load(fs.readFileSync(p, 'utf8')) as any
-    return Array.isArray(raw?.packs) ? raw.packs : []
-  } catch {
-    return []
+    parsed = yaml.load(raw)
+  } catch (err) {
+    throw new PackRegistryUnreadableError(p, `YAML parse failed: ${(err as Error).message}`)
   }
+  if (parsed === null || parsed === undefined) {
+    throw new PackRegistryUnreadableError(p, 'the file parsed to nothing')
+  }
+  if (typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new PackRegistryUnreadableError(p, `expected a mapping with a "packs" key, got ${Array.isArray(parsed) ? 'a list' : typeof parsed}`)
+  }
+  const packs = (parsed as { packs?: unknown }).packs
+  if (packs === undefined || packs === null) {
+    throw new PackRegistryUnreadableError(p, 'no "packs" key')
+  }
+  if (!Array.isArray(packs)) {
+    throw new PackRegistryUnreadableError(p, `"packs" is ${typeof packs}, expected a list`)
+  }
+  return packs as RegistryEntry[]
 }
 
 function saveRegistry(packsDir: string, entries: RegistryEntry[]): void {
   const content = yaml.dump({ packs: entries }, { lineWidth: 120, noRefs: true, quotingType: '"' })
-  fs.writeFileSync(registryPath(packsDir), content)
+  // Atomic + fsynced (#805, F11). A plain writeFileSync truncates in place, so
+  // a crash or a full disk mid-write leaves a half-written registry — which the
+  // loader above now refuses, but refusing is only the second line of defence.
+  // `atomicWrite` writes to a unique temp file, fsyncs it, renames, then fsyncs
+  // the directory, so the registry is either the old one or the new one.
+  atomicWrite(registryPath(packsDir), content)
+}
+
+/**
+ * Serialize a registry read-modify-write (audit 2026-08-03, finding 3).
+ *
+ * Making `saveRegistry` atomic fixed torn files but not lost updates, and those
+ * are the more likely failure: two processes installing different packs each
+ * read the same registry, each add their own entry, and each rename a COMPLETE
+ * but different snapshot. Both packs end up installed on disk, the last rename
+ * wins, and the other pack's integrity baseline is simply gone — after which it
+ * reports `unverified` and a tampered copy of it can no longer be detected.
+ * That is finding F11's harm arriving by a different road.
+ *
+ * Two MCP servers, or an MCP server and a CLI, is the ordinary case rather than
+ * an exotic one, so atomicity alone was never enough.
+ */
+function withRegistryLock<T>(packsDir: string, fn: () => T): T {
+  // The lock file must live next to the registry, and the directory may not
+  // exist yet on a first install.
+  if (!fs.existsSync(packsDir)) fs.mkdirSync(packsDir, { recursive: true })
+  return withLock(registryPath(packsDir), fn)
 }
 
 function addToRegistry(packsDir: string, entry: RegistryEntry): void {
-  const entries = loadRegistry(packsDir)
-  const idx = entries.findIndex(e => e.name === entry.name)
-  if (idx >= 0) entries[idx] = entry
-  else entries.push(entry)
-  saveRegistry(packsDir, entries)
+  withRegistryLock(packsDir, () => {
+    const entries = loadRegistry(packsDir)
+    const idx = entries.findIndex(e => e.name === entry.name)
+    if (idx >= 0) entries[idx] = entry
+    else entries.push(entry)
+    saveRegistry(packsDir, entries)
+  })
 }
 
 function removeFromRegistry(packsDir: string, name: string): void {
-  const entries = loadRegistry(packsDir).filter(e => e.name !== name)
-  saveRegistry(packsDir, entries)
+  withRegistryLock(packsDir, () => {
+    const entries = loadRegistry(packsDir).filter(e => e.name !== name)
+    saveRegistry(packsDir, entries)
+  })
+}
+
+/** Rewrite one entry's `source` under the same lock — the URL-install path. */
+function setRegistrySource(packsDir: string, name: string, source: string): void {
+  withRegistryLock(packsDir, () => {
+    const entries = loadRegistry(packsDir)
+    const idx = entries.findIndex(e => e.name === name)
+    if (idx >= 0) { entries[idx].source = source; saveRegistry(packsDir, entries) }
+  })
 }
 
 // --- Preview ---
@@ -304,6 +405,30 @@ function manifestToSkillMd(m: PackManifest): string {
   return `---\n${yaml.dump(fm)}---\n\n# ${m.name}\n\n${m.description ?? ''}\n`
 }
 
+/**
+ * fsync every file in a staged pack, then the directory itself (audit
+ * 2026-08-03, finding 11).
+ *
+ * Best-effort per entry, like `fsyncDir`: a filesystem that cannot fsync a
+ * directory must not fail an otherwise good install. Packs are small — a
+ * manifest and an engrams file — so this is a handful of syscalls, paid once
+ * per install, to stop a crash leaving a durable registry entry pointing at
+ * content that never reached the disk.
+ */
+function fsyncTree(dir: string): void {
+  let entries: string[]
+  try { entries = fs.readdirSync(dir) } catch { return }
+  for (const name of entries) {
+    const p = path.join(dir, name)
+    try {
+      if (fs.statSync(p).isDirectory()) { fsyncTree(p); continue }
+      const fd = fs.openSync(p, 'r')
+      try { fs.fsyncSync(fd) } finally { fs.closeSync(fd) }
+    } catch { /* unreadable or unsupported — skip */ }
+  }
+  try { fsyncDir(dir) } catch { /* not a syncable directory */ }
+}
+
 function _installPackDir(
   packsDir: string,
   source: string,
@@ -311,6 +436,14 @@ function _installPackDir(
   opts: InstallOptions = {},
 ): InstallResult {
   if (!fs.existsSync(source)) throw new Error(`Pack source not found: ${source}`)
+
+  // Preflight the registry BEFORE doing any filesystem work (#805, F11). The
+  // registry is only WRITTEN at the end of this function, so without this check
+  // an unreadable registry aborts the install after the pack directory is
+  // already live — leaving it installed but unrecorded, which then reports
+  // `integrity_status: 'unverified'`. That is precisely the ambiguous state
+  // this finding is about, so failing early is part of the fix, not a nicety.
+  loadRegistry(packsDir)
 
   // Security scan BEFORE copying — always runs, not opt-out
   const preview = _previewPackDir(source)
@@ -329,16 +462,34 @@ function _installPackDir(
     )
   }
 
-  const sourceName = path.basename(source)
-  const destDir = path.join(packsDir, sourceName)
+  // Destination name is the source basename, EXCEPT for a flat URL archive
+  // (#813, audit finding 12). Those extract to a directory literally called
+  // `extracted`, so every flat archive installed to `packs/extracted` and
+  // silently overwrote the previous one. Only that generic name is overridden,
+  // and only with a manifest name safe to use as a directory — every other
+  // pack keeps the basename it has always had.
+  const rawName = path.basename(source)
+  const manifestName = preview.manifest.name?.trim()
+  const sourceName = rawName === FLAT_ARCHIVE_DIRNAME && manifestName && /^[A-Za-z0-9._-]+$/.test(manifestName)
+    ? manifestName
+    : rawName
+  const destDir = resolveInside(packsDir, sourceName, 'install')
 
-  // Copy pack directory
-  if (!fs.existsSync(destDir)) fs.mkdirSync(destDir, { recursive: true })
+  // STAGE the whole install, then swap it in (#813, audit finding 12).
+  //
+  // Copying file-by-file into the live destination meant a copy error, a crash,
+  // or a concurrent install left a HYBRID of the old and new pack — half of one
+  // version's engrams beside half of another's, with an integrity hash matching
+  // neither. Everything below builds the pack in a staging directory; the live
+  // directory is not touched until the content is complete and sanitized.
+  const staging = `${destDir}.installing-${process.pid}-${Date.now()}`
+  fs.rmSync(staging, { recursive: true, force: true })
+  fs.mkdirSync(staging, { recursive: true })
 
   const files = fs.readdirSync(source)
   for (const file of files) {
     const srcPath = path.join(source, file)
-    const destPath = path.join(destDir, file)
+    const destPath = path.join(staging, file)
     if (fs.statSync(srcPath).isFile()) {
       fs.copyFileSync(srcPath, destPath)
     }
@@ -349,8 +500,8 @@ function _installPackDir(
   // warning), but the managed copy is normalized to the canonical SKILL.md so
   // the integrity hash below is computed over SKILL.md + engrams.yaml. Done
   // before computePackHash so the recorded integrity reflects the upgrade.
-  const destSkillMd = path.join(destDir, 'SKILL.md')
-  const destManifestYaml = path.join(destDir, 'manifest.yaml')
+  const destSkillMd = path.join(staging, 'SKILL.md')
+  const destManifestYaml = path.join(staging, 'manifest.yaml')
   if (!fs.existsSync(destSkillMd) && fs.existsSync(destManifestYaml)) {
     fs.writeFileSync(destSkillMd, manifestToSkillMd(preview.manifest))
     fs.rmSync(destManifestYaml)
@@ -362,7 +513,7 @@ function _installPackDir(
   // Load engrams, then clamp host-overriding fields (pinned / locked commitment)
   // before they can reach injection. Re-save the sanitized copy so the on-disk
   // pack AND the integrity hash reflect the clamped content.
-  const engramsPath = path.join(destDir, 'engrams.yaml')
+  const engramsPath = path.join(staging, 'engrams.yaml')
   let newEngrams = fs.existsSync(engramsPath) ? loadEngrams(engramsPath) : []
   const sanitized = sanitizePackEngrams(newEngrams)
   if (sanitized.changed) {
@@ -376,8 +527,45 @@ function _installPackDir(
   // Detect conflicts with existing engrams
   const conflicts = existingEngrams ? detectConflicts(newEngrams, existingEngrams) : []
 
-  // Compute integrity and record in registry (over the sanitized on-disk content)
-  const integrity = `sha256:${computePackHash(destDir)}`
+  // Compute integrity over the STAGED, sanitized content — the bytes that are
+  // about to become the pack. Hashing the live directory before the swap would
+  // record the hash of the previous install.
+  const integrity = `sha256:${computePackHash(staging)}`
+
+  // Make the staged content durable BEFORE it becomes the live pack (audit
+  // 2026-08-03, finding 11). Every file was copied with plain writes and the
+  // staging directory was never fsynced, while the registry entry written
+  // afterwards IS durable — so a power loss could leave a durable registry
+  // pointing at a pack that is missing, truncated or half-copied, with the
+  // previous version already deleted. Atomic-to-readers is not the same
+  // property as crash-durable, and the registry's durability made the gap worse
+  // rather than better.
+  fsyncTree(staging)
+
+  // Swap the staged pack in. Two renames, each atomic: the live directory is
+  // moved aside and the staged one takes its place, so a reader never sees a
+  // partially-copied pack. If the second rename fails, the previous install is
+  // put back rather than leaving nothing there.
+  const displaced = `${destDir}.replacing-${process.pid}-${Date.now()}`
+  let movedAside = false
+  try {
+    if (fs.existsSync(destDir)) {
+      fs.renameSync(destDir, displaced)
+      movedAside = true
+    }
+    fs.renameSync(staging, destDir)
+  } catch (err) {
+    if (movedAside && !fs.existsSync(destDir)) {
+      try { fs.renameSync(displaced, destDir) } catch { /* best-effort restore */ }
+    }
+    fs.rmSync(staging, { recursive: true, force: true })
+    throw err
+  }
+  // The renames themselves are metadata operations on the PARENT directory;
+  // without this the swap can be lost even though the contents were flushed.
+  try { fsyncDir(path.dirname(destDir)) } catch { /* best-effort, as elsewhere */ }
+  fs.rmSync(displaced, { recursive: true, force: true })
+
   const registryEntry: RegistryEntry = {
     name: preview.manifest.name,
     installed_at: new Date().toISOString(),
@@ -412,15 +600,48 @@ export async function installPack(
       // Overwrite the registry source with the original URL so `plur packs list`
       // shows where the pack came from, not an ephemeral /tmp path.
       result.registry.source = source
-      const entries = loadRegistry(packsDir)
-      const idx = entries.findIndex(e => e.name === result.registry.name)
-      if (idx >= 0) { entries[idx].source = source; saveRegistry(packsDir, entries) }
+      setRegistrySource(packsDir, result.registry.name, source)
       return result
     } finally {
       cleanupDownloadedPack(tmpRoot)
     }
   }
   return _installPackDir(packsDir, source, existingEngrams, opts)
+}
+
+/**
+ * Resolve `name` as a direct child of `packsDir`, or throw.
+ *
+ * A pack name is a caller-supplied string that reaches here from `plur packs
+ * uninstall <name>` and from the `plur_packs_uninstall` MCP tool. It used to be
+ * joined straight onto `packsDir`, which made `..` resolve to the PLUR ROOT —
+ * and `uninstallPack` ends in `fs.rmSync(packDir, { recursive: true })`.
+ *
+ * Demonstrated before this guard: `uninstallPack(packsDir, '..')` deleted
+ * engrams.yaml, config.yaml and the whole root, and returned `{removed: true}`.
+ * `../..` reached the parent. The install path had the mirror flaw, since a
+ * source ending in `/..` has basename `..`, so pack files were copied over a
+ * live engrams.yaml before any write guard could see them (#811).
+ *
+ * Containment is checked on the RESOLVED path rather than by pattern-matching
+ * the name: `a/../..`, an absolute path, and a name with embedded separators
+ * all normalise away, and a denylist of shapes would have to enumerate them.
+ * Resolution answers the only question that matters — does this end up inside
+ * the packs directory.
+ */
+function resolveInside(packsDir: string, name: string, op: string): string {
+  const base = path.resolve(packsDir)
+  const candidate = path.resolve(base, name)
+  const contained = candidate !== base && candidate.startsWith(base + path.sep)
+  if (!contained || name.includes('/') || name.includes('\\')) {
+    throw new Error(
+      `[plur] refusing to ${op} pack "${name}": a pack name must be a single directory ` +
+      `inside ${packsDir}, and this one resolves to ${candidate}.\n` +
+      `Names containing path separators or ".." are rejected — they would let this operation ` +
+      `read or delete outside the packs directory.`,
+    )
+  }
+  return candidate
 }
 
 // --- Uninstall ---
@@ -433,7 +654,7 @@ export interface UninstallResult {
 
 export function uninstallPack(packsDir: string, name: string): UninstallResult {
   // Find the pack — try exact name, then case-insensitive
-  let packDir = path.join(packsDir, name)
+  let packDir = resolveInside(packsDir, name, 'uninstall')
   if (!fs.existsSync(packDir)) {
     // Try case-insensitive scan
     const entries = fs.existsSync(packsDir) ? fs.readdirSync(packsDir) : []
@@ -478,6 +699,28 @@ export interface PackInfo {
   installed_at?: string
   source?: string
   integrity_ok?: boolean
+  /**
+   * Explicit integrity verdict (#805, F11) — the reason `integrity_ok` alone is
+   * not enough to act on.
+   *
+   *   'ok'          the pack hashes to what the registry recorded at install
+   *   'modified'    it does not — the contents changed after install
+   *   'unverified'  there is NO registry entry, so the question cannot be answered
+   *
+   * `integrity_ok === undefined` carried the third case, and every consumer
+   * treated it as "nothing to report" — the CLI printed a warning only for an
+   * explicit `false`. So a pack whose baseline had been destroyed looked exactly
+   * like a pack that was fine. A verdict that cannot be reached must be as
+   * visible as a verdict that failed, because the two have the same cause more
+   * often than not: something tampered with the pack directory.
+   */
+  integrity_status?: 'ok' | 'modified' | 'unverified'
+  /**
+   * Why this pack could not be read, when it could not (audit 2026-08-03,
+   * finding 13). A damaged pack is listed with what is known about it rather
+   * than aborting the listing or appearing as a healthy pack with 0 engrams.
+   */
+  load_error?: string
 }
 
 export function listPacks(packsDir: string): PackInfo[] {
@@ -504,17 +747,36 @@ export function listPacks(packsDir: string): PackInfo[] {
         installed_at: reg?.installed_at,
         source: reg?.source,
         integrity_ok: reg ? reg.integrity === currentIntegrity : undefined,
+        integrity_status: reg ? (reg.integrity === currentIntegrity ? 'ok' : 'modified') : 'unverified',
       })
-    } catch {
+    } catch (manifestErr) {
+      // Per-pack fallback: the manifest would not load, so report what can
+      // still be established rather than dropping the pack from the listing.
+      //
+      // `loadEngrams` THROWS on an unreadable corpus by design, and this call
+      // used to sit outside any try — so one pack with a corrupt engrams.yaml
+      // aborted the ENTIRE listing (audit 2026-08-03, finding 13). A fallback
+      // that is itself capable of throwing is not a fallback; the whole point
+      // of this branch is that this pack is already known to be damaged.
       const engramsPath = path.join(packDir, 'engrams.yaml')
-      const engrams = fs.existsSync(engramsPath) ? loadEngrams(engramsPath) : []
+      let count = 0
+      let loadError = (manifestErr as Error).message
+      try {
+        if (fs.existsSync(engramsPath)) count = loadEngrams(engramsPath).length
+      } catch (corpusErr) {
+        loadError = (corpusErr as Error).message
+      }
       const reg = registryMap.get(entry)
       result.push({
         name: entry,
         path: packDir,
-        engram_count: engrams.length,
+        engram_count: count,
         installed_at: reg?.installed_at,
         source: reg?.source,
+        // No manifest loaded means no hash was computed, so the integrity
+        // question cannot be answered — a state to report, not to omit (#805).
+        integrity_status: 'unverified',
+        load_error: loadError,
       })
     }
   }

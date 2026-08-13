@@ -16,7 +16,7 @@
 import * as fs from 'fs'
 import { loadEngrams, saveEngrams } from '../engrams.js'
 import type { Engram } from '../schemas/engram.js'
-import type { AsyncPrimaryStore, PrimaryStoreKind } from './primary-store.js'
+import type { AsyncPrimaryStore, PrimaryStoreKind, SaveOptions } from './primary-store.js'
 
 /**
  * Mean serialized size of one engram in `engrams.yaml`, in bytes.
@@ -33,6 +33,14 @@ export const AVG_YAML_BYTES_PER_ENGRAM = 2400
 
 export class YamlPrimaryStore implements AsyncPrimaryStore {
   readonly kind: PrimaryStoreKind = 'yaml'
+
+  /**
+   * `loadEngrams` throws `EngramStoreUnreadableError` rather than reporting an
+   * unreadable file as an empty corpus, so a short read from this store is
+   * always a real one. That is what lets a whole-corpus `save()` be safe here
+   * despite the absence of `append`/`updateMany`.
+   */
+  readonly refusesUnreadable = true
   private readonly filePath: string
   private cache: { mtime: bigint; engrams: Engram[] } | null = null
 
@@ -61,8 +69,8 @@ export class YamlPrimaryStore implements AsyncPrimaryStore {
     return engrams
   }
 
-  async save(engrams: Engram[]): Promise<void> {
-    saveEngrams(this.filePath, engrams)
+  async save(engrams: Engram[], opts?: SaveOptions): Promise<void> {
+    saveEngrams(this.filePath, engrams, { allowShrink: opts?.allowShrink })
     this.cache = null
   }
 

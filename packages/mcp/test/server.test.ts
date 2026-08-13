@@ -1,11 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync } from 'fs'
+import { mkdtempSync, readFileSync, rmSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { Client } from '@modelcontextprotocol/client'
 import { InMemoryTransport } from '@modelcontextprotocol/server'
-import { Plur, checkForUpdate, clearVersionCache, settleVersionChecks } from '@plur-ai/core'
+import { Plur, checkForUpdate, clearVersionCache, settleVersionChecks, VERSION_CHECK_SUCCESS_TTL_MS } from '@plur-ai/core'
 import { createServer } from '../src/server.js'
+import { payloadDropLogPath, readPayloadDropLog } from '../src/drop-log.js'
 
 describe('MCP server (wire protocol)', () => {
   let client: Client
@@ -47,7 +48,7 @@ describe('MCP server (wire protocol)', () => {
   it('returns server info with instructions on initialize', () => {
     const info = client.getServerVersion()
     expect(info?.name).toBe('plur-mcp')
-    expect(info?.version).toBe('0.16.1')
+    expect(info?.version).toBe('0.17.2')
   })
 
   // --- Tools ---
@@ -219,24 +220,167 @@ describe('MCP server (wire protocol)', () => {
       expect(parsed.engrams_created).toBe(2)
     })
 
-    it('empty arguments on a tool with array params names the client bug (#297)', async () => {
+    // #772 reclassified the empty-payload shape: it is NOT array-specific
+    // (scalar-only calls drop too; an array-carrying call succeeds moments
+    // later) and it is transient — the identical call succeeds on retry. The
+    // empty branch therefore points at #772 with retry-identical guidance for
+    // EVERY tool; the array-coercion fallback is appended only where the tool
+    // actually has array params. The dedicated #772 suite below pins the full
+    // contract; these two pin the #297-era split's replacement.
+    it('empty arguments points at #772 with retry-identical guidance, not the array workaround', async () => {
       const result = await client.callTool({ name: 'plur_learn', arguments: {} })
       expect(result.isError).toBe(true)
       const parsed = JSON.parse((result.content as any)[0].text)
       expect(parsed.error).toContain('arguments object was empty')
-      // The targeted hint: names the known client-side array serialization bug
-      // and the coercible retry shapes, so the agent self-corrects.
-      expect(parsed.error).toContain('plur-ai/plur#297')
-      expect(parsed.error).toMatch(/JSON string|comma-separated/)
+      expect(parsed.error).toContain('plur-ai/plur#772')
+      expect(parsed.error).toMatch(/IDENTICAL call/i)
+      // The payload was never evaluated — the agent must NOT be told to fix it.
+      expect(parsed.error).not.toContain('Fix the field(s) named above')
     })
 
-    it('empty arguments on a tool WITHOUT array params does not mention #297', async () => {
-      // plur_recall has no array-typed params — the hint would be noise.
+    it('empty arguments on a tool WITHOUT array params gets #772 but no array-coercion noise', async () => {
+      // plur_recall has no array-typed params — the coercion fallback would be noise.
       const result = await client.callTool({ name: 'plur_recall', arguments: {} })
       expect(result.isError).toBe(true)
       const parsed = JSON.parse((result.content as any)[0].text)
       expect(parsed.error).toContain('arguments object was empty')
-      expect(parsed.error).not.toContain('plur-ai/plur#297')
+      expect(parsed.error).toContain('plur-ai/plur#772')
+      expect(parsed.error).not.toMatch(/JSON string|comma-separated/)
+    })
+  })
+
+  // Issue #772 — intermittent whole-payload drop: the entire arguments object
+  // arrives empty (received_fields: []), not deterministically tied to array
+  // params. Client-side and transient (identical retries succeed; strongest
+  // correlation is multiple tool calls batched in one message), so the server
+  // cannot fix it — but it must (a) fail LOUDLY with retry-with-payload
+  // guidance (never silently store nothing), and (b) record a bounded,
+  // values-free forensic log of each dropped frame for the upstream report.
+  describe('whole-payload drop (#772)', () => {
+    it('rejects an empty-object plur_learn with a structured diagnostic', async () => {
+      const result = await client.callTool({ name: 'plur_learn', arguments: {} })
+      expect(result.isError).toBe(true)
+      const parsed = JSON.parse((result.content as any)[0].text)
+      expect(parsed.success).toBe(false)
+      expect(parsed.received_fields).toEqual([])
+      expect(parsed.missing_fields).toEqual(['statement'])
+      expect(parsed.drop).toBe('whole_payload')
+      // The guidance an agent needs to recover: retry the SAME payload, alone
+      // in the message — batching parallel tool calls is the observed trigger.
+      expect(parsed.error).toContain('plur-ai/plur#772')
+      expect(parsed.error).toMatch(/IDENTICAL call/i)
+      expect(parsed.error).toMatch(/ONLY tool call/i)
+      // Nothing may be stored on this path.
+      const status = await plurInstance.status()
+      expect(status.engram_count).toBe(0)
+    })
+
+    it('records a values-free forensic log entry for an empty-object drop', async () => {
+      await client.callTool({ name: 'plur_learn', arguments: {} })
+      const records = readPayloadDropLog(dir)
+      expect(records.length).toBe(1)
+      expect(records[0].tool).toBe('plur_learn')
+      expect(records[0].arguments_wire).toBe('empty_object')
+      expect(records[0].received_fields).toEqual([])
+      expect(records[0].missing_fields).toEqual(['statement'])
+      expect(records[0].server_version).toBeDefined()
+      expect(records[0].ts).toMatch(/^\d{4}-\d{2}-\d{2}T/)
+    })
+
+    it('distinguishes an entirely ABSENT arguments key from an empty object', async () => {
+      // callTool passes params through unchanged, so omitting `arguments`
+      // omits the key from the wire frame — the other #772 shape.
+      const result = await client.callTool({ name: 'plur_learn' } as any)
+      expect(result.isError).toBe(true)
+      const parsed = JSON.parse((result.content as any)[0].text)
+      expect(parsed.drop).toBe('whole_payload')
+      const records = readPayloadDropLog(dir)
+      expect(records.length).toBe(1)
+      expect(records[0].arguments_wire).toBe('absent')
+    })
+
+    it('records a partial drop with field NAMES but never values', async () => {
+      const secretish = 'summary text that must never enter the drop log'
+      const result = await client.callTool({
+        name: 'plur_session_end',
+        arguments: { summary: secretish },
+      })
+      expect(result.isError).toBe(true)
+      const records = readPayloadDropLog(dir)
+      expect(records.length).toBe(1)
+      expect(records[0].arguments_wire).toBe('partial')
+      expect(records[0].received_fields).toEqual(['summary'])
+      expect(records[0].missing_fields).toContain('engram_suggestions')
+      // The raw file must not contain the argument VALUE anywhere.
+      const raw = readFileSync(payloadDropLogPath(dir), 'utf8')
+      expect(raw).not.toContain(secretish)
+    })
+
+    it('a valid call writes no forensic log', async () => {
+      const result = await client.callTool({
+        name: 'plur_learn',
+        arguments: { statement: 'Valid calls leave no drop records' },
+      })
+      expect(result.isError).toBeFalsy()
+      expect(readPayloadDropLog(dir)).toEqual([])
+    })
+
+    // Contract change (#772): this case used to be excluded from the log on the
+    // reasoning that a non-array miss is an ordinary caller error, not a client
+    // drop. True — but the exclusion made the log unfalsifiable. Recording a
+    // partial drop ONLY when a missing field is array-typed guarantees that
+    // 100% of recorded partial drops involve an array, whatever the truth is,
+    // so the log could never test #297's array hypothesis — the one question
+    // #772 exists to answer. Both populations are now recorded and separated by
+    // `missing_array_params`, which is what makes the ratio measurable.
+    it('a scalar-only partial drop is recorded, so the array correlation can be falsified (#772)', async () => {
+      const result = await client.callTool({
+        name: 'plur_learn',
+        arguments: { scope: 'global', type: 'behavioral' },
+      })
+      expect(result.isError).toBe(true)
+      const parsed = JSON.parse((result.content as any)[0].text)
+      expect(parsed.drop).toBe('partial')
+      const records = readPayloadDropLog(dir)
+      expect(records.length).toBe(1)
+      expect(records[0].arguments_wire).toBe('partial')
+      expect(records[0].missing_fields).toContain('statement')
+      // No array among the missing fields — this is the population the old gate
+      // could not see.
+      expect(records[0].missing_array_params).toEqual([])
+    })
+
+    it('missing_array_params separates the #297 shape from a scalar-only miss', async () => {
+      await client.callTool({ name: 'plur_learn', arguments: { scope: 'global' } })
+      await client.callTool({ name: 'plur_session_end', arguments: { summary: 'x' } })
+
+      const records = readPayloadDropLog(dir)
+      expect(records.length).toBe(2)
+      expect(records[0].missing_array_params).toEqual([])
+      expect(records[1].missing_array_params).toEqual(['engram_suggestions'])
+    })
+
+    // Server-side exoneration pin: #772's strongest observed correlation is
+    // parallel plur_learn tool_use blocks in one client message. Through this
+    // server's real wire path, concurrent tools/call requests must all be
+    // delivered and stored — if this test ever drops one, the bug is NOT
+    // upstream after all.
+    it('8 concurrent plur_learn calls all persist (no server-side drop)', async () => {
+      const topics = ['tabs', 'vitest', 'zod schemas', 'kebab-case filenames', 'tsup builds', 'pnpm workspaces', 'conventional commits', 'squash merges']
+      const results = await Promise.all(
+        topics.map((topic, i) => client.callTool({
+          name: 'plur_learn',
+          arguments: { statement: `Concurrency pin ${i}: always prefer ${topic} in this repository` },
+        })),
+      )
+      for (const result of results) {
+        expect(result.isError).toBeFalsy()
+        const parsed = JSON.parse((result.content as any)[0].text)
+        expect(parsed.id).toBeDefined()
+      }
+      const status = await plurInstance.status()
+      expect(status.engram_count).toBe(8)
+      expect(readPayloadDropLog(dir)).toEqual([])
     })
   })
 
@@ -394,7 +538,7 @@ describe('MCP server (wire protocol)', () => {
     const result = await client.readResource({ uri: 'plur://status' })
     const data = JSON.parse((result.contents[0] as any).text)
     expect(data.engram_count).toBe(1)
-    expect(data.version).toBe('0.16.1')
+    expect(data.version).toBe('0.17.2')
     expect(data.storage_root).toBe(dir)
   })
 
@@ -540,6 +684,51 @@ describe('MCP server (wire protocol)', () => {
       const result = await client.callTool({ name: 'plur_status', arguments: {} })
       const data = JSON.parse((result.content as any)[0].text)
       expect(data.update_available).toBeUndefined()
+    })
+
+    // Regression test for #760: the process started while current, cached
+    // "no update", and a newer version was published while it kept running.
+    // Before the cache TTL, that process stayed silent forever — 0.14.0
+    // installs never surfaced 0.15/0.16.
+    it('surfaces a release published after a long-lived process started (#760)', async () => {
+      // Startup: current version IS the latest — check caches "no update"
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve({ version: '0.9.8' }),
+      }) as any
+      await checkForUpdate('@plur-ai/mcp', '0.9.8')
+
+      let result = await client.callTool({ name: 'plur_status', arguments: {} })
+      let data = JSON.parse((result.content as any)[0].text)
+      expect(data.update_available).toBeUndefined()
+
+      // A newer version is published while the process keeps running,
+      // and the success TTL elapses
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve({ version: '99.0.0' }),
+      }) as any
+      const base = Date.now()
+      const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => base + VERSION_CHECK_SUCCESS_TTL_MS + 1)
+      try {
+        // First read after expiry stays zero-cost (may still serve the stale
+        // answer) but triggers the background refresh
+        await client.callTool({ name: 'plur_status', arguments: {} })
+        await settleVersionChecks()
+
+        // The next read sees the new release on both surfaces
+        result = await client.callTool({ name: 'plur_status', arguments: {} })
+        data = JSON.parse((result.content as any)[0].text)
+        expect(data.update_available).toBeDefined()
+        expect(data.update_available.latest).toBe('99.0.0')
+
+        const session = await client.callTool({ name: 'plur_session_start', arguments: { task: 'test' } })
+        const sessionData = JSON.parse((session.content as any)[0].text)
+        expect(sessionData.version_warning).toBeDefined()
+        expect(sessionData.version_warning).toContain('99.0.0')
+      } finally {
+        nowSpy.mockRestore()
+      }
     })
   })
 })

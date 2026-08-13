@@ -1,5 +1,5 @@
 import { createPlur, type GlobalFlags } from '../plur.js'
-import { shouldOutputJson, outputJson, outputText, exit } from '../output.js'
+import { shouldOutputJson, outputJson, outputText, outputInfo, exit } from '../output.js'
 
 export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   const plur = createPlur(flags)
@@ -41,7 +41,9 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
         token_rotated: 'Rotated token for',
         added: 'Added',
       }[result.status] ?? 'Added'
-      outputText(`${verb} store: ${path} (scope: ${result.scope})`)
+      // Confirmation of the requested add → suppressed by --quiet. The
+      // scopeDropped branch above stays loud: the requested scope was NOT added.
+      outputInfo(`${verb} store: ${path} (scope: ${result.scope})`, flags)
     }
     return
   }
@@ -80,7 +82,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
       })
     } else {
       const total = discoveries.reduce((n, d) => n + d.unregistered.length, 0)
-      if (total > 0) outputText(`\nRun \`plur stores discover --register\` to register all ${total} unregistered scope(s).`)
+      if (total > 0) outputInfo(`\nRun \`plur stores discover --register\` to register all ${total} unregistered scope(s).`, flags)
     }
     return
   }

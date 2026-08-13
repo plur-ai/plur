@@ -107,6 +107,12 @@ plur-ai/plur#544) — don't work around it; declare the PRs.
 
 - TypeScript, Vitest, tsup, Zod for validation.
 - YAML for persistent storage (not JSON, not SQLite for primary data; SQLite is used only as an optional read index — YAML is always the source of truth).
+- Engram id grammar is specified in
+  [spec/ENGRAM-STANDARD-v1.md §3](spec/ENGRAM-STANDARD-v1.md): new ids are
+  `ENG-YYYY-MM-DD-NNN` (same shape locally and server-assigned); the legacy
+  compact `ENG-YYYY-MMDD-NNN` stays valid and every parser must accept both;
+  packs use dateless `ENG-PACK-{NAME}-NNN`; merged store ids get a 3-letter
+  prefix (`ENG-XXX-…`). Never write code that assumes only one date shape.
 - No AI attribution in commits, PRs, or issues: do not add `Co-Authored-By:` AI
   lines, `🤖 Generated with` footers, or any other AI-assistant credit to commits,
   PR descriptions, or issue comments.

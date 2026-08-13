@@ -111,8 +111,10 @@ function isAggregationQuery(query: string): boolean {
  * No LLM calls — fully local, ~500ms with cached embeddings.
  *
  * Automatically detects aggregation queries ("how many", "total", etc.)
- * and switches to exhaustive mode — wider retrieval to capture ALL
- * mentions across conversations, not just the top few.
+ * and switches to exhaustive mode — widens the internal candidate pool
+ * (limit floored at 50 for the BM25/embedding legs and the rerank stage)
+ * so relevant mentions are less likely to be crowded out of the ranking.
+ * The returned list is always capped at `limit` (#770).
  */
 export async function hybridSearch(
   engrams: Engram[],
@@ -186,7 +188,7 @@ export async function hybridSearchWithMeta(
   // recall always returns something.
   const reranked = await applyReranker(ranked.map(s => s.engram), query, rerank)
   return {
-    engrams: reranked.engrams,
+    engrams: reranked.engrams.slice(0, limit),
     mode,
     embedderError,
     topScore,

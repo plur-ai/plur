@@ -294,6 +294,206 @@ describe('PGLiteAdapter — permitted-scope pushdown', () => {
   })
 })
 
+describe('PGLiteAdapter — mounted-scope visibility grants (#775)', () => {
+  let dir: string
+  let yamlPath: string
+  let dbPath: string
+  let adapter: PGLiteAdapter
+
+  const GRANTS_CORPUS = [
+    mkEngram('ENG-2026-0730-201', 'project deploy row', { scope: 'project:a' }),
+    mkEngram('ENG-2026-0730-202', 'personal deploy row', { scope: 'global' }),
+    mkEngram('ENG-2026-0730-203', 'team deploy row', { scope: 'group:acme/eng' }),
+    mkEngram('ENG-2026-0730-204', 'team sub deploy row', { scope: 'group:acme/eng/sub' }),
+    mkEngram('ENG-2026-0730-205', 'sibling deploy row', { scope: 'group:acme/eng-private' }),
+    mkEngram('ENG-2026-0730-206', 'other team deploy row', { scope: 'group:other/team' }),
+  ]
+
+  beforeEach(async () => {
+    dir = mkdtempSync(join(tmpdir(), 'plur-775-pglite-'))
+    yamlPath = join(dir, 'engrams.yaml')
+    dbPath = join(dir, 'store.pglite')
+    seedYaml(yamlPath, GRANTS_CORPUS)
+    adapter = new PGLiteAdapter(yamlPath, dbPath, { vectorDim: DIM })
+    await adapter.reindex()
+  }, PGLITE_TIMEOUT)
+
+  afterEach(async () => {
+    if (adapter) await adapter.close()
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('loadFiltered: a granted scope and its true descendants pass the scope filter', async () => {
+    const ids = (await adapter.loadFiltered({
+      scope: 'project:a',
+      visibilityGrants: ['group:acme/eng'],
+    })).map(e => e.id)
+    expect(ids).toContain('ENG-2026-0730-201') // the filter scope
+    expect(ids).toContain('ENG-2026-0730-202') // personal pass-through
+    expect(ids).toContain('ENG-2026-0730-203') // granted scope
+    expect(ids).toContain('ENG-2026-0730-204') // true descendant
+    expect(ids, 'sibling string-prefix leaked through a grant (#383)').not.toContain('ENG-2026-0730-205')
+    expect(ids, 'an ungranted shared scope leaked').not.toContain('ENG-2026-0730-206')
+  }, PGLITE_TIMEOUT)
+
+  it('grants are inert without a scope filter', async () => {
+    const withGrants = (await adapter.loadFiltered({ visibilityGrants: ['group:acme/eng'] }))
+      .map(e => e.id).sort()
+    const without = (await adapter.loadFiltered({})).map(e => e.id).sort()
+    expect(withGrants).toEqual(without)
+  }, PGLITE_TIMEOUT)
+
+  it('SECURITY: grants never widen the scopes authorization allow-list', async () => {
+    const ids = (await adapter.loadFiltered({
+      scope: 'project:a',
+      scopes: ['project:a'],
+      visibilityGrants: ['group:acme/eng'],
+    })).map(e => e.id)
+    expect(ids).toEqual(['ENG-2026-0730-201'])
+    expect(await adapter.loadFiltered({ scopes: [], visibilityGrants: ['group:acme/eng'] })).toEqual([])
+  }, PGLITE_TIMEOUT)
+
+  it('searchBM25: the granted team row survives a scope-filtered search', async () => {
+    const hits = await adapter.searchBM25('deploy row', {
+      limit: 10,
+      scope: 'project:a',
+      visibilityGrants: ['group:acme/eng'],
+    })
+    const ids = hits.map(e => e.id)
+    expect(ids).toContain('ENG-2026-0730-203')
+    expect(ids).not.toContain('ENG-2026-0730-205')
+    expect(ids).not.toContain('ENG-2026-0730-206')
+  }, PGLITE_TIMEOUT)
+
+  /**
+   * Vector-leg embeddings for the grants corpus: the two rows the caller may
+   * NOT see (sibling + other team) are the NEAREST neighbours, so any
+   * implementation that applies scope/grants AFTER the k-NN query spends
+   * `limit` on them and the granted rows never surface.
+   */
+  async function seedGrantEmbeddings(): Promise<void> {
+    await adapter.upsertEmbedding('ENG-2026-0730-205', vec(1))          // sibling — nearest
+    await adapter.upsertEmbedding('ENG-2026-0730-206', vec(1, 0.001))   // other team — next
+    await adapter.upsertEmbedding('ENG-2026-0730-201', vec(1, 0.5))     // project
+    await adapter.upsertEmbedding('ENG-2026-0730-202', vec(1, 0.6))     // personal
+    await adapter.upsertEmbedding('ENG-2026-0730-203', vec(1, 0.7))     // granted
+    await adapter.upsertEmbedding('ENG-2026-0730-204', vec(1, 0.8))     // true descendant
+  }
+
+  it('searchVector: scope + grants ride the k-NN WHERE — granted rows surface past nearer forbidden ones', async () => {
+    await seedGrantEmbeddings()
+    expect(await adapter.getVectorColumnType()).toBe('vector') // pgvector, not the fallback
+    const hits = await adapter.searchVector(vec(1), 4, {
+      scope: 'project:a',
+      visibilityGrants: ['group:acme/eng'],
+    })
+    const ids = hits.map(h => h.engram.id)
+    // limit=4 with the 2 nearest rows forbidden: a post-filter returns at most
+    // 2 permitted rows; the in-query filter returns all 4.
+    expect(ids).toHaveLength(4)
+    expect(ids).toContain('ENG-2026-0730-201') // the filter scope
+    expect(ids).toContain('ENG-2026-0730-202') // personal pass-through
+    expect(ids).toContain('ENG-2026-0730-203') // granted scope
+    expect(ids).toContain('ENG-2026-0730-204') // true descendant
+  }, PGLITE_TIMEOUT)
+
+  it('searchVector SECURITY: grants never widen the scopes authorization allow-list', async () => {
+    await seedGrantEmbeddings()
+    const hits = await adapter.searchVector(vec(1), 10, {
+      scope: 'project:a',
+      scopes: ['project:a'],
+      visibilityGrants: ['group:acme/eng'],
+    })
+    expect(hits.map(h => h.engram.id)).toEqual(['ENG-2026-0730-201'])
+  }, PGLITE_TIMEOUT)
+
+  it('searchVector SECURITY: a wildcard grant matches literally on the vector leg', async () => {
+    await seedGrantEmbeddings()
+    const hits = await adapter.searchVector(vec(1), 10, {
+      scope: 'project:a',
+      visibilityGrants: ['group:%'],
+    })
+    const ids = hits.map(h => h.engram.id)
+    // `group:%` escaped matches only a literal `group:%` scope — none here.
+    expect(ids.filter(id => ['ENG-2026-0730-203', 'ENG-2026-0730-204', 'ENG-2026-0730-205', 'ENG-2026-0730-206'].includes(id)))
+      .toEqual([])
+    expect(ids).toContain('ENG-2026-0730-201')
+  }, PGLITE_TIMEOUT)
+})
+
+/**
+ * #775 vector-leg WIRING: the Plur recall legs must thread `scope` and the
+ * mounted-store visibilityGrants into `pgliteAdapter.searchVector`, not just
+ * `scopes`. The real-embedder end-to-end version is impractical offline
+ * (embed() returns null and the leg falls back before the adapter is hit), so
+ * embed() is mocked to a fixed vector and the assertion is on the filter the
+ * adapter receives — the SQL semantics of that filter are pinned by the
+ * adapter-level tests above.
+ */
+vi.mock('../src/embeddings.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/embeddings.js')>()
+  return {
+    ...actual,
+    // Non-zero so cosine distance is defined whatever the backend does with it;
+    // the tests only assert on the filter searchVector receives.
+    embed: vi.fn(async () => new Float32Array(384).fill(0.1)),
+  }
+})
+
+describe('Plur recall legs — vector-leg grant threading (#775)', () => {
+  let dir: string
+  const originalBackend = process.env.PLUR_BACKEND
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'plur-775-vecwire-'))
+    process.env.PLUR_BACKEND = 'pglite'
+  })
+
+  afterEach(() => {
+    if (originalBackend === undefined) delete process.env.PLUR_BACKEND
+    else process.env.PLUR_BACKEND = originalBackend
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  async function makePlurWithMountedStore() {
+    const { Plur } = await import('../src/index.js')
+    const teamPath = join(dir, 'team.yaml')
+    writeFileSync(teamPath, yaml.dump({ engrams: [] }, { noRefs: true }))
+    writeFileSync(join(dir, 'config.yaml'), yaml.dump({
+      stores: [{ path: teamPath, scope: 'group:acme/eng' }],
+    }, { noRefs: true }))
+    const plur = new Plur({ path: dir })
+    await plur.learn('the deployment pipeline uses snake_case naming', { scope: 'global' })
+    await plur.waitForIndex()
+    const adapter = (plur as any).pgliteAdapter
+    expect(adapter, 'PLUR_BACKEND=pglite must construct the PGLite adapter').toBeTruthy()
+    const spy = vi.spyOn(adapter, 'searchVector')
+    return { plur, spy }
+  }
+
+  it('recallHybrid passes scope + visibilityGrants into searchVector', async () => {
+    const { plur, spy } = await makePlurWithMountedStore()
+    await plur.recallHybrid('deployment pipeline', { scope: 'project:a' })
+    expect(spy).toHaveBeenCalled()
+    expect(spy.mock.calls[0][2]).toEqual({
+      scopes: undefined,
+      scope: 'project:a',
+      visibilityGrants: ['group:acme/eng'],
+    })
+  }, PGLITE_TIMEOUT)
+
+  it('recallSemantic passes scope + visibilityGrants into searchVector', async () => {
+    const { plur, spy } = await makePlurWithMountedStore()
+    await plur.recallSemantic('deployment pipeline', { scope: 'project:a', scopes: ['project:a'] })
+    expect(spy).toHaveBeenCalled()
+    expect(spy.mock.calls[0][2]).toEqual({
+      scopes: ['project:a'],
+      scope: 'project:a',
+      visibilityGrants: ['group:acme/eng'],
+    })
+  }, PGLITE_TIMEOUT)
+})
+
 describe('PGLiteAdapter — permitted-scope pushdown on the BYTEA fallback', () => {
   let dir: string
   let yamlPath: string

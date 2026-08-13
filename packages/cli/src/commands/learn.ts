@@ -1,5 +1,5 @@
 import { createPlur, type GlobalFlags } from '../plur.js'
-import { shouldOutputJson, outputJson, outputText, exit } from '../output.js'
+import { shouldOutputJson, outputJson, outputText, outputInfo, exit } from '../output.js'
 
 export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   const plur = createPlur(flags)
@@ -198,16 +198,18 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
       ...(domainHint ? { domain_hint: domainHint } : {}),
     })
   } else {
-    outputText(`Learned: "${engram.statement}"`)
-    outputText(`  ID: ${engram.id} | Scope: ${engram.scope} | Type: ${engram.type}${engram.domain ? ` | Domain: ${engram.domain}` : ''}`)
+    // Confirmation of a requested mutation → suppressed by --quiet (#730).
+    outputInfo(`Learned: "${engram.statement}"`, flags)
+    outputInfo(`  ID: ${engram.id} | Scope: ${engram.scope} | Type: ${engram.type}${engram.domain ? ` | Domain: ${engram.domain}` : ''}`, flags)
     if (demoted) {
+      // The write landed somewhere OTHER than requested — never suppressed.
       outputText(
         `  Warning: Sensitive content (${demoted.patterns}) detected — stored at ` +
         `${demoted.to}/private instead of ${demoted.from}; re-scope deliberately if false positive.`,
       )
     }
     if (domainHint) {
-      outputText(`  Hint: ${domainHint}`)
+      outputInfo(`  Hint: ${domainHint}`, flags)
     }
   }
 }

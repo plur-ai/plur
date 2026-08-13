@@ -1,15 +1,18 @@
 import { createPlur, type GlobalFlags } from '../plur.js'
-import { shouldOutputJson, outputJson, outputText } from '../output.js'
+import { shouldOutputJson, outputJson, outputText, outputInfo } from '../output.js'
 
 export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
-  const plur = createPlur(flags)
+  // Pure query — a read-only engine guarantees no lazy write side-effects.
+  const plur = createPlur(flags, { readonly: true })
   const result = await plur.status()
 
   if (shouldOutputJson(flags)) {
     outputJson(result)
   } else {
-    outputText('Plur Status')
-    outputText('===========')
+    // Banner is decoration → suppressed by --quiet; the fields below are the
+    // primary output and always print (#730).
+    outputInfo('Plur Status', flags)
+    outputInfo('===========', flags)
     outputText(`  Engrams:      ${result.engram_count}`)
     outputText(`  Episodes:     ${result.episode_count}`)
     outputText(`  Packs:        ${result.pack_count}`)
@@ -19,5 +22,16 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
       outputText(`  Events:       co_injection ${ev.co_injection} · outcomes ${ev.injection_outcome} (+${ev.outcome_positive}/-${ev.outcome_negative})`)
     }
     outputText(`  Storage root: ${result.storage_root}`)
+    // A store PLUR could not read must be visible here above all places (audit
+    // 2026-08-03, finding 14). Core reports these and the text surface dropped
+    // them, so a corrupt registry printed as a healthy `Packs: 0` — the same
+    // silence the refuse-on-corrupt work exists to remove.
+    if (result.store_errors) {
+      outputText('')
+      for (const [name, message] of Object.entries(result.store_errors)) {
+        outputText(`  ⚠️  ${name}: unreadable`)
+        for (const line of String(message).split('\n')) outputText(`      ${line}`)
+      }
+    }
   }
 }

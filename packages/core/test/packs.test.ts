@@ -661,3 +661,50 @@ describe('pack management', () => {
     expect((exported[0] as any).commitment).not.toBe('locked')
   })
 })
+
+describe('pack names are constrained to the packs directory (#811)', () => {
+  let root: string
+  let packsDir: string
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'plur-pack-traversal-'))
+    packsDir = join(root, 'packs')
+    mkdirSync(join(packsDir, 'real-pack'), { recursive: true })
+    // The things a traversal would destroy.
+    writeFileSync(join(root, 'engrams.yaml'), 'engrams: []\n')
+    writeFileSync(join(root, 'config.yaml'), 'stores: []\n')
+  })
+  afterEach(() => { rmSync(root, { recursive: true, force: true }) })
+
+  // Demonstrated before the guard: uninstallPack(packsDir, '..') resolved to
+  // the PLUR root and `fs.rmSync(packDir, { recursive: true })` deleted
+  // engrams.yaml, config.yaml and the whole root — returning {removed: true}.
+  // Reachable from `plur packs uninstall <name>` and the plur_packs_uninstall
+  // MCP tool, so any agent with MCP access could trigger it.
+  for (const name of ['..', '../..', 'a/../..', 'real-pack/../..']) {
+    it(`refuses to uninstall ${JSON.stringify(name)} and destroys nothing`, () => {
+      expect(() => uninstallPack(packsDir, name)).toThrow(/refusing to uninstall/i)
+      expect(existsSync(join(root, 'engrams.yaml')), 'engrams.yaml was deleted').toBe(true)
+      expect(existsSync(join(root, 'config.yaml')), 'config.yaml was deleted').toBe(true)
+      expect(existsSync(packsDir)).toBe(true)
+    })
+  }
+
+  it('refuses an absolute path as a pack name', () => {
+    expect(() => uninstallPack(packsDir, '/etc')).toThrow(/refusing to uninstall/i)
+  })
+
+  it('still reports a genuinely missing pack as not found, not as a traversal', () => {
+    expect(() => uninstallPack(packsDir, 'no-such-pack')).toThrow(/Pack not found/i)
+  })
+
+  it('refuses to install from a source whose basename escapes the packs dir', async () => {
+    // basename('/some/path/..') === '..', which made the destination the PLUR
+    // root — so pack files were copied over a live engrams.yaml before any
+    // write guard could see them.
+    const escaping = join(root, 'somewhere', '..')
+    mkdirSync(join(root, 'somewhere'), { recursive: true })
+    await expect(installPack(packsDir, escaping)).rejects.toThrow()
+    expect(readFileSync(join(root, 'engrams.yaml'), 'utf8')).toBe('engrams: []\n')
+  })
+})

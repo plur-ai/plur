@@ -4,7 +4,7 @@ import { loadEngrams, storePrefix } from './engrams.js'
 import { isPersonalScope, isScopeWithin } from './scope-util.js'
 import type { Engram } from './schemas/engram.js'
 import type { StoreEntry } from './schemas/config.js'
-import type { StorageFilter } from './storage-adapter.js'
+import { escapeLikePattern, type StorageFilter } from './storage-adapter.js'
 
 const require = createRequire(import.meta.url)
 
@@ -169,8 +169,30 @@ export class IndexedStorage {
       // engrams. Segment-aware membership (#383): a descendant matches only on a
       // real delimiter (`:`/`/`), so a sibling string-prefix (project:application
       // under a project:app query) does NOT leak. Mirrors isScopeWithin.
-      conditions.push("(personal = 1 OR scope = ? OR scope LIKE ? || ':%' OR scope LIKE ? || '/%')")
-      params.push(filter.scope, filter.scope, filter.scope)
+      //
+      // Mounted-scope visibility grants (#775): each grant contributes the same
+      // segment-aware containment triple as `filter.scope`, so an engram in a
+      // granted scope (or a true descendant of one) passes the visibility
+      // filter like the personal family. The precomputed `personal` column is
+      // untouched — grants vary per query (they come from config.stores), so
+      // they must be OR-clauses, not an indexed flag. VISIBILITY ONLY: the
+      // `scopes` allow-list above is authorization and never widened by grants.
+      // SQL twin of makeVisibilityPredicate (scope-util.ts) — keep all four
+      // arms (in-memory / sqlite / pglite / postgres) in lockstep.
+      //
+      // The two LIKE arms of each triple are escaped (escapeLikePattern +
+      // ESCAPE '\'), same as the pglite/postgres copies: a `%`/`_` in a
+      // caller-supplied scope or grant must match literally, not widen the
+      // containment into unrelated namespaces. The equality arm keeps the
+      // raw value. SQLite has NO default LIKE escape character, so the
+      // explicit ESCAPE clause is load-bearing, not style.
+      const clauses = ['personal = 1', "scope = ?", "scope LIKE ? || ':%' ESCAPE '\\'", "scope LIKE ? || '/%' ESCAPE '\\'"]
+      params.push(filter.scope, escapeLikePattern(filter.scope), escapeLikePattern(filter.scope))
+      for (const g of filter.visibilityGrants ?? []) {
+        clauses.push("scope = ?", "scope LIKE ? || ':%' ESCAPE '\\'", "scope LIKE ? || '/%' ESCAPE '\\'")
+        params.push(g, escapeLikePattern(g), escapeLikePattern(g))
+      }
+      conditions.push(`(${clauses.join(' OR ')})`)
     }
     if (filter.domain) {
       conditions.push("domain LIKE ? || '%'")

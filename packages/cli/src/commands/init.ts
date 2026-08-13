@@ -4,7 +4,7 @@ import { fileURLToPath } from 'url'
 import { homedir, platform } from 'os'
 import { createInterface } from 'readline'
 import { type GlobalFlags } from '../plur.js'
-import { outputText } from '../output.js'
+import { outputInfo } from '../output.js'
 import {
   buildMcpServerEntry,
   claudeDesktopConfigPath,
@@ -827,36 +827,36 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
 
   const entry = buildMcpServerEntry()
 
-  outputText('PLUR installed for Claude Code.')
-  outputText('')
-  outputText(`Hook binary: ${shim.status}${shim.shimPath ? ` (${shim.shimPath})` : ''}`)
-  outputText(`MCP binary:  ${mcpShim.status}${mcpShim.shimPath ? ` (${mcpShim.shimPath})` : ''}`)
-  outputText('')
-  outputText('Architecture: One global engram store (~/.plur/), enforcement hooks global, injection hooks project-scoped.')
-  outputText('Multi-project scoping via domain/scope fields on engrams, not separate installs.')
-  outputText('')
-  outputText(`MCP server (plur): ${mcpStatus}`)
-  outputText(`  command: ${entry.command} ${entry.args.join(' ')}`)
-  outputText('')
-  outputText(`Enforcement hooks (4, always global): ${enforcementHooksStatus}`)
-  outputText('  SessionStart      — enforce plur_session_start before any work')
-  outputText('  SessionEnd        — auto-close memory lifecycle (captures closing episode)')
-  outputText('  PreToolUse        — session guard (blocks tools until session started)')
-  outputText('  PostToolUse       — session sentinel (marks session as started)')
-  outputText('')
-  outputText(`Injection hooks (9): ${injectionHooksStatus}`)
-  outputText('  UserPromptSubmit  — inject engrams + auto-start session')
-  outputText('  PostCompact       — re-inject engrams after context compaction')
-  outputText('  PreToolUse        — contextual injection (plan mode, skills, agents)')
-  outputText('  PreToolUse        — observation capture for pattern learning')
-  outputText('  PostToolUse       — observation results capture')
-  outputText('  SubagentStart     — inject agent-scoped engrams into subagents')
-  outputText('  Stop              — learning reflection nudge (every 3rd response)')
-  outputText('')
-  outputText(`Enforcement file: ${enforcementPath}`)
-  if (!samePath) outputText(`Injection file:   ${injectionPath}`)
-  outputText(`Claude Desktop:   ${desktopStatus}`)
-  outputText(cursorStatus)
+  outputInfo('PLUR installed for Claude Code.', flags)
+  outputInfo('', flags)
+  outputInfo(`Hook binary: ${shim.status}${shim.shimPath ? ` (${shim.shimPath})` : ''}`, flags)
+  outputInfo(`MCP binary:  ${mcpShim.status}${mcpShim.shimPath ? ` (${mcpShim.shimPath})` : ''}`, flags)
+  outputInfo('', flags)
+  outputInfo('Architecture: One global engram store (~/.plur/), enforcement hooks global, injection hooks project-scoped.', flags)
+  outputInfo('Multi-project scoping via domain/scope fields on engrams, not separate installs.', flags)
+  outputInfo('', flags)
+  outputInfo(`MCP server (plur): ${mcpStatus}`, flags)
+  outputInfo(`  command: ${entry.command} ${entry.args.join(' ')}`, flags)
+  outputInfo('', flags)
+  outputInfo(`Enforcement hooks (4, always global): ${enforcementHooksStatus}`, flags)
+  outputInfo('  SessionStart      — enforce plur_session_start before any work', flags)
+  outputInfo('  SessionEnd        — auto-close memory lifecycle (captures closing episode)', flags)
+  outputInfo('  PreToolUse        — session guard (blocks tools until session started)', flags)
+  outputInfo('  PostToolUse       — session sentinel (marks session as started)', flags)
+  outputInfo('', flags)
+  outputInfo(`Injection hooks (9): ${injectionHooksStatus}`, flags)
+  outputInfo('  UserPromptSubmit  — inject engrams + auto-start session', flags)
+  outputInfo('  PostCompact       — re-inject engrams after context compaction', flags)
+  outputInfo('  PreToolUse        — contextual injection (plan mode, skills, agents)', flags)
+  outputInfo('  PreToolUse        — observation capture for pattern learning', flags)
+  outputInfo('  PostToolUse       — observation results capture', flags)
+  outputInfo('  SubagentStart     — inject agent-scoped engrams into subagents', flags)
+  outputInfo('  Stop              — learning reflection nudge (every 3rd response)', flags)
+  outputInfo('', flags)
+  outputInfo(`Enforcement file: ${enforcementPath}`, flags)
+  if (!samePath) outputInfo(`Injection file:   ${injectionPath}`, flags)
+  outputInfo(`Claude Desktop:   ${desktopStatus}`, flags)
+  outputInfo(cursorStatus, flags)
   if (shouldSetupCursor(args)) {
     // Audit fix (user evaluator): the 11-tools-instead-of-39 tradeoff and
     // plur_admin indirection were previously only discoverable by reading
@@ -867,11 +867,11 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     // Claude Code, both integrations are now active, running independently
     // (separate sentinel directories, separate config files); this plan
     // doesn't test that combination, just documents that it exists.
-    outputText('  Cursor gets a reduced tool set (~11 tools + plur_admin dispatch for the rest) to stay')
-    outputText('  under Cursor\'s ~40-tool-per-workspace limit — call plur_admin with { action, args } for')
-    outputText('  packs/sync/tensions/stores/timeline/etc. Run `plur doctor` any time to see current counts.')
-    outputText('  Note: the Claude Code hooks above are also active in this project — the two integrations')
-    outputText('  run independently and haven\'t been tested together.')
+    outputInfo('  Cursor gets a reduced tool set (~11 tools + plur_admin dispatch for the rest) to stay', flags)
+    outputInfo('  under Cursor\'s ~40-tool-per-workspace limit — call plur_admin with { action, args } for', flags)
+    outputInfo('  packs/sync/tensions/stores/timeline/etc. Run `plur doctor` any time to see current counts.', flags)
+    outputInfo('  Note: the Claude Code hooks above are also active in this project — the two integrations', flags)
+    outputInfo('  run independently and haven\'t been tested together.', flags)
     // Audit fix (evaluator review, 2026-07-08): .cursor/mcp.json and
     // .cursor/hooks.json are intentionally NOT gitignored (unlike the two
     // dynamic .mdc rule files above) so committing .cursor/ lets teammates
@@ -882,39 +882,39 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     // won't start there. `plur doctor` now catches this after the fact
     // (cursorWired checks the command exists); this warns before it bites.
     if (cmd.startsWith('/') || /^[A-Za-z]:\\/.test(cmd)) {
-      outputText('  Committing .cursor/mcp.json / .cursor/hooks.json? Their command is this machine\'s local')
-      outputText(`  path (${cmd}) — it won't exist on a teammate's machine or a fresh Background Agent VM.`)
-      outputText('  Run `plur init --cursor` there too, or edit the command to `npx -y @plur-ai/mcp@latest`.')
+      outputInfo('  Committing .cursor/mcp.json / .cursor/hooks.json? Their command is this machine\'s local', flags)
+      outputInfo(`  path (${cmd}) — it won't exist on a teammate's machine or a fresh Background Agent VM.`, flags)
+      outputInfo('  Run `plur init --cursor` there too, or edit the command to `npx -y @plur-ai/mcp@latest`.', flags)
     }
   }
-  outputText(`CLAUDE.md:        ${claudeMdStatus}`)
+  outputInfo(`CLAUDE.md:        ${claudeMdStatus}`, flags)
   if (projectConfigPath) {
-    outputText(`Project config:   ${projectConfigPath}`)
+    outputInfo(`Project config:   ${projectConfigPath}`, flags)
   }
-  outputText('')
-  outputText('Enforcement hooks fire from any subdirectory; they silent-pass when plur is not configured.')
+  outputInfo('', flags)
+  outputInfo('Enforcement hooks fire from any subdirectory; they silent-pass when plur is not configured.', flags)
   if (projectConfigPath) {
-    outputText('Project scoping configured. Engrams learned in this project will')
-    outputText('be tagged automatically. Run `plur init --domain X --scope Y` in')
-    outputText('other projects to set their defaults.')
-    outputText('')
+    outputInfo('Project scoping configured. Engrams learned in this project will', flags)
+    outputInfo('be tagged automatically. Run `plur init --domain X --scope Y` in', flags)
+    outputInfo('other projects to set their defaults.', flags)
+    outputInfo('', flags)
   }
-  outputText('Restart Claude Code to pick up the changes, then run `plur doctor` to verify.')
+  outputInfo('Restart Claude Code to pick up the changes, then run `plur doctor` to verify.', flags)
 
   // Telemetry opt-in — ask once, never nag. Runs last so it doesn't interrupt the
   // settings-installation summary above. Non-interactive installs silently write
   // enabled:false (opt-out), which ensures they are never opted in without consent.
   const telemetryResult = await promptTelemetryOptIn({ noPrompt })
-  outputText('')
+  outputInfo('', flags)
   if (telemetryResult === 'opted-in') {
-    outputText('Telemetry: enabled (thank you — anonymous counts only, nothing leaves your machine before POST /v1/heartbeat).')
-    outputText('           Disable any time: plur telemetry off  or  set PLUR_TELEMETRY=off')
+    outputInfo('Telemetry: enabled (thank you — anonymous counts only, nothing leaves your machine before POST /v1/heartbeat).', flags)
+    outputInfo('           Disable any time: plur telemetry off  or  set PLUR_TELEMETRY=off', flags)
   } else if (telemetryResult === 'opted-out') {
-    outputText('Telemetry: disabled. Enable any time: plur telemetry on  or  set PLUR_TELEMETRY=on')
-    outputText('           See docs/telemetry-design.md for what is and is not collected.')
+    outputInfo('Telemetry: disabled. Enable any time: plur telemetry on  or  set PLUR_TELEMETRY=on', flags)
+    outputInfo('           See docs/telemetry-design.md for what is and is not collected.', flags)
   } else if (telemetryResult === 'non-interactive') {
-    outputText('Telemetry: disabled (non-interactive install). Enable: set PLUR_TELEMETRY=on')
-    outputText('           See docs/telemetry-design.md for what is collected.')
+    outputInfo('Telemetry: disabled (non-interactive install). Enable: set PLUR_TELEMETRY=on', flags)
+    outputInfo('           See docs/telemetry-design.md for what is collected.', flags)
   }
   // 'already-configured' → silent, user already made a choice
 }

@@ -102,7 +102,25 @@ export to JSON and use `--from generic` in the meantime.
 | `--json` | Force JSON output (auto-detected when piped) |
 | `--path <dir>` | Override storage path (default: `~/.plur`) |
 | `--fast` | BM25-only search (skip embeddings, faster) |
-| `--quiet` | Suppress non-essential output |
+| `--quiet` | Suppress non-essential output (see below) |
+
+### What `--quiet` suppresses
+
+`--quiet` silences chatter, not answers:
+
+- **Suppressed** — progress lines, confirmations of requested mutations
+  (`Learned: …`, `Feedback recorded`), banners, hints/next-step suggestions,
+  summary footers (`Total: 5`).
+- **Preserved** — the primary output (recall results, listings, status
+  fields, doctor/audit reports), warnings that the outcome differs from what
+  was requested (e.g. a scope demotion, a failed index rebuild), all errors
+  (stderr), exit codes, and `--json` output (unaffected by `--quiet`).
+
+```bash
+plur learn "prefer tabs" --quiet        # exit 0, no output
+plur recall "tabs" --quiet              # results still print
+plur sync --quiet                       # silent unless the index broke
+```
 
 ## JSON Output
 

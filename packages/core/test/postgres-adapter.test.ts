@@ -19,7 +19,7 @@
  * Everything runs inside a per-run schema which is dropped in teardown, so this
  * can share a database with anything else without colliding.
  */
-import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { mkdtempSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
@@ -27,7 +27,6 @@ import yaml from 'js-yaml'
 import { PostgresAdapter, HNSW_RECALL_TARGET } from '../src/storage-postgres.js'
 import { PGLiteAdapter } from '../src/storage-pglite.js'
 import { requiresIndexSync, asDerivedIndex, efSearchFor, PGVECTOR_DEFAULT_EF_SEARCH } from '../src/storage-adapter.js'
-import { logger } from '../src/logger.js'
 import type { Engram } from '../src/schemas/engram.js'
 
 const DSN = process.env.PLUR_TEST_POSTGRES_URL
@@ -458,6 +457,14 @@ describe.skipIf(!DSN)('PGLite and Postgres answer the same filter identically', 
     { domain: 'plur.storage' },
     { domain: 'plur' },
     { scope: 'project:plur', domain: 'plur.storage' },
+    // #775 mounted-scope visibility grants — the two SQL twins must answer
+    // grant-widened visibility identically too.
+    { scope: 'project:plur', visibilityGrants: ['group:plur/eng'] },
+    { scope: 'local', visibilityGrants: ['project:plur'] },
+    // A grant that is a string-prefix sibling of a corpus scope: must NOT
+    // admit project:plurality on either backend (#383).
+    { scope: 'group:plur/eng', visibilityGrants: ['project:plur'] },
+    { scope: 'project:plur', visibilityGrants: ['group:plur/eng'], status: 'active' },
   ]
 
   for (const filter of filters) {
@@ -469,39 +476,57 @@ describe.skipIf(!DSN)('PGLite and Postgres answer the same filter identically', 
   }
 })
 
-describe.skipIf(!DSN)('the embeddings-gap warning at schema init (#752)', () => {
-  // The 0.16.0 release ships the Postgres tier WITHOUT core writing
-  // embeddings (ADR-0005 amendment): `engram_embeddings` stays empty and
-  // semantic recall silently falls back to in-memory scoring. The stated
-  // mitigation is a one-shot warning at schema init. That warning had zero
-  // test coverage — a refactor deleting it would strip the only runtime
-  // disclosure of the gap and nothing in CI would notice.
-  it('fires once for a non-exact vectorIndex, and not at all for exact', async () => {
-    const spy = vi.spyOn(logger, 'warning').mockImplementation(() => {})
-    const gapCalls = () => spy.mock.calls.filter(c => String(c[0]).includes('does not write embeddings'))
-    const auto = new PostgresAdapter({
-      connectionString: DSN!, schema: `${SCHEMA}_egap_a`, vectorDim: VECTOR_DIM,
-    })
-    const exact = new PostgresAdapter({
-      connectionString: DSN!, schema: `${SCHEMA}_egap_e`, vectorDim: VECTOR_DIM, vectorIndex: 'exact',
-    })
-    try {
-      await auto.save([])           // first schema init — warns
-      expect(gapCalls()).toHaveLength(1)
-      expect(String(gapCalls()[0][0])).toContain("vectorIndex:'exact' to silence")
-      await auto.load()             // second operation — no repeat
-      await auto.refreshVectorIndex()
-      expect(gapCalls()).toHaveLength(1)
+describe.skipIf(!DSN)('listEngramsMissingEmbeddings — the set-based auto-embed query (#762)', () => {
+  // The reason the embeddings gap shipped in 0.16.0 at all was the absence of
+  // this query: the only auto-embed pass loaded the corpus and probed
+  // `hasEmbedding` per id, which at the corpus size that selects this tier is
+  // a worse regression than the gap. The engine's write-path auto-embed and
+  // the semantic-recall completeness probe both stand on this method, so its
+  // semantics — active-only, bounded, shrinks as embeddings land — are pinned
+  // here at the adapter level.
+  const MSCHEMA = `${SCHEMA}_missing_762`
+  let adapter: PostgresAdapter
 
-      await exact.save([])          // documented escape hatch — silent
-      await exact.load()
-      expect(gapCalls()).toHaveLength(1)
-    } finally {
-      await auto.dropSchema().catch(() => {})
-      await exact.dropSchema().catch(() => {})
-      await auto.close().catch(() => {})
-      await exact.close().catch(() => {})
-      spy.mockRestore()
-    }
+  beforeAll(async () => {
+    adapter = new PostgresAdapter({
+      connectionString: DSN!, schema: MSCHEMA, vectorDim: VECTOR_DIM, vectorIndex: 'exact',
+    })
+    await adapter.save([
+      mkEngram('ENG-762-A', 'alpha statement'),
+      mkEngram('ENG-762-B', 'beta statement'),
+      mkEngram('ENG-762-C', 'gamma statement'),
+      mkEngram('ENG-762-R', 'retired statement', { status: 'retired' }),
+    ])
+  }, TIMEOUT)
+
+  afterAll(async () => {
+    await adapter?.dropSchema().catch(() => {})
+    await adapter?.close().catch(() => {})
+  }, TIMEOUT)
+
+  it('reports every un-embedded ACTIVE engram, and never a retired one', async () => {
+    const missing = await adapter.listEngramsMissingEmbeddings(10)
+    expect(missing.map(e => e.id).sort()).toEqual(['ENG-762-A', 'ENG-762-B', 'ENG-762-C'])
+  }, TIMEOUT)
+
+  it('is bounded by limit, in stable id order', async () => {
+    const one = await adapter.listEngramsMissingEmbeddings(1)
+    expect(one.map(e => e.id)).toEqual(['ENG-762-A'])
+    const two = await adapter.listEngramsMissingEmbeddings(2)
+    expect(two.map(e => e.id)).toEqual(['ENG-762-A', 'ENG-762-B'])
+  }, TIMEOUT)
+
+  it('shrinks as embeddings land, and empties when the gap is closed', async () => {
+    await adapter.upsertEmbedding('ENG-762-A', vec(1))
+    expect((await adapter.listEngramsMissingEmbeddings(10)).map(e => e.id).sort())
+      .toEqual(['ENG-762-B', 'ENG-762-C'])
+    await adapter.upsertEmbedding('ENG-762-B', vec(2))
+    await adapter.upsertEmbedding('ENG-762-C', vec(3))
+    // The LIMIT-1 shape is exactly the completeness probe recallSemantic runs.
+    expect(await adapter.listEngramsMissingEmbeddings(1)).toEqual([])
+  }, TIMEOUT)
+
+  it('rejects a non-positive limit rather than quietly returning everything', async () => {
+    await expect(adapter.listEngramsMissingEmbeddings(0)).rejects.toThrow(/positive integer/)
   }, TIMEOUT)
 })

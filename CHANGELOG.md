@@ -1,5 +1,294 @@
 # Changelog
 
+## 0.17.2 (2026-08-04)
+
+Chinese search works — found and fixed by skyeryg.
+
+- Chinese text is searchable
+- BM25 saw no Han at all
+- Postgres guards stale tokens
+- Stale stores self-heal
+
+### Fixed
+
+- **Chinese text is now indexed for BM25** (#780, #782): `ftsTokenize` discarded every Han
+  character, because JavaScript's `\w` is ASCII-only (`[A-Za-z0-9_]`). Pure-Chinese queries
+  tokenized to zero terms, so BM25 contributed nothing for non-English stores — hybrid recall
+  silently degenerated to embedding-only, and under `bm25-only` degradation a Chinese query
+  returned nothing at all. Han runs are now indexed as overlapping character bigrams: the standard
+  approach for scripts without word boundaries, no new dependency, and deterministic across
+  runtimes in a way a locale-dependent segmenter is not. ASCII behaviour is unchanged, at a
+  measured 4.50µs → 4.78µs per tokenization. Reported and fixed by
+  [@skyeryg](https://github.com/skyeryg), who hit it integrating PLUR into a Chinese-language
+  workflow. Chinese only — Japanese kana, Korean, Cyrillic, Arabic, Indic scripts and accented
+  Latin are still dropped or mangled, tracked in #833.
+- **Security: SSRF-relevant dependency upgrades** (#841): `ip-address` to >=10.3.1 and `hono` to
+  >=4.12.34, raised as floors in the existing `pnpm.overrides` block. Both reach users: they arrive
+  through `@modelcontextprotocol/core` as runtime dependencies of the published `@plur-ai/mcp`.
+  The high-severity one (GHSA-mwp4-54f8-5fhr) decodes leading-zero octets as decimal while
+  resolvers decode them as octal, which bypasses SSRF and trust-boundary checks; the others cover
+  CIDR-suffix and IPv4-mapped/NAT64 misclassification, plus a ReDoS in Hono's CORS middleware.
+- **Stale tokens re-derive themselves, and `plur reindex-tokens` forces it** (#840, #839): the
+  detection above named a remedy — re-save the store — that nothing in ordinary use performs.
+  `PostgresAdapter` implements the targeted `append` / `updateMany` seams, so `learn()` and
+  `feedback()` each touch one row and leave every other row's version untouched; an upgraded store
+  would sit on the correct-but-slower fallback indefinitely, having permanently lost the pushdown,
+  visible only as a log line. Stale rows are now re-derived in the background the first time they
+  are noticed, and `plur reindex-tokens` forces the same pass synchronously with a count for
+  operators who want the pushdown back before the first user query rather than after it.
+- **Postgres stores detect tokens written by an older tokenizer** (#834, #837): `PostgresAdapter`
+  derives tokens at write time and persists them, which is what lets the BM25 pushdown claim
+  exactness — `df` counted in SQL and `tf` counted in JS agree because one tokenizer produced both.
+  Changing the tokenizer breaks that for rows already written, and breaks it silently: pre-#782
+  rows contain no Han, so a Chinese query never matches them and the corpus reports it does not
+  hold an engram it does hold. Rows now carry the tokenizer version that produced them, and
+  `corpusStats` refuses rather than answering from a corpus it cannot vouch for, naming the
+  re-save that fixes it. Without this, the fix above would have reached only engrams written
+  *after* the upgrade.
+
+## 0.17.1 (2026-08-03)
+
+Learning something no longer reads your whole memory first.
+
+### Changed — performance
+
+- **`learn()` and `feedback()` stop loading the whole corpus** (#827, #828, (#829)): `learn()` read every
+  engram twice before writing one — once to check for a duplicate statement, once to work out the
+  next id — and `feedback()` read every engram to fetch the single one you rated. On a plain YAML
+  store that costs nothing, because the file is parsed either way; on a database-backed store it is
+  a full table scan standing in for an index lookup, on every write. Two optional store methods
+  (`findActiveByContentHash`, `nextEngramId`) let a store answer both questions directly, and the
+  same targeted-read treatment now covers `updateEngram`, `setPinned`, `forget` and `rescope`.
+  Nothing changes for the default YAML store, which keeps the behaviour it had.
+
+  One deliberate trade-off for stores that opt in: the dedup lookup is scope-**bound**, so it cannot
+  see — and must not disclose — a matching statement in a *different* scope. Cross-scope recurrence
+  (the rule that re-learning the same sentence under a second scope graduates the original toward
+  `global`) is therefore skipped on such stores, and the statement becomes its own engram instead.
+  This is the point rather than a side effect: where scopes are a permission boundary, one tenant's
+  engram must not be broadened because another tenant learned the same sentence. See
+  [ADR-0003](docs/adr/ADR-0003-primary-store-capability.md).
+
+## 0.17.0 (2026-08-03)
+
+Your memory now backs itself up.
+
+- Daily backups + `plur restore`
+- Move engrams between scopes
+- Switch scope mid-session
+- Faster writes at scale
+
+### Added — new capabilities
+
+- **Validity-gated daily backups and `plur restore`** (#799, #803): a snapshot on the first store write
+  of each day, taken only if the store passes a validity gate — parses, no schema-invalid entries,
+  no unexplained shrink, unique ids, no truncation. Backing up an already-damaged store is worse
+  than not backing up. `plur restore` lists snapshots, verifies against a sha256 sidecar, and names
+  exactly which engrams a restore would drop before it touches anything.
+- **`plur_rescope`** (#676, #790): move an existing engram to another scope, instead of forgetting it and
+  re-learning it somewhere else.
+- **`plur_session_scope`** (#243, #788): change the session's default scope mid-session, so a session
+  that starts personal and turns into team work does not have to be restarted.
+- **`plur login --status`** (#587, #786): reports whether the enterprise token is actually valid, rather
+  than echoing whatever is in the config file.
+- **Read-only mode and an incremental write seam** (#731, #740, #745): `learn()` appends instead of
+  rewriting the whole corpus on backends that support it, which is the difference between a
+  constant-cost write and one that grows with the store. Read-only mode makes a `Plur` instance
+  refuse every mutation, for analysis tooling that must not touch the corpus.
+- **Postgres semantic recall uses the vector index** (#762, #792): `engram_embeddings` now tracks the
+  corpus on the server tier, so `recallSemantic` queries the index instead of loading the corpus
+  and scoring it in memory. Previously the table stayed empty and the fallback was silent —
+  correct results, wrong performance, no error.
+- **`plur_admin` is discoverable** (#761, #787): the gateway that reaches every non-core tool is now
+  visible to clients rather than something you had to know about.
+- **Pack integrity is reported, not implied** (#805, #819): `plur packs list` distinguishes `ok`,
+  `modified` and `unverified`. It previously printed nothing at all for a pack whose integrity
+  could not be checked, which looked identical to a pack that verified clean.
+- **`plur status` reports unreadable artifacts** (#821, #822) through `store_errors`, instead of failing
+  or silently reporting zero.
+
+### Changed — operations that used to succeed can now refuse
+
+An adversarial data-loss audit of every store write path (#794) found that a corrupt store was
+being read as an *empty* one, and that the next write then persisted the emptiness. Measured: 5
+engrams → 0, including through `recall()` alone, because reactivation writes activation back. The
+fix is to refuse rather than guess, which means a small number of operations now throw where they
+previously returned quietly. Each throw replaces a silent corpus deletion.
+
+- **An existing store file that says nothing intelligible is an error, not an empty store**
+  (#795): a zero-length `engrams.yaml`, a mapping with no `engrams` key, and a top-level sequence
+  now raise `EngramStoreUnreadableError`. A **missing** file is still an empty store — that is the
+  only way a first run can work — and an explicitly empty `engrams: []` still loads as empty. If
+  you hit this, the file is damaged; `plur restore` (below) is the way back.
+- **A write that would shrink the corpus by more than 10% is refused** unless it declares itself
+  (#795). `compact`, `forget`, the outbox handoff and pack uninstall declare it; nothing else does,
+  so an unexpectedly short corpus is refused rather than written. Raises `EngramStoreShrinkError`.
+- **`plur sync` refuses to run against an unparseable store** (#798) instead of committing and
+  pushing it verbatim. See Fixed below — this one was also a privacy leak.
+
+### Added
+
+- **Validity-gated daily backups and `plur restore`** (#799): PLUR previously had no backup line at
+  all, which is why every finding in #794 that ended "the corpus is gone" ended there. A snapshot
+  is now taken on the first store write of each day — but only if the store passes a validity gate
+  (parses, no schema-invalid entries, no unexplained shrink, unique ids, no truncation). Backing up
+  an already-corrupt store is worse than not backing up, so a store that fails the gate warns and
+  leaves the previous snapshot untouched.
+
+  `plur restore --list` shows snapshots; `plur restore` shows what restoring *would* do without
+  doing it; `plur restore --yes` performs it. Restore verifies the snapshot independently (sha256
+  sidecar plus the same validity gate), **names the engrams it cannot recover** by reading the
+  append-only history log, and keeps the pre-restore store aside so a mistaken restore is itself
+  reversible.
+
+  Snapshots are daily, so engrams learned after a given day's snapshot are not in it — this turns
+  silent total loss into partial, *named* loss. `backups/` is never synced: a snapshot is a
+  whole-corpus copy including `scope:local` engrams.
+
+  **Disk cost:** snapshots are uncompressed copies, retained 7 daily + 4 weekly, so the set costs up
+  to 11× your store size — about 113 MB for a 10 MB store, about 431 MB for a 39 MB one. That is the
+  deliberate trade for backups you can read, diff, and verify by eye rather than through tooling.
+
+### Fixed
+
+- **`plur sync` no longer pushes a corrupt store, and no longer leaks `scope:local` engrams doing
+  it** (#798): an unparseable `engrams.yaml` silently disabled the scope strip, and the verbatim
+  blob — conflict markers and local-only engrams alike — was committed *and pushed*. Measured: the
+  pushed blob contained both, while sync returned `{action:'synced'}`. Sync now refuses, and
+  refuses separately to stage an unmerged store file (`git add -A -f` on a conflicted path marks it
+  "resolved" with the markers still in it). Both errors name `git stash list`, because after an
+  autostash pop conflict the only complete copy of your corpus may be in `stash@{0}` — check it
+  before `git stash drop` or `git reset --hard`.
+- **`plur sync` stops reporting pulls it did not make** (#798): the pull result was discarded and
+  the message reported the commits it *meant* to pull. It said `"pulled 1 remote commit(s)"` while
+  still one commit behind. It now says `"NOT pulled — still N commit(s) behind"`.
+- **The sync warning no longer claims to back up everything** (#798): it said the remote "receives
+  all engrams" while `scope:local` engrams were stripped — measured at 3 of 5 reaching a fresh
+  clone. It now names the count that is **not** backed up, and says plainly when a remote backs up
+  nothing at all.
+- **Invalid engrams are quarantined instead of deleted** (#795): `loadEngrams` skipped entries that
+  failed schema validation, and the next unrelated write persisted the filtered array as the whole
+  corpus — a silent permanent delete. Measured: 5 on disk, 2 invalid, one ordinary `learn()` and
+  both were gone. They are now withheld from callers but preserved in the file.
+- **Store writes are fsynced** (#796): `grep fsync` across the TypeScript packages returned zero
+  hits. write+rename survives a dying process but not a dying kernel, and the artifact it leaves is
+  a zero-length file — exactly the input to the corrupt-read wipe above. Both atomic writers now
+  fsync the file and its parent directory, and use unique temp names so concurrent writers cannot
+  rename each other's partial file. Derived caches (embeddings, reranker-eval) opt out.
+- **Episode capture is no longer lossy under concurrency** (#797): `captureEpisode` was
+  load/push/write with no lock, reachable from `plur_capture`, `plur_session_end` and
+  `reportFailure` — i.e. from every MCP server open at once. Measured: 4 processes × 25 episodes,
+  **30 of 100 survived**. Now 100 of 100.
+- **A slow writer no longer causes other processes to fail, or to steal its lock** (#804): the lock
+  had its budgets inverted — a waiter gave up after ~3.1 s while a holder was not considered
+  abandoned until 10 s, so a legitimately slow write failed everyone waiting on it, and for MCP
+  `plur_learn` that meant the engram was silently never stored. The stale threshold is now 60 s
+  (a 50,000-engram store legitimately holds the lock ~6.3 s, and the daily backup adds ~1.4 s once
+  per day), and the waiter's deadline always exceeds it, so a live holder is waited for rather than
+  abandoned.
+
+  Two things keep that from being simply slower. A lock whose owning process is **gone** is stolen
+  immediately rather than waited out, so crash recovery did not get slower — the check is scoped to
+  the host that wrote the lock, since a pid means nothing on another machine and `~/.plur` can live
+  on a synced volume. And a holder now removes the lock only if it still carries its own token:
+  previously, once a lock was stolen the original holder's cleanup deleted the *thief's* lock, and a
+  third process walked in while the thief was still writing.
+- **The exported `YamlStore` had drifted back to pre-#766 behaviour** (#794 F14): it kept its own
+  copy of the parse rules, which still caught errors and returned `[]`, after which
+  `append`/`remove` rewrote the file from that empty list. Both readers now share one parser, so
+  the copies cannot drift again.
+
+- **Sibling-file strip completes the shared-remote guarantee** (#686): #640/#678 stripped only `engrams.yaml`, but `episodes.yaml`, `candidates.yaml`, and `tensions.yaml` synced verbatim — a teammate cloning a `shared` remote could still receive statement text *derived* from private/personal engrams (a tension's statement snapshots, a failure-report episode) even though the engrams themselves were withheld. A sibling record is now pushed to a `shared` remote only when every engram id it references resolves to the shared push set; records referencing personal, private, or unresolvable engrams stay local (strip-on-doubt), the working tree keeps everything, and the strip is deterministic so the #396 no-infinite-dirty property holds. The sync `warning` reports the stripped sibling record count. `personal` remotes are unchanged.
+
+### Fixed — the audits of the fixes
+
+The first audit (#794) hardened the store write paths. Two further independent passes then audited
+that work — a whole-repository adversarial audit (#811) and an audit of the fix diff itself (#821)
+— on the reasoning that fixes written under release pressure have their own defect rate. They did:
+#821 found sixteen, every one introduced by an earlier fix. An independent human review (#823)
+cleared the result and added one more.
+
+- **The shrink guard had a bypass, and it was the guard's own optimisation** (#821): the exact
+  record count ran only when the outgoing document was >5% smaller than the file on disk. That
+  encoded an assumption engrams do not satisfy — a bare statement and one carrying `rationale`,
+  `dual_coding` and `knowledge_anchors` differ by an order of magnitude — so a write dropping 11 of
+  100 records moved the count 11% and the bytes under 5%, and the guard never ran. The count is now
+  unconditional, and cheap enough to afford it: counting scans for record-start lines instead of
+  parsing (62ms on a 20,000-engram/19.1MB save, against 246ms for the parse it replaced).
+- **The shrink guard now protects every whole-corpus writer** (#824): it lived in `saveEngrams`,
+  while `YamlStore.save()` — the `EngramStore` backend — replaced the whole file without it.
+- **A corrupt sibling store no longer takes down the session** (#821): `status()` is a diagnostic
+  and now reports unreadable artifacts through `store_errors` instead of throwing — including the
+  corpus itself. MCP `session_start` awaits `status()`, so a truncated `episodes.yaml` previously
+  meant no session could start at all. One damaged pack no longer hides the others.
+- **Atomic writes preserve file permissions** (#821): replace-by-rename creates a new inode, so a
+  `0600` `config.yaml` — bearer tokens, Postgres DSNs — came back `0644` under the usual umask.
+  Config files are also created `0600` rather than inheriting it.
+- **An engram's embedding now follows its text** (#812): nothing invalidated a vector when the text
+  changed, so a dedup UPDATE could rewrite a statement and semantic recall would rank it by the old
+  wording indefinitely. Both tiers store the hash of the text actually embedded.
+- **Migrations hold the corpus lock across plan, apply and version stamp** (#821): a concurrent run
+  and rollback could leave the store reporting a schema version it did not have.
+- **The pack registry is atomic, locked, and refuses to be read as empty** (#805): a truncated
+  registry destroyed every installed pack's integrity baseline, after which a tampered pack
+  reported its integrity as *unknown* rather than *modified*. `plur packs list` now distinguishes
+  `ok` / `modified` / `unverified` instead of printing nothing for the last two.
+- **Stale-lock recovery can no longer delete a live lock** (#821): the steal is an atomic
+  `rename` claim, so a contender can only remove a file it has already moved aside.
+- **Tension records, config writes, restore planning, pack installs and the MCP drop log** all
+  gained the locking, atomicity or quarantine-carrying they were missing (#805, #821).
+
+### Added — invariants that fail the build
+
+The recurring cause was invariants documented in prose. Prose does not fail a build, so each change
+re-derived them by hand and hand-derivation kept missing a call site.
+
+- **Property tests for the shrink guard**: random heterogeneous corpora and random writes against
+  the stated invariant, rather than fixtures. Both historical bypasses reproduce against them.
+- **A corruption matrix**: every store artifact, damaged eight ways, against every entry point —
+  asserting both that diagnostics survive and that write paths still refuse.
+
+### Security
+
+- All seven open Dependabot advisories cleared (#818), with bounded version ranges so a patch-level
+  advisory can no longer pull in a new major.
+
+
+### Also in this release
+
+Smaller changes that ship with 0.17.0, grouped by what they touch.
+
+**Recall and scoping**
+- Mounted store scopes become read-side visibility grants (#775, #777), and remote recall is
+  server-authoritative with per-host degradation surfaced rather than silently absorbed (#776, #778).
+- A recall `limit` floor leak is closed — `slice(0, limit)` now applies on every hybrid path (#774).
+- Engram ids are unified on `ENG-YYYY-MM-DD-NNN` (#771, #791), and the version-behind notification
+  re-checks its TTL instead of firing on a stale timestamp (#760).
+
+**Stores and sync**
+- A filesystem store materializes on registration rather than at first write, and the outbox skips
+  retired engrams instead of resurrecting them remotely (#766, #767).
+- Optional engram fields are transmitted on remote append (#769); previously they were dropped.
+- The dedup path no longer full-replaces the corpus on every backend (#802, #807).
+- Private-derived episode, candidate and tension records are stripped for `shared` remotes
+  (#686, #789) — a teammate cloning a shared remote could otherwise receive text derived from
+  private engrams even though the engrams themselves were withheld.
+- `close()` no longer leaks a connection pool or hangs on a held client (#751).
+
+**CLI and diagnostics**
+- `--quiet` is honoured across every command via a central output policy (#784).
+- `plur doctor` reports the live tool surface (#763) and probes the configured MCP server rather
+  than a synthesised one (#765).
+- The `#772` whole-payload-drop diagnostic is corrected, with a bounded forensic drop log (#779).
+- `learn()` and `learnRouted()` validate `type` instead of accepting anything (#729, #733).
+- `plur migrate` resolves receiver chains split across lines, anchored at the chain head (#758, #783).
+
+**The audit series**
+- Store write-path hardening (#800, #801, #806, #809, #810).
+- The independent whole-repository audit and its fixes (#814, #815, #817).
+- The audit of the fixes, and the human review that followed (#820, #822, #826).
+
+
 ## 0.16.1 (2026-07-29)
 
 Engine primitives are importable, and feedback stops disagreeing with itself.

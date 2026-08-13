@@ -125,15 +125,17 @@ describe('tool profiles', () => {
     })
 
     // Audit fix: a known action with invalid inner args must get the SAME
-    // isError:true + #297 array-bug-hint treatment a direct top-level call to
-    // that tool would get — this is the exact parity gap the original draft
-    // of this plan shipped without a test for.
-    it('surfaces isError:true and the #297 array-bug hint for a known action with bad args', async () => {
+    // isError:true + drop-diagnostic treatment (#297 partial / #772 empty)
+    // a direct top-level call to that tool would get — this is the exact
+    // parity gap the original draft of this plan shipped without a test for.
+    // (No forensic drop LOG is written on this path — plur_admin's inner args
+    // travel inside a delivered payload, so this is not a wire drop.)
+    it('surfaces isError:true and the drop diagnostic for a known action with bad args', async () => {
       const result = await client.callTool({
         name: 'plur_admin',
         // plur_packs_export has a required `name` string field — omit it,
-        // and pass no fields at all, to also trigger the #297 hint path
-        // (array-typed param + empty payload).
+        // and pass no fields at all, to also exercise the empty-payload
+        // (#772) diagnostic branch.
         arguments: { action: 'plur_packs_export', args: {} },
       })
       expect(result.isError).toBe(true)

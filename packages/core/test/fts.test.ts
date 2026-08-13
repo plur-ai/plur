@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest'
-import { ftsTokenize, ftsScore, searchEngrams, computeIdf, engramSearchText } from '../src/fts.js'
+import {
+  ftsTokenize, ftsScore, searchEngrams, computeIdf, engramSearchText,
+  MIN_TOKEN_LENGTH, TOKENIZER_VERSION,
+} from '../src/fts.js'
 import { EngramSchema } from '../src/schemas/engram.js'
 
 const makeEngram = (overrides: Partial<any> = {}) => EngramSchema.parse({
@@ -19,6 +22,30 @@ describe('ftsTokenize', () => {
     expect(tokens).toContain('fox')
     expect(tokens).toContain('jumps')
     expect(tokens).not.toContain('the')
+  })
+
+  it('keeps ASCII behavior unchanged when text contains no CJK', () => {
+    const tokens = ftsTokenize('docker compose deployment')
+    expect(tokens).toEqual(['docker', 'compose', 'deployment'])
+  })
+
+  it('indexes pure-Chinese text as character bigrams (was: empty tokens)', () => {
+    const tokens = ftsTokenize('测试部署应该用')
+    expect(tokens).toContain('测试')
+    expect(tokens).toContain('试部')
+    expect(tokens).toContain('部署')
+    expect(tokens).toContain('应该')
+    expect(tokens).toContain('该用')
+    // every Han char participates in two bigrams (except run edges)
+    expect(tokens.length).toBeGreaterThanOrEqual(4)
+  })
+
+  it('mixed Chinese + English keeps both term kinds', () => {
+    const tokens = ftsTokenize('测试部署应该用 docker compose')
+    expect(tokens).toContain('docker')
+    expect(tokens).toContain('compose')
+    expect(tokens).toContain('部署')
+    expect(tokens).toContain('该用')
   })
 })
 
@@ -167,5 +194,80 @@ describe('BM25 document length normalization', () => {
     const results = searchEngrams(engrams, 'kubernetes')
     // Short doc should rank higher — same term match but normalized by length
     expect(results[0].id).toBe('ENG-2026-0330-001')
+  })
+})
+
+describe('CJK search (Chinese engrams)', () => {
+  const engrams = [
+    makeEngram({ id: 'ENG-2026-0330-001', statement: '测试部署应该用 docker compose' }),
+    makeEngram({ id: 'ENG-2026-0330-002', statement: 'unit tests must run before commit' }),
+  ]
+
+  it('retrieves a Chinese engram for a Chinese query', () => {
+    const results = searchEngrams(engrams, '部署流程')
+    expect(results.length).toBeGreaterThan(0)
+    expect(results[0].id).toBe('ENG-2026-0330-001')
+  })
+
+  it('does not retrieve a Chinese engram for an unrelated Chinese query', () => {
+    const results = searchEngrams(engrams, '单位不要')
+    // zero term overlap → empty result (no noise from unrelated CJK queries)
+    expect(results).toHaveLength(0)
+  })
+})
+
+/**
+ * The tokenizer's contract with everything that persists its output (#834).
+ *
+ * `MIN_TOKEN_LENGTH` and `TOKENIZER_VERSION` are consumed by PostgresAdapter,
+ * which bakes them into a WHERE clause and an index predicate respectively.
+ * Both are claims ABOUT `ftsTokenize` made in another file, which is the shape
+ * of assertion that rots silently — `reversePrefixes` carried exactly such a
+ * claim as a literal `3` and #782 falsified it without a single test failing.
+ *
+ * So assert the claims against the tokenizer itself, not against a constant.
+ */
+describe('tokenizer contract (#834)', () => {
+  const SAMPLES = [
+    'deploy kubernetes to the staging cluster',
+    '测试部署应该用 docker compose',
+    '测试部署应该用',
+    'snake_case and CamelCase identifiers',
+    'a bc def ghij',
+    'transferWithAuthorization(address,address,uint256)',
+    '部署 docker 到 kubernetes 集群里面去',
+    '',
+  ]
+
+  it('MIN_TOKEN_LENGTH is the true shortest token the tokenizer can emit', () => {
+    const lengths = SAMPLES.flatMap(s => ftsTokenize(s)).map(t => t.length)
+    expect(lengths.length).toBeGreaterThan(0)
+    expect(Math.min(...lengths)).toBe(MIN_TOKEN_LENGTH)
+  })
+
+  it('no token is ever shorter than MIN_TOKEN_LENGTH', () => {
+    for (const s of SAMPLES) {
+      for (const t of ftsTokenize(s)) {
+        expect(t.length).toBeGreaterThanOrEqual(MIN_TOKEN_LENGTH)
+      }
+    }
+  })
+
+  /**
+   * A canary, not a behaviour test. It pins the CURRENT output so that any edit
+   * to `ftsTokenize` which changes what it emits fails here — and the fix is to
+   * bump TOKENIZER_VERSION, not to update this fixture in place. Stores persist
+   * these exact strings; changing them without bumping the version is what
+   * makes already-written rows silently unreachable.
+   */
+  it('output is pinned to TOKENIZER_VERSION — bump the version if this fails', () => {
+    expect(TOKENIZER_VERSION).toBe(2)
+    expect(ftsTokenize('测试部署应该用 docker compose')).toEqual([
+      'docker', 'compose',
+      '测试', '试部', '部署', '署应', '应该', '该用',
+    ])
+    expect(ftsTokenize('deploy kubernetes to the staging cluster')).toEqual([
+      'deploy', 'kubernetes', 'staging', 'cluster',
+    ])
   })
 })

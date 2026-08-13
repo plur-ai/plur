@@ -263,6 +263,14 @@ export class PGLiteAdapter implements DerivedIndexAdapter {
         );
       `)
     }
+    // #812: the text this vector was computed from, so a changed engram gets a
+    // changed vector. Additive + idempotent, so an existing store gains it on
+    // next open. Deliberately NOT a foreign key to `engrams`: `reindex()`
+    // deletes every engram row and re-inserts it, and ON DELETE CASCADE would
+    // therefore discard the whole embedding table on every reindex — the exact
+    // cache the comment there says is preserved on purpose. Orphans left by
+    // real removals are swept set-wise in `syncFromYaml` instead.
+    await db.exec('ALTER TABLE engram_embeddings ADD COLUMN IF NOT EXISTS content_hash TEXT;')
     // AGE engram graph (#200 lands the actual edges; we just create the
     // graph here so the schema is ready).
     if (this.hasAge) {
@@ -403,7 +411,7 @@ export class PGLiteAdapter implements DerivedIndexAdapter {
       params.push(filter.scopes)
     }
     if (filter.scope) {
-      // Read-side scope filter, two parts OR'd:
+      // Read-side scope filter, three parts OR'd:
       //  (1) personal-family pass-through — ALL non-shared scopes (local, global,
       //      user:*, agent:*, …), not just 'global'. The old `scope = 'global'`
       //      dropped local/user:/agent: under a project-scope recall (#402, the
@@ -412,14 +420,24 @@ export class PGLiteAdapter implements DerivedIndexAdapter {
       //      kept in sync with SHARED_SCOPE_PREFIXES in scope-util.ts.
       //  (2) segment-aware membership (#383): the requested scope, exactly or a
       //      descendant on a REAL delimiter (`:`/`/`) — never a sibling prefix.
-      conditions.push(
+      //  (3) mounted-scope visibility grants (#775): one segment-aware triple
+      //      per granted scope (config.stores), so team engrams in mounted
+      //      scopes pass a project-scope visibility filter like the personal
+      //      family. VISIBILITY ONLY — the `scopes` authorization clause above
+      //      is never widened by grants. SQL twin of makeVisibilityPredicate
+      //      (scope-util.ts); keep all four arms in lockstep.
+      let clause =
         `((NOT (${col}scope LIKE 'group:%' OR ${col}scope LIKE 'project:%' OR ${col}scope LIKE 'space:%' OR ${col}scope LIKE 'team:%' OR ${col}scope LIKE 'org:%' OR ${col}scope = 'public' OR ${col}scope LIKE 'public:%' OR ${col}scope LIKE 'public/%'))`
-        + ` OR ${col}scope = $${i++} OR ${col}scope LIKE $${i++} || ':%' ESCAPE '\\' OR ${col}scope LIKE $${i++} || '/%' ESCAPE '\\')`,
-      )
+        + ` OR ${col}scope = $${i++} OR ${col}scope LIKE $${i++} || ':%' ESCAPE '\\' OR ${col}scope LIKE $${i++} || '/%' ESCAPE '\\'`
       // Escaped for the same reason as the Postgres copy — these two clauses
       // must stay identical; they have drifted before, and that drift was an
       // authorization bypass.
       params.push(filter.scope, escapeLikePattern(filter.scope), escapeLikePattern(filter.scope))
+      for (const g of filter.visibilityGrants ?? []) {
+        clause += ` OR ${col}scope = $${i++} OR ${col}scope LIKE $${i++} || ':%' ESCAPE '\\' OR ${col}scope LIKE $${i++} || '/%' ESCAPE '\\'`
+        params.push(g, escapeLikePattern(g), escapeLikePattern(g))
+      }
+      conditions.push(clause + ')')
     }
     if (filter.domain) {
       conditions.push(`${col}domain LIKE $${i++} || '%' ESCAPE '\\'`)
@@ -505,6 +523,16 @@ export class PGLiteAdapter implements DerivedIndexAdapter {
         } else {
           await db.exec("DELETE FROM engrams WHERE source = 'primary'")
         }
+        // #812: sweep vectors whose engram is gone. `engram_embeddings` has no
+        // cascading FK on this tier (see the schema comment — a cascade would
+        // empty the table on every `reindex()`), so a removal used to leave the
+        // vector behind indefinitely. That mattered beyond wasted space:
+        // `generateEngramId` mints `max(same-day id) + 1`, so compacting the
+        // highest engram of a day frees that id for the next `learn()`, and the
+        // new, unrelated engram inherited the dead vector — recall ranking it as
+        // whatever the removed engram used to say. Set-based and inside the same
+        // transaction as the deletes above, so it costs one statement per sync.
+        await db.exec('DELETE FROM engram_embeddings WHERE engram_id NOT IN (SELECT id FROM engrams)')
         await db.exec('COMMIT')
       } catch (err) {
         await db.exec('ROLLBACK').catch(() => {})
@@ -554,10 +582,17 @@ export class PGLiteAdapter implements DerivedIndexAdapter {
    * `opts.scopes` is pushed into the candidate SELECT via loadFiltered, so the
    * BM25 scorer only ever sees permitted engrams — IDF and the top-N cut are
    * both computed over the in-scope corpus, not over the org's.
+   *
+   * The FULL StorageFilter is honoured (#775): this used to forward only
+   * `scopes` and silently drop a caller's `scope` visibility filter (and
+   * `domain`), which the interface doc explicitly calls a silent-wrong-results
+   * bug. The Postgres primary `searchBM25` already spreads the whole filter —
+   * this keeps the two in lockstep, `visibilityGrants` included.
    */
-  async searchBM25(query: string, opts: { limit: number } & ScopeRestriction): Promise<Engram[]> {
-    const candidates = await this.loadFiltered({ status: 'active', scopes: opts.scopes })
-    return searchEngrams(candidates, query, opts.limit)
+  async searchBM25(query: string, opts: { limit: number } & StorageFilter): Promise<Engram[]> {
+    const { limit, ...filter } = opts
+    const candidates = await this.loadFiltered({ ...filter, status: filter.status ?? 'active' })
+    return searchEngrams(candidates, query, limit)
   }
 
   /**
@@ -569,13 +604,29 @@ export class PGLiteAdapter implements DerivedIndexAdapter {
    * the dilution bug: `LIMIT` would be spent on engrams the caller may not
    * see, so asking for N in-scope results would silently return fewer.
    * Filtering in the query means `limit` counts permitted rows only.
+   *
+   * `opts.scope` + `opts.visibilityGrants` (#775) ride the same filter: the
+   * k-NN WHERE gets the full visibility clause (personal pass-through,
+   * segment-aware containment, escaped grant triples) via buildFilterClause,
+   * exactly like searchBM25/loadFiltered. Without them the vector leg spent
+   * `limit` on rows the visibility filter was about to discard, so a granted
+   * team engram could never surface through vector search.
    */
-  async searchVector(query: Float32Array, limit: number, opts?: ScopeRestriction): Promise<VectorSearchHit[]> {
+  async searchVector(
+    query: Float32Array,
+    limit: number,
+    opts?: ScopeRestriction & Pick<StorageFilter, 'scope' | 'visibilityGrants'>,
+  ): Promise<VectorSearchHit[]> {
     const db = await this.getDb()
     const totalRes = await db.query('SELECT COUNT(*)::int AS c FROM engram_embeddings')
     if (Number(totalRes.rows[0].c) === 0) return []
     // status defaults to 'active' (historical behaviour) but stays overridable.
-    const filter: StorageFilter = { status: 'active', scopes: opts?.scopes }
+    const filter: StorageFilter = {
+      status: 'active',
+      scopes: opts?.scopes,
+      scope: opts?.scope,
+      visibilityGrants: opts?.visibilityGrants,
+    }
     if (this.hasVector) {
       // pgvector path. Cosine distance = 1 - cosine similarity. The query
       // param is cast to the column's ACTUAL type (#223) — pgvector's <=>
@@ -617,7 +668,7 @@ export class PGLiteAdapter implements DerivedIndexAdapter {
     return scored.slice(0, limit)
   }
 
-  async upsertEmbedding(engramId: string, vector: Float32Array): Promise<void> {
+  async upsertEmbedding(engramId: string, vector: Float32Array, contentHash?: string): Promise<void> {
     return this.mutex.run(async () => {
       const db = await this.getDb()
       // #335 storage-boundary contract: a wrong-shape vector must never be
@@ -639,18 +690,20 @@ export class PGLiteAdapter implements DerivedIndexAdapter {
         // "[...]" literal and rounds to fp16 on write.
         const literal = vectorLiteral(vector)
         await db.query(
-          `INSERT INTO engram_embeddings (engram_id, embedding)
-           VALUES ($1, $2::${this.activeVecType})
-           ON CONFLICT (engram_id) DO UPDATE SET embedding = EXCLUDED.embedding`,
-          [engramId, literal],
+          `INSERT INTO engram_embeddings (engram_id, embedding, content_hash)
+           VALUES ($1, $2::${this.activeVecType}, $3)
+           ON CONFLICT (engram_id) DO UPDATE
+             SET embedding = EXCLUDED.embedding, content_hash = EXCLUDED.content_hash`,
+          [engramId, literal, contentHash ?? null],
         )
       } else {
         const buf = float32ToBytes(vector)
         await db.query(
-          `INSERT INTO engram_embeddings (engram_id, embedding)
-           VALUES ($1, $2)
-           ON CONFLICT (engram_id) DO UPDATE SET embedding = EXCLUDED.embedding`,
-          [engramId, buf],
+          `INSERT INTO engram_embeddings (engram_id, embedding, content_hash)
+           VALUES ($1, $2, $3)
+           ON CONFLICT (engram_id) DO UPDATE
+             SET embedding = EXCLUDED.embedding, content_hash = EXCLUDED.content_hash`,
+          [engramId, buf, contentHash ?? null],
         )
       }
     })
@@ -662,6 +715,26 @@ export class PGLiteAdapter implements DerivedIndexAdapter {
     const res = await db.query(
       'SELECT 1 FROM engram_embeddings WHERE engram_id = $1 LIMIT 1',
       [engramId],
+    )
+    return res.rows.length > 0
+  }
+
+  /**
+   * True when `engramId` has an embedding computed from exactly `contentHash`
+   * (#812) — the skip condition the auto-embed pass needs instead of
+   * `hasEmbedding`, which only ever asked whether SOME vector existed and so
+   * let an edited engram keep the vector of its previous text indefinitely.
+   *
+   * Both sides are hashed in JS by `embeddingContentHash`, since this tier's
+   * `engrams` table has no `search_text` column for SQL to hash. A row stored
+   * before content hashing carries NULL and reports false, so it is re-embedded
+   * once and correct from then on.
+   */
+  async embeddingIsCurrent(engramId: string, contentHash: string): Promise<boolean> {
+    const db = await this.getDb()
+    const res = await db.query(
+      'SELECT 1 FROM engram_embeddings WHERE engram_id = $1 AND content_hash = $2 LIMIT 1',
+      [engramId, contentHash],
     )
     return res.rows.length > 0
   }

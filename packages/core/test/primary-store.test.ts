@@ -80,7 +80,11 @@ describe('PrimaryStore contract (shared by every implementation)', () => {
       it('save() replaces the whole contents rather than appending', async () => {
         const store = make()
         await store.save([engram('ENG-2026-0701-003'), engram('ENG-2026-0701-004')])
-        await store.save([engram('ENG-2026-0701-005')])
+        // A replace that SHRINKS the corpus must declare itself (audit #794):
+        // an undeclared shrink is indistinguishable from the corrupt-read wipe
+        // the guard exists to stop. The replace semantic is unchanged — the
+        // caller just has to mean it.
+        await store.save([engram('ENG-2026-0701-005')], { allowShrink: true })
         expect((await store.load()).map(e => e.id)).toEqual(['ENG-2026-0701-005'])
       })
 
@@ -192,5 +196,91 @@ describe('MemoryPrimaryStore', () => {
     const store = new MemoryPrimaryStore(seed)
     seed[0].statement = 'mutated after construction'
     expect((await store.load())[0].statement).toBe('seeded')
+  })
+})
+
+/**
+ * The incremental write seam (#740), reconciled with the `updateMany` /
+ * `loadByIds` machinery from #749/#755: ONE update seam, plus an `append`
+ * capability for brand-new rows. These contract edges are what the engine
+ * relies on — see `Plur._appendEngram` / `Plur._updateEngrams`.
+ */
+describe('PrimaryStore incremental write seam (#740)', () => {
+  describe('MemoryPrimaryStore capabilities', () => {
+    it('append is visible to a subsequent load()', async () => {
+      const store = new MemoryPrimaryStore([engram('ENG-2026-0701-300')])
+      await store.append(engram('ENG-2026-0701-301'))
+      expect((await store.load()).map(e => e.id)).toEqual(['ENG-2026-0701-300', 'ENG-2026-0701-301'])
+    })
+
+    it('append leaves existing rows untouched — it is not a replace', async () => {
+      const store = new MemoryPrimaryStore([engram('ENG-2026-0701-302', 'kept')])
+      await store.append(engram('ENG-2026-0701-303'))
+      expect((await store.load())[0].statement).toBe('kept')
+    })
+
+    it('append REFUSES a duplicate id — a new-row claim that is false must surface', async () => {
+      // `updateMany` is the upsert; `append` asserting "this row is new" is
+      // what stops an id collision from silently overwriting an unrelated
+      // engram. Mirrors the unique-violation a Postgres INSERT raises.
+      const store = new MemoryPrimaryStore([engram('ENG-2026-0701-304')])
+      await expect(store.append(engram('ENG-2026-0701-304'))).rejects.toThrow(/already exists/)
+    })
+
+    it('updateMany replaces exactly the matching rows and deletes nothing', async () => {
+      const store = new MemoryPrimaryStore([
+        engram('ENG-2026-0701-305', 'untouched'),
+        engram('ENG-2026-0701-306', 'stale'),
+      ])
+      await store.updateMany([engram('ENG-2026-0701-306', 'fresh')])
+      const all = await store.load()
+      expect(all).toHaveLength(2)
+      expect(all.find(e => e.id === 'ENG-2026-0701-305')?.statement).toBe('untouched')
+      expect(all.find(e => e.id === 'ENG-2026-0701-306')?.statement).toBe('fresh')
+    })
+
+    it('updateMany UPSERTS a missing id — a mutation is re-inserted, never dropped', async () => {
+      // The crash-window contract: the engine mutates rows it loaded under the
+      // store lock, then hands them to updateMany. If a row vanished in
+      // between (external prune, replication lag), the safe outcome is the
+      // mutation SURVIVING as a re-inserted row — matching Postgres
+      // `ON CONFLICT DO UPDATE`. A found/not-found boolean here is the #745
+      // shape, where every ignored `false` silently lost a write.
+      const store = new MemoryPrimaryStore([engram('ENG-2026-0701-307')])
+      await store.updateMany([engram('ENG-2026-0701-308', 'rescued mutation')])
+      const all = await store.load()
+      expect(all.map(e => e.id)).toContain('ENG-2026-0701-308')
+      expect(all.find(e => e.id === 'ENG-2026-0701-308')?.statement).toBe('rescued mutation')
+    })
+
+    it('loadByIds returns exactly the present ids; missing ids are simply absent', async () => {
+      const store = new MemoryPrimaryStore([engram('ENG-2026-0701-309'), engram('ENG-2026-0701-310')])
+      const got = await store.loadByIds(['ENG-2026-0701-310', 'ENG-2026-0701-999'])
+      expect(got.map(e => e.id)).toEqual(['ENG-2026-0701-310'])
+    })
+
+    it('append and updateMany hand out no live references', async () => {
+      const store = new MemoryPrimaryStore()
+      const appended = engram('ENG-2026-0701-311', 'original')
+      await store.append(appended)
+      appended.statement = 'tampered'
+      expect((await store.load())[0].statement).toBe('original')
+    })
+  })
+
+  describe('YamlPrimaryStore deliberately opts out', () => {
+    it('implements neither append nor updateMany/loadByIds', () => {
+      // Pins the fallback design: a single-file store rewrites the whole file
+      // on any write, and every engine caller already holds a freshly loaded
+      // corpus under the store lock — so the engine reuses THAT corpus in its
+      // fallback `save()`. A YAML `append` that re-ran `loadEngrams()` would
+      // add a full parse of a file the caller just parsed (the #745
+      // regression: learn() went from 2 parses to 3). If YAML ever grows
+      // these methods, they must not re-read the file.
+      const store: PrimaryStore = new YamlPrimaryStore(join(tmpdir(), 'never-created.yaml'))
+      expect(store.append).toBeUndefined()
+      expect(store.updateMany).toBeUndefined()
+      expect(store.loadByIds).toBeUndefined()
+    })
   })
 })

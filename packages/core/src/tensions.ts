@@ -32,10 +32,11 @@ export interface JudgeStatement {
 /**
  * Resolve the recorded date of an engram (#240 Layer 3 prompt half).
  *
- * Prefers `temporal.learned_at`; falls back to the date embedded in the
- * canonical id forms `ENG-YYYY-MMDD-NNN`, `ENG-{PREFIX}-YYYY-MMDD-NNN`, and
- * the server-assigned `ENG-YYYY-MM-DD-NNN`. Returns undefined when no date
- * is derivable — callers must degrade gracefully.
+ * Prefers `temporal.learned_at`; falls back to the date embedded in the id.
+ * Accepts the canonical `ENG-YYYY-MM-DD-NNN` (also what servers assign, #771),
+ * the legacy compact `ENG-YYYY-MMDD-NNN`, and either form behind a store
+ * prefix (`ENG-{PREFIX}-...`). Returns undefined when no date is derivable —
+ * callers must degrade gracefully.
  */
 export function engramDate(e: Engram): string | undefined {
   const learned = e.temporal?.learned_at

@@ -5,7 +5,7 @@ import { decayedStrength, decayedCoAccessStrength, daysSince, confidenceDecay } 
 import { classifyPolarity } from './polarity.js'
 import { computeConfidence } from './confidence.js'
 import { freshTailBoost } from './fresh-tail.js'
-import { isPersonalScope, isScopeWithin } from './scope-util.js'
+import { makeVisibilityPredicate } from './scope-util.js'
 
 /**
  * D1-RECALL/INJECT-ASYMMETRY (#353). When an inject is given an EXPLICIT
@@ -27,6 +27,13 @@ export const INJECT_GLOBAL_IS_TARGETED = true
 export interface InjectionContext {
   prompt: string
   scope?: string
+  /**
+   * Mounted-scope visibility grants (#775): scopes from `config.yaml`
+   * `stores:` entries. Engrams in these scopes pass the `scope` visibility
+   * filter like the personal family. Visibility-only — never an
+   * authorization widening; see `makeVisibilityPredicate` in scope-util.ts.
+   */
+  grantedScopes?: readonly string[]
   session_id?: string
   maxTokens?: number      // Default: 8000 (~10% of 80K context)
   minRelevance?: number   // Default: 0.3
@@ -228,6 +235,8 @@ export function scoreEngram(
   packMatchTerms: string[],
   scopeFilter: string | undefined,
   isPack: boolean,
+  // Trailing optional so the post-#759 public signature stays non-breaking.
+  grantedScopes?: readonly string[],
 ): number {
   // Scope filtering: if scope is specified, only include matching engrams
   if (scopeFilter) {
@@ -237,12 +246,16 @@ export function scoreEngram(
       // personal-family pass-through below applies to PROJECT-scope filters
       // only; this branch predates D1 and is intentionally narrower than the
       // project branch (see INJECT_GLOBAL_IS_TARGETED JSDoc + D1-ASYMMETRY tests).
+      // Mounted-scope grants (#775) deliberately do NOT reach this branch:
+      // targeted-global stays global-only, grants or no grants.
       void INJECT_GLOBAL_IS_TARGETED
       if (engram.scope !== 'global') return 0
-    } else if (!isScopeWithin(engram.scope, scopeFilter) && !isPersonalScope(engram.scope)) {
-      // Personal-family scopes (local, global, user:*, agent:*, anything not
-      // isSharedScope) always pass a project-scope filter; only SHARED scopes
-      // that don't match the filter are excluded (#353 read-side fix).
+    } else if (!makeVisibilityPredicate(scopeFilter, grantedScopes)(engram.scope)) {
+      // Visibility filter (#353/#775), ONE predicate for every in-memory call
+      // site: personal-family scopes (local, global, user:*, agent:*, anything
+      // not isSharedScope) always pass a project-scope filter, and so do
+      // scopes granted by mounted `config.yaml` stores. Only SHARED scopes
+      // matching neither the filter nor a grant are excluded.
       return 0
     }
   }
@@ -401,7 +414,7 @@ export function selectAndSpread(
     if (engram.status !== 'active') continue
     if (skipForValidity(engram, today, expiryMode, graceCutoff)) continue
     engramMap.set(engram.id, engram)
-    let raw = scoreEngram(engram, promptLower, promptWords, [], ctx.scope, false)
+    let raw = scoreEngram(engram, promptLower, promptWords, [], ctx.scope, false, ctx.grantedScopes)
     // Embedding boost: semantically similar engrams with zero keyword hits still get scored.
     // Threshold raised from 0.3 -> 0.5 in 0.9.4 — with embeddings now actually running
     // (post-build-config fix), 0.3 was too generous and surfaced spurious matches between
@@ -432,7 +445,7 @@ export function selectAndSpread(
       if (engram.status !== 'active') continue
       if (skipForValidity(engram, today, expiryMode, graceCutoff)) continue
       engramMap.set(engram.id, engram)
-      let raw = scoreEngram(engram, promptLower, promptWords, matchTerms, ctx.scope, true)
+      let raw = scoreEngram(engram, promptLower, promptWords, matchTerms, ctx.scope, true, ctx.grantedScopes)
       const embBoost = embeddingBoosts?.get(engram.id) ?? 0
       if (raw === 0 && embBoost > 0.5) {
         raw = embBoost * 2
@@ -663,12 +676,12 @@ export interface PublicScoredEngram { engram: Engram; score: number }
 export function scoreEngramsPublic(
   engrams: Engram[],
   task: string,
-  options?: { scope?: string },
+  options?: { scope?: string; grantedScopes?: readonly string[] },
 ): PublicScoredEngram[] {
   const promptLower = task.toLowerCase()
   const promptWords = new Set(promptLower.split(/\W+/).filter(w => w.length > 2))
   return engrams.map(e => ({
     engram: e,
-    score: scoreEngram(e, promptLower, promptWords, [], options?.scope, false),
+    score: scoreEngram(e, promptLower, promptWords, [], options?.scope, false, options?.grantedScopes),
   })).sort((a, b) => b.score - a.score)
 }

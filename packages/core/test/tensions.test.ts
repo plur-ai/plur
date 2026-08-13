@@ -265,8 +265,27 @@ describe('engramDate', () => {
     expect(engramDate(e)).toBe('2026-06-15')
   })
 
+  // #771: the legacy compact local form must keep parsing forever — existing
+  // stores are not migrated.
+  it('falls back to legacy compact ID pattern ENG-YYYY-MMDD-NNN', () => {
+    const e = makeEngram({ id: 'ENG-2026-0615-001', statement: 'x' })
+    expect(engramDate(e)).toBe('2026-06-15')
+  })
+
+  it('parses store-prefixed IDs in both date forms (#771)', () => {
+    const full = makeEngram({ id: 'ENG-GPL-2026-07-30-032', statement: 'x' })
+    expect(engramDate(full)).toBe('2026-07-30')
+    const compact = makeEngram({ id: 'ENG-DFU-2026-0401-001', statement: 'x' })
+    expect(engramDate(compact)).toBe('2026-04-01')
+  })
+
   it('returns undefined for IDs with no date pattern', () => {
     const e = makeEngram({ id: 'E1', statement: 'x' })
+    expect(engramDate(e)).toBeUndefined()
+  })
+
+  it('returns undefined for dateless pack IDs', () => {
+    const e = makeEngram({ id: 'ENG-PACK-EM-006', statement: 'x' })
     expect(engramDate(e)).toBeUndefined()
   })
 })

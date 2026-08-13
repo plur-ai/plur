@@ -1,7 +1,26 @@
 name: PR Issue Guard
 
+# `pull_request_target`, NOT `pull_request` (#835).
+#
+# On a `pull_request` event raised from a FORK, GitHub forces GITHUB_TOKEN to
+# read-only regardless of the `permissions:` block below — the block can only
+# ever narrow the token, never restore what the fork rule took away. So
+# `addAssignees` returned 403 and this workflow failed on EVERY external
+# contribution, which is precisely the population whose duplicate-effort it
+# exists to prevent. Internal branches are the ones that never needed it.
+#
+# `pull_request_target` runs in the context of the BASE repository, so the token
+# is write-capable for fork PRs too.
+#
+# SECURITY — the rule that makes this safe:
+#   This workflow must NEVER check out, build, or execute the head ref.
+#   `pull_request_target` grants a privileged token to a workflow evaluated
+#   against the base branch; adding `actions/checkout` with the PR's ref would
+#   hand that token to attacker-controlled code. The only untrusted input read
+#   here is the PR body, and it is used solely as a regex source for issue
+#   numbers, each parsed through parseInt before it reaches an API call.
 on:
-  pull_request:
+  pull_request_target:
     types: [opened, edited, reopened]
 
 # Only needs to comment on PRs and assign issues — no code access needed.
@@ -31,6 +50,44 @@ jobs:
 
             if (seen.size === 0) return;
 
+            // IDEMPOTENCY (#862 review).
+            //
+            // The trigger includes `edited`, so this runs again on every PR
+            // description change. Both comment paths below are unconditional,
+            // so without a guard the same notice accumulates once per edit —
+            // and for the fallback path the person affected is a first-time
+            // contributor editing their PR description, which is exactly what
+            // first-time contributors do. #835 exists to keep that person from
+            // getting a red X on their first contribution; an unbounded stack
+            // of identical "you cannot be assigned" comments is no better.
+            //
+            // Dedup on a marker rather than gating on `context.payload.action`,
+            // so that an edit which FIRST introduces `Fixes #123` still
+            // comments. Markers are per-issue, so a run handling two issues
+            // posts for each without either suppressing the other.
+            let existingComments = [];
+            try {
+              existingComments = await github.paginate(github.rest.issues.listComments, {
+                owner, repo, issue_number: prNumber, per_page: 100,
+              });
+            } catch (e) {
+              // Fail open: a missed dedup is a duplicate comment, whereas
+              // skipping the notice entirely loses the signal it carries.
+              core.warning(`Could not list PR comments for dedup: ${e.message}. Posting without it.`);
+            }
+
+            const postOnce = (marker, body) => {
+              if (existingComments.some(c => c.body?.includes(marker))) {
+                core.info(`Notice already present on #${prNumber} (${marker}) — not reposting`);
+                return Promise.resolve();
+              }
+              return github.rest.issues.createComment({
+                owner, repo,
+                issue_number: prNumber,
+                body: `${marker}\n${body}`,
+              });
+            };
+
             for (const issueNumber of seen) {
               let issue;
               try {
@@ -43,19 +100,56 @@ jobs:
               const assignees = (issue.assignees || []).map(a => a.login);
 
               if (assignees.length === 0) {
-                await github.rest.issues.addAssignees({
-                  owner, repo,
-                  issue_number: issueNumber,
-                  assignees: [prAuthor],
-                });
-                core.info(`Auto-assigned #${issueNumber} to @${prAuthor}`);
+                // Degrade gracefully rather than failing the run (#835).
+                // Even with a write-capable token, GitHub only permits
+                // assigning users with repo access or prior interaction on the
+                // issue — a brand-new contributor may simply not be assignable.
+                // That is a fact about the account, not a fault in the PR, and
+                // it must not put a red X on someone's first contribution.
+                //
+                // addAssignees returns HTTP 201 and silently drops non-permitted
+                // logins — no exception is raised (#861). Verify via the response.
+                let needsFallback = false;
+                try {
+                  const { data: updated } = await github.rest.issues.addAssignees({
+                    owner, repo,
+                    issue_number: issueNumber,
+                    assignees: [prAuthor],
+                  });
+                  const assigned = (updated.assignees || []).some(
+                    a => a.login.toLowerCase() === prAuthor.toLowerCase()
+                  );
+                  if (assigned) {
+                    core.info(`Auto-assigned #${issueNumber} to @${prAuthor}`);
+                  } else {
+                    needsFallback = true;
+                    core.warning(
+                      `Could not auto-assign #${issueNumber} to @${prAuthor}: `
+                      + `assignee silently dropped (no repo access or prior issue interaction). `
+                      + `A maintainer should assign it manually so the claim is recorded.`,
+                    );
+                  }
+                } catch (e) {
+                  needsFallback = true;
+                  core.warning(
+                    `Could not auto-assign #${issueNumber} to @${prAuthor}: ${e.message}. `
+                    + `A maintainer should assign it manually so the claim is recorded.`,
+                  );
+                }
+                if (needsFallback) {
+                  await postOnce(
+                    `<!-- pr-issue-guard:fallback:${issueNumber} -->`,
+                    `ℹ️ Could not auto-assign #${issueNumber} to @${prAuthor} — `
+                      + `GitHub only allows assigning users with repo access or prior interaction on the issue. `
+                      + `Maintainer: please assign it manually so the claim is recorded. This is not a problem with the PR.`,
+                  ).catch(err => core.warning(`Fallback comment failed: ${err.message}`));
+                }
               } else if (!assignees.includes(prAuthor)) {
                 const list = assignees.map(a => `@${a}`).join(', ');
-                await github.rest.issues.createComment({
-                  owner, repo,
-                  issue_number: prNumber,
-                  body: `⚠️ This PR addresses #${issueNumber}, which is assigned to ${list} — possible duplicate effort. Confirm coordination before merging.`,
-                });
+                await postOnce(
+                  `<!-- pr-issue-guard:conflict:${issueNumber} -->`,
+                  `⚠️ This PR addresses #${issueNumber}, which is assigned to ${list} — possible duplicate effort. Confirm coordination before merging.`,
+                );
                 core.warning(`Conflict: #${issueNumber} is assigned to ${list}; PR opened by @${prAuthor}`);
               }
             }

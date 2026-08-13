@@ -1,8 +1,14 @@
 /**
- * Tests for `plur login` — config write, reload signal, and arg parsing.
+ * Tests for `plur login` — token status (#587), config write, reload signal,
+ * and arg parsing.
  *
- * Pure unit tests: no spawned CLI processes, no real HTTP. The OAuth device
- * flow itself is tested via a local stub server. Browser-open is not tested
+ * The `--status` path is covered at two levels: pure unit tests over the
+ * exported classification/report helpers (JWT expiry classification, grouping
+ * fan-in via buildStatusReport, remediation strings), and process-level tests
+ * spawning the real CLI against the core StubServer (real HTTP) for exit
+ * codes, --json shape, and the unreachable-host path. The OAuth device flow
+ * helpers are tested via a local stub server; the flow itself is GATED in the
+ * command (#300/#532) and the gate is pinned here. Browser-open is not tested
  * (it shells out to `open`/`xdg-open`/`start`; those are OS calls we don't
  * control). Signal delivery is tested by asserting the signalReload() return
  * value rather than actually sending a kill, which would require a real process.
@@ -14,8 +20,20 @@ import { tmpdir } from 'os'
 import { createServer, type Server } from 'http'
 import type { AddressInfo } from 'net'
 import { spawn } from 'child_process'
+import { StubServer } from '../../core/test/helpers/stub-server.js'
+// Warm the module graph at collection time: login.js now pulls in the full
+// @plur-ai/core barrel (checkRemoteHealth reuse, #587), and paying that import
+// inside the FIRST per-test dynamic import blows the 5s test timeout.
+import '../src/commands/login.js'
 
 const CLI = join(__dirname, '..', 'dist', 'index.js')
+
+const b64url = (o: object) => Buffer.from(JSON.stringify(o)).toString('base64url')
+const makeJwt = (payload: object) =>
+  `${b64url({ alg: 'HS256', typ: 'JWT' })}.${b64url(payload)}.sig`
+/** JWT expiring `days` whole days from now (+1h slack so day math is stable). */
+const jwtExpiringIn = (days: number, claims: object = {}) =>
+  makeJwt({ sub: 'gregor', orgId: 'igea', exp: Math.floor(Date.now() / 1000) + days * 86_400 + 3_600, ...claims })
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -251,15 +269,186 @@ describe('pollForToken', () => {
   })
 })
 
-// ── CLI process-level smoke tests ─────────────────────────────────────────────
-// SKIPPED: `plur login` is deactivated — the command is intentionally not
-// registered in the CLI dispatcher (packages/cli/src/index.ts) pending the
-// hardening in #300 (paste-token fallback, refresh tokens, live-server
-// verification). These process-level tests invoke `plur login` via the
-// dispatcher, so they can only pass once the command is re-registered. The
-// helper unit tests above still run — they exercise the (dormant) login.ts
-// functions directly. Re-enable this block when login is reactivated.
-describe.skip('plur login CLI', () => {
+// ── Token-status helpers (#587) — pure unit tests ─────────────────────────────
+
+describe('classifyTokenStatus (#587)', () => {
+  it('probe ok + far-future expiry → VALID', async () => {
+    const { classifyTokenStatus } = await import('../src/commands/login.js')
+    expect(classifyTokenStatus({ status: 'ok', tokenExpiresInDays: 23 })).toBe('VALID')
+  })
+
+  it('probe ok + opaque key (no expiry claim) → VALID', async () => {
+    const { classifyTokenStatus } = await import('../src/commands/login.js')
+    expect(classifyTokenStatus({ status: 'ok', tokenExpiresInDays: null })).toBe('VALID')
+  })
+
+  it('probe ok + <7d to expiry → EXPIRING SOON (boundary: 6 yes, 7 no)', async () => {
+    const { classifyTokenStatus } = await import('../src/commands/login.js')
+    expect(classifyTokenStatus({ status: 'ok', tokenExpiresInDays: 6 })).toBe('EXPIRING SOON')
+    expect(classifyTokenStatus({ status: 'ok', tokenExpiresInDays: 0 })).toBe('EXPIRING SOON')
+    expect(classifyTokenStatus({ status: 'ok', tokenExpiresInDays: 7 })).toBe('VALID')
+  })
+
+  it('auth failure + locally-expired JWT → EXPIRED', async () => {
+    const { classifyTokenStatus } = await import('../src/commands/login.js')
+    expect(classifyTokenStatus({ status: 'auth_expired', tokenExpiresInDays: -3 })).toBe('EXPIRED')
+  })
+
+  it('auth failure + non-expired or opaque token → INVALID (revoked/wrong)', async () => {
+    const { classifyTokenStatus } = await import('../src/commands/login.js')
+    expect(classifyTokenStatus({ status: 'auth_expired', tokenExpiresInDays: 20 })).toBe('INVALID')
+    expect(classifyTokenStatus({ status: 'auth_expired', tokenExpiresInDays: null })).toBe('INVALID')
+  })
+
+  it('network failure → UNREACHABLE (not an auth verdict)', async () => {
+    const { classifyTokenStatus } = await import('../src/commands/login.js')
+    expect(classifyTokenStatus({ status: 'unreachable', tokenExpiresInDays: 23 })).toBe('UNREACHABLE')
+  })
+})
+
+describe('formatRelativeExpiry (#587)', () => {
+  it('formats future, past, same-day, and opaque expiries', async () => {
+    const { formatRelativeExpiry } = await import('../src/commands/login.js')
+    expect(formatRelativeExpiry(23)).toBe('expires in 23d')
+    expect(formatRelativeExpiry(-3)).toBe('EXPIRED 3d ago')
+    expect(formatRelativeExpiry(0)).toBe('expires in <1d')
+    expect(formatRelativeExpiry(null)).toMatch(/no expiry claim/)
+    expect(formatRelativeExpiry(undefined)).toMatch(/no expiry claim/)
+  })
+})
+
+describe('buildStatusReport (#587)', () => {
+  it('maps a healthy probe to VALID with granted-scope count and mounted scopes', async () => {
+    const { buildStatusReport } = await import('../src/commands/login.js')
+    const report = buildStatusReport([{
+      url: 'https://plur.example.com', scopes: ['group:igea/gis'], status: 'ok', ok: true,
+      tokenExpiresAt: '2026-08-23T00:00:00.000Z', tokenExpiresInDays: 23,
+      tokenSubject: 'gregor', tokenOrg: 'igea', username: 'gregor', orgId: 'igea', grantedScopes: 5,
+    }])
+    expect(report.ok).toBe(true)
+    const h = report.hosts[0]
+    expect(h.status).toBe('VALID')
+    expect(h.subject).toBe('gregor')
+    expect(h.org).toBe('igea')
+    expect(h.expiry).toBe('expires in 23d')
+    expect(h.probe).toEqual({ probed: true, reachable: true, grantedScopes: 5 })
+    expect(h.mountedScopes).toEqual(['group:igea/gis'])
+    expect(h.remediation).toBeUndefined()
+  })
+
+  it('marks a locally-expired token EXPIRED with probe skipped, and fails the report', async () => {
+    const { buildStatusReport } = await import('../src/commands/login.js')
+    const report = buildStatusReport([{
+      url: 'https://plur.example.com', scopes: ['group:igea/gis'], status: 'auth_expired', ok: false,
+      reason: 'token expired 2026-07-28T00:00:00.000Z',
+      tokenExpiresAt: '2026-07-28T00:00:00.000Z', tokenExpiresInDays: -3, tokenSubject: 'gregor',
+    }])
+    expect(report.ok).toBe(false)
+    const h = report.hosts[0]
+    expect(h.status).toBe('EXPIRED')
+    expect(h.expiry).toBe('EXPIRED 3d ago')
+    expect(h.probe.probed).toBe(false)
+    expect(h.remediation).toBeTruthy()
+  })
+
+  it('EXPIRED/INVALID remediation gives the sign-in-URL + plur_stores_add flow and never suggests running plur login', async () => {
+    const { buildStatusReport } = await import('../src/commands/login.js')
+    const report = buildStatusReport([
+      { url: 'https://plur.example.com', scopes: ['group:a'], status: 'auth_expired', ok: false, tokenExpiresInDays: -3 },
+      { url: 'https://other.example.com', scopes: ['group:b'], status: 'auth_expired', ok: false, tokenExpiresInDays: null, reason: 'Remote /me failed: 401' },
+    ])
+    for (const h of report.hosts) {
+      const fix = h.remediation!
+      // A4′ flow: sign in at <host>/auth, re-add via plur_stores_add.
+      expect(fix).toContain('/auth')
+      expect(fix).toContain('plur_stores_add')
+      // `plur login` must never be SUGGESTED — enterprise servers have no
+      // device-flow endpoints. The A4′ string may only mention it to say it
+      // does NOT work.
+      expect(fix).not.toMatch(/run\s+`?plur login/i)
+      for (const m of fix.matchAll(/`?plur login`?/g)) {
+        expect(fix.slice(m.index)).toMatch(/^`?plur login`? does not work/)
+      }
+    }
+  })
+
+  it('UNREACHABLE does not fail the report (network is not an auth verdict)', async () => {
+    const { buildStatusReport } = await import('../src/commands/login.js')
+    const report = buildStatusReport([{
+      url: 'https://plur.example.com', scopes: ['group:a'], status: 'unreachable', ok: false,
+      reason: 'fetch failed', tokenExpiresInDays: 23,
+    }])
+    expect(report.hosts[0].status).toBe('UNREACHABLE')
+    expect(report.hosts[0].probe).toEqual({ probed: true, reachable: false, reason: 'fetch failed' })
+    expect(report.ok).toBe(true)
+  })
+
+  it('an empty credential set is not ok, and an unmounted legacy login token is flagged', async () => {
+    const { buildStatusReport } = await import('../src/commands/login.js')
+    const report = buildStatusReport([], { url: 'https://plur.example.com', mounted: false })
+    expect(report.ok).toBe(false)
+    expect(report.hosts).toEqual([])
+    expect(report.legacyLogin).toEqual({ url: 'https://plur.example.com', mounted: false })
+  })
+})
+
+describe('formatStatusLines (#587)', () => {
+  it('renders one block per credential with status, expiry, probe, and mounted scopes', async () => {
+    const { buildStatusReport, formatStatusLines } = await import('../src/commands/login.js')
+    const report = buildStatusReport([
+      { url: 'https://a.example.com', scopes: ['group:a'], status: 'ok', ok: true, tokenExpiresInDays: 23, tokenExpiresAt: '2026-08-23T00:00:00.000Z', tokenSubject: 'gregor', tokenOrg: 'igea', grantedScopes: 5 },
+      { url: 'https://b.example.com', scopes: ['group:b'], status: 'auth_expired', ok: false, tokenExpiresInDays: -3 },
+    ])
+    const text = formatStatusLines(report).join('\n')
+    expect(text).toContain('✓ https://a.example.com — VALID')
+    expect(text).toContain('identity: gregor (org: igea)')
+    expect(text).toContain('5 scope(s) granted')
+    expect(text).toContain('mounted:  group:a')
+    expect(text).toContain('✗ https://b.example.com — EXPIRED')
+    expect(text).toContain('not probed — token already expired')
+  })
+
+  it('with no credentials, points at the /auth + plur_stores_add flow (never `plur login`)', async () => {
+    const { buildStatusReport, formatStatusLines } = await import('../src/commands/login.js')
+    const text = formatStatusLines(buildStatusReport([])).join('\n')
+    expect(text).toContain('No enterprise tokens configured')
+    expect(text).toContain('plur_stores_add')
+    expect(text).not.toMatch(/run\s+`?plur login/i)
+  })
+
+  it('flags an unmounted legacy config.json token as unused', async () => {
+    const { buildStatusReport, formatStatusLines } = await import('../src/commands/login.js')
+    const text = formatStatusLines(buildStatusReport([], { url: 'https://plur.example.com', mounted: false })).join('\n')
+    expect(text).toContain('legacy `plur login` token')
+    expect(text).toContain('nothing reads it')
+  })
+})
+
+// ── CLI process-level tests ───────────────────────────────────────────────────
+// `login` is registered in the dispatcher for `--status` (#587); the device
+// flow itself is gated inside the command (#300/#532) — pinned below.
+
+/** Write a plur root (config.yaml) and return its --path value. */
+function writePlurRoot(stores: Array<Record<string, unknown>>): string {
+  const dir = mkdtempSync(join(tmpdir(), 'plur-login-root-'))
+  const storeYaml = stores.map(s =>
+    `  - ${Object.entries(s).map(([k, v]) => `${k}: ${JSON.stringify(v)}`).join('\n    ')}`,
+  ).join('\n')
+  writeFileSync(
+    join(dir, 'config.yaml'),
+    `embeddings:\n  enabled: false\nindex: false\nstores:\n${storeYaml}\n`,
+  )
+  return dir
+}
+
+/** Parse the JSON object line from combined CLI output (ignores log noise). */
+function parseJsonOut(stdout: string): any {
+  const line = stdout.split('\n').map(l => l.trim()).filter(l => l.startsWith('{')).pop()
+  expect(line, `no JSON line in output:\n${stdout}`).toBeTruthy()
+  return JSON.parse(line!)
+}
+
+describe('plur login CLI (gated device flow + arg errors)', () => {
   let home: string
   let cwd: string
 
@@ -291,33 +480,159 @@ describe.skip('plur login CLI', () => {
     expect(r.stdout).toMatch(/--timeout requires a value/)
   })
 
-  it('exits 1 when --timeout value is not a positive integer', async () => {
-    const r = await runCli('login https://plur.example.com --timeout abc', cwd, home)
-    expect(r.status).toBe(1)
-    expect(r.stdout).toMatch(/--timeout must be a positive integer/)
-  })
-
-  it('--help prints usage and exits 0', async () => {
+  it('--help prints usage (global help intercepts) and exits 0, listing login --status', async () => {
     const r = await runCli('login --help', cwd, home)
     expect(r.status).toBe(0)
-    expect(r.stdout).toMatch(/OAuth|device flow|USAGE/i)
+    // The dispatcher's global --help intercept answers before command dispatch;
+    // it must list the new status surface.
+    expect(r.stdout).toMatch(/Usage/i)
+    expect(r.stdout).toMatch(/login --status/)
   })
 
-  it('--status exits 1 when not logged in', async () => {
-    const r = await runCli('login --status', cwd, home)
+  it('device flow is gated: `plur login <host>` exits 1 with the /auth + plur_stores_add path', async () => {
+    const r = await runCli('login https://plur.example.com', cwd, home)
     expect(r.status).toBe(1)
-    expect(r.stdout).toMatch(/Not logged in/)
+    expect(r.stdout).toMatch(/not available yet/)
+    expect(r.stdout).toContain('https://plur.example.com/auth')
+    expect(r.stdout).toContain('plur_stores_add')
+    // The flow must not have started — no device code prompt.
+    expect(r.stdout).not.toMatch(/one-time code/)
+  })
+})
+
+describe('plur login --status (#587) — exit codes and --json shape', () => {
+  const TOKEN = 'status-test-token'
+  let server: StubServer
+  let baseUrl: string
+  let home: string
+  let cwd: string
+  const roots: string[] = []
+
+  beforeEach(async () => {
+    server = new StubServer(TOKEN)
+    const info = await server.start()
+    baseUrl = info.url
+    server.setMe({ username: 'gregor', org_id: 'igea', role: 'developer', scopes: ['group:igea/gis', 'group:igea/eng', 'user:igea:gregor'] })
+    home = mkdtempSync(join(tmpdir(), 'plur-status-home-'))
+    cwd  = mkdtempSync(join(tmpdir(), 'plur-status-proj-'))
   })
 
-  it.skip('--status prints auth info when config.json is present [requires real HOME]', async () => {
-    // This test would require writing to the real ~/.plur/config.json.
-    // Skipped — covered by the unit test above (writePlurConfig + readPlurConfig).
+  afterEach(async () => {
+    await server.stop()
+    rmSync(home, { recursive: true, force: true })
+    rmSync(cwd, { recursive: true, force: true })
+    while (roots.length > 0) rmSync(roots.pop()!, { recursive: true, force: true })
   })
 
-  it('exits non-zero when the device code endpoint is unreachable', async () => {
-    // Port 1 is reserved and will refuse connections on any OS
-    const r = await runCli('login http://127.0.0.1:1 --no-open --timeout 5', cwd, home)
-    expect(r.status).not.toBe(0)
-    expect(r.stdout).toMatch(/Error|failed|ECONNREFUSED/i)
+  const root = (stores: Array<Record<string, unknown>>): string => {
+    const dir = writePlurRoot(stores)
+    roots.push(dir)
+    return dir
+  }
+
+  it('exits 1 with an empty report when nothing is configured', async () => {
+    const r = await runCli('login --status --json', cwd, home)
+    expect(r.status).toBe(1)
+    const report = parseJsonOut(r.stdout)
+    expect(report.hosts).toEqual([])
+    expect(report.ok).toBe(false)
+  })
+
+  it('VALID: reachable host + accepted opaque token → exit 0, full JSON row, no token leaked', async () => {
+    const dir = root([{ url: baseUrl, token: TOKEN, scope: 'group:igea/gis' }])
+    const r = await runCli(`login --status --json --path ${dir}`, cwd, home)
+    expect(r.status).toBe(0)
+    const report = parseJsonOut(r.stdout)
+    expect(report.ok).toBe(true)
+    expect(report.hosts).toHaveLength(1)
+    const h = report.hosts[0]
+    expect(h.url).toBe(baseUrl)
+    expect(h.status).toBe('VALID')
+    expect(h.subject).toBe('gregor')
+    expect(h.org).toBe('igea')
+    expect(h.probe).toEqual({ probed: true, reachable: true, grantedScopes: 3 })
+    expect(h.mountedScopes).toEqual(['group:igea/gis'])
+    // The token value itself must never appear anywhere in the output.
+    expect(r.stdout).not.toContain(TOKEN)
+  })
+
+  it('EXPIRED: locally-expired JWT → exit 1, remediation is /auth + plur_stores_add', async () => {
+    const expired = jwtExpiringIn(-3)
+    const dir = root([{ url: baseUrl, token: expired, scope: 'group:igea/gis' }])
+    const r = await runCli(`login --status --json --path ${dir}`, cwd, home)
+    expect(r.status).toBe(1)
+    const h = parseJsonOut(r.stdout).hosts[0]
+    expect(h.status).toBe('EXPIRED')
+    expect(h.subject).toBe('gregor')
+    expect(h.expiry).toMatch(/^EXPIRED \dd ago$/)
+    expect(h.probe.probed).toBe(false)
+    expect(h.remediation).toContain('/auth')
+    expect(h.remediation).toContain('plur_stores_add')
+    expect(r.stdout).not.toContain(expired)
+  })
+
+  it('INVALID: server rejects a non-expired token (401) → exit 1', async () => {
+    const dir = root([{ url: baseUrl, token: 'wrong-token', scope: 'group:igea/gis' }])
+    const r = await runCli(`login --status --json --path ${dir}`, cwd, home)
+    expect(r.status).toBe(1)
+    const h = parseJsonOut(r.stdout).hosts[0]
+    expect(h.status).toBe('INVALID')
+    expect(h.probe.probed).toBe(true)
+    expect(h.probe.reachable).toBe(true)
+  })
+
+  it('EXPIRING SOON: valid JWT with <7d left → exit 0 but flagged', async () => {
+    const soonJwt = jwtExpiringIn(3)
+    const soonServer = new StubServer(soonJwt) // server accepts exactly this JWT
+    const info = await soonServer.start()
+    try {
+      const dir = root([{ url: info.url, token: soonJwt, scope: 'group:igea/gis' }])
+      const r = await runCli(`login --status --json --path ${dir}`, cwd, home)
+      expect(r.status).toBe(0)
+      const h = parseJsonOut(r.stdout).hosts[0]
+      expect(h.status).toBe('EXPIRING SOON')
+      expect(h.expiry).toMatch(/^expires in \dd$/)
+      expect(h.remediation).toContain('plur_stores_add')
+    } finally {
+      await soonServer.stop()
+    }
+  })
+
+  it('UNREACHABLE: host down → exit 0 (network is not an auth verdict)', async () => {
+    const down = new StubServer(TOKEN)
+    const info = await down.start()
+    await down.stop() // port now closed
+    const dir = root([{ url: info.url, token: TOKEN, scope: 'group:igea/gis' }])
+    const r = await runCli(`login --status --json --path ${dir}`, cwd, home)
+    expect(r.status).toBe(0)
+    const h = parseJsonOut(r.stdout).hosts[0]
+    expect(h.status).toBe('UNREACHABLE')
+    expect(h.probe.reachable).toBe(false)
+  })
+
+  it('groups by distinct (url, token): one dead second token fails the whole status', async () => {
+    const dir = root([
+      { url: baseUrl, token: TOKEN, scope: 'group:igea/gis' },
+      { url: baseUrl, token: 'dead-second-token', scope: 'group:igea/eng' },
+    ])
+    const r = await runCli(`login --status --json --path ${dir}`, cwd, home)
+    expect(r.status).toBe(1)
+    const report = parseJsonOut(r.stdout)
+    expect(report.hosts).toHaveLength(2)
+    const statuses = report.hosts.map((h: any) => h.status).sort()
+    expect(statuses).toEqual(['INVALID', 'VALID'])
+  })
+
+  it('flags an unmounted legacy config.json token instead of probing it', async () => {
+    mkdirSync(join(home, '.plur'), { recursive: true })
+    writeFileSync(
+      join(home, '.plur', 'config.json'),
+      JSON.stringify({ enterprise: { url: 'https://legacy.example.com', token: 'legacy-token' } }),
+    )
+    const r = await runCli('login --status --json', cwd, home)
+    expect(r.status).toBe(1) // no mounted credentials → not ok
+    const report = parseJsonOut(r.stdout)
+    expect(report.legacyLogin).toEqual({ url: 'https://legacy.example.com', mounted: false })
+    expect(r.stdout).not.toContain('legacy-token')
   })
 })

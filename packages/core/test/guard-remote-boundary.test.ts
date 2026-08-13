@@ -114,10 +114,12 @@ describe('remote-boundary leak guard (#353)', () => {
     }) as any)
   }
 
-  /** Prime the lazy remote cache, then return the namespaced engram id list sees. */
+  /** Prime the lazy remote cache, then return the namespaced engram id list sees.
+   *  #776: reads no longer fire a background refresh (`_loadRemoteCached` lost
+   *  its floating `void driver.load()` when live recall took over) — warming is
+   *  explicit via `warmRemoteCaches()`, the same path session_start uses. */
   async function primedRemoteId(plur: Plur, serverId: string): Promise<string> {
-    await plur.list()                                   // triggers background await load()
-    await new Promise(r => setTimeout(r, 50))     // let the await load() settle
+    await plur.warmRemoteCaches()
     const found = (await plur.list()).find(e => (e as any)._originalId === serverId || e.id.endsWith(serverId))
     if (!found) throw new Error(`remote engram ${serverId} not in cache after prime`)
     return found.id

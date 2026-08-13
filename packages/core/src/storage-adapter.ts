@@ -107,6 +107,26 @@ export interface StorageFilter extends ScopeRestriction {
    * Distinct from `scopes` — see {@link ScopeRestriction}.
    */
   scope?: string
+  /**
+   * Mounted-scope VISIBILITY grants (#775) — scopes explicitly mounted in
+   * `config.yaml` `stores:` (path and url entries alike). Each grant passes
+   * the `scope` visibility filter above exactly like the personal family:
+   * segment-aware containment (`scope = g OR scope LIKE g||':%' OR scope
+   * LIKE g||'/%'`), never a sibling string-prefix (#383).
+   *
+   * NOT AUTHORIZATION — read this twice before touching it. `scopes` (see
+   * {@link ScopeRestriction}) is the authorization allow-list: exact
+   * membership, AND-ed with everything, an empty list means NOTHING.
+   * `visibilityGrants` is the opposite kind of field: it only ever widens
+   * the `scope` VISIBILITY clause, is meaningless without `scope`, and MUST
+   * NEVER be consulted by (or OR-ed into) the `scopes` clause — an engram
+   * outside the `scopes` allow-list stays invisible no matter how many
+   * grants cover it. Confusing the two is a privilege escalation, not a
+   * styling choice.
+   *
+   * Absent and `[]` are equivalent: no extra scopes pass (prior behavior).
+   */
+  visibilityGrants?: readonly string[]
   domain?: string
 }
 
@@ -354,7 +374,7 @@ export interface StorageAdapter {
    * @param queryTokens Tokens from `ftsTokenize` — already lowercased and
    *   stop-word filtered, so the store must not re-tokenize.
    */
-  corpusStats?(queryTokens: string[], opts?: ScopeRestriction): Promise<CorpusStats>
+  corpusStats?(queryTokens: string[], opts?: ScopeRestriction): Promise<CorpusStats | undefined>
   /**
    * Corpus-wide `N` and per-term `df` for BM25 scoring (convergence Phase 4,
    * #711). OPTIONAL — a store that cannot compute these exactly must leave it
@@ -387,18 +407,65 @@ export interface StorageAdapter {
    * @param queryTokens Tokens from `ftsTokenize` — already lowercased and
    *   stop-word filtered, so the store must not re-tokenize.
    */
-  corpusStats?(queryTokens: string[], opts?: ScopeRestriction): Promise<CorpusStats>
+  corpusStats?(queryTokens: string[], opts?: ScopeRestriction): Promise<CorpusStats | undefined>
   /**
    * Vector similarity search (cosine).
    *
    * `opts.scopes` must be applied IN the query (as part of the k-NN
    * predicate), not to the returned rows — otherwise `limit` is measured
    * against the unrestricted neighbour list and in-scope results are diluted
-   * away. See {@link ScopeRestriction}.
+   * away. See {@link ScopeRestriction}. The `scope` visibility filter and
+   * `visibilityGrants` (#775) ride the same rule for the same reason: a
+   * caller that honours them post-hoc spends `limit` on rows it is about to
+   * discard, and a granted team engram never surfaces through the vector leg.
    */
-  searchVector(query: Float32Array, limit: number, opts?: ScopeRestriction): Promise<VectorSearchHit[]>
-  /** Upsert an embedding for a specific engram. */
-  upsertEmbedding(engramId: string, vector: Float32Array): Promise<void>
+  searchVector(
+    query: Float32Array,
+    limit: number,
+    opts?: ScopeRestriction & Pick<StorageFilter, 'scope' | 'visibilityGrants'>,
+  ): Promise<VectorSearchHit[]>
+  /**
+   * Upsert an embedding for a specific engram.
+   *
+   * `contentHash` is `embeddingContentHash(engram)` for the engram the vector
+   * was computed from — the store persists it beside the vector so it can
+   * later tell a current vector from a stale one (#812). Optional only for
+   * back-compatibility with callers that predate staleness tracking; omitting
+   * it stores a NULL hash, which reads as "unknown" and makes the engram a
+   * candidate for one re-embed.
+   */
+  upsertEmbedding(engramId: string, vector: Float32Array, contentHash?: string): Promise<void>
+  /**
+   * Active engrams with no stored embedding, up to `limit`, as ONE set-based
+   * query (#762). With `includeStale`, also those whose stored vector was
+   * computed from text the engram no longer has (#812).
+   *
+   * The two callers want different questions and must not be merged:
+   *
+   *   - the BACKFILL passes `includeStale: true` — a stale vector is work to do.
+   *   - the semantic read path's completeness gate does NOT. It asks whether
+   *     any engram is INVISIBLE to the vector leg, because that is what makes a
+   *     vector search silently partial. A stale vector still returns the engram,
+   *     just ranked by older text. Letting staleness open that gate would drop
+   *     every semantic recall onto the O(N) in-memory path corpus-wide until the
+   *     backfill caught up — one edited engram, whole-store cliff, which is the
+   *     regression this tier exists to avoid (ADR-0005's 2026-07-28 amendment).
+   *     Edits kick the backfill via the write path anyway, so nothing is missed.
+   *
+   * OPTIONAL — and the enabling contract for
+   * primary-store auto-embed: core only wires the write-path/backfill
+   * embedding pass into an adapter that can answer "which rows lack
+   * embeddings" without loading the corpus. The alternative shape — load
+   * everything, probe `hasEmbedding` per id — is O(N) round trips on every
+   * write, which at the corpus size that selects a server tier is a worse
+   * regression than the missing embeddings (see ADR-0005's 2026-07-28
+   * amendment). An adapter that cannot answer this as a set must leave the
+   * method undefined; core then skips auto-embed rather than degrade writes.
+   *
+   * Called with `limit: 1` as a completeness probe on the semantic read path,
+   * so the implementation should be an indexed anti-join, not a scan-and-diff.
+   */
+  listEngramsMissingEmbeddings?(limit: number, opts?: { includeStale?: boolean }): Promise<Engram[]>
   /** Release resources. */
   close(): Promise<void>
 }

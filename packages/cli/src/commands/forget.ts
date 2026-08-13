@@ -1,5 +1,5 @@
 import { createPlur, type GlobalFlags } from '../plur.js'
-import { shouldOutputJson, outputJson, outputText, exit } from '../output.js'
+import { shouldOutputJson, outputJson, outputText, outputInfo, exit } from '../output.js'
 
 export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   const plur = createPlur(flags)
@@ -27,17 +27,23 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     const engram = await plur.getById(target)
     if (!engram) exit(1, `Engram not found: ${target}`)
     if (engram.status === 'retired') exit(1, `Already retired: ${target}`)
-    await plur.forget(target, reason)
+    // force (#766): `plur forget` is an explicit user-facing forget — same
+    // surface as MCP plur_forget. Without force, a multiply-learned engram
+    // (reference_count > 1) only decrements and stays active, and a later
+    // learn() at a different scope re-matches it and inherits the old scope.
+    await plur.forget(target, reason, { force: true })
     if (shouldOutputJson(flags)) {
       outputJson({ success: true, retired: { id: target, statement: engram.statement } })
     } else {
-      outputText(`Retired: [${target}] ${engram.statement}`)
+      outputInfo(`Retired: [${target}] ${engram.statement}`, flags)
     }
     return
   }
 
-  // Search mode
-  const matches = await plur.recall(target, { limit: 100 })
+  // Search mode. remote:false (#776) — forget-by-search resolves LOCAL
+  // retirement targets; dialing every remote host with the search phrase
+  // would leak it and could surface un-forgettable remote rows as matches.
+  const matches = await plur.recall(target, { limit: 100, remote: false })
   if (matches.length === 0) {
     if (shouldOutputJson(flags)) {
       outputJson({ success: false, error: `No active engrams matching "${target}"` })
@@ -47,11 +53,13 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     return
   }
   if (matches.length === 1) {
-    await plur.forget(matches[0].id, reason)
+    // force (#766): explicit user-facing forget — full retirement, not a
+    // ref-count decrement (see the direct-ID branch above).
+    await plur.forget(matches[0].id, reason, { force: true })
     if (shouldOutputJson(flags)) {
       outputJson({ success: true, retired: { id: matches[0].id, statement: matches[0].statement } })
     } else {
-      outputText(`Retired: [${matches[0].id}] ${matches[0].statement}`)
+      outputInfo(`Retired: [${matches[0].id}] ${matches[0].statement}`, flags)
     }
     return
   }
