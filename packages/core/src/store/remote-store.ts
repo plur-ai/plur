@@ -397,6 +397,32 @@ export class RemoteStore implements EngramStore {
     }
   }
 
+  /**
+   * Existence probe that distinguishes "definitely absent" from "cannot tell".
+   *
+   * `getById` collapses both onto `null` — a 404 and a dead network return the
+   * same value — which is safe for the read paths that only want the engram,
+   * and unsafe for anything deciding whether it is free to act. `forget()`
+   * needs the distinction: treating an unreachable store as "not there" is how
+   * an id collision goes unnoticed and the wrong engram gets retired (#831).
+   *
+   * Returns false ONLY on an authoritative 404. Anything else — transport
+   * failure, 5xx, auth rejection — throws, so the caller must decide what an
+   * unknown means rather than inheriting a silent "no".
+   */
+  async existsById(id: string): Promise<boolean> {
+    const r = await fetch(`${this.apiBase}/engrams/${encodeURIComponent(id)}`, { headers: this.headers() })
+    if (r.status === 404) return false
+    if (!r.ok) throw new Error(`HTTP ${r.status} from ${this.apiBase}`)
+    // A 200 is not on its own proof of existence — confirm the body actually
+    // describes THIS engram. Servers and proxies return 200 with collection or
+    // envelope payloads on routes they do not recognise, and inferring
+    // existence from the status line alone would turn that into a false
+    // collision report on every forget.
+    const row = await r.json().catch(() => null) as { id?: unknown } | null
+    return typeof row?.id === 'string' && row.id === id
+  }
+
   /** Remove → DELETE /api/v1/engrams/:id (server soft-retires). */
   async remove(id: string): Promise<boolean> {
     const r = await fetch(`${this.apiBase}/engrams/${encodeURIComponent(id)}`, {

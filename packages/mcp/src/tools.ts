@@ -1441,11 +1441,17 @@ function getAllToolDefinitions(): ToolDefinition[] {
         properties: {
           id: { type: 'string', description: 'Exact engram ID to retire' },
           search: { type: 'string', description: 'Search term to find engram to retire' },
+          scope: { type: 'string', description: 'Which store holds it (#831). Ids are minted per store, so one id can name several unrelated engrams. Pass "primary" to stay on disk — the local primary store and any local secondary stores, never a remote — or a remote scope (e.g. "group:plur/plur-ai/engineering") to target that server. A scope matching no configured store is rejected, not guessed at. Omit it and an id resolving in two places is refused.' },
         },
       },
       handler: async (args, plur) => {
         if (args.id) {
-          const engram = await plur.getById(args.id as string)
+          const scope = args.scope as string | undefined
+          // getById resolves first-match-wins across stores, so on a colliding
+          // id it can return — and then report as retired — an engram that is
+          // not the one forget() acts on (#831). With an explicit scope, let
+          // forget() do the resolving and report from its own result.
+          const engram = scope ? undefined : await plur.getById(args.id as string)
           if (engram) {
             if (engram.status === 'retired') return { success: false, error: `Already retired: ${args.id}` }
             // force:true — explicit user forget always fully retires, ignoring
@@ -1454,11 +1460,12 @@ function getAllToolDefinitions(): ToolDefinition[] {
             await plur.forget(args.id as string, undefined, { force: true })
             return { success: true, retired: { id: engram.id, statement: engram.statement } }
           }
-          // Not in local store — fall through to plur.forget() which routes to
-          // remote stores (with prefix stripping per #86 / PR #186). Throws
-          // "Engram not found" if it's nowhere.
-          await plur.forget(args.id as string, undefined, { force: true })
-          return { success: true, retired: { id: args.id as string } }
+          // Not in local store, or an explicit scope was given — let
+          // plur.forget() resolve. It routes to remote stores (with prefix
+          // stripping per #86 / PR #186), refuses an ambiguous unqualified id
+          // (#831), and throws "Engram not found" if it is nowhere.
+          await plur.forget(args.id as string, undefined, { force: true, ...(scope ? { scope } : {}) })
+          return { success: true, retired: { id: args.id as string, ...(scope ? { scope } : {}) } }
         }
         if (args.search) {
           // remote:false (#776) — forget-by-search resolves local retirement
