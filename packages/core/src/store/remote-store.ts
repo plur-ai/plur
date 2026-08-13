@@ -192,10 +192,38 @@ export class RemoteStore implements EngramStore {
       // drop entries that don't parse (and any whose `scope` isn't in the
       // authorized set, so a remote can't smuggle metadata for an unrelated
       // scope into discovery). Absent/empty → [] (older servers).
+      // #843: a dropped entry must SAY SO. A server/client shape mismatch here
+      // disabled covers-based auto-routing on a live deployment and produced no
+      // signal anywhere — no warning, no log line, no degraded-mode flag. It was
+      // found only by diffing plur_scopes_discover against the admin UI, because
+      // `rankScopes` skips entries with empty covers, so an empty metadata list
+      // means zero candidates and every unscoped write falls to the personal
+      // `unscoped_default`. Team knowledge silently stopped reaching team scopes
+      // while the admin dashboard rendered all five scopes as fine.
+      //
+      // One warning on the first connection would have caught it. The authorized-
+      // set drop stays quiet: that one is a deliberate refusal (a remote must not
+      // smuggle metadata for a scope it did not grant), not an unexpected shape.
       scope_metadata: Array.isArray(body.scope_metadata)
         ? body.scope_metadata.flatMap((m) => {
             const parsed = ScopeMetadataSchema.safeParse(m)
-            if (!parsed.success) return []
+            if (!parsed.success) {
+              // Log PATHS and CODES only, never server-controlled values (#408):
+              // a Zod message can embed the received value, and a crafted one
+              // could carry control chars to forge log lines.
+              const why = parsed.error.issues
+                .map(i => `${i.path.join('.') || '(root)'}: ${i.code}`)
+                .join('; ')
+              const safeScope = String((m as { scope?: unknown } | null)?.scope ?? '<unknown>')
+                .replace(/[^\w:./-]/g, '?')
+                .slice(0, 64)
+              logger.warning(
+                `[plur:remote-store] ${this.url} sent scope metadata for "${safeScope}" that does not conform ` +
+                `(${why}) — DROPPED. That scope cannot participate in covers-based auto-routing until the ` +
+                `server sends a conforming shape, so unscoped writes may fall back to the personal default (#843).`,
+              )
+              return []
+            }
             if (!scopes.includes(parsed.data.scope)) return []
             return [parsed.data]
           })

@@ -127,15 +127,36 @@ const NO_CONTROL_MSG = 'must not contain control characters or newlines (directi
 export const ScopeMetadataSchema = z.object({
   scope: z.string()
     .describe('The scope this metadata describes (e.g. "group:plur/engineering", "project:plur").'),
-  description: z.string().max(MAX_DESCRIPTION_LEN).regex(NO_CONTROL_CHARS, NO_CONTROL_MSG)
-    .describe('Human-readable explanation of what this scope is for. Surfaced VERBATIM in scope/store discovery — bounded in length and free of control chars/newlines so a hostile remote cannot inject instructions (#345).'),
+  // null-tolerant (#843). A server serialising an unset nullable column as JSON
+  // `null` used to fail this field outright, and because RemoteStore.me() drops
+  // failures inside a flatMap, EVERY ordinary scope row vanished — silently
+  // disabling covers-based auto-routing on a live deployment. Coerced to '' so
+  // the OUTPUT type stays `string` and no consumer has to learn about null.
+  // `=== null` deliberately, NOT `== null`: an explicit null is a server
+  // serialising an unset column, but an ABSENT description is a malformed row
+  // and must still be rejected. Coercing undefined too would quietly turn a
+  // required field optional.
+  description: z.preprocess(
+    v => (v === null ? '' : v),
+    z.string().max(MAX_DESCRIPTION_LEN).regex(NO_CONTROL_CHARS, NO_CONTROL_MSG),
+  )
+    .describe('Human-readable explanation of what this scope is for. Surfaced VERBATIM in scope/store discovery — bounded in length and free of control chars/newlines so a hostile remote cannot inject instructions (#345). An explicit null reads as empty, so a server serialising an unset column does not fail the row; the key itself is still required (#843).'),
   covers: z.array(z.string().max(MAX_COVER_LEN).regex(NO_CONTROL_CHARS, NO_CONTROL_MSG)).max(MAX_COVERS).default([])
     .describe('Topics, domains, or areas this scope is the home for. Advisory; helps an agent pick the right scope and is surfaced in discovery. Each entry is length-bounded and control-char-free, and the list is capped, for the same directive-surface reason as `description` (#345).'),
-  sensitivity: ScopeSensitivitySchema.optional()
+  // null -> undefined at the trust boundary (#843): Zod's .optional()
+  // REJECTS null, and an unset nullable column is exactly what a server
+  // sends as null.
+  sensitivity: z.preprocess(v => (v === null ? undefined : v), ScopeSensitivitySchema.optional())
     .describe('Per-scope sensitivity policy. When present, the leak guard uses it; when absent, the guard falls back to the default shared-scope behavior.'),
-  injection_policy: z.enum(['on_match', 'on_request', 'always']).optional()
+  // null -> undefined at the trust boundary (#843): Zod's .optional()
+  // REJECTS null, and an unset nullable column is exactly what a server
+  // sends as null.
+  injection_policy: z.preprocess(v => (v === null ? undefined : v), z.enum(['on_match', 'on_request', 'always']).optional())
     .describe("When the loader may inject this scope's engrams. Mirrors pack injection_policy semantics."),
-  owner: z.string().optional()
+  // null -> undefined at the trust boundary (#843): Zod's .optional()
+  // REJECTS null, and an unset nullable column is exactly what a server
+  // sends as null.
+  owner: z.preprocess(v => (v === null ? undefined : v), z.string().optional())
     .describe('Owner of the scope (person or team). Advisory.'),
 }).describe('Self-describing metadata for an engram scope (Open Engram Standard, scope layer).')
 

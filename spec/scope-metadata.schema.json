@@ -13,7 +13,7 @@
       "type": "string",
       "maxLength": 500,
       "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F\\u2028\\u2029]*$",
-      "description": "Human-readable explanation of what this scope is for. Surfaced VERBATIM in scope/store discovery — bounded in length and free of control chars/newlines so a hostile remote cannot inject instructions (#345)."
+      "description": "Human-readable explanation of what this scope is for. Surfaced VERBATIM in scope/store discovery — bounded in length and free of control chars/newlines so a hostile remote cannot inject instructions (#345). An explicit null reads as empty, so a server serialising an unset column does not fail the row; the key itself is still required (#843)."
     },
     "covers": {
       "type": "array",
