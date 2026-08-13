@@ -39,9 +39,50 @@ export function shouldInject(
   return effective >= threshold
 }
 
-/** Bump retrieval strength when accessed (reactivation) */
+/**
+ * How much a passive retrieval used to add to `retrieval_strength`.
+ *
+ * Exported as a named constant because it was never one, and that was half the
+ * problem (#846): `POSITIVE_STRENGTH_DELTA` and `NEGATIVE_STRENGTH_DELTA` are
+ * public values precisely so consumers do not re-type them, while the one
+ * constant a downstream consumer needed in order to reason about what a
+ * feedback delta is WORTH was an unnamed literal inside this function. PLUR
+ * Enterprise hand-copied it and guarded the copy by measuring core empirically.
+ *
+ * @deprecated Retrieval no longer moves `retrieval_strength` — see
+ * {@link reactivate}. Kept exported so a consumer that hand-copied the old
+ * value can find this note.
+ */
+export const LEGACY_REACTIVATION_STRENGTH_DELTA = 0.1
+
+/**
+ * Reactivation on access.
+ *
+ * Returns the strength UNCHANGED (#846). Retrieval used to add +0.10 here while
+ * a deliberate ★ added +0.05 and a ✗ subtracted 0.10 — so a rating was worth
+ * half of being incidentally fetched, and a "this is wrong" was EXACTLY
+ * cancelled by the next recall that happened to return the engram.
+ *
+ * That mattered because `retrieval_strength` reads as "how well-regarded is
+ * this": it is what `min_strength` filters on, what `scoreEngram` multiplies
+ * into injection ranking, and what admin surfaces present. It actually encoded
+ * "how often has this been fetched" — a self-reinforcing loop in which the
+ * quality term was structurally unable to outvote the traffic term, and which
+ * saturated at 1.0 after three recalls, after which no feedback in either
+ * direction was visible in the value at all.
+ *
+ * The fix is separation, not a new ratio: traffic already has a home in
+ * `activation.frequency`, which counts retrieval events, works, and shows 62
+ * distinct values across a real store. `retrieval_strength` now moves ONLY on
+ * deliberate feedback, so the two signals stop fighting over one field and a
+ * ranker can weigh them explicitly.
+ *
+ * Recency is unaffected: `_reactivateResults` still refreshes `last_accessed`
+ * on every recall, and decay is driven by that — so a frequently-recalled
+ * engram still resists decay without its strength being inflated.
+ */
 export function reactivate(currentStrength: number): number {
-  return Math.min(1.0, currentStrength + 0.1)
+  return currentStrength
 }
 
 /** Co-access decay for associations (spreading activation) */

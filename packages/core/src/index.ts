@@ -4258,7 +4258,15 @@ export class Plur {
       // supports targeted updates write only those.
       const touched = new Map<string, Engram>()
 
-      // Reactivate accessed engrams
+      // Reactivate accessed engrams.
+      //
+      // TRAFFIC and QUALITY are separate signals here (#846). `frequency`
+      // counts retrievals and `last_accessed` carries recency — which is what
+      // decay actually keys on, so a frequently-recalled engram still resists
+      // decay. `retrieval_strength` is deliberately NOT touched: it moves only
+      // on deliberate feedback now, because when retrieval moved it too the
+      // traffic term structurally outvoted the quality term (+0.10 per fetch
+      // against +0.05 per ★) and saturated at 1.0 within three recalls.
       for (const e of allEngrams) {
         if (resultIds.has(e.id)) {
           e.activation.retrieval_strength = reactivate(e.activation.retrieval_strength)
