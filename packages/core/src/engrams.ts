@@ -5,6 +5,7 @@ import { EngramSchemaPassthrough, type Engram } from './schemas/engram.js'
 import { PackManifestSchema, type PackManifest } from './schemas/pack.js'
 import { logger } from './logger.js'
 import { atomicWrite } from './sync.js'
+import { normalizeEngramInput } from './normalize-engram.js'
 
 /**
  * Error thrown when the engram file exists but cannot be read as engrams.
@@ -140,23 +141,9 @@ export function parseEngramFile(
   const valid: Engram[] = []
   const quarantined: unknown[] = []
   for (const entry of raw.engrams) {
-    // Backward compat (#866): migrate the pre-866 field name `reference_count`
-    // to `write_count` on first parse, and strip the old key so passthrough
-    // does not re-serialise it and the YAML stays clean after the next write.
-    // Only applied when `write_count` is absent, so a store already migrated
-    // (or written by a newer PLUR) is untouched.
-    let normalized = entry
-    if (
-      entry &&
-      typeof entry === 'object' &&
-      !Array.isArray(entry) &&
-      !('write_count' in entry) &&
-      'reference_count' in entry
-    ) {
-      const { reference_count, ...rest } = entry as Record<string, unknown>
-      normalized = { ...rest, write_count: reference_count }
-    }
-    const result = EngramSchemaPassthrough.safeParse(normalized)
+    // Field-compat rules live in ONE place (#877) — normalise before parse, so
+    // "absent" is still distinguishable from "Zod filled the default".
+    const result = EngramSchemaPassthrough.safeParse(normalizeEngramInput(entry))
     if (result.success) valid.push(result.data)
     // Quarantine the ORIGINAL entry, not the normalised one: quarantined
     // entries are written back verbatim, and a rejected engram must not be
