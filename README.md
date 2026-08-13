@@ -254,6 +254,8 @@ await plur.sync('git@github.com:you/plur-memory.git')
 | `plur_inject_hybrid` | Select engrams for current task within token budget |
 | `plur_feedback` | Rate relevance (trains quality over time) |
 | `plur_forget` | Retire a memory (activation decays, eventually pruned) |
+| `plur_rescope` | Move an existing engram to another scope — personal → team, or back |
+| `plur_session_scope` | Change the session's default write scope mid-session |
 | `plur_capture` | Record an event — incident, resolution, session milestone |
 | `plur_timeline` | Query episode history by time, agent, or channel |
 | `plur_ingest` | Extract engrams from text automatically |

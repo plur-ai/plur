@@ -152,7 +152,7 @@ const recallHandler: ToolDefinition['handler'] = async (args, plur) => {
     return response
   }
   // mode === 'hybrid' (default)
-  const budget = args.budget as { max_tokens?: number; max_results?: number; ttl_seconds?: number } | undefined
+  const budget = args.budget as { max_tokens?: number; max_results?: number } | undefined
   const cap = budget?.max_results ?? (args.limit as number | undefined) ?? 20
   // When a max_results budget is set, fetch one extra so we can detect
   // whether the store had more results than the cap without over-fetching.
@@ -1287,7 +1287,13 @@ function getAllToolDefinitions(): ToolDefinition[] {
           scope: { type: 'string', description: 'Filter by scope (also includes global)' },
           domain: { type: 'string', description: 'Filter by domain prefix' },
           limit: { type: 'number', description: 'Max results to return (default 20)' },
-          budget: { type: 'object', description: 'Budget constraints for sub-agents. Hybrid mode only — ignored when mode:"keyword".', properties: { max_tokens: { type: 'number' }, max_results: { type: 'number' }, ttl_seconds: { type: 'number' } } },
+          // `ttl_seconds` was declared here and never read (#703). A schema
+          // field an agent can set and no handler consults is a lie the tool
+          // tells about itself — it reads as "caching is configurable" and
+          // nothing caches. Removed rather than documented: there is no
+          // behaviour to describe, and describing "accepted and ignored"
+          // still costs every caller a decision.
+          budget: { type: 'object', description: 'Budget constraints for sub-agents. Hybrid mode only — ignored when mode:"keyword".', properties: { max_tokens: { type: 'number' }, max_results: { type: 'number' } } },
           caller_session_id: { type: 'string', description: 'Session ID of calling agent for budget enforcement. Hybrid mode only — ignored when mode:"keyword".' },
           include_episodes: { type: 'boolean', description: 'If true, include linked episode summaries for each engram (SP2 episodic anchoring). Hybrid mode only — ignored when mode:"keyword".' },
           session_id: { type: 'string', description: 'Session this recall belongs to (from plur_session_start). Its default scope (incl. mid-session plur_session_scope changes) sets the remote dialing context when no explicit scope filter is passed. Optional when one session is open (#243).' },
@@ -1308,7 +1314,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
           scope: { type: 'string', description: 'Filter by scope (also includes global)' },
           domain: { type: 'string', description: 'Filter by domain prefix' },
           limit: { type: 'number', description: 'Max results to return (default 20)' },
-          budget: { type: 'object', description: 'Budget constraints for sub-agents', properties: { max_tokens: { type: 'number' }, max_results: { type: 'number' }, ttl_seconds: { type: 'number' } } },
+          budget: { type: 'object', description: 'Budget constraints for sub-agents', properties: { max_tokens: { type: 'number' }, max_results: { type: 'number' } } },
           caller_session_id: { type: 'string', description: 'Session ID of calling agent for budget enforcement' },
           include_episodes: { type: 'boolean', description: 'If true, include linked episode summaries for each engram (SP2 episodic anchoring)' },
           session_id: { type: 'string', description: 'Session this recall belongs to (from plur_session_start). Its default scope sets the remote dialing context when no explicit scope filter is passed (#243).' },

@@ -370,56 +370,17 @@ async function runInit() {
 // --- Packs subcommands ---
 
 async function runPacks(): Promise<void> {
-  const sub = process.argv[3]
   const plurPath = process.env.PLUR_PATH ?? join(homedir(), '.plur')
   const { Plur } = await import('@plur-ai/core')
+  const { packsCommand } = await import('./packs-cli.js')
   const plur = new Plur({ path: plurPath })
 
-  if (sub === 'install') {
-    const source = process.argv[4]
-    if (!source) {
-      process.stderr.write('Usage: plur-mcp packs install <path>\n')
-      process.exit(1)
-    }
-    try {
-      const result = await plur.installPack(source)
-      process.stdout.write(`Installed pack '${result.name}' (${result.installed} engrams)\n`)
-    } catch (err) {
-      process.stderr.write(`Error: ${(err as Error).message}\n`)
-      process.exit(1)
-    }
-  } else if (sub === 'list') {
-    const packs = plur.listPacks()
-    if (packs.length === 0) {
-      process.stdout.write('No packs installed.\n')
-    } else {
-      for (const pack of packs) {
-        const version = pack.manifest?.version ? ` v${pack.manifest.version}` : ''
-        process.stdout.write(`${pack.name}${version} (${pack.engram_count} engrams)\n`)
-      }
-    }
-  } else if (sub === 'uninstall') {
-    const name = process.argv[4]
-    if (!name) {
-      process.stderr.write('Usage: plur-mcp packs uninstall <name>\n')
-      process.exit(1)
-    }
-    try {
-      const result = plur.uninstallPack(name)
-      if (result.removed) {
-        process.stdout.write(`Uninstalled pack '${result.name}' (${result.engram_count} engrams removed)\n`)
-      } else {
-        process.stderr.write(`Pack '${name}' not found.\n`)
-        process.exit(1)
-      }
-    } catch (err) {
-      process.stderr.write(`Error: ${(err as Error).message}\n`)
-      process.exit(1)
-    }
-  } else {
-    process.stderr.write(`Unknown packs subcommand: ${sub ?? '(none)'}\nAvailable: install, list, uninstall\n`)
-    process.exit(1)
-  }
+  // The branch logic lives in `packs-cli.ts` so it can be tested without
+  // spawning a process (#545). This function's only job is streams and exit.
+  const result = await packsCommand(process.argv.slice(3), plur)
+  if (result.stdout) process.stdout.write(result.stdout)
+  if (result.stderr) process.stderr.write(result.stderr)
+  if (result.exitCode !== 0) process.exit(result.exitCode)
 }
 
 // --- Main execution ---

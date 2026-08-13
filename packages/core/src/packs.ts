@@ -648,7 +648,19 @@ function resolveInside(packsDir: string, name: string, op: string): string {
 
 export interface UninstallResult {
   name: string
-  removed: boolean
+  /**
+   * Always `true` — the literal type is the point (#545).
+   *
+   * `boolean` implied `false` was reachable, and a caller wrote the branch it
+   * implies: `plur-mcp packs uninstall` had an `else` that printed "Pack not
+   * found" and exited 1, which could never run. `uninstallPack` THROWS when the
+   * pack is absent, so a returned result is already proof of removal.
+   *
+   * Kept as a field rather than deleted so existing readers keep compiling, but
+   * narrowed so a `removed === false` branch is now a type error instead of
+   * dead code that reads like handled behaviour.
+   */
+  removed: true
   engram_count: number
 }
 
