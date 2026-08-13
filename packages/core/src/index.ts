@@ -4678,7 +4678,23 @@ export class Plur {
     // allow-list. A caller that wants pack content in scope names it.
     const permitted = options?.scopes
     const inScope = (e: Engram): boolean => permitted === undefined || permitted.includes(e.scope)
-    const engrams = permitted === undefined ? allEngrams : allEngrams.filter(inScope)
+    // Pack engrams are carried by `packs`, NOT by this array (#901).
+    //
+    // `_loadAllEngrams` merges installed-pack engrams into the corpus and
+    // stamps `_pack` — deliberately, and for RECALL: its own comment says
+    // "include pack engrams so they're searchable via recall". Injection does
+    // not need that merge, because it receives `packs` separately.
+    //
+    // Leaving them in meant `selectAndSpread` scored every pack engram TWICE:
+    // once in its personal-engram loop and once in its pack loop. Not merely a
+    // double count — the two loops apply different rules (the pack loop uses
+    // `packMatchTerms` and is capped by MAX_PER_PACK, the personal loop is
+    // neither), so the stray copy was scored under rules never meant for it,
+    // competed for the same token budget, and could displace a genuinely
+    // distinct engram. It also inflated `total_injections`, which feeds the
+    // H003 activation-rate assumption in hypotheses.yaml.
+    const withoutPacks = allEngrams.filter(e => (e as { _pack?: string })._pack === undefined)
+    const engrams = permitted === undefined ? withoutPacks : withoutPacks.filter(inScope)
     const packs = permitted === undefined
       ? allPacks
       : allPacks
