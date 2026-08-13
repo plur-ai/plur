@@ -9,7 +9,7 @@ import { loadConfig } from './config.js'
 import { generateEngramId, engramIdDatePrefix, loadAllPacks, storePrefix, initFilesystemStore } from './engrams.js'
 import { maybeDailyBackup } from './backup.js'
 import { logger } from './logger.js'
-import { searchEngrams, ftsTokenize, extendCorpusStats } from './fts.js'
+import { searchEngrams, ftsTokenize, extendCorpusStats, searchTextFrom } from './fts.js'
 import { selectAndSpread, scoreEngramsPublic, formatWithLayer, assignLayer } from './inject.js'
 import { reactivate } from './decay.js'
 import { captureEpisode, queryTimeline } from './episodes.js'
@@ -2652,6 +2652,90 @@ export class Plur {
    * (caller knows the write didn't land — better UX than a fire-and-
    * forget that pretends success and leaves the user with a phantom ID).
    */
+  /**
+   * Report the closest existing engrams to a statement — REPORTING ONLY (#856).
+   *
+   * `plur_learn` goes through {@link learnRouted} → sync `learn()`, which has
+   * only ever had exact content-hash dedup; `learnAsync` (and therefore the
+   * similarity pass) is reachable solely from `plur_learn_batch`. So the
+   * dominant write path had no near-duplicate visibility at all, which is how
+   * #854 happened on it.
+   *
+   * This gives that path the same observation the batch path gets, without
+   * giving either the power to suppress a write. Never throws: similarity is an
+   * optimisation, and a reporting failure must not affect a write that has
+   * already happened.
+   *
+   * @param excludeId engram to omit — pass the just-written id so it does not
+   *                  match itself at 1.0.
+   */
+  async nearDuplicates(
+    statement: string,
+    context?: LearnContext,
+    excludeId?: string,
+  ): Promise<{ mode: 'cosine' | 'hash-only'; near_duplicates?: Array<{ id: string; score: number }> }> {
+    // Respect the existing dedup switches. This costs a bounded recall plus one
+    // query embedding on every learn, which is a real addition to a hot path —
+    // so `dedup.enabled: false` or `mode: 'off'` must turn it off, exactly as
+    // they turn off the batch path's similarity pass. Reporting is worth paying
+    // for by default; it should not be unavoidable.
+    const dedupCfg = this.config.dedup ?? {}
+    if (dedupCfg.enabled === false || dedupCfg.mode === 'off') return { mode: 'hash-only' }
+    try {
+      let candidates: Engram[] = []
+      try {
+        candidates = await this.recall(statement, { limit: 6 })
+      } catch { candidates = [] }
+      candidates = candidates.filter(c => c.status === 'active' && c.id !== excludeId)
+      // Mirror the batch path's scope-awareness (#359).
+      if (context?.scope) candidates = candidates.filter(c => c.scope === context.scope)
+      if (candidates.length === 0) return { mode: 'hash-only' }
+
+      const query = searchTextFrom({
+        statement,
+        domain: context?.domain,
+        tags: context?.tags,
+        rationale: context?.rationale,
+        source: context?.source,
+        dual_coding: context?.dual_coding as never,
+        knowledge_anchors: context?.knowledge_anchors as never,
+      })
+      const { embeddingSearchWithScores } = await import('./embeddings.js')
+      // Dynamic, matching how learn-async is loaded elsewhere in this class —
+      // and imported rather than re-declared so both write paths observe at the
+      // same floor and the recorded distribution stays comparable.
+      const { NEAR_DUPLICATE_OBSERVATION_FLOOR } = await import('./learn-async.js')
+      const scored = await embeddingSearchWithScores(candidates, query, candidates.length, this.paths.root)
+      if (scored.length === 0) return { mode: 'hash-only' }
+
+      const ranked = scored
+        .map(s => ({ id: s.engram.id, score: s.score }))
+        .sort((a, b) => b.score - a.score)
+      const top = ranked[0]
+      if (top.score >= NEAR_DUPLICATE_OBSERVATION_FLOOR) {
+        try {
+          appendHistory(this.paths.root, {
+            event: 'dedup_near_duplicate',
+            engram_id: top.id,
+            timestamp: new Date().toISOString(),
+            data: {
+              statement: statement.slice(0, 200),
+              top_score: Number(top.score.toFixed(4)),
+              scope: context?.scope ?? null,
+              incoming_has_domain: Boolean(context?.domain),
+              incoming_has_rationale: Boolean(context?.rationale),
+              path: 'learn',
+            },
+          })
+        } catch { /* observation only */ }
+      }
+      return { mode: 'cosine', near_duplicates: ranked.slice(0, 3) }
+    } catch (err) {
+      logger.warning(`near-duplicate reporting unavailable: ${err}`)
+      return { mode: 'hash-only' }
+    }
+  }
+
   async learnRouted(statement: string, context?: LearnContext): Promise<Engram> {
     this._assertWritable()
     // #729: validate type BEFORE the secrets scan — a bad type must fail
@@ -2912,6 +2996,22 @@ export class Plur {
       engramsPath: this.paths.engrams,
       rootPath: this.paths.root,
       dedupConfig: this.config.dedup ?? {},
+      // Local similarity for the no-LLM dedup path (#854). Scores the already
+      // fetched candidates rather than the corpus, and reuses the embedding
+      // cache, so this costs one query embedding and no API call. Returns []
+      // when the embedder is unavailable, which the caller reads as
+      // "similarity did not run" rather than "nothing was similar".
+      similarityScores: async (statement: string, candidates: Engram[]) => {
+        if (candidates.length === 0) return []
+        const { embeddingSearchWithScores } = await import('./embeddings.js')
+        const scored = await embeddingSearchWithScores(
+          candidates,
+          statement,
+          candidates.length,
+          this.paths.root,
+        )
+        return scored.map(s => ({ id: s.engram.id, score: s.score }))
+      },
       isLlmAvailable: () => this._isLlmDedupAvailable(),
       recordLlmSuccess: () => this._recordLlmSuccess(),
       recordLlmFailure: () => this._recordLlmFailure(),

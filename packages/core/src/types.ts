@@ -83,6 +83,25 @@ export interface LearnAsyncResult {
   existing_id?: string
   tensions?: string[]
   /**
+   * What the dedup pass was actually able to do, and what it saw (#854).
+   *
+   * Before this existed, a write on an install with no LLM configured took the
+   * `decision = 'ADD'` default and reported success identically to a write that
+   * had been semantically checked. The two are not the same claim, and the
+   * difference was invisible: 131 near-duplicates accumulated across five months
+   * before anyone ran a similarity scan.
+   *
+   *  - 'llm'       — an LLM judged it
+   *  - 'cosine'    — local embeddings judged it, no API call
+   *  - 'hash-only' — neither was available; only exact content-hash ran, so an
+   *                  ADD here means "not identical", NOT "not a duplicate"
+   */
+  dedup?: {
+    mode: 'llm' | 'cosine' | 'hash-only'
+    /** Closest candidates and their scores — present whenever similarity ran. */
+    near_duplicates?: Array<{ id: string; score: number }>
+  }
+  /**
    * Position of this result's statement in the original learnBatch input array
    * (#281). `results` is compacted (failed statements are absent), so callers
    * must NOT assume `results[i]` corresponds to `inputs[i]` — read `input_index`
