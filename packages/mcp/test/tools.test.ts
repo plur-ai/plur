@@ -378,6 +378,36 @@ describe('MCP tools', () => {
       expect(result.domain_hint).toContain('group:acme/engineering')
     })
 
+    it('batch: does not count an item that AUTO-ROUTED without a domain (#681)', async () => {
+      // The parity gap. The single-item gate has four conditions, including
+      // "the write did not auto-route"; the batch count had three. A
+      // no-domain item can still clear the ranker's threshold on TAGS alone,
+      // and when it does the single-item path stays silent — so the same
+      // write produced a nudge in a batch and none on its own.
+      //
+      // The fixture's covers are ['acme.engineering', 'kubernetes',
+      // 'terraform'], so tagging an item with them routes it without a domain.
+      const result = await coversCall('plur_learn_batch', {
+        engrams: [
+          { statement: 'A kubernetes and terraform note for the engineering team',
+            tags: ['kubernetes', 'terraform', 'acme.engineering'] },
+          { statement: 'An unrelated note about gardening with no routing signal at all' },
+        ],
+      }) as any
+
+      // Guard the fixture on the STORED evidence, not on the response shape:
+      // the batch response does not echo `routed` per item, so asserting on it
+      // silently measured nothing (a first draft of this test did exactly that
+      // and reported 0 routed). `structured_data._routed` is what the gate
+      // itself reads.
+      const ids = result.ids as Array<string | null>
+      const stored = await Promise.all(ids.map(id => id ? coversPlur.getById(id) : null))
+      const routedCount = stored.filter(e =>
+        (e as { structured_data?: { _routed?: unknown } } | null)?.structured_data?._routed !== undefined).length
+      expect(routedCount, 'fixture no longer routes — the parity case is not exercised').toBe(1)
+      expect(result.domain_hint, 'the routed item was counted in the nudge').toContain('1 of 2')
+    })
+
     it('batch: silent when every item carries a domain or explicit scope', async () => {
       const result = await coversCall('plur_learn_batch', {
         engrams: [

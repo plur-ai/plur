@@ -1235,9 +1235,29 @@ function getAllToolDefinitions(): ToolDefinition[] {
         // neither a domain nor an explicit scope, and only when at least one
         // registered scope declares covers to route against.
         let batchDomainHint: { domain_hint?: string } = {}
-        const noDomainCount = raw.filter(e =>
+        // Parity with the single-item gate (#681). That gate has FOUR
+        // conditions, and this one had three: it counted an item as
+        // "no domain, no scope" without asking whether it nonetheless
+        // AUTO-ROUTED. A no-domain item reaches the ranker's 0.5 threshold on
+        // three matching tags alone (3 × WEIGHT_TAG = 1.5, the same total a
+        // domain match scores), and when it does the single-item path stays
+        // silent — so the same write produced a nudge in a batch and none on
+        // its own. Advisory either way, but a hint that contradicts itself
+        // depending on which call shape you used is worse than no hint.
+        //
+        // `_routed` is per-RESULT, not per-input, so the routed set is built
+        // from `results` and mapped back through `input_index` — the same
+        // alignment `ids` above needs, and for the same reason: `results` is
+        // compacted past failures.
+        const routedInputs = new Set<number>()
+        for (const r of results) {
+          const routed = (r.engram as { structured_data?: { _routed?: unknown } }).structured_data?._routed
+          if (routed !== undefined && r.input_index !== undefined) routedInputs.add(r.input_index)
+        }
+        const noDomainCount = raw.filter((e, i) =>
           !(typeof e.domain === 'string' && e.domain.length > 0) &&
-          !(typeof e.scope === 'string' && e.scope.length > 0)).length
+          !(typeof e.scope === 'string' && e.scope.length > 0) &&
+          !routedInputs.has(i)).length
         if (noDomainCount > 0) {
           try {
             const coversScopes = plur.listScopeMetadata()
