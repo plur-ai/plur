@@ -135,6 +135,14 @@ const recallHandler: ToolDefinition['handler'] = async (args, plur) => {
           scope: e.scope,
           domain: e.domain,
           retrieval_strength: e.activation.retrieval_strength,
+          // SAME FACT, not same record (#852 follow-up). A stable SHA-256 of
+          // the normalized statement: two engrams sharing it assert the same
+          // thing, in different stores or under different ids. Use it to match
+          // across stores and to spot a restatement you already hold — NOT as
+          // an identifier. Statements mutate (UPDATE, MERGE, procedure
+          // evolution), so this changes when the content does; `id` is what
+          // stays fixed.
+          content_hash: (e as { content_hash?: string }).content_hash,
         }
       }),
       count: results.length,
@@ -195,6 +203,9 @@ const recallHandler: ToolDefinition['handler'] = async (args, plur) => {
         scope: e.scope,
         domain: e.domain,
         retrieval_strength: e.activation.retrieval_strength,
+        // Same fact, not same record — see the note on the other recall
+        // formatter. Both shapes carry it or an agent gets it only sometimes.
+        content_hash: raw.content_hash,
       }
       if (includeEpisodes && raw.episode_ids?.length > 0) {
         const episodes = plur.timeline({ search: '' })
@@ -1101,6 +1112,8 @@ function getAllToolDefinitions(): ToolDefinition[] {
             id: engram.id, statement: engram.statement,
             scope: engram.scope, type: engram.type,
             pinned: (engram as any).pinned === true,
+            // See the note on recall results: same fact, not same record.
+            content_hash: (engram as { content_hash?: string }).content_hash,
             decision: 'ADD',
             ...(dedup?.near_duplicates?.length ? { dedup } : {}),
             ...temporalEcho(engram),
