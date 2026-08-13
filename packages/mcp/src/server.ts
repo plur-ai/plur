@@ -278,6 +278,7 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
             params_keys: Object.keys((request.params ?? {}) as Record<string, unknown>),
             received_fields: validated.errorPayload.received_fields,
             missing_fields: validated.errorPayload.missing_fields,
+            missing_array_params: validated.missingArrayParams,
             request_id: (request as { id?: string | number }).id,
             server_version: VERSION,
           })

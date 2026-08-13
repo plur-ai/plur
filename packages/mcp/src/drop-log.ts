@@ -23,8 +23,15 @@ import { atomicWrite, withLock } from '@plur-ai/core'
  *    diagnosing — every failure path is swallowed.
  */
 
-/** Newest-N cap applied on every write. */
-export const PAYLOAD_DROP_LOG_MAX_ENTRIES = 100
+/**
+ * Newest-N cap applied on every write.
+ *
+ * Raised from 100 when scalar-only partial drops started being recorded: that
+ * population is dominated by ordinary caller errors and is far more frequent
+ * than a genuine client drop, so the old cap would evict the rare events the
+ * log exists to preserve. A record is a few hundred bytes of field names.
+ */
+export const PAYLOAD_DROP_LOG_MAX_ENTRIES = 500
 
 export interface PayloadDropRecord {
   /** ISO-8601 timestamp of the drop. */
@@ -46,6 +53,22 @@ export interface PayloadDropRecord {
   received_fields: string[]
   /** Schema-required field NAMES that were missing. */
   missing_fields: string[]
+  /**
+   * The subset of {@link missing_fields} that is array-typed.
+   *
+   * This is the discriminator that makes the log falsifiable. A partial drop
+   * missing an array is the #297 shape; one missing only scalars is usually an
+   * ordinary caller error. Both are recorded — recording only the former made
+   * "every partial drop involves an array" true by construction and so unable
+   * to test the hypothesis it appeared to confirm. Empty array = scalar-only.
+   *
+   * OPTIONAL because records predating the discriminator do not carry it, and
+   * `readPayloadDropLog` returns those too. `undefined` is not `[]`: it means
+   * "unknown, and array-shaped by construction" — the old gate could not record
+   * anything else — whereas `[]` is a measured scalar-only drop. Anything
+   * computing the ratio must exclude `undefined` rather than count it as zero.
+   */
+  missing_array_params?: string[]
   /** JSON-RPC request id, when the SDK exposes it. */
   request_id?: string | number
   /** @plur-ai/mcp version that recorded the drop. */
