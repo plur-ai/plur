@@ -99,6 +99,123 @@ export const RATE_LIMIT_MAX_COOLDOWN_MS = 60 * 60 * 1000
  *  pair prints again at most once per this window (plan A4′, default 4h). */
 export const HOOK_HEADER_REPEAT_MS = 4 * 60 * 60 * 1000
 
+/** How often {@link startBudgetTimer} samples the event loop to tell elapsed
+ *  time apart from time this process spent unable to service I/O. */
+export const BUDGET_TICK_MS = 50
+
+/**
+ * Ceiling on the extra wall time a request may earn back from event-loop
+ * starvation (see {@link startBudgetTimer}).
+ *
+ * Absolute rather than a multiple of the budget: the hook path runs inside a
+ * user's prompt with a 1500 ms budget, and a multiplier would let a starved
+ * process stretch that into something a human notices. Credit is only ever
+ * earned while the loop is genuinely blocked — during which the caller is
+ * already waiting on that local work — so the practical worst case is bounded
+ * by the local work, not by this constant.
+ */
+export const MAX_STARVATION_CREDIT_MS = 5000
+
+/**
+ * A timeout that measures the time the request was actually SERVICED, not raw
+ * wall time.
+ *
+ * The remote leg is deliberately started before the local pipeline so its
+ * latency overlaps. But local work — above all the first-call BGE embedder
+ * initialisation — blocks Node's single event loop, and a plain `setTimeout`
+ * keeps counting through the block. The response cannot be read, the timer
+ * fires the moment the loop frees up, and the request is recorded as a host
+ * timeout that the host had no part in: measured cold, the connect phase
+ * aborted at ~1335 ms against a server answering in ~600 ms, while the very
+ * next call on the same process and host succeeded in ~1.1 s.
+ *
+ * That misattribution is not cosmetic. Hooks are one-shot processes at ~86% of
+ * recall volume, so for most of the fleet EVERY call is a cold call, and the
+ * breaker then counts these as host failures and parks a healthy host.
+ *
+ * So: sample the loop every {@link BUDGET_TICK_MS}. A tick that arrives late
+ * proves the loop was blocked, and the overshoot is credited back rather than
+ * charged to the network. A host that is simply slow or dead accrues no credit
+ * — the loop is responsive, ticks land on time, and the original budget is
+ * enforced exactly. Credit is capped by {@link MAX_STARVATION_CREDIT_MS} so a
+ * pathologically busy process still terminates the request.
+ *
+ * Returns a cancel function.
+ */
+export function startBudgetTimer(
+  budgetMs: number,
+  onExpire: () => void,
+  opts: { tickMs?: number; maxCreditMs?: number; now?: () => number } = {},
+): () => void {
+  const now = opts.now ?? Date.now
+  const tickMs = Math.max(1, opts.tickMs ?? BUDGET_TICK_MS)
+  const maxCredit = Math.max(0, opts.maxCreditMs ?? MAX_STARVATION_CREDIT_MS)
+  const started = now()
+  let last = started
+  let credit = 0
+  let timer: ReturnType<typeof setTimeout> | undefined
+  let done = false
+
+  const schedule = (): void => {
+    if (done) return
+    const serviced = (now() - started) - credit
+    const remaining = Math.max(1, Math.min(tickMs, budgetMs - serviced))
+    timer = setTimeout(tick, remaining)
+    // Never hold the process open on account of a timeout sampler.
+    ;(timer as { unref?: () => void }).unref?.()
+  }
+
+  const tick = (): void => {
+    if (done) return
+    const t = now()
+    // Anything beyond the interval we asked for is time the loop was busy
+    // elsewhere — the request was not being serviced, so it is not charged.
+    credit = Math.min(maxCredit, credit + Math.max(0, (t - last) - tickMs))
+    last = t
+    const wall = t - started
+    if ((wall - credit) >= budgetMs || wall >= budgetMs + maxCredit) {
+      done = true
+      onExpire()
+      return
+    }
+    schedule()
+  }
+
+  schedule()
+  return () => { done = true; if (timer) clearTimeout(timer) }
+}
+
+/**
+ * How long a recorded per-host recall outcome may still be presented as the
+ * host's CURRENT state (#864).
+ *
+ * The outcome map is fed only by hosts a recall actually dialed. A recall that
+ * dials nothing — `remote: false`, the kill-switch, an empty query, or no host
+ * implicated by the current project/work — leaves the previous entry in place,
+ * so without an age bound a single early failure is re-reported as live
+ * degradation for the entire life of the process. On a workstation that is
+ * days, and it accuses the server of a fault that is entirely client-side.
+ *
+ * Aligned with {@link BREAKER_COOLDOWN_MS}: once the breaker would have
+ * re-dialed the host anyway, a stale failure has outlived its evidence.
+ */
+export const REMOTE_STATUS_TTL_MS = BREAKER_COOLDOWN_MS
+
+/**
+ * States a successful non-recall interaction with the host (e.g. the
+ * `/me` probe behind `checkRemoteHealth`) genuinely CONTRADICTS, and may
+ * therefore clear (#864).
+ *
+ * Deliberately network-class only. `unsupported` (404 on the recall route)
+ * and `rate_limited` (429 against a separate budget) say nothing about `/me`
+ * and vice versa, and `auth_expired`/`forbidden` are authorization facts that
+ * a probe on a different route with different scope requirements must not be
+ * allowed to mask. Clearing those would trade a false alarm for a silent
+ * failure, which is the worse of the two.
+ */
+export const PROBE_CLEARABLE_STATES: ReadonlySet<RemoteHostState> =
+  new Set<RemoteHostState>(['timeout', 'unreachable', 'skipped_cooldown'])
+
 // ---------------------------------------------------------------------------
 // Env knobs
 // ---------------------------------------------------------------------------
@@ -547,9 +664,12 @@ export async function remoteRecall(
     if ((h.unsupported_until ?? 0) > t0) return finish('unsupported', { detail: 'unsupported_ttl' })
 
     const ctrl = new AbortController()
-    const overallTimer = setTimeout(() => ctrl.abort(), timeoutMs)
-    let connectTimer: ReturnType<typeof setTimeout> | undefined =
-      setTimeout(() => ctrl.abort(), Math.min(connectMs, timeoutMs))
+    // Starvation-aware (#864 follow-up): a cold process spends its first
+    // seconds initialising the embedder, and a wall-clock timer would abort a
+    // request the loop never got round to servicing.
+    const cancelOverall = startBudgetTimer(timeoutMs, () => ctrl.abort())
+    let cancelConnect: (() => void) | undefined =
+      startBudgetTimer(Math.min(connectMs, timeoutMs), () => ctrl.abort())
     try {
       const res = await fetchImpl(`${key}/api/v1/recall`, {
         method: 'POST',
@@ -574,8 +694,8 @@ export async function remoteRecall(
       })
       // Headers arrived — connect phase over; the overall timer still bounds
       // the body read.
-      clearTimeout(connectTimer)
-      connectTimer = undefined
+      cancelConnect?.()
+      cancelConnect = undefined
 
       if (res.status === 401) {
         h.failures = 0
@@ -635,8 +755,8 @@ export async function remoteRecall(
       return networkFailure(isAbort ? 'timeout' : 'unreachable',
         isAbort ? undefined : (err instanceof Error ? err.message.slice(0, 120) : undefined))
     } finally {
-      if (connectTimer) clearTimeout(connectTimer)
-      clearTimeout(overallTimer)
+      cancelConnect?.()
+      cancelOverall()
     }
   }
 
@@ -688,6 +808,11 @@ export interface RemoteStoreStatusEntry {
   dropped_scopes?: string[]
   ms?: number
   count?: number
+  /** When this outcome was observed (epoch ms) — #864. */
+  observed_at?: number
+  /** Age of the observation at the time the status was read (ms) — #864.
+   *  Renderers MUST NOT present a non-zero age as the host's state "now". */
+  age_ms?: number
 }
 
 /**

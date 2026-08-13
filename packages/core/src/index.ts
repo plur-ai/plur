@@ -48,6 +48,7 @@ import { decodeJwtExpiry, decodeJwtPayload } from './jwt.js'
 import { RemoteStore, normalizeEndpointUrl } from './store/remote-store.js'
 import {
   remoteRecall, isRemoteRecallDisabled, resolveRemoteRecallTimeoutMs, scopeOrg,
+  REMOTE_STATUS_TTL_MS, PROBE_CLEARABLE_STATES,
   type RemoteRecallHost, type RemoteRecallResult, type HostRecallOutcome, type RemoteStoreStatusEntry,
 } from './remote-recall.js'
 import { YamlPrimaryStore } from './store/yaml-primary-store.js'
@@ -294,6 +295,8 @@ export {
   claimHookDegradationLines,
   MAX_REMOTE_QUERY_CHARS, MAX_REMOTE_RESPONSE_BYTES, DEFAULT_REMOTE_RECALL_TIMEOUT_MS,
   BREAKER_FAILURE_THRESHOLD, BREAKER_COOLDOWN_MS, UNSUPPORTED_TTL_MS, HOOK_HEADER_REPEAT_MS,
+  REMOTE_STATUS_TTL_MS, PROBE_CLEARABLE_STATES,
+  startBudgetTimer, BUDGET_TICK_MS, MAX_STARVATION_CREDIT_MS,
   type RemoteRecallHost, type RemoteRecallResult, type HostRecallOutcome,
   type RemoteHostState, type RemoteStoreStatusEntry, type RemoteRecallOptions,
 } from './remote-recall.js'
@@ -3675,8 +3678,11 @@ export class Plur {
   // -------------------------------------------------------------------------
 
   /** Last per-host recall outcomes (in-process), keyed by normalized URL —
-   *  feeds `remoteStoreStatus()` (plan A4′). */
-  private _lastRemoteOutcomes = new Map<string, HostRecallOutcome>()
+   *  feeds `remoteStoreStatus()` (plan A4′). Each entry carries the time it
+   *  was observed: the map is written ONLY by hosts a recall actually dialed,
+   *  so without an age the newest entry is indistinguishable from one made
+   *  days ago by a process that has since been idle (#864). */
+  private _lastRemoteOutcomes = new Map<string, { outcome: HostRecallOutcome; observed_at: number }>()
 
   /** Where breaker/cooldown/unsupported state persists across processes.
    *  Inside the store root so tests and PLUR_PATH overrides isolate it. */
@@ -3714,6 +3720,12 @@ export class Plur {
    * feeds the doctor warning for that misconfiguration.
    */
   private _remoteRecallHosts(options?: { scope?: string; session?: string; remote_project?: RemoteProjectConfig }): RemoteRecallHost[] {
+    // Pick up out-of-process config edits (#307) before reading tokens: a
+    // rotated credential must reach the very next dial, not the next restart.
+    // The constructor's only re-read compares `stores.length`, so a rotation
+    // that leaves the store count unchanged was previously invisible for the
+    // life of the process (#864).
+    this.reloadConfigIfChanged()
     const stores = (this.config.stores ?? []).filter(s => s.url)
     const rp = options?.remote_project
     const rpKey = rp ? normalizeEndpointUrl(rp.url) : null
@@ -3800,7 +3812,10 @@ export class Plur {
       limit: options?.limit,
       statePath: this.remoteHealthStatePath(),
     }).then(result => {
-      for (const o of result.outcomes) this._lastRemoteOutcomes.set(normalizeEndpointUrl(o.url), o)
+      const observed_at = Date.now()
+      for (const o of result.outcomes) {
+        this._lastRemoteOutcomes.set(normalizeEndpointUrl(o.url), { outcome: o, observed_at })
+      }
       return result
     }).catch((): RemoteRecallResult => ({ engrams: [], scores: new Map(), outcomes: [] }))
   }
@@ -3890,15 +3905,53 @@ export class Plur {
    * outcomes this process observed — NOT by driver caches or fresh probes.
    * MCP surfaces attach a `remote_stores` block from this when any host is
    * non-ok (or silently scope-narrowed); plur_doctor renders remediation.
+   *
+   * Every entry carries `observed_at` and `age_ms` (#864). An observation is
+   * evidence about the moment it was taken, and this map is only written by
+   * hosts a recall actually DIALED — a recall that dials nothing leaves the
+   * previous entry untouched. Callers that speak in the present tense
+   * ("serving local only") must pass `freshOnly` so a stale failure stops
+   * being reported as the live state; callers that are explicitly historical
+   * (doctor's "last live recall") should read everything and render the age.
    */
-  remoteStoreStatus(): RemoteStoreStatusEntry[] {
-    return [...this._lastRemoteOutcomes.values()].map(o => ({
-      host: normalizeEndpointUrl(o.url),
-      status: o.state,
-      ...(o.dropped_scopes && o.dropped_scopes.length > 0 ? { dropped_scopes: o.dropped_scopes } : {}),
-      ms: o.ms,
-      count: o.count,
-    }))
+  remoteStoreStatus(opts?: { freshOnly?: boolean; now?: number }): RemoteStoreStatusEntry[] {
+    const now = opts?.now ?? Date.now()
+    const out: RemoteStoreStatusEntry[] = []
+    for (const { outcome: o, observed_at } of this._lastRemoteOutcomes.values()) {
+      const age_ms = Math.max(0, now - observed_at)
+      if (opts?.freshOnly && age_ms > REMOTE_STATUS_TTL_MS) continue
+      out.push({
+        host: normalizeEndpointUrl(o.url),
+        status: o.state,
+        ...(o.dropped_scopes && o.dropped_scopes.length > 0 ? { dropped_scopes: o.dropped_scopes } : {}),
+        ms: o.ms,
+        count: o.count,
+        observed_at,
+        age_ms,
+      })
+    }
+    return out
+  }
+
+  /**
+   * Record that a non-recall interaction with `url` just SUCCEEDED, clearing a
+   * cached network-class failure for that host (#864).
+   *
+   * Without this, `plur_doctor` contradicts itself inside one report: the
+   * `/me` probe says "Reachable, auth valid" and the line directly beneath it
+   * says the host timed out, because the second line is a cached recall
+   * outcome that nothing ever invalidates. A store that just answered a
+   * request is not unreachable, and the fresher observation wins.
+   *
+   * Only {@link PROBE_CLEARABLE_STATES} are cleared — see that constant for
+   * why an authorization or endpoint-support failure must survive a probe.
+   */
+  noteRemoteHostReachable(url: string): void {
+    const key = normalizeEndpointUrl(url)
+    const entry = this._lastRemoteOutcomes.get(key)
+    if (entry && PROBE_CLEARABLE_STATES.has(entry.outcome.state)) {
+      this._lastRemoteOutcomes.delete(key)
+    }
   }
 
   /**
@@ -7746,6 +7799,10 @@ Generate an improved version of the procedure that prevents this failure. Return
    */
   async checkRemoteHealth(opts?: { timeoutMs?: number }): Promise<RemoteHealth[]> {
     const timeoutMs = opts?.timeoutMs ?? 5000
+    // Decode the token that is on DISK now, not the one read at construction
+    // (#307/#864). Reporting "expires in 4d" from a 13-day-old in-memory copy
+    // of a credential the user rotated hours ago sends them to fix the server.
+    this.reloadConfigIfChanged()
     const groups = this.remoteEndpointTokenGroups()
     return Promise.all(groups.map(async ({ url, token, scopes }) => {
       const exp = decodeJwtExpiry(token)
@@ -7773,6 +7830,9 @@ Generate an improved version of the procedure that prevents this failure. Return
             timeoutHandle = setTimeout(() => reject(new Error(`/me timeout (${timeoutMs}ms)`)), timeoutMs)
           }),
         ])
+        // A host that just answered /me is not unreachable — retire any cached
+        // network-class recall failure for it rather than reporting both (#864).
+        this.noteRemoteHostReachable(url)
         return { url, scopes, status: 'ok' as const, ok: true,
           ...(me.username ? { username: me.username } : {}),
           ...(me.org_id ? { orgId: me.org_id } : {}),

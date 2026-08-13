@@ -1,7 +1,7 @@
 import { existsSync, unlinkSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
-import { Plur, extractMetaEngrams, validateMetaEngram, confidenceBand, generateProfile, getProfileForInjection, markProfileDirty, selectModelForOperation, readHistoryForEngram, getCachedUpdateCheck, minorVersionsBehind, scanForTensions, CapabilityCanary, readProjectConfig, isSharedScope, resolveRerankerName, getReranker, classifyRerankerFailure, hfCacheDirName, SUGGEST_DISPLAY_MIN_CONFIDENCE, mcpRemoteWarningLine, doctorRemoteRemediation } from '@plur-ai/core'
+import { Plur, extractMetaEngrams, validateMetaEngram, confidenceBand, generateProfile, getProfileForInjection, markProfileDirty, selectModelForOperation, readHistoryForEngram, getCachedUpdateCheck, minorVersionsBehind, scanForTensions, CapabilityCanary, readProjectConfig, isSharedScope, resolveRerankerName, getReranker, classifyRerankerFailure, hfCacheDirName, SUGGEST_DISPLAY_MIN_CONFIDENCE, mcpRemoteWarningLine, doctorRemoteRemediation, normalizeEndpointUrl, REMOTE_STATUS_TTL_MS, PROBE_CLEARABLE_STATES } from '@plur-ai/core'
 import type { LlmFunction, MetaField, TensionStatus, RerankerEvalResult, HistoryEvent, Receipt, RemoteStoreStatusEntry } from '@plur-ai/core'
 import { recordTelemetry } from './telemetry.js'
 import { VERSION } from './version.js'
@@ -47,6 +47,26 @@ export interface ToolDefinition {
 }
 
 /**
+ * Render an observation age as a short human suffix (#864).
+ *
+ * Doctor lines that report a cached outcome must say WHEN it was observed.
+ * "Last live recall: timeout" reads as a present-tense fact about the server;
+ * "Last live recall: timeout 3h ago" reads as what it is — a record of a past
+ * call, which the operator can weigh against the live probe beside it.
+ */
+function formatAge(ageMs: number | undefined): string {
+  if (typeof ageMs !== 'number' || !Number.isFinite(ageMs)) return '(age unknown)'
+  const s = Math.floor(ageMs / 1000)
+  if (s < 10) return 'just now'
+  if (s < 60) return `${s}s ago`
+  const m = Math.floor(s / 60)
+  if (m < 60) return `${m}m ago`
+  const h = Math.floor(m / 60)
+  if (h < 24) return `${h}h ago`
+  return `${Math.floor(h / 24)}d ago`
+}
+
+/**
  * A4′ (#776): attach per-host remote degradation to a tool response — ONLY
  * when a host is non-ok or was silently scope-narrowed (`dropped_scopes`).
  * Structured block + ONE prose `warning` line (agent-directed strings from
@@ -56,7 +76,13 @@ export interface ToolDefinition {
 function attachRemoteStoreDegradation(response: Record<string, unknown>, plur: Plur): void {
   let status: RemoteStoreStatusEntry[]
   try {
-    status = plur.remoteStoreStatus()
+    // `freshOnly` (#864): this block speaks in the present tense ("serving
+    // local only"), so it may only report observations recent enough to still
+    // describe now. The outcome map is written only by hosts a recall dialed,
+    // and most tools that reach here dial nothing — without the age bound, one
+    // early failure stamps a degradation warning onto every later response for
+    // the life of the process, long after the host recovered.
+    status = plur.remoteStoreStatus({ freshOnly: true })
   } catch {
     return // surfacing must never break the tool response
   }
@@ -2257,9 +2283,13 @@ function getAllToolDefinitions(): ToolDefinition[] {
         // Remote store auth/reachability (#295) — without this, doctor reports
         // "healthy" while the enterprise token is expired and writes silently
         // queue. Probe /me per configured remote and decode token expiry.
+        // Hosts a FRESH /me probe just reached, so the recall-status block
+        // below can defer to live evidence instead of contradicting it (#864).
+        const probedOkHosts = new Set<string>()
         try {
           const remotes = await plur.checkRemoteHealth({ timeoutMs: 5000 })
           for (const h of remotes) {
+            if (h.status === 'ok') probedOkHosts.add(normalizeEndpointUrl(h.url))
             const expiresNote = typeof h.tokenExpiresInDays === 'number'
               ? ` — token ${h.tokenExpiresInDays < 0 ? `expired ${-h.tokenExpiresInDays}d ago` : `expires in ${h.tokenExpiresInDays}d`}`
               : ''
@@ -2289,15 +2319,40 @@ function getAllToolDefinitions(): ToolDefinition[] {
         // narrowing via dropped_scopes).
         try {
           for (const s of plur.remoteStoreStatus()) {
-            const fix = doctorRemoteRemediation(s)
-            const degraded = s.status !== 'ok' || (s.dropped_scopes?.length ?? 0) > 0
+            const dropped = s.dropped_scopes?.length ? ` (dropped scopes: ${s.dropped_scopes.join(', ')})` : ''
+            const failed = s.status !== 'ok' || (s.dropped_scopes?.length ?? 0) > 0
+            // An observation describes the moment it was taken. Past the TTL,
+            // or once a fresh /me probe has reached the host, it is history —
+            // report it as history rather than as a live fault, and do not
+            // hand the operator remediation for a problem that may be over
+            // (#864). Both facts are stated so nothing is silently dropped.
+            const stale = (s.age_ms ?? 0) > REMOTE_STATUS_TTL_MS
+            // Same rule the invalidation path uses: a successful /me probe
+            // contradicts a network-class failure only. An authorization or
+            // endpoint-support failure is not disproved by a different route
+            // succeeding, and downgrading it here would hide a live problem
+            // behind a green check.
+            const contradicted = probedOkHosts.has(s.host) && PROBE_CLEARABLE_STATES.has(s.status)
+            const historical = failed && (stale || contradicted)
+            if (historical) {
+              const why = contradicted
+                ? 'the /me probe above just reached this host, so this is not the current state'
+                : 'older than the status TTL, so this is not the current state'
+              checks.push({
+                check: `remote recall: ${s.host}`,
+                ok: true,
+                detail: `Last live recall: ${s.status}${dropped} ${formatAge(s.age_ms)} — ${why}. Recalls at that time served local results only.`,
+              })
+              continue
+            }
             checks.push({
               check: `remote recall: ${s.host}`,
-              ok: !degraded,
-              detail: degraded
-                ? `Last live recall: ${s.status}${s.dropped_scopes?.length ? ` (dropped scopes: ${s.dropped_scopes.join(', ')})` : ''} — recent recalls served local results only.`
-                : `Last live recall ok (${s.count} row(s) in ${s.ms}ms)`,
+              ok: !failed,
+              detail: failed
+                ? `Last live recall: ${s.status}${dropped} ${formatAge(s.age_ms)} — recent recalls served local results only.`
+                : `Last live recall ok (${s.count} row(s) in ${s.ms}ms) ${formatAge(s.age_ms)}`,
             })
+            const fix = doctorRemoteRemediation(s)
             if (fix) remediation.push(fix)
           }
           // (url, token) fan-out sanity: differing tokens per endpoint mean
