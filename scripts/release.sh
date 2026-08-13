@@ -629,10 +629,47 @@ echo ""
 # the broken-publish case 0.9.2 hit (esbuild regression — the package
 # installed but `--version` would crash). If smoke fails, abort BEFORE
 # promoting to @latest so @latest stays on the prior good release.
+# --- 5a.5. Wait for the shared dependency to become resolvable ---
+# `cli` and `mcp` pin `core` at this exact version, so `npx @plur-ai/cli@X`
+# cannot resolve until `core@X` is visible to the registry's resolver. Without
+# this gate the FIRST package smoked absorbs the entire propagation wait for
+# the whole set, and its private retry budget decides the fate of the release.
+# v0.17.2 died exactly there: cli exhausted its retries, and mcp — smoked
+# seconds later against a now-propagated core — passed on its first retry. The
+# packages were fine; the ordering was the bug.
+#
+# Waiting on `npm view` here is much cheaper than an `npx` install per attempt,
+# so a generous budget costs seconds rather than minutes.
+echo "--- Step 5a.5: Wait for @plur-ai/core@$VERSION to propagate ---"
+echo -n "  "
+core_visible=false
+for _attempt in $(seq 1 30); do
+  if npm view "@plur-ai/core@$VERSION" version > /dev/null 2>&1; then
+    core_visible=true
+    break
+  fi
+  echo -n "."
+  sleep 10
+done
+if [ "$core_visible" = true ]; then
+  echo " ✓ resolvable"
+else
+  # Not fatal on its own — the smoke checks below still decide. This only means
+  # they start without the head start this gate exists to give them.
+  echo " ⚠ still not visible after 5 minutes; smoke checks may time out below"
+fi
+echo ""
+
 echo "--- Step 5b: Smoke test from @next ---"
 SMOKE_DIR=$(mktemp -d)
 pushd "$SMOKE_DIR" > /dev/null
 SMOKE_OK=true
+# Did every failure we saw look like propagation lag, rather than a defect?
+# The distinction changes the RECOVERY ADVICE completely: a crash means burn the
+# version and ship a patch; lag means the artefacts are good and the release
+# should be resumed from the promote step. v0.17.2 printed the former for the
+# latter, which would have burned a version for no reason.
+SMOKE_ONLY_PROPAGATION=true
 # CLI-shaped packages ship a `--version` bin (cli → `plur`, mcp → `plur-mcp`).
 # Both are promoted to @latest, so both are smoke-tested — #584: previously only
 # cli was checked, yet the audited fixes live in core (pulled in transitively).
@@ -659,6 +696,7 @@ for pkg_check in "cli:$VERSION" "mcp:$VERSION"; do
       [ "$attempt" -lt 6 ] && { echo -n "(propagating, retry $attempt) "; sleep 20; }
       continue
     fi
+    SMOKE_ONLY_PROPAGATION=false
     break
   done
   if [ "$smoke_ok_pkg" = true ]; then
@@ -675,15 +713,25 @@ done
 # Plur class is actually exported at the promoted version, before @latest moves.
 echo -n "  @plur-ai/core@$VERSION install + import → "
 core_exit=0
+# Whether the INSTALL itself ever resolved, tracked separately because
+# `core_exit` is reused by the import check below and so cannot answer that
+# question afterwards. It is the whole distinction the classifier rests on:
+# "core never installed" is propagation lag, "core installed and is broken" is
+# a defect. Losing it is what let a broken core be advised for promotion.
+core_installed=false
 # Same propagation-retry as the --version checks above: the install can ETARGET
 # while @next is still propagating.
 for attempt in 1 2 3 4 5 6; do
   core_install_out=$(npm install --no-save --no-audit --no-fund "@plur-ai/core@$VERSION" 2>&1) && core_exit=0 || core_exit=$?
-  [ "$core_exit" -eq 0 ] && break
+  if [ "$core_exit" -eq 0 ]; then
+    core_installed=true
+    break
+  fi
   if echo "$core_install_out" | grep -qiE 'ETARGET|No matching version|notarget'; then
     [ "$attempt" -lt 6 ] && { echo -n "(propagating, retry $attempt) "; sleep 20; }
     continue
   fi
+  SMOKE_ONLY_PROPAGATION=false
   break
 done
 if [ "$core_exit" -eq 0 ]; then
@@ -695,6 +743,18 @@ if [ "$core_exit" -eq 0 ] && [ "$core_inst" = "$VERSION" ]; then
 else
   echo "✗"
   echo "      Expected core@$VERSION to import with a Plur export (exit=$core_exit, installed=$core_inst): ${core_out:-}"
+  # The install resolved and core STILL failed — it either crashed on import or
+  # is present at the wrong version. Both are genuine defects, and both are the
+  # exact class this check exists to catch (#584, #64). Clearing the flag stops
+  # the abort from advising "resume → promote core@latest" over a broken core.
+  #
+  # Guarding on `core_installed` rather than on `core_inst = $VERSION` matters:
+  # a version MISMATCH is itself one of the two defects, so keying on the
+  # version would misfile it as lag — the same hole one level down.
+  # A pure ETARGET exhaustion never sets `core_installed`, so it stays lag.
+  if [ "$core_installed" = true ]; then
+    SMOKE_ONLY_PROPAGATION=false
+  fi
   SMOKE_OK=false
 fi
 popd > /dev/null
@@ -702,14 +762,38 @@ rm -rf "$SMOKE_DIR"
 if [ "$SMOKE_OK" != true ]; then
   echo ""
   echo "✗ Smoke test FAILED. @next is published but @latest is unchanged."
-  echo "  To revert @next:"
+  if [ "$SMOKE_ONLY_PROPAGATION" = true ]; then
+    # Every failure matched the propagation signature and none was a crash or a
+    # wrong version. The published artefacts are almost certainly fine and the
+    # registry was simply still catching up — do NOT burn the version.
+    echo ""
+    echo "  Every failure was npm-propagation lag (ETARGET / no matching version),"
+    echo "  never a crash or a version mismatch. The published artefacts are most"
+    echo "  likely GOOD and the registry was still catching up."
+    echo ""
+    echo "  DO NOT ship a new patch version for this. Verify, then RESUME:"
+    echo "    1. npx -y @plur-ai/cli@$VERSION --version    # expect $VERSION"
+    echo "    2. npx -y @plur-ai/mcp@$VERSION --version    # expect $VERSION"
+    echo "    3. If both report $VERSION, promote and continue the release:"
+    echo "         for p in core cli mcp migrate; do npm dist-tag add @plur-ai/\$p@$VERSION latest; done"
+    echo "       then finish PyPI (Step 6), GitHub release (7), website (8), tweet (9)."
+    echo "    4. Only if a check CRASHES or reports the wrong version is this a real"
+    echo "       defect — then revert @next and ship the next patch (see below)."
+    echo ""
+    echo "  Revert @next only if step 1 or 2 shows a genuine defect:"
+  else
+    echo "  A check crashed or reported the wrong version — this is a real defect."
+    echo "  To revert @next:"
+  fi
   echo "    npm dist-tag rm @plur-ai/core next"
   echo "    npm dist-tag rm @plur-ai/mcp next"
   echo "    npm dist-tag rm @plur-ai/cli next"
   if [ -n "$CLAW_VERSION" ]; then
     echo "    npm dist-tag rm @plur-ai/claw next"
   fi
-  echo "  Then ship a fix as the next patch (e.g. $VERSION → next-patch) and re-run."
+  if [ "$SMOKE_ONLY_PROPAGATION" != true ]; then
+    echo "  Then ship a fix as the next patch (e.g. $VERSION → next-patch) and re-run."
+  fi
   exit 1
 fi
 echo "✓ Smoke test passed."
