@@ -3,8 +3,9 @@ import { StdioServerTransport } from '@modelcontextprotocol/server/stdio'
 import { existsSync, readFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
-import { Plur, checkForUpdate } from '@plur-ai/core'
-import { getToolDefinitions, mcpCanary, validateToolArgs, CURSOR_CORE_TOOL_NAMES, type ToolProfile } from './tools.js'
+import { Plur, checkForUpdate, VERSION_CHECK_SUCCESS_TTL_MS } from '@plur-ai/core'
+import { getToolDefinitions, mcpCanary, validateToolArgs, CURSOR_CORE_TOOL_NAMES, type ToolProfile, resolveToolProfile, setActiveToolProfile } from './tools.js'
+import { payloadDropLogPath, recordPayloadDrop } from './drop-log.js'
 import { registerFlushOnExit } from './telemetry.js'
 import { VERSION } from './version.js'
 
@@ -47,7 +48,7 @@ export const INSTRUCTIONS = `PLUR is your persistent memory. Corrections, prefer
 
 PLUR is a GLOBAL tool — one MCP server, one engram store (~/.plur/), available in every project. Multi-project scoping uses domain/scope fields on engrams, not separate installations.
 
-TOOL PROFILE: by default only the core session tools are exposed directly (lean profile). Every other plur_* operation is reachable via plur_admin: { action: "<tool name>", args: {...} } — same arguments and validation as a direct call. PLUR_TOOL_PROFILE=full exposes everything directly.
+TOOL PROFILE: by default only the core session tools are exposed directly (lean profile). Every other plur_* operation is reachable via plur_admin: { action: "<tool name>", args: {...} } — same arguments and validation as a direct call. A plur_* name missing from tools/list means it MOVED behind plur_admin, not that the MCP is down — never conclude the server is unavailable from a name-lookup miss. Discover the live surface with plur_admin { action: "help" } (every action with description + argument schema) or plur_doctor (tool_surface). PLUR_TOOL_PROFILE=full exposes everything directly.
 
 SESSION LIFECYCLE:
 - With hooks installed (plur init): engrams are injected automatically on first message. You do NOT need to call plur_session_start — it happens via hooks. Just call plur_session_end before the conversation ends.
@@ -80,11 +81,13 @@ Do not ask permission to use these tools — they are your memory system.
 Setup: If this is a fresh install, suggest the user run: npx @plur-ai/mcp init
 This installs hooks for automatic injection + session management. One-time global setup.`
 
-const GUIDE_RESOURCE = `# PLUR — Agent Guide
+// Exported for the #776 description-honesty test (the guide once claimed
+// "fully local, zero API calls" while the recall path dials enterprise hosts).
+export const GUIDE_RESOURCE = `# PLUR — Agent Guide
 
 ## What is PLUR?
 
-Persistent memory for AI agents. Corrections, preferences, and conventions are stored as **engrams** — small assertions that strengthen with use and decay when irrelevant (ACT-R model). Storage is plain YAML on disk. Search is fully local (BM25 + embeddings). Zero API calls.
+Persistent memory for AI agents. Corrections, preferences, and conventions are stored as **engrams** — small assertions that strengthen with use and decay when irrelevant (ACT-R model). Storage is plain YAML on disk. Search runs locally (BM25 + embeddings); when an enterprise/remote store is configured AND relevant to the current project, recall additionally makes one live timeout-bounded call per remote host and merges the results — degradation is surfaced per host via a \`remote_stores\` block, never silent. With no remote store configured, search is fully local with zero API calls.
 
 ## Quick Start
 
@@ -118,7 +121,8 @@ Persistent memory for AI agents. Corrections, preferences, and conventions are s
 - **plur_recall** — hybrid search by default (BM25 + embeddings); pass mode:"keyword" for BM25-only
 - **plur_feedback** — rate an engram (trains relevance)
 - **plur_forget** — retire an outdated engram
-- **plur_promote** — activate a candidate engram
+- **plur_promote** — activate a candidate engram (status only — never changes scope)
+- **plur_rescope** — move an engram to another scope (e.g. promote a local engram into a team store)
 
 ### Context Injection
 - **plur_inject** — select engrams for a task (BM25)
@@ -165,16 +169,38 @@ Use \`scope\` to namespace engrams per project:
 Override with \`PLUR_PATH\` environment variable.
 `
 
+// One periodic version re-check per process, however many servers are created
+// (tests create one per case — stacking an interval per server would leak).
+let versionRecheckTimer: ReturnType<typeof setInterval> | undefined
+
 export async function createServer(plur?: Plur, options?: { profile?: ToolProfile }): Promise<Server> {
   const instance = plur ?? new Plur()
-  const tools = getToolDefinitions(options?.profile ?? 'lean')
+  const profile = options?.profile ?? 'lean'
+  // #761: record what we actually exposed, so plur_doctor reports THIS surface
+  // rather than re-deriving one from the environment — which is not the
+  // authority here, since the profile arrives as an option.
+  setActiveToolProfile(profile)
+  const tools = getToolDefinitions(profile)
 
-  // Non-blocking version check — fire and forget
-  checkForUpdate('@plur-ai/mcp', VERSION, (r) => {
+  // Non-blocking version check — fire and forget at startup, then re-checked
+  // periodically (#760). Without the periodic re-check a long-lived server
+  // process that started while current would cache "no update" for its entire
+  // lifetime and never surface releases published after startup — which is
+  // exactly how the 0.14.x regression report happened. The timer is unref'd so
+  // it never keeps the process alive, and the TTL-driven refresh-on-read in
+  // version-check.ts covers processes whose timers are throttled.
+  const announceUpdate = (r: { updateAvailable: boolean; current: string; latest: string | null }) => {
     if (r.updateAvailable) {
       console.error(`[plur] Update available: ${r.current} → ${r.latest}. Run: npx @plur-ai/mcp@latest`)
     }
-  })
+  }
+  checkForUpdate('@plur-ai/mcp', VERSION, announceUpdate)
+  if (!versionRecheckTimer) {
+    versionRecheckTimer = setInterval(() => {
+      checkForUpdate('@plur-ai/mcp', VERSION, announceUpdate)
+    }, VERSION_CHECK_SUCCESS_TTL_MS)
+    versionRecheckTimer.unref?.()
+  }
 
   const server = new Server(
     { name: 'plur-mcp', version: VERSION },
@@ -229,9 +255,44 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
     // `threshold` turns without an expected signal flags the capability.
     mcpCanary.tick()
     try {
-      let args = request.params.arguments ?? {}
+      // #772: capture whether the frame carried `arguments` at all BEFORE the
+      // `?? {}` default erases the distinction. "Key absent" vs "arrived as {}"
+      // is the one wire-level fact only this boundary can observe, and it is
+      // the first thing the upstream client report needs.
+      const rawArguments = request.params.arguments
+      let args = rawArguments ?? {}
       const validated = validateToolArgs(tool, args)
       if (!validated.ok) {
+        const drop = validated.errorPayload.drop
+        if (drop) {
+          // Forensic record of the dropped frame (#772) — bounded, field NAMES
+          // only, never values. Written only at this top-level wire boundary:
+          // plur_admin's inner `args` travel INSIDE a delivered payload, so an
+          // inner-validation failure there is not a wire drop.
+          recordPayloadDrop(instance.storageRoot, {
+            ts: new Date().toISOString(),
+            tool: request.params.name,
+            arguments_wire: drop === 'whole_payload'
+              ? (rawArguments === undefined ? 'absent' : 'empty_object')
+              : 'partial',
+            params_keys: Object.keys((request.params ?? {}) as Record<string, unknown>),
+            received_fields: validated.errorPayload.received_fields,
+            missing_fields: validated.errorPayload.missing_fields,
+            missing_array_params: validated.missingArrayParams,
+            request_id: (request as { id?: string | number }).id,
+            server_version: VERSION,
+          })
+          // Guarded sync AND async: a logging failure must never replace the
+          // diagnostic error response with a generic one via the outer catch.
+          try {
+            void Promise.resolve(server.sendLoggingMessage({
+              level: 'warning',
+              data: `Payload drop (#772) on ${request.params.name}: arguments ` +
+                `${rawArguments === undefined ? 'key absent from frame' : `arrived with fields [${validated.errorPayload.received_fields.join(', ')}]`}. ` +
+                `Recorded in ${payloadDropLogPath(instance.storageRoot)}.`,
+            })).catch(() => { /* logging must not break the error response */ })
+          } catch { /* ditto for synchronous throws */ }
+        }
         return {
           content: [{ type: 'text', text: JSON.stringify(validated.errorPayload) }],
           isError: true,
@@ -418,8 +479,10 @@ Please:
 }
 
 export async function runStdio(): Promise<void> {
-  const envProfile = process.env.PLUR_TOOL_PROFILE
-  const profile: ToolProfile = envProfile === 'full' ? 'full' : envProfile === 'cursor' ? 'cursor' : 'lean'
+  // Shared with describeToolSurface (#761) so the surface plur_doctor reports
+  // is resolved from the same rule the server exposes tools with — two copies
+  // of this ternary is how doctor comes to describe a profile nobody is running.
+  const profile: ToolProfile = resolveToolProfile()
   const server = await createServer(undefined, { profile })
   // Opt-in, content-free telemetry: ship any pending daily counter snapshot on
   // process exit (best-effort). Self-gates on telemetry opt-in — an opted-out

@@ -1,8 +1,9 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, beforeAll, afterAll } from 'vitest'
 import { mkdtempSync, rmSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { Plur } from '../src/index.js'
+import { embedderStatus, setEmbeddingsEnabled } from '../src/embeddings.js'
 
 describe('hybrid search (BM25 + embeddings via RRF)', () => {
   let dir: string
@@ -85,5 +86,67 @@ describe('hybrid search (BM25 + embeddings via RRF)', () => {
     const meta = await empty.recallHybridWithMeta('anything')
     expect(meta.engrams).toHaveLength(0)
     expect(meta.topScore).toBeNull()
+  })
+})
+
+describe('hybrid search limit — 50-floor regression (#770)', () => {
+  // The internal over-fetch floors (Math.max(limit * 3, 50) for the reranker
+  // path, Math.max(limit, 50) for aggregation queries) must not leak through
+  // as the returned count. These tests seed >50 engrams so the floor kicks in,
+  // then verify the caller's limit is the ceiling on what comes back.
+  //
+  // Embeddings are disabled: this is a COUNT correctness test. BM25-only is
+  // fast and exercises the same limit-enforcement code path.
+  // recallHybridWithMeta is called directly because the MCP layer calls it
+  // directly (bypassing the outer slice guard in recallHybrid).
+  let dir: string
+  let plur: Plur
+  let priorEmbeddings: { disabled: boolean; disabledReason: string | null }
+
+  beforeAll(async () => {
+    const status = embedderStatus()
+    priorEmbeddings = { disabled: status.disabled, disabledReason: status.disabledReason }
+    setEmbeddingsEnabled(false, 'limit regression test — BM25-only for speed')
+    dir = mkdtempSync(join(tmpdir(), 'plur-limit-floor-'))
+    plur = new Plur({ path: dir })
+    const topics = [
+      'cats', 'dogs', 'fish', 'birds', 'rabbits', 'hamsters', 'turtles', 'snakes',
+      'lions', 'tigers', 'bears', 'wolves', 'foxes', 'deer', 'moose', 'elk',
+      'Python', 'TypeScript', 'Rust', 'Go', 'Java', 'C++', 'Ruby', 'Swift',
+      'React', 'Vue', 'Angular', 'Svelte', 'Next.js', 'Remix', 'Astro', 'Nuxt',
+      'PostgreSQL', 'MySQL', 'SQLite', 'MongoDB', 'Redis', 'Cassandra', 'DynamoDB',
+      'AWS', 'GCP', 'Azure', 'Vercel', 'Netlify', 'Heroku', 'Render', 'Fly.io',
+      'Docker', 'Kubernetes', 'Terraform', 'Ansible', 'GitHub', 'GitLab', 'Bitbucket',
+    ]
+    for (const topic of topics) {
+      await plur.learn(`${topic} is a popular technology used by developers worldwide`, { type: 'terminological' })
+    }
+  }, 120_000)
+
+  afterAll(() => {
+    // Restore whatever state the suite found, not force-enable — another
+    // suite (or the environment) may have disabled embeddings deliberately.
+    setEmbeddingsEnabled(!priorEmbeddings.disabled, priorEmbeddings.disabledReason ?? undefined)
+    rmSync(dir, { recursive: true })
+  })
+
+  it('recallHybrid with limit:5 returns ≤5 even with >50 engrams seeded', async () => {
+    const results = await plur.recallHybrid('technology developers', { limit: 5 })
+    expect(results.length).toBeLessThanOrEqual(5)
+  })
+
+  it('recallHybrid aggregation query with limit:5 returns ≤5 — effectiveLimit 50-floor must not leak', async () => {
+    const results = await plur.recallHybrid('all the technologies used by developers', { limit: 5 })
+    expect(results.length).toBeLessThanOrEqual(5)
+  })
+
+  it('recallHybridWithMeta with limit:5 returns ≤5 — MCP tool calls this directly', async () => {
+    const meta = await plur.recallHybridWithMeta('technology developers', { limit: 5 })
+    expect(meta.engrams.length).toBeLessThanOrEqual(5)
+  })
+
+  it('recallHybridWithMeta aggregation query with limit:5 returns ≤5', async () => {
+    const meta = await plur.recallHybridWithMeta('all the technologies used by developers', { limit: 5 })
+    expect(meta.engrams.length).toBeLessThanOrEqual(5)
   })
 })

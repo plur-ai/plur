@@ -1,5 +1,5 @@
 import { createPlur, type GlobalFlags } from '../plur.js'
-import { shouldOutputJson, outputJson, outputText, exit } from '../output.js'
+import { shouldOutputJson, outputJson, outputText, outputInfo, exit } from '../output.js'
 import type { LlmFunction } from '@plur-ai/core'
 
 /** Create an OpenAI-compatible LLM function from base URL + key + model. */
@@ -93,13 +93,15 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     else { i++ }
   }
 
-  // NOTE: this used to read `createPlur(flags, { readonly: true })`. `createPlur`
-  // takes one parameter and `Plur`'s constructor has no `readonly` option, so
-  // that argument was discarded — this command has always opened a normal
-  // read-write engine. Dropped rather than left in place: an argument that reads
-  // as a safety property but does nothing is worse than no argument at all.
-  // A real read-only mode is worth having; it does not exist yet.
-  const plur = createPlur(flags)
+  // List mode (no --scan, no lifecycle action) is read-only: the command only
+  // reads persisted tensions and engrams, so a write-guarded engine prevents
+  // lazy engine side-effects from mutating the store as a side-effect of a
+  // query. Scan and lifecycle actions (confirm / dismiss / resolve) mutate
+  // state and get a standard writable engine. (An earlier version passed
+  // `{ readonly: true }` here before the option existed and it was silently
+  // discarded — #731 is the real implementation.)
+  const isListMode = !scan && !action
+  const plur = createPlur(flags, { readonly: isListMode })
 
   // --- Lifecycle actions (#181) ---
   if (action) {
@@ -111,13 +113,13 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
       if (action === 'confirm') {
         const record = plur.confirmTension(tensionId)
         if (shouldOutputJson(flags)) { outputJson({ record }) } else {
-          outputText(`Confirmed ${record.id} as a real conflict.`)
-          outputText(`Resolve it with: plur tensions resolve ${record.id} --winner <engram-id>`)
+          outputInfo(`Confirmed ${record.id} as a real conflict.`, flags)
+          outputInfo(`Resolve it with: plur tensions resolve ${record.id} --winner <engram-id>`, flags)
         }
       } else if (action === 'dismiss') {
         const record = plur.dismissTension(tensionId)
         if (shouldOutputJson(flags)) { outputJson({ record }) } else {
-          outputText(`Dismissed ${record.id} — the pair is suppressed from future scans.`)
+          outputInfo(`Dismissed ${record.id} — the pair is suppressed from future scans.`, flags)
         }
       } else {
         if (!winner) {
@@ -126,7 +128,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
         }
         const { record, retired_id } = await plur.resolveTension(tensionId, winner)
         if (shouldOutputJson(flags)) { outputJson({ record, retired: retired_id }) } else {
-          outputText(`Resolved ${record.id}: ${winner} wins, ${retired_id} retired.`)
+          outputInfo(`Resolved ${record.id}: ${winner} wins, ${retired_id} retired.`, flags)
         }
       }
     } catch (err) {
@@ -153,11 +155,12 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     }
 
     if (!shouldOutputJson(flags)) {
-      outputText(`Scanning ${engrams.length} engrams for contradictions…`)
-      if (scope) outputText(`  scope: ${scope}`)
-      if (domain) outputText(`  domain: ${domain}`)
-      outputText(`  min-confidence: ${minConfidence}  max-pairs: ${maxPairs}  batch-size: ${batchSize}`)
-      outputText('')
+      // Progress banner → suppressed by --quiet (#730).
+      outputInfo(`Scanning ${engrams.length} engrams for contradictions…`, flags)
+      if (scope) outputInfo(`  scope: ${scope}`, flags)
+      if (domain) outputInfo(`  domain: ${domain}`, flags)
+      outputInfo(`  min-confidence: ${minConfidence}  max-pairs: ${maxPairs}  batch-size: ${batchSize}`, flags)
+      outputInfo('', flags)
     }
 
     const { scanForTensions } = await import('@plur-ai/core')
@@ -217,10 +220,11 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
       outputText('')
     })
 
-    outputText('Next steps:')
-    outputText('  plur tensions confirm <T-id>                       # real conflict')
-    outputText('  plur tensions dismiss <T-id>                       # false positive, suppress')
-    outputText('  plur tensions resolve <T-id> --winner <engram-id>  # keep winner, retire loser')
+    // Next-step hints → suppressed by --quiet; the findings above stay (#730).
+    outputInfo('Next steps:', flags)
+    outputInfo('  plur tensions confirm <T-id>                       # real conflict', flags)
+    outputInfo('  plur tensions dismiss <T-id>                       # false positive, suppress', flags)
+    outputInfo('  plur tensions resolve <T-id> --winner <engram-id>  # keep winner, retire loser', flags)
     return
   }
 

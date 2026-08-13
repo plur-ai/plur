@@ -109,10 +109,18 @@ describe.skipIf(!DSN)('PostgresAdapter (requires PLUR_TEST_POSTGRES_URL)', () =>
     it('identifies itself as a postgres-kind primary store with a credential-free location', () => {
       expect(adapter.kind).toBe('postgres')
       // `location` is what ends up in logs and status output, so the password
-      // from the DSN must not survive into it.
-      const password = new URL(DSN!).password
-      if (password) expect(adapter.location).not.toContain(password)
-      expect(adapter.location).toContain(new URL(DSN!).hostname)
+      // from the DSN must not survive into it. Checked in its credential
+      // position (`:pw@`), not as a bare substring: a password that happens
+      // to be a substring of the database or host name — `plur` inside
+      // `plurtest`, found by the 0.16.0 audit run — false-positived the bare
+      // check against a correctly masked URL, and a guard that cries wolf on
+      // legitimate setups is a guard people learn to ignore.
+      const url = new URL(DSN!)
+      if (url.password) {
+        expect(adapter.location).not.toContain(`:${url.password}@`)
+        expect(adapter.location, 'the credential slot must be masked, not merely dropped').toContain(':***@')
+      }
+      expect(adapter.location).toContain(url.hostname)
     })
   })
 
@@ -449,6 +457,14 @@ describe.skipIf(!DSN)('PGLite and Postgres answer the same filter identically', 
     { domain: 'plur.storage' },
     { domain: 'plur' },
     { scope: 'project:plur', domain: 'plur.storage' },
+    // #775 mounted-scope visibility grants — the two SQL twins must answer
+    // grant-widened visibility identically too.
+    { scope: 'project:plur', visibilityGrants: ['group:plur/eng'] },
+    { scope: 'local', visibilityGrants: ['project:plur'] },
+    // A grant that is a string-prefix sibling of a corpus scope: must NOT
+    // admit project:plurality on either backend (#383).
+    { scope: 'group:plur/eng', visibilityGrants: ['project:plur'] },
+    { scope: 'project:plur', visibilityGrants: ['group:plur/eng'], status: 'active' },
   ]
 
   for (const filter of filters) {
@@ -458,4 +474,59 @@ describe.skipIf(!DSN)('PGLite and Postgres answer the same filter identically', 
       expect(a).toEqual(b)
     }, TIMEOUT)
   }
+})
+
+describe.skipIf(!DSN)('listEngramsMissingEmbeddings — the set-based auto-embed query (#762)', () => {
+  // The reason the embeddings gap shipped in 0.16.0 at all was the absence of
+  // this query: the only auto-embed pass loaded the corpus and probed
+  // `hasEmbedding` per id, which at the corpus size that selects this tier is
+  // a worse regression than the gap. The engine's write-path auto-embed and
+  // the semantic-recall completeness probe both stand on this method, so its
+  // semantics — active-only, bounded, shrinks as embeddings land — are pinned
+  // here at the adapter level.
+  const MSCHEMA = `${SCHEMA}_missing_762`
+  let adapter: PostgresAdapter
+
+  beforeAll(async () => {
+    adapter = new PostgresAdapter({
+      connectionString: DSN!, schema: MSCHEMA, vectorDim: VECTOR_DIM, vectorIndex: 'exact',
+    })
+    await adapter.save([
+      mkEngram('ENG-762-A', 'alpha statement'),
+      mkEngram('ENG-762-B', 'beta statement'),
+      mkEngram('ENG-762-C', 'gamma statement'),
+      mkEngram('ENG-762-R', 'retired statement', { status: 'retired' }),
+    ])
+  }, TIMEOUT)
+
+  afterAll(async () => {
+    await adapter?.dropSchema().catch(() => {})
+    await adapter?.close().catch(() => {})
+  }, TIMEOUT)
+
+  it('reports every un-embedded ACTIVE engram, and never a retired one', async () => {
+    const missing = await adapter.listEngramsMissingEmbeddings(10)
+    expect(missing.map(e => e.id).sort()).toEqual(['ENG-762-A', 'ENG-762-B', 'ENG-762-C'])
+  }, TIMEOUT)
+
+  it('is bounded by limit, in stable id order', async () => {
+    const one = await adapter.listEngramsMissingEmbeddings(1)
+    expect(one.map(e => e.id)).toEqual(['ENG-762-A'])
+    const two = await adapter.listEngramsMissingEmbeddings(2)
+    expect(two.map(e => e.id)).toEqual(['ENG-762-A', 'ENG-762-B'])
+  }, TIMEOUT)
+
+  it('shrinks as embeddings land, and empties when the gap is closed', async () => {
+    await adapter.upsertEmbedding('ENG-762-A', vec(1))
+    expect((await adapter.listEngramsMissingEmbeddings(10)).map(e => e.id).sort())
+      .toEqual(['ENG-762-B', 'ENG-762-C'])
+    await adapter.upsertEmbedding('ENG-762-B', vec(2))
+    await adapter.upsertEmbedding('ENG-762-C', vec(3))
+    // The LIMIT-1 shape is exactly the completeness probe recallSemantic runs.
+    expect(await adapter.listEngramsMissingEmbeddings(1)).toEqual([])
+  }, TIMEOUT)
+
+  it('rejects a non-positive limit rather than quietly returning everything', async () => {
+    await expect(adapter.listEngramsMissingEmbeddings(0)).rejects.toThrow(/positive integer/)
+  }, TIMEOUT)
 })

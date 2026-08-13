@@ -35,3 +35,7 @@ benchmark/.cache/
 # packages/core/test/concurrency-auto-discover.test.ts — discovery short-circuits
 # under the OS temp dir, so those tests must use a real path).
 packages/core/test/.scratch-auto-discover/
+
+# Runtime embedding cache — regenerated on demand, and keyed by local engram IDs.
+# Committing it churns a 40K blob and puts one machine's IDs in the repo (#706).
+.embeddings-cache.json

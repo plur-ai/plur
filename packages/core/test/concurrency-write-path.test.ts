@@ -122,23 +122,36 @@ describe('Plur — concurrent writes', () => {
    * prevents the holder from finishing, so it burned ~3.1s of blocked loop and
    * then threw `Failed to acquire lock`. The converted paths queue instead.
    *
-   * Scope note, deliberately narrow: `learnRouted`'s LOCAL route still delegates
-   * to the synchronous `learn()`, and `learn()` still takes the synchronous
-   * lock — so it still spins and still throws in this scenario. Flipping it is
-   * the remaining half of Phase 2 (see ADR-0004); this change does not claim it.
+   * That scope note is now closed. It used to read: `learnRouted`'s local route
+   * delegates to the synchronous `learn()`, which still takes the synchronous
+   * lock, so it still spins and still throws — flipping it being "the remaining
+   * half of Phase 2". Phase 2b (#728) flipped it: `learn()` is async and goes
+   * through `_withStoreLock` like everything else, so it queues rather than
+   * spinning. The comment outlived the work it described.
    */
   it('feedback waits out a lock held across an await instead of spinning', async () => {
     const target = await plur.learn('an engram whose feedback has to wait', { scope: 'global' })
 
     const HOLD_MS = 200
     const TICK_MS = 10
-    // A starved event loop CANNOT reach this. Node coalesces a blocked
-    // `setInterval` into a SINGLE callback fired the moment the loop is
-    // released, so a spin-waiting writer scores exactly 1 tick no matter how
-    // long it blocked — which is why `toBeGreaterThan(0)` proved nothing here.
-    // A loop that keeps turning fires ~HOLD_MS / TICK_MS times; half of that
-    // is the bar.
-    const MIN_TICKS = HOLD_MS / TICK_MS / 2
+    // Set from measurement, not from the nominal rate.
+    //
+    // Node coalesces a blocked `setInterval` into a SINGLE callback fired the
+    // moment the loop is released, so a spin-waiting writer scores exactly 1
+    // tick no matter how long it blocked — measured, 3 runs of 3 against the
+    // old spinning lock. That is why the original `toBeGreaterThan(0)` proved
+    // nothing: 1 > 0.
+    //
+    // A healthy loop scores 15-18 here in isolation (measured over 10 runs)
+    // against a nominal ceiling of HOLD_MS / TICK_MS = 20. The previous bar of
+    // half-nominal (10) sat INSIDE the load-variance band: under a full
+    // parallel suite the count dips below it, which is why this test failed
+    // roughly one run in three there while passing 52 of 53 in isolation.
+    //
+    // 5 keeps a 5x margin over starvation and tolerates a 3x slowdown from the
+    // healthy figure. The gap between 1 and 15 is wide; the bar belongs near
+    // the bottom of it, not the middle.
+    const MIN_TICKS = 5
 
     const events: string[] = []
     let ticks = 0

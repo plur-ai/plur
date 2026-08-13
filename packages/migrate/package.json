@@ -1,13 +1,15 @@
 {
   "name": "@plur-ai/migrate",
-  "version": "0.16.0",
+  "version": "0.17.2",
   "description": "Find and fix un-awaited PLUR calls after the 0.16 async migration",
   "type": "module",
   "bin": {
     "plur-migrate": "dist/index.js"
   },
   "main": "dist/index.js",
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsup",
     "test": "vitest run"

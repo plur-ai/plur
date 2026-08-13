@@ -1,7 +1,7 @@
 import { join } from 'path'
 import { homedir } from 'os'
 import { createPlur, type GlobalFlags } from '../plur.js'
-import { shouldOutputJson, outputJson, outputText, exit } from '../output.js'
+import { shouldOutputJson, outputJson, outputText, outputInfo, exit } from '../output.js'
 
 export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   const plur = createPlur(flags)
@@ -21,7 +21,15 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
         const version = p.manifest?.version ?? 'unknown'
         const creator = p.manifest?.creator ? ` by ${p.manifest.creator}` : ''
         const hash = p.integrity ? ` [${p.integrity.slice(0, 16)}]` : ''
-        const integrityFlag = p.integrity_ok === false ? ' ⚠️ MODIFIED' : ''
+        // 'unverified' used to print NOTHING, so a pack whose integrity baseline
+        // had been destroyed looked identical to one that verified clean (#805,
+        // F11). An unanswerable integrity question is reported as loudly as a
+        // failed one — the two usually have the same cause.
+        const integrityFlag = p.integrity_status === 'modified'
+          ? ' ⚠️  MODIFIED — contents changed since install'
+          : p.integrity_status === 'unverified'
+            ? ' ⚠️  UNVERIFIED — no registry entry, integrity cannot be checked'
+            : ''
         outputText(`${p.name} v${version}${creator} (${p.engram_count} engrams)${hash}${integrityFlag}`)
         if (p.installed_at) {
           const date = p.installed_at.slice(0, 10)
@@ -38,7 +46,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     if (!source) {
       exit(1, 'Usage: plur packs preview <source>')
     }
-    const preview = plur.previewPack(source)
+    const preview = await plur.previewPack(source)
     if (shouldOutputJson(flags)) {
       outputJson(preview)
     } else {
@@ -144,11 +152,14 @@ Options:
         name,
       })
     } else {
-      outputText(`Exported pack "${name}":`)
-      outputText(`  Engrams:    ${result.engram_count}`)
-      outputText(`  Path:       ${result.path}`)
-      outputText(`  Integrity:  ${result.integrity}`)
-      outputText(`  Match terms: ${result.match_terms.join(', ') || '(none)'}`)
+      // Export confirmation → suppressed by --quiet; the privacy findings
+      // below (blocked/warned engrams) stay loud — the pack differs from
+      // what was requested (#730).
+      outputInfo(`Exported pack "${name}":`, flags)
+      outputInfo(`  Engrams:    ${result.engram_count}`, flags)
+      outputInfo(`  Path:       ${result.path}`, flags)
+      outputInfo(`  Integrity:  ${result.integrity}`, flags)
+      outputInfo(`  Match terms: ${result.match_terms.join(', ') || '(none)'}`, flags)
 
       if (!result.privacy.clean) {
         const blocked = result.privacy.issues.filter(i => i.type === 'secret' || i.type === 'private_visibility')
@@ -181,9 +192,11 @@ Options:
     if (shouldOutputJson(flags)) {
       outputJson(result)
     } else {
-      outputText(`Installed pack "${result.name}": ${result.installed} engrams`)
+      // Install confirmation → suppressed by --quiet; security warnings and
+      // conflicts below stay loud (#730).
+      outputInfo(`Installed pack "${result.name}": ${result.installed} engrams`, flags)
       if (result.registry) {
-        outputText(`  Integrity: ${result.registry.integrity}`)
+        outputInfo(`  Integrity: ${result.registry.integrity}`, flags)
       }
 
       if (!result.security.clean) {
@@ -224,7 +237,7 @@ Use 'plur packs list' to see installed packs.`)
     if (shouldOutputJson(flags)) {
       outputJson(result)
     } else {
-      outputText(`Uninstalled pack "${result.name}": ${result.engram_count} engrams removed`)
+      outputInfo(`Uninstalled pack "${result.name}": ${result.engram_count} engrams removed`, flags)
     }
     return
   }

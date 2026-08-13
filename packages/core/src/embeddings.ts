@@ -310,7 +310,10 @@ function loadCache(cachePath: string, active: { name: string; dim: number }): Em
 function saveCache(cachePath: string, cache: EmbeddingCache): void {
   const dir = dirname(cachePath)
   if (dir && !existsSync(dir)) mkdirSync(dir, { recursive: true })
-  atomicWrite(cachePath, JSON.stringify(cache))
+  // Derived state: every vector here is recomputable from the corpus, so the
+  // fsync is pure cost. Losing this cache to a power cut costs a re-embed, not
+  // data (audit #794, F4).
+  atomicWrite(cachePath, JSON.stringify(cache), { durable: false })
 }
 
 function hashStatement(statement: string): string {

@@ -5,6 +5,34 @@ import { tmpdir } from 'os'
 import yaml from 'js-yaml'
 import { Plur } from '../src/index.js'
 
+/**
+ * Poll until `predicate` holds, instead of sleeping a fixed interval.
+ *
+ * These tests assert on state written by a FIRE-AND-FORGET task: `learn()`
+ * writes the outbox entry with `last_error: ''` and `attempt_count: 0`, then a
+ * background IIFE takes the store lock and updates it. A fixed 50ms sleep is a
+ * bet that the lock acquisition plus two store writes finish in 50ms, which
+ * holds on an idle machine and loses under parallel suite load — observed as
+ * `expected '' to be 'connection refused'` in one full run out of five, while
+ * the same file passed in isolation every time.
+ *
+ * A flaky gate is worse than a slow one: it trains everyone to re-run instead
+ * of read. This waits for the condition it is about to assert, so it is fast
+ * when the machine is fast and correct when it is not.
+ */
+async function waitFor(
+  predicate: () => boolean | Promise<boolean>,
+  { timeoutMs = 5000, label = 'condition' }: { timeoutMs?: number; label?: string } = {},
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  for (;;) {
+    if (await predicate()) return
+    if (Date.now() >= deadline) throw new Error(`waitFor timed out after ${timeoutMs}ms waiting for ${label}`)
+    await new Promise(r => setTimeout(r, 10))
+  }
+}
+
+
 function writeStoresConfig(dir: string, stores: Array<Record<string, unknown>>) {
   writeFileSync(
     join(dir, 'config.yaml'),
@@ -94,8 +122,12 @@ describe('outbox pattern (issue #26)', () => {
     expect(engram.statement).toBe('outbox test engram')
     expect(engram.scope).toBe(REMOTE_SCOPE)
 
-    // Wait for async fire-and-forget to settle
-    await new Promise(r => setTimeout(r, 50))
+    // Wait for the background push to record its failure on the outbox entry.
+    await waitFor(async () => {
+      const cur = await readLocalEngrams(primaryDir)
+      const e = cur.find((x: any) => x.statement === 'outbox test engram')
+      return !!e?.structured_data?._outbox?.last_error
+    }, { label: 'outbox last_error to be recorded' })
 
     // Engram should be in local store with outbox metadata
     const local = await readLocalEngrams(primaryDir)
@@ -118,10 +150,12 @@ describe('outbox pattern (issue #26)', () => {
       type: 'behavioral',
     })
 
-    // Wait for async push + cleanup
-    await new Promise(r => setTimeout(r, 100))
+    // Wait for async push + cleanup to remove the local copy.
+    await waitFor(async () => {
+      const cur = await readLocalEngrams(primaryDir)
+      return !cur.find((x: any) => x.statement === 'success test engram')
+    }, { label: 'local copy to be removed after a successful push' })
 
-    // Local store should NOT contain the engram (removed after success)
     const local = await readLocalEngrams(primaryDir)
     const found = local.find((e: any) => e.statement === 'success test engram')
     expect(found).toBeUndefined()
@@ -408,5 +442,120 @@ describe('outbox pattern (issue #26)', () => {
     const result = await plur2.flushOutbox()
     expect(result.failed).toBe(1)
     expect(result.expired_warnings.some(w => w.includes('no matching remote store'))).toBe(true)
+  })
+
+  it('flushOutbox() skips retired engrams — no remote push, no resurrection (#766)', async () => {
+    // 1. Create an engram in the outbox (remote push fails)
+    mockRemoteFailure('connection refused')
+    writeStoresConfig(primaryDir, storeConfig())
+    const plur = new Plur({ path: primaryDir })
+
+    await plur.learnRouted('pinned team rule', {
+      scope: REMOTE_SCOPE,
+      type: 'behavioral',
+    })
+    await waitFor(async () => {
+      const cur = await readLocalEngrams(primaryDir)
+      return !!cur.find((x: any) => x.statement === 'pinned team rule')?.structured_data?._outbox
+    }, { label: 'the engram to be queued in the outbox' })
+
+    const localBefore = await readLocalEngrams(primaryDir)
+    const queued = localBefore.find((e: any) => e.statement === 'pinned team rule')
+    expect(queued).toBeDefined()
+    expect(queued.structured_data._outbox).toBeDefined()
+
+    // 2. Retire the engram locally — simulates user calling plur_forget before flush
+    await plur.forget(queued.id, undefined, { force: true })
+
+    const localAfterForget = await readLocalEngrams(primaryDir)
+    const retired = localAfterForget.find((e: any) => e.id === queued.id)
+    expect(retired?.status).toBe('retired')
+    // _outbox metadata is stripped on retirement (#766 cancel-outbox)
+    expect(retired?.structured_data?._outbox).toBeUndefined()
+
+    // 3. flushOutbox must NOT push the retired engram
+    fetchMock.mockClear()
+    mockRemoteSuccess()
+    const result = await plur.flushOutbox()
+
+    expect(result.flushed).toBe(0)
+    expect(result.failed).toBe(0)
+    // fetch was NOT called with POST (no push attempt)
+    const postCalls = (fetchMock.mock.calls as [string, RequestInit][]).filter(
+      ([, init]) => (init?.method ?? 'GET') === 'POST'
+    )
+    expect(postCalls.length).toBe(0)
+  })
+
+  it('flushOutbox() skips retired engrams even when _outbox is present (YAML edited without cancel, #766)', async () => {
+    // Simulate a retired engram that still has _outbox (e.g. older client, direct YAML edit)
+    const engramsPath = join(primaryDir, 'engrams.yaml')
+    writeFileSync(
+      engramsPath,
+      yaml.dump({
+        engrams: [{
+          id: 'ENG-LEGACY-RETIRED',
+          statement: 'legacy stale outbox engram',
+          scope: REMOTE_SCOPE,
+          status: 'retired',
+          structured_data: {
+            _outbox: {
+              target_url: REMOTE_URL,
+              target_scope: REMOTE_SCOPE,
+              queued_at: new Date().toISOString(),
+              last_attempt: new Date().toISOString(),
+              attempt_count: 0,
+              last_error: '',
+            },
+          },
+        }],
+      }, { lineWidth: 120, noRefs: true })
+    )
+    writeStoresConfig(primaryDir, storeConfig())
+    const plur = new Plur({ path: primaryDir })
+
+    fetchMock.mockClear()
+    mockRemoteSuccess()
+    const result = await plur.flushOutbox()
+
+    expect(result.flushed).toBe(0)
+    expect(result.failed).toBe(0)
+    const postCalls = (fetchMock.mock.calls as [string, RequestInit][]).filter(
+      ([, init]) => (init?.method ?? 'GET') === 'POST'
+    )
+    expect(postCalls.length).toBe(0)
+  })
+
+  it('outboxCount() excludes retired engrams still carrying _outbox — no permanent phantom pending (#766)', async () => {
+    // A retired engram with a stale _outbox marker (direct YAML edit, older
+    // client — retirement without the cancel path) is skipped by flushOutbox
+    // forever. outboxCount must mirror the flush filter, or the count reports
+    // "pending" entries no flush will ever clear.
+    mockRemoteFailure('connection refused')
+    writeStoresConfig(primaryDir, storeConfig())
+    const plur = new Plur({ path: primaryDir })
+
+    await plur.learnRouted('phantom pending one', { scope: REMOTE_SCOPE, type: 'behavioral' })
+    await plur.learnRouted('phantom pending two', { scope: REMOTE_SCOPE, type: 'behavioral' })
+    await waitFor(async () => {
+      const cur = await readLocalEngrams(primaryDir)
+      return cur.filter((x: any) => x.structured_data?._outbox).length === 2
+    }, { label: 'both engrams to be queued in the outbox' })
+
+    const engramsPath = join(primaryDir, 'engrams.yaml')
+    const queued = await readLocalEngrams(primaryDir)
+    expect(queued.filter((e: any) => e.structured_data?._outbox)).toHaveLength(2)
+
+    // Retire one WITHOUT the cancel path: flip status in the YAML directly,
+    // leaving the stale _outbox marker in place.
+    const doc = yaml.load(readFileSync(engramsPath, 'utf-8')) as { engrams: any[] }
+    const victim = doc.engrams.find((e: any) => e.statement === 'phantom pending one')
+    victim.status = 'retired'
+    writeFileSync(engramsPath, yaml.dump(doc, { lineWidth: 120, noRefs: true }))
+
+    // Fresh instance (no stale cache): only the active engram counts — the
+    // retired one is invisible to flush and must be invisible to the count.
+    const plur2 = new Plur({ path: primaryDir })
+    expect(await plur2.outboxCount()).toBe(1)
   })
 })

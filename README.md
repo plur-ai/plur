@@ -4,6 +4,8 @@
 
 # PLUR — Your agents share the same memory
 
+[![MCP Toplist](https://mcptoplist.com/badge/io.github.plur-ai%2Fplur.svg)](https://mcptoplist.com/server/io.github.plur-ai%2Fplur)
+
 [![npm version](https://img.shields.io/npm/v/@plur-ai/core?logo=npm&color=cb3837)](https://www.npmjs.com/package/@plur-ai/core)
 [![CI](https://img.shields.io/github/actions/workflow/status/plur-ai/plur/ci.yml?branch=main&logo=github&label=CI)](https://github.com/plur-ai/plur/actions/workflows/ci.yml)
 [![License: Apache-2.0](https://img.shields.io/github/license/plur-ai/plur?color=blue)](LICENSE)
@@ -96,7 +98,7 @@ Run init from your project root — it sets up Cursor's `.cursor/mcp.json` (plus
 npx @plur-ai/mcp init
 ```
 
-PLUR runs under a **lean tool profile** in Cursor (`PLUR_TOOL_PROFILE=cursor`) — Cursor caps the tools a workspace can expose, so PLUR surfaces a curated core set (learn / recall / inject / status) instead of all 40, with the rest reachable through `plur_admin`. Cursor support shipped in v0.13.
+PLUR runs under a **lean tool profile** in Cursor (`PLUR_TOOL_PROFILE=cursor`) — Cursor caps the tools a workspace can expose, so PLUR surfaces a curated core set (learn / recall / inject / status) instead of all 42, with the rest reachable through `plur_admin`. Cursor support shipped in v0.13.
 
 ### OpenClaw
 
@@ -248,7 +250,7 @@ await plur.sync('git@github.com:you/plur-memory.git')
 |------|-------------|
 | `plur_learn` | Store a correction, preference, or convention |
 | `plur_learn_batch` | Store many engrams in one call (batch dedup + per-item failure isolation) |
-| `plur_recall_hybrid` | Retrieve relevant memories (BM25 + embeddings) |
+| `plur_recall` | Retrieve relevant memories — hybrid (BM25 + embeddings) by default; `mode:"keyword"` for BM25-only |
 | `plur_inject_hybrid` | Select engrams for current task within token budget |
 | `plur_feedback` | Rate relevance (trains quality over time) |
 | `plur_forget` | Retire a memory (activation decays, eventually pruned) |
@@ -297,7 +299,7 @@ It is local and read-only, and carries **no dollar or token figure by design**: 
 `plur.sync(remote)` is git underneath: it commits your engram store and pushes it to the remote you give it. What gets pushed depends on the remote's declared type (`sync.remote_type` in `config.yaml`, or the `remote_type` argument):
 
 - **`personal`** (default) — your own backup/mirror across your machines. The remote receives everything that is pushed, **including `visibility: private` engrams**: private visibility means "don't share this in a pack", not "don't mirror it to my own devices", so private engrams intentionally follow you from machine to machine. Because of that, **always use a private git remote** (a private GitHub/GitLab repo, or your own server). PLUR surfaces a `warning` in the sync result whenever private engrams are present. Never point a personal sync at a public repository.
-- **`shared`** — a team-visible remote. Only engrams with a **shared-family scope** (`group:`/`project:`/`space:`/`team:`/`org:`/`public`) **and a non-private visibility** are pushed; personal-family engrams (`local`, `global`, `user:*`, `agent:*`) and private-visibility engrams never reach the remote, by construction. Note the default visibility is `private`, so a shared remote receives only engrams whose visibility was set deliberately — teammates get what you chose to share, nothing else. **Current limit (#686):** the filter applies to `engrams.yaml`; the sibling store files (`episodes.yaml`, `candidates.yaml`, `tensions.yaml`) still sync verbatim and can embed statement text derived from private engrams. Until the sibling-file strip lands, treat a shared remote as team-visible for those files too.
+- **`shared`** — a team-visible remote. Only engrams with a **shared-family scope** (`group:`/`project:`/`space:`/`team:`/`org:`/`public`) **and a non-private visibility** are pushed; personal-family engrams (`local`, `global`, `user:*`, `agent:*`) and private-visibility engrams never reach the remote, by construction. Note the default visibility is `private`, so a shared remote receives only engrams whose visibility was set deliberately — teammates get what you chose to share, nothing else. The same guarantee covers the sibling store files (#686): an episode, candidate, or tension record is pushed only when every engram it references is itself in the push set — records derived from personal or private engrams (a tension's statement snapshots, a failure-report episode) stay local, as does any record referencing an engram the filter cannot resolve.
 
 In both modes **`scope: local` engrams** are machine-specific by design (paths, local ports, per-host quirks), so they are stripped from every commit and never reach any remote. Stripping happens on the *staged blob*: your local working copy always keeps every engram.
 
@@ -398,7 +400,29 @@ Everything is plain YAML. Open it, read it, edit it.
 
 `PLUR_PATH` overrides the default location.
 
-For large stores (>1k engrams), enable the SQLite read index for faster filtered queries. Add `index: true` to `config.yaml`. The YAML file stays the source of truth — the `.db` is a cache that rebuilds automatically. Delete it anytime.
+Indexing is on by default (`index: true`) and the backend is chosen from the
+size of your store, so there is normally nothing to configure:
+
+| Store size | Backend | What answers a query |
+|---|---|---|
+| under 5,000 engrams | `yaml` | in-memory BM25 + exact cosine |
+| 5,000 and up | `pglite` | embedded Postgres + pgvector |
+| 50,000 and up | `postgres` | a Postgres server you point it at — BM25 in SQL; semantic recall scores in memory (see below) |
+
+YAML stays the source of truth in every tier except `postgres` (ADR-0001,
+ADR-0005) — the index is a cache that rebuilds automatically, and you can delete
+it anytime. Set `backend:` in `config.yaml` to pin a tier explicitly.
+
+One caveat on the `postgres` tier, stated here because it is this table's
+headline row: **core does not write embeddings to a Postgres primary store**
+(ADR-0005 amendment). Keyword/BM25 recall runs in SQL, but `engram_embeddings`
+stays empty unless your deployment populates it, so semantic and hybrid recall
+fall back to loading engrams and scoring in memory — correct results, at the
+O(N) cost this tier otherwise avoids. The adapter says so once at schema init;
+`vectorIndex: 'exact'` acknowledges and silences it.
+
+`sqlite` (`engrams.db`, via `better-sqlite3`) is the legacy index and is no
+longer selected automatically.
 
 ## Requirements
 

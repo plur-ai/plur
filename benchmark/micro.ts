@@ -95,8 +95,12 @@ async function runBench(label: string, iterations: number) {
   console.log(`${'='.repeat(60)}\n`)
 
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'plur-micro-'))
-  fs.writeFileSync(path.join(tmpDir, 'engrams.yaml'), '[]')
-  fs.writeFileSync(path.join(tmpDir, 'episodes.yaml'), '[]')
+  // A MAPPING with an `engrams` list, not a bare `[]`. Since audit #794 the
+  // loader refuses a file it cannot interpret rather than treating it as an
+  // empty store — a bare list now raises EngramStoreUnreadableError on the
+  // first learn(), which took this benchmark out entirely.
+  fs.writeFileSync(path.join(tmpDir, 'engrams.yaml'), 'engrams: []\n')
+  fs.writeFileSync(path.join(tmpDir, 'episodes.yaml'), 'episodes: []\n')
   fs.writeFileSync(path.join(tmpDir, 'config.yaml'), 'auto_learn: true\nindex: false\n')
 
   const plur = new Plur({ path: tmpDir })

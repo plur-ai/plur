@@ -35,6 +35,7 @@
 #       undeclared in the CHANGELOG (issue #544; see RELEASING.md)
 #   3.7 Pre-flight: every target version must be publishable (not already taken)
 #   3.8 Website version pre-flight: index.html softwareVersion must == $VERSION
+#   3.9 Packaged-artefact smoke: pack tarballs, install clean, drive the public API
 #   4.  Commit + tag + push
 #   5a. Publish npm to @next (canary)
 #   5b. Smoke test (npx by exact version; retries on npm-propagation ETARGET)
@@ -121,9 +122,14 @@ generate_tweet() {
     return 1
   fi
   features=$(echo "$section" | grep "^- " | head -4 | sed 's/^- /✅ /')
-  # Headline: prefer "Tagline:" or "Tagline." pattern in first non-blank
-  # non-bullet line of the section, fall back to "Update:".
-  headline=$(echo "$section" | awk 'NF && !/^- / && !/^###/ {print; exit}')
+  # Headline: the first non-bullet, non-heading PARAGRAPH of the section.
+  # Joined across lines rather than taking only the first physical line: a
+  # hard-wrapped summary used to be truncated at the wrap point, which for
+  # 0.16.0 produced the fragment "one engine, two" — and that fragment would
+  # have been posted to X verbatim, since the length gate only checks the
+  # total. Reading the whole paragraph makes an over-long summary fail the
+  # gate (visible, fixable) instead of shipping as a cut-off sentence.
+  headline=$(echo "$section" | awk 'NF && !/^- / && !/^###/ {buf = buf (buf ? " " : "") $0; next} buf {print buf; buf = ""; exit} END {if (buf) print buf}')
   [ -z "$headline" ] && headline="Update:"
 
   TWEET="🚀 New release: PLUR $VERSION
@@ -178,14 +184,55 @@ echo "=== PLUR Release $VERSION ==="
 echo "Dry run: $DRY_RUN"
 echo ""
 
+# --- Step 0: Working-tree preflight ---
+# Step 4 runs `git add -A` and commits WHATEVER is in the tree, then pushes to
+# main. Before this gate existed, any stray file present at release time — a
+# scratch script, an unrelated in-progress edit, another session's work — was
+# silently folded into "chore: release vX.Y.Z" and published to the world.
+# The 0.16.0 pre-release audit (#752) flagged it: every other irreversible
+# step in this script has a gate in front of it; the commit had none.
+# Skipped for --dry-run, which never commits and is legitimately run on a
+# feature branch while iterating.
+if [ "$DRY_RUN" = false ]; then
+  echo "--- Step 0: Working-tree preflight ---"
+  BRANCH=$(git rev-parse --abbrev-ref HEAD)
+  if [ "$BRANCH" != "main" ]; then
+    echo "✗ Releases ship from main; this is '$BRANCH'."
+    exit 1
+  fi
+  if [ -n "$(git status --porcelain)" ]; then
+    echo "✗ Working tree is not clean. Step 4 commits with 'git add -A', so anything"
+    echo "  listed below would be silently folded into the release commit:"
+    git status --short
+    echo "  Commit, stash, or remove it first."
+    exit 1
+  fi
+  if ! git fetch origin main --quiet; then
+    echo "✗ Step 0: could not fetch origin/main — offline, or the remote is unreachable."
+    echo "  The sync check needs a fresh origin/main; restore connectivity and re-run."
+    exit 1
+  fi
+  if [ "$(git rev-parse HEAD)" != "$(git rev-parse origin/main)" ]; then
+    echo "✗ Local main is not origin/main ($(git rev-parse --short HEAD) vs $(git rev-parse --short origin/main))."
+    echo "  Pull or push first — releasing from a diverged main either loses the"
+    echo "  divergence or fails at the push AFTER npm has already published."
+    exit 1
+  fi
+  echo "  ✓ on main, clean tree, in sync with origin/main"
+  echo ""
+fi
+
 # --- 1. Version bump (11 locations) ---
 echo "--- Step 1: Version bump ---"
 
 OLD_CORE=$(node -e "console.log(require('./packages/core/package.json').version)")
 echo "Current version: $OLD_CORE → $VERSION"
 
-# package.json files for core/mcp/cli (claw is handled separately below)
-for pkg in core mcp cli; do
+# package.json files for core/mcp/cli/migrate (claw is handled separately below).
+# `migrate` ships with the release it migrates TO: the CHANGELOG tells users to
+# run `npx @plur-ai/migrate`, so a release that does not publish it advertises a
+# command that 404s.
+for pkg in core mcp cli migrate; do
   node -e "
     const fs = require('fs');
     const path = './packages/$pkg/package.json';
@@ -276,6 +323,15 @@ echo "  ✓ packages/hermes/pyproject.toml"
 # previous version on every release.
 sed -i '' "s/^version: .*/version: $VERSION/" packages/hermes/plur_hermes/skills/plur-memory.SKILL.md
 echo "  ✓ packages/hermes/plur_hermes/skills/plur-memory.SKILL.md"
+
+# Two more locations CLAUDE.md mandates that nothing was bumping. Both shipped
+# at 0.14.0 while 0.15.0 was the published release — a plugin manifest and a
+# standalone skill file that tell users which version they are on, quietly two
+# releases behind. The checklist listed them; no code acted on it.
+sed -i '' "s/^version: .*/version: $VERSION/" packages/hermes/plugin.yaml
+echo "  ✓ packages/hermes/plugin.yaml"
+sed -i '' "s/^version: .*/version: $VERSION/" skills/plur-memory/SKILL.md
+echo "  ✓ skills/plur-memory/SKILL.md"
 
 # Hermes npx-fallback CLI pin (#1) — the npx-fallback write path runs
 # @plur-ai/cli@$_NPX_CLI_VERSION; if it lags the release it runs a PRE-FIX CLI
@@ -455,7 +511,7 @@ preflight_check() {
   return 0
 }
 PREFLIGHT_OK=true
-for pkg in core cli mcp; do
+for pkg in core cli mcp migrate; do
   preflight_check "$pkg" "$VERSION" || PREFLIGHT_OK=false
 done
 if [ -n "$CLAW_VERSION" ]; then
@@ -490,8 +546,39 @@ if [ -f "$WEBSITE_PREFLIGHT_DIR/index.html" ]; then
   echo ""
 fi
 
+# --- Step 3.9: Packaged-artefact smoke ---
+# Every other test in this repo runs against the SOURCE tree, which is not what
+# users install. That gap has already shipped a defect: `pg` is an
+# optionalDependency and tsup only auto-externalizes dependencies +
+# peerDependencies, so the driver was inlined into core's dist and
+# `PostgresAdapter` threw on first use — in the published package, while every
+# in-repo test passed.
+#
+# `smoke-release.sh` packs real tarballs, installs them outside the workspace
+# (no node_modules to fall back on, no workspace: links) and drives the public
+# API. It existed but nothing called it, so it could only ever catch something
+# if a human remembered to run it. Here it is a gate, and it runs BEFORE the
+# irreversible git tag push and first publish.
+#
+# Set PLUR_SMOKE_POSTGRES_URL to include the Postgres store in the run.
+echo "--- Step 3.9: Packaged-artefact smoke ---"
+if ! bash "$REPO_ROOT/scripts/smoke-release.sh"; then
+  echo ""
+  echo "FAIL: the packaged artefacts do not work. Nothing has been published."
+  echo "  Reproduce with: pnpm smoke:release"
+  exit 1
+fi
+echo ""
+
 # --- 4. Commit + tag + push ---
 echo "--- Step 4: Git ---"
+# The tree was verified clean at Step 0, but build + tests + smoke ran for
+# minutes since. `git add -A` cannot distinguish this script's own version
+# bumps from a file the toolchain dropped mid-run, so print exactly what is
+# being swept into the release commit — visible in the release log rather
+# than silently folded in.
+echo "Committing the following changes:"
+git status --short
 git add -A
 git commit -m "chore: release v$VERSION"
 git tag "v$VERSION"
@@ -507,9 +594,26 @@ echo ""
 # but unflagged — npm's 72-hour unpublish rule means we can't delete; we ship
 # a 0.9.5 patch and deprecate 0.9.4 via `npm deprecate`).
 echo "--- Step 5a: Publish npm @next (canary) ---"
-for pkg in core cli mcp; do
+for pkg in core cli mcp migrate; do
   echo -n "  @plur-ai/$pkg@$VERSION → @next..."
-  pnpm --filter "@plur-ai/$pkg" publish --access public --no-git-checks --tag next 2>&1 | tail -1
+  if ! pnpm --filter "@plur-ai/$pkg" publish --access public --no-git-checks --tag next 2>&1 | tail -1; then
+    # Every other failure branch in this script prints its recovery steps;
+    # this one aborted bare (set -euo pipefail) and left you to reconstruct
+    # which of the four packages made it out. Blast radius is small — @latest
+    # only moves in Step 5c — but a partial @next needs finishing BY HAND: a
+    # full re-run fails Step 3.7 for every package already published.
+    echo ""
+    echo "FAIL: @plur-ai/$pkg@$VERSION did not reach @next."
+    echo "  Published so far this run: the packages BEFORE '$pkg' in (core cli mcp migrate)."
+    echo "  @latest has not moved; users are unaffected. To recover:"
+    echo "    1. Fix the cause, then for '$pkg' and each remaining package:"
+    echo "       pnpm --filter @plur-ai/<pkg> publish --access public --no-git-checks --tag next"
+    echo "    2. Verify: npm view @plur-ai/<pkg>@$VERSION dist-tags"
+    echo "    3. Continue manually from Step 5b (smoke from @next, then promote via"
+    echo "       npm dist-tag add @plur-ai/<pkg>@$VERSION latest), or roll back with"
+    echo "       npm dist-tag rm @plur-ai/<pkg> next"
+    exit 1
+  fi
 done
 if [ -n "$CLAW_VERSION" ]; then
   echo -n "  @plur-ai/claw@$CLAW_VERSION → @next..."
@@ -525,10 +629,47 @@ echo ""
 # the broken-publish case 0.9.2 hit (esbuild regression — the package
 # installed but `--version` would crash). If smoke fails, abort BEFORE
 # promoting to @latest so @latest stays on the prior good release.
+# --- 5a.5. Wait for the shared dependency to become resolvable ---
+# `cli` and `mcp` pin `core` at this exact version, so `npx @plur-ai/cli@X`
+# cannot resolve until `core@X` is visible to the registry's resolver. Without
+# this gate the FIRST package smoked absorbs the entire propagation wait for
+# the whole set, and its private retry budget decides the fate of the release.
+# v0.17.2 died exactly there: cli exhausted its retries, and mcp — smoked
+# seconds later against a now-propagated core — passed on its first retry. The
+# packages were fine; the ordering was the bug.
+#
+# Waiting on `npm view` here is much cheaper than an `npx` install per attempt,
+# so a generous budget costs seconds rather than minutes.
+echo "--- Step 5a.5: Wait for @plur-ai/core@$VERSION to propagate ---"
+echo -n "  "
+core_visible=false
+for _attempt in $(seq 1 30); do
+  if npm view "@plur-ai/core@$VERSION" version > /dev/null 2>&1; then
+    core_visible=true
+    break
+  fi
+  echo -n "."
+  sleep 10
+done
+if [ "$core_visible" = true ]; then
+  echo " ✓ resolvable"
+else
+  # Not fatal on its own — the smoke checks below still decide. This only means
+  # they start without the head start this gate exists to give them.
+  echo " ⚠ still not visible after 5 minutes; smoke checks may time out below"
+fi
+echo ""
+
 echo "--- Step 5b: Smoke test from @next ---"
 SMOKE_DIR=$(mktemp -d)
 pushd "$SMOKE_DIR" > /dev/null
 SMOKE_OK=true
+# Did every failure we saw look like propagation lag, rather than a defect?
+# The distinction changes the RECOVERY ADVICE completely: a crash means burn the
+# version and ship a patch; lag means the artefacts are good and the release
+# should be resumed from the promote step. v0.17.2 printed the former for the
+# latter, which would have burned a version for no reason.
+SMOKE_ONLY_PROPAGATION=true
 # CLI-shaped packages ship a `--version` bin (cli → `plur`, mcp → `plur-mcp`).
 # Both are promoted to @latest, so both are smoke-tested — #584: previously only
 # cli was checked, yet the audited fixes live in core (pulled in transitively).
@@ -552,9 +693,10 @@ for pkg_check in "cli:$VERSION" "mcp:$VERSION"; do
     # Retry ONLY the transient propagation signature; any other failure is a real
     # defect (crash, wrong version) — stop retrying and report it below.
     if echo "$smoke_out" | grep -qiE 'ETARGET|No matching version|notarget'; then
-      [ "$attempt" -lt 6 ] && { echo -n "(propagating, retry $attempt) "; sleep 8; }
+      [ "$attempt" -lt 6 ] && { echo -n "(propagating, retry $attempt) "; sleep 20; }
       continue
     fi
+    SMOKE_ONLY_PROPAGATION=false
     break
   done
   if [ "$smoke_ok_pkg" = true ]; then
@@ -571,15 +713,25 @@ done
 # Plur class is actually exported at the promoted version, before @latest moves.
 echo -n "  @plur-ai/core@$VERSION install + import → "
 core_exit=0
+# Whether the INSTALL itself ever resolved, tracked separately because
+# `core_exit` is reused by the import check below and so cannot answer that
+# question afterwards. It is the whole distinction the classifier rests on:
+# "core never installed" is propagation lag, "core installed and is broken" is
+# a defect. Losing it is what let a broken core be advised for promotion.
+core_installed=false
 # Same propagation-retry as the --version checks above: the install can ETARGET
 # while @next is still propagating.
 for attempt in 1 2 3 4 5 6; do
   core_install_out=$(npm install --no-save --no-audit --no-fund "@plur-ai/core@$VERSION" 2>&1) && core_exit=0 || core_exit=$?
-  [ "$core_exit" -eq 0 ] && break
+  if [ "$core_exit" -eq 0 ]; then
+    core_installed=true
+    break
+  fi
   if echo "$core_install_out" | grep -qiE 'ETARGET|No matching version|notarget'; then
-    [ "$attempt" -lt 6 ] && { echo -n "(propagating, retry $attempt) "; sleep 8; }
+    [ "$attempt" -lt 6 ] && { echo -n "(propagating, retry $attempt) "; sleep 20; }
     continue
   fi
+  SMOKE_ONLY_PROPAGATION=false
   break
 done
 if [ "$core_exit" -eq 0 ]; then
@@ -591,6 +743,18 @@ if [ "$core_exit" -eq 0 ] && [ "$core_inst" = "$VERSION" ]; then
 else
   echo "✗"
   echo "      Expected core@$VERSION to import with a Plur export (exit=$core_exit, installed=$core_inst): ${core_out:-}"
+  # The install resolved and core STILL failed — it either crashed on import or
+  # is present at the wrong version. Both are genuine defects, and both are the
+  # exact class this check exists to catch (#584, #64). Clearing the flag stops
+  # the abort from advising "resume → promote core@latest" over a broken core.
+  #
+  # Guarding on `core_installed` rather than on `core_inst = $VERSION` matters:
+  # a version MISMATCH is itself one of the two defects, so keying on the
+  # version would misfile it as lag — the same hole one level down.
+  # A pure ETARGET exhaustion never sets `core_installed`, so it stays lag.
+  if [ "$core_installed" = true ]; then
+    SMOKE_ONLY_PROPAGATION=false
+  fi
   SMOKE_OK=false
 fi
 popd > /dev/null
@@ -598,14 +762,38 @@ rm -rf "$SMOKE_DIR"
 if [ "$SMOKE_OK" != true ]; then
   echo ""
   echo "✗ Smoke test FAILED. @next is published but @latest is unchanged."
-  echo "  To revert @next:"
+  if [ "$SMOKE_ONLY_PROPAGATION" = true ]; then
+    # Every failure matched the propagation signature and none was a crash or a
+    # wrong version. The published artefacts are almost certainly fine and the
+    # registry was simply still catching up — do NOT burn the version.
+    echo ""
+    echo "  Every failure was npm-propagation lag (ETARGET / no matching version),"
+    echo "  never a crash or a version mismatch. The published artefacts are most"
+    echo "  likely GOOD and the registry was still catching up."
+    echo ""
+    echo "  DO NOT ship a new patch version for this. Verify, then RESUME:"
+    echo "    1. npx -y @plur-ai/cli@$VERSION --version    # expect $VERSION"
+    echo "    2. npx -y @plur-ai/mcp@$VERSION --version    # expect $VERSION"
+    echo "    3. If both report $VERSION, promote and continue the release:"
+    echo "         for p in core cli mcp migrate; do npm dist-tag add @plur-ai/\$p@$VERSION latest; done"
+    echo "       then finish PyPI (Step 6), GitHub release (7), website (8), tweet (9)."
+    echo "    4. Only if a check CRASHES or reports the wrong version is this a real"
+    echo "       defect — then revert @next and ship the next patch (see below)."
+    echo ""
+    echo "  Revert @next only if step 1 or 2 shows a genuine defect:"
+  else
+    echo "  A check crashed or reported the wrong version — this is a real defect."
+    echo "  To revert @next:"
+  fi
   echo "    npm dist-tag rm @plur-ai/core next"
   echo "    npm dist-tag rm @plur-ai/mcp next"
   echo "    npm dist-tag rm @plur-ai/cli next"
   if [ -n "$CLAW_VERSION" ]; then
     echo "    npm dist-tag rm @plur-ai/claw next"
   fi
-  echo "  Then ship a fix as the next patch (e.g. $VERSION → next-patch) and re-run."
+  if [ "$SMOKE_ONLY_PROPAGATION" != true ]; then
+    echo "  Then ship a fix as the next patch (e.g. $VERSION → next-patch) and re-run."
+  fi
   exit 1
 fi
 echo "✓ Smoke test passed."
@@ -615,7 +803,7 @@ echo ""
 # Past this point, @latest is updated. Users on @latest start receiving the
 # new version. PyPI publish + GH release + tweet follow.
 echo "--- Step 5c: Promote @next → @latest ---"
-for pkg in core cli mcp; do
+for pkg in core cli mcp migrate; do
   echo -n "  @plur-ai/$pkg@$VERSION → @latest..."
   npm dist-tag add "@plur-ai/$pkg@$VERSION" latest 2>&1 | tail -1
 done
@@ -712,7 +900,11 @@ elif [ ! -f "$DEPLOY_KEY" ]; then
   echo "    Set DEPLOY_KEY env var to override"
 else
   echo "  Deploying $WEBSITE_DIR → $DEPLOY_TARGET"
-  rsync -avz -e "ssh -i $DEPLOY_KEY -o StrictHostKeyChecking=accept-new" \
+  # IdentitiesOnly: without it, an ssh-agent loaded with several keys offers
+  # them all before -i, and the server disconnects with "Too many
+  # authentication failures" — killed Step 8 of the 0.16.0 release on a
+  # machine whose agent carried a full keyring.
+  rsync -avz -e "ssh -i $DEPLOY_KEY -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new" \
     "$WEBSITE_DIR/" "$DEPLOY_TARGET" \
     --exclude='.git' --exclude='node_modules' --exclude='.DS_Store' \
     --exclude='.gstack' --exclude='CLAUDE.md' --exclude='.github' \
@@ -834,10 +1026,99 @@ else
   " "$TWEET" "$REPLY"
 fi
 
+# --- 9b. Post-release pin verification ---
+#
+# Asserts, against the LIVE registry, that every published package is actually
+# reachable at the version just released. Two real misses on 2026-08-03 motivate
+# each half:
+#
+#   dist-tags — @plur-ai/claw was published by hand with `pnpm publish`, which
+#     writes `latest` and leaves `next` alone. Its `next` tag sat on 0.10.0 for
+#     two months, so `npm install @plur-ai/claw@next` served a build from before
+#     the whole data-loss audit series. The pipeline's publish -> smoke ->
+#     promote flow moves both tags; a manual publish silently does not.
+#
+#   resolved deps — `workspace:*` is rewritten at publish time, so a package
+#     that is NOT republished keeps pointing at whatever core it was last built
+#     against. claw@0.10.0 depended on @plur-ai/core@0.10.0, which meant every
+#     OpenClaw user ran a core without any of the protections this release
+#     exists to ship. Nothing anywhere flagged it.
+#
+# Warn-only by design: the release has already happened by this point, so
+# failing hard would report a disaster that is not one. The point is to say
+# plainly what still needs fixing while the operator is still looking.
+echo ""
+echo "--- Step 9b: Post-release pin verification ---"
+
+PIN_PROBLEMS=0
+verify_pins() {
+  local pkg="$1" want="$2"
+  local tags latest next deps
+  tags=$(npm view "$pkg" dist-tags --json 2>/dev/null) || {
+    echo "  ? $pkg — could not read dist-tags (registry unreachable?)"; return
+  }
+  latest=$(printf '%s' "$tags" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{console.log(JSON.parse(s).latest||"")}catch{console.log("")}})')
+  next=$(printf '%s' "$tags" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{console.log(JSON.parse(s).next||"")}catch{console.log("")}})')
+
+  if [ "$latest" = "$want" ]; then echo "  ✓ $pkg latest=$want"; else
+    echo "  ✗ $pkg latest=$latest (expected $want)"; PIN_PROBLEMS=$((PIN_PROBLEMS+1)); fi
+
+  # `next` only matters when it exists; a package that never used the tag is fine.
+  if [ -n "$next" ] && [ "$next" != "$want" ]; then
+    echo "  ✗ $pkg next=$next (expected $want) — run: npm dist-tag add $pkg@$want next"
+    PIN_PROBLEMS=$((PIN_PROBLEMS+1))
+  elif [ -n "$next" ]; then echo "  ✓ $pkg next=$want"; fi
+
+  # Published dependency on core must be the core we just shipped.
+  if [ "$pkg" != "@plur-ai/core" ]; then
+    deps=$(npm view "$pkg@$want" dependencies --json 2>/dev/null | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const d=JSON.parse(s)||{};console.log(d["@plur-ai/core"]||"")}catch{console.log("")}})')
+    if [ -n "$deps" ]; then
+      case "$deps" in
+        *"$VERSION"*) echo "  ✓ $pkg -> @plur-ai/core $deps" ;;
+        *) echo "  ✗ $pkg -> @plur-ai/core $deps (expected $VERSION) — republish it"
+           PIN_PROBLEMS=$((PIN_PROBLEMS+1)) ;;
+      esac
+    fi
+  fi
+}
+
+for pkg in @plur-ai/core @plur-ai/mcp @plur-ai/cli @plur-ai/migrate; do
+  verify_pins "$pkg" "$VERSION"
+done
+if [ -n "$CLAW_VERSION" ]; then
+  verify_pins "@plur-ai/claw" "$CLAW_VERSION"
+else
+  # Not released this run — but if its published core dep is stale, say so.
+  claw_core=$(npm view @plur-ai/claw dependencies --json 2>/dev/null | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const d=JSON.parse(s)||{};console.log(d["@plur-ai/core"]||"")}catch{console.log("")}})')
+  claw_ver=$(npm view @plur-ai/claw version 2>/dev/null || echo "?")
+  case "$claw_core" in
+    ""|*"$VERSION"*) echo "  ✓ @plur-ai/claw@$claw_ver -> @plur-ai/core $claw_core (not released this run)" ;;
+    *) echo "  ! @plur-ai/claw@$claw_ver still depends on @plur-ai/core $claw_core"
+       echo "    OpenClaw users are on that core, not $VERSION. Re-run with --claw <ver> to realign."
+       PIN_PROBLEMS=$((PIN_PROBLEMS+1)) ;;
+  esac
+fi
+
+if [ "$PIN_PROBLEMS" -gt 0 ]; then
+  echo ""
+  echo "  ⚠ $PIN_PROBLEMS pin problem(s) above. The release shipped; these are follow-ups."
+else
+  echo "  All pins verified."
+fi
+
 echo ""
 echo "=== Release v$VERSION complete ==="
 echo ""
 echo "Published:"
-echo "  npm: @plur-ai/core@$VERSION @plur-ai/mcp@$VERSION @plur-ai/claw@$VERSION @plur-ai/cli@$VERSION"
+# Report what was ACTUALLY published. This line named claw at $VERSION
+# unconditionally — but claw is on its own version track and ships only with
+# --claw, so a release without it announced a version that was never published;
+# and it omitted `migrate`, which IS published every release. A summary nobody
+# can trust is worse than no summary.
+NPM_PUBLISHED="@plur-ai/core@$VERSION @plur-ai/mcp@$VERSION @plur-ai/cli@$VERSION @plur-ai/migrate@$VERSION"
+if [ -n "$CLAW_VERSION" ]; then
+  NPM_PUBLISHED="$NPM_PUBLISHED @plur-ai/claw@$CLAW_VERSION"
+fi
+echo "  npm: $NPM_PUBLISHED"
 echo "  PyPI: plur-hermes==$VERSION"
 echo "  GitHub: https://github.com/plur-ai/plur/releases/tag/v$VERSION"

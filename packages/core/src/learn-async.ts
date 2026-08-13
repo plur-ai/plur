@@ -7,6 +7,7 @@ import { buildDedupPrompt, parseDedupResponse } from './dedup.js'
 import { appendHistory } from './history.js'
 import { logger } from './logger.js'
 import { withAsyncLock } from './store/async-lock.js'
+import { maybeDailyBackup } from './backup.js'
 import type { Engram } from './schemas/engram.js'
 import type { AsyncPrimaryStore } from './store/primary-store.js'
 import type { SecretMatch } from './secrets.js'
@@ -55,6 +56,70 @@ export interface LearnAsyncDeps {
    * can demote a mutated engram before it is written back to a shared store.
    */
   offendingHitsForScope: (statement: string, scope: string) => SecretMatch[]
+}
+
+
+/**
+ * Run `fn` under exclusive access to the store — the store's own mechanism when
+ * it has one, the path-based file lock otherwise.
+ *
+ * Mirrors `Plur._withStoreLock`, and exists for the same reason. These writes
+ * are load -> mutate -> `store.save(all)`, which REPLACES the whole corpus, so
+ * two concurrent writers do not merely lose an update: the loser deletes rows
+ * the winner committed.
+ *
+ * This module locked on `deps.engramsPath` unconditionally — an `O_EXCL` file on
+ * the LOCAL disk. That is correct for a YAML store, where the path being locked
+ * IS the data, and worthless for a shared database: two processes share neither
+ * the mutex nor the file. So `learnAsync` and `learnBatch` bypassed the Postgres
+ * advisory lock that every other write path takes.
+ */
+/**
+ * Persist exactly one changed engram (audit #794 F3 remainder, issue #802).
+ *
+ * The dedup UPDATE and MERGE branches used to call `deps.store.save(engrams)`
+ * directly, which bypasses the incremental write seam and is a WHOLE-CORPUS
+ * REPLACE on every backend. That is a correctness bug, not just a slow path:
+ * `PostgresAdapter.save()` finishes with
+ *
+ *   DELETE FROM engrams WHERE id NOT IN (<the ids being saved>)
+ *
+ * so every row absent from the array this call happened to load is deleted —
+ * and an empty array deletes the table outright. It fires on ordinary
+ * `plur_learn` calls, since UPDATE/MERGE is what LLM dedup returns whenever the
+ * statement resembles something already stored.
+ *
+ * `updateMany` is the seam's "these rows changed, leave the rest alone"
+ * primitive; a store that implements it gets a single-row UPDATE. A store
+ * without it falls back to the whole-corpus save it always had — no worse than
+ * before, and on YAML that save is itself guarded against an unexpected shrink.
+ */
+async function persistOne(deps: LearnAsyncDeps, corpus: Engram[], changed: Engram): Promise<void> {
+  if (deps.store.updateMany) {
+    await deps.store.updateMany([changed])
+    deps.store.invalidate()
+    return
+  }
+  await deps.store.save(corpus)
+}
+
+async function withStoreLock<T>(deps: LearnAsyncDeps, fn: () => Promise<T>): Promise<T> {
+  // Take the daily snapshot here too (#813, audit finding 15). Plur's own
+  // `_withStoreLock` does this, but the dedup paths lock through this helper
+  // instead — so when the first mutation of the day was an UPDATE or a MERGE,
+  // the pre-mutation corpus was never snapshotted and the statement being
+  // overwritten had no copy anywhere.
+  //
+  // Same ordering as the engine's hook and for the same reasons: inside the
+  // lock, before `fn` reads or writes, so the copy is of the on-disk bytes as
+  // they were. Never throws — a backup is a safety net for the write, not a
+  // precondition of it.
+  const guarded = async (): Promise<T> => {
+    try { maybeDailyBackup(deps.rootPath, deps.engramsPath) } catch { /* backup logs its own failures */ }
+    return await fn()
+  }
+  if (deps.store.withExclusiveAccess) return await deps.store.withExclusiveAccess(guarded)
+  return await withAsyncLock(deps.engramsPath, guarded)
 }
 
 /**
@@ -132,7 +197,7 @@ async function executeDedupDecision(
       if (targetId) {
         const existing = await deps.getById(targetId)
         if (existing && (existing as any).commitment !== 'locked') {
-          const result = await withAsyncLock(deps.engramsPath, async () => {
+          const result = await withStoreLock(deps, async () => {
             const engrams = await deps.store.load()
             const idx = engrams.findIndex(e => e.id === targetId)
             // Target gone — fall out of the lock and ADD; see the doc comment.
@@ -147,7 +212,7 @@ async function executeDedupDecision(
             // into an engram living at a shared scope. Demote before persisting.
             demoteIfSensitive(deps, updated, updated.statement)
             engrams[idx] = updated
-            await deps.store.save(engrams)
+            await persistOne(deps, engrams, updated)
             await deps.syncIndex()
             appendHistory(deps.rootPath, {
               event: 'engram_updated',
@@ -167,7 +232,7 @@ async function executeDedupDecision(
       if (targetId) {
         const existing = await deps.getById(targetId)
         if (existing && (existing as any).commitment !== 'locked') {
-          const result = await withAsyncLock(deps.engramsPath, async () => {
+          const result = await withStoreLock(deps, async () => {
             const engrams = await deps.store.load()
             const idx = engrams.findIndex(e => e.id === targetId)
             // Target gone — fall out of the lock and ADD; see the doc comment.
@@ -184,7 +249,7 @@ async function executeDedupDecision(
             // a shared scope. Demote before persisting.
             demoteIfSensitive(deps, merged, merged.statement)
             engrams[idx] = merged
-            await deps.store.save(engrams)
+            await persistOne(deps, engrams, merged)
             await deps.syncIndex()
             appendHistory(deps.rootPath, {
               event: 'engram_merged',

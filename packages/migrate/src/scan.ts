@@ -37,27 +37,44 @@
  * they were briefly async before release and were reverted.
  */
 export const NEWLY_ASYNC = [
-  'learn',
-  'learnRouted',
-  'learnBatch',
-  'recall',
-  'inject',
-  'feedback',
-  'forget',
+  // Derived from git, not from memory: these are the methods whose signature
+  // went sync -> async in 0.16. `packages/migrate/test/method-list.test.ts`
+  // re-derives the same set from `Plur` and fails if this drifts — the list was
+  // hand-written once and was wrong in both directions (it advised `await` on a
+  // synchronous `addStore`, and missed eight methods entirely).
+  'compact',
+  'episodeToEngram',
   'getById',
+  'ingest',
+  'inject',
+  'installPack',
+  'learn',
   'list',
   'listPinned',
-  'setPinned',
-  'updateEngram',
-  'status',
-  'ingest',
-  'sync',
-  'reindex',
-  'flushOutbox',
-  'purgeTensions',
-  'recordTensions',
-  'addStore',
   'listStores',
+  'outboxCount',
+  'purgeTensions',
+  'recall',
+  'receipt',
+  'recordTensions',
+  'reindex',
+  'rerankerEvalStatus',
+  'resolveTension',
+  'saveMetaEngrams',
+  'setPinned',
+  'status',
+  'sync',
+  'updateEngram',
+  // Already async before 0.16, so an un-awaited call was always a bug rather
+  // than migration fallout — but reporting it costs nothing and helps, and
+  // these were in the original list. `addStore` was too and is REMOVED: it is
+  // synchronous, so the tool was telling users to add an `await` that does not
+  // belong.
+  'feedback',
+  'flushOutbox',
+  'forget',
+  'learnBatch',
+  'learnRouted',
 ] as const
 
 export interface Finding {
@@ -102,7 +119,7 @@ function literalSpans(src: string): Array<[number, number]> {
       i = end === -1 ? src.length : end + 2
       continue
     }
-    if (c === '"' || c === "'" || c === '`') {
+    if (c === '"' || c === "'") {
       const quote = c
       let j = i + 1
       while (j < src.length) {
@@ -114,6 +131,41 @@ function literalSpans(src: string): Array<[number, number]> {
       i = j + 1
       continue
     }
+    if (c === '`') {
+      // A template literal is only PARTLY a literal: everything inside `${...}`
+      // is ordinary code. Treating the whole thing as a string hid every call
+      // written as `${plur.recall(q)}` — which is the worst place to miss one,
+      // because an un-awaited promise there does not throw, it interpolates as
+      // the string "[object Promise]" and ships.
+      //
+      // So push a span for each literal CHUNK and step over the holes.
+      let j = i + 1
+      let chunkStart = i
+      while (j < src.length) {
+        if (src[j] === '\\') { j += 2; continue }
+        if (src[j] === '`') break
+        if (src[j] === '$' && src[j + 1] === '{') {
+          spans.push([chunkStart, j])
+          // Walk to the matching `}`, counting nested braces. Nested template
+          // literals inside the hole are handled by the outer loop when it
+          // reaches them, so only brace depth matters here.
+          let depth = 1
+          let k = j + 2
+          while (k < src.length && depth > 0) {
+            if (src[k] === '{') depth++
+            else if (src[k] === '}') depth--
+            k++
+          }
+          j = k
+          chunkStart = k
+          continue
+        }
+        j++
+      }
+      spans.push([chunkStart, Math.min(j + 1, src.length)])
+      i = j + 1
+      continue
+    }
     i++
   }
   return spans
@@ -122,6 +174,92 @@ function literalSpans(src: string): Array<[number, number]> {
 function inSpans(spans: Array<[number, number]>, idx: number): boolean {
   for (const [a, b] of spans) if (idx >= a && idx < b) return true
   return false
+}
+
+/**
+ * Characters after which a line-starting `(` cannot splice onto the previous
+ * statement: statement terminators (`;`), openers (`{ ( [`), separators
+ * (`, :`), and binary/prefix operator tails (`= > & | + - * % < ~ ^ ?`
+ * — `>` also covers `=>`). Everything else — `)`, `]`, `}`, quotes,
+ * identifier characters — can legally absorb a following `(` as a call or
+ * index, which is the ASI splice. See the guard in `scanSource`.
+ *
+ * Two characters that LOOK like dangling operators are deliberately absent,
+ * because both far more often END a complete expression (iteration 2 of the
+ * #752 audit reproduced runtime splices for each):
+ *
+ *   - `/` — the tail of a regex literal. `literalSpans` does not lex regexes,
+ *     so `const re = /foo/` reaches this check as a bare `/`, and a regex
+ *     followed by `(` is a CallExpression — no ASI. A genuine dangling
+ *     division at end of line effectively does not occur.
+ *   - `!` — TypeScript's non-null assertion (`map.get(k)!`), a standard
+ *     end-of-line idiom in exactly the no-semicolon TS codebases this tool
+ *     targets; `expr!(args)` is a call. A dangling prefix-`!` at end of line
+ *     effectively does not occur.
+ *
+ * Known caveat, documented rather than removed: `>` stays because dangling
+ * comparisons (`count >` at end of line) are real and the wrap there is both
+ * safe and wanted — but a TS 4.7+ instantiation expression tail
+ * (`const g = f<string>` at end of line) also ends in `>` and DOES splice,
+ * silently. That shape is rare enough that refusing every dangling comparison
+ * to block it would cost more than it saves.
+ */
+const ASI_SAFE_BEFORE_PAREN = new Set([
+  ';', '{', ',', '(', '[', ':', '=', '>', '&', '|', '+', '-', '*', '%', '<', '~', '^', '?',
+])
+
+/** The span containing `idx`, or null. */
+function spanAt(spans: Array<[number, number]>, idx: number): [number, number] | null {
+  for (const s of spans) if (idx >= s[0] && idx < s[1]) return s
+  return null
+}
+
+/**
+ * Index of the last significant character at or before `from`: whitespace is
+ * skipped, COMMENT spans are skipped whole, and a string/template literal is
+ * significant — its closing quote/backtick position is returned, because a
+ * string can absorb a following `(` as a call (`'s'(...)` / tagged template),
+ * so for the ASI guard it must count as hazardous, not vanish like a comment.
+ * Callers that need to know they landed inside a literal check `spanAt`.
+ */
+function lastSignificantIndex(src: string, from: number, spans: Array<[number, number]>): number {
+  for (let j = from; j >= 0; j--) {
+    const span = spanAt(spans, j)
+    if (span) {
+      if (src[span[0]] === '/') { j = span[0]; continue } // comment — skip whole
+      return j // inside a string/template literal
+    }
+    if (/\s/.test(src[j])) continue
+    return j
+  }
+  return -1
+}
+
+/** The last significant character at or before `from`, or null. See above. */
+function lastSignificantChar(src: string, from: number, spans: Array<[number, number]>): string | null {
+  const j = lastSignificantIndex(src, from, spans)
+  return j < 0 ? null : src[j]
+}
+
+/**
+ * Index of the first significant character at or after `from`: whitespace is
+ * skipped, comment spans are skipped whole. The mirror of
+ * `lastSignificantIndex`, used to see what CONSUMES a call's result — a
+ * comment sitting between the call and its `.length` must not make a consumed
+ * call look bare, because the bare form gets a plain `await`, which for a
+ * consumed result awaits the wrong expression.
+ */
+function nextSignificantIndex(src: string, from: number, spans: Array<[number, number]>): number {
+  for (let j = from; j < src.length; j++) {
+    const span = spanAt(spans, j)
+    if (span) {
+      if (src[span[0]] === '/') { j = span[1] - 1; continue } // comment — skip whole
+      return j
+    }
+    if (/\s/.test(src[j])) continue
+    return j
+  }
+  return -1
 }
 
 /** Index of the line containing `idx`, and the column within it. */
@@ -137,71 +275,456 @@ function positionOf(src: string, idx: number): { line: number; column: number; t
   }
 }
 
+
+/** Statement keywords that take a parenthesised head — not callable functions. */
+const CONTROL_KEYWORDS = new Set(['if', 'for', 'while', 'switch', 'catch', 'with', 'do'])
+
+
+/**
+ * Is `idx` directly inside a `Promise.all/race/allSettled/any([...])` array?
+ *
+ * Awaiting an element there resolves that call BEFORE the array is even
+ * constructed, so the combinator receives an already-settled promise. For
+ * `race` that silently disables a timeout; for `all` it serialises what the
+ * caller wrote to run concurrently. Both still parse and still pass tests —
+ * this is the bug the tool exists to prevent, so emitting it is the one
+ * unacceptable outcome.
+ *
+ * Detected by scanning outwards for an unmatched `[` rather than by looking
+ * back a fixed number of characters. The window version passed the obvious
+ * cases and missed anything with a long enough preceding element: verified
+ * against a three-element `Promise.all` where the combinator sat beyond the
+ * 80-character lookback, and the tool rewrote it.
+ */
+function insideCombinatorArray(src: string, idx: number, spans: Array<[number, number]>): boolean {
+  let square = 0, round = 0, curly = 0
+  for (let i = idx - 1; i >= 0; i--) {
+    if (inSpans(spans, i)) continue
+    const c = src[i]
+    if (c === ']') { square++; continue }
+    if (c === ')') { round++; continue }
+    if (c === '}') { curly++; continue }
+    if (c === ')' || c === '}') continue
+    if (c === '[') {
+      if (square > 0) { square--; continue }
+      // Unmatched `[` — the array we are directly inside. Is it a combinator's?
+      //
+      // The lookback is built from SIGNIFICANT characters only — comment and
+      // string spans are skipped, exactly as the bracket walk above skips
+      // them. A raw `src.slice` here matched the literal text `Promise.all(`
+      // inside an adjacent COMMENT (`process(\n  // Promise.all(\n  [...]`)
+      // and refused two perfectly ordinary calls; the false positive fails
+      // safe but sends a human to investigate nothing.
+      let before = ''
+      for (let j = i - 1; j >= 0 && before.length < 60; j--) {
+        if (inSpans(spans, j)) continue
+        before = src[j] + before
+      }
+      return /Promise\s*\.\s*(all|race|allSettled|any)\s*\(\s*$/.test(before)
+    }
+    if (c === '(') {
+      if (round > 0) { round--; continue }
+      return false // an enclosing call, not an array literal
+    }
+    if (c === '{') {
+      if (curly > 0) { curly--; continue }
+      return false // an enclosing block or object
+    }
+  }
+  return false
+}
+
+/**
+ * Whether the function enclosing `idx` is `async` — or `'top-level'` when the
+ * call is not inside a function at all.
+ *
+ * `await` is a syntax error outside an async function, so inserting one without
+ * checking produces source that does not parse. The tool did exactly that:
+ * given `function saveIt(plur) { plur.learn('x') }` it emitted
+ * `await plur.learn('x')` inside a non-async function, and `node --check`
+ * rejected the file. A migration tool that breaks the build is worse than one
+ * that reports and leaves the edit to a human.
+ *
+ * Walks backwards tracking brace depth to find the nearest enclosing `{` that
+ * belongs to a function header, then inspects that header. String and comment
+ * spans are skipped by the caller's span list.
+ */
+function enclosingFunctionKind(src: string, idx: number, spans: Array<[number, number]>): 'async' | 'sync' | 'top-level' {
+  let depth = 0
+  for (let i = idx - 1; i >= 0; i--) {
+    if (inSpans(spans, i)) continue
+    const c = src[i]
+    if (c === '}') { depth++; continue }
+    if (c !== '{') continue
+    if (depth > 0) { depth--; continue }
+    // An unmatched `{` — the block we are directly inside. Is its header a
+    // function?
+    const header = src.slice(Math.max(0, i - 220), i)
+    // `function f(...)`, `async function f(...)`, `(...) =>`, method shorthand.
+    const fn = /(?:^|[^\w$])(async\s+)?function\s*\*?\s*[\w$]*\s*\([^()]*\)\s*$/.exec(header)
+    if (fn) return fn[1] ? 'async' : 'sync'
+    const arrow = /(?:^|[^\w$])(async\s*)?\([^()]*\)\s*=>\s*$/.exec(header)
+    if (arrow) return arrow[1] ? 'async' : 'sync'
+    const bareArrow = /(?:^|[^\w$])(async\s+)?[\w$]+\s*=>\s*$/.exec(header)
+    if (bareArrow) return bareArrow[1] ? 'async' : 'sync'
+    // Method shorthand in a class or object literal: `name(args) {`.
+    //
+    // The keyword guard is load-bearing: `if (...) {`, `for (...) {`,
+    // `while (...) {` and `catch (...) {` all match this shape, and treating
+    // one as a non-async function made every call inside a conditional or loop
+    // unfixable — even inside an async function. Caught by a test that put the
+    // call inside `if { for { ... } }`.
+    const method = /(?:^|[^\w$])(async\s+)?([\w$]+)\s*\([^()]*\)\s*$/.exec(header)
+    if (method && !CONTROL_KEYWORDS.has(method[2])) return method[1] ? 'async' : 'sync'
+    // Some other block (if/for/try/class body) — keep walking outwards.
+    depth = 0
+  }
+  return 'top-level'
+}
+
+/**
+ * True when the file can host a top-level `await`.
+ *
+ * TypeScript and `.mjs` are modules by default, so top-level await is valid
+ * there. `.cjs`/`.cts` never are. Plain `.js` is ambiguous — CommonJS unless the
+ * file shows module syntax — so evidence is required before rewriting, since a
+ * wrong guess emits source that does not parse.
+ */
+function isEsm(file: string, src: string): boolean {
+  if (/\.(mjs|mts|ts|tsx)$/.test(file)) return true
+  if (/\.(cjs|cts)$/.test(file)) return false
+  return /^\s*(import\s|export\s|import\()/m.test(src)
+}
+
+const IDENT_CHAR = /[\w$]/
+
+/**
+ * Words that may sit directly before a `(...)` or `[...]` group without
+ * calling or indexing it — prefix operators and statement keywords. They
+ * decide the receiver walk below: `await (getPlur()).recall(q)` must resolve
+ * the GROUP as the receiver head (and then be recognised as already awaited),
+ * not treat `await` as a callee — treating it as one re-anchors the finding
+ * past the `await` and reports (then mangles) already-correct code.
+ * `new` is deliberately absent: it is handled specially, because `await`
+ * cannot be inserted between `new` and its callee.
+ */
+const NON_CALLEE_WORDS = new Set([
+  'await', 'yield', 'return', 'throw', 'typeof', 'void', 'delete',
+  'in', 'of', 'case', 'else', 'instanceof',
+])
+
+/** Index of the `(` matching the `)` at `close`, or -1. Spans skipped whole. */
+function matchBackwardParen(src: string, close: number, spans: Array<[number, number]>): number {
+  let d = 0
+  for (let i = close; i >= 0; i--) {
+    const span = spanAt(spans, i)
+    if (span) { i = span[0]; continue }
+    if (src[i] === ')') d++
+    else if (src[i] === '(') { d--; if (d === 0) return i }
+  }
+  return -1
+}
+
+/** Index of the `[` matching the `]` at `close`, or -1. Spans skipped whole. */
+function matchBackwardBracket(src: string, close: number, spans: Array<[number, number]>): number {
+  let d = 0
+  for (let i = close; i >= 0; i--) {
+    const span = spanAt(spans, i)
+    if (span) { i = span[0]; continue }
+    if (src[i] === ']') d++
+    else if (src[i] === '[') { d--; if (d === 0) return i }
+  }
+  return -1
+}
+
+/**
+ * Resolve the start of the receiver chain whose method dot sits at `dot`, or
+ * null when what precedes the dot is not a receiver this tool understands.
+ *
+ * Walks BACKWARD from the dot through the chain — identifier segments, `?.`
+ * links, bracket indexes (nested ones too — the walk matches brackets with
+ * spans skipped, so `m[a[0]]` and `m["a]b"]` both resolve, two shapes the old
+ * character-class regex documented as misses), call arguments, and
+ * parenthesised heads — skipping whitespace and comments between tokens.
+ *
+ * Two failure classes of the receiver-anchored regex this replaces, both from
+ * the 0.16.0 audit trail (#752 item 6, #758):
+ *
+ *   - It could not span a newline, so `plur\n  .recall(q)` — an ordinary
+ *     fluent chain — scanned CLEAN, and a clean exit is read as "this file is
+ *     done".
+ *   - Worse, it re-anchored MID-chain: `getStore().plur.recall(q)` matched
+ *     with receiver `plur`, and --write emitted
+ *     `getStore().await plur.recall(q)`, which does not parse. The walk
+ *     starts the finding at the true head of the chain, so the insertion
+ *     point is always a position `await` may legally occupy — and an
+ *     `await`/`return`/`void` already in front of the CHAIN is seen, where
+ *     the mid-chain anchor looked past it.
+ *
+ * The walk stops (returns null) at anything it cannot classify — a string or
+ * template receiver, a control-structure header, an unmatched bracket. A miss
+ * is reported by nothing and costs a finding; a mis-anchored rewrite corrupts
+ * user source, which is the one unacceptable outcome.
+ */
+function receiverStart(src: string, dot: number, spans: Array<[number, number]>): number | null {
+  let i = dot - 1
+  if (src[i] === '?') i-- // the `?.` before the method — one token, always adjacent
+  for (;;) {
+    i = lastSignificantIndex(src, i, spans)
+    if (i < 0) return null
+    if (spanAt(spans, i)) return null // a string/template cannot head this chain
+    const c = src[i]
+
+    if (c === ')') {
+      // A call in the chain (`getPlur().recall(q)`, `plur.scoped(s).recall(q)`)
+      // or a parenthesised head (`(store as Plur).recall(q)`). What precedes
+      // the `(` decides which.
+      const open = matchBackwardParen(src, i, spans)
+      if (open < 0) return null
+      const p = lastSignificantIndex(src, open - 1, spans)
+      if (p < 0) return open                 // `(...)` at file start heads the receiver
+      if (spanAt(spans, p)) return null      // tagged-template call — not a chain this tool reads
+      if (IDENT_CHAR.test(src[p])) {
+        let w = p
+        while (w > 0 && IDENT_CHAR.test(src[w - 1])) w--
+        const word = src.slice(w, p + 1)
+        // `new Plur().recall(q)` — the insertion must cover the `new`:
+        // `new await Plur()` does not parse, `await new Plur()...` does.
+        if (word === 'new') return w
+        if (NON_CALLEE_WORDS.has(word)) return open // `await (...)`, `typeof (...)`, …
+        if (CONTROL_KEYWORDS.has(word)) return null // `for (...) (x).recall(q)` — a statement header, not a callee
+        if (/[0-9]/.test(src[w])) return null       // a number is not a callee
+        i = p                                       // ordinary call — the callee continues the chain
+        continue
+      }
+      if (src[p] === ')' || src[p] === ']') { i = p; continue } // f()(…) / arr[0](…)
+      return open // parenthesised expression heads the receiver
+    }
+
+    if (c === ']') {
+      const open = matchBackwardBracket(src, i, spans)
+      if (open < 0) return null
+      const p = lastSignificantIndex(src, open - 1, spans)
+      if (p < 0) return open                 // `[...]` literal at file start
+      if (spanAt(spans, p)) return null      // `'str'[0]` — a string receiver is not this tool's pattern
+      if (src[p] === '.' && src[p - 1] === '?') { i = p - 2; continue } // arr?.[0]
+      if (IDENT_CHAR.test(src[p])) {
+        let w = p
+        while (w > 0 && IDENT_CHAR.test(src[w - 1])) w--
+        const word = src.slice(w, p + 1)
+        // `return [a, b].learn(x)` — the `[` does not index the keyword.
+        if (word === 'new' || NON_CALLEE_WORDS.has(word) || CONTROL_KEYWORDS.has(word)) return open
+        i = p
+        continue
+      }
+      if (src[p] === ')' || src[p] === ']') { i = p; continue } // f()[0] / a[0][1]
+      return open // array literal heads the receiver
+    }
+
+    if (IDENT_CHAR.test(c)) {
+      let s = i
+      while (s > 0 && IDENT_CHAR.test(src[s - 1])) s--
+      if (/[0-9]/.test(src[s])) return null // a number literal, not an identifier
+      const p = lastSignificantIndex(src, s - 1, spans)
+      if (p >= 0 && !spanAt(spans, p) && src[p] === '.') {
+        if (src[p - 1] === '?') { i = p - 2; continue } // x?.y link
+        if (src[p - 1] === '.') return s               // `...plur` — spread dots, the chain starts here
+        i = p - 1                                       // plain member link
+        continue
+      }
+      if (p >= 0 && !spanAt(spans, p) && IDENT_CHAR.test(src[p])) {
+        let w = p
+        while (w > 0 && IDENT_CHAR.test(src[w - 1])) w--
+        if (src.slice(w, p + 1) === 'new') return w // `new Plur().recall(q)` via a bare callee
+      }
+      return s
+    }
+
+    return null // an operator or opener where an element was expected
+  }
+}
+
 /**
  * Scan one file's source for un-awaited calls to newly-async methods.
  *
- * Matches `<receiver>.<method>(` where the receiver is any identifier or member
- * expression — this cannot know that the receiver is a `Plur`, so it reports
- * `db.list()` too. That is the correct trade for a text tool: a false positive
- * costs a glance, a false negative ships a silent bug. The report says which
- * receiver it saw so the reader can dismiss it instantly.
+ * Anchored on the METHOD, not the receiver: the receiver is resolved by
+ * `receiverStart` walking backward from the method's dot, so a chain split
+ * across lines (`plur\n  .recall(q)`), a comment inside the chain, or a call
+ * in the chain all resolve to the same head as their single-line forms.
+ *
+ * This cannot know that the receiver is a `Plur`, so it reports `db.list()`
+ * too. That is the correct trade for a text tool: a false positive costs a
+ * glance, a false negative ships a silent bug. The report says which receiver
+ * it saw so the reader can dismiss it instantly.
  */
 export function scanSource(file: string, src: string, methods: readonly string[] = NEWLY_ASYNC): Finding[] {
   const spans = literalSpans(src)
   const out: Finding[] = []
   const alt = methods.join('|')
-  const re = new RegExp(String.raw`([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)\.(${alt})\s*\(`, 'g')
+  // `?.` on either side is the same call with the same hazard: `plur?.learn(x)`
+  // and `plur.learn?.(x)` both return a promise nobody awaited. Requiring a
+  // plain `.` missed both. The dot may carry whitespace on either side —
+  // `plur\n  .recall(q)` and `plur.\n  recall(q)` are both ordinary styles.
+  const re = new RegExp(String.raw`\.\s*(${alt})\s*(?:\?\.)?\s*\(`, 'g')
+  // One finding per receiver head: `plur.recall(q).learn(x)` produces two
+  // method matches that resolve to the SAME chain start, and rewriting both
+  // would insert twice at one offset.
+  const seen = new Set<number>()
 
   let m: RegExpExecArray | null
   while ((m = re.exec(src))) {
-    const idx = m.index
-    if (inSpans(spans, idx)) continue
+    const dot = m.index
+    if (inSpans(spans, dot)) continue
 
-    // Already awaited, yielded, or explicitly handled as a promise.
+    const idx = receiverStart(src, dot, spans)
+    if (idx === null || seen.has(idx)) continue
+
+    // The call's `(` is the LAST character of the regex match — taken from the
+    // match, not from `indexOf('(', idx)`, which finds the first paren after
+    // the receiver's start and therefore lands INSIDE a computed index like
+    // `arr[fn(1)].learn(x)`. Balancing from there ends the "call" mid-index,
+    // the `.length`-consumption check reads the wrong position, and the
+    // rewrite silently awaits the wrong expression — the failure class this
+    // tool exists to prevent.
+    const parenIdx = dot + m[0].length - 1
+
+    // Already awaited, yielded, or explicitly handled as a promise — checked
+    // at the CHAIN head: `await plur\n  .recall(q)` is awaited however many
+    // lines the chain spans.
     const before = src.slice(Math.max(0, idx - 80), idx)
     if (/\b(await|yield)\s*$/.test(before)) continue
     if (/\breturn\s*$/.test(before)) continue          // `return p.learn(...)` is fine
     if (/\bvoid\s*$/.test(before)) continue            // deliberate fire-and-forget
 
     const after = src.slice(idx)
-    // `.then(` / `.catch(` / `.finally(` immediately after the call: handled.
-    const callEnd = matchParen(after, after.indexOf('('))
-    if (callEnd > 0 && /^\s*\.(then|catch|finally)\s*\(/.test(after.slice(callEnd))) continue
+    const callEnd = matchParen(after, parenIdx - idx, spans, idx)
+    // What consumes the result is the next SIGNIFICANT character after the
+    // call — significant, so a comment between the call and its `.length`
+    // cannot make a consumed call look bare (the bare form gets a plain
+    // `await`, which for a consumed result awaits the wrong expression).
+    const nsi = callEnd > 0 ? nextSignificantIndex(src, idx + callEnd, spans) : -1
+    // `.then(` / `.catch(` / `.finally(` after the call: handled.
+    if (nsi >= 0 && /^(?:\?\.|\.)\s*(?:then|catch|finally)\s*\(/.test(src.slice(nsi, nsi + 80))) continue
 
     const pos = positionOf(src, idx)
 
     // Unambiguous cases only. Anything structural is reported, not rewritten.
     let fixable = true
     let reason: string | undefined
-    if (/(Promise\s*\.\s*(all|race|allSettled|any)\s*\(\s*\[[^\]]*)$/.test(before)) {
+    if (insideCombinatorArray(src, idx, spans)) {
       fixable = false
       reason = 'inside a Promise combinator array — awaiting here settles the call before the combinator sees it'
     } else if (/=>\s*$/.test(before)) {
       fixable = false
       reason = 'concise arrow body — the enclosing function must become async first'
+    } else {
+      // `await` outside an async function does not parse. Report, do not rewrite.
+      const kind = enclosingFunctionKind(src, idx, spans)
+      if (kind === 'sync') {
+        fixable = false
+        reason = 'the enclosing function is not `async` — make it async first, then re-run'
+      } else if (kind === 'top-level' && !isEsm(file, src)) {
+        fixable = false
+        reason = 'top-level await needs an ES module — convert the file, or wrap the call in an async function'
+      }
     }
 
     // Does something consume the result directly? Then `await` must wrap the
-    // whole call, not bind looser than the member access.
+    // whole call, not bind looser than the member access. `?.` counts: `await
+    // plur.recall(q)?.length` awaits `.length` OF THE PROMISE exactly as the
+    // plain dot does.
     let wrapTo: number | undefined
-    if (callEnd > 0 && /^\s*[.[]/.test(after.slice(callEnd))) {
+    if (callEnd < 0) {
+      // Could not find the closing paren, so whether the result is consumed is
+      // unknown. Guessing here is what produced the `.length`-of-a-promise bug.
+      fixable = false
+      reason = 'could not determine where the call ends — add `await` by hand'
+    } else if (nsi >= 0 && (src[nsi] === '.' || src[nsi] === '[' || (src[nsi] === '?' && src[nsi + 1] === '.'))) {
       const endIdx = idx + callEnd
       const endPos = positionOf(src, endIdx)
-      // Only when the call starts and ends on the same line — a multi-line call
-      // is reported for a human rather than rewritten blind.
+      // Only when the whole expression — chain head through closing paren —
+      // sits on one line. A consumed call that spans lines (a multi-line
+      // argument list, or a receiver chain split across lines: `plur\n
+      // .recall(q)\n  .length`, audit #752 item 6) is reported for a human
+      // rather than rewritten blind.
       if (endPos.line === pos.line) wrapTo = endPos.column
-      else { fixable = false; reason = 'result is consumed by a multi-line call — needs `(await ...)` by hand' }
+      else { fixable = false; reason = 'result is consumed by a multi-line expression — needs `(await ...)` by hand' }
     }
 
-    out.push({ file, line: pos.line, column: pos.column, method: m[2], text: pos.text, fixable, reason, wrapTo })
+    // ASI hazard — the third failure class in the header comment, and the one
+    // that shipped without its guard until the 0.16.0 pre-release audit
+    // reproduced it (#752). A `wrapTo` rewrite starts the line with `(`. If
+    // the PREVIOUS statement never terminated, that `(` splices both lines
+    // into one expression:
+    //
+    //     const x = someFunc()          const x = someFunc()
+    //     plur.list().length      ->    (await plur.list()).length
+    //
+    // parses as `someFunc()(await plur.list()).length` — the previous line's
+    // result is CALLED, at runtime, with the awaited value as its argument.
+    // Only the paren-wrap form is exposed: a plain inserted `await` cannot
+    // continue the previous expression (`f() await` is invalid, so ASI still
+    // splits the lines exactly as it did before the rewrite).
+    //
+    // Applies only when the call starts its line; mid-line insertions sit
+    // inside an expression whose parsing is already fixed. The previous
+    // significant character decides: an operator, opener, `;`, `,` or `:`
+    // means the `(` either starts a fresh statement or continues an
+    // expression that was ALREADY continuing — while `)`, `]`, `}`, a quote,
+    // or an identifier tail can all legally absorb a following `(` as a call.
+    // `}` is refused even though it is usually a block end, because it is
+    // also how a function EXPRESSION ends, and `let f = function () {}`
+    // followed by `(await ...)` is the splice again. Refusal costs a glance;
+    // the splice costs a runtime failure in rewritten user source.
+    if (fixable && wrapTo !== undefined) {
+      const lineStart = idx - (pos.column - 1)
+      if (/^\s*$/.test(src.slice(lineStart, idx))) {
+        const prev = lastSignificantChar(src, lineStart - 1, spans)
+        if (prev !== null && !ASI_SAFE_BEFORE_PAREN.has(prev)) {
+          fixable = false
+          reason = 'previous line has no terminator — a leading `(await ...)` splices onto it (ASI); end it with `;` or add `(await ...)` by hand'
+        }
+      }
+    } else if (fixable && (src[idx] === '(' || src[idx] === '[')) {
+      // The receiver HEAD is a parenthesised expression or array literal —
+      // the same splice read in the other direction. When that head starts
+      // its line and the previous line never terminated, the head is
+      // currently CONTINUING the previous expression (`let f = function ()
+      // {}` + `(store as Plur).recall(q)` calls f). A plain inserted `await`
+      // would cut that continuation and change what runs, so it is refused
+      // exactly as the leading-`(await ...)` wrap is.
+      const lineStart = idx - (pos.column - 1)
+      if (/^\s*$/.test(src.slice(lineStart, idx))) {
+        const prev = lastSignificantChar(src, lineStart - 1, spans)
+        if (prev !== null && !ASI_SAFE_BEFORE_PAREN.has(prev)) {
+          fixable = false
+          reason = 'previous line has no terminator, so this line continues it (ASI) — inserting `await` would split that; end the previous line with `;` and re-run'
+        }
+      }
+    }
+
+    seen.add(idx)
+    out.push({ file, line: pos.line, column: pos.column, method: m[1], text: pos.text, fixable, reason, wrapTo })
   }
   return out
 }
 
-function matchParen(s: string, open: number): number {
+/**
+ * Offset just past the `)` closing the `(` at `open`, or -1 if unbalanced.
+ *
+ * `s` is a suffix of the whole source starting at absolute offset `base`, so
+ * span membership is tested against `base + i`. Skipping string and comment
+ * spans is not cosmetic: a stray paren in a query string used to shift the
+ * match, `matchParen` returned -1, and `callEnd > 0` then read as "nothing
+ * consumes the result" — so `plur.recall('has a ( paren').length` was rewritten
+ * to `await plur.recall(...).length`, which awaits `.length` OF THE PROMISE and
+ * evaluates to undefined. It parses and it is silently wrong.
+ */
+function matchParen(s: string, open: number, spans: Array<[number, number]>, base: number): number {
   if (open < 0) return -1
   let d = 0
   for (let i = open; i < s.length; i++) {
+    if (inSpans(spans, base + i)) continue
     if (s[i] === '(') d++
     else if (s[i] === ')') { d--; if (d === 0) return i + 1 }
   }

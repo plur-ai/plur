@@ -1,13 +1,27 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
-import { type GlobalFlags } from '../plur.js'
-import { outputText } from '../output.js'
+import { doctorRemoteRemediation, normalizeEndpointUrl, type RemoteHealth } from '@plur-ai/core'
+import { createPlur, type GlobalFlags } from '../plur.js'
+import { outputText, outputInfo, outputError, outputJson, shouldOutputJson, isQuiet } from '../output.js'
 
 /**
- * plur login <host> — mint an enterprise token via OAuth device flow,
- * write it to ~/.plur/config.json, and signal the running MCP server
- * to hot-reload its configuration.
+ * plur login — enterprise token status (#587) and the (gated) OAuth device flow.
+ *
+ * `plur login --status` reports each configured enterprise credential's
+ * validity instead of dumping raw config: one row per DISTINCT (url, token)
+ * group in `~/.plur/config.yaml` stores (core's `remoteEndpointTokenGroups`,
+ * the #776 grouping), each with the JWT's display-only subject/org + expiry,
+ * a live `/api/v1/me` probe (via core's `checkRemoteHealth` — the same probe
+ * `plur_doctor` uses), and the locally mounted scopes. Token values are never
+ * printed. Exit 0 when every credential is valid; 1 when any is EXPIRED or
+ * INVALID (script-friendly).
+ *
+ * The device flow below is GATED (see #300/#532): enterprise servers do not
+ * expose the device-flow endpoints yet, and the token it writes has no
+ * consumers on the recall path — so attempting `plur login <host>` prints the
+ * supported path (sign in at <host>/auth, add the store via plur_stores_add)
+ * and exits 1. The implementation is kept for when B-T9 lands server-side.
  *
  * OAuth device flow:
  *   1. POST /api/v1/auth/device — request a device code
@@ -34,27 +48,26 @@ import { outputText } from '../output.js'
  *   written — the server picks it up on next start.
  */
 
-const HELP = `plur login — mint an enterprise token and configure the MCP server
+const HELP = `plur login — enterprise token status (device-flow sign-in not yet available)
 
 USAGE
-  plur login <host>               Authenticate against the enterprise server
-  plur login <host> --no-open    Print the URL instead of opening a browser
-  plur login <host> --timeout N  Poll window in seconds (default: 300)
-  plur login --status            Show current auth status from ~/.plur/config.json
+  plur login --status            Show enterprise token validity per host
+  plur login --status --json     Machine-readable status report
 
-ARGS
-  host    Enterprise server URL, e.g. https://plur.datafund.io
+WHAT --status DOES
+  For every distinct (url, token) credential in ~/.plur/config.yaml stores:
+    - decodes the JWT (display only, unverified): subject, org, expiry
+    - live-probes GET <host>/api/v1/me with a short timeout
+    - reports VALID / EXPIRING SOON (<7d) / EXPIRED / UNREACHABLE / INVALID
+    - lists the scopes mounted locally for that host
+  Token values are never printed. Exit code: 0 when all credentials are
+  valid, 1 when any is EXPIRED or INVALID (or none are configured).
 
-WHAT THIS DOES
-  Uses the OAuth 2.0 Device Authorization Grant (RFC 8628) to authenticate:
-    1. Fetches a device code from <host>/api/v1/auth/device
-    2. Opens the verification URL in your default browser
-    3. Polls for the token until you approve (or the code expires)
-    4. Writes the token to ~/.plur/config.json
-    5. Signals the running MCP server to hot-reload (SIGUSR1 on POSIX,
-       reload-marker file on Windows)
-
-  If no MCP server is running the token is saved and picked up on next start.
+SIGNING IN
+  \`plur login <host>\` (OAuth device flow) is not available yet — enterprise
+  servers do not expose the device-flow endpoints. To connect:
+    1. Sign in at <host>/auth in your browser
+    2. Add the store via plur_stores_add (MCP) or \`plur stores add\`
 `
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -333,6 +346,209 @@ async function openBrowser(url: string): Promise<boolean> {
   })
 }
 
+// ── Token status (#587) ───────────────────────────────────────────────────────
+
+/** Live `/me` probe budget for --status — short: a status readout must not hang. */
+export const STATUS_PROBE_TIMEOUT_MS = 3000
+
+/** Days-to-expiry below which a valid token is flagged EXPIRING SOON. */
+export const EXPIRING_SOON_DAYS = 7
+
+export type TokenStatusLabel = 'VALID' | 'EXPIRING SOON' | 'EXPIRED' | 'UNREACHABLE' | 'INVALID'
+
+export interface HostTokenStatus {
+  url: string
+  status: TokenStatusLabel
+  /** JWT `sub` (unverified) or, when the probe succeeded, the server's username. */
+  subject?: string
+  /** JWT org claim (unverified) or the server's org_id. */
+  org?: string
+  tokenExpiresAt?: string
+  tokenExpiresInDays?: number | null
+  /** Human-readable relative expiry: "expires in 23d" / "EXPIRED 3d ago". */
+  expiry: string
+  probe: {
+    /** False when the probe was skipped (token already expired locally). */
+    probed: boolean
+    reachable?: boolean
+    /** Scopes the server reports granted to this token (probe ok only). */
+    grantedScopes?: number
+    reason?: string
+  }
+  /** Scopes mounted locally (config.yaml stores) for this (url, token) group. */
+  mountedScopes: string[]
+  remediation?: string
+}
+
+export interface LoginStatusReport {
+  hosts: HostTokenStatus[]
+  /** A `plur login`-written ~/.plur/config.json token not mounted as a store —
+   *  it has no consumers on the recall path, so flag it instead of probing it. */
+  legacyLogin?: { url: string; mounted: boolean }
+  /** True when at least one credential is configured and none is EXPIRED/INVALID. */
+  ok: boolean
+}
+
+/**
+ * Classify one probed credential. EXPIRED means the JWT itself is past its
+ * `exp` (locally decodable — the strongest signal); INVALID means the server
+ * rejected a token that is not visibly expired (revoked, wrong, or opaque);
+ * UNREACHABLE is a network-class failure and deliberately NOT an auth verdict.
+ */
+export function classifyTokenStatus(h: Pick<RemoteHealth, 'status' | 'tokenExpiresInDays'>): TokenStatusLabel {
+  if (h.status === 'ok') {
+    const d = h.tokenExpiresInDays
+    return typeof d === 'number' && d >= 0 && d < EXPIRING_SOON_DAYS ? 'EXPIRING SOON' : 'VALID'
+  }
+  if (h.status === 'auth_expired') {
+    return typeof h.tokenExpiresInDays === 'number' && h.tokenExpiresInDays < 0 ? 'EXPIRED' : 'INVALID'
+  }
+  return 'UNREACHABLE'
+}
+
+/** "expires in 23d" / "EXPIRED 3d ago" / opaque-key fallback. */
+export function formatRelativeExpiry(days: number | null | undefined): string {
+  if (typeof days !== 'number') return 'no expiry claim (not a JWT)'
+  if (days < 0) return `EXPIRED ${-days}d ago`
+  if (days === 0) return 'expires in <1d'
+  return `expires in ${days}d`
+}
+
+/**
+ * Remediation per label — REUSES the A4′ doctor strings (remote-recall.ts) so
+ * every surface gives the same instruction: sign in at <host>/auth and re-add
+ * via plur_stores_add. Never suggests running `plur login` — enterprise
+ * servers have no device-flow endpoints (the A4′ strings say so explicitly).
+ */
+function remediationFor(label: TokenStatusLabel, url: string, expiresInDays?: number | null): string | undefined {
+  const host = normalizeEndpointUrl(url)
+  switch (label) {
+    case 'EXPIRED':
+    case 'INVALID':
+      return doctorRemoteRemediation({ host, status: 'auth_expired' }) ?? undefined
+    case 'UNREACHABLE':
+      return doctorRemoteRemediation({ host, status: 'unreachable' }) ?? undefined
+    case 'EXPIRING SOON':
+      return `Token for ${host} expires in ${expiresInDays}d — sign in at ${host}/auth and re-add the store via plur_stores_add before it expires.`
+    case 'VALID':
+      return undefined
+  }
+}
+
+/** Build the full --status report from checkRemoteHealth results. Pure. */
+export function buildStatusReport(
+  health: RemoteHealth[],
+  legacyLogin?: { url: string; mounted: boolean },
+): LoginStatusReport {
+  const hosts: HostTokenStatus[] = health.map(h => {
+    const status = classifyTokenStatus(h)
+    const locallyExpired = typeof h.tokenExpiresInDays === 'number' && h.tokenExpiresInDays < 0
+    const probe: HostTokenStatus['probe'] =
+      h.status === 'ok'
+        ? { probed: true, reachable: true, ...(h.grantedScopes !== undefined ? { grantedScopes: h.grantedScopes } : {}) }
+        : h.status === 'auth_expired' && locallyExpired
+          ? { probed: false, reason: 'skipped — token already expired' }
+          : h.status === 'auth_expired'
+            ? { probed: true, reachable: true, ...(h.reason ? { reason: h.reason } : {}) }
+            : { probed: true, reachable: false, ...(h.reason ? { reason: h.reason } : {}) }
+    const remediation = remediationFor(status, h.url, h.tokenExpiresInDays)
+    return {
+      url: h.url,
+      status,
+      ...(h.tokenSubject ?? h.username ? { subject: h.tokenSubject ?? h.username } : {}),
+      ...(h.tokenOrg ?? h.orgId ? { org: h.tokenOrg ?? h.orgId } : {}),
+      ...(h.tokenExpiresAt ? { tokenExpiresAt: h.tokenExpiresAt } : {}),
+      tokenExpiresInDays: h.tokenExpiresInDays ?? null,
+      expiry: formatRelativeExpiry(h.tokenExpiresInDays),
+      probe,
+      mountedScopes: h.scopes,
+      ...(remediation ? { remediation } : {}),
+    }
+  })
+  return {
+    hosts,
+    ...(legacyLogin ? { legacyLogin } : {}),
+    ok: hosts.length > 0 && hosts.every(h => h.status !== 'EXPIRED' && h.status !== 'INVALID'),
+  }
+}
+
+const STATUS_MARK: Record<TokenStatusLabel, string> = {
+  'VALID': '✓',
+  'EXPIRING SOON': '!',
+  'UNREACHABLE': '?',
+  'EXPIRED': '✗',
+  'INVALID': '✗',
+}
+
+/** Human-readable --status lines. Pure (testable); never includes token values. */
+export function formatStatusLines(report: LoginStatusReport): string[] {
+  const lines: string[] = []
+  if (report.hosts.length === 0) {
+    lines.push('No enterprise tokens configured (no remote stores in ~/.plur/config.yaml).')
+    lines.push('To connect: sign in at your enterprise server\'s /auth page and add the store via plur_stores_add.')
+  } else {
+    lines.push(`Enterprise token status — ${report.hosts.length} credential(s)`)
+    for (const h of report.hosts) {
+      lines.push('')
+      lines.push(`${STATUS_MARK[h.status]} ${h.url} — ${h.status}`)
+      if (h.subject || h.org) {
+        lines.push(`    identity: ${h.subject ?? '(unknown)'}${h.org ? ` (org: ${h.org})` : ''}`)
+      }
+      lines.push(`    token:    ${h.expiry}${h.tokenExpiresAt ? ` (${h.tokenExpiresAt.slice(0, 10)})` : ''}`)
+      if (!h.probe.probed) {
+        lines.push(`    server:   not probed — token already expired`)
+      } else if (h.probe.reachable && (h.status === 'VALID' || h.status === 'EXPIRING SOON')) {
+        lines.push(`    server:   reachable — ${h.probe.grantedScopes ?? 0} scope(s) granted`)
+      } else if (h.probe.reachable) {
+        lines.push(`    server:   reachable — token rejected${h.probe.reason ? ` (${h.probe.reason})` : ''}`)
+      } else {
+        lines.push(`    server:   unreachable${h.probe.reason ? ` (${h.probe.reason})` : ''}`)
+      }
+      lines.push(`    mounted:  ${h.mountedScopes.length > 0 ? h.mountedScopes.join(', ') : '(none)'}`)
+      if (h.remediation) lines.push(`    fix:      ${h.remediation}`)
+    }
+  }
+  if (report.legacyLogin && !report.legacyLogin.mounted) {
+    lines.push('')
+    lines.push(`Note: ~/.plur/config.json holds a legacy \`plur login\` token for ${report.legacyLogin.url} that is`)
+    lines.push('not mounted as a store — nothing reads it. Sign in at the server\'s /auth page and add the')
+    lines.push('store via plur_stores_add instead.')
+  }
+  return lines
+}
+
+/** `plur login --status` — build, print, and exit (0 all valid / 1 otherwise). */
+async function runStatus(flags: GlobalFlags): Promise<never> {
+  const plur = createPlur(flags)
+  let health: RemoteHealth[] = []
+  try {
+    health = await plur.checkRemoteHealth({ timeoutMs: STATUS_PROBE_TIMEOUT_MS })
+  } catch { /* belt-and-braces: checkRemoteHealth captures per-endpoint failures itself */ }
+
+  // Legacy `plur login`-written token (config.json): note-only — it is not on
+  // the recall path, so it is flagged rather than probed.
+  let legacyLogin: { url: string; mounted: boolean } | undefined
+  const ent = readPlurConfig().enterprise
+  if (ent?.url && ent?.token) {
+    let mounted = false
+    try {
+      const key = normalizeEndpointUrl(ent.url)
+      mounted = plur.remoteEndpointTokenGroups()
+        .some(g => normalizeEndpointUrl(g.url) === key && (g.token ?? '') === ent.token)
+    } catch { /* unparseable legacy URL → report as unmounted */ }
+    legacyLogin = { url: ent.url, mounted }
+  }
+
+  const report = buildStatusReport(health, legacyLogin)
+  if (shouldOutputJson(flags)) {
+    outputJson(report)
+  } else {
+    // Primary output of --status — never suppressed by --quiet (#784 policy).
+    for (const line of formatStatusLines(report)) outputText(line)
+  }
+  process.exit(report.ok ? 0 : 1)
+}
+
 // ── Args parser ───────────────────────────────────────────────────────────────
 
 interface ParsedArgs {
@@ -380,7 +596,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   const parsed = parseArgs(args)
 
   if (parsed.error) {
-    outputText(`Error: ${parsed.error}\n\n${HELP}`)
+    outputError(`Error: ${parsed.error}\n\n${HELP}`)
     process.exit(1)
   }
 
@@ -389,25 +605,13 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     return
   }
 
-  // --status: display current auth state
+  // --status: token validity per configured (url, token) credential (#587)
   if (parsed.status) {
-    const cfg = readPlurConfig()
-    const ent = cfg.enterprise
-    if (!ent?.url || !ent?.token) {
-      outputText('Not logged in. Run `plur login <host>` to authenticate.')
-      process.exit(1)
-    }
-    outputText(`Logged in to ${ent.url}`)
-    if (ent.username) outputText(`  as ${ent.username}`)
-    if (ent.authed_at) outputText(`  authenticated at ${ent.authed_at}`)
-    if (ent.scopes && ent.scopes.length > 0) {
-      outputText(`  scopes: ${ent.scopes.join(', ')}`)
-    }
-    return
+    await runStatus(flags)
   }
 
   if (!parsed.host) {
-    outputText(`Missing required argument: <host>\n\n${HELP}`)
+    outputError(`Missing required argument: <host>\n\n${HELP}`)
     process.exit(1)
   }
 
@@ -415,28 +619,49 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   try {
     origin = normaliseHost(parsed.host)
   } catch (err) {
-    outputText(`Error: ${(err as Error).message}`)
+    outputError(`Error: ${(err as Error).message}`)
+    process.exit(1)
+  }
+
+  // Device-flow gate (#300/#532): enterprise servers do not expose the
+  // device-flow endpoints yet, and the token this flow writes has no consumers
+  // on the recall path — attempting it would only produce a confusing HTTP 404.
+  // Point at the supported path instead. The flow below stays implemented
+  // (and unit-tested) for when server-side support (B-T9) lands; flip this
+  // constant to re-enable it.
+  const DEVICE_FLOW_AVAILABLE = false as boolean
+  if (!DEVICE_FLOW_AVAILABLE) {
+    // Error-class output (#784 policy): the command cannot do what was asked
+    // and exits 1, so the explanation + next steps go to stderr, unsuppressed.
+    outputError('plur login (OAuth device flow) is not available yet — enterprise servers')
+    outputError('do not expose the device-flow endpoints.')
+    outputError('')
+    outputError(`To connect to ${origin}:`)
+    outputError(`  1. Sign in at ${origin}/auth in your browser`)
+    outputError('  2. Add the store via plur_stores_add (MCP) or `plur stores add`')
+    outputError('')
+    outputError('Check existing tokens with: plur login --status')
     process.exit(1)
   }
 
   const timeoutSecs = parsed.timeoutSecs ?? 300
 
-  outputText(`Authenticating with ${origin}...`)
+  outputInfo(`Authenticating with ${origin}...`, flags)
 
   // Step 1: request device code
   let deviceResp: DeviceCodeResponse
   try {
     deviceResp = await requestDeviceCode(origin)
   } catch (err) {
-    outputText(`Error: ${(err as Error).message}`)
+    outputError(`Error: ${(err as Error).message}`)
     process.exit(1)
   }
 
   // Step 2: present code + URL to user
-  outputText('')
+  outputInfo('', flags)
   outputText(`Your one-time code:  ${deviceResp.user_code}`)
   outputText(`Visit:               ${deviceResp.verification_uri}`)
-  outputText('')
+  outputInfo('', flags)
 
   if (parsed.noOpen) {
     outputText('Open the URL above in your browser, enter the code, and approve the request.')
@@ -448,8 +673,8 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
       outputText('Could not open browser. Visit the URL above manually.')
     }
   }
-  outputText('')
-  outputText(`Waiting for approval (timeout: ${timeoutSecs}s)...`)
+  outputInfo('', flags)
+  outputInfo(`Waiting for approval (timeout: ${timeoutSecs}s)...`, flags)
 
   // Step 3: poll for token
   let tokenResp: TokenResponse
@@ -462,7 +687,9 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
       timeoutSecs,
       () => {
         // Progress indicator — write dots without newlines while polling.
-        // Use process.stdout.write directly (not outputText) to stay on-line.
+        // Raw stdout writes (not outputText) to stay on-line; gated on
+        // --quiet like any other progress output (#730).
+        if (isQuiet(flags)) return
         process.stdout.write('.')
         dots++
         if (dots % 40 === 0) process.stdout.write('\n')
@@ -470,7 +697,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     )
   } catch (err) {
     if (dots > 0) process.stdout.write('\n')
-    outputText(`\nError: ${(err as Error).message}`)
+    outputError(`\nError: ${(err as Error).message}`)
     process.exit(1)
   }
   if (dots > 0) process.stdout.write('\n')
@@ -488,15 +715,15 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     authed_at: new Date().toISOString(),
   }
   writePlurConfig(cfg)
-  outputText(`\nLogged in as ${me.username} — token written to ${plurConfigPath()}`)
+  outputInfo(`\nLogged in as ${me.username} — token written to ${plurConfigPath()}`, flags)
 
   // Step 6: signal hot-reload to running MCP server
   const reloadResult = signalReload()
-  outputText(`Server: ${reloadResult}`)
+  outputInfo(`Server: ${reloadResult}`, flags)
 
-  outputText('')
-  outputText('Done. Your enterprise token is active.')
+  outputInfo('', flags)
+  outputInfo('Done. Your enterprise token is active.', flags)
   if (me.scopes && me.scopes.length > 0) {
-    outputText(`  readable scopes: ${me.scopes.join(', ')}`)
+    outputInfo(`  readable scopes: ${me.scopes.join(', ')}`, flags)
   }
 }

@@ -68,27 +68,99 @@ describe('RemoteStore against stub server', () => {
     expect((all[0] as any).statement).toBe('hello world')
   })
 
-  it('#768 append roundtrips pinned, rationale, commitment, and tags to the server', async () => {
+  it('#768 append transmits optional fields from the CANONICAL shape (nested temporal/relations flattened to wire keys)', async () => {
     const store = new RemoteStore(baseUrl, TOKEN, 'group:test', { ttlMs: 0 })
+    // Canonical engram shape: validity window nested under `temporal` (#347),
+    // supersession under `relations.supersedes` (#240) — this is what learn()
+    // and learnRouted() actually hand to appendAndGetServerId. The wire
+    // contract (enterprise#627) takes these FLAT.
     await store.append({
-      id: 'tmp', scope: 'group:test', status: 'active',
-      statement: 'team policy rule',
+      id: 'tmp',
+      scope: 'group:test',
+      status: 'active',
+      statement: 'a pinned team rule',
+      domain: 'team.policy',
+      type: 'behavioral',
       pinned: true,
-      rationale: 'core operating principle, must always inject',
+      rationale: 'why this matters — enters the search corpus',
+      tags: ['policy', 'wire-test'],
       commitment: 'decided',
-      tags: ['policy', 'team'],
+      temporal: { learned_at: '2026-07-01T00:00:00Z', valid_from: '2026-07-01', valid_until: '2026-12-31' },
+      relations: {
+        broader: [], narrower: [], related: [], conflicts: [],
+        supersedes: ['ENG-2026-0101-001'], superseded_by: [],
+      },
     } as any)
 
-    const stored = server.getEngram('ENG-SRV-001')
-    expect((stored?.data as any)?.pinned).toBe(true)
-    expect((stored?.data as any)?.rationale).toBe('core operating principle, must always inject')
-    expect((stored?.data as any)?.commitment).toBe('decided')
-    expect((stored?.data as any)?.tags).toEqual(['policy', 'team'])
+    const sent = server.lastAppendBody
+    expect(sent).not.toBeNull()
+    expect(sent!.pinned).toBe(true)
+    expect(sent!.rationale).toBe('why this matters — enters the search corpus')
+    expect(sent!.tags).toEqual(['policy', 'wire-test'])
+    expect(sent!.commitment).toBe('decided')
+    // Flat on the wire, read from the nested canonical locations.
+    expect(sent!.valid_from).toBe('2026-07-01')
+    expect(sent!.valid_until).toBe('2026-12-31')
+    expect(sent!.supersedes).toEqual(['ENG-2026-0101-001'])
+  })
 
-    // Fields survive the load() → reshape() roundtrip too
+  it('#768 append omits optional fields that are not set (no null/undefined noise)', async () => {
+    const store = new RemoteStore(baseUrl, TOKEN, 'group:test', { ttlMs: 0 })
+    await store.append({ id: 'tmp', scope: 'group:test', status: 'active', statement: 'bare minimum' } as any)
+
+    const sent = server.lastAppendBody!
+    expect('pinned' in sent).toBe(false)
+    expect('rationale' in sent).toBe(false)
+    expect('tags' in sent).toBe(false)
+    expect('valid_from' in sent).toBe(false)
+    expect('valid_until' in sent).toBe(false)
+    expect('supersedes' in sent).toBe(false)
+  })
+
+  it('#768 load maps flat server-row validity (valid_from/valid_until) into nested temporal', async () => {
+    // enterprise#627 stores the validity window FLAT in row data; the local
+    // expiry gate reads `temporal.valid_until`. Without the reshape mapping a
+    // remote engram's validity window never drives local expiry.
+    server.seedEngram({
+      id: 'ENG-SRV-EXP-001',
+      scope: 'group:test',
+      status: 'active',
+      data: {
+        statement: 'expires at year end',
+        type: 'behavioral',
+        valid_from: '2026-07-01',
+        valid_until: '2026-12-31',
+      },
+    })
+
+    const store = new RemoteStore(baseUrl, TOKEN, 'group:test', { ttlMs: 0 })
     const all = await store.load()
-    expect((all[0] as any).pinned).toBe(true)
-    expect((all[0] as any).rationale).toBe('core operating principle, must always inject')
+    expect(all.length).toBe(1)
+    const t = (all[0] as any).temporal
+    expect(t).toBeTruthy()
+    expect(t.valid_from).toBe('2026-07-01')
+    expect(t.valid_until).toBe('2026-12-31')
+    expect(typeof t.learned_at).toBe('string')
+  })
+
+  it('#768 load keeps an existing nested temporal intact (nested wins over flat)', async () => {
+    server.seedEngram({
+      id: 'ENG-SRV-EXP-002',
+      scope: 'group:test',
+      status: 'active',
+      data: {
+        statement: 'nested temporal already present',
+        temporal: { learned_at: '2026-06-01T00:00:00Z', valid_until: '2026-09-30' },
+        valid_until: '2026-12-31',
+      },
+    })
+
+    const store = new RemoteStore(baseUrl, TOKEN, 'group:test', { ttlMs: 0 })
+    const all = await store.load()
+    expect(all.length).toBe(1)
+    const t = (all[0] as any).temporal
+    expect(t.valid_until).toBe('2026-09-30')
+    expect(t.learned_at).toBe('2026-06-01T00:00:00Z')
   })
 
   it('#404 rejects a malformed server-assigned id on append (does not trust it)', async () => {
@@ -388,6 +460,42 @@ describe('Plur integration with stub server', () => {
     }, { timeout: 10_000, interval: 25 }).toBeUndefined()
   })
 
+  it('#768 learn with valid_until + supersedes transmits them flat on the wire (real routed path)', async () => {
+    // Drives the REAL production write path — learn() with a routing-matched
+    // scope builds the canonical engram shape (validity nested under
+    // `temporal`, supersession under `relations.supersedes`) and pushes it
+    // through appendAndGetServerId. The wire body must carry the fields FLAT
+    // (enterprise#627 contract); reading them at the engram top level would
+    // silently drop them (the original #768 review finding).
+    const plur = new Plur({ path: primaryDir })
+    await plur.learn('team rule with expiry — wire shape test', {
+      scope: 'group:test',
+      type: 'behavioral',
+      pinned: true,
+      rationale: 'routed-path wire assertion',
+      tags: ['wire'],
+      commitment: 'decided',
+      valid_from: '2026-07-01',
+      valid_until: '2026-12-31',
+      supersedes: ['ENG-2026-0101-001'],
+    })
+
+    // The remote append is fire-and-forget from learn()'s perspective — poll.
+    await expect.poll(() => server.lastAppendBody, { timeout: 10_000, interval: 25 }).not.toBeNull()
+    const sent = server.lastAppendBody!
+    expect(sent.statement).toBe('team rule with expiry — wire shape test')
+    expect(sent.pinned).toBe(true)
+    expect(sent.rationale).toBe('routed-path wire assertion')
+    expect(sent.tags).toEqual(['wire'])
+    expect(sent.commitment).toBe('decided')
+    expect(sent.valid_from).toBe('2026-07-01')
+    expect(sent.valid_until).toBe('2026-12-31')
+    expect(sent.supersedes).toEqual(['ENG-2026-0101-001'])
+    // The canonical nested containers must NOT leak onto the wire.
+    expect('temporal' in sent).toBe(false)
+    expect('relations' in sent).toBe(false)
+  })
+
   it('learn with unmatched scope writes locally', async () => {
     const plur = new Plur({ path: primaryDir })
     await plur.learn('local only engram', {
@@ -682,7 +790,7 @@ describe('Remote mutation routing — pin / promote / reportFailure (#185, #86)'
       polarity: null,
       engram_version: 1,
       episode_ids: [],
-      write_count: 1,
+      reference_count: 1,
       sources: [],
     } as any
     const result = await plur.updateEngramAsync(fakeEngram)
@@ -721,5 +829,117 @@ describe('Remote mutation routing — pin / promote / reportFailure (#185, #86)'
     // Server should NOT have been patched
     const serverEngram = server.getEngram('ENG-RO-001')
     expect((serverEngram?.data as any)?.pinned).toBeUndefined()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// #776 — server-authoritative recall merged into recall/inject
+// ---------------------------------------------------------------------------
+
+describe('server-authoritative recall integration (#776)', () => {
+  let dir: string
+  const SCOPE = 'group:test'
+  const PROJECT = 'project:test/app' // org 'test' → implicates the group:test store
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'plur-rr-integ-'))
+    server.reset()
+    writeFileSync(
+      join(dir, 'config.yaml'),
+      yaml.dump({
+        embeddings: { enabled: false },
+        stores: [{ url: baseUrl, token: TOKEN, scope: SCOPE, shared: true, readonly: false }],
+        index: false,
+      }, { lineWidth: 120, noRefs: true }),
+    )
+  })
+
+  const row = (id: string, statement: string, extra: Record<string, unknown> = {}) => ({
+    id, scope: SCOPE, status: 'active', statement, ...extra,
+  })
+
+  it('merge ordering: the server-best row beats a weak local match', async () => {
+    const plur = new Plur({ path: dir })
+    await plur.learn('deployment mentioned once in passing', { scope: PROJECT })
+    server.recallRows = [row('ENG-2026-0731-050', 'deployment checklist deployment runbook deployment', { score: 1 })]
+    const results = await plur.recall('deployment checklist', { scope: PROJECT })
+    expect(results.length).toBeGreaterThanOrEqual(2)
+    expect((results[0] as any)._originalId).toBe('ENG-2026-0731-050')
+  })
+
+  it('RRF consensus: a row in BOTH the peek path and the live leg dedups to ONE id and ranks first', async () => {
+    // Same engram reachable via the legacy peek cache (GET /engrams) AND the
+    // live recall leg (POST /recall). The two paths MUST produce identical
+    // namespaced ids — otherwise RRF splits the row and feedback misroutes.
+    server.seedEngram({
+      id: 'ENG-2026-0731-051',
+      scope: SCOPE,
+      status: 'active',
+      data: { statement: 'consensus fact about release automation', tags: [] },
+    })
+    server.recallRows = [row('ENG-2026-0731-051', 'consensus fact about release automation', { score: 1 })]
+
+    const plur = new Plur({ path: dir })
+    await plur.warmRemoteCaches() // fill the peek cache (legacy path)
+    await plur.learn('release automation local note', { scope: PROJECT })
+
+    const results = await plur.recall('release automation consensus', { scope: PROJECT })
+    const consensusRows = results.filter(e => (e as any)._originalId === 'ENG-2026-0731-051')
+    expect(consensusRows).toHaveLength(1) // deduped, not split
+    expect((results[0] as any)._originalId).toBe('ENG-2026-0731-051') // consensus wins
+  })
+
+  it('recallHybrid merges the server leg too (BM25-only local mode)', async () => {
+    const plur = new Plur({ path: dir })
+    server.recallRows = [row('ENG-2026-0731-052', 'hybrid merge target', { score: 0.9 })]
+    const meta = await plur.recallHybridWithMeta('hybrid merge target', { scope: PROJECT })
+    expect(meta.engrams.some(e => (e as any)._originalId === 'ENG-2026-0731-052')).toBe(true)
+  })
+
+  it('injectHybrid: server rows join the pool via the boost channel and inject', async () => {
+    const plur = new Plur({ path: dir })
+    server.recallRows = [row('ENG-2026-0731-053', 'always gate releases behind the canary suite', { score: 1 })]
+    const result = await plur.injectHybrid('preparing a release', { scope: PROJECT })
+    expect(server.recallCalls).toBe(1)
+    expect(result.count).toBeGreaterThan(0)
+    expect(result.injected_ids.some(id => id.endsWith('-2026-0731-053'))).toBe(true)
+  })
+
+  it('ADVERSARIAL: a max-scored out-of-authorization row does NOT inject via the boost channel', async () => {
+    const plur = new Plur({ path: dir })
+    server.recallRows = [row('ENG-2026-0731-054', 'malicious high-score row', { score: 1 })]
+    // options.scopes is the AUTHORIZATION allow-list — the server row's scope
+    // (group:test) is not in it. Without the filter-before-boost rule, the
+    // 0.55+ boost would resurrect it (raw = boost*2 > threshold).
+    const result = await plur.injectHybrid('malicious high-score row', {
+      scope: PROJECT,
+      scopes: [PROJECT],
+    })
+    expect(result.injected_ids.some(id => id.endsWith('-2026-0731-054'))).toBe(false)
+  })
+
+  it('ADVERSARIAL: a max-scored foreign-scope row is dropped by the scope guard before boosts exist', async () => {
+    const plur = new Plur({ path: dir })
+    server.recallRows = [
+      { id: 'ENG-2026-0731-055', scope: 'group:evil/exfil', status: 'active', statement: 'smuggled row', score: 1 },
+    ]
+    const result = await plur.injectHybrid('smuggled row', { scope: PROJECT })
+    expect(result.injected_ids.some(id => id.includes('0731-055'))).toBe(false)
+    const recalled = await plur.recall('smuggled row', { scope: PROJECT })
+    expect(recalled.some(e => (e as any)._originalId === 'ENG-2026-0731-055')).toBe(false)
+  })
+
+  it('learn-dedup makes ZERO remote recall calls (internal-caller opt-out)', async () => {
+    const plur = new Plur({ path: dir })
+    await plur.learnAsync('a brand new fact that must not fan out', { scope: PROJECT })
+    await plur.learnAsync('a brand new fact that must not fan out', { scope: PROJECT }) // dedup hit path
+    expect(server.recallCalls).toBe(0)
+  })
+
+  it('BM25-only inject() never dials', async () => {
+    const plur = new Plur({ path: dir })
+    server.recallRows = [row('ENG-2026-0731-056', 'bm25 inject should stay local', { score: 1 })]
+    await plur.inject('bm25 inject should stay local', { scope: PROJECT })
+    expect(server.recallCalls).toBe(0)
   })
 })

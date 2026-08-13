@@ -77,6 +77,34 @@ export class StubServer {
    *  echoes this value as the {engram: ...} body — to simulate a server whose
    *  echoed row fails RemoteRowSchema validation (#327). */
   badPatchEcho: unknown = null
+  /** Raw JSON body of the most recent POST /engrams — lets tests assert what
+   *  the client actually transmits on the wire (#768: optional fields like
+   *  pinned/rationale/tags were silently never sent). */
+  lastAppendBody: Record<string, unknown> | null = null
+
+  // --- POST /api/v1/recall (#776 server-authoritative recall envelope) ---
+  /** Rows served in the envelope's `results` (top-level engram shape, each
+   *  optionally carrying a per-response 0-1 `score`). */
+  recallRows: unknown[] = []
+  /** Force an HTTP status for /recall (401/403/404/429/500...). null = 200. */
+  recallStatus: number | null = null
+  /** Retry-After header value served with a forced 429. */
+  recallRetryAfter: string | null = null
+  /** Raw body override (serialized as JSON) — for invalid-envelope tests. */
+  recallBodyOverride: unknown = null
+  /** Delay before responding, ms — for timeout tests. */
+  recallDelayMs = 0
+  /** Serve an oversize (>128KB) body. */
+  recallOversize = false
+  /** Old-server mode: bare `{results, count}` envelope without
+   *  mode/vector/effective_scopes/dropped_scopes (#628 tolerance). */
+  recallBare = false
+  /** Extra envelope fields (mode/vector/dropped_scopes/...) merged in. */
+  recallEnvelope: Record<string, unknown> = {}
+  /** Number of POST /api/v1/recall requests received (call spy). */
+  recallCalls = 0
+  /** Last POST /api/v1/recall request body (assert scopes/query/timeout_ms). */
+  lastRecallBody: Record<string, unknown> | null = null
 
   constructor(private readonly validToken: string) {}
 
@@ -141,6 +169,17 @@ export class StubServer {
     this.idCounter = 0
     this.badAppendId = null
     this.badPatchEcho = null
+    this.recallRows = []
+    this.recallStatus = null
+    this.recallRetryAfter = null
+    this.recallBodyOverride = null
+    this.recallDelayMs = 0
+    this.recallOversize = false
+    this.recallBare = false
+    this.recallEnvelope = {}
+    this.recallCalls = 0
+    this.lastRecallBody = null
+    this.lastAppendBody = null
   }
 
   private handleRequest(req: IncomingMessage, res: ServerResponse): void {
@@ -161,13 +200,64 @@ export class StubServer {
       return
     }
 
+    // POST /api/v1/recall — server-authoritative recall envelope (#776/#628).
+    // Mirrors the enterprise contract: {results (rows with per-response 0-1
+    // score), count, mode, requested_mode, vector, effective_scopes,
+    // dropped_scopes}. Failure-injection knobs above simulate the full
+    // client failure table.
+    if (method === 'POST' && path === '/api/v1/recall') {
+      this.recallCalls++
+      this.readBody(req, (body) => {
+        this.lastRecallBody = body
+        const respond = () => {
+          if (this.recallStatus !== null) {
+            const headers: Record<string, string> = {}
+            if (this.recallStatus === 429 && this.recallRetryAfter !== null) {
+              headers['Retry-After'] = this.recallRetryAfter
+            }
+            const payload = JSON.stringify({ error: `forced ${this.recallStatus}` })
+            res.writeHead(this.recallStatus, {
+              'Content-Type': 'application/json',
+              'Content-Length': Buffer.byteLength(payload),
+              ...headers,
+            })
+            res.end(payload)
+            return
+          }
+          if (this.recallOversize) {
+            this.json(res, 200, { results: [], padding: 'x'.repeat(256 * 1024) })
+            return
+          }
+          if (this.recallBodyOverride !== null) {
+            this.json(res, 200, this.recallBodyOverride)
+            return
+          }
+          const requestedScopes = Array.isArray(body.scopes) ? body.scopes as string[] : null
+          const envelope = this.recallBare
+            ? { results: this.recallRows, count: this.recallRows.length }
+            : {
+                results: this.recallRows,
+                count: this.recallRows.length,
+                mode: 'hybrid',
+                requested_mode: (body.mode as string) ?? 'hybrid',
+                vector: true,
+                effective_scopes: requestedScopes ?? this.me.scopes,
+                dropped_scopes: [],
+                ...this.recallEnvelope,
+              }
+          this.json(res, 200, envelope)
+        }
+        if (this.recallDelayMs > 0) setTimeout(respond, this.recallDelayMs)
+        else respond()
+      })
+      return
+    }
+
     // POST /api/v1/engrams — create
     if (method === 'POST' && path === '/api/v1/engrams') {
       this.readBody(req, (body) => {
-        // Scope is a top-level DB column; everything else goes into `data`.
-        // Previously only { statement, domain, type } were extracted, silently
-        // dropping pinned/rationale/commitment/tags (#768).
-        const { scope, ...rest } = body
+        this.lastAppendBody = body
+        const { statement, scope, domain, type, source } = body
         const id = `ENG-SRV-${String(++this.idCounter).padStart(3, '0')}`
         const now = new Date().toISOString()
         const engram: StoredEngram = {
@@ -176,7 +266,9 @@ export class StubServer {
           // the wire. A non-string scope falls back the same way a missing one does.
           scope: typeof scope === 'string' ? scope : 'global',
           status: 'active',
-          data: rest as Record<string, unknown>,
+          // `source` carries rescope provenance over the wire (#676) — keep it
+          // so tests can assert the pushed shape.
+          data: { statement, domain, type, ...(source !== undefined ? { source } : {}) },
           created_at: now,
           updated_at: now,
         }

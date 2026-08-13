@@ -335,9 +335,9 @@ describe('Plur cold-start with remote store (issues #184, #185)', () => {
       data: { statement: 'seeded engram', scope: 'group:test', status: 'active' },
     })
 
-    // Trigger cache population
-    await plur.list({ scope: 'group:test' })
-    await new Promise(r => setTimeout(r, 2000))
+    // #776: reads no longer fire a background refresh — warm explicitly,
+    // the same path session_start uses.
+    await plur.warmRemoteCaches()
 
     const stores = await plur.listStores()
     const remote = stores.find(s => s.url)
@@ -433,8 +433,8 @@ describe('Plur cold-start with remote store (issues #184, #185)', () => {
       data: { statement: 'seeded engram', scope: 'group:test', status: 'active' },
     })
 
-    await plur.list()
-    await new Promise(r => setTimeout(r, 2000))
+    // #776: reads no longer fire a background refresh — warm explicitly.
+    await plur.warmRemoteCaches()
 
     const found = await plur.getById('ENG-GTE-SEED-001')
     expect(found).toBeTruthy()

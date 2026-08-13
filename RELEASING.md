@@ -69,15 +69,28 @@ packages**, not just `cli`:
   import-time crash class that bricked `cli@0.9.2` (`Dynamic require of "os" is not supported`,
   #64) — the audited fixes live in `core`, so promoting it unchecked was a real gap (#584).
 
-Each smoke check **retries on npm-propagation lag** (up to 6 attempts, 8s apart): a package
+Each smoke check **retries on npm-propagation lag** (up to 6 attempts, 20s apart): a package
 published to `@next` seconds earlier may not be visible to `npx` yet, returning `ETARGET`
 ("no matching version") — which is not a real failure. Only that signature is retried; any
 other failure (crash, wrong version) fails fast. Without this, a propagation race aborts the
 whole release after `@next` is published — 0.14.0 hit exactly that and needed a manual
 promote → PyPI → GH release → website → tweet recovery.
 
+Before any smoke check runs, Step 5a.5 waits (up to 5 minutes) for `@plur-ai/core@<version>` to
+become resolvable via `npm view`. `cli` and `mcp` pin `core` at the exact version, so they cannot
+resolve until it is visible — without that gate the FIRST package smoked absorbs the whole set's
+propagation wait and its private retry budget decides the fate of the release. v0.17.2 died exactly
+there: `cli` exhausted its retries while `mcp`, checked seconds later against a now-propagated
+`core`, passed on its first retry. The packages were fine; the ordering was the bug.
+
 If a smoke check still fails after retries, `@next` is published but `@latest` is untouched;
-the script prints the `npm dist-tag rm … next` revert commands and aborts before promotion.
+the script prints the revert commands and aborts before promotion.
+
+**The abort message now distinguishes lag from a defect**, because the correct recovery is opposite
+in each case. If every failure matched the propagation signature (`ETARGET` / no matching version)
+and nothing crashed or reported a wrong version, the artefacts are good and the release should be
+**resumed from the promote step** — not reissued. Printing "ship the next patch" for a propagation
+timeout would burn a version number for no reason, which is what the v0.17.2 message did.
 
 **Website version pre-flight (Step 3.8).** Step 8 only *deploys* the website (rsync); it does
 not update content. The content bump (`softwareVersion` + `@plur-ai/cli@<version>` install

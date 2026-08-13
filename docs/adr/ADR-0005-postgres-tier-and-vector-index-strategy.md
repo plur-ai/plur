@@ -1,7 +1,8 @@
 # ADR-0005: The Postgres tier, and what happens to exact search
 
-Status: **Proposed** — amended 2026-07-27, see
-[Update — Phases 2 and 4 have landed](#what-this-phase-does-not-do-and-why)
+Status: **Accepted** — implemented in 0.16; amended 2026-07-28, see
+[Update — Phases 2 and 4 have landed](#what-this-phase-does-not-do-and-why);
+the amendment's embeddings gap is closed by #762 (see its Closure note)
 Date: 2026-07-26
 Authors: convergence programme, Phase 5
 Related: ADR-0001 ([#226](https://github.com/plur-ai/plur/issues/226)), ADR-0003,
@@ -311,3 +312,60 @@ difference.
   check against the exact answer.
 - `PGLite × Postgres` filter parity across ten filter shapes, including the
   personal-family pass-through (#402) and sibling-prefix (#383) cases.
+
+
+## Amendment — 2026-07-28: the engine does not populate vectors on this tier
+
+This ADR reasons at length about the exact-vs-HNSW trade-off, and that analysis
+holds — but it assumed embeddings would be present. On a Postgres PRIMARY store
+they are not.
+
+`PostgresAdapter` implements `upsertEmbedding`, `hasEmbedding` and
+`searchVector`, and they work. What is missing is the caller: core's only
+`upsertEmbedding` call site is `_autoEmbedNewEngrams`, reached solely through
+the PGLite derived-index path. Measured on 0.16: five engrams learned through
+`Plur` against a `PostgresAdapter` leave `engram_embeddings` with zero rows.
+
+Consequences as shipped:
+
+- `vectorIndex: 'auto'` correctly builds nothing, since the row count is zero.
+- `vectorIndex: 'hnsw'` builds an ANN index over an empty table.
+- `recallSemantic` / `recallHybrid` still return correct results, via the
+  in-memory embedding path — which is the O(N) behaviour this tier was chosen
+  to escape.
+
+0.16 makes the gap loud (a warning at schema init) rather than closing it. The
+fix is not a one-liner: `_autoEmbedNewEngrams` loads the whole corpus and probes
+`hasEmbedding` per id on every write. That is acceptable for PGLite and would be
+a serious regression at the 50,000-engram threshold that selects Postgres. It
+needs a set-based "which active ids have no embedding" query, and a decision
+about whether a server tier should pay embedding cost on the write path at all —
+which is a deployment question, not just an implementation one.
+
+### Closure — #762
+
+The gap above is closed, on exactly the terms this amendment demanded:
+
+- **The set-based query exists.** `PostgresAdapter.listEngramsMissingEmbeddings`
+  is one bounded anti-join between the two tables' primary keys (active rows
+  with no embedding row, `ORDER BY id LIMIT n`). Cost scales with the gap, not
+  the corpus; the `LIMIT 1` shape doubles as a completeness probe.
+- **The write path does NOT pay embedding cost.** Every primary-store write
+  kicks a fire-and-track background pass (`_syncIndex` → the coalescing
+  `_kickPrimaryAutoEmbed`) that drains the anti-join in bounded batches.
+  Back-to-back writes coalesce into one follow-up sweep instead of stacking
+  passes. Failures land in `lastIndexError()` / `status().index_error`, never
+  in the write.
+- **Backfill needs no operator step.** The first semantic recall probes
+  completeness; a store migrated in with rows but no embeddings starts the
+  backfill from the read side and converges without a single write.
+- **`recallSemantic` reads the table** — `_primarySemanticRecall` pushes the
+  k-NN into `searchVector` (scope allow-list, visibility scope, and mounted
+  grants all inside the query) once the table is complete, and degrades to the
+  in-memory path while it fills — partial vector answers are never served.
+- **Opt-outs hold.** `PLUR_DISABLE_EMBEDDINGS` / `embeddings.enabled: false`
+  skips the pass before any query (one loud notice per instance), and an
+  embedder/column dimension mismatch skips rather than persist wrong-shape
+  vectors (#335). The schema-init warning this amendment introduced is gone —
+  the condition it warned about no longer exists when the engine drives the
+  adapter.

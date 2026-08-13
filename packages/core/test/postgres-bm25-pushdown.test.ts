@@ -15,7 +15,7 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { PostgresAdapter } from '../src/storage-postgres.js'
-import { searchEngrams, ftsTokenize, computeIdf, termMatches } from '../src/fts.js'
+import { searchEngrams, ftsTokenize, computeIdf, termMatches, engramSearchText, TOKENIZER_VERSION } from '../src/fts.js'
 import type { Engram } from '../src/schemas/engram.js'
 
 const PG_URL = process.env.PLUR_TEST_POSTGRES_URL
@@ -87,7 +87,7 @@ describe.skipIf(!PG_URL)('BM25 pushdown parity (#711)', () => {
 
   it('reports the same corpus size the local path would', async () => {
     const stats = await adapter.corpusStats(ftsTokenize('deploy kubernetes'))
-    expect(stats.N).toBe(corpus.length)
+    expect(stats!.N).toBe(corpus.length)
   }, TIMEOUT)
 
   it('counts df exactly as termMatches does over the same corpus', async () => {
@@ -101,7 +101,7 @@ describe.skipIf(!PG_URL)('BM25 pushdown parity (#711)', () => {
         const terms = new Set(ftsTokenize(e.statement))
         if ([...terms].some(t => termMatches(t, qt))) expected++
       }
-      expect(stats.df.get(qt), `df mismatch for "${qt}"`).toBe(expected)
+      expect(stats!.df.get(qt), `df mismatch for "${qt}"`).toBe(expected)
     }
   }, TIMEOUT)
 
@@ -141,9 +141,9 @@ describe.skipIf(!PG_URL)('BM25 pushdown parity (#711)', () => {
     const all = await adapter.corpusStats(tokens)
     const alpha = await adapter.corpusStats(tokens, { scopes: ['project:alpha'] })
 
-    expect(alpha.N).toBe(1)
-    expect(alpha.N).toBeLessThan(all.N)
-    expect(alpha.df.get('deploy')).toBe(1)
+    expect(alpha!.N).toBe(1)
+    expect(alpha!.N).toBeLessThan(all!.N)
+    expect(alpha!.df.get('deploy')).toBe(1)
   }, TIMEOUT)
 
   it('refuses to report statistics when rows predate the tokens column', async () => {
@@ -223,23 +223,49 @@ describe.skipIf(!PG_URL)('PostgresAdapter — scope restriction as an AUTHORIZAT
     // searchVector previously omitted the `opts` parameter entirely; TypeScript
     // accepted the narrower arity, so callers passing `scopes` got an
     // unrestricted search with no error.
+    //
+    // This test used to run against a fixture with NO embeddings stored, and
+    // asserted `searchVector(v, 10, { scopes: [] })` returned []. Of course it
+    // did — with no vectors in the table it returns [] whether or not the
+    // filter is applied. The assertion could not fail. Real embeddings are
+    // stored here so the restriction has something to exclude.
     const dim = 384
-    const v = new Float32Array(dim)
-    v[0] = 1
-    // No embeddings are stored in this fixture, so the assertion that matters
-    // is that the call ACCEPTS the restriction and returns nothing out of scope
-    // rather than ignoring it.
-    const hits = await adapter.searchVector(v, 10, { scopes: [] })
-    expect(hits).toEqual([])
+    const vec = (seed: number) => {
+      const v = new Float32Array(dim)
+      for (let i = 0; i < dim; i++) v[i] = Math.sin(seed + i) / 10
+      v[0] = 1
+      return v
+    }
+    const alpha = corpus.find(e => e.scope === 'project:alpha')!
+    const beta = corpus.find(e => e.scope === 'project:beta')!
+    const globals = corpus.filter(e => e.scope === 'global').slice(0, 3)
+    for (const [i, e] of [alpha, beta, ...globals].entries()) {
+      await adapter.upsertEmbedding(e.id, vec(i))
+    }
+
+    // Unrestricted: the neighbour list contains engrams from several scopes —
+    // without this the restricted assertions below would be vacuous again.
+    const all = await adapter.searchVector(vec(0), 10)
+    expect(new Set(all.map(h => h.engram.scope)).size).toBeGreaterThan(1)
+
+    // Restricted to one scope: only that scope comes back, and the in-scope
+    // engram is still reachable (i.e. it filtered rather than returned nothing).
+    const scoped = await adapter.searchVector(vec(0), 10, { scopes: ['project:alpha'] })
+    expect(scoped.length).toBeGreaterThan(0)
+    expect(scoped.every(h => h.engram.scope === 'project:alpha')).toBe(true)
+    expect(scoped.map(h => h.engram.id)).toContain(alpha.id)
+
+    // Empty allow-list means nothing, never everything.
+    expect(await adapter.searchVector(vec(0), 10, { scopes: [] })).toEqual([])
   }, TIMEOUT)
 
   it('corpusStats honours the allow-list even with no query tokens', async () => {
     // The empty-token early return used to count the whole corpus regardless of
     // scope, reporting an N the caller was not permitted to see.
     const none = await adapter.corpusStats([], { scopes: [] })
-    expect(none.N).toBe(0)
+    expect(none!.N).toBe(0)
     const alpha = await adapter.corpusStats([], { scopes: ['project:alpha'] })
-    expect(alpha.N).toBe(1)
+    expect(alpha!.N).toBe(1)
   }, TIMEOUT)
 })
 
@@ -270,6 +296,312 @@ describe.skipIf(!PG_URL)('PostgresAdapter — LIKE metacharacters in query token
     expect(hits.map(e => e.id)).toEqual(['ENG-2026-0727-951'])
 
     const stats = await adapter.corpusStats(ftsTokenize('snake_case'))
-    expect(stats.df.get('snake_case')).toBe(1)
+    expect(stats!.df.get('snake_case')).toBe(1)
+  }, TIMEOUT)
+})
+
+/**
+ * `searchBM25` must hand its scope restriction to `corpusStats`.
+ *
+ * `corpusStats(tokens, opts)` is well covered on its own, and so is
+ * `searchBM25`'s narrowing. The HANDOVER between them was not: delete `opts`
+ * from `corpusStats(queryTokens, opts)` inside `searchBM25` and every existing
+ * test stays green, because each half still behaves correctly in isolation.
+ *
+ * What breaks is ranking. IDF would be computed over the whole corpus including
+ * engrams the caller cannot see, so a term that is common inside the permitted
+ * scope but rare outside it gets the outsider's weight. The leak shows up as an
+ * ORDER, never as a visible row — which is why no "the right engram came back"
+ * assertion can catch it, and why the first fixture written for this test could
+ * not either (both candidates matched the same terms, so no IDF could reorder
+ * them; the teeth-check below caught that).
+ */
+describe.skipIf(!PG_URL)('searchBM25 scores with the RESTRICTED corpus statistics', () => {
+  const SCOPED_SCHEMA = 'plur_phase4_stats_handover'
+  const QUERY = 'mesh ingress'
+  let adapter: PostgresAdapter
+  let corpus: Engram[]
+
+  /**
+   * Built so the two candidates match DIFFERENT query terms, and those terms
+   * swap rarity depending on which corpus you measure:
+   *
+   *   inside project:alpha   ingress is common (9 docs), mesh is rare (1)
+   *   across the whole store mesh is common (61 docs), ingress stays at 9
+   *
+   * So alpha's own statistics rank the `mesh` document first, and the corpus's
+   * rank the `ingress` document first. Same rows either way.
+   */
+  function buildSkewed(): Engram[] {
+    const out: Engram[] = [
+      makeEngram('ENG-2026-0728-800', 'mesh gateway for the tenant cluster', 'project:alpha'),
+      makeEngram('ENG-2026-0728-801', 'ingress gateway for the tenant cluster', 'project:alpha'),
+    ]
+    for (let i = 0; i < 8; i++) {
+      out.push(makeEngram(`ENG-2026-0728-8${String(i + 10)}`, `ingress policy for the tenant cluster ${i}`, 'project:alpha'))
+    }
+    for (let i = 0; i < 60; i++) {
+      out.push(makeEngram(`ENG-2026-0728-9${String(i).padStart(2, '0')}`, `mesh sidecar note for service ${i}`, 'project:beta'))
+    }
+    return out
+  }
+
+  /** Position of `id` in a ranked id list, or Infinity if absent. */
+  const rank = (ids: string[], id: string) => {
+    const i = ids.indexOf(id)
+    return i === -1 ? Infinity : i
+  }
+
+  beforeAll(async () => {
+    corpus = buildSkewed()
+    adapter = new PostgresAdapter({ connectionString: PG_URL!, schema: SCOPED_SCHEMA, vectorIndex: 'exact' })
+    await adapter.save(corpus)
+  }, TIMEOUT)
+
+  afterAll(async () => {
+    await adapter?.dropSchema().catch(() => { /* best effort */ })
+    await adapter?.close().catch(() => { /* best effort */ })
+  }, TIMEOUT)
+
+  it('the two statistics genuinely disagree — otherwise the test below proves nothing', async () => {
+    // Establish the teeth FIRST. If restricted and unrestricted statistics
+    // ranked these identically, the assertion in the next test would pass
+    // whichever one searchBM25 used, and it would be worthless.
+    const tokens = ftsTokenize(QUERY)
+    const restricted = await adapter.corpusStats(tokens, { scopes: ['project:alpha'] })
+    const unrestricted = await adapter.corpusStats(tokens)
+
+    expect(restricted!.N, 'the restriction did not narrow the corpus').toBeLessThan(unrestricted!.N)
+    // `df` is a Map. Property access silently yields undefined, and
+    // JSON.stringify prints a Map as `{}` — which makes a wrong assertion here
+    // look like a product bug.
+    expect(
+      restricted!.df.get('mesh') ?? 0,
+      'the fixture no longer makes `mesh` rare inside alpha',
+    ).toBeLessThan(restricted!.df.get('ingress') ?? 0)
+    expect(
+      unrestricted!.df.get('mesh') ?? 0,
+      'the fixture no longer makes `mesh` common corpus-wide',
+    ).toBeGreaterThan(unrestricted!.df.get('ingress') ?? 0)
+
+    const alphaOnly = corpus.filter(e => e.scope === 'project:alpha')
+    const byRestricted = searchEngrams(alphaOnly, QUERY, 20, restricted).map(e => e.id)
+    const byUnrestricted = searchEngrams(alphaOnly, QUERY, 20, unrestricted).map(e => e.id)
+
+    expect(
+      rank(byRestricted, 'ENG-2026-0728-800') < rank(byRestricted, 'ENG-2026-0728-801'),
+      'alpha statistics should favour the rare-inside-alpha `mesh` document',
+    ).toBe(true)
+    expect(
+      rank(byUnrestricted, 'ENG-2026-0728-801') < rank(byUnrestricted, 'ENG-2026-0728-800'),
+      'corpus-wide statistics should favour the `ingress` document — no teeth without this',
+    ).toBe(true)
+  }, TIMEOUT)
+
+  it('and searchBM25 uses the restricted one', async () => {
+    const tokens = ftsTokenize(QUERY)
+    const restricted = await adapter.corpusStats(tokens, { scopes: ['project:alpha'] })
+    const alphaOnly = corpus.filter(e => e.scope === 'project:alpha')
+    const expected = searchEngrams(alphaOnly, QUERY, 20, restricted).map(e => e.id)
+
+    const got = await adapter.searchBM25(QUERY, { limit: 20, status: 'active', scopes: ['project:alpha'] })
+
+    expect(
+      got.map(e => e.id),
+      'ranked with corpus-wide statistics — IDF is leaking from scopes the caller cannot see',
+    ).toEqual(expected)
+  }, TIMEOUT)
+})
+
+/**
+ * Tokenizer-version staleness and sub-three-character tokens (#834).
+ *
+ * The pushdown's exactness rests on one tokenizer producing BOTH the stored
+ * `tokens`/`search_text` and the live query terms. #782 changed that tokenizer,
+ * which made two latent assumptions false at once:
+ *
+ *   1. Rows written by the OLD tokenizer contain no Han, so a Chinese query
+ *      cannot match them — they vanish from the candidate set entirely rather
+ *      than ranking badly. Silent, and in the one direction a search index must
+ *      never fail.
+ *   2. `reversePrefixes` enumerated prefixes from length 3, justified by "no
+ *      stored token can be shorter". Han bigrams are exactly 2.
+ *
+ * The ASCII fixtures above exercise the matching rule but never with a token
+ * under three characters, which is why neither showed up.
+ */
+describe.skipIf(!PG_URL)('CJK pushdown parity and tokenizer staleness (#834)', () => {
+  const CJK_SCHEMA = 'plur_phase4_cjk'
+  let adapter: PostgresAdapter
+  let corpus: Engram[]
+
+  beforeAll(async () => {
+    corpus = [
+      makeEngram('ENG-2026-0804-001', '测试部署应该用 docker compose'),
+      makeEngram('ENG-2026-0804-002', '每天早上先看邮件再写代码'),
+      makeEngram('ENG-2026-0804-003', 'deploy the billing service to kubernetes'),
+      makeEngram('ENG-2026-0804-004', '部署流程需要自动化回滚步骤'),
+    ]
+    adapter = new PostgresAdapter({ connectionString: PG_URL!, schema: CJK_SCHEMA, vectorIndex: 'exact' })
+    await adapter.save(corpus)
+  }, TIMEOUT)
+
+  afterAll(async () => {
+    if (adapter) {
+      await adapter.dropSchema().catch(() => { /* best effort */ })
+      await adapter.close().catch(() => { /* best effort */ })
+    }
+  }, TIMEOUT)
+
+  it('a Chinese query pushed down ranks identically to the local path', async () => {
+    const QUERY = '部署流程'
+    const tokens = ftsTokenize(QUERY)
+    expect(tokens.length).toBeGreaterThan(0)
+
+    const stats = await adapter.corpusStats(tokens)
+    const pushed = await adapter.searchBM25(QUERY, { limit: 10 })
+    const local = searchEngrams(corpus, QUERY, 10)
+
+    expect(pushed.map(e => e.id)).toEqual(local.map(e => e.id))
+    expect(stats!.N).toBe(corpus.length)
+  }, TIMEOUT)
+
+  it('df for a two-character Han token matches the local count under termMatches', async () => {
+    const tokens = ftsTokenize('部署')
+    expect(tokens).toEqual(['部署'])
+
+    const stats = await adapter.corpusStats(tokens)
+    const localDf = corpus.filter(e => {
+      const terms = new Set(ftsTokenize(engramSearchText(e)))
+      return Array.from(terms).some(t => termMatches(t, '部署'))
+    }).length
+
+    expect(stats!.df.get('部署')).toBe(localDf)
+    expect(localDf).toBeGreaterThan(0)
+  }, TIMEOUT)
+
+  it('corpusStats returns undefined — not a throw — when stored tokens are from another version', async () => {
+    // Throwing here would take recall() down on every upgrade: index.ts calls
+    // corpusStats WITHOUT a try/catch, and every row of every existing store
+    // has a NULL version the moment this ships. The contract says return
+    // undefined and let the caller derive locally.
+    const pool = (await (adapter as any).getPool())
+    await pool.query(`UPDATE "${CJK_SCHEMA}".engrams SET tokens_version = 1 WHERE id = $1`, ['ENG-2026-0804-001'])
+    try {
+      await expect(adapter.corpusStats(ftsTokenize('部署流程'))).resolves.toBeUndefined()
+    } finally {
+      await pool.query(
+        `UPDATE "${CJK_SCHEMA}".engrams SET tokens_version = $1 WHERE id = $2`,
+        [TOKENIZER_VERSION, 'ENG-2026-0804-001'],
+      )
+    }
+  }, TIMEOUT)
+
+  it('a stale store still returns CORRECT Chinese results, via the local path', async () => {
+    // The real upgrade state, not a marker flip: tokens as the PRE-#782
+    // tokenizer would have produced them. `\w` is ASCII-only, so a
+    // pure-Chinese statement tokenized to the empty array and an empty
+    // search_text. The pushdown's `search_text LIKE '%部署%'` therefore selects
+    // nothing, and only the local fallback can find the engram.
+    //
+    // Writing tokens_version = NULL alone does NOT reproduce this — the rows
+    // would still carry correct bigrams and the pushdown would still work,
+    // which is a test that passes whether or not the fallback exists.
+    const pool = (await (adapter as any).getPool())
+    const oldTokenize = (t: string) => t.toLowerCase()
+      .replace(/[^\w\s]/g, ' ').split(/\s+/).filter(w => w.length > 2)
+    try {
+      for (const e of corpus) {
+        const toks = oldTokenize(e.statement)
+        await pool.query(
+          `UPDATE "${CJK_SCHEMA}".engrams SET tokens = $1, search_text = $2, tokens_version = NULL WHERE id = $3`,
+          [toks, toks.join(' '), e.id],
+        )
+      }
+
+      const stale = await adapter.searchBM25('部署流程', { limit: 10 })
+      const local = searchEngrams(corpus, '部署流程', 10)
+      expect(stale.length).toBeGreaterThan(0)
+      expect(stale.map(e => e.id)).toEqual(local.map(e => e.id))
+    } finally {
+      await adapter.save(corpus)
+    }
+  }, TIMEOUT)
+
+  it('auto-backfill restores the pushdown without an operator step (#839)', async () => {
+    // The gap this closes: `learn()` uses the `append` seam and `feedback()`
+    // uses `updateMany`, each touching ONE row. Neither re-derives the rest of
+    // the corpus, so ordinary use never clears staleness and the store would
+    // sit on the local-scoring fallback indefinitely.
+    const pool = (await (adapter as any).getPool())
+    const oldTokenize = (t: string) => t.toLowerCase()
+      .replace(/[^\w\s]/g, ' ').split(/\s+/).filter(w => w.length > 2)
+    for (const e of corpus) {
+      const toks = oldTokenize(e.statement)
+      await pool.query(
+        `UPDATE "${CJK_SCHEMA}".engrams SET tokens = $1, search_text = $2, tokens_version = NULL WHERE id = $3`,
+        [toks, toks.join(' '), e.id],
+      )
+    }
+
+    // The query that notices staleness answers from the fallback AND kicks the
+    // backfill; it must not block on it.
+    const during = await adapter.searchBM25('部署流程', { limit: 10 })
+    expect(during.length).toBeGreaterThan(0)
+
+    // Deterministic wait — the kick is fire-and-forget, so poll the marker
+    // rather than sleeping on a guess.
+    for (let i = 0; i < 100; i++) {
+      const { rows } = await pool.query(
+        `SELECT 1 FROM "${CJK_SCHEMA}".engrams WHERE tokens_version IS DISTINCT FROM $1 LIMIT 1`,
+        [TOKENIZER_VERSION],
+      )
+      if (rows.length === 0) break
+      await new Promise(r => setTimeout(r, 50))
+    }
+
+    // Pushdown is live again: corpusStats answers instead of declining.
+    const stats = await adapter.corpusStats(ftsTokenize('部署流程'))
+    expect(stats).toBeDefined()
+    expect(stats!.N).toBe(corpus.length)
+
+    // And the rows carry real bigrams now, not the pre-#782 empty tokenization.
+    const { rows: tok } = await pool.query(
+      `SELECT search_text FROM "${CJK_SCHEMA}".engrams WHERE id = $1`, ['ENG-2026-0804-004'])
+    expect(tok[0].search_text).toContain('部署')
+  }, TIMEOUT)
+
+  it('backfill stops instead of looping when a row cannot be updated (#840)', async () => {
+    // The UPDATE joins on `e.id = t.id` where `t.id` comes from the engram's
+    // own data. Desynchronise the two and the row stays stale forever while
+    // being re-selected by an identical query — an infinite loop holding a
+    // pool connection. Bounding on the SELECT alone would not catch it.
+    const pool = (await (adapter as any).getPool())
+    await pool.query(
+      `UPDATE "${CJK_SCHEMA}".engrams SET tokens_version = NULL, data = jsonb_set(data, '{id}', '"ENG-9999-9999-999"') WHERE id = $1`,
+      ['ENG-2026-0804-002'],
+    )
+    try {
+      // The assertion that matters is that this RETURNS at all.
+      const n = await adapter.backfillTokens()
+      expect(n).toBe(0)
+    } finally {
+      await adapter.save(corpus)
+    }
+  }, TIMEOUT)
+
+  it('backfillTokens is idempotent and reports zero on a current store', async () => {
+    await adapter.save(corpus)
+    expect(await adapter.backfillTokens()).toBe(0)
+  }, TIMEOUT)
+
+  it('a re-save restores the pushdown', async () => {
+    const pool = (await (adapter as any).getPool())
+    await pool.query(`UPDATE "${CJK_SCHEMA}".engrams SET tokens_version = NULL`)
+    await expect(adapter.corpusStats(ftsTokenize('部署流程'))).resolves.toBeUndefined()
+
+    await adapter.save(corpus)
+    const stats = await adapter.corpusStats(ftsTokenize('部署流程'))
+    expect(stats!.N).toBe(corpus.length)
   }, TIMEOUT)
 })

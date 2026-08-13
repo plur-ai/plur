@@ -336,7 +336,8 @@ export function loadRerankerEvalCache(storeRoot: string): Record<string, Reranke
 export function saveRerankerEvalResult(storeRoot: string, result: RerankerEvalResult): void {
   const evals = loadRerankerEvalCache(storeRoot)
   evals[result.reranker] = result
-  atomicWrite(rerankerEvalCachePath(storeRoot), JSON.stringify({ version: 1, evals }, null, 2))
+  // Derived state — a benchmark result, recomputable by re-running the eval.
+  atomicWrite(rerankerEvalCachePath(storeRoot), JSON.stringify({ version: 1, evals }, null, 2), { durable: false })
 }
 
 /**

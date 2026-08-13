@@ -46,6 +46,13 @@ jobs:
           --health-retries 10
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Tags, so packages/migrate/test/method-list.test.ts can read the
+          # 0.15.0 source and actually verify its sync -> async claim. Without
+          # them that test takes a no-assertion early return and passes
+          # vacuously — which is how a wrong claim about the past reached the
+          # CHANGELOG in the first place.
+          fetch-depth: 0
       - uses: pnpm/action-setup@v4
         with:
           version: 9
@@ -89,6 +96,16 @@ jobs:
             echo "::error::spec/*.json is out of sync with the Zod schemas. Run 'pnpm --filter @plur-ai/core gen:schemas' and commit."
             exit 1
           }
+      # Four suites (pr1-indexed-migration, read-side-scope-visibility,
+      # scope-pushdown, storage-indexed) gate themselves on
+      # `require('better-sqlite3')` inside try/catch and SKIP silently when the
+      # optionalDependency failed to build. Nothing asserted CI was actually in
+      # the ran-them state — a runner image change that breaks the native build
+      # would quietly shrink coverage with every job still green. Fail here
+      # instead, before the test step, with an unambiguous message.
+      - name: Assert better-sqlite3 built — the gated suites must run, not skip
+        run: node -e "require('better-sqlite3'); console.log('better-sqlite3 present — the sqlite-gated suites will run')"
+        working-directory: packages/core
       - run: pnpm test
         env:
           # Throwaway credentials for the ephemeral service container above —
@@ -97,3 +114,56 @@ jobs:
       # Getting-started examples must stay runnable against the public API (#267).
       - name: Run examples
         run: pnpm --filter @plur-ai/examples run all
+
+  # The packaged artefacts, not the source tree.
+  #
+  # `pnpm test` above proves the SOURCE works. Users install tarballs, and the
+  # difference has shipped a defect before: `pg` is an optionalDependency and
+  # tsup only auto-externalizes dependencies + peerDependencies, so the driver
+  # was inlined into core's dist and PostgresAdapter threw on first use — in the
+  # published package, with every in-repo test green.
+  #
+  # scripts/smoke-release.sh covered exactly that and nothing invoked it, so it
+  # could only catch anything when someone remembered to run it by hand. One
+  # Node version is enough: this checks packaging, not runtime compatibility.
+  smoke-packaged:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: plur_test
+          POSTGRES_PASSWORD: plur_test_only
+          POSTGRES_DB: plur_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U plur_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history so this job builds the same artefacts a release build
+          # would see (release.sh runs from a full clone with tags). The
+          # method-list.test.ts justification the `test` job carries does NOT
+          # apply here — this job never runs vitest; the comment used to be a
+          # copy-paste of that one, claiming a reason that was not this job's.
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Pack, install clean, and drive the public API
+        run: bash scripts/smoke-release.sh
+        env:
+          # Same throwaway credentials as the test job — the service container
+          # is reachable only from this job.
+          PLUR_SMOKE_POSTGRES_URL: postgres://plur_test:plur_test_only@127.0.0.1:5432/plur_test

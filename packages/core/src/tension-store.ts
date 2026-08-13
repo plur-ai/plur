@@ -9,6 +9,7 @@
 import { existsSync, readFileSync } from 'fs'
 import yaml from 'js-yaml'
 import { atomicWrite } from './sync.js'
+import { parseRecordArrayFile } from './engrams.js'
 import { TensionRecordSchema, type TensionRecord, type TensionCategory } from './schemas/tension.js'
 import type { Engram } from './schemas/engram.js'
 
@@ -17,25 +18,37 @@ export function tensionPairKey(idA: string, idB: string): string {
   return [idA, idB].sort().join(':')
 }
 
-export function loadTensions(path: string): TensionRecord[] {
-  if (!existsSync(path)) return []
-  try {
-    const raw = yaml.load(readFileSync(path, 'utf8'))
-    if (!Array.isArray(raw)) return []
-    const records: TensionRecord[] = []
-    for (const entry of raw) {
-      const parsed = TensionRecordSchema.safeParse(entry)
-      if (parsed.success) records.push(parsed.data)
-      // Malformed entries are skipped, not fatal — same posture as episodes.
-    }
-    return records
-  } catch {
-    return []
-  }
+/**
+ * Read tension records, or throw when the file is unreadable.
+ *
+ * Both halves of the engram-store defect lived here too (#794 F1/F2, still
+ * live after the first remediation and re-found by the #811 audit): a corrupt
+ * or wrongly-shaped file returned `[]`, and schema-invalid entries were
+ * silently skipped. Since `saveTensions` rewrites the whole array, the next
+ * `recordTensions` persisted only the survivors — a silent permanent delete.
+ */
+export function loadTensionsWithQuarantine(path: string): { valid: TensionRecord[]; quarantined: unknown[] } {
+  return parseRecordArrayFile<TensionRecord>(path, entry => {
+    const parsed = TensionRecordSchema.safeParse(entry)
+    return parsed.success ? parsed.data : null
+  })
 }
 
-export function saveTensions(path: string, records: TensionRecord[]): void {
-  atomicWrite(path, yaml.dump(records, { lineWidth: 120, noRefs: true }))
+export function loadTensions(path: string): TensionRecord[] {
+  return loadTensionsWithQuarantine(path).valid
+}
+
+/**
+ * Write the tension list.
+ *
+ * `quarantined` is the set withheld by {@link loadTensionsWithQuarantine};
+ * passing it back is what stops a malformed record being deleted by an
+ * unrelated write. Callers that loaded through the quarantine helper should
+ * always hand it back.
+ */
+export function saveTensions(path: string, records: TensionRecord[], quarantined: unknown[] = []): void {
+  const out = quarantined.length > 0 ? [...records, ...(quarantined as TensionRecord[])] : records
+  atomicWrite(path, yaml.dump(out, { lineWidth: 120, noRefs: true }))
 }
 
 /**
@@ -60,8 +73,9 @@ const SUPERSEDED_PATTERN = /\(\s*not\s+[^)]+\)/i
 
 /**
  * Recorded date of an engram: `temporal.learned_at`, falling back to the
- * date embedded in canonical ids (ENG-YYYY-MMDD-NNN, ENG-PREFIX-YYYY-MMDD-NNN,
- * server-assigned ENG-YYYY-MM-DD-NNN). Undefined when underivable.
+ * date embedded in the id — canonical ENG-YYYY-MM-DD-NNN (also what servers
+ * assign, #771), legacy compact ENG-YYYY-MMDD-NNN, and either form behind a
+ * store prefix (ENG-{PREFIX}-...). Undefined when underivable.
  */
 function recordedDate(e: Engram): string | undefined {
   const learned = e.temporal?.learned_at

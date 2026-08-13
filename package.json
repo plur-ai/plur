@@ -8,32 +8,41 @@
     "test:smoke": "vitest run packages/core/test/remote-smoke.test.ts",
     "test:watch": "vitest",
     "bench:micro": "npx tsx benchmark/micro.ts",
-    "typecheck:tests": "tsc -p tsconfig.tests.json --noEmit"
+    "typecheck:tests": "tsc -p tsconfig.tests.json --noEmit",
+    "smoke:release": "bash scripts/smoke-release.sh"
   },
   "devDependencies": {
     "@types/node": "25.5.0",
     "tsup": "^8.5.1",
     "typescript": "^6.0.2",
+    "vite": "^7.3.5",
     "vitest": "^4.1.1"
   },
   "pnpm": {
     "overrides": {
-      "fast-xml-parser": ">=5.7.0",
-      "@hono/node-server": ">=1.19.13",
-      "openclaw": ">=2026.6.5",
-      "undici": ">=7.28.0",
-      "linkify-it": ">=5.0.1",
-      "js-yaml": ">=4.2.0 <5",
-      "protobufjs": ">=7.5.6",
-      "hono": ">=4.12.18",
-      "brace-expansion": ">=2.0.2",
-      "postcss": ">=8.5.14",
-      "yaml": ">=2.9.0",
-      "minimatch": ">=10.0.3",
-      "path-to-regexp": ">=8.4.0",
+      "@hono/node-server": ">=2.0.5",
+      "body-parser": ">=2.3.0",
+      "brace-expansion": ">=5.0.7",
+      "esbuild": ">=0.28.1 <0.29",
+      "fast-uri": ">=3.1.4 <4",
       "fast-xml-builder": ">=1.1.7",
-      "ws": ">=8.20.1",
-      "ip-address": ">=10.1.1"
+      "fast-xml-parser": ">=5.7.0",
+      "hono": ">=4.12.34",
+      "ip-address": ">=10.3.1",
+      "js-yaml": ">=4.2.0 <5",
+      "linkify-it": ">=5.0.1",
+      "minimatch": ">=10.0.3",
+      "openclaw": ">=2026.6.5",
+      "path-to-regexp": ">=8.4.0",
+      "postcss": ">=8.5.18 <9",
+      "protobufjs": ">=8.5.0",
+      "qs": ">=6.15.2",
+      "sharp": ">=0.35.0",
+      "tar": ">=7.5.21",
+      "undici": ">=8.5.0",
+      "vite": ">=7.3.5 <8",
+      "ws": ">=8.21.0",
+      "yaml": ">=2.9.0"
     },
     "onlyBuiltDependencies": [
       "better-sqlite3"

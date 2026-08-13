@@ -34,6 +34,15 @@ OPTIONS
 
 const SKIP_DIRS = new Set(['node_modules', 'dist', 'build', '.git', 'coverage', '.next'])
 
+/**
+ * Does this file mention ANY of the methods we care about? Purely an
+ * optimisation — the scanner is authoritative. Built from `NEWLY_ASYNC` so it
+ * cannot fall behind it.
+ */
+// `\s*` after the dot mirrors the scanner: `plur.\n  recall(q)` is a chain
+// the scanner resolves, so the pre-filter must not skip the file it sits in.
+const PREFILTER = new RegExp(String.raw`\.\s*(?:${NEWLY_ASYNC.join('|')})\s*\(`)
+
 function walk(dir: string, exts: Set<string>, out: string[] = []): string[] {
   let entries
   try { entries = readdirSync(dir, { withFileTypes: true }) } catch { return out }
@@ -76,7 +85,15 @@ export function run(argv: string[]): number {
   for (const f of files) {
     let src: string
     try { src = readFileSync(f, 'utf8') } catch { continue }
-    if (!/\.(learn|recall|inject|feedback|forget|getById|list|status|ingest|sync)\s*\(/.test(src)) continue
+    // Cheap pre-filter, DERIVED from the method table rather than hand-written.
+    //
+    // It used to list ten names while `NEWLY_ASYNC` held twenty-eight, so a file
+    // whose only calls were `setPinned`, `receipt` or `installPack` was skipped
+    // outright — and the run then printed "no un-awaited PLUR calls found" and
+    // exited 0. Telling someone their migration is clean when it is not is the
+    // worst thing this tool can do; it is the one output they will act on
+    // without checking.
+    if (!PREFILTER.test(src)) continue
 
     const findings = scanSource(relative(process.cwd(), f) || f, src)
     if (findings.length === 0) continue

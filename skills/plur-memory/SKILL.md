@@ -1,7 +1,7 @@
 ---
 name: plur-memory
 description: Persistent learning for AI agents. Open engram format. Your agent learns from corrections, remembers across sessions, and transfers knowledge across domains.
-version: 0.14.0
+version: 0.17.2
 metadata:
   hermes:
     tags: [memory, learning, knowledge, engrams]
@@ -80,3 +80,7 @@ Meta-engrams are the highest-value knowledge: principles that transfer across do
 - Patterns: "This codebase uses repository pattern for data access"
 - Decisions: "We chose PostgreSQL for ACID compliance"
 - Conventions: "Always run lint before committing"
+
+## Related Skills
+
+- **[geo-visibility](../geo-visibility/SKILL.md)** — run GEO visibility scans weekly via nightshift and store findings as engrams; PLUR injects the current Share-of-Voice baseline, per-model mention rates, and open content gaps into future sessions automatically.

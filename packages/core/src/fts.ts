@@ -1,3 +1,4 @@
+import { createHash } from 'crypto'
 import type { Engram } from './schemas/engram.js'
 
 const STOP_WORDS = new Set([
@@ -6,13 +7,62 @@ const STOP_WORDS = new Set([
   'can', 'will', 'should', 'would', 'could', 'may', 'might',
 ])
 
+/**
+ * Shortest token `ftsTokenize` can emit.
+ *
+ * NOT the same number as the word-path length filter below, and the two parted
+ * company in #782. The whitespace path still discards anything under three
+ * characters; the Han bigram path emits tokens of exactly two.
+ *
+ * Anything reasoning about the shortest STORED token must read this constant
+ * rather than restate the word-path floor. `PostgresAdapter.reversePrefixes`
+ * did restate it — as a literal `3`, under a docstring asserting no stored
+ * token could be shorter — and #782 silently made that assertion false. It did
+ * not misbehave only because Han and ASCII alphabets are disjoint, so the arm
+ * it feeds could never fire on a bigram. An invariant that holds by accident
+ * is one refactor away from holding not at all.
+ */
+export const MIN_TOKEN_LENGTH = 2
+
+/**
+ * Version of `ftsTokenize`'s output contract. Bump on ANY change that can alter
+ * the token list produced for the same input.
+ *
+ * Exists because a store may derive tokens at WRITE time and compare them
+ * against freshly-tokenized query terms at READ time — `PostgresAdapter` does
+ * exactly that, and it is what lets the BM25 pushdown claim exactness: `df`
+ * counted in SQL over stored tokens, `tf` counted in JS over live text,
+ * guaranteed to agree because one tokenizer produced both.
+ *
+ * The guarantee holds only while the tokenizer that wrote the rows and the one
+ * asking the question are the same tokenizer. When they are not, nothing
+ * throws. Rows written before #782 contain no Han at all, so a Chinese query
+ * simply never matches them — the corpus reports that it does not contain the
+ * engram, which is indistinguishable from the engram not existing. Silent, and
+ * wrong in the one direction a search index must never be wrong.
+ *
+ * History:
+ *   1 — original. `\w`-based word split, three-character floor, stop words.
+ *   2 — #782. Han runs additionally indexed as overlapping character bigrams.
+ */
+export const TOKENIZER_VERSION = 2
+
 /** Tokenize text into searchable terms */
 export function ftsTokenize(text: string): string[] {
-  return text.toLowerCase()
+  const lower = text.toLowerCase()
+  const tokens = lower
     .replace(/[^\w\s]/g, ' ')
     .split(/\s+/)
     .filter(w => w.length > 2)
     .filter(w => !STOP_WORDS.has(w))
+  // CJK: \w is ASCII-only ([A-Za-z0-9_]), so Han runs are stripped by the
+  // replace above and pure-Chinese text tokenizes to nothing. Chinese has no
+  // whitespace-delimited words — re-extract Han runs from the source and index
+  // them as character bigrams so non-English text survives BM25. (plur-ai#782)
+  for (const run of lower.match(/\p{Script=Han}{2,}/gu) ?? []) {
+    for (let i = 0; i < run.length - 1; i++) tokens.push(run.slice(i, i + 2))
+  }
+  return tokens
 }
 
 /** Build searchable text from all engram fields */
@@ -48,6 +98,42 @@ export function engramSearchText(engram: Engram): string {
     }
   }
   return parts.join(' ')
+}
+
+/**
+ * Hash of the exact text an engram's embedding was computed from (#812).
+ *
+ * Stored beside the vector so a store can answer "is this vector still the
+ * right one for this engram?" — a question nothing could ask before, because
+ * `engram_embeddings` held only `(engram_id, embedding)`. Without it a dedup
+ * UPDATE/MERGE could rewrite a statement and semantic recall would go on
+ * ranking it by the old text forever.
+ *
+ * Hashes the RAW `engramSearchText` — the string actually passed to `embed()` —
+ * NOT its tokenization (audit 2026-08-03, finding 9). Hashing the tokenized
+ * form was lossy in exactly the direction that matters: `ftsTokenize` drops
+ * stop words, drops tokens under three characters, strips punctuation and
+ * lowercases. So "use X" -> "do not use X" produced an IDENTICAL hash — `do` is
+ * too short, `not` is a stop word — while the embedded text, and therefore the
+ * correct vector, had changed completely. A meaning-inverting edit is precisely
+ * the edit this mechanism exists to catch.
+ *
+ * md5, not the sha256 used by the file-backed cache in `embeddings.ts`. Not a
+ * security boundary — a change detector. The two hashes never meet.
+ *
+ * The WRITER hashes the text it actually embedded, rather than the store
+ * re-deriving it at write time. An engram updated between the backfill's batch
+ * read and its upsert would otherwise get a hash of the NEW text attached to a
+ * vector of the OLD text — permanently stale while claiming to be current.
+ * Hashing what we embedded makes that case self-healing.
+ */
+export function embeddingContentHash(engram: Engram): string {
+  return hashEmbeddedText(engramSearchText(engram))
+}
+
+/** md5 of an already-derived string. Exported so stores can hash the same way. */
+export function hashEmbeddedText(text: string): string {
+  return createHash('md5').update(text).digest('hex')
 }
 
 /**
@@ -149,6 +235,59 @@ export function computeIdf(
     idf.set(qt, Math.max(0, Math.log(N / (1 + df))))
   }
   return idf
+}
+
+/**
+ * Extend store-supplied corpus statistics with documents that live OUTSIDE
+ * that store, so a union of primary + outsider engrams is scored against the
+ * union's true statistics instead of the primary corpus's.
+ *
+ * Why this exists: scoring outsiders (secondary-store and pack engrams) with
+ * primary-only stats leaves any query term that is ABSENT from the primary
+ * corpus at `df = 0`, so `computeIdf` prices it as maximally rare —
+ * `log(N/1)`, unbounded in primary-corpus size and completely decoupled from
+ * the term's real prevalence among the outsiders. Measured before this
+ * function existed: a query mixing one primary-corpus term with one term
+ * common across a 196-engram secondary store ranked the single strongest
+ * primary match at position 197, below every weak outsider row. Team-specific
+ * jargon is exactly the vocabulary that is common in a team store and absent
+ * from a personal one, so the failure mode sat on the normal multi-store path,
+ * not an edge case.
+ *
+ * The outsiders are already fully materialised in memory by the time the
+ * union is ranked (that is how they got into the candidate list), so exact
+ * union figures cost one tokenisation pass — there is nothing to approximate.
+ * `df` counts under {@link termMatches}, the same rule `computeIdf`'s local
+ * path applies; see the CorpusStats.df doc for why drifting from that rule is
+ * worse than supplying no stats at all.
+ */
+export function extendCorpusStats(
+  stats: CorpusStats,
+  queryTokens: string[],
+  outsiders: Engram[],
+): CorpusStats {
+  if (outsiders.length === 0) return stats
+  const termSets: Array<Set<string>> = []
+  let totalLen = 0
+  for (const e of outsiders) {
+    const terms = ftsTokenize(engramSearchText(e))
+    totalLen += terms.length
+    termSets.push(new Set(terms))
+  }
+  const df = new Map(stats.df)
+  for (const qt of queryTokens) {
+    let added = 0
+    for (const set of termSets) {
+      if (set.has(qt) || Array.from(set).some(t => termMatches(t, qt))) added++
+    }
+    if (added > 0) df.set(qt, (df.get(qt) ?? 0) + added)
+  }
+  const N = stats.N + outsiders.length
+  return {
+    N,
+    df,
+    avgDocLength: N > 0 ? (stats.avgDocLength * stats.N + totalLen) / N : 0,
+  }
 }
 
 const BM25_K1 = 1.2

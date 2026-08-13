@@ -28,6 +28,78 @@ describe('scanSource — what it finds', () => {
     expect(scan('this.memory.plur.feedback(id, "positive")')).toHaveLength(1)
   })
 
+  it('finds calls on bracket-indexed receivers — arrays and maps of stores are ordinary shapes', () => {
+    // These scanned CLEAN before the 0.16.0 audit (#752): the receiver
+    // pattern only knew dot-chains, and a clean exit is read as "this file is
+    // done" — the silent-omission failure the tool's own header warns about.
+    for (const src of [
+      'async function go(arr) { arr[0].learn("x") }',
+      'async function go(byName) { byName[\'team\'].recall(q) }',
+      'async function go(pool, i) { pool[i + 1].learn("x") }',
+      'async function go(app) { app.stores[0].plur.learn("x") }',
+    ]) {
+      const f = scan(src)
+      expect(f, src).toHaveLength(1)
+      expect(f[0].fixable, src).toBe(true)
+    }
+  })
+
+  it('wraps a bracket-indexed receiver correctly when the result is consumed', () => {
+    const src = 'async function go(byName) { const n = byName["team"].recall(q).length }'
+    const f = scan(src)
+    expect(f).toHaveLength(1)
+    expect(applyFixes(src, f).src).toBe(
+      'async function go(byName) { const n = (await byName["team"].recall(q)).length }',
+    )
+  })
+
+  it('a computed-call index does not derail the wrap — the call paren comes from the match, not indexOf', () => {
+    // `indexOf('(', idx)` lands on `fn(`'s paren, ends the "call" mid-index,
+    // and the rewrite awaits the wrong expression. The paren must be the
+    // match's own last character.
+    const src = 'async function go(arr) { const n = arr[fn(1)].recall(q).length }'
+    const f = scan(src)
+    expect(f).toHaveLength(1)
+    expect(applyFixes(src, f).src).toBe(
+      'async function go(arr) { const n = (await arr[fn(1)].recall(q)).length }',
+    )
+  })
+
+  it('a NESTED bracket index resolves, anchored at the chain head — never an inner offset', () => {
+    // A documented miss until #758: `[^\]]` could not span the inner `]`, so
+    // this scanned clean. The backward receiver walk matches brackets by
+    // depth, so the index resolves — and the invariant that always held still
+    // must: the finding anchors at `m`, never inside the index
+    // (`m[await a[0]].learn` is the misreport that may not happen).
+    const src = 'async function go(m, a) { m[a[0]].learn("x") }'
+    const f = scan(src)
+    expect(f).toHaveLength(1)
+    expect(f[0].fixable).toBe(true)
+    expect(applyFixes(src, f).src).toBe('async function go(m, a) { await m[a[0]].learn("x") }')
+  })
+
+  it('finds optional-chain bracket receivers — ?.[ is ordinary modern TS (#752 iteration 2)', () => {
+    // `arr?.[0].learn(x)` scanned clean after the first bracket-receiver fix:
+    // the index alternative had no `?.` prefix, while `arr[0]?.learn(x)`
+    // (optional on the METHOD dot) was already found. Both sides now match.
+    const src = 'async function go(arr) { arr?.[0].learn("x") }'
+    const f = scan(src)
+    expect(f).toHaveLength(1)
+    expect(f[0].fixable).toBe(true)
+    expect(applyFixes(src, f).src).toBe('async function go(arr) { await arr?.[0].learn("x") }')
+  })
+
+  it('an index key containing `]` resolves — the walk reads spans, not characters', () => {
+    // The other documented miss until #758. The backward walk skips the
+    // string span whole, so the `]` inside the key cannot end the index —
+    // and the finding anchors at `m`, never inside the string.
+    const src = 'async function go(m) { m["a]b"].learn("x") }'
+    const f = scan(src)
+    expect(f).toHaveLength(1)
+    expect(f[0].fixable).toBe(true)
+    expect(applyFixes(src, f).src).toBe('async function go(m) { await m["a]b"].learn("x") }')
+  })
+
   it('reports each occurrence separately', () => {
     expect(scan('plur.learn("a")\nplur.forget("b")\n')).toHaveLength(2)
   })
@@ -142,5 +214,59 @@ describe('applyFixes', () => {
     const twice = applyFixes(once, scan(once))
     expect(twice.applied).toBe(0)
     expect(twice.src).toBe(once)
+  })
+})
+
+describe('never emits source that cannot parse', () => {
+  // The tool rewrites a user's files. Emitting a syntax error is the one
+  // outcome that is strictly worse than doing nothing, and it shipped: given a
+  // call inside a non-async function it inserted `await` anyway and `node
+  // --check` rejected the result.
+  const scanJs = (src: string) => scanSource('t.mjs', src)
+
+  it('refuses a call inside a non-async function declaration', () => {
+    const f = scanJs('function saveIt(plur) {\n  plur.learn("x")\n}\n')
+    expect(f).toHaveLength(1)
+    expect(f[0].fixable).toBe(false)
+    expect(f[0].reason).toMatch(/not `async`/)
+  })
+
+  it('refuses a call inside a non-async function expression', () => {
+    const f = scanJs('const go = function (plur) { plur.forget("x") }\n')
+    expect(f[0].fixable).toBe(false)
+  })
+
+  it('refuses a call inside a non-async method shorthand', () => {
+    const f = scanJs('const o = {\n  save(plur) {\n    plur.learn("x")\n  }\n}\n')
+    expect(f[0].fixable).toBe(false)
+  })
+
+  it('DOES fix a call inside an async function', () => {
+    const src = 'async function ok(plur) {\n  plur.learn("x")\n}\n'
+    const f = scanJs(src)
+    expect(f[0].fixable).toBe(true)
+    expect(applyFixes(src, f).src).toContain('await plur.learn("x")')
+  })
+
+  it('DOES fix a call inside an async arrow', () => {
+    const src = 'const go = async (plur) => {\n  plur.learn("x")\n}\n'
+    expect(scanJs(src)[0].fixable).toBe(true)
+  })
+
+  it('allows top-level await in an ES module but not in CommonJS', () => {
+    expect(scanSource('t.mjs', 'plur.learn("x")\n')[0].fixable).toBe(true)
+    expect(scanSource('t.cjs', 'plur.learn("x")\n')[0].fixable).toBe(false)
+  })
+
+  it('nested blocks inside an async function are still fixable', () => {
+    // The enclosing-function walk must look THROUGH if/for/try blocks rather
+    // than stopping at the first `{` it meets.
+    const src = 'async function ok(plur) {\n  if (true) {\n    for (const x of []) {\n      plur.learn("x")\n    }\n  }\n}\n'
+    expect(scanJs(src)[0].fixable).toBe(true)
+  })
+
+  it('nested blocks inside a NON-async function are still refused', () => {
+    const src = 'function bad(plur) {\n  if (true) {\n    plur.learn("x")\n  }\n}\n'
+    expect(scanJs(src)[0].fixable).toBe(false)
   })
 })

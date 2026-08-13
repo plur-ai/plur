@@ -92,7 +92,7 @@ describe('pack management', () => {
     rmSync(plurDir, { recursive: true })
   })
 
-  it('preview shows manifest, engrams, and security scan', () => {
+  it('preview shows manifest, engrams, and security scan', async () => {
     const packDir = join(dir, 'preview-pack')
     mkdirSync(packDir)
     writeFileSync(join(packDir, 'SKILL.md'), '---\nname: preview-test\nversion: "2.0"\ncreator: tester\ndescription: A test pack\n---\n')
@@ -126,7 +126,7 @@ describe('pack management', () => {
       frequency: 0
       last_accessed: "2026-01-01"
 `)
-    const preview = previewPack(packDir)
+    const preview = await previewPack(packDir)
     expect(preview.manifest.name).toBe('preview-test')
     expect(preview.manifest.version).toBe('2.0')
     expect(preview.manifest.creator).toBe('tester')
@@ -140,7 +140,7 @@ describe('pack management', () => {
     expect(preview.warnings.some(w => w.includes('global scope'))).toBe(true)
   })
 
-  it('preview flags security issues', () => {
+  it('preview flags security issues', async () => {
     const packDir = join(dir, 'sketchy-pack')
     mkdirSync(packDir)
     writeFileSync(join(packDir, 'SKILL.md'), '---\nname: sketchy\nversion: "1.0"\n---\n')
@@ -158,12 +158,12 @@ describe('pack management', () => {
       frequency: 0
       last_accessed: "2026-01-01"
 `)
-    const preview = previewPack(packDir)
+    const preview = await previewPack(packDir)
     expect(preview.security.clean).toBe(false)
     expect(preview.security.issues.some(i => i.type === 'secret')).toBe(true)
   })
 
-  it('install blocks packs containing secrets', () => {
+  it('install blocks packs containing secrets', async () => {
     const packDir = join(dir, 'secret-pack')
     mkdirSync(packDir)
     writeFileSync(join(packDir, 'SKILL.md'), '---\nname: secret-pack\nversion: "1.0"\n---\n')
@@ -181,7 +181,7 @@ describe('pack management', () => {
       frequency: 0
       last_accessed: "2026-01-01"
 `)
-    expect(() => installPack(join(dir, 'packs'), packDir)).toThrow(/secrets/)
+    await expect(installPack(join(dir, 'packs'), packDir)).rejects.toThrow(/secrets/)
   })
 
   it('install records registry entry with metadata', async () => {
@@ -215,7 +215,7 @@ describe('pack management', () => {
     expect(existsSync(registryFile)).toBe(true)
   })
 
-  it('listPacks includes registry metadata', () => {
+  it('listPacks includes registry metadata', async () => {
     const packDir = join(dir, 'listed-pack')
     mkdirSync(packDir)
     writeFileSync(join(packDir, 'SKILL.md'), '---\nname: listed-test\nversion: "1.0"\n---\n')
@@ -232,7 +232,7 @@ describe('pack management', () => {
       frequency: 0
       last_accessed: "2026-01-01"
 `)
-    installPack(join(dir, 'packs'), packDir)
+    await installPack(join(dir, 'packs'), packDir)
     const packs = listPacks(join(dir, 'packs'))
     const pack = packs.find(p => p.name === 'listed-test')
     expect(pack).toBeDefined()
@@ -241,7 +241,7 @@ describe('pack management', () => {
     expect(pack!.integrity_ok).toBe(true)
   })
 
-  it('preview warns about high retrieval strength', () => {
+  it('preview warns about high retrieval strength', async () => {
     const packDir = join(dir, 'hot-pack')
     mkdirSync(packDir)
     writeFileSync(join(packDir, 'SKILL.md'), '---\nname: hot-test\nversion: "1.0"\n---\n')
@@ -258,16 +258,16 @@ describe('pack management', () => {
       frequency: 0
       last_accessed: "2026-01-01"
 `)
-    const preview = previewPack(packDir)
+    const preview = await previewPack(packDir)
     expect(preview.warnings.some(w => w.includes('retrieval strength'))).toBe(true)
   })
 
-  it('uninstall removes registry entry', () => {
+  it('uninstall removes registry entry', async () => {
     const packDir = join(dir, 'remove-pack')
     mkdirSync(packDir)
     writeFileSync(join(packDir, 'SKILL.md'), '---\nname: remove-test\nversion: "1.0"\n---\n')
     writeFileSync(join(packDir, 'engrams.yaml'), 'engrams:\n  - id: ENG-2026-0101-001\n    statement: Will be removed\n    type: behavioral\n    scope: global\n    status: active\n    version: 2\n    activation:\n      retrieval_strength: 0.7\n      storage_strength: 1.0\n      frequency: 0\n      last_accessed: "2026-01-01"\n')
-    installPack(join(dir, 'packs'), packDir)
+    await installPack(join(dir, 'packs'), packDir)
 
     // Verify it's in the registry
     let packs = listPacks(join(dir, 'packs'))
@@ -312,7 +312,7 @@ describe('pack management', () => {
     expect((installed[0] as any).commitment).not.toBe('locked')
   })
 
-  it('install blocks packs containing prompt-injection text', () => {
+  it('install blocks packs containing prompt-injection text', async () => {
     const packDir = join(dir, 'injection-pack')
     mkdirSync(packDir)
     writeFileSync(join(packDir, 'SKILL.md'), '---\nname: injection-pack\nversion: "1.0"\n---\n')
@@ -329,10 +329,10 @@ describe('pack management', () => {
       frequency: 0
       last_accessed: "2026-01-01"
 `)
-    expect(() => installPack(join(dir, 'packs'), packDir)).toThrow(/injection/i)
+    await expect(installPack(join(dir, 'packs'), packDir)).rejects.toThrow(/injection/i)
   })
 
-  it('install blocks injection text hidden in rationale (rendered by formatLayer3)', () => {
+  it('install blocks injection text hidden in rationale (rendered by formatLayer3)', async () => {
     const packDir = join(dir, 'injection-rationale')
     mkdirSync(packDir)
     writeFileSync(join(packDir, 'SKILL.md'), '---\nname: injection-rationale\nversion: "1.0"\n---\n')
@@ -350,10 +350,10 @@ describe('pack management', () => {
       frequency: 0
       last_accessed: "2026-01-01"
 `)
-    expect(() => installPack(join(dir, 'packs'), packDir)).toThrow(/injection/i)
+    await expect(installPack(join(dir, 'packs'), packDir)).rejects.toThrow(/injection/i)
   })
 
-  it('install blocks injection text hidden in summary (rendered by formatLayer1)', () => {
+  it('install blocks injection text hidden in summary (rendered by formatLayer1)', async () => {
     const packDir = join(dir, 'injection-summary')
     mkdirSync(packDir)
     writeFileSync(join(packDir, 'SKILL.md'), '---\nname: injection-summary\nversion: "1.0"\n---\n')
@@ -371,7 +371,7 @@ describe('pack management', () => {
       frequency: 0
       last_accessed: "2026-01-01"
 `)
-    expect(() => installPack(join(dir, 'packs'), packDir)).toThrow(/injection/i)
+    await expect(installPack(join(dir, 'packs'), packDir)).rejects.toThrow(/injection/i)
   })
 
   // #381: the secret scan must cover every rendered/exported field, not just
@@ -379,7 +379,7 @@ describe('pack management', () => {
   // (formatLayer3) must be detected, blocked on install, and filtered on export.
   const SECRET = 'AKIA1234567890ABCDEF'
 
-  it('#381 install blocks a secret hidden in summary', () => {
+  it('#381 install blocks a secret hidden in summary', async () => {
     const packDir = join(dir, 'secret-summary')
     mkdirSync(packDir)
     writeFileSync(join(packDir, 'SKILL.md'), '---\nname: secret-summary\nversion: "1.0"\n---\n')
@@ -398,13 +398,13 @@ describe('pack management', () => {
       frequency: 0
       last_accessed: "2026-01-01"
 `)
-    const preview = previewPack(packDir)
+    const preview = await previewPack(packDir)
     expect(preview.security.clean).toBe(false)
     expect(preview.security.issues.some(i => i.type === 'secret')).toBe(true)
-    expect(() => installPack(join(dir, 'packs'), packDir)).toThrow(/secrets/)
+    await expect(installPack(join(dir, 'packs'), packDir)).rejects.toThrow(/secrets/)
   })
 
-  it('#381 install blocks a secret hidden in domain', () => {
+  it('#381 install blocks a secret hidden in domain', async () => {
     const packDir = join(dir, 'secret-domain')
     mkdirSync(packDir)
     writeFileSync(join(packDir, 'SKILL.md'), '---\nname: secret-domain\nversion: "1.0"\n---\n')
@@ -423,9 +423,9 @@ describe('pack management', () => {
       frequency: 0
       last_accessed: "2026-01-01"
 `)
-    const preview = previewPack(packDir)
+    const preview = await previewPack(packDir)
     expect(preview.security.issues.some(i => i.type === 'secret')).toBe(true)
-    expect(() => installPack(join(dir, 'packs'), packDir)).toThrow(/secrets/)
+    await expect(installPack(join(dir, 'packs'), packDir)).rejects.toThrow(/secrets/)
   })
 
   it('#381 export filters out an engram with a secret in summary or domain', () => {
@@ -446,7 +446,7 @@ describe('pack management', () => {
   // #389 review: exportPack serializes the WHOLE engram, so the secret scan must
   // cover serialized fields too (tags/structured_data/contraindications), not
   // just the 5 enumerated ones — else those caller-settable fields stay a bypass.
-  it('#389 install blocks a secret hidden in tags', () => {
+  it('#389 install blocks a secret hidden in tags', async () => {
     const packDir = join(dir, 'secret-tags')
     mkdirSync(packDir)
     writeFileSync(join(packDir, 'SKILL.md'), '---\nname: secret-tags\nversion: "1.0"\n---\n')
@@ -465,8 +465,8 @@ describe('pack management', () => {
       frequency: 0
       last_accessed: "2026-01-01"
 `)
-    expect(previewPack(packDir).security.issues.some(i => i.type === 'secret')).toBe(true)
-    expect(() => installPack(join(dir, 'packs'), packDir)).toThrow(/secrets/)
+    expect((await previewPack(packDir)).security.issues.some(i => i.type === 'secret')).toBe(true)
+    await expect(installPack(join(dir, 'packs'), packDir)).rejects.toThrow(/secrets/)
   })
 
   it('#389 export filters a secret in tags / structured_data / contraindications', () => {
@@ -618,7 +618,7 @@ describe('pack management', () => {
     expect(result.installed).toBe(1)
   })
 
-  it('preview warns about pinned engrams and flags injection text', () => {
+  it('preview warns about pinned engrams and flags injection text', async () => {
     const packDir = join(dir, 'preview-injection')
     mkdirSync(packDir)
     writeFileSync(join(packDir, 'SKILL.md'), '---\nname: preview-injection\nversion: "1.0"\n---\n')
@@ -636,7 +636,7 @@ describe('pack management', () => {
       frequency: 0
       last_accessed: "2026-01-01"
 `)
-    const preview = previewPack(packDir)
+    const preview = await previewPack(packDir)
     expect(preview.warnings.some(w => /pinned/i.test(w))).toBe(true)
     expect(preview.security.issues.some(i => i.type === 'prompt_injection')).toBe(true)
   })
@@ -659,5 +659,52 @@ describe('pack management', () => {
     expect(exported).toHaveLength(1)
     expect((exported[0] as any).pinned).toBeUndefined()
     expect((exported[0] as any).commitment).not.toBe('locked')
+  })
+})
+
+describe('pack names are constrained to the packs directory (#811)', () => {
+  let root: string
+  let packsDir: string
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'plur-pack-traversal-'))
+    packsDir = join(root, 'packs')
+    mkdirSync(join(packsDir, 'real-pack'), { recursive: true })
+    // The things a traversal would destroy.
+    writeFileSync(join(root, 'engrams.yaml'), 'engrams: []\n')
+    writeFileSync(join(root, 'config.yaml'), 'stores: []\n')
+  })
+  afterEach(() => { rmSync(root, { recursive: true, force: true }) })
+
+  // Demonstrated before the guard: uninstallPack(packsDir, '..') resolved to
+  // the PLUR root and `fs.rmSync(packDir, { recursive: true })` deleted
+  // engrams.yaml, config.yaml and the whole root — returning {removed: true}.
+  // Reachable from `plur packs uninstall <name>` and the plur_packs_uninstall
+  // MCP tool, so any agent with MCP access could trigger it.
+  for (const name of ['..', '../..', 'a/../..', 'real-pack/../..']) {
+    it(`refuses to uninstall ${JSON.stringify(name)} and destroys nothing`, () => {
+      expect(() => uninstallPack(packsDir, name)).toThrow(/refusing to uninstall/i)
+      expect(existsSync(join(root, 'engrams.yaml')), 'engrams.yaml was deleted').toBe(true)
+      expect(existsSync(join(root, 'config.yaml')), 'config.yaml was deleted').toBe(true)
+      expect(existsSync(packsDir)).toBe(true)
+    })
+  }
+
+  it('refuses an absolute path as a pack name', () => {
+    expect(() => uninstallPack(packsDir, '/etc')).toThrow(/refusing to uninstall/i)
+  })
+
+  it('still reports a genuinely missing pack as not found, not as a traversal', () => {
+    expect(() => uninstallPack(packsDir, 'no-such-pack')).toThrow(/Pack not found/i)
+  })
+
+  it('refuses to install from a source whose basename escapes the packs dir', async () => {
+    // basename('/some/path/..') === '..', which made the destination the PLUR
+    // root — so pack files were copied over a live engrams.yaml before any
+    // write guard could see them.
+    const escaping = join(root, 'somewhere', '..')
+    mkdirSync(join(root, 'somewhere'), { recursive: true })
+    await expect(installPack(packsDir, escaping)).rejects.toThrow()
+    expect(readFileSync(join(root, 'engrams.yaml'), 'utf8')).toBe('engrams: []\n')
   })
 })

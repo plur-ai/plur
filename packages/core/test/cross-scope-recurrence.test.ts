@@ -195,8 +195,11 @@ describe('cross-scope recurrence (#176)', () => {
       // write to the right store path (not silently drop).
       const secondaryDir = mkdtempSync(join(tmpdir(), 'plur-secondary-'))
       const secondaryPath = join(secondaryDir, 'engrams.yaml')
-      // Initialize an empty store file so saveEngrams can be called
-      writeFileSync(secondaryPath, '[]\n')
+      // Initialize an empty store file so saveEngrams can be called. This must
+      // be the shape PLUR actually writes — a mapping with an `engrams` key.
+      // A bare `[]` is a top-level sequence, which the loader now rejects
+      // rather than silently reading as an empty corpus (audit #794, F1).
+      writeFileSync(secondaryPath, 'engrams: []\n')
       try {
         plur.addStore(secondaryPath, 'project:secondary-a', { shared: true, readonly: false })
 
@@ -258,6 +261,34 @@ describe('cross-scope recurrence (#176)', () => {
       const fresh = await plur.learn('phoenix rule', { scope: 'project:b' })
       expect(fresh.id).not.toBe(first.id)
       expect(fresh.recurrence_count).toBe(0)
+    })
+
+    it('force forget (#766): cross-scope recurrence bumps reference_count to 2; force=true retires in one call', async () => {
+      // Learn at global — simulates a prior session's engram
+      const eng = await plur.learn('comms rule', { scope: 'global' })
+      expect((eng as any).reference_count).toBe(1)
+
+      // Cross-scope relearn → reference_count=2, same engram returned
+      const relearned = await plur.learn('comms rule', { scope: 'group:team/comms' })
+      expect(relearned.id).toBe(eng.id)  // cross-scope recurrence matched, same ID
+      expect((relearned as any).reference_count).toBe(2)
+
+      // Without force: one forget only decrements → still active
+      await plur.forget(eng.id)
+      const afterDecrement = await plur.getById(eng.id)
+      expect(afterDecrement?.status).toBe('active')
+      expect((afterDecrement as any).reference_count).toBe(1)
+
+      // With force: one call retires completely (#766 fix)
+      await plur.forget(eng.id, undefined, { force: true })
+      const afterForce = await plur.getById(eng.id)
+      expect(afterForce?.status).toBe('retired')
+
+      // Re-learn at a different scope creates fresh engram — resurrection is prevented
+      const fresh = await plur.learn('comms rule', { scope: 'group:team/infra' })
+      expect(fresh.id).not.toBe(eng.id)
+      expect(fresh.scope).toBe('group:team/infra')
+      expect((fresh as any).recurrence_count).toBe(0)
     })
 
     it('normalization-equivalent statements (punct/case) match across scopes', async () => {

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync } from 'fs'
+import { mkdtempSync, rmSync, readdirSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { captureEpisode, queryTimeline } from '../src/episodes.js'
@@ -49,5 +49,26 @@ describe('episodic memory', () => {
     captureEpisode(path, 'Deployed database migration', { agent: 'test' })
     const results = queryTimeline(path, { search: 'authentication' })
     expect(results).toHaveLength(1)
+  })
+})
+
+describe('captureEpisode concurrency (audit #794, F8)', () => {
+  it('does not lose episodes when writers interleave', async () => {
+    // Pre-fix this was load -> push -> write with no lock, and probe P02
+    // measured 30 of 100 episodes surviving across 4 concurrent writers.
+    const dir = mkdtempSync(join(tmpdir(), 'plur-ep-concurrency-'))
+    const path = join(dir, 'episodes.yaml')
+    try {
+      await Promise.all(
+        Array.from({ length: 40 }, (_, i) =>
+          Promise.resolve().then(() => captureEpisode(path, `episode ${i}`, { agent: 'test' })),
+        ),
+      )
+      expect(queryTimeline(path)).toHaveLength(40)
+      // A fixed <path>.tmp let writers rename each other's partial file.
+      expect(readdirSync(dir).filter(f => f.endsWith('.tmp'))).toEqual([])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 })
