@@ -4974,8 +4974,82 @@ export class Plur {
    * retirement. The default decrement-until-zero behavior is for internal
    * dedup tracking (two agents learned the same fact; one forgets — the
    * other's reference should remain). */
-  async forget(id: string, reason?: string, options?: { force?: boolean }): Promise<void> {
+  async forget(id: string, reason?: string, options?: { force?: boolean; scope?: string }): Promise<void> {
     this._assertWritable()
+
+    // Scope-targeted routing (#831). Ids are minted PER STORE, so one bare id
+    // can name several unrelated engrams. Resolving primary-first and retiring
+    // whichever came back destroyed the wrong engram in real use: history for
+    // ENG-2026-08-03-008 shows three creations across three scopes, and the
+    // retire hit the 11:32 one when the caller meant the 19:15 one — reporting
+    // success and echoing a statement the caller had never written.
+    //
+    // Same shape as the feedback disambiguation (#850): `scope` routes
+    // directly, and an unqualified id that resolves in more than one place is
+    // an error. `forget` is destructive, so refusing beats guessing by a wider
+    // margin here than it does for feedback.
+    const targetScope = options?.scope
+    if (targetScope !== undefined && (typeof targetScope !== 'string' || targetScope.trim() === '')) {
+      throw new TypeError('plur.forget: scope must be a non-empty string')
+    }
+    // Pick up out-of-process config edits (#307) so a store registered after
+    // startup is a valid target without a restart — mirrors rescope(). Without
+    // this, a stale in-memory config would make the validation below reject a
+    // scope that is in fact configured (#864 is the same class of staleness).
+    if (targetScope) this.reloadConfigIfChanged()
+    if (targetScope && targetScope !== 'primary') {
+      const entry = (this.config.stores ?? []).find(s => s.url && s.scope === targetScope)
+      if (entry) {
+        if (entry.readonly === true) throw new Error('Cannot retire engram from readonly store')
+        const serverId = this._stripRemotePrefix(id, entry.scope)
+        const driver = this._getRemoteDriver({ url: entry.url!, token: entry.token, scope: entry.scope })
+        const remoteEngram = await driver.getById(serverId)
+        if (!remoteEngram) throw new Error(`Engram "${id}" not found in store "${targetScope}"`)
+        const removed = await driver.remove(serverId)
+        if (!removed) {
+          throw new Error(
+            `Engram ${id} exists in ${targetScope} but the server refused to retire it — it was NOT removed. `
+            + `Check that the token has delete rights for that scope.`,
+          )
+        }
+        appendHistory(this.paths.root, {
+          event: 'engram_retired',
+          engram_id: id,
+          timestamp: new Date().toISOString(),
+          data: { reason: reason ?? null, routed_to: 'remote', scope: targetScope },
+        })
+        return
+      }
+      // No URL-backed store carries this scope. Falling through blindly here
+      // was a hole on the destructive path (#855 audit): because `targetScope`
+      // is truthy, the `if (!targetScope)` ambiguity guard below is skipped —
+      // so a MISTYPED scope silently disabled the guard and restored
+      // first-match-wins on exactly the id the guard exists to refuse.
+      // Verified: `group:tset` as a typo of `group:test` retired the local
+      // engram, issued no remote DELETE, and reported success.
+      //
+      // So validate that the scope names something before trusting it as a
+      // disambiguation signal. Same rule and same wording as rescope(), which
+      // documents this as typo protection — a scope that reaches neither a
+      // local family nor a configured store is a caller error, not a hint.
+      const storeEntry = (this.config.stores ?? []).find(s => s.scope === targetScope)
+      const isLocalFamily = targetScope === 'local'
+        || targetScope === 'global'
+        || targetScope.startsWith('project:')
+      if (!isLocalFamily && !storeEntry) {
+        const configured = (this.config.stores ?? []).map(s => s.scope).filter(Boolean)
+        throw new Error(
+          `Cannot retire from "${targetScope}": no configured store matches that scope. `
+          + `Valid targets: primary, local, global, project:*`
+          + (configured.length ? `, or a configured store scope (${configured.join(', ')})` : '')
+          + `. Check for typos — an unmatched scope would silently retire the LOCAL engram instead (#831).`,
+        )
+      }
+      // Past this point the scope names a local-family or non-URL store, so it
+      // is a genuine disambiguation signal and the ambiguity guard is
+      // deliberately skipped: the caller has already said which side they mean.
+    }
+
     // Check primary first.
     // Reference-counted retirement (#107): decrement reference_count; only
     // physically retire when it reaches 0. forget() called N times on an
@@ -4988,6 +5062,72 @@ export class Plur {
       const engrams = await this._loadTargeted([id])
       const engram = engrams.find(e => e.id === id)
       if (!engram) return false
+
+      // Ambiguity guard (#831). Sits HERE, past the not-found return, so the
+      // local hit is established by control flow — "ambiguous" means it resolves
+      // in more than one place, and a remote-only id (including a namespaced one,
+      // #86) is not ambiguous and must keep routing straight through. Matches the
+      // placement in #851 rather than re-deriving the local hit with a second
+      // targeted read, which is what an earlier version of this did.
+      //
+      // A COLD cache must not silently downgrade to first-match-wins (#855
+      // audit): `_loadRemoteCached` is a synchronous peek with no fetch, and
+      // nothing here warms it, so on a fresh process the guard simply did not
+      // run and the #831 destroy-the-wrong-engram path was reachable unguarded.
+      // Note the asymmetry that made this indefensible — a local MISS already
+      // pays for a live `driver.getById` walk below, so the function was
+      // willing to make the network call in the case where it matters less.
+      //
+      // So: peek first (free), and fall back to a bounded live lookup — one
+      // getById per configured remote store — only when that store's cache is
+      // cold. If the lookup cannot complete, refuse rather than guess; the
+      // caller has an explicit escape hatch in scope: "primary", which skips
+      // this block entirely and needs no network.
+      if (!targetScope) {
+        for (const entry of (this.config.stores ?? [])) {
+          if (!entry.url) continue
+          const serverId = this._stripRemotePrefix(id, entry.scope)
+          const cached = this._loadRemoteCached(entry)
+          let existsRemotely: boolean
+          if (cached.length > 0) {
+            existsRemotely = cached.some(e => e.id === serverId)
+          } else {
+            try {
+              const driver = this._getRemoteDriver({ url: entry.url!, token: entry.token, scope: entry.scope })
+              // existsById, NOT getById: the latter returns null for a dead
+              // network exactly as it does for a genuine 404, so it would
+              // report "no collision" for a store it never reached — the
+              // silent-no this guard exists to refuse.
+              existsRemotely = await driver.existsById(serverId)
+            } catch (e) {
+              throw new Error(
+                `Cannot safely retire "${id}": remote scope "${entry.scope}" is configured but could not be `
+                + `reached to rule out an id collision (${e instanceof Error ? e.message : String(e)}). `
+                + `Retiring is destructive and irreversible from here, so it will not guess. `
+                + `Pass scope: "primary" to retire the local engram without consulting the remote.`,
+              )
+            }
+          }
+          if (existsRemotely) {
+            throw new Error(
+              `Ambiguous engram ID "${id}": exists in both the local store and remote scope "${entry.scope}". `
+              + `Retiring is destructive and irreversible from here, so it will not guess. `
+              + `Pass scope: "primary" to retire the local engram, or scope: "${entry.scope}" to retire the remote one.`,
+            )
+          }
+        }
+      }
+
+      // Already retired — nothing to do (#855 audit). The MCP layer has an
+      // `Already retired` short-circuit, but it depends on a prior getById
+      // that an explicitly-scoped forget deliberately skips, so without this
+      // a second scoped forget re-ran the whole retirement: it rewrote the
+      // row and appended a SECOND `engram_retired` event for the same engram,
+      // then reported success. History is the audit trail for a destructive
+      // irreversible operation; it must not record a retirement that did not
+      // happen. Idempotent here so the guarantee does not depend on which
+      // caller reached us.
+      if (engram.status === 'retired') return true
 
       // Audit iter-2 fix (Data): for legacy engrams created before #107
       // landed, `reference_count` is missing. Defaulting to 1 means the
@@ -5098,6 +5238,14 @@ export class Plur {
 
     // Check remote stores — the engram may live on an enterprise server.
     // See: https://github.com/plur-ai/plur/issues/84
+    // scope: "primary" is an explicit local-only request (#831). Falling
+    // through to the remote walk here would retire a remote engram the caller
+    // just said they did not mean — the exact wrong-target retire this guard
+    // exists to prevent, arrived at from the opposite direction.
+    if (targetScope === 'primary') {
+      throw new Error(`Engram not found in the local primary store: ${id}`)
+    }
+
     // Strip store prefix before querying remote. See: #86
     let refusedBy: string | null = null
     for (const entry of (this.config.stores ?? [])) {
