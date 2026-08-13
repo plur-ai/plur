@@ -1378,9 +1378,39 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
    * and scoring locally when it is not, which is what this method did before
    * Phase 4.
    */
+  /**
+   * `searchBM25`, plus whether the candidate set was EXHAUSTED (#753).
+   *
+   * This adapter's trigram prefilter cannot rank, so both paths below compute
+   * and score the FULL candidate set and slice to `limit` in core. That makes
+   * the answer to "is there more?" free here — and core cannot derive it,
+   * because `rows.length === limit` is indistinguishable from "more rows
+   * exist". Without the signal, recall's widening loop re-ran this identical
+   * query up to three times purely to take a longer slice of an answer already
+   * computed, at the 50k+-engram scale that selects this tier.
+   */
   async searchBM25(query: string, opts: { limit: number } & StorageFilter): Promise<Engram[]> {
+    return (await this._searchBM25Full(query, opts)).rows
+  }
+
+  /**
+   * Exhaustion-aware variant (#753). Core prefers this when present and breaks
+   * out of its widening loop on `exhausted`, instead of re-querying an answer
+   * it already has.
+   */
+  async searchBM25Exhaustive(
+    query: string,
+    opts: { limit: number } & StorageFilter,
+  ): Promise<{ rows: Engram[]; exhausted: boolean }> {
+    return await this._searchBM25Full(query, opts)
+  }
+
+  private async _searchBM25Full(
+    query: string,
+    opts: { limit: number } & StorageFilter,
+  ): Promise<{ rows: Engram[]; exhausted: boolean }> {
     const queryTokens = ftsTokenize(query)
-    if (queryTokens.length === 0) return []
+    if (queryTokens.length === 0) return { rows: [], exhausted: true }
 
     // Resolve the pool FIRST. `trigramAvailable` is only assigned inside
     // `initSchema`, which `getPool` drives; reading it beforehand on a freshly
@@ -1398,7 +1428,10 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
     // CURRENT tokenizer, so it is immune to whatever happens to be stored.
     if (this.trigramAvailable !== true || await this.tokensAreStale(opts)) {
       const candidates = await this.loadFiltered({ ...opts, status: 'active' })
-      return searchEngrams(candidates, query, opts.limit)
+      return {
+        rows: searchEngrams(candidates, query, opts.limit),
+        exhausted: candidates.length <= opts.limit,
+      }
     }
 
     // Reuse `buildFilterClause` for status/scope/domain/scopes rather than
@@ -1440,7 +1473,10 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
     // already immune; only the BM25 pushdown was not.
     const candidates = rows.map((r: { data: Engram }) => parseRow(r as { data: any }))
     const stats = await this.corpusStats(queryTokens, opts)
-    return searchEngrams(candidates, query, opts.limit, stats)
+    return {
+      rows: searchEngrams(candidates, query, opts.limit, stats),
+      exhausted: candidates.length <= opts.limit,
+    }
   }
 
   /**

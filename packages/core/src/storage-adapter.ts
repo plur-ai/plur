@@ -343,6 +343,23 @@ export interface StorageAdapter {
    */
   searchBM25(query: string, opts: { limit: number } & StorageFilter): Promise<Engram[]>
   /**
+   * `searchBM25`, plus whether the candidate set was EXHAUSTED (#753). OPTIONAL
+   * and purely additive — an adapter that cannot know this leaves it undefined
+   * and core's widening loop behaves exactly as before.
+   *
+   * Core cannot derive the answer: `rows.length === limit` is
+   * indistinguishable from "more rows exist", so the widening loop re-queries
+   * on the assumption there might be. For an adapter whose prefilter cannot
+   * rank — `PostgresAdapter`, which computes and scores the FULL candidate set
+   * and slices in core — that assumption is wrong every time, and the re-query
+   * is a 2-3x cost amplification concentrated in exactly the high-rejection
+   * case the widening exists to serve.
+   */
+  searchBM25Exhaustive?(
+    query: string,
+    opts: { limit: number } & StorageFilter,
+  ): Promise<{ rows: Engram[]; exhausted: boolean }>
+  /**
    * Corpus-wide `N` and per-term `df` for BM25 scoring (convergence Phase 4,
    * #711). OPTIONAL — a store that cannot compute these exactly must leave it
    * undefined, and the caller falls back to deriving them from the candidate
