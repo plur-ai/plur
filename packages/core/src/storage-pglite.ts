@@ -26,6 +26,8 @@
  */
 import { existsSync } from 'fs'
 import type { Engram } from './schemas/engram.js'
+import { EngramSchemaPassthrough } from './schemas/engram.js'
+import { normalizeEngramInput } from './normalize-engram.js'
 import { loadEngrams } from './engrams.js'
 import { searchEngrams } from './fts.js'
 import { logger } from './logger.js'
@@ -447,9 +449,26 @@ export class PGLiteAdapter implements DerivedIndexAdapter {
     return { where, params, nextIndex: i }
   }
 
-  /** Parse a `data` row back to an Engram. PGLite returns JSONB as parsed JSON. */
+  /**
+   * Parse a `data` row back to an Engram. PGLite returns JSONB as parsed JSON.
+   *
+   * Normalise + validate, matching `storage-postgres.ts`'s `parseRow` (#877).
+   * This returned `row.data` VERBATIM, which is the same defect that adapter's
+   * own doc comment records having already been fixed there — two loaders
+   * disagreeing about what a valid engram looks like, so a row whose JSONB
+   * lacked `associations` crashed `recall()`. It also meant a pre-#866 row kept
+   * `reference_count` and never gained `write_count`, and `write_count` gates
+   * retirement: one `forget()` would retire an engram with five corroborating
+   * writes.
+   *
+   * A row that cannot be parsed is returned as-is rather than dropped — losing
+   * an engram silently is worse than passing along one that is odd, and the
+   * caller's own guards still apply.
+   */
   private parseRow(row: { data: any }): Engram {
-    return typeof row.data === 'string' ? JSON.parse(row.data) : row.data
+    const raw = typeof row.data === 'string' ? JSON.parse(row.data) : row.data
+    const parsed = EngramSchemaPassthrough.safeParse(normalizeEngramInput(raw))
+    return parsed.success ? (parsed.data as Engram) : (raw as Engram)
   }
 
   async loadFiltered(filter: StorageFilter): Promise<Engram[]> {

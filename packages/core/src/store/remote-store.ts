@@ -2,6 +2,7 @@ import { z } from 'zod'
 import type { Engram } from '../schemas/engram.js'
 import type { EngramStore } from './types.js'
 import { logger } from '../logger.js'
+import { normalizeEngramInput } from '../normalize-engram.js'
 import { ScopeMetadataSchema, type ScopeMetadata } from '../schemas/scope-metadata.js'
 
 /**
@@ -102,7 +103,11 @@ export class RemoteStore implements EngramStore {
    */
   private reshape(raw: { id?: unknown; scope?: unknown; status?: unknown; data?: unknown; created_at?: unknown }): Engram | null {
     const d = raw.data && typeof raw.data === 'object' ? raw.data as Record<string, unknown> : {}
-    const candidate = { ...d, id: raw.id, scope: raw.scope, status: raw.status }
+    // Same field-compat rules as the YAML and Postgres loaders (#877). Without
+    // this, a server row still carrying a pre-#866 `reference_count` arrived
+    // with the old key and no `write_count`, and every read site had to know to
+    // fall back — which two of the three did not.
+    const candidate = normalizeEngramInput({ ...d, id: raw.id, scope: raw.scope, status: raw.status })
     const parsed = RemoteRowSchema.safeParse(candidate)
     if (!parsed.success) {
       // #408: do NOT echo server-controlled VALUES into the log. Zod messages can

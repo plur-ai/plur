@@ -73,6 +73,7 @@
  */
 import type { Engram } from './schemas/engram.js'
 import { EngramSchemaPassthrough } from './schemas/engram.js'
+import { normalizeEngramInput } from './normalize-engram.js'
 import {
   searchEngrams, ftsTokenize, engramSearchText, embeddingContentHash,
   MIN_TOKEN_LENGTH, TOKENIZER_VERSION, type CorpusStats,
@@ -1779,7 +1780,10 @@ export function buildFilterClause(filter: StorageFilter): { where: string; param
  */
 function parseRow(row: { data: any }): Engram {
   const raw = typeof row.data === 'string' ? JSON.parse(row.data) : row.data
-  const parsed = EngramSchemaPassthrough.safeParse(raw)
+  // Same field-compat rules as every other loader (#877). This site had NONE,
+  // so #875's reference_count -> write_count rename silently reset the count on
+  // the Postgres tier — and write_count gates retirement.
+  const parsed = EngramSchemaPassthrough.safeParse(normalizeEngramInput(raw))
   return parsed.success ? (parsed.data as Engram) : (raw as Engram)
 }
 
