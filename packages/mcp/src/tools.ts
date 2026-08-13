@@ -1351,6 +1351,10 @@ function getAllToolDefinitions(): ToolDefinition[] {
             enum: ['positive', 'negative', 'neutral'],
             description: 'Feedback signal (single mode)',
           },
+          scope: {
+            type: 'string',
+            description: 'Store scope to target directly, e.g. "primary" for the local store or a remote scope like "group:plur/plur-ai/engineering". Required when the same engram ID exists in multiple stores (#850).',
+          },
           signals: {
             type: 'array',
             items: {
@@ -1358,6 +1362,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
               properties: {
                 id: { type: 'string', description: 'Engram ID' },
                 signal: { type: 'string', enum: ['positive', 'negative', 'neutral'] },
+                scope: { type: 'string', description: 'Store scope to target directly (optional, same semantics as top-level scope).' },
               },
               required: ['id', 'signal'],
             },
@@ -1370,9 +1375,9 @@ function getAllToolDefinitions(): ToolDefinition[] {
         if (args.signals && Array.isArray(args.signals)) {
           const results: Array<{ id: string; signal: string; success: boolean; error?: string }> = []
           const summary = { positive: 0, negative: 0, neutral: 0 }
-          for (const { id, signal } of args.signals as Array<{ id: string; signal: 'positive' | 'negative' | 'neutral' }>) {
+          for (const { id, signal, scope } of args.signals as Array<{ id: string; signal: 'positive' | 'negative' | 'neutral'; scope?: string }>) {
             try {
-              await plur.feedback(id, signal)
+              await plur.feedback(id, signal, scope)
               results.push({ id, signal, success: true })
               summary[signal]++
             } catch (err: any) {
@@ -1383,7 +1388,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
         }
         // Single mode
         try {
-          await plur.feedback(args.id as string, args.signal as 'positive' | 'negative' | 'neutral')
+          await plur.feedback(args.id as string, args.signal as 'positive' | 'negative' | 'neutral', args.scope as string | undefined)
           return { success: true, id: args.id, signal: args.signal }
         } catch (err: any) {
           if (err.message?.includes('readonly store')) {

@@ -4427,9 +4427,73 @@ export class Plur {
     }
   }
 
-  /** Update feedback_signals and adjust retrieval_strength. Searches primary, stores, then packs. */
-  async feedback(id: string, signal: 'positive' | 'negative' | 'neutral'): Promise<void> {
+  /**
+   * Update feedback_signals and adjust retrieval_strength. Searches primary, stores, then packs.
+   *
+   * Pass `scope` to route directly to a specific store and bypass the first-match-wins
+   * walk (#850). Use scope: "primary" to target the local primary store, or a remote
+   * scope string (e.g. "group:plur/plur-ai/engineering") to target that remote.
+   * Without scope, an ID that exists in both the local store and a warmed remote cache
+   * is an error — the caller must disambiguate rather than relying on resolution order.
+   */
+  async feedback(id: string, signal: 'positive' | 'negative' | 'neutral', scope?: string): Promise<void> {
     this._assertWritable()
+
+    if (scope !== undefined && (typeof scope !== 'string' || scope.trim() === '')) {
+      throw new TypeError('plur.feedback: scope must be a non-empty string')
+    }
+    // Pick up out-of-process config edits (#307) so a store registered after
+    // startup is not rejected as unknown by the validation below — mirrors
+    // rescope() and forget().
+    if (scope) this.reloadConfigIfChanged()
+
+    // Scope-targeted routing (#850): when the caller knows which store the engram
+    // lives in, route directly and skip the first-match-wins walk.
+    if (scope && scope !== 'primary') {
+      const entry = (this.config.stores ?? []).find(s => s.url && s.scope === scope)
+      if (entry) {
+        if (entry.readonly === true) throw new Error('Engram is in a readonly store')
+        const serverId = this._stripRemotePrefix(id, entry.scope)
+        const driver = this._getRemoteDriver({ url: entry.url!, token: entry.token, scope: entry.scope })
+        const remoteEngram = await driver.getById(serverId)
+        if (!remoteEngram) throw new Error(`Engram "${id}" not found in store "${scope}"`)
+        await driver.feedback(serverId, signal)
+        try {
+          appendHistory(this.paths.root, {
+            event: 'feedback_received',
+            engram_id: id,
+            timestamp: new Date().toISOString(),
+            data: { signal, routed_to: 'remote', scope },
+          })
+        } catch (err) {
+          logger.warning(
+            `[plur] feedback on ${id} was applied remotely but its history record could not be written: ` +
+            `${(err as Error).message}. Do not retry — the signal is already counted.`,
+          )
+        }
+        this._logInjectionOutcome(id, signal)
+        return
+      }
+      // No URL-backed store carries this scope. Falling through blindly was a
+      // hole (#851 audit): because `scope` is truthy, the `if (!scope)`
+      // ambiguity guard below is skipped, so a MISTYPED scope silently
+      // disabled the guard and restored first-match-wins. Same defect as
+      // forget()'s, one severity band down — a mis-targeted signal is
+      // recoverable where a retire is not — but the same guard, so the same
+      // rule: validate that the scope names something, following rescope().
+      const storeEntry = (this.config.stores ?? []).find(s => s.scope === scope)
+      const isLocalFamily = scope === 'local' || scope === 'global' || scope.startsWith('project:')
+      if (!isLocalFamily && !storeEntry) {
+        const configured = (this.config.stores ?? []).map(s => s.scope).filter(Boolean)
+        throw new Error(
+          `Cannot rate in "${scope}": no configured store matches that scope. `
+          + `Valid targets: primary, local, global, project:*`
+          + (configured.length ? `, or a configured store scope (${configured.join(', ')})` : '')
+          + `. Check for typos — an unmatched scope would silently rate the LOCAL engram instead (#831).`,
+        )
+      }
+    }
+
     // Try primary engrams first
     const found = await this._withStoreLock(this.paths.engrams, async () => {
       // Targeted read (#827): rating one engram is a lookup by primary key,
@@ -4438,6 +4502,53 @@ export class Plur {
       const engrams = await this._loadTargeted([id])
       const engram = engrams.find(e => e.id === id)
       if (!engram) return false
+
+      // Ambiguity guard (#850): without an explicit scope, refuse when the same
+      // bare ID exists in a warmed remote cache. Silent wrong-target writes are
+      // indistinguishable from correct ones; the caller must pass scope to resolve.
+      // A COLD cache must not silently downgrade to first-match-wins:
+      // `_loadRemoteCached` is a synchronous peek with no fetch, and nothing
+      // here warms it, so on a fresh process the guard did not run at all.
+      // Peek first (free), then one live probe per remote only when that
+      // store's cache is cold — session_start warms the cache, so in normal
+      // operation this costs nothing and fires only before the first warm.
+      //
+      // Unlike forget(), an unreachable store does NOT block the write. A
+      // mis-targeted feedback signal is recoverable and rating is a hot path;
+      // refusing here would trade a real cost for a reversible risk. Warn
+      // instead, so the unverified case is visible rather than silent.
+      if (!scope) {
+        for (const entry of (this.config.stores ?? [])) {
+          if (!entry.url) continue
+          const serverId = this._stripRemotePrefix(id, entry.scope)
+          const remoteCached = this._loadRemoteCached(entry)
+          let existsRemotely: boolean
+          if (remoteCached.length > 0) {
+            existsRemotely = remoteCached.some(e => e.id === serverId)
+          } else {
+            try {
+              const driver = this._getRemoteDriver({ url: entry.url!, token: entry.token, scope: entry.scope })
+              // existsById, NOT getById: getById returns null for a dead
+              // network exactly as for a genuine 404, so it would report
+              // "no collision" for a store it never reached.
+              existsRemotely = await driver.existsById(serverId)
+            } catch (err) {
+              existsRemotely = false
+              logger.warning(
+                `[plur] could not reach remote scope "${entry.scope}" to rule out an id collision on ${id} `
+                + `(${(err as Error).message}) — rating the LOCAL engram unverified. `
+                + `Pass scope explicitly if this id also exists remotely.`,
+              )
+            }
+          }
+          if (existsRemotely) {
+            throw new Error(
+              `Ambiguous engram ID "${id}": exists in both the local store and remote scope "${entry.scope}". ` +
+              `Pass scope: "primary" to rate the local engram, or scope: "${entry.scope}" to rate the remote one.`,
+            )
+          }
+        }
+      }
 
       applyFeedbackSignal(engram, signal)
 
@@ -4466,6 +4577,11 @@ export class Plur {
     if (found) {
       this._logInjectionOutcome(id, signal)
       return
+    }
+
+    // scope: "primary" means local-only — do not try secondary or remote stores
+    if (scope === 'primary') {
+      throw new Error(`Engram "${id}" not found in primary store`)
     }
 
     // Try configured stores (namespaced IDs)
