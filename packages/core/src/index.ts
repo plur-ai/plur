@@ -49,8 +49,7 @@ import { RemoteStore, normalizeEndpointUrl } from './store/remote-store.js'
 import {
   remoteRecall, isRemoteRecallDisabled, resolveRemoteRecallTimeoutMs, scopeOrg,
   REMOTE_STATUS_TTL_MS, PROBE_CLEARABLE_STATES,
-  type RemoteRecallHost, type RemoteRecallResult, type HostRecallOutcome, type RemoteStoreStatusEntry,
-} from './remote-recall.js'
+  type RemoteRecallHost, type RemoteRecallResult, type HostRecallOutcome, type RemoteStoreStatusEntry, isHostInCooldown, recordWriteOutcome} from './remote-recall.js'
 import { YamlPrimaryStore } from './store/yaml-primary-store.js'
 import { ReadonlyStoreGuard, ReadonlyStoreError } from './store/readonly-store-guard.js'
 import { withAsyncLock } from './store/async-lock.js'
@@ -6395,6 +6394,9 @@ export class Plur {
 
     let flushed = 0
     let failed = 0
+    let skipped = 0
+    /** Warn once per host, not once per queued engram (#785). */
+    const cooldownSkippedHosts = new Set<string>()
     const expired_warnings: string[] = []
     const now = new Date()
     const TTL_MS = 7 * 24 * 60 * 60 * 1000
@@ -6422,6 +6424,31 @@ export class Plur {
         failed++
         continue
       }
+      // #785: consult the per-host breaker the RECALL leg maintains before
+      // spending a full fetch timeout on a host already known to be down.
+      //
+      // Without this, N queued engrams for an unreachable host cost N
+      // sequential timeouts on EVERY session start — and those failures never
+      // fed back, so the recall leg learned nothing from them either. Two legs,
+      // one host, two independent opinions about whether it is reachable.
+      //
+      // Skipping leaves the engrams queued: the outbox already retries on the
+      // next flush, and the breaker's own cooldown is what decides when that
+      // becomes worth attempting.
+      const cooldown = isHostInCooldown(storeEntry.url!)
+      if (cooldown.inCooldown) {
+        if (!cooldownSkippedHosts.has(storeEntry.url!)) {
+          cooldownSkippedHosts.add(storeEntry.url!)
+          const secs = Math.max(1, Math.ceil(((cooldown.until ?? 0) - Date.now()) / 1000))
+          expired_warnings.push(
+            `${storeEntry.url}: skipped — ${cooldown.reason === 'rate_limit' ? 'rate-limited' : 'circuit breaker open'}, `
+            + `retrying in ~${secs}s. Queued engrams stay queued.`,
+          )
+        }
+        skipped++
+        continue
+      }
+
       const driver = this._getRemoteDriver({ url: storeEntry.url!, token: storeEntry.token, scope: storeEntry.scope })
 
       // Build clean copy without outbox metadata for the remote
@@ -6472,6 +6499,8 @@ export class Plur {
 
       try {
         await driver.appendAndGetServerId(cleanEngram)
+        // #785: a write success clears the host's failure count for BOTH legs.
+        recordWriteOutcome(storeEntry.url!, true)
         // Success: remove from local store
         const idx = engrams.findIndex(e => e.id === engram.id)
         if (idx !== -1) engrams.splice(idx, 1)
@@ -6486,6 +6515,9 @@ export class Plur {
         outbox.last_attempt = now.toISOString()
         outbox.attempt_count += 1
         outbox.last_error = (err as Error).message
+        // #785: and a write failure counts toward the same breaker, so a host
+        // that only ever fails on writes still opens one.
+        recordWriteOutcome(storeEntry.url!, false)
         failed++
         logger.warning(`[plur:outbox] retry failed for ${engram.id}: ${(err as Error).message}`)
       }

@@ -419,6 +419,77 @@ function mergeWriteRemoteHealth(statePath: string, touched: Record<string, HostH
   withRemoteHealthLock(statePath, readMergeWrite, readMergeWrite)
 }
 
+/**
+ * Is this host's breaker open right now? (#785)
+ *
+ * The recall leg has always consulted this state; the WRITE leg never did, so
+ * `flushOutbox()` sent one full-timeout attempt per queued engram to a host the
+ * read leg already knew was down — on every session start, and with the failures
+ * not feeding back, so the read leg learned nothing from them either. Two legs,
+ * one host, two independent opinions about whether it is reachable.
+ *
+ * Exported rather than duplicated: the breaker, its persistence, the
+ * classification table and the file-lock helper all already exist here and are
+ * already correct. The write path only has to ask.
+ */
+export function isHostInCooldown(
+  url: string,
+  now: number = Date.now(),
+  statePath: string = remoteHealthPath(),
+): { inCooldown: boolean; until?: number; reason?: 'breaker' | 'rate_limit' } {
+  try {
+    const health = readRemoteHealth(statePath)
+    const h = health.hosts[normalizeEndpointUrl(url)]
+    if (!h?.cooldown_until || h.cooldown_until <= now) return { inCooldown: false }
+    // `cooldown_until` is set by both the failure breaker and a 429
+    // Retry-After. `last_state` distinguishes them for the operator-facing
+    // message; the skip decision is the same either way.
+    return {
+      inCooldown: true,
+      until: h.cooldown_until,
+      reason: h.last_state === 'rate_limited' ? 'rate_limit' : 'breaker',
+    }
+  } catch {
+    // Health state is an optimisation. If it cannot be read, do NOT block the
+    // write — a corrupt cache file must not become an outage.
+    return { inCooldown: false }
+  }
+}
+
+/**
+ * Record a WRITE-leg failure into the same per-host state the recall leg uses,
+ * so a host that only ever fails on writes still opens its breaker (#785).
+ *
+ * Mirrors the recall leg's accounting: count consecutive network-class
+ * failures, open for {@link BREAKER_COOLDOWN_MS} at
+ * {@link BREAKER_FAILURE_THRESHOLD}. A success clears the counter.
+ */
+export function recordWriteOutcome(
+  url: string,
+  ok: boolean,
+  now: number = Date.now(),
+  statePath: string = remoteHealthPath(),
+): void {
+  try {
+    const key = normalizeEndpointUrl(url)
+    const health = readRemoteHealth(statePath)
+    const h: HostHealth = { ...(health.hosts[key] ?? {}) }
+    if (ok) {
+      h.failures = 0
+      delete h.cooldown_until
+      h.last_state = 'ok'
+    } else {
+      h.failures = (h.failures ?? 0) + 1
+      h.last_state = 'unreachable'
+      if (h.failures >= BREAKER_FAILURE_THRESHOLD) h.cooldown_until = now + BREAKER_COOLDOWN_MS
+    }
+    h.updated_at = now
+    mergeWriteRemoteHealth(statePath, { [key]: h })
+  } catch {
+    // Same reasoning as above: never let health bookkeeping fail a write.
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Org extraction for the dialing rule
 // ---------------------------------------------------------------------------
