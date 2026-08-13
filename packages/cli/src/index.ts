@@ -50,6 +50,7 @@ Commands:
   scopes                  List authorized-but-unregistered shared scopes (#647)
   scopes register <scope> Register one; scopes dismiss <scope>; scopes --reoffer
   reindex-tokens          Re-derive BM25 tokens after a tokenizer change (Postgres only)
+  reindex-hashes          Repair engrams whose content_hash is stale or missing (#852)
   init                    Install Claude Code hooks + register plur MCP server
   init-remote             Opt this project into recall from a PLUR Enterprise server
   login --status          Enterprise token validity per host (probe + expiry) (#587)
@@ -114,6 +115,7 @@ const COMMANDS: Record<string, string> = {
   stores: './commands/stores.js',
   scopes: './commands/scopes.js',
   'reindex-tokens': './commands/reindex-tokens.js',
+  'reindex-hashes': './commands/reindex-hashes.js',
   migrate: './commands/migrate.js',
   init: './commands/init.js',
   'init-remote': './commands/init-remote.js',

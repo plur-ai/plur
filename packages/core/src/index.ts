@@ -91,6 +91,13 @@ export type { MetaField, StructuralTemplate, EvidenceEntry, MetaConfidence, Doma
 export { MetaFieldSchema, StructuralTemplateSchema, EvidenceEntrySchema, MetaConfidenceSchema, DomainCoverageSchema, HierarchyPositionSchema, FalsificationSchema } from './schemas/meta-engram.js'
 export { engramSearchText, termMatches, computeIdf, type CorpusStats } from './fts.js'
 export { EngramStoreUnreadableError, EngramStoreShrinkError } from './engrams.js'
+// Exported for store-repair tooling (#852's `plur reindex-hashes`), which must
+// read the RAW store rows. `Plur.list()` goes through `_filterEngrams`, which
+// merges packs in and drops inactive/expired engrams — fine for recall, wrong
+// for a repair pass, which would then miss stale rows and try to "fix" pack
+// entries it does not own. Exposing the existing loader rather than letting a
+// caller write a fourth one is the whole point of #877.
+export { loadEngrams, saveEngrams } from './engrams.js'
 export {
   maybeDailyBackup,
   listBackups,
