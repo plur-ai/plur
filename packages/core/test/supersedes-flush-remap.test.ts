@@ -51,14 +51,25 @@ describe('supersedes survives the flush (#863)', () => {
     globalThis.fetch = vi.fn(async () => { throw new Error('fetch failed') }) as never
   }
   function remoteUp() {
+    // Explicit Response-shaped return, annotated: an inline object literal with
+    // `text: async () => ''` makes TS infer the method's type from its own
+    // return expression, which `typecheck:tests` rejects as implicit-any
+    // recursion (TS7023).
+    const res = (status: number, body: unknown): Response => ({
+      ok: true,
+      status,
+      json: async (): Promise<unknown> => body,
+      text: async (): Promise<string> => '',
+    } as unknown as Response)
+
     globalThis.fetch = vi.fn(async (_url: string, init?: { method?: string; body?: string }) => {
       if ((init?.method ?? 'GET') === 'POST') {
         posted.push(JSON.parse(init!.body as string))
         serverSeq++
         // The server assigns its OWN id — the whole reason local ids cannot ride.
-        return { ok: true, status: 201, json: async () => ({ id: `ENG-GDA-2026-08-11-${String(serverSeq).padStart(3, '0')}` }), text: async () => '' }
+        return res(201, { id: `ENG-GDA-2026-08-11-${String(serverSeq).padStart(3, '0')}` })
       }
-      return { ok: true, status: 200, json: async () => ({ rows: [], total_count: 0 }), text: async () => '' }
+      return res(200, { rows: [], total_count: 0 })
     }) as never
   }
 
