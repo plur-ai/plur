@@ -690,9 +690,22 @@ describe('feedback() — cross-store ID collision guard (issue #850)', () => {
     expect(posts[0][0]).toContain(`/engrams/${collidingId}/feedback`)
   })
 
-  it('does not throw when remote cache is cold (backward compatible)', async () => {
-    // If warmRemoteCaches() was never called, remote cache is empty.
-    // Existing first-match-wins behaviour should still apply.
+  /** Seed a local engram carrying a chosen (colliding) id. */
+  async function seedCollidingLocal(plur: Plur, collidingId: string, statement: string) {
+    const localEngram = await plur.learn(statement, { scope: 'global' })
+    const yaml_ = await import('js-yaml')
+    const engramPath = join(primaryDir, 'engrams.yaml')
+    const data = yaml_.load(readFileSync(engramPath, 'utf-8')) as { engrams: Array<{ id: string }> }
+    data.engrams.find(e => e.id === localEngram.id)!.id = collidingId
+    writeFileSync(engramPath, yaml_.dump(data))
+  }
+
+  // Was 'does not throw when remote cache is cold (backward compatible)'.
+  // That backward compatibility WAS the hole: `_loadRemoteCached` is a
+  // synchronous peek with no fetch, so on a fresh process the guard did not
+  // run and first-match-wins was restored — silently, in the case the guard
+  // exists for. It now falls back to a live probe when the cache is cold.
+  it('detects the collision on a cold cache via a live probe', async () => {
     const collidingId = 'ENG-2026-08-09-005'
     mockRemoteWithId(collidingId)
 
@@ -700,16 +713,55 @@ describe('feedback() — cross-store ID collision guard (issue #850)', () => {
       { url: 'https://plur.example.com/sse', token: 'tok', scope: 'group:test', shared: true, readonly: false },
     ])
     const plur = new Plur({ path: primaryDir })
+    await seedCollidingLocal(plur, collidingId, 'local engram cold cache test')
 
-    const localEngram = await plur.learn('local engram cold cache test', { scope: 'global' })
-    const yaml_ = await import('js-yaml')
-    const engramPath = join(primaryDir, 'engrams.yaml')
-    const content = readFileSync(engramPath, 'utf-8')
-    const data = yaml_.load(content) as { engrams: Array<{ id: string }> }
-    data.engrams.find(e => e.id === localEngram.id)!.id = collidingId
-    writeFileSync(engramPath, yaml_.dump(data))
+    // Cache deliberately NOT warmed.
+    await expect(plur.feedback(collidingId, 'positive')).rejects.toThrow(/Ambiguous engram ID/)
+  })
 
-    // Do NOT warm the cache — collision not detectable, falls through to local
-    await expect(plur.feedback(collidingId, 'positive')).resolves.not.toThrow()
+  // The #851 audit: `if (scope && scope !== 'primary')` fell through when no
+  // store matched, and because `scope` was truthy the `if (!scope)` ambiguity
+  // guard was skipped — so a typo silently restored first-match-wins.
+  it('refuses a typo-d scope instead of silently rating the local engram', async () => {
+    const collidingId = 'ENG-2026-08-09-006'
+    mockRemoteWithId(collidingId)
+
+    writeStoresConfig(primaryDir, [
+      { url: 'https://plur.example.com/sse', token: 'tok', scope: 'group:test', shared: true, readonly: false },
+    ])
+    const plur = new Plur({ path: primaryDir })
+    await seedCollidingLocal(plur, collidingId, 'local engram typo scope test')
+
+    // 'group:tset' is a typo of the configured 'group:test'
+    await expect(plur.feedback(collidingId, 'positive', 'group:tset'))
+      .rejects.toThrow(/no configured store matches that scope/)
+  })
+
+  it('names the valid targets so a typo is correctable from the error alone', async () => {
+    writeStoresConfig(primaryDir, [
+      { url: 'https://plur.example.com/sse', token: 'tok', scope: 'group:test', shared: true, readonly: false },
+    ])
+    const plur = new Plur({ path: primaryDir })
+    const e = await plur.learn('local engram for target listing', { scope: 'global' })
+
+    await expect(plur.feedback(e.id, 'positive', 'group:tset')).rejects.toThrow(/group:test/)
+  })
+
+  // Deliberately WEAKER than forget()'s equivalent. A mis-targeted feedback
+  // signal is recoverable and rating is a hot path, so an unreachable store
+  // warns and proceeds rather than blocking the write — where forget() refuses.
+  it('rates locally with a warning when the remote cannot be reached to rule out a collision', async () => {
+    fetchMock.mockImplementation((async (_url: string, init?: { method?: string }) => {
+      if ((init?.method ?? 'GET') === 'GET') throw new Error('network down')
+      return { ok: true, status: 200, json: async () => ({}), text: async () => '' } as Response
+    }) as any)
+
+    writeStoresConfig(primaryDir, [
+      { url: 'https://plur.example.com/sse', token: 'tok', scope: 'group:test', shared: true, readonly: false },
+    ])
+    const plur = new Plur({ path: primaryDir })
+    const e = await plur.learn('local engram unreachable remote', { scope: 'global' })
+
+    await expect(plur.feedback(e.id, 'positive')).resolves.toBeUndefined()
   })
 })
