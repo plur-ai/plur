@@ -3145,10 +3145,28 @@ export class Plur {
       let surviving: Engram[] = []
       let fetch = Math.max(limit * PUSHDOWN_OVERFETCH, limit)
       for (let round = 0; round < PUSHDOWN_MAX_ROUNDS; round++) {
-        narrowed = await adapter.searchBM25(query, { ...pushdownFilter, limit: fetch })
+        // #753: prefer the exhaustion-aware call when the adapter offers one.
+        //
+        // `narrowed.length < fetch` is the only exhaustion signal core can
+        // derive, and it is wrong for an adapter whose prefilter cannot rank:
+        // PostgresAdapter computes and scores the FULL candidate set and slices
+        // to `limit` here, so a full page means "your slice was full", not
+        // "there is more". The loop then re-ran an identical query up to three
+        // times to take a longer slice of an answer already computed — a 2-3x
+        // amplification, concentrated in the high-rejection case the widening
+        // exists to serve, at the scale that selects this tier.
+        let exhausted = false
+        if (adapter.searchBM25Exhaustive) {
+          const res = await adapter.searchBM25Exhaustive(query, { ...pushdownFilter, limit: fetch })
+          narrowed = res.rows
+          exhausted = res.exhausted
+        } else {
+          narrowed = await adapter.searchBM25(query, { ...pushdownFilter, limit: fetch })
+        }
         surviving = this._applyResidualFilters(narrowed, options)
-        // Enough survivors, or the store has nothing more to give.
-        if (surviving.length >= limit || narrowed.length < fetch) break
+        // Enough survivors, the adapter says there is no more, or the page came
+        // back short (the inferred signal, kept for adapters without the hook).
+        if (surviving.length >= limit || exhausted || narrowed.length < fetch) break
         fetch *= PUSHDOWN_OVERFETCH
       }
 
