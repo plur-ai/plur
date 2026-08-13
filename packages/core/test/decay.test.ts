@@ -37,8 +37,15 @@ describe('decay as deprioritization', () => {
     expect(result).toBe(false)
   })
 
-  it('reactivate bumps strength', () => {
-    expect(reactivate(0.3)).toBe(0.4)
-    expect(reactivate(0.95)).toBe(1.0)
+  // Was 'reactivate bumps strength'. That bump is the defect (#846): passive
+  // retrieval added +0.10 while a deliberate ★ added +0.05 and a ✗ subtracted
+  // 0.10 — so a rating was worth half of being incidentally fetched, and a
+  // "this is wrong" was exactly cancelled by the next recall that returned the
+  // engram. Traffic and quality now live in different fields.
+  it('reactivate leaves strength untouched — retrieval is not a quality signal', () => {
+    expect(reactivate(0.3)).toBe(0.3)
+    expect(reactivate(0.95)).toBe(0.95)
+    expect(reactivate(1.0)).toBe(1.0)
+    expect(reactivate(0)).toBe(0)
   })
 })
