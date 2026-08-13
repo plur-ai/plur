@@ -5207,10 +5207,16 @@ export class Plur {
 
       // Audit iter-2 fix (Data): for legacy engrams created before #107
       // landed, `write_count` is missing (was `reference_count` before #866).
+      // The parse-time migration in engrams.ts covers local YAML, but NOT rows
+      // reshaped from a remote store — RemoteRowSchema is passthrough, so a
+      // server row still carrying `reference_count` arrives with the old key
+      // and no `write_count`. Read the old name before falling back to the
+      // sources-length heuristic, or a remote engram silently loses its count.
       // Defaulting to 1 means the first forget() retires them even if they
       // have multiple sources. Infer from sources[] length when available so
       // legacy cross-store dups don't get prematurely retired.
       const currentCount = engram.write_count
+        ?? (engram as any).reference_count
         ?? Math.max(1, ((engram as any).sources?.length ?? 1))
       // force:true retires immediately, bypassing the decrement (#766) — this
       // branch is on main and NOT on this branch's base, so taking the local
@@ -5284,6 +5290,7 @@ export class Plur {
         if (!engram) return false
         // Same legacy-engram migration as primary path (audit iter-2, Data).
         const currentCount = engram.write_count
+          ?? (engram as any).reference_count
           ?? Math.max(1, ((engram as any).sources?.length ?? 1))
         // force:true retires immediately (#766) — see the note above.
         const newCount = options?.force ? 0 : Math.max(0, currentCount - 1)

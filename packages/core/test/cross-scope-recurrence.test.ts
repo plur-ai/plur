@@ -263,21 +263,21 @@ describe('cross-scope recurrence (#176)', () => {
       expect(fresh.recurrence_count).toBe(0)
     })
 
-    it('force forget (#766): cross-scope recurrence bumps reference_count to 2; force=true retires in one call', async () => {
+    it('force forget (#766): cross-scope recurrence bumps write_count to 2; force=true retires in one call', async () => {
       // Learn at global — simulates a prior session's engram
       const eng = await plur.learn('comms rule', { scope: 'global' })
-      expect((eng as any).reference_count).toBe(1)
+      expect((eng as any).write_count).toBe(1)
 
-      // Cross-scope relearn → reference_count=2, same engram returned
+      // Cross-scope relearn → write_count=2, same engram returned
       const relearned = await plur.learn('comms rule', { scope: 'group:team/comms' })
       expect(relearned.id).toBe(eng.id)  // cross-scope recurrence matched, same ID
-      expect((relearned as any).reference_count).toBe(2)
+      expect((relearned as any).write_count).toBe(2)
 
       // Without force: one forget only decrements → still active
       await plur.forget(eng.id)
       const afterDecrement = await plur.getById(eng.id)
       expect(afterDecrement?.status).toBe('active')
-      expect((afterDecrement as any).reference_count).toBe(1)
+      expect((afterDecrement as any).write_count).toBe(1)
 
       // With force: one call retires completely (#766 fix)
       await plur.forget(eng.id, undefined, { force: true })
