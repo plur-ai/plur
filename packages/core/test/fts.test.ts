@@ -261,7 +261,10 @@ describe('tokenizer contract (#834)', () => {
    * makes already-written rows silently unreachable.
    */
   it('output is pinned to TOKENIZER_VERSION — bump the version if this fails', () => {
-    expect(TOKENIZER_VERSION).toBe(2)
+    // Bumped 2 -> 3 by #833/#832: the tokenizer now covers every script rather
+    // than ASCII + Han, so stores carrying tokens derived under v2 must be
+    // re-derived (`plur reindex-tokens`) or their rows go unreachable.
+    expect(TOKENIZER_VERSION).toBe(3)
     expect(ftsTokenize('测试部署应该用 docker compose')).toEqual([
       'docker', 'compose',
       '测试', '试部', '部署', '署应', '应该', '该用',

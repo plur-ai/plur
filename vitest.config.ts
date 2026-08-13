@@ -32,6 +32,40 @@ export default defineConfig({
       'packages/migrate',
       {
         test: {
+          // Same shape as core-pglite, same reason: contention, not defects.
+          // These four spawn real CLI processes and wait on their exit against
+          // fixed 5s/30s budgets. In the fully-parallel pool the spawns starve
+          // each other and blow those budgets while doing nothing wrong —
+          // hook-learn-check runs in ~2.6s alone against a 5s timeout, and four
+          // separate work sessions hit it on one day (#793).
+          //
+          // Serialised rather than given bigger timeouts: raising the budget is
+          // the move #311 already made once for the embedder and that regressed
+          // anyway, and it makes a genuinely hung spawn slower to report. A
+          // suite with a known-flaky baseline stops being a signal, which is how
+          // a real 55-test breakage nearly got blamed on the change under test.
+          name: 'cli-spawn',
+          root: 'packages/cli',
+          globals: true,
+          // Keep in sync with SPAWN_SUITES in packages/cli/vitest.config.ts.
+          include: [
+            'test/hook-learn-check.test.ts',
+            'test/hook-session-guard.test.ts',
+            'test/list.test.ts',
+            'test/tensions-lifecycle.test.ts',
+          ],
+          // The whole point: one file at a time, so no two batches of CLI
+          // processes are spawning concurrently.
+          fileParallelism: false,
+          // Generous, because serial execution means a slow run costs
+          // wall-clock rather than correctness. A timeout here should mean a
+          // real hang, not a busy machine.
+          testTimeout: 60000,
+          hookTimeout: 60000,
+        },
+      },
+      {
+        test: {
           name: 'core-pglite',
           root: 'packages/core',
           globals: true,
