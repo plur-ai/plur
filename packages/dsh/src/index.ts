@@ -34,6 +34,7 @@ import { createMemoryCache, renderBlock } from './memory-section.js'
 import { createRefreshPolicy } from './refresh.js'
 import { createScopeResolver } from './scope.js'
 import { recallQueryFrom, type LogEvent } from './session-log.js'
+import { readWorkspaceScope } from './workspace-scope.js'
 import { registerSkills } from './skills.js'
 import { registerTools } from './tools.js'
 
@@ -87,7 +88,10 @@ export function apply(ctx: Context, config: Config, plur?: PlurClient): void {
   const counters = createCounters()
   const cache = createMemoryCache()
   const refresh = createRefreshPolicy({ refreshIntervalMs: config.refreshIntervalMs })
-  const scopes = createScopeResolver(config, async () => undefined)
+  // The REAL workspace reader, not a stub: without it every session on a
+  // multi-session host collapses onto the configured default scope, ignoring
+  // each workspace's own .plur.yaml.
+  const scopes = createScopeResolver(config, readWorkspaceScope)
   const live = new Map<string, AgentState>()
   const onError = () => counters.bump('errors_swallowed')
 

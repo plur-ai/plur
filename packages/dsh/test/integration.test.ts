@@ -9,6 +9,9 @@
  * This is the layer that proves the thesis: memory reaches the model through the
  * system prompt, and it does NOT accrete across turns.
  */
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -206,6 +209,30 @@ describe('real dsh system-prompt integration', () => {
     expect(prompt).toContain('## DIRECTIVES')
     expect(prompt).toContain('## CONSTRAINTS')
     expect(prompt).toContain('## ALSO CONSIDER')
+  })
+
+  it('WIRING: apply() reads a real workspace .plur.yaml, not a stub', async () => {
+    // Regression guard. An earlier build resolved scope correctly in isolation
+    // but wired apply() to `async () => undefined`, so every session on a
+    // multi-session host silently collapsed onto the configured default and
+    // each workspace's declared scope was ignored. The unit tests all passed
+    // because they injected their own resolver. Only a real directory catches it.
+    const root = mkdtempSync(join(tmpdir(), 'plur-dsh-wire-'))
+    try {
+      writeFileSync(join(root, '.plur.yaml'), 'scope: "project:from-disk"\n', 'utf8')
+      const seen: string[] = []
+      apply(host.ctx, new Config({}), {
+        injectHybrid: async (_task: string, opts: { scope: string }) => {
+          seen.push(opts.scope)
+          return { directives: '[ENG-1] x', count: 1 }
+        },
+      })
+      const a = { id: 'a1', session: { events: askedAbout('a question'), header: { cwd: root } } }
+      await turn(a)
+      expect(seen).toEqual(['project:from-disk'])
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
   })
 
   it('two agents keep separate blocks in one host', async () => {
