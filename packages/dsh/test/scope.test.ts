@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { createScopeResolver } from '../src/scope.ts'
+import { createScopeResolver } from '../src/scope.js'
 
 describe('createScopeResolver', () => {
   it('prefers a workspace .plur.yaml scope over the config default', async () => {

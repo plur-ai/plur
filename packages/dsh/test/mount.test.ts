@@ -19,6 +19,7 @@ import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import Tools from '@deepseek-ai/dsh-tools'
 import { describe, expect, it } from 'vitest'
 import * as plugin from '../src/index.js'
+import { cfg } from './helpers/config.js'
 
 const settle = () => new Promise(r => setTimeout(r, 300))
 
@@ -27,7 +28,7 @@ describe('mounting through ctx.plugin(), as dsh does', () => {
     const ctx = new Context() as Context & Record<string, any>
     ctx.plugin(SystemPrompt, {})
     ctx.plugin(Tools, {})
-    const fiber = ctx.plugin(plugin, {})
+    const fiber = ctx.plugin(plugin, cfg())
     await expect(Promise.resolve(fiber)).resolves.toBeDefined()
     await settle()
     // Its work is visible: the tool registry accepted our definitions.
@@ -40,7 +41,7 @@ describe('mounting through ctx.plugin(), as dsh does', () => {
     const ctx = new Context() as Context & Record<string, any>
     ctx.plugin(SystemPrompt, {})
     ctx.plugin(Tools, {})
-    ctx.plugin(plugin, {})
+    ctx.plugin(plugin, cfg())
     await settle()
     expect(ctx.tools.get('plur_status')).toBeDefined()
   })
@@ -49,7 +50,7 @@ describe('mounting through ctx.plugin(), as dsh does', () => {
     const ctx = new Context() as Context & Record<string, any>
     ctx.plugin(SystemPrompt, {})
     ctx.plugin(Tools, {})
-    ctx.plugin(plugin, {})
+    ctx.plugin(plugin, cfg())
     await settle()
     expect(ctx.tools.get('plur_learn')).toBeDefined()
   })
@@ -64,7 +65,7 @@ describe('mounting through ctx.plugin(), as dsh does', () => {
     const ctx = new Context() as Context & Record<string, any>
     ctx.plugin(SystemPrompt, {})
     ctx.plugin(Tools, {})
-    ctx.plugin(plugin, { injectionMode: 'off' })
+    ctx.plugin(plugin, cfg({ injectionMode: 'off' }))
     await settle()
     const assembled = await ctx.systemPrompt.assemble({})
     const names = (assembled.sections as Array<{ name: string }>).map(s => s.name)
@@ -78,7 +79,10 @@ describe('mounting through ctx.plugin(), as dsh does', () => {
     const ctx = new Context() as Context & Record<string, any>
     ctx.plugin(SystemPrompt, {})
     ctx.plugin(Tools, {})
-    ctx.plugin(plugin, { timeoutMs: 0 })
+    // Raw, NOT through cfg(): the helper runs the same schema and would throw
+    // here, testing the helper instead of the container. dsh hands Cordis
+    // whatever is in the user's config file, so that is what goes in.
+    ctx.plugin(plugin, { timeoutMs: 0 } as never)
     await settle()
     expect(ctx.tools.get('plur_recall')).toBeUndefined()
   })
@@ -100,7 +104,7 @@ describe('mounting through ctx.plugin(), as dsh does', () => {
     ctx.plugin(SystemPrompt, {})
     ctx.plugin(Tools, {})
     ctx.plugin(Commands)
-    ctx.plugin(plugin, {})
+    const fiber = ctx.plugin(plugin, cfg())
     await settle()
 
     const command = seen.find(c => c.name === 'plur-memory')
@@ -114,8 +118,10 @@ describe('mounting through ctx.plugin(), as dsh does', () => {
     expect(res.status).toBe(200)
     expect(await res.text()).toContain('hero-title')
 
-    // Unloading the plugin must release the port, not leak a server.
-    await ctx.registry.get(plugin)?.dispose?.()
+    // Unloading the plugin must release the port, not leak a server. Cordis
+    // disposes through the fiber the plugin mounted on, not the registry entry.
+    await fiber.dispose()
     await settle()
+    await expect(fetch(url!)).rejects.toThrow()
   })
 })

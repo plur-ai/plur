@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { createRefreshPolicy } from '../src/refresh.ts'
+import { createRefreshPolicy } from '../src/refresh.js'
 
 describe('createRefreshPolicy', () => {
   it('refreshes on the first step of a turn', () => {

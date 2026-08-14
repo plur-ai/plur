@@ -15,21 +15,22 @@ import { apply } from '../src/index.js'
 import { createWriteQueue, guard } from '../src/guard.js'
 import { renderBlock } from '../src/memory-section.js'
 import { recallQueryFrom } from '../src/session-log.js'
+import { cfg } from './helpers/config.js'
 
-async function boot(plur?: PlurClient, config = new Config({})) {
+async function boot(plur?: PlurClient, config = cfg({})) {
   const ctx = new Context() as Context & Record<string, any>
   ctx.plugin(SystemPrompt, {})
   await new Promise(r => setTimeout(r, 50))
-  ctx.tools = { register: () => () => {} }
-  ctx.skills = { register: () => () => {} }
-  ctx.commands = { register: () => () => {} }
+  ctx.tools = { register: () => () => {} } as never
+  ctx.skills = { register: () => () => {} } as never
+  ctx.commands = { register: () => () => {} } as never
 
   const listeners = new Map<string, Function[]>()
   const realOn = ctx.on.bind(ctx)
-  ctx.on = (event: string, fn: Function, opts?: unknown) => {
+  ctx.on = ((event: string, fn: Function, opts?: unknown) => {
     listeners.set(event, [...(listeners.get(event) ?? []), fn])
     try { return realOn(event as never, fn as never, opts as never) } catch { return () => {} }
-  }
+  }) as never
 
   apply(ctx, config, plur)
 
@@ -186,7 +187,7 @@ describe('hostile: resource exhaustion', () => {
 
   it('a retry storm on one turn triggers at most one recall', async () => {
     const injectHybrid = vi.fn(async () => ({ directives: 'x', count: 1 }))
-    const h = await boot({ injectHybrid }, new Config({ refreshIntervalMs: 60_000 }))
+    const h = await boot({ injectHybrid }, cfg({ refreshIntervalMs: 60_000 }))
     const a = agent('a1', asked('a question'))
     for (let i = 0; i < 50; i++) await turn(h, a, 1)
     expect(injectHybrid).toHaveBeenCalledOnce()
@@ -284,8 +285,8 @@ describe('hostile: the host misbehaving', () => {
     const ctx = new Context() as Context & Record<string, any>
     ctx.plugin(SystemPrompt, {})
     await new Promise(r => setTimeout(r, 50))
-    ctx.tools = { register: () => () => {} }
+    ctx.tools = { register: () => () => {} } as never
     // No ctx.skills, no ctx.commands — a minimal host composition.
-    expect(() => apply(ctx, new Config({}))).not.toThrow()
+    expect(() => apply(ctx, cfg({}))).not.toThrow()
   })
 })

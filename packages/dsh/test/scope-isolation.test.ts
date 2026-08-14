@@ -14,6 +14,7 @@ import { Config } from '../src/config.js'
 import { createCounters } from '../src/counters.js'
 import { registerLearning } from '../src/learn.js'
 import { registerTools } from '../src/tools.js'
+import { cfg } from './helpers/config.js'
 
 const settle = () => new Promise(r => setTimeout(r, 20))
 
@@ -23,7 +24,7 @@ const SCOPE_BY_CWD: Record<string, string> = {
   '/work/zeta': 'project:zeta',
 }
 
-function toolHarness(plur: PlurClient, config = new Config({})) {
+function toolHarness(plur: PlurClient, config = cfg({})) {
   const tools: any[] = []
   const ctx = { tools: { register: (d: any) => { tools.push(d); return () => {} } } }
   const scopes = new Map<string, string>()
@@ -31,7 +32,7 @@ function toolHarness(plur: PlurClient, config = new Config({})) {
     config,
     counters: createCounters(),
     plur,
-    queue: async (fn: () => Promise<unknown>) => { try { return await fn() } catch { return undefined } },
+    queue: async <T,>(fn: () => Promise<T>) => { try { return await fn() } catch { return undefined } },
 
     resolveScope: async (agent?: { id?: string; session?: { header?: { cwd?: string } } }) => {
       const cwd = agent?.session?.header?.cwd
@@ -94,12 +95,12 @@ describe('auto-learn resolves the originating session scope', () => {
         return () => {}
       },
     }
-    const config = new Config({})
+    const config = cfg({})
     registerLearning(ctx as never, {
       config,
       counters: createCounters(),
       plur: { learn },
-    queue: async (fn: () => Promise<unknown>) => { try { return await fn() } catch { return undefined } },
+    queue: async <T,>(fn: () => Promise<T>) => { try { return await fn() } catch { return undefined } },
 
       resolveScope: async (session?: { header?: { cwd?: string } }) => {
         const cwd = session?.header?.cwd

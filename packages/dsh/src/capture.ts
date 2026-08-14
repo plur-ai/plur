@@ -50,7 +50,13 @@ export function registerCapture(ctx: Context, deps: CaptureDeps): void {
     const session = (agent as { session?: { id?: string; header?: { cwd?: string } } } | null)?.session
     void queue(() => guard(async () => {
       const scope = await resolveScope(session)
-      await plur?.capture?.(summary.slice(0, SUMMARY_MAX_CHARS), { scope })
+      // `scope` is not a CaptureContext field — core keeps one timeline per
+      // store and silently dropped it. A tag is where the scope survives, so a
+      // mixed timeline can still say which project an episode came from.
+      await plur?.capture?.(summary.slice(0, SUMMARY_MAX_CHARS), {
+        tags: [`scope:${scope}`],
+        ...(session?.id === undefined ? {} : { session_id: session.id }),
+      })
     }, opts))
   })
 

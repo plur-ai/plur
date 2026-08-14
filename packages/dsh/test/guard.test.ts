@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { createWriteQueue, guard } from '../src/guard.ts'
+import { createWriteQueue, guard } from '../src/guard.js'
 
 describe('guard', () => {
   it('returns the value on success', async () => {

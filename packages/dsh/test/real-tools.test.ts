@@ -14,6 +14,7 @@ import Tools from '@deepseek-ai/dsh-tools'
 import { beforeAll, describe, expect, it } from 'vitest'
 import { Config } from '../src/config.js'
 import { apply } from '../src/index.js'
+import { cfg } from './helpers/config.js'
 
 const EXPECTED = ['plur_feedback', 'plur_forget', 'plur_learn', 'plur_recall', 'plur_status']
 
@@ -26,7 +27,7 @@ beforeAll(async () => {
   await new Promise(r => setTimeout(r, 300))
   ctx.skills = { register: () => () => {} }
   ctx.commands = { register: () => () => {} }
-  apply(ctx, new Config({ scope: 'project:realtools' }), {
+  apply(ctx, cfg({ scope: 'project:realtools' }), {
     recall: async () => [{ id: 'ENG-7', statement: 'Real registry round trip.' }],
     learn: async () => ({ id: 'ENG-8' }),
   })
@@ -51,7 +52,7 @@ describe('real dsh tool registry', () => {
 
   it('execute returns the canonical value the registry declares', async () => {
     const def = ctx.tools.get('plur_recall')!
-    const value = await def.execute({ query: 'anything' }, { signal: new AbortController().signal })
+    const value = await def.execute({ query: 'anything' }, { signal: new AbortController().signal } as never)
     // Must satisfy the declared output.schema: { text: string }
     expect(value).toEqual({ text: '[ENG-7] Real registry round trip.' })
     expect(JSON.parse(JSON.stringify(value))).toEqual(value)
@@ -70,9 +71,9 @@ describe('real dsh tool registry', () => {
     await new Promise(r => setTimeout(r, 300))
     isolated.skills = { register: () => () => {} }
     isolated.commands = { register: () => () => {} }
-    apply(isolated, new Config({}), { recall: async () => { throw new Error('store gone') } })
+    apply(isolated, cfg({}), { recall: async () => { throw new Error('store gone') } })
     const def = isolated.tools.get('plur_recall')!
-    const value = await def.execute({ query: 'x' }, { signal: new AbortController().signal })
+    const value = await def.execute({ query: 'x' }, { signal: new AbortController().signal } as never)
     expect(String((value as { text: string }).text)).toMatch(/unavailable/i)
   })
 })

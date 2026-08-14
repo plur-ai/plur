@@ -80,9 +80,9 @@ export function createEngine(
     // BM25 here rather than at the call site, which cannot see inside.
     injectHybrid: async (task, options) => {
       const plur = await engine()
-      return (await (plur?.injectHybrid ?? plur?.inject)?.call(plur, task, options)) ?? { engrams: [] }
+      return (await (plur?.injectHybrid ?? plur?.inject)?.call(plur, task, options)) ?? { count: 0 }
     },
-    inject: async (task, options) => (await (await engine())?.inject?.(task, options)) ?? { engrams: [] },
+    inject: async (task, options) => (await (await engine())?.inject?.(task, options)) ?? { count: 0 },
     recall: async (query, options) => (await (await engine())?.recall?.(query, options)) ?? [],
     learn: async (statement, context) => (await engine())?.learn?.(statement, context),
     forget: async (id, reason, options) => (await engine())?.forget?.(id, reason, options),

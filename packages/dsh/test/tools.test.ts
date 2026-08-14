@@ -1,16 +1,17 @@
 import { describe, expect, it, vi } from 'vitest'
-import { Config } from '../src/config.ts'
-import { createCounters } from '../src/counters.ts'
-import { registerTools } from '../src/tools.ts'
+import { Config } from '../src/config.js'
+import { createCounters } from '../src/counters.js'
+import { registerTools } from '../src/tools.js'
+import { cfg } from './helpers/config.js'
 
-function collect(plur?: Record<string, unknown>, config = new Config({})) {
+function collect(plur?: Record<string, unknown>, config = cfg({})) {
   const tools: any[] = []
   const ctx = { tools: { register: (d: any) => { tools.push(d); return () => {} } } }
   const disposers = registerTools(ctx as any, {
     config,
     counters: createCounters(),
     plur: plur as never,
-    queue: async (fn: () => Promise<unknown>) => { try { return await fn() } catch { return undefined } },
+    queue: async <T,>(fn: () => Promise<T>) => { try { return await fn() } catch { return undefined } },
     resolveScope: async () => config.scope ?? 'project:dsh',
   })
   return { tools, disposers }
@@ -68,7 +69,7 @@ describe('registerTools', () => {
 
   it('plur_recall uses the resolved scope, never the ambient global store', async () => {
     const recall = vi.fn(async () => [])
-    const config = new Config({ scope: 'project:acme' })
+    const config = cfg({ scope: 'project:acme' })
     collect({ recall }, config)
     const tool = byName(collect({ recall }, config).tools, 'plur_recall')
     await tool.execute({ query: 'x' }, {} as never)

@@ -82,7 +82,7 @@ describe('the real Plur satisfies PlurClient', () => {
   it('capture accepts a positional summary plus a context object', async () => {
     // capture() is synchronous in core (it returns the episode, not a promise),
     // so `await` is a no-op here. The contract types it as Promise-or-value.
-    expect(() => plur.capture!('Conformance: an episode summary.', { scope: SCOPE })).not.toThrow()
+    expect(() => plur.capture!('Conformance: an episode summary.', { tags: [`scope:${SCOPE}`] })).not.toThrow()
   })
 
   it('forget accepts an id, a reason, and a scope', async () => {

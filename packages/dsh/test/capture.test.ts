@@ -2,10 +2,11 @@ import { describe, expect, it, vi } from 'vitest'
 import { registerCapture } from '../src/capture.js'
 import { Config } from '../src/config.js'
 import { createCounters } from '../src/counters.js'
+import { cfg } from './helpers/config.js'
 
 const settle = () => new Promise(r => setTimeout(r, 10))
 
-function harness(plur: Record<string, unknown>, config = new Config({})) {
+function harness(plur: Record<string, unknown>, config = cfg({})) {
   const listeners = new Map<string, Function[]>()
   const ctx = {
     on: (event: string, fn: Function) => {
@@ -17,7 +18,7 @@ function harness(plur: Record<string, unknown>, config = new Config({})) {
     config,
     counters: createCounters(),
     plur: plur as never,
-    queue: async (fn: () => Promise<unknown>) => { try { return await fn() } catch { return undefined } },
+    queue: async <T,>(fn: () => Promise<T>) => { try { return await fn() } catch { return undefined } },
     resolveScope: async () => config.scope ?? 'project:dsh',
   })
   return {
@@ -42,20 +43,28 @@ describe('registerCapture — episode capture', () => {
     expect(capture).toHaveBeenCalledWith('the answer', expect.any(Object))
   })
 
-  it('captures into the resolved scope', async () => {
-    const capture = vi.fn(async () => {})
-    const h = harness({ capture }, new Config({ scope: 'project:acme' }))
+  it('records the resolved scope as a tag — core has no scoped timeline', async () => {
+    // This asserted `{ scope }` for months. Core's CaptureContext has no such
+    // field, so every episode was written with the scope silently discarded;
+    // nothing caught it because the package was never typechecked. Core keeps
+    // one timeline per store, so a tag is the only place the scope survives.
+    const capture = vi.fn(async (_summary: string, _context?: unknown) => {})
+    const h = harness({ capture }, cfg({ scope: 'project:acme' }))
     await h.fire('agent/turn-stopping', { session: { events: [assistant('x')] } })
     await settle()
-    expect(capture).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ scope: 'project:acme' }))
+    expect(capture).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ tags: ['scope:project:acme'] }),
+    )
+    expect(capture.mock.calls[0]![1]).not.toHaveProperty('scope')
   })
 
   it('truncates a very long summary rather than bloating the store', async () => {
-    const capture = vi.fn(async () => {})
+    const capture = vi.fn(async (_summary: string, _context?: unknown) => {})
     const h = harness({ capture })
     await h.fire('agent/turn-stopping', { session: { events: [assistant('y'.repeat(5000))] } })
     await settle()
-    expect((capture.mock.calls[0]![0] as string).length).toBe(2000)
+    expect(capture.mock.calls[0]![0].length).toBe(2000)
   })
 
   it('captures nothing when the turn produced no assistant text', async () => {
@@ -68,7 +77,7 @@ describe('registerCapture — episode capture', () => {
 
   it('does nothing when autoCapture is off', async () => {
     const capture = vi.fn(async () => {})
-    const h = harness({ capture }, new Config({ autoCapture: false }))
+    const h = harness({ capture }, cfg({ autoCapture: false }))
     expect(h.listeners.size).toBe(0)
   })
 

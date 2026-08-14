@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { lastAssistantText, recallQueryFrom, type LogEvent } from '../src/session-log.ts'
+import { lastAssistantText, recallQueryFrom, type LogEvent } from '../src/session-log.js'
 
 const text = (t: string) => ({ content: [{ type: 'text', text: t }] })
 const userMsg = (t: string, time: number): LogEvent =>

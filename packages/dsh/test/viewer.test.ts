@@ -5,11 +5,19 @@ import { createCounters } from '../src/counters.js'
 import { Config } from '../src/config.js'
 import type { Context } from '@deepseek-ai/cordis'
 import type { PlurClient } from '../src/client.js'
+import { cfg } from './helpers/config.js'
 
 /** A viewer start that records its calls instead of binding a port. */
 function fakeStart() {
   const close = vi.fn(async () => {})
-  const start = vi.fn(async () => ({ url: 'http://127.0.0.1:41234/', close }))
+  // Typed parameters, so `mock.calls[0][0]` is the options object rather than
+  // an empty tuple TypeScript refuses to index.
+  const start = vi.fn(async (_opts: {
+    load: () => Promise<readonly unknown[]>
+    where: string
+    openPath?: string
+    port?: number
+  }) => ({ url: 'http://127.0.0.1:41234/', close }))
   return { start, close }
 }
 
@@ -69,16 +77,16 @@ describe('createViewer', () => {
   it('reads the store path from status and passes it as the reveal target', async () => {
     const { start } = fakeStart()
     await createViewer(PLUR, { startViewer: start }).open()
-    expect(start.mock.calls[0][0]).toMatchObject({ where: '/tmp/store', openPath: '/tmp/store' })
+    expect(start.mock.calls[0]![0]).toMatchObject({ where: '/tmp/store', openPath: '/tmp/store' })
   })
 
   it('still serves when status is broken — a diagnostic must not block reading memory', async () => {
     const { start } = fakeStart()
     const broken: PlurClient = { ...PLUR, status: async () => { throw new Error('corrupt') } }
     await createViewer(broken, { startViewer: start }).open()
-    expect(start.mock.calls[0][0].where).toBe('')
+    expect(start.mock.calls[0]![0].where).toBe('')
     // No path resolved means no reveal button rather than a reveal of ''.
-    expect(start.mock.calls[0][0].openPath).toBeUndefined()
+    expect(start.mock.calls[0]![0].openPath).toBeUndefined()
   })
 
   it('surfaces a missing engine as an error, not a crash', async () => {
@@ -88,7 +96,7 @@ describe('createViewer', () => {
 
   it('recovers from a failed start instead of caching the failure forever', async () => {
     let attempt = 0
-    const start = vi.fn(async () => {
+    const start = vi.fn(async (_opts: unknown) => {
       if (++attempt === 1) throw new Error('EADDRINUSE')
       return { url: 'http://127.0.0.1:41235/', close: async () => {} }
     })
@@ -101,7 +109,7 @@ describe('createViewer', () => {
     const { start } = fakeStart()
     const empty: PlurClient = { ...PLUR, list: undefined }
     await createViewer(empty, { startViewer: start }).open()
-    await expect(start.mock.calls[0][0].load()).resolves.toEqual([])
+    await expect(start.mock.calls[0]![0].load()).resolves.toEqual([])
   })
 })
 
@@ -115,7 +123,7 @@ describe('the /plur-memory command', () => {
     return { ctx, registered }
   }
 
-  const deps = () => ({ config: new Config({}), counters: createCounters() })
+  const deps = () => ({ config: cfg({}), counters: createCounters() })
 
   it('registers alongside /plur rather than replacing it', () => {
     const { ctx, registered } = hostWith()
@@ -133,7 +141,7 @@ describe('the /plur-memory command', () => {
 
   it('reports a start failure as text instead of throwing into the host', async () => {
     const { ctx, registered } = hostWith()
-    const start = vi.fn(async () => { throw new Error('port busy') })
+    const start = vi.fn(async (_opts: unknown) => { throw new Error('port busy') })
     registerCommands(ctx, { ...deps(), viewer: createViewer(PLUR, { startViewer: start }) })
     const out = String(await registered.find(c => c.name === 'plur-memory')!.execute())
     expect(out).toContain('port busy')

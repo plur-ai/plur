@@ -1,6 +1,6 @@
 #!/bin/bash
 # PLUR Release Script
-# Usage: ./scripts/release.sh <version> [--claw <claw-version>] [--dsh <dsh-version>] [--dry-run] [--skip-tweet] [--preview-tweet]
+# Usage: ./scripts/release.sh <version> [--claw <claw-version>] [--dsh <dsh-version>] [--ui <ui-version>] [--dry-run] [--skip-tweet] [--preview-tweet]
 #
 # Modes:
 #   default          Full release (bump, build, test, commit, tag, push,
@@ -17,6 +17,11 @@
 #                    version track: it is pinned to a pre-1.0 DeepSeek Harness
 #                    dependency line and moves on that ecosystem's cadence, not
 #                    core's. Specify explicitly when dsh should ride along.
+#   --ui <ver>       Also bump and publish @plur-ai/ui at <ver>. The viewer is
+#                    a runtime dependency of BOTH cli and dsh, so it publishes
+#                    FIRST — pnpm rewrites `workspace:*` to the version that
+#                    must already exist on the registry. Independent track: the
+#                    viewer changes on its own cadence, not core's.
 #   --dry-run        Bump + build + test + tweet preview, then stop before commit.
 #                    Files ARE mutated (versions bumped) — revert with git.
 #   --preview-tweet  Print the tweet that would be posted for <version>, exit.
@@ -75,6 +80,7 @@ SKIP_TWEET=false
 PREVIEW_TWEET=false
 CLAW_VERSION=""
 DSH_VERSION=""
+UI_VERSION=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -90,6 +96,11 @@ while [ $# -gt 0 ]; do
       shift
       DSH_VERSION="${1:-}"
       [ -n "$DSH_VERSION" ] && shift
+      ;;
+    --ui)
+      shift
+      UI_VERSION="${1:-}"
+      [ -n "$UI_VERSION" ] && shift
       ;;
     --*)
       echo "Unknown flag: $1" >&2
@@ -332,6 +343,24 @@ else
   echo "  (dsh stays at $CURRENT_DSH — pass --dsh <version> to bump and publish)"
 fi
 
+# ui is on an independent version track. It has exactly one place to bump —
+# there is no VERSION constant in its source, because nothing in the viewer
+# reports its own version.
+if [ -n "$UI_VERSION" ]; then
+  echo "  --- ui bumps (independent track: $UI_VERSION) ---"
+  node -e "
+    const fs = require('fs');
+    const path = './packages/ui/package.json';
+    const pkg = JSON.parse(fs.readFileSync(path, 'utf8'));
+    pkg.version = '$UI_VERSION';
+    fs.writeFileSync(path, JSON.stringify(pkg, null, 2) + '\n');
+  "
+  echo "  ✓ packages/ui/package.json"
+else
+  CURRENT_UI=$(node -e "console.log(require('./packages/ui/package.json').version)")
+  echo "  (ui stays at $CURRENT_UI — pass --ui <version> to bump and publish)"
+fi
+
 # MCP Registry / ClawHub listing — both the top-level version and the package
 # version pin must track the release; without this the registry directs users
 # to install a stale version of @plur-ai/mcp.
@@ -549,6 +578,12 @@ done
 if [ -n "$CLAW_VERSION" ]; then
   preflight_check claw "$CLAW_VERSION" || PREFLIGHT_OK=false
 fi
+if [ -n "$DSH_VERSION" ]; then
+  preflight_check dsh "$DSH_VERSION" || PREFLIGHT_OK=false
+fi
+if [ -n "$UI_VERSION" ]; then
+  preflight_check ui "$UI_VERSION" || PREFLIGHT_OK=false
+fi
 if [ "$PREFLIGHT_OK" != true ]; then
   echo ""
   echo "✗ Pre-flight failed — nothing committed, tagged, or published."
@@ -626,6 +661,16 @@ echo ""
 # but unflagged — npm's 72-hour unpublish rule means we can't delete; we ship
 # a 0.9.5 patch and deprecate 0.9.4 via `npm deprecate`).
 echo "--- Step 5a: Publish npm @next (canary) ---"
+# ui goes out BEFORE cli, which depends on it: pnpm rewrites `workspace:*` to
+# a concrete version at pack time, and installing a version the registry does
+# not have yet is an unresolvable dependency for anyone who lands between the
+# two publishes.
+if [ -n "$UI_VERSION" ]; then
+  echo -n "  @plur-ai/ui@$UI_VERSION → @next..."
+  pnpm --filter "@plur-ai/ui" publish --access public --no-git-checks --tag next 2>&1 | tail -1
+else
+  echo "  @plur-ai/ui: skipped (no --ui flag)"
+fi
 for pkg in core cli mcp migrate; do
   echo -n "  @plur-ai/$pkg@$VERSION → @next..."
   if ! pnpm --filter "@plur-ai/$pkg" publish --access public --no-git-checks --tag next 2>&1 | tail -1; then
@@ -839,6 +884,14 @@ for pkg in core cli mcp migrate; do
   echo -n "  @plur-ai/$pkg@$VERSION → @latest..."
   npm dist-tag add "@plur-ai/$pkg@$VERSION" latest 2>&1 | tail -1
 done
+if [ -n "$UI_VERSION" ]; then
+  echo -n "  @plur-ai/ui@$UI_VERSION → @latest..."
+  npm dist-tag add "@plur-ai/ui@$UI_VERSION" latest 2>&1 | tail -1
+fi
+if [ -n "$DSH_VERSION" ]; then
+  echo -n "  @plur-ai/dsh@$DSH_VERSION → @latest..."
+  npm dist-tag add "@plur-ai/dsh@$DSH_VERSION" latest 2>&1 | tail -1
+fi
 if [ -n "$CLAW_VERSION" ]; then
   echo -n "  @plur-ai/claw@$CLAW_VERSION → @latest..."
   npm dist-tag add "@plur-ai/claw@$CLAW_VERSION" latest 2>&1 | tail -1

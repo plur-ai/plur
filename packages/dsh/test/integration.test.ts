@@ -18,6 +18,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { Config } from '../src/config.js'
 import { apply } from '../src/index.js'
 import type { PlurClient } from '../src/client.js'
+import { cfg } from './helpers/config.js'
 
 /** Boot a Cordis context carrying the real system-prompt service. */
 async function bootHost() {
@@ -27,20 +28,20 @@ async function bootHost() {
   // Stubs only for the services this integration does not exercise. dsh-tools
   // needs most of the agent tree to activate, and its contract is covered by the
   // unit suite.
-  ctx.tools = { register: () => () => {} }
-  ctx.skills = { register: () => () => {} }
-  ctx.commands = { register: () => () => {} }
+  ctx.tools = { register: () => () => {} } as never
+  ctx.skills = { register: () => () => {} } as never
+  ctx.commands = { register: () => () => {} } as never
 
   const listeners = new Map<string, Function[]>()
   const realOn = ctx.on.bind(ctx)
-  ctx.on = (event: string, fn: Function, opts?: unknown) => {
+  ctx.on = ((event: string, fn: Function, opts?: unknown) => {
     listeners.set(event, [...(listeners.get(event) ?? []), fn])
     try {
       return realOn(event as never, fn as never, opts as never)
     } catch {
       return () => {}
     }
-  }
+  }) as never
 
   return {
     ctx,
@@ -91,7 +92,7 @@ describe('real dsh system-prompt integration', () => {
     const plur: PlurClient = {
       injectHybrid: async () => ({ directives: '[ENG-1] Deploy with pnpm.', count: 1 }),
     }
-    apply(host.ctx, new Config({}), plur)
+    apply(host.ctx, cfg({}), plur)
     const a = agent()
     a.session.events = askedAbout('how do I deploy?')
 
@@ -103,7 +104,7 @@ describe('real dsh system-prompt integration', () => {
   })
 
   it('renders after the harness identity and persona, not before', async () => {
-    apply(host.ctx, new Config({}), {
+    apply(host.ctx, cfg({}), {
       injectHybrid: async () => ({ directives: '[ENG-1] x', count: 1 }),
     })
     await turn(agent())
@@ -113,7 +114,7 @@ describe('real dsh system-prompt integration', () => {
   })
 
   it('DOES NOT ACCRETE — ten turns render the block exactly once', async () => {
-    apply(host.ctx, new Config({}), {
+    apply(host.ctx, cfg({}), {
       injectHybrid: async () => ({ directives: '[ENG-1] Deploy with pnpm.', count: 1 }),
     })
     const a = agent()
@@ -127,7 +128,7 @@ describe('real dsh system-prompt integration', () => {
   })
 
   it('never appends a plugin-sourced message to the conversation', async () => {
-    apply(host.ctx, new Config({}), {
+    apply(host.ctx, cfg({}), {
       injectHybrid: async () => ({ directives: '[ENG-1] x', count: 1 }),
     })
     const a = agent()
@@ -140,7 +141,7 @@ describe('real dsh system-prompt integration', () => {
 
   it('recalls once per turn boundary, not once per step', async () => {
     const injectHybrid = vi.fn(async () => ({ directives: '[ENG-1] x', count: 1 }))
-    apply(host.ctx, new Config({}), { injectHybrid })
+    apply(host.ctx, cfg({}), { injectHybrid })
     const a = agent()
     a.session.events = askedAbout('a question')
 
@@ -152,7 +153,7 @@ describe('real dsh system-prompt integration', () => {
   })
 
   it('an unchanged memory set leaves the prompt byte-identical', async () => {
-    apply(host.ctx, new Config({}), {
+    apply(host.ctx, cfg({}), {
       injectHybrid: async () => ({ directives: '[ENG-1] stable', count: 1 }),
     })
     const a = agent()
@@ -165,7 +166,7 @@ describe('real dsh system-prompt integration', () => {
   })
 
   it('a broken store leaves the host prompt intact and usable', async () => {
-    apply(host.ctx, new Config({}), {
+    apply(host.ctx, cfg({}), {
       injectHybrid: async () => { throw new Error('store corrupt') },
     })
     const a = agent()
@@ -178,7 +179,7 @@ describe('real dsh system-prompt integration', () => {
   })
 
   it('a hung store does not stall the turn', async () => {
-    apply(host.ctx, new Config({ timeoutMs: 50 }), {
+    apply(host.ctx, cfg({ timeoutMs: 50 }), {
       injectHybrid: () => new Promise(() => {}),
     })
     const a = agent()
@@ -192,7 +193,7 @@ describe('real dsh system-prompt integration', () => {
   })
 
   it('renders all three canonical sections through the real service', async () => {
-    apply(host.ctx, new Config({}), {
+    apply(host.ctx, cfg({}), {
       injectHybrid: async () => ({
         directives: '[ENG-1] A directive.',
         constraints: '[ENG-2] A constraint.',
@@ -221,7 +222,7 @@ describe('real dsh system-prompt integration', () => {
     try {
       writeFileSync(join(root, '.plur.yaml'), 'scope: "project:from-disk"\n', 'utf8')
       const seen: string[] = []
-      apply(host.ctx, new Config({}), {
+      apply(host.ctx, cfg({}), {
         injectHybrid: async (_task: string, opts: { scope: string }) => {
           seen.push(opts.scope)
           return { directives: '[ENG-1] x', count: 1 }
@@ -237,7 +238,7 @@ describe('real dsh system-prompt integration', () => {
 
   it('two agents keep separate blocks in one host', async () => {
     const blocks: Record<string, string> = { a1: '[ENG-A] alpha', a2: '[ENG-B] beta' }
-    apply(host.ctx, new Config({}), {
+    apply(host.ctx, cfg({}), {
       injectHybrid: async (task: string) => ({
         directives: task.includes('alpha') ? blocks.a1! : blocks.a2!,
         count: 1,

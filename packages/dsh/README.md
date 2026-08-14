@@ -65,7 +65,33 @@ Five, deliberately — dsh bills every registered tool's schema on every request
 Want the full ~40-tool surface? Use [`@plur-ai/mcp`](https://www.npmjs.com/package/@plur-ai/mcp)
 alongside or instead.
 
-There's also a `/plur` command for memory status without spending a model turn.
+## Commands
+
+Both dispatch without spending a model turn.
+
+| Command | What it does |
+|---|---|
+| `/plur` | Memory status and this session's activity |
+| `/plur-memory` | Opens the memory viewer in your browser |
+
+## The memory viewer
+
+`/plur-memory` starts a local page listing every engram — what was learned,
+what actually gets recalled, and how often. It binds loopback only, serves
+read-only, and returns a URL:
+
+```
+PLUR memory viewer: http://127.0.0.1:53119/
+(local to this machine, read-only)
+```
+
+The same page `plur ui` serves, in English and 中文. It stops when the plugin
+unloads.
+
+Why a command and not a tab: dsh renders its UI as a React client assembled
+over a typed slot registry, so a native tab means shipping a browser bundle
+bound to that registry's pre-1.0 internals. A URL costs nothing and breaks on
+nobody's upgrade.
 
 ## What leaves your machine
 

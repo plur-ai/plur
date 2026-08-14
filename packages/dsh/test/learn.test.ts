@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { Config } from '../src/config.js'
 import { createCounters } from '../src/counters.js'
 import { detectLearning, registerLearning } from '../src/learn.js'
+import { cfg } from './helpers/config.js'
 
 const settle = () => new Promise(r => setTimeout(r, 10))
 
@@ -37,7 +38,7 @@ describe('detectLearning', () => {
   })
 })
 
-function harness(plur: Record<string, unknown>, config = new Config({})) {
+function harness(plur: Record<string, unknown>, config = cfg({})) {
   const listeners: Function[] = []
   const ctx = {
     on: (event: string, fn: Function) => {
@@ -49,7 +50,7 @@ function harness(plur: Record<string, unknown>, config = new Config({})) {
     config,
     counters: createCounters(),
     plur: plur as never,
-    queue: async (fn: () => Promise<unknown>) => { try { return await fn() } catch { return undefined } },
+    queue: async <T,>(fn: () => Promise<T>) => { try { return await fn() } catch { return undefined } },
     resolveScope: async () => config.scope ?? 'project:dsh',
   })
   return (event: unknown) => Promise.all(listeners.map(fn => fn({ id: 's1' }, event)))
@@ -70,7 +71,7 @@ describe('registerLearning', () => {
 
   it('writes to the resolved scope, never the ambient global store', async () => {
     const learn = vi.fn(async () => {})
-    await harness({ learn }, new Config({ scope: 'project:acme' }))(userMessage('Always pin the deps.'))
+    await harness({ learn }, cfg({ scope: 'project:acme' }))(userMessage('Always pin the deps.'))
     await settle()
     expect(learn).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ scope: 'project:acme' }))
   })
@@ -94,7 +95,7 @@ describe('registerLearning', () => {
 
   it('does nothing when autoLearn is off', async () => {
     const learn = vi.fn(async () => {})
-    await harness({ learn }, new Config({ autoLearn: false }))(userMessage('Always pin the deps.'))
+    await harness({ learn }, cfg({ autoLearn: false }))(userMessage('Always pin the deps.'))
     await settle()
     expect(learn).not.toHaveBeenCalled()
   })

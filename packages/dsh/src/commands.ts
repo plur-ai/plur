@@ -40,7 +40,7 @@ export function registerCommands(
         ].join('\n')
       },
     }),
-    register({
+    ...(deps.config.viewerEnabled === false ? [] : [register({
       name: 'plur-memory',
       description: 'Open the PLUR memory viewer in a browser.',
       execute: async () => {
@@ -53,7 +53,7 @@ export function registerCommands(
           return `Could not start the memory viewer: ${error instanceof Error ? error.message : String(error)}`
         }
       },
-    }),
+    })]),
   ]
 
   return () => { for (const dispose of disposers) { try { dispose() } catch { /* already gone */ } } }

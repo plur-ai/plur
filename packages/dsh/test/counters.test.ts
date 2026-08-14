@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { createCounters } from '../src/counters.ts'
+import { createCounters } from '../src/counters.js'
 
 describe('createCounters', () => {
   it('starts every counter at zero', () => {

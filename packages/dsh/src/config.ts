@@ -37,8 +37,8 @@ export interface Config {
   reranker: 'off' | 'ms-marco-minilm-l6' | 'bge-reranker-v2-m3'
   /** Hard bound on any single PLUR call. */
   timeoutMs: number
-  /** Register the Web UI memory tab. */
-  tabEnabled: boolean
+  /** Register the `/plur-memory` command that opens the memory viewer. */
+  viewerEnabled: boolean
 }
 
 export const Config: z<Config> = z.object({
@@ -51,5 +51,5 @@ export const Config: z<Config> = z.object({
   autoCapture: z.boolean().default(true),
   reranker: z.union(['off', 'ms-marco-minilm-l6', 'bge-reranker-v2-m3']).default('off'),
   timeoutMs: z.natural().min(1).default(5000),
-  tabEnabled: z.boolean().default(true),
+  viewerEnabled: z.boolean().default(true),
 })

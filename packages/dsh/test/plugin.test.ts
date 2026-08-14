@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
-import { Config } from '../src/config.ts'
-import { apply, name } from '../src/index.ts'
+import { Config } from '../src/config.js'
+import { apply, name } from '../src/index.js'
+import { cfg } from './helpers/config.js'
 
 /** Minimal Cordis-shaped double: records registrations and lets tests fire events. */
 function makeCtx() {
@@ -66,7 +67,7 @@ describe('plugin contract', () => {
 
   it('registers a pre-step listener', () => {
     const h = makeCtx()
-    apply(h.ctx, new Config({}))
+    apply(h.ctx, cfg({}))
     expect(h.listeners.has('agent/pre-step')).toBe(true)
   })
 })
@@ -74,7 +75,7 @@ describe('plugin contract', () => {
 describe('injection is prompt-section only', () => {
   it('NEVER appends to the pre-step decision', async () => {
     const h = makeCtx()
-    apply(h.ctx, new Config({}))
+    apply(h.ctx, cfg({}))
     const decision = { kind: 'enter' as const, messages: [] as unknown[] }
     const [result] = await h.fire('agent/pre-step', preStepInput(), async () => decision)
     expect(result).toBe(decision)
@@ -83,7 +84,7 @@ describe('injection is prompt-section only', () => {
 
   it('registers the plur:memory section once per agent', async () => {
     const h = makeCtx()
-    apply(h.ctx, new Config({}))
+    apply(h.ctx, cfg({}))
     const a = agent()
     const next = async () => ({ kind: 'enter' as const, messages: [] })
     await h.fire('agent/pre-step', preStepInput(a, 1), next)
@@ -93,7 +94,7 @@ describe('injection is prompt-section only', () => {
 
   it('the section text provider is synchronous and returns a string', async () => {
     const h = makeCtx()
-    apply(h.ctx, new Config({}))
+    apply(h.ctx, cfg({}))
     await h.fire('agent/pre-step', preStepInput(), async () => ({ kind: 'enter', messages: [] }))
     const section = h.sections.find(s => s.name === 'plur:memory')!
     expect(typeof section.text()).toBe('string')
@@ -101,14 +102,14 @@ describe('injection is prompt-section only', () => {
 
   it('orders the section after the persona', async () => {
     const h = makeCtx()
-    apply(h.ctx, new Config({}))
+    apply(h.ctx, cfg({}))
     await h.fire('agent/pre-step', preStepInput(), async () => ({ kind: 'enter', messages: [] }))
     expect(h.sections.find(s => s.name === 'plur:memory')!.order).toBeGreaterThan(0)
   })
 
   it('does not register the section when injectionMode is off', async () => {
     const h = makeCtx()
-    apply(h.ctx, new Config({ injectionMode: 'off' }))
+    apply(h.ctx, cfg({ injectionMode: 'off' }))
     await h.fire('agent/pre-step', preStepInput(), async () => ({ kind: 'enter', messages: [] }))
     expect(h.sections).toHaveLength(0)
   })
@@ -116,7 +117,7 @@ describe('injection is prompt-section only', () => {
   it('renders recalled engrams into the section on the next turn', async () => {
     const h = makeCtx()
     const plur = { injectHybrid: async () => ({ directives: '[ENG-1] Pin your deps.', count: 1 }) }
-    apply(h.ctx, new Config({}), plur)
+    apply(h.ctx, cfg({}), plur)
     const a = agent()
     a.session.events = [
       { type: 'turn/start', time: 1, data: { turn: 1 } },
@@ -131,7 +132,7 @@ describe('injection is prompt-section only', () => {
 describe('failure discipline', () => {
   it('returns the delegated decision unchanged when it is a reject', async () => {
     const h = makeCtx()
-    apply(h.ctx, new Config({}))
+    apply(h.ctx, cfg({}))
     const decision = { kind: 'reject' as const }
     const [result] = await h.fire('agent/pre-step', preStepInput(), async () => decision)
     expect(result).toBe(decision)
@@ -139,7 +140,7 @@ describe('failure discipline', () => {
 
   it('returns the delegated decision even when recall throws', async () => {
     const h = makeCtx()
-    apply(h.ctx, new Config({}), { injectHybrid: async () => { throw new Error('plur down') } })
+    apply(h.ctx, cfg({}), { injectHybrid: async () => { throw new Error('plur down') } })
     const decision = { kind: 'enter' as const, messages: [] }
     const [result] = await h.fire('agent/pre-step', preStepInput(), async () => decision)
     await settle()
@@ -148,7 +149,7 @@ describe('failure discipline', () => {
 
   it('does not reject when recall throws — the turn must survive', async () => {
     const h = makeCtx()
-    apply(h.ctx, new Config({}), { injectHybrid: async () => { throw new Error('plur down') } })
+    apply(h.ctx, cfg({}), { injectHybrid: async () => { throw new Error('plur down') } })
     const a = agent()
     a.session.events = [
       { type: 'turn/start', time: 1, data: { turn: 1 } },
@@ -164,7 +165,7 @@ describe('failure discipline', () => {
   it('survives a host whose systemPrompt.section throws', async () => {
     const h = makeCtx()
     h.ctx.systemPrompt.section = () => { throw new Error('host api changed') }
-    apply(h.ctx, new Config({}))
+    apply(h.ctx, cfg({}))
     const decision = { kind: 'enter' as const, messages: [] }
     const [result] = await h.fire('agent/pre-step', preStepInput(), async () => decision)
     expect(result).toBe(decision)
@@ -173,7 +174,7 @@ describe('failure discipline', () => {
   it('skips work when the signal is already aborted', async () => {
     const h = makeCtx()
     const injectHybrid = vi.fn(async () => ({ directives: '', count: 0 }))
-    apply(h.ctx, new Config({}), { injectHybrid })
+    apply(h.ctx, cfg({}), { injectHybrid })
     const controller = new AbortController()
     controller.abort()
     const decision = { kind: 'enter' as const, messages: [] }
@@ -191,7 +192,7 @@ describe('failure discipline', () => {
 describe('registrations', () => {
   it('registers exactly five model-facing tools', () => {
     const h = makeCtx()
-    apply(h.ctx, new Config({}))
+    apply(h.ctx, cfg({}))
     expect(h.tools.map(t => t.name).sort()).toEqual(
       ['plur_feedback', 'plur_forget', 'plur_learn', 'plur_recall', 'plur_status'],
     )
@@ -199,7 +200,7 @@ describe('registrations', () => {
 
   it('registers the plur-memory skill and the /plur command', () => {
     const h = makeCtx()
-    apply(h.ctx, new Config({}))
+    apply(h.ctx, cfg({}))
     expect(h.skills.map(s => s.name)).toContain('plur-memory')
     expect(h.commands.map(c => c.name)).toContain('plur')
   })
@@ -207,7 +208,7 @@ describe('registrations', () => {
   it('clears cached state when an agent is disposed', async () => {
     const h = makeCtx()
     const plur = { injectHybrid: async () => ({ directives: '[ENG-1] Remembered.', count: 1 }) }
-    apply(h.ctx, new Config({}), plur)
+    apply(h.ctx, cfg({}), plur)
     const a = agent()
     a.session.events = [
       { type: 'turn/start', time: 1, data: { turn: 1 } },

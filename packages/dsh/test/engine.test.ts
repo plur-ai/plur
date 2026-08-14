@@ -1,8 +1,9 @@
 import { describe, expect, it, vi } from 'vitest'
 import { Config } from '../src/config.js'
 import { createEngine } from '../src/engine.js'
+import { cfg } from './helpers/config.js'
 
-const config = () => new Config({})
+const config = () => cfg({})
 
 describe('createEngine against the REAL @plur-ai/core', () => {
   it('constructs an engine — the production path, not a fake', async () => {
@@ -44,7 +45,7 @@ describe('createEngine when core is unavailable', () => {
     await expect(engine.recall!('x')).resolves.toEqual([])
     await expect(engine.list!()).resolves.toEqual([])
     await expect(engine.status!()).resolves.toEqual({})
-    await expect(engine.injectHybrid!('x')).resolves.toEqual({ engrams: [] })
+    await expect(engine.injectHybrid!('x')).resolves.toEqual({ count: 0 })
   })
 
   it('degrades every write to a no-op instead of rejecting', async () => {
@@ -77,16 +78,16 @@ describe('the facade shape', () => {
   })
 
   it('falls back to BM25 inject when the build of core has no hybrid path', async () => {
-    const inject = vi.fn(async () => ({ engrams: [{ id: 'a', statement: 'b' }] }))
+    const inject = vi.fn(async () => ({ directives: 'use pnpm', count: 1 }))
     const engine = createEngine(config(), async () => ({ Plur: class { inject = inject } }))
     const out = await engine.injectHybrid!('task', { scope: 's' })
     expect(inject).toHaveBeenCalledWith('task', { scope: 's' })
-    expect(out).toMatchObject({ engrams: [{ id: 'a' }] })
+    expect(out).toMatchObject({ directives: 'use pnpm', count: 1 })
   })
 
   it('passes the configured store path to the constructor', async () => {
     const seen: Array<{ path?: string }> = []
-    const engine = createEngine(new Config({ path: '/tmp/elsewhere' }), async () => ({
+    const engine = createEngine(cfg({ path: '/tmp/elsewhere' }), async () => ({
       Plur: class { constructor(o: { path?: string }) { seen.push(o) } },
     }))
     await engine.ready()

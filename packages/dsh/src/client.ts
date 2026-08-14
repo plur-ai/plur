@@ -18,6 +18,20 @@ export interface EngramLike {
   readonly statement: string
 }
 
+/**
+ * Context core accepts on `capture()` — a subset of core's `CaptureContext`.
+ *
+ * Note what is NOT here: `scope`. Core writes every episode to one timeline per
+ * store; episodes are not scoped. Passing `{ scope }` was silently discarded,
+ * so the scope an episode came from was simply lost. It travels in `tags` now.
+ */
+export interface CaptureContextLike {
+  agent?: string
+  channel?: string
+  session_id?: string
+  tags?: string[]
+}
+
 /** Context accepted alongside a stored statement (a subset of core's `LearnContext`). */
 export interface LearnContextLike {
   scope?: string
@@ -46,8 +60,11 @@ export interface PlurClient {
   forget?(id: string, reason?: string, options?: { scope?: string }): Promise<unknown>
   /** Rate one engram. Takes the signal word, NOT a number. */
   feedback?(id: string, signal: FeedbackSignal, scope?: string): Promise<unknown>
-  /** Record an episode summary. Positional summary, NOT an options object. */
-  capture?(summary: string, context?: { scope?: string }): Promise<unknown>
+  /**
+   * Record an episode summary. Positional summary, NOT an options object, and
+   * SYNCHRONOUS in core — it returns the episode, not a promise.
+   */
+  capture?(summary: string, context?: CaptureContextLike): unknown
   /** Extract learnings from a range about to be shadowed by compaction. */
   compactLearn?(input: { events: readonly LogEvent[]; scope: string }): Promise<unknown>
   /** Every engram in scope, backing the memory viewer. */
