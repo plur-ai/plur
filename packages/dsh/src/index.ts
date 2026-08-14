@@ -175,18 +175,27 @@ export function apply(ctx: Context, config: Config, plur?: PlurClient): void {
     }
   }
 
-  /** Recompute and cache one agent's block. Never throws; never awaited by the loop. */
+  /**
+   * Recompute and cache one agent's block.
+   *
+   * The ENTIRE body is inside `guard`, not just the store call. This function is
+   * invoked with `void` from the pre-step listener, so anything that escapes it
+   * becomes an unhandled promise rejection — which modern Node treats as fatal
+   * and would take the user's whole agent down. Query construction reads
+   * host-supplied data that can be malformed, so it must be inside the guard
+   * too; an earlier version had it outside and a junk event array produced
+   * exactly that unhandled rejection.
+   */
   async function refreshBlock(
     agentId: string,
     agent: AgentLike | undefined,
     turn: number,
     proposed: readonly unknown[],
   ): Promise<void> {
-    const events = agent?.session?.events ?? []
-    const query = recallQueryFrom(events, turn, proposed)
-    if (!query) return
-
     const block = await guard(async () => {
+      const events = agent?.session?.events ?? []
+      const query = recallQueryFrom(events, turn, proposed)
+      if (!query) return undefined
       const scope = await scopes.resolve(agentId, agent?.session?.header?.cwd)
       // Hybrid first; fall back to BM25-only exactly as @plur-ai/mcp does, so a
       // machine without the embedder still gets memory rather than nothing.

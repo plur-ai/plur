@@ -8,7 +8,7 @@
  */
 import { Context } from '@deepseek-ai/cordis'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { PlurClient } from '../src/client.js'
 import { Config } from '../src/config.js'
 import { apply } from '../src/index.js'
@@ -53,6 +53,28 @@ const asked = (text: string) => [
 ]
 
 const settle = () => new Promise(r => setTimeout(r, 30))
+
+/**
+ * Fail the test on ANY unhandled rejection.
+ *
+ * The refresh path is invoked with `void`, so a throw that escapes it never
+ * reaches the caller — it becomes an unhandled rejection, which modern Node
+ * treats as fatal. Without this hook every test below asserted only on the
+ * `fire()` promise and passed while the plugin was in fact throwing: two real
+ * crashes (a junk event array and a non-iterable `messages`) hid behind green
+ * ticks until the runner reported them separately.
+ */
+let unhandled: unknown[] = []
+const onUnhandled = (reason: unknown) => { unhandled.push(reason) }
+beforeEach(() => {
+  unhandled = []
+  process.on('unhandledRejection', onUnhandled)
+})
+afterEach(async () => {
+  await new Promise(r => setTimeout(r, 30))
+  process.off('unhandledRejection', onUnhandled)
+  expect(unhandled.map(String)).toEqual([])
+})
 
 async function turn(h: Awaited<ReturnType<typeof boot>>, a: unknown, step = 1) {
   const decision = { kind: 'enter' as const, messages: [] as unknown[] }

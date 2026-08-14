@@ -53,22 +53,29 @@ export function recallQueryFrom(
   turn: number,
   proposed: readonly unknown[],
 ): string {
+  if (!Array.isArray(events)) return ''
   const start = events.findLastIndex(
-    event => event.type === 'turn/start' && (event.data as { turn?: number } | null)?.turn === turn,
+    event => event?.type === 'turn/start' && (event.data as { turn?: number } | null)?.turn === turn,
   )
   const parts: string[] = []
   if (start >= 0) {
     for (const event of events.slice(start + 1)) {
-      if (event.type !== 'user/message') continue
+      // A log array can contain junk: this runs against a live host's data, not
+      // a fixture, so an element may be null/undefined/a primitive.
+      if (event?.type !== 'user/message') continue
       const data = event.data as MessageLike | null
       if (data?.source?.kind !== 'user') continue
       const value = textOf(data)
       if (value) parts.push(value)
     }
   }
-  for (const message of proposed) {
-    const value = textOf(message)
-    if (value) parts.push(value)
+  // `proposed` comes from a PreStepDecision another plugin may have rewritten;
+  // it is not guaranteed to be an array.
+  if (Array.isArray(proposed)) {
+    for (const message of proposed) {
+      const value = textOf(message)
+      if (value) parts.push(value)
+    }
   }
   return parts.join('\n').trim()
 }
@@ -83,6 +90,7 @@ export function recallQueryFrom(
  * @returns the text, or `undefined` when the session has produced none.
  */
 export function lastAssistantText(events: readonly LogEvent[]): string | undefined {
+  if (!Array.isArray(events)) return undefined
   for (let i = events.length - 1; i >= 0; i--) {
     const event = events[i]
     if (event?.type !== 'assistant/message') continue
