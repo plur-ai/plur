@@ -600,6 +600,27 @@ export const COMMITMENT_MULTIPLIER: Record<string, number> = {
  * keeps months of mappings while the file stays well under a megabyte —
  * comfortably more history than the queued-correction case that needs it.
  */
+/**
+ * Total time an ambiguity guard may spend probing remotes, across ALL stores.
+ *
+ * The per-request bound (`fetchBounded`, 30s) stops one host hanging forever;
+ * it does not stop N hosts costing N × 30s. These guards run INSIDE the primary
+ * store lock, whose acquire budget is 180s — so four stalled remotes would
+ * exhaust it and every waiting writer would throw "Failed to acquire lock",
+ * which is the silent-lost-write failure the per-request bound was added to
+ * close. A budget for the WHOLE walk is what actually bounds it.
+ *
+ * 45s: comfortably above one healthy round-trip per store for a handful of
+ * stores, comfortably below the lock budget even when every store is stalled.
+ *
+ * Expiry needs no new policy — it routes into the SAME "cannot tell" branch an
+ * unreachable store already takes, and the two callers already differ there by
+ * design: `forget` refuses (a mis-targeted retire is irreversible), `feedback`
+ * warns and proceeds (a mis-targeted rating is recoverable, and rating is a
+ * hot path).
+ */
+const REMOTE_GUARD_BUDGET_MS = 45_000
+
 const OUTBOX_ID_MAP_MAX = 5000
 
 const LLM_BREAKER_THRESHOLD = 3
@@ -4995,6 +5016,7 @@ export class Plur {
       // refusing here would trade a real cost for a reversible risk. Warn
       // instead, so the unverified case is visible rather than silent.
       if (!scope) {
+        const guardDeadline = Date.now() + REMOTE_GUARD_BUDGET_MS
         for (const entry of (this.config.stores ?? [])) {
           if (!entry.url) continue
           const serverId = this._stripRemotePrefix(id, entry.scope)
@@ -5002,6 +5024,16 @@ export class Plur {
           let existsRemotely: boolean
           if (remoteCached.length > 0) {
             existsRemotely = remoteCached.some(e => e.id === serverId)
+          } else if (Date.now() >= guardDeadline) {
+            // Budget spent on earlier stores. Same branch an unreachable store
+            // takes — "cannot tell" — so feedback proceeds with a warning
+            // rather than refusing a recoverable operation.
+            existsRemotely = false
+            logger.warning(
+              `[plur] ran out of time probing remotes for an id collision on ${id} `
+              + `(${REMOTE_GUARD_BUDGET_MS}ms budget spent before reaching "${entry.scope}") — `
+              + `rating the LOCAL engram unverified. Pass scope explicitly to skip this walk.`,
+            )
           } else {
             try {
               const driver = this._getRemoteDriver({ url: entry.url!, token: entry.token, scope: entry.scope })
@@ -5651,6 +5683,7 @@ export class Plur {
       // caller has an explicit escape hatch in scope: "primary", which skips
       // this block entirely and needs no network.
       if (!targetScope) {
+        const guardDeadline = Date.now() + REMOTE_GUARD_BUDGET_MS
         for (const entry of (this.config.stores ?? [])) {
           if (!entry.url) continue
           const serverId = this._stripRemotePrefix(id, entry.scope)
@@ -5658,6 +5691,19 @@ export class Plur {
           let existsRemotely: boolean
           if (cached.length > 0) {
             existsRemotely = cached.some(e => e.id === serverId)
+          } else if (Date.now() >= guardDeadline) {
+            // Budget spent on earlier stores. Same branch an unreachable store
+            // takes here — and on THIS path that branch REFUSES, because a
+            // retire is irreversible and "I ran out of time looking" is not
+            // evidence of absence. `scope: "primary"` remains the escape
+            // hatch, and it needs no network at all.
+            throw new Error(
+              `Cannot verify that "${id}" is unambiguous: spent the ${REMOTE_GUARD_BUDGET_MS}ms `
+              + `remote budget before reaching scope "${entry.scope}".\n`
+              + `Retiring now could destroy the wrong engram (#831), so this refuses rather than guessing.\n`
+              + `Pass scope: "primary" to retire the local engram without probing remotes, or pass the `
+              + `remote scope to target it directly.`,
+            )
           } else {
             try {
               const driver = this._getRemoteDriver({ url: entry.url!, token: entry.token, scope: entry.scope })

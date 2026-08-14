@@ -36,11 +36,27 @@ export const NEGATIVE_STRENGTH_DELTA = 0.1
  * leaving it unset would let an older engram accrue unlimited positive signal
  * while still reading as though nobody had an opinion about it.
  *
- * Anything unrecognised is returned untouched. That is load-bearing rather than
- * defensive: a deployment may extend the enum — `commitment: 'draft'` stages an
- * engram in a review queue (see the extension note in `schemas/engram.ts`) — and
- * silently promoting a draft out of review on a thumbs-up would publish
- * unreviewed content. Unknown means "not mine to advance".
+ * Anything unrecognised is returned untouched — defence in depth, not support
+ * for an extension mechanism (#905).
+ *
+ * This previously read "a deployment may extend the enum — `commitment:
+ * 'draft'` stages an engram in a review queue (see the extension note in
+ * `schemas/engram.ts`)". There is no such extension note, and no such
+ * extension: `EngramSchema.commitment` is a closed
+ * `z.enum(['exploring','leaning','decided','locked'])`, so an engram carrying
+ * `'draft'` fails validation and is QUARANTINED at load rather than reaching
+ * this function. The docstring described a feature that was never built, and
+ * the schema and the prose contradicted each other for anyone reading either
+ * one on its own.
+ *
+ * The branch itself stays, and is still worth having: a value can arrive here
+ * from a store written by a newer version, a hand-edited YAML file, or a code
+ * path that constructs an engram without parsing it. Advancing a commitment
+ * this function does not understand would be a silent semantic change to
+ * somebody else's state — so unknown means "not mine to advance".
+ *
+ * If a review-queue state is ever actually wanted, it needs a schema change
+ * and a migration, not a docstring.
  */
 export function nextCommitment(current: string | undefined): string | undefined {
   switch (current) {
