@@ -100,7 +100,7 @@ describe('injection is prompt-section only', () => {
 
   it('renders recalled engrams into the section on the next turn', async () => {
     const h = makeCtx()
-    const plur = { recall: async () => [{ id: 'ENG-1', statement: 'Pin your deps.', confidence: 0.9 }] }
+    const plur = { injectHybrid: async () => ({ directives: '[ENG-1] Pin your deps.', count: 1 }) }
     apply(h.ctx, new Config({}), plur)
     const a = agent()
     a.session.events = [
@@ -124,7 +124,7 @@ describe('failure discipline', () => {
 
   it('returns the delegated decision even when recall throws', async () => {
     const h = makeCtx()
-    apply(h.ctx, new Config({}), { recall: async () => { throw new Error('plur down') } })
+    apply(h.ctx, new Config({}), { injectHybrid: async () => { throw new Error('plur down') } })
     const decision = { kind: 'enter' as const, messages: [] }
     const [result] = await h.fire('agent/pre-step', preStepInput(), async () => decision)
     await settle()
@@ -133,7 +133,7 @@ describe('failure discipline', () => {
 
   it('does not reject when recall throws — the turn must survive', async () => {
     const h = makeCtx()
-    apply(h.ctx, new Config({}), { recall: async () => { throw new Error('plur down') } })
+    apply(h.ctx, new Config({}), { injectHybrid: async () => { throw new Error('plur down') } })
     const a = agent()
     a.session.events = [
       { type: 'turn/start', time: 1, data: { turn: 1 } },
@@ -157,8 +157,8 @@ describe('failure discipline', () => {
 
   it('skips work when the signal is already aborted', async () => {
     const h = makeCtx()
-    const recall = vi.fn(async () => [])
-    apply(h.ctx, new Config({}), { recall })
+    const injectHybrid = vi.fn(async () => ({ directives: '', count: 0 }))
+    apply(h.ctx, new Config({}), { injectHybrid })
     const controller = new AbortController()
     controller.abort()
     const decision = { kind: 'enter' as const, messages: [] }
@@ -169,7 +169,7 @@ describe('failure discipline', () => {
     )
     await settle()
     expect(result).toBe(decision)
-    expect(recall).not.toHaveBeenCalled()
+    expect(injectHybrid).not.toHaveBeenCalled()
   })
 })
 
@@ -191,7 +191,7 @@ describe('registrations', () => {
 
   it('clears cached state when an agent is disposed', async () => {
     const h = makeCtx()
-    const plur = { recall: async () => [{ id: 'ENG-1', statement: 'Remembered.', confidence: 0.9 }] }
+    const plur = { injectHybrid: async () => ({ directives: '[ENG-1] Remembered.', count: 1 }) }
     apply(h.ctx, new Config({}), plur)
     const a = agent()
     a.session.events = [

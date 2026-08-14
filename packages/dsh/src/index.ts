@@ -30,7 +30,7 @@ import { Config } from './config.js'
 import { createCounters } from './counters.js'
 import { guard } from './guard.js'
 import { registerLearning } from './learn.js'
-import { createMemoryCache, renderBlock, type EngramLike } from './memory-section.js'
+import { createMemoryCache, renderBlock } from './memory-section.js'
 import { createRefreshPolicy } from './refresh.js'
 import { createScopeResolver } from './scope.js'
 import { recallQueryFrom, type LogEvent } from './session-log.js'
@@ -172,10 +172,14 @@ export function apply(ctx: Context, config: Config, plur?: PlurClient): void {
 
     const block = await guard(async () => {
       const scope = await scopes.resolve(agentId, agent?.session?.header?.cwd)
-      const engrams: readonly EngramLike[] = (await plur?.recall?.(query, { scope, limit: 10 })) ?? []
+      // Hybrid first; fall back to BM25-only exactly as @plur-ai/mcp does, so a
+      // machine without the embedder still gets memory rather than nothing.
+      const injection = plur?.injectHybrid
+        ? await plur.injectHybrid(query, { scope })
+        : await plur?.inject?.(query, { scope })
       counters.bump('engrams_rendered')
       // Rendering is INSIDE the guard: a malformed engram must not escape either.
-      return renderBlock(engrams, config.injectionBudget)
+      return renderBlock(injection, config.injectionBudget)
     }, { timeoutMs: config.timeoutMs, onError })
 
     if (block === undefined) return

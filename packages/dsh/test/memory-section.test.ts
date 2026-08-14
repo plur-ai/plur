@@ -1,51 +1,84 @@
 import { describe, expect, it } from 'vitest'
-import { blockHash, createMemoryCache, renderBlock } from '../src/memory-section.ts'
+import { blockHash, createMemoryCache, renderBlock } from '../src/memory-section.js'
 
-const e = (id: string, statement: string, confidence = 0.9, domain?: string) =>
-  ({ id, statement, confidence, domain })
+const injection = (over: Record<string, unknown> = {}) => ({
+  directives: '[ENG-1] Always pin dsh deps.',
+  constraints: '',
+  consider: '',
+  count: 1,
+  ...over,
+})
 
 describe('renderBlock', () => {
-  it('renders nothing for an empty set, so the prompt section stays absent', () => {
-    expect(renderBlock([], 2000)).toBe('')
+  it('renders nothing when no engrams were selected', () => {
+    expect(renderBlock(injection({ count: 0 }), 2000)).toBe('')
+    expect(renderBlock(undefined, 2000)).toBe('')
   })
 
-  it('renders high-confidence engrams under a DIRECTIVES heading', () => {
-    const out = renderBlock([e('ENG-1', 'Always pin dsh deps.')], 2000)
+  it('renders directives under the canonical heading', () => {
+    const out = renderBlock(injection(), 2000)
     expect(out).toContain('## DIRECTIVES')
-    expect(out).toContain('[ENG-1]')
-    expect(out).toContain('Always pin dsh deps.')
+    expect(out).toContain('[ENG-1] Always pin dsh deps.')
   })
 
-  it('separates low-confidence engrams into ALSO CONSIDER', () => {
-    const out = renderBlock([e('ENG-1', 'High.', 0.9), e('ENG-2', 'Low.', 0.3)], 2000)
-    expect(out.indexOf('## DIRECTIVES')).toBeLessThan(out.indexOf('## ALSO CONSIDER'))
-    expect(out).toContain('[ENG-2]')
+  it('renders all three sections in the canonical order', () => {
+    const out = renderBlock(injection({
+      constraints: '[ENG-2] Never write to global.',
+      consider: '[ENG-3] Maybe relevant.',
+      count: 3,
+    }), 2000)
+    expect(out.indexOf('## DIRECTIVES')).toBeLessThan(out.indexOf('## CONSTRAINTS'))
+    expect(out.indexOf('## CONSTRAINTS')).toBeLessThan(out.indexOf('## ALSO CONSIDER'))
   })
 
-  it('omits the DIRECTIVES heading when nothing qualifies', () => {
-    const out = renderBlock([e('ENG-2', 'Low.', 0.1)], 2000)
-    expect(out).not.toContain('## DIRECTIVES')
-    expect(out).toContain('## ALSO CONSIDER')
+  it('matches @plur-ai/mcp session-start construction byte for byte', () => {
+    // The canonical assembly, copied from packages/mcp/src/tools.ts:2622-2626.
+    const result = { directives: 'D-text', constraints: 'C-text', consider: 'A-text', count: 3 }
+    const lines: string[] = []
+    if (result.directives) lines.push('## DIRECTIVES\n', result.directives)
+    if (result.constraints) lines.push('\n## CONSTRAINTS\n', result.constraints)
+    if (result.consider) lines.push('\n## ALSO CONSIDER\n', result.consider)
+    expect(renderBlock(result, 2000)).toBe(lines.join('\n'))
   })
 
-  it('trims to the token budget rather than emitting an oversized block', () => {
-    const many = Array.from({ length: 500 }, (_, i) => e(`ENG-${i}`, 'x'.repeat(200)))
-    const out = renderBlock(many, 100)
-    expect(out.length).toBeLessThan(1200)
+  it('omits a section the injection left empty', () => {
+    const out = renderBlock(injection({ consider: '', constraints: '' }), 2000)
+    expect(out).not.toContain('## CONSTRAINTS')
+    expect(out).not.toContain('## ALSO CONSIDER')
   })
 
-  it('emits nothing at all for a zero budget', () => {
-    expect(renderBlock([e('ENG-1', 'Anything.')], 0)).toBe('')
+  it('drops ALSO CONSIDER first when over budget', () => {
+    const out = renderBlock(injection({
+      directives: 'd'.repeat(200),
+      constraints: 'c'.repeat(100),
+      consider: 'x'.repeat(4000),
+      count: 3,
+    }), 100)
+    expect(out).toContain('## DIRECTIVES')
+    expect(out).not.toContain('## ALSO CONSIDER')
+  })
+
+  it('drops CONSTRAINTS next when still over budget', () => {
+    const out = renderBlock(injection({
+      directives: 'd'.repeat(200),
+      constraints: 'c'.repeat(4000),
+      consider: 'x'.repeat(4000),
+      count: 3,
+    }), 100)
+    expect(out).toContain('## DIRECTIVES')
+    expect(out).not.toContain('## CONSTRAINTS')
+  })
+
+  it('emits nothing rather than a truncated engram when even directives overflow', () => {
+    expect(renderBlock(injection({ directives: 'd'.repeat(10_000) }), 10)).toBe('')
+  })
+
+  it('emits nothing for a zero budget', () => {
+    expect(renderBlock(injection(), 0)).toBe('')
   })
 
   it('is deterministic for the same input', () => {
-    const set = [e('ENG-1', 'One.'), e('ENG-2', 'Two.')]
-    expect(renderBlock(set, 2000)).toBe(renderBlock(set, 2000))
-  })
-
-  it('tolerates a missing confidence by treating it as low', () => {
-    const out = renderBlock([{ id: 'ENG-1', statement: 'No confidence field.' }], 2000)
-    expect(out).toContain('## ALSO CONSIDER')
+    expect(renderBlock(injection(), 2000)).toBe(renderBlock(injection(), 2000))
   })
 })
 

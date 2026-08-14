@@ -6,66 +6,66 @@
  * in front of the model with no tool call — and, because a prompt section is
  * rendered rather than logged as a message, nothing accretes.
  *
+ * The block is assembled from `@plur-ai/core`'s pre-rendered `InjectionResult`
+ * strings using the SAME construction as `@plur-ai/mcp`'s session-start output,
+ * so cross-host format parity holds by construction rather than by a snapshot
+ * test that can drift.
+ *
  * @module
  */
 import { createHash } from 'node:crypto'
 
-/** The engram fields the rendered block uses. */
-export interface EngramLike {
-  readonly id: string
-  readonly statement: string
-  readonly domain?: string
-  readonly confidence?: number
+/** The `InjectionResult` fields this module renders. */
+export interface InjectionLike {
+  /** Pre-rendered high-confidence engrams. */
+  readonly directives?: string
+  /** Pre-rendered constraint engrams. */
+  readonly constraints?: string
+  /** Pre-rendered lower-confidence engrams. */
+  readonly consider?: string
+  /** How many engrams were selected. */
+  readonly count?: number
 }
 
-/** Engrams at or above this confidence render as directives. */
-const DIRECTIVE_CONFIDENCE = 0.5
-
 /**
- * Conservative chars-per-token divisor for budget trimming.
- *
- * Deliberately an estimate rather than a tokenizer call: this runs on the
- * request path and must stay synchronous and cheap. Under-estimating tokens
- * would overshoot the budget, so the divisor errs small.
+ * Conservative chars-per-token divisor, matching `@plur-ai/claw`'s
+ * `estimateTokens`. Deliberately an estimate rather than a tokenizer call:
+ * this runs on the request path and must stay synchronous and cheap.
  */
 const CHARS_PER_TOKEN = 4
 
 /**
  * Render the memory block for the `plur:memory` system-prompt section.
  *
- * The format matches `@plur-ai/claw`'s assembler and the MCP session-start
- * block — identical output across hosts is a PLUR principle, enforced by the
- * format-parity test. Returns `''` for an empty set so the section contributes
- * nothing rather than a bare heading.
+ * Sections are dropped whole, least important first (`consider`, then
+ * `constraints`), rather than truncating mid-engram — a half-rendered engram is
+ * worse than an absent one, because the model reads it as a complete statement.
  *
- * @param engrams - selected engrams, already ranked by the caller.
+ * @param injection - the result of a PLUR injection call.
  * @param budgetTokens - approximate token ceiling for the whole block.
  * @returns the rendered block, or `''` when there is nothing to say.
  */
-export function renderBlock(engrams: readonly EngramLike[], budgetTokens: number): string {
-  if (engrams.length === 0) return ''
+export function renderBlock(injection: InjectionLike | undefined, budgetTokens: number): string {
+  if (!injection || (injection.count ?? 0) === 0) return ''
   const budgetChars = Math.max(0, budgetTokens) * CHARS_PER_TOKEN
   if (budgetChars === 0) return ''
 
-  const directives: string[] = []
-  const also: string[] = []
-  let used = 0
-
-  for (const engram of engrams) {
-    const confidence = engram.confidence ?? 0
-    const isDirective = confidence >= DIRECTIVE_CONFIDENCE
-    const line = isDirective && engram.domain
-      ? `[${engram.id}] ${engram.statement}\n  Domain: ${engram.domain}`
-      : `[${engram.id}] ${engram.statement}`
-    if (used + line.length > budgetChars) break
-    used += line.length
-    ;(isDirective ? directives : also).push(line)
+  // Same construction as @plur-ai/mcp's session-start block.
+  const assemble = (withConstraints: boolean, withConsider: boolean): string => {
+    const lines: string[] = []
+    if (injection.directives) lines.push('## DIRECTIVES\n', injection.directives)
+    if (withConstraints && injection.constraints) lines.push('\n## CONSTRAINTS\n', injection.constraints)
+    if (withConsider && injection.consider) lines.push('\n## ALSO CONSIDER\n', injection.consider)
+    return lines.join('\n')
   }
 
-  const sections: string[] = []
-  if (directives.length > 0) sections.push(`## DIRECTIVES\n\n${directives.join('\n\n')}`)
-  if (also.length > 0) sections.push(`## ALSO CONSIDER\n\n${also.join('\n')}`)
-  return sections.join('\n\n')
+  for (const [constraints, consider] of [[true, true], [true, false], [false, false]] as const) {
+    const block = assemble(constraints, consider)
+    if (block.length <= budgetChars) return block
+  }
+
+  // Even directives alone overflow: emit nothing rather than a truncated engram.
+  return ''
 }
 
 /**
