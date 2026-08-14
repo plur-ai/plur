@@ -75,7 +75,7 @@ export const CSS = `
 * { box-sizing: border-box; }
 body {
   margin: 0; background: var(--bg); color: var(--text);
-  font-family: var(--font-display); font-size: 15px; line-height: 1.55;
+  font-family: var(--font-display); font-size:17px; line-height: 1.55;
   -webkit-font-smoothing: antialiased;
 }
 .wrap { max-width: 1140px; margin: 0 auto; padding: var(--sp-7) var(--sp-6) var(--sp-8); }
@@ -84,10 +84,50 @@ a:hover { text-decoration: underline; }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
 .mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
 
-.page-head { display: flex; align-items: baseline; justify-content: space-between; gap: var(--sp-4); flex-wrap: wrap; margin-bottom: var(--sp-2); }
-.page-title { font-size: 24px; font-weight: 600; margin: 0; letter-spacing: -0.015em; }
-.page-where { font-family: var(--font-mono); font-size: 13px; color: var(--muted); }
-.page-sub { font-size: 14px; color: var(--text-tertiary); margin: 0 0 var(--sp-6); max-width: 68ch; }
+/* ── hero ─────────────────────────────────────────────────────────────────
+   The headline is a sentence with the store's real numbers set inside it,
+   rather than a stat card above a label. The numbers ARE the claim, so they
+   belong in the prose where they are read, not in a box beside it. */
+.hero { margin-bottom: var(--sp-6); }
+.hero-top {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: var(--sp-4); flex-wrap: wrap; margin-bottom: var(--sp-4);
+}
+.hero-brand {
+  font-family: var(--font-mono); font-size:12.5px; font-weight: 600;
+  letter-spacing: 0.14em; text-transform: uppercase; color: var(--text-tertiary);
+}
+.hero-brand .dot { color: var(--accent); margin: 0 0.5em; }
+.hero-title {
+  font-size: clamp(28px, 4.4vw, 44px); font-weight: 600; margin: 0;
+  letter-spacing: -0.025em; line-height: 1.14; max-width: 22ch;
+  text-wrap: balance;
+}
+/* The counts: same family as every other number on the page, so the eye
+   connects the headline to the table below it. */
+.hero-title em {
+  font-style: normal; font-family: var(--font-mono); font-weight: 600;
+  font-variant-numeric: tabular-nums; letter-spacing: -0.03em;
+  color: var(--accent);
+}
+.hero-sub {
+  font-size:18px; line-height: 1.55; color: var(--text-tertiary);
+  margin: var(--sp-4) 0 0; max-width: 62ch;
+}
+.hero-meta {
+  display: flex; align-items: center; gap: var(--sp-3); flex-wrap: wrap;
+  margin-top: var(--sp-5);
+}
+.page-where { font-family: var(--font-mono); font-size:13.5px; color: var(--muted); }
+
+/* ── language switch ──────────────────────────────────────────────────── */
+.lang { display: inline-flex; gap: 2px; padding: 2px; border: 1px solid var(--line); border-radius: 8px; }
+.lang a {
+  padding: 3px 10px; border-radius: 6px; font-size:13.5px; font-weight: 500;
+  color: var(--text-tertiary); text-decoration: none; transition: all 150ms ease;
+}
+.lang a:hover { color: var(--text); }
+.lang a[aria-current="true"] { background: rgba(var(--accent-rgb),0.12); color: var(--accent); }
 
 /* ── stat strip ───────────────────────────────────────────────────────── */
 .stats {
@@ -97,9 +137,10 @@ a:hover { text-decoration: underline; }
 }
 .stat { padding: var(--sp-4) var(--sp-5); border-right: 1px solid var(--line); }
 .stat:last-child { border-right: none; }
-.stat-value { font-family: var(--font-mono); font-size: 23px; font-variant-numeric: tabular-nums; line-height: 1.15; }
-.stat-label { font-size: 12px; color: var(--text-tertiary); margin-top: 2px; }
+.stat-value { font-family: var(--font-mono); font-size:26px; font-variant-numeric: tabular-nums; line-height: 1.15; }
+.stat-label { font-size:13.5px; color: var(--text-tertiary); margin-top: 2px; }
 .stat.warn .stat-value { color: var(--amber); }
+.stat.accent .stat-value { color: var(--accent); }
 
 /* ── widgets ──────────────────────────────────────────────────────────── */
 /* The chart earns more width than the list: 30 columns need room to read as a
@@ -110,36 +151,36 @@ a:hover { text-decoration: underline; }
   background: var(--bg-card); border: 1px solid var(--bg-card-border);
   border-radius: 12px; padding: var(--sp-5); overflow: hidden;
 }
-.card-title { font-size: 14px; font-weight: 500; margin: 0; }
-.card-sub { font-size: 12px; color: var(--text-tertiary); display: block; margin: 2px 0 var(--sp-4); }
+.card-title { font-size:16px; font-weight: 500; margin: 0; }
+.card-sub { font-size:13.5px; color: var(--text-tertiary); display: block; margin: 2px 0 var(--sp-4); }
 
 .bars { display: flex; align-items: flex-end; gap: 2px; height: 84px; }
 .bar { flex: 1; min-width: 2px; background: rgba(var(--accent-rgb),0.5); border-radius: 2px 2px 0 0; }
 .bar.empty { background: var(--line); }
-.bar-axis { display: flex; justify-content: space-between; font-family: var(--font-mono); font-size: 11px; color: var(--muted); margin-top: var(--sp-2); }
+.bar-axis { display: flex; justify-content: space-between; font-family: var(--font-mono); font-size:12.5px; color: var(--muted); margin-top: var(--sp-2); }
 
 /* One line per item — the previous card stacked six full statements and
    unbalanced the whole row against the sparse chart beside it. */
 .top-row { display: grid; grid-template-columns: 1fr auto; gap: var(--sp-3); align-items: baseline; padding: 7px 0; border-bottom: 1px solid var(--line); }
 .top-row:last-child { border-bottom: none; }
-.top-stmt { font-size: 13px; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.top-n { font-family: var(--font-mono); font-size: 12px; color: var(--accent); font-variant-numeric: tabular-nums; }
+.top-stmt { font-size:15px; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.top-n { font-family: var(--font-mono); font-size:13.5px; color: var(--accent); font-variant-numeric: tabular-nums; }
 
 /* ── controls ─────────────────────────────────────────────────────────── */
 .controls { display: flex; gap: var(--sp-3); align-items: center; flex-wrap: wrap; margin-bottom: var(--sp-3); }
 .seg { display: inline-flex; border: 1px solid var(--bg-card-border); border-radius: 8px; overflow: hidden; }
-.seg a { padding: 6px 13px; font-size: 13px; color: var(--text-tertiary); border-right: 1px solid var(--line); }
+.seg a { padding: 6px 13px; font-size:15px; color: var(--text-tertiary); border-right: 1px solid var(--line); }
 .seg a:last-child { border-right: none; }
 .seg a:hover { background: var(--row-hover); text-decoration: none; }
 .seg a[aria-current="true"] { background: rgba(var(--accent-rgb),0.12); color: var(--accent); }
 .controls form { display: flex; gap: var(--sp-2); flex: 1; min-width: 220px; }
 .controls input {
   flex: 1; background: var(--bg-subtle); border: 1px solid var(--bg-card-border); color: var(--text);
-  border-radius: 8px; padding: 7px 12px; font-size: 13px; font-family: inherit; min-width: 0;
+  border-radius: 8px; padding: 7px 12px; font-size:15px; font-family: inherit; min-width: 0;
 }
 .controls button {
   background: var(--bg-card); border: 1px solid var(--bg-card-border); color: var(--text-secondary);
-  border-radius: 8px; padding: 7px 14px; font-size: 13px; cursor: pointer; font-family: inherit;
+  border-radius: 8px; padding: 7px 14px; font-size:15px; cursor: pointer; font-family: inherit;
 }
 .controls button:hover { border-color: rgba(var(--accent-rgb),0.35); color: var(--text); }
 
@@ -161,7 +202,7 @@ a:hover { text-decoration: underline; }
   .rec-line .col-scope, .rec-line .col-date { display: none; }
 }
 .rec-head {
-  font-size: 11px; text-transform: uppercase; letter-spacing: 0.055em;
+  font-size:12.5px; text-transform: uppercase; letter-spacing: 0.055em;
   color: var(--text-tertiary); background: rgba(255,255,255,0.02);
   border-bottom: 1px solid var(--line);
 }
@@ -171,14 +212,14 @@ details.rec > summary { list-style: none; cursor: pointer; }
 details.rec > summary::-webkit-details-marker { display: none; }
 details.rec > summary:hover { background: var(--row-hover); }
 details.rec[open] > summary { background: var(--row-hover); }
-.rec-id { font-family: var(--font-mono); font-size: 12px; color: var(--text-tertiary); }
-.rec-stmt { font-size: 14px; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rec-id { font-family: var(--font-mono); font-size:13.5px; color: var(--text-tertiary); }
+.rec-stmt { font-size:16px; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* The row stays one truncated line even when open: the expanded body is the
    single place the full statement appears. Letting the summary wrap printed it
    twice and made the row height jump as you opened records. */
 details.rec[open] .rec-stmt { color: var(--text); }
-.rec-scope { font-family: var(--font-mono); font-size: 12px; color: var(--text-tertiary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.rec-date { font-family: var(--font-mono); font-size: 12px; color: var(--muted); }
+.rec-scope { font-family: var(--font-mono); font-size:13.5px; color: var(--text-tertiary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rec-date { font-family: var(--font-mono); font-size:13.5px; color: var(--muted); }
 
 /* THE SIGNATURE — recall weight as a quantity, not just a number.
    Recall is a power law here: one engram at 594, a median of 4, and a long
@@ -187,34 +228,33 @@ details.rec[open] .rec-stmt { color: var(--text); }
 .weight { display: flex; align-items: center; gap: 7px; }
 .weight-bar { flex: 1; height: 3px; border-radius: 2px; background: var(--line); overflow: hidden; }
 .weight-fill { display: block; height: 100%; background: var(--accent); border-radius: 2px; }
-.weight-n { font-family: var(--font-mono); font-size: 12px; font-variant-numeric: tabular-nums; color: var(--accent); min-width: 3ch; text-align: right; }
+.weight-n { font-family: var(--font-mono); font-size:13.5px; font-variant-numeric: tabular-nums; color: var(--accent); min-width: 3ch; text-align: right; }
 .weight-n.zero { color: var(--muted); }
 
 .rec-body { padding: var(--sp-2) var(--sp-5) var(--sp-5); background: var(--bg-subtle); }
 .rec-statement-full {
-  font-size: 15px; line-height: 1.6; color: var(--text);
+  font-size:17px; line-height: 1.6; color: var(--text);
   white-space: pre-wrap; overflow-wrap: anywhere; margin: 0 0 var(--sp-4); max-width: 84ch;
 }
-.rec-meta { display: flex; flex-wrap: wrap; gap: var(--sp-2) var(--sp-5); font-size: 12px; }
+.rec-meta { display: flex; flex-wrap: wrap; gap: var(--sp-2) var(--sp-5); font-size:13.5px; }
 .rec-meta div { display: flex; gap: 6px; }
 .rec-meta dt { color: var(--text-tertiary); }
 .rec-meta dd { margin: 0; font-family: var(--font-mono); color: var(--text-secondary); }
 
-.pill { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 10.5px; letter-spacing: 0.045em; text-transform: uppercase; white-space: nowrap; font-weight: 500; }
-.chip { display: inline-block; padding: 1px 7px; border-radius: 999px; background: var(--bg-code); border: 1px solid var(--line); font-size: 10.5px; color: var(--text-tertiary); white-space: nowrap; }
+.pill { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size:12px; letter-spacing: 0.045em; text-transform: uppercase; white-space: nowrap; font-weight: 500; }
+.chip { display: inline-block; padding: 1px 7px; border-radius: 999px; background: var(--bg-code); border: 1px solid var(--line); font-size:12px; color: var(--text-tertiary); white-space: nowrap; }
 .chip.violet { color: var(--violet); border-color: rgba(167,139,250,0.32); }
 
-.empty { padding: var(--sp-8); text-align: center; color: var(--text-tertiary); font-size: 14px; }
-.pager { display: flex; justify-content: space-between; align-items: center; margin-top: var(--sp-4); font-size: 13px; }
+.empty { padding: var(--sp-8); text-align: center; color: var(--text-tertiary); font-size:16px; }
+.pager { display: flex; justify-content: space-between; align-items: center; margin-top: var(--sp-4); font-size:15px; }
 .pager .off { color: var(--muted); }
-footer { margin-top: var(--sp-8); padding-top: var(--sp-4); border-top: 1px solid var(--line); font-size: 12px; color: var(--muted); }
+footer { margin-top: var(--sp-8); padding-top: var(--sp-4); border-top: 1px solid var(--line); font-size:13.5px; color: var(--muted); }
 
 /* ── header aside, footer ─────────────────────────────────────────────── */
-.page-aside { display: inline-flex; align-items: center; gap: var(--sp-3); }
 .open-folder { display: inline; margin: 0; }
 .open-folder button {
   background: transparent; border: 1px solid var(--bg-card-border); color: var(--text-tertiary);
-  border-radius: 7px; padding: 4px 11px; font-size: 12px; font-family: inherit; cursor: pointer;
+  border-radius: 7px; padding: 4px 11px; font-size:13.5px; font-family: inherit; cursor: pointer;
   transition: border-color 140ms ease, color 140ms ease;
 }
 .open-folder button:hover { border-color: rgba(var(--accent-rgb),0.4); color: var(--accent); }
@@ -222,7 +262,7 @@ footer { margin-top: var(--sp-8); padding-top: var(--sp-4); border-top: 1px soli
 footer {
   margin-top: var(--sp-8); padding-top: var(--sp-4); border-top: 1px solid var(--line);
   display: flex; justify-content: space-between; align-items: center; gap: var(--sp-4);
-  flex-wrap: wrap; font-size: 12px; color: var(--muted);
+  flex-wrap: wrap; font-size:13.5px; color: var(--muted);
 }
 .plur { display: inline-flex; gap: var(--sp-4); flex-wrap: wrap; }
 /* The four words are what the name stands for, so they get a little life on

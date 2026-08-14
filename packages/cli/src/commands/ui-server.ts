@@ -12,12 +12,14 @@
  */
 import { spawn } from 'node:child_process'
 import { createServer, type Server } from 'node:http'
-import { renderBrowse, renderPage, type EngramRow } from '@plur-ai/ui'
+import { renderBrowse, renderPage, resolveLang, strings, type EngramRow } from '@plur-ai/ui'
 
 /** Where to send people who want to help. */
 const LINKS = {
   requestFeature: 'https://github.com/plur-ai/plur/issues/new',
   contribute: 'https://github.com/plur-ai/plur/blob/main/CONTRIBUTING.md',
+  github: 'https://github.com/plur-ai/plur',
+  website: 'https://plur.ai',
 } as const
 
 /** Options accepted by `plur ui`. */
@@ -101,8 +103,8 @@ function errorPage(message: string): string {
     .replace(/"/g, '&quot;').replace(/'/g, '&#39;')
   return renderPage({
     title: 'PLUR Memory — error',
-    body: `<h1 class="page-title">Memory unavailable</h1>
-<p class="page-sub">PLUR could not read the store.</p>
+    body: `<header class="hero"><h1 class="hero-title">Memory unavailable</h1>
+<p class="hero-sub">PLUR could not read the store.</p></header>
 <div class="records"><div class="empty">${safe}</div></div>`,
   })
 }
@@ -136,7 +138,8 @@ export function createUiServer(opts: UiServerOptions): Server {
       // browser cannot pop a file manager window on the operator's desktop.
       if (url.pathname === '/open-store' && req.method === 'POST' && opts.openPath) {
         revealFolder(opts.openPath)
-        res.writeHead(303, { ...headers, location: '/' })
+        const back = url.searchParams.get('lang') === 'zh' ? '/?lang=zh' : '/'
+        res.writeHead(303, { ...headers, location: back })
         res.end()
         return
       }
@@ -155,7 +158,11 @@ export function createUiServer(opts: UiServerOptions): Server {
       try {
         const rows = await opts.load()
         const offset = Number(url.searchParams.get('offset') ?? '0')
+        // An explicit ?lang wins; otherwise follow the browser's own preference,
+        // so a Chinese-locale machine opens in Chinese without being asked.
+        const lang = resolveLang(url.searchParams.get('lang') ?? req.headers['accept-language'])
         const body = renderBrowse({
+          lang,
           rows,
           query: {
             q: url.searchParams.get('q') ?? undefined,
@@ -167,7 +174,7 @@ export function createUiServer(opts: UiServerOptions): Server {
           links: { ...LINKS, ...(opts.openPath ? { openFolder: '/open-store' } : {}) },
         })
         res.writeHead(200, headers)
-        res.end(renderPage({ title: 'PLUR Memory', body }))
+        res.end(renderPage({ title: strings(lang).docTitle, body, lang }))
       } catch (error: unknown) {
         res.writeHead(500, headers)
         res.end(errorPage(error instanceof Error ? error.message : String(error)))

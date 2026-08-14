@@ -9,17 +9,27 @@
  *
  * @module @plur-ai/ui
  */
-export { renderBrowse, renderPage, htmlEscape, type BrowseOptions } from './views.js'
+export { renderBrowse, renderPage, htmlEscape, type BrowseOptions, type BrowseLinks, type BrowseMode } from './views.js'
+export {
+  formatDate,
+  resolveLang,
+  strings,
+  fill,
+  type Lang,
+  type Strings,
+} from './i18n.js'
 export {
   filterEngrams,
   memoryStats,
   recallCount,
   topByRecall,
+  storeSpan,
   writtenPerDay,
   type BrowseQuery,
   type BrowsePage,
   type DayCount,
   type EngramRow,
   type MemoryStats,
+  type StoreSpan,
 } from './query.js'
 export { CSS } from './theme.js'

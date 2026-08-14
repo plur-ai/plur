@@ -19,11 +19,13 @@ import {
   filterEngrams,
   memoryStats,
   recallCount,
+  storeSpan,
   topByRecall,
   writtenPerDay,
   type BrowseQuery,
   type EngramRow,
 } from './query.js'
+import { fill, formatDate, resolveLang, strings, type Lang } from './i18n.js'
 import { CSS } from './theme.js'
 
 /** Escape a value for interpolation into HTML text or an attribute. */
@@ -38,9 +40,9 @@ export function htmlEscape(value: string): string {
 }
 
 /** Wrap a body in a complete, offline-capable document. */
-export function renderPage(opts: { title: string; body: string }): string {
+export function renderPage(opts: { title: string; body: string; lang?: Lang }): string {
   return `<!doctype html>
-<html lang="en">
+<html lang="${opts.lang === 'zh' ? 'zh-Hans' : 'en'}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -90,17 +92,17 @@ function weightPct(count: number, peak: number): number {
 }
 
 /** The recall-weight cell: the page's one piece of visual editorialising. */
-function weightCell(count: number, peak: number, hot = false): string {
+function weightCell(count: number, peak: number, hot: boolean, t: ReturnType<typeof strings>): string {
   if (count === 0) {
     return `<span class="weight"><span class="weight-bar"></span><span class="weight-n zero" title="Never recalled">0</span></span>`
   }
   // `hot` is set for the single busiest engram on the page and nowhere else.
   const cls = hot ? 'weight-fill hot' : 'weight-fill'
-  return `<span class="weight" title="Recalled ${count} time${count === 1 ? '' : 's'}"><span class="weight-bar"><i class="${cls}" style="width:${weightPct(count, peak)}%"></i></span><span class="weight-n">${count}</span></span>`
+  return `<span class="weight" title="${htmlEscape(count === 0 ? t.neverRecalled : fill(t.recalledTimes, { n: count }))}"><span class="weight-bar"><i class="${cls}" style="width:${weightPct(count, peak)}%"></i></span><span class="weight-n">${count}</span></span>`
 }
 
 /** Engrams written per day, over the trailing month. */
-function writtenChart(rows: readonly EngramRow[], now: Date): string {
+function writtenChart(rows: readonly EngramRow[], now: Date, t: ReturnType<typeof strings>): string {
   const days = writtenPerDay(rows, 30, now)
   const peak = Math.max(1, ...days.map(d => d.count))
   const total = days.reduce((sum, d) => sum + d.count, 0)
@@ -109,56 +111,60 @@ function writtenChart(rows: readonly EngramRow[], now: Date): string {
     return `<div class="${d.count === 0 ? 'bar empty' : 'bar'}" style="height:${height}%" title="${htmlEscape(d.date)} · ${d.count}"></div>`
   }).join('')
   return `<div class="card">
-  <p class="card-title">Written</p>
-  <span class="card-sub">${total} engram${total === 1 ? '' : 's'} learned in the last 30 days · peak ${peak}</span>
+  <p class="card-title">${htmlEscape(t.written)}</p>
+  <span class="card-sub">${htmlEscape(fill(t.writtenSub, { n: total, peak }))}</span>
   <div class="bars">${bars}</div>
   <div class="bar-axis"><span>${htmlEscape(days[0]?.date ?? '')}</span><span>${htmlEscape(days.at(-1)?.date ?? '')}</span></div>
 </div>`
 }
 
 /** The most-recalled list — one line per item, by design. */
-function topRecalledCard(rows: readonly EngramRow[]): string {
+function topRecalledCard(rows: readonly EngramRow[], t: ReturnType<typeof strings>): string {
   const top = topByRecall(rows, 8)
   const peak = recallCount(top[0])
   const body = top.length === 0
-    ? `<div class="empty" style="padding:var(--sp-6) 0;">Nothing recalled yet.</div>`
+    ? `<div class="empty" style="padding:var(--sp-6) 0;">${htmlEscape(t.nothingRecalled)}</div>`
     : top.map(r => `  <div class="top-row">
     <span class="top-stmt" title="${htmlEscape(r.statement ?? '')}">${htmlEscape(r.statement ?? '')}</span>
     <span class="top-n">${recallCount(r)}</span>
   </div>`).join('\n')
   return `<div class="card">
-  <p class="card-title">Most recalled</p>
-  <span class="card-sub">what the agent actually pulls into context${peak > 0 ? ` · top ${peak}` : ''}</span>
+  <p class="card-title">${htmlEscape(t.mostRecalled)}</p>
+  <span class="card-sub">${htmlEscape(t.mostRecalledSub)}${peak > 0 ? ` · ${peak}` : ''}</span>
 ${body}
 </div>`
 }
 
 /** The headline stat strip. */
-function statStrip(rows: readonly EngramRow[]): string {
+function statStrip(rows: readonly EngramRow[], t: ReturnType<typeof strings>): string {
   const s = memoryStats(rows)
+  const n = (v: number) => v.toLocaleString('en-US')
+  // Deliberately does NOT repeat the engram and recall totals: the headline
+  // above already states both, and a strip that echoes them reads as filler.
+  // This describes the store's composition instead.
   return `<div class="stats">
-  <div class="stat"><div class="stat-value">${s.total.toLocaleString('en-US')}</div><div class="stat-label">Engrams</div></div>
-  <div class="stat"><div class="stat-value">${s.recalled.toLocaleString('en-US')}</div><div class="stat-label">Recalled</div></div>
-  <div class="stat${s.neverRecalledPct >= 50 ? ' warn' : ''}"><div class="stat-value">${s.neverRecalled.toLocaleString('en-US')}</div><div class="stat-label">Never recalled${s.total > 0 ? ` · ${s.neverRecalledPct}%` : ''}</div></div>
-  <div class="stat"><div class="stat-value">${s.scopes}</div><div class="stat-label">Scope${s.scopes === 1 ? '' : 's'}</div></div>
+  <div class="stat accent"><div class="stat-value">${n(s.recalled)}</div><div class="stat-label">${htmlEscape(t.statRecalled)}</div></div>
+  <div class="stat${s.neverRecalledPct >= 50 ? ' warn' : ''}"><div class="stat-value">${n(s.neverRecalled)}</div><div class="stat-label">${htmlEscape(t.statNever)}${s.total > 0 ? ` · ${s.neverRecalledPct}%` : ''}</div></div>
+  <div class="stat"><div class="stat-value">${n(s.scopes)}</div><div class="stat-label">${htmlEscape(t.statScopes)}</div></div>
+  <div class="stat"><div class="stat-value">${n(s.domains)}</div><div class="stat-label">${htmlEscape(t.statDomains)}</div></div>
 </div>`
 }
 
 /** One expandable record. */
-function record(r: EngramRow, peak: number, hot = false): string {
+function record(r: EngramRow, peak: number, hot: boolean, t: ReturnType<typeof strings>): string {
   const stmt = r.statement ?? ''
   const n = recallCount(r)
   const created = createdOn(r) ?? '—'
-  const pinned = r.pinned === true ? ` <span class="chip violet">pinned</span>` : ''
+  const pinned = r.pinned === true ? ` <span class="chip violet">${htmlEscape(t.pinned)}</span>` : ''
   const meta: Array<[string, string]> = [
-    ['ID', r.id ?? '—'],
-    ['Scope', r.scope ?? '—'],
-    ['Created', created],
+    [t.metaId, r.id ?? '—'],
+    [t.metaScope, r.scope ?? '—'],
+    [t.metaCreated, created],
   ]
-  if (r.domain) meta.push(['Domain', r.domain])
-  if (r.commitment) meta.push(['Commitment', r.commitment])
-  if (r.activation?.last_accessed) meta.push(['Last active', r.activation.last_accessed.slice(0, 10)])
-  meta.push(['Recalls', String(n)])
+  if (r.domain) meta.push([t.metaDomain, r.domain])
+  if (r.commitment) meta.push([t.metaCommitment, r.commitment])
+  if (r.activation?.last_accessed) meta.push([t.metaLastActive, r.activation.last_accessed.slice(0, 10)])
+  meta.push([t.metaRecalls, String(n)])
 
   return `<details class="rec">
   <summary>
@@ -166,7 +172,7 @@ function record(r: EngramRow, peak: number, hot = false): string {
       <span class="rec-id" title="${htmlEscape(r.id ?? '')}">${htmlEscape((r.id ?? '').slice(0, 20))}</span>
       <span class="rec-stmt">${htmlEscape(stmt)}</span>
       <span class="rec-scope col-scope" title="${htmlEscape(r.scope ?? '')}">${htmlEscape(r.scope ?? '—')}</span>
-      ${weightCell(n, peak, hot)}
+      ${weightCell(n, peak, hot, t)}
       <span class="rec-date col-date">${htmlEscape(created)}</span>
     </div>
   </summary>
@@ -186,6 +192,10 @@ export interface BrowseLinks {
   requestFeature?: string
   /** Where to contribute. */
   contribute?: string
+  /** The source repository. */
+  github?: string
+  /** The product site. */
+  website?: string
   /**
    * Endpoint that opens the store folder in the OS file manager.
    *
@@ -210,6 +220,8 @@ export interface BrowseOptions {
   where?: string
   /** Header links. */
   links?: BrowseLinks
+  /** Display language. Defaults to English. */
+  lang?: Lang
 }
 
 /**
@@ -219,13 +231,17 @@ export interface BrowseOptions {
  * a first-time reader something true rather than decorating the page. It
  * appears here and nowhere else.
  */
-function footer(links: BrowseLinks): string {
+function footer(links: BrowseLinks, t: ReturnType<typeof strings>): string {
+  const link = (href: string | undefined, label: string): string =>
+    href ? `<a href="${htmlEscape(href)}" target="_blank" rel="noreferrer noopener">${htmlEscape(label)}</a>` : ''
   const items = [
-    links.requestFeature ? `<a href="${htmlEscape(links.requestFeature)}" target="_blank" rel="noreferrer noopener">Request a feature</a>` : '',
-    links.contribute ? `<a href="${htmlEscape(links.contribute)}" target="_blank" rel="noreferrer noopener">Contribute</a>` : '',
+    link(links.requestFeature, t.requestFeature),
+    link(links.contribute, t.contribute),
+    link(links.github, t.github),
+    link(links.website, t.website),
   ].filter(Boolean).join('<span class="sep">·</span>')
   return `<footer>
-  <span class="plur"><span>☮️ Peace</span><span>💜 Love</span><span>🤝 Unity</span><span>✊ Respect</span></span>
+  <span class="plur"><span>☮️ ${htmlEscape(t.peace)}</span><span>💜 ${htmlEscape(t.love)}</span><span>🤝 ${htmlEscape(t.unity)}</span><span>✊ ${htmlEscape(t.respect)}</span></span>
   ${items ? `<span class="foot-links">${items}</span>` : ''}
 </footer>`
 }
@@ -241,11 +257,15 @@ export function renderBrowse(opts: BrowseOptions): string {
   const action = opts.action ?? '/'
   const mode: BrowseMode = opts.mode === 'all' ? 'all' : 'top'
   const q = opts.query.q ?? ''
+  const lang = resolveLang(opts.lang)
+  const t = strings(lang)
 
   const href = (params: Record<string, string>): string => {
     const p = new URLSearchParams()
     if (q) p.set('q', q)
     if (opts.query.scope) p.set('scope', opts.query.scope)
+    // Carried on every link, so switching language does not reset the page.
+    if (lang !== 'en') p.set('lang', lang)
     for (const [k, v] of Object.entries(params)) { if (v) p.set(k, v); else p.delete(k) }
     const qs = p.toString()
     return htmlEscape(qs ? `${action}?${qs}` : action)
@@ -266,56 +286,81 @@ export function renderBrowse(opts: BrowseOptions): string {
   const peak = Math.max(1, ...opts.rows.map(r => recallCount(r)))
 
   const list = ordered.length === 0
-    ? `<div class="empty">${mode === 'top' && !q ? 'No engrams have been recalled yet.' : 'No engrams match.'}</div>`
+    ? `<div class="empty">${htmlEscape(mode === 'top' && !q ? t.emptyNoRecalls : t.emptyNoMatch)}</div>`
     : `<div class="rec-head">
-    <span>ID</span><span>Statement</span><span class="col-scope">Scope</span><span>Recalls</span><span class="col-date">Created</span>
+    <span>${htmlEscape(t.colId)}</span><span>${htmlEscape(t.colStatement)}</span><span class="col-scope">${htmlEscape(t.colScope)}</span><span>${htmlEscape(t.colRecalls)}</span><span class="col-date">${htmlEscape(t.colCreated)}</span>
   </div>
-${ordered.map(r => record(r, peak, recallCount(r) === peak && peak > 0)).join('\n')}`
+${ordered.map(r => record(r, peak, recallCount(r) === peak && peak > 0, t)).join('\n')}`
 
   const hasPrev = page.offset > 0
   const hasNext = page.offset + page.limit < page.total
   const pager = page.total > page.limit
     ? `<div class="pager">
-  ${hasPrev ? `<a href="${href({ mode, offset: String(Math.max(0, page.offset - page.limit)) })}">&larr; Previous</a>` : '<span class="off">&larr; Previous</span>'}
-  <span class="off">${page.total.toLocaleString('en-US')} match${page.total === 1 ? '' : 'es'} · showing ${ordered.length} from ${page.offset}</span>
-  ${hasNext ? `<a href="${href({ mode, offset: String(page.offset + page.limit) })}">Next &rarr;</a>` : '<span class="off">Next &rarr;</span>'}
+  ${hasPrev ? `<a href="${href({ mode, offset: String(Math.max(0, page.offset - page.limit)) })}">&larr; ${htmlEscape(t.prev)}</a>` : `<span class="off">&larr; ${htmlEscape(t.prev)}</span>`}
+  <span class="off">${htmlEscape(fill(t.pagerCount, { total: page.total.toLocaleString('en-US'), shown: ordered.length, offset: page.offset }))}</span>
+  ${hasNext ? `<a href="${href({ mode, offset: String(page.offset + page.limit) })}">${htmlEscape(t.next)} &rarr;</a>` : `<span class="off">${htmlEscape(t.next)} &rarr;</span>`}
 </div>`
     : ''
 
   const links = opts.links ?? {}
   const openFolder = links.openFolder
-    ? `<form class="open-folder" method="POST" action="${htmlEscape(links.openFolder)}"><button type="submit" title="Open the store folder in your file manager">Open folder</button></form>`
+    ? `<form class="open-folder" method="POST" action="${htmlEscape(lang === 'zh' ? `${links.openFolder}?lang=zh` : links.openFolder)}"><button type="submit" title="${htmlEscape(t.openFolderHint)}">${htmlEscape(t.openFolder)}</button></form>`
     : ''
 
-  return `<div class="page-head">
-  <h1 class="page-title">Memory</h1>
-  <span class="page-aside">
+  // The store's own scale is the headline. A viewer that opens on the word
+  // "Memory" says nothing; one that opens on 27,987 recalls says what the
+  // thing is for.
+  const span = storeSpan(opts.rows)
+  const n = (v: number) => v.toLocaleString('en-US')
+  const headline = opts.rows.length === 0
+    ? htmlEscape(t.heroEmpty)
+    : fill(htmlEscape(t.heroTitle), {
+        n: `<em>${n(opts.rows.length)}</em>`,
+        r: `<em>${n(span.totalRecalls)}</em>`,
+      })
+  const standfirst = opts.rows.length === 0
+    ? htmlEscape(t.heroSubEmpty)
+    : fill(htmlEscape(t.heroSub), { since: formatDate(span.earliest, lang) })
+
+  const langSwitch = `<nav class="lang" aria-label="${htmlEscape(t.langSwitch)}">
+    <a href="${href({ lang: '' })}" aria-current="${lang === 'en'}" lang="en">EN</a>
+    <a href="${href({ lang: 'zh' })}" aria-current="${lang === 'zh'}" lang="zh-Hans">中文</a>
+  </nav>`
+
+  return `<header class="hero">
+  <div class="hero-top">
+    <span class="hero-brand">PLUR<span class="dot">·</span>${htmlEscape(t.brand)}</span>
+    ${langSwitch}
+  </div>
+  <h1 class="hero-title">${headline}</h1>
+  <p class="hero-sub">${standfirst}</p>
+  <div class="hero-meta">
     ${opts.where ? `<span class="page-where">${htmlEscape(opts.where)}</span>` : ''}
     ${openFolder}
-  </span>
-</div>
-<p class="page-sub">What your agents have learned, and what they actually use. Everything here is local to this machine. Select a row to read the full engram.</p>
+  </div>
+</header>
 
-${statStrip(opts.rows)}
+${statStrip(opts.rows, t)}
 
 <div class="widgets">
-${writtenChart(opts.rows, now)}
-${topRecalledCard(opts.rows)}
+${writtenChart(opts.rows, now, t)}
+${topRecalledCard(opts.rows, t)}
 </div>
 
 <div class="controls">
-  <nav class="seg" aria-label="Which engrams to list">
-    <a href="${href({ mode: '', offset: '' })}" aria-current="${mode === 'top'}">Most recalled</a>
-    <a href="${href({ mode: 'all', offset: '' })}" aria-current="${mode === 'all'}">All</a>
+  <nav class="seg" aria-label="${htmlEscape(t.modeTop)} / ${htmlEscape(t.modeAll)}">
+    <a href="${href({ mode: '', offset: '' })}" aria-current="${mode === 'top'}">${htmlEscape(t.modeTop)}</a>
+    <a href="${href({ mode: 'all', offset: '' })}" aria-current="${mode === 'all'}">${htmlEscape(t.modeAll)}</a>
   </nav>
   <form method="GET" action="${htmlEscape(action)}">
     ${mode === 'all' ? '<input type="hidden" name="mode" value="all">' : ''}
-    <input name="q" value="${htmlEscape(q)}" placeholder="Search statement or ID" autocomplete="off" aria-label="Search statement or ID">
-    <button type="submit">Search</button>
+    ${lang !== 'en' ? `<input type="hidden" name="lang" value="${lang}">` : ''}
+    <input name="q" value="${htmlEscape(q)}" placeholder="${htmlEscape(t.searchPlaceholder)}" autocomplete="off" aria-label="${htmlEscape(t.searchPlaceholder)}">
+    <button type="submit">${htmlEscape(t.search)}</button>
   </form>
 </div>
 
 <div class="records">${list}</div>
 ${pager}
-${footer(links)}`
+${footer(links, t)}`
 }

@@ -147,6 +147,8 @@ export interface MemoryStats {
   neverRecalledPct: number
   /** Distinct scopes present. */
   scopes: number
+  /** Distinct domains present. */
+  domains: number
 }
 
 /**
@@ -180,9 +182,11 @@ export function memoryStats(rows: readonly EngramRow[]): MemoryStats {
   const total = list.length
   let recalled = 0
   const scopes = new Set<string>()
+  const domains = new Set<string>()
   for (const row of list) {
     if (recallCount(row) > 0) recalled++
     if (row.scope) scopes.add(row.scope)
+    if (row.domain) domains.add(row.domain)
   }
   const neverRecalled = total - recalled
   return {
@@ -191,6 +195,7 @@ export function memoryStats(rows: readonly EngramRow[]): MemoryStats {
     neverRecalled,
     neverRecalledPct: pctNeverRecalled(neverRecalled, total),
     scopes: scopes.size,
+    domains: domains.size,
   }
 }
 
@@ -209,6 +214,41 @@ export function topByRecall(rows: readonly EngramRow[], limit: number): EngramRo
     .filter(row => row && recallCount(row) > 0)
     .sort((a, b) => recallCount(b) - recallCount(a))
     .slice(0, Math.max(0, limit))
+}
+
+/** The span a store covers, and how hard it has been worked. */
+export interface StoreSpan {
+  /** Earliest creation date present, or `undefined` on an empty store. */
+  earliest?: string
+  /** Latest creation date present. */
+  latest?: string
+  /** Every recall across every engram, summed. */
+  totalRecalls: number
+}
+
+/**
+ * How far back the store goes and how much it has been used.
+ *
+ * The header's job is to say what this store IS, and a store's age plus its
+ * total recalls is the honest answer — a count alone says nothing about whether
+ * any of it was ever read.
+ *
+ * @param rows - all engrams in scope.
+ * @returns the span and the total recall count.
+ */
+export function storeSpan(rows: readonly EngramRow[]): StoreSpan {
+  let earliest: string | undefined
+  let latest: string | undefined
+  let totalRecalls = 0
+  for (const row of Array.isArray(rows) ? rows : []) {
+    if (!row || typeof row !== 'object') continue
+    totalRecalls += recallCount(row)
+    const day = createdOn(row)
+    if (!day) continue
+    if (earliest === undefined || day < earliest) earliest = day
+    if (latest === undefined || day > latest) latest = day
+  }
+  return { earliest, latest, totalRecalls }
 }
 
 /** One column of the written-per-day chart. */
