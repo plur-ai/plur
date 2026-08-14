@@ -66,4 +66,36 @@ describe('an unreachable store is not reported as "not found" (#907)', () => {
     expect(message, 'a reachable 404 must read as absence, not as uncertainty')
       .not.toMatch(/could not be reached/)
   })
+  it('forget records an unreachable store instead of claiming plain absence', async () => {
+    // The destructive path. It still CONTINUES the walk — `forget handles
+    // remote server error gracefully` (#84) asserts a degraded fleet must not
+    // stop a retire, and that availability is worth keeping. What changes is
+    // that the terminal message can no longer claim absence it never verified.
+    globalThis.fetch = vi.fn(async () => { throw new Error('ECONNREFUSED') }) as never
+
+    const message = await plur.forget('ENG-GPL-2026-08-13-025', 'testing', { force: true }).then(
+      () => 'retired', (e: Error) => e.message,
+    )
+    expect(message, 'the phrase the #84 contract and its test depend on').toContain('Engram not found')
+    expect(message, 'a bare "not found" claims a search that did not happen')
+      .toMatch(/could not be reached/)
+    expect(message).toContain(SCOPE)
+  })
+
+  it('forget still reports plain absence when every store answered 404', async () => {
+    // The control, on the destructive side: a reachable 404 IS absence and
+    // must not be dressed up as uncertainty.
+    globalThis.fetch = vi.fn(async () => ({
+      ok: false, status: 404,
+      json: async (): Promise<unknown> => null,
+      text: async (): Promise<string> => '',
+    } as unknown as Response)) as never
+
+    const message = await plur.forget('ENG-GPL-2026-08-13-025', 'testing', { force: true }).then(
+      () => 'retired', (e: Error) => e.message,
+    )
+    expect(message).toContain('Engram not found')
+    expect(message, 'a reachable 404 must read as absence, not uncertainty')
+      .not.toMatch(/could not be reached/)
+  })
 })

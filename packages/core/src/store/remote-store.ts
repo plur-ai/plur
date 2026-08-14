@@ -545,6 +545,39 @@ export class RemoteStore implements EngramStore {
     return typeof row?.id === 'string' && row.id === id
   }
 
+  /**
+   * Ownership probe with a THIRD state: `unknown` (#907).
+   *
+   * `getById` collapses "not here" and "could not look" onto `null`, so a walk
+   * using it cannot tell a store that answered 404 from one that never
+   * answered. `existsById` separates them but answers a STRICTER question —
+   * it refuses to treat a bare 200 as proof, because proxies answer 200 with
+   * envelope payloads on unrecognised routes. Swapping it in as an ownership
+   * test broke five tests including "a successful remote retire still
+   * succeeds".
+   *
+   * So ownership here is decided by `reshape`, exactly as `getById` decides
+   * it — same acceptance, no behaviour change for reachable stores — and only
+   * the failure modes are split out.
+   */
+  async probeById(id: string): Promise<'owned' | 'absent' | 'unknown'> {
+    let r: Response
+    try {
+      r = await this.fetchBounded(`${this.apiBase}/engrams/${encodeURIComponent(id)}`, {
+        headers: this.headers(),
+      })
+    } catch {
+      return 'unknown'
+    }
+    if (r.status === 404) return 'absent'
+    // Any other non-ok says nothing about whether the row exists.
+    if (!r.ok) return 'unknown'
+    const row = await r.json().catch(() => null)
+    if (row === null) return 'unknown'
+    return this.reshape(row as { id?: unknown; scope?: unknown; status?: unknown; data?: unknown })
+      ? 'owned' : 'absent'
+  }
+
   /** Remove → DELETE /api/v1/engrams/:id (server soft-retires). */
   async remove(id: string): Promise<boolean> {
     const r = await this.fetchBounded(`${this.apiBase}/engrams/${encodeURIComponent(id)}`, {

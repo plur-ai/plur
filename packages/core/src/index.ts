@@ -5912,6 +5912,11 @@ export class Plur {
 
     // Strip store prefix before querying remote. See: #86
     let refusedBy: string | null = null
+    /** Stores this walk could not reach — so "not found" cannot claim absence
+     *  it never verified (#907). Recorded, NOT thrown on: the existing
+     *  contract (`forget handles remote server error gracefully`, #84) is that
+     *  a degraded fleet must not stop a retire, and that is worth keeping. */
+    const unreachedStores: string[] = []
     for (const entry of (this.config.stores ?? [])) {
       if (!entry.url) continue
       const serverId = this._stripRemotePrefix(id, entry.scope)
@@ -5924,6 +5929,33 @@ export class Plur {
         continue
       }
       const driver = this._getRemoteDriver({ url: entry.url, token: entry.token, scope: entry.scope })
+      // Tri-state (#907). `getById` alone cannot distinguish "this store does
+      // not have it" from "this store did not answer", so an unreachable
+      // remote was walked past and the engram reported as simply not found —
+      // absence the walk never verified, which is #831's harm by another route.
+      //
+      // The walk CONTINUES on `unknown` rather than refusing: `forget handles
+      // remote server error gracefully` (#84) asserts a degraded fleet does
+      // not stop a retire, and that availability is worth keeping. What
+      // changes is only that the store is recorded, so the terminal message
+      // below stops claiming knowledge it does not have. Same resolution
+      // `feedback` already uses.
+      // Optional capability: a driver without `probeById` (an injected stub, a
+      // third-party implementation) keeps the previous two-state behaviour
+      // rather than crashing. Absence of the capability is not a reason to
+      // fail a retire.
+      const ownership: 'owned' | 'absent' | 'unknown' = driver.probeById
+        ? await driver.probeById(serverId)
+        : ((await driver.getById(serverId)) ? 'owned' : 'absent')
+      if (ownership === 'unknown') {
+        unreachedStores.push(entry.scope ?? entry.url!)
+        logger.warning(
+          `[plur] could not reach "${entry.scope ?? entry.url}" while looking for ${id} — `
+          + `it may hold this engram.`,
+        )
+        continue
+      }
+      if (ownership === 'absent') continue
       const found = await driver.getById(serverId)
       if (found) {
         const removed = await driver.remove(serverId)
@@ -5952,7 +5984,16 @@ export class Plur {
         + `Check that the token has delete rights for that scope.`,
       )
     }
-    throw new Error(`Engram not found: ${id}`)
+    // Still "Engram not found" — the existing contract and its test both
+    // depend on that phrase — but never a bare claim of absence when a store
+    // could not be reached (#907).
+    throw new Error(
+      unreachedStores.length > 0
+        ? `Engram not found: ${id} — but ${unreachedStores.length} store(s) could not be reached `
+          + `(${unreachedStores.join(', ')}). This is "not found where I could look", not `
+          + `"does not exist". Retry, or pass scope explicitly to target a store directly.`
+        : `Engram not found: ${id}`,
+    )
   }
 
   /**
