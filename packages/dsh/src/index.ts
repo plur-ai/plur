@@ -163,8 +163,16 @@ export function apply(ctx: Context, config: Config, injected?: PlurClient): void
   registerTools(ctx, { config, counters, plur, resolveScope, queue })
   registerLearning(ctx, { config, counters, plur, resolveScope, queue })
   registerCapture(ctx, { config, counters, plur, resolveScope, queue })
-  registerSkills(ctx)
-  registerCommands(ctx, { config, counters })
+  // Skills and commands are OPTIONAL surfaces, so they mount in their own
+  // scoped fibers via ctx.inject() rather than joining this plugin's `inject`
+  // list. Two reasons, and the first one is a crash we shipped past every unit
+  // test: Cordis throws on merely READING `ctx.skills` when `skills` is not
+  // declared — a `typeof ctx.skills?.register` guard never runs, because the
+  // property ACCESS throws first, which took the whole dsh boot down. Second,
+  // making them hard requirements would stop memory working at all on a minimal
+  // profile that composes no skill or command registry.
+  ctx.inject(['skills'], scoped => { registerSkills(scoped) })
+  ctx.inject(['commands'], scoped => { registerCommands(scoped, { config, counters }) })
 
   if (config.injectionMode !== 'off') {
     ctx.on('agent/pre-step', async ({ agent, turn, step, signal }, next): Promise<PreStepDecision> => {

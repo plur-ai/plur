@@ -5,6 +5,10 @@
  * so installing the plugin is the only step — nothing to copy into a skills
  * directory.
  *
+ * MUST be reached through `ctx.inject(['skills'], ...)`. Cordis throws on
+ * reading an undeclared service, so the guard below cannot save a caller that
+ * has not declared the dependency — the property access throws first.
+ *
  * @module
  */
 import type { Context } from '@deepseek-ai/cordis'

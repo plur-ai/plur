@@ -19,6 +19,12 @@ function makeCtx() {
     skills: { register: (s: any) => { skills.push(s); return () => {} } },
     commands: { register: (c: any) => { commands.push(c); return () => {} } },
     logger: { warn: vi.fn(), info: vi.fn() },
+    // Cordis mounts a scoped fiber once the named services exist. This double
+    // provides them, so it runs the callback immediately with the same context.
+    inject: (deps: string[], cb: (scoped: any) => void) => {
+      if (deps.every(d => ctx[d] !== undefined)) cb(ctx)
+      return { then: (r: any) => r(undefined) }
+    },
   }
   return {
     ctx,
