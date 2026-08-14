@@ -56,12 +56,19 @@ export function detectLearning(text: string): LearningCandidate | undefined {
   return undefined
 }
 
+/** The slice of the originating session scope resolution needs. */
+export interface CallerSession {
+  readonly id?: string
+  readonly header?: { readonly cwd?: string }
+}
+
 /** Dependencies for the learning subscription. */
 export interface LearnDeps {
   config: Config
   counters: Counters
   plur?: PlurClient
-  resolveScope: () => Promise<string>
+  /** Resolves the scope of the session the event came from. */
+  resolveScope: (session?: CallerSession) => Promise<string>
 }
 
 interface TextBlock {
@@ -85,7 +92,7 @@ export function registerLearning(ctx: Context, deps: LearnDeps): void {
   if (!config.autoLearn) return
   const queue = createWriteQueue()
 
-  ctx.on('session/event', (_session: unknown, event: unknown) => {
+  ctx.on('session/event', (session: unknown, event: unknown) => {
     const record = event as { type?: string; data?: unknown } | null
     if (record?.type !== 'user/message') return
     const data = record.data as
@@ -104,7 +111,7 @@ export function registerLearning(ctx: Context, deps: LearnDeps): void {
     if (!candidate) return
 
     void queue(() => guard(async () => {
-      const scope = await resolveScope()
+      const scope = await resolveScope(session as CallerSession)
       await plur?.learn?.({ statement: candidate.statement, scope })
       counters.bump('learn_captured')
     }, { timeoutMs: config.timeoutMs, onError: () => counters.bump('errors_swallowed') }))

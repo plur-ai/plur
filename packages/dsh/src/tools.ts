@@ -20,8 +20,20 @@ export interface ToolDeps {
   config: Config
   counters: Counters
   plur?: PlurClient
-  /** Resolves the scope for the calling session. */
-  resolveScope: () => Promise<string>
+  /**
+   * Resolves the scope for the CALLING session.
+   *
+   * Takes the agent because dsh's default profile is a multi-session server:
+   * resolving a shared or default scope here would read one project's memories
+   * into another project's session, or write them there.
+   */
+  resolveScope: (agent?: CallerAgent) => Promise<string>
+}
+
+/** The slice of the calling agent scope resolution needs. */
+export interface CallerAgent {
+  readonly id?: string
+  readonly session?: { readonly header?: { readonly cwd?: string } }
 }
 
 /** Canonical tool value: one text payload, kept lossless-JSON. */
@@ -53,6 +65,10 @@ const UNAVAILABLE = 'PLUR is unavailable right now; continuing without memory.'
 export function registerTools(ctx: Context, deps: ToolDeps): Array<() => void> {
   const { config, counters, plur, resolveScope } = deps
 
+  /** Read the calling agent off the registry-supplied execution context. */
+  const callerOf = (exec: unknown): CallerAgent | undefined =>
+    (exec as { agent?: CallerAgent } | null | undefined)?.agent
+
   /** Run a tool body under the never-throw guard and shape the canonical value. */
   const body = async (fn: () => Promise<string>): Promise<TextValue> => {
     const out = await guard(fn, {
@@ -74,9 +90,9 @@ export function registerTools(ctx: Context, deps: ToolDeps): Array<() => void> {
         additionalProperties: false,
       },
       output: TEXT_OUTPUT,
-      execute: (args: unknown) => body(async () => {
+      execute: (args: unknown, exec: unknown) => body(async () => {
         const query = String((args as { query?: unknown } | null)?.query ?? '')
-        const scope = await resolveScope()
+        const scope = await resolveScope(callerOf(exec))
         const results = (await plur?.recall?.(query, { scope, limit: 10 })) ?? []
         if (results.length === 0) return 'No matching engrams.'
         return results.map(r => `[${r.id}] ${r.statement}`).join('\n')
@@ -96,11 +112,11 @@ export function registerTools(ctx: Context, deps: ToolDeps): Array<() => void> {
         additionalProperties: false,
       },
       output: TEXT_OUTPUT,
-      execute: (args: unknown) => body(async () => {
+      execute: (args: unknown, exec: unknown) => body(async () => {
         const input = args as { statement?: unknown; domain?: unknown } | null
         const statement = String(input?.statement ?? '').trim()
         if (!statement) return 'Nothing to store: statement was empty.'
-        const scope = await resolveScope()
+        const scope = await resolveScope(callerOf(exec))
         await plur?.learn?.({
           statement,
           domain: input?.domain === undefined ? undefined : String(input.domain),
@@ -160,8 +176,8 @@ export function registerTools(ctx: Context, deps: ToolDeps): Array<() => void> {
         'Report memory-system health and this session\'s memory activity counters. Use when asked why something was or was not remembered.',
       parameters: { type: 'object', properties: {}, additionalProperties: false },
       output: TEXT_OUTPUT,
-      execute: () => body(async () => {
-        const scope = await resolveScope()
+      execute: (_args: unknown, exec: unknown) => body(async () => {
+        const scope = await resolveScope(callerOf(exec))
         const snapshot = counters.snapshot()
         return [
           `scope: ${scope}`,

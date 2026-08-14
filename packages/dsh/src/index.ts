@@ -91,7 +91,23 @@ export function apply(ctx: Context, config: Config, plur?: PlurClient): void {
   const live = new Map<string, AgentState>()
   const onError = () => counters.bump('errors_swallowed')
 
-  const resolveScope = () => scopes.resolve('shared', undefined)
+  /**
+   * Resolve the scope of whichever session is calling.
+   *
+   * Tools receive the calling `agent` on their execution context; the
+   * `session/event` paths receive the session. Both carry an id and a cwd,
+   * which is all the resolver needs. Falling back to a single shared id here
+   * would collapse every concurrent session onto one scope — the cross-project
+   * leak this indirection exists to prevent.
+   */
+  const resolveScope = (caller?: {
+    id?: string
+    session?: { header?: { cwd?: string } }
+    header?: { cwd?: string }
+  }): Promise<string> => {
+    const cwd = caller?.session?.header?.cwd ?? caller?.header?.cwd
+    return scopes.resolve(caller?.id ?? `anon:${cwd ?? 'none'}`, cwd)
+  }
 
   registerTools(ctx, { config, counters, plur, resolveScope })
   registerLearning(ctx, { config, counters, plur, resolveScope })

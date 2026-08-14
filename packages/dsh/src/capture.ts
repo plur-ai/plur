@@ -23,7 +23,8 @@ export interface CaptureDeps {
   config: Config
   counters: Counters
   plur?: PlurClient
-  resolveScope: () => Promise<string>
+  /** Resolves the scope of the session the event came from. */
+  resolveScope: (session?: { id?: string; header?: { cwd?: string } }) => Promise<string>
 }
 
 /**
@@ -45,8 +46,9 @@ export function registerCapture(ctx: Context, deps: CaptureDeps): void {
     const events = (agent as { session?: { events?: readonly LogEvent[] } } | null)?.session?.events ?? []
     const summary = lastAssistantText(events)
     if (!summary) return
+    const session = (agent as { session?: { id?: string; header?: { cwd?: string } } } | null)?.session
     void queue(() => guard(async () => {
-      const scope = await resolveScope()
+      const scope = await resolveScope(session)
       await plur?.capture?.({ summary: summary.slice(0, SUMMARY_MAX_CHARS), scope })
     }, opts))
   })
@@ -54,8 +56,9 @@ export function registerCapture(ctx: Context, deps: CaptureDeps): void {
   ctx.on('session/event', (session: unknown, event: unknown) => {
     if ((event as { type?: string } | null)?.type !== 'compaction/start') return
     const events = (session as { events?: readonly LogEvent[] } | null)?.events ?? []
+    const owner = session as { id?: string; header?: { cwd?: string } } | null
     void queue(() => guard(async () => {
-      const scope = await resolveScope()
+      const scope = await resolveScope(owner ?? undefined)
       await plur?.compactLearn?.({ events, scope })
     }, opts))
   })
