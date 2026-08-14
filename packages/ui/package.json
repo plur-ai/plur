@@ -4,14 +4,40 @@
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
-  "files": ["dist"],
-  "scripts": { "build": "tsup", "test": "vitest run" },
-  "devDependencies": { "@types/node": "^22.0.0" },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0"
+  },
   "license": "Apache-2.0",
-  "description": "Local memory viewer for PLUR — pure HTML render functions, no framework, no bundler",
-  "keywords": ["plur", "memory", "engram", "viewer", "ui"],
+  "description": "Local memory viewer for PLUR \u2014 pure HTML render functions, no framework, no bundler",
+  "keywords": [
+    "plur",
+    "memory",
+    "engram",
+    "viewer",
+    "ui"
+  ],
   "homepage": "https://plur.ai",
-  "repository": { "type": "git", "url": "https://github.com/plur-ai/plur", "directory": "packages/ui" },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/plur-ai/plur",
+    "directory": "packages/ui"
+  },
   "author": "PLUR <info@plur.ai>",
-  "exports": { ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" } }
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./server": {
+      "types": "./dist/server.d.ts",
+      "import": "./dist/server.js"
+    }
+  }
 }

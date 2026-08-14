@@ -33,7 +33,7 @@ const SCOPE = 'project:conformance'
 
 describe('the real Plur satisfies PlurClient', () => {
   it('exposes every method the plugin calls', () => {
-    for (const method of ['injectHybrid', 'inject', 'recall', 'learn', 'forget', 'feedback', 'capture'] as const) {
+    for (const method of ['injectHybrid', 'inject', 'recall', 'learn', 'forget', 'feedback', 'capture', 'list', 'status'] as const) {
       expect(typeof plur[method], `Plur.${method}`).toBe('function')
     }
   })
@@ -88,5 +88,23 @@ describe('the real Plur satisfies PlurClient', () => {
   it('forget accepts an id, a reason, and a scope', async () => {
     const stored = await plur.learn!('Conformance: this one gets retired.', { scope: SCOPE }) as { id: string }
     await expect(plur.forget!(stored.id, 'conformance test', { scope: SCOPE })).resolves.not.toThrow()
+  })
+
+  it('list returns the rows the memory viewer renders', async () => {
+    // The viewer reads `list()` and nothing else; if core ever changes it to
+    // return a paged envelope, /plur-memory renders an empty table in silence.
+    const rows = await plur.list!()
+    expect(Array.isArray(rows)).toBe(true)
+    const row = (rows as Array<{ id?: unknown; statement?: unknown }>)[0]
+    if (row) {
+      expect(row.id).toBeTypeOf('string')
+      expect(row.statement).toBeTypeOf('string')
+    }
+  })
+
+  it('status exposes storage_root, which the viewer shows and reveals', async () => {
+    const status = await plur.status!()
+    expect(status).toBeTypeOf('object')
+    expect(status.storage_root).toBeTypeOf('string')
   })
 })

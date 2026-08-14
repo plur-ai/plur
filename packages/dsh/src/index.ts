@@ -15,7 +15,6 @@
  *
  * @module @plur-ai/dsh
  */
-import { createRequire } from 'node:module'
 import type { Context } from '@deepseek-ai/cordis'
 import type { PreStepDecision } from '@deepseek-ai/dsh-agent'
 // Side-effect type imports. Each of these packages augments Cordis's Context and
@@ -37,6 +36,8 @@ import { createScopeResolver } from './scope.js'
 import { recallQueryFrom, type LogEvent } from './session-log.js'
 import { readWorkspaceScope } from './workspace-scope.js'
 import { registerSkills } from './skills.js'
+import { createEngine } from './engine.js'
+import { createViewer } from './viewer.js'
 import { registerTools } from './tools.js'
 
 export { Config }
@@ -90,27 +91,6 @@ interface AgentLike {
   readonly session?: {
     readonly events?: readonly LogEvent[]
     readonly header?: { readonly cwd?: string }
-  }
-}
-
-/**
- * Construct the real PLUR engine.
- *
- * Imported lazily and defensively: `@plur-ai/core` pulls in a WASM store, and a
- * machine where that fails to initialise must degrade to "no memory" rather than
- * taking down the host agent at plugin-load time.
- *
- * @param config - supplies the optional store path.
- * @returns the engine, or `undefined` when it cannot be constructed.
- */
-function createEngine(config: Config): PlurClient | undefined {
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const require = createRequire(import.meta.url)
-    const { Plur } = require('@plur-ai/core') as { Plur: new (o: { path?: string }) => PlurClient }
-    return new Plur({ path: config.path })
-  } catch {
-    return undefined
   }
 }
 
@@ -171,8 +151,16 @@ export function apply(ctx: Context, config: Config, injected?: PlurClient): void
   // property ACCESS throws first, which took the whole dsh boot down. Second,
   // making them hard requirements would stop memory working at all on a minimal
   // profile that composes no skill or command registry.
+  // Started lazily by /plur-memory and stopped with the plugin, so a host that
+  // never opens the viewer never binds a port.
+  const viewer = createViewer(plur)
+  // ctx.effect() is Cordis's disposal seam — there is no 'dispose' event. The
+  // returned teardown runs when this plugin's fiber goes away, so unloading
+  // PLUR also releases the viewer's port.
+  ctx.effect(() => () => { void viewer.dispose() }, 'plur-viewer')
+
   ctx.inject(['skills'], scoped => { registerSkills(scoped) })
-  ctx.inject(['commands'], scoped => { registerCommands(scoped, { config, counters }) })
+  ctx.inject(['commands'], scoped => { registerCommands(scoped, { config, counters, viewer }) })
 
   if (config.injectionMode !== 'off') {
     ctx.on('agent/pre-step', async ({ agent, turn, step, signal }, next): Promise<PreStepDecision> => {

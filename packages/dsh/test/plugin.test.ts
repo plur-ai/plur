@@ -9,6 +9,7 @@ function makeCtx() {
   const tools: any[] = []
   const skills: any[] = []
   const commands: any[] = []
+  const teardowns: Array<() => void> = []
   const ctx: any = {
     on: (event: string, fn: Function) => {
       listeners.set(event, [...(listeners.get(event) ?? []), fn])
@@ -19,6 +20,13 @@ function makeCtx() {
     skills: { register: (s: any) => { skills.push(s); return () => {} } },
     commands: { register: (c: any) => { commands.push(c); return () => {} } },
     logger: { warn: vi.fn(), info: vi.fn() },
+    // Cordis's disposal seam. Real Contexts have it; the double must too, or
+    // the harness passes while production takes `ctx.effect is not a function`.
+    effect: (execute: () => (() => void) | void) => {
+      const teardown = execute()
+      if (typeof teardown === 'function') teardowns.push(teardown)
+      return () => {}
+    },
     // Cordis mounts a scoped fiber once the named services exist. This double
     // provides them, so it runs the callback immediately with the same context.
     inject: (deps: string[], cb: (scoped: any) => void) => {
@@ -33,6 +41,7 @@ function makeCtx() {
     skills,
     commands,
     listeners,
+    teardowns,
     fire: (event: string, ...args: any[]) =>
       Promise.all((listeners.get(event) ?? []).map(fn => fn(...args))),
   }

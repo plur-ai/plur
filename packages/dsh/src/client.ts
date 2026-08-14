@@ -50,4 +50,8 @@ export interface PlurClient {
   capture?(summary: string, context?: { scope?: string }): Promise<unknown>
   /** Extract learnings from a range about to be shadowed by compaction. */
   compactLearn?(input: { events: readonly LogEvent[]; scope: string }): Promise<unknown>
+  /** Every engram in scope, backing the memory viewer. */
+  list?(options?: { scope?: string }): Promise<readonly unknown[]>
+  /** Store diagnostics — the viewer shows `storage_root` and `engram_count`. */
+  status?(): Promise<{ storage_root?: unknown; engram_count?: unknown }>
 }
