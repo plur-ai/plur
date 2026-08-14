@@ -2,7 +2,9 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "outDir": "dist",
-    "rootDir": "src"
+    "rootDir": "src",
+    // findLastIndex on arrays (session-log.ts) is ES2023.
+    "lib": ["ES2023"]
   },
   "include": ["src"]
 }
