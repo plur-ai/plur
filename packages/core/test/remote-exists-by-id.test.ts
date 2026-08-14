@@ -15,6 +15,8 @@
  * stored. A hang here is not slow, it is lost writes.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { readFileSync } from 'fs'
+import { join } from 'path'
 import { RemoteStore } from '../src/store/remote-store.js'
 
 const URL = 'https://plur.example.com/sse'
@@ -120,5 +122,57 @@ describe('RemoteStore.existsById', () => {
       .toBeUndefined()
     expect(outcome.message).toMatch(/timed out/)
     expect(outcome.message).not.toMatch(/^existence probe for ENG-X-001 failed/)
+  })
+})
+
+/**
+ * Every endpoint is bounded, not just the two that were noticed individually.
+ *
+ * `load()` was bounded by #504 and `existsById` by the 2026-08-13 audit. The
+ * other six — `/me`, `append`, `getById`, `remove`, `feedback`, `patch` — were
+ * bare `fetch`, inheriting undici's 300s `headersTimeout`. `forget()` and
+ * `feedback()` walk every configured store calling `getById`, and several of
+ * those paths hold the primary store lock while they do it.
+ *
+ * Reproduced before the fix: one `feedback()` against a store with an
+ * unreachable host did not return in 120 seconds.
+ */
+describe('every RemoteStore request is bounded', () => {
+  let originalFetch: typeof globalThis.fetch
+  beforeEach(() => { originalFetch = globalThis.fetch })
+  afterEach(() => { globalThis.fetch = originalFetch; vi.useRealTimers() })
+
+  /** Never settles unless aborted — stands in for a host that stalls after the handshake. */
+  const stalling = () => vi.fn((_u: string, init?: { signal?: AbortSignal }) =>
+    new Promise((_res, rej) => {
+      init?.signal?.addEventListener('abort', () => rej(new Error('aborted')))
+    })) as never
+
+  it.each([
+    ['getById', (s: RemoteStore) => s.getById('ENG-X-001')],
+    ['remove', (s: RemoteStore) => s.remove('ENG-X-001')],
+    ['append', (s: RemoteStore) => s.append({ id: 'ENG-X-001', statement: 'x' } as never)],
+    ['feedback', (s: RemoteStore) => s.feedback('ENG-X-001', 'positive')],
+  ])('%s settles rather than hanging when the host stalls', async (_name, call) => {
+    vi.useFakeTimers()
+    globalThis.fetch = stalling()
+
+    // Settle handler attached BEFORE advancing, or the rejection lands
+    // unhandled — see the note in the timeout test above.
+    const settled = call(store()).then(() => 'settled', () => 'settled')
+    await vi.advanceTimersByTimeAsync(31_000)
+
+    await expect(settled, 'the call never returned — it would hold the store lock').resolves.toBe('settled')
+  })
+
+  it('the bound is one shared helper, so a new endpoint inherits it', () => {
+    // The reason this is a helper and not six call-site fixes: a rule enforced
+    // by convention at N sites holds at N-1 of them. Asserted against the
+    // source so a seventh bare `fetch` fails here rather than in production.
+    const src = readFileSync(join(__dirname, '..', 'src', 'store', 'remote-store.ts'), 'utf8')
+    const bare = [...src.matchAll(/await fetch\(/g)]
+    // Exactly two remain by design: `fetchBounded` itself, and the two paths
+    // that build their own AbortController (`load`'s pager, `existsById`).
+    expect(bare.length, 'a bare fetch was added without a timeout').toBeLessThanOrEqual(3)
   })
 })
