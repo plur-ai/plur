@@ -20,7 +20,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { mkdtempSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
-import { Plur, readHistory } from '@plur-ai/core'
+import { Plur, readHistory, storePrefix } from '@plur-ai/core'
 import { getToolDefinitions, _resetSessionTelemetry } from '../src/tools.js'
 
 describe('plur_session_scope (#243)', () => {
@@ -245,7 +245,9 @@ describe('plur_session_scope — remote routing and dialing (#243 × #778)', () 
 
     const engram = await callTool('plur_learn', { statement: 'routed to the enterprise store via the adjusted scope' })
     expect(engram.scope).toBe('group:plur/eng')
-    expect(engram.id).toBe('ENG-REMOTE-001')
+    // The server assigned ENG-REMOTE-001; plur_learn reports it in the same
+    // namespaced form plur_recall uses for that store (#914).
+    expect(engram.id).toBe(`ENG-${storePrefix('group:plur/eng')}-REMOTE-001`)
     const engramPosts = fetchMock.mock.calls.filter(([u, i]) =>
       (i as any)?.method === 'POST' && String(u).includes('/api/v1/engrams'))
     expect(engramPosts.length).toBe(1)

@@ -608,6 +608,21 @@ export function loadAllPacks(packsDir: string): LoadedPack[] {
   return packs
 }
 
+/**
+ * Namespace a store-local id the way the read paths hand it back.
+ *
+ * A store's ids are prefixed with `ENG-{storePrefix(scope)}-` on load so ids
+ * from different stores cannot collide locally. The write path has to return
+ * the same shape, or a caller that records what it just wrote is holding an id
+ * no read path ever produced (#914). Idempotent: an already-namespaced id is
+ * returned unchanged, so the two call sites can't double-prefix each other.
+ */
+export function namespaceEngramId(id: string, scope: string): string {
+  const prefix = storePrefix(scope)
+  if (new RegExp(`^(ENG|ABS|META)-${prefix}-`).test(id)) return id
+  return id.replace(/^(ENG|ABS|META)-/, `$1-${prefix}-`)
+}
+
 /** Derive a 3-char prefix from a store scope (e.g. 'datafund' → 'DFU', 'project:myapp' → 'PMY') */
 export function storePrefix(scope: string): string {
   const parts = scope.split(/[:\-_./]/).filter(Boolean)
