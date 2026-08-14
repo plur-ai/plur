@@ -1,6 +1,7 @@
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
+import { VERSION } from '../src/index.js'
 
 const root = join(import.meta.dirname, '..')
 const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
@@ -25,5 +26,39 @@ describe('dsh bundle manifest', () => {
   it('mounts this package by name in the patch', () => {
     const patch = readFileSync(join(root, 'cordis.patch.yml'), 'utf8')
     expect(patch).toContain('name: "@plur-ai/dsh"')
+  })
+
+  it('keeps the exported VERSION in step with package.json', () => {
+    expect(VERSION).toBe(pkg.version)
+  })
+})
+
+describe('README', () => {
+  const readme = readFileSync(join(root, 'README.md'), 'utf8')
+  // Prose wraps; assert on meaning, not on where the line breaks fall.
+  const flat = readme.replace(/\s+/g, ' ').toLowerCase()
+
+  it('documents the exact install command', () => {
+    expect(readme).toContain('dsh plugin --profile web add @plur-ai/dsh')
+  })
+
+  it('discloses that memories reach the configured model provider', () => {
+    expect(flat).toContain('model provider')
+    expect(readme).toContain('api.deepseek.com')
+  })
+
+  it('states that the scope defaults closed', () => {
+    expect(readme).toContain('project:dsh')
+    expect(flat).toContain('not** your whole memory store')
+  })
+
+  it('ships a Chinese README, matching the ecosystem convention', () => {
+    expect(existsSync(join(root, 'README.zh.md'))).toBe(true)
+  })
+
+  it('is shipped in the npm tarball so npmjs.com renders it', () => {
+    // `files` omits README.md, but npm always includes it — assert the Chinese
+    // one explicitly, since npm does NOT include that by default.
+    expect(pkg.files).toContain('README.zh.md')
   })
 })

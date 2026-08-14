@@ -107,6 +107,21 @@ prints the recovery path: check the project history (usually just lag), re-run `
 if the filename is already registered from a partial upload — bump to the next patch, because the
 version is burned and cannot be reused.
 
+## Independent version tracks
+
+`core` / `mcp` / `cli` / `migrate` / `hermes` / `python` bump together on the
+release version. Three packages do not, and are only touched when their flag is
+passed:
+
+| Track | Flag | Why it is independent |
+|---|---|---|
+| `@plur-ai/claw` | `--claw <ver>` | ClawHub publish + plugin lifecycle; lockstep bumps would regress its npm version |
+| `@plur-ai/dsh` | `--dsh <ver>` | Pinned to a pre-1.0 DeepSeek Harness line; moves on that ecosystem's cadence |
+| `plur-langchain` | (manual) | Ships on its own schedule |
+
+Each track's files are listed in `CLAUDE.md` under "Version bumps". A partial bump
+is caught by that package's own manifest test, not at publish time.
+
 ## Manual publish (one package)
 
 When `main` has a version bump that hasn't reached npm yet — e.g. `@plur-ai/claw@0.9.10` is on

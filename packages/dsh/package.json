@@ -6,7 +6,8 @@
   "types": "dist/index.d.ts",
   "files": [
     "dist",
-    "cordis.patch.yml"
+    "cordis.patch.yml",
+    "README.zh.md"
   ],
   "dsh": {
     "bundle": {
