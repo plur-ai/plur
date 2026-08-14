@@ -254,9 +254,17 @@ export function loadEngrams(filePath: string): Engram[] {
  * opaque payload they never inspect would be far more invasive — and far easier
  * to get wrong — than one map keyed on the thing they already agree about.
  *
- * A stale entry cannot cause loss: `saveEngrams` re-reads the file's current
- * quarantine before writing, and an id that has since become valid is
- * de-duplicated against the outgoing array.
+ * PRECONDITION, not a self-healing property: a writer must `loadEngrams` the
+ * same path before it saves. `saveEngrams` re-attaches whatever this map holds
+ * for that path from the last load IN THIS PROCESS — it does not re-parse the
+ * file, and an earlier version of this comment claimed it did (2026-08-13
+ * data-loss audit, F6). Every in-tree writer satisfies the precondition
+ * because they all load under the lock immediately before saving, so the
+ * entries are fresh in practice; the point of stating it as a precondition is
+ * that a future writer which saves WITHOUT a preceding load would either
+ * re-inject a stale quarantine set or, with an empty map, drop quarantined
+ * rows. An id that has since become valid is de-duplicated against the
+ * outgoing array, so the failure mode is confined to that one case.
  */
 const quarantineByPath = new Map<string, unknown[]>()
 

@@ -13,7 +13,7 @@
  * opinions about whether it is reachable.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync } from 'fs'
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync, existsSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import yaml from 'js-yaml'
@@ -162,5 +162,61 @@ describe('flushOutbox honours the breaker (#785)', () => {
     await plur.flushOutbox()
 
     expect(isHostInCooldown(REMOTE, Date.now(), statePath).inCooldown).toBe(true)
+  })
+})
+
+/**
+ * The two legs must use ONE health file even when PLUR_PATH and `path` differ.
+ *
+ * Every test above sets both to the same directory — the one configuration in
+ * which this cannot fail. The write leg called `isHostInCooldown` and
+ * `recordWriteOutcome` without a `statePath`, so it took the default, which
+ * resolves from PLUR_PATH; the recall leg passes `remoteHealthStatePath()`,
+ * which resolves from `paths.root`. For `new Plur({ path })`, `plur --path`,
+ * and every embedded consumer those are different files, so #785's "one host,
+ * one opinion" held only by coincidence of the fixture (2026-08-13 panel).
+ */
+describe('both legs share one health file across path configurations (#785)', () => {
+  let storeDir: string
+  let envDir: string
+  let originalFetch: typeof globalThis.fetch
+
+  beforeEach(() => {
+    storeDir = mkdtempSync(join(tmpdir(), 'plur-store-'))
+    envDir = mkdtempSync(join(tmpdir(), 'plur-env-'))
+    // Deliberately DIFFERENT from the engine's root.
+    process.env.PLUR_PATH = envDir
+    originalFetch = globalThis.fetch
+    globalThis.fetch = vi.fn(async () => { throw new Error('fetch failed') }) as never
+    writeFileSync(join(storeDir, 'config.yaml'), yaml.dump({
+      stores: [{ url: REMOTE, token: 'tok', scope: 'group:acme/team', shared: true, readonly: false }],
+      index: false,
+    }))
+  })
+  afterEach(() => {
+    globalThis.fetch = originalFetch
+    delete process.env.PLUR_PATH
+    rmSync(storeDir, { recursive: true, force: true })
+    rmSync(envDir, { recursive: true, force: true })
+  })
+
+  it('a flush failure lands in the file the recall leg reads', async () => {
+    const plur = new Plur({ path: storeDir })
+    for (let i = 0; i < BREAKER_FAILURE_THRESHOLD; i++) {
+      await plur.learn(`queued team fact ${i}`, { scope: 'group:acme/team', type: 'behavioral' })
+    }
+    await new Promise(r => setTimeout(r, 60))
+    await plur.flushOutbox()
+
+    // The engine's own answer to "where does health state live".
+    const recallLegPath = plur.remoteHealthStatePath()
+    expect(recallLegPath.startsWith(storeDir), 'fixture assumption: root drives the recall leg').toBe(true)
+    expect(
+      isHostInCooldown(REMOTE, Date.now(), recallLegPath).inCooldown,
+      'the write leg recorded its failures somewhere the recall leg never reads',
+    ).toBe(true)
+
+    // …and NOT in the PLUR_PATH-derived file, which is where they used to go.
+    expect(existsSync(join(envDir, 'cache', 'remote-health.json'))).toBe(false)
   })
 })

@@ -262,9 +262,17 @@ describe('tokenizer contract (#834)', () => {
    */
   it('output is pinned to TOKENIZER_VERSION — bump the version if this fails', () => {
     // Bumped 2 -> 3 by #833/#832: the tokenizer now covers every script rather
-    // than ASCII + Han, so stores carrying tokens derived under v2 must be
-    // re-derived (`plur reindex-tokens`) or their rows go unreachable.
-    expect(TOKENIZER_VERSION).toBe(3)
+    // than ASCII + Han. Bumped 3 -> 4 by the 2026-08-13 panel: the space-less
+    // run now uses `Script_Extensions`, so characters that belong to a script
+    // without being it (U+30FC ー, the Han iteration mark 々) join their run
+    // instead of terminating it. Either way, stores carrying tokens derived
+    // under the older version must be re-derived (`plur reindex-tokens`) or
+    // their rows go unreachable.
+    //
+    // The Han fixture below is UNCHANGED across 3 -> 4, which is the point of
+    // pinning it: the version bump is required by what the change COULD alter,
+    // not only by what it did.
+    expect(TOKENIZER_VERSION).toBe(4)
     expect(ftsTokenize('测试部署应该用 docker compose')).toEqual([
       'docker', 'compose',
       '测试', '试部', '部署', '署应', '应该', '该用',

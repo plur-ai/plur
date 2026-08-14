@@ -120,6 +120,41 @@ describe('the length floor is script-aware (#832)', () => {
   })
 })
 
+/**
+ * A character can belong to a script without BEING that script. The 2026-08-13
+ * panel measured the consequence: U+30FC ー, the prolonged sound mark in
+ * essentially every Japanese loanword, is `Script=Common`, so a `Script=`-based
+ * run regex terminated at it.
+ */
+describe('script-extension characters join their run, not split it', () => {
+  it('a katakana word with a prolonged sound mark is one run', () => {
+    const tokens = ftsTokenize('コンピューター')
+    // Under `Script=Katakana` the run stopped dead at the mark: the regex
+    // matched only コンピュ, and the tail leaked into the WORD path as the
+    // single token ーター. Result: ["ーター","コン","ンピ","ピュ"] — three
+    // bigrams for a seven-character word, and a word-shaped token that no
+    // query will ever produce.
+    expect(tokens).toEqual(['コン', 'ンピ', 'ピュ', 'ュー', 'ータ', 'ター'])
+    expect(tokens, 'the tail of the word was unreachable').toContain('ター')
+    expect(tokens, 'the run leaked a word-path token').not.toContain('ーター')
+  })
+
+  it('a query term matches the document that contains it', () => {
+    // The user-visible property, and the reason this matters: bigrams cut at
+    // the wrong offsets mean the query and the document never share a token.
+    const doc = ftsTokenize('データベースの設定を確認する')
+    const query = ftsTokenize('ベース')
+    expect(query.length, 'the query must tokenize to something').toBeGreaterThan(0)
+    expect(query.some(t => doc.includes(t)), 'no shared token — the document is unfindable').toBe(true)
+  })
+
+  it('the Han iteration mark stays inside its run', () => {
+    // 々 repeats the preceding character and is Script=Common too.
+    const tokens = ftsTokenize('人々の設定')
+    expect(tokens).toContain('人々')
+  })
+})
+
 describe('English tokenization is untouched (#833 regression guard)', () => {
   it('produces the same tokens as before for plain ASCII', () => {
     expect(ftsTokenize('The quick brown fox jumps over the lazy dog'))

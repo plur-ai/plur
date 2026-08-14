@@ -39,6 +39,10 @@ function makePrimaryQueryStore() {
       updateMany: async () => {},
       nextEngramId: async () => 'ENG-STUB-001',
       searchBM25: async (q: string) => { calls.push(`bm25:${q}`); return [] as Engram[] },
+      searchBM25Exhaustive: async (q: string) => {
+        calls.push(`exhaustive:${q}`)
+        return { rows: [] as Engram[], exhausted: true }
+      },
       searchVector: async () => { calls.push('vector'); return [] },
     },
   }
@@ -86,6 +90,34 @@ describe('ReadonlyStoreGuard forwards the query-adapter surface (#830)', () => {
     // nextEngramId is NOT a read: an implementation that makes allocation
     // collision-safe does so by CONSUMING the id, which mutates the store.
     await expect(guard.nextEngramId!('2026-08-13')).rejects.toBeInstanceOf(ReadonlyStoreError)
+  })
+
+  it('forwards EVERY query-adapter read the inner store declares', () => {
+    // A structural check, not another per-member case, because the per-member
+    // cases are what missed `searchBM25Exhaustive` when #753 added it: the
+    // guard shipped without it, `recall()` silently kept widening 3L → 9L →
+    // 27L against a read-only Postgres store, and nobody noticed because a
+    // 2-3x cost regression is invisible where a crash is not. Enumerating
+    // instead means the NEXT member fails here on the day it lands.
+    const { store } = makePrimaryQueryStore()
+    const guard = new ReadonlyStoreGuard(store as never) as unknown as Record<string, unknown>
+    const READS = ['searchBM25', 'searchBM25Exhaustive', 'searchVector'] as const
+    for (const name of READS) {
+      expect(typeof guard[name], `${name} was not forwarded — pushdown degrades silently`)
+        .toBe('function')
+    }
+    expect(guard.role).toBe('primary')
+    expect(guard.vectorIndex).toEqual({ kind: 'hnsw' })
+  })
+
+  it('the forwarded exhaustion hook reaches the inner store', async () => {
+    const { store, calls } = makePrimaryQueryStore()
+    const guard = new ReadonlyStoreGuard(store as never) as unknown as {
+      searchBM25Exhaustive: (q: string, o: { limit: number }) => Promise<{ exhausted: boolean }>
+    }
+    const res = await guard.searchBM25Exhaustive('docker', { limit: 10 })
+    expect(calls).toContain('exhaustive:docker')
+    expect(res.exhausted).toBe(true)
   })
 
   it('does not invent a query surface for a store that has none', () => {

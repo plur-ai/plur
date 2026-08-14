@@ -43,9 +43,17 @@
  * until someone remembers to add it. A Proxy forwarding everything except a
  * write deny-list would not have this failure mode. It is still the right shape
  * HERE, because the two failure modes are not symmetric: a missed entry on a
- * whitelist loses functionality and is discovered; a missed entry on a
- * deny-list PERMITS A WRITE on a path whose entire purpose is that it cannot
- * write. On a safety guard, fail closed.
+ * whitelist loses functionality, where a missed entry on a deny-list PERMITS A
+ * WRITE on a path whose entire purpose is that it cannot write. On a safety
+ * guard, fail closed.
+ *
+ * This argument used to end "…loses functionality AND SOMEONE NOTICES", and
+ * that half was false. #753 added `searchBM25Exhaustive` to the query-adapter
+ * surface hours after #830's whitelist landed, this file was not updated, and
+ * nobody noticed — because the loss was a 2-3x cost regression rather than a
+ * crash. Fail-closed remains right; "it gets caught" does not. The structural
+ * test in `readonly-query-adapter.test.ts` enumerates the surface so the next
+ * member fails on the day it lands rather than in the next audit.
  */
 import type { Engram } from '../schemas/engram.js'
 import type { PrimaryStore, PrimaryStoreKind } from './primary-store.js'
@@ -96,6 +104,25 @@ export class ReadonlyStoreGuard implements PrimaryStore {
    */
   readonly role?: string
   readonly searchBM25?: (query: string, opts: { limit: number } & Record<string, unknown>) => Promise<Engram[]>
+  /**
+   * Also a read, and the one the whitelist's own argument failed on (#753,
+   * found by the 2026-08-13 panel). `recall()`'s widening loop uses it to stop
+   * as soon as the adapter reports the candidate set exhausted; a guarded store
+   * that dropped it kept widening 3L → 9L → 27L and re-ranked the same rows
+   * two extra times.
+   *
+   * That is the case the file header calls "loses functionality and is
+   * discovered" — and it was NOT discovered, because the loss is a silent 2-3x
+   * cost regression rather than a visible failure, in exactly the multi-tenant
+   * deployment read-only exists to serve. The whitelist is still the right
+   * shape for the reasons below; the argument for it is just weaker than it
+   * reads, so new members of the query-adapter surface need adding here
+   * deliberately rather than being noticed later.
+   */
+  readonly searchBM25Exhaustive?: (
+    query: string,
+    opts: { limit: number } & Record<string, unknown>,
+  ) => Promise<{ rows: Engram[]; exhausted: boolean }>
   readonly searchVector?: (...args: unknown[]) => Promise<unknown>
   readonly vectorIndex?: unknown
 
@@ -116,11 +143,18 @@ export class ReadonlyStoreGuard implements PrimaryStore {
     const inner = _inner as unknown as {
       role?: string
       searchBM25?: (q: string, o: { limit: number } & Record<string, unknown>) => Promise<Engram[]>
+      searchBM25Exhaustive?: (
+        q: string,
+        o: { limit: number } & Record<string, unknown>,
+      ) => Promise<{ rows: Engram[]; exhausted: boolean }>
       searchVector?: (...a: unknown[]) => Promise<unknown>
       vectorIndex?: unknown
     }
     if (inner.role !== undefined) this.role = inner.role
     if (inner.searchBM25) this.searchBM25 = (q, o) => inner.searchBM25!(q, o)
+    if (inner.searchBM25Exhaustive) {
+      this.searchBM25Exhaustive = (q, o) => inner.searchBM25Exhaustive!(q, o)
+    }
     if (inner.searchVector) this.searchVector = (...a: unknown[]) => inner.searchVector!(...a)
     if (inner.vectorIndex !== undefined) this.vectorIndex = inner.vectorIndex
   }

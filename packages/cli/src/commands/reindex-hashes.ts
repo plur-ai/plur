@@ -30,9 +30,19 @@
  * Putting a store rewrite behind the command people run casually to check their
  * setup is the wrong affordance. `doctor` reports; this repairs — the same split
  * `reindex-tokens` already established.
+ *
+ * ## Why this file is thin
+ *
+ * The scan and the write live in `Plur.repairContentHashes()`, not here. This
+ * command's first cut did `loadEngrams` → mutate → `saveEngrams` inline, which
+ * is an UNLOCKED whole-corpus read-modify-write: the 2026-08-13 data-loss audit
+ * reproduced it destroying a concurrent writer's engram 6/6 on a real-sized
+ * store. Going through the engine gets the store lock, the #799 daily backup,
+ * and a targeted UPDATE on stores that support one — and it means the repair
+ * also reaches an injected non-YAML primary store, which reading
+ * `paths.engrams` directly never could.
  */
-import type { GlobalFlags } from '../plur.js'
-import { computeContentHash, detectPlurStorage, loadEngrams, saveEngrams } from '@plur-ai/core'
+import { createPlur, type GlobalFlags } from '../plur.js'
 import { shouldOutputJson, outputJson, outputText, exit } from '../output.js'
 
 function usage(): never {
@@ -50,69 +60,46 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   if (args.includes('--help') || args.includes('-h')) usage()
   const apply = args.includes('--apply')
 
-  // Read the RAW store, not `Plur.list()`.
-  //
-  // `list()` goes through `_filterEngrams`, which merges PACKS in and drops
-  // inactive/expired engrams. Measured against this store, that gave 5,388
-  // scanned / 1 stale / 1,805 missing, where the file itself holds 4,642 / 38 /
-  // 961 — it counted pack entries this command does not own as "missing", and
-  // hid stale rows on retired engrams. For a repair pass that is not a cosmetic
-  // difference: writes would go somewhere other than the file carrying the
-  // problem.
-  const paths = detectPlurStorage(flags.path || process.env.PLUR_PATH || undefined)
-  const engrams = loadEngrams(paths.engrams)
-
-  const stale: Array<{ id: string; statement: string }> = []
-  const missing: Array<{ id: string; statement: string }> = []
-  for (const e of engrams) {
-    if (!e.statement) continue
-    const current = (e as { content_hash?: string }).content_hash
-    if (!current) missing.push({ id: e.id, statement: e.statement })
-    else if (current !== computeContentHash(e.statement)) stale.push({ id: e.id, statement: e.statement })
-  }
-
-  // Reported separately on purpose: they are different conditions. A STALE hash
-  // is actively wrong and absorbs writes today. A MISSING one predates the
-  // field and is inert until something matches on it. One number would
-  // overstate the second and bury the first.
-  let repaired = 0
-  if (apply && (stale.length > 0 || missing.length > 0)) {
-    const target = new Set([...stale, ...missing].map(e => e.id))
-    for (const e of engrams) {
-      if (!target.has(e.id) || !e.statement) continue
-      ;(e as { content_hash?: string }).content_hash = computeContentHash(e.statement)
-      repaired++
-    }
-    // Same count in, same count out — this only ever rewrites a field.
-    saveEngrams(paths.engrams, engrams)
-  }
+  // `readonly: true` without `--apply` is not cosmetic: it makes the reporting
+  // mode structurally incapable of writing, so a scan cannot be the thing that
+  // damages a store the user ran it to inspect.
+  const plur = createPlur(flags, apply ? undefined : { readonly: true })
+  const { scanned, stale, missing, unhashable, repaired } = await plur.repairContentHashes({ apply })
 
   if (shouldOutputJson(flags)) {
     outputJson({
-      scanned: engrams.length,
+      scanned,
       stale: stale.length,
       missing: missing.length,
+      unhashable: unhashable.length,
       repaired,
       applied: apply,
       stale_ids: stale.slice(0, 50).map(e => e.id),
+      unhashable_ids: unhashable.slice(0, 50).map(e => e.id),
     })
     return
   }
 
-  if (stale.length === 0 && missing.length === 0) {
-    outputText(`Scanned ${engrams.length} engrams — every content_hash matches its statement.`)
+  if (stale.length === 0 && missing.length === 0 && unhashable.length === 0) {
+    outputText(`Scanned ${scanned} engrams — every content_hash matches its statement.`)
     return
   }
 
   const lines = [
-    `Scanned ${engrams.length} engrams.`,
-    `  stale   ${String(stale.length).padStart(5)}  hash does not match the statement — these absorb unrelated writes (#852)`,
-    `  missing ${String(missing.length).padStart(5)}  no hash at all — inert until something matches on them`,
+    `Scanned ${scanned} engrams.`,
+    `  stale      ${String(stale.length).padStart(5)}  hash does not match the statement — these absorb unrelated writes (#852)`,
+    `  missing    ${String(missing.length).padStart(5)}  no hash at all — inert until something matches on them`,
+    `  unhashable ${String(unhashable.length).padStart(5)}  statement normalizes to nothing — SKIPPED, a shared hash is worse than none (#896)`,
   ]
   if (stale.length > 0) {
     lines.push('', 'Stale:')
     for (const e of stale.slice(0, 10)) lines.push(`  ${e.id}  ${e.statement.slice(0, 68)}`)
     if (stale.length > 10) lines.push(`  … and ${stale.length - 10} more`)
+  }
+  if (unhashable.length > 0) {
+    lines.push('', 'Unhashable (not written):')
+    for (const e of unhashable.slice(0, 10)) lines.push(`  ${e.id}  ${e.statement.slice(0, 68)}`)
+    if (unhashable.length > 10) lines.push(`  … and ${unhashable.length - 10} more`)
   }
   lines.push('', apply
     ? `Repaired ${repaired}.`
