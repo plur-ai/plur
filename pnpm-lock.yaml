@@ -14,7 +14,7 @@ overrides:
   fast-xml-parser: '>=5.7.0'
   hono: '>=4.12.34'
   ip-address: '>=10.3.1'
-  js-yaml: '>=4.2.0 <5'
+  js-yaml: '>=4.3.1 <5'
   linkify-it: '>=5.0.1'
   minimatch: '>=10.0.3'
   openclaw: '>=2026.6.5'
@@ -91,8 +91,8 @@ importers:
         specifier: ^0.4.6
         version: 0.4.6
       js-yaml:
-        specifier: '>=4.2.0 <5'
-        version: 4.3.0
+        specifier: '>=4.3.1 <5'
+        version: 4.3.1
       zod:
         specifier: ^3.23.0
         version: 3.25.76
@@ -147,8 +147,8 @@ importers:
         specifier: workspace:*
         version: link:../core
       js-yaml:
-        specifier: '>=4.2.0 <5'
-        version: 4.3.0
+        specifier: '>=4.3.1 <5'
+        version: 4.3.1
     devDependencies:
       '@deepseek-ai/cordis':
         specifier: ^4.0.1
@@ -1829,8 +1829,8 @@ packages:
     resolution: {integrity: sha512-34wB/Y7MW7bzjKRjUKTa46I2Z7eV62Rkhva+KkopW7Qvv/OSWBqvkSY7vusOPrNuZcUG3tApvdVgNB8POj3SPw==}
     engines: {node: '>=10'}
 
-  js-yaml@4.3.0:
-    resolution: {integrity: sha512-1td788aAnnZ5qs7V2QIRl1owjtYpbKt749Y3xauqQgwIIGF/xXWz1wMTEBx5O3LK3lXLVuqXPdPxj2BoFHaW9Q==}
+  js-yaml@4.3.1:
+    resolution: {integrity: sha512-CY6crGq313MX8GkwvB7tzgp99vjQxY1++5y10/BKN/GUfHqWaOGQMNZkBvqSzsZKWk/ijwHlWzzkLulsGHhjWQ==}
     hasBin: true
 
   json-bigint@1.0.0:
@@ -4529,7 +4529,7 @@ snapshots:
 
   joycon@3.1.1: {}
 
-  js-yaml@4.3.0:
+  js-yaml@4.3.1:
     dependencies:
       argparse: 2.0.1
 
