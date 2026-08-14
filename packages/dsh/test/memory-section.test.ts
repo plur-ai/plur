@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { blockHash, createMemoryCache, renderBlock } from '../src/memory-section.js'
+import { blockHash, createMemoryCache, estimateTokens, renderBlock } from '../src/memory-section.js'
 
 const injection = (over: Record<string, unknown> = {}) => ({
   directives: '[ENG-1] Always pin dsh deps.',
@@ -73,12 +73,44 @@ describe('renderBlock', () => {
     expect(renderBlock(injection({ directives: 'd'.repeat(10_000) }), 10)).toBe('')
   })
 
+  it('does NOT blow the budget on Chinese engrams', () => {
+    // 3000 CJK chars is ~3000 tokens. Under a flat length/4 estimate it would
+    // measure 750 and sail past a 1000-token budget.
+    const out = renderBlock(injection({ directives: '记'.repeat(3000) }), 1000)
+    expect(out).toBe('')
+  })
+
+  it('still renders Chinese that genuinely fits', () => {
+    const out = renderBlock(injection({ directives: '记'.repeat(100) }), 1000)
+    expect(out).toContain('记')
+  })
+
   it('emits nothing for a zero budget', () => {
     expect(renderBlock(injection(), 0)).toBe('')
   })
 
   it('is deterministic for the same input', () => {
     expect(renderBlock(injection(), 2000)).toBe(renderBlock(injection(), 2000))
+  })
+})
+
+describe('estimateTokens — CJK aware', () => {
+  it('counts latin text at roughly four chars per token', () => {
+    expect(estimateTokens('a'.repeat(400))).toBe(100)
+  })
+
+  it('counts CJK at about one token per character, not one per four', () => {
+    // The bug this guards: a flat length/4 under-counts Chinese ~4x, so a block
+    // that measures 500 tokens is really 2000. Most of this ecosystem is Chinese.
+    expect(estimateTokens('中'.repeat(100))).toBe(100)
+  })
+
+  it('handles mixed scripts', () => {
+    expect(estimateTokens('中'.repeat(10) + 'a'.repeat(40))).toBe(20)
+  })
+
+  it('is zero for empty text', () => {
+    expect(estimateTokens('')).toBe(0)
   })
 })
 

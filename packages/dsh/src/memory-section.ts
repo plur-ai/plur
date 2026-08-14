@@ -28,11 +28,34 @@ export interface InjectionLike {
 }
 
 /**
- * Conservative chars-per-token divisor, matching `@plur-ai/claw`'s
- * `estimateTokens`. Deliberately an estimate rather than a tokenizer call:
- * this runs on the request path and must stay synchronous and cheap.
+ * Latin chars per token, matching `@plur-ai/claw`'s `estimateTokens`.
+ * Deliberately an estimate rather than a tokenizer call: this runs on the
+ * request path and must stay synchronous and cheap.
  */
 const CHARS_PER_TOKEN = 4
+
+/**
+ * CJK and full-width characters, which tokenize at roughly ONE token each
+ * rather than four-to-one.
+ *
+ * A flat `length / 4` under-counts Chinese text by about 4x, so a block that
+ * looks like 500 tokens can really be 2000. The DeepSeek Harness ecosystem is
+ * substantially Chinese-language, which makes that the common case here rather
+ * than an edge case.
+ */
+const CJK = /[\u3000-\u303f\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uff00-\uffef]/gu
+
+/**
+ * Estimate the token cost of a string, counting CJK at one token per character.
+ *
+ * @param text - the text to measure.
+ * @returns an approximate token count, biased to over-estimate.
+ */
+export function estimateTokens(text: string): number {
+  const cjk = text.match(CJK)?.length ?? 0
+  const rest = text.length - cjk
+  return cjk + Math.ceil(rest / CHARS_PER_TOKEN)
+}
 
 /**
  * Render the memory block for the `plur:memory` system-prompt section.
@@ -47,8 +70,8 @@ const CHARS_PER_TOKEN = 4
  */
 export function renderBlock(injection: InjectionLike | undefined, budgetTokens: number): string {
   if (!injection || (injection.count ?? 0) === 0) return ''
-  const budgetChars = Math.max(0, budgetTokens) * CHARS_PER_TOKEN
-  if (budgetChars === 0) return ''
+  const budget = Math.max(0, budgetTokens)
+  if (budget === 0) return ''
 
   // Same construction as @plur-ai/mcp's session-start block.
   const assemble = (withConstraints: boolean, withConsider: boolean): string => {
@@ -61,7 +84,7 @@ export function renderBlock(injection: InjectionLike | undefined, budgetTokens: 
 
   for (const [constraints, consider] of [[true, true], [true, false], [false, false]] as const) {
     const block = assemble(constraints, consider)
-    if (block.length <= budgetChars) return block
+    if (estimateTokens(block) <= budget) return block
   }
 
   // Even directives alone overflow: emit nothing rather than a truncated engram.

@@ -58,6 +58,17 @@ export const VERSION = '0.1.0'
  */
 const SECTION_ORDER = 120
 
+/**
+ * Ceiling on tracked live agents.
+ *
+ * Per-agent state is normally reclaimed on `agent/disposed`, but a host that
+ * drops sessions on disconnect or crash may never emit it. Without a cap, a
+ * long-lived server accumulates a prompt-section registration per dead session
+ * forever. Evicting the oldest is safe: a still-live agent simply re-registers
+ * on its next step.
+ */
+const MAX_TRACKED_AGENTS = 512
+
 /** Live per-agent state, disposed with the agent. */
 interface AgentState {
   disposeSection: () => void
@@ -187,6 +198,20 @@ export function apply(ctx: Context, config: Config, injected?: PlurClient): void
   ctx.on('agent/disposed', (agent: unknown) => {
     const agentId = (agent as { id?: string } | null)?.id
     if (agentId === undefined) return
+    releaseAgent(agentId)
+  })
+
+  /** Drop the oldest tracked agents once the ceiling is reached. */
+  function evictIfNeeded(): void {
+    while (live.size >= MAX_TRACKED_AGENTS) {
+      const oldest = live.keys().next()
+      if (oldest.done) return
+      releaseAgent(oldest.value)
+    }
+  }
+
+  /** Tear down everything held for one agent. Safe to call for an unknown id. */
+  function releaseAgent(agentId: string): void {
     const state = live.get(agentId)
     if (state) {
       try {
@@ -199,11 +224,12 @@ export function apply(ctx: Context, config: Config, injected?: PlurClient): void
     cache.clear(agentId)
     refresh.clear(agentId)
     scopes.clear(agentId)
-  })
+  }
 
   /** Register this agent's prompt section exactly once. */
   function ensureSection(agentId: string): void {
     if (live.has(agentId)) return
+    evictIfNeeded()
     try {
       const disposeSection = ctx.systemPrompt.section({
         name: 'plur:memory',

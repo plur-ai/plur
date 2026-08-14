@@ -174,6 +174,16 @@ describe('hostile: resource exhaustion', () => {
     expect(memory).toHaveLength(0)
   })
 
+  it('caps tracked agents even when the host never emits agent/disposed', async () => {
+    // A host that drops sessions on disconnect leaks one prompt-section
+    // registration per dead session forever without a ceiling.
+    const h = await boot({ injectHybrid: async () => ({ directives: '[ENG-1] x', count: 1 }) })
+    for (let i = 0; i < 600; i++) await turn(h, agent(`leak${i}`, asked('a question')), 1)
+    const assembled = await h.ctx.systemPrompt.assemble({})
+    const memory = (assembled.sections as Array<{ name: string }>).filter(s => s.name === 'plur:memory')
+    expect(memory.length).toBeLessThanOrEqual(512)
+  })
+
   it('a retry storm on one turn triggers at most one recall', async () => {
     const injectHybrid = vi.fn(async () => ({ directives: 'x', count: 1 }))
     const h = await boot({ injectHybrid }, new Config({ refreshIntervalMs: 60_000 }))
