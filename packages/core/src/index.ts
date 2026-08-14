@@ -3468,7 +3468,8 @@ export class Plur {
     // #776: remote leg starts BEFORE the local pipeline (added latency =
     // max(0, remote − local)); merged below via RRF.
     const remotePromise = this._startRemoteRecall(query, options)
-    const filtered = await this._filterEngrams(options)
+    // #906: narrowed by the store when provably equivalent, else the full read.
+    const filtered = await this._hybridCandidates(query, options)
     const limit = options?.limit ?? 20
     const rerank = await this._resolveRerankOptions(options?.rerank)
     const intent = this._resolveIntentProfile(query, options?.intentOverride)
@@ -4369,6 +4370,57 @@ export class Plur {
       filtered = filtered.filter(e => visible(e.scope))
     }
     return filtered
+  }
+
+  /**
+   * Candidates for the hybrid path — narrowed by the store when that is
+   * PROVABLY equivalent, otherwise the full filtered corpus (#906).
+   *
+   * `recallHybridWithMeta` called `_filterEngrams()` unconditionally, and for a
+   * Postgres primary query store that is a full scan on every call: `indexTier`
+   * resolves to 'none' when a primary query store is present (ADR-0005 — such
+   * an adapter IS both the source of truth and the query engine), so it takes
+   * `_filterEngrams`'s else branch and loads everything. `plur_recall` defaults
+   * to hybrid, so that is one whole-corpus read per query, on exactly the
+   * deployment where a scan is expensive.
+   *
+   * Narrowing before RRF would normally be a RECALL-QUALITY change — the vector
+   * leg can only rank what it is given — and would need a plur-bench number
+   * before shipping. This does not, because it narrows only when the adapter
+   * reports `exhausted`: the returned rows are then not a sample but everything
+   * the store holds for that filter, so ranking over them is identical to
+   * ranking over the full corpus BY CONSTRUCTION. Not exhausted, and it falls
+   * back to the previous behaviour untouched.
+   *
+   * The filters are passed through in full. `searchBM25Exhaustive` takes
+   * `{ limit } & StorageFilter`, and StorageFilter carries every field
+   * `_filterEngrams` applies — status, scope, scopes, visibilityGrants,
+   * domain — so this cannot silently drop an authorization filter. That parity
+   * is the precondition for the whole approach; if it ever stops holding, this
+   * must revert to `_filterEngrams` rather than narrow.
+   */
+  private async _hybridCandidates(
+    query: string,
+    options?: RecallOptions & { include_expired?: boolean },
+  ): Promise<Engram[]> {
+    const adapter = this._primaryQueryAdapter()
+    if (adapter?.searchBM25Exhaustive) {
+      try {
+        const narrowed = await adapter.searchBM25Exhaustive(query, {
+          limit: (options?.limit ?? 20) * PUSHDOWN_OVERFETCH,
+          status: 'active',
+          ...(options?.scope !== undefined ? { scope: options.scope } : {}),
+          ...(options?.scopes !== undefined ? { scopes: options.scopes } : {}),
+          ...(options?.domain !== undefined ? { domain: options.domain } : {}),
+          visibilityGrants: this._grantedScopes(),
+        })
+        if (narrowed.exhausted) return narrowed.rows
+      } catch {
+        // A pushdown failure must never fail a recall — fall back to the read
+        // that has always worked.
+      }
+    }
+    return await this._filterEngrams(options)
   }
 
   private async _filterEngrams(options?: RecallOptions & { include_expired?: boolean }): Promise<Engram[]> {
