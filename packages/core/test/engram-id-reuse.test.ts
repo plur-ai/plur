@@ -20,7 +20,7 @@
  * a collision the old behaviour would have avoided.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync } from 'fs'
+import { mkdtempSync, rmSync, mkdirSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { Plur } from '../src/index.js'
@@ -81,6 +81,33 @@ describe('engram ids are never reused after compaction (#816)', () => {
     const day = new Date().toISOString().slice(0, 10)
     const minted = mintedIdsWithPrefix(dir, day.slice(0, 7), [`ENG-${day}-`])
     expect(minted, 'the allocation was not recorded — the fix has nothing to read').toContain(a.id)
+  })
+
+  it('stays monotonic even when history is unreadable', async () => {
+    // The in-process claim, added with the cache. `appendHistory` is
+    // best-effort at several call sites, so allocation cannot depend on the
+    // log having been written — and two writes in the same tick must not both
+    // read a history that neither has appended to yet.
+    const a = await plur.learn('first fact before history breaks', { scope: 'global', type: 'behavioral' })
+    // Make the log unreadable: a directory where the month file should be.
+    const monthFile = join(dir, 'history', `${new Date().toISOString().slice(0, 7)}.jsonl`)
+    rmSync(monthFile, { force: true })
+    mkdirSync(monthFile, { recursive: true })
+
+    const b = await plur.learn('second fact with history broken', { scope: 'global', type: 'behavioral' })
+    const c = await plur.learn('third fact with history broken', { scope: 'global', type: 'behavioral' })
+
+    expect(new Set([a.id, b.id, c.id]).size, 'ids collided once history stopped being readable').toBe(3)
+  })
+
+  it('two writes in the same tick get different ids', async () => {
+    // Concurrent within one process: both would read the same corpus and the
+    // same history, so only the in-process claim separates them.
+    const [x, y] = await Promise.all([
+      plur.learn('one of two simultaneous facts', { scope: 'global', type: 'behavioral' }),
+      plur.learn('the other of two simultaneous facts', { scope: 'global', type: 'behavioral' }),
+    ])
+    expect(x.id).not.toBe(y.id)
   })
 
   describe('the allocator itself', () => {

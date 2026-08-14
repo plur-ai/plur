@@ -1425,11 +1425,41 @@ export class Plur {
    */
   private _mintedTodayIds(): string[] {
     const day = new Date().toISOString().slice(0, 10)
-    return mintedIdsWithPrefix(this.paths.root, day.slice(0, 7), [
-      `ENG-${day}-`,
-      `ENG-${day.slice(0, 4)}-${day.slice(5, 7)}${day.slice(8, 10)}-`,
-    ])
+    // Cached per process, per day.
+    //
+    // Without this, every learn() re-read and re-parsed a month of
+    // history.jsonl — on the hottest write path, to answer a question whose
+    // answer this process already knows. The cache is keyed on the DAY so it
+    // self-invalidates across midnight (allocation is per-day, so yesterday's
+    // ids are irrelevant to today's suffix).
+    //
+    // Staleness is safe in the one direction that matters: ids minted by
+    // ANOTHER process after this cache was filled are missing from it, which
+    // degrades to the pre-fix corpus-only behaviour rather than introducing a
+    // new hazard — and the corpus scan, which is always fresh, still sees any
+    // engram that other process actually wrote. Ids minted by THIS process are
+    // added below without a re-read, so a burst of writes in one session stays
+    // monotonic without touching disk again.
+    if (this._mintedCache?.day !== day) {
+      this._mintedCache = {
+        day,
+        ids: new Set(mintedIdsWithPrefix(this.paths.root, day.slice(0, 7), [
+          `ENG-${day}-`,
+          `ENG-${day.slice(0, 4)}-${day.slice(5, 7)}${day.slice(8, 10)}-`,
+        ])),
+      }
+    }
+    return [...this._mintedCache.ids]
   }
+
+  /** Record an id this process just minted, so the next allocation sees it
+   *  without re-reading history (#816). */
+  private _rememberMintedId(id: string): void {
+    const day = new Date().toISOString().slice(0, 10)
+    if (this._mintedCache?.day === day) this._mintedCache.ids.add(id)
+  }
+
+  private _mintedCache: { day: string; ids: Set<string> } | null = null
 
   private _storeAt(path: string): AsyncPrimaryStore {
     if (path === this.paths.engrams) return this._primaryStore
@@ -2463,6 +2493,10 @@ export class Plur {
       const id = canDelegate
         ? await ps.nextEngramId!(engramIdDatePrefix())
         : generateEngramId(allEngrams, this._mintedTodayIds())
+      // Claim it in-process immediately (#816). The history record is written
+      // later and best-effort; without this, two writes in the same tick — or
+      // one whose history append fails — could both take the same suffix.
+      this._rememberMintedId(id)
       const now = new Date().toISOString()
       const type = context?.type ?? 'behavioral'
       const cogLevel = TYPE_TO_COGNITIVE[type] ?? 'remember'
@@ -2941,6 +2975,7 @@ export class Plur {
         const engrams = await this._primaryStore.load()
         // Replace placeholder ID with a real local ID
         localPlaceholder.id = generateEngramId([...engrams, ...allEngrams], this._mintedTodayIds())
+        this._rememberMintedId(localPlaceholder.id)
         if (storeEntry) {
           ;(localPlaceholder as any).structured_data = {
             ...((localPlaceholder as any).structured_data ?? {}),
