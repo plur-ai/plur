@@ -30,6 +30,7 @@ export default defineConfig({
       'packages/cli',
       'packages/claw',
       'packages/dsh',
+      'packages/ui',
       'packages/migrate',
       {
         test: {
