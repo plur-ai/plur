@@ -36,7 +36,8 @@
     "@deepseek-ai/dsh-system-prompt": "0.1.0-rc.6",
     "@deepseek-ai/schemastery": "^3.18.1",
     "@types/node": "^22.0.0",
-    "@types/js-yaml": "^4.0.9"
+    "@types/js-yaml": "^4.0.9",
+    "@deepseek-ai/dsh-tools": "0.1.0-rc.6"
   },
   "license": "Apache-2.0",
   "description": "PLUR memory for DeepSeek Harness \u2014 engrams injected straight into the prompt, no tool call required",
