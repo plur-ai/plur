@@ -342,8 +342,8 @@ export const EngramSchema = z.object({
 
   // === SP1: Memory Intelligence fields ===
   content_hash: z.string().optional().describe('Hash of normalized statement content, used for dedup.'),
-  commitment: z.enum(['exploring', 'leaning', 'decided', 'locked']).optional()
-    .describe('Commitment level of the asserted knowledge.'),
+  commitment: z.enum(['exploring', 'leaning', 'decided', 'locked', 'draft']).optional()
+    .describe('Commitment level of the asserted knowledge. `draft` stages an engram in a review queue pending human approval.'),
   locked_at: z.string().optional().describe("Timestamp when commitment reached 'locked'."),
   locked_reason: z.string().optional().describe('Why this engram was locked.'),
 
@@ -407,11 +407,10 @@ export const EngramSchema = z.object({
  * The Engram type is derived from the strict schema (without passthrough) to keep
  * TypeScript type safety — passthrough only affects runtime Zod validation.
  *
- * Extension point: enterprise adds `commitment: 'draft'` (review-queue staging —
- * pending human approval before an engram enters the recall pool) via this passthrough
- * rather than the core enum. The value is intentionally absent from the strict enum
- * because it is only meaningful in governed deployments with an admin triage UI;
- * see plur-ai/enterprise#567 for the write sites.
+ * `commitment: 'draft'` is in the strict enum (added in #905). It is a valid lifecycle
+ * state: an engram staged in a review queue pending human approval. `nextCommitment`
+ * deliberately leaves it untouched so a positive feedback signal does not publish
+ * unreviewed content. See plur-ai/enterprise#567 for the review-queue write sites.
  */
 export const EngramSchemaPassthrough = EngramSchema.passthrough()
 
