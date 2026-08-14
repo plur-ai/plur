@@ -144,8 +144,11 @@ a:hover { text-decoration: underline; }
 .controls button:hover { border-color: rgba(var(--accent-rgb),0.35); color: var(--text); }
 
 /* ── record list ──────────────────────────────────────────────────────── */
-/* Not a <table>: each record is a <details>, so expanding to read a full
-   engram needs no JavaScript and is keyboard-operable for free. */
+/* Each record is a native disclosure element rather than a table row, so
+   expanding to read a full engram needs no JavaScript and is keyboard-operable
+   for free. (Deliberately no literal angle-bracket tag names in this comment:
+   the stylesheet is inlined into the page, and a tag name here shows up in
+   anything that scans the served HTML for one.) */
 .records { border: 1px solid var(--bg-card-border); border-radius: 12px; background: var(--bg-card); overflow: hidden; }
 .rec-head, .rec-line {
   display: grid;

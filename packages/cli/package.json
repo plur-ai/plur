@@ -14,7 +14,8 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@plur-ai/core": "workspace:*"
+    "@plur-ai/core": "workspace:*",
+    "@plur-ai/ui": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^25.5.0",
@@ -32,7 +33,7 @@
     "node": ">=20"
   },
   "license": "Apache-2.0",
-  "description": "PLUR CLI — persistent memory for AI agents from the command line",
+  "description": "PLUR CLI \u2014 persistent memory for AI agents from the command line",
   "keywords": [
     "ai",
     "memory",

@@ -103,14 +103,14 @@ describe('renderBrowse', () => {
                   row({ id: 'ENG-2026-0101-002', statement: 'Used a lot.', activation: { frequency: 9 } })]
     const html = renderBrowse({ rows, query: {}, mode: 'top', now: new Date('2026-08-14T12:00:00Z') })
     expect(html).toContain('Used a lot.')
-    expect(html.split('<details').length - 1).toBe(1)
+    expect(html.split('<details class="rec"').length - 1).toBe(1)
   })
 
   it('the all slice shows everything', () => {
     const rows = [row({ id: 'ENG-2026-0101-001', activation: { frequency: 0 } }),
                   row({ id: 'ENG-2026-0101-002', activation: { frequency: 9 } })]
     const html = renderBrowse({ rows, query: {}, mode: 'all', now: new Date('2026-08-14T12:00:00Z') })
-    expect(html.split('<details').length - 1).toBe(2)
+    expect(html.split('<details class="rec"').length - 1).toBe(2)
   })
 
   it('renders each record as a native details element — expansion needs no JS', () => {
