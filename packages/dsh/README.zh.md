@@ -69,15 +69,17 @@ PLUR 把一切存储在本地 `~/.plur` 并在本地检索。但被注入的记�
 你的 agent 发送给**你所配置的模型提供方**的提示词的一部分——
 对于默认的 DeepSeek Harness 安装，那就是 DeepSeek 的托管 API `api.deepseek.com`。
 
-默认情况下本插件只读取 `project:dsh` 这一个 scope，**而不是**你的整个记忆库。
-全局 PLUR 库会累积你曾经接入过的每一个工具的记忆，
+默认情况下本插件只读取**你当前所在工作区对应的 scope**——
+如果项目自身的 `.plur.yaml` 声明了 scope 就用它，否则派生为 `project:<目录名>`。
+它绝不会是你的整个记忆库。全局 PLUR 库会累积你曾经接入过的每一个工具的记忆，
 一个编码 harness 不应该仅仅因为你安装了插件就继承全部内容。
-请主动决定是否放宽范围，随时可以收窄，也可以完全关闭注入。
+
+如需覆盖这一派生规则，可显式设置 scope；也可以完全关闭注入：
 
 ```yaml
 # $DSH_HOME/settings.yaml
 plur:
-  scope: project:dsh      # 主动放宽，例如 project:acme
+  scope: project:acme     # 可选——省略则按工作区派生
   injectionMode: content  # 或者：off
 ```
 
@@ -88,7 +90,7 @@ plur:
 | 配置项 | 默认值 | 含义 |
 |---|---|---|
 | `path` | `~/.plur` | 存储位置 |
-| `scope` | `project:dsh` | 本 harness 可读写的记忆 scope |
+| `scope` | 自动派生 | 本 harness 可读写的记忆 scope；省略时按工作区派生 |
 | `injectionMode` | `content` | `content` 注入记忆；`off` 关闭注入 |
 | `injectionBudget` | `2000` | 注入块的近似 token 上限 |
 | `refreshIntervalMs` | `0` | 两次召回之间的下限；`0` 表示每轮一次 |
@@ -108,7 +110,7 @@ plur:
 记忆块是否发生变化、是否有错误被静默吞掉：
 
 ```
-scope: project:dsh
+scope: project:acme
 injection: content
 refresh_attempted: 12
 blocks_written: 4

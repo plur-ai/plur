@@ -74,16 +74,18 @@ memories become part of the prompt your agent sends to **your configured model
 provider** — for a default DeepSeek Harness install, that is DeepSeek's hosted
 API at `api.deepseek.com`.
 
-By default this plugin reads only the `project:dsh` scope, **not** your whole
-memory store. A global PLUR store accumulates across every tool you have ever
-pointed PLUR at, and a coding harness should not inherit all of it just because
-you installed a plugin. Widen it deliberately, narrow it any time, or turn
-injection off entirely.
+By default this plugin reads only **the scope belonging to the workspace you are
+in** — your project's own `.plur.yaml` scope if it declares one, otherwise
+`project:<directory name>`. It is never your whole memory store. A global PLUR
+store accumulates across every tool you have ever pointed PLUR at, and a coding
+harness should not inherit all of that just because you installed a plugin.
+
+Set a scope explicitly to override the derivation, or turn injection off:
 
 ```yaml
 # $DSH_HOME/settings.yaml
 plur:
-  scope: project:dsh      # widen deliberately, e.g. project:acme
+  scope: project:acme     # optional — omit to derive per workspace
   injectionMode: content  # or: off
 ```
 
@@ -95,7 +97,7 @@ All settings live under the `plur` namespace in `$DSH_HOME/settings.yaml`
 | Setting | Default | Meaning |
 |---|---|---|
 | `path` | `~/.plur` | Store location |
-| `scope` | `project:dsh` | Which memory scope this harness may read and write |
+| `scope` | derived | Which memory scope this harness may read and write. Omitted, it derives per workspace |
 | `injectionMode` | `content` | `content` injects memories; `off` disables injection |
 | `injectionBudget` | `2000` | Approximate token ceiling for the injected block |
 | `refreshIntervalMs` | `0` | Floor between recalls; `0` means once per turn |
@@ -115,7 +117,7 @@ Run `/plur` or ask for `plur_status`. The counters tell you whether recall ran a
 all, whether the block changed, and whether anything was swallowed:
 
 ```
-scope: project:dsh
+scope: project:acme
 injection: content
 refresh_attempted: 12
 blocks_written: 4

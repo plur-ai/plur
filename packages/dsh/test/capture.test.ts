@@ -17,7 +17,8 @@ function harness(plur: Record<string, unknown>, config = new Config({})) {
     config,
     counters: createCounters(),
     plur: plur as never,
-    resolveScope: async () => config.scope,
+    queue: async (fn: () => Promise<unknown>) => { try { return await fn() } catch { return undefined } },
+    resolveScope: async () => config.scope ?? 'project:dsh',
   })
   return {
     fire: (event: string, ...args: unknown[]) =>
@@ -38,7 +39,7 @@ describe('registerCapture — episode capture', () => {
     const h = harness({ capture })
     await h.fire('agent/turn-stopping', { session: { events: [assistant('the answer')] } })
     await settle()
-    expect(capture).toHaveBeenCalledWith(expect.objectContaining({ summary: 'the answer' }))
+    expect(capture).toHaveBeenCalledWith('the answer', expect.any(Object))
   })
 
   it('captures into the resolved scope', async () => {
@@ -46,7 +47,7 @@ describe('registerCapture — episode capture', () => {
     const h = harness({ capture }, new Config({ scope: 'project:acme' }))
     await h.fire('agent/turn-stopping', { session: { events: [assistant('x')] } })
     await settle()
-    expect(capture).toHaveBeenCalledWith(expect.objectContaining({ scope: 'project:acme' }))
+    expect(capture).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ scope: 'project:acme' }))
   })
 
   it('truncates a very long summary rather than bloating the store', async () => {
@@ -54,7 +55,7 @@ describe('registerCapture — episode capture', () => {
     const h = harness({ capture })
     await h.fire('agent/turn-stopping', { session: { events: [assistant('y'.repeat(5000))] } })
     await settle()
-    expect(capture.mock.calls[0]![0].summary.length).toBe(2000)
+    expect((capture.mock.calls[0]![0] as string).length).toBe(2000)
   })
 
   it('captures nothing when the turn produced no assistant text', async () => {

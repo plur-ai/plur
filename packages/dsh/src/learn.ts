@@ -11,7 +11,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import type { PlurClient } from './client.js'
 import type { Config } from './config.js'
 import type { Counters } from './counters.js'
-import { createWriteQueue, guard } from './guard.js'
+import { guard, type WriteQueue } from './guard.js'
 
 /** High-precision correction and rule patterns. */
 const PATTERNS: readonly RegExp[] = [
@@ -68,6 +68,8 @@ export interface LearnDeps {
   counters: Counters
   plur?: PlurClient
   /** Resolves the scope of the session the event came from. */
+  /** The ONE shared write queue. Must not be created per-module. */
+  queue: WriteQueue
   resolveScope: (session?: CallerSession) => Promise<string>
 }
 
@@ -88,9 +90,8 @@ interface TextBlock {
  * @param deps - config, counters, the PLUR client, and scope resolution.
  */
 export function registerLearning(ctx: Context, deps: LearnDeps): void {
-  const { config, counters, plur, resolveScope } = deps
+  const { config, counters, plur, resolveScope, queue } = deps
   if (!config.autoLearn) return
-  const queue = createWriteQueue()
 
   ctx.on('session/event', (session: unknown, event: unknown) => {
     const record = event as { type?: string; data?: unknown } | null
@@ -112,7 +113,7 @@ export function registerLearning(ctx: Context, deps: LearnDeps): void {
 
     void queue(() => guard(async () => {
       const scope = await resolveScope(session as CallerSession)
-      await plur?.learn?.({ statement: candidate.statement, scope })
+      await plur?.learn?.(candidate.statement, { scope })
       counters.bump('learn_captured')
     }, { timeoutMs: config.timeoutMs, onError: () => counters.bump('errors_swallowed') }))
   })

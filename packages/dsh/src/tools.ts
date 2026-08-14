@@ -12,7 +12,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { Config } from './config.js'
 import type { Counters } from './counters.js'
-import { guard } from './guard.js'
+import { guard, type WriteQueue } from './guard.js'
 import type { PlurClient } from './client.js'
 
 /** Dependencies shared by every tool. */
@@ -20,6 +20,8 @@ export interface ToolDeps {
   config: Config
   counters: Counters
   plur?: PlurClient
+  /** The ONE shared write queue, so tool writes cannot interleave with auto-learn. */
+  queue: WriteQueue
   /**
    * Resolves the scope for the CALLING session.
    *
@@ -63,7 +65,7 @@ const UNAVAILABLE = 'PLUR is unavailable right now; continuing without memory.'
  * @returns one disposer per registered tool, in registration order.
  */
 export function registerTools(ctx: Context, deps: ToolDeps): Array<() => void> {
-  const { config, counters, plur, resolveScope } = deps
+  const { config, counters, plur, resolveScope, queue } = deps
 
   /** Read the calling agent off the registry-supplied execution context. */
   const callerOf = (exec: unknown): CallerAgent | undefined =>
@@ -117,11 +119,10 @@ export function registerTools(ctx: Context, deps: ToolDeps): Array<() => void> {
         const statement = String(input?.statement ?? '').trim()
         if (!statement) return 'Nothing to store: statement was empty.'
         const scope = await resolveScope(callerOf(exec))
-        await plur?.learn?.({
-          statement,
-          domain: input?.domain === undefined ? undefined : String(input.domain),
+        await queue(async () => plur?.learn?.(statement, {
           scope,
-        })
+          domain: input?.domain === undefined ? undefined : String(input.domain),
+        }))
         counters.bump('learn_captured')
         return 'Stored.'
       }),
@@ -140,11 +141,12 @@ export function registerTools(ctx: Context, deps: ToolDeps): Array<() => void> {
         additionalProperties: false,
       },
       output: TEXT_OUTPUT,
-      execute: (args: unknown) => body(async () => {
+      execute: (args: unknown, exec: unknown) => body(async () => {
         const input = args as { id?: unknown; reason?: unknown } | null
         const id = String(input?.id ?? '').trim()
         if (!id) return 'Nothing to retire: id was empty.'
-        await plur?.forget?.(id, input?.reason === undefined ? undefined : String(input.reason))
+        const scope = await resolveScope(callerOf(exec))
+        await queue(async () => plur?.forget?.(id, input?.reason === undefined ? undefined : String(input.reason), { scope }))
         return 'Retired.'
       }),
     },
@@ -162,11 +164,12 @@ export function registerTools(ctx: Context, deps: ToolDeps): Array<() => void> {
         additionalProperties: false,
       },
       output: TEXT_OUTPUT,
-      execute: (args: unknown) => body(async () => {
+      execute: (args: unknown, exec: unknown) => body(async () => {
         const input = args as { id?: unknown; signal?: unknown } | null
         const id = String(input?.id ?? '').trim()
         if (!id) return 'Nothing to rate: id was empty.'
-        await plur?.feedback?.(id, input?.signal === 'negative' ? -1 : 1)
+        const scope = await resolveScope(callerOf(exec))
+        await queue(async () => plur?.feedback?.(id, input?.signal === 'negative' ? 'negative' : 'positive', scope))
         return 'Recorded.'
       }),
     },
@@ -188,5 +191,15 @@ export function registerTools(ctx: Context, deps: ToolDeps): Array<() => void> {
     },
   ]
 
-  return definitions.map(definition => ctx.tools.register(definition as never))
+  // Registration is guarded: a host that rejects a definition — a duplicate name
+  // after a hot reload, a schema the registry stops accepting — must not abort
+  // plugin mount and take the user's agent down at startup.
+  return definitions.map(definition => {
+    try {
+      return ctx.tools.register(definition as never)
+    } catch {
+      counters.bump('errors_swallowed')
+      return () => {}
+    }
+  })
 }

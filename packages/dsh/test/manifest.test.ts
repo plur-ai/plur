@@ -47,9 +47,10 @@ describe('README', () => {
     expect(readme).toContain('api.deepseek.com')
   })
 
-  it('states that the scope defaults closed', () => {
-    expect(readme).toContain('project:dsh')
-    expect(flat).toContain('not** your whole memory store')
+  it('states that the scope defaults closed and derives per workspace', () => {
+    expect(readme).toContain('.plur.yaml')
+    expect(flat).toContain('never your whole memory store')
+    expect(flat).toContain('project:<directory name>')
   })
 
   it('ships a Chinese README, matching the ecosystem convention', () => {

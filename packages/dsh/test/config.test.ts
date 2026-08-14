@@ -8,10 +8,14 @@ describe('Config', () => {
     expect(c.injectionBudget).toBe(2000)
   })
 
-  it('defaults the scope closed — never the ambient global store', () => {
-    const c = new Config({})
-    expect(c.scope).toBe('project:dsh')
-    expect(c.scope).not.toBe('global')
+  it('leaves scope UNSET so it derives per workspace', () => {
+    // A single shared default would put every unconfigured repository into one
+    // engram pool — a cross-project leak. Derivation happens in scope.ts.
+    expect(new Config({}).scope).toBeUndefined()
+  })
+
+  it('honours an explicit scope, and never the ambient global store', () => {
+    expect(new Config({ scope: 'project:acme' }).scope).toBe('project:acme')
   })
 
   it('rejects a non-positive timeout', () => {

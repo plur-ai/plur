@@ -70,9 +70,15 @@ export function recallQueryFrom(
     }
   }
   // `proposed` comes from a PreStepDecision another plugin may have rewritten;
-  // it is not guaranteed to be an array.
+  // it is not guaranteed to be an array, and it may contain that plugin's own
+  // injected scaffolding. Apply the SAME user-source filter as logged events, or
+  // another plugin's context becomes our recall query.
   if (Array.isArray(proposed)) {
     for (const message of proposed) {
+      const source = (message as MessageLike | null)?.source
+      // An absent source is an ordinary prompt the loop has not stamped yet;
+      // an explicitly non-user source is somebody else's injected content.
+      if (source !== undefined && source?.kind !== 'user') continue
       const value = textOf(message)
       if (value) parts.push(value)
     }

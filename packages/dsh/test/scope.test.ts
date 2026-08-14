@@ -45,8 +45,22 @@ describe('createScopeResolver', () => {
   })
 
   it('ignores an empty declared scope rather than widening to it', async () => {
-    const r = createScopeResolver({ scope: 'project:dsh' }, async () => '')
-    expect(await r.resolve('a1', '/w/acme')).toBe('project:dsh')
+    const r = createScopeResolver({ scope: 'project:configured' }, async () => '')
+    expect(await r.resolve('a1', '/w/acme')).toBe('project:configured')
+  })
+
+  it('derives project:<dirname> when nothing is configured or declared', async () => {
+    // Two unconfigured repos must NOT share one pool.
+    const r = createScopeResolver({}, async () => undefined)
+    expect(await r.resolve('a1', '/work/acme')).toBe('project:acme')
+    expect(await r.resolve('a2', '/work/zeta')).toBe('project:zeta')
+  })
+
+  it('re-resolves when the same agent moves to another workspace', async () => {
+    // The host may reuse an agent id or move it without emitting agent/disposed.
+    const r = createScopeResolver({}, async () => undefined)
+    expect(await r.resolve('a1', '/work/acme')).toBe('project:acme')
+    expect(await r.resolve('a1', '/work/zeta')).toBe('project:zeta')
   })
 
   it('clear forgets an agent so a reused id re-resolves', async () => {

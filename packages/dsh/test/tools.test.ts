@@ -10,7 +10,8 @@ function collect(plur?: Record<string, unknown>, config = new Config({})) {
     config,
     counters: createCounters(),
     plur: plur as never,
-    resolveScope: async () => config.scope,
+    queue: async (fn: () => Promise<unknown>) => { try { return await fn() } catch { return undefined } },
+    resolveScope: async () => config.scope ?? 'project:dsh',
   })
   return { tools, disposers }
 }
@@ -78,14 +79,14 @@ describe('registerTools', () => {
     const learn = vi.fn(async () => {})
     expect(await run(byName(collect({ learn }).tools, 'plur_learn'), { statement: 'Always pin.' }))
       .toContain('Stored')
-    expect(learn).toHaveBeenCalled()
+    expect(learn).toHaveBeenCalledWith('Always pin.', expect.objectContaining({ scope: 'project:dsh' }))
   })
 
   it('plur_feedback maps negative to a negative signal', async () => {
     const feedback = vi.fn(async () => {})
     await byName(collect({ feedback }).tools, 'plur_feedback')
       .execute({ id: 'ENG-1', signal: 'negative' }, {} as never)
-    expect(feedback).toHaveBeenCalledWith('ENG-1', -1)
+    expect(feedback).toHaveBeenCalledWith('ENG-1', 'negative', 'project:dsh')
   })
 
   it('plur_status reports scope, mode and counters', async () => {

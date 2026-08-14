@@ -12,7 +12,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import type { Config } from './config.js'
 import type { Counters } from './counters.js'
 import type { PlurClient } from './client.js'
-import { createWriteQueue, guard } from './guard.js'
+import { guard, type WriteQueue } from './guard.js'
 import { lastAssistantText, type LogEvent } from './session-log.js'
 
 /** Cap on a captured episode summary, so one long turn cannot bloat the store. */
@@ -24,6 +24,8 @@ export interface CaptureDeps {
   counters: Counters
   plur?: PlurClient
   /** Resolves the scope of the session the event came from. */
+  /** The ONE shared write queue. Must not be created per-module. */
+  queue: WriteQueue
   resolveScope: (session?: { id?: string; header?: { cwd?: string } }) => Promise<string>
 }
 
@@ -37,9 +39,8 @@ export interface CaptureDeps {
  * @param deps - config, counters, the PLUR client, and scope resolution.
  */
 export function registerCapture(ctx: Context, deps: CaptureDeps): void {
-  const { config, counters, plur, resolveScope } = deps
+  const { config, counters, plur, resolveScope, queue } = deps
   if (!config.autoCapture) return
-  const queue = createWriteQueue()
   const opts = { timeoutMs: config.timeoutMs, onError: () => counters.bump('errors_swallowed') }
 
   ctx.on('agent/turn-stopping', (agent: unknown) => {
@@ -49,7 +50,7 @@ export function registerCapture(ctx: Context, deps: CaptureDeps): void {
     const session = (agent as { session?: { id?: string; header?: { cwd?: string } } } | null)?.session
     void queue(() => guard(async () => {
       const scope = await resolveScope(session)
-      await plur?.capture?.({ summary: summary.slice(0, SUMMARY_MAX_CHARS), scope })
+      await plur?.capture?.(summary.slice(0, SUMMARY_MAX_CHARS), { scope })
     }, opts))
   })
 

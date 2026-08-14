@@ -31,9 +31,11 @@ function toolHarness(plur: PlurClient, config = new Config({})) {
     config,
     counters: createCounters(),
     plur,
+    queue: async (fn: () => Promise<unknown>) => { try { return await fn() } catch { return undefined } },
+
     resolveScope: async (agent?: { id?: string; session?: { header?: { cwd?: string } } }) => {
       const cwd = agent?.session?.header?.cwd
-      const scope = (cwd && SCOPE_BY_CWD[cwd]) || config.scope
+      const scope = (cwd && SCOPE_BY_CWD[cwd]) || config.scope || 'project:dsh'
       if (agent?.id) scopes.set(agent.id, scope)
       return scope
     },
@@ -63,7 +65,7 @@ describe('tools resolve the CALLING session scope', () => {
 
     await tool.execute({ statement: 'Deploy with pnpm.' }, { agent: agentIn('a1', '/work/acme'), signal: new AbortController().signal })
 
-    expect(learn).toHaveBeenCalledWith(expect.objectContaining({ scope: 'project:acme' }))
+    expect(learn).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ scope: 'project:acme' }))
   })
 
   it('plur_status reports the calling session scope', async () => {
@@ -97,9 +99,11 @@ describe('auto-learn resolves the originating session scope', () => {
       config,
       counters: createCounters(),
       plur: { learn },
+    queue: async (fn: () => Promise<unknown>) => { try { return await fn() } catch { return undefined } },
+
       resolveScope: async (session?: { header?: { cwd?: string } }) => {
         const cwd = session?.header?.cwd
-        return (cwd && SCOPE_BY_CWD[cwd]) || config.scope
+        return (cwd && SCOPE_BY_CWD[cwd]) || config.scope || 'project:dsh'
       },
     })
 
@@ -110,6 +114,6 @@ describe('auto-learn resolves the originating session scope', () => {
     await Promise.all(listeners.map(fn => fn({ id: 's1', header: { cwd: '/work/acme' } }, event)))
     await settle()
 
-    expect(learn).toHaveBeenCalledWith(expect.objectContaining({ scope: 'project:acme' }))
+    expect(learn).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ scope: 'project:acme' }))
   })
 })

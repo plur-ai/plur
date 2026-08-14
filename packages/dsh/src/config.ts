@@ -7,12 +7,18 @@ export interface Config {
   /**
    * Which PLUR scope this harness may read and write.
    *
-   * Defaults CLOSED to a dsh-specific scope. A global store accretes across
-   * every tool the user has ever pointed PLUR at — server addresses, credentials
-   * paths, client names — and a third-party harness must not inherit all of it
-   * merely by being installed. Widening this is a deliberate act.
+   * Omitted, it is DERIVED per workspace (`project:<directory name>`), matching
+   * @plur-ai/core's own store discovery. It is never the ambient global store: a
+   * global store accretes across every tool the user has ever pointed PLUR at —
+   * server addresses, credential paths, client names — and a third-party harness
+   * must not inherit all of that merely by being installed.
+   *
+   * Deriving rather than defaulting to one literal matters: a single shared
+   * default would put every unconfigured repository into the same engram pool,
+   * which is a cross-project leak affecting exactly the users least likely to
+   * notice it.
    */
-  scope: string
+  scope?: string
   /** `content` injects the engrams themselves; `off` disables injection entirely. */
   injectionMode: 'content' | 'off'
   /** Token ceiling for the rendered block. */
@@ -37,7 +43,7 @@ export interface Config {
 
 export const Config: z<Config> = z.object({
   path: z.string(),
-  scope: z.string().default('project:dsh'),
+  scope: z.string(),
   injectionMode: z.union(['content', 'off']).default('content'),
   injectionBudget: z.natural().min(1).default(2000),
   refreshIntervalMs: z.natural().default(0),

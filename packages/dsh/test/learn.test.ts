@@ -49,7 +49,8 @@ function harness(plur: Record<string, unknown>, config = new Config({})) {
     config,
     counters: createCounters(),
     plur: plur as never,
-    resolveScope: async () => config.scope,
+    queue: async (fn: () => Promise<unknown>) => { try { return await fn() } catch { return undefined } },
+    resolveScope: async () => config.scope ?? 'project:dsh',
   })
   return (event: unknown) => Promise.all(listeners.map(fn => fn({ id: 's1' }, event)))
 }
@@ -71,7 +72,7 @@ describe('registerLearning', () => {
     const learn = vi.fn(async () => {})
     await harness({ learn }, new Config({ scope: 'project:acme' }))(userMessage('Always pin the deps.'))
     await settle()
-    expect(learn).toHaveBeenCalledWith(expect.objectContaining({ scope: 'project:acme' }))
+    expect(learn).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ scope: 'project:acme' }))
   })
 
   it('ignores plugin-sourced messages so it never learns from its own injection', async () => {
