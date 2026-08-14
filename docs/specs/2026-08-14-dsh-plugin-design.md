@@ -1,288 +1,352 @@
 # `@plur-ai/dsh` — native DeepSeek Harness plugin
 
-**Status:** draft for review
+**Status:** revision 2 — incorporates a five-evaluator review (cto, dijkstra, taleb, ceo, popper)
 **Date:** 2026-08-14
 **Owner:** Gregor
 
+> **Revision note.** Revision 1 claimed `form: 'snapshot'` made repeated injection safe by
+> superseding earlier injections. **That was false**, and it was the load-bearing claim.
+> `deriveEventMessage` in `packages/core/session/src/surface.ts:96` projects
+> `user/message` as `return event.data` — verbatim, with no `form` check and no producer
+> dedup. `form` is a presentation label consumed by a client renderer to pick an icon.
+> Revision 2 abandons tail injection entirely in favour of a re-rendered system-prompt
+> section, which has no accretion at all. See §1.
+
 ## Why
 
-DeepSeek open-sourced DeepSeek Harness (`dsh`) on 2026-08-13. It reached 92.7k stars
-in 26 hours and the `dsh-plugin` GitHub topic carries 2,151 repositories. Across its
-219 packages there is **no memory or recall seam** — `ctx.storage` and
-`ctx.storageDomain` are opaque key-value hubs and nothing owns cross-session
-knowledge. Every other capability has a named seam. Memory is the hole.
+DeepSeek open-sourced DeepSeek Harness on 2026-08-13; 92,733 stars and 2,151
+`dsh-plugin`-topic repositories as of 2026-08-14 (GitHub API, same date). Across its
+219 packages there is no memory or recall seam.
 
-The slot is contested but thinner than the star counts suggest. Of the apparent
-competitors, `flowix` (276★) ships no `dsh` manifest key at all and `sivtr` (131★) is
-a Rust CLI shipping skills. The only serious native entrants are
-`dsh-memory-evolve` (53★) and **mnemon** (430★).
+**How that negative was established** (it is a universal claim and deserves its method
+stated): dsh's generated `docs/capability-seams.md` enumerates every `ctx.*` service in
+the tree with its owner, implementations and consumers — 60-odd entries covering
+filesystem, shell, sandbox, subagents, compaction, skills, approval, web, LSP, storage.
+No memory, recall, or knowledge service appears. A `grep` for `ctx.memory`,
+`memorySeam` and `ctx.recall` across `packages/` and `docs/` returns nothing.
+`ctx.storage` / `ctx.storageDomain` are opaque KV hubs with no semantic retrieval.
+**Falsified by:** any `ctx.*` memory service appearing in that generated catalogue, or
+a DeepSeek roadmap entry for one. Re-check before publish.
 
-### The architectural opening
+### The competitive opening — restated precisely
 
-Mnemon's plugin is not mnemon's — it is `dsh-mnemon` v0.1.1, authored by `omdsh-dev`
-and pinned by a nine-line wrapper bundle. Its own configuration reference documents
-`recallMode: guided` as *"whether to inject an on-demand recall **cue**"* and
-`writebackMode: guided` as *"inject the hot-memory cue"*.
+Revision 1 claimed "every other dsh memory plugin injects a cue." That was imprecise
+and rested on examining one competitor. Both have now been read:
 
-So the market leader's recall path is:
+- **mnemon** (430★) — its plugin is `dsh-mnemon` v0.1.1, authored by `omdsh-dev`, not
+  by mnemon. Its own configuration reference documents `recallMode: guided` as
+  *"whether to inject an on-demand recall **cue**"*. It registers 13 tools and reaches
+  its store through a CLI (`cliPath`, `timeoutMs` default 10000, documented as *"hard
+  timeout for a single CLI call"*). Recall is therefore model-mediated: cue → the model
+  decides → tool call → subprocess → result → continue.
+- **dsh-memory-evolve** (53★) — `src/` contains only `client/`; every `inject` call is
+  `ctx.slots.inject('conversation.view', …)`, i.e. UI slots. It registers **no
+  `agent/pre-step` listener at all**. It is a Web-UI-plus-lifecycle-observer plugin.
 
-```
-agent/pre-step injects a hint
-  -> model decides whether to call mnemon_recall
-     -> tool spawns the Go CLI (cliPath, 10s hard timeout)
-        -> SQLite read
-           -> result returns as a tool message
-              -> model continues
-```
+The other apparent entrants are not memory plugins: `flowix` (276★) ships no `dsh`
+manifest key; `sivtr` (131★) is a Rust CLI shipping skills.
 
-That is **model-mediated recall**: one extra round trip, one subprocess spawn, and a
-compliance gamble every turn. It also registers **13 tools**, whose schemas dsh bills
-on every request.
+So the defensible claim, and the one to use publicly:
 
-PLUR already does the other thing. `injectHybrid()` puts the actual engrams into the
-prompt at assemble time — no tool call, no second round trip, no reliance on the
-model taking a hint. This is not a feature difference, it is a difference in kind,
-and it is the plugin's entire thesis:
+> **Neither serious dsh memory plugin puts the memories themselves into the prompt.
+> One injects a cue and makes the model ask; the other doesn't touch the request path.**
 
-> **Every other dsh memory plugin injects a cue. This one injects the memories.**
+That is falsifiable, scoped to what was actually examined, and still the thesis.
+
+### Where the competitor's design legitimately wins
+
+Direct injection is not unconditionally superior and the spec should not pretend it is.
+Roughly:
+
+- ours ≈ `schema_tax(5 tools) + T_block` every turn
+- theirs ≈ `schema_tax(13 tools) + T_cue + p · T_recall`, for `p` = P(model bites)
+
+**When memory relevance is sparse (`p` low), the cue design is cheaper.** Ours wins when
+relevance is dense, and when correctness matters more than marginal tokens — because
+theirs fails silently whenever the model declines the cue, which is precisely the
+"why didn't it remember?" complaint that destroys trust in a memory product. We are
+trading a bounded, measurable token cost for the elimination of an unbounded
+correctness gamble. That is the honest framing.
 
 ## Goals
 
-1. Memory that works without the model asking for it, via direct content injection.
-2. A curated tool surface, deliberately small, because schema cost is per-request.
-3. Never take the host agent down. A memory layer that breaks someone's coding
-   session is worse than no memory layer.
-4. Feature parity with mnemon where parity is cheap (skills, commands, a Web tab).
+1. Memory that works without the model asking for it.
+2. A curated tool surface — five tools, because schema cost is per-request.
+3. Never take the host agent down, and never silently inflate the user's bill.
+4. Never move more of the user's memory off their machine than they intended.
 5. Ship one package, publish once, list once.
+
+### Success criterion
+
+Two evaluators independently flagged that revision 1 had none, and that without one a
+quiet launch is indistinguishable from a wrong thesis. Pre-registered:
+
+- **Primary:** ≥ 250 npm downloads in the first 30 days *and* ≥ 1 unsolicited
+  third-party mention (issue, blog, awesome-list entry we did not submit).
+- **Secondary:** measured token overhead per turn within 1.5× of mnemon's at equal or
+  better task success on a 20-task A/B run.
+- **Reassess 2026-09-14.** If the primary is missed, the default action is to stop
+  investing — keep the package alive at maintenance level, do not build v0.2.
+- **Immediate abort:** DeepSeek announces a first-party memory seam. Then the play
+  changes from "ship a plugin" to "be the reference implementation of their interface."
 
 ## Non-goals
 
-- Replacing `@plur-ai/mcp`. Power users wanting all ~40 tools keep using MCP; this
-  plugin is the zero-configuration path and registers five tools.
-- Multi-user or team-server features. Enterprise scoping stays where it is.
-- Supporting dsh's Python SDK or ACP transports in v1.
+- Replacing `@plur-ai/mcp` — power users wanting all ~40 tools keep using MCP.
+- Team/server features. Enterprise scoping stays where it is.
+- dsh's Python SDK or ACP transports.
 
 ## Package
 
-One package, `packages/dsh` → **`@plur-ai/dsh`**, in the existing monorepo.
-
-`pnpm-workspace.yaml` already globs `packages/*`. `@plur-ai/claw` is the precedent in
-every respect: an external-harness plugin, its own manifest, its own independent
-version track. Mnemon's two-package split exists only because a third party wrote
-their plugin; a single package can declare both `dsh.bundle` and its plugin entry
-point, as dsh's own publish tutorial shows.
+One package, `packages/dsh` → `@plur-ai/dsh`, in the monorepo. `pnpm-workspace.yaml`
+already globs `packages/*`; `@plur-ai/claw` is the precedent in every respect.
 
 ```
 packages/dsh/
-├── package.json          # declares dsh.bundle + main
-├── cordis.patch.yml      # the layer a profile applies
+├── package.json          # dsh.bundle + main
+├── cordis.patch.yml
 ├── src/
-│   ├── index.ts          # plugin: name, inject, Config, apply()
-│   ├── inject.ts         # agent/pre-step direct injection
-│   ├── learn.ts          # session/event correction detection
-│   ├── capture.ts        # agent/turn-stopping episode capture
-│   ├── compact.ts        # compaction/* learn-before-drop
-│   ├── tools.ts          # the five model-facing tools
+│   ├── index.ts          # name, inject, Config, apply()
+│   ├── memory-section.ts # the system-prompt section + its async cache
+│   ├── refresh.ts        # when to recompute the block
+│   ├── scope.ts          # per-session scope resolution
+│   ├── learn.ts          # correction detection off session/event
+│   ├── capture.ts        # episode capture + learn-before-compaction
+│   ├── tools.ts          # the five tools
 │   ├── skills.ts         # ctx.skills registration
 │   ├── commands.ts       # /plur commands
-│   ├── config.ts         # schemastery schema
-│   ├── guard.ts          # timeout + never-throw wrapper
-│   └── client/           # Web UI tab (ctx.slots)
+│   ├── config.ts         # schemastery
+│   ├── guard.ts          # timeout + never-throw
+│   ├── counters.ts       # local debug counters (NOT gated on the Web tab)
+│   ├── session-log.ts    # shared log-walking helpers, unit-tested once
+│   └── client/           # Web UI tab
 └── test/
 ```
 
 ### Dependency posture
 
-`@plur-ai/core`'s hard dependencies are light — PGlite (WASM, no native build),
-`js-yaml`, `zod`. `better-sqlite3`, `@huggingface/transformers` and `pg` are all
-**optional**. So the plugin runs PLUR **in-process** inside the dsh host rather than
-shelling out to a binary the way mnemon does. That removes their per-call subprocess
-spawn and their 10-second timeout ceiling.
+PLUR core's hard dependencies are light — PGlite (WASM), `js-yaml`, `zod`;
+`better-sqlite3`, `@huggingface/transformers` and `pg` are optional. So PLUR runs
+**in-process**, removing mnemon's per-call subprocess spawn.
 
-dsh packages are on npm as release candidates (`@deepseek-ai/dsh-agent` 0.1.0-rc.6,
-most others 0.0.1-rc.1, `@deepseek-ai/cordis` 4.0.1). They go in `peerDependencies`
-with a pinned caret range plus `devDependencies` for tests. Given "THERE WILL BE
-COMPATIBILITY-BREAKING CHANGES" in the README, a CI job builds against dsh `main`
-weekly so drift surfaces as a red build, not a user bug report.
+dsh packages go in `peerDependencies`, pinned to one release line.
+
+> **Verified 2026-08-14, and non-obvious:** the npm `latest` dist-tag is stale and
+> internally inconsistent. `@deepseek-ai/dsh-tools@latest` is `0.0.1-rc.1`, which
+> peer-requires `dsh-agent@^0.0.1-rc.1`, while `dsh-agent@latest` is `0.1.0-rc.6` —
+> installing both fails with ERESOLVE. The current line is under the **`next`**
+> dist-tag. Pin every `@deepseek-ai/dsh-*` to `0.1.0-rc.6` (cordis `^4.0.1`,
+> schemastery `^3.18.1`); that resolves cleanly. Do **not** use `--legacy-peer-deps`.
+> Published typings at that line match the git source, so we build against npm.
+
+A weekly CI job builds against dsh `main` so drift is a red build, not a user report.
 
 ## Design
 
-### 1. Direct injection — the core
+### 1. Memory as a re-rendered system-prompt section — the core
 
-Registered on the `agent/pre-step` waterfall with `{ prepend: true }`, following the
-shape `@deepseek-ai/dsh-time-context` establishes:
+**Not** a tail-appended `user/message`. Revision 1's approach accretes: every injected
+`user/message` stays in derived history verbatim and is resent on every subsequent
+request until compaction, so with `refreshIntervalMs: 0` a long session would grow a
+fresh ~2000-token block per step, forever. Nothing in dsh removes it —
+`SurfaceOp.replace` is the only mechanism that shadows history, it requires naming the
+exact seqs to shadow, and `PreStepDecision` (`{kind:'enter'; messages: UserMessage[]}`)
+exposes no knob to set it. That road is closed.
+
+Instead:
 
 ```ts
-ctx.on('agent/pre-step', async ({ agent, turn, step, signal }, next) => {
-  const decision = await next()              // delegate FIRST
-  if (decision.kind === 'reject' || signal.aborted) return decision
-  const engrams = await guard(() => plur.injectHybrid({ ... }))
-  if (!engrams) return decision              // degrade silently
-  return {
-    kind: 'enter',
-    messages: [...decision.messages, createUserMessage({
-      content: [{ type: 'text', text: render(engrams) }],
-      source: { kind: 'plugin', plugin: name, form: 'snapshot', sections: [...] },
-    })],
-  }
-}, { prepend: true })
+// registered per-agent, on that agent's scoped context
+agent.ctx.systemPrompt.section({
+  name: 'plur:memory',
+  order: 120,                       // after persona (0), alongside tool guidance
+  text: () => cache.get(agent.id) ?? '',   // SYNCHRONOUS read of a cached block
+})
 ```
 
-**`form: 'snapshot'` is the mechanism that makes this safe.** dsh defines it as
-*"current state, where a later snapshot from the same producer supersedes an earlier
-one."* Injected context is a durable `user/message` in dsh's log and is otherwise
-resent on every subsequent request until compaction — so a naive port of claw's
-per-prompt-build injection would accrete an engram block per turn and quietly balloon
-the user's context and bill. Snapshot form makes each injection supersede the last.
+`PromptSection.text` may be *"a provider evaluated at each assembly"*
+(`packages/core/system-prompt/src/index.ts`). So the block is re-rendered from cache on
+every request and **never accumulates**. Registration is scoped and returns a Cordis
+disposer, so it unwinds with the agent.
 
-Two further guards on top:
+The `text` provider is synchronous and `injectHybrid()` is async, so the cache is
+refreshed **out of band**:
 
-- **Content-hash skip.** If the selected engram set hashes identically to the last
-  injection, skip entirely. Avoids pointless supersession churn.
-- **`refreshIntervalMs`.** A floor between injections, as `time-context` does, found
-  by scanning back through `agent.session.events` for this plugin's last
-  `user/message`.
+- On `agent/pre-step`, at **turn boundaries only** (step 1), fire-and-forget:
+  recompute the block, write it to the cache. The current turn renders whatever is in
+  cache; the next turn sees the update. One recall per user turn is the natural cadence
+  and it means retries and multi-step tool loops never trigger extra recalls.
+- Content-hash gate: if the newly selected engram set hashes to what is already cached,
+  **do not write** — an unchanged system prompt keeps the KV-cache prefix stable.
 
-Rendering reuses claw's `assembler.ts` / `system-prompt.ts` format verbatim.
-Identical output across hosts is an existing PLUR principle and the MCP
-session-start block already matches it.
+**The tradeoff moved, and improved.** Revision 1 risked unbounded, silent context
+growth. Revision 2 risks KV-cache prefix invalidation when the memory block *changes* —
+bounded, measurable, gated by the content hash, and worst-case it costs one cache miss
+on a turn where memory genuinely changed. A stale-by-one-turn block is a far better
+failure mode than an exploding bill.
 
-**Open question for review:** dsh's docs emphasise KV-cache economics and note that
-appended context is prefix-stable. A snapshot *supersession* may rewrite history
-rather than append, which would invalidate cache from the changed token onward. If
-so, `refreshIntervalMs` should default conservatively high, or injection should
-prefer step 1 of a turn only. This needs measurement before defaults are fixed.
+Rendering reuses claw's `assembler.ts` / `system-prompt.ts` format. A snapshot test
+asserts byte-identity with claw's and MCP's rendered block, since "identical output
+across hosts" is claimed as a principle and should therefore be enforced.
 
-### 2. Auto-learn
+### 2. Per-session scope resolution
 
-`ctx.on('session/event', ...)`, filtered to `user/message` with `source.kind === 'user'`.
-Runs claw's existing `learner.ts` heuristics (length filter, correction regexes,
-sentence-level scan, polarity detection) and fires `plur.learnRouted()`
-fire-and-forget at confidence ≥ 0.7. Never awaited on the turn path.
+A single global `scope` config is wrong: dsh's default profile is the multi-session web
+server, so two unrelated project sessions in one dsh instance would draw from and write
+to the same PLUR scope — engrams from one project leaking into another's context. Claw
+already solves this with a `Map<sessionKey, scope>`; `scope.ts` does the same, keyed by
+`agent.id`, resolved from (in precedence order) explicit config → the session's `cwd`
+(a `.plur.yaml` in the workspace root) → the configured default.
 
-### 3. Episode capture
+### 3. Scope gate and disclosure — what leaves the machine
 
-`ctx.on('agent/turn-stopping', ...)` — serial, no `next()`. Captures an episode
-summary from the turn's last assistant message. Fire-and-forget.
+An engram block injected into a dsh request goes to whatever provider the host is
+configured with. dsh's onboarding pre-populates exactly one provider card, and
+`packages/llm/llm-deepseek/src/index.ts` sets
+`PUBLIC_BASE_URL = 'https://api.deepseek.com'`. So the default path sends memory content
+to DeepSeek's hosted API.
 
-### 4. Learn before drop
+This is not a new *class* of exposure — every PLUR adapter injects content into the
+host's model traffic, and `docs/telemetry-design.md`'s "no content capture" rule governs
+PLUR's own phone-home telemetry, not the user's model provider. But two things follow
+that revision 1 got wrong:
 
-`ctx.on('compaction/start', ...)` extracts learnings from the range about to be
-shadowed. This is claw's `compact` hook and the one place where memory earns its keep
-most visibly, because the alternative is losing the content.
+- **The store must be gated by scope, defaulting closed.** With `scope` unset, the
+  ambient global store is eligible — and a global store accretes across every tool a
+  user has ever pointed PLUR at, including (per this installation's own conventions)
+  server IPs, SSH configs and client names. A third-party harness must not inherit all
+  of that by default. Default to a dsh-specific scope; broadening is an explicit act.
+- **First-run disclosure.** One line in the README and one on first activation:
+  *"PLUR includes your stored memories in requests sent to your configured model
+  provider — for a default dsh install that is DeepSeek's hosted API. Change the
+  provider, narrow the scope, or set `injectionMode: off` in settings."* We advertise
+  "your conversations never leave your machine" in claw's own README; we do not get to
+  be vague here.
+
+`injectionMode` stays defaulted to `content`. Defaulting it off would disable the
+product's thesis and contradicts every other PLUR adapter. Disclosure plus a scope gate
+addresses the real risk; disabling the feature addresses it by not shipping it.
+
+### 4. Auto-learn, capture, and learn-before-compaction
+
+All off the `session/event` emit feed, whose listener failures dsh explicitly contains.
+
+- **Auto-learn** — filter `user/message` with `source.kind === 'user'`, run claw's
+  `learner.ts` heuristics, fire-and-forget `plur.learnRouted()` at confidence ≥ 0.7.
+- **Episode capture** — on `agent/turn-stopping` (serial, no `next()`).
+- **Learn before drop** — `compaction/start` is a `SessionEventMap` entry, **not** a
+  Cordis event; `ctx.on('compaction/start', …)` does not exist. Filter it out of
+  `session/event`: `if (evt.type !== 'compaction/start') return`. It does fire before
+  summarization, so reading pre-shadow content is sound.
+
+**Concurrency.** Two live sessions in one process can fire auto-learn against the same
+YAML store simultaneously — a hazard the subprocess-per-call competitor does not have
+and that our in-process choice introduces. All writes go through a single in-process
+serialization queue in `guard.ts`. Not last-write-wins by accident.
 
 ### 5. Subagent scope propagation
 
-`ctx.on('subagent/start', ...)` propagates the parent's scope to the child, mirroring
-claw's `prepareSubagentSpawn`.
+`subagent/start` is documented as observe-only and fires *after* the child is published
+— it is **not** claw's pre-spawn `prepareSubagentSpawn`, and revision 1 overstated the
+parity. Whether the scope write lands before the child's first assembly is a real
+timing question, so this ships only with a layer-3 test proving the child's first
+rendered prompt reflects the inherited scope. If the test can't be made to pass, the
+feature is cut rather than shipped on the strength of an analogy.
 
-### 6. Tools — five, not forty
-
-Schema cost is billed per request while registered. Mnemon pays for 13. The MCP
-server's ~40 would be indefensible.
+### 6. Tools — five
 
 | Tool | Why it earns its schema |
 |---|---|
-| `plur_recall` | Targeted lookup beyond what injection surfaced |
-| `plur_learn` | Explicit store when the model knows something matters |
+| `plur_recall` | Targeted lookup beyond what the section surfaced |
+| `plur_learn` | Explicit store |
 | `plur_forget` | Retire wrong knowledge — the editability differentiator |
-| `plur_feedback` | Rate an injected engram; trains relevance. No competitor has this |
-| `plur_status` | Health check, and how a user debugs "why didn't it remember" |
+| `plur_feedback` | Rate an engram; trains relevance. No competitor has this |
+| `plur_status` | Health, and how a user debugs "why didn't it remember" |
 
-Everything else stays reachable through `@plur-ai/mcp` for users who want it.
+### 7. Skills, commands, counters, Web tab
 
-### 7. Skills and commands
+`ctx.skills.register()` contributes the existing `plur-memory` SKILL.md.
+`ctx.commands` registers `/plur status` and `/plur recall <query>`.
 
-`ctx.skills.register()` contributes the existing `plur-memory` SKILL.md at runtime —
-no filesystem provider needed. `ctx.commands` registers `/plur status` and
-`/plur recall <query>`, which dispatch without a model turn.
+`counters.ts` keeps claw's per-event counters (`injects_attempted`, `engrams_injected`,
+`errors_swallowed`, …) and is **independent of the Web tab** — if the tab is cut, a
+human-facing debugging surface must still exist.
 
-### 8. Web UI tab
+The Web tab (one tab: recent engrams, search, toggle) is built last, behind
+`tabEnabled`. It surfaces engram content inside a third-party UI, so it inherits §3's
+scope gate.
 
-dsh's default profile *is* the web UI, so a plugin with no surface reads as
-incomplete. Scope for v1 is deliberately small: one tab listing recent engrams, a
-search box, and an enable/disable toggle. Built on `ctx.slots` plus a client module.
-This is the largest single risk to the schedule (a second learning curve, in the
-Cordis client graph and React) and is therefore built **last**, behind
-`tabEnabled`, so it can be cut without blocking the release.
-
-### 9. Configuration
-
-Schemastery, registered under the `plur` namespace in `$DSH_HOME/settings.yaml`.
+### 8. Configuration
 
 | Key | Default | Meaning |
 |---|---|---|
 | `path` | `~/.plur` | Store location |
-| `injectionMode` | `content` | `content` \| `off`. There is deliberately no `cue` mode |
-| `injectionBudget` | `2000` | Token ceiling for the injected block |
-| `refreshIntervalMs` | `0` | Floor between injections; `0` means every eligible step. Raised to a non-zero default only if the KV-cache measurement below shows supersession is expensive |
-| `autoLearn` | `true` | Correction detection |
-| `autoCapture` | `true` | Episode capture |
-| `scope` | unset | Default write scope |
+| `scope` | dsh-specific scope | **Gated.** Not the ambient global store |
+| `injectionMode` | `content` | `content` \| `off` |
+| `injectionBudget` | `2000` | Provisional, pending measurement. Measured with `ctx.tokenMeter` so our budget and the host's agree |
+| `refreshIntervalMs` | `0` | Floor between cache refreshes; `0` = once per turn boundary, which is the cadence, not every step |
+| `autoLearn` / `autoCapture` | `true` | |
 | `reranker` | `off` | `off` \| `ms-marco-minilm-l6` \| `bge-reranker-v2-m3` |
-| `timeoutMs` | `5000` | Hard bound on any PLUR call |
+| `timeoutMs` | `5000` | Provisional. Hard bound on any PLUR call |
 | `tabEnabled` | `true` | Web tab |
 
-### 10. Failure discipline
+### 9. Failure discipline
 
-This code runs inside someone else's coding agent. The governing rule:
+> A PLUR failure must never fail the host's turn, and never silently inflate the bill.
 
-> A PLUR failure must never fail the host's turn.
-
-Concretely, enforced in `guard.ts` and asserted by tests:
-
-- Every PLUR call is wrapped in a timeout (`timeoutMs`) and a `try/catch` that logs
-  and returns `undefined`.
-- `agent/pre-step` **always** calls `next()`, and on any internal error returns the
-  delegated decision unmodified.
-- All learning and capture paths are fire-and-forget (`void p.catch(...)`).
-- A missing, corrupt, or unreadable store degrades to no-injection, not a throw.
-- Plugin disposal cancels in-flight work and unregisters cleanly (Cordis effects).
+- **Everything** PLUR-side runs inside `guard()` — including *rendering*, not just
+  retrieval. Revision 1's own code sample called `render(engrams)` outside the guard;
+  that is exactly the bug the rule exists to prevent.
+- The prompt-section `text` provider is synchronous, cache-only, and cannot throw: it
+  returns `''` on any miss.
+- All learning and capture are fire-and-forget.
+- A missing or corrupt store degrades to an empty block.
+- Disposal cancels in-flight work and unwinds registrations via Cordis effects.
+- **Known limit, stated rather than papered over:** the reranker path
+  (`@huggingface/transformers`, peak RSS ≈ 2GB for bge) is native/WASM; an OOM or
+  native crash there cannot be caught by a JS `try/catch` and would take the host
+  process down. It stays defaulted `off`, and enabling it is documented as
+  "for local/batch use, not inside a shared agent host."
 
 ## Testing
 
-TDD throughout. Four layers:
+TDD. Four layers:
 
-1. **Unit** — pure functions: block rendering, budget trimming, content-hash skip,
-   refresh-interval policy, learner heuristics. No Cordis.
-2. **Plugin contract** — mount `apply()` in a minimal Cordis context with stub
-   `ctx.agents` / `ctx.tools` / `ctx.skills`; dispatch `agent/pre-step` and assert the
-   returned `PreStepDecision`. Includes the negative cases: PLUR throws, PLUR times
-   out, decision is `reject`, signal aborted — all must return the delegated decision.
-3. **End-to-end, deterministic** — `@deepseek-ai/dsh-llm-replay` is published, so a
-   real dsh runtime can be driven with a recorded model stream and the session log
-   asserted directly. This is the layer that proves injection actually reaches the
-   model and that supersession behaves.
-4. **Manifest contract** — assert `package.json`'s `dsh.bundle.patch`, the
-   `cordis.patch.yml` row name, and the README install command stay in sync. Stolen
-   directly from mnemon's `dsh_bundle_test.go`, which is a good idea.
+1. **Unit** — block rendering, budget trimming, content-hash gating, refresh policy,
+   scope resolution, and `session-log.ts`'s log-walking helpers (the exact category
+   where the review found two bugs). No Cordis.
+2. **Plugin contract** — mount `apply()` in a minimal Cordis context with stubs;
+   assert registration, and the negative paths: PLUR throws, PLUR times out,
+   **render throws after a successful recall**, decision is `reject`, signal aborted,
+   retry storm within one step, plugin disposed mid-flight.
+3. **Deterministic E2E** — `@deepseek-ai/dsh-llm-replay@0.1.0-rc.6` is published, so a
+   real dsh runtime runs against a recorded stream. This layer proves the section
+   actually reaches the model, that a multi-turn session does **not** accrete, and that
+   an inherited subagent scope reaches the child's first assembly.
+4. **Manifest contract** — `dsh.bundle.patch`, the patch row name and the README
+   install command stay in sync.
 
-## Release
+## Estimate
 
-A fifth independent version track, mirroring claw:
-
-- `scripts/release.sh` gains `--dsh <ver>`, bumping `packages/dsh/package.json`,
-  the version constant in `src/index.ts`, and the test assertion.
-- `RELEASING.md`'s manifest gate gains the corresponding rows.
-
-**Both land before the first publish**, not during it.
-
-Published prebuilt to npm. A GitHub install would force users to allowlist an
-install-time build script — permission to execute our code on their machine outside
-any sandbox — which is a bad thing to attach to a memory product's first impression.
+Not previously stated, and the urgency argument is meaningless without one. For one
+engineer new to Cordis: **6–9 working days** — 1 setup and config, 2 the memory section
+and its cache, 1 scope and tools, 1 learn/capture/compaction, 1 skills/commands/counters,
+2–3 Web tab. The tab is the variable and the cuttable part.
 
 ## Risks
 
 | Risk | Mitigation |
 |---|---|
-| dsh breaking changes (stated in caps) | Pinned peer range; weekly CI against dsh main |
-| KV-cache invalidation from supersession | Measure before fixing defaults; may restrict to step 1 |
-| Embedder memory footprint in host process | Optional dep; hybrid→BM25 fallback already exists in claw |
-| Cordis learning curve dominating the estimate | Reference plugins read (`time-context`, `agent-instructions`); Web tab built last and cuttable |
-| DeepSeek ships its own `ctx.memory` seam | No evidence in-tree today. If it lands, being an early implementer of their interface beats being an early plugin — reassess immediately |
+| dsh breaking changes (announced in caps) | One-line pin; weekly CI against `main` |
+| KV-cache invalidation on block change | Content-hash gate; turn-boundary cadence; measure in layer 3 |
+| **Memory content reaches the host's model provider — DeepSeek by default** | Scope gate defaulting closed; first-run disclosure; `injectionMode: off` available |
+| Reranker native crash takes the host down | Default `off`; documented as unsuitable for a shared host |
+| Concurrent writes from multiple sessions | Single serialization queue for all writes |
+| Cordis learning curve | Reference plugins read; tab built last and cuttable |
+| DeepSeek ships `ctx.memory` | Re-check the seam catalogue before publish; if it lands, pivot to reference implementation |
 
 ## Sequencing
 
-Host plugin first, in dependency order: config and guard → injection → tools →
-learn/capture/compact → skills and commands → Web tab. Injection is stage one because
-it is the thesis; if only one thing ships, it is that.
+Config and guard → memory section and cache → scope → tools → learn/capture/compaction
+→ skills/commands/counters → Web tab. The memory section is stage one because it is the
+thesis; if only one thing ships, it is that.
