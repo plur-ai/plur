@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { filterEngrams, memoryStats, topByRecall, writtenPerDay, type EngramRow } from '../src/query.js'
+import { createdOn, filterEngrams, memoryStats, recallCount, topByRecall, writtenPerDay, type EngramRow } from '../src/query.js'
 
 const row = (over: Partial<EngramRow> = {}): EngramRow => ({
   id: 'ENG-1',
@@ -7,8 +7,52 @@ const row = (over: Partial<EngramRow> = {}): EngramRow => ({
   scope: 'project:acme',
   status: 'active',
   injection_count: 0,
+  activation: { frequency: 0 },
   temporal: { learned_at: '2026-08-10' },
   ...over,
+})
+
+describe('recallCount — the field that is actually populated', () => {
+  it('reads activation.frequency, the retrieval counter with real history', () => {
+    expect(recallCount(row({ activation: { frequency: 594 } }))).toBe(594)
+  })
+
+  it('prefers frequency over injection_count', () => {
+    // injection_count shipped 2026-08-13. Using it as the headline reported a
+    // store with 8 months of use as 99% never recalled, which is simply false.
+    expect(recallCount(row({ activation: { frequency: 40 }, injection_count: 1 }))).toBe(40)
+  })
+
+  it('falls back to injection_count when there is no frequency', () => {
+    expect(recallCount(row({ activation: undefined, injection_count: 3 }))).toBe(3)
+  })
+
+  it('is 0 when neither is set', () => {
+    expect(recallCount(row({ activation: undefined, injection_count: undefined }))).toBe(0)
+    expect(recallCount(null)).toBe(0)
+  })
+})
+
+describe('createdOn — the date source that actually exists', () => {
+  it('parses the compact id form', () => {
+    expect(createdOn(row({ id: 'ENG-2026-0814-017' }))).toBe('2026-08-14')
+  })
+
+  it('parses the dashed id form', () => {
+    expect(createdOn(row({ id: 'ENG-2026-08-03-005' }))).toBe('2026-08-03')
+  })
+
+  it('parses an org-prefixed id', () => {
+    expect(createdOn(row({ id: 'ENG-GPL-2026-0729-046' }))).toBe('2026-07-29')
+  })
+
+  it('falls back to temporal.learned_at for a non-conforming id', () => {
+    expect(createdOn(row({ id: 'custom-id', temporal: { learned_at: '2026-05-01' } }))).toBe('2026-05-01')
+  })
+
+  it('is undefined when neither source yields a date', () => {
+    expect(createdOn(row({ id: 'custom-id', temporal: undefined }))).toBeUndefined()
+  })
 })
 
 describe('filterEngrams', () => {
@@ -48,12 +92,9 @@ describe('filterEngrams', () => {
     expect(filterEngrams([row()], { offset: 999 }).rows).toEqual([])
   })
 
-  it('sorts newest first so recent memory is what you see', () => {
-    const rows = [
-      row({ id: 'OLD', temporal: { learned_at: '2026-01-01' } }),
-      row({ id: 'NEW', temporal: { learned_at: '2026-08-14' } }),
-    ]
-    expect(filterEngrams(rows, {}).rows.map(r => r.id)).toEqual(['NEW', 'OLD'])
+  it('sorts newest first, by the date in the id', () => {
+    const rows = [row({ id: 'ENG-2026-0101-001' }), row({ id: 'ENG-2026-0814-001' })]
+    expect(filterEngrams(rows, {}).rows.map(r => r.id)).toEqual(['ENG-2026-0814-001', 'ENG-2026-0101-001'])
   })
 
   it('tolerates rows with missing fields rather than throwing', () => {
@@ -64,29 +105,29 @@ describe('filterEngrams', () => {
 
 describe('memoryStats', () => {
   it('counts total, recalled and never-recalled', () => {
-    const rows = [row({ injection_count: 5 }), row({ injection_count: 0 }), row({ injection_count: 2 })]
+    const rows = [row({ activation: { frequency: 5 } }), row({ activation: { frequency: 0 } }), row({ activation: { frequency: 2 } })]
     expect(memoryStats(rows)).toMatchObject({ total: 3, recalled: 2, neverRecalled: 1 })
   })
 
   it('surfaces the never-recalled share — the "nobody is using this" signal', () => {
-    const rows = [row({ injection_count: 0 }), row({ injection_count: 0 }), row({ injection_count: 0 }), row({ injection_count: 1 })]
+    const rows = [row({ activation: { frequency: 0 } }), row({ activation: { frequency: 0 } }), row({ activation: { frequency: 0 } }), row({ activation: { frequency: 1 } })]
     expect(memoryStats(rows).neverRecalledPct).toBe(75)
   })
 
   it('never claims 100% never-recalled while some HAVE been recalled', () => {
     // 5409/5429 rounds to 100, which printed beside "20 recalled" reads as a bug.
-    const rows = [...Array.from({ length: 5409 }, () => row({ injection_count: 0 })),
-                  ...Array.from({ length: 20 }, () => row({ injection_count: 1 }))]
+    const rows = [...Array.from({ length: 5409 }, () => row({ activation: { frequency: 0 } })),
+                  ...Array.from({ length: 20 }, () => row({ activation: { frequency: 1 } }))]
     expect(memoryStats(rows).neverRecalledPct).toBe(99)
   })
 
   it('never claims 0% while some have NOT been recalled', () => {
-    const rows = [...Array.from({ length: 999 }, () => row({ injection_count: 5 })), row({ injection_count: 0 })]
+    const rows = [...Array.from({ length: 999 }, () => row({ activation: { frequency: 5 } })), row({ activation: { frequency: 0 } })]
     expect(memoryStats(rows).neverRecalledPct).toBe(1)
   })
 
   it('reports a true 100% when nothing has ever been recalled', () => {
-    expect(memoryStats([row({ injection_count: 0 })]).neverRecalledPct).toBe(100)
+    expect(memoryStats([row({ activation: { frequency: 0 } })]).neverRecalledPct).toBe(100)
   })
 
   it('does not divide by zero on an empty store', () => {
@@ -117,11 +158,11 @@ describe('topByRecall', () => {
 })
 
 describe('writtenPerDay', () => {
-  it('buckets by learned_at date', () => {
+  it('buckets by the engram id date', () => {
     const rows = [
-      row({ temporal: { learned_at: '2026-08-14' } }),
-      row({ temporal: { learned_at: '2026-08-14' } }),
-      row({ temporal: { learned_at: '2026-08-13' } }),
+      row({ id: 'ENG-2026-0814-001' }),
+      row({ id: 'ENG-2026-0814-002' }),
+      row({ id: 'ENG-2026-0813-001' }),
     ]
     const days = writtenPerDay(rows, 3, new Date('2026-08-14T12:00:00Z'))
     expect(days.at(-1)).toEqual({ date: '2026-08-14', count: 2 })
@@ -136,18 +177,18 @@ describe('writtenPerDay', () => {
   })
 
   it('ignores engrams older than the window', () => {
-    const rows = [row({ temporal: { learned_at: '2020-01-01' } })]
+    const rows = [row({ id: 'ENG-2020-0101-001', temporal: { learned_at: '2020-01-01' } })]
     const days = writtenPerDay(rows, 5, new Date('2026-08-14T12:00:00Z'))
     expect(days.reduce((s, d) => s + d.count, 0)).toBe(0)
   })
 
-  it('tolerates a missing or malformed learned_at', () => {
-    const rows = [row({ temporal: undefined }), row({ temporal: { learned_at: 'not-a-date' } })]
+  it('tolerates a missing or malformed date', () => {
+    const rows = [row({ id: 'x', temporal: undefined }), row({ id: 'y', temporal: { learned_at: 'not-a-date' } })]
     expect(() => writtenPerDay(rows, 5, new Date('2026-08-14T12:00:00Z'))).not.toThrow()
   })
 
-  it('accepts a full ISO timestamp, not just a date', () => {
-    const rows = [row({ temporal: { learned_at: '2026-08-14T09:31:00.000Z' } })]
+  it('accepts a full ISO timestamp in the learned_at fallback', () => {
+    const rows = [row({ id: 'no-date-here', temporal: { learned_at: '2026-08-14T09:31:00.000Z' } })]
     const days = writtenPerDay(rows, 2, new Date('2026-08-14T12:00:00Z'))
     expect(days.at(-1)).toEqual({ date: '2026-08-14', count: 1 })
   })

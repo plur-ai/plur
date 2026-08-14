@@ -57,10 +57,51 @@ function dayOf(value: string | undefined): string | undefined {
   return /^\d{4}-\d{2}-\d{2}$/.test(day) ? day : undefined
 }
 
-/** Recall count for one row, tolerating older stores that lack the field. */
+/**
+ * Engram ID date formats.
+ *
+ * Both are in the wild: `ENG-2026-0814-017` and `ENG-2026-08-14-005`, plus an
+ * optional org segment (`ENG-GPL-2026-0814-017`). Between them they cover every
+ * row in a real 5,429-engram store, which is why the ID is the reliable source
+ * for a creation date and `temporal.learned_at` is not.
+ */
+const ID_DATE = /^ENG(?:-[A-Z]+)?-(\d{4})-(\d{2})-?(\d{2})-/
+
+/**
+ * How many times this engram has actually been recalled.
+ *
+ * Reads `activation.frequency` — the retrieval-event counter, populated on
+ * 3,964 of 5,429 rows in a real store with eight months of history.
+ *
+ * NOT `injection_count`: that counter shipped in #866 on 2026-08-13, so it is
+ * non-zero on a couple of dozen rows and reports a store with years of use as
+ * essentially unread. It is kept as a fallback for the case where a future
+ * store has injections but no recorded retrievals.
+ *
+ * @param row - the engram.
+ * @returns the recall count, or 0.
+ */
 export function recallCount(row: EngramRow | null | undefined): number {
-  const n = row?.injection_count
-  return typeof n === 'number' && Number.isFinite(n) && n > 0 ? n : 0
+  const freq = row?.activation?.frequency
+  if (typeof freq === 'number' && Number.isFinite(freq) && freq > 0) return freq
+  const injected = row?.injection_count
+  return typeof injected === 'number' && Number.isFinite(injected) && injected > 0 ? injected : 0
+}
+
+/**
+ * The date this engram was created.
+ *
+ * Prefers the date encoded in the engram ID, because `temporal.learned_at` is
+ * optional and in practice almost never set — 1 row in 5,429 on a real store,
+ * which renders a "written per day" chart completely empty.
+ *
+ * @param row - the engram.
+ * @returns a `YYYY-MM-DD` date, or `undefined` when neither source yields one.
+ */
+export function createdOn(row: EngramRow | null | undefined): string | undefined {
+  const match = ID_DATE.exec(row?.id ?? '')
+  if (match) return `${match[1]}-${match[2]}-${match[3]}`
+  return dayOf(row?.temporal?.learned_at)
 }
 
 /**
@@ -89,7 +130,7 @@ export function filterEngrams(rows: readonly EngramRow[], query: BrowseQuery): B
     return true
   })
 
-  matched.sort((a, b) => (dayOf(b.temporal?.learned_at) ?? '').localeCompare(dayOf(a.temporal?.learned_at) ?? ''))
+  matched.sort((a, b) => (createdOn(b) ?? '').localeCompare(createdOn(a) ?? ''))
 
   return { rows: matched.slice(offset, offset + limit), total: matched.length, limit, offset }
 }
@@ -181,10 +222,12 @@ export interface DayCount {
  * Emits a contiguous run of days including empty ones, so the chart shows gaps
  * as gaps rather than silently compressing them into a misleadingly busy series.
  *
- * Only WRITES are charted. A local store records `temporal.learned_at` per
- * engram but keeps no per-event recall log — only a cumulative
- * `injection_count` — so a matching "recalled per day" band cannot be derived
- * here without inventing data. The never-recalled share in {@link memoryStats}
+ * Dates come from {@link createdOn}, not `temporal.learned_at` — see that
+ * function for why.
+ *
+ * Only WRITES are charted. A local store keeps no per-event recall log, only
+ * cumulative counters, so a matching "recalled per day" band cannot be derived
+ * without inventing data. The never-recalled share in {@link memoryStats}
  * carries that signal instead.
  *
  * @param rows - all engrams in scope.
@@ -196,7 +239,7 @@ export function writtenPerDay(rows: readonly EngramRow[], days: number, now: Dat
   const span = Math.max(1, days)
   const counts = new Map<string, number>()
   for (const row of Array.isArray(rows) ? rows : []) {
-    const day = dayOf(row?.temporal?.learned_at)
+    const day = createdOn(row)
     if (day) counts.set(day, (counts.get(day) ?? 0) + 1)
   }
 
