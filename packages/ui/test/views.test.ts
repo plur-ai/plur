@@ -121,6 +121,23 @@ describe('renderBrowse', () => {
     expect(html).not.toMatch(/onclick=/i)
   })
 
+  it('shows the statement ONCE — the summary row never wraps to a second copy', () => {
+    // The row and the expanded body both used to render the whole statement,
+    // so opening a record printed it twice and the row height jumped.
+    const marker = 'UNIQUE-STATEMENT-MARKER'
+    const html = browse([row({ statement: `${marker} and some trailing prose.` })])
+    // Scope to the record list: the top-recalled widget legitimately renders the
+    // statement too, and asserting page-wide just counts that.
+    const records = html.slice(html.indexOf('<div class="records">'))
+    expect(records.split(marker).length - 1).toBe(2)  // the summary line + the expanded body
+  })
+
+  it('defaults to 25 rows a page, not 50', () => {
+    const rows = Array.from({ length: 80 }, (_, i) => row({ id: `ENG-2026-0101-${i}`, activation: { frequency: 1 } }))
+    const html = renderBrowse({ rows, query: {}, mode: 'all', now: new Date('2026-08-14T12:00:00Z') })
+    expect(html.split('<details class="rec"').length - 1).toBe(25)
+  })
+
   it('the expanded body carries the FULL statement, not the truncated one', () => {
     const long = 'A '.repeat(200) + 'END-MARKER'
     const html = browse([row({ statement: long })])

@@ -48,7 +48,8 @@ export interface BrowsePage {
   offset: number
 }
 
-const DEFAULT_LIMIT = 50
+/** Rows per page. 50 made for a page you scroll past rather than read. */
+const DEFAULT_LIMIT = 25
 
 /** The day portion of a date or ISO timestamp, or `undefined` if unparseable. */
 function dayOf(value: string | undefined): string | undefined {

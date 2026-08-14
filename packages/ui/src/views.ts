@@ -55,6 +55,9 @@ ${opts.body}
 </html>`
 }
 
+/** Rows per page, matching `filterEngrams`'s own default. */
+const DEFAULT_PAGE = 25
+
 /** Which slice of the store the record list is showing. */
 export type BrowseMode = 'top' | 'all'
 
@@ -218,7 +221,7 @@ export function renderBrowse(opts: BrowseOptions): string {
   const ranked = mode === 'top'
     ? matching.filter(r => recallCount(r) > 0).sort((a, b) => recallCount(b) - recallCount(a))
     : matching
-  const limit = Math.max(1, opts.query.limit ?? 50)
+  const limit = Math.max(1, opts.query.limit ?? DEFAULT_PAGE)
   const offset = Math.max(0, opts.query.offset ?? 0)
   const ordered = ranked.slice(offset, offset + limit)
   const page = { total: ranked.length, limit, offset }

@@ -173,7 +173,10 @@ details.rec > summary:hover { background: var(--row-hover); }
 details.rec[open] > summary { background: var(--row-hover); }
 .rec-id { font-family: var(--font-mono); font-size: 12px; color: var(--text-tertiary); }
 .rec-stmt { font-size: 14px; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-details.rec[open] .rec-stmt { white-space: normal; color: var(--text); }
+/* The row stays one truncated line even when open: the expanded body is the
+   single place the full statement appears. Letting the summary wrap printed it
+   twice and made the row height jump as you opened records. */
+details.rec[open] .rec-stmt { color: var(--text); }
 .rec-scope { font-family: var(--font-mono); font-size: 12px; color: var(--text-tertiary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rec-date { font-family: var(--font-mono); font-size: 12px; color: var(--muted); }
 
