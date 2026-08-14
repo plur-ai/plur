@@ -5139,6 +5139,8 @@ export class Plur {
     }
     // The ID may be prefixed (ENG-GPL-...) from _loadAllEngrams namespacing.
     // Strip the prefix before querying the remote server. See: #86
+    /** Stores this walk could not reach — so "not found" can say so (#907). */
+    const unverifiedStores: string[] = []
     for (const entry of (this.config.stores ?? [])) {
       if (!entry.url) continue
       const serverId = this._stripRemotePrefix(id, entry.scope)
@@ -5149,6 +5151,32 @@ export class Plur {
         continue
       }
       const driver = this._getRemoteDriver({ url: entry.url, token: entry.token, scope: entry.scope })
+      // OWNERSHIP is decided by `existsById`, not `getById` (#907).
+      //
+      // `getById` catches everything and returns null, so a timeout, a 5xx or
+      // an auth rejection was indistinguishable from a genuine 404 — the walk
+      // read silence as "this store does not have it", moved on, and reported
+      // "Engram not found" for an engram the store demonstrably held. That is
+      // the exact collapse `existsById` exists to prevent, quoting its own
+      // docstring: safe for reads that only want the engram, unsafe for
+      // anything deciding whether it is free to act. Deciding which store owns
+      // an id IS deciding whether to act.
+      let owns: boolean
+      try {
+        owns = await driver.existsById(serverId)
+      } catch (err) {
+        // Could not tell. Feedback's established policy is to proceed rather
+        // than refuse — a mis-targeted rating is recoverable and rating is a
+        // hot path — but the store is COUNTED, so the message below cannot
+        // claim knowledge this walk does not have.
+        unverifiedStores.push(entry.scope ?? entry.url!)
+        logger.warning(
+          `[plur] could not reach "${entry.scope ?? entry.url}" while looking for ${id} `
+          + `(${(err as Error).message}) — it may hold this engram.`,
+        )
+        continue
+      }
+      if (!owns) continue
       const found = await driver.getById(serverId)
       if (found) {
         await driver.feedback(serverId, signal)
@@ -5172,7 +5200,7 @@ export class Plur {
     }
 
     // Search pack engrams by scanning pack directories
-    await this._feedbackPack(id, signal)
+    await this._feedbackPack(id, signal, unverifiedStores)
     this._logInjectionOutcome(id, signal)
   }
 
@@ -6586,7 +6614,16 @@ export class Plur {
   }
 
   /** Search packs for an engram by ID and apply feedback, writing back to the pack's engrams.yaml. */
-  private async _feedbackPack(id: string, signal: 'positive' | 'negative' | 'neutral'): Promise<void> {
+  /**
+   * @param unreachedStores stores the caller's remote walk could not probe, so
+   *   the terminal "not found" can say so rather than claiming a search that
+   *   did not run (#907).
+   */
+  private async _feedbackPack(
+    id: string,
+    signal: 'positive' | 'negative' | 'neutral',
+    unreachedStores: string[] = [],
+  ): Promise<void> {
     if (!fs.existsSync(this.paths.packs)) throw new Error(`Engram not found: ${id}`)
 
     for (const entry of fs.readdirSync(this.paths.packs)) {
@@ -6619,7 +6656,16 @@ export class Plur {
       if (handled) return
     }
 
-    throw new Error(`Engram not found: ${id}`)
+    // "Not found" must not mean "did not look" (#907). If a store could not be
+    // reached, say which — the caller can retry or pass an explicit scope, and
+    // neither is actionable if the message claims a search that did not run.
+    throw new Error(
+      unreachedStores.length > 0
+        ? `Engram not found: ${id} — but ${unreachedStores.length} store(s) could not be reached `
+          + `(${unreachedStores.join(', ')}). This is "not found where I could look", not "does not exist". `
+          + `Retry, or pass scope explicitly to target a store directly.`
+        : `Engram not found: ${id}`,
+    )
   }
 
   /** Capture an episodic memory. */
