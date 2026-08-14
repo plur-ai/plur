@@ -13,15 +13,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import type { Config } from './config.js'
 import type { Counters } from './counters.js'
 import { guard } from './guard.js'
-import type { EngramLike } from './memory-section.js'
-
-/** The slice of `@plur-ai/core` these tools use. Injected so tests need no store. */
-export interface PlurClient {
-  recall?(query: string, opts: { scope: string; limit?: number }): Promise<readonly EngramLike[]>
-  learn?(input: { statement: string; domain?: string; scope: string }): Promise<unknown>
-  forget?(id: string, reason?: string): Promise<unknown>
-  feedback?(id: string, signal: number): Promise<unknown>
-}
+import type { PlurClient } from './client.js'
 
 /** Dependencies shared by every tool. */
 export interface ToolDeps {

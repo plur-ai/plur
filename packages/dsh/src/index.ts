@@ -23,16 +23,19 @@ import type { PreStepDecision } from '@deepseek-ai/dsh-agent'
 import '@deepseek-ai/dsh-agent'
 import '@deepseek-ai/dsh-system-prompt'
 import '@deepseek-ai/dsh-tools'
+import type { PlurClient } from './client.js'
+import { registerCapture } from './capture.js'
 import { registerCommands } from './commands.js'
 import { Config } from './config.js'
 import { createCounters } from './counters.js'
 import { guard } from './guard.js'
+import { registerLearning } from './learn.js'
 import { createMemoryCache, renderBlock, type EngramLike } from './memory-section.js'
 import { createRefreshPolicy } from './refresh.js'
 import { createScopeResolver } from './scope.js'
 import { recallQueryFrom, type LogEvent } from './session-log.js'
 import { registerSkills } from './skills.js'
-import { registerTools, type PlurClient } from './tools.js'
+import { registerTools } from './tools.js'
 
 export { Config }
 export type { PlurClient }
@@ -88,12 +91,11 @@ export function apply(ctx: Context, config: Config, plur?: PlurClient): void {
   const live = new Map<string, AgentState>()
   const onError = () => counters.bump('errors_swallowed')
 
-  registerTools(ctx, {
-    config,
-    counters,
-    plur,
-    resolveScope: () => scopes.resolve('shared', undefined),
-  })
+  const resolveScope = () => scopes.resolve('shared', undefined)
+
+  registerTools(ctx, { config, counters, plur, resolveScope })
+  registerLearning(ctx, { config, counters, plur, resolveScope })
+  registerCapture(ctx, { config, counters, plur, resolveScope })
   registerSkills(ctx)
   registerCommands(ctx, { config, counters })
 
