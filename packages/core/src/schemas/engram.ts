@@ -343,7 +343,7 @@ export const EngramSchema = z.object({
   // === SP1: Memory Intelligence fields ===
   content_hash: z.string().optional().describe('Hash of normalized statement content, used for dedup.'),
   commitment: z.enum(['exploring', 'leaning', 'decided', 'locked', 'draft']).optional()
-    .describe('Commitment level of the asserted knowledge. `draft` stages an engram in a review queue pending human approval.'),
+    .describe("Commitment level of the asserted knowledge. `draft` marks an engram as pending human approval; core stores and recalls it like any other value — enforcement is left to deployments that implement a review queue. A positive feedback signal does not advance it (see feedback.ts:nextCommitment)."),
   locked_at: z.string().optional().describe("Timestamp when commitment reached 'locked'."),
   locked_reason: z.string().optional().describe('Why this engram was locked.'),
 

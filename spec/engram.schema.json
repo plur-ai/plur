@@ -635,9 +635,10 @@
         "exploring",
         "leaning",
         "decided",
-        "locked"
+        "locked",
+        "draft"
       ],
-      "description": "Commitment level of the asserted knowledge."
+      "description": "Commitment level of the asserted knowledge. `draft` marks an engram as pending human approval; core stores and recalls it like any other value — enforcement is left to deployments that implement a review queue. A positive feedback signal does not advance it (see feedback.ts:nextCommitment)."
     },
     "locked_at": {
       "type": "string",
