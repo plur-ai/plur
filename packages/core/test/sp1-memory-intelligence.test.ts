@@ -28,8 +28,12 @@ describe('SP1: Memory Intelligence', () => {
   describe('Idea 29: Content Hash Dedup', () => {
     it('normalizes statements for hashing', () => {
       expect(normalizeStatement('  Hello,  World!  ')).toBe('hello world')
-      expect(normalizeStatement('Use SNAKE_CASE for APIs.')).toBe('use snake_case for apis')
+      expect(normalizeStatement('Use SNAKE_CASE for APIs.')).toBe('use snakecase for apis')
       expect(normalizeStatement('a   b\n\tc')).toBe('a b c')
+      // Unicode-aware: accented and non-Latin characters must be preserved, not stripped (#896)
+      expect(normalizeStatement('déploiement français')).toBe('déploiement français')
+      expect(normalizeStatement('čednja résumé')).toBe('čednja résumé')
+      expect(normalizeStatement('Привет мир')).toBe('привет мир')
     })
 
     it('computes consistent SHA256 hashes', () => {
@@ -44,6 +48,12 @@ describe('SP1: Memory Intelligence', () => {
       const h1 = computeContentHash('API uses snake_case.')
       const h2 = computeContentHash('  api   uses  SNAKE_CASE  ')
       expect(h1).toBe(h2)
+    })
+
+    it('diacritics produce distinct hashes — not collapsed to ASCII skeleton (#896)', () => {
+      const h1 = computeContentHash('déploiement')
+      const h2 = computeContentHash('dploiement')
+      expect(h1).not.toBe(h2)
     })
 
     it('learn() returns existing engram on exact duplicate', async () => {
