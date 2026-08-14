@@ -7,13 +7,13 @@ const row = (over: Partial<EngramRow> = {}): EngramRow => ({
   statement: 'Pin dsh deps to one release line.',
   scope: 'project:acme',
   status: 'active',
-  injection_count: 3,
+  activation: { frequency: 3 },
   temporal: { learned_at: '2026-08-14' },
   ...over,
 })
 
-const browse = (rows: EngramRow[], q = {}) =>
-  renderBrowse({ rows, query: q, now: new Date('2026-08-14T12:00:00Z') })
+const browse = (rows: EngramRow[], q = {}, mode: 'top' | 'all' = 'all') =>
+  renderBrowse({ rows, query: q, mode, now: new Date('2026-08-14T12:00:00Z') })
 
 describe('htmlEscape', () => {
   it('escapes the characters that break out of markup', () => {
@@ -51,19 +51,20 @@ describe('renderBrowse', () => {
   })
 
   it('shows the never-recalled count as the headline signal', () => {
-    const html = browse([row({ injection_count: 0 }), row({ id: 'B', injection_count: 4 })])
+    const html = browse([row({ activation: { frequency: 0 } }), row({ id: 'B', activation: { frequency: 4 } })])
     expect(html).toContain('Never recalled')
   })
 
   it('mutes a zero recall count and accents a non-zero one', () => {
-    const zero = browse([row({ injection_count: 0 })])
+    const zero = browse([row({ activation: { frequency: 0 } })])
     expect(zero).toContain('title="Never recalled"')
-    const some = browse([row({ injection_count: 7 })])
+    const some = browse([row({ activation: { frequency: 7 } })])
     expect(some).toContain('>7<')
   })
 
   it('marks a pinned engram', () => {
-    expect(browse([row({ pinned: true })])).toContain('PINNED')
+    // Uppercasing is CSS (.chip text-transform); the markup carries the word.
+    expect(browse([row({ pinned: true })])).toContain('class="chip violet">pinned<')
   })
 
   it('renders an empty state rather than a bare table', () => {
@@ -73,25 +74,94 @@ describe('renderBrowse', () => {
   })
 
   it('renders the written-per-day chart with one bar per day', () => {
-    const html = browse([row()])
-    expect((html.match(/class="bar[ "]/g) ?? []).length).toBeGreaterThanOrEqual(14)
+    expect((browse([row()]).match(/class="bar[ "]/g) ?? []).length).toBe(30)
   })
 
   it('renders a top-recalled list when anything has been recalled', () => {
-    const html = browse([row({ injection_count: 9 })])
+    const html = browse([row({ activation: { frequency: 9 } })])
     expect(html).toContain('Most recalled')
   })
 
   it('says so plainly when nothing has ever been recalled', () => {
-    const html = browse([row({ injection_count: 0 })])
-    expect(html).toMatch(/nothing has been recalled|no engrams have been recalled/i)
+    expect(browse([row({ activation: { frequency: 0 } })])).toMatch(/nothing recalled yet/i)
   })
 
   it('paginates and reports the offset', () => {
-    const rows = Array.from({ length: 120 }, (_, i) => row({ id: `E${i}` }))
-    const html = renderBrowse({ rows, query: { limit: 50, offset: 50 }, now: new Date('2026-08-14T12:00:00Z') })
+    const rows = Array.from({ length: 120 }, (_, i) => row({ id: `ENG-2026-0101-${i}` }))
+    const html = renderBrowse({ rows, query: { limit: 50, offset: 50 }, mode: 'all', now: new Date('2026-08-14T12:00:00Z') })
     expect(html).toContain('offset=100')
     expect(html).toContain('offset=0')
+  })
+
+  it('defaults to the most-recalled slice', () => {
+    const html = renderBrowse({ rows: [row({ activation: { frequency: 5 } })], query: {}, now: new Date('2026-08-14T12:00:00Z') })
+    expect(html).toContain('aria-current="true">Most recalled</a>')
+  })
+
+  it('the most-recalled slice hides never-recalled engrams', () => {
+    const rows = [row({ id: 'ENG-2026-0101-001', statement: 'Never used.', activation: { frequency: 0 } }),
+                  row({ id: 'ENG-2026-0101-002', statement: 'Used a lot.', activation: { frequency: 9 } })]
+    const html = renderBrowse({ rows, query: {}, mode: 'top', now: new Date('2026-08-14T12:00:00Z') })
+    expect(html).toContain('Used a lot.')
+    expect(html.split('<details').length - 1).toBe(1)
+  })
+
+  it('the all slice shows everything', () => {
+    const rows = [row({ id: 'ENG-2026-0101-001', activation: { frequency: 0 } }),
+                  row({ id: 'ENG-2026-0101-002', activation: { frequency: 9 } })]
+    const html = renderBrowse({ rows, query: {}, mode: 'all', now: new Date('2026-08-14T12:00:00Z') })
+    expect(html.split('<details').length - 1).toBe(2)
+  })
+
+  it('renders each record as a native details element — expansion needs no JS', () => {
+    const html = browse([row()])
+    expect(html).toContain('<details class="rec">')
+    expect(html).toContain('<summary>')
+    expect(html).not.toContain('<script')
+    expect(html).not.toMatch(/onclick=/i)
+  })
+
+  it('the expanded body carries the FULL statement, not the truncated one', () => {
+    const long = 'A '.repeat(200) + 'END-MARKER'
+    const html = browse([row({ statement: long })])
+    expect(html).toContain('rec-statement-full')
+    expect(html).toContain('END-MARKER')
+  })
+
+  it('the expanded body lists the metadata a reader needs', () => {
+    const html = browse([row({ domain: 'plur.engineering', scope: 'project:acme' })])
+    for (const label of ['ID', 'Scope', 'Created', 'Domain', 'Recalls']) {
+      expect(html).toContain(`<dt>${label}</dt>`)
+    }
+  })
+
+  it('ranks by recall BEFORE paginating, so the top engram is on page one', () => {
+    // The bug this guards: paginating by date and re-sorting the page turned
+    // "most recalled" into "the newest ones that were recalled", hiding the
+    // single busiest engram in the store behind 50 newer rows.
+    const rows = [
+      ...Array.from({ length: 60 }, (_, i) => row({ id: `ENG-2026-0814-${i}`, activation: { frequency: 2 } })),
+      row({ id: 'ENG-2026-0418-001', statement: 'THE BUSIEST ONE', activation: { frequency: 594 } }),
+    ]
+    const html = renderBrowse({ rows, query: { limit: 50 }, mode: 'top', now: new Date('2026-08-14T12:00:00Z') })
+    expect(html).toContain('THE BUSIEST ONE')
+  })
+
+  it('scales the recall weight bar logarithmically, so mid-range stays visible', () => {
+    // Against a peak of 594, a linear bar renders 4 recalls as a 0.7% sliver.
+    const rows = [row({ id: 'ENG-2026-0101-001', activation: { frequency: 594 } }),
+                  row({ id: 'ENG-2026-0101-002', activation: { frequency: 4 } })]
+    const html = renderBrowse({ rows, query: {}, mode: 'top', now: new Date('2026-08-14T12:00:00Z') })
+    const widths = [...html.matchAll(/weight-fill" style="width:(\d+)%/g)].map(m => Number(m[1]))
+    expect(Math.min(...widths)).toBeGreaterThan(15)
+    expect(Math.max(...widths)).toBe(100)
+  })
+
+  it('is read-only — no edit or delete controls', () => {
+    const html = browse([row()])
+    expect(html).not.toMatch(/method="POST"/i)
+    expect(html.toLowerCase()).not.toContain('>delete<')
+    expect(html.toLowerCase()).not.toContain('>edit<')
   })
 })
 

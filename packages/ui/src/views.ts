@@ -2,16 +2,20 @@
  * The memory viewer, rendered as self-contained HTML.
  *
  * Pure functions returning strings — the same idiom as the PLUR Enterprise
- * admin, and for the same reason: it needs no framework, no bundler and no
- * browser to test. Assert on the markup.
+ * admin, and for the same reason: no framework, no bundler, and no browser
+ * needed to test it. Assert on the markup.
+ *
+ * Deliberately script-free. Expanding a record uses native `<details>`, so the
+ * page works identically served from a bare HTTP server and embedded in a
+ * host's web shell, with keyboard operation for free and no CSP exemption.
  *
  * Every value that reaches the page is escaped. Engram statements are user
- * data, and some of them will contain angle brackets because people store code
- * in their memory.
+ * data, and people store code in their memory.
  *
  * @module
  */
 import {
+  createdOn,
   filterEngrams,
   memoryStats,
   recallCount,
@@ -51,6 +55,9 @@ ${opts.body}
 </html>`
 }
 
+/** Which slice of the store the record list is showing. */
+export type BrowseMode = 'top' | 'all'
+
 /** Status pill, matching the enterprise admin's colour vocabulary. */
 function statusPill(status: string | undefined, commitment: string | undefined): string {
   const colours: Record<string, string> = {
@@ -59,149 +66,206 @@ function statusPill(status: string | undefined, commitment: string | undefined):
     candidate: '251, 191, 36',
   }
   const NEUTRAL = '138, 143, 163'
-  // A draft awaiting review is not live knowledge, whatever its lifecycle
-  // status says — rendering it green would tell the reader it is recallable.
+  // A draft awaiting review is not live knowledge whatever its lifecycle status
+  // says; rendering it green would tell the reader it is recallable.
   const rgb = commitment === 'draft' ? NEUTRAL : (colours[status ?? ''] ?? NEUTRAL)
   const label = commitment === 'draft' ? 'draft' : (status ?? 'unknown')
-  return `<span class="pill" style="background:rgba(${rgb},0.12);color:rgb(${rgb});border:1px solid rgba(${rgb},0.30);">${htmlEscape(label)}</span>`
+  return `<span class="pill" style="background:rgba(${rgb},0.12);color:rgb(${rgb});border:1px solid rgba(${rgb},0.28);">${htmlEscape(label)}</span>`
 }
 
-/** The written-per-day bar chart. */
+/**
+ * Recall weight as a proportion of the busiest engram, log-scaled.
+ *
+ * Linear scaling is useless here: against a maximum of 594, an engram recalled
+ * four times renders as an invisible 0.7% sliver, so the entire middle of the
+ * distribution reads as empty. Log makes the working range visible while the
+ * outlier still tops out.
+ */
+function weightPct(count: number, peak: number): number {
+  if (count <= 0 || peak <= 0) return 0
+  return Math.max(6, Math.round((Math.log1p(count) / Math.log1p(peak)) * 100))
+}
+
+/** The recall-weight cell: the page's one piece of visual editorialising. */
+function weightCell(count: number, peak: number): string {
+  if (count === 0) {
+    return `<span class="weight"><span class="weight-bar"></span><span class="weight-n zero" title="Never recalled">0</span></span>`
+  }
+  return `<span class="weight" title="Recalled ${count} time${count === 1 ? '' : 's'}"><span class="weight-bar"><i class="weight-fill" style="width:${weightPct(count, peak)}%"></i></span><span class="weight-n">${count}</span></span>`
+}
+
+/** Engrams written per day, over the trailing month. */
 function writtenChart(rows: readonly EngramRow[], now: Date): string {
   const days = writtenPerDay(rows, 30, now)
   const peak = Math.max(1, ...days.map(d => d.count))
   const total = days.reduce((sum, d) => sum + d.count, 0)
   const bars = days.map(d => {
-    const pct = Math.round((d.count / peak) * 100)
-    const cls = d.count === 0 ? 'bar empty' : 'bar'
-    const height = d.count === 0 ? 2 : Math.max(4, pct)
-    return `<div class="${cls}" style="height:${height}%" title="${htmlEscape(d.date)}: ${d.count}"></div>`
+    const height = d.count === 0 ? 2 : Math.max(5, Math.round((d.count / peak) * 100))
+    return `<div class="${d.count === 0 ? 'bar empty' : 'bar'}" style="height:${height}%" title="${htmlEscape(d.date)} · ${d.count}"></div>`
   }).join('')
-  return `<div class="chart-card">
-  <p class="chart-title">Written — last 30 days</p>
-  <span class="chart-sub">${total} engram${total === 1 ? '' : 's'} learned in this window</span>
+  return `<div class="card">
+  <p class="card-title">Written</p>
+  <span class="card-sub">${total} engram${total === 1 ? '' : 's'} learned in the last 30 days · peak ${peak}</span>
   <div class="bars">${bars}</div>
   <div class="bar-axis"><span>${htmlEscape(days[0]?.date ?? '')}</span><span>${htmlEscape(days.at(-1)?.date ?? '')}</span></div>
 </div>`
 }
 
-/** The most-recalled list. */
+/** The most-recalled list — one line per item, by design. */
 function topRecalledCard(rows: readonly EngramRow[]): string {
-  const top = topByRecall(rows, 6)
-  if (top.length === 0) {
-    return `<div class="chart-card">
-  <p class="chart-title">Most recalled</p>
-  <span class="chart-sub">what the agent actually pulls into context</span>
-  <div class="empty" style="padding:var(--sp-6) 0;">Nothing has been recalled yet.<br><span style="font-size:13px;">A store that only grows is a store nobody is reading.</span></div>
-</div>`
-  }
-  const items = top.map(r => `  <div class="card-engram">
-    <span class="card-engram-statement">${htmlEscape(r.statement ?? '')}</span>
-    <span class="card-engram-count" title="Pulled into context ${recallCount(r)} times">&#8635; ${recallCount(r)}</span>
+  const top = topByRecall(rows, 8)
+  const peak = recallCount(top[0])
+  const body = top.length === 0
+    ? `<div class="empty" style="padding:var(--sp-6) 0;">Nothing recalled yet.</div>`
+    : top.map(r => `  <div class="top-row">
+    <span class="top-stmt" title="${htmlEscape(r.statement ?? '')}">${htmlEscape(r.statement ?? '')}</span>
+    <span class="top-n">${recallCount(r)}</span>
   </div>`).join('\n')
-  return `<div class="chart-card">
-  <p class="chart-title">Most recalled</p>
-  <span class="chart-sub">what the agent actually pulls into context</span>
-${items}
+  return `<div class="card">
+  <p class="card-title">Most recalled</p>
+  <span class="card-sub">what the agent actually pulls into context${peak > 0 ? ` · top ${peak}` : ''}</span>
+${body}
 </div>`
 }
 
-/** The headline stat row. */
-function statRow(rows: readonly EngramRow[]): string {
+/** The headline stat strip. */
+function statStrip(rows: readonly EngramRow[]): string {
   const s = memoryStats(rows)
   return `<div class="stats">
-  <div class="stat"><div class="stat-value">${s.total}</div><div class="stat-label">Engrams</div></div>
-  <div class="stat"><div class="stat-value">${s.recalled}</div><div class="stat-label">Recalled at least once</div></div>
-  <div class="stat${s.neverRecalledPct >= 50 ? ' warn' : ''}"><div class="stat-value">${s.neverRecalled}</div><div class="stat-label">Never recalled${s.total > 0 ? ` · ${s.neverRecalledPct}%` : ''}</div></div>
+  <div class="stat"><div class="stat-value">${s.total.toLocaleString('en-US')}</div><div class="stat-label">Engrams</div></div>
+  <div class="stat"><div class="stat-value">${s.recalled.toLocaleString('en-US')}</div><div class="stat-label">Recalled</div></div>
+  <div class="stat${s.neverRecalledPct >= 50 ? ' warn' : ''}"><div class="stat-value">${s.neverRecalled.toLocaleString('en-US')}</div><div class="stat-label">Never recalled${s.total > 0 ? ` · ${s.neverRecalledPct}%` : ''}</div></div>
   <div class="stat"><div class="stat-value">${s.scopes}</div><div class="stat-label">Scope${s.scopes === 1 ? '' : 's'}</div></div>
 </div>`
+}
+
+/** One expandable record. */
+function record(r: EngramRow, peak: number): string {
+  const stmt = r.statement ?? ''
+  const n = recallCount(r)
+  const created = createdOn(r) ?? '—'
+  const pinned = r.pinned === true ? ` <span class="chip violet">pinned</span>` : ''
+  const meta: Array<[string, string]> = [
+    ['ID', r.id ?? '—'],
+    ['Scope', r.scope ?? '—'],
+    ['Created', created],
+  ]
+  if (r.domain) meta.push(['Domain', r.domain])
+  if (r.commitment) meta.push(['Commitment', r.commitment])
+  if (r.activation?.last_accessed) meta.push(['Last active', r.activation.last_accessed.slice(0, 10)])
+  meta.push(['Recalls', String(n)])
+
+  return `<details class="rec">
+  <summary>
+    <div class="rec-line">
+      <span class="rec-id" title="${htmlEscape(r.id ?? '')}">${htmlEscape((r.id ?? '').slice(0, 20))}</span>
+      <span class="rec-stmt">${htmlEscape(stmt)}</span>
+      <span class="rec-scope col-scope" title="${htmlEscape(r.scope ?? '')}">${htmlEscape(r.scope ?? '—')}</span>
+      ${weightCell(n, peak)}
+      <span class="rec-date col-date">${htmlEscape(created)}</span>
+    </div>
+  </summary>
+  <div class="rec-body">
+    <p class="rec-statement-full">${htmlEscape(stmt)}</p>
+    <div style="margin-bottom:var(--sp-3);">${statusPill(r.status, r.commitment)}${pinned}</div>
+    <dl class="rec-meta">
+${meta.map(([k, v]) => `      <div><dt>${htmlEscape(k)}</dt><dd>${htmlEscape(v)}</dd></div>`).join('\n')}
+    </dl>
+  </div>
+</details>`
 }
 
 /** Options for {@link renderBrowse}. */
 export interface BrowseOptions {
   rows: readonly EngramRow[]
   query: BrowseQuery
+  /** Which slice to list. Defaults to `top` — the useful default on a big store. */
+  mode?: BrowseMode
   /** Injectable clock, for tests. */
   now?: Date
-  /** Path the search form submits to. */
+  /** Path the search form and links target. */
   action?: string
+  /** Shown beside the title, e.g. the store path. */
+  where?: string
 }
 
 /**
- * Render the browse view: stats, two widgets, and the engram table.
+ * Render the browse view: stats, two widgets, controls, and the record list.
  *
- * @param opts - rows, active filters, and presentation options.
+ * @param opts - rows, filters, and presentation options.
  * @returns the page body (not a full document — see {@link renderPage}).
  */
 export function renderBrowse(opts: BrowseOptions): string {
   const now = opts.now ?? new Date()
   const action = opts.action ?? '/'
-  const page = filterEngrams(opts.rows, opts.query)
+  const mode: BrowseMode = opts.mode === 'all' ? 'all' : 'top'
   const q = opts.query.q ?? ''
 
-  const link = (offset: number, label: string): string => {
-    const params = new URLSearchParams()
-    if (q) params.set('q', q)
-    if (opts.query.scope) params.set('scope', opts.query.scope)
-    params.set('offset', String(offset))
-    return `<a href="${htmlEscape(action)}?${htmlEscape(params.toString())}">${label}</a>`
+  const href = (params: Record<string, string>): string => {
+    const p = new URLSearchParams()
+    if (q) p.set('q', q)
+    if (opts.query.scope) p.set('scope', opts.query.scope)
+    for (const [k, v] of Object.entries(params)) { if (v) p.set(k, v); else p.delete(k) }
+    const qs = p.toString()
+    return htmlEscape(qs ? `${action}?${qs}` : action)
   }
 
-  const body = page.rows.length === 0
-    ? `<div class="empty">No engrams match these filters.</div>`
-    : `<table>
-  <thead><tr>
-    <th>ID</th><th>Scope</th><th>Status</th><th>Statement</th>
-    <th title="Times this engram was pulled into agent context">Recalls</th><th>Learned</th>
-  </tr></thead>
-  <tbody>
-${page.rows.map(r => {
-  const stmt = r.statement ?? ''
-  const short = stmt.length > 96 ? `${stmt.slice(0, 93)}...` : stmt
-  const n = recallCount(r)
-  const recalls = n === 0
-    ? `<span class="mono" style="color:var(--muted);" title="Never recalled">0</span>`
-    : `<span class="mono" style="color:var(--accent);font-weight:500;">${n}</span>`
-  const pinned = r.pinned === true ? ` <span class="tag-chip violet">PINNED</span>` : ''
-  return `    <tr>
-      <td class="mono" style="font-size:13px;" title="${htmlEscape(r.id ?? '')}">${htmlEscape((r.id ?? '').slice(0, 18))}</td>
-      <td class="mono" style="font-size:13px;">${htmlEscape(r.scope ?? '—')}</td>
-      <td>${statusPill(r.status, r.commitment)}${pinned}</td>
-      <td title="${htmlEscape(stmt)}">${htmlEscape(short)}</td>
-      <td class="num">${recalls}</td>
-      <td class="num" style="color:var(--muted);font-size:13px;">${htmlEscape(r.temporal?.learned_at?.slice(0, 10) ?? '—')}</td>
-    </tr>`
-}).join('\n')}
-  </tbody>
-</table>`
+  // Order BEFORE paginating. Sorting a page that was already sliced by date
+  // silently turns "most recalled" into "the newest ones that happen to have
+  // been recalled" — which hid the single most-recalled engram in the store
+  // behind 50 newer rows.
+  const matching = filterEngrams(opts.rows, { ...opts.query, limit: Number.MAX_SAFE_INTEGER, offset: 0 }).rows
+  const ranked = mode === 'top'
+    ? matching.filter(r => recallCount(r) > 0).sort((a, b) => recallCount(b) - recallCount(a))
+    : matching
+  const limit = Math.max(1, opts.query.limit ?? 50)
+  const offset = Math.max(0, opts.query.offset ?? 0)
+  const ordered = ranked.slice(offset, offset + limit)
+  const page = { total: ranked.length, limit, offset }
+  const peak = Math.max(1, ...opts.rows.map(r => recallCount(r)))
+
+  const list = ordered.length === 0
+    ? `<div class="empty">${mode === 'top' && !q ? 'No engrams have been recalled yet.' : 'No engrams match.'}</div>`
+    : `<div class="rec-head">
+    <span>ID</span><span>Statement</span><span class="col-scope">Scope</span><span>Recalls</span><span class="col-date">Created</span>
+  </div>
+${ordered.map(r => record(r, peak)).join('\n')}`
 
   const hasPrev = page.offset > 0
   const hasNext = page.offset + page.limit < page.total
   const pager = page.total > page.limit
     ? `<div class="pager">
-  ${hasPrev ? link(Math.max(0, page.offset - page.limit), '&larr; Previous') : '<span class="off">&larr; Previous</span>'}
-  <span class="off">${page.total} total · showing ${page.rows.length} (offset ${page.offset})</span>
-  ${hasNext ? link(page.offset + page.limit, 'Next &rarr;') : '<span class="off">Next &rarr;</span>'}
+  ${hasPrev ? `<a href="${href({ mode, offset: String(Math.max(0, page.offset - page.limit)) })}">&larr; Previous</a>` : '<span class="off">&larr; Previous</span>'}
+  <span class="off">${page.total.toLocaleString('en-US')} match${page.total === 1 ? '' : 'es'} · showing ${ordered.length} from ${page.offset}</span>
+  ${hasNext ? `<a href="${href({ mode, offset: String(page.offset + page.limit) })}">Next &rarr;</a>` : '<span class="off">Next &rarr;</span>'}
 </div>`
     : ''
 
-  return `<h1 class="page-title">Memory</h1>
-<p class="page-sub">Engrams are atomic units of learned knowledge — corrections, preferences, conventions and patterns your agents recall during sessions. Everything here is local, on this machine.</p>
+  return `<div class="page-head">
+  <h1 class="page-title">Memory</h1>
+  ${opts.where ? `<span class="page-where">${htmlEscape(opts.where)}</span>` : ''}
+</div>
+<p class="page-sub">What your agents have learned, and what they actually use. Everything here is local to this machine. Select a row to read the full engram.</p>
 
-${statRow(opts.rows)}
+${statStrip(opts.rows)}
 
-<div class="grid2">
+<div class="widgets">
 ${writtenChart(opts.rows, now)}
 ${topRecalledCard(opts.rows)}
 </div>
 
-<form class="search" method="GET" action="${htmlEscape(action)}">
-  <label>Search statement or ID
-    <input name="q" value="${htmlEscape(q)}" placeholder="deploy, ENG-2026-, pnpm …" autocomplete="off">
-  </label>
-  <button type="submit">Search</button>
-</form>
+<div class="controls">
+  <nav class="seg" aria-label="Which engrams to list">
+    <a href="${href({ mode: '', offset: '' })}" aria-current="${mode === 'top'}">Most recalled</a>
+    <a href="${href({ mode: 'all', offset: '' })}" aria-current="${mode === 'all'}">All</a>
+  </nav>
+  <form method="GET" action="${htmlEscape(action)}">
+    ${mode === 'all' ? '<input type="hidden" name="mode" value="all">' : ''}
+    <input name="q" value="${htmlEscape(q)}" placeholder="Search statement or ID" autocomplete="off" aria-label="Search statement or ID">
+    <button type="submit">Search</button>
+  </form>
+</div>
 
-<div class="scroller">${body}</div>
+<div class="records">${list}</div>
 ${pager}`
 }
