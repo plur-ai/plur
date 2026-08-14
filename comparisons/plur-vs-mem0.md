@@ -18,7 +18,7 @@
 
 ## Recall — table stakes, not the deciding factor
 
-Both are competitive; quality is table stakes. PLUR reaches **97.6% R@5 on LongMemEval-S**, fully local. We don't run a head-to-head scores race — the decision is ownership.
+Both are competitive; quality is table stakes. PLUR reaches **97.6% R@5 on LongMemEval-S**, fully local (hybrid + the opt-in BGE-reranker; the zero-config default is 95.6%). We don't run a head-to-head scores race — the decision is ownership.
 *(LongMemEval-S · n=500 · chunk · canonical-doc; R@5 = evidence in the top-5, not answer accuracy; measured on our own plur-bench harness, public with our paper.)*
 
 ## Choose mem0 if

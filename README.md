@@ -26,7 +26,12 @@ PLUR is memory, not just retrieval — so we measure it on more than one axis, o
 |-------|-----|-------|
 | BM25 only | 92.2% | no embedder — fully airgapped |
 | Hybrid (BGE-small, shipping default) | 95.6% | bundled local embedder, zero downloads |
-| **+ BGE-reranker-v2-m3** | **98.0%** | local cross-encoder, max quality — R@1 93.8%, R@10 99.0% |
+| **+ BGE-reranker-v2-m3** | **97.6%** | local cross-encoder, max quality — opt-in, ≈5s p50 on CPU |
+
+Numbers come from [plur-ai/plur-bench](https://github.com/plur-ai/plur-bench),
+which is the source of truth for every benchmark figure PLUR publishes. Where
+an in-repo number and a plur-bench number disagree, plur-bench wins — it is the
+reproducible harness, and it is what CI regression-checks.
 
 Chunk granularity, canonical-doc scoring, corpus SHA256 pinned — reproduce it in [plur-ai/plur-bench](https://github.com/plur-ai/plur-bench). No cloud call is required for any of these numbers (an *optional* cloud embedder, openai-3-large, reaches 97.0% hybrid). A faster reranker — `ms-marco-minilm-l6` (p50≈245ms vs BGE's ≈5s on CPU) — trades a little recall for sub-second latency.
 
@@ -254,12 +259,34 @@ await plur.sync('git@github.com:you/plur-memory.git')
 | `plur_inject_hybrid` | Select engrams for current task within token budget |
 | `plur_feedback` | Rate relevance (trains quality over time) |
 | `plur_forget` | Retire a memory (activation decays, eventually pruned) |
+| `plur_rescope` | Move an existing engram to another scope — personal → team, or back |
+| `plur_session_scope` | Change the session's default write scope mid-session |
 | `plur_capture` | Record an event — incident, resolution, session milestone |
 | `plur_timeline` | Query episode history by time, agent, or channel |
 | `plur_ingest` | Extract engrams from text automatically |
 | `plur_sync` | Sync via git. `personal` remotes mirror everything (use a private repo); `shared` remotes receive only shared-scope, non-private engrams |
 | `plur_status` | Check system health and engram counts |
 | `plur_receipt` | Counted, local report of what your memory retrieved for you |
+| `plur_outbox` | Inspect (and retry) team writes queued while their store was unreachable |
+
+### The outbox
+
+A write to a team scope goes to that team's remote store. When the store cannot
+be reached — VPN off, server down, token expired — the engram is **not lost and
+not silently dropped**: it is written locally with queue metadata and retried on
+the next session start, on `plur sync`, or on demand.
+
+The queue is not a directory. It lives as `structured_data._outbox` inside the
+affected engrams in `engrams.yaml`, which is why it needs a command to see:
+
+```
+plur outbox            # what is queued, for which scope, how long, last error
+plur outbox --flush    # retry now
+```
+
+The same thing is available to agents as `plur_outbox` (`{flush: true}` to
+retry), and `plur status` reports the pending count. Neither surface prints the
+target URL or the token.
 
 ## The memory receipt
 
@@ -305,7 +332,11 @@ In both modes **`scope: local` engrams** are machine-specific by design (paths, 
 
 ## Benchmark details
 
-Per-category retrieval recall — full LongMemEval-S (N=500), fully local (BGE-small + BGE-reranker-v2-m3, chunk granularity):
+Per-category retrieval recall, from an **earlier in-repo run** — full
+LongMemEval-S (N=500), fully local (BGE-small + BGE-reranker-v2-m3, chunk
+granularity). Its overall figure (98.0%) predates the current plur-bench
+measurement of the same stack (97.6%) and has not been re-run per category;
+treat the shape as indicative and the headline table above as current.
 
 | Category | R@5 | R@10 |
 |----------|-----|------|

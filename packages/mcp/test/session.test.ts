@@ -196,6 +196,52 @@ describe('Session & store tools', () => {
       expect(endResult.injection_summary.pack_counts).toEqual({})
     })
 
+    it('buckets a PACK engram under its pack name, not __personal__ (#553)', async () => {
+      // Every other telemetry test here seeds a personal engram and asserts
+      // `pack_counts.__personal__ > 0`. That leaves the feature's actual
+      // purpose — counting per installed pack — unexercised, so the field the
+      // bucketing reads could be renamed or dropped in propagation and CI
+      // would stay green while every pack engram silently became personal.
+      const packSource = mkdtempSync(join(tmpdir(), 'plur-pack-src-'))
+      writeFileSync(join(packSource, 'SKILL.md'),
+        '---\nname: telemetry-pack\nversion: "1.0"\n---\n')
+      writeFileSync(join(packSource, 'engrams.yaml'), [
+        'engrams:',
+        '  - id: ENG-2026-0101-777',
+        '    statement: prefer semicolons when writing TypeScript code',
+        '    type: behavioral',
+        '    scope: global',
+        '    status: active',
+        '    version: 2',
+        '    activation:',
+        '      retrieval_strength: 0.9',
+        '      storage_strength: 1.0',
+        '      frequency: 0',
+        '      last_accessed: "2026-01-01"',
+        '',
+      ].join('\n'))
+      await plur.installPack(packSource)
+
+      const startResult = await callTool('plur_session_start', { task: 'write TypeScript code' }) as any
+      const endResult = await callTool('plur_session_end', {
+        summary: 'Wrote TypeScript',
+        session_id: startResult.session_id,
+        engram_suggestions: [],
+      }) as any
+
+      const counts = endResult.injection_summary.pack_counts as Record<string, number>
+      expect(counts['telemetry-pack'], `bucketed as ${JSON.stringify(counts)}`).toBeGreaterThan(0)
+      // Deliberately NOT asserting `__personal__` is absent. With the fix in
+      // place this store still reports one personal injection despite holding
+      // no personal engram, which means the candidate pool carries a second
+      // copy of the pack row without its `_pack` marker — `_loadAllEngrams`
+      // merges pack engrams AND `_inject` loads packs again. That is a
+      // separate defect (a double-counted injection), and pinning it here
+      // would couple this test to it; it is noted rather than asserted.
+      expect(counts['telemetry-pack']).toBeGreaterThanOrEqual(1)
+      rmSync(packSource, { recursive: true, force: true })
+    })
+
     it('standalone plur_inject calls accumulate into the session telemetry', async () => {
       await plur.learn('Use pnpm for package management', { scope: 'global' })
 

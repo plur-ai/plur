@@ -51,6 +51,10 @@ const ALWAYS_ASYNC = new Set([
   // Born async (#676) — never had a sync form, so there is no pre-0.16
   // call site for the migrate tool to rewrite.
   'rescope',
+  // Born async (#667) — the outbox inspector behind `plur_outbox` / `plur
+  // outbox`. Reads through the async store seam, and new in this release, so
+  // there is no pre-0.16 call site for the migrate tool to rewrite.
+  'listOutbox',
   // Born async (#856) — near-duplicate REPORTING for the plur_learn path.
   // Embedding-backed, so it could never have been sync, and it is new in this
   // release, so no pre-0.16 call site exists for the migrate tool to rewrite.

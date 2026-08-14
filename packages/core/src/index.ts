@@ -45,7 +45,7 @@ import { loadTensions, loadTensionsWithQuarantine, saveTensions, generateTension
 import type { TensionRecord, TensionStatus } from './schemas/tension.js'
 import type { TensionPair } from './tensions.js'
 import { engramDate } from './tensions.js'
-import { resolveValidity, buildTemporal } from './expiry.js'
+import { resolveValidity, buildTemporal, normalizeIsoDate } from './expiry.js'
 import { decodeJwtExpiry, decodeJwtPayload } from './jwt.js'
 import { RemoteStore, normalizeEndpointUrl } from './store/remote-store.js'
 import {
@@ -4702,7 +4702,25 @@ export class Plur {
           ]
           const counts: Record<string, number> = {}
           for (const e of allEngrams) {
-            const key = (e as any).pack ?? '__personal__'
+            // `_pack` FIRST, and that is a bug fix, not a preference (#553).
+            //
+            // This read only `pack` — the schema field, which an engram carries
+            // only if its own YAML declares it. But `_loadAllEngrams` stamps
+            // installed-pack engrams with `_pack` (the pack's manifest name),
+            // and nothing sets `pack` on them. So the normal case — a pack
+            // whose engrams do not self-declare their origin — bucketed
+            // ENTIRELY as `__personal__`, and per-pack telemetry counted
+            // nothing it existed to count.
+            //
+            // #553 predicted this shape ("a future regression in that
+            // propagation would keep CI green") and was one step off: it was
+            // not a future regression, it was already true, and no test
+            // installed a pack so nothing could see it.
+            //
+            // `_pack` survives into `WireEngram` because `stripScoring`
+            // rest-spreads. `pack` is kept as the fallback so a pack engram
+            // that DOES declare its origin still buckets by it.
+            const key = (e as { _pack?: string })._pack ?? e.pack ?? '__personal__'
             counts[key] = (counts[key] ?? 0) + 1
           }
           return counts
@@ -6638,6 +6656,55 @@ export class Plur {
   }
 
   /**
+   * The outbox, as inspectable entries (#667).
+   *
+   * The outbox works and is effectively invisible: it is not a file or a
+   * queue directory, it is `structured_data._outbox` nested inside ordinary
+   * engrams in `engrams.yaml`. So a user whose team store was unreachable has
+   * queued writes with no supported way to see them — diagnosing meant
+   * reverse-engineering the storage model, and the only prose describing the
+   * pattern lived inside an engram.
+   *
+   * `target_url` is DELIBERATELY not returned. It is the one field here that
+   * identifies a credentialed endpoint, the entry is rendered into agent
+   * context and CLI output, and `target_scope` already answers the question a
+   * human is asking ("which store is behind?"). Omitting it at the source
+   * beats redacting it at each of the several call sites that print it.
+   */
+  async listOutbox(): Promise<Array<{
+    id: string
+    target_scope: string
+    queued_at: string
+    attempt_count: number
+    last_error?: string
+    age_days: number
+  }>> {
+    const engrams = await this._loadCached(this.paths.engrams)
+    const now = Date.now()
+    const out = []
+    for (const e of engrams) {
+      const ob = (e as any).structured_data?._outbox as {
+        target_scope?: string; queued_at?: string; attempt_count?: number; last_error?: string
+      } | undefined
+      if (!ob || e.status === 'retired') continue
+      const queued_at = typeof ob.queued_at === 'string' ? ob.queued_at : ''
+      const queuedMs = queued_at ? Date.parse(queued_at) : NaN
+      out.push({
+        id: e.id,
+        target_scope: ob.target_scope ?? '(unknown)',
+        queued_at,
+        attempt_count: typeof ob.attempt_count === 'number' ? ob.attempt_count : 0,
+        ...(ob.last_error ? { last_error: ob.last_error } : {}),
+        // A malformed or missing timestamp reports 0, not NaN: this number is
+        // rendered, and NaN in a report reads as a bug in the reporter rather
+        // than as the missing data it actually is.
+        age_days: Number.isFinite(queuedMs) ? Math.floor((now - queuedMs) / 86_400_000) : 0,
+      })
+    }
+    return out
+  }
+
+  /**
    * Flush the outbox — retry pushing pending engrams to their target remote
    * stores. Called automatically on session_start and plur_sync.
    *
@@ -7264,7 +7331,23 @@ Generate an improved version of the procedure that prevents this failure. Return
       active = active.filter(e => e.domain?.startsWith(options.domain!))
     }
     if (options?.created_after) {
-      const cutoff = options.created_after
+      // Validated, not trusted (#547). The comparison below is LEXICOGRAPHIC
+      // against a `YYYY-MM-DD` stamp, which is exactly right for a well-formed
+      // date and silently wrong for anything else: "last week" sorts after
+      // every real date and returns 0, "2026-13-99" sorts after December and
+      // does the same. A caller typo produced a confident, quietly wrong count
+      // — the one failure a diagnostic must not have.
+      //
+      // Reuses `normalizeIsoDate` rather than adding a second date rule: it
+      // already rejects both malformed shapes and impossible calendar dates
+      // (2026-02-30), and one definition means the two cannot disagree.
+      const cutoff = normalizeIsoDate(options.created_after)
+      if (!cutoff) {
+        throw new TypeError(
+          `plur.status: created_after must be an ISO date (YYYY-MM-DD), got "${options.created_after}". `
+          + `Dates are compared as strings, so a malformed value would return a silently wrong count.`,
+        )
+      }
       active = active.filter(e => { const d = engramDate(e); return d !== undefined && d >= cutoff })
     }
     const lockedCount = active.filter(e => (e as any).commitment === 'locked').length

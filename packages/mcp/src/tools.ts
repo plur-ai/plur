@@ -152,7 +152,7 @@ const recallHandler: ToolDefinition['handler'] = async (args, plur) => {
     return response
   }
   // mode === 'hybrid' (default)
-  const budget = args.budget as { max_tokens?: number; max_results?: number; ttl_seconds?: number } | undefined
+  const budget = args.budget as { max_tokens?: number; max_results?: number } | undefined
   const cap = budget?.max_results ?? (args.limit as number | undefined) ?? 20
   // When a max_results budget is set, fetch one extra so we can detect
   // whether the store had more results than the cap without over-fetching.
@@ -1235,9 +1235,29 @@ function getAllToolDefinitions(): ToolDefinition[] {
         // neither a domain nor an explicit scope, and only when at least one
         // registered scope declares covers to route against.
         let batchDomainHint: { domain_hint?: string } = {}
-        const noDomainCount = raw.filter(e =>
+        // Parity with the single-item gate (#681). That gate has FOUR
+        // conditions, and this one had three: it counted an item as
+        // "no domain, no scope" without asking whether it nonetheless
+        // AUTO-ROUTED. A no-domain item reaches the ranker's 0.5 threshold on
+        // three matching tags alone (3 × WEIGHT_TAG = 1.5, the same total a
+        // domain match scores), and when it does the single-item path stays
+        // silent — so the same write produced a nudge in a batch and none on
+        // its own. Advisory either way, but a hint that contradicts itself
+        // depending on which call shape you used is worse than no hint.
+        //
+        // `_routed` is per-RESULT, not per-input, so the routed set is built
+        // from `results` and mapped back through `input_index` — the same
+        // alignment `ids` above needs, and for the same reason: `results` is
+        // compacted past failures.
+        const routedInputs = new Set<number>()
+        for (const r of results) {
+          const routed = (r.engram as { structured_data?: { _routed?: unknown } }).structured_data?._routed
+          if (routed !== undefined && r.input_index !== undefined) routedInputs.add(r.input_index)
+        }
+        const noDomainCount = raw.filter((e, i) =>
           !(typeof e.domain === 'string' && e.domain.length > 0) &&
-          !(typeof e.scope === 'string' && e.scope.length > 0)).length
+          !(typeof e.scope === 'string' && e.scope.length > 0) &&
+          !routedInputs.has(i)).length
         if (noDomainCount > 0) {
           try {
             const coversScopes = plur.listScopeMetadata()
@@ -1287,7 +1307,13 @@ function getAllToolDefinitions(): ToolDefinition[] {
           scope: { type: 'string', description: 'Filter by scope (also includes global)' },
           domain: { type: 'string', description: 'Filter by domain prefix' },
           limit: { type: 'number', description: 'Max results to return (default 20)' },
-          budget: { type: 'object', description: 'Budget constraints for sub-agents. Hybrid mode only — ignored when mode:"keyword".', properties: { max_tokens: { type: 'number' }, max_results: { type: 'number' }, ttl_seconds: { type: 'number' } } },
+          // `ttl_seconds` was declared here and never read (#703). A schema
+          // field an agent can set and no handler consults is a lie the tool
+          // tells about itself — it reads as "caching is configurable" and
+          // nothing caches. Removed rather than documented: there is no
+          // behaviour to describe, and describing "accepted and ignored"
+          // still costs every caller a decision.
+          budget: { type: 'object', description: 'Budget constraints for sub-agents. Hybrid mode only — ignored when mode:"keyword".', properties: { max_tokens: { type: 'number' }, max_results: { type: 'number' } } },
           caller_session_id: { type: 'string', description: 'Session ID of calling agent for budget enforcement. Hybrid mode only — ignored when mode:"keyword".' },
           include_episodes: { type: 'boolean', description: 'If true, include linked episode summaries for each engram (SP2 episodic anchoring). Hybrid mode only — ignored when mode:"keyword".' },
           session_id: { type: 'string', description: 'Session this recall belongs to (from plur_session_start). Its default scope (incl. mid-session plur_session_scope changes) sets the remote dialing context when no explicit scope filter is passed. Optional when one session is open (#243).' },
@@ -1308,7 +1334,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
           scope: { type: 'string', description: 'Filter by scope (also includes global)' },
           domain: { type: 'string', description: 'Filter by domain prefix' },
           limit: { type: 'number', description: 'Max results to return (default 20)' },
-          budget: { type: 'object', description: 'Budget constraints for sub-agents', properties: { max_tokens: { type: 'number' }, max_results: { type: 'number' }, ttl_seconds: { type: 'number' } } },
+          budget: { type: 'object', description: 'Budget constraints for sub-agents', properties: { max_tokens: { type: 'number' }, max_results: { type: 'number' } } },
           caller_session_id: { type: 'string', description: 'Session ID of calling agent for budget enforcement' },
           include_episodes: { type: 'boolean', description: 'If true, include linked episode summaries for each engram (SP2 episodic anchoring)' },
           session_id: { type: 'string', description: 'Session this recall belongs to (from plur_session_start). Its default scope sets the remote dialing context when no explicit scope filter is passed (#243).' },
@@ -1770,7 +1796,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
 
     {
       name: 'plur_sync',
-      description: 'Sync engrams via git AND refresh the derived index from YAML. Initializes repo on first call, commits and pushes/pulls on subsequent calls. Provide a remote URL on first call to enable cross-device sync. Pass full=true to drop-and-rebuild the index from YAML (recovery path; YAML stays untouched).',
+      description: 'Sync engrams via git AND refresh the derived index from YAML. Initializes repo on first call, commits and pushes/pulls on subsequent calls. Provide a remote URL on first call to enable cross-device sync. Pass full=true to drop-and-rebuild the index from YAML (recovery path; YAML stays untouched). Also flushes the remote-write outbox — retries team-scoped writes that were queued while their remote store was unreachable; use plur_outbox to inspect what is queued.',
       annotations: { title: 'Sync', openWorldHint: true, destructiveHint: false, idempotentHint: true },
       inputSchema: {
         type: 'object',
@@ -1836,6 +1862,37 @@ function getAllToolDefinitions(): ToolDefinition[] {
               `The outbox flush failed — ${outbox_error}. Engrams routed to a remote store are `
               + `still queued locally and were NOT pushed. They retry on the next session_start or plur_sync.`,
           } : {}),
+        }
+      },
+    },
+
+    {
+      name: 'plur_outbox',
+      description: 'Inspect the remote-write outbox — team-scoped writes queued locally because their remote store was unreachable. Read-only by default; pass flush:true to retry them now. Entries never include the target URL or token.',
+      annotations: { title: 'Outbox', readOnlyHint: false, idempotentHint: false },
+      inputSchema: {
+        type: 'object',
+        properties: {
+          flush: { type: 'boolean', description: 'Retry every queued write now, instead of only reporting them. Defaults to false.' },
+        },
+      },
+      handler: async (args, plur) => {
+        // Read first, ALWAYS — including on a flush. The entries a flush
+        // consumed are the interesting ones ("what was stuck, and for how
+        // long"), and after a successful flush they are gone from the store,
+        // so reading afterwards would report an empty outbox and tell the
+        // caller nothing about what just moved.
+        const before = await plur.listOutbox()
+        if (args.flush !== true) {
+          return { pending: before.length, entries: before }
+        }
+        const result = await plur.flushOutbox()
+        return {
+          pending: await plur.outboxCount(),
+          flushed: result.flushed,
+          failed: result.failed,
+          ...(result.expired_warnings.length > 0 ? { expired_warnings: result.expired_warnings } : {}),
+          attempted: before,
         }
       },
     },
@@ -2682,7 +2739,13 @@ function getAllToolDefinitions(): ToolDefinition[] {
             const failures = discoveries.filter(d => !d.ok)
             if (failures.length > 0) {
               const authExpired = failures.some(f => /\b40[13]\b/.test(f.error ?? ''))
-              const pending = outbox_result?.failed ?? 0
+              // The count is what is QUEUED, not what this flush failed on
+              // (#667). `outbox_result.failed` counts only entries this flush
+              // attempted and lost — so when the host is in breaker cooldown
+              // the flush attempts nothing, `failed` is 0, and the warning
+              // said nothing at all while N team writes sat queued. The
+              // pending total is the number the user needs to act on.
+              const pending = await plur.outboxCount().catch(() => outbox_result?.failed ?? 0)
               const urls = [...new Set(failures.map(f => f.url))].join(', ')
               guide += authExpired
                 ? `\n\n⚠️ ENTERPRISE STORE AUTH FAILED (token expired/invalid): ${urls}. ` +
@@ -2691,7 +2754,8 @@ function getAllToolDefinitions(): ToolDefinition[] {
                   `~/.plur/config.yaml, then restart Claude/MCP. Queued engrams flush on the next session_start.`
                 : `\n\n⚠️ ENTERPRISE STORE UNREACHABLE: ${urls}. ` +
                   `Reads fall back to local; team-scoped writes queue in the outbox` +
-                  (pending > 0 ? ` (${pending} pending)` : '') + ` until it recovers. Check connectivity/VPN.`
+                  (pending > 0 ? ` (${pending} pending — inspect with plur_outbox, retry with plur_outbox {flush:true})` : '') +
+                  ` until it recovers. Check connectivity/VPN.`
             }
             // #647: a QUIET, per-scope-aware hint. `d.unregistered` already
             // excludes dismissed scopes; also drop personal-family (they can't be

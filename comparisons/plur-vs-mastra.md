@@ -17,7 +17,7 @@
 
 ## Recall — table stakes, not the deciding factor
 
-Both are competitive; quality is table stakes. PLUR reaches **97.6% R@5 on LongMemEval-S**, fully local. (Mastra's memory numbers are blog-level; we don't run a head-to-head.) The decision is portability, not a recall delta.
+Both are competitive; quality is table stakes. PLUR reaches **97.6% R@5 on LongMemEval-S**, fully local (hybrid + the opt-in BGE-reranker; the zero-config default is 95.6%). (Mastra's memory numbers are blog-level; we don't run a head-to-head.) The decision is portability, not a recall delta.
 *(LongMemEval-S · n=500 · chunk · canonical-doc; R@5 = evidence in the top-5, not answer accuracy; measured on our own plur-bench harness, public with our paper.)*
 
 ## Choose Mastra if
