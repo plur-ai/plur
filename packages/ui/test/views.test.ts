@@ -169,12 +169,48 @@ describe('renderBrowse', () => {
     const rows = [row({ id: 'ENG-2026-0101-001', activation: { frequency: 594 } }),
                   row({ id: 'ENG-2026-0101-002', activation: { frequency: 4 } })]
     const html = renderBrowse({ rows, query: {}, mode: 'top', now: new Date('2026-08-14T12:00:00Z') })
-    const widths = [...html.matchAll(/weight-fill" style="width:(\d+)%/g)].map(m => Number(m[1]))
+    const widths = [...html.matchAll(/weight-fill[^"]*" style="width:(\d+)%/g)].map(m => Number(m[1]))
     expect(Math.min(...widths)).toBeGreaterThan(15)
     expect(Math.max(...widths)).toBe(100)
   })
 
-  it('is read-only — no edit or delete controls', () => {
+  it('marks exactly ONE bar hot — the busiest engram, and nothing else', () => {
+    const rows = [row({ id: 'ENG-2026-0101-001', activation: { frequency: 594 } }),
+                  row({ id: 'ENG-2026-0101-002', activation: { frequency: 83 } }),
+                  row({ id: 'ENG-2026-0101-003', activation: { frequency: 83 } })]
+    const html = renderBrowse({ rows, query: {}, mode: 'top', now: new Date('2026-08-14T12:00:00Z') })
+    expect(html.split('weight-fill hot').length - 1).toBe(1)
+  })
+
+  it('renders the PLUR expansion once, in the footer', () => {
+    const html = browse([row()])
+    for (const word of ['Peace', 'Love', 'Unity', 'Respect']) {
+      expect(html.split(word).length - 1).toBe(1)
+    }
+  })
+
+  it('renders header links only when given', () => {
+    expect(browse([row()])).not.toContain('Request a feature')
+    const withLinks = renderBrowse({
+      rows: [row()], query: {}, mode: 'all', now: new Date('2026-08-14T12:00:00Z'),
+      links: { requestFeature: 'https://example.invalid/issues', contribute: 'https://example.invalid/contributing' },
+    })
+    expect(withLinks).toContain('Request a feature')
+    expect(withLinks).toContain('rel="noreferrer noopener"')
+  })
+
+  it('open-folder is a POST form, because a file:// link is blocked and a GET is fireable by any page', () => {
+    const html = renderBrowse({
+      rows: [row()], query: {}, mode: 'all', now: new Date('2026-08-14T12:00:00Z'),
+      links: { openFolder: '/open-store' },
+    })
+    expect(html).toContain('method="POST" action="/open-store"')
+    expect(html).not.toContain('href="file://')
+  })
+
+  it('is read-only — no edit or delete controls on a record', () => {
+    // The only POST the page may carry is the open-folder button, which is not
+    // rendered unless a host supplies its endpoint.
     const html = browse([row()])
     expect(html).not.toMatch(/method="POST"/i)
     expect(html.toLowerCase()).not.toContain('>delete<')

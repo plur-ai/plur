@@ -10,8 +10,15 @@
  *
  * @module
  */
+import { spawn } from 'node:child_process'
 import { createServer, type Server } from 'node:http'
 import { renderBrowse, renderPage, type EngramRow } from '@plur-ai/ui'
+
+/** Where to send people who want to help. */
+const LINKS = {
+  requestFeature: 'https://github.com/plur-ai/plur/issues/new',
+  contribute: 'https://github.com/plur-ai/plur/blob/main/CONTRIBUTING.md',
+} as const
 
 /** Options accepted by `plur ui`. */
 export interface UiArgs {
@@ -65,6 +72,26 @@ export interface UiServerOptions {
   load: () => Promise<readonly EngramRow[]>
   /** Shown beside the page title, e.g. the store path. */
   where: string
+  /**
+   * Absolute path to reveal when the operator clicks Open folder.
+   *
+   * Omitted, the button is not rendered. Bound only on loopback: opening a
+   * window on someone's desktop is a poor thing to expose to a network.
+   */
+  openPath?: string
+}
+
+/** Reveal a directory in the platform's file manager. Best-effort. */
+function revealFolder(path: string): void {
+  const command = process.platform === 'darwin' ? 'open'
+    : process.platform === 'win32' ? 'explorer'
+    : 'xdg-open'
+  try {
+    // The path is the store root this process resolved, never request input.
+    spawn(command, [path], { stdio: 'ignore', detached: true }).unref()
+  } catch {
+    // No file manager. The path is on screen either way.
+  }
 }
 
 /** Minimal HTML error page. Escaped: a store path is not trusted markup. */
@@ -102,13 +129,23 @@ export function createUiServer(opts: UiServerOptions): Server {
         'referrer-policy': 'no-referrer',
       }
 
+      const url = new URL(req.url ?? '/', 'http://localhost')
+
+      // The one write-shaped route, and it writes nothing: it reveals a folder.
+      // A POST rather than a GET so a stray `img` tag on any page in the
+      // browser cannot pop a file manager window on the operator's desktop.
+      if (url.pathname === '/open-store' && req.method === 'POST' && opts.openPath) {
+        revealFolder(opts.openPath)
+        res.writeHead(303, { ...headers, location: '/' })
+        res.end()
+        return
+      }
+
       if (req.method !== 'GET') {
         res.writeHead(405, { ...headers, allow: 'GET' })
         res.end(errorPage('This viewer is read-only.'))
         return
       }
-
-      const url = new URL(req.url ?? '/', 'http://localhost')
       if (url.pathname !== '/') {
         res.writeHead(404, headers)
         res.end(errorPage('Not found.'))
@@ -127,6 +164,7 @@ export function createUiServer(opts: UiServerOptions): Server {
           },
           mode: url.searchParams.get('mode') === 'all' ? 'all' : 'top',
           where: opts.where,
+          links: { ...LINKS, ...(opts.openPath ? { openFolder: '/open-store' } : {}) },
         })
         res.writeHead(200, headers)
         res.end(renderPage({ title: 'PLUR Memory', body }))

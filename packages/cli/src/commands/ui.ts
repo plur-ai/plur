@@ -43,6 +43,10 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     // refreshing shows it.
     load: async () => (await plur.list()) as unknown as readonly EngramRow[],
     where: String(status.storage_root ?? ''),
+    // Loopback only. Revealing a folder is harmless locally and rude remotely.
+    ...(opts.host === '127.0.0.1' || opts.host === 'localhost'
+      ? { openPath: String(status.storage_root ?? '') }
+      : {}),
   })
 
   await new Promise<void>((resolve, reject) => {

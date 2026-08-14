@@ -209,5 +209,84 @@ details.rec[open] .rec-stmt { color: var(--text); }
 .pager .off { color: var(--muted); }
 footer { margin-top: var(--sp-8); padding-top: var(--sp-4); border-top: 1px solid var(--line); font-size: 12px; color: var(--muted); }
 
-@media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+/* ── header aside, footer ─────────────────────────────────────────────── */
+.page-aside { display: inline-flex; align-items: center; gap: var(--sp-3); }
+.open-folder { display: inline; margin: 0; }
+.open-folder button {
+  background: transparent; border: 1px solid var(--bg-card-border); color: var(--text-tertiary);
+  border-radius: 7px; padding: 4px 11px; font-size: 12px; font-family: inherit; cursor: pointer;
+  transition: border-color 140ms ease, color 140ms ease;
+}
+.open-folder button:hover { border-color: rgba(var(--accent-rgb),0.4); color: var(--accent); }
+
+footer {
+  margin-top: var(--sp-8); padding-top: var(--sp-4); border-top: 1px solid var(--line);
+  display: flex; justify-content: space-between; align-items: center; gap: var(--sp-4);
+  flex-wrap: wrap; font-size: 12px; color: var(--muted);
+}
+.plur { display: inline-flex; gap: var(--sp-4); flex-wrap: wrap; }
+/* The four words are what the name stands for, so they get a little life on
+   hover — the one place on the page that is allowed to be warm. */
+.plur span { transition: color 220ms ease, transform 220ms ease; }
+.plur span:hover { color: var(--text-secondary); transform: translateY(-1px); }
+.foot-links { display: inline-flex; gap: var(--sp-3); align-items: center; }
+.foot-links .sep { color: var(--line); }
+
+/* ── motion ───────────────────────────────────────────────────────────────
+   Everything here encodes activation, which is what an engram store actually
+   models: memory strengthens with use and decays without it. Nothing is
+   ambient, nothing loops forever except the one bar that has earned it, and
+   all of it disappears under prefers-reduced-motion. */
+
+/* Records settle in on load, staggered — the list arriving rather than
+   appearing. 25 rows, so the stagger stays under a quarter of a second. */
+@keyframes settle { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+details.rec { animation: settle 260ms cubic-bezier(0.22, 0.61, 0.36, 1) both; }
+details.rec:nth-child(1)  { animation-delay: 0ms }
+details.rec:nth-child(2)  { animation-delay: 8ms }
+details.rec:nth-child(3)  { animation-delay: 16ms }
+details.rec:nth-child(4)  { animation-delay: 24ms }
+details.rec:nth-child(5)  { animation-delay: 32ms }
+details.rec:nth-child(6)  { animation-delay: 40ms }
+details.rec:nth-child(7)  { animation-delay: 48ms }
+details.rec:nth-child(8)  { animation-delay: 56ms }
+details.rec:nth-child(9)  { animation-delay: 64ms }
+details.rec:nth-child(10) { animation-delay: 72ms }
+details.rec:nth-child(n+11) { animation-delay: 80ms }
+
+/* The chart grows from the baseline, so the series reads as accumulating. */
+@keyframes grow { from { transform: scaleY(0); } to { transform: scaleY(1); } }
+.bar { transform-origin: bottom; animation: grow 420ms cubic-bezier(0.22, 0.61, 0.36, 1) both; }
+
+/* Weight bars fill left-to-right: the quantity being measured out. */
+@keyframes fill { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+.weight-fill { transform-origin: left; animation: fill 520ms cubic-bezier(0.22, 0.61, 0.36, 1) both; animation-delay: 120ms; }
+
+/* THE one indulgence: the single busiest engram's bar carries a slow travelling
+   sheen. Highest activation in the store, so it is the one thing still warm.
+   Applied to exactly one element per page — see views.ts. */
+@keyframes sheen { 0% { background-position: -140% 0 } 100% { background-position: 240% 0 } }
+.weight-fill.hot {
+  background-image: linear-gradient(90deg,
+    rgba(255,255,255,0) 0%, rgba(255,255,255,0.55) 50%, rgba(255,255,255,0) 100%);
+  background-size: 45% 100%; background-repeat: no-repeat;
+  animation: fill 520ms cubic-bezier(0.22,0.61,0.36,1) both, sheen 3.6s 1.1s ease-in-out infinite;
+}
+
+/* Rows lift a hairline accent on hover rather than shifting anything. */
+details.rec > summary { box-shadow: inset 2px 0 0 transparent; transition: box-shadow 140ms ease, background-color 140ms ease; }
+details.rec > summary:hover { box-shadow: inset 2px 0 0 rgba(var(--accent-rgb),0.5); }
+details.rec[open] > summary { box-shadow: inset 2px 0 0 var(--accent); }
+
+/* The expanded body unfolds instead of snapping open. */
+@keyframes unfold { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: none; } }
+details.rec[open] .rec-body { animation: unfold 200ms ease both; }
+
+.stat, .card { transition: border-color 200ms ease; }
+.stats:hover .stat, .card:hover { border-color: rgba(var(--accent-rgb),0.18); }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; }
+  .weight-fill.hot { background-image: none; }
+}
 `

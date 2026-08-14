@@ -90,11 +90,13 @@ function weightPct(count: number, peak: number): number {
 }
 
 /** The recall-weight cell: the page's one piece of visual editorialising. */
-function weightCell(count: number, peak: number): string {
+function weightCell(count: number, peak: number, hot = false): string {
   if (count === 0) {
     return `<span class="weight"><span class="weight-bar"></span><span class="weight-n zero" title="Never recalled">0</span></span>`
   }
-  return `<span class="weight" title="Recalled ${count} time${count === 1 ? '' : 's'}"><span class="weight-bar"><i class="weight-fill" style="width:${weightPct(count, peak)}%"></i></span><span class="weight-n">${count}</span></span>`
+  // `hot` is set for the single busiest engram on the page and nowhere else.
+  const cls = hot ? 'weight-fill hot' : 'weight-fill'
+  return `<span class="weight" title="Recalled ${count} time${count === 1 ? '' : 's'}"><span class="weight-bar"><i class="${cls}" style="width:${weightPct(count, peak)}%"></i></span><span class="weight-n">${count}</span></span>`
 }
 
 /** Engrams written per day, over the trailing month. */
@@ -143,7 +145,7 @@ function statStrip(rows: readonly EngramRow[]): string {
 }
 
 /** One expandable record. */
-function record(r: EngramRow, peak: number): string {
+function record(r: EngramRow, peak: number, hot = false): string {
   const stmt = r.statement ?? ''
   const n = recallCount(r)
   const created = createdOn(r) ?? '—'
@@ -164,7 +166,7 @@ function record(r: EngramRow, peak: number): string {
       <span class="rec-id" title="${htmlEscape(r.id ?? '')}">${htmlEscape((r.id ?? '').slice(0, 20))}</span>
       <span class="rec-stmt">${htmlEscape(stmt)}</span>
       <span class="rec-scope col-scope" title="${htmlEscape(r.scope ?? '')}">${htmlEscape(r.scope ?? '—')}</span>
-      ${weightCell(n, peak)}
+      ${weightCell(n, peak, hot)}
       <span class="rec-date col-date">${htmlEscape(created)}</span>
     </div>
   </summary>
@@ -176,6 +178,22 @@ ${meta.map(([k, v]) => `      <div><dt>${htmlEscape(k)}</dt><dd>${htmlEscape(v)}
     </dl>
   </div>
 </details>`
+}
+
+/** Links shown in the header. Omitted links are simply not rendered. */
+export interface BrowseLinks {
+  /** Where to file a feature request. */
+  requestFeature?: string
+  /** Where to contribute. */
+  contribute?: string
+  /**
+   * Endpoint that opens the store folder in the OS file manager.
+   *
+   * Rendered as a POST form rather than a link: a `file://` href is blocked
+   * from an `http://` page by every Chromium browser, and a side-effecting GET
+   * could be fired by any page on the machine with an `img` tag.
+   */
+  openFolder?: string
 }
 
 /** Options for {@link renderBrowse}. */
@@ -190,6 +208,26 @@ export interface BrowseOptions {
   action?: string
   /** Shown beside the title, e.g. the store path. */
   where?: string
+  /** Header links. */
+  links?: BrowseLinks
+}
+
+/**
+ * The footer.
+ *
+ * PLUR is an acronym before it is a product name, so spelling it out once tells
+ * a first-time reader something true rather than decorating the page. It
+ * appears here and nowhere else.
+ */
+function footer(links: BrowseLinks): string {
+  const items = [
+    links.requestFeature ? `<a href="${htmlEscape(links.requestFeature)}" target="_blank" rel="noreferrer noopener">Request a feature</a>` : '',
+    links.contribute ? `<a href="${htmlEscape(links.contribute)}" target="_blank" rel="noreferrer noopener">Contribute</a>` : '',
+  ].filter(Boolean).join('<span class="sep">·</span>')
+  return `<footer>
+  <span class="plur"><span>☮️ Peace</span><span>💜 Love</span><span>🤝 Unity</span><span>✊ Respect</span></span>
+  ${items ? `<span class="foot-links">${items}</span>` : ''}
+</footer>`
 }
 
 /**
@@ -232,7 +270,7 @@ export function renderBrowse(opts: BrowseOptions): string {
     : `<div class="rec-head">
     <span>ID</span><span>Statement</span><span class="col-scope">Scope</span><span>Recalls</span><span class="col-date">Created</span>
   </div>
-${ordered.map(r => record(r, peak)).join('\n')}`
+${ordered.map(r => record(r, peak, recallCount(r) === peak && peak > 0)).join('\n')}`
 
   const hasPrev = page.offset > 0
   const hasNext = page.offset + page.limit < page.total
@@ -244,9 +282,17 @@ ${ordered.map(r => record(r, peak)).join('\n')}`
 </div>`
     : ''
 
+  const links = opts.links ?? {}
+  const openFolder = links.openFolder
+    ? `<form class="open-folder" method="POST" action="${htmlEscape(links.openFolder)}"><button type="submit" title="Open the store folder in your file manager">Open folder</button></form>`
+    : ''
+
   return `<div class="page-head">
   <h1 class="page-title">Memory</h1>
-  ${opts.where ? `<span class="page-where">${htmlEscape(opts.where)}</span>` : ''}
+  <span class="page-aside">
+    ${opts.where ? `<span class="page-where">${htmlEscape(opts.where)}</span>` : ''}
+    ${openFolder}
+  </span>
 </div>
 <p class="page-sub">What your agents have learned, and what they actually use. Everything here is local to this machine. Select a row to read the full engram.</p>
 
@@ -270,5 +316,6 @@ ${topRecalledCard(opts.rows)}
 </div>
 
 <div class="records">${list}</div>
-${pager}`
+${pager}
+${footer(links)}`
 }
