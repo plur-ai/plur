@@ -1109,7 +1109,13 @@ function getAllToolDefinitions(): ToolDefinition[] {
             ? undefined
             : await plur.nearDuplicates(statement, context, engram.id)
           return {
-            id: engram.id, statement: engram.statement,
+            // #914: report the id in the form plur_recall hands back, so a
+            // caller that records what it just learned and passes it to
+            // plur_feedback / plur_forget is holding an id shape the read side
+            // actually produces. An outbox engram is excluded: it is sitting in
+            // the LOCAL store under a local id until the retry lands, and that
+            // is the id recall returns for it.
+            id: isOutbox ? engram.id : plur.readIdFor(engram), statement: engram.statement,
             scope: engram.scope, type: engram.type,
             pinned: (engram as any).pinned === true,
             // See the note on recall results: same fact, not same record.

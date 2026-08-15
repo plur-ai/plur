@@ -19,7 +19,7 @@ import { join } from 'path'
 import { tmpdir } from 'os'
 import { Client } from '@modelcontextprotocol/client'
 import { InMemoryTransport } from '@modelcontextprotocol/server'
-import { Plur } from '@plur-ai/core'
+import { Plur, storePrefix } from '@plur-ai/core'
 import { createServer } from '../src/server.js'
 import { StubServer } from '../../core/test/helpers/stub-server.js'
 
@@ -113,7 +113,7 @@ describe('MCP plur_learn routing', () => {
     expect(stub.engramCount).toBe(1)
   })
 
-  it('returned ID matches server-assigned ID', async () => {
+  it('returned ID is the server-assigned ID in the namespaced form recall uses (#914)', async () => {
     const { client } = await makeClient(dir)
 
     const raw = await client.callTool({
@@ -122,10 +122,16 @@ describe('MCP plur_learn routing', () => {
     })
     const result = callResult(raw) as any
 
-    expect(result.id).toMatch(/^ENG-SRV-/)
-    const serverEngram = stub.getEngram(result.id)
+    // plur_recall namespaces a store's ids with `ENG-{storePrefix(scope)}-`, so
+    // plur_learn reports the same form (#914). The server's own row keeps the
+    // id it assigned: the namespace is a local view of the same engram, and
+    // stripping the prefix has to land exactly on the row the write created.
+    const prefix = storePrefix(REMOTE_SCOPE)
+    expect(result.id).toMatch(new RegExp(`^ENG-${prefix}-SRV-`))
+    const serverId = result.id.replace(`ENG-${prefix}-`, 'ENG-')
+    const serverEngram = stub.getEngram(serverId)
     expect(serverEngram).toBeDefined()
-    expect(serverEngram!.id).toBe(result.id)
+    expect(serverEngram!.id).toBe(serverId)
   })
 
   it('local engrams.yaml does NOT contain the remote-scoped engram', async () => {
@@ -167,14 +173,17 @@ describe('MCP plur_forget routing', () => {
       arguments: { statement: 'Squash commits before merging feature branches', scope: REMOTE_SCOPE, type: 'procedural' },
     })
     const learned = callResult(learnRaw) as any
-    const serverId = learned.id
+    // The id plur_learn reports is namespaced (#914); the server row keeps the
+    // id it assigned. Forgetting by the reported id still has to reach it.
+    const reportedId = learned.id
+    const serverId = reportedId.replace(`ENG-${storePrefix(REMOTE_SCOPE)}-`, 'ENG-')
 
     expect(stub.getEngram(serverId)?.status).toBe('active')
 
-    // Forget by server ID
+    // Forget by the id the caller was handed
     const forgetRaw = await client.callTool({
       name: 'plur_forget',
-      arguments: { id: serverId },
+      arguments: { id: reportedId },
     })
     const forgotten = callResult(forgetRaw) as any
 
@@ -196,11 +205,14 @@ describe('MCP plur_feedback routing', () => {
       arguments: { statement: 'Write tests before submitting a PR', scope: REMOTE_SCOPE, type: 'procedural' },
     })
     const learned = callResult(learnRaw) as any
-    const serverId = learned.id
+    // Same as forget: feedback by the reported (namespaced) id has to land on
+    // the server row that carries the id the server assigned (#914).
+    const reportedId = learned.id
+    const serverId = reportedId.replace(`ENG-${storePrefix(REMOTE_SCOPE)}-`, 'ENG-')
 
     const fbRaw = await client.callTool({
       name: 'plur_feedback',
-      arguments: { id: serverId, signal: 'positive' },
+      arguments: { id: reportedId, signal: 'positive' },
     })
     const fb = callResult(fbRaw) as any
 
