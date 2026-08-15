@@ -46,7 +46,6 @@ describe('createEngine when core is unavailable', () => {
     await expect(engine.list!()).resolves.toEqual([])
     await expect(engine.status!()).resolves.toEqual({})
     await expect(engine.injectHybrid!('x')).resolves.toEqual({ count: 0 })
-    await expect(engine.ingest!('x')).resolves.toEqual([])
   })
 
   it('degrades every write to a no-op instead of rejecting', async () => {

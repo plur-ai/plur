@@ -47,10 +47,14 @@ describe('README', () => {
     expect(readme).toContain('api.deepseek.com')
   })
 
-  it('states that the scope defaults closed and derives per workspace', () => {
+  it('describes scope derivation, and is honest that reads include global', () => {
     expect(readme).toContain('.plur.yaml')
-    expect(flat).toContain('never your whole memory store')
     expect(flat).toContain('project:<directory name>')
+    // The README used to claim "never your whole memory store". Core includes
+    // global engrams in every scoped read by design, so that was false — the
+    // wording must state what actually happens.
+    expect(flat).not.toContain('never your whole memory store')
+    expect(flat.toLowerCase()).toContain('global')
   })
 
   it('ships a Chinese README, matching the ecosystem convention', () => {

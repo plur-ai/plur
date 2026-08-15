@@ -11,11 +11,18 @@
  */
 import type { InjectionLike } from './memory-section.js'
 
-/** One candidate statement core's `ingest()` extracted from text. */
-export interface IngestCandidateLike {
-  readonly statement: string
-  readonly type?: string
-  readonly source?: string
+
+/**
+ * How a read is scoped.
+ *
+ * BOTH fields, always. `scope` is core's VISIBILITY filter and passes the
+ * entire personal family through; `scopes` is the AUTHORIZATION allow-list,
+ * exact membership with no hierarchy expansion. Sending only `scope` is what
+ * let one project's engrams into another project's system prompt.
+ */
+export interface ReadScope {
+  scope?: string
+  scopes?: string[]
 }
 
 /** One engram as the store returns it. */
@@ -55,11 +62,11 @@ export interface PlurClient {
    * pre-rendered directives/constraints/consider strings that @plur-ai/mcp and
    * @plur-ai/claw render, so every host shows the user the same block.
    */
-  injectHybrid?(task: string, options?: { scope?: string }): Promise<InjectionLike>
+  injectHybrid?(task: string, options?: ReadScope): Promise<InjectionLike>
   /** BM25-only injection, used when the hybrid path is unavailable. */
-  inject?(task: string, options?: { scope?: string }): Promise<InjectionLike>
+  inject?(task: string, options?: ReadScope): Promise<InjectionLike>
   /** Targeted list lookup, backing the `plur_recall` tool. */
-  recall?(query: string, options?: { scope?: string; limit?: number }): Promise<readonly EngramLike[]>
+  recall?(query: string, options?: ReadScope & { limit?: number }): Promise<readonly EngramLike[]>
   /** Store one assertion. Positional statement, NOT an options object. */
   learn?(statement: string, context?: LearnContextLike): Promise<unknown>
   /** Retire one engram by id. */
@@ -71,15 +78,6 @@ export interface PlurClient {
    * SYNCHRONOUS in core — it returns the episode, not a promise.
    */
   capture?(summary: string, context?: CaptureContextLike): unknown
-  /**
-   * Rule-based extraction of engram candidates from free text.
-   *
-   * The compaction path is built on this plus {@link PlurClient.learn}. An
-   * earlier version called a `compactLearn()` that core has never implemented,
-   * so `plur?.compactLearn?.()` was always undefined and every compaction
-   * silently learned nothing.
-   */
-  ingest?(content: string, options?: { source?: string }): Promise<readonly IngestCandidateLike[]>
   /** Every engram in scope, backing the memory viewer. */
   list?(options?: { scope?: string }): Promise<readonly unknown[]>
   /** Store diagnostics — the viewer shows `storage_root` and `engram_count`. */

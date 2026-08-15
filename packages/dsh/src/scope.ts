@@ -85,3 +85,23 @@ export function createScopeResolver(
     },
   }
 }
+
+/**
+ * Build the read filter for one resolved scope.
+ *
+ * Always sets `scopes`, core's authorization allow-list. `scope` alone is a
+ * visibility filter that passes the whole personal family and does not
+ * isolate: with only `scope`, a `project:beta` injection surfaced
+ * `project:alpha`'s engrams — verified against the real engine.
+ *
+ * @param scope - the session's resolved scope.
+ * @param includeGlobal - whether global engrams accompany it.
+ * @returns the options every read should spread.
+ */
+export function readScope(scope: string, includeGlobal: boolean): { scope: string; scopes: string[] } {
+  return {
+    scope,
+    scopes: includeGlobal && scope !== 'global' ? [scope, 'global'] : [scope],
+  }
+}
+

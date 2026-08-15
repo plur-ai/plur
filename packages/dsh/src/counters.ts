@@ -16,7 +16,6 @@ export type CounterKey =
   | 'blocks_unchanged'
   | 'engrams_rendered'
   | 'learn_captured'
-  | 'compaction_learned'
   | 'errors_swallowed'
 
 const KEYS: readonly CounterKey[] = [
@@ -25,7 +24,6 @@ const KEYS: readonly CounterKey[] = [
   'blocks_unchanged',
   'engrams_rendered',
   'learn_captured',
-  'compaction_learned',
   'errors_swallowed',
 ]
 

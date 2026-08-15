@@ -11,6 +11,7 @@
  */
 import type { Context } from '@deepseek-ai/cordis'
 import type { Config } from './config.js'
+import { readScope } from './scope.js'
 import type { Counters } from './counters.js'
 import { guard, type WriteQueue } from './guard.js'
 import type { PlurClient } from './client.js'
@@ -95,7 +96,7 @@ export function registerTools(ctx: Context, deps: ToolDeps): Array<() => void> {
       execute: (args: unknown, exec: unknown) => body(async () => {
         const query = String((args as { query?: unknown } | null)?.query ?? '')
         const scope = await resolveScope(callerOf(exec))
-        const results = (await plur?.recall?.(query, { scope, limit: 10 })) ?? []
+        const results = (await plur?.recall?.(query, { ...readScope(scope, config.includeGlobal), limit: 10 })) ?? []
         if (results.length === 0) return 'No matching engrams.'
         return results.map(r => `[${r.id}] ${r.statement}`).join('\n')
       }),
@@ -119,10 +120,19 @@ export function registerTools(ctx: Context, deps: ToolDeps): Array<() => void> {
         const statement = String(input?.statement ?? '').trim()
         if (!statement) return 'Nothing to store: statement was empty.'
         const scope = await resolveScope(callerOf(exec))
-        await queue(async () => plur?.learn?.(statement, {
-          scope,
-          domain: input?.domain === undefined ? undefined : String(input.domain),
-        }))
+        // The sentinel matters: createWriteQueue() swallows the error and
+        // resolves undefined, so awaiting the raw call cannot distinguish a
+        // completed write from a failed one. Reporting "Stored." for a write
+        // that did not happen is the worst answer a memory tool can give —
+        // the user believes it is remembered and stops repeating it.
+        const ok = await queue(async () => {
+          await plur?.learn?.(statement, {
+            scope,
+            domain: input?.domain === undefined ? undefined : String(input.domain),
+          })
+          return true
+        })
+        if (ok !== true) return 'Could not store that — the memory store did not accept the write.'
         counters.bump('learn_captured')
         return 'Stored.'
       }),
@@ -146,8 +156,11 @@ export function registerTools(ctx: Context, deps: ToolDeps): Array<() => void> {
         const id = String(input?.id ?? '').trim()
         if (!id) return 'Nothing to retire: id was empty.'
         const scope = await resolveScope(callerOf(exec))
-        await queue(async () => plur?.forget?.(id, input?.reason === undefined ? undefined : String(input.reason), { scope }))
-        return 'Retired.'
+        const ok = await queue(async () => {
+          await plur?.forget?.(id, input?.reason === undefined ? undefined : String(input.reason), { scope })
+          return true
+        })
+        return ok === true ? 'Retired.' : `Could not retire ${id} — the memory store did not accept the write.`
       }),
     },
     {
@@ -169,8 +182,11 @@ export function registerTools(ctx: Context, deps: ToolDeps): Array<() => void> {
         const id = String(input?.id ?? '').trim()
         if (!id) return 'Nothing to rate: id was empty.'
         const scope = await resolveScope(callerOf(exec))
-        await queue(async () => plur?.feedback?.(id, input?.signal === 'negative' ? 'negative' : 'positive', scope))
-        return 'Recorded.'
+        const ok = await queue(async () => {
+          await plur?.feedback?.(id, input?.signal === 'negative' ? 'negative' : 'positive', scope)
+          return true
+        })
+        return ok === true ? 'Recorded.' : `Could not record feedback on ${id}.`
       }),
     },
     {

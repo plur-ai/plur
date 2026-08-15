@@ -97,7 +97,7 @@ describe('injection is prompt-section only', () => {
     apply(h.ctx, cfg({}))
     await h.fire('agent/pre-step', preStepInput(), async () => ({ kind: 'enter', messages: [] }))
     const section = h.sections.find(s => s.name === 'plur:memory')!
-    expect(typeof section.text()).toBe('string')
+    expect(typeof section.text({ agent: { id: 'a1' } })).toBe('string')
   })
 
   it('orders the section after the persona', async () => {
@@ -125,7 +125,7 @@ describe('injection is prompt-section only', () => {
     ] as never
     await h.fire('agent/pre-step', preStepInput(a, 1), async () => ({ kind: 'enter', messages: [] }))
     await settle()
-    expect(h.sections.find(s => s.name === 'plur:memory')!.text()).toContain('[ENG-1] Pin your deps.')
+    expect(h.sections.find(s => s.name === 'plur:memory')!.text({ agent: { id: 'a1' } })).toContain('[ENG-1] Pin your deps.')
   })
 })
 
@@ -159,13 +159,15 @@ describe('failure discipline', () => {
       h.fire('agent/pre-step', preStepInput(a, 1), async () => ({ kind: 'enter', messages: [] })),
     ).resolves.toBeDefined()
     await settle()
-    expect(h.sections.find(s => s.name === 'plur:memory')!.text()).toBe('')
+    expect(h.sections.find(s => s.name === 'plur:memory')!.text({ agent: { id: 'a1' } })).toBe('')
   })
 
   it('survives a host whose systemPrompt.section throws', async () => {
+    // The section is registered once at mount now, so a throwing host breaks
+    // apply() itself if it is not contained.
     const h = makeCtx()
     h.ctx.systemPrompt.section = () => { throw new Error('host api changed') }
-    apply(h.ctx, cfg({}))
+    expect(() => apply(h.ctx, cfg({}))).not.toThrow()
     const decision = { kind: 'enter' as const, messages: [] }
     const [result] = await h.fire('agent/pre-step', preStepInput(), async () => decision)
     expect(result).toBe(decision)
@@ -217,8 +219,8 @@ describe('registrations', () => {
     await h.fire('agent/pre-step', preStepInput(a, 1), async () => ({ kind: 'enter', messages: [] }))
     await settle()
     const section = h.sections.find(s => s.name === 'plur:memory')!
-    expect(section.text()).not.toBe('')
-    await h.fire('agent/disposed', a)
-    expect(section.text()).toBe('')
+    expect(section.text({ agent: { id: 'a1' } })).not.toBe('')
+    await h.fire('agent/disposed', { agent: a })
+    expect(section.text({ agent: { id: 'a1' } })).toBe('')
   })
 })

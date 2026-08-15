@@ -38,7 +38,7 @@ describe('registerCapture — episode capture', () => {
   it('captures the last assistant message at turn end', async () => {
     const capture = vi.fn(async () => {})
     const h = harness({ capture })
-    await h.fire('agent/turn-stopping', { session: { events: [assistant('the answer')] } })
+    await h.fire('agent/turn-stopping', { agent: { id: 'a', session: { events: [assistant('the answer')] } } })
     await settle()
     expect(capture).toHaveBeenCalledWith('the answer', expect.any(Object))
   })
@@ -50,7 +50,7 @@ describe('registerCapture — episode capture', () => {
     // one timeline per store, so a tag is the only place the scope survives.
     const capture = vi.fn(async (_summary: string, _context?: unknown) => {})
     const h = harness({ capture }, cfg({ scope: 'project:acme' }))
-    await h.fire('agent/turn-stopping', { session: { events: [assistant('x')] } })
+    await h.fire('agent/turn-stopping', { agent: { id: 'a', session: { events: [assistant('x')] } } })
     await settle()
     expect(capture).toHaveBeenCalledWith(
       expect.any(String),
@@ -62,7 +62,7 @@ describe('registerCapture — episode capture', () => {
   it('truncates a very long summary rather than bloating the store', async () => {
     const capture = vi.fn(async (_summary: string, _context?: unknown) => {})
     const h = harness({ capture })
-    await h.fire('agent/turn-stopping', { session: { events: [assistant('y'.repeat(5000))] } })
+    await h.fire('agent/turn-stopping', { agent: { id: 'a', session: { events: [assistant('y'.repeat(5000))] } } })
     await settle()
     expect(capture.mock.calls[0]![0].length).toBe(2000)
   })
@@ -70,7 +70,7 @@ describe('registerCapture — episode capture', () => {
   it('captures nothing when the turn produced no assistant text', async () => {
     const capture = vi.fn(async () => {})
     const h = harness({ capture })
-    await h.fire('agent/turn-stopping', { session: { events: [] } })
+    await h.fire('agent/turn-stopping', { agent: { id: 'a', session: { events: [] } } })
     await settle()
     expect(capture).not.toHaveBeenCalled()
   })
@@ -84,80 +84,39 @@ describe('registerCapture — episode capture', () => {
   it('a throwing store does not surface to the caller', async () => {
     const h = harness({ capture: async () => { throw new Error('down') } })
     await expect(
-      h.fire('agent/turn-stopping', { session: { events: [assistant('x')] } }),
+      h.fire('agent/turn-stopping', { agent: { id: 'a', session: { events: [assistant('x')] } } }),
     ).resolves.toBeDefined()
     await settle()
   })
 })
 
-describe('registerCapture — learn before compaction', () => {
-  it('subscribes compaction/start via session/event, not as a Cordis event', () => {
-    const h = harness({ ingest: async () => [{ statement: 'Use pnpm, never npm.' }], learn: async () => ({ id: 'x' }) })
-    // compaction/start is a SessionEventMap entry; ctx.on('compaction/start') would never fire.
-    expect(h.listeners.has('compaction/start')).toBe(false)
-    expect(h.listeners.has('session/event')).toBe(true)
-  })
+describe('registerCapture — compaction writes NOTHING', () => {
+  // 0.1.0 deliberately has no learn-before-compaction. The previous version
+  // called a `compactLearn()` core has never implemented (a no-op), and the
+  // version after that called `ingest()` — which WRITES unless `extract_only`
+  // is passed, defaulting the scope to `global`. That put one project's
+  // conversation into the store every other project reads from, with core's
+  // patterns dropping negations along the way: "Never mention that Acme is
+  // churning" is stored as "mention that Acme is churning".
+  //
+  // These tests exist so re-adding it is a deliberate act, not an accident.
 
-  it('extracts learnings from the range about to be shadowed', async () => {
-    // The whole point: this range is about to be summarised away, so anything
-    // worth keeping has to be turned into an engram BEFORE it goes.
-    const learn = vi.fn(async () => ({ id: 'x' }))
-    const ingest = vi.fn(async () => [{ statement: 'Use pnpm, never npm.' }])
-    const h = harness({ ingest, learn }, cfg({ scope: 'project:acme' }))
-    const session = { events: [assistant('about to be summarised')] }
-    await h.fire('session/event', session, { type: 'compaction/start' })
+  it('subscribes to session/event for nothing — no store call on compaction', async () => {
+    const calls: string[] = []
+    const spy = new Proxy({}, {
+      get: (_t, name: string) => { calls.push(name); return async () => undefined },
+    }) as Record<string, unknown>
+    const h = harness(spy)
+    await h.fire('session/event', { events: [assistant('private client detail')] }, { type: 'compaction/start' })
     await settle()
-    // ingest() receives the conversation text...
-    expect(ingest).toHaveBeenCalledWith(
-      expect.stringContaining('about to be summarised'),
-      expect.objectContaining({ source: 'dsh:compaction' }),
-    )
-    // ...and each candidate it returns is actually written, into the session's
-    // own scope. Before this, the compaction hook called a core method that
-    // does not exist, so nothing was ever learned here.
-    expect(learn).toHaveBeenCalledWith('Use pnpm, never npm.',
-      expect.objectContaining({ scope: 'project:acme', source: 'dsh:compaction' }))
+    expect(calls.filter(c => c !== 'then'), 'compaction reached the store').toEqual([])
   })
 
-  it('writes nothing when the range yields no candidates', async () => {
-    const learn = vi.fn(async () => ({ id: 'x' }))
-    const h = harness({ ingest: async () => [], learn })
-    await h.fire('session/event', { events: [assistant('nothing quotable')] }, { type: 'compaction/start' })
-    await settle()
-    expect(learn).not.toHaveBeenCalled()
-  })
-
-  it('bounds how much one compaction can write', async () => {
-    // A long session can yield a great many candidates, and a compaction
-    // boundary is exactly when nobody is watching.
-    const learn = vi.fn(async () => ({ id: 'x' }))
-    const many = Array.from({ length: 50 }, (_, i) => ({ statement: `candidate ${i}` }))
-    const h = harness({ ingest: async () => many, learn })
-    await h.fire('session/event', { events: [assistant('long session')] }, { type: 'compaction/start' })
-    await settle()
-    expect(learn.mock.calls.length).toBeLessThanOrEqual(12)
-    expect(learn.mock.calls.length).toBeGreaterThan(0)
-  })
-
-  it('skips a range with no conversation text at all', async () => {
+  it('never calls ingest — it writes to global unless extract_only is passed', async () => {
     const ingest = vi.fn(async () => [])
     const h = harness({ ingest })
-    await h.fire('session/event', { events: [{ type: 'tool/call', time: 1, data: {} }] }, { type: 'compaction/start' })
+    await h.fire('session/event', { events: [assistant('x')] }, { type: 'compaction/start' })
     await settle()
     expect(ingest).not.toHaveBeenCalled()
-  })
-
-  it('ignores other session events', async () => {
-    const learn = vi.fn(async () => ({ id: 'x' }))
-    const ingest = vi.fn(async () => [{ statement: 'Use pnpm, never npm.' }])
-    const h = harness({ ingest, learn })
-    await h.fire('session/event', { events: [] }, { type: 'turn/start' })
-    await settle()
-    expect(ingest).not.toHaveBeenCalled()
-  })
-
-  it('tolerates a malformed event', async () => {
-    const h = harness({ ingest: async () => [{ statement: 'Use pnpm, never npm.' }], learn: async () => ({ id: 'x' }) })
-    await expect(h.fire('session/event', null, null)).resolves.toBeDefined()
   })
 })

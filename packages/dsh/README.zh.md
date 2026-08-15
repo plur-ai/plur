@@ -92,10 +92,15 @@ PLUR 把一切存储在本地 `~/.plur` 并在本地检索。但被注入的记�
 你的 agent 发送给**你所配置的模型提供方**的提示词的一部分——
 对于默认的 DeepSeek Harness 安装，那就是 DeepSeek 的托管 API `api.deepseek.com`。
 
-默认情况下本插件只读取**你当前所在工作区对应的 scope**——
-如果项目自身的 `.plur.yaml` 声明了 scope 就用它，否则派生为 `project:<目录名>`。
-它绝不会是你的整个记忆库。全局 PLUR 库会累积你曾经接入过的每一个工具的记忆，
-一个编码 harness 不应该仅仅因为你安装了插件就继承全部内容。
+**写入**进入你当前所在工作区对应的 scope——如果项目自身的 `.plur.yaml` 声明了
+scope 就用它，否则派生为 `project:<目录名>`。本插件学到的任何内容都不会写入
+`global`。
+
+**读取**是该 scope **加上你的 global engram**。这是 PLUR 自身的模型，并非本插件
+额外引入：`global` 属于个人 scope，而个人 scope 会有意地通过所有按项目过滤的
+读取——因此按 scope 召回时会包含它们。如果你的 global 库中有不希望编码 harness
+看到的内容，请将其移到项目 scope，或显式设置 `scope`；用 `plur ui` 可以查看
+里面到底有什么。
 
 如需覆盖这一派生规则，可显式设置 scope；也可以完全关闭注入：
 

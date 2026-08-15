@@ -32,7 +32,7 @@ import { createWriteQueue, guard } from './guard.js'
 import { registerLearning } from './learn.js'
 import { createMemoryCache, renderBlock } from './memory-section.js'
 import { createRefreshPolicy } from './refresh.js'
-import { createScopeResolver } from './scope.js'
+import { createScopeResolver, readScope } from './scope.js'
 import { recallQueryFrom, type LogEvent } from './session-log.js'
 import { readWorkspaceScope } from './workspace-scope.js'
 import { registerSkills } from './skills.js'
@@ -64,15 +64,14 @@ const SECTION_ORDER = 120
  *
  * Per-agent state is normally reclaimed on `agent/disposed`, but a host that
  * drops sessions on disconnect or crash may never emit it. Without a cap, a
- * long-lived server accumulates a prompt-section registration per dead session
- * forever. Evicting the oldest is safe: a still-live agent simply re-registers
- * on its next step.
+ * long-lived server accumulates cached blocks for dead sessions forever.
+ * Evicting the oldest is safe: the state is a cache, and a still-live agent
+ * simply repopulates it on its next step.
  */
 const MAX_TRACKED_AGENTS = 512
 
 /** Live per-agent state, disposed with the agent. */
 interface AgentState {
-  disposeSection: () => void
   /** Monotonic refresh counter; a completed refresh writes only if it is still the latest. */
   generation: number
   /** True while a refresh is in flight, so a wedged store cannot pile up work. */
@@ -159,6 +158,38 @@ export function apply(ctx: Context, config: Config, injected?: PlurClient): void
   // PLUR also releases the viewer's port.
   ctx.effect(() => () => { void viewer.dispose() }, 'plur-viewer')
 
+  // ONE section, registered once on the plugin's own context, keyed by the
+  // agent the host passes for each assembly. This is verbatim the pattern
+  // @deepseek-ai/dsh-plan-mode uses (`text: (context) => context.agent ...`),
+  // including its explicit no-agent guard.
+  //
+  // The alternative — one section PER AGENT under the same name — throws by
+  // contract on the duplicate, and the catch that hid it meant agents 2..N got
+  // nothing while the surviving section served agent 1's memory to all of
+  // them. `agent.ctx` is not the answer either: reading `agent.ctx.systemPrompt`
+  // throws "cannot get property without inject" on a scope that did not
+  // declare it.
+  if (config.injectionMode !== 'off') {
+    // Contained: this runs at mount, so a host whose section API has moved
+    // would otherwise take the whole plugin — and the boot — down with it.
+    try {
+      const disposeSection = ctx.systemPrompt.section({
+        name: 'plur:memory',
+        order: SECTION_ORDER,
+      // Synchronous and cache-only, so prompt assembly can never wait on, or
+      // be broken by, the memory store. A diagnostic assembly carries no
+      // agent; render nothing rather than somebody's memory.
+        text: context => {
+          const agentId = context?.agent?.id
+          return agentId === undefined ? '' : cache.read(agentId)
+        },
+      })
+      ctx.effect(() => () => { try { disposeSection() } catch { onError() } }, 'plur-section')
+    } catch {
+      onError()
+    }
+  }
+
   ctx.inject(['skills'], scoped => { registerSkills(scoped) })
   ctx.inject(['commands'], scoped => { registerCommands(scoped, { config, counters, viewer }) })
 
@@ -170,9 +201,7 @@ export function apply(ctx: Context, config: Config, injected?: PlurClient): void
       if (decision.kind === 'reject') return decision
       if (signal.aborted) return decision
 
-      ensureSection(agentId)
-
-      const state = live.get(agentId)
+      const state = trackAgent(agentId)
       // An in-flight refresh means the store is slower than the user is typing.
       // Skipping is right: guard() times a call out but cannot CANCEL the work
       // behind it, so launching another would pile real work up in the host.
@@ -191,8 +220,11 @@ export function apply(ctx: Context, config: Config, injected?: PlurClient): void
     }, { prepend: true })
   }
 
-  ctx.on('agent/disposed', (agent: unknown) => {
-    const agentId = (agent as { id?: string } | null)?.id
+  // The payload is `{ agent }`, NOT the agent. Reading `.id` off the payload
+  // always produced undefined, so nothing was ever reclaimed and eviction was
+  // the only path that ran.
+  ctx.on('agent/disposed', (payload: { agent?: { id?: string } }) => {
+    const agentId = payload?.agent?.id
     if (agentId === undefined) return
     releaseAgent(agentId)
   })
@@ -208,39 +240,20 @@ export function apply(ctx: Context, config: Config, injected?: PlurClient): void
 
   /** Tear down everything held for one agent. Safe to call for an unknown id. */
   function releaseAgent(agentId: string): void {
-    const state = live.get(agentId)
-    if (state) {
-      try {
-        state.disposeSection()
-      } catch {
-        onError()
-      }
-      live.delete(agentId)
-    }
+    live.delete(agentId)
     cache.clear(agentId)
     refresh.clear(agentId)
     scopes.clear(agentId)
   }
 
-  /** Register this agent's prompt section exactly once. */
-  function ensureSection(agentId: string): void {
-    if (live.has(agentId)) return
+  /** Per-agent refresh bookkeeping. Creates it on first sight. */
+  function trackAgent(agentId: string): AgentState {
+    const existing = live.get(agentId)
+    if (existing) return existing
     evictIfNeeded()
-    try {
-      const disposeSection = ctx.systemPrompt.section({
-        name: 'plur:memory',
-        order: SECTION_ORDER,
-        // Synchronous and cache-only, so prompt assembly can never wait on, or
-        // be broken by, the memory store.
-        text: () => cache.read(agentId),
-      })
-      live.set(agentId, { disposeSection, generation: 0, refreshing: false })
-    } catch {
-      // A host API change must not crash the turn. Mark the agent as handled so
-      // we do not retry the same failing registration on every step.
-      live.set(agentId, { disposeSection: () => {}, generation: 0, refreshing: false })
-      onError()
-    }
+    const state: AgentState = { generation: 0, refreshing: false }
+    live.set(agentId, state)
+    return state
   }
 
   /**
@@ -268,9 +281,10 @@ export function apply(ctx: Context, config: Config, injected?: PlurClient): void
       const scope = await scopes.resolve(agentId, agent?.session?.header?.cwd)
       // Hybrid first; fall back to BM25-only exactly as @plur-ai/mcp does, so a
       // machine without the embedder still gets memory rather than nothing.
+      const where = readScope(scope, config.includeGlobal)
       const injection = plur?.injectHybrid
-        ? await plur.injectHybrid(query, { scope })
-        : await plur?.inject?.(query, { scope })
+        ? await plur.injectHybrid(query, where)
+        : await plur?.inject?.(query, where)
       counters.bump('engrams_rendered')
       // Rendering is INSIDE the guard: a malformed engram must not escape either.
       return renderBlock(injection, config.injectionBudget)

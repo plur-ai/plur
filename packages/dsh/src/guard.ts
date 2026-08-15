@@ -33,12 +33,28 @@ export async function guard<T>(
   opts: GuardOptions,
 ): Promise<T | undefined> {
   let timer: ReturnType<typeof setTimeout> | undefined
+  // A distinct sentinel, not `undefined`: a timeout used to resolve through the
+  // SUCCESS path, so it bumped no counter and called no observer. Timeout is
+  // the dominant failure mode on a large store — a slow injection on a
+  // multi-thousand-engram corpus reaches 5s under ordinary contention — and it
+  // was the one failure nothing anywhere recorded. "It forgot and I cannot
+  // find out why" is the report that follows.
+  const TIMED_OUT = Symbol('timeout')
   try {
-    const timeout = new Promise<undefined>(resolve => {
-      timer = setTimeout(() => resolve(undefined), opts.timeoutMs)
+    const timeout = new Promise<typeof TIMED_OUT>(resolve => {
+      timer = setTimeout(() => resolve(TIMED_OUT), opts.timeoutMs)
     })
     // Promise.resolve().then(fn) also captures a synchronous throw from fn().
-    return await Promise.race([Promise.resolve().then(fn), timeout])
+    const result = await Promise.race([Promise.resolve().then(fn), timeout])
+    if (result === TIMED_OUT) {
+      try {
+        opts.onError?.(new Error(`PLUR call exceeded ${opts.timeoutMs}ms`))
+      } catch {
+        // An observer must never escalate a contained failure into a live one.
+      }
+      return undefined
+    }
+    return result
   } catch (error: unknown) {
     try {
       opts.onError?.(error)

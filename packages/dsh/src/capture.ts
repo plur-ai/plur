@@ -1,10 +1,9 @@
 /**
- * Episode capture, and learning from content about to be dropped.
+ * Episode capture.
  *
- * NOTE: `compaction/start` is a `SessionEventMap` entry, NOT a Cordis event —
- * `ctx.on('compaction/start', ...)` does not exist and would silently never
- * fire. It is filtered out of the `session/event` feed instead. It fires before
- * summarisation, so the pre-shadow content is still readable at that point.
+ * One episode per finished turn, into core's timeline. Learning from content
+ * about to be dropped at a compaction boundary is deliberately NOT here — see
+ * the note in `registerCapture`.
  *
  * @module
  */
@@ -13,22 +12,20 @@ import type { Config } from './config.js'
 import type { Counters } from './counters.js'
 import type { PlurClient } from './client.js'
 import { guard, type WriteQueue } from './guard.js'
-import { conversationText, lastAssistantText, type LogEvent } from './session-log.js'
+import { lastAssistantText, type LogEvent } from './session-log.js'
+
+/** The structural slice of a live dsh Agent this module reads. */
+interface AgentLike {
+  readonly id?: string
+  readonly session?: {
+    readonly id?: string
+    readonly events?: readonly LogEvent[]
+    readonly header?: { readonly cwd?: string }
+  }
+}
 
 /** Cap on a captured episode summary, so one long turn cannot bloat the store. */
 const SUMMARY_MAX_CHARS = 2000
-
-/**
- * Cap on engrams written from one compaction.
- *
- * Rule-based extraction over a whole session can yield a great many
- * candidates, and a compaction boundary is exactly when the user is not
- * watching. A bounded write keeps one long session from flooding the store.
- */
-const MAX_COMPACTION_LEARNINGS = 12
-
-/** Cap on the text handed to ingest, so a huge session is not scanned whole. */
-const COMPACTION_MAX_CHARS = 20_000
 
 
 /** Dependencies for the capture subscriptions. */
@@ -43,10 +40,10 @@ export interface CaptureDeps {
 }
 
 /**
- * Subscribe episode capture and learn-before-compaction.
+ * Subscribe episode capture.
  *
- * Both paths are fire-and-forget through the shared write queue: a turn must
- * never wait on a store write, and two live sessions must not interleave.
+ * Fire-and-forget through the shared write queue: a turn must never wait on a
+ * store write, and two live sessions must not interleave.
  *
  * @param ctx - the Cordis context whose scope owns the subscriptions.
  * @param deps - config, counters, the PLUR client, and scope resolution.
@@ -56,11 +53,15 @@ export function registerCapture(ctx: Context, deps: CaptureDeps): void {
   if (!config.autoCapture) return
   const opts = { timeoutMs: config.timeoutMs, onError: () => counters.bump('errors_swallowed') }
 
-  ctx.on('agent/turn-stopping', (agent: unknown) => {
-    const events = (agent as { session?: { events?: readonly LogEvent[] } } | null)?.session?.events ?? []
+  // The payload is `{ agent, turn, signal }`, NOT the agent. Reading
+  // `.session` off the payload always produced undefined, so `events` was
+  // always [] and `autoCapture: true` captured nothing, ever — on every
+  // install, silently. The unit tests emitted the shape the code expected.
+  ctx.on('agent/turn-stopping', (payload: { agent?: AgentLike }) => {
+    const events = payload?.agent?.session?.events ?? []
     const summary = lastAssistantText(events)
     if (!summary) return
-    const session = (agent as { session?: { id?: string; header?: { cwd?: string } } } | null)?.session
+    const session = payload?.agent?.session
     void queue(() => guard(async () => {
       const scope = await resolveScope(session)
       // `scope` is not a CaptureContext field — core keeps one timeline per
@@ -73,27 +74,26 @@ export function registerCapture(ctx: Context, deps: CaptureDeps): void {
     }, opts))
   })
 
-  ctx.on('session/event', (session: unknown, event: unknown) => {
-    if ((event as { type?: string } | null)?.type !== 'compaction/start') return
-    const events = (session as { events?: readonly LogEvent[] } | null)?.events ?? []
-    const owner = session as { id?: string; header?: { cwd?: string } } | null
-    void queue(() => guard(async () => {
-      const scope = await resolveScope(owner ?? undefined)
-      // Compaction is about to shadow this range. Anything worth keeping has
-      // to be extracted BEFORE it goes, because afterwards it is gone.
-      //
-      // Built on ingest() + learn(), which core actually has. This called a
-      // `compactLearn()` that core has never implemented — `?.` meant it was
-      // always undefined, so every compaction learned exactly nothing.
-      const text = conversationText(events, COMPACTION_MAX_CHARS)
-      if (!text) return
-      const candidates = (await plur?.ingest?.(text, { source: 'dsh:compaction' })) ?? []
-      for (const candidate of candidates.slice(0, MAX_COMPACTION_LEARNINGS)) {
-        const statement = candidate?.statement?.trim()
-        if (!statement) continue
-        await plur?.learn?.(statement, { scope, source: 'dsh:compaction' })
-      }
-      if (candidates.length > 0) counters.bump('compaction_learned')
-    }, opts))
-  })
+  // NO learn-before-compaction in 0.1.0.
+  //
+  // The idea is right — a compaction boundary is the last moment the discarded
+  // range can still be read — but the only extractor available is core's
+  // rule-based `ingest()`, and it is not safe to run unattended:
+  //
+  //   * `ingest()` WRITES unless `extract_only: true`, and defaults the scope
+  //     to `global`. Called from a hook whose whole point is running while
+  //     nobody watches, that puts one project's conversation into the store
+  //     every other project reads from.
+  //   * Its patterns capture only the tail after a trigger word, so
+  //     `(?:always|never|must|should)\s+(.+?)` turns "Never mention that Acme
+  //     is churning" into the engram "mention that Acme is churning" — a
+  //     prohibition stored as an instruction, rendered under CONSTRAINTS.
+  //   * `learn()` dedups on exact content hash only, so near-duplicates from
+  //     repeated compactions of one growing session accumulate.
+  //
+  // Those are acceptable for `plur ingest`, where a human reads the candidates
+  // before anything is written. They are not acceptable here. This previously
+  // called a `compactLearn()` core has never implemented, so it has always
+  // been a no-op — leaving it out is not a regression, and doing it properly
+  // needs an extractor that understands negation.
 }

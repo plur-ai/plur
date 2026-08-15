@@ -100,11 +100,16 @@ memories become part of the prompt your agent sends to **your configured model
 provider** — for a default DeepSeek Harness install, that is DeepSeek's hosted
 API at `api.deepseek.com`.
 
-By default this plugin reads only **the scope belonging to the workspace you are
-in** — your project's own `.plur.yaml` scope if it declares one, otherwise
-`project:<directory name>`. It is never your whole memory store. A global PLUR
-store accumulates across every tool you have ever pointed PLUR at, and a coding
-harness should not inherit all of that just because you installed a plugin.
+**Writes** go to the scope belonging to the workspace you are in — your
+project's own `.plur.yaml` scope if it declares one, otherwise
+`project:<directory name>`. Nothing this plugin learns is written to `global`.
+
+**Reads** are that same scope *plus your global engrams*. That is PLUR's own
+model, not something this plugin adds: `global` is a personal scope, and
+personal scopes deliberately pass every project-scoped filter, so a scoped
+recall includes them. If your global store holds things you would rather a
+coding harness never see, move them to a project scope or set `scope`
+explicitly — `plur ui` shows you what is in there.
 
 Set a scope explicitly to override the derivation, or turn injection off:
 

@@ -38,8 +38,8 @@ async function boot(plur?: PlurClient, config = cfg({})) {
     ctx,
     fire: (event: string, ...args: unknown[]) =>
       Promise.all((listeners.get(event) ?? []).map(fn => fn(...args))),
-    async prompt(): Promise<string> {
-      const a = await ctx.systemPrompt.assemble({})
+    async prompt(agentId = 'a1'): Promise<string> {
+      const a = await ctx.systemPrompt.assemble({ agent: { id: agentId, session: { id: `s-${agentId}`, events: [] } } })
       return (a.sections as Array<{ text: string }>).map(s => s.text).join('\n')
     },
   }
@@ -153,13 +153,13 @@ describe('hostile: malformed agents and sessions', () => {
     await turn(h, a)
     await turn(h, a)
     expect(await h.prompt()).toContain('[ENG-1] stale')
-    await h.fire('agent/disposed', a)
+    await h.fire('agent/disposed', { agent: a })
     expect(await h.prompt()).not.toContain('[ENG-1] stale')
   })
 
   it('disposal of an unknown agent is a no-op, not a crash', async () => {
     const h = await boot({})
-    await expect(h.fire('agent/disposed', { id: 'never-seen' })).resolves.toBeDefined()
+    await expect(h.fire('agent/disposed', { agent: { id: 'never-seen' } })).resolves.toBeDefined()
     await expect(h.fire('agent/disposed', null)).resolves.toBeDefined()
   })
 })
@@ -169,10 +169,16 @@ describe('hostile: resource exhaustion', () => {
     const h = await boot({ injectHybrid: async () => ({ directives: '[ENG-1] x', count: 1 }) })
     const agents = Array.from({ length: 200 }, (_, i) => agent(`a${i}`, asked('a question')))
     for (const a of agents) await turn(h, a)
-    for (const a of agents) await h.fire('agent/disposed', a)
-    const assembled = await h.ctx.systemPrompt.assemble({})
-    const memory = (assembled.sections as Array<{ name: string }>).filter(s => s.name === 'plur:memory')
-    expect(memory).toHaveLength(0)
+    for (const a of agents) await h.fire('agent/disposed', { agent: a })
+    // The invariant changed with the design, and for the better: there is now
+    // exactly ONE section for the whole plugin, keyed by the agent the host
+    // passes at assembly. 200 agents cannot leak 200 registrations because
+    // only one ever exists. What must be released is the per-agent CACHE.
+    const assembled = await h.ctx.systemPrompt.assemble({ agent: { id: 'a1', session: { id: 's-a1', events: [] } } })
+    const memory = (assembled.sections as Array<{ name: string; text: string }>)
+      .filter(s => s.name === 'plur:memory')
+    expect(memory, 'the single global section should always exist').toHaveLength(1)
+    expect(memory[0]!.text, 'a disposed agent still has cached memory').toBe('')
   })
 
   it('caps tracked agents even when the host never emits agent/disposed', async () => {
@@ -180,7 +186,7 @@ describe('hostile: resource exhaustion', () => {
     // registration per dead session forever without a ceiling.
     const h = await boot({ injectHybrid: async () => ({ directives: '[ENG-1] x', count: 1 }) })
     for (let i = 0; i < 600; i++) await turn(h, agent(`leak${i}`, asked('a question')), 1)
-    const assembled = await h.ctx.systemPrompt.assemble({})
+    const assembled = await h.ctx.systemPrompt.assemble({ agent: { id: 'a1', session: { id: 's-a1', events: [] } } })
     const memory = (assembled.sections as Array<{ name: string }>).filter(s => s.name === 'plur:memory')
     expect(memory.length).toBeLessThanOrEqual(512)
   })

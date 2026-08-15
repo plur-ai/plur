@@ -47,13 +47,19 @@ async function bootHost() {
     ctx,
     fire: (event: string, ...args: unknown[]) =>
       Promise.all((listeners.get(event) ?? []).map(fn => fn(...args))),
-    /** The rendered system prompt the model would actually receive. */
-    async renderedPrompt(): Promise<string> {
-      const assembled = await ctx.systemPrompt.assemble({})
+    /**
+     * The rendered system prompt the model would actually receive.
+     *
+     * The agent is passed because the host passes it: the memory section is
+     * global and keyed by `context.agent`, the same contract
+     * @deepseek-ai/dsh-plan-mode relies on.
+     */
+    async renderedPrompt(agentId = 'a1'): Promise<string> {
+      const assembled = await ctx.systemPrompt.assemble({ agent: { id: agentId, session: { id: `s-${agentId}`, events: [] } } })
       return (assembled.sections as Array<{ text: string }>).map(s => s.text).join('\n')
     },
-    async sectionNames(): Promise<string[]> {
-      const assembled = await ctx.systemPrompt.assemble({})
+    async sectionNames(agentId = 'a1'): Promise<string[]> {
+      const assembled = await ctx.systemPrompt.assemble({ agent: { id: agentId, session: { id: `s-${agentId}`, events: [] } } })
       return (assembled.sections as Array<{ name: string }>).map(s => s.name)
     },
   }
@@ -252,7 +258,7 @@ describe('real dsh system-prompt integration', () => {
     await turn(a1)
     await turn(a2)
 
-    const assembled = await host.ctx.systemPrompt.assemble({})
+    const assembled = await host.ctx.systemPrompt.assemble({ agent: { id: 'a1', session: { id: 's-a1', events: [] } } })
     const memory = (assembled.sections as Array<{ name: string; text: string }>)
       .filter(s => s.name === 'plur:memory')
     // One section per agent id, each reading its own cache entry.

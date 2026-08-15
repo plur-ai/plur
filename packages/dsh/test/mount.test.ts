@@ -14,7 +14,7 @@
  *
  * These tests mount through `ctx.plugin()` so the inject contract is enforced.
  */
-import { Context, Service } from '@deepseek-ai/cordis'
+import { Context } from '@deepseek-ai/cordis'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import Tools from '@deepseek-ai/dsh-tools'
 import { describe, expect, it } from 'vitest'
@@ -87,41 +87,8 @@ describe('mounting through ctx.plugin(), as dsh does', () => {
     expect(ctx.tools.get('plur_recall')).toBeUndefined()
   })
 
-  it('registers /plur-memory on a host that HAS a command registry, and serves it', async () => {
-    // The whole viewer path, through real Cordis: a real command registry, the
-    // real plugin, a real HTTP server, a real fetch. The unit tests fake the
-    // server; this proves the wiring that connects them.
-    const seen: Array<{ name: string; execute: () => unknown }> = []
-    class Commands extends Service {
-      constructor(ctx: Context) { super(ctx, 'commands') }
-      register(command: { name: string; execute: () => unknown }): () => void {
-        seen.push(command)
-        return () => {}
-      }
-    }
-
-    const ctx = new Context() as Context & Record<string, any>
-    ctx.plugin(SystemPrompt, {})
-    ctx.plugin(Tools, {})
-    ctx.plugin(Commands)
-    const fiber = ctx.plugin(plugin, cfg())
-    await settle()
-
-    const command = seen.find(c => c.name === 'plur-memory')
-    expect(command, '/plur-memory was not registered').toBeDefined()
-
-    const output = String(await command!.execute())
-    const url = /http:\/\/127\.0\.0\.1:\d+\//.exec(output)?.[0]
-    expect(url, `no loopback URL in: ${output}`).toBeDefined()
-
-    const res = await fetch(url!)
-    expect(res.status).toBe(200)
-    expect(await res.text()).toContain('hero-title')
-
-    // Unloading the plugin must release the port, not leak a server. Cordis
-    // disposes through the fiber the plugin mounted on, not the registry entry.
-    await fiber.dispose()
-    await settle()
-    await expect(fetch(url!)).rejects.toThrow()
-  })
+  // The /plur-memory + real-command-registry case lives in
+  // host-conformance.test.ts, which boots the REAL @deepseek-ai/dsh-commands
+  // rather than a hand-written Service. A fake registry here accepted whatever
+  // shape we passed, which is precisely how `execute` (the wrong field) shipped.
 })

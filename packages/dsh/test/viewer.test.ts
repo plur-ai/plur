@@ -116,7 +116,7 @@ describe('createViewer', () => {
 describe('the /plur-memory command', () => {
   /** A minimal command registry standing in for the host's. */
   function hostWith() {
-    const registered: Array<{ name: string; description: string; execute: () => unknown }> = []
+    const registered: Array<{ name: string; description: string; handler: () => unknown }> = []
     const ctx = {
       commands: { register: (c: never) => { registered.push(c); return () => {} } },
     } as unknown as Context
@@ -134,7 +134,7 @@ describe('the /plur-memory command', () => {
   it('returns the viewer URL', async () => {
     const { ctx, registered } = hostWith()
     registerCommands(ctx, { ...deps(), viewer: createViewer(PLUR, { startViewer: fakeStart().start }) })
-    const out = String(await registered.find(c => c.name === 'plur-memory')!.execute())
+    const out = String((await registered.find(c => c.name === 'plur-memory')!.handler() as { text?: string }).text)
     expect(out).toContain('http://127.0.0.1:41234/')
     expect(out).toContain('read-only')
   })
@@ -143,14 +143,14 @@ describe('the /plur-memory command', () => {
     const { ctx, registered } = hostWith()
     const start = vi.fn(async (_opts: unknown) => { throw new Error('port busy') })
     registerCommands(ctx, { ...deps(), viewer: createViewer(PLUR, { startViewer: start }) })
-    const out = String(await registered.find(c => c.name === 'plur-memory')!.execute())
+    const out = String((await registered.find(c => c.name === 'plur-memory')!.handler() as { text?: string }).text)
     expect(out).toContain('port busy')
   })
 
   it('says so plainly when there is no engine', async () => {
     const { ctx, registered } = hostWith()
     registerCommands(ctx, deps())
-    const out = String(await registered.find(c => c.name === 'plur-memory')!.execute())
+    const out = String((await registered.find(c => c.name === 'plur-memory')!.handler() as { text?: string }).text)
     expect(out).toMatch(/unavailable/i)
   })
 

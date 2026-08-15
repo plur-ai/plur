@@ -9,9 +9,17 @@
  * reading an undeclared service, so the guard below cannot save a caller that
  * has not declared the dependency — the property access throws first.
  *
+ * The host contract is `SkillRegistration`: the body field is **`content`**,
+ * and `source` is required. An earlier version passed `body`. Register-time
+ * validation only checks name and description, so registration SUCCEEDED and
+ * the skill appeared in the catalog — then `ctx.skills.get('plur-memory')`
+ * threw "loaded skill 'plur-memory' source must be a string" for anyone who
+ * opened it. Advertised and broken is worse than absent.
+ *
  * @module
  */
 import type { Context } from '@deepseek-ai/cordis'
+import type { SkillRegistration } from '@deepseek-ai/dsh-skill'
 
 const SKILL_BODY = `Use PLUR memory deliberately.
 
@@ -35,11 +43,18 @@ stored is wrong, retire it rather than working around it.
  * @returns the disposer, or a no-op when the host exposes no skill registry.
  */
 export function registerSkills(ctx: Context): () => void {
-  const skills = (ctx as { skills?: { register?: (s: unknown) => () => void } }).skills
+  const skills = (ctx as { skills?: { register?: (s: SkillRegistration) => () => void } }).skills
   if (typeof skills?.register !== 'function') return () => {}
-  return skills.register({
-    name: 'plur-memory',
-    description: 'How to use PLUR persistent memory in this session.',
-    body: SKILL_BODY,
-  })
+  try {
+    return skills.register({
+      name: 'plur-memory',
+      description: 'How to use PLUR persistent memory in this session.',
+      // `runtime`: contributed in-process by a plugin, not discovered on disk.
+      source: 'runtime',
+      content: SKILL_BODY,
+    })
+  } catch {
+    // A host that rejects the skill must not stop memory working.
+    return () => {}
+  }
 }
