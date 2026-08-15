@@ -10,7 +10,7 @@
  *
  * These tests exercise the REAL engine against a temp store.
  */
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
@@ -31,11 +31,31 @@ afterAll(() => { rmSync(storePath, { recursive: true, force: true }) })
 
 const SCOPE = 'project:conformance'
 
+/**
+ * Every method PlurClient declares, read from the source rather than typed out.
+ *
+ * A hand-maintained list is how `compactLearn` survived: it was declared on
+ * PlurClient, called through `?.`, never added to this array, and core never
+ * implemented it — so the compaction path was dead from the first commit and
+ * every test passed. Parsing the interface means a method cannot be invented
+ * without this file noticing.
+ */
+function declaredMethods(): string[] {
+  const src = readFileSync(new URL('../src/client.ts', import.meta.url), 'utf8')
+  const body = src.slice(src.indexOf('export interface PlurClient'))
+  return [...body.slice(0, body.indexOf('\n}')).matchAll(/^\s{2}(\w+)\??\(/gm)].map(m => m[1])
+}
+
 describe('the real Plur satisfies PlurClient', () => {
-  it('exposes every method the plugin calls', () => {
-    for (const method of ['injectHybrid', 'inject', 'recall', 'learn', 'forget', 'feedback', 'capture', 'list', 'status'] as const) {
-      expect(typeof plur[method], `Plur.${method}`).toBe('function')
-    }
+  it('declares at least the methods we know it calls', () => {
+    // Guards the parser itself: a regex that silently matched nothing would
+    // make the check below vacuously pass.
+    expect(declaredMethods()).toEqual(expect.arrayContaining(['learn', 'recall', 'inject', 'status']))
+  })
+
+  it('exposes EVERY method PlurClient declares — no invented contracts', () => {
+    const missing = declaredMethods().filter(m => typeof (plur as Record<string, unknown>)[m] !== 'function')
+    expect(missing, `PlurClient declares methods core does not implement: ${missing.join(', ')}`).toEqual([])
   })
 
   it('learn accepts a positional statement plus a context object', async () => {

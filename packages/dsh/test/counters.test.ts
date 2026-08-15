@@ -9,6 +9,7 @@ describe('createCounters', () => {
       blocks_unchanged: 0,
       engrams_rendered: 0,
       learn_captured: 0,
+      compaction_learned: 0,
       errors_swallowed: 0,
     })
   })

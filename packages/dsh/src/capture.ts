@@ -13,10 +13,23 @@ import type { Config } from './config.js'
 import type { Counters } from './counters.js'
 import type { PlurClient } from './client.js'
 import { guard, type WriteQueue } from './guard.js'
-import { lastAssistantText, type LogEvent } from './session-log.js'
+import { conversationText, lastAssistantText, type LogEvent } from './session-log.js'
 
 /** Cap on a captured episode summary, so one long turn cannot bloat the store. */
 const SUMMARY_MAX_CHARS = 2000
+
+/**
+ * Cap on engrams written from one compaction.
+ *
+ * Rule-based extraction over a whole session can yield a great many
+ * candidates, and a compaction boundary is exactly when the user is not
+ * watching. A bounded write keeps one long session from flooding the store.
+ */
+const MAX_COMPACTION_LEARNINGS = 12
+
+/** Cap on the text handed to ingest, so a huge session is not scanned whole. */
+const COMPACTION_MAX_CHARS = 20_000
+
 
 /** Dependencies for the capture subscriptions. */
 export interface CaptureDeps {
@@ -66,7 +79,21 @@ export function registerCapture(ctx: Context, deps: CaptureDeps): void {
     const owner = session as { id?: string; header?: { cwd?: string } } | null
     void queue(() => guard(async () => {
       const scope = await resolveScope(owner ?? undefined)
-      await plur?.compactLearn?.({ events, scope })
+      // Compaction is about to shadow this range. Anything worth keeping has
+      // to be extracted BEFORE it goes, because afterwards it is gone.
+      //
+      // Built on ingest() + learn(), which core actually has. This called a
+      // `compactLearn()` that core has never implemented — `?.` meant it was
+      // always undefined, so every compaction learned exactly nothing.
+      const text = conversationText(events, COMPACTION_MAX_CHARS)
+      if (!text) return
+      const candidates = (await plur?.ingest?.(text, { source: 'dsh:compaction' })) ?? []
+      for (const candidate of candidates.slice(0, MAX_COMPACTION_LEARNINGS)) {
+        const statement = candidate?.statement?.trim()
+        if (!statement) continue
+        await plur?.learn?.(statement, { scope, source: 'dsh:compaction' })
+      }
+      if (candidates.length > 0) counters.bump('compaction_learned')
     }, opts))
   })
 }

@@ -88,7 +88,7 @@ export function createEngine(
     forget: async (id, reason, options) => (await engine())?.forget?.(id, reason, options),
     feedback: async (id, signal, scope) => (await engine())?.feedback?.(id, signal, scope),
     capture: async (summary, context) => (await engine())?.capture?.(summary, context),
-    compactLearn: async input => (await engine())?.compactLearn?.(input),
+    ingest: async (content, options) => (await (await engine())?.ingest?.(content, options)) ?? [],
     list: async options => (await (await engine())?.list?.(options)) ?? [],
     status: async () => (await (await engine())?.status?.()) ?? {},
   }

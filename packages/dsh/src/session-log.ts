@@ -105,3 +105,37 @@ export function lastAssistantText(events: readonly LogEvent[]): string | undefin
   }
   return undefined
 }
+
+/**
+ * The human and assistant text of a session, oldest first.
+ *
+ * Used at a compaction boundary, where this range is about to be shadowed and
+ * anything worth keeping has to be extracted before it goes.
+ *
+ * Tool traffic is excluded: it is machine payload, and rule-based extraction
+ * over it produces candidates nobody wants in their memory.
+ *
+ * @param events - the session's append-only log.
+ * @param maxChars - cap on the returned text; the tail is kept, being the most
+ *   recent and so the most likely to matter.
+ * @returns the joined text, or `''` when the range carries none.
+ */
+export function conversationText(events: readonly LogEvent[], maxChars: number): string {
+  if (!Array.isArray(events)) return ''
+  const parts: string[] = []
+  for (const event of events) {
+    // Same shapes lastAssistantText and recallQueryFrom walk: the message is
+    // under `data.message` for the assistant and is `data` itself for the user.
+    if (event?.type === 'assistant/message') {
+      const value = textOf((event.data as { message?: unknown } | null)?.message)
+      if (value) parts.push(value)
+    } else if (event?.type === 'user/message') {
+      const data = event.data as MessageLike | null
+      if (data?.source?.kind !== 'user') continue
+      const value = textOf(data)
+      if (value) parts.push(value)
+    }
+  }
+  return parts.join('\n\n').slice(-Math.max(0, maxChars))
+}
+

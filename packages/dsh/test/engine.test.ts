@@ -46,6 +46,7 @@ describe('createEngine when core is unavailable', () => {
     await expect(engine.list!()).resolves.toEqual([])
     await expect(engine.status!()).resolves.toEqual({})
     await expect(engine.injectHybrid!('x')).resolves.toEqual({ count: 0 })
+    await expect(engine.ingest!('x')).resolves.toEqual([])
   })
 
   it('degrades every write to a no-op instead of rejecting', async () => {
@@ -54,7 +55,7 @@ describe('createEngine when core is unavailable', () => {
     await expect(engine.forget!('id')).resolves.toBeUndefined()
     await expect(engine.feedback!('id', 'positive')).resolves.toBeUndefined()
     await expect(engine.capture!('x')).resolves.toBeUndefined()
-    await expect(engine.compactLearn!({ events: [], scope: 's' })).resolves.toBeUndefined()
+
   })
 
   it('treats a module with no Plur export as unavailable, not as a crash', async () => {

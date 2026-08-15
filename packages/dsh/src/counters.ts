@@ -2,20 +2,21 @@
  * Local debug counters.
  *
  * "Why didn't it remember that?" is the question a memory product gets asked
- * most, and these are how it gets answered. Deliberately independent of the Web
- * tab so that cutting the tab never removes the only human-facing debug surface.
+ * most, and these are how it gets answered. Deliberately independent of the memory
+ * viewer, so that a host without one still has a human-facing debug surface.
  * Purely in-process — nothing here is ever sent anywhere.
  *
  * @module
  */
 
-/** Observable events, surfaced by `/plur`, `plur_status`, and the Web tab. */
+/** Observable events, surfaced by `/plur` and `plur_status`. */
 export type CounterKey =
   | 'refresh_attempted'
   | 'blocks_written'
   | 'blocks_unchanged'
   | 'engrams_rendered'
   | 'learn_captured'
+  | 'compaction_learned'
   | 'errors_swallowed'
 
 const KEYS: readonly CounterKey[] = [
@@ -24,6 +25,7 @@ const KEYS: readonly CounterKey[] = [
   'blocks_unchanged',
   'engrams_rendered',
   'learn_captured',
+  'compaction_learned',
   'errors_swallowed',
 ]
 

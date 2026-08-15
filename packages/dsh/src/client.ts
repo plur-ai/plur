@@ -10,7 +10,13 @@
  * @module
  */
 import type { InjectionLike } from './memory-section.js'
-import type { LogEvent } from './session-log.js'
+
+/** One candidate statement core's `ingest()` extracted from text. */
+export interface IngestCandidateLike {
+  readonly statement: string
+  readonly type?: string
+  readonly source?: string
+}
 
 /** One engram as the store returns it. */
 export interface EngramLike {
@@ -65,8 +71,15 @@ export interface PlurClient {
    * SYNCHRONOUS in core — it returns the episode, not a promise.
    */
   capture?(summary: string, context?: CaptureContextLike): unknown
-  /** Extract learnings from a range about to be shadowed by compaction. */
-  compactLearn?(input: { events: readonly LogEvent[]; scope: string }): Promise<unknown>
+  /**
+   * Rule-based extraction of engram candidates from free text.
+   *
+   * The compaction path is built on this plus {@link PlurClient.learn}. An
+   * earlier version called a `compactLearn()` that core has never implemented,
+   * so `plur?.compactLearn?.()` was always undefined and every compaction
+   * silently learned nothing.
+   */
+  ingest?(content: string, options?: { source?: string }): Promise<readonly IngestCandidateLike[]>
   /** Every engram in scope, backing the memory viewer. */
   list?(options?: { scope?: string }): Promise<readonly unknown[]>
   /** Store diagnostics — the viewer shows `storage_root` and `engram_count`. */
