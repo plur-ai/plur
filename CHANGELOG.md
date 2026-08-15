@@ -1,5 +1,50 @@
 # Changelog
 
+## 0.18.0 (unreleased)
+
+Memory you can look at, and PLUR inside DeepSeek Harness.
+
+- `plur ui` — a local page showing what your agents learned and actually use
+- `@plur-ai/dsh` — native DeepSeek Harness plugin, engrams in the prompt
+- Both viewers speak English and 中文
+
+### Added
+
+- **`plur ui` opens a local memory viewer** — every engram, what gets recalled and how
+  often, a written-per-day chart, and the most-recalled list. Selecting a row expands the
+  whole engram. Read-only: browsing memory never mutates it, including through a lazy write
+  path such as decay. Binds `127.0.0.1` by default and deliberately — the viewer serves an
+  entire memory store with **no authentication**; `--host` widens it and prints a warning.
+  The pages live in `packages/ui` — zero-dependency, pure render functions, with the HTTP
+  host behind a `/server` subpath so the root entry stays free of `node:http`. It is
+  internal and bundled into its consumers, not published.
+
+- **`@plur-ai/dsh` — a native DeepSeek Harness plugin.** Not an MCP bridge: PLUR mounts as
+  a Cordis plugin and writes engrams into the system prompt, so the model reads them the
+  way it reads its own instructions — no tool call, no round trip, no turn spent deciding
+  whether to look. The section is re-rendered on each prompt assembly rather than appended,
+  so memory does not accumulate in the context as a session runs; the blocking cost on the
+  turn path measured 0.0ms p50, because recall happens off it. Five tools are still
+  registered for deliberate use. Scope defaults closed, resolved per workspace from its
+  `.plur.yaml` — a global store holds server addresses and client names and must not follow
+  you into an unrelated project.
+
+- **Bilingual viewer (English / 中文).** Follows the browser's `Accept-Language`, or force
+  it with `?lang=zh`. Each language owns its own punctuation and date format rather than
+  sharing a template — an ideographic sentence closed with a Latin full stop reads as
+  machine output. Dates are formatted by hand rather than through `Intl`, so the page
+  renders identically regardless of the host's ICU build. Engram content is never
+  translated; it is your data, not chrome.
+
+- **`/plur-memory` inside DeepSeek Harness** opens that same viewer. A command rather than
+  a native tab: dsh renders its UI as a React client assembled over a typed slot registry,
+  so a tab would mean shipping a browser bundle bound to that registry's pre-1.0 internals.
+
+### Fixed
+
+- **js-yaml advisory GHSA-5p4m-2wfm-xmqj (high)**: the root pnpm override permitted 4.3.0.
+  Tightened to `>=4.3.1 <5`.
+
 ## 0.17.2 (2026-08-04)
 
 Chinese search works — found and fixed by skyeryg.

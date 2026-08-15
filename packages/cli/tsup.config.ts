@@ -7,6 +7,8 @@ export default defineConfig([
     dts: true,
     clean: true,
     banner: { js: '#!/usr/bin/env node' },
+    // Bundled, not depended on — see packages/ui/README.md.
+    noExternal: ['@plur-ai/ui'],
   },
   {
     entry: ['src/commands/*.ts'],
@@ -15,5 +17,6 @@ export default defineConfig([
     dts: false,
     clean: false,
     outDir: 'dist/commands',
+    noExternal: ['@plur-ai/ui'],
   },
 ])

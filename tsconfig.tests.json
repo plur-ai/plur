@@ -17,6 +17,10 @@
   "extends": "./tsconfig.base.json",
   "compilerOptions": {
     "noEmit": true,
+    // packages/dsh sets lib ES2023 for Array.prototype.findLastIndex; this
+    // config compiles that src too, so it needs the same floor or it reports
+    // an error the package's own tsconfig does not have.
+    "lib": ["ES2023"],
     "declaration": false,
     "declarationMap": false,
     "sourceMap": false,

@@ -29,6 +29,8 @@ export default defineConfig({
       'packages/mcp',
       'packages/cli',
       'packages/claw',
+      'packages/dsh',
+      'packages/ui',
       'packages/migrate',
       {
         test: {
