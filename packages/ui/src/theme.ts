@@ -93,11 +93,20 @@ a:hover { text-decoration: underline; }
   display: flex; align-items: center; justify-content: space-between;
   gap: var(--sp-4); flex-wrap: wrap; margin-bottom: var(--sp-4);
 }
-.hero-brand {
-  font-family: var(--font-mono); font-size:12.5px; font-weight: 600;
-  letter-spacing: 0.14em; text-transform: uppercase; color: var(--text-tertiary);
+/* Brand lockup: the mark, the wordmark, then the product name. The four node
+   colours are the brand's own and are already tokens here, so the mark needs
+   no palette of its own. */
+.lockup { display: inline-flex; align-items: center; gap: var(--sp-3); }
+.mark { display: block; flex: none; border-radius: 7px; }
+.wordmark {
+  font-size:21px; font-weight: 700; letter-spacing: 0.02em;
+  color: var(--text); line-height: 1;
 }
-.hero-brand .dot { color: var(--accent); margin: 0 0.5em; }
+.lockup-rule { width: 1px; height: 18px; background: var(--line); }
+.lockup-product {
+  font-size:13.5px; font-weight: 500; letter-spacing: 0.06em;
+  text-transform: uppercase; color: var(--text-tertiary);
+}
 .hero-title {
   font-size: clamp(28px, 4.4vw, 44px); font-weight: 600; margin: 0;
   letter-spacing: -0.025em; line-height: 1.14; max-width: 22ch;
@@ -147,22 +156,30 @@ a:hover { text-decoration: underline; }
    series, whereas the list is deliberately one line per item. */
 .widgets { display: grid; grid-template-columns: 1.6fr 1fr; gap: var(--sp-4); margin-bottom: var(--sp-6); }
 @media (max-width: 860px) { .widgets { grid-template-columns: 1fr; } }
+ /* A flex column so the chart can claim whatever height the grid gives this
+    card. The two widgets have very different natural heights and the grid
+    stretches both to the taller one; without this the chart kept its fixed
+    84px and left the bottom half of its card empty. */
 .card {
   background: var(--bg-card); border: 1px solid var(--bg-card-border);
   border-radius: 12px; padding: var(--sp-5); overflow: hidden;
+  display: flex; flex-direction: column;
 }
 .card-title { font-size:16px; font-weight: 500; margin: 0; }
 .card-sub { font-size:13.5px; color: var(--text-tertiary); display: block; margin: 2px 0 var(--sp-4); }
 
-.bars { display: flex; align-items: flex-end; gap: 2px; height: 84px; }
+/* flex:1 — grows to fill the card, so 30 daily counts read as a chart
+   rather than a sparkline stranded above a void. */
+.bars { display: flex; align-items: flex-end; gap: 2px; flex: 1; min-height: 84px; }
 .bar { flex: 1; min-width: 2px; background: rgba(var(--accent-rgb),0.5); border-radius: 2px 2px 0 0; }
-.bar.empty { background: var(--line); }
-.bar-axis { display: flex; justify-content: space-between; font-family: var(--font-mono); font-size:12.5px; color: var(--muted); margin-top: var(--sp-2); }
+.bar-zero { background: var(--line); }
+.bar-axis { display: flex; justify-content: space-between; font-family: var(--font-mono); font-size:12.5px; color: var(--muted); margin-top: var(--sp-3); }
 
 /* One line per item — the previous card stacked six full statements and
    unbalanced the whole row against the sparse chart beside it. */
 .top-row { display: grid; grid-template-columns: 1fr auto; gap: var(--sp-3); align-items: baseline; padding: 7px 0; border-bottom: 1px solid var(--line); }
-.top-row:last-child { border-bottom: none; }
+.top-row:last-child { border-bottom: none; margin-bottom: auto; }
+.card > .top-row:last-of-type { margin-bottom: auto; }
 .top-stmt { font-size:15px; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .top-n { font-family: var(--font-mono); font-size:13.5px; color: var(--accent); font-variant-numeric: tabular-nums; }
 

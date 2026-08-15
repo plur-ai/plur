@@ -237,3 +237,43 @@ describe('renderPage', () => {
     expect(renderPage({ title: '<script>x</script>', body: '' })).not.toContain('<script>x</script>')
   })
 })
+
+describe('the written chart', () => {
+  const withGap: EngramRow[] = [
+    { id: 'ENG-2026-0801-001', statement: 'a', status: 'active' },
+    { id: 'ENG-2026-0802-002', statement: 'b', status: 'active' },
+  ]
+  const now = new Date('2026-08-15T12:00:00Z')
+
+  it('never puts the generic `empty` class on a bar', () => {
+    // `.empty` belongs to the record list's "no results" message and carries
+    // 32px of padding. A zero-count day that borrowed the class inherited it,
+    // and with border-box that made the flex item 64px wider than every real
+    // bar — a grey slab across the tail of the chart.
+    const html = renderBrowse({ rows: withGap, query: {}, where: '', now })
+    const bars = html.match(/<div class="bar[^"]*"/g) ?? []
+    expect(bars.length).toBeGreaterThan(0)
+    for (const bar of bars) {
+      expect(bar, `a bar carries the list's empty-state class: ${bar}`)
+        .not.toMatch(/\bempty\b/)
+    }
+  })
+
+  it('marks zero-count days with a bar-scoped modifier', () => {
+    const html = renderBrowse({ rows: withGap, query: {}, where: '', now })
+    expect(html).toContain('class="bar bar-zero"')
+  })
+
+  it('renders one bar per day of the window', () => {
+    const html = renderBrowse({ rows: withGap, query: {}, where: '', now })
+    expect((html.match(/<div class="bar[^"]*" style="height:/g) ?? []).length).toBe(30)
+  })
+
+  it('gives every bar a height, so none collapses to nothing', () => {
+    const html = renderBrowse({ rows: withGap, query: {}, where: '', now })
+    for (const [, pct] of html.matchAll(/<div class="bar[^"]*" style="height:(\d+)%"/g)) {
+      expect(Number(pct)).toBeGreaterThan(0)
+    }
+  })
+})
+

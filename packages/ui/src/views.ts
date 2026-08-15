@@ -108,7 +108,10 @@ function writtenChart(rows: readonly EngramRow[], now: Date, t: ReturnType<typeo
   const total = days.reduce((sum, d) => sum + d.count, 0)
   const bars = days.map(d => {
     const height = d.count === 0 ? 2 : Math.max(5, Math.round((d.count / peak) * 100))
-    return `<div class="${d.count === 0 ? 'bar empty' : 'bar'}" style="height:${height}%" title="${htmlEscape(d.date)} · ${d.count}"></div>`
+    // `bar-zero`, NOT `bar empty`: `.empty` belongs to the record list's
+    // "no results" message and carries 32px of padding. A zero-count day that
+    // borrowed it rendered as a grey slab six times the width of a real bar.
+    return `<div class="${d.count === 0 ? 'bar bar-zero' : 'bar'}" style="height:${height}%" title="${htmlEscape(d.date)} · ${d.count}"></div>`
   }).join('')
   return `<div class="card">
   <p class="card-title">${htmlEscape(t.written)}</p>
@@ -252,6 +255,39 @@ function footer(links: BrowseLinks, t: ReturnType<typeof strings>): string {
  * @param opts - rows, filters, and presentation options.
  * @returns the page body (not a full document — see {@link renderPage}).
  */
+/**
+ * The PLUR mark: four nodes wired P→L→U→R across a 3×3 grid.
+ *
+ * The "home" frame of the animated mark on plur.ai, at the same geometry
+ * (200 viewBox, grid at 40/100/160, nodes r=21 at indices 0/4/5/8, dim dots
+ * r=7 at the rest, bars stroke 11 round-capped at 0.72). Rendered without the
+ * P/L/U/R letters: at header size each node is about six pixels across and the
+ * letters would be mud. The wordmark beside it carries the name.
+ *
+ * Transparent — no tile. The four node colours are the brand's own and carry
+ * the mark on either ground; the five dim grid dots use `currentColor` so they
+ * follow the page instead of assuming one.
+ *
+ * Inline rather than an asset, because the viewer ships as one self-contained
+ * string with no files to serve and no external request to make.
+ */
+const MARK = `<svg class="mark" viewBox="0 0 200 200" width="32" height="32" aria-hidden="true" focusable="false">
+  <g stroke-width="11" stroke-linecap="round" opacity="0.72" fill="none">
+    <line x1="40" y1="40" x2="100" y2="100" stroke="var(--cyan)"/>
+    <line x1="100" y1="100" x2="160" y2="100" stroke="var(--amber)"/>
+    <line x1="160" y1="100" x2="160" y2="160" stroke="var(--violet)"/>
+  </g>
+  <g fill="currentColor" opacity="0.20">
+    <circle cx="100" cy="40" r="7"/><circle cx="160" cy="40" r="7"/>
+    <circle cx="40" cy="100" r="7"/><circle cx="40" cy="160" r="7"/>
+    <circle cx="100" cy="160" r="7"/>
+  </g>
+  <circle cx="40" cy="40" r="21" fill="var(--cyan)"/>
+  <circle cx="100" cy="100" r="21" fill="var(--amber)"/>
+  <circle cx="160" cy="100" r="21" fill="var(--violet)"/>
+  <circle cx="160" cy="160" r="21" fill="var(--emerald)"/>
+</svg>`
+
 export function renderBrowse(opts: BrowseOptions): string {
   const now = opts.now ?? new Date()
   const action = opts.action ?? '/'
@@ -329,7 +365,7 @@ ${ordered.map(r => record(r, peak, recallCount(r) === peak && peak > 0, t)).join
 
   return `<header class="hero">
   <div class="hero-top">
-    <span class="hero-brand">PLUR<span class="dot">·</span>${htmlEscape(t.brand)}</span>
+    <span class="lockup">${MARK}<span class="wordmark">PLUR</span><span class="lockup-rule"></span><span class="lockup-product">${htmlEscape(t.brand)}</span></span>
     ${langSwitch}
   </div>
   <h1 class="hero-title">${headline}</h1>
