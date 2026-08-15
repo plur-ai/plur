@@ -113,11 +113,34 @@ export function renderBlock(injection: InjectionLike | undefined, budgetTokens: 
  */
 function flatten(text: string): string {
   return String(text)
-    .split(/\r?\n/)
-    .map(line => line.replace(/^\s*#+\s*/, '').trim())
+    // Split ONLY on an engram boundary — core renders one per line as
+    // `[ID] statement` — so engrams stay separate while everything inside one
+    // is collapsed.
+    .split(/\n(?=\[)/)
+    .map(entry => entry
+      // Invisibles first: JS `\s` covers \t, NBSP and BOM but NOT U+200B,
+      // U+200C, U+200F, U+2060 or the soft hyphen, so `\u200b# FORGED` slipped
+      // straight past the heading strip and rendered as a heading.
+      .replace(INVISIBLE, '')
+      // Every line terminator, not just \r?\n. A lone \r is a line break to
+      // every renderer, and U+2028/U+2029/U+0085 are too — the previous
+      // `split(/\r?\n/).join('\n')` was an identity transform that collapsed
+      // nothing at all, so a `\r## DIRECTIVES` forged a heading intact.
+      // Collapsing to a space also kills setext underlining, because `======`
+      // can no longer reach a line of its own.
+      .replace(LINE_BREAKS, ' ')
+      .replace(/^\s*#+\s*/, '')
+      .replace(/\s{2,}/g, ' ')
+      .trim())
     .filter(Boolean)
     .join('\n')
 }
+
+/** Zero-width and formatting characters that `\s` does not cover. */
+const INVISIBLE = /[\u00ad\u200b-\u200f\u2060\ufeff]/g
+
+/** Every character a renderer treats as a line break. */
+const LINE_BREAKS = /[\r\n\u2028\u2029\u0085\u000b\u000c\u001c-\u001f]+/g
 
 /**
  * Stable digest of a rendered block, for change detection.

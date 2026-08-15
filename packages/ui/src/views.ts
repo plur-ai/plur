@@ -73,7 +73,12 @@ function statusPill(status: string | undefined, commitment: string | undefined):
   const NEUTRAL = '138, 143, 163'
   // A draft awaiting review is not live knowledge whatever its lifecycle status
   // says; rendering it green would tell the reader it is recallable.
-  const rgb = commitment === 'draft' ? NEUTRAL : (colours[status ?? ''] ?? NEUTRAL)
+  // Object.hasOwn, not a bare index: a status of "constructor" or "toString"
+  // reached Object.prototype and interpolated a function body raw into a style
+  // attribute. No quote is reachable so it was never XSS — safe by accident,
+  // which is not a property to leave in a security-reviewed file.
+  const own = status !== undefined && Object.hasOwn(colours, status)
+  const rgb = commitment === 'draft' || !own ? NEUTRAL : colours[status]
   const label = commitment === 'draft' ? 'draft' : (status ?? 'unknown')
   return `<span class="pill" style="background:rgba(${rgb},0.12);color:rgb(${rgb});border:1px solid rgba(${rgb},0.28);">${htmlEscape(label)}</span>`
 }

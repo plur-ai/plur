@@ -89,4 +89,34 @@ describe('createScopeResolver', () => {
     declared = 'project:second'
     expect(await r.resolve('a1', '/w')).toBe('project:second')
   })
+
+  it('derives the same scope however the host spells the path', async () => {
+    // Hashing the raw cwd meant `/w/proj` and `/w/proj/` were different
+    // scopes for the SAME directory: a host that reports a trailing slash, or
+    // a symlinked checkout, silently produced a second empty store and two
+    // entries in `plur ui`. That is the "why did it forget everything?" bug.
+    const { mkdtempSync, mkdirSync } = await import('node:fs')
+    const { tmpdir } = await import('node:os')
+    const { join } = await import('node:path')
+    const root = mkdtempSync(join(tmpdir(), 'scope-'))
+    const proj = join(root, 'proj')
+    mkdirSync(proj)
+
+    const r = createScopeResolver({}, async () => undefined)
+    const forms = [proj, `${proj}/`, `${proj}/.`, join(root, 'other', '..', 'proj')]
+    const derived = []
+    for (const [i, form] of forms.entries()) derived.push(await r.resolve(`a${i}`, form))
+    expect(new Set(derived).size, `forms diverged: ${derived.join(' ')}`).toBe(1)
+  })
+
+  it('never derives a scope nobody could type', async () => {
+    // basename('/') is '' and basename('/x/.') is '.'.
+    const r = createScopeResolver({}, async () => undefined)
+    for (const cwd of ['/', '/.']) {
+      const scope = await r.resolve(`x${cwd}`, cwd)
+      expect(scope, cwd).toMatch(/^project:[A-Za-z0-9._-]+-[0-9a-f]{6}$/)
+      expect(scope, cwd).not.toMatch(/^project:[.-]/)
+    }
+  })
 })
+

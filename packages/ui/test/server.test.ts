@@ -175,5 +175,62 @@ describe('the viewer refuses requests that are not its own page', () => {
       expect(res.headers.get('x-frame-options')).toBe('DENY')
     } finally { await h.close() }
   })
+
+  it('rejects a cross-origin POST from a browser that sends no Sec-Fetch-Site', async () => {
+    // The first fix allowed everything when the header was absent, which is
+    // every pre-16.4 WebKit and every embedded webview: 15 cross-origin POSTs
+    // still produced 15 file-manager spawns. Origin predates Sec-Fetch-Site
+    // and is sent on every cross-origin POST.
+    const h = await boot()
+    try {
+      const res = await fetch(`${h.base}/open-store`, {
+        method: 'POST',
+        headers: { origin: 'https://evil.example', referer: 'https://evil.example/x' },
+        redirect: 'manual',
+      })
+      expect(res.status).toBe(403)
+    } finally { await h.close() }
+  })
+
+  it('allows the page\'s own Origin', async () => {
+    const h = await boot()
+    try {
+      const res = await fetch(`${h.base}/open-store`, {
+        method: 'POST',
+        headers: { origin: h.base },
+        redirect: 'manual',
+      })
+      expect(res.status).toBe(303)
+    } finally { await h.close() }
+  })
+
+  it('still allows a non-browser client, which sends neither header', async () => {
+    const h = await boot()
+    try {
+      const res = await fetch(`${h.base}/open-store`, { method: 'POST', redirect: 'manual' })
+      expect(res.status).toBe(303)
+    } finally { await h.close() }
+  })
+
+  it('accepts an uppercase Host — hostnames are case-insensitive', async () => {
+    const h = await boot()
+    try {
+      expect((await rawGet(h.port, '/', { host: `LOCALHOST:${h.port}` })).status).toBe(200)
+    } finally { await h.close() }
+  })
+
+  it('refuses every Host spoof shape', async () => {
+    const h = await boot()
+    try {
+      for (const host of [
+        'memory.evil.example', '127.0.0.1.nip.io', 'localhost.', 'sub.localhost',
+        '0.0.0.0', '127.0.0.2', '127.1', '2130706433', '0177.0.0.1', 'evil@127.0.0.1',
+      ]) {
+        const { status, body } = await rawGet(h.port, '/', { host })
+        expect(status, host).toBe(403)
+        expect(body, host).not.toContain('Pin dsh deps.')
+      }
+    } finally { await h.close() }
+  })
 })
 

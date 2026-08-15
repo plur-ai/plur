@@ -104,8 +104,8 @@ provider** — for a default DeepSeek Harness install, that is DeepSeek's hosted
 API at `api.deepseek.com`.
 
 **Writes** go to the scope belonging to the workspace you are in — your
-project's own `.plur.yaml` scope if it declares one, otherwise
-`project:<directory name>`. Nothing this plugin learns is written to `global`.
+project's own `.plur.yaml` scope if it declares one, otherwise `project:<directory name>-<short path digest>` — the digest keeps two
+checkouts that happen to share a directory name apart. Nothing this plugin learns is written to `global`.
 
 **Reads** are that same scope *plus your global engrams*. That is PLUR's own
 model, not something this plugin adds: `global` is a personal scope, and

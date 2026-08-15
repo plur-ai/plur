@@ -226,7 +226,7 @@ export function apply(ctx: Context, config: Config, injected?: PlurClient): void
         const generation = ++state.generation
         // Deliberately not awaited: a slow or wedged store must not stall the
         // turn. This turn renders whatever is cached; the next one sees the update.
-        void refreshBlock(agentId, agent as AgentLike, turn, decision.messages, generation)
+        void refreshBlock(agentId, agent as AgentLike, turn, decision?.messages ?? [], generation)
       }
 
       // Returned UNCHANGED. Injection happens through the prompt section.

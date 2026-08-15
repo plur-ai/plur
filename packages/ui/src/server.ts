@@ -79,13 +79,29 @@ function revealFolder(path: string): void {
  * own viewer should not be blocked.
  */
 function isSameOrigin(req: { headers: Record<string, string | string[] | undefined> }): boolean {
-  const site = req.headers['sec-fetch-site']
-  return site === undefined || site === 'same-origin' || site === 'none'
+  const site = String(req.headers['sec-fetch-site'] ?? '').toLowerCase().trim()
+  if (site !== '') return site === 'same-origin' || site === 'none'
+  // No Sec-Fetch-Site. Allowing everything here left the hole open for any
+  // browser that does not send it — pre-16.4 WebKit, embedded webviews — and
+  // 15 cross-origin POSTs still produced 15 file-manager spawns. `Origin`
+  // predates Sec-Fetch-Site by years and IS sent on every cross-origin POST,
+  // so an Origin that is present and not ours is a cross-site request whatever
+  // the browser's vintage. curl sends neither and is still allowed through.
+  const origin = req.headers.origin
+  if (origin === undefined) return true
+  const host = String(req.headers.host ?? '').toLowerCase()
+  try {
+    return new URL(String(origin)).host.toLowerCase() === host
+  } catch {
+    return false
+  }
 }
 
 /** Is the Host header one of ours? Rebinding arrives with the attacker's. */
 function hostIsLoopback(req: { headers: Record<string, string | string[] | undefined> }): boolean {
-  const host = String(req.headers.host ?? '')
+  // Case-insensitive: hostnames are, per RFC 7230. Browsers lowercase it, but
+  // a proxy or a hand-typed http://LOCALHOST:7777/ should not be refused.
+  const host = String(req.headers.host ?? '').toLowerCase()
   const name = host.replace(/:\d+$/, '').replace(/^\[|\]$/g, '')
   return name === '127.0.0.1' || name === 'localhost' || name === '::1' || name === ''
 }

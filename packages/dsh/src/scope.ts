@@ -9,7 +9,8 @@
  * @module
  */
 import { createHash } from 'node:crypto'
-import { basename } from 'node:path'
+import { realpathSync } from 'node:fs'
+import { basename, resolve } from 'node:path'
 
 /** Last-resort scope when there is no workspace to derive one from. */
 export const DEFAULT_SCOPE = 'project:dsh'
@@ -119,7 +120,22 @@ export function readScope(scope: string, includeGlobal: boolean): { scope: strin
  * @returns the derived scope.
  */
 function derive(cwd: string): string {
-  const digest = createHash('sha256').update(cwd).digest('hex').slice(0, 6)
-  return `project:${basename(cwd)}-${digest}`
+  // Normalise FIRST. Hashing the raw string meant `/w/proj` and `/w/proj/`
+  // were different scopes for the same directory — a host that ever reports a
+  // trailing slash, or a user on a symlinked checkout, silently got a second
+  // empty store and two entries in `plur ui`. realpath additionally collapses
+  // symlinks; it throws on a path that does not exist, which is ordinary for a
+  // workspace the host names before creating, so fall back to resolve().
+  let path = cwd
+  try {
+    path = realpathSync.native(cwd)
+  } catch {
+    path = resolve(cwd)
+  }
+  const digest = createHash('sha256').update(path).digest('hex').slice(0, 6)
+  // `basename('/')` is '' and `basename('/x/.')` is '.', neither of which is a
+  // name anyone can type into .plur.yaml.
+  const name = basename(path) || 'root'
+  return `project:${name === '.' ? 'root' : name}-${digest}`
 }
 
