@@ -7,11 +7,69 @@ English | [中文](README.zh.md)
 Exposing memory as a tool is the common pattern — the model still has to decide
 to call it. This one puts the memories themselves in the prompt.
 
+## Overview
+
+DeepSeek Harness starts every session knowing nothing about you. You re-explain
+the same conventions, corrections and preferences you explained yesterday.
+
+This plugin gives dsh a memory that survives the session: corrections you make
+once, project conventions, the decisions behind them. It is for anyone who uses
+dsh for real work in the same codebase more than once.
+
+Everything stays on your machine as plain YAML you can read, edit and delete.
+
+## Compatibility
+
+| | |
+|---|---|
+| DeepSeek Harness | `0.1.0-rc.6` and later on the `0.1.x` line (`^0.1.0-rc.6`) |
+| Cordis | `^4.0.1` |
+| Node | 20, 22, 24, 26 (tested in CI on all four) |
+| Last verified against | dsh `0.1.0-rc.6`, 2026-08-15 |
+
+The dsh line is pre-1.0 and moving. Peer ranges use a caret so this plugin keeps
+installing as the line advances; if a future release changes a host contract, the
+plugin degrades to "no memory" rather than breaking your agent — every host
+registration is contained, and `/plur` will show the failure.
+
+## Install
+
 ```sh
 dsh plugin --profile web add @plur-ai/dsh
 ```
 
 That's it. Restart `dsh` and your agent has memory.
+
+Requires [`@plur-ai/core`](https://www.npmjs.com/package/@plur-ai/core), which
+installs alongside it.
+
+## Quick start
+
+Teach it something once:
+
+> **You:** Always use pnpm in this project — `npm install` breaks the lockfile in CI.
+
+Nothing else to do; the correction is detected and stored. Start a new session
+tomorrow, in the same directory:
+
+> **You:** How do I install dependencies here?
+>
+> **Agent:** Use `pnpm install` — you mentioned npm breaks the lockfile in CI.
+
+No reminder, no tool call. To see what it knows, run `/plur-memory`.
+
+## Uninstall
+
+```sh
+dsh plugin --profile web remove @plur-ai/dsh
+```
+
+Your memories are not touched — they live in `~/.plur`, independently of this
+plugin, and remain available to every other PLUR integration. To remove them
+too, delete that directory; to remove one engram, use `plur_forget` or
+[`@plur-ai/cli`](https://www.npmjs.com/package/@plur-ai/cli).
+
+To disable without uninstalling, set `injectionMode: off` (below).
 
 ## How it works
 
@@ -96,7 +154,7 @@ over a typed slot registry, so a native tab means shipping a browser bundle
 bound to that registry's pre-1.0 internals. A URL costs nothing and breaks on
 nobody's upgrade.
 
-## What leaves your machine
+## Permissions & data
 
 PLUR stores everything locally in `~/.plur` and searches it locally. But injected
 memories become part of the prompt your agent sends to **your configured model
@@ -157,10 +215,10 @@ All settings live under the `plur` namespace in `$DSH_HOME/settings.yaml`
 `PLUR_RERANKER` environment variable. It runs in the harness's own process and
 `bge-reranker-v2-m3` peaks around 2GB RSS, where a native OOM cannot be caught
 by a JavaScript `try`/`catch` and would take your agent down with it. Leave it
-unset for interactive use.
-enable it for local batch work where a crash costs you nothing.
+unset for interactive use; enable it for local batch work where a crash
+costs you nothing.
 
-## When memory misbehaves
+## Troubleshooting
 
 Run `/plur` or ask for `plur_status`. The counters tell you whether recall ran at
 all, whether the block changed, and whether anything was swallowed:
@@ -177,14 +235,43 @@ errors_swallowed: 0
 `errors_swallowed > 0` means PLUR failed and the plugin degraded quietly — by
 design, a memory failure never fails your turn.
 
+## Development
+
+The plugin lives in the PLUR monorepo at
+[`packages/dsh`](https://github.com/plur-ai/plur/tree/main/packages/dsh).
+
+```sh
+git clone https://github.com/plur-ai/plur && cd plur
+pnpm install
+pnpm --filter @plur-ai/dsh build
+pnpm --filter @plur-ai/dsh test
+```
+
+`test/host-conformance.test.ts` is the one to know about: it boots the real
+`dsh-commands`, `dsh-skill`, `dsh-system-prompt` and `dsh-tools` registries
+against a real store on disk, rather than a double. Every host-contract bug this
+plugin has had — and there were five — survived a suite that stubbed those
+registries and hand-wrote event payloads. If you touch anything the host owns,
+assert against the host's own implementation.
+
+Issues and pull requests: [github.com/plur-ai/plur](https://github.com/plur-ai/plur).
+
 ## Also available for
 
 Claude Code and Cursor (via MCP), OpenClaw, Hermes, LangChain, and a Python SDK.
 Same engrams, same store, every tool you use.
 
+## License & security
+
+Apache-2.0. See [LICENSE](./LICENSE).
+
+Report a security issue privately to **security@plur.ai**, not through a public
+issue. What is worth reporting here: anything that reads or writes engrams
+outside the scope the session resolved, anything that gets engram text to forge
+structure in the system prompt, and anything reachable on the memory viewer's
+loopback port from another origin.
+
 ## Links
 
 - [plur.ai](https://plur.ai) · [docs.plur.ai](https://docs.plur.ai)
 - [github.com/plur-ai/plur](https://github.com/plur-ai/plur)
-
-Apache-2.0

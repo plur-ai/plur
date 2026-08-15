@@ -7,11 +7,64 @@
 把记忆作为工具暴露出来是常见做法——模型仍然需要自己决定要不要调用它。
 本插件直接把记忆本身放进提示词。
 
+## 概述
+
+DeepSeek Harness 每次开启新会话时对你一无所知。你得把昨天已经解释过的约定、
+纠正和偏好重新解释一遍。
+
+本插件让 dsh 拥有能跨会话存活的记忆：你只纠正一次的内容、项目约定，以及这些
+决定背后的原因。适合任何在同一个代码库中不止一次用 dsh 做实际工作的人。
+
+所有内容都以纯 YAML 保存在你自己的机器上，可读、可改、可删。
+
+## 兼容性
+
+| | |
+|---|---|
+| DeepSeek Harness | `0.1.0-rc.6` 及 `0.1.x` 线上的后续版本（`^0.1.0-rc.6`） |
+| Cordis | `^4.0.1` |
+| Node | 20、22、24、26（四个版本均在 CI 中测试） |
+| 最近验证 | dsh `0.1.0-rc.6`，2026-08-15 |
+
+dsh 仍处于 1.0 之前且演进很快。peer 版本范围使用 caret，以便本插件能随该版本线
+继续安装；如果未来某个版本改变了宿主契约，本插件会退化为「无记忆」，而不会让你
+的 agent 崩溃——每一处宿主注册都做了包裹，`/plur` 会显示失败情况。
+
+## 安装
+
 ```sh
 dsh plugin --profile web add @plur-ai/dsh
 ```
 
 就这样。重启 `dsh`，你的 agent 就有记忆了。
+
+需要 [`@plur-ai/core`](https://www.npmjs.com/package/@plur-ai/core)，会一并安装。
+
+## 快速上手
+
+先教它一次：
+
+> **你：** 这个项目一律用 pnpm——`npm install` 会破坏 CI 里的 lockfile。
+
+之后不需要任何操作；这条纠正会被自动识别并存储。第二天在同一个目录下开启新会话：
+
+> **你：** 这里怎么安装依赖？
+>
+> **Agent：** 用 `pnpm install`——你提到过 npm 会破坏 CI 里的 lockfile。
+
+不需要提醒，也不需要工具调用。想看它记住了什么，运行 `/plur-memory`。
+
+## 卸载
+
+```sh
+dsh plugin --profile web remove @plur-ai/dsh
+```
+
+你的记忆不会被动到——它们独立于本插件保存在 `~/.plur`，其他所有 PLUR 集成仍然
+可以使用。如果也想删除它们，删掉该目录即可；若只想删除单条 engram，使用
+`plur_forget` 或 [`@plur-ai/cli`](https://www.npmjs.com/package/@plur-ai/cli)。
+
+想暂时停用而不卸载，把 `injectionMode` 设为 `off`（见下）。
 
 ## 工作原理
 
@@ -88,7 +141,7 @@ PLUR memory viewer: http://127.0.0.1:53119/
 客户端，做原生标签页就意味着要发布一个绑定其 1.0 前内部接口的浏览器构建产物。
 一个 URL 不花什么代价，也不会在任何人升级时损坏。
 
-## 哪些数据会离开你的机器
+## 权限与数据
 
 PLUR 把一切存储在本地 `~/.plur` 并在本地检索。但被注入的记忆会成为
 你的 agent 发送给**你所配置的模型提供方**的提示词的一部分——
@@ -144,7 +197,7 @@ plur:
 `bge-reranker-v2-m3` 峰值内存约 2GB RSS。
 交互式使用请保持 `off`；仅在崩溃无代价的本地批处理场景中启用。
 
-## 记忆行为异常时
+## 故障排查
 
 运行 `/plur` 或调用 `plur_status`。计数器会告诉你召回是否执行过、
 记忆块是否发生变化、是否有错误被静默吞掉：
@@ -161,14 +214,41 @@ errors_swallowed: 0
 `errors_swallowed > 0` 表示 PLUR 出错并静默降级了——这是设计使然：
 记忆失败永远不会让你的这一轮对话失败。
 
+## 开发
+
+本插件位于 PLUR monorepo 的
+[`packages/dsh`](https://github.com/plur-ai/plur/tree/main/packages/dsh)。
+
+```sh
+git clone https://github.com/plur-ai/plur && cd plur
+pnpm install
+pnpm --filter @plur-ai/dsh build
+pnpm --filter @plur-ai/dsh test
+```
+
+其中最值得了解的是 `test/host-conformance.test.ts`：它会启动真实的
+`dsh-commands`、`dsh-skill`、`dsh-system-prompt` 和 `dsh-tools` 注册表，并针对
+磁盘上的真实存储运行，而不是使用替身。本插件出现过的每一个宿主契约 bug——一共
+五个——都躲过了那套把这些注册表打桩、并手写事件负载的测试。只要你改动了宿主
+拥有的东西，就请针对宿主自己的实现来断言。
+
+Issue 与 PR：[github.com/plur-ai/plur](https://github.com/plur-ai/plur)。
+
 ## 同样支持
 
 Claude Code 与 Cursor（通过 MCP）、OpenClaw、Hermes、LangChain，以及 Python SDK。
 同一份 engram，同一个存储，覆盖你使用的每个工具。
 
+## 许可证与安全
+
+Apache-2.0，见 [LICENSE](./LICENSE)。
+
+安全问题请私下发送到 **security@plur.ai**，不要通过公开 issue 提交。值得在此
+报告的包括：任何在会话解析出的 scope 之外读取或写入 engram 的行为；任何让
+engram 文本得以在系统提示词中伪造结构的方式；以及任何能从其他来源访问到记忆
+查看器回环端口的途径。
+
 ## 链接
 
 - [plur.ai](https://plur.ai) · [docs.plur.ai](https://docs.plur.ai)
 - [github.com/plur-ai/plur](https://github.com/plur-ai/plur)
-
-Apache-2.0
