@@ -17,9 +17,25 @@ describe('dsh bundle manifest', () => {
     expect(pkg.files).toContain('dist')
   })
 
-  it('pins every dsh peer to one release line', () => {
+  it('declares dsh peers the way dsh declares its own — caret, not exact', () => {
+    // An exact pin rejects BOTH the next rc and the eventual 0.1.0 final, so
+    // the day either ships every install of this plugin fails ERESOLVE. dsh's
+    // own package.json uses `^0.1.0-rc.6` for its siblings; matching that is
+    // what keeps the plugin installable as the pre-1.0 line moves.
     for (const [name, range] of Object.entries(pkg.peerDependencies ?? {})) {
-      if (name.startsWith('@deepseek-ai/dsh-')) expect(range).toBe('0.1.0-rc.6')
+      if (name.startsWith('@deepseek-ai/dsh-')) {
+        expect(range, name).toBe('^0.1.0-rc.6')
+      }
+    }
+  })
+
+  it('pins the dsh devDependencies exactly, so tests are reproducible', () => {
+    // The peers are loose so users can install; the versions we TEST against
+    // are exact, so a green suite means a known combination.
+    for (const [name, range] of Object.entries(pkg.devDependencies ?? {})) {
+      if (name.startsWith('@deepseek-ai/dsh-')) {
+        expect(range, name).toBe('0.1.0-rc.6')
+      }
     }
   })
 
