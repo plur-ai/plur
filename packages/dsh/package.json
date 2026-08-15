@@ -7,7 +7,8 @@
   "files": [
     "dist",
     "cordis.patch.yml",
-    "README.zh.md"
+    "README.zh.md",
+    "LICENSE"
   ],
   "dsh": {
     "bundle": {
@@ -48,7 +49,7 @@
     "@types/node": "^22.0.0"
   },
   "license": "Apache-2.0",
-  "description": "PLUR memory for DeepSeek Harness — engrams injected straight into the prompt, no tool call required",
+  "description": "PLUR memory for DeepSeek Harness \u2014 engrams injected straight into the prompt, no tool call required",
   "keywords": [
     "deepseek-harness",
     "dsh",

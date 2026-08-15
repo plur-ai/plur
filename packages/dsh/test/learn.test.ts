@@ -121,6 +121,8 @@ describe('auto-learn precision — these fire unattended and write permanently',
     'Actually I think we already shipped that last week.',
     'It always takes forever to build on this machine.',
     'Hmm, actually never mind, ignore that.',
+    // Sentence-initial by construction, so the anchor alone cannot reject it.
+    "Never mind that, let's move on to the next item.",
     "I'm not sure — the client never replied about the invoice.",
   ]
   for (const text of chatter) {

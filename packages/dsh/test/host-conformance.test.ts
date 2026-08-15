@@ -216,6 +216,55 @@ describe('the real prompt registry, with more than one agent', () => {
   })
 })
 
+describe('the real agent lifecycle events', () => {
+  it('captures an episode from a REAL agent/turn-stopping payload', async () => {
+    // The last surface still verified only by a mock. `agent/turn-stopping`
+    // carries `{ agent, turn, signal }`; the handler used to read the payload
+    // AS the agent, so autoCapture recorded nothing on every install — and the
+    // unit tests emitted the shape the code expected, so nothing caught it.
+    const ctx = await host()
+    const before = await countEpisodes()
+
+    await (ctx.parallel as (...a: unknown[]) => Promise<void>)('agent/turn-stopping', {
+      agent: fakeAgent('cap', '/tmp/alpha', [{
+        type: 'assistant/message',
+        time: 1,
+        data: { message: { content: [{ type: 'text', text: 'The deploy uses pnpm.' }] } },
+      }]),
+      turn: 1,
+      signal: new AbortController().signal,
+    })
+    await settle(1500)
+
+    expect(await countEpisodes(), 'agent/turn-stopping captured nothing').toBeGreaterThan(before)
+  })
+
+  it('reclaims an agent from a REAL agent/disposed payload', async () => {
+    // Same class: the payload is `{ agent }`, and reading `.id` off it always
+    // produced undefined, so nothing was ever released.
+    const ctx = await host()
+    const agent = await firePreStep(ctx, 'dis', '/tmp/alpha')
+    const cached = await waitForBlock(ctx, agent)
+    expect(cached, 'nothing was cached, so disposal would prove nothing').toContain('SECRETFOR')
+
+    await (ctx.parallel as (...a: unknown[]) => Promise<void>)('agent/disposed', { agent })
+    await settle(300)
+    expect(await assembleFor(ctx, agent)).not.toContain('SECRETFOR')
+  })
+})
+
+/** Episodes recorded in the shared temp store. */
+async function countEpisodes(): Promise<number> {
+  const { Plur } = await import('@plur-ai/core') as unknown as {
+    Plur: new (o: { path: string }) => { timeline: () => unknown[] }
+  }
+  try {
+    return new Plur({ path: storePath }).timeline().length
+  } catch {
+    return 0
+  }
+}
+
 /**
  * Drive one real `agent/pre-step` waterfall for an agent in a workspace.
  *
@@ -236,7 +285,7 @@ async function firePreStep(
     turn: 1,
     step: 1,
     signal: new AbortController().signal,
-  }, async () => ({ kind: 'proceed', messages: [] }))
+  }, async () => ({ kind: 'enter', messages: [] }))
   return agent
 }
 

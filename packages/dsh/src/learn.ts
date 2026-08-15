@@ -33,7 +33,9 @@ import { guard, type WriteQueue } from './guard.js'
  */
 const PATTERNS: readonly RegExp[] = [
   /\bno,?\s+(?:use|do|it'?s|that'?s|the)\b/i,
-  /(?:^|[.!?]\s*)(?:(?:we|you)\s+(?:should\s+|must\s+)?)?(?:always|never)\s+\w+/i,
+  // `(?!mind\b)`: "Never mind that, let's move on" is a discourse marker, and
+  // it is sentence-initial by construction, so the anchor alone cannot reject it.
+  /(?:^|[.!?]\s*)(?:(?:we|you)\s+(?:should\s+|must\s+)?)?(?:always|never)\s+(?!mind\b)\w+/i,
   /\buse\s+\S+.*\bnot\s+\S+/i,
   /\bthe right way (?:to|is)\b/i,
   /\bcorrection,?\s+\w+/i,
@@ -135,7 +137,11 @@ export function registerLearning(ctx: Context, deps: LearnDeps): void {
 
     void queue(() => guard(async () => {
       const scope = await resolveScope(session as CallerSession)
-      await plur?.learn?.(candidate.statement, { scope })
+      // Only count a write that a real engine actually performed. Bumping
+      // before checking meant an absent `learn` — the whole engine missing —
+      // still reported captures.
+      if (typeof plur?.learn !== 'function') return
+      await plur.learn(candidate.statement, { scope })
       counters.bump('learn_captured')
     }, { timeoutMs: config.timeoutMs, onError: () => counters.bump('errors_swallowed') }))
   })

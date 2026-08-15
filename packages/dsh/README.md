@@ -4,8 +4,8 @@
 
 English | [中文](README.zh.md)
 
-Every other dsh memory plugin injects a *cue* and hopes the model calls a tool.
-This one puts the memories themselves in the prompt.
+Exposing memory as a tool is the common pattern — the model still has to decide
+to call it. This one puts the memories themselves in the prompt.
 
 ```sh
 dsh plugin --profile web add @plur-ai/dsh
@@ -16,8 +16,11 @@ That's it. Restart `dsh` and your agent has memory.
 ## How it works
 
 PLUR registers a system-prompt section that DeepSeek Harness re-renders on every
-request. Relevant memories are simply *there*, in front of the model, before it
-does anything.
+request. Relevant memories are simply *there*, in front of the model, with no
+tool call to decide on.
+
+Recall runs off the turn path, so the block lands from the second assembly of a
+session onward. A turn is never delayed waiting on the memory store.
 
 | | Cue-based memory | `@plur-ai/dsh` |
 |---|---|---|
@@ -42,13 +45,13 @@ that you can read, edit, and delete.
 
 We publish our retrieval numbers, measured on LongMemEval:
 
-| Configuration | Hit@5 |
-|---|---|
-| Hybrid, no reranker (shipping default) | 76.7% |
-| Hybrid + ms-marco-minilm-l6 | 83.3% |
-| Hybrid + bge-reranker-v2-m3 | 90.0% |
+On a 30-question sanity subset of LongMemEval-S, PLUR's retrieval scores
+**76.7% Hit@5** in the configuration this plugin ships — hybrid BM25 + BGE
+embeddings, no reranker (core v0.9.13, 2026-06-27).
 
-No other DeepSeek Harness memory plugin publishes retrieval benchmarks at all.
+n=30 is a smoke test, not a leaderboard: one question is worth 3.3 points. The
+reproducible harness and the raw runs are in
+[plur-bench](https://github.com/plur-ai/plur-bench).
 
 ## Tools
 
@@ -111,7 +114,19 @@ recall includes them. If your global store holds things you would rather a
 coding harness never see, move them to a project scope or set `scope`
 explicitly — `plur ui` shows you what is in there.
 
-Set a scope explicitly to override the derivation, or turn injection off:
+Two details worth knowing:
+
+- Scope membership is exact, with no hierarchy expansion. A session scoped to
+  `project:acme` does not read `project:acme:api`. This plugin's own derivation
+  is flat so it never creates those, but a store populated through the CLI or
+  MCP with hierarchical child scopes will not surface them here.
+- A workspace's `.plur.yaml` is trusted as written. A repository you clone can
+  declare a scope, and this plugin will use it for both reads and writes — the
+  same as `@plur-ai/core` itself. Check it the way you would check any other
+  file you are about to run.
+
+A workspace's own `.plur.yaml` scope wins. The `scope` setting below applies
+when the workspace declares none — set it, or turn injection off entirely:
 
 ```yaml
 # $DSH_HOME/settings.yaml

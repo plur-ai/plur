@@ -77,7 +77,7 @@ export function registerCommands(
         }
         try {
           const url = await deps.viewer.open()
-          return { kind: 'success', text: `PLUR memory viewer: ${url}\n(local to this machine, read-only)` }
+          return { kind: 'success', text: `PLUR memory viewer: ${url}\n(local to this machine, read-only, shows every scope in the store)` }
         } catch (error: unknown) {
           // A viewer that cannot start reports why. It must settle as a result,
           // never throw: the host records a thrown handler as kind:'error' but

@@ -4,7 +4,7 @@
 
 [English](README.md) | 中文
 
-其他 dsh 记忆插件注入的是*提示线索*，然后指望模型去调用工具。
+把记忆作为工具暴露出来是常见做法——模型仍然需要自己决定要不要调用它。
 本插件直接把记忆本身放进提示词。
 
 ```sh
@@ -15,8 +15,11 @@ dsh plugin --profile web add @plur-ai/dsh
 
 ## 工作原理
 
-PLUR 注册一个系统提示词分区（system-prompt section），DeepSeek Harness 会在每次请求时重新渲染它。
-相关记忆就直接*在那里*，在模型开始工作之前就已经呈现在它面前。
+PLUR 注册一个系统提示词分区（system-prompt section），DeepSeek Harness 会在每次
+请求时重新渲染它。相关记忆就直接*在那里*呈现在模型面前，不需要它决定是否调用工具。
+
+召回运行在轮次主路径之外，因此记忆块从一次会话的第二次组装开始出现——任何一轮都
+不会因为等待记忆存储而被拖慢。
 
 | | 线索式记忆 | `@plur-ai/dsh` |
 |---|---|---|
@@ -38,13 +41,12 @@ PLUR 注册一个系统提示词分区（system-prompt section），DeepSeek Har
 
 我们公开检索指标，基于 LongMemEval 测量：
 
-| 配置 | Hit@5 |
-|---|---|
-| Hybrid，无 reranker（默认发布配置） | 76.7% |
-| Hybrid + ms-marco-minilm-l6 | 83.3% |
-| Hybrid + bge-reranker-v2-m3 | 90.0% |
+在 LongMemEval-S 的 30 题冒烟子集上，PLUR 的检索在本插件所发布的配置下取得
+**76.7% Hit@5**——hybrid BM25 + BGE 向量，不启用 reranker（core v0.9.13，
+2026-06-27）。
 
-目前没有任何其他 DeepSeek Harness 记忆插件公开过检索基准。
+n=30 是冒烟测试，不是排行榜：一道题就值 3.3 个百分点。可复现的测试工具与原始
+运行结果见 [plur-bench](https://github.com/plur-ai/plur-bench)。
 
 ## 工具
 
@@ -102,7 +104,17 @@ scope 就用它，否则派生为 `project:<目录名>`。本插件学到的任�
 看到的内容，请将其移到项目 scope，或显式设置 `scope`；用 `plur ui` 可以查看
 里面到底有什么。
 
-如需覆盖这一派生规则，可显式设置 scope；也可以完全关闭注入：
+另有两点值得注意：
+
+- scope 匹配是精确的，不会做层级展开。scope 为 `project:acme` 的会话不会读取
+  `project:acme:api`。本插件自身的派生规则是扁平的，不会产生这类 scope，但如果
+  你的库是通过 CLI 或 MCP 写入了层级子 scope，这里不会读到它们。
+- 工作区的 `.plur.yaml` 会被原样信任。你克隆的仓库可以声明一个 scope，本插件
+  在读写时都会采用它——`@plur-ai/core` 本身也是这样。请像检查任何你即将运行的
+  文件一样检查它。
+
+工作区自身 `.plur.yaml` 中声明的 scope 优先。下面的 `scope` 设置只在工作区未声明
+时生效——可以设置它，也可以完全关闭注入：
 
 ```yaml
 # $DSH_HOME/settings.yaml

@@ -115,9 +115,18 @@ export function apply(ctx: Context, config: Config, injected?: PlurClient): void
   // each workspace's own .plur.yaml.
   const scopes = createScopeResolver(config, readWorkspaceScope)
   const live = new Map<string, AgentState>()
-  // ONE queue for the whole plugin. Previously learn.ts and capture.ts each made
-  // their own and the tools bypassed queueing entirely, so the "writes are
-  // serialized" guarantee was simply false against the shared on-disk store.
+  // ONE queue for the whole plugin's ENGRAM WRITES — learn, capture, and the
+  // tools. Previously learn.ts and capture.ts each made their own and the
+  // tools bypassed queueing entirely.
+  //
+  // It is not, and does not claim to be, a serialization guarantee over every
+  // store touch. `refreshBlock` calls `injectHybrid` outside it once per turn,
+  // and that IS a write — core bumps `injection_count`, which on the YAML
+  // backend rewrites the corpus (measured at 714ms on a 60-engram store).
+  // Routing it through the queue would make a slow store stall the next turn's
+  // recall behind the previous one, which is the opposite of keeping recall
+  // off the turn path. Correctness is core's `_withStoreLock`; this queue is
+  // about not interleaving OUR writes.
   const queue = createWriteQueue()
   const onError = () => counters.bump('errors_swallowed')
 
@@ -290,7 +299,12 @@ export function apply(ctx: Context, config: Config, injected?: PlurClient): void
       const injection = plur?.injectHybrid
         ? await plur.injectHybrid(query, where)
         : await plur?.inject?.(query, where)
-      counters.bump('engrams_rendered')
+      // By the COUNT, not by one per attempt. `/plur` exists to answer "why
+      // didn't it remember that?", and during the inert-engine bug — when the
+      // plugin recalled nothing at all, on every install — this counter still
+      // incremented once per turn and read perfectly healthy.
+      const rendered = injection?.count ?? 0
+      for (let i = 0; i < rendered; i++) counters.bump('engrams_rendered')
       // Rendering is INSIDE the guard: a malformed engram must not escape either.
       return renderBlock(injection, config.injectionBudget)
     }, { timeoutMs: config.timeoutMs, onError })
