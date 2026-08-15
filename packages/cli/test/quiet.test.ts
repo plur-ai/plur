@@ -178,6 +178,7 @@ describe('doctor --quiet (#730)', () => {
       cursorProjectDetected: false,
       cursorWired: false,
       pgliteGemmaReembedNeeded: false,
+      staleContentHashes: 0,
       overall: 'fail',
     }
   }

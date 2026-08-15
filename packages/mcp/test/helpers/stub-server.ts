@@ -97,7 +97,7 @@ export class StubServer {
         const now = new Date().toISOString()
         const engram: StoredEngram = {
           id,
-          scope: scope ?? 'global',
+          scope: (scope as string | undefined) ?? 'global',
           status: 'active',
           data: { statement, domain, type },
           created_at: now,
