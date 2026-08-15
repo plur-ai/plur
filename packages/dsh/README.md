@@ -134,12 +134,15 @@ All settings live under the `plur` namespace in `$DSH_HOME/settings.yaml`
 | `refreshIntervalMs` | `0` | Floor between recalls; `0` means once per turn |
 | `autoLearn` | `true` | Detect corrections in your messages and store them |
 | `autoCapture` | `true` | Record an episode summary at turn end |
-| `reranker` | `off` | `off`, `ms-marco-minilm-l6`, or `bge-reranker-v2-m3` |
 | `timeoutMs` | `5000` | Hard bound on any single memory call |
-| `tabEnabled` | `true` | Web UI memory tab |
+| `viewerEnabled` | `true` | Register the `/plur-memory` command |
+| `includeGlobal` | `true` | Whether global engrams accompany the workspace scope |
 
-**A note on `reranker`.** It runs in the harness's own process, and
-`bge-reranker-v2-m3` peaks around 2GB RSS. Leave it `off` for interactive use;
+**Reranking** is configured through PLUR itself, not here: set the
+`PLUR_RERANKER` environment variable. It runs in the harness's own process and
+`bge-reranker-v2-m3` peaks around 2GB RSS, where a native OOM cannot be caught
+by a JavaScript `try`/`catch` and would take your agent down with it. Leave it
+unset for interactive use.
 enable it for local batch work where a crash costs you nothing.
 
 ## When memory misbehaves

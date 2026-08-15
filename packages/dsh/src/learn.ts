@@ -13,17 +13,34 @@ import type { Config } from './config.js'
 import type { Counters } from './counters.js'
 import { guard, type WriteQueue } from './guard.js'
 
-/** High-precision correction and rule patterns. */
+/**
+ * High-precision correction and rule patterns.
+ *
+ * Precision matters more than recall here, because these fire unattended and
+ * what they write is permanent. Two patterns were measurably too loose and
+ * turned ordinary conversation into engrams — every one of these became a
+ * stored memory:
+ *
+ *   "I never got the confirmation email from them."
+ *   "Actually I think we already shipped that last week."
+ *   "It always takes forever to build on this machine."
+ *   "Hmm, actually never mind, ignore that."
+ *
+ * So `always`/`never` must now open a sentence or follow `we`/`you` — the
+ * shapes a rule actually takes — rather than appearing anywhere in it; and
+ * bare `actually`, which is mostly a discourse marker, is gone. `correction`
+ * stays, because nobody says it by accident.
+ */
 const PATTERNS: readonly RegExp[] = [
   /\bno,?\s+(?:use|do|it'?s|that'?s|the)\b/i,
-  /\b(?:always|never)\s+\w+/i,
+  /(?:^|[.!?]\s*)(?:(?:we|you)\s+(?:should\s+|must\s+)?)?(?:always|never)\s+\w+/i,
   /\buse\s+\S+.*\bnot\s+\S+/i,
   /\bthe right way (?:to|is)\b/i,
-  /\b(?:actually|correction),?\s+\w+/i,
+  /\bcorrection,?\s+\w+/i,
   /\bdon'?t\s+\w+.*\binstead\b/i,
 ]
 
-/** Below this a message is chatter; above it, a wall of text we should not store. */
+/** Below this a sentence is chatter; above it, a wall of text we should not store. */
 const MIN_LENGTH = 10
 const MAX_LENGTH = 500
 
@@ -45,11 +62,16 @@ export interface LearningCandidate {
  */
 export function detectLearning(text: string): LearningCandidate | undefined {
   const trimmed = text.trim()
-  if (trimmed.length < MIN_LENGTH || trimmed.length > MAX_LENGTH) return undefined
   if (trimmed.endsWith('?')) return undefined
   for (const sentence of trimmed.split(/(?<=[.!])\s+/)) {
     const candidate = sentence.trim()
-    if (candidate && PATTERNS.some(pattern => pattern.test(candidate))) {
+    // The length gate belongs HERE, on the sentence being stored — not on the
+    // whole message. Applied to the message it contradicted this function's
+    // own promise: a real "No, use pnpm rather than npm here." inside a
+    // 524-character turn was dropped silently, with no counter bumped. That is
+    // exactly the "I told it and it forgot" report, and it was undiagnosable.
+    if (candidate.length < MIN_LENGTH || candidate.length > MAX_LENGTH) continue
+    if (PATTERNS.some(pattern => pattern.test(candidate))) {
       return { statement: candidate, confidence: 0.75 }
     }
   }

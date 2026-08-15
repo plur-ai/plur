@@ -36,32 +36,14 @@ import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import Tools from '@deepseek-ai/dsh-tools'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import * as plugin from '../src/index.js'
+import { askedEvents, fakeAgent } from './helpers/agent.js'
 import { cfg } from './helpers/config.js'
-import type { PlurClient } from '../src/client.js'
+import type { Agent } from '@deepseek-ai/dsh-agent'
 
 const settle = (ms = 400) => new Promise(r => setTimeout(r, ms))
 
-/**
- * An agent as the host presents one to a pre-step listener.
- */
-function agentIn(_root: Context & Record<string, any>, id: string, cwd: string, ask?: string) {
-  const events = ask === undefined ? [] : [
-    { type: 'turn/start', time: 1, data: { turn: 1 } },
-    {
-      type: 'user/message',
-      time: 2,
-      data: { source: { kind: 'user' }, content: [{ type: 'text', text: ask }] },
-    },
-  ]
-  return {
-    id,
-    session: { id: `s-${id}`, events, header: { cwd } },
-  }
-}
-
 /** A bare agent for registry calls that only need identity. */
-const agentOf = (id: string, cwd = '/tmp/hc') =>
-  ({ id, session: { id: `s-${id}`, events: [], header: { cwd } } }) as never
+const agentOf = (id: string, cwd = '/tmp/hc') => fakeAgent(id, cwd)
 
 /**
  * Resolve a command through the real registry and invoke its real handler.
@@ -95,6 +77,8 @@ async function run(ctx: Context & Record<string, any>, name: string) {
  * path: real core, real scope resolution, real recall, real assembly.
  */
 let storePath: string
+let scopeAlpha: string
+let scopeBeta: string
 
 beforeAll(async () => {
   storePath = mkdtempSync(join(tmpdir(), 'plur-hc-'))
@@ -102,8 +86,16 @@ beforeAll(async () => {
     learn: (s: string, c: { scope: string }) => Promise<unknown>
   } }
   const seed = new Plur({ path: storePath })
-  await seed.learn('SECRETFORALPHA: alpha deploys with pnpm', { scope: 'project:alpha' })
-  await seed.learn('SECRETFORBETA: beta deploys with yarn', { scope: 'project:beta' })
+  // Seed the scopes the resolver ACTUALLY derives for these directories,
+  // digest and all — hard-coding `project:alpha` would test a scope no real
+  // session ever gets.
+  const { createScopeResolver } = await import('../src/scope.js')
+  const { readWorkspaceScope } = await import('../src/workspace-scope.js')
+  const resolver = createScopeResolver(cfg({ path: storePath }), readWorkspaceScope)
+  scopeAlpha = await resolver.resolve('seed-a', '/tmp/alpha')
+  scopeBeta = await resolver.resolve('seed-b', '/tmp/beta')
+  await seed.learn('SECRETFORALPHA: alpha deploys with pnpm', { scope: scopeAlpha })
+  await seed.learn('SECRETFORBETA: beta deploys with yarn', { scope: scopeBeta })
 }, 60_000)
 
 afterAll(() => { rmSync(storePath, { recursive: true, force: true }) })
@@ -113,8 +105,8 @@ async function host(withStore = true) {
   const ctx = new Context() as Context & Record<string, any>
   ctx.plugin(SystemPrompt, {})
   ctx.plugin(Tools, {})
-  ctx.plugin(Commands, {})
-  ctx.plugin(Skills, {})
+  ctx.plugin(Commands, {} as never)
+  ctx.plugin(Skills, {} as never)
   await settle(200)
   ctx.plugin(plugin, cfg(withStore ? { path: storePath } : { path: '/nonexistent/plur-store' }))
   await settle()
@@ -178,7 +170,7 @@ describe('the real prompt registry, with more than one agent', () => {
     ctx.plugin(Tools, {})
     await settle(200)
     const realSection = ctx.systemPrompt.section.bind(ctx.systemPrompt)
-    ctx.systemPrompt.section = (s: { name: string }) => { sections.push(s.name); return realSection(s) }
+    ctx.systemPrompt.section = (s: { name: string }) => { sections.push(s.name); return realSection(s as never) }
     ctx.plugin(plugin, cfg({ path: storePath }))
     await settle()
     expect(sections.filter(n => n === 'plur:memory')).toHaveLength(1)
@@ -208,10 +200,12 @@ describe('the real prompt registry, with more than one agent', () => {
 
     const agentA = await firePreStep(ctx, 'a', '/tmp/alpha')
     const agentB = await firePreStep(ctx, 'b', '/tmp/beta')
-    await settle(800)
 
-    const alpha = await assembleFor(ctx, agentA)
-    const beta = await assembleFor(ctx, agentB)
+    // Poll rather than sleep: recall is deliberately off the turn path, so the
+    // block lands whenever the store finishes. A fixed sleep is a flake under
+    // parallel test load, and a flaky security test gets muted.
+    const alpha = await waitForBlock(ctx, agentA)
+    const beta = await waitForBlock(ctx, agentB)
 
     expect(alpha, 'agent A got no memory at all — the harness is not reaching the section')
       .toContain('SECRETFORALPHA')
@@ -235,8 +229,8 @@ async function firePreStep(
   cwd: string,
   ask = 'how do we deploy this project',
 ) {
-  const agent = agentIn(ctx, id, cwd, ask)
-  await ctx.waterfall('agent/pre-step', {
+  const agent = fakeAgent(id, cwd, askedEvents(ask))
+  await (ctx.waterfall as (...a: unknown[]) => Promise<unknown>)('agent/pre-step', {
     agent,
     messages: [],
     turn: 1,
@@ -257,18 +251,31 @@ async function firePreStep(
  * absence, and absence is also what you get when the section is never reached,
  * so it passed against a deliberately reintroduced leak.
  */
-async function assembleFor(
-  ctx: Context & Record<string, any>,
-  agent: { id: string; session: unknown },
-): Promise<string> {
+async function assembleFor(ctx: Context & Record<string, any>, agent: Agent): Promise<string> {
   const assembly = await ctx.systemPrompt.assemble({ agent })
   const sections = (assembly as { sections?: ReadonlyArray<{ text?: unknown }> })?.sections ?? []
   return sections.map(section => String(section?.text ?? '')).join(String.fromCharCode(10))
 }
 
+/** Assemble until the memory block is populated, or give up. */
+async function waitForBlock(
+  ctx: Context & Record<string, any>,
+  agent: Agent,
+  timeoutMs = 15_000,
+): Promise<string> {
+  const deadline = Date.now() + timeoutMs
+  let last = ''
+  while (Date.now() < deadline) {
+    last = await assembleFor(ctx, agent)
+    if (last.includes('SECRETFOR')) return last
+    await settle(150)
+  }
+  return last
+}
+
 /** Assemble with NO agent — a diagnostic call. Must render nobody's memory. */
 async function assembleAnonymously(ctx: Context & Record<string, any>): Promise<string> {
-  const assembly = await ctx.systemPrompt.assemble({})
+  const assembly = await ctx.systemPrompt.assemble({} as never)
   const sections = (assembly as { sections?: ReadonlyArray<{ text?: unknown }> })?.sections ?? []
   return sections.map(section => String(section?.text ?? '')).join(String.fromCharCode(10))
 }

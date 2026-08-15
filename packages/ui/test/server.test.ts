@@ -1,5 +1,19 @@
 import { describe, expect, it } from 'vitest'
+import { request } from 'node:http'
 import { createUiServer, startViewer } from '../src/server.js'
+
+/** A GET with headers fetch refuses to set, notably `Host`. */
+function rawGet(port: number, path: string, headers: Record<string, string>) {
+  return new Promise<{ status: number; body: string }>((resolve, reject) => {
+    const req = request({ host: '127.0.0.1', port, path, method: 'GET', headers }, res => {
+      let body = ''
+      res.on('data', chunk => { body += String(chunk) })
+      res.on('end', () => { resolve({ status: res.statusCode ?? 0, body }) })
+    })
+    req.on('error', reject)
+    req.end()
+  })
+}
 import type { EngramRow } from '../src/query.js'
 
 const ROWS: EngramRow[] = [
@@ -91,3 +105,75 @@ describe('the shared server', () => {
     } finally { await new Promise<void>(r => server.close(() => r())) }
   })
 })
+
+describe('the viewer refuses requests that are not its own page', () => {
+  async function boot() {
+    const server = createUiServer({ load: async () => ROWS, where: '~/.plur', openPath: '/tmp/store' })
+    await new Promise<void>(r => server.listen(0, '127.0.0.1', r))
+    const addr = server.address()
+    const port = typeof addr === 'object' && addr ? addr.port : 0
+    return { base: `http://127.0.0.1:${port}`, port, close: () => new Promise<void>(r => server.close(() => r())) }
+  }
+
+  it('rejects a cross-origin POST to /open-store — 25 of these spawned 25 file managers', async () => {
+    // A cross-origin FORM post is a simple request: no preflight, no CORS to
+    // stop it. "It is a POST, not an img tag" was not the protection the code
+    // claimed. A loop of these is a desktop denial of service.
+    const h = await boot()
+    try {
+      const res = await fetch(`${h.base}/open-store`, {
+        method: 'POST',
+        headers: { 'sec-fetch-site': 'cross-site' },
+        redirect: 'manual',
+      })
+      expect(res.status).toBe(403)
+    } finally { await h.close() }
+  })
+
+  it('still allows the viewer\'s own form to open the folder', async () => {
+    const h = await boot()
+    try {
+      const res = await fetch(`${h.base}/open-store`, {
+        method: 'POST',
+        headers: { 'sec-fetch-site': 'same-origin' },
+        redirect: 'manual',
+      })
+      expect(res.status).toBe(303)
+    } finally { await h.close() }
+  })
+
+  it('rejects a rebound Host — binding loopback does not stop DNS rebinding', async () => {
+    // Binding 127.0.0.1 keeps the network out, not a browser the attacker
+    // controls. A short-TTL record pointing at 127.0.0.1 makes their page
+    // same-origin with the viewer, and the whole store is readable.
+    //
+    // Raw node:http, not fetch: undici forbids overriding `Host`, so a fetch
+    // with that header silently sends the real one and the test passes
+    // against a server with no check at all.
+    const h = await boot()
+    try {
+      const { status, body } = await rawGet(h.port, '/', { host: 'evil.example' })
+      expect(status).toBe(403)
+      expect(body).not.toContain('Pin dsh deps.')
+    } finally { await h.close() }
+  })
+
+  it('accepts localhost and 127.0.0.1 by name', async () => {
+    const h = await boot()
+    try {
+      for (const host of [`127.0.0.1:${h.port}`, `localhost:${h.port}`]) {
+        expect((await rawGet(h.port, '/', { host })).status, host).toBe(200)
+      }
+    } finally { await h.close() }
+  })
+
+  it('forbids framing, the other half of the rebinding story', async () => {
+    const h = await boot()
+    try {
+      const res = await fetch(`${h.base}/`)
+      expect(res.headers.get('content-security-policy')).toContain("frame-ancestors 'none'")
+      expect(res.headers.get('x-frame-options')).toBe('DENY')
+    } finally { await h.close() }
+  })
+})
+

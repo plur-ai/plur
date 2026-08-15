@@ -124,9 +124,9 @@ plur:
 | `refreshIntervalMs` | `0` | 两次召回之间的下限；`0` 表示每轮一次 |
 | `autoLearn` | `true` | 检测你消息中的纠正并存储 |
 | `autoCapture` | `true` | 在轮次结束时记录情节摘要 |
-| `reranker` | `off` | `off`、`ms-marco-minilm-l6` 或 `bge-reranker-v2-m3` |
 | `timeoutMs` | `5000` | 单次记忆调用的硬超时 |
-| `tabEnabled` | `true` | Web UI 记忆标签页 |
+| `viewerEnabled` | `true` | 是否注册 `/plur-memory` 命令 |
+| `includeGlobal` | `true` | global engram 是否随工作区 scope 一起读取 |
 
 **关于 `reranker` 的提醒。** 它运行在 harness 自己的进程中，
 `bge-reranker-v2-m3` 峰值内存约 2GB RSS。

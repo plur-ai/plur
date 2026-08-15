@@ -12,4 +12,4 @@
         injectionBudget: 2000
         autoLearn: true
         autoCapture: true
-        tabEnabled: true
+        viewerEnabled: true

@@ -16,6 +16,7 @@ import { createWriteQueue, guard } from '../src/guard.js'
 import { renderBlock } from '../src/memory-section.js'
 import { recallQueryFrom } from '../src/session-log.js'
 import { cfg } from './helpers/config.js'
+import { fakeAgent } from './helpers/agent.js'
 
 async function boot(plur?: PlurClient, config = cfg({})) {
   const ctx = new Context() as Context & Record<string, any>
@@ -39,7 +40,7 @@ async function boot(plur?: PlurClient, config = cfg({})) {
     fire: (event: string, ...args: unknown[]) =>
       Promise.all((listeners.get(event) ?? []).map(fn => fn(...args))),
     async prompt(agentId = 'a1'): Promise<string> {
-      const a = await ctx.systemPrompt.assemble({ agent: { id: agentId, session: { id: `s-${agentId}`, events: [] } } })
+      const a = await ctx.systemPrompt.assemble({ agent: fakeAgent(agentId) })
       return (a.sections as Array<{ text: string }>).map(s => s.text).join('\n')
     },
   }
@@ -174,7 +175,7 @@ describe('hostile: resource exhaustion', () => {
     // exactly ONE section for the whole plugin, keyed by the agent the host
     // passes at assembly. 200 agents cannot leak 200 registrations because
     // only one ever exists. What must be released is the per-agent CACHE.
-    const assembled = await h.ctx.systemPrompt.assemble({ agent: { id: 'a1', session: { id: 's-a1', events: [] } } })
+    const assembled = await h.ctx.systemPrompt.assemble({ agent: fakeAgent('a1') })
     const memory = (assembled.sections as Array<{ name: string; text: string }>)
       .filter(s => s.name === 'plur:memory')
     expect(memory, 'the single global section should always exist').toHaveLength(1)
@@ -186,7 +187,7 @@ describe('hostile: resource exhaustion', () => {
     // registration per dead session forever without a ceiling.
     const h = await boot({ injectHybrid: async () => ({ directives: '[ENG-1] x', count: 1 }) })
     for (let i = 0; i < 600; i++) await turn(h, agent(`leak${i}`, asked('a question')), 1)
-    const assembled = await h.ctx.systemPrompt.assemble({ agent: { id: 'a1', session: { id: 's-a1', events: [] } } })
+    const assembled = await h.ctx.systemPrompt.assemble({ agent: fakeAgent('a1') })
     const memory = (assembled.sections as Array<{ name: string }>).filter(s => s.name === 'plur:memory')
     expect(memory.length).toBeLessThanOrEqual(512)
   })

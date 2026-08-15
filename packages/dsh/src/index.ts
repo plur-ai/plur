@@ -198,8 +198,13 @@ export function apply(ctx: Context, config: Config, injected?: PlurClient): void
       const decision = await next()
       const agentId = (agent as { id?: string } | undefined)?.id
       if (agentId === undefined) return decision
-      if (decision.kind === 'reject') return decision
-      if (signal.aborted) return decision
+      // `decision` is whatever the REST of the plugin chain returned — we
+      // register with { prepend: true }, so a neighbour with one path that
+      // forgets to return hands back undefined. Cordis's waterfall has no
+      // containment, so an unguarded `.kind` here becomes a PLUR-branded crash
+      // in someone else's plugin's name.
+      if (decision?.kind === 'reject') return decision
+      if (signal?.aborted === true) return decision
 
       const state = trackAgent(agentId)
       // An in-flight refresh means the store is slower than the user is typing.

@@ -112,3 +112,52 @@ describe('registerLearning', () => {
     await expect(fire(null)).resolves.toBeDefined()
   })
 })
+
+describe('auto-learn precision — these fire unattended and write permanently', () => {
+  // Every string below became a stored engram before the patterns were
+  // tightened. They are ordinary conversation, not corrections.
+  const chatter = [
+    'I never got the confirmation email from them.',
+    'Actually I think we already shipped that last week.',
+    'It always takes forever to build on this machine.',
+    'Hmm, actually never mind, ignore that.',
+    "I'm not sure — the client never replied about the invoice.",
+  ]
+  for (const text of chatter) {
+    it(`does not learn from: ${text}`, () => {
+      expect(detectLearning(text)).toBeUndefined()
+    })
+  }
+
+  // And these must still be caught, or the tightening went too far.
+  const real = [
+    'Always use pnpm in this project.',
+    'Never commit secrets to the repo.',
+    'We never deploy on Fridays.',
+    'You should always run the migration first.',
+    'No, use the staging bucket for that.',
+    'Correction, the endpoint is /v2/search not /v1/search.',
+  ]
+  for (const text of real) {
+    it(`still learns from: ${text}`, () => {
+      expect(detectLearning(text), text).toBeDefined()
+    })
+  }
+
+  it('finds a correction buried in a long turn, and stores only that sentence', () => {
+    // The length gate used to reject the whole MESSAGE before the sentence
+    // loop ran, so a real correction inside a long turn vanished with no
+    // counter bumped — the "I told it and it forgot" report, undiagnosable.
+    const long = `${'Some context about the deploy pipeline. '.repeat(14)}No, use pnpm rather than npm here.`
+    expect(long.length).toBeGreaterThan(500)
+    const found = detectLearning(long)
+    expect(found, 'a long turn swallowed the correction').toBeDefined()
+    expect(found!.statement).toBe('No, use pnpm rather than npm here.')
+    expect(found!.statement.length).toBeLessThan(100)
+  })
+
+  it('still refuses a single sentence that is a wall of text', () => {
+    expect(detectLearning(`Always ${'x'.repeat(600)}`)).toBeUndefined()
+  })
+})
+

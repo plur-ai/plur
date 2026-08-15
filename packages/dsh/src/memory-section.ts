@@ -76,9 +76,9 @@ export function renderBlock(injection: InjectionLike | undefined, budgetTokens: 
   // Same construction as @plur-ai/mcp's session-start block.
   const assemble = (withConstraints: boolean, withConsider: boolean): string => {
     const lines: string[] = []
-    if (injection.directives) lines.push('## DIRECTIVES\n', injection.directives)
-    if (withConstraints && injection.constraints) lines.push('\n## CONSTRAINTS\n', injection.constraints)
-    if (withConsider && injection.consider) lines.push('\n## ALSO CONSIDER\n', injection.consider)
+    if (injection.directives) lines.push('## DIRECTIVES\n', flatten(injection.directives))
+    if (withConstraints && injection.constraints) lines.push('\n## CONSTRAINTS\n', flatten(injection.constraints))
+    if (withConsider && injection.consider) lines.push('\n## ALSO CONSIDER\n', flatten(injection.consider))
     return lines.join('\n')
   }
 
@@ -89,6 +89,34 @@ export function renderBlock(injection: InjectionLike | undefined, budgetTokens: 
 
   // Even directives alone overflow: emit nothing rather than a truncated engram.
   return ''
+}
+
+/**
+ * Strip structure-forging characters from engram text.
+ *
+ * Statements are attacker-influenceable — packs are shared, and a user can be
+ * talked into learning something — and this plugin promotes them from
+ * tool-result trust to SYSTEM-PROMPT authority. Verified against a real
+ * assembly, one engram could open its own `## DIRECTIVES` heading, fabricate
+ * `## CONSTRAINTS` / `## ALSO CONSIDER` boundaries the model reads as ours,
+ * and close and reopen a `<system>` tag.
+ *
+ * An engram is one assertion, so it is a single line by nature: collapsing
+ * newlines removes the ability to forge a block without costing anything
+ * legitimate. Leading `#` is neutralised for the same reason — a statement
+ * cannot be allowed to look like a heading this plugin wrote. Angle brackets
+ * are left alone; they are ordinary in technical notes, and a pseudo-tag with
+ * no newline cannot restructure the prompt.
+ *
+ * @param text - one pre-rendered group from core.
+ * @returns the same content, one engram per line, unable to forge structure.
+ */
+function flatten(text: string): string {
+  return String(text)
+    .split(/\r?\n/)
+    .map(line => line.replace(/^\s*#+\s*/, '').trim())
+    .filter(Boolean)
+    .join('\n')
 }
 
 /**

@@ -25,8 +25,8 @@ beforeAll(async () => {
   ctx.plugin(SystemPrompt, {})
   ctx.plugin(Tools, {})
   await new Promise(r => setTimeout(r, 300))
-  ctx.skills = { register: () => () => {} }
-  ctx.commands = { register: () => () => {} }
+  ctx.skills = { register: () => () => {} } as never
+  ctx.commands = { register: () => () => {} } as never
   apply(ctx, cfg({ scope: 'project:realtools' }), {
     recall: async () => [{ id: 'ENG-7', statement: 'Real registry round trip.' }],
     learn: async () => ({ id: 'ENG-8' }),
@@ -69,8 +69,8 @@ describe('real dsh tool registry', () => {
     isolated.plugin(SystemPrompt, {})
     isolated.plugin(Tools, {})
     await new Promise(r => setTimeout(r, 300))
-    isolated.skills = { register: () => () => {} }
-    isolated.commands = { register: () => () => {} }
+    isolated.skills = { register: () => () => {} } as never
+    isolated.commands = { register: () => () => {} } as never
     apply(isolated, cfg({}), { recall: async () => { throw new Error('store gone') } })
     const def = isolated.tools.get('plur_recall')!
     const value = await def.execute({ query: 'x' }, { signal: new AbortController().signal } as never)

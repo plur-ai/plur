@@ -19,6 +19,7 @@ import { Config } from '../src/config.js'
 import { apply } from '../src/index.js'
 import type { PlurClient } from '../src/client.js'
 import { cfg } from './helpers/config.js'
+import { fakeAgent } from './helpers/agent.js'
 
 /** Boot a Cordis context carrying the real system-prompt service. */
 async function bootHost() {
@@ -55,11 +56,11 @@ async function bootHost() {
      * @deepseek-ai/dsh-plan-mode relies on.
      */
     async renderedPrompt(agentId = 'a1'): Promise<string> {
-      const assembled = await ctx.systemPrompt.assemble({ agent: { id: agentId, session: { id: `s-${agentId}`, events: [] } } })
+      const assembled = await ctx.systemPrompt.assemble({ agent: fakeAgent(agentId) })
       return (assembled.sections as Array<{ text: string }>).map(s => s.text).join('\n')
     },
     async sectionNames(agentId = 'a1'): Promise<string[]> {
-      const assembled = await ctx.systemPrompt.assemble({ agent: { id: agentId, session: { id: `s-${agentId}`, events: [] } } })
+      const assembled = await ctx.systemPrompt.assemble({ agent: fakeAgent(agentId) })
       return (assembled.sections as Array<{ name: string }>).map(s => s.name)
     },
   }
@@ -258,7 +259,7 @@ describe('real dsh system-prompt integration', () => {
     await turn(a1)
     await turn(a2)
 
-    const assembled = await host.ctx.systemPrompt.assemble({ agent: { id: 'a1', session: { id: 's-a1', events: [] } } })
+    const assembled = await host.ctx.systemPrompt.assemble({ agent: fakeAgent('a1') })
     const memory = (assembled.sections as Array<{ name: string; text: string }>)
       .filter(s => s.name === 'plur:memory')
     // One section per agent id, each reading its own cache entry.

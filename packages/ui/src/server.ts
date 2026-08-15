@@ -56,6 +56,40 @@ function revealFolder(path: string): void {
   }
 }
 
+/**
+ * Is this request from the viewer's own page, rather than another site?
+ *
+ * Two attacks made this necessary, both demonstrated against the running
+ * server:
+ *
+ *   - CSRF on `POST /open-store`. A cross-origin FORM post is a simple
+ *     request with no preflight, so "it is a POST, not an img tag" was not the
+ *     protection the code claimed. 25 cross-origin posts produced 25 real
+ *     file-manager spawns; a loop is a desktop denial of service. `plur ui`
+ *     uses a fixed port, so nothing even has to be guessed.
+ *   - DNS rebinding on `GET /`. Binding 127.0.0.1 keeps the network out but
+ *     not a browser the attacker already controls: a page on their domain with
+ *     a short-TTL record pointing at 127.0.0.1 becomes same-origin and can
+ *     read the entire engram store.
+ *
+ * `Sec-Fetch-Site` is sent by every current browser and is not settable by
+ * script. `Host` closes rebinding, because a rebound request still carries the
+ * attacker's hostname. Non-browser clients (curl) send neither and are allowed
+ * through on GET — they are not the threat, and a terminal user fetching their
+ * own viewer should not be blocked.
+ */
+function isSameOrigin(req: { headers: Record<string, string | string[] | undefined> }): boolean {
+  const site = req.headers['sec-fetch-site']
+  return site === undefined || site === 'same-origin' || site === 'none'
+}
+
+/** Is the Host header one of ours? Rebinding arrives with the attacker's. */
+function hostIsLoopback(req: { headers: Record<string, string | string[] | undefined> }): boolean {
+  const host = String(req.headers.host ?? '')
+  const name = host.replace(/:\d+$/, '').replace(/^\[|\]$/g, '')
+  return name === '127.0.0.1' || name === 'localhost' || name === '::1' || name === ''
+}
+
 /** Minimal HTML error page. Escaped: a store path is not trusted markup. */
 function errorPage(message: string): string {
   const safe = message
@@ -87,16 +121,31 @@ export function createUiServer(opts: UiServerOptions): Server {
         'cache-control': 'no-store',
         'x-content-type-options': 'nosniff',
         // The page loads nothing external; say so.
-        'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; img-src data:",
+        // frame-ancestors 'none' keeps the page out of an attacker's iframe,
+        // which is the other half of the rebinding story.
+        'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; img-src data:; frame-ancestors 'none'",
+        'x-frame-options': 'DENY',
         'referrer-policy': 'no-referrer',
       }
 
       const url = new URL(req.url ?? '/', 'http://localhost')
 
+      // Rebinding check first: it applies to every route, including the read.
+      if (!hostIsLoopback(req)) {
+        res.writeHead(403, headers)
+        res.end(errorPage('Refused: this viewer only answers to localhost.'))
+        return
+      }
+
       // The one write-shaped route, and it writes nothing: it reveals a folder.
       // A POST rather than a GET so a stray `img` tag on any page in the
       // browser cannot pop a file manager window on the operator's desktop.
       if (url.pathname === '/open-store' && req.method === 'POST' && opts.openPath) {
+        if (!isSameOrigin(req)) {
+          res.writeHead(403, headers)
+          res.end(errorPage('Refused: that request did not come from this page.'))
+          return
+        }
         revealFolder(opts.openPath)
         const back = url.searchParams.get('lang') === 'zh' ? '/?lang=zh' : '/'
         res.writeHead(303, { ...headers, location: back })

@@ -86,6 +86,11 @@ export function createViewer(
     return await startViewer({
       // Reloaded per request, so learning something mid-session and
       // refreshing shows it.
+      // Unscoped on purpose, and said so in the command's own output: the
+      // viewer is a human-initiated, loopback-only window onto the store the
+      // user owns. Scoping it to the calling session would hide the very
+      // engrams someone opens it to find. The prompt path is scoped; this is
+      // not the prompt path.
       load: async () => (await plur.list?.()) ?? [],
       where,
       // Revealing a folder is harmless locally, and the server binds loopback

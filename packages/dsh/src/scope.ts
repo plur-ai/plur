@@ -8,6 +8,7 @@
  *
  * @module
  */
+import { createHash } from 'node:crypto'
 import { basename } from 'node:path'
 
 /** Last-resort scope when there is no workspace to derive one from. */
@@ -73,8 +74,7 @@ export function createScopeResolver(
       // be one shared literal: two unconfigured repos sharing `project:dsh` is a
       // cross-project leak between exactly the users least likely to notice.
       // Derive per workspace, the way @plur-ai/core's own store discovery does.
-      scope ??= config.scope
-        ?? (cwd ? `project:${basename(cwd)}` : DEFAULT_SCOPE)
+      scope ??= config.scope ?? (cwd ? derive(cwd) : DEFAULT_SCOPE)
       resolved.set(key, scope)
       return scope
     },
@@ -103,5 +103,23 @@ export function readScope(scope: string, includeGlobal: boolean): { scope: strin
     scope,
     scopes: includeGlobal && scope !== 'global' ? [scope, 'global'] : [scope],
   }
+}
+
+/**
+ * Derive a scope from a workspace path.
+ *
+ * The directory NAME alone collides: `~/clients/acme/api` and
+ * `~/clients/northwind/api` both become `project:api`, pooling two clients'
+ * engrams — and `api`, `web`, `server`, `docs` are the common cases, so this is
+ * the normal outcome rather than an edge one. A short digest of the full path
+ * disambiguates while keeping the name readable, which matters because this
+ * string is what a user sees in `plur ui` and types into `.plur.yaml`.
+ *
+ * @param cwd - the workspace directory.
+ * @returns the derived scope.
+ */
+function derive(cwd: string): string {
+  const digest = createHash('sha256').update(cwd).digest('hex').slice(0, 6)
+  return `project:${basename(cwd)}-${digest}`
 }
 

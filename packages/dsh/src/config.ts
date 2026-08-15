@@ -52,12 +52,6 @@ export interface Config {
   autoLearn: boolean
   /** Record an episode summary at turn end. */
   autoCapture: boolean
-  /**
-   * Reranker tier. Stays `off` by default: the bge reranker peaks around 2GB RSS
-   * and runs in the HOST's process, where a native OOM cannot be caught by a JS
-   * try/catch and would take the user's agent down with it.
-   */
-  reranker: 'off' | 'ms-marco-minilm-l6' | 'bge-reranker-v2-m3'
   /** Hard bound on any single PLUR call. */
   timeoutMs: number
   /** Register the `/plur-memory` command that opens the memory viewer. */
@@ -73,7 +67,6 @@ export const Config: z<Config> = z.object({
   refreshIntervalMs: z.natural().default(0),
   autoLearn: z.boolean().default(true),
   autoCapture: z.boolean().default(true),
-  reranker: z.union(['off', 'ms-marco-minilm-l6', 'bge-reranker-v2-m3']).default('off'),
   timeoutMs: z.natural().min(1).default(5000),
   viewerEnabled: z.boolean().default(true),
 })

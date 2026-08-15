@@ -33,7 +33,11 @@ describe('Config', () => {
     expect(c.autoCapture).toBe(true)
   })
 
-  it('defaults the reranker off — bge peaks at ~2GB RSS and this runs in the host process', () => {
-    expect(cfg({}).reranker).toBe('off')
+  it('exposes no reranker option — core owns that, via PLUR_RERANKER', () => {
+    // It was validated, documented and warned about here, and read by nothing.
+    // Core's per-call rerank flag is a boolean that forces bge-reranker-v2-m3,
+    // the ~2GB model this config claimed to keep off, so the option could not
+    // have been honoured faithfully even if it had been wired.
+    expect('reranker' in cfg({})).toBe(false)
   })
 })
