@@ -1,6 +1,6 @@
-import type { Engram } from './schemas/engram.js'
+import type { Engram, MeasuredUnder } from './schemas/engram.js'
 import type { InjectionSource } from './history.js'
-export type { Engram, KnowledgeAnchor, Association } from './schemas/engram.js'
+export type { Engram, KnowledgeAnchor, Association, MeasuredUnder } from './schemas/engram.js'
 export type { Episode } from './schemas/episode.js'
 export type { PlurConfig } from './schemas/config.js'
 export type { PackManifest } from './schemas/pack.js'
@@ -49,6 +49,13 @@ export interface LearnContext {
    * intentional update is not a contradiction.
    */
   supersedes?: string[]
+  /**
+   * Measurement context for numeric or benchmark-derived claims (#869).
+   * Records model, source_type, hardware, dataset, and/or date under which
+   * the asserted value was measured. When omitted, the field is absent from
+   * the stored engram (not null). See MeasuredUnderSchema for field details.
+   */
+  measured_under?: MeasuredUnder
   /**
    * Session key this write belongs to (convergence Phase 2).
    *

@@ -587,4 +587,64 @@ describe('plur doctor', () => {
     expect(report.cursorProjectDetected).toBe(false)
     expect(report.overall).toBe('ok')
   })
+
+  // ── Stale content_hash detection (#911) ──────────────────────────────────
+  // Advisory only: a stale hash does not fail overall, but doctor must report
+  // the count so users know to run `plur reindex-hashes --apply`.
+
+  it('reports staleContentHashes=0 when the store has no engrams', () => {
+    const { stdout } = runDoctor()
+    const report = JSON.parse(stdout)
+
+    expect(report.staleContentHashes).toBe(0)
+  })
+
+  it('reports staleContentHashes > 0 and does not fail overall when engrams have stale hashes (#911)', () => {
+    // Write an engrams.yaml directly into the tmp home dir, which doctor
+    // loads via PLUR_PATH. The content_hash is deliberately wrong — a hash
+    // of "" (the pre-#896 SHA-256 of the empty string after ASCII-only
+    // normalizeStatement stripped all non-Latin characters), while the
+    // statement is plain ASCII and would compute a different hash.
+    const plurDir = join(home, '.plur')
+    mkdirSync(plurDir, { recursive: true })
+    const staleHash = 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855' // SHA-256("")
+    // Minimum valid engram: id, status, type, scope, statement — all fields
+    // without defaults that the Zod schema requires. activation uses its
+    // schema default. content_hash is optional but present here and stale.
+    writeFileSync(join(plurDir, 'engrams.yaml'), [
+      'engrams:',
+      '  - id: ENG-2026-0101-001',
+      '    status: active',
+      '    type: behavioral',
+      '    scope: global',
+      '    statement: "this is a perfectly valid ASCII statement"',
+      `    content_hash: "${staleHash}"`,
+    ].join('\n'))
+
+    writeGlobalSettings({
+      hooks: {
+        UserPromptSubmit: [
+          { hooks: [{ type: 'command', command: 'npx @plur-ai/cli hook-inject' }] },
+        ],
+      },
+      mcpServers: {
+        plur: { command: '/bin/sh', args: ['-lc', 'exec npx -y @plur-ai/mcp@latest'] },
+      },
+    })
+
+    const stdout = (() => {
+      try {
+        return execSync(`node ${CLI} doctor --no-handshake --json`, {
+          encoding: 'utf-8', timeout: 15000,
+          env: { ...process.env, HOME: home, USERPROFILE: home, PLUR_PATH: plurDir, PLUR_DOCTOR_TIMEOUT: '2' },
+          cwd: home,
+        })
+      } catch (err: any) { return err.stdout?.toString() ?? '' }
+    })()
+    const report = JSON.parse(stdout)
+
+    expect(report.staleContentHashes).toBeGreaterThan(0)
+    // Advisory only — must not drive overall to fail on its own.
+    expect(report.overall).toBe('ok')
+  })
 })

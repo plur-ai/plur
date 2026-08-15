@@ -230,6 +230,28 @@ describe('RemoteStore against stub server', () => {
       .rejects.toThrow('Remote store append failed: 401')
   })
 
+  it('#912 append error message is truncated to 200 chars and control chars are stripped', async () => {
+    const longHtml = '<html>' + 'x'.repeat(300) + '</html>'
+    const withControlChars = 'error:\x00\x01\x1F\x7Fmalformed'
+    server.appendErrorResponse = { status: 500, body: longHtml }
+    const store = new RemoteStore(baseUrl, TOKEN, 'group:test')
+    const err1 = await store.append({ id: 'x', scope: 'group:test', status: 'active', statement: 'y' } as any)
+      .then(() => null).catch((e: Error) => e)
+    expect(err1).not.toBeNull()
+    // Error includes status and truncated body (≤200 chars after 'Remote store append failed: 500 ')
+    const msg1 = err1!.message
+    expect(msg1).toContain('Remote store append failed: 500')
+    expect(msg1.length).toBeLessThanOrEqual('Remote store append failed: 500 '.length + 200)
+
+    server.appendErrorResponse = { status: 503, body: withControlChars }
+    const err2 = await store.append({ id: 'x', scope: 'group:test', status: 'active', statement: 'y' } as any)
+      .then(() => null).catch((e: Error) => e)
+    expect(err2).not.toBeNull()
+    // No raw control chars in the message
+    expect(err2!.message).not.toMatch(/[\x00-\x1F\x7F]/)
+    server.appendErrorResponse = null
+  })
+
   it('scope filtering returns only matching engrams', async () => {
     const store = new RemoteStore(baseUrl, TOKEN, 'group:alpha', { ttlMs: 0 })
     await store.append({ id: 'tmp', scope: 'group:alpha', status: 'active', statement: 'alpha-1' } as any)

@@ -2532,6 +2532,8 @@ export class Plur {
           superseded_by: [],
         } : undefined,
         pinned: context?.pinned === true ? true : undefined,
+        // #869: measurement context — present only when the caller supplies it.
+        measured_under: context?.measured_under,
       }
 
       // #240: supersedes is a graph edge, not a temporality enum — write the
@@ -3084,6 +3086,8 @@ export class Plur {
         supersedes: context!.supersedes!, superseded_by: [],
       } : undefined,
       pinned: context?.pinned === true ? true : undefined,
+      // #869: measurement context — present only when the caller supplies it.
+      measured_under: context?.measured_under,
     }
     // Echo marker for extracted expiry (#347) — mirrors the learn() stamping
     // so the remote-routed MCP response can confirm the parse too.
