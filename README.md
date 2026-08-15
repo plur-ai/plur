@@ -128,9 +128,11 @@ The plugin registers automatically via Hermes' plugin system. It injects relevan
 For Python environments that aren't Hermes:
 
 ```bash
-pip install plur-ai
+pip install "plur-ai @ git+https://github.com/plur-ai/plur.git#subdirectory=packages/python"
 npm install -g @plur-ai/cli   # bridge (required)
 ```
+
+> **Note:** `plur-ai` is not yet on PyPI — use the git install above until [#915](https://github.com/plur-ai/plur/issues/915) is resolved.
 
 ```python
 from plur_ai import Plur
