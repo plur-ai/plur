@@ -77,10 +77,10 @@ importers:
       '@plur-ai/core':
         specifier: workspace:*
         version: link:../core
+    devDependencies:
       '@plur-ai/ui':
         specifier: workspace:*
         version: link:../ui
-    devDependencies:
       '@types/node':
         specifier: ^25.5.0
         version: 25.5.0
@@ -146,9 +146,6 @@ importers:
       '@plur-ai/core':
         specifier: workspace:*
         version: link:../core
-      '@plur-ai/ui':
-        specifier: workspace:*
-        version: link:../ui
       js-yaml:
         specifier: '>=4.3.1 <5'
         version: 4.3.1
@@ -165,6 +162,9 @@ importers:
       '@deepseek-ai/schemastery':
         specifier: ^3.18.1
         version: 3.18.1
+      '@plur-ai/ui':
+        specifier: workspace:*
+        version: link:../ui
       '@types/js-yaml':
         specifier: ^4.0.9
         version: 4.0.9

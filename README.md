@@ -425,11 +425,13 @@ While search is a core part of PLUR (finding the right engram to inject), the se
 | [`@plur-ai/claw`](packages/claw) | OpenClaw ContextEngine plugin |
 | [`@plur-ai/cli`](packages/cli) | CLI — plur learn / recall / inject / status |
 | [`@plur-ai/dsh`](packages/dsh) | DeepSeek Harness plugin — engrams in the prompt, no tool call |
-| [`@plur-ai/ui`](packages/ui) | Local memory viewer — the pages behind `plur ui` |
 | [`@plur-ai/migrate`](packages/migrate) | Store migrations, shipped with the release they migrate to |
 | [`plur-hermes`](packages/hermes) | Hermes Agent plugin (Python, via CLI bridge) |
 | [`plur-ai`](packages/python) | Python SDK — learn/recall/inject for LangChain, llama.cpp, scripts |
 | [`plur-langchain`](packages/langchain) | LangChain BaseMemory + BaseChatMessageHistory adapter |
+
+`packages/ui` is internal — the memory viewer's pages, bundled into the CLI and
+the DeepSeek Harness plugin rather than published. It is not on npm.
 
 ## Architecture
 

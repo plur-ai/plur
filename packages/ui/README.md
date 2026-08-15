@@ -1,9 +1,21 @@
-# @plur-ai/ui
+# @plur-ai/ui — internal
 
-**See what your agents remember.** A local memory viewer for PLUR — browse every engram, and find out which ones are actually being used.
+**Not published.** This package is `private: true`. It holds the memory
+viewer's pages, and it is bundled into `@plur-ai/cli` and `@plur-ai/dsh` at
+build time (`noExternal: ['@plur-ai/ui']`) rather than shipped to npm.
+
+Why: the viewer is the pages behind two commands, not a library anyone
+installs. Publishing it would add a name, a version track, a publish-ordering
+constraint and a support surface, to save ~45KB in each of two first-party
+consumers. Extracting and publishing it later stays open; npm burns a name and
+a version permanently, so this is the reversible direction.
+
+**See what your agents remember.** Browse every engram, and find out which ones
+are actually being used:
 
 ```bash
-plur ui
+plur ui              # the CLI
+/plur-memory         # inside DeepSeek Harness
 ```
 
 Opens in your browser. Everything stays on your machine.

@@ -85,16 +85,14 @@ pnpm --filter @plur-ai/core build
 fails the suite rather than shipping. dsh is pinned to a pre-1.0 DeepSeek Harness
 dependency line (`0.1.0-rc.6`) and moves on that ecosystem's cadence, not core's.
 
-**ui track** (independent — only bumped when `--ui <ver>` is passed to release.sh):
-
-- `packages/ui/package.json` — the only place; nothing in the viewer reports
-  its own version, so there is no constant to keep in sync.
-
-`@plur-ai/ui` is a runtime dependency of BOTH `@plur-ai/cli` and `@plur-ai/dsh`
-via `workspace:*`, so release.sh publishes it FIRST. pnpm rewrites
-`workspace:*` to a concrete version at pack time, and a dependent published
-against a version the registry does not have yet is unresolvable for anyone who
-installs in between.
+**ui — no track, not published.** `packages/ui` is `private: true`. The memory
+viewer is the pages behind `plur ui` and `/plur-memory`, not a library anyone
+installs, so it is bundled into `@plur-ai/cli` and `@plur-ai/dsh` at build time
+(`noExternal: ['@plur-ai/ui']`) rather than shipped as its own package. That
+costs ~45KB in each consumer and buys back a name, a version track, a publish
+ordering constraint and a support surface. Extracting and publishing it later
+stays possible; npm burns a name and a version permanently, so this is the
+reversible direction.
 
 **Langchain track** (independent — bumped separately when `plur-langchain` ships):
 

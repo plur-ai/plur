@@ -14,12 +14,12 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@plur-ai/core": "workspace:*",
-    "@plur-ai/ui": "workspace:*"
+    "@plur-ai/core": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^25.5.0",
-    "better-sqlite3": "^12.0.0"
+    "better-sqlite3": "^12.0.0",
+    "@plur-ai/ui": "workspace:*"
   },
   "peerDependencies": {
     "@plur-ai/core": ">=0.3.0"

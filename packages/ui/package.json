@@ -39,5 +39,6 @@
       "types": "./dist/server.d.ts",
       "import": "./dist/server.js"
     }
-  }
+  },
+  "private": true
 }

@@ -15,9 +15,9 @@ Memory you can look at, and PLUR inside DeepSeek Harness.
   whole engram. Read-only: browsing memory never mutates it, including through a lazy write
   path such as decay. Binds `127.0.0.1` by default and deliberately — the viewer serves an
   entire memory store with **no authentication**; `--host` widens it and prints a warning.
-  The pages ship as [`@plur-ai/ui`](packages/ui), a zero-dependency package of pure render
-  functions, with the HTTP host behind a `@plur-ai/ui/server` subpath so the root entry
-  stays free of `node:http`.
+  The pages live in `packages/ui` — zero-dependency, pure render functions, with the HTTP
+  host behind a `/server` subpath so the root entry stays free of `node:http`. It is
+  internal and bundled into its consumers, not published.
 
 - **`@plur-ai/dsh` — a native DeepSeek Harness plugin.** Not an MCP bridge: PLUR mounts as
   a Cordis plugin and writes engrams into the system prompt, so the model reads them the
