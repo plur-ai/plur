@@ -453,7 +453,13 @@ export function selectAndSpread(
         raw += embBoost
       }
       if (raw > 0) {
-        scored.push({ ...engram, keyword_match: raw, raw_score: raw, score: raw })
+        // Stamp `_pack` so the pack name survives stripAssociations/stripScoring into
+        // WireEngram — the telemetry loop in _inject reads `_pack` to bucket
+        // pack_counts. The corpus path no longer carries these rows (filtered by the
+        // #901 fix), so the stamp must come from the pack loop instead.
+        const scored_entry = { ...engram, keyword_match: raw, raw_score: raw, score: raw } as any
+        scored_entry._pack = pack.manifest.name
+        scored.push(scored_entry)
       }
     }
   }

@@ -231,13 +231,11 @@ describe('Session & store tools', () => {
 
       const counts = endResult.injection_summary.pack_counts as Record<string, number>
       expect(counts['telemetry-pack'], `bucketed as ${JSON.stringify(counts)}`).toBeGreaterThan(0)
-      // Deliberately NOT asserting `__personal__` is absent. With the fix in
-      // place this store still reports one personal injection despite holding
-      // no personal engram, which means the candidate pool carries a second
-      // copy of the pack row without its `_pack` marker — `_loadAllEngrams`
-      // merges pack engrams AND `_inject` loads packs again. That is a
-      // separate defect (a double-counted injection), and pinning it here
-      // would couple this test to it; it is noted rather than asserted.
+      // #901 removed the double-injection that used to produce a spurious
+      // __personal__ entry for this pack-only store. The `_pack` stamp is now
+      // applied in the selectAndSpread pack loop (rather than propagated from
+      // the corpus-merged copy), so every pack-sourced injection buckets under
+      // its pack name and nothing leaks into __personal__.
       expect(counts['telemetry-pack']).toBeGreaterThanOrEqual(1)
       rmSync(packSource, { recursive: true, force: true })
     })
