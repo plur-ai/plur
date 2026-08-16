@@ -104,7 +104,7 @@ function makeEngram(id: string, statement: string, scope: string, domain?: strin
       frequency: 1,
       retrieval_strength: 0.5,
     },
-  } as Engram
+  } as unknown as Engram
 }
 
 // ---------------------------------------------------------------------------
@@ -148,7 +148,7 @@ describe('_filterEngrams(): primary-store pushdown (#906)', () => {
   it('passes status:active to loadFiltered — inactive rows are excluded', async () => {
     adapter.seed([
       makeEngram('ENG-2026-0815-003', 'active fact', 'global'),
-      { ...makeEngram('ENG-2026-0815-004', 'retired fact', 'global'), status: 'inactive' } as Engram,
+      { ...makeEngram('ENG-2026-0815-004', 'retired fact', 'global'), status: 'retired' } as unknown as Engram,
     ])
 
     await plur.recallHybrid('fact')
