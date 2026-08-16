@@ -4437,6 +4437,30 @@ export class Plur {
         domain: options?.domain,
       })
     } else {
+      const adapter = this._primaryQueryAdapter()
+      if (adapter && !this.pgliteAdapter) {
+        // #906: primary-store adapter (e.g. Postgres) supports server-side
+        // filtered load. Use it instead of _loadAllEngrams + in-memory filter:
+        // one scoped query replaces a full table read on every recallHybrid call.
+        //
+        // PGLite is excluded even though it also exposes role='primary' — its
+        // SQLite index tracks only file-backed stores, and the PGLite hybrid
+        // path needs the full corpus (including packs and remote stores) that
+        // _loadAllEngrams provides.
+        //
+        // Temporal validity and min_strength are applied below, same as every
+        // other path. _engramsOutsidePrimaryStore applies active/scope/domain
+        // filters to packs and remote secondary stores.
+        const primaryRows = await adapter.loadFiltered({
+          status: 'active',
+          scope: options?.scope,
+          scopes: options?.scopes,
+          visibilityGrants: this._grantedScopes(),
+          domain: options?.domain,
+        })
+        const outsiders = await this._engramsOutsidePrimaryStore(options)
+        engrams = [...primaryRows, ...outsiders]
+      } else {
       // PGLite path (or no-index path): read from YAML so this code stays
       // synchronous. PGLite is currently used for vector/Cypher queries
       // and remains in sync via _syncIndex on every write — but the
@@ -4469,6 +4493,7 @@ export class Plur {
         // inject.ts INJECT_GLOBAL_IS_TARGETED).
         const visible = makeVisibilityPredicate(options.scope, this._grantedScopes())
         engrams = engrams.filter(e => visible(e.scope))
+      }
       }
     }
     // Temporal validity: exclude expired or not-yet-valid engrams.
