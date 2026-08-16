@@ -76,6 +76,24 @@ pnpm --filter @plur-ai/core build
 - `packages/claw/openclaw.plugin.json` — `version` field
 - `packages/claw/test/hello.test.ts` — version assertion
 
+**dsh track** (independent — only bumped when `--dsh <ver>` is passed to release.sh):
+
+- `packages/dsh/package.json`
+- `packages/dsh/src/index.ts` — `export const VERSION`
+
+`packages/dsh/test/manifest.test.ts` asserts these two agree, so a half-done bump
+fails the suite rather than shipping. dsh is pinned to a pre-1.0 DeepSeek Harness
+dependency line (`0.1.0-rc.6`) and moves on that ecosystem's cadence, not core's.
+
+**ui — no track, not published.** `packages/ui` is `private: true`. The memory
+viewer is the pages behind `plur ui` and `/plur-memory`, not a library anyone
+installs, so it is bundled into `@plur-ai/cli` and `@plur-ai/dsh` at build time
+(`noExternal: ['@plur-ai/ui']`) rather than shipped as its own package. That
+costs ~45KB in each consumer and buys back a name, a version track, a publish
+ordering constraint and a support surface. Extracting and publishing it later
+stays possible; npm burns a name and a version permanently, so this is the
+reversible direction.
+
 **Langchain track** (independent — bumped separately when `plur-langchain` ships):
 
 - `packages/langchain/pyproject.toml`

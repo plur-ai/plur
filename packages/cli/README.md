@@ -54,12 +54,33 @@ plur forget ENG-2026-0329-001
 | `plur capture <summary>` | Record an episode to the timeline |
 | `plur timeline [query]` | Query the episodic timeline |
 | `plur status` | System health check |
+| `plur ui` | Open the memory viewer in a browser |
 | `plur sync` | Cross-device sync via git (engram data only — secrets and derived files are never committed) |
 | `plur packs list` | List installed engram packs |
 | `plur packs install <source>` | Install an engram pack |
 | `plur import --from <source> --path <file>` | Import memories from another system (see below) |
 | `plur init` | Install Claude Code hooks + local hook binary for automatic injection |
 | `plur doctor` | Diagnose installation health (hooks, MCP, shim, embedder) |
+
+## The memory viewer
+
+```bash
+plur ui                    # opens http://127.0.0.1:7777/ in your browser
+plur ui --port 8080        # somewhere else
+plur ui --no-open          # print the URL, don't launch a browser
+```
+
+A local page listing every engram: what was learned, what actually gets
+recalled, and how often, plus a written-per-day chart and the most-recalled
+list. Selecting a row expands the whole engram.
+
+Read-only — browsing memory never mutates it, including through a lazy write
+path such as decay. Available in English and 中文; it follows your browser's
+`Accept-Language`, or force it with `?lang=zh`.
+
+Binds `127.0.0.1` by default and deliberately: the viewer serves your entire
+memory store with **no authentication**. `--host` widens it and prints a
+warning; only do that on a network you control.
 
 ## Importing from other memory systems
 

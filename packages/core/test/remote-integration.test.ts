@@ -31,6 +31,7 @@ import { tmpdir } from 'os'
 import yaml from 'js-yaml'
 import { RemoteStore } from '../src/store/remote-store.js'
 import { Plur } from '../src/index.js'
+import { storePrefix } from '../src/engrams.js'
 import { StubServer } from './helpers/stub-server.js'
 
 const TOKEN = 'integration-test-token'
@@ -458,6 +459,37 @@ describe('Plur integration with stub server', () => {
       const local = yaml.load(readFileSync(localYaml, 'utf-8')) as { engrams?: any[] } | null
       return (local?.engrams ?? []).find((e: any) => e.statement === 'integration test engram')
     }, { timeout: 10_000, interval: 25 }).toBeUndefined()
+  })
+
+  it('#914 readIdFor reports a remote write in the shape recall hands back', async () => {
+    // The read paths namespace a store's ids with `ENG-{storePrefix(scope)}-`
+    // (remote-recall.ts), so a surface reporting an id next to recall results
+    // has to use that form. learnRouted keeps returning the server's own id:
+    // that is what the remote holds, and callers talking to it need it.
+    const plur = new Plur({ path: primaryDir })
+    const engram = await plur.learnRouted('round-trip id shape', {
+      scope: 'group:test',
+      type: 'behavioral',
+    })
+
+    await expect.poll(() => server.engramCount, { timeout: 10_000, interval: 25 }).toBe(1)
+
+    const prefix = storePrefix('group:test')
+    expect(engram.id).toBe('ENG-SRV-001')
+    expect(plur.readIdFor(engram)).toBe(`ENG-${prefix}-SRV-001`)
+  })
+
+  it('#914 readIdFor leaves an id alone when the scope has no remote store', async () => {
+    const plur = new Plur({ path: primaryDir })
+    // 'local' is not among the configured stores, so nothing namespaces it.
+    expect(plur.readIdFor({ id: 'ENG-2026-08-14-001', scope: 'local' })).toBe('ENG-2026-08-14-001')
+  })
+
+  it('#914 readIdFor is idempotent, so an already-namespaced id is not doubled', async () => {
+    const plur = new Plur({ path: primaryDir })
+    const prefix = storePrefix('group:test')
+    const already = `ENG-${prefix}-SRV-009`
+    expect(plur.readIdFor({ id: already, scope: 'group:test' })).toBe(already)
   })
 
   it('#768 learn with valid_until + supersedes transmits them flat on the wire (real routed path)', async () => {

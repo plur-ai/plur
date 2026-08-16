@@ -1,6 +1,6 @@
 #!/bin/bash
 # PLUR Release Script
-# Usage: ./scripts/release.sh <version> [--claw <claw-version>] [--dry-run] [--skip-tweet] [--preview-tweet]
+# Usage: ./scripts/release.sh <version> [--claw <claw-version>] [--dsh <dsh-version>] [--dry-run] [--skip-tweet] [--preview-tweet]
 #
 # Modes:
 #   default          Full release (bump, build, test, commit, tag, push,
@@ -13,6 +13,10 @@
 #                    claw in lockstep with core would regress its npm version
 #                    and fail publish. Specify explicitly when claw should
 #                    ride along with this release.
+#   --dsh <ver>      Also bump @plur-ai/dsh at <ver>. Like claw, dsh has its own
+#                    version track: it is pinned to a pre-1.0 DeepSeek Harness
+#                    dependency line and moves on that ecosystem's cadence, not
+#                    core's. Specify explicitly when dsh should ride along.
 #   --dry-run        Bump + build + test + tweet preview, then stop before commit.
 #                    Files ARE mutated (versions bumped) — revert with git.
 #   --preview-tweet  Print the tweet that would be posted for <version>, exit.
@@ -70,6 +74,7 @@ DRY_RUN=false
 SKIP_TWEET=false
 PREVIEW_TWEET=false
 CLAW_VERSION=""
+DSH_VERSION=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -80,6 +85,12 @@ while [ $# -gt 0 ]; do
       shift
       CLAW_VERSION="${1:-}"
       [ -n "$CLAW_VERSION" ] && shift
+      ;;
+    --dsh)
+      shift
+      DSH_VERSION="${1:-}"
+      [ -n "$DSH_VERSION" ] && shift
+  
       ;;
     --*)
       echo "Unknown flag: $1" >&2
@@ -300,6 +311,28 @@ else
   echo "  (claw stays at $CURRENT_CLAW — pass --claw <version> to bump and publish)"
 fi
 
+# dsh is on an independent version track — only bump if --dsh was provided.
+# It is pinned to a pre-1.0 DeepSeek Harness dependency line and moves on that
+# ecosystem's cadence; bumping it in lockstep with core would churn its npm
+# version for releases that do not touch it.
+if [ -n "$DSH_VERSION" ]; then
+  echo "  --- dsh bumps (independent track: $DSH_VERSION) ---"
+  node -e "
+    const fs = require('fs');
+    const path = './packages/dsh/package.json';
+    const pkg = JSON.parse(fs.readFileSync(path, 'utf8'));
+    pkg.version = '$DSH_VERSION';
+    fs.writeFileSync(path, JSON.stringify(pkg, null, 2) + '\n');
+  "
+  echo "  ✓ packages/dsh/package.json"
+
+  sed -i '' "s/export const VERSION = '.*'/export const VERSION = '$DSH_VERSION'/" packages/dsh/src/index.ts
+  echo "  ✓ packages/dsh/src/index.ts"
+else
+  CURRENT_DSH=$(node -e "console.log(require('./packages/dsh/package.json').version)")
+  echo "  (dsh stays at $CURRENT_DSH — pass --dsh <version> to bump and publish)"
+fi
+
 # MCP Registry / ClawHub listing — both the top-level version and the package
 # version pin must track the release; without this the registry directs users
 # to install a stale version of @plur-ai/mcp.
@@ -517,6 +550,9 @@ done
 if [ -n "$CLAW_VERSION" ]; then
   preflight_check claw "$CLAW_VERSION" || PREFLIGHT_OK=false
 fi
+if [ -n "$DSH_VERSION" ]; then
+  preflight_check dsh "$DSH_VERSION" || PREFLIGHT_OK=false
+fi
 if [ "$PREFLIGHT_OK" != true ]; then
   echo ""
   echo "✗ Pre-flight failed — nothing committed, tagged, or published."
@@ -620,6 +656,14 @@ if [ -n "$CLAW_VERSION" ]; then
   pnpm --filter "@plur-ai/claw" publish --access public --no-git-checks --tag next 2>&1 | tail -1
 else
   echo "  @plur-ai/claw: skipped (no --claw flag)"
+fi
+# dsh last: it depends on core. The viewer it serves is bundled into its own
+# dist, so there is no @plur-ai/ui to publish first.
+if [ -n "$DSH_VERSION" ]; then
+  echo -n "  @plur-ai/dsh@$DSH_VERSION → @next..."
+  pnpm --filter "@plur-ai/dsh" publish --access public --no-git-checks --tag next 2>&1 | tail -1
+else
+  echo "  @plur-ai/dsh: skipped (no --dsh flag)"
 fi
 echo ""
 
@@ -807,6 +851,10 @@ for pkg in core cli mcp migrate; do
   echo -n "  @plur-ai/$pkg@$VERSION → @latest..."
   npm dist-tag add "@plur-ai/$pkg@$VERSION" latest 2>&1 | tail -1
 done
+if [ -n "$DSH_VERSION" ]; then
+  echo -n "  @plur-ai/dsh@$DSH_VERSION → @latest..."
+  npm dist-tag add "@plur-ai/dsh@$DSH_VERSION" latest 2>&1 | tail -1
+fi
 if [ -n "$CLAW_VERSION" ]; then
   echo -n "  @plur-ai/claw@$CLAW_VERSION → @latest..."
   npm dist-tag add "@plur-ai/claw@$CLAW_VERSION" latest 2>&1 | tail -1

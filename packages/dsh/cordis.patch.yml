@@ -1,0 +1,15 @@
+# Mount PLUR memory into a DeepSeek Harness profile.
+#
+# Engrams reach the model through a system-prompt section that is re-rendered on
+# every assembly, NOT through an appended user/message — dsh projects injected
+# user messages into derived history verbatim and never removes them, so tail
+# injection would accrete a block per step until compaction.
+- insert:
+    - id: plur
+      name: "@plur-ai/dsh"
+      config:
+        injectionMode: content
+        injectionBudget: 2000
+        autoLearn: true
+        autoCapture: true
+        viewerEnabled: true

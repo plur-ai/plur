@@ -6,7 +6,7 @@ import { detectPlurStorage, type PlurPaths } from './storage.js'
 import { IndexedStorage } from './storage-indexed.js'
 import { PGLiteAdapter } from './storage-pglite.js'
 import { loadConfig } from './config.js'
-import { generateEngramId, engramIdDatePrefix, loadAllPacks, storePrefix, initFilesystemStore } from './engrams.js'
+import { generateEngramId, engramIdDatePrefix, loadAllPacks, storePrefix, namespaceEngramId, initFilesystemStore } from './engrams.js'
 import { maybeDailyBackup } from './backup.js'
 import { logger } from './logger.js'
 import { searchEngrams, ftsTokenize, extendCorpusStats, searchTextFrom } from './fts.js'
@@ -100,6 +100,10 @@ export { EngramStoreUnreadableError, EngramStoreShrinkError } from './engrams.js
 // entries it does not own. Exposing the existing loader rather than letting a
 // caller write a fourth one is the whole point of #877.
 export { loadEngrams, saveEngrams } from './engrams.js'
+// The id-namespacing pair (#914). `readIdFor` is the API a surface should use;
+// these are exported so a caller (and the tests) can reason about the shape
+// without re-deriving the prefix rule a fourth time.
+export { storePrefix, namespaceEngramId } from './engrams.js'
 export {
   maybeDailyBackup,
   listBackups,
@@ -2976,6 +2980,28 @@ export class Plur {
       )
     }
     return serverEngram
+  }
+
+  /**
+   * The id shape the READ paths hand back for an engram (#914).
+   *
+   * A store's engrams are namespaced with `ENG-{storePrefix(scope)}-` on load,
+   * so `recall` returns `ENG-GPL-2026-08-13-025` where the write path returned
+   * the server's own `ENG-2026-08-13-025`. Core keeps returning the server id
+   * from `learnRouted` — that is the id the remote actually holds, and callers
+   * that talk to the store need it — but a surface that reports an id back to a
+   * caller alongside `recall` results should report the form `recall` uses, or
+   * a caller recording what it just wrote ends up holding a shape no read path
+   * produced.
+   *
+   * Returns the id unchanged when the scope is not backed by a REMOTE store:
+   * a locally-written engram keeps a local id, and the read paths hand that one
+   * back as it is. This mirrors `_isRemoteBackedScope`'s exact-scope rule, so
+   * the two agree on which writes leave the machine.
+   */
+  readIdFor(engram: { id: string; scope: string }): string {
+    if (!this._isRemoteBackedScope(engram.scope)) return engram.id
+    return namespaceEngramId(engram.id, engram.scope)
   }
 
   /**

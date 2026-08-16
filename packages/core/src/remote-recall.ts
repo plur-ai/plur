@@ -55,7 +55,7 @@ import { z } from 'zod'
 import type { Engram } from './schemas/engram.js'
 import { RemoteRowSchema, normalizeEndpointUrl } from './store/remote-store.js'
 import { isScopeWithin, isSharedScope } from './scope-util.js'
-import { storePrefix } from './engrams.js'
+import { namespaceEngramId } from './engrams.js'
 import { logger } from './logger.js'
 import { withLock } from './sync.js'
 
@@ -591,7 +591,7 @@ function processHostRows(
     const cloned = { ...e } as any
     if (cloned.scope === 'global') cloned.scope = entry.scope
     const originalId = cloned.id
-    cloned.id = cloned.id.replace(/^(ENG|ABS|META)-/, `$1-${storePrefix(entry.scope)}-`)
+    cloned.id = namespaceEngramId(cloned.id, entry.scope)
     cloned._originalId = originalId
     cloned._storeScope = entry.scope
     // The injection scorer iterates `tags` unguarded — a row without them

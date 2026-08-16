@@ -114,6 +114,25 @@ openclaw config set plur.enabled true
 
 That's it. PLUR works in the background from here. No workflow changes needed — just use your tools as usual. Corrections accumulate automatically.
 
+### DeepSeek Harness
+
+```bash
+dsh plugin add @plur-ai/dsh
+```
+
+Native, not an MCP bridge. PLUR mounts as a Cordis plugin and writes your
+engrams straight into the system prompt, so the model reads them the way it
+reads its own instructions — no tool call, no round trip, and no turn spent
+deciding whether to look. The section is re-rendered on each assembly rather
+than appended, so memory does not accumulate in the context as a session runs.
+
+Five tools (`plur_recall`, `plur_learn`, `plur_forget`, `plur_feedback`,
+`plur_status`) are still registered for when the agent wants to reach for
+memory deliberately. Scope defaults closed — each workspace gets its own,
+resolved from its `.plur.yaml`.
+
+`/plur` reports status; `/plur-memory` opens the memory viewer below.
+
 ### Hermes Agent
 
 ```bash
@@ -148,6 +167,19 @@ context = plur.inject("write a streaming endpoint", limit=10)
 ### Verify it works
 
 Ask your agent: *"What's my PLUR status?"* — it should call `plur_status` and return your engram count and storage path.
+
+### Read your memory
+
+```bash
+plur ui
+```
+
+Opens a local page listing every engram: what was learned, what actually gets
+recalled, and how often. Read-only, loopback-only, and served from your own
+machine — nothing is uploaded. `--port` moves it, `--no-open` skips the
+browser. Inside DeepSeek Harness the same page is one `/plur-memory` away.
+
+Available in English and 中文; it follows your browser, or `?lang=zh`.
 
 ### See it in action
 
@@ -394,8 +426,14 @@ While search is a core part of PLUR (finding the right engram to inject), the se
 | [`@plur-ai/mcp`](packages/mcp) | MCP server for Claude Code, Cursor, Windsurf |
 | [`@plur-ai/claw`](packages/claw) | OpenClaw ContextEngine plugin |
 | [`@plur-ai/cli`](packages/cli) | CLI — plur learn / recall / inject / status |
+| [`@plur-ai/dsh`](packages/dsh) | DeepSeek Harness plugin — engrams in the prompt, no tool call |
+| [`@plur-ai/migrate`](packages/migrate) | Store migrations, shipped with the release they migrate to |
 | [`plur-hermes`](packages/hermes) | Hermes Agent plugin (Python, via CLI bridge) |
 | [`plur-ai`](packages/python) | Python SDK — learn/recall/inject for LangChain, llama.cpp, scripts |
+| [`plur-langchain`](packages/langchain) | LangChain BaseMemory + BaseChatMessageHistory adapter |
+
+`packages/ui` is internal — the memory viewer's pages, bundled into the CLI and
+the DeepSeek Harness plugin rather than published. It is not on npm.
 
 ## Architecture
 

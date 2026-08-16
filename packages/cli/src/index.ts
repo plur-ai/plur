@@ -35,6 +35,7 @@ Commands:
   capture <summary>       Record an episode
   timeline [query]        Query episode timeline
   status                  System health check
+  ui                      Open the memory viewer in a browser
   receipt [--days N]      What your memory retrieved for you
   sync                    Cross-device sync
   packs list              List installed packs
@@ -105,6 +106,7 @@ const COMMANDS: Record<string, string> = {
   capture: './commands/capture.js',
   timeline: './commands/timeline.js',
   status: './commands/status.js',
+  ui: './commands/ui.js',
   receipt: './commands/receipt.js',
   sync: './commands/sync.js',
   restore: './commands/restore.js',
