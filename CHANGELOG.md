@@ -120,6 +120,43 @@ surfaces a count and reminder if any stale hashes are detected (#911).
 - **js-yaml advisory GHSA-5p4m-2wfm-xmqj (high)**: the root pnpm override permitted 4.3.0.
   Tightened to `>=4.3.1 <5`.
 
+- **Remote error sanitisation no longer destroys non-ASCII diagnostics** (#923, #925):
+  the truncation added above stripped `[^\x20-\x7E]` — everything outside printable
+  ASCII — so a server error in Japanese, Cyrillic or any accented Latin arrived in
+  `outbox.last_error` as a row of nothing. The escape-injection vector it exists to
+  block is entirely within the control-character range, so the class is narrowed to
+  `[\x00-\x1F\x7F]` and the 200-character truncation is now code-point-safe rather
+  than UTF-16-safe (an emoji at the boundary was being cut in half).
+
+- **`ENGRAM-STANDARD-v1.md` documents `measured_under`, and cannot silently drift
+  again** (#924, #927): the field shipped in the schema but not in the published
+  interoperability standard, so an implementer reading the standard concluded it was
+  not part of v1 while the reference implementation accepted and wrote it. The JSON
+  Schema was already drift-guarded in CI; the markdown was not. A test now asserts
+  every top-level `EngramSchema` field appears in the standard. Two fields are
+  excluded with the reason recorded: `exchange` (documented as `exchange.*`
+  sub-fields) and `insight` (genuinely undocumented — a real gap, tracked rather
+  than hidden).
+
+### Changed — forward compatibility
+
+- **`commitment` accepts a fifth value, `draft`** (#905, #908): the schema documented
+  a review-queue state that deployments could supposedly add through the schema's
+  `passthrough()`. That mechanism cannot work — `passthrough()` preserves undeclared
+  *keys*, never an out-of-enum *value* for a declared key — so `commitment: 'draft'`
+  failed validation and was quarantined at load. The enum is widened rather than the
+  claim deleted, because a review queue is genuinely wanted.
+
+  Core **stores and recalls a `draft` engram like any other**; it is not withheld from
+  recall, injection or sync. Enforcement belongs to deployments that implement a queue.
+  A positive feedback signal does not promote it out of review (`nextCommitment`).
+
+  **This is a forward-compatibility break worth planning around.** Widening an enum is
+  safe for readers of old data, but not for writers of new: an engram written with
+  `commitment: 'draft'` **fails validation on an older core** and is quarantined there.
+  In a mixed-version fleet, or a store synced between machines on different versions,
+  upgrade the readers before anything starts writing `draft`.
+
 ## 0.17.2 (2026-08-04)
 
 Chinese search works — found and fixed by skyeryg.
