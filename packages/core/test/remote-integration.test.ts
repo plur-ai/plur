@@ -252,6 +252,50 @@ describe('RemoteStore against stub server', () => {
     server.appendErrorResponse = null
   })
 
+  // The two assertions above pass under EITHER character class, which is how
+  // #923 shipped: the first cut stripped everything outside printable ASCII, so
+  // a localised server error arrived as '??????: ????????' in `plur outbox` —
+  // the one surface that exists to explain a stuck write. This pins the
+  // distinction the other tests cannot see.
+  it('#923 a non-ASCII error body survives sanitisation', async () => {
+    const store = new RemoteStore(baseUrl, TOKEN, 'group:test')
+    const bodies = [
+      'エラー: 認証に失敗しました',
+      'Ошибка: неверный токен',
+      "Échec de l'authentification",
+    ]
+    for (const body of bodies) {
+      server.appendErrorResponse = { status: 500, body }
+      const err = await store.append({ id: 'x', scope: 'group:test', status: 'active', statement: 'y' } as any)
+        .then(() => null).catch((e: Error) => e)
+      expect(err).not.toBeNull()
+      expect(err!.message, `body was mangled: ${err!.message}`).toContain(body)
+    }
+    server.appendErrorResponse = null
+  })
+
+  // Truncation must not split a surrogate pair: a lone surrogate in this value
+  // is persisted to YAML (append → _outbox.last_error).
+  //
+  // The single leading 'x' is load-bearing. Emoji are 2 UTF-16 units, so a bare
+  // run of them puts every pair on an even offset and a UTF-16 `slice(0, 200)`
+  // lands exactly on a boundary — the test would pass against the very bug it
+  // is meant to catch. One ASCII character shifts the pairs onto odd offsets so
+  // the 200th unit is a high surrogate.
+  it('#923 truncation respects character boundaries', async () => {
+    const store = new RemoteStore(baseUrl, TOKEN, 'group:test')
+    server.appendErrorResponse = { status: 500, body: 'x' + '🔥'.repeat(300) }
+    const err = await store.append({ id: 'x', scope: 'group:test', status: 'active', statement: 'y' } as any)
+      .then(() => null).catch((e: Error) => e)
+    expect(err).not.toBeNull()
+    // No unpaired surrogate survived the cut.
+    expect(err!.message).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/)
+    // Bounded at 200 CODE POINTS, which is more than 200 UTF-16 units here.
+    const bodyPart = err!.message.replace('Remote store append failed: 500 ', '')
+    expect(Array.from(bodyPart).length).toBeLessThanOrEqual(200)
+    server.appendErrorResponse = null
+  })
+
   it('scope filtering returns only matching engrams', async () => {
     const store = new RemoteStore(baseUrl, TOKEN, 'group:alpha', { ttlMs: 0 })
     await store.append({ id: 'tmp', scope: 'group:alpha', status: 'active', statement: 'alpha-1' } as any)
