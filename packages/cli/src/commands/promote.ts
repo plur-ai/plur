@@ -9,7 +9,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     exit(1, 'Usage: plur promote <engram-id>')
   }
 
-  const engram = await plur.getById(id)
+  const engram = plur.getById(id)
   if (!engram) {
     exit(1, `Engram not found: ${id}`)
   }
@@ -31,7 +31,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   engram.activation.retrieval_strength = 0.7
   engram.activation.storage_strength = 1.0
   engram.activation.last_accessed = new Date().toISOString().split('T')[0]
-  await plur.updateEngram(engram)
+  plur.updateEngram(engram)
 
   if (shouldOutputJson(flags)) {
     outputJson({ success: true, id, statement: engram.statement, status: 'promoted' })

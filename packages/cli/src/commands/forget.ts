@@ -24,7 +24,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   // If it looks like an ID (ENG-* or ABS-*), use direct forget
   // If --search flag or doesn't look like an ID, use search mode
   if (!isSearch && /^(ENG|ABS|META)-/.test(target)) {
-    const engram = await plur.getById(target)
+    const engram = plur.getById(target)
     if (!engram) exit(1, `Engram not found: ${target}`)
     if (engram.status === 'retired') exit(1, `Already retired: ${target}`)
     await plur.forget(target, reason)
@@ -37,7 +37,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   }
 
   // Search mode
-  const matches = await plur.recall(target, { limit: 100 })
+  const matches = plur.recall(target, { limit: 100 })
   if (matches.length === 0) {
     if (shouldOutputJson(flags)) {
       outputJson({ success: false, error: `No active engrams matching "${target}"` })

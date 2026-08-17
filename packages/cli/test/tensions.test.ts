@@ -1,4 +1,4 @@
-import { describe, it, expect, assert, beforeEach, afterEach, beforeAll, afterAll } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, beforeAll, afterAll } from 'vitest'
 import { mkdtempSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
@@ -64,22 +64,18 @@ describe('plur tensions --scan temporal gates (#240)', () => {
   }
 
   /** Two contradicting engrams recorded ~a month apart (learned_at back-dated). */
-  async function seedPair(domain?: string): Promise<void> {
+  function seedPair(domain?: string): void {
     const plur = new Plur({ path: dir })
-    const a = await plur.learn('hormuz strait ceasefire holding, passage regulated', domain ? { domain } : undefined)
-    const b = await plur.learn('hormuz strait ceasefire collapsed, passage closed', domain ? { domain } : undefined)
+    const a = plur.learn('hormuz strait ceasefire holding, passage regulated', domain ? { domain } : undefined)
+    const b = plur.learn('hormuz strait ceasefire collapsed, passage closed', domain ? { domain } : undefined)
     for (const [id, learnedAt] of [[a.id, '2026-04-07'], [b.id, '2026-05-05']] as const) {
-      // NOTE: `await plur.getById(id)!` asserted on the Promise, not the value,
-      // so a seed that silently failed to store spread `null` into the update
-      // and surfaced as an unrelated failure. Assert the read instead.
-      const stored = await plur.getById(id)
-      assert(stored !== null, `seedPair: engram ${id} was not stored`)
-      await plur.updateEngram({ ...stored, temporal: { ...stored.temporal, learned_at: learnedAt } })
+      const stored = plur.getById(id)!
+      plur.updateEngram({ ...stored, temporal: { ...stored.temporal, learned_at: learnedAt } })
     }
   }
 
   it('reports days_apart and passes recorded dates to the judge', async () => {
-    await seedPair()
+    seedPair()
     const out = JSON.parse(await run(`tensions --scan --llm-base-url ${baseUrl} --llm-api-key k`))
     expect(out.pairs_checked).toBe(1)
     expect(out.count).toBe(1)
@@ -91,7 +87,7 @@ describe('plur tensions --scan temporal gates (#240)', () => {
 
   it('config tensions.temporal_domains skips snapshot pairs before the judge', async () => {
     writeFileSync(join(dir, 'config.yaml'), 'tensions:\n  temporal_domains:\n    - war-analysis\n')
-    await seedPair('war-analysis')
+    seedPair('war-analysis')
     const out = JSON.parse(await run(`tensions --scan --llm-base-url ${baseUrl} --llm-api-key k`))
     expect(out.pairs_checked).toBe(0)
     expect(out.count).toBe(0)
@@ -99,7 +95,7 @@ describe('plur tensions --scan temporal gates (#240)', () => {
   })
 
   it('--temporal-discount multiplies confidence by the days-apart ladder', async () => {
-    await seedPair()
+    seedPair()
     const out = JSON.parse(await run(`tensions --scan --temporal-discount --min-confidence 0.2 --llm-base-url ${baseUrl} --llm-api-key k`))
     expect(out.count).toBe(1)
     // 28 days apart → ×0.3 → 0.27
@@ -109,7 +105,7 @@ describe('plur tensions --scan temporal gates (#240)', () => {
 
   it('--no-temporal-discount overrides config temporal_discount: true', async () => {
     writeFileSync(join(dir, 'config.yaml'), 'tensions:\n  temporal_discount: true\n')
-    await seedPair()
+    seedPair()
     const out = JSON.parse(await run(`tensions --scan --no-temporal-discount --llm-base-url ${baseUrl} --llm-api-key k`))
     expect(out.count).toBe(1)
     expect(out.tensions[0].confidence).toBeCloseTo(0.9)
@@ -129,22 +125,22 @@ describe('plur learn --supersedes (#240)', () => {
     }).trim()
   }
 
-  it('writes the forward edge on the new engram and the reverse edge on the target', async () => {
-    const oldE = JSON.parse(await run('learn "plur cli version is 0.3.0"'))
-    const newE = JSON.parse(await run(`learn "plur cli version is 0.8.2" --supersedes ${oldE.id}`))
+  it('writes the forward edge on the new engram and the reverse edge on the target', () => {
+    const oldE = JSON.parse(run('learn "plur cli version is 0.3.0"'))
+    const newE = JSON.parse(run(`learn "plur cli version is 0.8.2" --supersedes ${oldE.id}`))
 
     const plur = new Plur({ path: dir })
-    expect((await plur.getById(newE.id))?.relations?.supersedes).toEqual([oldE.id])
-    expect((await plur.getById(oldE.id))?.relations?.superseded_by).toEqual([newE.id])
+    expect(plur.getById(newE.id)?.relations?.supersedes).toEqual([oldE.id])
+    expect(plur.getById(oldE.id)?.relations?.superseded_by).toEqual([newE.id])
   })
 
-  it('supersedes-linked pair is not scanned as a tension candidate', async () => {
-    const oldE = JSON.parse(await run('learn "plur cli version is 0.3.0"'))
-    JSON.parse(await run(`learn "plur cli version is 0.8.2" --supersedes ${oldE.id}`))
+  it('supersedes-linked pair is not scanned as a tension candidate', () => {
+    const oldE = JSON.parse(run('learn "plur cli version is 0.3.0"'))
+    JSON.parse(run(`learn "plur cli version is 0.8.2" --supersedes ${oldE.id}`))
 
     // Scan finds zero candidates, so the (blocked-event-loop) stub server is
     // never contacted — safe to run synchronously.
-    const out = JSON.parse(await run(`tensions --scan --llm-base-url ${baseUrl} --llm-api-key k`))
+    const out = JSON.parse(run(`tensions --scan --llm-base-url ${baseUrl} --llm-api-key k`))
     expect(out.pairs_checked).toBe(0)
     expect(out.count).toBe(0)
   })

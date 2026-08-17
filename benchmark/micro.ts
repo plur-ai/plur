@@ -20,7 +20,7 @@
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
-import { Plur, type InjectionResult } from '../packages/core/src/index.js'
+import { Plur } from '../packages/core/src/index.js'
 
 interface Stats {
   count: number
@@ -48,22 +48,18 @@ function computeStats(samples: number[]): Stats {
   }
 }
 
-/**
- * Time one operation.
- *
- * Always awaits, and is typed to only accept something awaitable, because every
- * engine method measured here returns a promise. A non-awaiting timer stops the
- * clock at the callee's first `await` — it reports the cost of *starting* the
- * operation, a few microseconds, and never the operation. Worse, the work it
- * failed to measure does not disappear: the floating promises resolve during
- * whatever runs next, so an unawaited `learn()` loop lands on top of the recall
- * and inject phases and inflates those instead.
- */
-async function timeOp(fn: () => Promise<unknown>): Promise<number> {
+function timeOp(fn: () => any): number {
+  const start = process.hrtime.bigint()
+  fn()
+  const end = process.hrtime.bigint()
+  return Number(end - start) / 1_000_000 // ns → ms
+}
+
+async function timeOpAsync(fn: () => Promise<any>): Promise<number> {
   const start = process.hrtime.bigint()
   await fn()
   const end = process.hrtime.bigint()
-  return Number(end - start) / 1_000_000 // ns → ms
+  return Number(end - start) / 1_000_000
 }
 
 function generateStatement(i: number): string {
@@ -105,7 +101,7 @@ async function runBench(label: string, iterations: number) {
   console.log(`[1/5] Timing learn() × ${iterations}...`)
   const learnTimes: number[] = []
   for (let i = 0; i < iterations; i++) {
-    const t = await timeOp(() => plur.learn(generateStatement(i), { type: 'behavioral', domain: 'test' }))
+    const t = timeOp(() => plur.learn(generateStatement(i), { type: 'behavioral', domain: 'test' }))
     learnTimes.push(t)
   }
   const learnStats = computeStats(learnTimes)
@@ -121,7 +117,7 @@ async function runBench(label: string, iterations: number) {
   ]
   const recallTimes: number[] = []
   for (let i = 0; i < iterations; i++) {
-    const t = await timeOp(() => plur.recall(queries[i % queries.length], { limit: 10 }))
+    const t = timeOp(() => plur.recall(queries[i % queries.length], { limit: 10 }))
     recallTimes.push(t)
   }
   const recallStats = computeStats(recallTimes)
@@ -131,7 +127,7 @@ async function runBench(label: string, iterations: number) {
   console.log(`\n[3/5] Timing recallHybrid() × ${iterations}...`)
   const hybridTimes: number[] = []
   for (let i = 0; i < iterations; i++) {
-    const t = await timeOp(() => plur.recallHybrid(queries[i % queries.length], { limit: 10 }))
+    const t = await timeOpAsync(async () => plur.recallHybrid(queries[i % queries.length], { limit: 10 }))
     hybridTimes.push(t)
   }
   const hybridStats = computeStats(hybridTimes)
@@ -150,8 +146,8 @@ async function runBench(label: string, iterations: number) {
   ]
   for (let i = 0; i < iterations; i++) {
     const task = injectTasks[i % injectTasks.length]
-    let result: InjectionResult | undefined
-    const t = await timeOp(async () => { result = await plur.inject(task, { budget: 2000 }) })
+    let result: any
+    const t = timeOp(() => { result = plur.inject(task, { budget: 2000 }) })
     injectTimes.push(t)
     if (result?.tokens_used !== undefined) tokensUsed.push(result.tokens_used)
   }
@@ -187,12 +183,7 @@ async function runBench(label: string, iterations: number) {
   else console.log(`  No LLM key (set OPENROUTER_API_KEY or OPENAI_API_KEY)`)
 
   for (const { original, near } of dupes) {
-    // Awaited deliberately: the near-duplicate below can only be judged against
-    // an original that is already in the store, so fire-and-forget here races
-    // the learnAsync() that is supposed to see it. (With no LLM key configured
-    // only hash dedup runs, which never matches a near-duplicate — every pair
-    // is ADD either way. The race decides the answer once an LLM is wired in.)
-    await plur.learn(original, { type: 'behavioral', domain: 'dedup-test' })
+    plur.learn(original, { type: 'behavioral', domain: 'dedup-test' })
     const start = process.hrtime.bigint()
     try {
       const result: any = await (plur as any).learnAsync(near, {
@@ -204,7 +195,7 @@ async function runBench(label: string, iterations: number) {
       dedupResults.push({ duplicate_decision: result?.decision ?? 'UNKNOWN', latency_ms: latency })
     } catch (err: any) {
       const latency = Number(process.hrtime.bigint() - start) / 1_000_000
-      await plur.learn(near, { type: 'behavioral', domain: 'dedup-test' })
+      plur.learn(near, { type: 'behavioral', domain: 'dedup-test' })
       dedupResults.push({ duplicate_decision: `ERROR:${err?.message ?? 'unknown'}`, latency_ms: latency })
     }
   }

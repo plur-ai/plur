@@ -67,7 +67,7 @@ function makeDir(stores: unknown[], extra: Record<string, unknown> = {}): { dir:
   return { dir, plur: new Plur({ path: dir }) }
 }
 
-async function readStores(dir: string): Promise<Array<Record<string, any>>> {
+function readStores(dir: string): Array<Record<string, any>> {
   const raw = readFileSync(join(dir, 'config.yaml'), 'utf8')
   return ((yaml.load(raw) as Record<string, unknown>).stores ?? []) as Array<Record<string, any>>
 }
@@ -99,12 +99,12 @@ describe('F1: remote `allow` cannot disarm the leak guard', () => {
     await syncMeta(plur)
 
     // The remote allow is NOT persisted (absent or empty), forbid is.
-    const eng = (await readStores(dir)).find(s => s.scope === ENG)!
+    const eng = readStores(dir).find(s => s.scope === ENG)!
     expect(eng.sensitivity?.forbid).toEqual(['secrets', 'infra'])
     expect(eng.sensitivity?.allow ?? []).toEqual([])
 
     // End to end: infra content targeted at the shared scope still demotes.
-    const e = await plur.learn('deploy target is 139.59.155.82', { scope: ENG }) as { scope: string; visibility: string }
+    const e = plur.learn('deploy target is 139.59.155.82', { scope: ENG }) as { scope: string; visibility: string }
     expect(e.scope).toBe('local')
     expect(e.visibility).toBe('private')
     await new Promise(r => setTimeout(r, 60)) // let learn's background append settle before dir cleanup
@@ -126,7 +126,7 @@ describe('F1: remote `allow` cannot disarm the leak guard', () => {
         sensitivity: { forbid: ['secrets', 'malware', 'pii'] as never, allow: ['secrets'] },
       }],
     }])
-    const eng = (await readStores(dir)).find(s => s.scope === ENG)!
+    const eng = readStores(dir).find(s => s.scope === ENG)!
     expect(eng.sensitivity?.forbid).toEqual(['secrets'])       // junk dropped
     expect(eng.sensitivity?.allow ?? []).toEqual([])           // allow never persisted
 
@@ -138,7 +138,7 @@ describe('F1: remote `allow` cannot disarm the leak guard', () => {
         sensitivity: { forbid: ['malware'] as never, allow: [] },
       }],
     }])
-    const eng2 = (await readStores(dir)).find(s => s.scope === ENG)!
+    const eng2 = readStores(dir).find(s => s.scope === ENG)!
     expect(eng2.sensitivity?.forbid).toEqual(['secrets', 'infra'])
   })
 
@@ -156,12 +156,12 @@ describe('F1: remote `allow` cannot disarm the leak guard', () => {
     ])
     await syncMeta(plur)
 
-    const eng = (await readStores(dir)).find(s => s.scope === ENG)!
+    const eng = readStores(dir).find(s => s.scope === ENG)!
     expect(eng.sensitivity?.allow).toEqual(['infra'])   // local allow survives the sync
     expect(eng.sensitivity?.forbid).toEqual(['secrets'])
 
     // …and the guard still honors it: infra content stays at the shared scope.
-    const e = await plur.learn('deploy target is 139.59.155.82', { scope: ENG }) as { scope: string }
+    const e = plur.learn('deploy target is 139.59.155.82', { scope: ENG }) as { scope: string }
     expect(e.scope).toBe(ENG)
     await new Promise(r => setTimeout(r, 60)) // let learn's background remote append settle before dir cleanup
   })
@@ -203,7 +203,7 @@ describe('F2: metadata persist converges (no rewrite-every-session_start loop)',
       { url: baseUrl, token: TOKEN, scope: ENG, shared: true, readonly: false },
     ])
     await syncMeta(plur)
-    expect((await readStores(dir)).find(s => s.scope === ENG)!.sensitivity?.forbid).toEqual(['secrets', 'infra'])
+    expect(readStores(dir).find(s => s.scope === ENG)!.sensitivity?.forbid).toEqual(['secrets', 'infra'])
 
     // Server tightens the policy shape → the change must land ON DISK (the
     // pre-audit raw-forbid restore in mergeStoresForWriteback discarded it).
@@ -211,7 +211,7 @@ describe('F2: metadata persist converges (no rewrite-every-session_start loop)',
       scope_metadata: [{ scope: ENG, description: 'Eng', covers: ['plur.engineering'], sensitivity: { forbid: ['secrets'] } }],
     })
     await syncMeta(plur)
-    expect((await readStores(dir)).find(s => s.scope === ENG)!.sensitivity?.forbid).toEqual(['secrets'])
+    expect(readStores(dir).find(s => s.scope === ENG)!.sensitivity?.forbid).toEqual(['secrets'])
 
     // …and the new state converges: the next identical sync is a no-op.
     const before = { mtime: statSync(join(dir, 'config.yaml')).mtimeMs, content: readFileSync(join(dir, 'config.yaml'), 'utf8') }
@@ -236,7 +236,7 @@ describe('F2: metadata persist converges (no rewrite-every-session_start loop)',
     expect(statSync(join(dir, 'config.yaml')).mtimeMs).toBe(before.mtime)
     expect(readFileSync(join(dir, 'config.yaml'), 'utf8')).toBe(before.content)
     // Local sensitivity untouched.
-    expect((await readStores(dir)).find(s => s.scope === ENG)!.sensitivity?.allow).toEqual(['infra'])
+    expect(readStores(dir).find(s => s.scope === ENG)!.sensitivity?.allow).toEqual(['infra'])
   })
 })
 
@@ -254,7 +254,7 @@ describe('F5: server-authoritative overwrite of local covers/description warns',
     await syncMeta(plur)
 
     // Overwrite happened (by design)…
-    const eng = (await readStores(dir)).find(s => s.scope === ENG)!
+    const eng = readStores(dir).find(s => s.scope === ENG)!
     expect(eng.covers).toEqual(['plur.engineering'])
     expect(eng.description).toBe('Engineering knowledge')
     // …but visibly.

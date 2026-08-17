@@ -23,10 +23,8 @@ import { Plur } from '@plur-ai/core'
 
 const plur = new Plur()
 
-// Your agent gets corrected — save it. The engine's read and write methods
-// are async: they return promises so a `Plur` can be backed by a network store
-// as well as the default local YAML one.
-await plur.learn('toEqual() in Vitest is strict — use toMatchObject() for partial matching', {
+// Your agent gets corrected — save it
+plur.learn('toEqual() in Vitest is strict — use toMatchObject() for partial matching', {
   type: 'behavioral',
   scope: 'project:my-app',
   domain: 'dev/testing'
@@ -36,18 +34,18 @@ await plur.learn('toEqual() in Vitest is strict — use toMatchObject() for part
 const results = await plur.recallHybrid('vitest assertion matching')
 
 // Or inject the best engrams into a system prompt, within a token budget
-const { directives, consider, tokens_used } = await plur.inject('Write tests for the user service', {
+const { directives, consider, tokens_used } = plur.inject('Write tests for the user service', {
   scope: 'project:my-app',
   budget: 2000
 })
 
 // Rate what was useful — the system improves over time
-await plur.feedback(results[0].id, 'positive')
+plur.feedback(results[0].id, 'positive')
 
 // Sync across machines via git — use a PRIVATE remote: the push contains every
 // engram, including visibility:private ones. scope:local engrams are the exception —
 // they are machine-specific and stripped from every commit, so they never sync.
-await plur.sync('git@github.com:you/plur-memory.git')
+plur.sync('git@github.com:you/plur-memory.git')
 ```
 
 ## How it works

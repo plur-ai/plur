@@ -18,8 +18,8 @@ describe('enriched search — schema fields improve retrieval', () => {
 
   afterEach(() => { rmSync(dir, { recursive: true }) })
 
-  it('engramSearchText includes entities in searchable text', async () => {
-    await plur.learn('The database migration was completed successfully', { type: 'behavioral' })
+  it('engramSearchText includes entities in searchable text', () => {
+    plur.learn('The database migration was completed successfully', { type: 'behavioral' })
     const paths = detectPlurStorage(dir)
     const engrams = loadEngrams(paths.engrams)
     // Add entities to the engram
@@ -36,8 +36,8 @@ describe('enriched search — schema fields improve retrieval', () => {
     expect(text).toContain('person')
   })
 
-  it('engramSearchText includes temporal validity', async () => {
-    await plur.learn('The API uses v2 endpoints', { type: 'behavioral' })
+  it('engramSearchText includes temporal validity', () => {
+    plur.learn('The API uses v2 endpoints', { type: 'behavioral' })
     const paths = detectPlurStorage(dir)
     const engrams = loadEngrams(paths.engrams)
     engrams[0].temporal = {
@@ -52,8 +52,8 @@ describe('enriched search — schema fields improve retrieval', () => {
     expect(text).toContain('2026-12-31')
   })
 
-  it('engramSearchText includes rationale', async () => {
-    await plur.learn('Always use prepared statements for SQL', { type: 'behavioral' })
+  it('engramSearchText includes rationale', () => {
+    plur.learn('Always use prepared statements for SQL', { type: 'behavioral' })
     const paths = detectPlurStorage(dir)
     const engrams = loadEngrams(paths.engrams)
     engrams[0].rationale = 'Prevents SQL injection attacks'
@@ -64,9 +64,9 @@ describe('enriched search — schema fields improve retrieval', () => {
     expect(text).toContain('attacks')
   })
 
-  it('entity-enriched engram scores higher for entity name queries', async () => {
-    await plur.learn('The team decided to use a new framework', { type: 'architectural' })
-    await plur.learn('We migrated the database to a new server', { type: 'architectural' })
+  it('entity-enriched engram scores higher for entity name queries', () => {
+    plur.learn('The team decided to use a new framework', { type: 'architectural' })
+    plur.learn('We migrated the database to a new server', { type: 'architectural' })
     const paths = detectPlurStorage(dir)
     const engrams = loadEngrams(paths.engrams)
 
@@ -81,8 +81,8 @@ describe('enriched search — schema fields improve retrieval', () => {
     expect(score0).toBeGreaterThan(score1)
   })
 
-  it('BM25 recall finds engrams by entity name', async () => {
-    await plur.learn('The project uses a specific database', { type: 'architectural' })
+  it('BM25 recall finds engrams by entity name', () => {
+    plur.learn('The project uses a specific database', { type: 'architectural' })
     const paths = detectPlurStorage(dir)
     const engrams = loadEngrams(paths.engrams)
     engrams[0].entities = [
@@ -93,25 +93,25 @@ describe('enriched search — schema fields improve retrieval', () => {
 
     // Reload plur to pick up the modified engrams
     const plur2 = new Plur({ path: dir })
-    const results = await plur2.recall('MongoDB')
+    const results = plur2.recall('MongoDB')
     expect(results.length).toBe(1)
     expect(results[0].entities?.[0]?.name).toBe('MongoDB')
   })
 
-  it('BM25 recall finds engrams by rationale content', async () => {
-    await plur.learn('Use TypeScript strict mode', { type: 'behavioral' })
+  it('BM25 recall finds engrams by rationale content', () => {
+    plur.learn('Use TypeScript strict mode', { type: 'behavioral' })
     const paths = detectPlurStorage(dir)
     const engrams = loadEngrams(paths.engrams)
     engrams[0].rationale = 'Catches null pointer exceptions at compile time'
     saveEngrams(paths.engrams, engrams)
 
     const plur2 = new Plur({ path: dir })
-    const results = await plur2.recall('null pointer exceptions')
+    const results = plur2.recall('null pointer exceptions')
     expect(results.length).toBe(1)
   })
 
-  it('temporal dates make engrams findable by date queries', async () => {
-    await plur.learn('Conference keynote presentation', { type: 'behavioral' })
+  it('temporal dates make engrams findable by date queries', () => {
+    plur.learn('Conference keynote presentation', { type: 'behavioral' })
     const paths = detectPlurStorage(dir)
     const engrams = loadEngrams(paths.engrams)
     engrams[0].temporal = {
@@ -122,12 +122,12 @@ describe('enriched search — schema fields improve retrieval', () => {
     saveEngrams(paths.engrams, engrams)
 
     const plur2 = new Plur({ path: dir })
-    const results = await plur2.recall('EthCC')
+    const results = plur2.recall('EthCC')
     expect(results.length).toBe(1)
   })
 
-  it('temporal valid_from in future excludes engram from recall', async () => {
-    await plur.learn('Future conference talk', { type: 'behavioral' })
+  it('temporal valid_from in future excludes engram from recall', () => {
+    plur.learn('Future conference talk', { type: 'behavioral' })
     const paths = detectPlurStorage(dir)
     const engrams = loadEngrams(paths.engrams)
     engrams[0].temporal = {
@@ -138,12 +138,12 @@ describe('enriched search — schema fields improve retrieval', () => {
     saveEngrams(paths.engrams, engrams)
 
     const plur2 = new Plur({ path: dir })
-    const results = await plur2.recall('FutureConf')
+    const results = plur2.recall('FutureConf')
     expect(results.length).toBe(0)
   })
 
-  it('enriched text does not break when optional fields are absent', async () => {
-    await plur.learn('Simple engram with no extras', { type: 'behavioral' })
+  it('enriched text does not break when optional fields are absent', () => {
+    plur.learn('Simple engram with no extras', { type: 'behavioral' })
     const paths = detectPlurStorage(dir)
     const engrams = loadEngrams(paths.engrams)
     const text = engramSearchText(engrams[0])

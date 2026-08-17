@@ -253,19 +253,6 @@ else
   echo "  (claw stays at $CURRENT_CLAW — pass --claw <version> to bump and publish)"
 fi
 
-# MCP Registry / ClawHub listing — both the top-level version and the package
-# version pin must track the release; without this the registry directs users
-# to install a stale version of @plur-ai/mcp.
-node -e "
-  const fs = require('fs');
-  const path = './server.json';
-  const data = JSON.parse(fs.readFileSync(path, 'utf8'));
-  data.version = '$VERSION';
-  data.packages[0].version = '$VERSION';
-  fs.writeFileSync(path, JSON.stringify(data, null, 2) + '\n');
-"
-echo "  ✓ server.json (MCP Registry version)"
-
 # Hermes pyproject.toml
 sed -i '' "s/^version = \".*\"/version = \"$VERSION\"/" packages/hermes/pyproject.toml
 echo "  ✓ packages/hermes/pyproject.toml"

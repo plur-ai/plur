@@ -381,7 +381,7 @@ export function sync(root: string, remote?: string, options?: { remoteType?: Syn
   if (!existingRemote) {
     const filesChanged = commitChanges(root, remoteType)
     if (filesChanged === 0) {
-      return { action: 'up-to-date', message: 'No changes to commit. Add a remote with await plur.sync({ remote: "..." }) to enable cross-device sync.', remote: null, files_changed: 0 }
+      return { action: 'up-to-date', message: 'No changes to commit. Add a remote with plur.sync({ remote: "..." }) to enable cross-device sync.', remote: null, files_changed: 0 }
     }
     return { action: 'committed', message: `Committed ${filesChanged} file(s) locally.`, remote: null, files_changed: filesChanged }
   }

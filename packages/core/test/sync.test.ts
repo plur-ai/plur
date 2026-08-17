@@ -72,8 +72,8 @@ describe('sync', () => {
   })
 
   describe('init', () => {
-    it('initializes git repo on first sync', async () => {
-      const result = await sync(dir)
+    it('initializes git repo on first sync', () => {
+      const result = sync(dir)
       expect(result.action).toBe('initialized')
       expect(existsSync(join(dir, '.git'))).toBe(true)
       expect(existsSync(join(dir, '.gitignore'))).toBe(true)
@@ -200,17 +200,17 @@ describe('sync', () => {
   })
 
   describe('local commits', () => {
-    it('commits new changes on subsequent sync', async () => {
+    it('commits new changes on subsequent sync', () => {
       sync(dir)
       writeFileSync(join(dir, 'engrams.yaml'), '- id: ENG-001\n  statement: updated\n')
-      const result = await sync(dir)
+      const result = sync(dir)
       expect(result.action).toBe('committed')
       expect(result.files_changed).toBe(1)
     })
 
-    it('returns up-to-date when nothing changed', async () => {
+    it('returns up-to-date when nothing changed', () => {
       sync(dir)
-      const result = await sync(dir)
+      const result = sync(dir)
       expect(result.action).toBe('up-to-date')
       expect(result.files_changed).toBe(0)
     })
@@ -228,8 +228,8 @@ describe('sync', () => {
       rmSync(bareRemote, { recursive: true, force: true })
     })
 
-    it('adds remote and pushes on first sync with remote', async () => {
-      const result = await sync(dir, bareRemote)
+    it('adds remote and pushes on first sync with remote', () => {
+      const result = sync(dir, bareRemote)
       expect(result.action).toBe('initialized')
       expect(result.remote).toBe(bareRemote)
       // Verify remote has the commit
@@ -237,24 +237,24 @@ describe('sync', () => {
       expect(log).toContain('Initial PLUR engram store')
     })
 
-    it('adds remote to existing local repo', async () => {
+    it('adds remote to existing local repo', () => {
       sync(dir) // init without remote
-      const result = await sync(dir, bareRemote)
+      const result = sync(dir, bareRemote)
       expect(result.action).toBe('synced')
       expect(result.remote).toBe(bareRemote)
     })
 
-    it('pushes new commits to remote', async () => {
+    it('pushes new commits to remote', () => {
       sync(dir, bareRemote)
       writeFileSync(join(dir, 'engrams.yaml'), '- id: ENG-002\n  statement: new\n')
-      const result = await sync(dir)
+      const result = sync(dir)
       expect(result.action).toBe('synced')
       // Verify remote has 2 commits
       const log = execSync(`git log --oneline`, { cwd: bareRemote, encoding: 'utf8' })
       expect(log.split('\n').length).toBeGreaterThanOrEqual(2)
     })
 
-    it('pulls remote changes', async () => {
+    it('pulls remote changes', () => {
       // Set up: init with remote, clone to second dir, push from second
       sync(dir, bareRemote)
       const dir2 = mkdtempSync(join(tmpdir(), 'plur-sync2-'))
@@ -265,14 +265,14 @@ describe('sync', () => {
       git('push', dir2)
 
       // Now sync original — should pull the remote change
-      const result = await sync(dir)
+      const result = sync(dir)
       expect(result.action).toBe('synced')
       expect(existsSync(join(dir, 'episodes.yaml'))).toBe(true)
 
       rmSync(dir2, { recursive: true, force: true })
     })
 
-    it('handles concurrent changes (both sides modified)', async () => {
+    it('handles concurrent changes (both sides modified)', () => {
       sync(dir, bareRemote)
       const dir2 = mkdtempSync(join(tmpdir(), 'plur-sync3-'))
       execSync(`git clone ${bareRemote} .`, { cwd: dir2 })
@@ -285,7 +285,7 @@ describe('sync', () => {
       git('push', dir2)
 
       // Sync original — should commit local, pull remote, push both
-      const result = await sync(dir)
+      const result = sync(dir)
       expect(result.action).toBe('synced')
       expect(existsSync(join(dir, 'episodes.yaml'))).toBe(true)
 
@@ -343,7 +343,7 @@ describe('sync', () => {
       expect(committed).not.toContain('ENG-002')
     })
 
-    it('does not create empty commits when only local engrams change (no infinite-dirty trap)', async () => {
+    it('does not create empty commits when only local engrams change (no infinite-dirty trap)', () => {
       sync(dir, bareRemote)
       const countAfterFirst = parseInt(git('rev-list --count HEAD', dir), 10)
 
@@ -352,7 +352,7 @@ describe('sync', () => {
         join(dir, 'engrams.yaml'),
         CANONICAL.replace('machine-specific note', 'machine-specific note EDITED'),
       )
-      const result = await sync(dir)
+      const result = sync(dir)
       expect(result.files_changed).toBe(0)
       expect(result.action).toBe('up-to-date')
 
@@ -360,13 +360,13 @@ describe('sync', () => {
       expect(countAfterSecond).toBe(countAfterFirst)
     })
 
-    it('still commits when a non-local engram changes', async () => {
+    it('still commits when a non-local engram changes', () => {
       sync(dir, bareRemote)
       writeFileSync(
         join(dir, 'engrams.yaml'),
         CANONICAL.replace('shared across my devices', 'shared across my devices UPDATED'),
       )
-      const result = await sync(dir)
+      const result = sync(dir)
       expect(result.files_changed).toBeGreaterThan(0)
       const committed = git('show HEAD:engrams.yaml', dir)
       expect(committed).toContain('UPDATED')
@@ -386,22 +386,22 @@ describe('sync', () => {
       rmSync(bareRemote, { recursive: true, force: true })
     })
 
-    it('warns that the remote receives private engrams', async () => {
+    it('warns that the remote receives private engrams', () => {
       writeFileSync(
         join(dir, 'engrams.yaml'),
         'engrams:\n  - id: ENG-001\n    scope: "project:app"\n    visibility: private\n    statement: secret\n',
       )
-      const result = await sync(dir, bareRemote)
+      const result = sync(dir, bareRemote)
       expect(result.warning).toBeDefined()
       expect(result.warning).toMatch(/private/i)
     })
 
-    it('omits the warning when there are no private engrams', async () => {
+    it('omits the warning when there are no private engrams', () => {
       writeFileSync(
         join(dir, 'engrams.yaml'),
         'engrams:\n  - id: ENG-001\n    scope: "project:app"\n    visibility: public\n    statement: shareable\n',
       )
-      const result = await sync(dir, bareRemote)
+      const result = sync(dir, bareRemote)
       expect(result.warning).toBeUndefined()
     })
   })
@@ -484,27 +484,27 @@ describe('sync', () => {
       expect(committed).not.toContain('ENG-LOCAL')
     })
 
-    it('shared: no new commit when only a stripped engram changes (deterministic blob, #396 property)', async () => {
+    it('shared: no new commit when only a stripped engram changes (deterministic blob, #396 property)', () => {
       sync(dir, bareRemote, { remoteType: 'shared' })
       const countAfterFirst = parseInt(git('rev-list --count HEAD', dir), 10)
       writeFileSync(
         join(dir, 'engrams.yaml'),
         MIXED.replace('personal cross-project note', 'personal cross-project note EDITED'),
       )
-      const result = await sync(dir, undefined, { remoteType: 'shared' })
+      const result = sync(dir, undefined, { remoteType: 'shared' })
       expect(result.files_changed).toBe(0)
       expect(result.action).toBe('up-to-date')
       expect(parseInt(git('rev-list --count HEAD', dir), 10)).toBe(countAfterFirst)
     })
 
-    it('shared: warning reports the stripped count instead of the mirror-everything note', async () => {
-      const result = await sync(dir, bareRemote, { remoteType: 'shared' })
+    it('shared: warning reports the stripped count instead of the mirror-everything note', () => {
+      const result = sync(dir, bareRemote, { remoteType: 'shared' })
       expect(result.warning).toBeDefined()
       expect(result.warning).toMatch(/stayed local/)
     })
 
-    it('personal: warning now points at sync.remote_type shared for team remotes', async () => {
-      const result = await sync(dir, bareRemote)
+    it('personal: warning now points at sync.remote_type shared for team remotes', () => {
+      const result = sync(dir, bareRemote)
       expect(result.warning).toBeDefined()
       expect(result.warning).toMatch(/remote_type/)
     })

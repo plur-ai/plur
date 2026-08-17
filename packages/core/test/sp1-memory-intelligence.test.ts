@@ -46,26 +46,26 @@ describe('SP1: Memory Intelligence', () => {
       expect(h1).toBe(h2)
     })
 
-    it('learn() returns existing engram on exact duplicate', async () => {
-      const first = await plur.learn('Always use TypeScript for new projects')
-      const second = await plur.learn('Always use TypeScript for new projects')
+    it('learn() returns existing engram on exact duplicate', () => {
+      const first = plur.learn('Always use TypeScript for new projects')
+      const second = plur.learn('Always use TypeScript for new projects')
       expect(second.id).toBe(first.id)
     })
 
-    it('learn() returns existing on normalized duplicate', async () => {
-      const first = await plur.learn('Use port 3000 for dev.')
-      const second = await plur.learn('  use port 3000 for dev  ')
+    it('learn() returns existing on normalized duplicate', () => {
+      const first = plur.learn('Use port 3000 for dev.')
+      const second = plur.learn('  use port 3000 for dev  ')
       expect(second.id).toBe(first.id)
     })
 
-    it('learn() creates new engram for different content', async () => {
-      const first = await plur.learn('Use port 3000 for dev')
-      const second = await plur.learn('Use port 5000 for staging')
+    it('learn() creates new engram for different content', () => {
+      const first = plur.learn('Use port 3000 for dev')
+      const second = plur.learn('Use port 5000 for staging')
       expect(second.id).not.toBe(first.id)
     })
 
-    it('learn() stores content_hash on new engrams', async () => {
-      const engram = await plur.learn('Test content hash')
+    it('learn() stores content_hash on new engrams', () => {
+      const engram = plur.learn('Test content hash')
       expect((engram as any).content_hash).toBe(computeContentHash('Test content hash'))
     })
   })
@@ -73,18 +73,18 @@ describe('SP1: Memory Intelligence', () => {
   // === Idea 6: Commitment Levels ===
 
   describe('Idea 6: Commitment Levels', () => {
-    it('new engrams default to leaning commitment', async () => {
-      const engram = await plur.learn('Prefer blue-green deployments')
+    it('new engrams default to leaning commitment', () => {
+      const engram = plur.learn('Prefer blue-green deployments')
       expect((engram as any).commitment).toBe('leaning')
     })
 
-    it('explicit commitment is preserved', async () => {
-      const engram = await plur.learn('Always use 2FA', { commitment: 'decided' })
+    it('explicit commitment is preserved', () => {
+      const engram = plur.learn('Always use 2FA', { commitment: 'decided' })
       expect((engram as any).commitment).toBe('decided')
     })
 
-    it('locked commitment sets locked_at timestamp', async () => {
-      const engram = await plur.learn('Server IP is 10.0.0.1', {
+    it('locked commitment sets locked_at timestamp', () => {
+      const engram = plur.learn('Server IP is 10.0.0.1', {
         commitment: 'locked',
         locked_reason: 'Production server address',
       })
@@ -93,41 +93,41 @@ describe('SP1: Memory Intelligence', () => {
       expect((engram as any).locked_reason).toBe('Production server address')
     })
 
-    it('exploring commitment gets lower injection score', async () => {
-      await plur.learn('Exploring: maybe use Redis', { commitment: 'exploring', tags: ['redis'] })
-      await plur.learn('Decided: always use PostgreSQL', { commitment: 'decided', tags: ['postgresql'] })
+    it('exploring commitment gets lower injection score', () => {
+      plur.learn('Exploring: maybe use Redis', { commitment: 'exploring', tags: ['redis'] })
+      plur.learn('Decided: always use PostgreSQL', { commitment: 'decided', tags: ['postgresql'] })
       // Both should be found, but decided should rank higher in injection
-      const result = await plur.inject('database redis postgresql')
+      const result = plur.inject('database redis postgresql')
       expect(result.count).toBeGreaterThan(0)
     })
 
     it('positive feedback promotes exploring → leaning', async () => {
-      const engram = await plur.learn('Maybe try Bun for build', { commitment: 'exploring' })
+      const engram = plur.learn('Maybe try Bun for build', { commitment: 'exploring' })
       expect((engram as any).commitment).toBe('exploring')
       await plur.feedback(engram.id, 'positive')
-      const updated = await plur.getById(engram.id)
+      const updated = plur.getById(engram.id)
       expect((updated as any).commitment).toBe('leaning')
     })
 
     it('positive feedback promotes leaning → decided', async () => {
-      const engram = await plur.learn('Prefer pnpm over npm', { commitment: 'leaning' })
+      const engram = plur.learn('Prefer pnpm over npm', { commitment: 'leaning' })
       await plur.feedback(engram.id, 'positive')
-      const updated = await plur.getById(engram.id)
+      const updated = plur.getById(engram.id)
       expect((updated as any).commitment).toBe('decided')
     })
 
     it('positive feedback does NOT promote decided → locked', async () => {
-      const engram = await plur.learn('Use TypeScript always', { commitment: 'decided' })
+      const engram = plur.learn('Use TypeScript always', { commitment: 'decided' })
       await plur.feedback(engram.id, 'positive')
-      const updated = await plur.getById(engram.id)
+      const updated = plur.getById(engram.id)
       // decided stays decided — locked requires explicit parameter
       expect((updated as any).commitment).toBe('decided')
     })
 
-    it('status includes locked_count', async () => {
-      await plur.learn('Locked fact', { commitment: 'locked', locked_reason: 'test' })
-      await plur.learn('Normal fact')
-      const status = await plur.status()
+    it('status includes locked_count', () => {
+      plur.learn('Locked fact', { commitment: 'locked', locked_reason: 'test' })
+      plur.learn('Normal fact')
+      const status = plur.status()
       expect(status.locked_count).toBe(1)
     })
   })
@@ -135,28 +135,28 @@ describe('SP1: Memory Intelligence', () => {
   // === Idea 5: Cognitive Level for Injection ===
 
   describe('Idea 5: Cognitive Level Injection', () => {
-    it('learn() sets knowledge_type based on engram type', async () => {
-      const behavioral = await plur.learn('Always validate', { type: 'behavioral' })
-      const terminological = await plur.learn('REST means Representational State Transfer', { type: 'terminological' })
-      const architectural = await plur.learn('Use microservices for scaling', { type: 'architectural' })
+    it('learn() sets knowledge_type based on engram type', () => {
+      const behavioral = plur.learn('Always validate', { type: 'behavioral' })
+      const terminological = plur.learn('REST means Representational State Transfer', { type: 'terminological' })
+      const architectural = plur.learn('Use microservices for scaling', { type: 'architectural' })
 
       expect((behavioral as any).knowledge_type?.cognitive_level).toBe('apply')
       expect((terminological as any).knowledge_type?.cognitive_level).toBe('remember')
       expect((architectural as any).knowledge_type?.cognitive_level).toBe('evaluate')
     })
 
-    it('terminological (remember) engrams route to consider bucket', async () => {
-      await plur.learn('REST means Representational State Transfer', { type: 'terminological', tags: ['rest', 'api'] })
-      const result = await plur.inject('explain REST API')
+    it('terminological (remember) engrams route to consider bucket', () => {
+      plur.learn('REST means Representational State Transfer', { type: 'terminological', tags: ['rest', 'api'] })
+      const result = plur.inject('explain REST API')
       // terminological/remember goes to consider (ALSO CONSIDER) bucket
       if (result.count > 0) {
         expect(result.consider).toMatch(/REST/)
       }
     })
 
-    it('architectural (evaluate) engrams route to directives bucket', async () => {
-      await plur.learn('Use event-driven architecture for real-time systems', { type: 'architectural', tags: ['architecture', 'events'] })
-      const result = await plur.inject('design real-time architecture events')
+    it('architectural (evaluate) engrams route to directives bucket', () => {
+      plur.learn('Use event-driven architecture for real-time systems', { type: 'architectural', tags: ['architecture', 'events'] })
+      const result = plur.inject('design real-time architecture events')
       if (result.count > 0) {
         // architectural/evaluate → directives
         const allOutput = [result.directives, result.constraints].join('\n')
@@ -168,12 +168,12 @@ describe('SP1: Memory Intelligence', () => {
   // === Idea 19: Tension Detection ===
 
   describe('Idea 19: Tension Detection', () => {
-    it('status includes tension_count — zero when no explicit tensions recorded', async () => {
+    it('status includes tension_count — zero when no explicit tensions recorded', () => {
       // Auto-detection via dedup was removed (caused 109K false positives, issue #137).
       // Tensions are now user-managed via plur_tensions_purge.
-      await plur.learn('API uses camelCase for responses', { scope: 'project:myapp' })
-      await plur.learn('API uses snake_case for responses', { scope: 'project:myapp' })
-      const status = await plur.status()
+      plur.learn('API uses camelCase for responses', { scope: 'project:myapp' })
+      plur.learn('API uses snake_case for responses', { scope: 'project:myapp' })
+      const status = plur.status()
       expect(status.tension_count).toBe(0)
     })
   })
@@ -230,7 +230,7 @@ REASON: Duplicate of existing
     })
 
     it('learnAsync returns NOOP on exact hash match', async () => {
-      const first = await plur.learn('Exact duplicate test')
+      const first = plur.learn('Exact duplicate test')
       const result = await plur.learnAsync('Exact duplicate test')
       expect(result.decision).toBe('NOOP')
       expect(result.existing_id).toBe(first.id)
@@ -251,7 +251,7 @@ REASON: Duplicate of existing
     })
 
     it('learnAsync with mock LLM decides UPDATE', async () => {
-      await plur.learn('Use port 3000 for development', { type: 'behavioral' })
+      plur.learn('Use port 3000 for development', { type: 'behavioral' })
 
       const mockLlm = vi.fn().mockResolvedValue(`
 DECISION: UPDATE
@@ -264,7 +264,7 @@ REASON: More specific port configuration
       const llmDir = makeDir()
       writeFileSync(join(llmDir, 'config.yaml'), yaml.dump({ dedup: { enabled: true, mode: 'llm' } }))
       const llmPlur = new Plur({ path: llmDir })
-      await llmPlur.learn('Use port 3000 for development', { type: 'behavioral' })
+      llmPlur.learn('Use port 3000 for development', { type: 'behavioral' })
 
       const result = await llmPlur.learnAsync('Use port 3000 for dev server, configure via PORT env var', {
         llm: mockLlm,
@@ -278,7 +278,7 @@ REASON: More specific port configuration
     }, 30_000)  // explicit: this constructs a fresh Plur + learnAsync, paying the BGE embedder cold-load, which exceeds the 5s default on loaded CI runners (#311)
 
     it('learnAsync with mock LLM detects tensions', async () => {
-      await plur.learn('Always use REST APIs', { type: 'behavioral', tags: ['api'] })
+      plur.learn('Always use REST APIs', { type: 'behavioral', tags: ['api'] })
 
       const mockLlm = vi.fn().mockResolvedValue(`
 DECISION: ADD
@@ -301,7 +301,7 @@ REASON: This contradicts the REST-only policy
       const failLlm = vi.fn().mockRejectedValue(new Error('API timeout'))
 
       // Seed the store with engrams so recall finds candidates (triggers LLM path)
-      await plur.learn('Deploy using blue green strategy for zero downtime', { tags: ['deploy'] })
+      plur.learn('Deploy using blue green strategy for zero downtime', { tags: ['deploy'] })
 
       // Each call uses similar keywords to trigger recall matches
       const attempts = [

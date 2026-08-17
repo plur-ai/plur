@@ -68,17 +68,17 @@ describe('plur_doctor per-store reranker eval gate (#451)', () => {
     const warmDir = mkdtempSync(join(tmpdir(), 'plur-evalgate-warm-'))
     try {
       const warm = new Plur({ path: warmDir })
-      await warm.learn('embedder warm-up', { scope: 'global' })
+      warm.learn('embedder warm-up', { scope: 'global' })
       await warm.recallHybrid('embedder warm-up')
     } finally {
       rmSync(warmDir, { recursive: true, force: true })
     }
   }, 120_000)
 
-  beforeEach(async () => {
+  beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), 'plur-evalgate-'))
     plur = new Plur({ path: dir })
-    for (const s of STATEMENTS) await plur.learn(s, { scope: 'global' })
+    for (const s of STATEMENTS) plur.learn(s, { scope: 'global' })
     tools = getToolDefinitions('full')
     process.env.PLUR_RERANKER = TINY
     _resetRerankerCache()

@@ -408,7 +408,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     // which is the large majority of all injections.
     let eventSessionId: string | undefined
     try { eventSessionId = JSON.parse(readFileSync(marker, 'utf8')).sessionId } catch { /* fail-open */ }
-    const result = await plur.inject(task, { budget: 3000, source: 'hook', session_id: eventSessionId })
+    const result = plur.inject(task, { budget: 3000, source: 'hook', session_id: eventSessionId })
     if (result.count > 0) {
       const parts: string[] = []
       if (result.directives) parts.push(result.directives)
@@ -519,7 +519,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
       }
     } catch {
       // Fall back to BM25
-      const result = await plur.inject(task, injectOpts)
+      const result = plur.inject(task, injectOpts)
       if (result.count > 0) {
         const parts: string[] = []
         if (result.directives) parts.push(result.directives)

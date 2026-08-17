@@ -49,9 +49,7 @@ const EXPECTED: Record<EmbedderName, { dim: number; modelId: string; adapterName
 
 describe('EmbedderAdapter factory — metadata contract', () => {
   it('exports the five expected names', () => {
-    // Copy before sorting: EMBEDDER_NAMES is an exported `as const` tuple, and
-    // .sort() would reorder the shared module-level array in place.
-    expect([...EMBEDDER_NAMES].sort()).toEqual(
+    expect(EMBEDDER_NAMES.sort()).toEqual(
       ['bge-base', 'bge-small', 'embedding-gemma', 'minilm', 'openai-3-large'],
     )
   })
@@ -144,7 +142,7 @@ describe('EmbeddingGemma — role-aware prefix contract', () => {
   })
 })
 
-describe.skipIf(!NETWORK)('EmbedderAdapter — live model loads (PLUR_EMBEDDER_NETWORK_TESTS=1)', async () => {
+describe.skipIf(!NETWORK)('EmbedderAdapter — live model loads (PLUR_EMBEDDER_NETWORK_TESTS=1)', () => {
   // Live tests share state across the suite because each model is ~100MB+
   // and downloads can take a minute on cold caches.
   const LIVE_TIMEOUT = 180_000

@@ -39,7 +39,7 @@ npx @plur-ai/cli@0.9.4 packs install effective-memory
 12 engrams covering:
 
 - **Capture** — call `plur_learn` immediately on corrections; detect correction-shaped phrases.
-- **Recall** — `plur_recall` before factual answers; don't confabulate.
+- **Recall** — `plur_recall_hybrid` before factual answers; don't confabulate.
 - **Session lifecycle** — bookend with `plur_session_start` / `plur_session_end`; `plur_feedback` on injected engrams; `plur_timeline` for long-horizon agents.
 - **Verification** — artifact-first; never bulk-mark as done from narrative text.
 - **Safety** — irreversible actions need actual user confirmation and one-item dry-runs.

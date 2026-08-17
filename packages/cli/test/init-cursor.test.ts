@@ -56,7 +56,7 @@ describe('plur init --cursor', () => {
 
     const rule = readFileSync(join(project, '.cursor', 'rules', 'plur-memory.mdc'), 'utf-8')
     expect(rule).toContain('alwaysApply: true')
-    expect(rule).toContain('plur_recall')
+    expect(rule).toContain('plur_recall_hybrid')
 
     // Both dynamic rule files (session context + reminder) are regenerated
     // every session and must not get committed.

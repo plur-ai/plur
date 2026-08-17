@@ -37,7 +37,7 @@ describe('plur import', () => {
     }).trim()
   }
 
-  it('imports a generic JSON file and prints a migration report', async () => {
+  it('imports a generic JSON file and prints a migration report', () => {
     const input = join(work, 'memories.json')
     writeFileSync(input, JSON.stringify([
       { statement: 'cli import fact one' },
@@ -51,14 +51,14 @@ describe('plur import', () => {
     expect(report.skipped).toBe(1)
     expect(report.conflicts).toBe(0)
     const plur = new Plur({ path: store })
-    expect(await plur.list({})).toHaveLength(2)
+    expect(plur.list({})).toHaveLength(2)
   })
 
-  it('imports the mem0 fixture', async () => {
+  it('imports the mem0 fixture', () => {
     const report = JSON.parse(run(`--from mem0 --path ${join(CORE_FIXTURES, 'mem0-export.json')}`))
     expect(report.imported).toBe(3)
     const plur = new Plur({ path: store })
-    const darkMode = (await plur.list({})).find(e => e.statement.includes('dark mode'))
+    const darkMode = plur.list({}).find(e => e.statement.includes('dark mode'))
     expect(darkMode?.scope).toBe('user:alice')
   })
 
@@ -75,25 +75,25 @@ describe('plur import', () => {
     expect(report.skipped).toBe(0)
   })
 
-  it('supports --dry-run (report only, no writes)', async () => {
+  it('supports --dry-run (report only, no writes)', () => {
     const input = join(work, 'memories.json')
     writeFileSync(input, JSON.stringify([{ statement: 'dry run fact' }]))
     const report = JSON.parse(run(`--from generic --path ${input} --dry-run`))
     expect(report.dry_run).toBe(true)
     expect(report.imported).toBe(1)
     const plur = new Plur({ path: store })
-    expect(await plur.list({})).toHaveLength(0)
+    expect(plur.list({})).toHaveLength(0)
   })
 
-  it('supports --scope override', async () => {
+  it('supports --scope override', () => {
     const input = join(work, 'memories.json')
     writeFileSync(input, JSON.stringify([{ statement: 'scoped cli fact' }]))
     run(`--from generic --path ${input} --scope project:cli-test`)
     const plur = new Plur({ path: store })
-    expect((await plur.list({}))[0].scope).toBe('project:cli-test')
+    expect(plur.list({})[0].scope).toBe('project:cli-test')
   })
 
-  it('supports --mapping for generic imports', async () => {
+  it('supports --mapping for generic imports', () => {
     const input = join(work, 'custom.json')
     writeFileSync(input, JSON.stringify([{ note: 'mapped cli fact', area: 'dev.cli' }]))
     const mapping = join(work, 'mapping.json')
@@ -101,7 +101,7 @@ describe('plur import', () => {
     const report = JSON.parse(run(`--from generic --path ${input} --mapping ${mapping}`))
     expect(report.imported).toBe(1)
     const plur = new Plur({ path: store })
-    expect((await plur.list({}))[0].domain).toBe('dev.cli')
+    expect(plur.list({})[0].domain).toBe('dev.cli')
   })
 
   it('exits 1 with a clear error for an unknown --from', () => {

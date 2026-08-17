@@ -8,18 +8,18 @@ describe('hybrid search (BM25 + embeddings via RRF)', () => {
   let dir: string
   let plur: Plur
 
-  beforeEach(async () => {
+  beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), 'plur-hybrid-'))
     plur = new Plur({ path: dir })
     // Seed engrams with varied content
-    await plur.learn('The capital of France is Paris', { type: 'terminological' })
-    await plur.learn('TypeScript strict mode catches null errors at compile time', { type: 'behavioral' })
-    await plur.learn('User prefers dark theme for all code editors', { type: 'behavioral' })
-    await plur.learn('We decided to use PostgreSQL for the main database', { type: 'architectural' })
-    await plur.learn('The REST API returns JSON responses with snake_case keys', { type: 'behavioral' })
-    await plur.learn('Python is used for data analysis and ML scripts', { type: 'procedural' })
-    await plur.learn('Deploy to production requires two senior approvals', { type: 'procedural' })
-    await plur.learn('The French language is beautiful and widely spoken in Europe', { type: 'terminological' })
+    plur.learn('The capital of France is Paris', { type: 'terminological' })
+    plur.learn('TypeScript strict mode catches null errors at compile time', { type: 'behavioral' })
+    plur.learn('User prefers dark theme for all code editors', { type: 'behavioral' })
+    plur.learn('We decided to use PostgreSQL for the main database', { type: 'architectural' })
+    plur.learn('The REST API returns JSON responses with snake_case keys', { type: 'behavioral' })
+    plur.learn('Python is used for data analysis and ML scripts', { type: 'procedural' })
+    plur.learn('Deploy to production requires two senior approvals', { type: 'procedural' })
+    plur.learn('The French language is beautiful and widely spoken in Europe', { type: 'terminological' })
   })
 
   afterEach(() => { rmSync(dir, { recursive: true }) })
@@ -60,9 +60,9 @@ describe('hybrid search (BM25 + embeddings via RRF)', () => {
   })
 
   it('reactivates returned engrams', async () => {
-    const before = (await plur.recall('France'))[0]?.activation.frequency ?? 0
+    const before = plur.recall('France')[0]?.activation.frequency ?? 0
     await plur.recallHybrid('France')
-    const after = (await plur.recall('France'))[0]?.activation.frequency ?? 0
+    const after = plur.recall('France')[0]?.activation.frequency ?? 0
     expect(after).toBeGreaterThan(before)
   })
 

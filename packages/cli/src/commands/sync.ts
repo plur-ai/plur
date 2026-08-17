@@ -27,7 +27,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     else { i++ }
   }
 
-  const result = await plur.sync(remote, { full })
+  const result = plur.sync(remote, { full })
   // Block on any background PGLite work so the CLI returns a quiescent state.
   if (typeof (plur as { waitForIndex?: () => Promise<void> }).waitForIndex === 'function') {
     await (plur as { waitForIndex: () => Promise<void> }).waitForIndex()

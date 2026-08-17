@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { Plur } from '@plur-ai/core'
-import { getToolDefinitions, _resetSessionTelemetry } from '../src/tools.js'
+import { getToolDefinitions } from '../src/tools.js'
 
 describe('Session & store tools', () => {
   let plur: Plur
@@ -14,10 +14,6 @@ describe('Session & store tools', () => {
     dir = mkdtempSync(join(tmpdir(), 'plur-session-'))
     plur = new Plur({ path: dir })
     tools = getToolDefinitions('full')
-    // Session telemetry is module-level, so sessions started by earlier tests
-    // in this file are still "open" when a later one runs. Start from a clean
-    // slate — otherwise each test inherits whatever the previous one leaked.
-    _resetSessionTelemetry()
   })
   afterEach(() => { rmSync(dir, { recursive: true }) })
 
@@ -29,7 +25,7 @@ describe('Session & store tools', () => {
 
   it('plur_session_start returns session_id and engrams when engrams exist', async () => {
     // Seed an engram so injection finds something
-    await plur.learn('Always use semicolons in TypeScript', { scope: 'global' })
+    plur.learn('Always use semicolons in TypeScript', { scope: 'global' })
 
     const result = await callTool('plur_session_start', { task: 'write TypeScript code' }) as any
     expect(result.session_id).toBeDefined()
@@ -51,7 +47,7 @@ describe('Session & store tools', () => {
   })
 
   it('plur_session_start returns guide when engrams exist but none match', async () => {
-    await plur.learn('Always use semicolons in TypeScript', { scope: 'global' })
+    plur.learn('Always use semicolons in TypeScript', { scope: 'global' })
     const result = await callTool('plur_session_start', { task: 'cooking recipes for dinner' }) as any
     expect(result.session_id).toBeDefined()
     expect(result.engrams).toEqual([])
@@ -73,7 +69,7 @@ describe('Session & store tools', () => {
     expect(result.episode_id).toBeDefined()
 
     // Verify engrams were created
-    const status = await plur.status()
+    const status = plur.status()
     expect(status.engram_count).toBe(2)
 
     // Verify episode was captured
@@ -102,7 +98,7 @@ describe('Session & store tools', () => {
     }) as any
     expect(result.engrams_created).toBe(2)
     expect(result.episode_id).toBeDefined()
-    const status = await plur.status()
+    const status = plur.status()
     expect(status.engram_count).toBe(2)
   })
 
@@ -129,7 +125,7 @@ describe('Session & store tools', () => {
   describe('session injection telemetry', () => {
     it('session_end returns injection_summary when engrams were injected', async () => {
       // Seed an engram so session_start injects something
-      await plur.learn('Always use semicolons in TypeScript', { scope: 'global' })
+      plur.learn('Always use semicolons in TypeScript', { scope: 'global' })
 
       const startResult = await callTool('plur_session_start', { task: 'write TypeScript code' }) as any
       const session_id = startResult.session_id
@@ -152,7 +148,7 @@ describe('Session & store tools', () => {
     })
 
     it('injection_summary.session_duration_ms reflects elapsed wall-clock time', async () => {
-      await plur.learn('Timing test engram', { scope: 'global' })
+      plur.learn('Timing test engram', { scope: 'global' })
 
       const before = Date.now()
       const startResult = await callTool('plur_session_start', { task: 'timing test' }) as any
@@ -172,16 +168,8 @@ describe('Session & store tools', () => {
       expect(session_duration_ms).toBeLessThanOrEqual(after - before)
     })
 
-    it('reports an injection_summary on an empty store — the call happened, it found nothing', async () => {
-      // Previously asserted `injection_summary` was undefined here, on the
-      // premise "no engrams → session_start injects nothing → nothing to
-      // report". That premise conflated a call that found nothing with a call
-      // that never happened, and it was the same conflation that made
-      // `total_injections` undercount (see the recorder in tools.ts).
-      //
-      // An empty store is precisely the case where you want to know injection
-      // RAN and came back empty — that is the difference between "memory is
-      // not wired up" and "memory is wired up and this task matched nothing".
+    it('session_end returns no injection_summary when no engrams exist', async () => {
+      // No engrams → session_start injects nothing
       const startResult = await callTool('plur_session_start', { task: 'fresh store task' }) as any
       const session_id = startResult.session_id
 
@@ -191,13 +179,11 @@ describe('Session & store tools', () => {
         engram_suggestions: [],
       }) as any
 
-      expect(endResult.injection_summary).toBeDefined()
-      expect(endResult.injection_summary.total_injections).toBeGreaterThanOrEqual(1)
-      expect(endResult.injection_summary.pack_counts).toEqual({})
+      expect(endResult.injection_summary).toBeUndefined()
     })
 
     it('standalone plur_inject calls accumulate into the session telemetry', async () => {
-      await plur.learn('Use pnpm for package management', { scope: 'global' })
+      plur.learn('Use pnpm for package management', { scope: 'global' })
 
       const startResult = await callTool('plur_session_start', { task: 'tooling check' }) as any
       const session_id = startResult.session_id
@@ -216,36 +202,8 @@ describe('Session & store tools', () => {
       expect(endResult.injection_summary.total_injections).toBeGreaterThanOrEqual(2)
     })
 
-    it('counts an inject call that matched NOTHING', async () => {
-      // The counter is "distinct inject calls", not "calls that found
-      // something". It used to skip empty ones, which made the count depend on
-      // retrieval quality: a session_start whose task matched no engram — or
-      // one where injectHybrid fell back to BM25 because the embedding model
-      // was slow to load, as on a cold CI runner — silently undercounted.
-      // Intermittent by construction, and biased toward sessions that went
-      // well.
-      await plur.learn('Use pnpm for package management', { scope: 'global' })
-
-      const startResult = await callTool('plur_session_start', { task: 'tooling check' }) as any
-      const session_id = startResult.session_id
-
-      const inject = await callTool('plur_inject', {
-        task: 'zzzz nothing in the corpus resembles this query zzzz',
-      }) as any
-      expect(inject.count).toBe(0)
-
-      const endResult = await callTool('plur_session_end', {
-        summary: 'no matches',
-        session_id,
-        engram_suggestions: [],
-      }) as any
-
-      // session_start + the empty standalone call.
-      expect(endResult.injection_summary.total_injections).toBeGreaterThanOrEqual(2)
-    })
-
     it('session telemetry is cleared after session_end — no cross-session bleed', async () => {
-      await plur.learn('Test engram', { scope: 'global' })
+      plur.learn('Test engram', { scope: 'global' })
 
       const startA = await callTool('plur_session_start', { task: 'task A' }) as any
       const session_id_A = startA.session_id
@@ -311,10 +269,10 @@ describe('Session & store tools', () => {
 
   it('plur_promote promotes a candidate engram', async () => {
     // Create an engram and manually set it to candidate status
-    const engram = await plur.learn('Test candidate engram', { scope: 'global' })
+    const engram = plur.learn('Test candidate engram', { scope: 'global' })
     engram.status = 'candidate' as any
     engram.activation.retrieval_strength = 0.3
-    await plur.updateEngram(engram)
+    plur.updateEngram(engram)
 
     const result = await callTool('plur_promote', { id: engram.id }) as any
     expect(result.success).toBe(true)
@@ -322,13 +280,13 @@ describe('Session & store tools', () => {
     expect(result.promoted[0].id).toBe(engram.id)
 
     // Verify it's now active
-    const updated = await plur.getById(engram.id)
+    const updated = plur.getById(engram.id)
     expect(updated!.status).toBe('active')
     expect(updated!.activation.retrieval_strength).toBe(0.7)
   })
 
   it('plur_promote returns already_active for active engrams', async () => {
-    const engram = await plur.learn('Already active engram', { scope: 'global' })
+    const engram = plur.learn('Already active engram', { scope: 'global' })
     const result = await callTool('plur_promote', { id: engram.id }) as any
     expect(result.success).toBe(false)
     expect(result.errors).toHaveLength(1)
@@ -336,7 +294,7 @@ describe('Session & store tools', () => {
   })
 
   it('plur_promote returns error for retired engrams', async () => {
-    const engram = await plur.learn('Soon retired', { scope: 'global' })
+    const engram = plur.learn('Soon retired', { scope: 'global' })
     await plur.forget(engram.id)
     const result = await callTool('plur_promote', { id: engram.id }) as any
     expect(result.success).toBe(false)
@@ -408,7 +366,7 @@ describe('Session & store tools', () => {
 
       await callTool('plur_session_start', { task: 'integration test' })
 
-      const engram = await plur.learn('this should NOT leak to global')
+      const engram = plur.learn('this should NOT leak to global')
       expect(engram.scope).toBe('project:integration-test')
     })
 
@@ -453,7 +411,7 @@ describe('Session & store tools', () => {
         await callTool('plur_session_start', { task: 'B' })
         expect(plur.getSessionScope()).toBeNull()  // not "project:a"!
 
-        const bEngram = await plur.learn('B-side engram')
+        const bEngram = plur.learn('B-side engram')
         // 0.10.0 (#353): un-scoped writes default to "global" (reverted from the
         // Stage 3b "local"). The property under test is "no cross-project leak"
         // into project:a — "global" satisfies that (it is the personal namespace,

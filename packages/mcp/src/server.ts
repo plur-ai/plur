@@ -73,7 +73,7 @@ A single session produces engrams that belong in different stores. Choose the
 
 OPTIONAL but improves quality:
 - Call plur_feedback to rate which injected engrams helped (positive/negative)
-- Call plur_recall before answering factual questions — the answer may be in memory
+- Call plur_recall_hybrid before answering factual questions — the answer may be in memory
 
 Do not ask permission to use these tools — they are your memory system.
 
@@ -115,7 +115,8 @@ Persistent memory for AI agents. Corrections, preferences, and conventions are s
 
 ### Core Memory
 - **plur_learn** — store a correction, preference, or convention
-- **plur_recall** — hybrid search by default (BM25 + embeddings); pass mode:"keyword" for BM25-only
+- **plur_recall** — BM25 keyword search
+- **plur_recall_hybrid** — BM25 + embeddings (recommended default)
 - **plur_feedback** — rate an engram (trains relevance)
 - **plur_forget** — retire an outdated engram
 - **plur_promote** — activate a candidate engram
@@ -323,7 +324,7 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
     }
 
     if (uri === 'plur://status') {
-      const status = await instance.status()
+      const status = instance.status()
       return {
         contents: [{
           uri: 'plur://status',
@@ -365,7 +366,7 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
     const name = request.params.name
 
     if (name === 'plur-getting-started') {
-      const status = await instance.status()
+      const status = instance.status()
       return {
         description: 'Get started with PLUR memory',
         messages: [{
@@ -382,7 +383,7 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
 ${status.engram_count === 0
   ? `I have no memories yet. Help me get started by:
 1. Teaching me a coding preference or convention (I'll use plur_learn)
-2. Then recalling it to verify it works (I'll use plur_recall)
+2. Then recalling it to verify it works (I'll use plur_recall_hybrid)
 3. Rating the recall quality (I'll use plur_feedback)`
   : `I have ${status.engram_count} engrams stored. Try asking me something related to your project — I'll check my memory first.`}`,
           },
@@ -402,7 +403,7 @@ ${status.engram_count === 0
             text: `Starting a new session. Task: ${task}${scope ? ` (scope: ${scope})` : ''}
 
 Please:
-1. Call plur_recall with query "${task}"${scope ? ` and scope "${scope}"` : ''} to load relevant memories
+1. Call plur_recall_hybrid with query "${task}"${scope ? ` and scope "${scope}"` : ''} to load relevant memories
 2. Review the recalled engrams and apply any relevant conventions or preferences
 3. If any recalled engrams are helpful, call plur_feedback with "positive"
 4. If any are irrelevant, call plur_feedback with "negative"`,

@@ -165,7 +165,7 @@ Hooks inject engrams automatically on every first message — you do not need to
 
 1. **Automatic**: Hooks inject relevant engrams on first message — no action needed
 2. **Learn**: When corrected or discovering something new, call \`plur_learn\` immediately
-3. **Recall**: Before answering factual questions, call \`plur_recall\` — check memory first
+3. **Recall**: Before answering factual questions, call \`plur_recall_hybrid\` — check memory first
 4. **Feedback**: Rate injected engrams with \`plur_feedback\` (positive/negative) — trains relevance
 5. **End**: Call \`plur_session_end\` with summary + engram_suggestions — a SessionEnd hook auto-closes the lifecycle if you forget, but calling it yourself captures higher-quality learnings
 
@@ -320,7 +320,7 @@ async function runInit() {
       const installedVersion = installedByName.get(entry)
       if (!installedByName.has(entry)) {
         try {
-          await plur.installPack(join(bundledPacksDir, entry))
+          plur.installPack(join(bundledPacksDir, entry))
           newPacks.push(entry)
         } catch {}
       } else if (
@@ -335,7 +335,7 @@ async function runInit() {
         // can't do a comparison, so we upgrade unconditionally rather than
         // leave a versionless pack stale forever.
         try {
-          await plur.installPack(join(bundledPacksDir, entry))
+          plur.installPack(join(bundledPacksDir, entry))
           upgradedPacks.push(
             `${entry} ${installedVersion ?? 'unknown'}→${bundledVersion}`,
           )
@@ -382,7 +382,7 @@ async function runPacks(): Promise<void> {
       process.exit(1)
     }
     try {
-      const result = await plur.installPack(source)
+      const result = plur.installPack(source)
       process.stdout.write(`Installed pack '${result.name}' (${result.installed} engrams)\n`)
     } catch (err) {
       process.stderr.write(`Error: ${(err as Error).message}\n`)

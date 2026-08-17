@@ -3,7 +3,7 @@ import { shouldOutputJson, outputJson, outputText } from '../output.js'
 
 export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
   const plur = createPlur(flags)
-  const result = await plur.status()
+  const result = plur.status()
 
   if (shouldOutputJson(flags)) {
     outputJson(result)

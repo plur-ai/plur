@@ -34,7 +34,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     exit(1, 'Usage: plur ingest <content> [--source <src>] [--scope <scope>] [--domain <domain>] [--extract-only]')
   }
 
-  const candidates = await plur.ingest(content, { source, extract_only: extractOnly, scope, domain })
+  const candidates = plur.ingest(content, { source, extract_only: extractOnly, scope, domain })
 
   if (shouldOutputJson(flags)) {
     outputJson({ candidates, count: candidates.length, saved: !extractOnly })

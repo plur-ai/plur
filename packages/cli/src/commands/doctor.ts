@@ -630,7 +630,7 @@ function printText(report: DoctorReport): void {
     outputText('')
     outputText('⚠  datacore MCP server detected alongside plur.')
     outputText('   plur and datacore are SEPARATE MCP servers with separate tool namespaces.')
-    outputText('   plur tools are prefixed plur_* (plur_learn, plur_recall, etc.).')
+    outputText('   plur tools are prefixed plur_* (plur_learn, plur_recall_hybrid, etc.).')
     outputText('   datacore tools are prefixed datacore_*. They do NOT share memory.')
     outputText('   If your agent confuses them, this is the cause.')
   }

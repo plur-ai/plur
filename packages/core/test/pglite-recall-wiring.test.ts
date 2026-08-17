@@ -46,7 +46,7 @@ describe('PGLite recall wiring (iter-2 audit B-1)', () => {
   // PLUR_EMBEDDER_NETWORK_TESTS=1 once auto-embed-on-learn is wired (PR-4 TODO).
   it.skipIf(process.env.PLUR_EMBEDDER_NETWORK_TESTS !== '1')('learn() auto-upserts the embedding into PGLite', async () => {
     const plur = new Plur({ path: dir })
-    const e = await plur.learn('cats prefer to sleep on the keyboard', {
+    const e = plur.learn('cats prefer to sleep on the keyboard', {
       type: 'behavioral',
       scope: 'global',
     })
@@ -67,9 +67,9 @@ describe('PGLite recall wiring (iter-2 audit B-1)', () => {
   it('recallHybrid still returns YAML-backed engrams (no synthetic IDs)', async () => {
     const plur = new Plur({ path: dir })
     const seeded = [
-      await plur.learn('blue ocean strategy is a market positioning concept', { type: 'behavioral', scope: 'global' }),
-      await plur.learn('the user prefers terse responses', { type: 'behavioral', scope: 'global' }),
-      await plur.learn('always run tests before merging', { type: 'procedural', scope: 'project:plur' }),
+      plur.learn('blue ocean strategy is a market positioning concept', { type: 'behavioral', scope: 'global' }),
+      plur.learn('the user prefers terse responses', { type: 'behavioral', scope: 'global' }),
+      plur.learn('always run tests before merging', { type: 'procedural', scope: 'project:plur' }),
     ]
     await plur.waitForIndex()
     const results = await plur.recallHybrid('ocean strategy')
@@ -83,21 +83,21 @@ describe('PGLite recall wiring (iter-2 audit B-1)', () => {
 
   it('PGLite directory exists after first learn (substrate is opt-in but real)', async () => {
     const plur = new Plur({ path: dir })
-    await plur.learn('initialize the index', { type: 'behavioral', scope: 'global' })
+    plur.learn('initialize the index', { type: 'behavioral', scope: 'global' })
     await plur.waitForIndex()
     expect(existsSync(join(dir, 'store.pglite'))).toBe(true)
   }, PGLITE_TIMEOUT)
 
   it('recallSemantic returns YAML-backed engrams when PGLite is active', async () => {
     const plur = new Plur({ path: dir })
-    const learned = await plur.learn('marine biologists study ocean ecosystems', { type: 'behavioral', scope: 'global' })
-    await plur.learn('the user prefers terse responses', { type: 'behavioral', scope: 'global' })
+    const learned = plur.learn('marine biologists study ocean ecosystems', { type: 'behavioral', scope: 'global' })
+    plur.learn('the user prefers terse responses', { type: 'behavioral', scope: 'global' })
     await plur.waitForIndex()
 
     const results = await plur.recallSemantic('ocean')
     // YAML-as-truth — every returned ID came from learn().
-    const seededIds = new Set([learned.id]);
-    (await plur.list()).forEach(e => seededIds.add(e.id))
+    const seededIds = new Set([learned.id])
+    plur.list().forEach(e => seededIds.add(e.id))
     for (const r of results) {
       expect(seededIds.has(r.id)).toBe(true)
     }

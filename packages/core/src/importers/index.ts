@@ -58,9 +58,6 @@ export const IMPORT_SOURCES: ImportSource[] = [
   lettaSource,
 ]
 
-// Synchronous — the entire body returns a frozen module-level constant. An
-// automated pass made it async during the Phase 2 flip; there is nothing to
-// await. See the note in index.ts on suggestScope.
 export function listImportSources(): ImportSource[] {
   return IMPORT_SOURCES
 }
@@ -84,10 +81,10 @@ export interface ImportFromOptions {
 }
 
 /** File → parse → dedup-gated learn, in one call. Used by the CLI command. */
-export async function importFrom(plur: Plur, opts: ImportFromOptions): Promise<MigrationReport> {
+export function importFrom(plur: Plur, opts: ImportFromOptions): MigrationReport {
   const source = getImportSource(opts.from)
   const records = source.parse({ path: opts.path, mapping: opts.mapping })
-  return await runImport(plur, records, {
+  return runImport(plur, records, {
     from: opts.from,
     path: opts.path,
     dryRun: opts.dryRun,

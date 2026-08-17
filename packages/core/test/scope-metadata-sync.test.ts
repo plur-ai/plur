@@ -57,7 +57,7 @@ function makeDir(stores: unknown[]): { dir: string; plur: Plur } {
   return { dir, plur: new Plur({ path: dir }) }
 }
 
-async function readStores(dir: string): Promise<unknown[]> {
+function readStores(dir: string): unknown[] {
   const raw = readFileSync(join(dir, 'config.yaml'), 'utf8')
   return ((yaml.load(raw) as Record<string, unknown>).stores ?? []) as unknown[]
 }
@@ -75,7 +75,7 @@ describe('persistScopeMetadata()', () => {
       const discoveries = await plur.discoverRemoteScopes()
       plur.persistScopeMetadata(discoveries)
 
-      const stores = await readStores(dir) as Array<Record<string, unknown>>
+      const stores = readStores(dir) as Array<Record<string, unknown>>
       const eng = stores.find(s => s.scope === 'group:plur/engineering')!
       expect(eng.covers).toEqual(['plur.engineering', 'ci', 'deploy'])
       expect(eng.description).toBe('Engineering knowledge')
@@ -91,7 +91,7 @@ describe('persistScopeMetadata()', () => {
       const discoveries = await plur.discoverRemoteScopes()
       plur.persistScopeMetadata(discoveries)
 
-      const stores = await readStores(dir) as Array<Record<string, unknown>>
+      const stores = readStores(dir) as Array<Record<string, unknown>>
       expect((stores.find(s => s.scope === 'group:plur/engineering') as Record<string, unknown>).covers)
         .toEqual(['plur.engineering', 'ci', 'deploy'])
       expect((stores.find(s => s.scope === 'group:plur/comms') as Record<string, unknown>).covers)
@@ -114,7 +114,7 @@ describe('persistScopeMetadata()', () => {
       const d2 = await plur.discoverRemoteScopes()
       plur.persistScopeMetadata(d2)
 
-      const stores = await readStores(dir) as Array<Record<string, unknown>>
+      const stores = readStores(dir) as Array<Record<string, unknown>>
       const eng = stores.find(s => s.scope === 'group:plur/engineering')!
       expect(eng.covers).toEqual(['plur.engineering', 'testing'])
       expect(eng.description).toBe('Eng v2')
@@ -150,7 +150,7 @@ describe('persistScopeMetadata()', () => {
       }]
       plur2.persistScopeMetadata(discoveries)
 
-      const stores = await readStores(dir2) as Array<Record<string, unknown>>
+      const stores = readStores(dir2) as Array<Record<string, unknown>>
       // global is not in stores → no entry to update (personal scopes are never registered)
       expect(stores.find(s => s.scope === 'global')).toBeUndefined()
       // The shared scope does get updated
@@ -175,7 +175,7 @@ describe('persistScopeMetadata()', () => {
       const discoveries = await plur.discoverRemoteScopes()
       plur.persistScopeMetadata(discoveries)
 
-      const stores = await readStores(dir) as Array<Record<string, unknown>>
+      const stores = readStores(dir) as Array<Record<string, unknown>>
       const comms = stores.find(s => s.scope === 'group:plur/comms')!
       expect(comms.covers).toBeUndefined()  // untouched — no metadata for it
       const eng = stores.find(s => s.scope === 'group:plur/engineering')!
@@ -205,7 +205,7 @@ describe('persistScopeMetadata()', () => {
       plur.persistScopeMetadata([
         { url: baseUrl, ok: false as const, authorized: [], registered: [], unregistered: [], metadata: [], error: 'simulated failure' },
       ])
-      const stores = await readStores(dir) as Array<Record<string, unknown>>
+      const stores = readStores(dir) as Array<Record<string, unknown>>
       expect(stores[0].covers).toBeUndefined()  // not written on failure
     } finally { rmSync(dir, { recursive: true, force: true }) }
   })
@@ -224,7 +224,7 @@ describe('suggestScope() activates after persistScopeMetadata()', () => {
       const discoveries = await plur.discoverRemoteScopes()
       plur.persistScopeMetadata(discoveries)
 
-      const candidates = await plur.suggestScope({ statement: 'deploy pipeline config', domain: 'plur.engineering' })
+      const candidates = plur.suggestScope({ statement: 'deploy pipeline config', domain: 'plur.engineering' })
       expect(candidates.length).toBeGreaterThan(0)
       expect(candidates[0].scope).toBe('group:plur/engineering')
       expect(candidates[0].confidence).toBeGreaterThanOrEqual(0.5)
@@ -237,7 +237,7 @@ describe('suggestScope() activates after persistScopeMetadata()', () => {
     ])
     try {
       // No persistScopeMetadata call — covers never written
-      const candidates = await plur.suggestScope({ statement: 'deploy pipeline config', domain: 'plur.engineering' })
+      const candidates = plur.suggestScope({ statement: 'deploy pipeline config', domain: 'plur.engineering' })
       expect(candidates).toEqual([])
     } finally { rmSync(dir, { recursive: true, force: true }) }
   })
@@ -256,7 +256,7 @@ describe('registerDiscoveredScopes() auto-syncs metadata', () => {
     try {
       await plur.registerDiscoveredScopes()
 
-      const stores = await readStores(dir) as Array<Record<string, unknown>>
+      const stores = readStores(dir) as Array<Record<string, unknown>>
       // engineering was already registered; comms is newly registered — both get covers
       const eng = stores.find(s => s.scope === 'group:plur/engineering')!
       expect(eng.covers).toEqual(['plur.engineering', 'ci', 'deploy'])
@@ -278,7 +278,7 @@ describe('registerScope() auto-syncs metadata', () => {
     try {
       await plur.registerScope('group:plur/comms')
 
-      const stores = await readStores(dir) as Array<Record<string, unknown>>
+      const stores = readStores(dir) as Array<Record<string, unknown>>
       const comms = stores.find(s => s.scope === 'group:plur/comms')!
       expect(comms.covers).toEqual(['plur.comms', 'marketing'])
     } finally { rmSync(dir, { recursive: true, force: true }) }

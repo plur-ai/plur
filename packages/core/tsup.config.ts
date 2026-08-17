@@ -23,13 +23,5 @@ export default defineConfig({
     '@electric-sql/pglite',
     '@electric-sql/pglite/vector',
     '@electric-sql/pglite/age',
-    // `pg` is an optionalDependency, and tsup only auto-externalizes
-    // `dependencies` + `peerDependencies` — so without this line esbuild
-    // inlines the entire CJS driver into core's ESM dist and rewrites the lazy
-    // `await import('pg')` to reference the inlined copy. That fails at runtime
-    // in the PUBLISHED package while every in-repo test passes, because tests
-    // run from source and never touch dist.
-    'pg',
-    'pg-native',
   ],
 })

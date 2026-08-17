@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { mkdtempSync, rmSync, readFileSync, writeFileSync, mkdirSync, existsSync, chmodSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
-import { runCli } from './helpers/spawn.js'
+import { spawnSync } from 'child_process'
 
 const CLI = join(__dirname, '..', 'dist', 'index.js')
 
@@ -59,7 +59,7 @@ describe('hook-session-end (#217 — SessionEnd auto-close)', () => {
     input: object,
     env?: Record<string, string>,
   ): { stdout: string; stderr: string; status: number | null } {
-    const result = runCli('node', [CLI, 'hook-session-end'], {
+    const result = spawnSync('node', [CLI, 'hook-session-end'], {
       input: JSON.stringify(input),
       encoding: 'utf-8',
       timeout: 15000,

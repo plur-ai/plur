@@ -4,7 +4,6 @@ import { loadEngrams, storePrefix } from './engrams.js'
 import { isPersonalScope, isScopeWithin } from './scope-util.js'
 import type { Engram } from './schemas/engram.js'
 import type { StoreEntry } from './schemas/config.js'
-import type { StorageFilter } from './storage-adapter.js'
 
 const require = createRequire(import.meta.url)
 
@@ -117,9 +116,9 @@ export class IndexedStorage {
   }
 
   /** Load all engrams from SQLite index. Auto-rebuilds if db missing. */
-  async loadAll(): Promise<Engram[]> {
+  loadAll(): Engram[] {
     if (!existsSync(this.dbPath)) {
-      await this.reindex()
+      this.reindex()
     }
     const db = this.getDb()
     const rows = db.prepare('SELECT data FROM engrams').all() as { data: string }[]
@@ -127,9 +126,9 @@ export class IndexedStorage {
   }
 
   /** Load engrams with SQL-level filtering. */
-  async loadFiltered(filter: StorageFilter): Promise<Engram[]> {
+  loadFiltered(filter: { status?: string; scope?: string; domain?: string }): Engram[] {
     if (!existsSync(this.dbPath)) {
-      await this.reindex()
+      this.reindex()
     }
     const db = this.getDb()
     const conditions: string[] = []
@@ -138,29 +137,6 @@ export class IndexedStorage {
     if (filter.status) {
       conditions.push('status = ?')
       params.push(filter.status)
-    }
-    if (filter.scopes !== undefined) {
-      // Permitted-scope allow-list pushdown (Phase 3) — the SQLite twin of
-      // storage-pglite's `scope = ANY($n::text[])`. EXACT membership: no
-      // hierarchy expansion and no `personal = 1` pass-through, because the
-      // caller has already resolved identity to a complete permitted set and
-      // widening it here would hand back engrams authorization never granted.
-      //
-      // An EMPTY list must match NOTHING, so it compiles to a literal false
-      // rather than being dropped — `scope IN ()` is not even valid SQLite,
-      // and silently dropping the clause would show a principal with zero
-      // permitted scopes the entire corpus.
-      //
-      // One placeholder per scope. A permitted-scope list is an authorization
-      // decision (tens of entries at most), so SQLite's variable ceiling
-      // (SQLITE_MAX_VARIABLE_NUMBER, 32766 in better-sqlite3) is not in reach;
-      // if it ever were, switch to `IN (SELECT value FROM json_each(?))`.
-      if (filter.scopes.length === 0) {
-        conditions.push('1 = 0')
-      } else {
-        conditions.push(`scope IN (${filter.scopes.map(() => '?').join(', ')})`)
-        params.push(...filter.scopes)
-      }
     }
     if (filter.scope) {
       // Read-side scope filter (#353). `personal = 1` passes ALL personal-family
@@ -183,9 +159,9 @@ export class IndexedStorage {
   }
 
   /** Count engrams with optional status filter. */
-  async count(filter?: { status?: string }): Promise<number> {
+  count(filter?: { status?: string }): number {
     if (!existsSync(this.dbPath)) {
-      await this.reindex()
+      this.reindex()
     }
     const db = this.getDb()
     if (filter?.status) {

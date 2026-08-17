@@ -13,7 +13,7 @@ function writeEngrams(path: string, engrams: any[]): void {
   writeFileSync(path, yaml.dump({ engrams }), 'utf8')
 }
 
-async function readEngrams(path: string): Promise<any[]> {
+function readEngrams(path: string): any[] {
   const raw = readFileSync(path, 'utf8')
   const data = yaml.load(raw) as any
   return data?.engrams ?? []
@@ -72,10 +72,8 @@ describe('purgeTensions', () => {
     const { Plur } = await import('../src/index.js')
     const plur = new Plur({ path: dir })
 
-    await plur.ready()   // the constructor starts it; ready() is where it lands
-
     // Auto-purge should have already run in constructor
-    const engrams = await readEngrams(engramsPath)
+    const engrams = readEngrams(engramsPath)
     const withConflicts = engrams.filter((e: any) => e.relations?.conflicts?.length > 0)
     expect(withConflicts).toHaveLength(0)
   })
@@ -101,10 +99,9 @@ describe('purgeTensions', () => {
 
     const { Plur } = await import('../src/index.js')
     const plur = new Plur({ path: dir })
-    await plur.ready()
 
     // Verify project store was cleaned
-    const projectEngrams = await readEngrams(projectPath)
+    const projectEngrams = readEngrams(projectPath)
     const withConflicts = projectEngrams.filter((e: any) => e.relations?.conflicts?.length > 0)
     expect(withConflicts).toHaveLength(0)
   })
@@ -118,8 +115,7 @@ describe('purgeTensions', () => {
 
     const { Plur } = await import('../src/index.js')
     const plur = new Plur({ path: dir })
-    await plur.ready()
-    const status = await plur.status()
+    const status = plur.status()
     expect(status.tension_count).toBe(0)
   })
 
@@ -128,7 +124,7 @@ describe('purgeTensions', () => {
     writeEngrams(engramsPath, [makeEngram('ENG-001', ['ENG-002'])])
 
     const { Plur } = await import('../src/index.js')
-    await new Plur({ path: dir }).ready()
+    new Plur({ path: dir })
 
     expect(existsSync(join(dir, '.tensions-purged'))).toBe(true)
   })
@@ -145,10 +141,9 @@ describe('purgeTensions', () => {
 
     const { Plur } = await import('../src/index.js')
     const plur = new Plur({ path: dir })
-    await plur.ready()
 
     // Conflicts should still be there (purge was skipped)
-    const engrams = await readEngrams(engramsPath)
+    const engrams = readEngrams(engramsPath)
     const withConflicts = engrams.filter((e: any) => e.relations?.conflicts?.length > 0)
     expect(withConflicts).toHaveLength(2)
   })
@@ -161,9 +156,8 @@ describe('purgeTensions', () => {
 
     const { Plur } = await import('../src/index.js')
     const plur = new Plur({ path: dir })
-    await plur.ready()
 
-    const engrams = await readEngrams(engramsPath)
+    const engrams = readEngrams(engramsPath)
     expect(engrams[0].id).toBe('ENG-001')
     expect(engrams[0].statement).toBe('Test engram ENG-001')
     expect(engrams[0].type).toBe('behavioral')
@@ -185,11 +179,10 @@ describe('purgeTensions', () => {
     // Create sentinel to skip auto-purge
     writeFileSync(join(dir, '.tensions-purged'), 'skip\n', 'utf8')
     const plur = new Plur({ path: dir })
-    await plur.ready()
 
     // Remove sentinel and re-purge manually
     rmSync(join(dir, '.tensions-purged'))
-    const result = await plur.purgeTensions()
+    const result = plur.purgeTensions()
     expect(result.purged_count).toBe(3) // ENG-001 has 2 + ENG-002 has 1
     expect(result.engrams_modified).toBe(2) // ENG-001 and ENG-002
     expect(result.stores_cleaned).toBe(1) // primary store
@@ -206,8 +199,7 @@ describe('purgeTensions', () => {
     const { Plur } = await import('../src/index.js')
     // Should not throw trying to write to remote store
     const plur = new Plur({ path: dir })
-    await plur.ready()
-    const result = await plur.purgeTensions()
+    const result = plur.purgeTensions()
     expect(result.stores_cleaned).toBe(0)
   })
 })

@@ -15,12 +15,7 @@ function makeEngram(id: string, statement: string, domain: string, tags: string[
     knowledge_anchors: [], associations: [],
     feedback_signals: { positive: 0, negative: 0, neutral: 0 },
     derivation_count: 1, visibility: 'private',
-    reference_count: 1,
-    sources: [{ scope: 'global', session_id: null, stored_at: '2026-03-29T00:00:00.000Z' }],
-    recurrence_count: 0,
-    engram_version: 1,
-    episode_ids: [],
-  }
+  } as Engram
 }
 
 // Full mock LLM — handles all pipeline stages

@@ -2,8 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { mkdtempSync, rmSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
-import { execSync } from 'child_process'
-import { runCli } from './helpers/spawn.js'
+import { execSync, spawnSync } from 'child_process'
 
 const CLI = join(__dirname, '..', 'dist', 'index.js')
 
@@ -14,7 +13,7 @@ describe('plur sync', () => {
 
   it('returns a result with action field on non-git dir', () => {
     // sync initializes a git repo in the plur dir; may succeed or throw
-    const result = runCli('node', [CLI, 'sync', '--path', dir, '--json'], {
+    const result = spawnSync('node', [CLI, 'sync', '--path', dir, '--json'], {
       encoding: 'utf-8',
       timeout: 15000,
     })
@@ -30,7 +29,7 @@ describe('plur sync', () => {
   })
 
   it('initializes git repo and returns initialized action', () => {
-    const result = runCli('node', [CLI, 'sync', '--path', dir, '--json'], {
+    const result = spawnSync('node', [CLI, 'sync', '--path', dir, '--json'], {
       encoding: 'utf-8',
       timeout: 15000,
     })

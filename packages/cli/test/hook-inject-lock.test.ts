@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, chmodSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
-import { runCli } from './helpers/spawn.js'
+import { spawnSync } from 'child_process'
 
 const CLI = join(__dirname, '..', 'dist', 'index.js')
 
@@ -32,7 +32,7 @@ describe('hook-inject concurrency guard (#519)', () => {
     stderr: string
     status: number
   } {
-    const result = runCli('node', [CLI, 'hook-inject'], {
+    const result = spawnSync('node', [CLI, 'hook-inject'], {
       input: JSON.stringify(input),
       encoding: 'utf-8',
       timeout: 15_000,

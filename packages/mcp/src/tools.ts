@@ -46,128 +46,6 @@ export interface ToolDefinition {
   handler: (args: Record<string, unknown>, plur: Plur) => Promise<unknown>
 }
 
-/**
- * The canonical `plur_recall` handler (#693).
- *
- * Hoisted out of the tool literal so the deprecated `plur_recall_hybrid`
- * alias can forward to it rather than re-implementing the hybrid branch.
- * Budget capping, episode expansion, the hybrid-degraded warning and the
- * #341 reranker surfacing all live here once — the alias adds only its
- * deprecation notice, so the two cannot drift before the 0.18 removal.
- */
-const recallHandler: ToolDefinition['handler'] = async (args, plur) => {
-  const mode = (args.mode as string | undefined) ?? 'hybrid'
-  if (mode === 'keyword') {
-    // `await` added on merge: `recall()` is async as of the Phase 2 write-path
-    // flip. Landed on main against the synchronous signature, so without this
-    // `results` is a Promise and `.map` below throws.
-    const results = await plur.recall(args.query as string, {
-      scope: args.scope as string | undefined,
-      domain: args.domain as string | undefined,
-      limit: args.limit as number | undefined,
-    })
-    return {
-      results: results.map(e => {
-        const supersededBy = e.relations?.superseded_by
-        const annotation = supersededBy?.length ? ` [superseded by ${supersededBy.join(', ')}]` : ''
-        return {
-          id: e.id,
-          statement: e.statement + annotation,
-          type: e.type,
-          scope: e.scope,
-          domain: e.domain,
-          retrieval_strength: e.activation.retrieval_strength,
-        }
-      }),
-      count: results.length,
-      mode: 'keyword',
-    }
-  }
-  // mode === 'hybrid' (default)
-  const budget = args.budget as { max_tokens?: number; max_results?: number; ttl_seconds?: number } | undefined
-  const cap = budget?.max_results ?? (args.limit as number | undefined) ?? 20
-  // When a max_results budget is set, fetch one extra so we can detect
-  // whether the store had more results than the cap without over-fetching.
-  // Without this, the search layer already caps at `cap` before we can
-  // compare, so `results.length > cap` is always false (#725).
-  const fetchLimit = budget?.max_results != null ? cap + 1 : cap
-  const meta = await plur.recallHybridWithMeta(args.query as string, {
-    scope: args.scope as string | undefined,
-    domain: args.domain as string | undefined,
-    limit: fetchLimit,
-  })
-  // Opt-in, content-free engagement counter (default-off; no query text).
-  recordTelemetry('recall')
-  // Failed-recall miss-signal (WS5 demand flywheel) is emitted from the
-  // core recallHybridWithMeta() this handler delegates to — it fires once
-  // there for ALL consumers (MCP, claw, CLI, direct API), so we do NOT
-  // re-emit here and double-count. It is opt-in/default-off and ships only
-  // a query fingerprint hash + scope/domain + timestamp, never raw text.
-  const truncatedByCount = budget?.max_results != null && meta.engrams.length > cap
-  let truncated = truncatedByCount
-  let boundedResults = truncatedByCount ? meta.engrams.slice(0, cap) : meta.engrams
-  if (budget?.max_tokens) {
-    let tokenCount = 0
-    const withinBudget = []
-    for (const e of boundedResults) {
-      const tokens = Math.ceil(e.statement.length / 4) + 20
-      if (tokenCount + tokens > budget.max_tokens) { truncated = true; break }
-      withinBudget.push(e)
-      tokenCount += tokens
-    }
-    boundedResults = withinBudget
-  }
-  const includeEpisodes = args.include_episodes === true
-  const response: Record<string, unknown> = {
-    results: boundedResults.map(e => {
-      const raw = e as any
-      const supersededBy = (e as any).relations?.superseded_by
-      const annotation = supersededBy?.length ? ` [superseded by ${supersededBy.join(', ')}]` : ''
-      const base: Record<string, unknown> = {
-        id: e.id,
-        statement: e.statement + annotation,
-        type: e.type,
-        scope: e.scope,
-        domain: e.domain,
-        retrieval_strength: e.activation.retrieval_strength,
-      }
-      if (includeEpisodes && raw.episode_ids?.length > 0) {
-        const episodes = plur.timeline({ search: '' })
-        base.episodes = episodes
-          .filter((ep: any) => raw.episode_ids.includes(ep.id))
-          .map((ep: any) => ({ id: ep.id, summary: ep.summary, timestamp: ep.timestamp }))
-      }
-      return base
-    }),
-    count: boundedResults.length,
-    truncated,
-    mode: meta.mode,
-  }
-  if (meta.mode === 'hybrid-degraded') {
-    response.warning = `Embedding layer unavailable — results are BM25-only. Run plur_doctor for diagnosis. Last error: ${meta.embedderError ?? 'unknown'}`
-  }
-  // #341: reranker non-engagement surfacing. When PLUR_RERANKER requests
-  // reranking, report how many candidates the cross-encoder actually
-  // re-scored — and if it never engaged on a non-empty result set, say
-  // so in the response instead of a per-call stderr warning nobody
-  // reads. The caller believes reranking is on; RRF-only results must
-  // not be silently mislabeled.
-  if (resolveRerankerName() !== 'off') {
-    response.reranked = meta.reranked ?? 0
-    const rr = plur.rerankerStatus()
-    if (boundedResults.length > 0 && (meta.reranked ?? 0) === 0 && rr.lastError) {
-      const corruptNote = rr.lastErrorKind === 'corrupt-cache'
-        ? ' The model cache looks corrupt (truncated download) — purge and re-download, see plur_doctor.'
-        : ''
-      response.reranker_warning = `PLUR_RERANKER is set but the reranker did not engage — results are RRF-only (fusion order, no cross-encoder rerank).${corruptNote} Last error: ${rr.lastError}. Run plur_doctor for diagnosis.`
-    }
-  }
-  return response
-}
-
-const RECALL_HYBRID_DEPRECATION =
-  'plur_recall_hybrid is deprecated since 0.16 — use plur_recall (mode defaults to hybrid). This alias will be removed in 0.18.'
-
 // Recursive JSON-Schema → Zod converter for tool input validation. Moved here
 // (was previously private to server.ts) so plur_admin's dispatch handler can
 // validate inner-tool args the same way the top-level CallToolRequestSchema
@@ -196,18 +74,7 @@ function jsonSchemaPropToZod(prop: any): z.ZodTypeAny {
           return val
         }
       }
-      // The comma-separated fallback must also cover union item schemas that
-      // ACCEPT a bare string, not just `items: {type: 'string'}`. Before this,
-      // `engram_suggestions` — whose items are
-      // `anyOf: [{type:'string'}, {type:'object'}]` (#231) — failed the check
-      // and fell through to `return val`, so the very workaround the #297
-      // error message advertises did not work for it.
-      const items = prop.items as any
-      const itemVariants = (items?.anyOf as any[] | undefined) ?? (items?.oneOf as any[] | undefined)
-      const itemsAcceptString = items?.type === 'string'
-        || (Array.isArray(itemVariants) && itemVariants.some((v: any) => v?.type === 'string'))
-
-      if (itemsAcceptString) {
+      if (prop.items?.type === 'string') {
         return trimmed.length === 0 ? [] : trimmed.split(',').map((s: string) => s.trim()).filter((s: string) => s.length > 0)
       }
       return val
@@ -256,31 +123,9 @@ export function validateToolArgs(
     const details = parsed.error.issues.map(i => `${i.path.join('.') || 'root'}: ${i.message}`).join(', ')
     const hasArrayParam = Object.values((schema.properties ?? {}) as Record<string, any>)
       .some((p: any) => p?.type === 'array')
-
-    // #297 has TWO shapes, not one. The original (total drop) loses the whole
-    // arguments object. The partial drop keeps the early scalar fields and
-    // silently discards trailing ones — observed on a large payload where a
-    // ~700-char `summary` plus a 5-element `engram_suggestions` array arrived
-    // as `{summary}` alone. Gating the hint on `receivedFields.length === 0`
-    // meant the partial case — the one that actually looks like a schema bug
-    // to the caller — got a bare "Required" with no workaround. Fire the hint
-    // whenever a *missing* field is itself array-typed.
-    const missingArrayParams = parsed.error.issues
-      .filter((i: any) => i.code === 'invalid_type' && i.received === 'undefined')
-      .map((i: any) => String(i.path[0] ?? ''))
-      .filter((k: string) => (schema.properties as any)?.[k]?.type === 'array')
-
-    const totalDrop = receivedFields.length === 0 && hasArrayParam
-    const partialDrop = missingArrayParams.length > 0
-
-    const arrayBugHint = totalDrop || partialDrop
-      ? ' Known client-side bug (plur-ai/plur#297): some MCP clients drop ' +
-        (partialDrop
-          ? `array-typed parameters from a large arguments payload while keeping the earlier fields ` +
-            `(here: ${missingArrayParams.join(', ')}). This is size-sensitive — the same call often ` +
-            `succeeds with a shorter payload, so shrink the other fields (e.g. a briefer summary) as well. `
-          : 'the entire arguments payload when an array-typed parameter is included. ') +
-        'Retry passing array parameters as a JSON string ' +
+    const arrayBugHint = receivedFields.length === 0 && hasArrayParam
+      ? ' Known client-side bug (plur-ai/plur#297): some MCP clients drop the entire arguments payload ' +
+        'when an array-typed parameter is included. Retry passing array parameters as a JSON string ' +
         '(e.g. tags: "[\\"a\\",\\"b\\"]") or a comma-separated string (tags: "a, b") — the server coerces ' +
         'both back into arrays.'
       : ''
@@ -330,7 +175,7 @@ const PLUR_GUIDE = `## PLUR Quick Start
 
 ### Core Tools
 - **plur_learn** — record corrections, preferences, patterns (CALL THIS OFTEN)
-- **plur_recall** — search engrams by topic (default: hybrid BM25 + embeddings; use mode:"keyword" for BM25-only)
+- **plur_recall_hybrid** — search engrams by topic
 - **plur_forget** — retire an outdated engram`
 
 function getLlmFunction(): LlmFunction | undefined {
@@ -406,72 +251,19 @@ function _cleanExpiredSessions(): void {
 }
 
 /**
- * The session an untagged `plur_inject` / `plur_inject_hybrid` call belongs to.
- *
- * This used to be a module-level `_activeSessionId`, assigned by session_start
- * and cleared by session_end, justified by "MCP sessions are sequential within
- * a process". Convergence Phase 2 removes that assumption: a deployment that
- * serves concurrent sessions from one process has overlapping session_start
- * calls, and the second one silently reassigns the variable — so an inject
- * belonging to session A is recorded against session B, and when A ends the
- * `if (_activeSessionId === session_id)` guard leaves the stale id in place.
- *
- * Derived, not stored, and only answered when it is UNAMBIGUOUS. With exactly
- * one session open the implicit attribution is correct and behaviour is
- * unchanged. With none or several, there is no right answer, and recording
- * nothing beats recording against the wrong session — telemetry that is
- * silently misattributed is worse than telemetry that is absent. Callers that
- * need attribution under concurrency pass `session_id` explicitly.
+ * The session_id of the currently active session. Set by session_start, cleared
+ * by session_end. MCP sessions are sequential within a process, so a single
+ * module-level variable is safe. Used by plur_inject / plur_inject_hybrid to
+ * record telemetry without requiring callers to pass a session_id.
  */
-function _implicitSessionId(): string | undefined {
-  _cleanExpiredSessions()
-  if (_sessionTelemetry.size !== 1) return undefined
-  return _sessionTelemetry.keys().next().value
-}
-
-/**
- * Drop all session telemetry.
- *
- * The map is module-level, so it outlives any single `Plur` instance and leaks
- * between tests in one file. Exported as a test seam — and usable by an
- * embedding consumer that recycles the tool definitions across tenants — so
- * "which sessions are open" is a controllable input rather than whatever the
- * previous test happened to leave behind.
- */
-export function _resetSessionTelemetry(): void {
-  _sessionTelemetry.clear()
-}
-
-/** Resolve the session for an injection: explicit argument first, then implicit. */
-function _resolveInjectionSession(args: Record<string, unknown>): string | undefined {
-  const explicit = args.session_id
-  if (typeof explicit === 'string' && explicit.length > 0) return explicit
-  return _implicitSessionId()
-}
+let _activeSessionId: string | undefined
 
 /** Record pack counts from an InjectionResult into the active session's telemetry. */
 function _recordInjectionTelemetry(session_id: string | undefined, injected_packs: Record<string, number> | undefined): void {
-  if (!session_id) return
+  if (!session_id || !injected_packs) return
   const state = _sessionTelemetry.get(session_id)
   if (!state) return
-
-  // The CALL is counted whether or not it injected anything.
-  //
-  // This used to return early on `!injected_packs`, and core only builds that
-  // object when at least one engram was injected — so an inject call that
-  // matched nothing was not counted at all, while the field is named
-  // `injection_calls` and documented as "number of distinct inject calls".
-  //
-  // The effect was load-bearing and intermittent: `session_start` injects for
-  // the session's task, and if that task happens to match no engram (or if
-  // `injectHybrid` falls back to BM25 because the embedding model is slow to
-  // load, which is exactly what happens on a cold CI runner) the count silently
-  // came up short. A telemetry counter that undercounts only when retrieval
-  // does badly is worse than no counter: it biases the metric toward sessions
-  // that went well.
   state.injection_calls++
-
-  if (!injected_packs) return
   for (const [pack, count] of Object.entries(injected_packs)) {
     state.pack_counts[pack] = (state.pack_counts[pack] ?? 0) + count
   }
@@ -509,7 +301,7 @@ export const CURSOR_CORE_TOOL_NAMES: ReadonlySet<string> = new Set([
   'plur_session_start',
   'plur_session_end',
   'plur_learn',
-  'plur_recall',
+  'plur_recall_hybrid',
   'plur_feedback',
   'plur_forget',
   'plur_status',
@@ -781,7 +573,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
         } catch (err) {
 // learnRouted now saves to outbox on remote failure, so this
           // path should rarely be reached. Keep as defense-in-depth.
-          const engram = await plur.learn(statement, context)
+          const engram = plur.learn(statement, context)
           const isOutbox = !!(engram as any).structured_data?._outbox
           const routedFallback = (engram as any).structured_data?._routed as { scope: string; confidence: number; reason: string } | undefined
           mcpCanary.signal('learn_activity')
@@ -925,29 +717,48 @@ function getAllToolDefinitions(): ToolDefinition[] {
 
     {
       name: 'plur_recall',
-      description: 'Search engrams by topic. Default mode is hybrid (BM25 + local embeddings via RRF) — set mode:"keyword" for BM25-only. No API calls, fully local. Note: a project-scope filter also returns personal-family engrams (local, global, user:*, agent:*); an explicit scope=global recall returns ALL personal-family engrams — wider than scope=global INJECT, which is targeted to the global namespace only.',
-      annotations: { title: 'Recall', readOnlyHint: true, idempotentHint: true },
+      description: 'Query engrams by BM25 keyword matching — use plur_recall_hybrid for semantic similarity. Note: a project-scope filter also returns personal-family engrams (local, global, user:*, agent:*); an explicit scope=global recall returns ALL personal-family engrams — wider than scope=global INJECT, which is targeted to the global namespace only.',
+      annotations: { title: 'Recall (BM25)', readOnlyHint: true, idempotentHint: true },
       inputSchema: {
         type: 'object',
         properties: {
           query: { type: 'string', description: 'Search query to find relevant engrams' },
-          mode: { type: 'string', enum: ['hybrid', 'keyword'], description: 'Search mode — hybrid (default): BM25 + embeddings via RRF; keyword: BM25-only (faster, embeddings-independent). budget, caller_session_id and include_episodes apply to hybrid mode only — in keyword mode use limit to bound results.' },
           scope: { type: 'string', description: 'Filter by scope (also includes global)' },
           domain: { type: 'string', description: 'Filter by domain prefix' },
           limit: { type: 'number', description: 'Max results to return (default 20)' },
-          budget: { type: 'object', description: 'Budget constraints for sub-agents. Hybrid mode only — ignored when mode:"keyword".', properties: { max_tokens: { type: 'number' }, max_results: { type: 'number' }, ttl_seconds: { type: 'number' } } },
-          caller_session_id: { type: 'string', description: 'Session ID of calling agent for budget enforcement. Hybrid mode only — ignored when mode:"keyword".' },
-          include_episodes: { type: 'boolean', description: 'If true, include linked episode summaries for each engram (SP2 episodic anchoring). Hybrid mode only — ignored when mode:"keyword".' },
+          budget: { type: 'object', description: 'Budget constraints for sub-agents', properties: { max_tokens: { type: 'number' }, max_results: { type: 'number' } } },
+          caller_session_id: { type: 'string', description: 'Caller session ID for budget enforcement' },
         },
         required: ['query'],
       },
-      handler: recallHandler,
+      handler: async (args, plur) => {
+        const results = plur.recall(args.query as string, {
+          scope: args.scope as string | undefined,
+          domain: args.domain as string | undefined,
+          limit: args.limit as number | undefined,
+        })
+        return {
+          results: results.map(e => {
+            const supersededBy = e.relations?.superseded_by
+            const annotation = supersededBy?.length ? ` [superseded by ${supersededBy.join(', ')}]` : ''
+            return {
+              id: e.id,
+              statement: e.statement + annotation,
+              type: e.type,
+              scope: e.scope,
+              domain: e.domain,
+              retrieval_strength: e.activation.retrieval_strength,
+            }
+          }),
+          count: results.length,
+        }
+      },
     },
 
     {
       name: 'plur_recall_hybrid',
-      description: '[Deprecated since 0.16 — use plur_recall (mode defaults to hybrid). Alias kept for backwards compatibility; removal earliest 0.18.] Hybrid search — BM25 + local embeddings merged via Reciprocal Rank Fusion. No API calls, fully local.',
-      annotations: { title: 'Recall (hybrid) [deprecated alias]', readOnlyHint: true, idempotentHint: true },
+      description: 'Hybrid search — BM25 + local embeddings merged via Reciprocal Rank Fusion. No API calls, fully local. Best default for most use cases.',
+      annotations: { title: 'Recall (hybrid)', readOnlyHint: true, idempotentHint: true },
       inputSchema: {
         type: 'object',
         properties: {
@@ -961,12 +772,85 @@ function getAllToolDefinitions(): ToolDefinition[] {
         },
         required: ['query'],
       },
-      // True forwarder — delegates to the canonical plur_recall handler and
-      // prepends the deprecation notice. No duplicated budget/episode/
-      // reranker logic, so a fix to plur_recall reaches this alias too.
       handler: async (args, plur) => {
-        const result = await recallHandler({ ...args, mode: 'hybrid' }, plur)
-        return { deprecated: RECALL_HYBRID_DEPRECATION, ...(result as Record<string, unknown>) }
+        const budget = args.budget as { max_tokens?: number; max_results?: number; ttl_seconds?: number } | undefined
+        const effectiveLimit = budget?.max_results ?? (args.limit as number | undefined) ?? 20
+        const meta = await plur.recallHybridWithMeta(args.query as string, {
+          scope: args.scope as string | undefined,
+          domain: args.domain as string | undefined,
+          limit: effectiveLimit,
+        })
+        // Opt-in, content-free engagement counter (default-off; no query text).
+        recordTelemetry('recall')
+        // Failed-recall miss-signal (WS5 demand flywheel) is emitted from the
+        // core recallHybridWithMeta() this handler delegates to — it fires once
+        // there for ALL consumers (MCP, claw, CLI, direct API), so we do NOT
+        // re-emit here and double-count. It is opt-in/default-off and ships only
+        // a query fingerprint hash + scope/domain + timestamp, never raw text.
+        const results = meta.engrams
+        let truncated = false
+        let boundedResults = results
+        if (budget?.max_results && results.length > budget.max_results) {
+          boundedResults = results.slice(0, budget.max_results)
+          truncated = true
+        }
+        if (budget?.max_tokens) {
+          let tokenCount = 0
+          const withinBudget = []
+          for (const e of boundedResults) {
+            const tokens = Math.ceil(e.statement.length / 4) + 20
+            if (tokenCount + tokens > budget.max_tokens) { truncated = true; break }
+            withinBudget.push(e)
+            tokenCount += tokens
+          }
+          boundedResults = withinBudget
+        }
+        const includeEpisodes = args.include_episodes === true
+        const response: Record<string, unknown> = {
+          results: boundedResults.map(e => {
+            const raw = e as any
+            const supersededBy = (e as any).relations?.superseded_by
+            const annotation = supersededBy?.length ? ` [superseded by ${supersededBy.join(', ')}]` : ''
+            const base: Record<string, unknown> = {
+              id: e.id,
+              statement: e.statement + annotation,
+              type: e.type,
+              scope: e.scope,
+              domain: e.domain,
+              retrieval_strength: e.activation.retrieval_strength,
+            }
+            if (includeEpisodes && raw.episode_ids?.length > 0) {
+              const episodes = plur.timeline({ search: '' })
+              base.episodes = episodes
+                .filter((ep: any) => raw.episode_ids.includes(ep.id))
+                .map((ep: any) => ({ id: ep.id, summary: ep.summary, timestamp: ep.timestamp }))
+            }
+            return base
+          }),
+          count: boundedResults.length,
+          truncated,
+          mode: meta.mode,
+        }
+        if (meta.mode === 'hybrid-degraded') {
+          response.warning = `Embedding layer unavailable — results are BM25-only. Run plur_doctor for diagnosis. Last error: ${meta.embedderError ?? 'unknown'}`
+        }
+        // #341: reranker non-engagement surfacing. When PLUR_RERANKER requests
+        // reranking, report how many candidates the cross-encoder actually
+        // re-scored — and if it never engaged on a non-empty result set, say
+        // so in the response instead of a per-call stderr warning nobody
+        // reads. The caller believes reranking is on; RRF-only results must
+        // not be silently mislabeled.
+        if (resolveRerankerName() !== 'off') {
+          response.reranked = meta.reranked ?? 0
+          const rr = plur.rerankerStatus()
+          if (boundedResults.length > 0 && (meta.reranked ?? 0) === 0 && rr.lastError) {
+            const corruptNote = rr.lastErrorKind === 'corrupt-cache'
+              ? ' The model cache looks corrupt (truncated download) — purge and re-download, see plur_doctor.'
+              : ''
+            response.reranker_warning = `PLUR_RERANKER is set but the reranker did not engage — results are RRF-only (fusion order, no cross-encoder rerank).${corruptNote} Last error: ${rr.lastError}. Run plur_doctor for diagnosis.`
+          }
+        }
+        return response
       },
     },
 
@@ -980,19 +864,17 @@ function getAllToolDefinitions(): ToolDefinition[] {
           task: { type: 'string', description: 'The task description to inject context for' },
           budget: { type: 'number', description: 'Token budget for injection (default 2000)' },
           scope: { type: 'string', description: 'Scope filter for engram selection' },
-          session_id: { type: 'string', description: 'Session this injection belongs to (from plur_session_start). Optional when one session is open; required for correct attribution when several are.' },
         },
         required: ['task'],
       },
       handler: async (args, plur) => {
-        const session_id = _resolveInjectionSession(args)
-        const result = await plur.inject(args.task as string, {
+        const result = plur.inject(args.task as string, {
           budget: args.budget as number | undefined,
           scope: args.scope as string | undefined,
           source: 'inject',
-          session_id,
+          session_id: _activeSessionId,
         })
-        _recordInjectionTelemetry(session_id, result.injected_packs)
+        _recordInjectionTelemetry(_activeSessionId, result.injected_packs)
         return {
           directives: result.directives,
           consider: result.consider,
@@ -1015,19 +897,17 @@ function getAllToolDefinitions(): ToolDefinition[] {
           task: { type: 'string', description: 'The task description to inject context for' },
           budget: { type: 'number', description: 'Token budget for injection (default 2000)' },
           scope: { type: 'string', description: 'Scope filter for engram selection' },
-          session_id: { type: 'string', description: 'Session this injection belongs to (from plur_session_start). Optional when one session is open; required for correct attribution when several are.' },
         },
         required: ['task'],
       },
       handler: async (args, plur) => {
-        const session_id = _resolveInjectionSession(args)
         const result = await plur.injectHybrid(args.task as string, {
           budget: args.budget as number | undefined,
           scope: args.scope as string | undefined,
           source: 'inject',
-          session_id,
+          session_id: _activeSessionId,
         })
-        _recordInjectionTelemetry(session_id, result.injected_packs)
+        _recordInjectionTelemetry(_activeSessionId, result.injected_packs)
         return {
           directives: result.directives,
           consider: result.consider,
@@ -1111,7 +991,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
       },
       handler: async (args, plur) => {
         if (args.list === true) {
-          const pinned = await plur.listPinned()
+          const pinned = plur.listPinned()
           return {
             count: pinned.length,
             pinned: pinned.map(e => ({ id: e.id, statement: e.statement, scope: e.scope, domain: e.domain })),
@@ -1148,7 +1028,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
       },
       handler: async (args, plur) => {
         if (args.id) {
-          const engram = await plur.getById(args.id as string)
+          const engram = plur.getById(args.id as string)
           if (engram) {
             if (engram.status === 'retired') return { success: false, error: `Already retired: ${args.id}` }
             await plur.forget(args.id as string)
@@ -1161,7 +1041,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
           return { success: true, retired: { id: args.id as string } }
         }
         if (args.search) {
-          const matches = await plur.recall(args.search as string, { limit: 100 })
+          const matches = plur.recall(args.search as string, { limit: 100 })
           if (matches.length === 0) return { success: false, error: `No active engrams matching "${args.search}"` }
           if (matches.length === 1) {
             await plur.forget(matches[0].id)
@@ -1264,7 +1144,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
         required: ['content'],
       },
       handler: async (args, plur) => {
-        const candidates = await plur.ingest(args.content as string, {
+        const candidates = plur.ingest(args.content as string, {
           source: args.source as string | undefined,
           extract_only: args.extract_only as boolean | undefined,
           scope: args.scope as string | undefined,
@@ -1284,33 +1164,33 @@ function getAllToolDefinitions(): ToolDefinition[] {
 
     {
       name: 'plur_packs_preview',
-      description: 'Preview a pack before installing — shows manifest, engram list, security scan, and warnings. Always call this before plur_packs_install to let the user review what they are importing. Accepts a local directory path or an https:// URL pointing to a .tar.gz archive.',
+      description: 'Preview a pack before installing — shows manifest, engram list, security scan, and warnings. Always call this before plur_packs_install to let the user review what they are importing.',
       annotations: { title: 'Preview pack', readOnlyHint: true, idempotentHint: true },
       inputSchema: {
         type: 'object',
         properties: {
-          source: { type: 'string', description: 'Path to the pack directory, or an https:// URL to a .tar.gz pack archive' },
+          source: { type: 'string', description: 'Path to the pack directory to preview' },
         },
         required: ['source'],
       },
       handler: async (args, plur) => {
-        return await plur.previewPack(args.source as string)
+        return plur.previewPack(args.source as string)
       },
     },
 
     {
       name: 'plur_packs_install',
-      description: 'Install an engram pack from a local directory path or an https:// URL pointing to a .tar.gz archive. Runs a mandatory security scan (blocks if secrets found), detects conflicts with existing engrams, and records install metadata in the registry. Call plur_packs_preview first to show the user what the pack contains.',
+      description: 'Install an engram pack from a directory path. Runs a mandatory security scan (blocks if secrets found), detects conflicts with existing engrams, and records install metadata in the registry. Call plur_packs_preview first to show the user what the pack contains.',
       annotations: { title: 'Install pack', destructiveHint: false, idempotentHint: true },
       inputSchema: {
         type: 'object',
         properties: {
-          source: { type: 'string', description: 'Path to the pack directory, or an https:// URL to a .tar.gz pack archive' },
+          source: { type: 'string', description: 'Path to the pack directory to install' },
         },
         required: ['source'],
       },
       handler: async (args, plur) => {
-        const result = await plur.installPack(args.source as string)
+        const result = plur.installPack(args.source as string)
         return {
           installed: result.installed,
           name: result.name,
@@ -1412,7 +1292,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
         },
       },
       handler: async (args, plur) => {
-        const result = await plur.sync(args.remote as string | undefined, {
+        const result = plur.sync(args.remote as string | undefined, {
           full: args.full === true,
           ...(args.remote_type === 'personal' || args.remote_type === 'shared' ? { remoteType: args.remote_type } : {}),
         })
@@ -1483,12 +1363,12 @@ function getAllToolDefinitions(): ToolDefinition[] {
           args.llm_model as string | undefined,
         )
         // Load all active engrams (list() returns all, no BM25 filter)
-        const sourceEngrams = await plur.list({
+        const sourceEngrams = plur.list({
           domain: args.domain as string | undefined,
           scope: args.scope as string | undefined,
         })
         // Load existing meta-engrams for deduplication during pipeline
-        const existingMetas = (await plur.list()).filter(e => e.id.startsWith('META-'))
+        const existingMetas = plur.list().filter(e => e.id.startsWith('META-'))
         const result = await extractMetaEngrams(sourceEngrams, llm, {
           run_validation: args.run_validation as boolean | undefined,
           existing_metas: existingMetas,
@@ -1498,7 +1378,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
         const isDryRun = args.dry_run === true
         let saveStats: { saved: number; skipped: number } | null = null
         if (!isDryRun && result.results.length > 0) {
-          saveStats = await plur.saveMetaEngrams(result.results)
+          saveStats = plur.saveMetaEngrams(result.results)
         }
 
         return {
@@ -1536,7 +1416,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
         },
       },
       handler: async (args, plur) => {
-        const allEngrams = await plur.list()
+        const allEngrams = plur.list()
         const metaEngrams = allEngrams.filter(e => e.id.startsWith('META-'))
         const minConfidence = (args.min_confidence as number | undefined) ?? 0
         const levelFilter = args.hierarchy_level as string | undefined
@@ -1592,14 +1472,14 @@ function getAllToolDefinitions(): ToolDefinition[] {
         required: ['meta_engram_id', 'test_domain', 'llm_base_url', 'llm_api_key'],
       },
       handler: async (args, plur) => {
-        const allEngrams = await plur.list()
+        const allEngrams = plur.list()
         const meta = allEngrams.find(e => e.id === (args.meta_engram_id as string))
         if (!meta) {
           throw new Error(`Meta-engram not found: ${args.meta_engram_id}`)
         }
 
         const testDomain = args.test_domain as string
-        const testEngrams = await plur.list({ domain: testDomain })
+        const testEngrams = plur.list({ domain: testDomain })
 
         const llm = makeHttpLlm(
           args.llm_base_url as string,
@@ -1610,7 +1490,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
         const result = await validateMetaEngram(meta, testEngrams, testDomain, llm)
 
         // validateMetaEngram mutates domain_coverage + confidence in-place — persist changes
-        await plur.updateEngram(meta)
+        plur.updateEngram(meta)
 
         return {
           meta_engram_id: result.meta_engram_id,
@@ -1637,7 +1517,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
         },
       },
       handler: async (args, plur) => {
-        const status = await plur.status({
+        const status = plur.status({
           domain: args.domain as string | undefined,
           created_after: args.created_after as string | undefined,
         })
@@ -1669,7 +1549,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
               behind: minorVersionsBehind(versionCheck.current, versionCheck.latest),
             },
           } : {}),
-          capabilities: await mcpCanary.status(),
+          capabilities: mcpCanary.status(),
         }
       },
     },
@@ -1689,7 +1569,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
         const days = typeof args.days === 'number' && Number.isFinite(args.days) && args.days >= 1
           ? Math.floor(args.days)
           : undefined
-        const receipt = await plur.receipt(days ? { days } : undefined)
+        const receipt = plur.receipt(days ? { days } : undefined)
         return { summary: receiptSummary(receipt), ...receipt }
       },
     },
@@ -1712,7 +1592,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
           // corrupt model cache can be re-probed without a process restart.
           plur.resetReranker()
         }
-        const status = await plur.status()
+        const status = plur.status()
         const before = plur.embedderStatus()
         // Skip the load probe when explicitly disabled — would short-circuit
         // anyway and pollute the report with a misleading "load attempt".
@@ -1854,7 +1734,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
               evalStatus = { result: run.result, stale: false }
               freshlyRun = !run.cached
             } else {
-              evalStatus = await plur.rerankerEvalStatus(rerankerName)
+              evalStatus = plur.rerankerEvalStatus(rerankerName)
             }
             if (!evalStatus) {
               checks.push({
@@ -1896,7 +1776,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
             })
           }
         }
-        const canaryStatuses = await mcpCanary.status()
+        const canaryStatuses = mcpCanary.status()
         for (const cs of canaryStatuses) {
           if (!cs.healthy) {
             checks.push({ check: `capability: ${cs.capability}`, ok: false, detail: cs.warning })
@@ -1974,6 +1854,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
         // activation-rate validation (target: 25-80 sessions/month per user).
         // TTL cleanup runs here to evict any unclosed sessions from prior starts.
         _cleanExpiredSessions()
+        _activeSessionId = session_id
         _sessionTelemetry.set(session_id, {
           pack_counts: {},
           injection_calls: 0,
@@ -2029,7 +1910,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
         plur.setSessionScope(default_scope)
 
         // Get store stats for context
-        const status = await plur.status()
+        const status = plur.status()
         const store_stats = {
           engram_count: status.engram_count,
           episode_count: status.episode_count,
@@ -2058,7 +1939,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
           }
         } catch {
           // Fall back to BM25 if hybrid unavailable
-          const result = await plur.inject(task, {
+          const result = plur.inject(task, {
             scope: tags?.length ? `tags:${tags.join(',')}` : undefined,
             session_id,
             source: 'session_start',
@@ -2300,7 +2181,7 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
                 `engram_suggestions[${i}] must be a string or {statement: string, type?: string}, got ${typeof s}`,
               )
             }
-            await plur.learn(statement, { type: type as any })
+            plur.learn(statement, { type: type as any })
             engrams_created++
           }
         }
@@ -2324,6 +2205,7 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
         // Clean up session telemetry
         if (session_id) {
           _sessionTelemetry.delete(session_id)
+          if (_activeSessionId === session_id) _activeSessionId = undefined
         }
 
         // Clean up session checkpoint (#215) — session ended cleanly
@@ -2340,7 +2222,7 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
           }
         } catch { /* cleanup is best-effort */ }
 
-        const status = await plur.status()
+        const status = plur.status()
 
         return {
           engrams_created,
@@ -2416,7 +2298,7 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
         // Use async variant so remote store engram_count reflects real data
         // even on first call after server start (issue #184).
         const stores = await plur.listStoresAsync()
-        const outboxCount = await plur.outboxCount()
+        const outboxCount = plur.outboxCount()
         return {
           stores,
           count: stores.length,
@@ -2455,7 +2337,7 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
         const minConfidence = explicit
           ?? plur.getScopeRoutingConfig().min_confidence
           ?? SUGGEST_DISPLAY_MIN_CONFIDENCE
-        const candidates = await plur.suggestScope({
+        const candidates = plur.suggestScope({
           statement: args.statement as string,
           domain: args.domain as string | undefined,
           tags: args.tags as string[] | undefined,
@@ -2530,7 +2412,7 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
         const errors: Array<{ id: string; error: string }> = []
 
         for (const id of targetIds) {
-          const engram = await plur.getById(id)
+          const engram = plur.getById(id)
           if (!engram) { errors.push({ id, error: 'Not found' }); continue }
           if (engram.status === 'active') { errors.push({ id, error: 'Already active' }); continue }
           if (engram.status === 'retired') { errors.push({ id, error: 'Cannot promote retired' }); continue }
@@ -2539,7 +2421,7 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
           engram.activation.retrieval_strength = 0.7
           engram.activation.storage_strength = 1.0
           engram.activation.last_accessed = new Date().toISOString().split('T')[0]
-          await plur.updateEngram(engram)
+          plur.updateEngram(engram)
           promoted.push({ id, statement: engram.statement })
         }
 
@@ -2587,13 +2469,13 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
           if (args.action === 'resolve') {
             const winner = args.winner as string | undefined
             if (!winner) throw new Error('action:"resolve" requires winner (the engram id to keep)')
-            const { record, retired_id } = await plur.resolveTension(id, winner)
+            const { record, retired_id } = plur.resolveTension(id, winner)
             return { record, retired: retired_id, message: `Tension ${id} resolved: ${winner} wins, ${retired_id} retired.` }
           }
           throw new Error(`Unknown action: ${args.action}. Use confirm, dismiss, or resolve.`)
         }
 
-        const engrams = await plur.list({
+        const engrams = plur.list({
           scope: args.scope as string | undefined,
           domain: args.domain as string | undefined,
         })
@@ -2628,7 +2510,7 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
             ...(persist ? { exclude_pairs: new Set(plur.suppressedTensionPairKeys()) } : {}),
           })
           const persisted = persist && result.tensions.length > 0
-            ? await plur.recordTensions(result.tensions)
+            ? plur.recordTensions(result.tensions)
             : undefined
 
           return {
@@ -2700,7 +2582,7 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
       annotations: { title: 'Purge Tensions', destructiveHint: true, idempotentHint: true },
       inputSchema: { type: 'object', properties: {} },
       handler: async (_args, plur) => {
-        const result = await plur.purgeTensions()
+        const result = plur.purgeTensions()
         return {
           purged_conflict_refs: result.purged_count,
           engrams_modified: result.engrams_modified,
@@ -2724,7 +2606,7 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
         required: ['episode_id'],
       },
       handler: async (args, plur) => {
-        const engram = await plur.episodeToEngram(args.episode_id as string, {
+        const engram = plur.episodeToEngram(args.episode_id as string, {
           scope: args.scope as string | undefined,
           domain: args.domain as string | undefined,
           tags: args.tags as string[] | undefined,
@@ -2765,7 +2647,7 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
 
         // Return recent history across all engrams
         const { listHistoryMonths, readHistory } = await import('@plur-ai/core')
-        const status = await plur.status()
+        const status = plur.status()
         const months = listHistoryMonths(status.storage_root)
         const allEvents: HistoryEvent[] = []
         // Read from most recent months first
@@ -2846,7 +2728,7 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
       },
       handler: async (args, plur) => {
         const name = args.name as string
-        let engrams = await plur.list({
+        let engrams = plur.list({
           domain: args.filter_domain as string | undefined,
           scope: args.filter_scope as string | undefined,
         })
@@ -2932,7 +2814,7 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
         },
       },
       handler: async (args, plur) => {
-        const status = await plur.status()
+        const status = plur.status()
         const storagePath = status.storage_root
         if (!args.force_regenerate) {
           const cached = getProfileForInjection(storagePath)
@@ -2945,7 +2827,7 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
         }
         const model = (args.llm_model as string) ?? selectModelForOperation('profile', status.config?.llm)
         const llm = makeHttpLlm(args.llm_base_url as string, args.llm_api_key as string, model)
-        const engrams = await plur.list({ scope: args.scope as string | undefined })
+        const engrams = plur.list({ scope: args.scope as string | undefined })
         const profile = await generateProfile(engrams, llm, storagePath, status.config?.profile?.cache_ttl_hours ?? 24)
         return { profile, source: 'generated', engram_count: engrams.length, model }
       },

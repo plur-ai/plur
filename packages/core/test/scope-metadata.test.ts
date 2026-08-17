@@ -210,16 +210,16 @@ describe('metadata-driven leak guard (#345)', () => {
   })
 
   // (a) scope whose sensitivity.allow contains the matched category → NOT demoted.
-  it('does NOT demote when the matched category is allowed by the scope policy', async () => {
+  it('does NOT demote when the matched category is allowed by the scope policy', () => {
     const plur = plurWithStores([
       { path: '/tmp/infra.yaml', scope: 'group:plur/infra', description: 'Infra topology home', sensitivity: { forbid: ['secrets'], allow: ['infra'] } },
     ])
-    const e = await plur.learn('deploy target is 139.59.155.82', { scope: 'group:plur/infra' }) as { scope: string; structured_data?: { _demoted?: unknown } }
+    const e = plur.learn('deploy target is 139.59.155.82', { scope: 'group:plur/infra' }) as { scope: string; structured_data?: { _demoted?: unknown } }
     expect(e.scope).toBe('group:plur/infra')           // kept at the shared scope
     expect(e.structured_data?._demoted).toBeUndefined() // no demotion marker
   })
 
-  it('still demotes a forbidden category even when another is allowed', async () => {
+  it('still demotes a forbidden category even when another is allowed', () => {
     // allow_secrets:true bypasses the *hard* detectSecrets guard (which throws
     // outright on credential patterns, before the scope logic runs) so we can
     // exercise the *soft* per-scope policy: infra is allowed here, but secrets
@@ -227,34 +227,34 @@ describe('metadata-driven leak guard (#345)', () => {
     const plur = plurWithStores([
       { path: '/tmp/infra.yaml', scope: 'group:plur/infra', description: 'Infra home', sensitivity: { forbid: ['secrets', 'infra'], allow: ['infra'] } },
     ], { allow_secrets: true })
-    const e = await plur.learn('token is Bearer abcdefghijklmnopqrstuvwxyz0123456789', { scope: 'group:plur/infra' }) as { scope: string }
+    const e = plur.learn('token is Bearer abcdefghijklmnopqrstuvwxyz0123456789', { scope: 'group:plur/infra' }) as { scope: string }
     expect(e.scope).toBe('local')
   })
 
   // (b) scope with NO metadata + sensitive content on a shared scope → demoted (fallback unchanged).
-  it('falls back to Stage 1: no metadata + sensitive content on a shared scope demotes', async () => {
+  it('falls back to Stage 1: no metadata + sensitive content on a shared scope demotes', () => {
     const plur = plurWithStores([]) // no metadata anywhere
-    const e = await plur.learn('login at https://t:p@hub-staging.plur.ai', { scope: 'project:plur' }) as { scope: string; visibility: string }
+    const e = plur.learn('login at https://t:p@hub-staging.plur.ai', { scope: 'project:plur' }) as { scope: string; visibility: string }
     expect(e.scope).toBe('local')
     expect(e.visibility).toBe('private')
   })
 
   // (c) scope with the DEFAULT forbid policy + infra content → demoted.
-  it('demotes under the default policy (forbid secrets+infra) with infra content', async () => {
+  it('demotes under the default policy (forbid secrets+infra) with infra content', () => {
     const plur = plurWithStores([
       // declares metadata but an empty sensitivity → defaults apply (forbid secrets+infra)
       { path: '/tmp/eng.yaml', scope: 'group:plur/engineering', description: 'Engineering scope', sensitivity: {} },
     ])
-    const e = await plur.learn('deploy target is 139.59.155.82', { scope: 'group:plur/engineering' }) as { scope: string; visibility: string }
+    const e = plur.learn('deploy target is 139.59.155.82', { scope: 'group:plur/engineering' }) as { scope: string; visibility: string }
     expect(e.scope).toBe('local')
     expect(e.visibility).toBe('private')
   })
 
-  it('keeps clean content at a metadata-bearing shared scope', async () => {
+  it('keeps clean content at a metadata-bearing shared scope', () => {
     const plur = plurWithStores([
       { path: '/tmp/eng.yaml', scope: 'group:plur/engineering', description: 'Engineering scope', sensitivity: {} },
     ])
-    const e = await plur.learn('SKILL.md is the canonical pack format', { scope: 'group:plur/engineering' }) as { scope: string }
+    const e = plur.learn('SKILL.md is the canonical pack format', { scope: 'group:plur/engineering' }) as { scope: string }
     expect(e.scope).toBe('group:plur/engineering')
   })
 

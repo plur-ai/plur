@@ -125,35 +125,6 @@ export const VectorConfigSchema = z.object({
 export type VectorConfigYaml = z.infer<typeof VectorConfigSchema>
 
 /**
- * Server-Postgres backend configuration (ADR-0005).
- *
- * Presence of `url` is what makes the `postgres` tier reachable at all: the
- * size-based selector may decide a corpus wants a server, but without somewhere
- * to connect it caps at PGLite and says so. `PLUR_POSTGRES_URL` overrides `url`.
- *
- * `vector_index` picks the recall/latency trade-off explicitly:
- *   - `auto` (default) — exact below the row threshold, HNSW above it
- *   - `exact`          — never approximate; 100% recall, linear scan
- *   - `hnsw`           — always approximate
- *
- * `ef_search` is a FLOOR, not a fixed value: every query raises it to at least
- * the requested limit, because pgvector's default (40) sits below most useful
- * limits and silently truncates the result set.
- */
-export const PostgresConfigSchema = z.object({
-  url: z.string().optional()
-    .describe('libpq connection string. Prefer PLUR_POSTGRES_URL so credentials stay out of config.yaml.'),
-  schema: z.string().optional().describe('Schema owning the PLUR tables (default: plur).'),
-  vector_index: z.enum(['auto', 'exact', 'hnsw']).optional(),
-  hnsw_m: z.number().int().positive().optional().catch(undefined),
-  hnsw_ef_construction: z.number().int().positive().optional().catch(undefined),
-  ef_search: z.number().int().positive().optional().catch(undefined),
-  max_connections: z.number().int().positive().optional().catch(undefined),
-}).partial()
-
-export type PostgresConfigYaml = z.infer<typeof PostgresConfigSchema>
-
-/**
  * Scope-routing tuning — optional overrides for the deterministic ranker that
  * auto-routes unscoped writes to a `covers`-matching scope (Stage 3b, #351/#362).
  * Defaults match the module-level constants in scope-routing.ts.
@@ -243,28 +214,17 @@ export const PlurConfigSchema = z.object({
   allow_secrets: z.boolean().default(false),
   index: z.boolean().default(true),
   /**
-   * Storage tier selector — an OVERRIDE, not a default.
-   *
-   * Leave it unset and the tier is chosen from the size of the store (ADR-0005,
-   * `backend-selection.ts`): `yaml` for a personal corpus, `pglite` past ~5k
-   * engrams, `postgres` past ~50k when `postgres.url` is configured. Set it and
-   * that choice is yours — the automatic path exists to make the default sane,
-   * not to overrule a decision someone made on purpose.
-   *
-   *   - `yaml`     — no index; in-memory BM25 + exact cosine (with `index: true`,
-   *                  the legacy better-sqlite3 metadata index)
-   *   - `sqlite`   — legacy better-sqlite3 index (requires `index: true`)
-   *   - `pglite`   — ADR-0001 substrate: PGLite WASM + pgvector + Apache AGE
-   *   - `postgres` — ADR-0005: server Postgres as store AND index
-   *
-   * Env override: PLUR_BACKEND=yaml|sqlite|pglite|postgres.
+   * Index backend selector. `sqlite` is the historical default
+   * (better-sqlite3, in-process WAL). `pglite` opts in to the ADR-0001
+   * substrate — PGLite WASM + pgvector + Apache AGE. PGLite is opt-in until
+   * the bake-off completes; defaults remain sqlite to keep the existing
+   * test surface stable.
+   * Env override: PLUR_BACKEND=pglite|sqlite.
    */
-  backend: z.enum(['yaml', 'sqlite', 'pglite', 'postgres']).optional(),
+  backend: z.enum(['sqlite', 'pglite']).default('sqlite'),
   storage: StorageConfigSchema.default({}),
   embeddings: EmbeddingsConfigSchema.default({}),
   vector: VectorConfigSchema.default({}),
-  /** Server-Postgres backend settings (ADR-0005). See {@link PostgresConfigSchema}. */
-  postgres: PostgresConfigSchema.default({}),
   stores: z.array(StoreEntrySchema).default([]),
   /**
    * Shared scopes the user has explicitly dismissed from the "authorized but

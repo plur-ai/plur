@@ -350,34 +350,34 @@ describe('plur.suggestScope — reads scope metadata from config stores', () => 
   }
   afterEach(() => { while (dirs.length) rmSync(dirs.pop()!, { recursive: true, force: true }) })
 
-  it('ranks registered scopes by fit', async () => {
+  it('ranks registered scopes by fit', () => {
     const plur = plurWithStores([
       { path: '/tmp/core.yaml', scope: 'group:plur/core', description: 'Core engine', covers: ['plur.*', 'engine'] },
       { path: '/tmp/infra.yaml', scope: 'group:plur/infra', description: 'Infra', covers: ['servers', 'deployment'] },
     ])
-    const ranked = await plur.suggestScope({ statement: 'embedding model init', domain: 'plur.core.embeddings' })
+    const ranked = plur.suggestScope({ statement: 'embedding model init', domain: 'plur.core.embeddings' })
     expect(ranked[0].scope).toBe('group:plur/core')
     expect(ranked[0].confidence).toBeGreaterThan(0)
   })
 
-  it('returns an empty array when no registered scope declares covers', async () => {
+  it('returns an empty array when no registered scope declares covers', () => {
     const plur = plurWithStores([
       { path: '/tmp/x.yaml', scope: 'group:plur/x', description: 'No covers declared' },
     ])
-    expect(await plur.suggestScope({ statement: 'anything at all', domain: 'plur.core' })).toEqual([])
+    expect(plur.suggestScope({ statement: 'anything at all', domain: 'plur.core' })).toEqual([])
   })
 
-  it('returns an empty array with no stores configured', async () => {
+  it('returns an empty array with no stores configured', () => {
     const plur = plurWithStores([])
-    expect(await plur.suggestScope({ statement: 'whatever', tags: ['infra'] })).toEqual([])
+    expect(plur.suggestScope({ statement: 'whatever', tags: ['infra'] })).toEqual([])
   })
 
-  it('Stage 3b: a weak (sub-threshold) match falls to unscoped_default, NOT the top suggestion', async () => {
+  it('Stage 3b: a weak (sub-threshold) match falls to unscoped_default, NOT the top suggestion', () => {
     const plur = plurWithStores([
       { path: '/tmp/infra.yaml', scope: 'group:plur/infra', description: 'Infra', covers: ['servers', 'deployment'] },
     ])
     // suggestScope still points at the infra scope (advisory ranking unchanged)…
-    const ranked = await plur.suggestScope({ statement: 'restart the deployment on the servers' })
+    const ranked = plur.suggestScope({ statement: 'restart the deployment on the servers' })
     expect(ranked[0].scope).toBe('group:plur/infra')
     // …but its confidence is only a keyword match (deployment + servers), which
     // sits BELOW SCOPE_MATCH_THRESHOLD, so Stage 3b auto-routing does NOT fire —
@@ -385,15 +385,15 @@ describe('plur.suggestScope — reads scope metadata from config stores', () => 
     // in 0.10.0 #353). The confident (domain-prefix) auto-route path is covered
     // in route-unscoped.test.ts.
     expect(ranked[0].confidence).toBeLessThan(SCOPE_MATCH_THRESHOLD)
-    const e = await plur.learn('restart the deployment on the servers') as { scope: string }
+    const e = plur.learn('restart the deployment on the servers') as { scope: string }
     expect(e.scope).toBe('global')
   })
 
-  it('feeds tags through to the ranker', async () => {
+  it('feeds tags through to the ranker', () => {
     const plur = plurWithStores([
       { path: '/tmp/infra.yaml', scope: 'group:plur/infra', description: 'Infra', covers: ['servers'] },
     ])
-    const ranked = await plur.suggestScope({ statement: 'no overlap words zzz', tags: ['servers'] })
+    const ranked = plur.suggestScope({ statement: 'no overlap words zzz', tags: ['servers'] })
     expect(ranked.map(c => c.scope)).toContain('group:plur/infra')
   })
 })
@@ -536,25 +536,25 @@ describe('scope_routing config — Plur integration (#362)', () => {
   }
   afterEach(() => { while (dirs.length) rmSync(dirs.pop()!, { recursive: true, force: true }) })
 
-  it('match_threshold:0.7 — three-tag match (confidence=0.5) no longer auto-routes', async () => {
+  it('match_threshold:0.7 — three-tag match (confidence=0.5) no longer auto-routes', () => {
     // Default threshold 0.5: three tags route. Raised to 0.7: same three tags fall through.
     const plur = plurWithConfig(
       [{ path: '/tmp/infra.yaml', scope: 'group:plur/infra', covers: ['servers', 'deploy', 'infra'] }],
       { match_threshold: 0.7 },
     )
-    const ranked = await plur.suggestScope({ statement: 'no overlap zzz', tags: ['servers', 'deploy', 'infra'] })
+    const ranked = plur.suggestScope({ statement: 'no overlap zzz', tags: ['servers', 'deploy', 'infra'] })
     expect(ranked[0].confidence).toBe(0.5)
-    const e = await plur.learn('no overlap zzz', { tags: ['servers', 'deploy', 'infra'] }) as { scope: string }
+    const e = plur.learn('no overlap zzz', { tags: ['servers', 'deploy', 'infra'] }) as { scope: string }
     expect(e.scope).toBe('global')
   })
 
-  it('weight_tag:0.3 — three-tag match drops below 0.5 and no longer auto-routes', async () => {
+  it('weight_tag:0.3 — three-tag match drops below 0.5 and no longer auto-routes', () => {
     // Default weight_tag=0.5: 3 tags → 0.5000 routes. Override 0.3: 3*0.3=0.9 → squash(0.9)=0.375 < 0.5.
     const plur = plurWithConfig(
       [{ path: '/tmp/infra.yaml', scope: 'group:plur/infra', covers: ['servers', 'deploy', 'infra'] }],
       { weight_tag: 0.3 },
     )
-    const e = await plur.learn('no overlap zzz', { tags: ['servers', 'deploy', 'infra'] }) as { scope: string }
+    const e = plur.learn('no overlap zzz', { tags: ['servers', 'deploy', 'infra'] }) as { scope: string }
     expect(e.scope).toBe('global')
   })
 })

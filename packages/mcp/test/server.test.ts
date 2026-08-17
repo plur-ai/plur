@@ -4,31 +4,19 @@ import { join } from 'path'
 import { tmpdir } from 'os'
 import { Client } from '@modelcontextprotocol/client'
 import { InMemoryTransport } from '@modelcontextprotocol/server'
-import { Plur, checkForUpdate, clearVersionCache, settleVersionChecks } from '@plur-ai/core'
+import { Plur, checkForUpdate, clearVersionCache } from '@plur-ai/core'
 import { createServer } from '../src/server.js'
 
 describe('MCP server (wire protocol)', () => {
   let client: Client
   let dir: string
   let plurInstance: Plur
-  const realFetch = globalThis.fetch
 
   beforeEach(async () => {
     dir = mkdtempSync(join(tmpdir(), 'plur-mcp-server-'))
-
-    // `createServer` fires a fire-and-forget npm version check. Left alone it
-    // reaches the real registry — 32 live requests per run of this file — and,
-    // worse, lands in a module-level cache at an unpredictable moment, which is
-    // what made the staleness assertions below fail under parallel load while
-    // passing in isolation. Stub the network for the whole file, then drain the
-    // check and reset the cache so each test starts from a known-empty one.
-    globalThis.fetch = vi.fn().mockResolvedValue({ ok: false, json: () => Promise.resolve({}) }) as any
-
     const plur = new Plur({ path: dir })
     plurInstance = plur
     const server = await createServer(plur, { profile: 'full' })
-    await settleVersionChecks()
-    clearVersionCache()
 
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
     await server.connect(serverTransport)
@@ -38,7 +26,6 @@ describe('MCP server (wire protocol)', () => {
   })
 
   afterEach(() => {
-    globalThis.fetch = realFetch
     rmSync(dir, { recursive: true })
   })
 
@@ -104,7 +91,7 @@ describe('MCP server (wire protocol)', () => {
       expect(result.isError).toBeFalsy()
       const parsed = JSON.parse((result.content as any)[0].text)
       expect(parsed.id).toBeDefined()
-      const stored = await plurInstance.getById(parsed.id)
+      const stored = plurInstance.getById(parsed.id)
       expect(stored?.tags).toEqual(['alpha', 'beta'])
     })
 
@@ -115,7 +102,7 @@ describe('MCP server (wire protocol)', () => {
       })
       expect(result.isError).toBeFalsy()
       const parsed = JSON.parse((result.content as any)[0].text)
-      const stored = await plurInstance.getById(parsed.id)
+      const stored = plurInstance.getById(parsed.id)
       expect(stored?.tags).toEqual(['alpha', 'beta'])
     })
 
@@ -126,7 +113,7 @@ describe('MCP server (wire protocol)', () => {
       })
       expect(result.isError).toBeFalsy()
       const parsed = JSON.parse((result.content as any)[0].text)
-      const stored = await plurInstance.getById(parsed.id)
+      const stored = plurInstance.getById(parsed.id)
       expect(stored?.tags).toEqual(['solo'])
     })
 
@@ -150,73 +137,6 @@ describe('MCP server (wire protocol)', () => {
       const parsed = JSON.parse((result.content as any)[0].text)
       expect(parsed.success).toBe(false)
       expect(parsed.error).toContain('tags')
-    })
-
-    // #297 partial drop: the client keeps the early scalar fields and silently
-    // discards a trailing array-typed one. Observed with plur_session_end on a
-    // large payload (long summary + 5-element engram_suggestions) arriving as
-    // {summary} alone. Previously the hint was gated on receivedFields.length
-    // === 0, so this — the shape that most looks like a server schema bug to
-    // the caller — got a bare "Required" and no workaround.
-    it('partial drop of an array param still names the client bug (#297)', async () => {
-      const result = await client.callTool({
-        name: 'plur_session_end',
-        arguments: { summary: 'Trailing array param was dropped by the client' },
-      })
-      expect(result.isError).toBe(true)
-      const parsed = JSON.parse((result.content as any)[0].text)
-      // The scalar field survived, so this is NOT the empty-payload path.
-      expect(parsed.received_fields).toEqual(['summary'])
-      expect(parsed.error).not.toContain('arguments object was empty')
-      // ...but the caller must still be told what happened and how to retry.
-      expect(parsed.error).toContain('plur-ai/plur#297')
-      expect(parsed.error).toContain('engram_suggestions')
-      expect(parsed.error).toMatch(/JSON string|comma-separated/)
-      // Size is the trigger; say so, or the caller retries an identical payload.
-      expect(parsed.error).toMatch(/size-sensitive|shorter payload/)
-    })
-
-    it('a missing NON-array required field does not mention #297', async () => {
-      // plur_session_end also requires `summary`. Omitting only that is an
-      // ordinary caller error — the array hint would be misleading noise.
-      const result = await client.callTool({
-        name: 'plur_session_end',
-        arguments: { engram_suggestions: ['a real suggestion'] },
-      })
-      expect(result.isError).toBe(true)
-      const parsed = JSON.parse((result.content as any)[0].text)
-      expect(parsed.error).toContain('summary')
-      expect(parsed.error).not.toContain('plur-ai/plur#297')
-    })
-
-    // The workaround the #297 message advertises must actually work for the
-    // parameter it is most often needed on. engram_suggestions has union items
-    // (anyOf: [string, object], #231); the old `items?.type === 'string'` check
-    // was false for it, so comma-separated input fell through uncoerced.
-    it('coerces comma-separated input for union (anyOf) item schemas', async () => {
-      const result = await client.callTool({
-        name: 'plur_session_end',
-        arguments: {
-          summary: 'Union-item coercion',
-          engram_suggestions: 'first learning, second learning',
-        },
-      })
-      expect(result.isError).toBeFalsy()
-      const parsed = JSON.parse((result.content as any)[0].text)
-      expect(parsed.engrams_created).toBe(2)
-    })
-
-    it('coerces a JSON-stringified array for union (anyOf) item schemas', async () => {
-      const result = await client.callTool({
-        name: 'plur_session_end',
-        arguments: {
-          summary: 'Union-item JSON coercion',
-          engram_suggestions: '["json one","json two"]',
-        },
-      })
-      expect(result.isError).toBeFalsy()
-      const parsed = JSON.parse((result.content as any)[0].text)
-      expect(parsed.engrams_created).toBe(2)
     })
 
     it('empty arguments on a tool with array params names the client bug (#297)', async () => {
@@ -381,7 +301,7 @@ describe('MCP server (wire protocol)', () => {
     const text = (result.contents[0] as any).text
     expect(text).toContain('PLUR')
     expect(text).toContain('plur_learn')
-    expect(text).toContain('plur_recall')
+    expect(text).toContain('plur_recall_hybrid')
   })
 
   it('reads the status resource with live data', async () => {
@@ -444,14 +364,6 @@ describe('MCP server (wire protocol)', () => {
 
   describe('version staleness warnings', () => {
     const originalFetch = globalThis.fetch
-
-    beforeEach(() => {
-      // createServer() fires checkForUpdate() fire-and-forget in beforeEach.
-      // That async call can populate the cache before the test body mocks fetch,
-      // causing the test's checkForUpdate() to return the stale cache entry.
-      // Clear eagerly to guarantee the test body's mock is the first writer.
-      clearVersionCache()
-    })
 
     afterEach(() => {
       globalThis.fetch = originalFetch

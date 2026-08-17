@@ -70,7 +70,7 @@ describe('migrations', () => {
       expect(getSchemaVersion(configPath)).toBe(3)
     })
 
-    it('preserves other config fields', async () => {
+    it('preserves other config fields', () => {
       fs.writeFileSync(configPath, yaml.dump({ auto_learn: false, injection_budget: 3000 }))
       setSchemaVersion(configPath, 5)
       const raw = yaml.load(fs.readFileSync(configPath, 'utf8')) as Record<string, unknown>

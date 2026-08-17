@@ -24,56 +24,56 @@ function makeApi(path: string) {
 }
 
 describe('claw canary wiring', () => {
-  it('no warning before threshold is reached', async () => {
+  it('no warning before threshold is reached', () => {
     const api = makeApi('/tmp/plur-canary-a')
     plugin.register(api as any)
-    const [result1] = await Promise.all(api.fire('before_prompt_build', { prompt: 'task one' }))
-    const [result2] = await Promise.all(api.fire('before_prompt_build', { prompt: 'task two' }))
+    const [result1] = api.fire('before_prompt_build', { prompt: 'task one' })
+    const [result2] = api.fire('before_prompt_build', { prompt: 'task two' })
     expect(result1?.prependContext ?? '').not.toContain('⚠️')
     expect(result2?.prependContext ?? '').not.toContain('⚠️')
   })
 
-  it('injects warning after threshold ticks with no agent_end', async () => {
+  it('injects warning after threshold ticks with no agent_end', () => {
     const api = makeApi('/tmp/plur-canary-b')
     plugin.register(api as any)
     api.fire('before_prompt_build', { prompt: 'turn 1' })
     api.fire('before_prompt_build', { prompt: 'turn 2' })
-    const [result] = await Promise.all(api.fire('before_prompt_build', { prompt: 'turn 3' }))
+    const [result] = api.fire('before_prompt_build', { prompt: 'turn 3' })
     expect(result?.prependContext).toContain('⚠️')
     expect(result?.prependContext).toContain('agent_end')
   })
 
-  it('no warning when agent_end fires normally', async () => {
+  it('no warning when agent_end fires normally', () => {
     const api = makeApi('/tmp/plur-canary-c')
     plugin.register(api as any)
     api.fire('before_prompt_build', { prompt: 'turn 1' })
     api.fire('agent_end', { messages: [] })
     api.fire('before_prompt_build', { prompt: 'turn 2' })
     api.fire('agent_end', { messages: [] })
-    const [result] = await Promise.all(api.fire('before_prompt_build', { prompt: 'turn 3' }))
+    const [result] = api.fire('before_prompt_build', { prompt: 'turn 3' })
     expect(result?.prependContext ?? '').not.toContain('⚠️')
   })
 
-  it('warning clears after agent_end fires (hot-reload recovery)', async () => {
+  it('warning clears after agent_end fires (hot-reload recovery)', () => {
     const api = makeApi('/tmp/plur-canary-d')
     plugin.register(api as any)
     // 3 turns with no agent_end — warning fires
     api.fire('before_prompt_build', { prompt: 'turn 1' })
     api.fire('before_prompt_build', { prompt: 'turn 2' })
-    const [warned] = await Promise.all(api.fire('before_prompt_build', { prompt: 'turn 3' }))
+    const [warned] = api.fire('before_prompt_build', { prompt: 'turn 3' })
     expect(warned?.prependContext).toContain('⚠️')
     // agent_end fires — canary recovers
     api.fire('agent_end', { messages: [] })
-    const [cleared] = await Promise.all(api.fire('before_prompt_build', { prompt: 'turn 4' }))
+    const [cleared] = api.fire('before_prompt_build', { prompt: 'turn 4' })
     expect(cleared?.prependContext ?? '').not.toContain('⚠️')
   })
 
-  it('warning includes the fix command', async () => {
+  it('warning includes the fix command', () => {
     const api = makeApi('/tmp/plur-canary-e')
     plugin.register(api as any)
     api.fire('before_prompt_build', { prompt: 'turn 1' })
     api.fire('before_prompt_build', { prompt: 'turn 2' })
-    const [result] = await Promise.all(api.fire('before_prompt_build', { prompt: 'turn 3' }))
+    const [result] = api.fire('before_prompt_build', { prompt: 'turn 3' })
     expect(result?.prependContext).toContain('allowConversationAccess')
   })
 })

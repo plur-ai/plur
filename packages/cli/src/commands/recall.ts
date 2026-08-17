@@ -20,7 +20,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   }
 
   const engrams = flags.fast
-    ? await plur.recall(query, { limit })
+    ? plur.recall(query, { limit })
     : await plur.recallHybrid(query, { limit })
 
   if (engrams.length === 0) {

@@ -21,7 +21,7 @@ describe('SP2 Idea 18: Failure-Driven Procedure Evolution', () => {
 
   it('rejects non-procedural engrams', async () => {
     const plur = new Plur({ path: dir })
-    const engram = await plur.learn('Use camelCase', { type: 'behavioral' })
+    const engram = plur.learn('Use camelCase', { type: 'behavioral' })
 
     await expect(
       plur.reportFailure(engram.id, 'Did not work')
@@ -38,7 +38,7 @@ describe('SP2 Idea 18: Failure-Driven Procedure Evolution', () => {
 
   it('logs failure without rewriting when no LLM provided', async () => {
     const plur = new Plur({ path: dir })
-    const engram = await plur.learn('Run npm test before deploying', { type: 'procedural' })
+    const engram = plur.learn('Run npm test before deploying', { type: 'procedural' })
 
     const result = await plur.reportFailure(engram.id, 'Tests passed but deploy still failed')
 
@@ -47,13 +47,13 @@ describe('SP2 Idea 18: Failure-Driven Procedure Evolution', () => {
     expect(result.engram.statement).toBe('Run npm test before deploying') // unchanged
 
     // Episode should be linked
-    const updated = await plur.getById(engram.id)
+    const updated = plur.getById(engram.id)
     expect((updated as any).episode_ids).toContain(result.episode.id)
   })
 
   it('evolves procedure with LLM', async () => {
     const plur = new Plur({ path: dir })
-    const engram = await plur.learn('Run npm test before deploying', { type: 'procedural' })
+    const engram = plur.learn('Run npm test before deploying', { type: 'procedural' })
 
     const mockLlm: LlmFunction = async (_prompt: string) => {
       return 'Run npm test AND npm run build before deploying to catch compilation errors'
@@ -70,7 +70,7 @@ describe('SP2 Idea 18: Failure-Driven Procedure Evolution', () => {
 
   it('logs procedure_evolved in history', async () => {
     const plur = new Plur({ path: dir })
-    const engram = await plur.learn('Check logs before restarting', { type: 'procedural' })
+    const engram = plur.learn('Check logs before restarting', { type: 'procedural' })
 
     const mockLlm: LlmFunction = async () => 'Check logs AND metrics before restarting'
 
@@ -85,7 +85,7 @@ describe('SP2 Idea 18: Failure-Driven Procedure Evolution', () => {
 
   it('increments version on each evolution', async () => {
     const plur = new Plur({ path: dir })
-    const engram = await plur.learn('Step 1', { type: 'procedural' })
+    const engram = plur.learn('Step 1', { type: 'procedural' })
 
     const mockLlm: LlmFunction = async () => 'Step 1 improved'
     await plur.reportFailure(engram.id, 'Failed once', mockLlm)
@@ -98,7 +98,7 @@ describe('SP2 Idea 18: Failure-Driven Procedure Evolution', () => {
 
   it('enforces rate limit of 3 revisions per 24h', async () => {
     const plur = new Plur({ path: dir })
-    const engram = await plur.learn('Rate limited procedure', { type: 'procedural' })
+    const engram = plur.learn('Rate limited procedure', { type: 'procedural' })
     const mockLlm: LlmFunction = async () => 'Improved procedure'
 
     // First 3 should succeed
@@ -114,7 +114,7 @@ describe('SP2 Idea 18: Failure-Driven Procedure Evolution', () => {
 
   it('falls back gracefully when LLM throws', async () => {
     const plur = new Plur({ path: dir })
-    const engram = await plur.learn('Fragile procedure', { type: 'procedural' })
+    const engram = plur.learn('Fragile procedure', { type: 'procedural' })
 
     const failingLlm: LlmFunction = async () => {
       throw new Error('LLM unavailable')
@@ -131,13 +131,13 @@ describe('SP2 Idea 18: Failure-Driven Procedure Evolution', () => {
 
   it('status shows versioned_engram_count after evolution', async () => {
     const plur = new Plur({ path: dir })
-    await plur.learn('Regular engram', { type: 'behavioral' })
-    const proc = await plur.learn('Evolving procedure', { type: 'procedural' })
+    plur.learn('Regular engram', { type: 'behavioral' })
+    const proc = plur.learn('Evolving procedure', { type: 'procedural' })
 
     const mockLlm: LlmFunction = async () => 'Improved procedure'
     await plur.reportFailure(proc.id, 'Failed', mockLlm)
 
-    const status = await plur.status()
+    const status = plur.status()
     expect(status.versioned_engram_count).toBe(1)
   })
 })

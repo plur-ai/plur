@@ -129,8 +129,8 @@ describe('RemoteStore against stub server', () => {
   })
 
   it('append throws on bad token', async () => {
-    const badStore = new RemoteStore(baseUrl, 'wrong-token', 'group:test');
-    (await expect(badStore.append({ id: 'x', scope: 'group:test', status: 'active' } as any)))
+    const badStore = new RemoteStore(baseUrl, 'wrong-token', 'group:test')
+    await expect(badStore.append({ id: 'x', scope: 'group:test', status: 'active' } as any))
       .rejects.toThrow('Remote store append failed: 401')
   })
 
@@ -342,7 +342,7 @@ describe('Plur integration with stub server', () => {
 
   it('learn routes to stub server, skips local', async () => {
     const plur = new Plur({ path: primaryDir })
-    const engram = await plur.learn('integration test engram', {
+    const engram = plur.learn('integration test engram', {
       scope: 'group:test',
       type: 'behavioral',
     })
@@ -358,16 +358,16 @@ describe('Plur integration with stub server', () => {
     // Local YAML should NOT have it (the outbox copy is removed AFTER the
     // remote push succeeds — poll for the removal, don't race it)
     const localYaml = join(primaryDir, 'engrams.yaml')
-    await expect.poll(async () => {
+    await expect.poll(() => {
       if (!existsSync(localYaml)) return undefined
       const local = yaml.load(readFileSync(localYaml, 'utf-8')) as { engrams?: any[] } | null
       return (local?.engrams ?? []).find((e: any) => e.statement === 'integration test engram')
     }, { timeout: 10_000, interval: 25 }).toBeUndefined()
   })
 
-  it('learn with unmatched scope writes locally', async () => {
+  it('learn with unmatched scope writes locally', () => {
     const plur = new Plur({ path: primaryDir })
-    await plur.learn('local only engram', {
+    plur.learn('local only engram', {
       scope: 'global',
       type: 'behavioral',
     })
@@ -386,10 +386,10 @@ describe('Plur integration with stub server', () => {
     const plur = new Plur({ path: primaryDir })
 
     // Write one locally
-    await plur.learn('local knowledge about databases', { scope: 'global', type: 'procedural' })
+    plur.learn('local knowledge about databases', { scope: 'global', type: 'procedural' })
 
     // Write one to remote
-    await plur.learn('remote team knowledge about deployment', { scope: 'group:test', type: 'procedural' })
+    plur.learn('remote team knowledge about deployment', { scope: 'group:test', type: 'procedural' })
 
     // Fire-and-forget append — poll, don't race (release-run flake, 2026-07-24)
     await expect.poll(() => server.engramCount, { timeout: 10_000, interval: 25 }).toBe(1)
@@ -398,7 +398,7 @@ describe('Plur integration with stub server', () => {
 
     // Local recall finds the local engram (remote merging requires
     // full engram schema from stub — tested via RemoteStore directly above)
-    const results = await plur.recall('databases')
+    const results = plur.recall('databases')
     expect(results.length).toBeGreaterThan(0)
     expect(results[0].statement).toContain('databases')
   })
@@ -420,7 +420,7 @@ describe('Plur integration with stub server', () => {
     )
     const plur = new Plur({ path: primaryDir })
 
-    await plur.learn('should stay local due to readonly', {
+    plur.learn('should stay local due to readonly', {
       scope: 'group:test',
       type: 'behavioral',
     })
@@ -469,16 +469,16 @@ describe('ID prefix round-trip (issue #86)', () => {
     const plur = new Plur({ path: primaryDir })
 
     // Learn to remote
-    await plur.learn('remote engram for feedback test', { scope: 'group:test', type: 'behavioral' })
+    plur.learn('remote engram for feedback test', { scope: 'group:test', type: 'behavioral' })
     await new Promise(r => setTimeout(r, 100))
     expect(server.engramCount).toBe(1)
 
     // Load engrams — this adds the store prefix (e.g. ENG-GTE-...)
-    const loaded = await plur.list({ scope: 'group:test' })
+    const loaded = plur.list({ scope: 'group:test' })
 
     // Wait for remote cache to populate
     await new Promise(r => setTimeout(r, 2000))
-    const loadedAfter = await plur.list({ scope: 'group:test' })
+    const loadedAfter = plur.list({ scope: 'group:test' })
     const remoteEngrams = loadedAfter.filter(e => e.id.includes('-GTE-'))
     expect(remoteEngrams.length).toBeGreaterThanOrEqual(1)
 
@@ -498,13 +498,13 @@ describe('ID prefix round-trip (issue #86)', () => {
     const plur = new Plur({ path: primaryDir })
 
     // Learn to remote
-    await plur.learn('remote engram for forget test', { scope: 'group:test', type: 'behavioral' })
+    plur.learn('remote engram for forget test', { scope: 'group:test', type: 'behavioral' })
     await new Promise(r => setTimeout(r, 100))
     expect(server.engramCount).toBe(1)
 
     // Wait for remote cache to populate
     await new Promise(r => setTimeout(r, 2000))
-    const loaded = await plur.list({ scope: 'group:test' })
+    const loaded = plur.list({ scope: 'group:test' })
     const remoteEngrams = loaded.filter(e => e.id.includes('-GTE-'))
     expect(remoteEngrams.length).toBeGreaterThanOrEqual(1)
 
@@ -523,7 +523,7 @@ describe('ID prefix round-trip (issue #86)', () => {
     const plur = new Plur({ path: primaryDir })
 
     // Learn to remote
-    await plur.learn('remote engram for unprefixed test', { scope: 'group:test', type: 'behavioral' })
+    plur.learn('remote engram for unprefixed test', { scope: 'group:test', type: 'behavioral' })
     await new Promise(r => setTimeout(r, 100))
 
     // Feedback with the server-side ID directly (no prefix)
@@ -572,11 +572,11 @@ describe('Remote mutation routing — pin / promote / reportFailure (#185, #86)'
     const plur = new Plur({ path: primaryDir })
 
     // Learn to remote
-    await plur.learn('engram to pin', { scope: 'group:test', type: 'behavioral' })
+    plur.learn('engram to pin', { scope: 'group:test', type: 'behavioral' })
     await new Promise(r => setTimeout(r, 100))
     await new Promise(r => setTimeout(r, 2000)) // cache populate
 
-    const loaded = await plur.list({ scope: 'group:test' })
+    const loaded = plur.list({ scope: 'group:test' })
     const remoteEngrams = loaded.filter(e => e.id.includes('-GTE-'))
     expect(remoteEngrams.length).toBeGreaterThanOrEqual(1)
     const prefixedId = remoteEngrams[0].id
@@ -594,11 +594,11 @@ describe('Remote mutation routing — pin / promote / reportFailure (#185, #86)'
   it('updateEngramAsync routes statement change to remote (promote path)', async () => {
     const plur = new Plur({ path: primaryDir })
 
-    await plur.learn('original procedure', { scope: 'group:test', type: 'procedural' })
+    plur.learn('original procedure', { scope: 'group:test', type: 'procedural' })
     await new Promise(r => setTimeout(r, 100))
     await new Promise(r => setTimeout(r, 2000))
 
-    const loaded = await plur.list({ scope: 'group:test' })
+    const loaded = plur.list({ scope: 'group:test' })
     const remoteEngrams = loaded.filter(e => e.id.includes('-GTE-'))
     expect(remoteEngrams.length).toBeGreaterThanOrEqual(1)
     const target = remoteEngrams[0]
@@ -616,11 +616,11 @@ describe('Remote mutation routing — pin / promote / reportFailure (#185, #86)'
   it('reportFailure with LLM rewrite routes new statement to remote', async () => {
     const plur = new Plur({ path: primaryDir })
 
-    await plur.learn('flaky procedure that fails', { scope: 'group:test', type: 'procedural' })
+    plur.learn('flaky procedure that fails', { scope: 'group:test', type: 'procedural' })
     await new Promise(r => setTimeout(r, 100))
     await new Promise(r => setTimeout(r, 2000))
 
-    const loaded = await plur.list({ scope: 'group:test' })
+    const loaded = plur.list({ scope: 'group:test' })
     const remoteEngrams = loaded.filter(e => e.id.includes('-GTE-'))
     const target = remoteEngrams[0]
 

@@ -96,7 +96,7 @@ type Resolver = {
   _resolveUnscopedScope: (
     s: string,
     c?: { domain?: string; tags?: string[] },
-  ) => Promise<{ scope: string; routed: { scope: string; confidence: number; reason: string } | null }>
+  ) => { scope: string; routed: { scope: string; confidence: number; reason: string } | null }
 }
 
 // ---------------------------------------------------------------------------
@@ -276,13 +276,13 @@ describe('routing-fuzz — _resolveUnscopedScope no-over-route / no-under-route'
   const overRoutes: string[] = []
   const underRoutes: string[] = []
 
-  it('resolves every case per the independent oracle, with no over-route into the shared scope and no under-route of a forward match', async () => {
+  it('resolves every case per the independent oracle, with no over-route into the shared scope and no under-route of a forward match', () => {
     for (const c of cases) {
       const store: Record<string, unknown> = c.readonly
         ? { url: 'https://ro.example.com', token: 't', readonly: true, scope: SCOPE, description: 'S', covers: c.covers }
         : { path: '/tmp/fuzz.yaml', scope: SCOPE, description: 'S', covers: c.covers }
       const plur = makePlur({ stores: [store] }) as unknown as Resolver
-      const res = await plur._resolveUnscopedScope(c.domain ? STMT : STMT, { domain: c.domain, tags: c.tags })
+      const res = plur._resolveUnscopedScope(c.domain ? STMT : STMT, { domain: c.domain, tags: c.tags })
 
       if (res.scope !== c.expect)
         failures.push(`${c.label}: oracle=${c.expect} got=${res.scope} routed=${JSON.stringify(res.routed)}`)
@@ -307,21 +307,21 @@ describe('routing-fuzz — _resolveUnscopedScope no-over-route / no-under-route'
     expect(failures, `oracle mismatches:\n${failures.join('\n')}`).toEqual([])
   })
 
-  it('auto_route_scope:false never routes regardless of a perfect forward domain match', async () => {
+  it('auto_route_scope:false never routes regardless of a perfect forward domain match', () => {
     const bad: string[] = []
     for (const covers of [['plur.*'], ['plur'], ['plur.core']]) {
       const plur = makePlur({
         auto_route_scope: false,
         stores: [{ path: '/tmp/fuzz.yaml', scope: SCOPE, description: 'S', covers }],
       }) as unknown as Resolver
-      const res = await plur._resolveUnscopedScope(STMT, { domain: 'plur.core.security' })
+      const res = plur._resolveUnscopedScope(STMT, { domain: 'plur.core.security' })
       if (res.scope !== FALLBACK || res.routed !== null)
         bad.push(`covers=${JSON.stringify(covers)} → scope=${res.scope} routed=${JSON.stringify(res.routed)}`)
     }
     expect(bad, `auto_route_scope:false leaked a route:\n${bad.join('\n')}`).toEqual([])
   })
 
-  it('multi-candidate forward ties resolve deterministically and stay within a forward scope', async () => {
+  it('multi-candidate forward ties resolve deterministically and stay within a forward scope', () => {
     // Two shared scopes that both forward-match the domain. Winner must be one of
     // them (never fallback — that would be an under-route) and deterministic.
     const plur = makePlur({
@@ -330,8 +330,8 @@ describe('routing-fuzz — _resolveUnscopedScope no-over-route / no-under-route'
         { path: '/tmp/a.yaml', scope: 'group:plur/a', description: 'A', covers: ['plur.core.*'] },
       ],
     }) as unknown as Resolver
-    const r1 = await plur._resolveUnscopedScope(STMT, { domain: 'plur.core.security' })
-    const r2 = await plur._resolveUnscopedScope(STMT, { domain: 'plur.core.security' })
+    const r1 = plur._resolveUnscopedScope(STMT, { domain: 'plur.core.security' })
+    const r2 = plur._resolveUnscopedScope(STMT, { domain: 'plur.core.security' })
     expect(r1.scope).toBe(r2.scope)                  // deterministic
     expect(['group:plur/a', 'group:plur/b']).toContain(r1.scope) // forward, not fallback
   })

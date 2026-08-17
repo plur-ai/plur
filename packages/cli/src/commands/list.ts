@@ -21,7 +21,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     else { i++ }
   }
 
-  let engrams = await plur.list({ scope, domain })
+  let engrams = plur.list({ scope, domain })
 
   // Post-filter by type
   if (type) {

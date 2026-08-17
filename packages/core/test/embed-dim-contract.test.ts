@@ -129,7 +129,7 @@ describe.each([
   { embedderName: 'bge-small', dim: 384 },
   { embedderName: 'embedding-gemma', dim: 768 },
   { embedderName: 'openai-3-large', dim: 3072 },
-])('PGLite cross-shape roundtrip at $dim d ($embedderName) — ADR-0001 (#335)', async ({ dim }) => {
+])('PGLite cross-shape roundtrip at $dim d ($embedderName) — ADR-0001 (#335)', ({ dim }) => {
   let dir: string
   let yamlPath: string
   let dbPath: string

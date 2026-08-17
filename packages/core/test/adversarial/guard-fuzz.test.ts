@@ -91,7 +91,7 @@ function bothStores(dir: string) {
   ]
 }
 
-async function readLocalEngrams(dir: string): Promise<any[]> {
+function readLocalEngrams(dir: string): any[] {
   const path = join(dir, 'engrams.yaml')
   if (!existsSync(path)) return []
   const data = yaml.load(readFileSync(path, 'utf-8')) as { engrams?: unknown[] } | null
@@ -102,7 +102,7 @@ function writeLocalEngrams(dir: string, engrams: any[]) {
   writeFileSync(join(dir, 'engrams.yaml'), yaml.dump({ engrams }, { lineWidth: 120, noRefs: true }))
 }
 
-async function readSharedStore(dir: string): Promise<any[]> {
+function readSharedStore(dir: string): any[] {
   const path = join(dir, 'team-store.yaml')
   if (!existsSync(path)) return []
   const data = yaml.load(readFileSync(path, 'utf-8')) as { engrams?: unknown[] } | null
@@ -181,9 +181,9 @@ describe('adversarial leak-guard fuzzer (#353 round-3)', () => {
   }
 
   async function primedRemoteId(plur: Plur, serverId: string): Promise<string> {
-    await plur.list()
+    plur.list()
     await new Promise(r => setTimeout(r, 50))
-    const found = (await plur.list()).find(e => (e as any)._originalId === serverId || e.id.endsWith(serverId))
+    const found = plur.list().find(e => (e as any)._originalId === serverId || e.id.endsWith(serverId))
     if (!found) throw new Error(`remote engram ${serverId} not in cache after prime`)
     return found.id
   }
@@ -211,18 +211,18 @@ describe('adversarial leak-guard fuzzer (#353 round-3)', () => {
   // ==========================================================================
   // PATH 1 — learn() to the SHARED local-file scope and the REMOTE scope.
   // ==========================================================================
-  it('learn() to a shared local-file scope demotes every sensitive payload, never written shared', async () => {
+  it('learn() to a shared local-file scope demotes every sensitive payload, never written shared', () => {
     writeStoresConfig(dir, bothStores(dir))
     const plur = new Plur({ path: dir })
 
     for (const payload of SENSITIVE_CORPUS) {
-      const e = await plur.learn(payload, { scope: SHARED_SCOPE, type: 'behavioral' }) as any
+      const e = plur.learn(payload, { scope: SHARED_SCOPE, type: 'behavioral' }) as any
       expect(e.scope, `learn(shared) should demote: ${payload}`).toBe('local')
       expect(e.visibility).toBe('private')
     }
     // Nothing landed in the shared store; only demoted-local engrams in primary.
-    expect((await readSharedStore(dir)).length).toBe(0)
-    const local = await readLocalEngrams(dir)
+    expect(readSharedStore(dir).length).toBe(0)
+    const local = readLocalEngrams(dir)
     expect(local.length).toBe(SENSITIVE_CORPUS.length)
     expect(local.every(e => e.scope === 'local')).toBe(true)
   })
@@ -233,23 +233,20 @@ describe('adversarial leak-guard fuzzer (#353 round-3)', () => {
     const plur = new Plur({ path: dir })
 
     for (const payload of SENSITIVE_CORPUS) {
-      const e = await plur.learn(payload, { scope: REMOTE_SCOPE, type: 'behavioral' }) as any
+      const e = plur.learn(payload, { scope: REMOTE_SCOPE, type: 'behavioral' }) as any
       expect(e.scope, `learn(remote) should demote: ${payload}`).toBe('local')
       expect(e.visibility).toBe('private')
     }
     await new Promise(r => setTimeout(r, 80)) // let any erroneous fire-and-forget settle
     expect(postCalls().length, 'remote append spy must be ZERO').toBe(0)
-    expect(await plur.outboxCount(), 'nothing queued for retry push').toBe(0)
+    expect(plur.outboxCount(), 'nothing queued for retry push').toBe(0)
   })
 
   it('learn() does NOT over-block clean content to the remote scope', async () => {
     mockEmptyRemote()
     writeStoresConfig(dir, bothStores(dir))
     const plur = new Plur({ path: dir })
-    // 'behavioral', matching every other write in this file. The adversarial
-    // dimension here is the payload (CLEAN_CORPUS vs SENSITIVE_CORPUS), not the
-    // type field — 'preference' was a stale value, not a deliberate fuzz input.
-    const e = await plur.learn(CLEAN_CORPUS[0], { scope: REMOTE_SCOPE, type: 'behavioral' }) as any
+    const e = plur.learn(CLEAN_CORPUS[0], { scope: REMOTE_SCOPE, type: 'preference' }) as any
     expect(e.scope).toBe(REMOTE_SCOPE) // honored, not demoted
     await new Promise(r => setTimeout(r, 80))
     expect(postCalls().length, 'a clean engram SHOULD reach the remote').toBe(1)
@@ -259,7 +256,7 @@ describe('adversarial leak-guard fuzzer (#353 round-3)', () => {
   // (forward domain match) into a SHARED scope must then be demoted by the
   // sensitivity guard — the guard runs AFTER _resolveUnscopedScope. Proves the
   // auto-route fix did not open a back-door around the leak guard.
-  it('auto-route into a shared scope is still demoted when the content is sensitive', async () => {
+  it('auto-route into a shared scope is still demoted when the content is sensitive', () => {
     writeStoresConfig(dir, [
       { path: join(dir, 'team-store.yaml'), scope: SHARED_SCOPE, readonly: false, covers: ['plur'] },
       { url: REMOTE_URL, token: 'plur_sk_test', scope: REMOTE_SCOPE, readonly: false },
@@ -267,12 +264,12 @@ describe('adversarial leak-guard fuzzer (#353 round-3)', () => {
     const plur = new Plur({ path: dir })
     // No explicit scope; domain forward-matches `covers:['plur']` → auto-route to
     // project:plur, then the public IP must force a demotion.
-    const e = await plur.learn(`deploy box is ${PUBLIC_IP}`, { domain: 'plur.infra', type: 'behavioral' }) as any
+    const e = plur.learn(`deploy box is ${PUBLIC_IP}`, { domain: 'plur.infra', type: 'behavioral' }) as any
     expect(e.scope, 'auto-routed shared scope must still demote').toBe('local')
     expect(e.visibility).toBe('private')
     expect(e.structured_data?._routed?.scope).toBe(SHARED_SCOPE) // it DID auto-route
     expect(e.structured_data?._demoted?.from).toBe(SHARED_SCOPE) // and was then demoted
-    expect((await readSharedStore(dir)).length).toBe(0)
+    expect(readSharedStore(dir).length).toBe(0)
   })
 
   // ==========================================================================
@@ -290,7 +287,7 @@ describe('adversarial leak-guard fuzzer (#353 round-3)', () => {
     }
     await new Promise(r => setTimeout(r, 80))
     expect(postCalls().length, 'remote append spy must be ZERO').toBe(0)
-    expect(await plur.outboxCount(), 'nothing queued for retry push').toBe(0)
+    expect(plur.outboxCount(), 'nothing queued for retry push').toBe(0)
   })
 
   it('learnRouted() to a shared local-file scope demotes sensitive payloads', async () => {
@@ -301,7 +298,7 @@ describe('adversarial leak-guard fuzzer (#353 round-3)', () => {
       expect(e.scope).toBe('local')
       expect(e.visibility).toBe('private')
     }
-    expect((await readSharedStore(dir)).length).toBe(0)
+    expect(readSharedStore(dir).length).toBe(0)
   })
 
   it('learnRouted() does NOT over-block clean content (it reaches the remote)', async () => {
@@ -329,7 +326,7 @@ describe('adversarial leak-guard fuzzer (#353 round-3)', () => {
     expect(e.scope, 'sensitive rationale must demote').toBe('local')
     await new Promise(r => setTimeout(r, 80))
     expect(postCalls().length).toBe(0)
-    expect(await plur.outboxCount()).toBe(0)
+    expect(plur.outboxCount()).toBe(0)
   })
 
   // ==========================================================================
@@ -373,7 +370,7 @@ describe('adversarial leak-guard fuzzer (#353 round-3)', () => {
     writeStoresConfig(dir, bothStores(dir))
     const plur = new Plur({ path: dir })
     const id = await primedRemoteId(plur, 'ENG-2026-0601-103')
-    const found = (await plur.list()).find(e => e.id === id)!
+    const found = plur.list().find(e => e.id === id)!
 
     for (const payload of [`connect to ${PUBLIC_IP}:8877`, `login ${BASIC_AUTH_URL}`]) {
       const sensitive = { ...found, statement: payload } as any
@@ -387,10 +384,10 @@ describe('adversarial leak-guard fuzzer (#353 round-3)', () => {
     writeStoresConfig(dir, bothStores(dir))
     const plur = new Plur({ path: dir })
     const id = await primedRemoteId(plur, 'ENG-2026-0601-104')
-    const found = (await plur.list()).find(e => e.id === id)!
+    const found = plur.list().find(e => e.id === id)!
     const sensitive = { ...found, statement: `the prod box is ${PUBLIC_IP}` } as any
 
-    await expect(plur.updateEngram(sensitive)).rejects.toThrow(/sensitive content/i)
+    expect(() => plur.updateEngram(sensitive)).toThrow(/sensitive content/i)
     expect(patchCalls().length).toBe(0)
   })
 
@@ -401,7 +398,7 @@ describe('adversarial leak-guard fuzzer (#353 round-3)', () => {
     writeStoresConfig(dir, bothStores(dir))
     const plur = new Plur({ path: dir })
     const id = await primedRemoteId(plur, 'ENG-2026-0601-105')
-    const found = (await plur.list()).find(e => e.id === id)!
+    const found = plur.list().find(e => e.id === id)!
     const sensitive = { ...found, statement: 'still clean here', rationale: `because ${PUBLIC_IP} is the box` } as any
 
     await expect(plur.updateEngramAsync(sensitive)).rejects.toThrow(/sensitive content/i)
@@ -413,7 +410,7 @@ describe('adversarial leak-guard fuzzer (#353 round-3)', () => {
     writeStoresConfig(dir, bothStores(dir))
     const plur = new Plur({ path: dir })
     const id = await primedRemoteId(plur, 'ENG-2026-0601-106')
-    const found = (await plur.list()).find(e => e.id === id)!
+    const found = plur.list().find(e => e.id === id)!
     const clean = { ...found, statement: 'a slightly improved but still clean procedure' } as any
 
     const patched = await plur.updateEngramAsync(clean)
@@ -423,29 +420,29 @@ describe('adversarial leak-guard fuzzer (#353 round-3)', () => {
 
   // A LOCAL-resident engram update with sensitive content DEMOTES in place (does
   // not throw) and never reaches any shared store.
-  it('updateEngram() on a LOCAL engram demotes a sensitive statement in place', async () => {
+  it('updateEngram() on a LOCAL engram demotes a sensitive statement in place', () => {
     writeStoresConfig(dir, bothStores(dir))
     const plur = new Plur({ path: dir })
     // Create a clean engram at the shared scope; it demotes-on-create, so seed a
     // genuinely shared-scope LOCAL engram by writing directly, then update it.
-    const seeded = await plur.learn('a clean team note', { scope: SHARED_SCOPE, type: 'behavioral' }) as any
+    const seeded = plur.learn('a clean team note', { scope: SHARED_SCOPE, type: 'behavioral' }) as any
     // It was clean → it should have landed at the shared scope (in the shared file).
     // Re-fetch its canonical id from whichever store holds it.
-    const all = await plur.list()
+    const all = plur.list()
     const target = all.find(e => e.statement === 'a clean team note')!
     const sensitive = { ...target, statement: `now mentions ${PUBLIC_IP}`, scope: SHARED_SCOPE } as any
-    const ok = await plur.updateEngram(sensitive)
+    const ok = plur.updateEngram(sensitive)
     expect(ok).toBe(true)
-    const updated = (await plur.list()).find(e => String(e.statement).includes(PUBLIC_IP))!
+    const updated = plur.list().find(e => String(e.statement).includes(PUBLIC_IP))!
     expect(updated.scope, 'local-resident sensitive update must demote').toBe('local')
     expect((updated as any).visibility).toBe('private')
-    expect((await readSharedStore(dir)).find(e => String(e.statement).includes(PUBLIC_IP))).toBeUndefined()
+    expect(readSharedStore(dir).find(e => String(e.statement).includes(PUBLIC_IP))).toBeUndefined()
   })
 
   // ==========================================================================
   // PATH 5 — saveMetaEngrams(): the historically-unguarded persist path.
   // ==========================================================================
-  it('saveMetaEngrams() demotes a shared-scope meta carrying infra-sensitive content', async () => {
+  it('saveMetaEngrams() demotes a shared-scope meta carrying infra-sensitive content', () => {
     writeStoresConfig(dir, bothStores(dir))
     const plur = new Plur({ path: dir })
 
@@ -462,10 +459,10 @@ describe('adversarial leak-guard fuzzer (#353 round-3)', () => {
         knowledge_type: { memory_class: 'semantic', cognitive_level: 'remember' },
       })) as any[]
 
-    const res = await plur.saveMetaEngrams(metas)
+    const res = plur.saveMetaEngrams(metas)
     expect(res.saved).toBe(metas.length)
 
-    const local = await readLocalEngrams(dir)
+    const local = readLocalEngrams(dir)
     for (const m of metas) {
       const persisted = local.find(e => e.id === m.id)
       expect(persisted, `meta ${m.id} persisted`).toBeDefined()
@@ -475,10 +472,10 @@ describe('adversarial leak-guard fuzzer (#353 round-3)', () => {
     }
     // None written at the shared scope.
     expect(local.some(e => e.scope === SHARED_SCOPE)).toBe(false)
-    expect((await readSharedStore(dir)).length).toBe(0)
+    expect(readSharedStore(dir).length).toBe(0)
   })
 
-  it('saveMetaEngrams() does NOT demote a clean shared-scope meta', async () => {
+  it('saveMetaEngrams() does NOT demote a clean shared-scope meta', () => {
     writeStoresConfig(dir, bothStores(dir))
     const plur = new Plur({ path: dir })
     const metas = [{
@@ -489,8 +486,8 @@ describe('adversarial leak-guard fuzzer (#353 round-3)', () => {
       status: 'active',
       knowledge_type: { memory_class: 'semantic', cognitive_level: 'remember' },
     }] as any[]
-    await plur.saveMetaEngrams(metas)
-    const persisted = (await readLocalEngrams(dir)).find(e => e.id === 'META-FUZZ-CLEAN')
+    plur.saveMetaEngrams(metas)
+    const persisted = readLocalEngrams(dir).find(e => e.id === 'META-FUZZ-CLEAN')
     expect(persisted.scope, 'clean meta keeps its scope').toBe(SHARED_SCOPE)
   })
 
@@ -504,8 +501,8 @@ describe('adversarial leak-guard fuzzer (#353 round-3)', () => {
     const plur = new Plur({ path: dir })
 
     // Seed a clean engram at the shared LOCAL-FILE scope (no demotion on create).
-    await plur.learn('the deployment runbook lives in the team wiki', { scope: SHARED_SCOPE, type: 'behavioral' })
-    const seededId = (await plur.list()).find(e => e.statement.includes('deployment runbook'))!.id
+    plur.learn('the deployment runbook lives in the team wiki', { scope: SHARED_SCOPE, type: 'behavioral' })
+    const seededId = plur.list().find(e => e.statement.includes('deployment runbook'))!.id
 
     // Force the dedup UPDATE decision: an LLM that always says UPDATE this target.
     // parseDedupResponse expects `DECISION:`/`TARGET:` lines (NOT JSON).
@@ -523,7 +520,7 @@ describe('adversarial leak-guard fuzzer (#353 round-3)', () => {
 
     await new Promise(r => setTimeout(r, 80))
     expect(egressCalls().length, 'no append/PATCH to remote').toBe(0)
-    expect((await readSharedStore(dir)).find(e => String(e.statement).includes(PUBLIC_IP))).toBeUndefined()
+    expect(readSharedStore(dir).find(e => String(e.statement).includes(PUBLIC_IP))).toBeUndefined()
   })
 
   // ==========================================================================
@@ -534,8 +531,8 @@ describe('adversarial leak-guard fuzzer (#353 round-3)', () => {
     writeStoresConfig(dir, bothStores(dir))
     const plur = new Plur({ path: dir })
 
-    await plur.learn('the deployment notes summary for the release', { scope: SHARED_SCOPE, type: 'behavioral' })
-    const seededId = (await plur.list()).find(e => e.statement.includes('deployment notes'))!.id
+    plur.learn('the deployment notes summary for the release', { scope: SHARED_SCOPE, type: 'behavioral' })
+    const seededId = plur.list().find(e => e.statement.includes('deployment notes'))!.id
 
     const mergeLlm: LlmFunction = async () => `DECISION: MERGE\nTARGET: ${seededId}\nREASON: complementary deployment notes`
     const res = await plur.learnAsync(`the deployment target host is ${BASIC_AUTH_URL}`, {
@@ -549,14 +546,14 @@ describe('adversarial leak-guard fuzzer (#353 round-3)', () => {
 
     await new Promise(r => setTimeout(r, 80))
     expect(egressCalls().length).toBe(0)
-    expect((await readSharedStore(dir)).find(e => String(e.statement).includes('hub-staging'))).toBeUndefined()
+    expect(readSharedStore(dir).find(e => String(e.statement).includes('hub-staging'))).toBeUndefined()
   })
 
   it('learnAsync UPDATE: a CLEAN mutation does NOT demote (no over-block)', async () => {
     writeStoresConfig(dir, bothStores(dir))
     const plur = new Plur({ path: dir })
-    await plur.learn('original clean note about the deployment wiki', { scope: SHARED_SCOPE, type: 'behavioral' })
-    const seededId = (await plur.list()).find(e => e.statement.includes('original clean note'))!.id
+    plur.learn('original clean note about the deployment wiki', { scope: SHARED_SCOPE, type: 'behavioral' })
+    const seededId = plur.list().find(e => e.statement.includes('original clean note'))!.id
     const updateLlm: LlmFunction = async () => `DECISION: UPDATE\nTARGET: ${seededId}\nREASON: same note`
     const res = await plur.learnAsync('a still-clean revised note about the deployment wiki', {
       scope: SHARED_SCOPE,
@@ -605,7 +602,7 @@ describe('adversarial leak-guard fuzzer (#353 round-3)', () => {
     writeLocalEngrams(dir, [poisoned])
 
     const plur = new Plur({ path: dir })
-    expect(await plur.outboxCount()).toBe(1)
+    expect(plur.outboxCount()).toBe(1)
 
     const result = await plur.flushOutbox()
 
@@ -616,7 +613,7 @@ describe('adversarial leak-guard fuzzer (#353 round-3)', () => {
     expect(result.expired_warnings.some(w => /demoted to local\/private|now forbidden/.test(w))).toBe(true)
 
     // Demoted in place: scope→local, _outbox dropped, _demoted stamped.
-    const found = (await readLocalEngrams(dir)).find(e => e.id === 'ENG-FUZZ-OUTBOX-1')
+    const found = readLocalEngrams(dir).find(e => e.id === 'ENG-FUZZ-OUTBOX-1')
     expect(found.scope).toBe('local')
     expect(found.visibility).toBe('private')
     expect(found.structured_data?._outbox).toBeUndefined()

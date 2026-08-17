@@ -22,8 +22,8 @@ describe('history integration', () => {
     fs.rmSync(dir, { recursive: true, force: true })
   })
 
-  it('records engram_created event on learn()', async () => {
-    const engram = await plur.learn('Test history tracking')
+  it('records engram_created event on learn()', () => {
+    const engram = plur.learn('Test history tracking')
     const now = new Date().toISOString().slice(0, 7)
     const events = readHistory(dir, now)
     expect(events.length).toBeGreaterThanOrEqual(1)
@@ -33,7 +33,7 @@ describe('history integration', () => {
   })
 
   it('records feedback_received event on feedback()', async () => {
-    const engram = await plur.learn('Test feedback history')
+    const engram = plur.learn('Test feedback history')
     await plur.feedback(engram.id, 'positive')
     const now = new Date().toISOString().slice(0, 7)
     const events = readHistory(dir, now)
@@ -43,7 +43,7 @@ describe('history integration', () => {
   })
 
   it('records engram_retired event on forget()', async () => {
-    const engram = await plur.learn('Test retire history')
+    const engram = plur.learn('Test retire history')
     await plur.forget(engram.id, 'No longer relevant')
     const now = new Date().toISOString().slice(0, 7)
     const events = readHistory(dir, now)
@@ -52,9 +52,9 @@ describe('history integration', () => {
     expect(retired!.data.reason).toBe('No longer relevant')
   })
 
-  it('history files are JSONL format (one JSON per line)', async () => {
-    await plur.learn('First engram')
-    await plur.learn('Second engram')
+  it('history files are JSONL format (one JSON per line)', () => {
+    plur.learn('First engram')
+    plur.learn('Second engram')
     const now = new Date().toISOString().slice(0, 7)
     const filePath = path.join(dir, 'history', `${now}.jsonl`)
     expect(fs.existsSync(filePath)).toBe(true)

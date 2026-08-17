@@ -377,10 +377,10 @@ describe('Plur.rerankerSelfEval + advisory on the enable path (#451)', () => {
   let dir: string
   let plur: Plur
 
-  beforeEach(async () => {
+  beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), 'plur-rerank-plur-'))
     plur = new Plur({ path: dir })
-    for (const s of STATEMENTS) await plur.learn(s, { scope: 'global' })
+    for (const s of STATEMENTS) plur.learn(s, { scope: 'global' })
     _resetRerankerCache()
     resetRerankerStatus()
   })
@@ -399,7 +399,7 @@ describe('Plur.rerankerSelfEval + advisory on the enable path (#451)', () => {
     expect(result.verdict).toBe('harmful')
     expect(result.reranker).toBe('ms-marco-minilm-l6')
     // Cached on disk, keyed by reranker name.
-    const disk = loadRerankerEvalCache((await plur.status()).storage_root)
+    const disk = loadRerankerEvalCache(plur.status().storage_root)
     expect(disk['ms-marco-minilm-l6']?.verdict).toBe('harmful')
   })
 
@@ -421,11 +421,11 @@ describe('Plur.rerankerSelfEval + advisory on the enable path (#451)', () => {
   })
 
   it('rerankerEvalStatus reads the cached verdict without running anything', async () => {
-    expect(await plur.rerankerEvalStatus('ms-marco-minilm-l6')).toBeNull()
+    expect(plur.rerankerEvalStatus('ms-marco-minilm-l6')).toBeNull()
     process.env.PLUR_RERANKER = 'ms-marco-minilm-l6'
     _setCachedReranker('ms-marco-minilm-l6', { ...adversary, name: 'ms-marco-minilm-l6' })
     await plur.rerankerSelfEval()
-    const status = await plur.rerankerEvalStatus('ms-marco-minilm-l6')
+    const status = plur.rerankerEvalStatus('ms-marco-minilm-l6')
     expect(status).not.toBeNull()
     expect(status!.result.verdict).toBe('harmful')
     expect(status!.stale).toBe(false)
@@ -446,10 +446,10 @@ describe('Plur.rerankerSelfEval + advisory on the enable path (#451)', () => {
       const warnings = () => spy.mock.calls
         .filter(c => String(c[0]).includes('plur:warning') && c.map(String).join(' ').includes('net-negative'))
         .length
-      expect(await warnings()).toBe(1)
+      expect(warnings()).toBe(1)
       // Second recall: advisory does not repeat.
       await fresh.recallHybridWithMeta('staging deploy target cluster', { limit: 5 })
-      expect(await warnings()).toBe(1)
+      expect(warnings()).toBe(1)
     } finally {
       spy.mockRestore()
     }

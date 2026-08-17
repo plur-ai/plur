@@ -399,7 +399,7 @@ describe('R3 config robustness — persistStores transient read failure does not
   // we rely on never fires (CI sometimes runs as root in containers).
   const asRoot = typeof process.getuid === 'function' && process.getuid() === 0
   const itNotRoot = asRoot ? it.skip : it
-  itNotRoot('aborts the write (does not discard auto_learn/embeddings/etc) when the config read fails transiently', async () => {
+  itNotRoot('aborts the write (does not discard auto_learn/embeddings/etc) when the config read fails transiently', () => {
     vi.spyOn(console, 'error').mockImplementation(() => {})
     const dir = mkdir()
     const URL = 'https://enterprise.example.com'
@@ -446,7 +446,7 @@ describe('R3 config robustness — persistStores transient read failure does not
     expect((after.stores as Array<Record<string, unknown>>)[0].token).toBe('old-token')
   })
 
-  it('ENOENT (config genuinely absent) still starts safely from {} and writes the stores', async () => {
+  it('ENOENT (config genuinely absent) still starts safely from {} and writes the stores', () => {
     vi.spyOn(console, 'error').mockImplementation(() => {})
     const dir = mkdir()
     const URL = 'https://enterprise.example.com'

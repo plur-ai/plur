@@ -35,7 +35,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   }
 
   const result = flags.fast
-    ? await plur.inject(task, { budget })
+    ? plur.inject(task, { budget })
     : await plur.injectHybrid(task, { budget })
 
   // Append default learning protocol to directives (opt-out via --no-with-default-protocol)

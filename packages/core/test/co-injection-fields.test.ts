@@ -12,54 +12,54 @@ function tmpDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'plur-coinject-fields-'))
 }
 
-async function seed(plur: Plur): Promise<void> {
-  await plur.learn('This monorepo uses pnpm for every install, never npm.', { type: 'procedural' })
-  await plur.learn('Nightshift deploys run via systemd restart after a git pull.', { type: 'procedural' })
+function seed(plur: Plur): void {
+  plur.learn('This monorepo uses pnpm for every install, never npm.', { type: 'procedural' })
+  plur.learn('Nightshift deploys run via systemd restart after a git pull.', { type: 'procedural' })
 }
 
 describe('co_injection carries tokens_used and source', () => {
   let dir: string
   let plur: Plur
 
-  beforeEach(async () => {
+  beforeEach(() => {
     dir = tmpDir()
     plur = new Plur({ path: dir })
-    await seed(plur)
+    seed(plur)
   })
   afterEach(() => { fs.rmSync(dir, { recursive: true, force: true }) })
 
-  it('records tokens_used as a positive number', async () => {
-    await plur.inject('pnpm install monorepo', { session_id: 's1' })
+  it('records tokens_used as a positive number', () => {
+    plur.inject('pnpm install monorepo', { session_id: 's1' })
     const { events } = readCoInjections(dir)
     expect(events.length).toBeGreaterThan(0)
     expect(events[0].data.tokens_used).toBeGreaterThan(0)
   })
 
-  it('records the source passed by the caller', async () => {
-    await plur.inject('pnpm install monorepo', { session_id: 's1', source: 'hook' })
+  it('records the source passed by the caller', () => {
+    plur.inject('pnpm install monorepo', { session_id: 's1', source: 'hook' })
     expect(readCoInjections(dir).events[0].data.source).toBe('hook')
   })
 
-  it('defaults source to "inject" when the caller omits it', async () => {
-    await plur.inject('pnpm install monorepo', { session_id: 's1' })
+  it('defaults source to "inject" when the caller omits it', () => {
+    plur.inject('pnpm install monorepo', { session_id: 's1' })
     expect(readCoInjections(dir).events[0].data.source).toBe('inject')
   })
 
-  it('preserves session_id', async () => {
-    await plur.inject('pnpm install monorepo', { session_id: 'sess-abc' })
+  it('preserves session_id', () => {
+    plur.inject('pnpm install monorepo', { session_id: 'sess-abc' })
     expect(readCoInjections(dir).events[0].data.session_id).toBe('sess-abc')
   })
 
-  it('still records ids and query_hash', async () => {
-    await plur.inject('pnpm install monorepo', { session_id: 's1' })
+  it('still records ids and query_hash', () => {
+    plur.inject('pnpm install monorepo', { session_id: 's1' })
     const d = readCoInjections(dir).events[0].data
     expect(d.ids.length).toBeGreaterThan(0)
     expect(d.query_hash).toMatch(/^[0-9a-f]{16}$/)
   })
 
-  it('accepts every documented source value', async () => {
+  it('accepts every documented source value', () => {
     for (const src of ['session_start', 'inject', 'hook'] as const) {
-      await plur.inject('pnpm install monorepo', { session_id: `s-${src}`, source: src })
+      plur.inject('pnpm install monorepo', { session_id: `s-${src}`, source: src })
     }
     const bySession = new Map(
       readCoInjections(dir).events.map(e => [e.data.session_id, e.data.source]),
@@ -69,10 +69,10 @@ describe('co_injection carries tokens_used and source', () => {
     expect(bySession.get('s-hook')).toBe('hook')
   })
 
-  it('an inject with source but no session_id is anonymous and readable', async () => {
+  it('an inject with source but no session_id is anonymous and readable', () => {
     // Mirrors the MCP inject tools when no session is active: source tagged,
     // session_id undefined — the event must still round-trip cleanly.
-    await plur.inject('pnpm install monorepo', { source: 'inject' })
+    plur.inject('pnpm install monorepo', { source: 'inject' })
     const e = readCoInjections(dir).events.at(-1)!
     expect(e.data.source).toBe('inject')
     expect(e.data.session_id).toBeUndefined()
@@ -102,7 +102,7 @@ describe('readCoInjections is defensive', () => {
     expect(legacy!.data.source).toBeUndefined()
   })
 
-  it('skips malformed lines without throwing and counts them', async () => {
+  it('skips malformed lines without throwing and counts them', () => {
     const month = new Date().toISOString().slice(0, 7)
     fs.mkdirSync(path.join(dir, 'history'), { recursive: true })
     fs.appendFileSync(path.join(dir, 'history', `${month}.jsonl`), '{not json\n')
@@ -177,9 +177,9 @@ describe('readCoInjections is defensive', () => {
     expect(readCoInjections(dir)).toEqual({ events: [], skipped: 0 })
   })
 
-  it('writes no event when nothing was injected', async () => {
+  it('writes no event when nothing was injected', () => {
     const emptyStore = new Plur({ path: dir })
-    await emptyStore.inject('nothing in this store matches anything at all', { session_id: 's1' })
+    emptyStore.inject('nothing in this store matches anything at all', { session_id: 's1' })
     expect(readCoInjections(dir).events).toHaveLength(0)
   })
 })

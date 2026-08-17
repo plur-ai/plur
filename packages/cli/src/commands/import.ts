@@ -14,9 +14,9 @@ import { Plur, importFrom, listImportSources, type FieldMapping, type MigrationR
 import type { GlobalFlags } from '../plur.js'
 import { shouldOutputJson, outputJson, outputText, exit } from '../output.js'
 
-async function usage(): Promise<string> {
-  const implemented = (await listImportSources()).filter(s => s.implemented).map(s => s.name).join('|')
-  const stubbed = (await listImportSources()).filter(s => !s.implemented).map(s => s.name).join(', ')
+function usage(): string {
+  const implemented = listImportSources().filter(s => s.implemented).map(s => s.name).join('|')
+  const stubbed = listImportSources().filter(s => !s.implemented).map(s => s.name).join(', ')
   return `Usage: plur import --from <${implemented}> --path <input-file> [--dry-run] [--scope <scope>] [--mapping <file.json>] [--store <dir>]
 
   --from <source>   Source system: generic (JSON/JSONL/CSV), gp-engram (SQLite .db), mem0 (JSON export)
@@ -51,7 +51,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   }
 
   if (!from || !file) {
-    exit(1, await usage())
+    exit(1, usage())
   }
 
   let mapping: FieldMapping | undefined
@@ -64,7 +64,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   }
 
   const plur = new Plur({ path: store || process.env.PLUR_PATH || undefined })
-  const report = await importFrom(plur, { from, path: file, mapping, dryRun, scope })
+  const report = importFrom(plur, { from, path: file, mapping, dryRun, scope })
 
   if (shouldOutputJson(flags)) {
     outputJson(report)

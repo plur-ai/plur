@@ -52,7 +52,7 @@ By default (lean profile), your agent gets 11 tools. Everything else is reachabl
 |------|-------------|
 | `plur_session_start` | Start a session — injects relevant engrams for your task |
 | `plur_learn` | Store a memory — correction, preference, convention, or decision |
-| `plur_recall` | **Best default** — hybrid (BM25 + embeddings via RRF) by default; pass `mode:"keyword"` for BM25-only. Zero cost. |
+| `plur_recall_hybrid` | **Best default** — BM25 + embeddings merged via RRF. Zero cost. |
 | `plur_feedback` | Rate a memory — trains relevance over time |
 | `plur_forget` | Retire a memory (history preserved) |
 | `plur_session_end` | End a session — captures summary and new learnings |

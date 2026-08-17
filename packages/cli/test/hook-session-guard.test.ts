@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync, chmodSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
-import { runCli } from './helpers/spawn.js'
+import { spawnSync } from 'child_process'
 
 const CLI = join(__dirname, '..', 'dist', 'index.js')
 
@@ -29,7 +29,7 @@ describe('hook-session-guard', () => {
   })
 
   function runGuard(input: object): { stdout: string; stderr: string; status: number } {
-    const result = runCli('node', [CLI, 'hook-session-guard'], {
+    const result = spawnSync('node', [CLI, 'hook-session-guard'], {
       input: JSON.stringify(input),
       encoding: 'utf-8',
       timeout: 10000,
@@ -119,7 +119,7 @@ describe('hook-session-guard', () => {
     const roTmp = mkdtempSync(join(tmpdir(), 'plur-ro-guard-'))
     chmodSync(roTmp, 0o500) // r-x: owner cannot create plur-sessions inside
     try {
-      const result = runCli('node', [CLI, 'hook-session-guard'], {
+      const result = spawnSync('node', [CLI, 'hook-session-guard'], {
         input: JSON.stringify({ session_id: 'ro-guard', tool_name: 'Bash' }),
         encoding: 'utf-8',
         timeout: 10000,
@@ -154,7 +154,7 @@ describe('hook-session-guard', () => {
     }
 
     // Seed an engram in the store — no session ever started.
-    runCli('node', [CLI, 'learn', 'the project deploys to the staging server via rsync', '--json'], {
+    spawnSync('node', [CLI, 'learn', 'the project deploys to the staging server via rsync', '--json'], {
       encoding: 'utf-8',
       timeout: 15000,
       env,
@@ -165,7 +165,7 @@ describe('hook-session-guard', () => {
     expect(existsSync(join(home, 'tmp', 'plur-session-never-started'))).toBe(false)
 
     // hook-inject still starts a session and injects the engram.
-    const result = runCli('node', [CLI, 'hook-inject'], {
+    const result = spawnSync('node', [CLI, 'hook-inject'], {
       input: JSON.stringify({ prompt: 'how do we deploy the project' }),
       encoding: 'utf-8',
       timeout: 15000,

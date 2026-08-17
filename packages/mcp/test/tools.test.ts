@@ -21,7 +21,7 @@ describe('MCP tools', () => {
     const warmDir = mkdtempSync(join(tmpdir(), 'plur-mcp-warm-'))
     try {
       const warm = new Plur({ path: warmDir })
-      await warm.learn('embedder warm-up', { scope: 'global' })
+      warm.learn('embedder warm-up', { scope: 'global' })
       await warm.recallHybrid('embedder warm-up')
     } finally {
       rmSync(warmDir, { recursive: true, force: true })
@@ -83,7 +83,7 @@ describe('MCP tools', () => {
       expect(result.stats.failed).toBe(0)
       expect(result.failures).toBeUndefined() // omitted when there are none
       // every returned id is actually persisted
-      for (const id of result.ids) expect(await plur.getById(id)).toBeTruthy()
+      for (const id of result.ids) expect(plur.getById(id)).toBeTruthy()
     })
 
     it('dedupes a duplicate within the same batch to NOOP', async () => {
@@ -148,7 +148,7 @@ describe('MCP tools', () => {
         valid_until: '2099-12-31',
       }) as any
       expect(result.valid_until).toBe('2099-12-31')
-      const stored = await plur.getById(result.id)
+      const stored = plur.getById(result.id)
       expect(stored?.temporal?.valid_until).toBe('2099-12-31')
     })
 
@@ -405,158 +405,10 @@ describe('MCP tools', () => {
     expect(result.statement).toBe(clean)
   })
 
-  it('plur_recall finds learned engrams (default hybrid mode)', async () => {
+  it('plur_recall finds learned engrams', async () => {
     await callTool('plur_learn', { statement: 'API uses snake_case', scope: 'global' })
     const result = await callTool('plur_recall', { query: 'API snake' }) as any
     expect(result.results.length).toBeGreaterThan(0)
-  })
-
-  it('plur_recall mode:keyword returns BM25-only results', async () => {
-    await callTool('plur_learn', { statement: 'deploy uses rsync for file transfer', scope: 'global' })
-    const result = await callTool('plur_recall', { query: 'deploy rsync', mode: 'keyword' }) as any
-    expect(result.results.length).toBeGreaterThan(0)
-    expect(result.mode).toBe('keyword')
-  })
-
-  it('plur_recall_hybrid is a deprecated alias that returns results and a deprecation notice', async () => {
-    await callTool('plur_learn', { statement: 'staging server uses port 8080', scope: 'global' })
-    const result = await callTool('plur_recall_hybrid', { query: 'staging port' }) as any
-    expect(result.results.length).toBeGreaterThan(0)
-    expect(result.deprecated).toMatch(/deprecated since 0\.16/)
-  })
-
-  // ── #693 acceptance: embeddings-off degradation surfaces to the caller ────
-
-  /**
-   * Force the degraded path. `hybrid-degraded` is produced deep in core when
-   * the ONNX embedder fails to load; stubbing the method the handler
-   * delegates to exercises the handler's warning branch directly, without
-   * depending on a broken model cache.
-   */
-  const stubDegraded = () => {
-    (plur as any).recallHybridWithMeta = async () => ({
-      engrams: [{
-        id: 'ENG-2026-0101-001',
-        statement: 'degraded result',
-        type: 'fact',
-        scope: 'global',
-        domain: 'test',
-        activation: { retrieval_strength: 0.5 },
-      }],
-      mode: 'hybrid-degraded',
-      embedderError: 'onnxruntime failed to load',
-      topScore: 0.5,
-      reranked: 0,
-    })
-  }
-
-  it('plur_recall surfaces a warning when embeddings are unavailable (hybrid-degraded)', async () => {
-    stubDegraded()
-    const result = await callTool('plur_recall', { query: 'anything' }) as any
-    expect(result.mode).toBe('hybrid-degraded')
-    expect(result.warning).toMatch(/Embedding layer unavailable/)
-    expect(result.warning).toMatch(/onnxruntime failed to load/)
-  })
-
-  it('plur_recall_hybrid inherits the degraded warning — proving it forwards, not copies', async () => {
-    stubDegraded()
-    const result = await callTool('plur_recall_hybrid', { query: 'anything' }) as any
-    expect(result.mode).toBe('hybrid-degraded')
-    expect(result.warning).toMatch(/Embedding layer unavailable/)
-    expect(result.deprecated).toMatch(/deprecated since 0\.16/)
-  })
-
-  /**
-   * Anti-drift guard for the deprecated alias. The alias must be a forwarder
-   * to the canonical plur_recall handler, so its response is byte-identical
-   * apart from the added `deprecated` field. A future edit that re-copies the
-   * hybrid branch into the alias — or fixes one path and not the other —
-   * fails here rather than silently diverging until the 0.18 removal.
-   */
-  it('plur_recall_hybrid response matches plur_recall exactly apart from `deprecated`', async () => {
-    await callTool('plur_learn', { statement: 'cache TTL is 300 seconds', scope: 'global' })
-
-    const args = { query: 'cache TTL', include_episodes: true, budget: { max_results: 5 } }
-    const canonical = await callTool('plur_recall', args) as any
-    const alias = await callTool('plur_recall_hybrid', args) as any
-
-    // retrieval_strength is an activation value that each recall boosts, so it
-    // legitimately differs between two sequential calls. Normalize it; every
-    // other field must match exactly.
-    const normalize = (r: any) => ({
-      ...r,
-      results: r.results.map(({ retrieval_strength, ...rest }: any) => rest),
-    })
-
-    const { deprecated, ...aliasRest } = alias
-    expect(deprecated).toMatch(/deprecated since 0\.16/)
-    expect(normalize(aliasRest)).toEqual(normalize(canonical))
-    // Same top-level shape — a re-copied alias that gains or loses a field fails here.
-    expect(Object.keys(aliasRest).sort()).toEqual(Object.keys(canonical).sort())
-  })
-
-  it('plur_recall_hybrid honours budget through the forwarder', async () => {
-    for (let i = 0; i < 5; i++) {
-      await callTool('plur_learn', { statement: `retry policy rule number ${i}`, scope: 'global' })
-    }
-
-    // max_results caps the underlying query limit, so results are bounded.
-    const capped = await callTool('plur_recall_hybrid', {
-      query: 'retry policy rule', budget: { max_results: 2 },
-    }) as any
-    expect(capped.results.length).toBeLessThanOrEqual(2)
-
-    // max_tokens truncates mid-list and flags it — the budget path the alias
-    // would lose entirely if it stopped forwarding.
-    const squeezed = await callTool('plur_recall_hybrid', {
-      query: 'retry policy rule', budget: { max_tokens: 25 },
-    }) as any
-    expect(squeezed.truncated).toBe(true)
-    expect(squeezed.deprecated).toMatch(/deprecated since 0\.16/)
-  })
-
-  // ── #725: truncated flag accuracy when budget.max_results drops results ───
-
-  describe('plur_recall budget.max_results truncation (#725)', () => {
-    beforeEach(async () => {
-      for (let i = 1; i <= 5; i++) {
-        await callTool('plur_learn', { statement: `zephyr convention rule ${i}`, scope: 'global' })
-      }
-    })
-
-    it('sets truncated: true when max_results drops at least one result', async () => {
-      const result = await callTool('plur_recall', {
-        query: 'zephyr convention rule',
-        budget: { max_results: 2 },
-      }) as any
-      expect(result.truncated).toBe(true)
-      expect(result.count).toBe(2)
-      expect(result.results).toHaveLength(2)
-    })
-
-    it('sets truncated: false when all results fit within max_results', async () => {
-      const result = await callTool('plur_recall', {
-        query: 'zephyr convention rule',
-        budget: { max_results: 10 },
-      }) as any
-      expect(result.truncated).toBe(false)
-    })
-
-    it('sets truncated: false when no budget is given', async () => {
-      const result = await callTool('plur_recall', {
-        query: 'zephyr convention rule',
-      }) as any
-      expect(result.truncated).toBe(false)
-    })
-
-    it('plur_recall_hybrid inherits accurate truncated via forwarder', async () => {
-      const result = await callTool('plur_recall_hybrid', {
-        query: 'zephyr convention rule',
-        budget: { max_results: 2 },
-      }) as any
-      expect(result.truncated).toBe(true)
-      expect(result.count).toBe(2)
-    })
   })
 
   it('plur_inject returns formatted injection', async () => {
@@ -688,11 +540,11 @@ describe('MCP tools', () => {
       async scoreBatch(_q: string, docs: string[]): Promise<number[]> { return docs.map(() => 0.5) },
     })
 
-    beforeEach(async () => {
+    beforeEach(() => {
       process.env.PLUR_RERANKER = BGE
       _resetRerankerCache()
       resetRerankerStatus()
-      await plur.learn('The deploy target for staging is cluster-2', { scope: 'global' })
+      plur.learn('The deploy target for staging is cluster-2', { scope: 'global' })
     })
     afterEach(() => {
       delete process.env.PLUR_RERANKER

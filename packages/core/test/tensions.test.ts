@@ -356,9 +356,7 @@ describe('getCandidatePairs', () => {
       id: 'E1',
       statement: 'plur search uses BM25.',
       scope: 'global',
-      // Every edge array is present — `relations` is an all-or-nothing block in
-      // the schema; only `conflicts` carries the edge under test.
-      relations: { broader: [], narrower: [], related: [], conflicts: ['E2'], supersedes: [], superseded_by: [] },
+      relations: { conflicts: ['E2'] },
     })
     const b = makeEngram({ id: 'E2', statement: 'plur search uses embeddings.', scope: 'global' })
     const pairs = getCandidatePairs([a, b])

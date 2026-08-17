@@ -106,14 +106,14 @@ describe('pack SKILL.md policy + manifest.yaml deprecation (#325)', () => {
   })
 
   describe('installPack auto-upgrade', () => {
-    it('upgrades a manifest.yaml-only pack to SKILL.md in the installed copy', async () => {
+    it('upgrades a manifest.yaml-only pack to SKILL.md in the installed copy', () => {
       const source = mkdtempSync(join(tmpdir(), 'plur-src-'))
       const packsDir = join(dir, 'packs')
       try {
         writeFileSync(join(source, 'manifest.yaml'), 'name: legacy-pack\nversion: 1.0.0\n')
         writeFileSync(join(source, 'engrams.yaml'), validEngrams)
 
-        const result = await installPack(packsDir, source)
+        const result = installPack(packsDir, source)
         expect(result.installed).toBe(1)
 
         // installPack names the installed dir after the source basename.

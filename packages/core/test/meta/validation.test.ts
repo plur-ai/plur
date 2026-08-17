@@ -12,7 +12,6 @@ function makeMeta(overrides?: Partial<Engram>): Engram {
       constraint_type: 'assumed-independence-of-correlated-variables',
       outcome_type: 'systematically-understated-risk',
       template: '[risk-assessment] + [assumed-independence-of-correlated-variables] → [systematically-understated-risk]',
-      structure_type: 'goal-constraint-outcome',
     },
     evidence: [
       { engram_id: 'ENG-1', domain: 'trading', mapping_rationale: 'liquidation', alignment_score: 0.9 },
@@ -33,7 +32,7 @@ function makeMeta(overrides?: Partial<Engram>): Engram {
     hierarchy: { level: 'mop', parent: null, children: [] },
     pipeline_version: '1.0.0',
   }
-  const meta: Engram = {
+  return {
     id: 'META-risk-assessment-correlated-vars',
     version: 2, status: 'active', consolidated: false,
     type: 'behavioral', scope: 'global',
@@ -44,14 +43,9 @@ function makeMeta(overrides?: Partial<Engram>): Engram {
     knowledge_anchors: [], associations: [],
     feedback_signals: { positive: 0, negative: 0, neutral: 0 },
     derivation_count: 2, visibility: 'private',
-    reference_count: 1,
-    sources: [{ scope: 'global', session_id: null, stored_at: '2026-03-29T00:00:00.000Z' }],
-    recurrence_count: 0,
-    engram_version: 1,
-    episode_ids: [],
     structured_data: { meta: metaField },
-  }
-  return { ...meta, ...overrides }
+    ...overrides,
+  } as Engram
 }
 
 function makeTestEngram(id: string, statement: string): Engram {
@@ -64,12 +58,7 @@ function makeTestEngram(id: string, statement: string): Engram {
     knowledge_anchors: [], associations: [],
     feedback_signals: { positive: 0, negative: 0, neutral: 0 },
     derivation_count: 1, visibility: 'private',
-    reference_count: 1,
-    sources: [{ scope: 'global', session_id: null, stored_at: '2026-03-29T00:00:00.000Z' }],
-    recurrence_count: 0,
-    engram_version: 1,
-    episode_ids: [],
-  }
+  } as Engram
 }
 
 const mockLlm: LlmFunction = async (prompt: string) => {

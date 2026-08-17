@@ -15,32 +15,32 @@ describe('Plur', () => {
   })
   afterEach(() => { rmSync(dir, { recursive: true }) })
 
-  it('learn and recall', async () => {
-    const engram = await plur.learn('API uses snake_case', { scope: 'project:myapp', type: 'behavioral' })
+  it('learn and recall', () => {
+    const engram = plur.learn('API uses snake_case', { scope: 'project:myapp', type: 'behavioral' })
     expect(engram.id).toMatch(/^ENG-/)
-    const results = await plur.recall('API naming convention snake')
+    const results = plur.recall('API naming convention snake')
     expect(results.length).toBeGreaterThan(0)
     expect(results[0].statement).toContain('snake_case')
   })
 
-  it('inject returns scored engrams within budget', async () => {
-    await plur.learn('Always use blue-green deploy strategies', { scope: 'global' })
-    await plur.learn('Database for myapp is PostgreSQL', { scope: 'project:myapp' })
-    const result = await plur.inject('deploy myapp database', { budget: 500, scope: 'project:myapp' })
+  it('inject returns scored engrams within budget', () => {
+    plur.learn('Always use blue-green deploy strategies', { scope: 'global' })
+    plur.learn('Database for myapp is PostgreSQL', { scope: 'project:myapp' })
+    const result = plur.inject('deploy myapp database', { budget: 500, scope: 'project:myapp' })
     expect(result.count).toBeGreaterThan(0)
     expect(result.tokens_used).toBeLessThanOrEqual(500)
   })
 
   it('feedback strengthens engrams', async () => {
-    const engram = await plur.learn('Use feature flags', { scope: 'global' })
+    const engram = plur.learn('Use feature flags', { scope: 'global' })
     await plur.feedback(engram.id, 'positive')
     await plur.feedback(engram.id, 'positive')
-    const recalled = await plur.recall('feature flags')
+    const recalled = plur.recall('feature flags')
     expect(recalled[0].feedback_signals?.positive).toBe(2)
   })
 
   it('feedback re-anchors last_accessed so read-time decay does not swallow the bump', async () => {
-    const engram = await plur.learn('Prefer structured logging over print debugging', { scope: 'global' })
+    const engram = plur.learn('Prefer structured logging over print debugging', { scope: 'global' })
     const engramsPath = join(dir, 'engrams.yaml')
 
     // Simulate a long-dormant engram: rewrite its stored last_accessed to a stale
@@ -62,9 +62,9 @@ describe('Plur', () => {
   })
 
   it('forget retires engrams', async () => {
-    const engram = await plur.learn('Wrong info about something specific', { scope: 'global' })
+    const engram = plur.learn('Wrong info about something specific', { scope: 'global' })
     await plur.forget(engram.id, 'incorrect')
-    const recalled = await plur.recall('Wrong info specific')
+    const recalled = plur.recall('Wrong info specific')
     expect(recalled).toHaveLength(0)
   })
 
@@ -77,32 +77,32 @@ describe('Plur', () => {
     expect(filtered).toHaveLength(1)
   })
 
-  it('ingest extracts engrams from content', async () => {
-    const candidates = await plur.ingest(
+  it('ingest extracts engrams from content', () => {
+    const candidates = plur.ingest(
       'We decided to use PostgreSQL for ACID compliance. Always run migrations before deploy.',
       { source: 'conversation', extract_only: true }
     )
     expect(candidates.length).toBeGreaterThan(0)
   })
 
-  it('status returns system info', async () => {
-    const status = await plur.status()
+  it('status returns system info', () => {
+    const status = plur.status()
     expect(status.engram_count).toBe(0)
-    await plur.learn('Test engram', { scope: 'global' })
-    const status2 = await plur.status()
+    plur.learn('Test engram', { scope: 'global' })
+    const status2 = plur.status()
     expect(status2.engram_count).toBe(1)
   })
 
-  it('conflicting statements are both saved (no auto-conflict detection)', async () => {
-    await plur.learn('API uses camelCase for responses', { scope: 'project:myapp' })
-    const conflicting = await plur.learn('API uses snake_case for responses', { scope: 'project:myapp' })
+  it('conflicting statements are both saved (no auto-conflict detection)', () => {
+    plur.learn('API uses camelCase for responses', { scope: 'project:myapp' })
+    const conflicting = plur.learn('API uses snake_case for responses', { scope: 'project:myapp' })
     // Both engrams are saved — conflicts are surfaced via plur_tensions, not auto-detected on learn
     expect(conflicting.id).toMatch(/^ENG-/)
     // Auto-conflict detection was removed (issue #137 — produced 109K false positives)
     expect(conflicting.relations?.conflicts ?? []).toHaveLength(0)
   })
 
-  it('same statement in a different scope is a cross-scope recurrence (#136 superseded by #176)', async () => {
+  it('same statement in a different scope is a cross-scope recurrence (#136 superseded by #176)', () => {
     // ORIGINAL #136 semantics: cross-scope re-learn created a NEW engram —
     // scopes were strict isolation boundaries.
     // SUPERSEDED by #176: cross-scope re-learn is now evidence of universal
@@ -110,16 +110,16 @@ describe('Plur', () => {
     // (recurrence_count++) instead of creating a duplicate at the new scope.
     // The 2nd cross-scope hit auto-broadens scope to 'global' and escalates
     // commitment; this first-hit case still preserves the original scope.
-    const local = await plur.learn('pnpm build before tests', { scope: 'global' })
-    const recurrence = await plur.learn('pnpm build before tests', { scope: 'group:team/eng' })
+    const local = plur.learn('pnpm build before tests', { scope: 'global' })
+    const recurrence = plur.learn('pnpm build before tests', { scope: 'group:team/eng' })
     expect(recurrence.id).toBe(local.id)              // SAME engram, mutated
     expect(recurrence.recurrence_count).toBe(1)       // 1st cross-scope hit
     expect(recurrence.scope).toBe('global')           // unchanged on 1st hit
-    expect((await plur.status()).engram_count).toBe(1)        // no duplicate created
+    expect(plur.status().engram_count).toBe(1)        // no duplicate created
   })
 
-  it('inject returns empty result when no engrams match', async () => {
-    const result = await plur.inject('completely unrelated topic xyz123')
+  it('inject returns empty result when no engrams match', () => {
+    const result = plur.inject('completely unrelated topic xyz123')
     expect(result.count).toBe(0)
     expect(result.directives).toBe('')
     expect(result.constraints).toBe('')
@@ -127,8 +127,8 @@ describe('Plur', () => {
     expect(result.tokens_used).toBe(0)
   })
 
-  it('learn returns engram with correct type', async () => {
-    const engram = await plur.learn('Always use PostgreSQL for persistence', {
+  it('learn returns engram with correct type', () => {
+    const engram = plur.learn('Always use PostgreSQL for persistence', {
       type: 'architectural',
       scope: 'project:api',
       domain: 'database',
@@ -138,22 +138,22 @@ describe('Plur', () => {
     expect(engram.domain).toBe('database')
   })
 
-  it('recall filters by scope', async () => {
-    await plur.learn('Use Redis for caching', { scope: 'project:alpha' })
-    await plur.learn('Use Redis for caching', { scope: 'project:beta' })
-    await plur.learn('Use Redis for caching', { scope: 'global' })
-    const results = await plur.recall('Redis caching', { scope: 'project:alpha' })
+  it('recall filters by scope', () => {
+    plur.learn('Use Redis for caching', { scope: 'project:alpha' })
+    plur.learn('Use Redis for caching', { scope: 'project:beta' })
+    plur.learn('Use Redis for caching', { scope: 'global' })
+    const results = plur.recall('Redis caching', { scope: 'project:alpha' })
     // Should include global + project:alpha, not project:beta
     for (const r of results) {
       expect(['global', 'project:alpha']).toContain(r.scope)
     }
   })
 
-  it('recall respects limit option', async () => {
+  it('recall respects limit option', () => {
     for (let i = 0; i < 5; i++) {
-      await plur.learn(`Use pattern ${i} for testing purposes`, { scope: 'global' })
+      plur.learn(`Use pattern ${i} for testing purposes`, { scope: 'global' })
     }
-    const results = await plur.recall('pattern testing', { limit: 3 })
+    const results = plur.recall('pattern testing', { limit: 3 })
     expect(results.length).toBeLessThanOrEqual(3)
   })
 
@@ -165,30 +165,30 @@ describe('Plur', () => {
     await expect(plur.forget('ENG-9999-01-001', 'test')).rejects.toThrow('Engram not found')
   })
 
-  it('status includes storage root', async () => {
-    const status = await plur.status()
+  it('status includes storage root', () => {
+    const status = plur.status()
     expect(status.storage_root).toBe(dir)
   })
 
-  it('ingest saves engrams when not extract_only', async () => {
-    await plur.ingest(
+  it('ingest saves engrams when not extract_only', () => {
+    plur.ingest(
       'We decided to use TypeScript for all new projects.',
       { source: 'conversation', scope: 'global' }
     )
-    const status = await plur.status()
+    const status = plur.status()
     expect(status.engram_count).toBeGreaterThan(0)
   })
 
-  it('inject formats engrams into buckets as readable strings', async () => {
-    await plur.learn('Always validate inputs', { scope: 'global' })
-    const result = await plur.inject('validate user input')
+  it('inject formats engrams into buckets as readable strings', () => {
+    plur.learn('Always validate inputs', { scope: 'global' })
+    const result = plur.inject('validate user input')
     if (result.count > 0) {
       const allOutput = [result.directives, result.constraints, result.consider].join('\n')
       expect(allOutput).toMatch(/\[ENG-/)
     }
   })
 
-  it('saveMetaEngrams persists to store and skips duplicates', async () => {
+  it('saveMetaEngrams persists to store and skips duplicates', () => {
     const meta = {
       id: 'META-test-principle',
       version: 2,
@@ -212,39 +212,39 @@ describe('Plur', () => {
     } as any
 
     // Save first time
-    const { saved, skipped } = await plur.saveMetaEngrams([meta])
+    const { saved, skipped } = plur.saveMetaEngrams([meta])
     expect(saved).toBe(1)
     expect(skipped).toBe(0)
 
     // Verify it's in the store
-    const all = await plur.list()
+    const all = plur.list()
     const metas = all.filter(e => e.id.startsWith('META-'))
     expect(metas).toHaveLength(1)
     expect(metas[0].id).toBe('META-test-principle')
 
     // Save again — should skip duplicate
-    const { saved: saved2, skipped: skipped2 } = await plur.saveMetaEngrams([meta])
+    const { saved: saved2, skipped: skipped2 } = plur.saveMetaEngrams([meta])
     expect(saved2).toBe(0)
     expect(skipped2).toBe(1)
 
     // Total should still be 1
-    expect((await plur.list()).filter(e => e.id.startsWith('META-')).length).toBe(1)
+    expect(plur.list().filter(e => e.id.startsWith('META-')).length).toBe(1)
   })
 
-  it('updateEngram persists changes to an existing engram', async () => {
-    const engram = await plur.learn('Original statement', { scope: 'global' })
+  it('updateEngram persists changes to an existing engram', () => {
+    const engram = plur.learn('Original statement', { scope: 'global' })
     engram.statement = 'Updated statement'
     engram.activation.retrieval_strength = 0.99
-    const updated = await plur.updateEngram(engram)
+    const updated = plur.updateEngram(engram)
     expect(updated).toBe(true)
 
-    const recalled = await plur.list()
+    const recalled = plur.list()
     const found = recalled.find(e => e.id === engram.id)
     expect(found?.statement).toBe('Updated statement')
     expect(found?.activation.retrieval_strength).toBe(0.99)
   })
 
-  it('updateEngram returns false for non-existent ID', async () => {
+  it('updateEngram returns false for non-existent ID', () => {
     const fake = {
       id: 'ENG-9999-01-001',
       version: 2, status: 'active', consolidated: false,
@@ -257,11 +257,11 @@ describe('Plur', () => {
       derivation_count: 1,
       pack: null, abstract: null, derived_from: null, polarity: null,
     } as any
-    expect(await plur.updateEngram(fake)).toBe(false)
+    expect(plur.updateEngram(fake)).toBe(false)
   })
 
-  it('saveMetaEngrams coexists with regular engrams', async () => {
-    await plur.learn('Regular engram', { scope: 'global' })
+  it('saveMetaEngrams coexists with regular engrams', () => {
+    plur.learn('Regular engram', { scope: 'global' })
     const meta = {
       id: 'META-coexist',
       version: 2,
@@ -283,48 +283,48 @@ describe('Plur', () => {
       derived_from: null,
       polarity: null,
     } as any
-    await plur.saveMetaEngrams([meta])
+    plur.saveMetaEngrams([meta])
 
-    const all = await plur.list()
+    const all = plur.list()
     expect(all.length).toBe(2)
     expect(all.some(e => e.id.startsWith('ENG-'))).toBe(true)
     expect(all.some(e => e.id.startsWith('META-'))).toBe(true)
   })
 
-  it('recall excludes expired engrams (valid_until in the past)', async () => {
-    const engram = await plur.learn('Temporary API endpoint is /v1/beta', { scope: 'global' })
+  it('recall excludes expired engrams (valid_until in the past)', () => {
+    const engram = plur.learn('Temporary API endpoint is /v1/beta', { scope: 'global' })
     engram.temporal = { learned_at: '2026-01-01', valid_until: '2026-01-31' }
-    await plur.updateEngram(engram)
-    const results = await plur.recall('API endpoint beta')
+    plur.updateEngram(engram)
+    const results = plur.recall('API endpoint beta')
     expect(results).toHaveLength(0)
   })
 
-  it('recall excludes not-yet-valid engrams (valid_from in the future)', async () => {
-    const engram = await plur.learn('New API launches with GraphQL endpoint', { scope: 'global' })
+  it('recall excludes not-yet-valid engrams (valid_from in the future)', () => {
+    const engram = plur.learn('New API launches with GraphQL endpoint', { scope: 'global' })
     engram.temporal = { learned_at: '2026-03-30', valid_from: '2099-01-01' }
-    await plur.updateEngram(engram)
-    const results = await plur.recall('GraphQL API endpoint')
+    plur.updateEngram(engram)
+    const results = plur.recall('GraphQL API endpoint')
     expect(results).toHaveLength(0)
   })
 
-  it('recall includes engrams without temporal fields', async () => {
-    await plur.learn('Always use HTTPS for API calls', { scope: 'global' })
-    const results = await plur.recall('HTTPS API calls')
+  it('recall includes engrams without temporal fields', () => {
+    plur.learn('Always use HTTPS for API calls', { scope: 'global' })
+    const results = plur.recall('HTTPS API calls')
     expect(results.length).toBeGreaterThan(0)
   })
 
-  it('recall includes engrams within temporal window', async () => {
-    const engram = await plur.learn('Current sprint focus is performance', { scope: 'global' })
+  it('recall includes engrams within temporal window', () => {
+    const engram = plur.learn('Current sprint focus is performance', { scope: 'global' })
     engram.temporal = { learned_at: '2026-01-01', valid_from: '2026-01-01', valid_until: '2099-12-31' }
-    await plur.updateEngram(engram)
-    const results = await plur.recall('sprint performance focus')
+    plur.updateEngram(engram)
+    const results = plur.recall('sprint performance focus')
     expect(results.length).toBeGreaterThan(0)
   })
 
   // #347 — populate temporal.valid_until on the write path.
   describe('temporal validity on the write path (#347)', () => {
-    it('learn stores explicit valid_until in temporal', async () => {
-      const engram = await plur.learn('Conference discount code is CONF20', {
+    it('learn stores explicit valid_until in temporal', () => {
+      const engram = plur.learn('Conference discount code is CONF20', {
         scope: 'global',
         valid_until: '2099-12-31',
       })
@@ -332,46 +332,47 @@ describe('Plur', () => {
       expect(engram.temporal?.learned_at).toBeDefined()
     })
 
-    it('learn stores explicit valid_from in temporal', async () => {
-      const engram = await plur.learn('New pricing takes effect next quarter', {
+    it('learn stores explicit valid_from in temporal', () => {
+      const engram = plur.learn('New pricing takes effect next quarter', {
         scope: 'global',
         valid_from: '2099-01-01',
       })
       expect(engram.temporal?.valid_from).toBe('2099-01-01')
     })
 
-    it('learn leaves temporal unset when no validity is provided or detected', async () => {
-      const engram = await plur.learn('API uses snake_case everywhere', { scope: 'global' })
+    it('learn leaves temporal unset when no validity is provided or detected', () => {
+      const engram = plur.learn('API uses snake_case everywhere', { scope: 'global' })
       expect(engram.temporal).toBeUndefined()
     })
 
-    it('learn rejects malformed valid_until', async () => {
-      await expect(plur.learn('Something', { valid_until: 'end of Q2' })).rejects.toThrow(/valid_until/)
-      await expect(plur.learn('Something', { valid_until: '2026-02-30' })).rejects.toThrow(/valid_until/)
+    it('learn rejects malformed valid_until', () => {
+      expect(() => plur.learn('Something', { valid_until: 'end of Q2' })).toThrow(/valid_until/)
+      expect(() => plur.learn('Something', { valid_until: '2026-02-30' })).toThrow(/valid_until/)
     })
 
-    it('learn rejects malformed valid_from', async () => {
-      await expect(plur.learn('Something', { valid_from: 'someday' })).rejects.toThrow(/valid_from/)
+    it('learn rejects malformed valid_from', () => {
+      expect(() => plur.learn('Something', { valid_from: 'someday' })).toThrow(/valid_from/)
     })
 
-    it('learn rejects an inverted validity window (valid_from after valid_until)', async () => {
-      await expect(plur.learn('Something', { valid_from: '2026-06-01', valid_until: '2026-05-01' })).rejects.toThrow(/valid_from/)
+    it('learn rejects an inverted validity window (valid_from after valid_until)', () => {
+      expect(() => plur.learn('Something', { valid_from: '2026-06-01', valid_until: '2026-05-01' }))
+        .toThrow(/valid_from/)
     })
 
-    it('extraction round-trip: expiry phrase in statement → structured valid_until → hard-skipped after expiry', async () => {
+    it('extraction round-trip: expiry phrase in statement → structured valid_until → hard-skipped after expiry', () => {
       // The observed #347 failure shape: statement says "valid 31 May 2026",
       // engram kept injecting past expiry because temporal.valid_until was empty.
-      const engram = await plur.learn('Acme Enterprise offer REV.002, valid 31 May 2026', { scope: 'global' })
+      const engram = plur.learn('Acme Enterprise offer REV.002, valid 31 May 2026', { scope: 'global' })
       expect(engram.temporal?.valid_until).toBe('2026-05-31')
       // Echo marker so the caller can confirm the parse (never silently guess).
       expect((engram as any).structured_data?._expiry_extracted).toMatchObject({ valid_until: '2026-05-31' })
       // 2026-05-31 is in the past relative to the test run → recall hard-skips it.
-      const results = await plur.recall('Acme Enterprise offer')
+      const results = plur.recall('Acme Enterprise offer')
       expect(results).toHaveLength(0)
     })
 
-    it('explicit valid_until wins over an extracted phrase', async () => {
-      const engram = await plur.learn('Offer valid until 31 May 2026, extended', {
+    it('explicit valid_until wins over an extracted phrase', () => {
+      const engram = plur.learn('Offer valid until 31 May 2026, extended', {
         scope: 'global',
         valid_until: '2099-12-31',
       })
@@ -379,25 +380,25 @@ describe('Plur', () => {
       expect((engram as any).structured_data?._expiry_extracted).toBeUndefined()
     })
 
-    it('learn with future valid_from is skipped by inject (not-yet-valid)', async () => {
-      await plur.learn('Next-gen deploy pipeline goes live for everyone', {
+    it('learn with future valid_from is skipped by inject (not-yet-valid)', () => {
+      plur.learn('Next-gen deploy pipeline goes live for everyone', {
         scope: 'global',
         valid_from: '2099-01-01',
       })
-      const result = await plur.inject('deploy pipeline live')
+      const result = plur.inject('deploy pipeline live')
       expect(result.injected_ids).toHaveLength(0)
     })
 
-    it('config expiry.mode=soft injects recently-expired engrams with the EXPIRED marker', async () => {
+    it('config expiry.mode=soft injects recently-expired engrams with the EXPIRED marker', () => {
       const softDir = mkdtempSync(join(tmpdir(), 'plur-soft-expiry-'))
       try {
         writeFileSync(join(softDir, 'config.yaml'), yaml.dump({ expiry: { mode: 'soft', grace_days: 30 } }))
         const soft = new Plur({ path: softDir })
         const until = new Date(Date.now() - 5 * 86400000).toISOString().slice(0, 10)
-        const engram = await soft.learn('Deploy target for the beta is staging-2', { scope: 'global' })
+        const engram = soft.learn('Deploy target for the beta is staging-2', { scope: 'global' })
         engram.temporal = { learned_at: '2026-01-01', valid_until: until }
-        await soft.updateEngram(engram)
-        const result = await soft.inject('deploy beta staging')
+        soft.updateEngram(engram)
+        const result = soft.inject('deploy beta staging')
         expect(result.injected_ids).toContain(engram.id)
         const rendered = [result.directives, result.constraints, result.consider].join('\n')
         expect(rendered).toContain(`⚠ EXPIRED ${until} — verify before use`)
@@ -406,41 +407,43 @@ describe('Plur', () => {
       }
     })
 
-    it('default (hard) config keeps skipping expired engrams from inject', async () => {
-      const engram = await plur.learn('Deploy target for the beta is staging-2', { scope: 'global' })
+    it('default (hard) config keeps skipping expired engrams from inject', () => {
+      const engram = plur.learn('Deploy target for the beta is staging-2', { scope: 'global' })
       engram.temporal = { learned_at: '2026-01-01', valid_until: '2026-01-31' }
-      await plur.updateEngram(engram)
-      const result = await plur.inject('deploy beta staging')
+      plur.updateEngram(engram)
+      const result = plur.inject('deploy beta staging')
       expect(result.injected_ids).not.toContain(engram.id)
     })
   })
 
-  it('learn rejects statements containing secrets', async () => {
-    await expect(plur.learn('API key is sk-1234567890abcdefghijklmn')).rejects.toThrow('Secret detected')
+  it('learn rejects statements containing secrets', () => {
+    expect(() => plur.learn('API key is sk-1234567890abcdefghijklmn')).toThrow('Secret detected')
   })
 
-  it('learn rejects a secret hidden in caller-supplied domain (#381)', async () => {
-    await expect(plur.learn('A clean statement', { domain: 'token sk-1234567890abcdefghijklmn' })).rejects.toThrow('Secret detected')
+  it('learn rejects a secret hidden in caller-supplied domain (#381)', () => {
+    expect(() => plur.learn('A clean statement', { domain: 'token sk-1234567890abcdefghijklmn' }))
+      .toThrow('Secret detected')
   })
 
-  it('learn rejects a secret hidden in caller-supplied tags (#389)', async () => {
-    await expect(plur.learn('A clean statement', { tags: ['ok', 'sk-1234567890abcdefghijklmn'] })).rejects.toThrow('Secret detected')
+  it('learn rejects a secret hidden in caller-supplied tags (#389)', () => {
+    expect(() => plur.learn('A clean statement', { tags: ['ok', 'sk-1234567890abcdefghijklmn'] }))
+      .toThrow('Secret detected')
   })
 
-  it('learn allows clean statements', async () => {
-    const engram = await plur.learn('Store API keys in environment variables', { scope: 'global' })
+  it('learn allows clean statements', () => {
+    const engram = plur.learn('Store API keys in environment variables', { scope: 'global' })
     expect(engram.id).toMatch(/^ENG-/)
   })
 
-  it('learn allows secrets when allow_secrets config is true', async () => {
+  it('learn allows secrets when allow_secrets config is true', () => {
     writeFileSync(join(dir, 'config.yaml'), 'allow_secrets: true\n')
     const permissivePlur = new Plur({ path: dir })
-    const engram = await permissivePlur.learn('API key is sk-1234567890abcdefghijklmn')
+    const engram = permissivePlur.learn('API key is sk-1234567890abcdefghijklmn')
     expect(engram.id).toMatch(/^ENG-/)
   })
 
-  it('ingest skips candidates containing secrets', async () => {
-    const candidates = await plur.ingest(
+  it('ingest skips candidates containing secrets', () => {
+    const candidates = plur.ingest(
       'We decided to use password = supersecretpass123 for the database. Always encrypt at rest.',
       { source: 'conversation', extract_only: true }
     )
@@ -449,11 +452,11 @@ describe('Plur', () => {
     }
   })
 
-  it('recall creates co-access associations between co-recalled engrams', async () => {
-    const e1 = await plur.learn('PostgreSQL is the primary database', { scope: 'global' })
-    const e2 = await plur.learn('PostgreSQL requires connection pooling', { scope: 'global' })
-    await plur.recall('PostgreSQL database')
-    const all = await plur.list()
+  it('recall creates co-access associations between co-recalled engrams', () => {
+    const e1 = plur.learn('PostgreSQL is the primary database', { scope: 'global' })
+    const e2 = plur.learn('PostgreSQL requires connection pooling', { scope: 'global' })
+    plur.recall('PostgreSQL database')
+    const all = plur.list()
     const updated1 = all.find(e => e.id === e1.id)!
     const coAccess1 = updated1.associations.filter(a => a.type === 'co_accessed')
     expect(coAccess1.length).toBeGreaterThan(0)
@@ -461,63 +464,63 @@ describe('Plur', () => {
     expect(coAccess1[0].strength).toBe(0.3)
   })
 
-  it('recall strengthens existing co-access associations on repeat', async () => {
-    const e1 = await plur.learn('Redis is used for caching layer', { scope: 'global' })
-    const e2 = await plur.learn('Redis requires memory monitoring', { scope: 'global' })
-    await plur.recall('Redis caching memory')
-    await plur.recall('Redis caching memory')
-    const all = await plur.list()
+  it('recall strengthens existing co-access associations on repeat', () => {
+    const e1 = plur.learn('Redis is used for caching layer', { scope: 'global' })
+    const e2 = plur.learn('Redis requires memory monitoring', { scope: 'global' })
+    plur.recall('Redis caching memory')
+    plur.recall('Redis caching memory')
+    const all = plur.list()
     const updated1 = all.find(e => e.id === e1.id)!
     const coAccess1 = updated1.associations.filter(a => a.type === 'co_accessed')
     expect(coAccess1[0].strength).toBe(0.35) // 0.3 initial + 0.05 bump
   })
 
-  it('co-access associations are bidirectional', async () => {
-    const e1 = await plur.learn('Docker containers for deployment', { scope: 'global' })
-    const e2 = await plur.learn('Docker compose for local development', { scope: 'global' })
-    await plur.recall('Docker containers compose')
-    const all = await plur.list()
+  it('co-access associations are bidirectional', () => {
+    const e1 = plur.learn('Docker containers for deployment', { scope: 'global' })
+    const e2 = plur.learn('Docker compose for local development', { scope: 'global' })
+    plur.recall('Docker containers compose')
+    const all = plur.list()
     const u1 = all.find(e => e.id === e1.id)!
     const u2 = all.find(e => e.id === e2.id)!
     expect(u1.associations.some(a => a.type === 'co_accessed' && a.target === e2.id)).toBe(true)
     expect(u2.associations.some(a => a.type === 'co_accessed' && a.target === e1.id)).toBe(true)
   })
 
-  it('co-access associations cap at 5 per engram', async () => {
+  it('co-access associations cap at 5 per engram', () => {
     const ids: string[] = []
     for (let i = 0; i < 7; i++) {
-      const e = await plur.learn(`Testing pattern ${i} for validation purposes`, { scope: 'global' })
+      const e = plur.learn(`Testing pattern ${i} for validation purposes`, { scope: 'global' })
       ids.push(e.id)
     }
-    await plur.recall('testing pattern validation')
-    const all = await plur.list()
+    plur.recall('testing pattern validation')
+    const all = plur.list()
     for (const e of all) {
       const coAccess = e.associations.filter(a => a.type === 'co_accessed')
       expect(coAccess.length).toBeLessThanOrEqual(5)
     }
   })
 
-  it('co-access strength caps at 0.95', async () => {
-    const e1 = await plur.learn('Nginx reverse proxy configuration', { scope: 'global' })
-    const e2 = await plur.learn('Nginx load balancing setup', { scope: 'global' })
+  it('co-access strength caps at 0.95', () => {
+    const e1 = plur.learn('Nginx reverse proxy configuration', { scope: 'global' })
+    const e2 = plur.learn('Nginx load balancing setup', { scope: 'global' })
     // Recall many times to bump strength repeatedly
     for (let i = 0; i < 20; i++) {
-      await plur.recall('Nginx proxy load balancing')
+      plur.recall('Nginx proxy load balancing')
     }
-    const all = await plur.list()
+    const all = plur.list()
     const updated1 = all.find(e => e.id === e1.id)!
     const coAccess = updated1.associations.filter(a => a.type === 'co_accessed')
     expect(coAccess.length).toBeGreaterThan(0)
     expect(coAccess[0].strength).toBeLessThanOrEqual(0.95)
   })
 
-  it('co-access disabled when config.injection.co_access is false', async () => {
+  it('co-access disabled when config.injection.co_access is false', () => {
     writeFileSync(join(dir, 'config.yaml'), 'injection:\n  co_access: false\n')
     const noCoAccessPlur = new Plur({ path: dir })
-    await noCoAccessPlur.learn('TypeScript strict mode enabled', { scope: 'global' })
-    await noCoAccessPlur.learn('TypeScript compiler configuration', { scope: 'global' })
-    await noCoAccessPlur.recall('TypeScript strict compiler')
-    const all = await noCoAccessPlur.list()
+    noCoAccessPlur.learn('TypeScript strict mode enabled', { scope: 'global' })
+    noCoAccessPlur.learn('TypeScript compiler configuration', { scope: 'global' })
+    noCoAccessPlur.recall('TypeScript strict compiler')
+    const all = noCoAccessPlur.list()
     for (const e of all) {
       const coAccess = e.associations.filter(a => a.type === 'co_accessed')
       expect(coAccess.length).toBe(0)
@@ -525,37 +528,37 @@ describe('Plur', () => {
   })
 
   it('compact removes retired engrams from storage', async () => {
-    await plur.learn('Keep this one', { scope: 'global' })
-    const toRetire = await plur.learn('Remove this one', { scope: 'global' })
+    plur.learn('Keep this one', { scope: 'global' })
+    const toRetire = plur.learn('Remove this one', { scope: 'global' })
     await plur.forget(toRetire.id, 'test cleanup')
-    const result = await plur.compact()
+    const result = plur.compact()
     expect(result.removed).toBe(1)
     expect(result.remaining).toBe(1)
-    const all = await plur.list()
+    const all = plur.list()
     expect(all).toHaveLength(1)
     expect(all[0].statement).toBe('Keep this one')
   })
 
-  it('compact returns zero when nothing to remove', async () => {
-    await plur.learn('Active engram', { scope: 'global' })
-    const result = await plur.compact()
+  it('compact returns zero when nothing to remove', () => {
+    plur.learn('Active engram', { scope: 'global' })
+    const result = plur.compact()
     expect(result.removed).toBe(0)
     expect(result.remaining).toBe(1)
   })
 
-  it('compact works on empty store', async () => {
-    const result = await plur.compact()
+  it('compact works on empty store', () => {
+    const result = plur.compact()
     expect(result.removed).toBe(0)
     expect(result.remaining).toBe(0)
   })
 
-  it('co-access only applies to top half of results', async () => {
-    const strong1 = await plur.learn('Kubernetes orchestration for containers', { scope: 'global' })
-    const strong2 = await plur.learn('Kubernetes cluster scaling rules', { scope: 'global' })
-    const weak = await plur.learn('Container image builds slowly', { scope: 'global' })
-    const results = await plur.recall('kubernetes cluster orchestration')
+  it('co-access only applies to top half of results', () => {
+    const strong1 = plur.learn('Kubernetes orchestration for containers', { scope: 'global' })
+    const strong2 = plur.learn('Kubernetes cluster scaling rules', { scope: 'global' })
+    const weak = plur.learn('Container image builds slowly', { scope: 'global' })
+    const results = plur.recall('kubernetes cluster orchestration')
     expect(results.length).toBeGreaterThanOrEqual(2)
-    const all = await plur.list()
+    const all = plur.list()
     const updatedStrong1 = all.find(e => e.id === strong1.id)!
     const coAccess = updatedStrong1.associations.filter(a => a.type === 'co_accessed')
     expect(coAccess.length).toBeGreaterThan(0)
@@ -564,8 +567,8 @@ describe('Plur', () => {
 
   // --- Step 6: New tests for Datacore migration prerequisites ---
 
-  it('learn passes tags, knowledge_anchors, dual_coding, rationale, visibility, abstract, derived_from', async () => {
-    const engram = await plur.learn('Always validate inputs before processing', {
+  it('learn passes tags, knowledge_anchors, dual_coding, rationale, visibility, abstract, derived_from', () => {
+    const engram = plur.learn('Always validate inputs before processing', {
       type: 'behavioral',
       scope: 'project:api',
       domain: 'validation',
@@ -589,8 +592,8 @@ describe('Plur', () => {
     expect(engram.derived_from).toBe('ENG-2026-0101-001')
   })
 
-  it('learn defaults to empty tags/anchors and private visibility when not provided', async () => {
-    const engram = await plur.learn('Simple statement', { scope: 'global' })
+  it('learn defaults to empty tags/anchors and private visibility when not provided', () => {
+    const engram = plur.learn('Simple statement', { scope: 'global' })
     expect(engram.tags).toEqual([])
     expect(engram.knowledge_anchors).toEqual([])
     expect(engram.visibility).toBe('private')
@@ -598,12 +601,12 @@ describe('Plur', () => {
     expect(engram.derived_from).toBeNull()
   })
 
-  it('#401 having a domain does NOT default visibility to public', async () => {
+  it('#401 having a domain does NOT default visibility to public', () => {
     // A domain is a topic classification most engrams carry; it must not
     // auto-publish. Visibility stays private unless set deliberately.
-    const withDomain = await plur.learn('Categorized note', { scope: 'global', domain: 'software.architecture' })
+    const withDomain = plur.learn('Categorized note', { scope: 'global', domain: 'software.architecture' })
     expect(withDomain.visibility).toBe('private')
-    const explicitPublic = await plur.learn('Deliberately shared', { scope: 'global', domain: 'software.architecture', visibility: 'public' })
+    const explicitPublic = plur.learn('Deliberately shared', { scope: 'global', domain: 'software.architecture', visibility: 'public' })
     expect(explicitPublic.visibility).toBe('public')
   })
 
@@ -621,10 +624,10 @@ describe('Plur', () => {
     expect(explicit.visibility).toBe('public')
   })
 
-  it('inject returns injected_ids array', async () => {
-    await plur.learn('Always use blue-green deploy strategies', { scope: 'global' })
-    await plur.learn('Database for myapp is PostgreSQL', { scope: 'project:myapp' })
-    const result = await plur.inject('deploy myapp database', { budget: 500, scope: 'project:myapp' })
+  it('inject returns injected_ids array', () => {
+    plur.learn('Always use blue-green deploy strategies', { scope: 'global' })
+    plur.learn('Database for myapp is PostgreSQL', { scope: 'project:myapp' })
+    const result = plur.inject('deploy myapp database', { budget: 500, scope: 'project:myapp' })
     expect(Array.isArray(result.injected_ids)).toBe(true)
     expect(result.injected_ids.length).toBe(result.count)
     for (const id of result.injected_ids) {
@@ -632,14 +635,14 @@ describe('Plur', () => {
     }
   })
 
-  it('inject returns empty injected_ids when no engrams match', async () => {
-    const result = await plur.inject('completely unrelated topic xyz123')
+  it('inject returns empty injected_ids when no engrams match', () => {
+    const result = plur.inject('completely unrelated topic xyz123')
     expect(result.injected_ids).toEqual([])
   })
 
-  it('getById finds active engrams', async () => {
-    const engram = await plur.learn('Test getById active', { scope: 'global' })
-    const found = await plur.getById(engram.id)
+  it('getById finds active engrams', () => {
+    const engram = plur.learn('Test getById active', { scope: 'global' })
+    const found = plur.getById(engram.id)
     expect(found).not.toBeNull()
     expect(found!.id).toBe(engram.id)
     expect(found!.statement).toBe('Test getById active')
@@ -647,15 +650,15 @@ describe('Plur', () => {
   })
 
   it('getById finds retired engrams', async () => {
-    const engram = await plur.learn('Will be retired', { scope: 'global' })
+    const engram = plur.learn('Will be retired', { scope: 'global' })
     await plur.forget(engram.id, 'test')
-    const found = await plur.getById(engram.id)
+    const found = plur.getById(engram.id)
     expect(found).not.toBeNull()
     expect(found!.status).toBe('retired')
   })
 
-  it('getById returns null for missing id', async () => {
-    const found = await plur.getById('ENG-9999-0101-999')
+  it('getById returns null for missing id', () => {
+    const found = plur.getById('ENG-9999-0101-999')
     expect(found).toBeNull()
   })
 

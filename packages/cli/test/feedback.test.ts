@@ -26,30 +26,30 @@ describe('plur feedback', () => {
     return JSON.parse(output).id as string
   }
 
-  it('records positive feedback and returns JSON', async () => {
-    const id = await learn('always use TypeScript')
+  it('records positive feedback and returns JSON', () => {
+    const id = learn('always use TypeScript')
     const output = JSON.parse(run(`feedback ${id} positive`))
     expect(output.id).toBe(id)
     expect(output.signal).toBe('positive')
     expect(output.status).toBe('recorded')
   })
 
-  it('records negative feedback', async () => {
-    const id = await learn('always use JavaScript')
+  it('records negative feedback', () => {
+    const id = learn('always use JavaScript')
     const output = JSON.parse(run(`feedback ${id} negative`))
     expect(output.signal).toBe('negative')
     expect(output.status).toBe('recorded')
   })
 
-  it('records neutral feedback', async () => {
-    const id = await learn('some statement')
+  it('records neutral feedback', () => {
+    const id = learn('some statement')
     const output = JSON.parse(run(`feedback ${id} neutral`))
     expect(output.signal).toBe('neutral')
     expect(output.status).toBe('recorded')
   })
 
-  it('exits 1 with invalid signal', async () => {
-    const id = await learn('test engram')
+  it('exits 1 with invalid signal', () => {
+    const id = learn('test engram')
     expect(() => run(`feedback ${id} excellent`)).toThrow()
   })
 

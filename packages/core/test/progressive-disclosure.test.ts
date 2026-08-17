@@ -1,13 +1,8 @@
 import { describe, it, expect } from 'vitest'
 import { formatLayer1, formatLayer2, formatLayer3, formatWithLayer, assignLayer } from '../src/inject.js'
-import type { WireEngram } from '../src/inject.js'
 
 describe('progressive disclosure', () => {
-  // WireEngram is the post-strip shape the formatters actually receive:
-  // Omit<Engram, 'associations'> + confidence_score. Typed explicitly so the
-  // fixture stays in step with the schema — an untyped literal let `type` and
-  // `status` widen to `string` and quietly dropped five required fields.
-  const makeWire = (overrides: Partial<WireEngram> = {}): WireEngram => ({
+  const makeWire = (overrides: Partial<any> = {}) => ({
     id: 'ENG-001', statement: 'Use port 3000 for dev. Configure via PORT env var.',
     type: 'behavioral', scope: 'global', status: 'active',
     rationale: 'Avoids conflicts with system services.',
@@ -18,12 +13,7 @@ describe('progressive disclosure', () => {
     derivation_count: 1, tags: [], pack: null, abstract: null,
     derived_from: null, polarity: null,
     feedback_signals: { positive: 2, negative: 0, neutral: 0 },
-    knowledge_anchors: [],
-    // Schema defaults, spelled out because WireEngram requires them.
-    // `associations` is deliberately absent — stripAssociations() removes it
-    // before anything reaches these formatters.
-    reference_count: 1, sources: [], recurrence_count: 0,
-    engram_version: 1, episode_ids: [],
+    knowledge_anchors: [], associations: [],
     ...overrides,
   })
 

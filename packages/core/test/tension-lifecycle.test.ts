@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, vi, assert } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { mkdtempSync, rmSync, existsSync, readFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
@@ -36,10 +36,10 @@ describe('tension persistence (#181)', () => {
   })
   afterEach(() => rmSync(dir, { recursive: true, force: true }))
 
-  it('recordTensions persists records to tensions.yaml and survives a fresh instance', async () => {
-    const a = await plur.learn('plur cli version is 0.3.0')
-    const b = await plur.learn('plur cli version is 0.8.2')
-    const { records, new_count } = await plur.recordTensions([pairOf(a, b)])
+  it('recordTensions persists records to tensions.yaml and survives a fresh instance', () => {
+    const a = plur.learn('plur cli version is 0.3.0')
+    const b = plur.learn('plur cli version is 0.8.2')
+    const { records, new_count } = plur.recordTensions([pairOf(a, b)])
 
     expect(new_count).toBe(1)
     expect(records[0].id).toMatch(/^T-\d{4}-\d{4}-\d{3}$/)
@@ -53,23 +53,23 @@ describe('tension persistence (#181)', () => {
     expect(reloaded[0].statement_a).toBe(a.statement)
   })
 
-  it('does not duplicate an already-recorded pair (either direction)', async () => {
-    const a = await plur.learn('plur cli version is 0.3.0')
-    const b = await plur.learn('plur cli version is 0.8.2')
-    const first = await plur.recordTensions([pairOf(a, b)])
+  it('does not duplicate an already-recorded pair (either direction)', () => {
+    const a = plur.learn('plur cli version is 0.3.0')
+    const b = plur.learn('plur cli version is 0.8.2')
+    const first = plur.recordTensions([pairOf(a, b)])
     expect(first.new_count).toBe(1)
 
     // Same pair again — and reversed
-    const again = await plur.recordTensions([pairOf(a, b), pairOf(b, a)])
+    const again = plur.recordTensions([pairOf(a, b), pairOf(b, a)])
     expect(again.new_count).toBe(0)
     expect(again.existing_count).toBe(2)
     expect(plur.listTensions()).toHaveLength(1)
   })
 
-  it('emits the contradiction_detected history event on new records (audit C5)', async () => {
-    const a = await plur.learn('plur cli version is 0.3.0')
-    const b = await plur.learn('plur cli version is 0.8.2')
-    await plur.recordTensions([pairOf(a, b)])
+  it('emits the contradiction_detected history event on new records (audit C5)', () => {
+    const a = plur.learn('plur cli version is 0.3.0')
+    const b = plur.learn('plur cli version is 0.8.2')
+    plur.recordTensions([pairOf(a, b)])
 
     const month = new Date().toISOString().slice(0, 7)
     const events = readHistory(dir, month).filter(e => e.event === 'contradiction_detected')
@@ -79,24 +79,24 @@ describe('tension persistence (#181)', () => {
     expect((events[0].data as any).tension_id).toMatch(/^T-/)
   })
 
-  it('status().tension_count counts unresolved persisted records (audit C2)', async () => {
-    const a = await plur.learn('plur cli version is 0.3.0')
-    const b = await plur.learn('plur cli version is 0.8.2')
-    expect((await plur.status()).tension_count).toBe(0)
+  it('status().tension_count counts unresolved persisted records (audit C2)', () => {
+    const a = plur.learn('plur cli version is 0.3.0')
+    const b = plur.learn('plur cli version is 0.8.2')
+    expect(plur.status().tension_count).toBe(0)
 
-    const { records } = await plur.recordTensions([pairOf(a, b)])
-    expect((await plur.status()).tension_count).toBe(1)
+    const { records } = plur.recordTensions([pairOf(a, b)])
+    expect(plur.status().tension_count).toBe(1)
 
     plur.dismissTension(records[0].id)
-    expect((await plur.status()).tension_count).toBe(0)
+    expect(plur.status().tension_count).toBe(0)
   })
 
-  it('listTensions filters by status', async () => {
-    const a = await plur.learn('plur cli version is 0.3.0')
-    const b = await plur.learn('plur cli version is 0.8.2')
-    const c = await plur.learn('plur uses yaml storage')
-    const d = await plur.learn('plur uses json storage')
-    const { records } = await plur.recordTensions([pairOf(a, b), pairOf(c, d)])
+  it('listTensions filters by status', () => {
+    const a = plur.learn('plur cli version is 0.3.0')
+    const b = plur.learn('plur cli version is 0.8.2')
+    const c = plur.learn('plur uses yaml storage')
+    const d = plur.learn('plur uses json storage')
+    const { records } = plur.recordTensions([pairOf(a, b), pairOf(c, d)])
     plur.dismissTension(records[1].id)
 
     expect(plur.listTensions({ status: ['detected'] })).toHaveLength(1)
@@ -148,12 +148,12 @@ describe('scan suppression via recorded pairs (#181)', () => {
   afterEach(() => rmSync(dir, { recursive: true, force: true }))
 
   it('recorded pairs are excluded from future scans (no LLM call)', async () => {
-    const a = await plur.learn('plur cli version is 0.3.0')
-    const b = await plur.learn('plur cli version is 0.8.2')
-    await plur.recordTensions([pairOf(a, b)])
+    const a = plur.learn('plur cli version is 0.3.0')
+    const b = plur.learn('plur cli version is 0.8.2')
+    plur.recordTensions([pairOf(a, b)])
 
     const llm = vi.fn(async () => 'CONTRADICTS: yes\nCONFIDENCE: 1.0\nREASON: versions differ.')
-    const result = await scanForTensions(await plur.list(), llm, {
+    const result = await scanForTensions(plur.list(), llm, {
       exclude_pairs: new Set(plur.suppressedTensionPairKeys()),
     })
     expect(result.pairs_checked).toBe(0)
@@ -161,9 +161,9 @@ describe('scan suppression via recorded pairs (#181)', () => {
   })
 
   it('dismissed pairs stay suppressed', async () => {
-    const a = await plur.learn('plur cli version is 0.3.0')
-    const b = await plur.learn('plur cli version is 0.8.2')
-    const { records } = await plur.recordTensions([pairOf(a, b)])
+    const a = plur.learn('plur cli version is 0.3.0')
+    const b = plur.learn('plur cli version is 0.8.2')
+    const { records } = plur.recordTensions([pairOf(a, b)])
     plur.dismissTension(records[0].id)
 
     expect(plur.suppressedTensionPairKeys()).toContain(tensionPairKey(a.id, b.id))
@@ -202,67 +202,65 @@ describe('confirm / dismiss / resolve (#181)', () => {
   })
   afterEach(() => rmSync(dir, { recursive: true, force: true }))
 
-  async function seed(): Promise<{ id: string; a: Engram; b: Engram }> {
-    const a = await plur.learn('plur cli version is 0.3.0')
-    const b = await plur.learn('plur cli version is 0.8.2')
-    const { records } = await plur.recordTensions([pairOf(a, b)])
+  function seed(): { id: string; a: Engram; b: Engram } {
+    const a = plur.learn('plur cli version is 0.3.0')
+    const b = plur.learn('plur cli version is 0.8.2')
+    const { records } = plur.recordTensions([pairOf(a, b)])
     return { id: records[0].id, a: a as Engram, b: b as Engram }
   }
 
-  it('confirm marks a detected tension confirmed', async () => {
-    const { id } = await seed()
+  it('confirm marks a detected tension confirmed', () => {
+    const { id } = seed()
     const record = plur.confirmTension(id)
     expect(record.status).toBe('confirmed')
     expect(plur.listTensions({ status: ['confirmed'] })).toHaveLength(1)
   })
 
-  it('dismiss works from detected and confirmed', async () => {
-    const { id } = await seed()
+  it('dismiss works from detected and confirmed', () => {
+    const { id } = seed()
     plur.confirmTension(id)
     const record = plur.dismissTension(id)
     expect(record.status).toBe('dismissed')
   })
 
-  it('resolve picks a winner, retires the loser, stamps the record', async () => {
-    const { id, a, b } = await seed()
-    const { record, retired_id } = await plur.resolveTension(id, b.id)
+  it('resolve picks a winner, retires the loser, stamps the record', () => {
+    const { id, a, b } = seed()
+    const { record, retired_id } = plur.resolveTension(id, b.id)
 
     expect(record.status).toBe('resolved')
     expect(record.resolved_by).toBe(b.id)
     expect(record.resolved_at).toBeTruthy()
     expect(retired_id).toBe(a.id)
 
-    const loser = await new Plur({ path: dir }).getById(a.id)
+    const loser = new Plur({ path: dir }).getById(a.id)
     expect(loser?.status).toBe('retired')
     expect(loser?.rationale).toContain(id)
     // Winner untouched
-    expect((await plur.getById(b.id))?.status).toBe('active')
+    expect(plur.getById(b.id)?.status).toBe('active')
   })
 
-  it('resolve retires a multiply-learned loser outright (no reference-count games)', async () => {
-    const a = await plur.learn('plur cli version is 0.3.0')
-    await plur.learn('plur cli version is 0.3.0', { scope: 'project:other' }) // bump reference_count
-    const b = await plur.learn('plur cli version is 0.8.2')
-    const aStored = await plur.getById(a.id)
-    assert(aStored !== null, 'seed engram a was not stored')
-    const { records } = await plur.recordTensions([pairOf(aStored, b)])
+  it('resolve retires a multiply-learned loser outright (no reference-count games)', () => {
+    const a = plur.learn('plur cli version is 0.3.0')
+    plur.learn('plur cli version is 0.3.0', { scope: 'project:other' }) // bump reference_count
+    const b = plur.learn('plur cli version is 0.8.2')
+    const { records } = plur.recordTensions([pairOf(plur.getById(a.id)!, b)])
 
-    await plur.resolveTension(records[0].id, b.id)
-    expect((await plur.getById(a.id))?.status).toBe('retired')
+    plur.resolveTension(records[0].id, b.id)
+    expect(plur.getById(a.id)?.status).toBe('retired')
   })
 
-  it('resolve rejects a winner outside the pair', async () => {
-    const { id } = await seed()
-    const c = await plur.learn('unrelated statement about storage')
-    await expect(plur.resolveTension(id, c.id)).rejects.toThrow(/not part of tension/)
+  it('resolve rejects a winner outside the pair', () => {
+    const { id } = seed()
+    const c = plur.learn('unrelated statement about storage')
+    expect(() => plur.resolveTension(id, c.id)).toThrow(/not part of tension/)
   })
 
-  it('terminal states are enforced', async () => {
-    const { id, b } = await seed()
-    await plur.resolveTension(id, b.id)
+  it('terminal states are enforced', () => {
+    const { id, b } = seed()
+    plur.resolveTension(id, b.id)
     expect(() => plur.confirmTension(id)).toThrow(/already resolved/)
     expect(() => plur.dismissTension(id)).toThrow(/already resolved/)
-    await expect(plur.resolveTension(id, b.id)).rejects.toThrow(/already resolved/)
+    expect(() => plur.resolveTension(id, b.id)).toThrow(/already resolved/)
   })
 
   it('unknown tension ids throw', () => {
@@ -280,46 +278,45 @@ describe('injection warnings (#181, audit item 4)', () => {
   })
   afterEach(() => rmSync(dir, { recursive: true, force: true }))
 
-  it('confirmed tension warns when either side injects', async () => {
+  it('confirmed tension warns when either side injects', () => {
     // pinned → bypasses the relevance gate, so injection is deterministic
-    const a = await plur.learn('use tabs for indentation in this repo', { pinned: true })
-    const b = await plur.learn('completely unrelated fact about databases')
-    const { records } = await plur.recordTensions([pairOf(a, b)])
+    const a = plur.learn('use tabs for indentation in this repo', { pinned: true })
+    const b = plur.learn('completely unrelated fact about databases')
+    const { records } = plur.recordTensions([pairOf(a, b)])
     plur.confirmTension(records[0].id)
 
-    const result = await plur.inject('anything at all')
+    const result = plur.inject('anything at all')
     expect(result.injected_ids).toContain(a.id)
     expect(result.warnings).toBeDefined()
     expect(result.warnings![0]).toContain(records[0].id)
     expect(result.warnings![0]).toMatch(/contradicts/)
   })
 
-  it('detected tension warns only when BOTH sides inject', async () => {
-    const a = await plur.learn('use tabs for indentation in this repo', { pinned: true })
-    const b = await plur.learn('completely unrelated fact about databases')
-    await plur.recordTensions([pairOf(a, b)])
+  it('detected tension warns only when BOTH sides inject', () => {
+    const a = plur.learn('use tabs for indentation in this repo', { pinned: true })
+    const b = plur.learn('completely unrelated fact about databases')
+    plur.recordTensions([pairOf(a, b)])
 
-    const oneSide = await plur.inject('anything at all')
+    const oneSide = plur.inject('anything at all')
     expect(oneSide.injected_ids).toContain(a.id)
     expect(oneSide.warnings).toBeUndefined()
 
     // Pin the other side too — now both inject and the warning fires
-    const bStored = await plur.getById(b.id)
-    assert(bStored !== null, 'seed engram b was not stored')
-    await plur.updateEngram({ ...bStored, pinned: true })
-    const bothSides = await plur.inject('anything at all')
+    const bStored = plur.getById(b.id)!
+    plur.updateEngram({ ...bStored, pinned: true } as Engram)
+    const bothSides = plur.inject('anything at all')
     expect(bothSides.injected_ids).toEqual(expect.arrayContaining([a.id, b.id]))
     expect(bothSides.warnings).toBeDefined()
     expect(bothSides.warnings![0]).toMatch(/Tension T-/)
   })
 
-  it('resolved and dismissed tensions never warn', async () => {
-    const a = await plur.learn('use tabs for indentation in this repo', { pinned: true })
-    const b = await plur.learn('use spaces for indentation in this repo', { pinned: true })
-    const { records } = await plur.recordTensions([pairOf(a, b)])
+  it('resolved and dismissed tensions never warn', () => {
+    const a = plur.learn('use tabs for indentation in this repo', { pinned: true })
+    const b = plur.learn('use spaces for indentation in this repo', { pinned: true })
+    const { records } = plur.recordTensions([pairOf(a, b)])
     plur.dismissTension(records[0].id)
 
-    const result = await plur.inject('anything at all')
+    const result = plur.inject('anything at all')
     expect(result.warnings).toBeUndefined()
   })
 })
@@ -337,43 +334,39 @@ describe('lock-escalation gate (#181, audit item 3)', () => {
   const STMT = 'deploy platform is fly.io for all services'
 
   /** Drive cross-scope recurrence to the point where the NEXT hit would lock. */
-  async function escalateToDecided(): Promise<Engram> {
-    await plur.learn(STMT, { scope: 'project:a' })            // create (leaning)
-    await plur.learn(STMT, { scope: 'project:b' })            // recurrence 1 — no escalation
-    const e = await plur.learn(STMT, { scope: 'project:c' })  // recurrence 2 — leaning → decided
-    expect((await plur.getById(e.id) as any).commitment).toBe('decided')
+  function escalateToDecided(): Engram {
+    plur.learn(STMT, { scope: 'project:a' })            // create (leaning)
+    plur.learn(STMT, { scope: 'project:b' })            // recurrence 1 — no escalation
+    const e = plur.learn(STMT, { scope: 'project:c' })  // recurrence 2 — leaning → decided
+    expect((plur.getById(e.id) as any).commitment).toBe('decided')
     return e as Engram
   }
 
-  it('without a tension, the next cross-scope hit locks (baseline #176 behavior)', async () => {
-    const e = await escalateToDecided()
-    await plur.learn(STMT, { scope: 'project:d' })            // recurrence 3 — decided → locked
-    expect((await plur.getById(e.id) as any).commitment).toBe('locked')
+  it('without a tension, the next cross-scope hit locks (baseline #176 behavior)', () => {
+    const e = escalateToDecided()
+    plur.learn(STMT, { scope: 'project:d' })            // recurrence 3 — decided → locked
+    expect((plur.getById(e.id) as any).commitment).toBe('locked')
   })
 
-  it('an unresolved tension blocks the decided → locked step', async () => {
-    const e = await escalateToDecided()
-    const rival = await plur.learn('deploy platform is render.com for all services')
-    const eStored = await plur.getById(e.id)
-    assert(eStored !== null, 'escalated engram was not stored')
-    await plur.recordTensions([pairOf(eStored, rival)])
+  it('an unresolved tension blocks the decided → locked step', () => {
+    const e = escalateToDecided()
+    const rival = plur.learn('deploy platform is render.com for all services')
+    plur.recordTensions([pairOf(plur.getById(e.id)!, rival)])
 
-    await plur.learn(STMT, { scope: 'project:d' })            // recurrence 3 — capped
-    expect((await plur.getById(e.id) as any).commitment).toBe('decided')
+    plur.learn(STMT, { scope: 'project:d' })            // recurrence 3 — capped
+    expect((plur.getById(e.id) as any).commitment).toBe('decided')
   })
 
-  it('resolving the tension re-opens the path to locked', async () => {
-    const e = await escalateToDecided()
-    const rival = await plur.learn('deploy platform is render.com for all services')
-    const eStored = await plur.getById(e.id)
-    assert(eStored !== null, 'escalated engram was not stored')
-    const { records } = await plur.recordTensions([pairOf(eStored, rival)])
+  it('resolving the tension re-opens the path to locked', () => {
+    const e = escalateToDecided()
+    const rival = plur.learn('deploy platform is render.com for all services')
+    const { records } = plur.recordTensions([pairOf(plur.getById(e.id)!, rival)])
 
-    await plur.learn(STMT, { scope: 'project:d' })            // blocked
-    expect((await plur.getById(e.id) as any).commitment).toBe('decided')
+    plur.learn(STMT, { scope: 'project:d' })            // blocked
+    expect((plur.getById(e.id) as any).commitment).toBe('decided')
 
-    await plur.resolveTension(records[0].id, e.id)            // engram wins
-    await plur.learn(STMT, { scope: 'project:e' })            // next hit locks
-    expect((await plur.getById(e.id) as any).commitment).toBe('locked')
+    plur.resolveTension(records[0].id, e.id)            // engram wins
+    plur.learn(STMT, { scope: 'project:e' })            // next hit locks
+    expect((plur.getById(e.id) as any).commitment).toBe('locked')
   })
 })

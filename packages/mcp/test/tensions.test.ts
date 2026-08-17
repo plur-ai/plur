@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, vi, assert } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import * as fs from 'fs'
 import * as os from 'os'
 import * as path from 'path'
@@ -9,18 +9,15 @@ function tmpDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'plur-tensions-'))
 }
 
-async function injectLegacyConflict(plur: Plur, fromId: string, toId: string): Promise<void> {
-  const engrams = await plur.list()
+function injectLegacyConflict(plur: Plur, fromId: string, toId: string): void {
+  const engrams = plur.list()
   const engram = engrams.find(e => e.id === fromId)!
-  await plur.updateEngram({
+  plur.updateEngram({
     ...engram,
-    // Spread the engram's own relations rather than rebuilding the object: the
-    // literal form omitted `supersedes` and `superseded_by`, so this helper —
-    // whose only job is to add ONE legacy conflict ref — was also silently
-    // dropping two other relation fields from the engram it wrote back.
     relations: {
-      broader: [], narrower: [], related: [], supersedes: [], superseded_by: [],
-      ...engram.relations,
+      broader: [],
+      narrower: [],
+      related: [],
       conflicts: [toId],
     },
   })
@@ -53,7 +50,7 @@ describe('plur_tensions tool', () => {
   })
 
   it('returns empty tensions when no conflicts', async () => {
-    await plur.learn('Always use TypeScript')
+    plur.learn('Always use TypeScript')
     const result = await tensionsTool.handler({}, plur) as any
     expect(result.tensions).toEqual([])
     expect(result.count).toBe(0)
@@ -66,8 +63,8 @@ describe('plur_tensions tool', () => {
     // guard meant the pair-field assertions never ran. Detection happens in
     // SCAN mode; mock the LLM judge (as the sibling scan tests do) and assert
     // the detected pair, unguarded.
-    await plur.learn('Always use tabs for indentation in TypeScript files')
-    await plur.learn('Always use spaces for indentation in TypeScript files')
+    plur.learn('Always use tabs for indentation in TypeScript files')
+    plur.learn('Always use spaces for indentation in TypeScript files')
 
     const originalFetch = globalThis.fetch
     globalThis.fetch = vi.fn().mockResolvedValue({
@@ -97,16 +94,16 @@ describe('plur_tensions tool', () => {
     // — and it read t.engram_a.id, but list records expose engram_a as a bare id
     // string. Here we SEED persisted records (same pair thrice, including a
     // swapped-id ordering) and assert the pair collapses to one record, unguarded.
-    const e1 = await plur.learn('Use PostgreSQL for the database')
-    const e2 = await plur.learn('Use MySQL for the database instead of PostgreSQL')
+    const e1 = plur.learn('Use PostgreSQL for the database')
+    const e2 = plur.learn('Use MySQL for the database instead of PostgreSQL')
     const pair = {
       id_a: e1.id, id_b: e2.id,
       statement_a: e1.statement, statement_b: e2.statement,
       confidence: 0.9, reason: 'Mutually exclusive database choices.',
     }
-    await plur.recordTensions([pair])
-    await plur.recordTensions([pair])
-    await plur.recordTensions([{ ...pair, id_a: e2.id, id_b: e1.id }])
+    plur.recordTensions([pair])
+    plur.recordTensions([pair])
+    plur.recordTensions([{ ...pair, id_a: e2.id, id_b: e1.id }])
 
     const result = await tensionsTool.handler({ status: 'all' }, plur) as any
     const pairKeys = result.tensions.map((t: any) => [t.engram_a, t.engram_b].sort().join(':'))
@@ -116,9 +113,9 @@ describe('plur_tensions tool', () => {
   })
 
   it('surfaces legacy conflict relations separately with a purge hint (#181)', async () => {
-    const e1 = await plur.learn('Always use PostgreSQL')
-    const e2 = await plur.learn('Always use MySQL')
-    await injectLegacyConflict(plur, e1.id, e2.id)
+    const e1 = plur.learn('Always use PostgreSQL')
+    const e2 = plur.learn('Always use MySQL')
+    injectLegacyConflict(plur, e1.id, e2.id)
 
     const result = await tensionsTool.handler({}, plur) as any
     // legacy relations.conflicts refs are NOT persisted tension records
@@ -129,7 +126,7 @@ describe('plur_tensions tool', () => {
   })
 
   it('omits purge_hint when there are no tensions', async () => {
-    await plur.learn('Use TypeScript')
+    plur.learn('Use TypeScript')
     const result = await tensionsTool.handler({}, plur) as any
     expect(result.count).toBe(0)
     expect(result.purge_hint).toBeUndefined()
@@ -157,8 +154,8 @@ describe('plur_tensions scan mode', () => {
   })
 
   it('returns error when scan:true but no LLM configured', async () => {
-    await plur.learn('plur uses BM25 for search')
-    await plur.learn('plur uses embeddings for search')
+    plur.learn('plur uses BM25 for search')
+    plur.learn('plur uses embeddings for search')
     const result = await tensionsTool.handler({ scan: true }, plur) as any
     expect(result.error).toMatch(/requires an LLM/)
     expect(result.tensions).toEqual([])
@@ -166,8 +163,8 @@ describe('plur_tensions scan mode', () => {
   })
 
   it('calls LLM and returns high-confidence tensions', async () => {
-    await plur.learn('plur search uses only BM25 and ignores embeddings entirely')
-    await plur.learn('plur search uses only embeddings and ignores BM25 entirely')
+    plur.learn('plur search uses only BM25 and ignores embeddings entirely')
+    plur.learn('plur search uses only embeddings and ignores BM25 entirely')
 
     globalThis.fetch = vi.fn().mockResolvedValue({
       ok: true,
@@ -192,8 +189,8 @@ describe('plur_tensions scan mode', () => {
   })
 
   it('filters out low-confidence pairs', async () => {
-    await plur.learn('plur uses BM25 for search ranking')
-    await plur.learn('plur uses embeddings for search ranking')
+    plur.learn('plur uses BM25 for search ranking')
+    plur.learn('plur uses embeddings for search ranking')
 
     globalThis.fetch = vi.fn().mockResolvedValue({
       ok: true,
@@ -214,8 +211,8 @@ describe('plur_tensions scan mode', () => {
   })
 
   it('respects min_confidence override', async () => {
-    await plur.learn('plur uses BM25 for search ranking')
-    await plur.learn('plur uses embeddings for search ranking')
+    plur.learn('plur uses BM25 for search ranking')
+    plur.learn('plur uses embeddings for search ranking')
 
     globalThis.fetch = vi.fn().mockResolvedValue({
       ok: true,
@@ -235,9 +232,9 @@ describe('plur_tensions scan mode', () => {
   })
 
   it('batches multiple candidate pairs into a single LLM call by default (#180)', async () => {
-    await plur.learn('plur uses yaml')
-    await plur.learn('plur uses json')
-    await plur.learn('plur uses toml')
+    plur.learn('plur uses yaml')
+    plur.learn('plur uses json')
+    plur.learn('plur uses toml')
 
     const fetchMock = vi.fn().mockImplementation(async (_url: any, init: any) => {
       const prompt: string = JSON.parse(init.body).messages[0].content
@@ -262,9 +259,9 @@ describe('plur_tensions scan mode', () => {
   })
 
   it('batch_size 1 forces sequential single-pair calls (#180)', async () => {
-    await plur.learn('plur uses yaml')
-    await plur.learn('plur uses json')
-    await plur.learn('plur uses toml')
+    plur.learn('plur uses yaml')
+    plur.learn('plur uses json')
+    plur.learn('plur uses toml')
 
     const prompts: string[] = []
     const fetchMock = vi.fn().mockImplementation(async (_url: any, init: any) => {
@@ -290,8 +287,8 @@ describe('plur_tensions scan mode', () => {
 
   it('uses OPENAI_API_KEY from env when no explicit LLM args', async () => {
     process.env.OPENAI_API_KEY = 'env-test-key'
-    await plur.learn('plur search uses only BM25 for ranking')
-    await plur.learn('plur search uses only embeddings for ranking')
+    plur.learn('plur search uses only BM25 for ranking')
+    plur.learn('plur search uses only embeddings for ranking')
 
     globalThis.fetch = vi.fn().mockResolvedValue({
       ok: true,
@@ -325,19 +322,12 @@ describe('plur_tensions temporal config wiring (#240)', () => {
   })
 
   /** Learn two contradicting snapshot engrams recorded on different days. */
-  async function seedSnapshotPair(plur: Plur): Promise<void> {
-    const a = await plur.learn('hormuz strait ceasefire holding, passage regulated', { domain: 'war-analysis' })
-    const b = await plur.learn('hormuz strait ceasefire collapsed, passage closed', { domain: 'war-analysis' })
+  function seedSnapshotPair(plur: Plur): void {
+    const a = plur.learn('hormuz strait ceasefire holding, passage regulated', { domain: 'war-analysis' })
+    const b = plur.learn('hormuz strait ceasefire collapsed, passage closed', { domain: 'war-analysis' })
     for (const [id, learnedAt] of [[a.id, '2026-04-07'], [b.id, '2026-05-05']] as const) {
-      // Was `await plur.getById(id)!`, which parses as `await (getById(id)!)` —
-      // the assertion lands on the Promise, which was never nullable, so it did
-      // nothing and `stored` stayed `Engram | null`. Spreading a null then made
-      // every field optional, which is what the typechecker was objecting to.
-      // Assert on the awaited value instead, so a seed that failed to store says
-      // so here rather than surfacing as an unrelated failure downstream.
-      const stored = await plur.getById(id)
-      assert(stored !== null, `seed engram ${id} was not stored`)
-      await plur.updateEngram({ ...stored, temporal: { ...stored.temporal, learned_at: learnedAt } })
+      const stored = plur.getById(id)!
+      plur.updateEngram({ ...stored, temporal: { ...stored.temporal, learned_at: learnedAt } })
     }
   }
 
@@ -353,7 +343,7 @@ describe('plur_tensions temporal config wiring (#240)', () => {
   it('config tensions.temporal_domains skips snapshot pairs in scan mode', async () => {
     fs.writeFileSync(path.join(dir, 'config.yaml'), 'tensions:\n  temporal_domains:\n    - war-analysis\n')
     const plur = new Plur({ path: dir })
-    await seedSnapshotPair(plur)
+    seedSnapshotPair(plur)
 
     const fetchMock = yesLlm()
     globalThis.fetch = fetchMock as any
@@ -369,7 +359,7 @@ describe('plur_tensions temporal config wiring (#240)', () => {
 
   it('without the config the same pair is judged (dates still reach the prompt)', async () => {
     const plur = new Plur({ path: dir })
-    await seedSnapshotPair(plur)
+    seedSnapshotPair(plur)
 
     const prompts: string[] = []
     const fetchMock = vi.fn().mockImplementation(async (_url: any, init: any) => {
@@ -394,7 +384,7 @@ describe('plur_tensions temporal config wiring (#240)', () => {
 
   it('temporal_discount arg discounts confidence and reports raw_confidence', async () => {
     const plur = new Plur({ path: dir })
-    await seedSnapshotPair(plur)
+    seedSnapshotPair(plur)
 
     globalThis.fetch = yesLlm() as any
 
@@ -412,7 +402,7 @@ describe('plur_tensions temporal config wiring (#240)', () => {
   it('config tensions.temporal_discount=true applies without an explicit arg', async () => {
     fs.writeFileSync(path.join(dir, 'config.yaml'), 'tensions:\n  temporal_discount: true\n')
     const plur = new Plur({ path: dir })
-    await seedSnapshotPair(plur)
+    seedSnapshotPair(plur)
 
     globalThis.fetch = yesLlm() as any
 
@@ -454,8 +444,8 @@ describe('plur_learn supersedes (#240)', () => {
       statement: 'plur cli version is 0.8.2', scope: 'global', supersedes: [oldE.id],
     }, plur) as any
 
-    expect((await plur.getById(newE.id))?.relations?.supersedes).toEqual([oldE.id])
-    expect((await plur.getById(oldE.id))?.relations?.superseded_by).toEqual([newE.id])
+    expect(plur.getById(newE.id)?.relations?.supersedes).toEqual([oldE.id])
+    expect(plur.getById(oldE.id)?.relations?.superseded_by).toEqual([newE.id])
   })
 
   it('supersedes-linked pair no longer surfaces as a scan candidate', async () => {
@@ -499,9 +489,9 @@ describe('plur_tensions_purge tool', () => {
   })
 
   it('clears all legacy conflict relations', async () => {
-    const e1 = await plur.learn('Use tabs for indentation')
-    const e2 = await plur.learn('Use spaces for indentation')
-    await injectLegacyConflict(plur, e1.id, e2.id)
+    const e1 = plur.learn('Use tabs for indentation')
+    const e2 = plur.learn('Use spaces for indentation')
+    injectLegacyConflict(plur, e1.id, e2.id)
 
     const before = await tensionsTool.handler({}, plur) as any
     expect(before.legacy_conflicts).toHaveLength(1)
@@ -517,7 +507,7 @@ describe('plur_tensions_purge tool', () => {
   })
 
   it('returns zero counts when nothing to purge', async () => {
-    await plur.learn('Use TypeScript')
+    plur.learn('Use TypeScript')
     const result = await purgeTool.handler({}, plur) as any
     expect(result.purged_conflict_refs).toBe(0)
     expect(result.engrams_modified).toBe(0)

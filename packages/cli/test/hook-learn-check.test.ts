@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync, readFileSync, chmodSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
-import { runCli } from './helpers/spawn.js'
+import { spawnSync } from 'child_process'
 
 const CLI = join(__dirname, '..', 'dist', 'index.js')
 
@@ -27,7 +27,7 @@ describe('hook-learn-check', () => {
   })
 
   function runHook(sessionId: string, cwd: string = home): { stdout: string; status: number } {
-    const result = runCli('node', [CLI, 'hook-learn-check'], {
+    const result = spawnSync('node', [CLI, 'hook-learn-check'], {
       input: JSON.stringify({ cwd }),
       encoding: 'utf-8',
       timeout: 10000,
@@ -42,7 +42,7 @@ describe('hook-learn-check', () => {
     const bareTmp = join(bareHome, 'tmp')
     mkdirSync(bareTmp, { recursive: true })
     try {
-      const result = runCli('node', [CLI, 'hook-learn-check'], {
+      const result = spawnSync('node', [CLI, 'hook-learn-check'], {
         input: JSON.stringify({ cwd: bareHome }),
         encoding: 'utf-8',
         timeout: 10000,
@@ -118,7 +118,7 @@ describe('hook-learn-check', () => {
     const roTmp = mkdtempSync(join(tmpdir(), 'plur-ro-learn-'))
     chmodSync(roTmp, 0o500) // r-x: owner cannot create plur-sessions inside
     try {
-      const result = runCli('node', [CLI, 'hook-learn-check'], {
+      const result = spawnSync('node', [CLI, 'hook-learn-check'], {
         input: JSON.stringify({ cwd: home }),
         encoding: 'utf-8',
         timeout: 10000,
