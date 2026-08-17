@@ -73,6 +73,9 @@ export class StubServer {
   /** When set, POST /engrams returns this as the assigned id instead of a valid
    *  one — to simulate a buggy/hostile server (e.g. for the #404 id-shape test). */
   badAppendId: unknown = null
+  /** When set, POST /engrams short-circuits to this error response BEFORE reading
+   *  the body — to simulate a server that rejects the write (#912 sanitise test). */
+  appendErrorResponse: { status: number; body: string } | null = null
   /** When set, PATCH /engrams/:id still applies the update server-side but
    *  echoes this value as the {engram: ...} body — to simulate a server whose
    *  echoed row fails RemoteRowSchema validation (#327). */
@@ -168,6 +171,7 @@ export class StubServer {
     this.engrams.clear()
     this.idCounter = 0
     this.badAppendId = null
+    this.appendErrorResponse = null
     this.badPatchEcho = null
     this.recallRows = []
     this.recallStatus = null
@@ -255,6 +259,12 @@ export class StubServer {
 
     // POST /api/v1/engrams — create
     if (method === 'POST' && path === '/api/v1/engrams') {
+      if (this.appendErrorResponse !== null) {
+        const { status, body } = this.appendErrorResponse
+        res.writeHead(status, { 'Content-Type': 'text/plain' })
+        res.end(body)
+        return
+      }
       this.readBody(req, (body) => {
         this.lastAppendBody = body
         const { statement, scope, domain, type, source } = body

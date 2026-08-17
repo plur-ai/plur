@@ -2,11 +2,29 @@
 
 ## 0.18.0 (unreleased)
 
-Memory you can look at, and PLUR inside DeepSeek Harness.
+Memory you can look at, PLUR inside DeepSeek Harness, and several correctness fixes.
 
 - `plur ui` — a local page showing what your agents learned and actually use
 - `@plur-ai/dsh` — native DeepSeek Harness plugin, engrams in the prompt
 - Both viewers speak English and 中文
+- `plur doctor` surfaces stale content hashes; `plur_learn` records measurement conditions
+
+### Migration note — non-ASCII stores
+
+**If your store contains statements with non-ASCII letters** (Cyrillic, Japanese,
+Korean, Arabic, Greek, accented Latin, etc.), those engrams have a stale
+`content_hash` after upgrading. The normalizer used ASCII-only `\w` in older
+versions, so non-Latin text normalized to the empty string and every such engram
+shared `SHA-256("")` — they collided with each other and absorbed unrelated writes.
+The normalizer is fixed in this cycle; the old hashes on disk are not rewritten
+automatically.
+
+**Affected population:** stores with any non-ASCII letter in at least one statement.
+Pure-ASCII stores are unaffected — hashes are byte-identical before and after.
+
+**How to repair:** run `plur reindex-hashes --apply` once after upgrading. The dry-run
+(`plur reindex-hashes`, no flag) reports the count first. `plur doctor` now also
+surfaces a count and reminder if any stale hashes are detected (#911).
 
 ### Added
 
@@ -40,7 +58,64 @@ Memory you can look at, and PLUR inside DeepSeek Harness.
   a native tab: dsh renders its UI as a React client assembled over a typed slot registry,
   so a tab would mean shipping a browser bundle bound to that registry's pre-1.0 internals.
 
+- **`plur doctor` reports stale `content_hash` values** (#911): after upgrading,
+  any engram whose `content_hash` no longer matches `computeContentHash(statement)`
+  is counted and surfaced as an advisory. Non-zero means `plur reindex-hashes
+  --apply` is needed. Does not fail the overall doctor check — pure read, no lock,
+  no writes.
+
+- **`plur reindex-hashes`** (#852, #897): repair command for engrams whose
+  `content_hash` is stale (does not match the current statement) or missing
+  (predates the field). Dry-run by default; writes only with `--apply`. Ships
+  counts separately — stale hashes actively absorb unrelated writes; missing hashes
+  are inert until something matches on them.
+
+- **`content_hash` exposed as an MCP lookup key** (#895): agents can now retrieve
+  an engram by its exact content hash, enabling stable cross-session references
+  without relying on ids that change on MERGE.
+
+- **`measured_under` field on `plur_learn`** (#869): numeric and benchmark engrams
+  can now record their measurement conditions (date, dataset, config, hardware),
+  preventing stale numbers from being treated as eternal facts out of context.
+
 ### Fixed
+
+- **`plur doctor` sanitises remote error response bodies** (#912): `RemoteStore.append`
+  now truncates server error responses to 200 characters and strips control characters
+  before storing in `outbox.last_error`, preventing large HTML error pages from
+  polluting the outbox view or injecting terminal escape sequences.
+
+- **`content_hash` kept in step with the statement on UPDATE and MERGE** (#852,
+  #894): when `learn()` rewrote a statement (UPDATE path) or merged two engrams
+  (MERGE path), the stored `content_hash` was not recomputed. The updated statement
+  therefore had a hash pointing at its old text — making it an attractor for any
+  future write whose statement hashed to the old value. Now recomputed on every
+  path that changes the statement, and absorptions are recorded.
+
+- **Non-Latin statements no longer collapse to a shared hash** (#896): `normalizeStatement`
+  used JavaScript's ASCII-only `\w` (`[A-Za-z0-9_]`), so every non-Latin character
+  was stripped before hashing. Statements in Cyrillic, Japanese, Korean, Arabic,
+  Greek, and accented Latin all normalized to the empty string and therefore to
+  `SHA-256("")`. Four unrelated facts written in the same non-Latin script were
+  absorbed into one engram, with three silently destroyed and four reported as
+  successes. Fixed in the #896/#900 audit pass; a migration command (`plur
+  reindex-hashes --apply`) ships alongside so existing stale hashes can be repaired.
+
+- **`reindex-hashes --apply` now runs inside the store lock** (#900): the previous
+  implementation did an unlocked whole-corpus read-modify-write, reproduced as a
+  silent data-loss race on a 4,642-engram store at 6/6. Moved inside
+  `_withStoreLock` and refuses to write the shared empty-string hash (reporting
+  those rows as a third category rather than stamping the collision hash onto every
+  previously-affected engram).
+
+- **Eleven post-merge defects** (#900): a three-pass audit over the 2026-08-13
+  batch — data-loss, adversarial, and evaluator passes run blind to each other —
+  found and fixed: non-Latin dedup collapse (#896), locked reindex, local-scope
+  remote-DELETE, unbounded fetch inside store lock, supersedes flush ordering,
+  inject whole-corpus writer, outbox merge-back snapshot revert, circuit breaker
+  dual state file, Japanese loanword tokenizer split, `searchBM25Exhaustive`
+  readonly whitelist gap, and a `saveEngrams` quarantine precondition. Every fix
+  has a test that fails when the fix is reverted.
 
 - **js-yaml advisory GHSA-5p4m-2wfm-xmqj (high)**: the root pnpm override permitted 4.3.0.
   Tightened to `>=4.3.1 <5`.

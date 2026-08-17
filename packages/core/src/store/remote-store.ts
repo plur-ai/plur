@@ -37,6 +37,13 @@ export const RemoteRowSchema = z.object({
   domain: z.string().nullish(),
 }).passthrough()
 
+// #912: Truncate and strip control chars from server error bodies before
+// persisting them (append → _outbox.last_error) or surfacing in thrown errors.
+// Mirrors the treatment applied to server-assigned ids in append().
+function sanitiseResponseBody(raw: string): string {
+  return raw.slice(0, 200).replace(/[^\x20-\x7E]/g, '?')
+}
+
 /**
  * Remote engram store — speaks to a PLUR Enterprise server over its
  * public REST API (/api/v1).
@@ -167,7 +174,7 @@ export class RemoteStore implements EngramStore {
   async me(): Promise<{ username: string; org_id: string; role: string; scopes: string[]; scope_metadata: ScopeMetadata[] }> {
     const r = await fetch(`${this.apiBase}/me`, { headers: this.headers() })
     if (!r.ok) {
-      const text = await r.text().catch(() => '')
+      const text = sanitiseResponseBody(await r.text().catch(() => ''))
       throw new Error(`Remote /me failed: ${r.status} ${text}`)
     }
     const body = await r.json().catch(() => ({})) as Partial<{ username: string; org_id: string; role: string; scopes: unknown[]; scope_metadata: unknown[] }>
@@ -380,7 +387,7 @@ export class RemoteStore implements EngramStore {
       body,
     })
     if (!r.ok) {
-      const text = await r.text().catch(() => '')
+      const text = sanitiseResponseBody(await r.text().catch(() => ''))
       throw new Error(`Remote store append failed: ${r.status} ${text}`)
     }
     const data = await r.json().catch(() => ({})) as { id?: unknown }
@@ -510,7 +517,7 @@ export class RemoteStore implements EngramStore {
       body: JSON.stringify({ signal }),
     })
     if (!r.ok) {
-      const text = await r.text().catch(() => '')
+      const text = sanitiseResponseBody(await r.text().catch(() => ''))
       throw new Error(`Remote feedback failed: ${r.status} ${text}`)
     }
     this.cache = null
@@ -543,7 +550,7 @@ export class RemoteStore implements EngramStore {
     })
     if (r.status === 404) return null
     if (!r.ok) {
-      const text = await r.text().catch(() => '')
+      const text = sanitiseResponseBody(await r.text().catch(() => ''))
       throw new Error(`Remote patch failed: ${r.status} ${text}`)
     }
     // #327: the server confirmed the write (2xx). Capture the pre-write row

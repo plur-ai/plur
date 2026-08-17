@@ -246,6 +246,39 @@ export function getExtractionProvenance(
   return parsed.success ? parsed.data : null
 }
 
+// === NEW: Measurement context (issue #869) ===
+//
+// Captures the configuration under which a numeric or benchmark-derived claim
+// was measured. The motivating incidents:
+//   - max_tokens 16384 (bench, operation context) asserted for a different op
+//   - 87% wall-clock (local-git) asserted as a general ratio (inverts on GitLab)
+//
+// Both had the same shape: evidence gathered under configuration A was asserted
+// for configuration B, with the difference invisible in the stored artifact.
+// `measured_under` makes the measurement context explicit so tension-aware
+// retrieval (#203) can store differing-condition measurements as refinements
+// rather than contradictions.
+//
+// Kept deliberately loose (.passthrough()) so future fields can be added by
+// producers without invalidating consumers. All fields optional — absent =
+// unknown, not "not applicable".
+
+export const MeasuredUnderSchema = z.object({
+  /** Model or system variant under which the measurement was taken (e.g. 'claude-opus-4', 'gpt-4o'). */
+  model: z.string().optional(),
+  /** Source environment type (e.g. 'local-git', 'gitlab', 'bench', 'production'). */
+  source_type: z.string().optional(),
+  /** Hardware or runtime tier (e.g. 'M3-Pro-36GB', 'A100', 'CI-runner'). */
+  hardware: z.string().optional(),
+  /** Dataset or workload identifier (e.g. 'LongMemEval-S', 'plur-bench-2026-Q2'). */
+  dataset: z.string().optional(),
+  /** ISO date (YYYY-MM-DD) the measurement was taken. */
+  date: z.string().optional(),
+}).passthrough()
+  .describe('Context under which a numeric or benchmark-derived measurement was taken (#869). All fields optional — absent means unknown.')
+
+export type MeasuredUnder = z.infer<typeof MeasuredUnderSchema>
+
 // === Main Engram Schema ===
 
 export const EngramSchema = z.object({
@@ -399,6 +432,13 @@ export const EngramSchema = z.object({
    */
   pinned: z.boolean().optional()
     .describe('Always-load flag. Pinned engrams bypass the keyword-relevance gate and are eligible for injection every session. Use sparingly.'),
+
+  /** Measurement context for numeric or benchmark-derived claims (#869).
+   *  Records model, source_type, hardware, dataset, and/or date under which the
+   *  asserted value was measured, so differing-condition measurements can be
+   *  stored as refinements rather than tensions (#203). Absent for non-numeric
+   *  engrams; all sub-fields are optional even when the object is present. */
+  measured_under: MeasuredUnderSchema.optional(),
 })
 
 /**

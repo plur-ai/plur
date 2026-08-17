@@ -128,9 +128,18 @@ const recallHandler: ToolDefinition['handler'] = async (args, plur) => {
       results: results.map(e => {
         const supersededBy = e.relations?.superseded_by
         const annotation = supersededBy?.length ? ` [superseded by ${supersededBy.join(', ')}]` : ''
+        const raw = e as any
+        // #869: surface measured_under so callers can see the measurement context.
+        const measuredUnder: Record<string, string> | undefined = raw.measured_under
+        const measuredAnnotation = measuredUnder
+          ? ' [measured under: ' + Object.entries(measuredUnder)
+              .filter(([, v]) => v != null)
+              .map(([k, v]) => `${k}=${v}`)
+              .join(', ') + ']'
+          : ''
         return {
           id: e.id,
-          statement: e.statement + annotation,
+          statement: e.statement + annotation + measuredAnnotation,
           type: e.type,
           scope: e.scope,
           domain: e.domain,
@@ -143,6 +152,7 @@ const recallHandler: ToolDefinition['handler'] = async (args, plur) => {
           // evolution), so this changes when the content does; `id` is what
           // stays fixed.
           content_hash: (e as { content_hash?: string }).content_hash,
+          ...(measuredUnder ? { measured_under: measuredUnder } : {}),
         }
       }),
       count: results.length,
@@ -196,9 +206,17 @@ const recallHandler: ToolDefinition['handler'] = async (args, plur) => {
       const raw = e as any
       const supersededBy = (e as any).relations?.superseded_by
       const annotation = supersededBy?.length ? ` [superseded by ${supersededBy.join(', ')}]` : ''
+      // #869: surface measured_under so callers can see the measurement context.
+      const measuredUnder: Record<string, string> | undefined = raw.measured_under
+      const measuredAnnotation = measuredUnder
+        ? ' [measured under: ' + Object.entries(measuredUnder)
+            .filter(([, v]) => v != null)
+            .map(([k, v]) => `${k}=${v}`)
+            .join(', ') + ']'
+        : ''
       const base: Record<string, unknown> = {
         id: e.id,
-        statement: e.statement + annotation,
+        statement: e.statement + annotation + measuredAnnotation,
         type: e.type,
         scope: e.scope,
         domain: e.domain,
@@ -206,6 +224,7 @@ const recallHandler: ToolDefinition['handler'] = async (args, plur) => {
         // Same fact, not same record — see the note on the other recall
         // formatter. Both shapes carry it or an agent gets it only sometimes.
         content_hash: raw.content_hash,
+        ...(measuredUnder ? { measured_under: measuredUnder } : {}),
       }
       if (includeEpisodes && raw.episode_ids?.length > 0) {
         const episodes = plur.timeline({ search: '' })
@@ -985,6 +1004,17 @@ function getAllToolDefinitions(): ToolDefinition[] {
           valid_until: { type: 'string', description: 'ISO date (YYYY-MM-DD) the knowledge expires — inject/recall skip the engram after this date. Set this for any time-bound fact (offers, deadlines, temporary endpoints). When omitted, an explicit expiry phrase in the statement ("valid until 31 May 2026") is auto-parsed and echoed back (#347)' },
           supersedes: { type: 'array', items: { type: 'string' }, description: 'Engram IDs this statement intentionally replaces (#240). Writes relations.supersedes on the new engram and the reverse superseded_by edge on each local target. Supersedes-linked pairs are skipped by tension scans — an intentional update is not a contradiction. Use when updating a standing fact (new version, changed rule) rather than contradicting it.' },
           session_id: { type: 'string', description: 'Session this write belongs to (from plur_session_start). Resolves the session default scope (incl. mid-session plur_session_scope changes) when no explicit scope is passed. Optional when one session is open; pass it when several are (#243).' },
+          measured_under: {
+            type: 'object',
+            description: 'Measurement context for numeric or benchmark-derived claims (#869). Records the conditions under which the asserted value was measured — model, source_type, hardware, dataset, date. When present, differing-condition measurements are stored as refinements rather than tensions. Omit for non-numeric engrams.',
+            properties: {
+              model: { type: 'string', description: 'Model or system variant (e.g. "claude-opus-4", "gpt-4o")' },
+              source_type: { type: 'string', description: 'Source environment type (e.g. "local-git", "gitlab", "bench", "production")' },
+              hardware: { type: 'string', description: 'Hardware or runtime tier (e.g. "M3-Pro-36GB", "A100", "CI-runner")' },
+              dataset: { type: 'string', description: 'Dataset or workload identifier (e.g. "LongMemEval-S", "plur-bench-2026-Q2")' },
+              date: { type: 'string', description: 'ISO date (YYYY-MM-DD) the measurement was taken' },
+            },
+          },
         },
         required: ['statement'],
       },
@@ -1009,6 +1039,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
           valid_from: args.valid_from as string | undefined,
           valid_until: args.valid_until as string | undefined,
           supersedes: args.supersedes as string[] | undefined,
+          measured_under: args.measured_under as Record<string, string> | undefined,
           // #243: resolve which session's default scope governs this write —
           // explicit session_id first, else the lone open session. Never
           // persisted on the engram (LearnContext.session selects a scope, it
@@ -1189,6 +1220,17 @@ function getAllToolDefinitions(): ToolDefinition[] {
                 commitment: { type: 'string', enum: ['exploring', 'leaning', 'decided', 'locked'], description: 'How firmly the user has committed (default: leaning)' },
                 valid_from: { type: 'string', description: 'ISO date (YYYY-MM-DD) the knowledge becomes valid' },
                 valid_until: { type: 'string', description: 'ISO date (YYYY-MM-DD) the knowledge expires' },
+                measured_under: {
+                  type: 'object',
+                  description: 'Measurement context for numeric/benchmark claims (#869). Fields: model, source_type, hardware, dataset, date.',
+                  properties: {
+                    model: { type: 'string' },
+                    source_type: { type: 'string' },
+                    hardware: { type: 'string' },
+                    dataset: { type: 'string' },
+                    date: { type: 'string' },
+                  },
+                },
               },
               required: ['statement'],
             },
@@ -1216,6 +1258,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
             pinned: e.pinned as boolean | undefined,
             valid_from: e.valid_from as string | undefined,
             valid_until: e.valid_until as string | undefined,
+            measured_under: e.measured_under as Record<string, string> | undefined,
           },
         }))
         const maxLlmCalls = typeof args.max_llm_calls === 'number' ? args.max_llm_calls : undefined

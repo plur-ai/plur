@@ -732,6 +732,28 @@
     "pinned": {
       "type": "boolean",
       "description": "Always-load flag. Pinned engrams bypass the keyword-relevance gate and are eligible for injection every session. Use sparingly."
+    },
+    "measured_under": {
+      "type": "object",
+      "properties": {
+        "model": {
+          "type": "string"
+        },
+        "source_type": {
+          "type": "string"
+        },
+        "hardware": {
+          "type": "string"
+        },
+        "dataset": {
+          "type": "string"
+        },
+        "date": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true,
+      "description": "Context under which a numeric or benchmark-derived measurement was taken (#869). All fields optional — absent means unknown."
     }
   },
   "required": [

@@ -16,6 +16,7 @@ import {
   readConfig,
 } from '../mcp-config.js'
 import { hasPlurCursorHooks, readCursorHooksConfig } from '../cursor-hooks.js'
+import { computeContentHash, detectPlurStorage, loadEngrams } from '@plur-ai/core'
 
 /**
  * plur doctor — diagnose a Claude Code / Claude Desktop / Cursor installation.
@@ -95,6 +96,20 @@ interface DoctorReport {
    * --full` and never fails the overall check.
    */
   pgliteGemmaReembedNeeded: boolean
+  /**
+   * Number of engrams whose `content_hash` does not match
+   * `computeContentHash(statement)`. These act as dedup attractors — a
+   * re-learn of an unrelated statement that happens to hash to the same old
+   * value is absorbed into the wrong engram (#852, #896).
+   *
+   * Non-zero after upgrading from a version where `normalizeStatement` used
+   * ASCII `\w` — any statement containing non-ASCII letters hashed to a
+   * different value under the old normalizer. Pure-ASCII stores are unaffected.
+   *
+   * Advisory only: does not fail the overall check. Fix: run
+   * `plur reindex-hashes --apply`.
+   */
+  staleContentHashes: number
   overall: 'ok' | 'fail'
 }
 
@@ -195,6 +210,28 @@ function commandIsExecutableFile(path: string): boolean {
     return true
   } catch {
     return false
+  }
+}
+
+/**
+ * Count engrams whose `content_hash` does not match the current
+ * `computeContentHash(statement)` result (#911). Pure read — no writes, no
+ * lock. Errors (missing store, unreadable file) return 0 so a fresh install
+ * with no engrams file does not surface a spurious advisory.
+ */
+function countStaleContentHashes(flags: GlobalFlags): number {
+  try {
+    const paths = detectPlurStorage(flags.path || process.env.PLUR_PATH || undefined)
+    const engrams = loadEngrams(paths.engrams)
+    let count = 0
+    for (const e of engrams) {
+      if (!e.statement) continue
+      const stored = (e as { content_hash?: string }).content_hash
+      if (stored && stored !== computeContentHash(e.statement)) count++
+    }
+    return count
+  } catch {
+    return 0
   }
 }
 
@@ -622,10 +659,17 @@ function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<Doctor
     const pgliteGemmaReembedNeeded =
       process.env.PLUR_BACKEND === 'pglite' && process.env.PLUR_EMBEDDER === 'embedding-gemma'
 
+    // #911: count engrams whose content_hash is out of step with their
+    // statement under the current normalizer. Non-zero after upgrading from a
+    // version where normalizeStatement used ASCII \w — any statement with
+    // non-ASCII letters hashed differently under the old normalizer, leaving
+    // those engrams as dedup attractors. Advisory: does not fail overall.
+    const staleContentHashes = countStaleContentHashes(flags)
+
     return {
       configs, hooksInstalled, mcpRegistered, datacoreCollision, staleNpxHooks, staleNpxMcp,
       hookShim, mcpShim, handshake, cursorHandshake, embedder,
-      cursorProjectDetected, cursorWired, pgliteGemmaReembedNeeded, overall,
+      cursorProjectDetected, cursorWired, pgliteGemmaReembedNeeded, staleContentHashes, overall,
     }
   })
 }
@@ -717,6 +761,16 @@ export function printText(report: DoctorReport, flags?: GlobalFlags): void {
     outputText('   does NOT auto-rebuild — recall keeps serving the old (wrong-prefix) embedding')
     outputText('   space silently. The SQLite/flat-file backend auto-rebuilds; PGLite cannot.')
     outputText('   Fix: run `plur sync --reembed --full` once to rebuild the vectors.')
+  }
+
+  if (report.staleContentHashes > 0) {
+    outputText('')
+    outputText(`⚠  ${report.staleContentHashes} engram${report.staleContentHashes === 1 ? '' : 's'} have a stale content_hash (#896, #911).`)
+    outputText('   This happens after upgrading from a version where normalizeStatement used ASCII \\w')
+    outputText('   — any statement containing non-ASCII letters hashes differently under the new')
+    outputText('   normalizer. Stale hashes act as dedup attractors: re-learns that hash-match the')
+    outputText('   old value are absorbed into the wrong engram. Pure-ASCII stores are unaffected.')
+    outputText('   Fix: run `plur reindex-hashes --apply` to recompute and repair.')
   }
 
   outputText('')
