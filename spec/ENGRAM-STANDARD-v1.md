@@ -417,6 +417,7 @@ ignore the values.
 | `episode_ids` | string[] | default `[]` | Source episode IDs. |
 | `summary` | string | ≤80 chars | Injection-friendly short form. |
 | `pinned` | boolean | | Always-load flag; bypasses keyword gating. Use sparingly. |
+| `measured_under` | object | `model?`, `source_type?`, `hardware?`, `dataset?`, `date?` (ISO date) | Measurement conditions for numeric/benchmark engrams — which model, environment type, hardware tier, dataset, and date the value was recorded under. Allows tension-aware retrieval to treat differently-measured values as refinements rather than contradictions (#869). |
 
 ### 4.13 Required-field summary
 

@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'fs'
+import path from 'path'
 import {
   buildEngramSchema,
   buildPackManifestSchema,
@@ -52,5 +53,24 @@ describe('spec JSON Schema drift (#315)', () => {
     expect(engram.properties.insight).toBeDefined()
     // Draft 2020-12 identity.
     expect(engram.$schema).toBe('https://json-schema.org/draft/2020-12/schema')
+  })
+
+  it('ENGRAM-STANDARD-v1.md documents every top-level EngramSchema field (#924)', () => {
+    const schema = buildEngramSchema() as { properties: Record<string, unknown> }
+    const standardPath = path.join(path.dirname(ENGRAM_SCHEMA_PATH), 'ENGRAM-STANDARD-v1.md')
+    const standardText = readFileSync(standardPath, 'utf8')
+
+    // Fields whose documentation pattern does not use the bare `fieldname`
+    // backtick form and are therefore excluded from the field-presence check:
+    //   exchange — §4.11 documents sub-fields as `exchange.foo`; the parent
+    //              object is implied by the section heading.
+    //   insight  — complex metacognition sub-object; warrants a dedicated
+    //              section, tracked in plur-ai/plur#924 follow-up.
+    const EXCLUDED = new Set(['exchange', 'insight'])
+
+    const missing = Object.keys(schema.properties).filter(
+      field => !EXCLUDED.has(field) && !standardText.includes(`\`${field}\``),
+    )
+    expect(missing).toEqual([])
   })
 })
