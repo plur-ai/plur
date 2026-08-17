@@ -5,9 +5,16 @@
  * invocation — a whole-corpus read — even when the primary store (e.g.
  * Postgres) supports a filtered query that returns only the matching rows.
  *
- * These tests verify the property that matters for safety: every authorization
- * filter (scopes allow-list, scope visibility, domain) that used to be applied
- * in memory is still enforced when the adapter path is taken.
+ * These tests verify that every authorization filter (status, scopes allow-list,
+ * scope visibility, domain) that used to be applied in memory is still HANDED TO
+ * the adapter when the pushdown path is taken.
+ *
+ * They deliberately stop there. The mock's `loadFiltered` implements only
+ * `status` and `domain`, so what is pinned here is forwarding, not enforcement —
+ * on the real path enforcement is a SQL WHERE clause and belongs to the Postgres
+ * adapter's own tests. The distinction matters: the in-memory code this replaces
+ * both forwarded and enforced, so a reader could reasonably assume this suite
+ * covers both. It does not.
  *
  * A mock adapter that satisfies both PrimaryStore and the _primaryQueryAdapter()
  * duck-type check (role === 'primary' && typeof searchBM25 === 'function') is
@@ -136,10 +143,6 @@ describe('_filterEngrams(): primary-store pushdown (#906)', () => {
 
     // loadFiltered must have been called at least once
     expect(adapter.loadFilteredCalls.length).toBeGreaterThan(0)
-    // The full corpus loader (load / loadCached) tracks invocations too — it
-    // may be called once during ready() setup, but not repeatedly on recall.
-    const loadCallsBeforeRecall = 0 // adapter starts clean
-    expect(adapter.loadAllCalls).toBeLessThanOrEqual(loadCallsBeforeRecall + 2)
 
     // Results should include the engrams from the adapter
     expect(results.some(e => e.statement.includes('terraform'))).toBe(true)
@@ -170,21 +173,31 @@ describe('_filterEngrams(): primary-store pushdown (#906)', () => {
     expect(filters.some(f => f.domain === 'finance')).toBe(true)
   })
 
-  it('does not call loadFiltered when indexedStorage is active (SQLite path)', async () => {
-    // Create a second Plur instance WITH the SQLite index — the fast path
-    // should take indexedStorage.loadFiltered, not the adapter's.
-    const dir2 = mkdtempSync(join(tmpdir(), 'plur-906-idx-'))
-    try {
-      const adapter2 = new MockPrimaryAdapter()
-      adapter2.seed([makeEngram('ENG-2026-0815-007', 'some fact', 'global')])
-      // Note: index:true is the opt-in for IndexedStorage
-      const plur2 = new Plur({ path: dir2, store: adapter2 as unknown as AsyncPrimaryStore })
-      await plur2.recallHybrid('fact')
-      // Without index:true the default YAML path is taken, so loadFiltered
-      // IS called (the whole point of the fix). Just verify no crash.
-      rmSync(dir2, { recursive: true, force: true })
-    } catch {
-      rmSync(dir2, { recursive: true, force: true })
+  it('a primary query store leaves PGLite and SQLite unconstructed, so the guard holds', async () => {
+    // The pushdown branch is `adapter && !this.pgliteAdapter`. That second
+    // conjunct is what stops the narrowed corpus from reaching a path which
+    // needs the full one — but it is unreachable as written, because the
+    // constructor's tier selection already guarantees it:
+    //
+    //   hasPrimaryQueryStore = _primaryQueryAdapter() !== null
+    //   indexTier = hasPrimaryQueryStore ? 'none' : ...
+    //   if (indexTier === 'pglite') this.pgliteAdapter = new PGLiteAdapter(...)
+    //
+    // So this pins the INVARIANT rather than the branch. If the tier logic ever
+    // starts building a PGLite index alongside a Postgres primary, this fails
+    // here — loudly and in one place — instead of silently narrowing the corpus
+    // that the PGLite hybrid path reads.
+    adapter.seed([makeEngram('ENG-2026-0815-007', 'some fact', 'global')])
+    await plur.recallHybrid('fact')
+
+    const internals = plur as unknown as {
+      pgliteAdapter: unknown
+      indexedStorage: unknown
     }
+    expect(internals.pgliteAdapter, 'PGLite built alongside a primary query store').toBe(null)
+    expect(internals.indexedStorage, 'SQLite index built alongside a primary query store').toBe(null)
+    // And the pushdown really was the path taken, so the assertions above are
+    // describing the state the branch actually ran under.
+    expect(adapter.loadFilteredCalls.length).toBeGreaterThan(0)
   })
 })

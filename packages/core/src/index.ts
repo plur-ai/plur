@@ -4443,10 +4443,18 @@ export class Plur {
         // filtered load. Use it instead of _loadAllEngrams + in-memory filter:
         // one scoped query replaces a full table read on every recallHybrid call.
         //
-        // PGLite is excluded even though it also exposes role='primary' — its
-        // SQLite index tracks only file-backed stores, and the PGLite hybrid
-        // path needs the full corpus (including packs and remote stores) that
-        // _loadAllEngrams provides.
+        // `!pgliteAdapter` is a BELT, not a live branch: the two cannot both be
+        // set. `pgliteAdapter` is constructed only when `indexTier === 'pglite'`,
+        // and that tier is chosen only when `hasPrimaryQueryStore` is false —
+        // i.e. exactly when `_primaryQueryAdapter()` returns null. So whenever
+        // `adapter` is non-null, `pgliteAdapter` is already null by construction.
+        //
+        // Kept because the invariant lives in the constructor's tier selection,
+        // far from here, and the consequence of it changing is silent: the
+        // PGLite hybrid path needs the full corpus (packs + remote stores) that
+        // _loadAllEngrams provides, so taking this branch with PGLite active
+        // would narrow the corpus rather than fail. Pinned by
+        // `filter-engrams-primary-pushdown.test.ts`.
         //
         // Temporal validity and min_strength are applied below, same as every
         // other path. _engramsOutsidePrimaryStore applies active/scope/domain
