@@ -40,6 +40,21 @@ import { createHash } from 'crypto'
  * `plur reindex-hashes` exists to repair. Run it after upgrading; that is the
  * intended migration, and it is why the two shipped together.
  */
+/**
+ * Version of the `normalizeStatement` output contract.
+ *
+ * v1 — ASCII `\w`; stripped diacritics and every non-Latin script before
+ *      hashing (the collapse documented above).
+ * v2 — `\p{L}\p{N}\p{M}_`; preserves them.
+ *
+ * Bump this on any change that alters normalized output for a statement that
+ * previously normalized to something non-empty, and add a migration alongside
+ * it: every stored `content_hash` written under the old contract becomes stale
+ * at that moment, and nothing else in the store records which contract it was
+ * written under. Migration `20260813-006` is the one that carries v1 → v2.
+ */
+export const HASH_NORMALIZER_VERSION = 2
+
 const NON_WORD = /[^\p{L}\p{N}\p{M}_\s]/gu
 
 export function normalizeStatement(statement: string): string {
