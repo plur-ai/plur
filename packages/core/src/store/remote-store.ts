@@ -40,8 +40,28 @@ export const RemoteRowSchema = z.object({
 // #912: Truncate and strip control chars from server error bodies before
 // persisting them (append → _outbox.last_error) or surfacing in thrown errors.
 // Mirrors the treatment applied to server-assigned ids in append().
+//
+// CONTROL CHARACTERS ONLY (#923). The first cut used `[^\x20-\x7E]`, which is
+// every code point outside printable ASCII — so a server returning a localised
+// error produced a row of question marks in `plur outbox`, the one surface that
+// exists to answer "why is this write stuck?":
+//
+//   'エラー: 認証に失敗しました'  -> '???: ?????????'
+//   'Ошибка: неверный токен'   -> '??????: ???????? ?????'
+//   'Échec de authentification' -> '?chec de authentification'
+//
+// Both classes neutralise the escape-injection vector identically — that is
+// what \x00-\x1F and \x7F cover — so the wider class bought nothing and cost
+// the diagnostic. It was also the same ASCII-only assumption #896 had just
+// been fixed for one layer down, in `normalizeStatement`.
+//
+// Truncation is by CODE POINT, not UTF-16 unit. `String.prototype.slice` cuts
+// mid-surrogate, and a lone surrogate in this value is persisted to YAML —
+// so the bound has to respect character boundaries, and it has to run AFTER
+// the substitution so the replacement characters are counted too.
 function sanitiseResponseBody(raw: string): string {
-  return raw.slice(0, 200).replace(/[^\x20-\x7E]/g, '?')
+  const cleaned = raw.replace(/[\x00-\x1F\x7F]/g, '?')
+  return Array.from(cleaned).slice(0, 200).join('')
 }
 
 /**
