@@ -2,29 +2,43 @@
  * #905 — the schema and `nextCommitment`'s prose must agree.
  *
  * The docstring claimed deployments could extend the commitment enum with
- * `'draft'` and pointed at "the extension note in `schemas/engram.ts`". No such
- * note existed, and no such extension: `commitment` is a closed enum, so an
- * engram carrying `'draft'` never reaches `nextCommitment` — it fails
- * validation and is quarantined at load.
+ * `'draft'` via the schema's `passthrough()`. That mechanism cannot work:
+ * `passthrough()` preserves undeclared *keys*, not out-of-enum *values* for a
+ * declared key. So the prose and the schema genuinely disagreed.
  *
- * These tests pin BOTH sides, so the two cannot drift apart again: the schema
- * really does reject the value the prose claimed, and the defensive branch
- * really does leave unknown values alone for the cases that can still reach it.
+ * #908 resolved the disagreement in the direction the issue asked for — by
+ * widening the enum to include `'draft'` — rather than by deleting the claim.
+ * `commitment` is therefore now a closed enum of FIVE values, and the prose is
+ * true. Core stores and recalls a `draft` engram like any other; withholding it
+ * is left to deployments that implement a review queue.
+ *
+ * These tests pin BOTH sides so they cannot drift apart again. The schema side
+ * matters specifically: #908's widening is otherwise enforced only at compile
+ * time, through `typecheck:tests`. That is a strong guarantee while that job
+ * runs, but it lives outside the test job — so a runtime assertion is what
+ * keeps the enum honest if the typecheck job is ever made optional.
  */
 import { describe, it, expect } from 'vitest'
 import { nextCommitment } from '../src/feedback.js'
 import { EngramSchema } from '../src/schemas/engram.js'
 
+const CANONICAL = ['exploring', 'leaning', 'decided', 'locked', 'draft'] as const
+
 describe('commitment: schema and nextCommitment agree (#905)', () => {
-  it('the schema REJECTS the value the docstring used to advertise', () => {
+  it('the schema ACCEPTS the value the docstring advertises (#908)', () => {
     const parsed = EngramSchema.shape.commitment.safeParse('draft')
-    expect(parsed.success, "'draft' parses — then the docstring was right and this test is the bug")
-      .toBe(false)
+    expect(parsed.success, "'draft' is rejected — then #908's widening has been reverted")
+      .toBe(true)
   })
 
-  it('accepts exactly the four canonical values', () => {
-    for (const v of ['exploring', 'leaning', 'decided', 'locked']) {
+  it('accepts exactly the five canonical values, and nothing else', () => {
+    for (const v of CANONICAL) {
       expect(EngramSchema.shape.commitment.safeParse(v).success, v).toBe(true)
+    }
+    // Closed, not open: without this the test above passes against a plain
+    // z.string() and would stop describing an enum at all.
+    for (const v of ['archived', 'lokced', 'DRAFT', '']) {
+      expect(EngramSchema.shape.commitment.safeParse(v).success, v).toBe(false)
     }
   })
 
@@ -41,7 +55,12 @@ describe('commitment: schema and nextCommitment agree (#905)', () => {
     // written by a newer version, a hand-edited file, or an engram constructed
     // without parsing. Advancing a state this function does not understand
     // would silently rewrite somebody else's semantics.
-    for (const v of ['draft', 'archived', 'lokced']) {
+    //
+    // `draft` is deliberately NOT in this list any more: since #908 it is a
+    // known value, and the reason it does not advance is a review-queue
+    // guarantee rather than defensive ignorance. That case is pinned in
+    // feedback.test.ts ('does not promote a review-queue draft out of review').
+    for (const v of ['archived', 'lokced']) {
       expect(nextCommitment(v), `${v} was advanced`).toBe(v)
     }
   })
