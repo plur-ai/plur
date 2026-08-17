@@ -5,8 +5,10 @@ LangChain memory adapter for [PLUR](https://plur.ai) — plug persistent, local-
 ## Install
 
 ```bash
-pip install plur-langchain
+pip install "plur-langchain @ git+https://github.com/plur-ai/plur.git#subdirectory=packages/langchain"
 ```
+
+> **Note:** `plur-langchain` is not yet on PyPI — use the git install above until [#915](https://github.com/plur-ai/plur/issues/915) is resolved.
 
 Requires Node.js (for the `@plur-ai/cli` runtime that PLUR shells out to) and `@plur-ai/mcp` installed.
 

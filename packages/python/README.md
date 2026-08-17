@@ -8,8 +8,10 @@ stored as plain YAML on your disk with zero-cost local search. `plur-ai` is the
 Pythonic way to use it from any Python agent stack.
 
 ```bash
-pip install plur-ai
+pip install "plur-ai @ git+https://github.com/plur-ai/plur.git#subdirectory=packages/python"
 ```
+
+> **Note:** `plur-ai` is not yet on PyPI — use the git install above until [#915](https://github.com/plur-ai/plur/issues/915) is resolved.
 
 ## Quickstart
 
