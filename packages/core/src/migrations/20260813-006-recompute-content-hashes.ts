@@ -12,9 +12,16 @@ import { computeContentHash, isHashable } from '../content-hash.js'
  * written under v1 and are stale for any statement containing a character the
  * old ASCII `\w` stripped. `Plur.repairContentHashes` (the CLI's
  * `plur reindex-hashes`) repairs them, but only when a user knows to run it.
- * Nothing prompts them to, so an upgraded store does not self-heal and keeps
- * matching on hashes that no longer describe their statements. That gap is
- * #911; this closes it by making the repair part of the upgrade.
+ *
+ * #911 tracked the discoverability gap and is closed: the 0.18.0 changelog
+ * names the affected population and the command (its option A), and `plur
+ * doctor` counts stale hashes and prints the remedy (#919, its option B).
+ * What #911's options did not include is folding the repair into `plur
+ * migrate` — the step an upgrading user runs anyway — which is what this
+ * migration adds. Note this is NOT #911's rejected option C (rewrite on
+ * first load): `plur migrate` is an explicit write command that runs under
+ * the corpus lock with a backup and rollback, not a write smuggled into a
+ * read path.
  *
  * ## It must agree with `repairContentHashes`, not merely resemble it
  *
@@ -53,7 +60,7 @@ import { computeContentHash, isHashable } from '../content-hash.js'
  */
 export const migration: Migration = {
   id: '20260813-006-recompute-content-hashes',
-  description: 'Recompute content_hash with the Unicode-aware normalizer (#896, closes #911)',
+  description: 'Recompute content_hash with the Unicode-aware normalizer (#896, #911)',
   up(engrams: Engram[]): Engram[] {
     return engrams.map(e => {
       if (!e.statement || !isHashable(e.statement)) return e
