@@ -25,7 +25,7 @@ export const RemoteRowSchema = z.object({
   statement: z.string().min(1),
   type: z.enum(['behavioral', 'terminological', 'procedural', 'architectural']).optional(),
   pinned: z.boolean().optional(),
-  commitment: z.enum(['exploring', 'leaning', 'decided', 'locked']).optional(),
+  commitment: z.enum(['exploring', 'leaning', 'decided', 'locked', 'draft']).optional(),
   visibility: z.enum(['private', 'public', 'template']).optional(),
   // Fields rendered into agent context or used in arithmetic — type confusion
   // here either throws at injection time (confidence_score.toFixed in

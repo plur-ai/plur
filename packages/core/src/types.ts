@@ -18,7 +18,7 @@ export interface LearnContext {
   abstract?: string | null
   derived_from?: string | null
   /** Commitment level. Defaults to 'leaning' for new engrams. */
-  commitment?: 'exploring' | 'leaning' | 'decided' | 'locked'
+  commitment?: 'exploring' | 'leaning' | 'decided' | 'locked' | 'draft'
   /** Reason for locking (required when commitment='locked'). */
   locked_reason?: string
   /** Explicit memory_class override (SP2 Idea 3). Auto-set from type if not provided. */

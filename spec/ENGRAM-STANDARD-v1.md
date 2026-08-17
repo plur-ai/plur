@@ -405,7 +405,7 @@ ignore the values.
 | Field | Type | Range / enum | Semantics |
 |---|---|---|---|
 | `content_hash` | string | | Hash of normalized statement, for dedup. |
-| `commitment` | string | `exploring` \| `leaning` \| `decided` \| `locked` | Epistemic commitment level. |
+| `commitment` | string | `exploring` \| `leaning` \| `decided` \| `locked` \| `draft` | Epistemic commitment level. `draft` marks the engram as pending human approval — core stores and recalls it normally; enforcement is left to deployments with a review queue. |
 | `locked_at` | string | | When commitment became `locked`. |
 | `locked_reason` | string | | Why locked. |
 | `write_count` | integer | ≥0, default 1 | Same-scope re-learn count. Engram retires only at 0. Renamed from `reference_count` (#866); implementations MUST backfill on first parse. |

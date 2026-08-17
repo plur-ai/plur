@@ -219,7 +219,7 @@ describe('injection engine', () => {
     // #348: commitment and confidence are distinct fields. These used to assert
     // `Confidence: <commitment>` with the numeric score HIDDEN — encoding the bug
     // where a low-confidence engram read as maximally certain. Now both show.
-    for (const level of ['exploring', 'leaning', 'decided', 'locked'] as const) {
+    for (const level of ['exploring', 'leaning', 'decided', 'locked', 'draft'] as const) {
       it(`renders "Commitment: ${level}" ALONGSIDE the confidence float`, () => {
         const wire = makeWire({ commitment: level })
         const text = formatWithLayer([wire], 3)

@@ -15,10 +15,7 @@ import {
 } from '../src/feedback.js'
 import type { Engram } from '../src/schemas/engram.js'
 
-// `commitment` is widened to `string` on purpose: these tests cover values
-// outside core's enum (a deployment may add `draft`), and `Partial<Engram>`
-// would narrow it straight back to the enum.
-const mk = (over: Omit<Partial<Engram>, 'commitment'> & { commitment?: string } = {}): Engram & { commitment?: string } => ({
+const mk = (over: Partial<Engram> = {}): Engram => ({
   id: 'ENG-2026-0729-001',
   statement: 'a statement',
   type: 'behavioral',
