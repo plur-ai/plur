@@ -4,12 +4,12 @@
 
 Your agents' memory, on a dashboard.
 
-- `plur ui` opens it locally
+- Open it: `plur dashboard`
 - Recall stats and written-per-day
 - Also inside DeepSeek Harness
 - `plur migrate` heals stale hashes
 
-**The memory dashboard.** `plur ui` opens a local web dashboard of everything your
+**The memory dashboard.** `plur dashboard` opens a local web view of everything your
 agents learned — every engram, what actually gets recalled and how often, and a
 written-per-day chart with the most-recalled list. It speaks English and
 中文, stays read-only and local-only by default, and the same dashboard rides
@@ -39,7 +39,7 @@ its dry-run (`plur reindex-hashes`, no flag) reports the count without writing.
 
 ### Added
 
-- **`plur ui` opens a local memory viewer** (alias: `plur dashboard`; `plur status`
+- **`plur dashboard` opens a local memory viewer** (alias: `plur ui`; `plur status`
   points at it) — every engram, what gets recalled and how
   often, a written-per-day chart, and the most-recalled list. Selecting a row expands the
   whole engram. Read-only: browsing memory never mutates it, including through a lazy write

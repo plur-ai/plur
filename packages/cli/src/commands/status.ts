@@ -25,7 +25,7 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
     // Discoverability, not decoration: the dashboard is on-demand by design
     // (it serves the whole store with no auth, so nothing auto-starts it),
     // which means the one place a user learns it exists is a hint like this.
-    outputInfo('  Browse it:    plur ui', flags)
+    outputInfo('  Browse it:    plur dashboard', flags)
     // A store PLUR could not read must be visible here above all places (audit
     // 2026-08-03, finding 14). Core reports these and the text surface dropped
     // them, so a corrupt registry printed as a healthy `Packs: 0` — the same
