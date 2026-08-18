@@ -52,7 +52,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   await new Promise<void>((resolve, reject) => {
     server.once('error', (error: NodeJS.ErrnoException) => {
       reject(error.code === 'EADDRINUSE'
-        ? new Error(`Port ${opts.port} is already in use. Try: plur ui --port ${opts.port + 1}`)
+        ? new Error(`Port ${opts.port} is already in use. Try: plur dashboard --port ${opts.port + 1}`)
         : error)
     })
     server.listen(opts.port, opts.host, resolve)

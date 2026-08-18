@@ -35,7 +35,7 @@ Commands:
   capture <summary>       Record an episode
   timeline [query]        Query episode timeline
   status                  System health check
-  ui                      Open the memory dashboard in a browser (alias: dashboard)
+  dashboard               Open the memory dashboard in a browser (alias: ui)
   receipt [--days N]      What your memory retrieved for you
   sync                    Cross-device sync
   packs list              List installed packs
@@ -107,9 +107,9 @@ const COMMANDS: Record<string, string> = {
   timeline: './commands/timeline.js',
   status: './commands/status.js',
   ui: './commands/ui.js',
-  // `dashboard` is an alias for `ui` — the two names users guess first.
-  // mlflow made `ui` the convention for a local metrics viewer; minikube
-  // made `dashboard`. Both land here; `ui` stays the documented canonical.
+  // `dashboard` is the documented canonical; `ui` remains as an alias.
+  // Both names users guess land here — `dashboard` (minikube's convention,
+  // and the word the release copy teaches) and `ui` (mlflow's convention).
   dashboard: './commands/ui.js',
   receipt: './commands/receipt.js',
   sync: './commands/sync.js',

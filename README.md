@@ -171,7 +171,7 @@ Ask your agent: *"What's my PLUR status?"* — it should call `plur_status` and 
 ### Read your memory
 
 ```bash
-plur ui
+plur dashboard
 ```
 
 Opens a local page listing every engram: what was learned, what actually gets
