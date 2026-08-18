@@ -41,6 +41,18 @@ export interface UiServerOptions {
    * window on someone's desktop is a poor thing to expose to a network.
    */
   openPath?: string
+  /**
+   * Set to `true` when the server has been intentionally bound to a
+   * non-loopback address via `--host`.
+   *
+   * The `hostIsLoopback()` check is a DNS-rebinding defence: it catches a
+   * rebound request that arrives with the attacker's hostname in `Host` while
+   * the socket is bound to 127.0.0.1. Once the bind is widened that defence
+   * is meaningless — any host on the network can connect regardless — and
+   * keeping the check just refuses legitimate LAN clients. Skip it when the
+   * caller has made an explicit, informed decision to widen the bind.
+   */
+  widened?: boolean
 }
 
 /** Reveal a directory in the platform's file manager. Best-effort. */
@@ -146,8 +158,12 @@ export function createUiServer(opts: UiServerOptions): Server {
 
       const url = new URL(req.url ?? '/', 'http://localhost')
 
-      // Rebinding check first: it applies to every route, including the read.
-      if (!hostIsLoopback(req)) {
+      // Rebinding check: catches a DNS-rebound request whose `Host` header
+      // still carries the attacker's domain while the socket is on 127.0.0.1.
+      // Not applied when the server was intentionally widened — the bind is
+      // already open to the network, so the check would only block legitimate
+      // LAN clients without stopping anything.
+      if (!opts.widened && !hostIsLoopback(req)) {
         res.writeHead(403, headers)
         res.end(errorPage('Refused: this viewer only answers to localhost.'))
         return
