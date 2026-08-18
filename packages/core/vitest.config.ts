@@ -23,6 +23,13 @@ export const PGLITE_SUITES = [
   // Not named pglite, but PGLite-backed (it uses the same PGLITE_TIMEOUT) and
   // fails in the same way under load.
   'test/sync-index-error.test.ts',
+  // Same again: boots PGLite AND cold-loads the embedder per case. Blew its
+  // timeouts on three different cases across two 2026-08-18 release runs while
+  // passing 14/14 alone — the exact pattern this pool exists for.
+  'test/embedding-staleness-812.test.ts',
+  // Pack install with a local HTTP stub server plus embedding of the pack's
+  // engrams; starved under the same load, failed the same way, passes alone.
+  'test/packs-url.test.ts',
   // Server-Postgres suite (ADR-0005). Same reason, one step further: it talks
   // to a real database and boots PGLite alongside it for the cross-adapter
   // parity check. Skips entirely unless PLUR_TEST_POSTGRES_URL is set.

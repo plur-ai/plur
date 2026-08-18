@@ -29,6 +29,15 @@ export const SPAWN_SUITES = [
   'test/hook-session-guard.test.ts',
   'test/list.test.ts',
   'test/tensions-lifecycle.test.ts',
+  // Added 2026-08-18: the next members of the same family, observed blowing
+  // their 5s spawn budgets across two release-gate runs and one review run,
+  // each passing in isolation. Same remedy as #793/#889, for the same reason.
+  'test/import.test.ts',
+  'test/readonly-commands.test.ts',
+  'test/recall.test.ts',
+  'test/rescope.test.ts',
+  'test/sync.test.ts',
+  'test/timeline.test.ts',
 ]
 
 export default defineConfig({
