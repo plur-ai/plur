@@ -23,6 +23,16 @@
 #                    No file mutations, no network. Use to iterate CHANGELOG
 #                    copy until the tweet fits 280 chars.
 #   --skip-tweet     Full release but don't post to X.
+#   --trust-ci       Replace the LOCAL test suite (step 3) with a verification
+#                    that HEAD equals origin/main and that the five required CI
+#                    contexts are green on that exact commit. Same safety
+#                    purpose, different evidence: use when the release machine
+#                    is too contended for the timing-sensitive suites to pass
+#                    honestly (four aborts on 2026-08-18, every failure a flake
+#                    passing in isolation). The tree still differs from the
+#                    verified commit by the version bumps this script just
+#                    made — the packaged-artifact smoke test downstream is what
+#                    covers those, as it does on every release.
 #
 # Tweet validation: tweet text is generated from CHANGELOG and validated
 # (length ≤ 270) BEFORE step 4 (git). A too-long tweet would fail at the X
@@ -71,6 +81,7 @@ cd "$REPO_ROOT"
 # --- Parse args ---
 VERSION=""
 DRY_RUN=false
+TRUST_CI=false
 SKIP_TWEET=false
 PREVIEW_TWEET=false
 CLAW_VERSION=""
@@ -80,6 +91,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --dry-run) DRY_RUN=true; shift ;;
     --skip-tweet) SKIP_TWEET=true; shift ;;
+    --trust-ci) TRUST_CI=true; shift ;;
     --preview-tweet) PREVIEW_TWEET=true; shift ;;
     --claw)
       shift
@@ -403,6 +415,30 @@ echo ""
 
 # --- 3. Test ---
 echo "--- Step 3: Test ---"
+if [ "$TRUST_CI" = true ]; then
+  # Trust-CI mode: the gate's purpose is "never ship an untested tree". A
+  # green required-context set on the identical commit satisfies that purpose
+  # with uncontended evidence, where a loaded release machine cannot.
+  echo "  --trust-ci: verifying required CI on the exact commit instead of running locally"
+  git fetch origin main --quiet
+  LOCAL_SHA=$(git rev-parse HEAD)
+  REMOTE_SHA=$(git rev-parse origin/main)
+  if [ "$LOCAL_SHA" != "$REMOTE_SHA" ]; then
+    echo "ERROR: HEAD ($LOCAL_SHA) is not origin/main ($REMOTE_SHA) — CI evidence would describe a different tree. Aborting."
+    exit 1
+  fi
+  CI_FAILED=false
+  for CTX in "test (20)" "test (22)" "test (24)" "test (26)" "smoke-packaged"; do
+    CONCLUSION=$(gh api "repos/plur-ai/plur/commits/$LOCAL_SHA/check-runs?per_page=100"       --jq "[.check_runs[] | select(.name == \"$CTX\")] | max_by(.started_at) | .conclusion // \"missing\"" 2>/dev/null || echo "query-failed")
+    echo "  $CTX: $CONCLUSION"
+    [ "$CONCLUSION" = "success" ] || CI_FAILED=true
+  done
+  if [ "$CI_FAILED" = true ]; then
+    echo "ERROR: required CI is not uniformly green on $LOCAL_SHA. Run without --trust-ci, or fix CI. Aborting."
+    exit 1
+  fi
+  echo "  ✓ all five required contexts green on $LOCAL_SHA"
+else
 TEST_OUTPUT=$(pnpm test 2>&1 || true)
 PASS_COUNT=$(echo "$TEST_OUTPUT" | grep -o '[0-9]* passed' | head -1)
 FAIL_COUNT=$(echo "$TEST_OUTPUT" | grep -o '[0-9]* failed' | head -1 || echo "0 failed")
@@ -418,6 +454,7 @@ if [ "$REAL_FAILS" -gt 0 ] 2>/dev/null; then
   echo "ERROR: $REAL_FAILS unexpected test failures. Aborting."
   echo "$FAIL_LINES"
   exit 1
+fi
 fi
 echo ""
 
