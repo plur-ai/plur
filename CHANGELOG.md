@@ -2,18 +2,21 @@
 
 ## 0.18.0 (unreleased)
 
-**The memory dashboard.** `plur ui` opens a local web dashboard of everything your
-agents learned — every engram, what actually gets recalled and how often, what is
-most relied on, and how much of the store just sits there. Memory you could only
-trust before, you can now look at.
+Your agents' memory, on a dashboard.
 
-- `plur ui` — engram browser, recall frequency, a written-per-day chart, and the
-  most-recalled list. Read-only, local-only by default.
-- The same dashboard rides inside DeepSeek Harness as `/plur-memory`, via the new
-  native `@plur-ai/dsh` plugin — engrams land in the system prompt, no tool call.
-- English and 中文.
-- Upgrades self-repair: `plur migrate` now recomputes stale content hashes, and
-  `plur doctor` counts them. `plur_learn` records measurement conditions.
+- `plur ui` opens it locally
+- Recall stats and written-per-day
+- Also inside DeepSeek Harness
+- `plur migrate` heals stale hashes
+
+**The memory dashboard.** `plur ui` opens a local web dashboard of everything your
+agents learned — every engram, what actually gets recalled and how often, and a
+written-per-day chart with the most-recalled list. It speaks English and
+中文, stays read-only and local-only by default, and the same dashboard rides
+inside DeepSeek Harness as `/plur-memory` via the new native `@plur-ai/dsh`
+plugin — engrams land in the system prompt, no tool call. Upgrades self-repair:
+`plur migrate` recomputes stale content hashes, `plur doctor` counts them, and
+`plur_learn` records measurement conditions.
 
 ### Migration note — non-ASCII stores
 
