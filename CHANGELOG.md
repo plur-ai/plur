@@ -2,12 +2,18 @@
 
 ## 0.18.0 (unreleased)
 
-Memory you can look at, PLUR inside DeepSeek Harness, and several correctness fixes.
+**The memory dashboard.** `plur ui` opens a local web dashboard of everything your
+agents learned — every engram, what actually gets recalled and how often, what is
+most relied on, and how much of the store just sits there. Memory you could only
+trust before, you can now look at.
 
-- `plur ui` — a local page showing what your agents learned and actually use
-- `@plur-ai/dsh` — native DeepSeek Harness plugin, engrams in the prompt
-- Both viewers speak English and 中文
-- `plur doctor` surfaces stale content hashes; `plur_learn` records measurement conditions
+- `plur ui` — engram browser, recall frequency, a written-per-day chart, and the
+  most-recalled list. Read-only, local-only by default.
+- The same dashboard rides inside DeepSeek Harness as `/plur-memory`, via the new
+  native `@plur-ai/dsh` plugin — engrams land in the system prompt, no tool call.
+- English and 中文.
+- Upgrades self-repair: `plur migrate` now recomputes stale content hashes, and
+  `plur doctor` counts them. `plur_learn` records measurement conditions.
 
 ### Migration note — non-ASCII stores
 
@@ -16,15 +22,17 @@ Korean, Arabic, Greek, accented Latin, etc.), those engrams have a stale
 `content_hash` after upgrading. The normalizer used ASCII-only `\w` in older
 versions, so non-Latin text normalized to the empty string and every such engram
 shared `SHA-256("")` — they collided with each other and absorbed unrelated writes.
-The normalizer is fixed in this cycle; the old hashes on disk are not rewritten
-automatically.
+The normalizer is fixed in this cycle, and the repair ships with it.
 
 **Affected population:** stores with any non-ASCII letter in at least one statement.
 Pure-ASCII stores are unaffected — hashes are byte-identical before and after.
 
-**How to repair:** run `plur reindex-hashes --apply` once after upgrading. The dry-run
-(`plur reindex-hashes`, no flag) reports the count first. `plur doctor` now also
-surfaces a count and reminder if any stale hashes are detected (#911).
+**How to repair:** run `plur migrate` once after upgrading — migration 006 recomputes
+the stale hashes, under the store lock, with a backup taken first and a rollback on
+failure. `plur reindex-hashes --apply` remains available for the repair alone, and
+its dry-run (`plur reindex-hashes`, no flag) reports the count without writing.
+`plur doctor` also counts stale hashes and prints the remedy if any are detected
+(#911).
 
 ### Added
 
