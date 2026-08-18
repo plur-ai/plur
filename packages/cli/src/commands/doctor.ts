@@ -770,7 +770,8 @@ export function printText(report: DoctorReport, flags?: GlobalFlags): void {
     outputText('   — any statement containing non-ASCII letters hashes differently under the new')
     outputText('   normalizer. Stale hashes act as dedup attractors: re-learns that hash-match the')
     outputText('   old value are absorbed into the wrong engram. Pure-ASCII stores are unaffected.')
-    outputText('   Fix: run `plur reindex-hashes --apply` to recompute and repair.')
+    outputText('   Fix: run `plur migrate` (migration 006 recomputes them, with backup and rollback)')
+    outputText('   or `plur reindex-hashes --apply` for the repair alone.')
   }
 
   outputText('')
