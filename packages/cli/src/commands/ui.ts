@@ -38,15 +38,19 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   const plur = createPlur(flags, { readonly: true })
   const status = await plur.status()
 
+  const isLoopback = opts.host === '127.0.0.1' || opts.host === 'localhost'
   const server = createUiServer({
     // Reloaded per request, so learning something in another window and
     // refreshing shows it.
     load: async () => (await plur.list()) as unknown as readonly EngramRow[],
     where: String(status.storage_root ?? ''),
-    // Loopback only. Revealing a folder is harmless locally and rude remotely.
-    ...(opts.host === '127.0.0.1' || opts.host === 'localhost'
-      ? { openPath: String(status.storage_root ?? '') }
-      : {}),
+    // Reveal folder only on loopback: opening a window on someone's desktop
+    // is a poor thing to expose to a network.
+    ...(isLoopback ? { openPath: String(status.storage_root ?? '') } : {}),
+    // When the bind is widened, skip the Host-header rebinding check — it
+    // would refuse every legitimate LAN client while providing no protection
+    // against the actual exposure (anyone on the network can connect).
+    ...(isLoopback ? {} : { widened: true }),
   })
 
   await new Promise<void>((resolve, reject) => {
