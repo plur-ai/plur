@@ -227,6 +227,16 @@ its dry-run (`plur reindex-hashes`, no flag) reports the count without writing.
   path with nothing to read — a crash exactly where readonly is most wanted
   (shared multi-tenant storage).
 
+- **Hybrid recall no longer reads the whole corpus when a Postgres primary can
+  filter server-side** (#906, #922): `recallHybridWithMeta` called
+  `_loadAllEngrams` — a full table read — on every invocation even when the
+  primary store supports a scoped query. `_filterEngrams` now pushes
+  status/scope/domain filters down to the adapter, with packs and remote
+  secondary stores merged through the same loader every other read path uses.
+  `ReadonlyStoreGuard` forwards `loadFiltered`, so guarded multi-tenant stores
+  keep the pushdown instead of demoting to the fallback; a query-capable store
+  without `loadFiltered` takes the fallback read rather than crashing.
+
 - **`plur doctor` reports the live remote state, not a cached failure** (#864,
   #873): one cold-start timeout stamped a degradation warning onto every later
   response for the life of the process, pointing the operator at a healthy server.
