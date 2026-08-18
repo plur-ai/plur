@@ -39,7 +39,8 @@ its dry-run (`plur reindex-hashes`, no flag) reports the count without writing.
 
 ### Added
 
-- **`plur ui` opens a local memory viewer** — every engram, what gets recalled and how
+- **`plur ui` opens a local memory viewer** (alias: `plur dashboard`; `plur status`
+  points at it) — every engram, what gets recalled and how
   often, a written-per-day chart, and the most-recalled list. Selecting a row expands the
   whole engram. Read-only: browsing memory never mutates it, including through a lazy write
   path such as decay. Binds `127.0.0.1` by default and deliberately — the viewer serves an
