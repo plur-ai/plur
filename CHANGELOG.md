@@ -2,12 +2,18 @@
 
 ## 0.18.0 (unreleased)
 
-Memory you can look at, PLUR inside DeepSeek Harness, and several correctness fixes.
+**The memory dashboard.** `plur ui` opens a local web dashboard of everything your
+agents learned — every engram, what actually gets recalled and how often, what is
+most relied on, and how much of the store just sits there. Memory you could only
+trust before, you can now look at.
 
-- `plur ui` — a local page showing what your agents learned and actually use
-- `@plur-ai/dsh` — native DeepSeek Harness plugin, engrams in the prompt
-- Both viewers speak English and 中文
-- `plur doctor` surfaces stale content hashes; `plur_learn` records measurement conditions
+- `plur ui` — engram browser, recall frequency, a written-per-day chart, and the
+  most-recalled list. Read-only, local-only by default.
+- The same dashboard rides inside DeepSeek Harness as `/plur-memory`, via the new
+  native `@plur-ai/dsh` plugin — engrams land in the system prompt, no tool call.
+- English and 中文.
+- Upgrades self-repair: `plur migrate` now recomputes stale content hashes, and
+  `plur doctor` counts them. `plur_learn` records measurement conditions.
 
 ### Migration note — non-ASCII stores
 
@@ -16,15 +22,17 @@ Korean, Arabic, Greek, accented Latin, etc.), those engrams have a stale
 `content_hash` after upgrading. The normalizer used ASCII-only `\w` in older
 versions, so non-Latin text normalized to the empty string and every such engram
 shared `SHA-256("")` — they collided with each other and absorbed unrelated writes.
-The normalizer is fixed in this cycle; the old hashes on disk are not rewritten
-automatically.
+The normalizer is fixed in this cycle, and the repair ships with it.
 
 **Affected population:** stores with any non-ASCII letter in at least one statement.
 Pure-ASCII stores are unaffected — hashes are byte-identical before and after.
 
-**How to repair:** run `plur reindex-hashes --apply` once after upgrading. The dry-run
-(`plur reindex-hashes`, no flag) reports the count first. `plur doctor` now also
-surfaces a count and reminder if any stale hashes are detected (#911).
+**How to repair:** run `plur migrate` once after upgrading — migration 006 recomputes
+the stale hashes, under the store lock, with a backup taken first and a rollback on
+failure. `plur reindex-hashes --apply` remains available for the repair alone, and
+its dry-run (`plur reindex-hashes`, no flag) reports the count without writing.
+`plur doctor` also counts stale hashes and prints the remedy if any are detected
+(#911).
 
 ### Added
 
@@ -78,6 +86,17 @@ surfaces a count and reminder if any stale hashes are detected (#911).
   can now record their measurement conditions (date, dataset, config, hardware),
   preventing stale numbers from being treated as eternal facts out of context.
 
+- **`PLUR_MODEL_CACHE_DIR` places the embedding-model cache** (#886): transformers.js
+  derives its cache from the package location and reads no environment variable, so
+  an npm-installed consumer kept the ~128MB model inside `node_modules` and every
+  `npm ci` destroyed it. Precedence: `PLUR_MODEL_CACHE_DIR`, then `HF_HOME`
+  (honoured even though the library ignores it, because an operator reasonably
+  expects it to work), then the library default.
+
+- **`injection_count` field** (#866): counts `inject()` selections separately from
+  `recall()` activations. High injection with low positive feedback is the
+  efficacy-failure signal #865 needs.
+
 ### Fixed
 
 - **`plur doctor` sanitises remote error response bodies** (#912): `RemoteStore.append`
@@ -119,6 +138,153 @@ surfaces a count and reminder if any stale hashes are detected (#911).
 
 - **js-yaml advisory GHSA-5p4m-2wfm-xmqj (high)**: the root pnpm override permitted 4.3.0.
   Tightened to `>=4.3.1 <5`.
+
+- **Remote error sanitisation no longer destroys non-ASCII diagnostics** (#923, #925):
+  the truncation added above stripped `[^\x20-\x7E]` — everything outside printable
+  ASCII — so a server error in Japanese, Cyrillic or any accented Latin arrived in
+  `outbox.last_error` as a row of nothing. The escape-injection vector it exists to
+  block is entirely within the control-character range, so the class is narrowed to
+  `[\x00-\x1F\x7F]` and the 200-character truncation is now code-point-safe rather
+  than UTF-16-safe (an emoji at the boundary was being cut in half).
+
+- **`ENGRAM-STANDARD-v1.md` documents `measured_under`, and cannot silently drift
+  again** (#924, #927): the field shipped in the schema but not in the published
+  interoperability standard, so an implementer reading the standard concluded it was
+  not part of v1 while the reference implementation accepted and wrote it. The JSON
+  Schema was already drift-guarded in CI; the markdown was not. A test now asserts
+  every top-level `EngramSchema` field appears in the standard. Two fields are
+  excluded with the reason recorded: `exchange` (documented as `exchange.*`
+  sub-fields) and `insight` (genuinely undocumented — a real gap, tracked rather
+  than hidden).
+
+- **Deliberate feedback is no longer erased by mere use** (#888): passive retrieval
+  moved `retrieval_strength` by +0.10 while an explicit positive rating moved it
+  +0.05 and a negative one −0.10 — so a star was worth half of being incidentally
+  fetched, and a considered "this is wrong" was exactly cancelled by the next recall
+  that returned the engram. The field saturated at 1.0 within three recalls, after
+  which no feedback in either direction was visible in it at all. Retrieval and
+  rating are now separated rather than rebalanced, so each remains legible.
+
+- **Local cosine dedup actually runs when no LLM is configured** (#854, #856): the
+  cosine fallback existed only in comments — candidates were fetched, filtered, and
+  discarded unread, so every install without an LLM key had exact-hash dedup only
+  and wrote every reworded near-duplicate. Measured on the store: 131 near-duplicate
+  engrams in 63 clusters over five months. Local similarity now decides, and both
+  write paths report `dedup.near_duplicates` instead of guessing a threshold.
+
+- **Every script is tokenized, not just ASCII and Han** (#890): measured before the
+  fix, Japanese kana, Korean, Arabic and Hindi returned `[]` from the FTS tokenizer,
+  Russian and Thai returned only embedded English words, and accented Latin split at
+  each accent (`déploiement` → `ploiement`). Nonspacing marks (`\p{M}`) join the
+  character class, space-less runs are stripped from the word path, and the length
+  floor respects dense scripts where two-character words are ordinary (도커).
+
+- **`plur_learn` reports ids in the namespaced form recall returns** (#914, #916):
+  the write report handed back the server-assigned id while every read path returns
+  the namespaced one, so a caller that recorded what it had just written held a
+  shape no read path produces. The namespacing rule lives in one function
+  (`namespaceEngramId`) so the two surfaces cannot drift apart. (The batch path was
+  missed and still misreports — tracked as #930.)
+
+- **`supersedes` is remapped or refused on outbox flush, never dropped** (#863,
+  #892): an edge pointing at a local id was silently discarded when the engram was
+  delivered to a remote store. It is now remapped when the target resolves and the
+  write refused with the reason recorded when it cannot — an explicit failure
+  instead of quietly severed provenance.
+
+- **A rescoped engram is not later delivered to the store it was moved away from**
+  (#882): the outbox entry kept the original target, so when that host recovered —
+  arbitrarily later — the delivery silently undid the rescope. The pending entry is
+  now cancelled at rescope time.
+
+- **Outbox flush consults the per-host circuit breaker** (#887): the read leg
+  already backed off after three network-class failures; the write leg attempted one
+  full-timeout write per queued engram against a host the client had already given
+  up on, every session start, and never fed its failures back.
+
+- **Remote writes carry `pinned`, `rationale`, `commitment` and `tags`** (#768,
+  in #875): the POST body serialized only statement/scope/domain/type, so a
+  team-scope policy engram written with `pinned: true` was stored without the pin
+  and never bypassed the relevance gate for subscribers.
+
+- **Server `null`s in scope metadata no longer disable covers-based auto-routing**
+  (#880): Zod's `.optional()` rejects `null`, and an unset nullable column is
+  exactly what a server serialises as null — every ordinary scope row failed
+  parsing, vanished inside a `flatMap`, and team knowledge silently stopped
+  reaching team scopes while the admin dashboard showed every scope healthy. The
+  schema now tolerates the shape, and a dropped entry is logged instead of silent.
+
+- **An explicit empty `forbid` list means "not configured", not "forbid nothing"**
+  (#883): `?? default` supplies the default only for null/undefined, so a policy
+  normalised with `forbid: []` turned the sensitive-content scan off while looking
+  more governed than no policy at all. Core's own paths were not live-exposed (the
+  schema already coerces `[]` to the default — pinned by two tests), but the guard
+  was wrong standalone and now defaults on emptiness too.
+
+- **`readonly: true` works on stores that answer queries themselves** (#884):
+  `ReadonlyStoreGuard` forwarded a whitelist that omitted `role`/`searchBM25`, so a
+  guarded query-capable store failed the adapter check and recall fell through to a
+  path with nothing to read — a crash exactly where readonly is most wanted
+  (shared multi-tenant storage).
+
+- **Hybrid recall no longer reads the whole corpus when a Postgres primary can
+  filter server-side** (#906, #922): `recallHybridWithMeta` called
+  `_loadAllEngrams` — a full table read — on every invocation even when the
+  primary store supports a scoped query. `_filterEngrams` now pushes
+  status/scope/domain filters down to the adapter, with packs and remote
+  secondary stores merged through the same loader every other read path uses.
+  `ReadonlyStoreGuard` forwards `loadFiltered`, so guarded multi-tenant stores
+  keep the pushdown instead of demoting to the fallback; a query-capable store
+  without `loadFiltered` takes the fallback read rather than crashing.
+
+- **`plur doctor` reports the live remote state, not a cached failure** (#864,
+  #873): one cold-start timeout stamped a degradation warning onto every later
+  response for the life of the process, pointing the operator at a healthy server.
+  Outcomes now carry their age; present-tense surfaces fall silent past the TTL
+  while doctor keeps history and renders the age.
+
+### Changed — operations that used to succeed can now refuse
+
+- **`forget()` refuses an ambiguous bare id** (#831, #855): ids are minted per
+  store, so one bare id can name several unrelated engrams. `forget` resolved
+  primary-first and retired whichever it reached — in real use it destroyed the
+  wrong engram (history for one id showed three creations across three scopes).
+  An unqualified id that resolves in more than one place is now an error;
+  `{ scope }` disambiguates. Retiring is destructive and not reversible from the
+  caller's side, so refusing beats guessing by a wide margin.
+
+- **`feedback()` refuses an ambiguous bare id across stores** (#850, #851): the
+  same ambiguity, the same resolution — a rating that could land on the wrong
+  engram is refused with the candidate scopes listed, rather than applied to a
+  coin-flip target.
+
+### Changed — forward compatibility
+
+- **`commitment` accepts a fifth value, `draft`** (#905, #908): the schema documented
+  a review-queue state that deployments could supposedly add through the schema's
+  `passthrough()`. That mechanism cannot work — `passthrough()` preserves undeclared
+  *keys*, never an out-of-enum *value* for a declared key — so `commitment: 'draft'`
+  failed validation and was quarantined at load. The enum is widened rather than the
+  claim deleted, because a review queue is genuinely wanted.
+
+  Core **stores and recalls a `draft` engram like any other**; it is not withheld from
+  recall, injection or sync. Enforcement belongs to deployments that implement a queue.
+  A positive feedback signal does not promote it out of review (`nextCommitment`).
+
+  **This is a forward-compatibility break worth planning around.** Widening an enum is
+  safe for readers of old data, but not for writers of new: an engram written with
+  `commitment: 'draft'` **fails validation on an older core** and is quarantined there.
+  In a mixed-version fleet, or a store synced between machines on different versions,
+  upgrade the readers before anything starts writing `draft`.
+
+- **`reference_count` is renamed `write_count`** (#866, #875): the schema field
+  name never matched what the write path set, so the counter never incremented —
+  4,496 of 4,559 engrams stuck at 1 confirmed the bug was universal. `loadEngrams`
+  backfills the legacy key on first parse and strips it on the next write; both
+  decrement sites read `reference_count` as a fallback so an old store arriving
+  mid-decrement does not lose its count. Per the spec: implementations MUST
+  backfill on first parse of old stores. The JSON Schema and
+  `ENGRAM-STANDARD-v1.md` are updated.
 
 ## 0.17.2 (2026-08-04)
 
