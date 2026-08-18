@@ -500,11 +500,20 @@ function getLlmFunction(): LlmFunction | undefined {
 }
 
 /**
- * Strip XML parameter-envelope artifacts from a statement string.
- * When an LLM generates tool calls in the old XML format, the raw statement
- * value sometimes contains the closing tag followed by the full duplicated body:
- *   "clean text</statement>\n\n<parameter name="statement">clean text..."
+ * Strip XML parameter-envelope artifacts from a statement string, and collapse
+ * all line terminators to a single space.
+ *
+ * XML-envelope stripping: when an LLM generates tool calls in the old XML
+ * format the raw value sometimes contains the closing tag followed by the full
+ * duplicated body ("clean text</statement>\n\n<parameter name="statement">…").
  * Truncate at whichever marker appears first.
+ *
+ * Line-terminator collapsing: a statement is a single assertion. Any embedded
+ * newline (or other line-break character) would be treated as an entry boundary
+ * by dsh's flatten(), allowing a statement to mint a fabricated second engram
+ * in the system prompt — trust promotion from pack content to system-prompt
+ * authority. Collapsing here at the write boundary prevents it for every MCP
+ * client. (#940)
  */
 function sanitizeStatement(raw: string): string {
   const markers = ['</statement>', '<parameter name=']
@@ -513,7 +522,7 @@ function sanitizeStatement(raw: string): string {
     const pos = raw.indexOf(m)
     if (pos !== -1 && pos < cut) cut = pos
   }
-  return raw.slice(0, cut).trimEnd()
+  return raw.slice(0, cut).replace(/[\r\n\u2028\u2029\u0085\u000b\u000c\u001c-\u001f]+/g, ' ').replace(/ {2,}/g, ' ').trimEnd()
 }
 
 // Exported so the server dispatch loop can tick it once per tool call (#192).
