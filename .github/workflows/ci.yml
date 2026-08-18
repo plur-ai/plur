@@ -3,8 +3,17 @@ name: CI
 on:
   push:
     branches: [main]
+  # EVERY pull request, not only those targeting main.
+  #
+  # This was `branches: [main]`, so a STACKED pr — one based on another
+  # in-review branch — ran no CI at all. It did not fail; it showed a green
+  # `issue-guard` and read as verified, which is worse than a red check.
+  # Discovered on #903 (based on #900), where three core fixes sat with no
+  # matrix run behind them and nothing said so.
+  #
+  # Stacking is the normal way to keep a review chain moving when one PR
+  # depends on another, so the trigger has to cover it.
   pull_request:
-    branches: [main]
 
 # Principle of least privilege: workflow only needs to checkout and run tests.
 permissions:

@@ -4,8 +4,10 @@ on:
   push:
     branches: [main]
     paths: ['packages/hermes/**', '.github/workflows/hermes.yml']
+  # Every pull request, not only those targeting main — a stacked PR (one based
+  # on another in-review branch) otherwise runs no CI and reads as verified.
+  # See the note in ci.yml.
   pull_request:
-    branches: [main]
     paths: ['packages/hermes/**', '.github/workflows/hermes.yml']
 
   # manual matrix runs (crtahlin review, #541)

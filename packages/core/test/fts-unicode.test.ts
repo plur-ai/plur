@@ -21,7 +21,7 @@
  *      words, which are ordinary in dense scripts — 도커 ("docker") vanished.
  */
 import { describe, it, expect } from 'vitest'
-import { ftsTokenize } from '../src/fts.js'
+import { ftsTokenize, MAX_SPACELESS_RUN_CHARS } from '../src/fts.js'
 
 describe('ftsTokenize covers non-Latin scripts (#833)', () => {
   // Each of these returned [] or near-[] before the fix — the table in the
@@ -152,6 +152,35 @@ describe('script-extension characters join their run, not split it', () => {
     // 々 repeats the preceding character and is Script=Common too.
     const tokens = ftsTokenize('人々の設定')
     expect(tokens).toContain('人々')
+  })
+})
+
+describe('bigram emission is bounded per run (#899)', () => {
+  it('is a no-op for any statement-sized run', () => {
+    // The cap must not touch real engrams. A statement in a space-less script
+    // runs to tens of characters; the bound is 512.
+    const run = '設定'.repeat(20) // 40 chars
+    expect(run.length).toBeLessThan(MAX_SPACELESS_RUN_CHARS)
+    expect(ftsTokenize(run)).toHaveLength(run.length - 1)
+  })
+
+  it('truncates rather than drops a document-sized run', () => {
+    // Dropping would make a long engram unfindable; truncating keeps the
+    // opening, which is the part a query is most likely to share.
+    const run = '設'.repeat(MAX_SPACELESS_RUN_CHARS * 3)
+    const tokens = ftsTokenize(run)
+    expect(tokens.length, 'a long run must still be indexed, just bounded')
+      .toBe(MAX_SPACELESS_RUN_CHARS - 1)
+    expect(tokens.length).toBeLessThan(run.length - 1)
+  })
+
+  it('bounds each run independently, so many short runs are unaffected', () => {
+    // The cap is per RUN. Prose alternating scripts must not lose its later
+    // runs because earlier ones used up a budget.
+    const text = Array.from({ length: 50 }, (_, i) => `note ${i} 設定確認`).join(' ')
+    const tokens = ftsTokenize(text)
+    // 50 runs of 4 chars → 3 bigrams each.
+    expect(tokens.filter(t => t === '設定')).toHaveLength(50)
   })
 })
 

@@ -4,8 +4,10 @@ on:
   push:
     branches: [main]
     paths: ['packages/python/**', 'packages/langchain/**', '.github/workflows/python.yml']
+  # Every pull request, not only those targeting main — a stacked PR (one based
+  # on another in-review branch) otherwise runs no CI and reads as verified.
+  # See the note in ci.yml.
   pull_request:
-    branches: [main]
     paths: ['packages/python/**', 'packages/langchain/**', 'packages/cli/**', 'packages/core/**', '.github/workflows/python.yml']
 
 permissions:

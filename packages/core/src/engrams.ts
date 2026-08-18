@@ -664,15 +664,38 @@ export function engramIdDatePrefix(now: Date = new Date()): string {
   return `ENG-${now.toISOString().slice(0, 10)}-`
 }
 
-export function generateEngramId(existing: Engram[]): string {
+export function generateEngramId(existing: Engram[], alsoAllocated: Iterable<string> = []): string {
   const day = new Date().toISOString().slice(0, 10) // YYYY-MM-DD
   const prefix = `ENG-${day}-`
   // Legacy compact form minted by earlier releases: ENG-YYYYMMDD → ENG-YYYY-MMDD-
   const legacyPrefix = `ENG-${day.slice(0, 4)}-${day.slice(5, 7)}${day.slice(8, 10)}-`
-  const existingNums = existing
-    .filter(e => e.id.startsWith(prefix) || e.id.startsWith(legacyPrefix))
-    .map(e => parseInt(e.id.slice(e.id.startsWith(prefix) ? prefix.length : legacyPrefix.length), 10))
-    .filter(n => !isNaN(n))
-  const next = existingNums.length > 0 ? Math.max(...existingNums) + 1 : 1
-  return `${prefix}${String(next).padStart(3, '0')}`
+  const suffixOf = (id: string): number | null => {
+    const p = id.startsWith(prefix) ? prefix : id.startsWith(legacyPrefix) ? legacyPrefix : null
+    if (p === null) return null
+    const n = parseInt(id.slice(p.length), 10)
+    return isNaN(n) ? null : n
+  }
+  let max = 0
+  for (const e of existing) {
+    const n = suffixOf(e.id)
+    if (n !== null && n > max) max = n
+  }
+  // Ids that were minted and are no longer in the corpus (#816).
+  //
+  // The corpus is not a record of what has been ALLOCATED, only of what
+  // currently exists — `compact()` removes rows and frees their ids, so the
+  // next `learn()` mints an id a different engram already had. Everything
+  // keyed by id that outlives the corpus entry then merges two lives into one:
+  // history narrates a single story out of two, a restore diff reads a
+  // substitution as an edit, and a `supersedes` edge silently re-targets.
+  //
+  // Callers pass the ids this store has minted (from the append-only history
+  // log, which never forgets). Purely additive: this can only raise `max`, so
+  // an incomplete list degrades to the previous behaviour and can never cause
+  // a collision that the previous behaviour would have avoided.
+  for (const id of alsoAllocated) {
+    const n = suffixOf(id)
+    if (n !== null && n > max) max = n
+  }
+  return `${prefix}${String(max + 1).padStart(3, '0')}`
 }

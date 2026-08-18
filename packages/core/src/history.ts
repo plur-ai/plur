@@ -1,4 +1,5 @@
 import * as fs from 'fs'
+import { logger } from './logger.js'
 import { join } from 'path'
 import { createHash } from 'crypto'
 
@@ -38,14 +39,44 @@ export function appendHistory(root: string, event: HistoryEvent): void {
   // Best-effort on the fsync itself: the append already succeeded, and failing
   // the caller's mutation because a diagnostic log could not be flushed would
   // trade a small durability gap for a large availability one.
-  const fd = fs.openSync(filePath, 'a')
+  // Best-effort on the WHOLE append, not just the fsync.
+  //
+  // The reasoning above — that failing a caller's mutation because a
+  // diagnostic log could not be written trades a small durability gap for a
+  // large availability one — was applied only to `fsyncSync`. `openSync` and
+  // `writeSync` were unguarded, so an unwritable history directory (disk full,
+  // permissions, a path that is not a file) propagated out and failed the
+  // learn/forget/feedback that called it. Found by a test that made the month
+  // file unreadable to check id allocation degraded safely: it did not
+  // degrade, it threw EISDIR out of `plur.learn()`.
+  //
+  // Warned rather than silently swallowed: history is load-bearing for `plur
+  // restore` (it NAMES the engrams a restore cannot recover) and, since #816,
+  // for id allocation. A store writing no history is degraded and the operator
+  // needs to know — but the write itself must still land.
   try {
-    fs.writeSync(fd, line)
-    try { fs.fsyncSync(fd) } catch { /* append landed; durability is best-effort */ }
-  } finally {
-    fs.closeSync(fd)
+    const fd = fs.openSync(filePath, 'a')
+    try {
+      fs.writeSync(fd, line)
+      try { fs.fsyncSync(fd) } catch { /* append landed; durability is best-effort */ }
+    } finally {
+      fs.closeSync(fd)
+    }
+  } catch (err) {
+    if (!warnedHistoryPaths.has(filePath)) {
+      warnedHistoryPaths.add(filePath)
+      logger.warning(
+        `[plur] history could not be written to ${filePath}: ${(err as Error).message}. ` +
+        `The operation itself succeeded. While this persists, \`plur restore\` cannot name ` +
+        `unrecoverable engrams and engram-id allocation loses its cross-compaction guarantee (#816).`,
+      )
+    }
   }
 }
+
+/** Warn once per path — this is on the hot write path; a broken log must not
+ *  also become a log flood. */
+const warnedHistoryPaths = new Set<string>()
 
 /**
  * Read history events from a specific month's JSONL file.
@@ -66,6 +97,48 @@ export function readHistory(root: string, yearMonth: string): HistoryEvent[] {
     }
   }
   return events
+}
+
+/**
+ * Ids this store has ever MINTED whose prefix matches one of `prefixes` (#816).
+ *
+ * `generateEngramId` allocates by scanning the corpus for the highest same-day
+ * suffix, so the corpus is the only record of what has been handed out — and
+ * `compact()` removes rows, which frees their ids for reuse. Two different
+ * engrams then share an id, and everything keyed by id that outlives the corpus
+ * entry (history itself, backups and restore diffs, `supersedes` edges, outbox
+ * rows, remote store rows) silently merges two lives into one.
+ *
+ * The repair needs a record of allocation that survives removal. That record
+ * already exists: this log is append-only, keyed by engram id, and written on
+ * every create — nothing is ever deleted from it, which is exactly the property
+ * the corpus lacks. No new state, no store-format change, no migration.
+ *
+ * ## Why this is safe even though history writes are best-effort
+ *
+ * Several call sites wrap `appendHistory` in try/catch, deliberately: a failed
+ * history write must not fail the write it describes. So this can UNDER-report.
+ * That is tolerable because the failure is one-directional — a missed record
+ * leaves allocation exactly where it is today, while every record found can
+ * only push the next suffix higher. Reading more allocation history can never
+ * create a collision, only avoid one.
+ *
+ * Reads a single month (allocation is per-day, so only the current month can
+ * hold same-day ids) and never throws: an unreadable log degrades to today's
+ * corpus-only behaviour rather than blocking a write.
+ */
+export function mintedIdsWithPrefix(root: string, yearMonth: string, prefixes: string[]): string[] {
+  try {
+    const out: string[] = []
+    for (const ev of readHistory(root, yearMonth)) {
+      if (ev.event !== 'engram_created') continue
+      const id = ev.engram_id
+      if (typeof id === 'string' && prefixes.some(p => id.startsWith(p))) out.push(id)
+    }
+    return out
+  } catch {
+    return []
+  }
 }
 
 /**

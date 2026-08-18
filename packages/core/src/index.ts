@@ -37,7 +37,7 @@ import { detectSecrets, detectSensitive, sensitivityCategory, SCAN_TRUNCATED } f
 import type { SecretMatch } from './secrets.js'
 import { SENSITIVITY_CATEGORIES, type ScopeMetadata, type SensitivityCategory } from './schemas/scope-metadata.js'
 import { rankScopes, SCOPE_MATCH_THRESHOLD, type ScopeSignals, type ScopeCandidate } from './scope-routing.js'
-import { appendHistory, readHistoryForEngram, generateEventId, generateInjectionId, computeQueryHash, findLatestInjectionFor, countInjectionEvents, type InjectionEventCounts } from './history.js'
+import { mintedIdsWithPrefix, appendHistory, readHistoryForEngram, generateEventId, generateInjectionId, computeQueryHash, findLatestInjectionFor, countInjectionEvents, type InjectionEventCounts } from './history.js'
 import { computeContentHash, isHashable } from './content-hash.js'
 import { isLocalOnlyScope, assertScopeNamesATarget } from './scope-target.js'
 import { orderBySupersedes } from './outbox-order.js'
@@ -600,6 +600,27 @@ export const COMMITMENT_MULTIPLIER: Record<string, number> = {
  * keeps months of mappings while the file stays well under a megabyte —
  * comfortably more history than the queued-correction case that needs it.
  */
+/**
+ * Total time an ambiguity guard may spend probing remotes, across ALL stores.
+ *
+ * The per-request bound (`fetchBounded`, 30s) stops one host hanging forever;
+ * it does not stop N hosts costing N × 30s. These guards run INSIDE the primary
+ * store lock, whose acquire budget is 180s — so four stalled remotes would
+ * exhaust it and every waiting writer would throw "Failed to acquire lock",
+ * which is the silent-lost-write failure the per-request bound was added to
+ * close. A budget for the WHOLE walk is what actually bounds it.
+ *
+ * 45s: comfortably above one healthy round-trip per store for a handful of
+ * stores, comfortably below the lock budget even when every store is stalled.
+ *
+ * Expiry needs no new policy — it routes into the SAME "cannot tell" branch an
+ * unreachable store already takes, and the two callers already differ there by
+ * design: `forget` refuses (a mis-targeted retire is irreversible), `feedback`
+ * warns and proceeds (a mis-targeted rating is recoverable, and rating is a
+ * hot path).
+ */
+const REMOTE_GUARD_BUDGET_MS = 45_000
+
 const OUTBOX_ID_MAP_MAX = 5000
 
 const LLM_BREAKER_THRESHOLD = 3
@@ -1416,6 +1437,50 @@ export class Plur {
       /* maybeDailyBackup already logs; a backup must never fail a write */
     }
   }
+
+  /**
+   * Ids this store has minted today that are no longer in the corpus (#816).
+   *
+   * Read from the append-only history log, which — unlike the corpus — never
+   * forgets. See `mintedIdsWithPrefix` for why an incomplete answer is safe.
+   */
+  private _mintedTodayIds(): string[] {
+    const day = new Date().toISOString().slice(0, 10)
+    // Cached per process, per day.
+    //
+    // Without this, every learn() re-read and re-parsed a month of
+    // history.jsonl — on the hottest write path, to answer a question whose
+    // answer this process already knows. The cache is keyed on the DAY so it
+    // self-invalidates across midnight (allocation is per-day, so yesterday's
+    // ids are irrelevant to today's suffix).
+    //
+    // Staleness is safe in the one direction that matters: ids minted by
+    // ANOTHER process after this cache was filled are missing from it, which
+    // degrades to the pre-fix corpus-only behaviour rather than introducing a
+    // new hazard — and the corpus scan, which is always fresh, still sees any
+    // engram that other process actually wrote. Ids minted by THIS process are
+    // added below without a re-read, so a burst of writes in one session stays
+    // monotonic without touching disk again.
+    if (this._mintedCache?.day !== day) {
+      this._mintedCache = {
+        day,
+        ids: new Set(mintedIdsWithPrefix(this.paths.root, day.slice(0, 7), [
+          `ENG-${day}-`,
+          `ENG-${day.slice(0, 4)}-${day.slice(5, 7)}${day.slice(8, 10)}-`,
+        ])),
+      }
+    }
+    return [...this._mintedCache.ids]
+  }
+
+  /** Record an id this process just minted, so the next allocation sees it
+   *  without re-reading history (#816). */
+  private _rememberMintedId(id: string): void {
+    const day = new Date().toISOString().slice(0, 10)
+    if (this._mintedCache?.day === day) this._mintedCache.ids.add(id)
+  }
+
+  private _mintedCache: { day: string; ids: Set<string> } | null = null
 
   private _storeAt(path: string): AsyncPrimaryStore {
     if (path === this.paths.engrams) return this._primaryStore
@@ -2448,7 +2513,11 @@ export class Plur {
 
       const id = canDelegate
         ? await ps.nextEngramId!(engramIdDatePrefix())
-        : generateEngramId(allEngrams)
+        : generateEngramId(allEngrams, this._mintedTodayIds())
+      // Claim it in-process immediately (#816). The history record is written
+      // later and best-effort; without this, two writes in the same tick — or
+      // one whose history append fails — could both take the same suffix.
+      this._rememberMintedId(id)
       const now = new Date().toISOString()
       const type = context?.type ?? 'behavioral'
       const cogLevel = TYPE_TO_COGNITIVE[type] ?? 'remember'
@@ -2926,7 +2995,8 @@ export class Plur {
       return await this._withStoreLock(this.paths.engrams, async () => {
         const engrams = await this._primaryStore.load()
         // Replace placeholder ID with a real local ID
-        localPlaceholder.id = generateEngramId([...engrams, ...allEngrams])
+        localPlaceholder.id = generateEngramId([...engrams, ...allEngrams], this._mintedTodayIds())
+        this._rememberMintedId(localPlaceholder.id)
         if (storeEntry) {
           ;(localPlaceholder as any).structured_data = {
             ...((localPlaceholder as any).structured_data ?? {}),
@@ -3398,7 +3468,8 @@ export class Plur {
     // #776: remote leg starts BEFORE the local pipeline (added latency =
     // max(0, remote − local)); merged below via RRF.
     const remotePromise = this._startRemoteRecall(query, options)
-    const filtered = await this._filterEngrams(options)
+    // #906: narrowed by the store when provably equivalent, else the full read.
+    const filtered = await this._hybridCandidates(query, options)
     const limit = options?.limit ?? 20
     const rerank = await this._resolveRerankOptions(options?.rerank)
     const intent = this._resolveIntentProfile(query, options?.intentOverride)
@@ -4301,6 +4372,57 @@ export class Plur {
     return filtered
   }
 
+  /**
+   * Candidates for the hybrid path — narrowed by the store when that is
+   * PROVABLY equivalent, otherwise the full filtered corpus (#906).
+   *
+   * `recallHybridWithMeta` called `_filterEngrams()` unconditionally, and for a
+   * Postgres primary query store that is a full scan on every call: `indexTier`
+   * resolves to 'none' when a primary query store is present (ADR-0005 — such
+   * an adapter IS both the source of truth and the query engine), so it takes
+   * `_filterEngrams`'s else branch and loads everything. `plur_recall` defaults
+   * to hybrid, so that is one whole-corpus read per query, on exactly the
+   * deployment where a scan is expensive.
+   *
+   * Narrowing before RRF would normally be a RECALL-QUALITY change — the vector
+   * leg can only rank what it is given — and would need a plur-bench number
+   * before shipping. This does not, because it narrows only when the adapter
+   * reports `exhausted`: the returned rows are then not a sample but everything
+   * the store holds for that filter, so ranking over them is identical to
+   * ranking over the full corpus BY CONSTRUCTION. Not exhausted, and it falls
+   * back to the previous behaviour untouched.
+   *
+   * The filters are passed through in full. `searchBM25Exhaustive` takes
+   * `{ limit } & StorageFilter`, and StorageFilter carries every field
+   * `_filterEngrams` applies — status, scope, scopes, visibilityGrants,
+   * domain — so this cannot silently drop an authorization filter. That parity
+   * is the precondition for the whole approach; if it ever stops holding, this
+   * must revert to `_filterEngrams` rather than narrow.
+   */
+  private async _hybridCandidates(
+    query: string,
+    options?: RecallOptions & { include_expired?: boolean },
+  ): Promise<Engram[]> {
+    const adapter = this._primaryQueryAdapter()
+    if (adapter?.searchBM25Exhaustive) {
+      try {
+        const narrowed = await adapter.searchBM25Exhaustive(query, {
+          limit: (options?.limit ?? 20) * PUSHDOWN_OVERFETCH,
+          status: 'active',
+          ...(options?.scope !== undefined ? { scope: options.scope } : {}),
+          ...(options?.scopes !== undefined ? { scopes: options.scopes } : {}),
+          ...(options?.domain !== undefined ? { domain: options.domain } : {}),
+          visibilityGrants: this._grantedScopes(),
+        })
+        if (narrowed.exhausted) return narrowed.rows
+      } catch {
+        // A pushdown failure must never fail a recall — fall back to the read
+        // that has always worked.
+      }
+    }
+    return await this._filterEngrams(options)
+  }
+
   private async _filterEngrams(options?: RecallOptions & { include_expired?: boolean }): Promise<Engram[]> {
     let engrams: Engram[]
     if (this.indexedStorage) {
@@ -4678,7 +4800,23 @@ export class Plur {
     // allow-list. A caller that wants pack content in scope names it.
     const permitted = options?.scopes
     const inScope = (e: Engram): boolean => permitted === undefined || permitted.includes(e.scope)
-    const engrams = permitted === undefined ? allEngrams : allEngrams.filter(inScope)
+    // Pack engrams are carried by `packs`, NOT by this array (#901).
+    //
+    // `_loadAllEngrams` merges installed-pack engrams into the corpus and
+    // stamps `_pack` — deliberately, and for RECALL: its own comment says
+    // "include pack engrams so they're searchable via recall". Injection does
+    // not need that merge, because it receives `packs` separately.
+    //
+    // Leaving them in meant `selectAndSpread` scored every pack engram TWICE:
+    // once in its personal-engram loop and once in its pack loop. Not merely a
+    // double count — the two loops apply different rules (the pack loop uses
+    // `packMatchTerms` and is capped by MAX_PER_PACK, the personal loop is
+    // neither), so the stray copy was scored under rules never meant for it,
+    // competed for the same token budget, and could displace a genuinely
+    // distinct engram. It also inflated `total_injections`, which feeds the
+    // H003 activation-rate assumption in hypotheses.yaml.
+    const withoutPacks = allEngrams.filter(e => (e as { _pack?: string })._pack === undefined)
+    const engrams = permitted === undefined ? withoutPacks : withoutPacks.filter(inScope)
     const packs = permitted === undefined
       ? allPacks
       : allPacks
@@ -4930,6 +5068,7 @@ export class Plur {
       // refusing here would trade a real cost for a reversible risk. Warn
       // instead, so the unverified case is visible rather than silent.
       if (!scope) {
+        const guardDeadline = Date.now() + REMOTE_GUARD_BUDGET_MS
         for (const entry of (this.config.stores ?? [])) {
           if (!entry.url) continue
           const serverId = this._stripRemotePrefix(id, entry.scope)
@@ -4937,6 +5076,16 @@ export class Plur {
           let existsRemotely: boolean
           if (remoteCached.length > 0) {
             existsRemotely = remoteCached.some(e => e.id === serverId)
+          } else if (Date.now() >= guardDeadline) {
+            // Budget spent on earlier stores. Same branch an unreachable store
+            // takes — "cannot tell" — so feedback proceeds with a warning
+            // rather than refusing a recoverable operation.
+            existsRemotely = false
+            logger.warning(
+              `[plur] ran out of time probing remotes for an id collision on ${id} `
+              + `(${REMOTE_GUARD_BUDGET_MS}ms budget spent before reaching "${entry.scope}") — `
+              + `rating the LOCAL engram unverified. Pass scope explicitly to skip this walk.`,
+            )
           } else {
             try {
               const driver = this._getRemoteDriver({ url: entry.url!, token: entry.token, scope: entry.scope })
@@ -5042,6 +5191,8 @@ export class Plur {
     }
     // The ID may be prefixed (ENG-GPL-...) from _loadAllEngrams namespacing.
     // Strip the prefix before querying the remote server. See: #86
+    /** Stores this walk could not reach — so "not found" can say so (#907). */
+    const unverifiedStores: string[] = []
     for (const entry of (this.config.stores ?? [])) {
       if (!entry.url) continue
       const serverId = this._stripRemotePrefix(id, entry.scope)
@@ -5052,6 +5203,32 @@ export class Plur {
         continue
       }
       const driver = this._getRemoteDriver({ url: entry.url, token: entry.token, scope: entry.scope })
+      // OWNERSHIP is decided by `existsById`, not `getById` (#907).
+      //
+      // `getById` catches everything and returns null, so a timeout, a 5xx or
+      // an auth rejection was indistinguishable from a genuine 404 — the walk
+      // read silence as "this store does not have it", moved on, and reported
+      // "Engram not found" for an engram the store demonstrably held. That is
+      // the exact collapse `existsById` exists to prevent, quoting its own
+      // docstring: safe for reads that only want the engram, unsafe for
+      // anything deciding whether it is free to act. Deciding which store owns
+      // an id IS deciding whether to act.
+      let owns: boolean
+      try {
+        owns = await driver.existsById(serverId)
+      } catch (err) {
+        // Could not tell. Feedback's established policy is to proceed rather
+        // than refuse — a mis-targeted rating is recoverable and rating is a
+        // hot path — but the store is COUNTED, so the message below cannot
+        // claim knowledge this walk does not have.
+        unverifiedStores.push(entry.scope ?? entry.url!)
+        logger.warning(
+          `[plur] could not reach "${entry.scope ?? entry.url}" while looking for ${id} `
+          + `(${(err as Error).message}) — it may hold this engram.`,
+        )
+        continue
+      }
+      if (!owns) continue
       const found = await driver.getById(serverId)
       if (found) {
         await driver.feedback(serverId, signal)
@@ -5075,7 +5252,7 @@ export class Plur {
     }
 
     // Search pack engrams by scanning pack directories
-    await this._feedbackPack(id, signal)
+    await this._feedbackPack(id, signal, unverifiedStores)
     this._logInjectionOutcome(id, signal)
   }
 
@@ -5586,6 +5763,7 @@ export class Plur {
       // caller has an explicit escape hatch in scope: "primary", which skips
       // this block entirely and needs no network.
       if (!targetScope) {
+        const guardDeadline = Date.now() + REMOTE_GUARD_BUDGET_MS
         for (const entry of (this.config.stores ?? [])) {
           if (!entry.url) continue
           const serverId = this._stripRemotePrefix(id, entry.scope)
@@ -5593,6 +5771,19 @@ export class Plur {
           let existsRemotely: boolean
           if (cached.length > 0) {
             existsRemotely = cached.some(e => e.id === serverId)
+          } else if (Date.now() >= guardDeadline) {
+            // Budget spent on earlier stores. Same branch an unreachable store
+            // takes here — and on THIS path that branch REFUSES, because a
+            // retire is irreversible and "I ran out of time looking" is not
+            // evidence of absence. `scope: "primary"` remains the escape
+            // hatch, and it needs no network at all.
+            throw new Error(
+              `Cannot verify that "${id}" is unambiguous: spent the ${REMOTE_GUARD_BUDGET_MS}ms `
+              + `remote budget before reaching scope "${entry.scope}".\n`
+              + `Retiring now could destroy the wrong engram (#831), so this refuses rather than guessing.\n`
+              + `Pass scope: "primary" to retire the local engram without probing remotes, or pass the `
+              + `remote scope to target it directly.`,
+            )
           } else {
             try {
               const driver = this._getRemoteDriver({ url: entry.url!, token: entry.token, scope: entry.scope })
@@ -5773,6 +5964,11 @@ export class Plur {
 
     // Strip store prefix before querying remote. See: #86
     let refusedBy: string | null = null
+    /** Stores this walk could not reach — so "not found" cannot claim absence
+     *  it never verified (#907). Recorded, NOT thrown on: the existing
+     *  contract (`forget handles remote server error gracefully`, #84) is that
+     *  a degraded fleet must not stop a retire, and that is worth keeping. */
+    const unreachedStores: string[] = []
     for (const entry of (this.config.stores ?? [])) {
       if (!entry.url) continue
       const serverId = this._stripRemotePrefix(id, entry.scope)
@@ -5785,6 +5981,33 @@ export class Plur {
         continue
       }
       const driver = this._getRemoteDriver({ url: entry.url, token: entry.token, scope: entry.scope })
+      // Tri-state (#907). `getById` alone cannot distinguish "this store does
+      // not have it" from "this store did not answer", so an unreachable
+      // remote was walked past and the engram reported as simply not found —
+      // absence the walk never verified, which is #831's harm by another route.
+      //
+      // The walk CONTINUES on `unknown` rather than refusing: `forget handles
+      // remote server error gracefully` (#84) asserts a degraded fleet does
+      // not stop a retire, and that availability is worth keeping. What
+      // changes is only that the store is recorded, so the terminal message
+      // below stops claiming knowledge it does not have. Same resolution
+      // `feedback` already uses.
+      // Optional capability: a driver without `probeById` (an injected stub, a
+      // third-party implementation) keeps the previous two-state behaviour
+      // rather than crashing. Absence of the capability is not a reason to
+      // fail a retire.
+      const ownership: 'owned' | 'absent' | 'unknown' = driver.probeById
+        ? await driver.probeById(serverId)
+        : ((await driver.getById(serverId)) ? 'owned' : 'absent')
+      if (ownership === 'unknown') {
+        unreachedStores.push(entry.scope ?? entry.url!)
+        logger.warning(
+          `[plur] could not reach "${entry.scope ?? entry.url}" while looking for ${id} — `
+          + `it may hold this engram.`,
+        )
+        continue
+      }
+      if (ownership === 'absent') continue
       const found = await driver.getById(serverId)
       if (found) {
         const removed = await driver.remove(serverId)
@@ -5813,7 +6036,16 @@ export class Plur {
         + `Check that the token has delete rights for that scope.`,
       )
     }
-    throw new Error(`Engram not found: ${id}`)
+    // Still "Engram not found" — the existing contract and its test both
+    // depend on that phrase — but never a bare claim of absence when a store
+    // could not be reached (#907).
+    throw new Error(
+      unreachedStores.length > 0
+        ? `Engram not found: ${id} — but ${unreachedStores.length} store(s) could not be reached `
+          + `(${unreachedStores.join(', ')}). This is "not found where I could look", not `
+          + `"does not exist". Retry, or pass scope explicitly to target a store directly.`
+        : `Engram not found: ${id}`,
+    )
   }
 
   /**
@@ -6475,7 +6707,16 @@ export class Plur {
   }
 
   /** Search packs for an engram by ID and apply feedback, writing back to the pack's engrams.yaml. */
-  private async _feedbackPack(id: string, signal: 'positive' | 'negative' | 'neutral'): Promise<void> {
+  /**
+   * @param unreachedStores stores the caller's remote walk could not probe, so
+   *   the terminal "not found" can say so rather than claiming a search that
+   *   did not run (#907).
+   */
+  private async _feedbackPack(
+    id: string,
+    signal: 'positive' | 'negative' | 'neutral',
+    unreachedStores: string[] = [],
+  ): Promise<void> {
     if (!fs.existsSync(this.paths.packs)) throw new Error(`Engram not found: ${id}`)
 
     for (const entry of fs.readdirSync(this.paths.packs)) {
@@ -6508,7 +6749,16 @@ export class Plur {
       if (handled) return
     }
 
-    throw new Error(`Engram not found: ${id}`)
+    // "Not found" must not mean "did not look" (#907). If a store could not be
+    // reached, say which — the caller can retry or pass an explicit scope, and
+    // neither is actionable if the message claims a search that did not run.
+    throw new Error(
+      unreachedStores.length > 0
+        ? `Engram not found: ${id} — but ${unreachedStores.length} store(s) could not be reached `
+          + `(${unreachedStores.join(', ')}). This is "not found where I could look", not "does not exist". `
+          + `Retry, or pass scope explicitly to target a store directly.`
+        : `Engram not found: ${id}`,
+    )
   }
 
   /** Capture an episodic memory. */

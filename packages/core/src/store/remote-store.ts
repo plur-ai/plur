@@ -124,6 +124,40 @@ export class RemoteStore implements EngramStore {
   private get ttlMs(): number { return this.opts.ttlMs ?? 60_000 }
 
   /**
+   * Every request this class makes, bounded (#907 investigation).
+   *
+   * `load()` has been bounded since #504 and `existsById` since the 2026-08-13
+   * data-loss audit — but `/me`, `append`, `getById`, `remove`, `feedback` and
+   * `patch` were all bare `fetch`, inheriting undici's 300s `headersTimeout`.
+   * That is not a slow request, it is a hang: `forget()` and `feedback()` walk
+   * every configured store calling `getById`, several of those paths hold the
+   * primary store lock, and `DEFAULT_ACQUIRE_TIMEOUT` is 180s — so one stalled
+   * host blocks every other writer until they throw "Failed to acquire lock"
+   * and their engram is silently never stored.
+   *
+   * Reproduced while investigating #907: a single `feedback()` against a store
+   * with an unreachable host did not return in 120 seconds.
+   *
+   * One helper rather than six call-site fixes, for the reason this codebase
+   * keeps relearning: a rule enforced by convention at N sites is a rule that
+   * holds at N-1 of them. A seventh endpoint added later inherits the bound.
+   */
+  private async fetchBounded(url: string, init: RequestInit = {}): Promise<Response> {
+    const ctrl = new AbortController()
+    const timer = setTimeout(() => ctrl.abort(), LOAD_FETCH_TIMEOUT_MS)
+    try {
+      return await fetch(url, { ...init, signal: ctrl.signal })
+    } catch (err) {
+      throw ctrl.signal.aborted
+        ? new Error(`request to ${url} timed out after ${LOAD_FETCH_TIMEOUT_MS}ms`)
+        : (err as Error)
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+
+
+  /**
    * Reshape a DB row {id, scope, status, data} into an Engram and validate it.
    * Authoritative columns (id/scope/status) win over anything in `data`. Returns
    * null (and logs) for malformed rows so callers can drop them. (finding #3)
@@ -192,7 +226,7 @@ export class RemoteStore implements EngramStore {
    * Throws on a non-2xx response (caller decides whether to swallow per URL).
    */
   async me(): Promise<{ username: string; org_id: string; role: string; scopes: string[]; scope_metadata: ScopeMetadata[] }> {
-    const r = await fetch(`${this.apiBase}/me`, { headers: this.headers() })
+    const r = await this.fetchBounded(`${this.apiBase}/me`, { headers: this.headers() })
     if (!r.ok) {
       const text = sanitiseResponseBody(await r.text().catch(() => ''))
       throw new Error(`Remote /me failed: ${r.status} ${text}`)
@@ -401,7 +435,7 @@ export class RemoteStore implements EngramStore {
       // when unset so the historical body is byte-identical without it.
       ...(e.source != null                  ? { source: e.source }             : {}),
     })
-    const r = await fetch(`${this.apiBase}/engrams`, {
+    const r = await this.fetchBounded(`${this.apiBase}/engrams`, {
       method: 'POST',
       headers: this.headers({ 'Content-Type': 'application/json' }),
       body,
@@ -447,7 +481,7 @@ export class RemoteStore implements EngramStore {
 
   async getById(id: string): Promise<Engram | null> {
     try {
-      const r = await fetch(`${this.apiBase}/engrams/${encodeURIComponent(id)}`, { headers: this.headers() })
+      const r = await this.fetchBounded(`${this.apiBase}/engrams/${encodeURIComponent(id)}`, { headers: this.headers() })
       if (r.status === 404) return null
       if (!r.ok) return null
       const row = await r.json() as any
@@ -511,9 +545,42 @@ export class RemoteStore implements EngramStore {
     return typeof row?.id === 'string' && row.id === id
   }
 
+  /**
+   * Ownership probe with a THIRD state: `unknown` (#907).
+   *
+   * `getById` collapses "not here" and "could not look" onto `null`, so a walk
+   * using it cannot tell a store that answered 404 from one that never
+   * answered. `existsById` separates them but answers a STRICTER question —
+   * it refuses to treat a bare 200 as proof, because proxies answer 200 with
+   * envelope payloads on unrecognised routes. Swapping it in as an ownership
+   * test broke five tests including "a successful remote retire still
+   * succeeds".
+   *
+   * So ownership here is decided by `reshape`, exactly as `getById` decides
+   * it — same acceptance, no behaviour change for reachable stores — and only
+   * the failure modes are split out.
+   */
+  async probeById(id: string): Promise<'owned' | 'absent' | 'unknown'> {
+    let r: Response
+    try {
+      r = await this.fetchBounded(`${this.apiBase}/engrams/${encodeURIComponent(id)}`, {
+        headers: this.headers(),
+      })
+    } catch {
+      return 'unknown'
+    }
+    if (r.status === 404) return 'absent'
+    // Any other non-ok says nothing about whether the row exists.
+    if (!r.ok) return 'unknown'
+    const row = await r.json().catch(() => null)
+    if (row === null) return 'unknown'
+    return this.reshape(row as { id?: unknown; scope?: unknown; status?: unknown; data?: unknown })
+      ? 'owned' : 'absent'
+  }
+
   /** Remove → DELETE /api/v1/engrams/:id (server soft-retires). */
   async remove(id: string): Promise<boolean> {
-    const r = await fetch(`${this.apiBase}/engrams/${encodeURIComponent(id)}`, {
+    const r = await this.fetchBounded(`${this.apiBase}/engrams/${encodeURIComponent(id)}`, {
       method: 'DELETE',
       headers: this.headers(),
     })
@@ -531,7 +598,7 @@ export class RemoteStore implements EngramStore {
    * Requires server support: see https://github.com/plur-ai/plur/issues/85
    */
   async feedback(id: string, signal: 'positive' | 'negative' | 'neutral'): Promise<void> {
-    const r = await fetch(`${this.apiBase}/engrams/${encodeURIComponent(id)}/feedback`, {
+    const r = await this.fetchBounded(`${this.apiBase}/engrams/${encodeURIComponent(id)}/feedback`, {
       method: 'POST',
       headers: this.headers({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ signal }),
@@ -563,7 +630,7 @@ export class RemoteStore implements EngramStore {
    * (closes the pin/promote/reportFailure remainder of issue #86).
    */
   async patch(id: string, updates: Partial<Engram>): Promise<Engram | null> {
-    const r = await fetch(`${this.apiBase}/engrams/${encodeURIComponent(id)}`, {
+    const r = await this.fetchBounded(`${this.apiBase}/engrams/${encodeURIComponent(id)}`, {
       method: 'PATCH',
       headers: this.headers({ 'Content-Type': 'application/json' }),
       body: JSON.stringify(updates),
