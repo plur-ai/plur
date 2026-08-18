@@ -279,6 +279,8 @@ its dry-run (`plur reindex-hashes`, no flag) reports the count without writing.
   counts both adapter entry points (#893).
 - The geo-visibility skill was added (#849) and removed (#926) within this
   cycle — net absent from 0.18.0.
+- The 0.18.0 notes themselves were audited against the shipped-PR manifest and
+  completed (#929, #944) — including entries this gate itself forced.
 
 ### Changed — operations that used to succeed can now refuse
 
