@@ -1275,9 +1275,17 @@ function getAllToolDefinitions(): ToolDefinition[] {
         // was `results.map(r => r.engram.id)` — a COMPACTED array, so after a
         // mid-batch failure every subsequent id shifted left and mis-attributed
         // to the wrong input (#281). Build from input_index instead.
+        //
+        // #930/#914 parity: report ids in the namespaced form plur_recall returns,
+        // matching the fix applied to plur_learn in b93fa8e. An outbox engram is
+        // excluded — it sits in the LOCAL store under a local id until the retry
+        // lands, and that is what recall returns for it.
         const ids: (string | null)[] = raw.map(() => null)
         for (const r of results) {
-          if (r.input_index !== undefined) ids[r.input_index] = r.engram.id
+          if (r.input_index !== undefined) {
+            const isOutbox = !!(r.engram as any).structured_data?._outbox
+            ids[r.input_index] = isOutbox ? r.engram.id : plur.readIdFor(r.engram)
+          }
         }
         // Missing-domain nudge (#671), batch form: aggregate count instead of a
         // per-item echo. Same gate as plur_learn — only items that passed
@@ -1322,9 +1330,11 @@ function getAllToolDefinitions(): ToolDefinition[] {
         }
         return {
           ids,
-          results: results.map((r) => ({
+          results: results.map((r) => {
+            const isOutbox = !!(r.engram as any).structured_data?._outbox
+            return {
             input_index: r.input_index,
-            id: r.engram.id,
+            id: isOutbox ? r.engram.id : plur.readIdFor(r.engram),
             statement: r.engram.statement,
             scope: r.engram.scope,
             type: r.engram.type,
@@ -1334,7 +1344,8 @@ function getAllToolDefinitions(): ToolDefinition[] {
             // reporting it exists for reached no caller — "anything below the
             // bar is still reported" was not observable anywhere.
             ...(r.dedup ? { dedup: r.dedup } : {}),
-          })),
+          }
+          }),
           stats,
           ...batchDomainHint,
           ...(failures.length > 0
