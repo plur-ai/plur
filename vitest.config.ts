@@ -55,6 +55,12 @@ export default defineConfig({
             'test/hook-session-guard.test.ts',
             'test/list.test.ts',
             'test/tensions-lifecycle.test.ts',
+            'test/import.test.ts',
+            'test/readonly-commands.test.ts',
+            'test/recall.test.ts',
+            'test/rescope.test.ts',
+            'test/sync.test.ts',
+            'test/timeline.test.ts',
           ],
           // The whole point: one file at a time, so no two batches of CLI
           // processes are spawning concurrently.
@@ -72,7 +78,13 @@ export default defineConfig({
           root: 'packages/core',
           globals: true,
           // Keep in sync with PGLITE_SUITES in packages/core/vitest.config.ts.
-          include: ['test/pglite-*.test.ts', 'test/sync-index-error.test.ts', 'test/postgres-*.test.ts'],
+          include: [
+            'test/pglite-*.test.ts',
+            'test/sync-index-error.test.ts',
+            'test/postgres-*.test.ts',
+            'test/embedding-staleness-812.test.ts',
+            'test/packs-url.test.ts',
+          ],
           // The whole point: one file at a time, so no two WASM Postgres
           // instances are booting concurrently.
           fileParallelism: false,
