@@ -30,7 +30,7 @@ The normalizer is fixed in this cycle, and the repair ships with it.
 **Affected population:** stores with any non-ASCII letter in at least one statement.
 Pure-ASCII stores are unaffected — hashes are byte-identical before and after.
 
-**How to repair:** run `plur migrate` once after upgrading — migration 006 recomputes
+**How to repair:** run `plur migrate` once after upgrading — migration 006 (#928) recomputes
 the stale hashes, under the store lock, with a backup taken first and a rollback on
 failure. `plur reindex-hashes --apply` remains available for the repair alone, and
 its dry-run (`plur reindex-hashes`, no flag) reports the count without writing.
@@ -39,8 +39,8 @@ its dry-run (`plur reindex-hashes`, no flag) reports the count without writing.
 
 ### Added
 
-- **`plur dashboard` opens a local memory viewer** (alias: `plur ui`; `plur status`
-  points at it) — every engram, what gets recalled and how
+- **`plur dashboard` opens a local memory viewer** (#934, #936) (alias: `plur ui`;
+  `plur status` points at it) — every engram, what gets recalled and how
   often, a written-per-day chart, and the most-recalled list. Selecting a row expands the
   whole engram. Read-only: browsing memory never mutates it, including through a lazy write
   path such as decay. Binds `127.0.0.1` by default and deliberately — the viewer serves an
@@ -49,7 +49,7 @@ its dry-run (`plur reindex-hashes`, no flag) reports the count without writing.
   host behind a `/server` subpath so the root entry stays free of `node:http`. It is
   internal and bundled into its consumers, not published.
 
-- **`@plur-ai/dsh` — a native DeepSeek Harness plugin.** Not an MCP bridge: PLUR mounts as
+- **`@plur-ai/dsh` — a native DeepSeek Harness plugin.** Not an MCP bridge: PLUR mounts as (#918)
   a Cordis plugin and writes engrams into the system prompt, so the model reads them the
   way it reads its own instructions — no tool call, no round trip, no turn spent deciding
   whether to look. The section is re-rendered on each prompt assembly rather than appended,
@@ -70,7 +70,7 @@ its dry-run (`plur reindex-hashes`, no flag) reports the count without writing.
   a native tab: dsh renders its UI as a React client assembled over a typed slot registry,
   so a tab would mean shipping a browser bundle bound to that registry's pre-1.0 internals.
 
-- **`plur doctor` reports stale `content_hash` values** (#911): after upgrading,
+- **`plur doctor` reports stale `content_hash` values** (#911, #919): after upgrading,
   any engram whose `content_hash` no longer matches `computeContentHash(statement)`
   is counted and surfaced as an advisory. Non-zero means `plur reindex-hashes
   --apply` is needed. Does not fail the overall doctor check — pure read, no lock,
@@ -103,13 +103,31 @@ its dry-run (`plur reindex-hashes`, no flag) reports the count without writing.
 
 ### Fixed
 
-- **`plur doctor` sanitises remote error response bodies** (#912): `RemoteStore.append`
+- **CJK bigram emission is capped per space-less run** (#899, #903): one long
+  pasted CJK document wrote ~n GIN index entries and dominated the index.
+  `MAX_SPACELESS_RUN_CHARS = 512` truncates the run — prefix kept, because the
+  opening of a run is what a query is most likely to share.
+
+- **Installed-pack engrams are injected once, not twice** (#901, #903): the
+  corpus merge and the pack loop each scored the same engram under different
+  rules, letting the stray copy displace a distinct engram and inflating
+  `total_injections`. `pack_counts` telemetry now buckets in the pack loop,
+  preserving #553's guarantee.
+
+- **A compacted engram id is never minted again** (#816, #903): max-suffix id
+  allocation now consults `history.jsonl` (append-only, synced, never pruned)
+  as well as the live corpus, so `compact()` cannot free an id for reuse. No
+  new persistent state; a missed history write can only leave allocation where
+  it is, never collide. Also from #903: every `RemoteStore` request is bounded,
+  and `forget`/`feedback` remote walks distinguish "not found" from "could not
+  look" (#907) — `forget` refuses on uncertainty, `feedback` warns and proceeds.
+
+- **`plur doctor` sanitises remote error response bodies** (#912, #919): `RemoteStore.append`
   now truncates server error responses to 200 characters and strips control characters
   before storing in `outbox.last_error`, preventing large HTML error pages from
   polluting the outbox view or injecting terminal escape sequences.
 
-- **`content_hash` kept in step with the statement on UPDATE and MERGE** (#852,
-  #894): when `learn()` rewrote a statement (UPDATE path) or merged two engrams
+- **`content_hash` kept in step with the statement on UPDATE and MERGE** (#852, #894): when `learn()` rewrote a statement (UPDATE path) or merged two engrams
   (MERGE path), the stored `content_hash` was not recomputed. The updated statement
   therefore had a hash pointing at its old text — making it an attractor for any
   future write whose statement hashed to the old value. Now recomputed on every
@@ -190,8 +208,7 @@ its dry-run (`plur reindex-hashes`, no flag) reports the count without writing.
   (`namespaceEngramId`) so the two surfaces cannot drift apart. (The batch path was
   missed and still misreports — tracked as #930.)
 
-- **`supersedes` is remapped or refused on outbox flush, never dropped** (#863,
-  #892): an edge pointing at a local id was silently discarded when the engram was
+- **`supersedes` is remapped or refused on outbox flush, never dropped** (#863, #892): an edge pointing at a local id was silently discarded when the engram was
   delivered to a remote store. It is now remapped when the target resolves and the
   write refused with the reason recorded when it cannot — an explicit failure
   instead of quietly severed provenance.
@@ -241,11 +258,27 @@ its dry-run (`plur reindex-hashes`, no flag) reports the count without writing.
   keep the pushdown instead of demoting to the fallback; a query-capable store
   without `loadFiltered` takes the fallback read rather than crashing.
 
-- **`plur doctor` reports the live remote state, not a cached failure** (#864,
-  #873): one cold-start timeout stamped a degradation warning onto every later
+- **`plur doctor` reports the live remote state, not a cached failure** (#864, #873): one cold-start timeout stamped a degradation warning onto every later
   response for the life of the process, pointing the operator at a healthy server.
   Outcomes now carry their age; present-tense surfaces fall silent past the TTL
   while doctor keeps history and renders the age.
+
+### Also in this release
+
+- Release pipeline: the smoke gate waits for core propagation instead of
+  burning a version on registry lag (#842); `--trust-ci` verifies required CI
+  on the exact commit when the release machine is too contended for the local
+  suite (#943).
+- The forensic payload-drop log records scalar-only drops, so it can falsify
+  rather than assume #297's array hypothesis (#853).
+- CI detects the `addAssignees` silent-drop for first-time contributors (#862).
+- Engram field-compatibility rules live in one place, applied at every loader
+  (#879).
+- A pushdown storage adapter can signal candidate-set exhaustion, saving 2-3x
+  re-query amplification at 50k+ engram scale (#891); the routing test spy
+  counts both adapter entry points (#893).
+- The geo-visibility skill was added (#849) and removed (#926) within this
+  cycle — net absent from 0.18.0.
 
 ### Changed — operations that used to succeed can now refuse
 
@@ -281,7 +314,8 @@ its dry-run (`plur reindex-hashes`, no flag) reports the count without writing.
   In a mixed-version fleet, or a store synced between machines on different versions,
   upgrade the readers before anything starts writing `draft`.
 
-- **`reference_count` is renamed `write_count`** (#866, #875): the schema field
+- **`reference_count` is renamed `write_count`** (#866, #874, #875): Node 26 is
+  supported in the same change. the schema field
   name never matched what the write path set, so the counter never incremented —
   4,496 of 4,559 engrams stuck at 1 confirmed the bug was universal. `loadEngrams`
   backfills the legacy key on first parse and strips it on the next write; both
