@@ -22,6 +22,10 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
       outputText(`  Events:       co_injection ${ev.co_injection} · outcomes ${ev.injection_outcome} (+${ev.outcome_positive}/-${ev.outcome_negative})`)
     }
     outputText(`  Storage root: ${result.storage_root}`)
+    // Discoverability, not decoration: the dashboard is on-demand by design
+    // (it serves the whole store with no auth, so nothing auto-starts it),
+    // which means the one place a user learns it exists is a hint like this.
+    outputInfo('  Browse it:    plur ui', flags)
     // A store PLUR could not read must be visible here above all places (audit
     // 2026-08-03, finding 14). Core reports these and the text surface dropped
     // them, so a corrupt registry printed as a healthy `Packs: 0` — the same
