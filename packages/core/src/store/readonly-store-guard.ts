@@ -104,6 +104,10 @@ export class ReadonlyStoreGuard implements PrimaryStore {
    */
   readonly role?: string
   readonly searchBM25?: (query: string, opts: { limit: number } & Record<string, unknown>) => Promise<Engram[]>
+  /** Pure read — #906's _filterEngrams pushdown calls this on any primary query
+   *  adapter. Not forwarding it would demote every guarded query-capable store
+   *  to the whole-corpus fallback (or, before the typeof guard, crash it). */
+  readonly loadFiltered?: (filter: Record<string, unknown>) => Promise<Engram[]>
   /**
    * Also a read, and the one the whitelist's own argument failed on (#753,
    * found by the 2026-08-13 panel). `recall()`'s widening loop uses it to stop
@@ -143,6 +147,7 @@ export class ReadonlyStoreGuard implements PrimaryStore {
     const inner = _inner as unknown as {
       role?: string
       searchBM25?: (q: string, o: { limit: number } & Record<string, unknown>) => Promise<Engram[]>
+      loadFiltered?: (f: Record<string, unknown>) => Promise<Engram[]>
       searchBM25Exhaustive?: (
         q: string,
         o: { limit: number } & Record<string, unknown>,
@@ -152,6 +157,7 @@ export class ReadonlyStoreGuard implements PrimaryStore {
     }
     if (inner.role !== undefined) this.role = inner.role
     if (inner.searchBM25) this.searchBM25 = (q, o) => inner.searchBM25!(q, o)
+    if (inner.loadFiltered) this.loadFiltered = (f) => inner.loadFiltered!(f)
     if (inner.searchBM25Exhaustive) {
       this.searchBM25Exhaustive = (q, o) => inner.searchBM25Exhaustive!(q, o)
     }

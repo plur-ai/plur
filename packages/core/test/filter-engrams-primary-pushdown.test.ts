@@ -201,3 +201,51 @@ describe('_filterEngrams(): primary-store pushdown (#906)', () => {
     expect(adapter.loadFilteredCalls.length).toBeGreaterThan(0)
   })
 })
+
+describe('_filterEngrams(): pushdown degradation paths (#906)', () => {
+  it('a query adapter WITHOUT loadFiltered falls back to the corpus read, not a crash', async () => {
+    // _primaryQueryAdapter() duck-types on role + searchBM25 only, so a store
+    // can qualify for the pushdown branch while implementing just the query
+    // surface. #903's hybrid-pushdown mock is exactly that shape, and so was
+    // ReadonlyStoreGuard before it forwarded loadFiltered. Discovered as a
+    // combined-tree failure: each PR green alone, TypeError together.
+    const dir = mkdtempSync(join(tmpdir(), 'plur-906-nolf-'))
+    try {
+      const adapter = new MockPrimaryAdapter()
+      adapter.seed([makeEngram('ENG-2026-0818-001', 'query-only store fact', 'global')])
+      // Shadow the PROTOTYPE method with an instance undefined — `delete` on a
+      // class instance removes nothing (the method lives on the prototype) and
+      // silently leaves the pushdown path intact, making this test vacuous.
+      ;(adapter as unknown as { loadFiltered?: unknown }).loadFiltered = undefined
+      expect(typeof (adapter as unknown as { loadFiltered?: unknown }).loadFiltered).not.toBe('function')
+      const plur = new Plur({ path: dir, store: adapter as unknown as AsyncPrimaryStore })
+
+      const results = await plur.recallHybrid('fact')
+
+      expect(results.some(e => e.statement.includes('query-only'))).toBe(true)
+      expect(adapter.loadAllCalls, 'fallback corpus read was not taken').toBeGreaterThan(0)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('ReadonlyStoreGuard forwards loadFiltered, so a guarded store keeps the pushdown', async () => {
+    // Without the forward the guarded store demotes to the whole-corpus
+    // fallback — the quiet version of the #884 failure (readonly unusable
+    // where it is most wanted: shared multi-tenant storage).
+    const dir = mkdtempSync(join(tmpdir(), 'plur-906-ro-'))
+    try {
+      const adapter = new MockPrimaryAdapter()
+      adapter.seed([makeEngram('ENG-2026-0818-002', 'guarded store fact', 'global')])
+      const { ReadonlyStoreGuard } = await import('../src/store/readonly-store-guard.js')
+      const guarded = new ReadonlyStoreGuard(adapter as unknown as ConstructorParameters<typeof ReadonlyStoreGuard>[0])
+      const plur = new Plur({ path: dir, store: guarded as unknown as AsyncPrimaryStore, readonly: true })
+
+      await plur.recallHybrid('fact')
+
+      expect(adapter.loadFilteredCalls.length, 'pushdown did not reach the inner store').toBeGreaterThan(0)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})

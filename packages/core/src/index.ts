@@ -4438,10 +4438,17 @@ export class Plur {
       })
     } else {
       const adapter = this._primaryQueryAdapter()
-      if (adapter && !this.pgliteAdapter) {
+      if (adapter && typeof adapter.loadFiltered === 'function' && !this.pgliteAdapter) {
         // #906: primary-store adapter (e.g. Postgres) supports server-side
         // filtered load. Use it instead of _loadAllEngrams + in-memory filter:
         // one scoped query replaces a full table read on every recallHybrid call.
+        //
+        // The `typeof loadFiltered` check is LOAD-BEARING, not defensive noise:
+        // _primaryQueryAdapter() duck-types on role + searchBM25 only, so a
+        // store can qualify while implementing just the query surface —
+        // ReadonlyStoreGuard forwarded exactly that subset before it learned to
+        // forward loadFiltered, and #903's hybrid-pushdown test mock still
+        // does. Such a store must take the fallback read below, not crash here.
         //
         // `!pgliteAdapter` is a BELT, not a live branch: the two cannot both be
         // set. `pgliteAdapter` is constructed only when `indexTier === 'pglite'`,
