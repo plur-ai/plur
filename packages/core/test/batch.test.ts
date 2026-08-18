@@ -80,6 +80,87 @@ describe('learnBatch: dedup within the batch', () => {
   })
 })
 
+describe('learnBatch: in-batch near-duplicate detection (#854)', () => {
+  /**
+   * Regression test for the in-batch dedup blind spot (#854).
+   *
+   * Root cause: _syncIndex() is fire-and-forget, so the BM25/embedding index
+   * does not contain statement[i] when statement[i+N] is processed. With the
+   * real recall deps, learnAsync sees zero candidates for subsequent statements
+   * and short-circuits to ADD — producing one engram per batch item regardless
+   * of similarity.
+   *
+   * Fix: learnBatch now maintains a `batchAccumulator` of ADD-written engrams
+   * and splices them into the recall results so the dedup step sees them even
+   * before the index has flushed.
+   *
+   * This test uses fake deps where `recall`/`recallHybrid` return [] to
+   * simulate the stale-index blind spot exactly. The LLM is supplied so the
+   * dedup step reaches the LLM decision branch. The second statement (near-
+   * duplicate) must be NOOP or UPDATE — not a second ADD.
+   */
+  it('catches a near-duplicate written earlier in the same batch (index blind spot)', async () => {
+    // First engram written by deps.learn on the ADD path.
+    const firstEngram = {
+      id: 'ENG-2026-0854-001',
+      statement: 'Always rebase before pushing to the shared branch',
+      type: 'behavioral',
+      domain: 'test',
+      scope: 'global',
+      status: 'active',
+    } as unknown as Engram
+
+    // Track written statements to drive the learn stub.
+    const written: string[] = []
+
+    const deps: LearnAsyncDeps = {
+      // hashDedup: always miss — we want the full dedup path to run.
+      hashDedup: async () => null,
+      // Index is stale: return [] so the blind spot is reproduced exactly.
+      recallHybrid: async () => [],
+      recall: async () => [],
+      learn: async (statement: string) => {
+        written.push(statement)
+        // Return firstEngram for the first ADD so the accumulator captures it.
+        return written.length === 1 ? firstEngram : ({ id: 'ENG-2026-0854-002', statement } as unknown as Engram)
+      },
+      getById: async (id: string) => id === firstEngram.id ? firstEngram : null,
+      store: new MemoryPrimaryStore(),
+      engramsPath: '/tmp/plur-test-854-engrams.yaml',
+      rootPath: '/tmp/plur-test-854',
+      dedupConfig: { enabled: true, mode: 'llm' },
+      isLlmAvailable: () => true,
+      recordLlmSuccess: () => {},
+      recordLlmFailure: () => {},
+      offendingHitsForScope: () => [],
+      syncIndex: async () => {},
+    }
+
+    // LLM returns NOOP against the accumulator-supplied candidate.
+    const llm = async (_prompt: string): Promise<string> =>
+      `DECISION: NOOP\nTARGET: ${firstEngram.id}\nREASON: Same advice, different wording`
+
+    const res = await learnBatch(deps, [
+      { statement: 'Always rebase before pushing to the shared branch' },
+      // Near-duplicate: same meaning, different wording.
+      // With the blind spot, recallHybrid/recall return [] so this becomes ADD.
+      // With the fix, the accumulator supplies the first engram as a candidate.
+      { statement: 'Rebase onto the shared branch before every push' },
+    ], llm)
+
+    expect(res.results).toHaveLength(2)
+    // First statement is a fresh ADD.
+    expect(res.results[0]!.decision).toBe('ADD')
+    // Second statement must NOT be ADD — the accumulator made the first engram
+    // visible to the dedup step before the index flushed (#854).
+    expect(res.results[1]!.decision).not.toBe('ADD')
+    expect(['NOOP', 'UPDATE', 'MERGE']).toContain(res.results[1]!.decision)
+    // Stats reflect dedup working: only one net ADD.
+    expect(res.stats.added).toBe(1)
+    expect(res.stats.failed).toBe(0)
+  })
+})
+
 describe('learnBatch: partial-failure isolation', () => {
   // A fake deps whose write throws for one statement, so we can assert the
   // batch keeps going and records the failure against its input index.
