@@ -21,7 +21,7 @@
  * used so the suite runs without a real Postgres instance.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync } from 'fs'
+import { mkdtempSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { Plur } from '../src/index.js'
@@ -246,6 +246,91 @@ describe('_filterEngrams(): pushdown degradation paths (#906)', () => {
       expect(adapter.loadFilteredCalls.length, 'pushdown did not reach the inner store').toBeGreaterThan(0)
     } finally {
       rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('_filterEngrams(): engrams OUTSIDE the primary store still arrive (#931)', () => {
+  /**
+   * The pushdown replaces one expression with a union of two:
+   *
+   *   before:  _loadAllEngrams()  = primary + _loadSecondaryAndPacks()
+   *   after:   adapter.loadFiltered(...) + _engramsOutsidePrimaryStore(options)
+   *
+   * The suite above pins the first half. This pins the second — the half whose
+   * helper has exactly this regression in its recorded history: an earlier
+   * re-implementation skipped `url` stores entirely and returned rows raw
+   * (no namespacing, no `global` narrowing, no containment guard). A repeat
+   * would not error: the corpus narrows quietly and recall just returns less.
+   *
+   * The secondary store here is FILE-BACKED, deliberately. A remote (`url`)
+   * store reads through `_loadRemoteCached`, a synchronous peek at a driver
+   * cache — unwarmed it legitimately returns nothing, which would make this
+   * test pass while asserting nothing. The file store exercises the same loop,
+   * namespacing and scope narrowing without that false-pass hazard.
+   */
+  it('pushdown results include pack and secondary-store engrams, not only primary rows', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'plur-931-'))
+    const packSource = mkdtempSync(join(tmpdir(), 'plur-931-pack-'))
+    try {
+      // Secondary file store, mounted via config.yaml `stores:` — written
+      // BEFORE the Plur instance so the constructor reads it.
+      const teamPath = join(dir, 'team.yaml')
+      writeFileSync(teamPath, `engrams:
+  - id: ENG-2026-0818-100
+    statement: the team ships billing through the shared terraform pipeline
+    type: behavioral
+    scope: group:acme/eng
+    status: active
+    version: 2
+    activation:
+      retrieval_strength: 0.9
+      storage_strength: 1.0
+      frequency: 0
+      last_accessed: "2026-08-01"
+`)
+      writeFileSync(join(dir, 'config.yaml'), `stores:\n  - path: ${teamPath}\n    scope: group:acme/eng\n`)
+
+      // Installed pack with one matching engram.
+      writeFileSync(join(packSource, 'SKILL.md'), `---\nname: pipeline-pack\nversion: "1.0"\n---\n`)
+      writeFileSync(join(packSource, 'engrams.yaml'), `engrams:
+  - id: ENG-2026-0818-200
+    statement: terraform pipeline runs must pin the provider version
+    type: behavioral
+    scope: global
+    status: active
+    version: 2
+    activation:
+      retrieval_strength: 0.9
+      storage_strength: 1.0
+      frequency: 0
+      last_accessed: "2026-08-01"
+`)
+
+      const adapter = new MockPrimaryAdapter()
+      adapter.seed([makeEngram('ENG-2026-0818-001', 'billing deploys go through the terraform pipeline', 'global')])
+      const plur = new Plur({ path: dir, store: adapter as unknown as AsyncPrimaryStore })
+      await plur.installPack(packSource)
+
+      const results = await plur.recallHybrid('terraform pipeline billing')
+      const statements = results.map(e => e.statement)
+
+      // The pushdown path was the one taken — otherwise the assertions below
+      // describe the fallback and this test stops guarding the union.
+      expect(adapter.loadFilteredCalls.length, 'pushdown was not taken').toBeGreaterThan(0)
+
+      expect(statements.some(s => s.includes('billing deploys')), 'primary row missing').toBe(true)
+      expect(statements.some(s => s.includes('shared terraform pipeline')), 'secondary-store row missing').toBe(true)
+      expect(statements.some(s => s.includes('pin the provider')), 'pack row missing').toBe(true)
+
+      // The outsider arrives PROCESSED, not raw — the historical failure was
+      // returning secondary rows without id namespacing.
+      const teamRow = results.find(e => e.statement.includes('shared terraform pipeline'))
+      expect(teamRow!.id, 'secondary id was not namespaced').not.toBe('ENG-2026-0818-100')
+      expect(teamRow!.id).toContain('ENG-')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+      rmSync(packSource, { recursive: true, force: true })
     }
   })
 })
