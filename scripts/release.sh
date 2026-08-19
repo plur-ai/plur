@@ -465,42 +465,93 @@ echo ""
 # Same argument as 3.5 below, applied to the thing 3.5 forgot. Step 3.5 catches
 # a tweet that is too long; it does not catch a tweet that cannot be posted at
 # all. On 2026-08-18 the 0.18.0 release went green through npm, PyPI, tag, GH
-# release, MCP registry and the website, then died at step 9 with X API 401 —
-# the PLUR_X_* tokens had been regenerated on X's side. Every irreversible step
-# had already run. A read-only probe here costs one HTTP call and moves that
-# failure to before the first publish.
+# release, MCP registry and the website, then died at step 9 with X API 401.
+# Every irreversible step had already run.
 #
-# Probes BOTH credential classes because they die independently: the app-only
-# bearer when the app's keys are regenerated in the developer portal, the OAuth2
-# user token when the user-context grant is revoked. On 2026-08-18 both were dead.
+# PROBES EXACTLY WHAT STEP 9 USES, AND NOTHING ELSE.
+#
+# The first version of this check probed PLUR_X_OAUTH2_ACCESS_TOKEN and
+# PLUR_X_BEARER_TOKEN with bearer headers. Step 9 uses neither: it signs with
+# OAuth 1.0a over PLUR_X_API_KEY / _API_SECRET / _ACCESS_TOKEN /
+# _ACCESS_TOKEN_SECRET. So that check was wrong in both directions — it would
+# abort a release whose tweet would have posted fine, and wave through one whose
+# signing set was dead. A preflight that guards a different credential than the
+# step it protects is worse than none, because it is trusted.
+#
+# The signing code below is deliberately the same shape as step 9's: same four
+# variables, same HMAC-SHA1 construction, same crypto module. Only the request
+# differs — GET /2/users/me, which requires user context, so a 200 proves the
+# whole tuple agrees. Read-only, unmetered, one call.
 if [ "$SKIP_TWEET" != true ]; then
   echo "--- Step 3.4: X credential check ---"
-  X_CRED_OK=true
-  for pair in "PLUR_X_OAUTH2_ACCESS_TOKEN|https://api.twitter.com/2/users/me" \
-              "PLUR_X_BEARER_TOKEN|https://api.twitter.com/2/users/by/username/plur_ai"; do
-    var="${pair%%|*}"; url="${pair##*|}"
-    val="$(printenv "$var" || true)"
-    if [ -z "$val" ]; then
-      echo "✗ $var is not set"
-      X_CRED_OK=false
-      continue
-    fi
-    code="$(curl -s -o /dev/null -w '%{http_code}' -m 20 -H "Authorization: Bearer $val" "$url" || echo 000)"
-    if [ "$code" = "200" ]; then
-      echo "✓ $var accepted by X"
-    else
-      echo "✗ $var rejected by X (HTTP $code)"
-      X_CRED_OK=false
+  for v in PLUR_X_API_KEY PLUR_X_API_SECRET PLUR_X_ACCESS_TOKEN PLUR_X_ACCESS_TOKEN_SECRET; do
+    if [ -z "$(printenv "$v" || true)" ]; then
+      echo "✗ $v is not set"
+      X_CRED_MISSING=true
     fi
   done
+  if [ "${X_CRED_MISSING:-}" = true ]; then
+    X_CRED_OK=false
+  else
+    X_CRED_OK=$(node -e "
+      const crypto = require('crypto');
+      const https = require('https');
+
+      const apiKey = process.env.PLUR_X_API_KEY;
+      const apiSecret = process.env.PLUR_X_API_SECRET;
+      const accessToken = process.env.PLUR_X_ACCESS_TOKEN;
+      const accessSecret = process.env.PLUR_X_ACCESS_TOKEN_SECRET;
+
+      const url = 'https://api.twitter.com/2/users/me';
+      const pe = s => encodeURIComponent(s).replace(/[!*()']/g, c => '%' + c.charCodeAt(0).toString(16).toUpperCase());
+
+      const params = {
+        oauth_consumer_key: apiKey,
+        oauth_nonce: crypto.randomBytes(16).toString('hex'),
+        oauth_signature_method: 'HMAC-SHA1',
+        oauth_timestamp: Math.floor(Date.now() / 1000).toString(),
+        oauth_token: accessToken,
+        oauth_version: '1.0',
+      };
+      const norm = Object.keys(params).sort().map(k => pe(k) + '=' + pe(params[k])).join('&');
+      const base = ['GET', pe(url), pe(norm)].join('&');
+      const key = pe(apiSecret) + '&' + pe(accessSecret);
+      params.oauth_signature = crypto.createHmac('sha1', key).update(base).digest('base64');
+      const auth = 'OAuth ' + Object.keys(params).sort().map(k => pe(k) + '=\"' + pe(params[k]) + '\"').join(', ');
+
+      const req = https.request(url, { method: 'GET', headers: { Authorization: auth } }, res => {
+        let body = '';
+        res.on('data', d => body += d);
+        res.on('end', () => {
+          if (res.statusCode === 200) {
+            let who = '';
+            try { who = JSON.parse(body).data.username; } catch {}
+            console.error('✓ OAuth1 signing set accepted by X' + (who ? ' — @' + who : ''));
+            console.log('true');
+          } else {
+            console.error('✗ X rejected the OAuth1 signing set (HTTP ' + res.statusCode + ') ' + body.slice(0, 160));
+            console.log('false');
+          }
+        });
+      });
+      req.on('error', e => { console.error('✗ could not reach X: ' + e.message); console.log('false'); });
+      req.setTimeout(20000, () => { req.destroy(); console.error('✗ X request timed out'); console.log('false'); });
+      req.end();
+    ")
+  fi
   if [ "$X_CRED_OK" != true ]; then
     echo ""
     echo "✗ X credentials are not usable. Aborting BEFORE anything is published."
-    echo "  Regenerate in the X developer portal, then update the values in:"
+    echo "  Update the four PLUR_X OAuth1 values in:"
     echo "      ~/Data/.datacore/secrets/spaces/5-plur.env"
     echo "  NOT in ~/Data/.datacore/env/.env — that file is generated by"
     echo "  'creds sync' and says so in its own header; an edit there is lost."
-    echo "  Then: creds sync && creds doctor --id plur-x-oauth2"
+    echo "  Then: creds sync && creds doctor --id plur-x-account"
+    echo ""
+    echo "  Before assuming the keys were regenerated in the developer portal,"
+    echo "  diff this store against the other hosts. On 2026-08-19 the working"
+    echo "  set had been sitting on plur-claw since a July rotation that never"
+    echo "  reached the canonical store — nothing was revoked, only un-synced."
     echo ""
     echo "  Or release without the announcement:"
     echo "      ./scripts/release.sh $VERSION --skip-tweet"
