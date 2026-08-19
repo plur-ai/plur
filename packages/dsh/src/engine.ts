@@ -49,7 +49,8 @@ async function loadEngine(
     const Plur = mod.Plur ?? mod.default?.Plur
     if (typeof Plur !== 'function') return undefined
     return new Plur({ path: config.path })
-  } catch {
+  } catch (error) {
+    console.warn(`[plur] memory engine unavailable, continuing without memory: ${error}`)
     return undefined
   }
 }

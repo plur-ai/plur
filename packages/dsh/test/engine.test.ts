@@ -40,6 +40,16 @@ describe('createEngine when core is unavailable', () => {
     await expect(engine.ready()).resolves.toBe(false)
   })
 
+  it('logs a warning when the engine fails to load (#941)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const engine = createEngine(config(), missing)
+    await engine.ready()
+    expect(warn).toHaveBeenCalledOnce()
+    expect(warn.mock.calls[0][0]).toMatch(/memory engine unavailable/)
+    expect(warn.mock.calls[0][0]).toMatch(/ERR_MODULE_NOT_FOUND/)
+    warn.mockRestore()
+  })
+
   it('degrades every read to empty instead of taking the host down', async () => {
     const engine = createEngine(config(), missing)
     await expect(engine.recall!('x')).resolves.toEqual([])
