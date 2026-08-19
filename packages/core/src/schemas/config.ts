@@ -242,6 +242,15 @@ export const PlurConfigSchema = z.object({
     spread_cap: z.number().default(3),
     spread_budget: z.number().default(480),
     co_access: z.boolean().default(true),
+    /**
+     * Share of `injection_budget` the pinned tier may occupy. Pinned engrams
+     * are always-load rules, so this is the ceiling that decides how many of
+     * them actually load: at the default, an install needs an
+     * `injection_budget` of at least 2x its total pinned cost. Over the cap,
+     * pinned engrams are dropped silently in retrieval-strength order. Size it
+     * against `audit_engram_shape.py --pinned`, not by guessing.
+     */
+    pinned_ratio: z.number().min(0).max(1).default(0.5),
   }).default({}),
   dedup: DedupConfigSchema.default({}),
   /** Temporal-aware tension scan tuning (#240). See {@link TensionsConfigSchema}. */

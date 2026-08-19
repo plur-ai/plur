@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { scoreEngram, selectAndSpread, estimateTokens, fillTokenBudget, formatWithLayer } from '../src/inject.js'
+import { scoreEngram, selectAndSpread, estimateTokens, fillTokenBudget, formatWithLayer, DEFAULT_PINNED_TOKEN_BUDGET_RATIO } from '../src/inject.js'
 import { EngramSchema } from '../src/schemas/engram.js'
 import { daysSince } from '../src/decay.js'
 
@@ -322,16 +322,19 @@ describe('injection engine', () => {
 
   // === Pinned engram budget cap (0.9.4) ===
 
-  it('pinned engrams cannot consume more than 50% of the token budget', () => {
+  it('pinned engrams cannot consume more than the pinned sub-cap of the token budget', () => {
     // Carefully sized so that the OUTER maxTokens guard cannot be the binding
-    // constraint — the pinned sub-cap (50% of maxTokens) must do the work.
-    // Each engram is short (~50-token JSON serialization). With maxTokens=10000,
-    // the outer guard would let all 30 pinned engrams through (30*50=1500 < 10000).
-    // The pinnedBudget=5000 lets in ~100 engrams worth — but we have 30, so all 30
-    // would fit IF the cap were broken. Instead, we expect the cap to bind under
-    // a tighter budget. So: maxTokens=600 → pinnedBudget=300. 30 short engrams
-    // with cost ~50 each → only 6 fit under the 300-token sub-cap, with the
-    // outer maxTokens (600) leaving headroom that proves the sub-cap is binding.
+    // constraint — the pinned sub-cap must do the work. Each engram is short
+    // (~50-token JSON serialization). With maxTokens=10000, the outer guard
+    // would let all 30 pinned engrams through (30*50=1500 < 10000), so all 30
+    // would fit IF the cap were broken. Instead we use a tighter budget:
+    // maxTokens=600 → pinnedBudget = 600 * DEFAULT_PINNED_TOKEN_BUDGET_RATIO. 30
+    // engrams at ~50 each overflow that sub-cap while leaving headroom under
+    // maxTokens, which is what proves the sub-cap — not the outer guard — bound.
+    //
+    // Asserted against the exported ratio rather than a hardcoded fraction: the
+    // invariant under test is "pinned respects its sub-cap", not the particular
+    // value, which is per-install tuning (config `injection.pinned_ratio`).
     const shortStatement = 'X'.repeat(80)
     const pinned = Array.from({ length: 30 }, (_, i) => ({
       ...EngramSchema.parse({
@@ -353,8 +356,8 @@ describe('injection engine', () => {
     }))
     const maxTokens = 600
     const { selected, tokens_used } = fillTokenBudget(pinned, maxTokens)
-    // Sub-cap binds: tokens_used must respect the 50%-of-budget sub-cap.
-    expect(tokens_used).toBeLessThanOrEqual(maxTokens * 0.5)
+    // Sub-cap binds: tokens_used must respect the pinned sub-cap.
+    expect(tokens_used).toBeLessThanOrEqual(maxTokens * DEFAULT_PINNED_TOKEN_BUDGET_RATIO)
     // And there must be headroom under maxTokens — i.e. the outer guard isn't
     // the reason we stopped. Without this we'd be testing the same thing twice.
     expect(tokens_used).toBeLessThan(maxTokens)
@@ -362,6 +365,54 @@ describe('injection engine', () => {
     // sub-budget", not "nothing fit at all").
     expect(selected.length).toBeGreaterThan(0)
     expect(selected.length).toBeLessThan(30)
+  })
+
+  it('pinned sub-cap follows the configured ratio, not a fixed fraction', () => {
+    // The ratio is per-install config (`injection.pinned_ratio`), so the same
+    // pinned set must admit more members at a higher ratio and fewer at a
+    // lower one. Same fixture as the test above: 30 short pinned engrams at
+    // ~50 tokens each, maxTokens=600.
+    const shortStatement = 'X'.repeat(80)
+    const pinned = Array.from({ length: 30 }, (_, i) => ({
+      ...EngramSchema.parse({
+        id: `ENG-RATIO-${String(i).padStart(3, '0')}`,
+        statement: shortStatement,
+        type: 'behavioral',
+        scope: 'global',
+        status: 'active',
+        pinned: true,
+      }),
+      pinned: true,
+      keyword_match: 1.0,
+      raw_score: 1.0,
+      score: 1.0,
+    }))
+    const maxTokens = 600
+
+    const low = fillTokenBudget(pinned, maxTokens, 0.25)
+    const high = fillTokenBudget(pinned, maxTokens, 0.75)
+
+    expect(low.tokens_used).toBeLessThanOrEqual(maxTokens * 0.25)
+    expect(high.tokens_used).toBeLessThanOrEqual(maxTokens * 0.75)
+    // The ratio is doing the work: a wider cap admits strictly more.
+    expect(high.selected.length).toBeGreaterThan(low.selected.length)
+    // Still bounded by the outer guard, so this is a sub-cap and not a bypass.
+    expect(high.tokens_used).toBeLessThan(maxTokens)
+  })
+
+  it('selectAndSpread threads config.pinned_ratio into the sub-cap', () => {
+    const pinned = Array.from({ length: 12 }, (_, i) => EngramSchema.parse({
+      id: `ENG-THREAD-${String(i).padStart(3, '0')}`,
+      statement: `Always deploy carefully, rule number ${i}, ${'Y'.repeat(120)}`,
+      type: 'behavioral',
+      scope: 'global',
+      status: 'active',
+      pinned: true,
+    }))
+    const ctx = { prompt: 'deploy the app', maxTokens: 900 }
+    const narrow = selectAndSpread(ctx, pinned, [], { pinned_ratio: 0.2 })
+    const wide = selectAndSpread(ctx, pinned, [], { pinned_ratio: 0.9 })
+    expect(wide.directives.length).toBeGreaterThan(narrow.directives.length)
   })
 
   // === Pinned engram bypasses minRelevance (0.9.4) ===

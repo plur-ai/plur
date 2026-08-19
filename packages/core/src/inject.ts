@@ -66,9 +66,17 @@ const MAX_PER_PACK = 5
 const MAX_PER_DOMAIN = 10
 // Pinned engrams bypass per-pack/per-domain caps but must not eat the entire
 // budget — left unbounded, a single user with many pinned packs could starve
-// every relevance-scored engram. Cap at 50% of maxTokens so contextual recall
-// still gets at least half the budget. Tuned for default 8000 → 4000 pinned.
-const PINNED_TOKEN_BUDGET_RATIO = 0.5
+// every relevance-scored engram. Default share of maxTokens; override per
+// install with `injection.pinned_ratio` in config.yaml.
+//
+// Whether this default suits an install depends entirely on the size of that
+// install's pinned set, which is why it is configurable rather than tuned here:
+// a 43-engram set costing 25,330 tokens needs a 50,660 budget at this ratio,
+// while the shipped `injection_budget` default of 2000 admits two of them.
+// When the cap binds, pinned rules are dropped silently and in retrieval-
+// strength order, so the rule that falls out first is the largest weakest one
+// — not the least important one. Audit with `audit_engram_shape.py --pinned`.
+export const DEFAULT_PINNED_TOKEN_BUDGET_RATIO = 0.5
 
 // DIP-0019 consider pool (bottom 1/3 of first-pass)
 const DIP19_CONSIDER_MAX = 5
@@ -335,6 +343,7 @@ export function scoreEngram(
 export function fillTokenBudget(
   scored: ScoredEngram[],
   maxTokens: number,
+  pinnedRatio: number = DEFAULT_PINNED_TOKEN_BUDGET_RATIO,
 ): { selected: ScoredEngram[]; tokens_used: number } {
   const result: ScoredEngram[] = []
   const packCounts = new Map<string, number>()
@@ -345,10 +354,11 @@ export function fillTokenBudget(
   // ignore per-pack and per-domain fairness caps because they're meant to be
   // always-load — but they respect both maxTokens AND a sub-budget so they
   // can't starve the relevance-scored engrams. With many pinned packs, the
-  // pinned set can grow unboundedly; the sub-budget caps at 50% of maxTokens.
+  // pinned set can grow unboundedly; the sub-budget caps at `pinnedRatio` of
+  // maxTokens (config `injection.pinned_ratio`).
   const pinned = scored.filter(e => (e as any).pinned === true)
   const unpinned = scored.filter(e => (e as any).pinned !== true)
-  const pinnedBudget = Math.floor(maxTokens * PINNED_TOKEN_BUDGET_RATIO)
+  const pinnedBudget = Math.floor(maxTokens * pinnedRatio)
 
   for (const engram of pinned) {
     const cost = estimateTokens(engram)
@@ -389,11 +399,12 @@ export function selectAndSpread(
   ctx: InjectionContext,
   personalEngrams: Engram[],
   packs: LoadedPack[],
-  config?: { spread_cap?: number; spread_budget?: number; expiry?: ExpiryConfig },
+  config?: { spread_cap?: number; spread_budget?: number; pinned_ratio?: number; expiry?: ExpiryConfig },
   embeddingBoosts?: Map<string, number>,
 ): InternalInjectionResult {
   const spreadCap = config?.spread_cap ?? 3
   const spreadBudget = config?.spread_budget ?? 480
+  const pinnedRatio = config?.pinned_ratio ?? DEFAULT_PINNED_TOKEN_BUDGET_RATIO
 
   const promptLower = ctx.prompt.toLowerCase()
   const promptWords = new Set(promptLower.split(/\W+/).filter(w => w.length > 2))
@@ -500,7 +511,7 @@ export function selectAndSpread(
   }
 
   // Step 6: Fill directive token budget
-  const { selected: directives, tokens_used: directiveTokens } = fillTokenBudget(filtered, maxTokens)
+  const { selected: directives, tokens_used: directiveTokens } = fillTokenBudget(filtered, maxTokens, pinnedRatio)
   const directiveIds = new Set(directives.map(e => e.id))
 
   // DIP-0019 consider pool: next candidates that didn't fit as directives
@@ -517,7 +528,7 @@ export function selectAndSpread(
     return true
   })
   const { selected: dip19Consider } = fillTokenBudget(
-    dip19Remainder, DIP19_CONSIDER_BUDGET,
+    dip19Remainder, DIP19_CONSIDER_BUDGET, pinnedRatio,
   )
   // Cap at DIP19_CONSIDER_MAX and correct token count
   const dip19Pool = dip19Consider.slice(0, DIP19_CONSIDER_MAX)

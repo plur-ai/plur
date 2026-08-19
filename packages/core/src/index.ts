@@ -4881,6 +4881,7 @@ export class Plur {
       {
         spread_cap: this.config.injection?.spread_cap,
         spread_budget: this.config.injection?.spread_budget,
+        pinned_ratio: this.config.injection?.pinned_ratio,
         expiry: this.config.expiry,
       },
       embeddingBoosts,
