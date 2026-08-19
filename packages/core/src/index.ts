@@ -2434,6 +2434,9 @@ export class Plur {
     if (typeof statement !== 'string' || statement.length === 0) {
       throw new TypeError(`plur.learn: statement must be a non-empty string, got ${typeof statement}`)
     }
+    // Strip all line terminators (LF, CR, U+2028 LS, U+2029 PS) so a crafted
+    // \n[ sequence cannot be promoted to system-prompt authority by dsh flatten().
+    statement = statement.replace(/[\r\n\u2028\u2029]+/g, ' ').replace(/ {2,}/g, ' ').trimEnd()
     if (context?.type !== undefined && !VALID_ENGRAM_TYPES.has(context.type)) {
       throw new TypeError(
         `plur.learn: invalid type '${context.type}'. Must be one of: behavioral, terminological, procedural, architectural`
