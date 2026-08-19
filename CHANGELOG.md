@@ -190,8 +190,21 @@ To keep the old behaviour set `backend: pglite` in `~/.plur/config.yaml` or
 capabilities are the point, and it now logs its per-process boot cost once at
 startup when explicitly selected.
 
-## 0.18.0
 
+## 0.18.1
+
+### Added
+
+- **`plur-hermes` is now discoverable as a Hermes MemoryProvider.** Added the
+  `hermes_agent.memory_providers` entry point (`plur_hermes.memory_provider:create_memory_provider`)
+  so `hermes plugins --memory` lists PLUR alongside bundled providers and `memory.provider: plur`
+  works in `config.yaml`. `register()` also calls `ctx.register_memory_provider()` when the
+  context supports it (Hermes Herald Release ≥ 0.20.0), passing a `PlurMemoryProvider` instance
+  that shares the same `PlurBridge` as the standalone hook path — no duplicate CLI subprocess
+  spawns. Older Hermes versions that lack `register_memory_provider()` are unaffected; the
+  standalone `hermes_agent.plugins` entry point is retained alongside the new one.
+
+## 0.18.0
 Your agents' memory, on a dashboard.
 
 - Open it: `plur dashboard`
