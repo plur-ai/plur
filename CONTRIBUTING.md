@@ -54,7 +54,28 @@ pnpm --filter @plur-ai/core build
 
 6. **Open a PR with the linked issue.** Keep commits to one logical change each.
 
+   Link the issue with a closing keyword **repeated for every issue**:
+
+   ```
+   Closes #545, closes #547, closes #553
+   ```
+
+   GitHub binds the keyword to the **first** reference only, so
+   `Closes #545, #547, #553` links `#545` and silently ignores the rest. A PR
+   that closed nine issues this way linked one; seven were closed by hand
+   afterwards and one was missed entirely, staying open for days after it had
+   shipped.
+
 7. **Green before merge.** `pnpm test` and `pnpm build` must pass.
+
+8. **Record the outcome on the issue.** Closing keywords cover the ordinary
+   case. When they don't — a partial fix, a change of approach, or work with
+   no diff to point at — say so on the issue itself.
+
+   This matters most for **configuration and process changes**, which leave no
+   trace in the repository. A branch-protection issue had two of its four
+   options implemented within a day and was never updated; the next reader had
+   to re-derive the current state from the API to find out what was left.
 
 ### Labels and @-mentions are signals, not assignments
 
@@ -71,6 +92,28 @@ work. @-mentioning someone in a comment informs them; it does not assign them.
 - **Unassigned means nobody is on it**, no matter how many labels it carries.
 
 This binds autonomous agents as much as people: a label is never a work order.
+
+### What the priority labels oblige
+
+Priority is a claim about *sequencing*, not about how much you care. Each level
+carries an obligation, and a level that obliges nothing is noise:
+
+| Label | Means | Obligation |
+|---|---|---|
+| `P0` | Drop other work | Someone is on it now. Expect roughly one open at a time |
+| `P1` | Before the next release | Assigned, or explicitly next up. **Target: 8 open** |
+| `P2` | Wanted, not scheduled | None. The honest default for real work with no date |
+| `P3` | Would accept a PR | None |
+
+**Check the existing set before adding `P1`.** The label is a comparison, not a
+description: if the set is already at target, adding one means demoting
+another. A backlog where a third of open issues are `P1` has stopped
+distinguishing anything — the target exists to make that visible at filing
+time rather than at audit time.
+
+**Re-level rather than let age do it silently.** A `P0` or `P1` that nobody has
+touched in three weeks is evidence about the label, not about the work. Lower
+it, or assign it.
 
 ## Reviewing and merging
 
@@ -113,6 +156,11 @@ plur-ai/plur#544) — don't work around it; declare the PRs.
   compact `ENG-YYYY-MMDD-NNN` stays valid and every parser must accept both;
   packs use dateless `ENG-PACK-{NAME}-NNN`; merged store ids get a 3-letter
   prefix (`ENG-XXX-…`). Never write code that assumes only one date shape.
+- **Qualify cross-repository references.** Write
+  `plur-ai/enterprise#428`, not `enterprise#428`. A bare `#N` is read as an
+  issue in *this* repository by GitHub, by tooling, and by anyone skimming —
+  two such references produced false matches in a backlog audit, each appearing
+  to be work landing on an unrelated local issue.
 - No AI attribution in commits, PRs, or issues: do not add `Co-Authored-By:` AI
   lines, `🤖 Generated with` footers, or any other AI-assistant credit to commits,
   PR descriptions, or issue comments.
@@ -123,3 +171,13 @@ plur-ai/plur#544) — don't work around it; declare the PRs.
 
 Open an issue with a clear description and, for bugs, the smallest reproduction
 you can manage. Check open issues first to avoid duplicates.
+
+**Label it when you file it — a TYPE and a priority.** TYPE is what kind of
+work it is (`bug`, `enhancement`, `documentation`, `feature`, `research`,
+`testing`, `proposal`); priority is one of `P0`–`P3` as defined above. An
+unlabelled issue is invisible to every label-based view, which is how two audit
+requests sat in the backlog carrying no labels at all.
+
+**This binds automated runs too.** Both unlabelled issues were filed by
+automation, and an agent that can open an issue can set its labels in the same
+call.
