@@ -234,3 +234,42 @@ describe('the viewer refuses requests that are not its own page', () => {
   })
 })
 
+describe('widened server (--host non-loopback)', () => {
+  // Simulates the state after `plur ui --host 0.0.0.0`: the server is
+  // intentionally bound to a non-loopback address. The Host-header rebinding
+  // check is skipped — it would refuse every legitimate LAN client without
+  // stopping anything, since the whole network can already reach the port.
+  async function bootWide() {
+    const server = createUiServer({ load: async () => ROWS, where: '~/.plur', widened: true })
+    await new Promise<void>(r => server.listen(0, '127.0.0.1', r))
+    const addr = server.address()
+    const port = typeof addr === 'object' && addr ? addr.port : 0
+    return { port, close: () => new Promise<void>(r => server.close(() => r())) }
+  }
+
+  it('accepts a non-loopback Host — the legitimate LAN client case', async () => {
+    const h = await bootWide()
+    try {
+      const { status, body } = await rawGet(h.port, '/', { host: `192.168.1.50:${h.port}` })
+      expect(status).toBe(200)
+      expect(body).toContain('Pin dsh deps.')
+    } finally { await h.close() }
+  })
+
+  it('accepts an mDNS hostname', async () => {
+    const h = await bootWide()
+    try {
+      expect((await rawGet(h.port, '/', { host: `my-laptop.local:${h.port}` })).status).toBe(200)
+    } finally { await h.close() }
+  })
+
+  it('still accepts loopback hosts', async () => {
+    const h = await bootWide()
+    try {
+      for (const host of [`127.0.0.1:${h.port}`, `localhost:${h.port}`]) {
+        expect((await rawGet(h.port, '/', { host })).status, host).toBe(200)
+      }
+    } finally { await h.close() }
+  })
+})
+
