@@ -27,6 +27,25 @@ statement came from. Those are different things.
 
 ---
 
+## Try it on your own memories first
+
+Before turning anything on, see what a record looks like for a memory you already
+have. This reads your store and writes nothing:
+
+```bash
+pnpm --filter @plur-ai/core try:provenance
+```
+
+It picks a recent engram, builds a record, and tells you whether a stranger
+receiving it could answer the five questions. Pass an engram identifier to choose
+one, or `-- --write` to save the record to a temporary file.
+
+Expect some "NO" answers on older memories. Nothing recorded who asserted them,
+so the record does not guess. That gap is what this feature closes going forward,
+and seeing it is the quickest way to understand what the record is for.
+
+---
+
 ## Turning it on
 
 Nothing is written by default. Add this to `~/.plur/config.yaml`:
