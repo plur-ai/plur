@@ -10,7 +10,7 @@ on:
   pull_request:
     paths: ['packages/hermes/**', '.github/workflows/hermes.yml']
 
-  # manual matrix runs (crtahlin review, #541)
+  # manual matrix runs (maintainer review, #541)
   workflow_dispatch:
 
 permissions:

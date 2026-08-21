@@ -25,6 +25,23 @@ export interface LearnContext {
   memory_class?: 'semantic' | 'episodic' | 'procedural' | 'metacognitive'
   /** Current session episode ID for episodic anchoring (SP2 Idea 24). */
   session_episode_id?: string
+  /**
+   * Who is answerable for this engram (#961). Every field optional. A caller
+   * that does not know a value omits it rather than guessing — a record with no
+   * agent is valid, a record with a guessed agent is worse than one with none.
+   */
+  attribution?: {
+    asserted_by?: string
+    runtime?: { name: string; version?: string }
+    model?: { name: string; prompt_id?: string; prompt_version?: string; prompt_sha256?: string }
+    tool?: { name: string; version?: string }
+    on_behalf_of?: string
+  }
+  /**
+   * What kind of claim this is (#963): observed, documented, structural,
+   * asserted, inferred or revised. Omitted when it cannot be determined.
+   */
+  claim_class?: 'observed' | 'documented' | 'structural' | 'asserted' | 'inferred' | 'revised'
   /** Always-load flag — bypass keyword-relevance gate during injection. */
   pinned?: boolean
   /**

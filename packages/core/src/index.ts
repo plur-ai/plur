@@ -713,6 +713,27 @@ function isStoreTeardownError(err: unknown): boolean {
   return msg.includes('adapter is closed') || msg.includes('after calling end')
 }
 
+/**
+ * Assemble the attribution block for a new engram (#961).
+ *
+ * Returns undefined when the caller supplied nothing, so the field is absent
+ * rather than present-and-empty. We never invent a runtime, and we never read
+ * the operating system account for an identity.
+ */
+function buildAttribution(
+  context?: LearnContext,
+): NonNullable<Engram['attribution']> | undefined {
+  const a = context?.attribution
+  if (!a) return undefined
+  const out: NonNullable<Engram['attribution']> = {}
+  if (a.asserted_by) out.asserted_by = a.asserted_by
+  if (a.runtime) out.runtime = a.runtime
+  if (a.model) out.model = a.model
+  if (a.tool) out.tool = a.tool
+  if (a.on_behalf_of) out.on_behalf_of = a.on_behalf_of
+  return Object.keys(out).length > 0 ? out : undefined
+}
+
 export class Plur {
   private paths: PlurPaths
   private config: PlurConfig
@@ -2579,6 +2600,11 @@ export class Plur {
         pack: null,
         abstract: context?.abstract ?? null,
         derived_from: context?.derived_from ?? null,
+        // Who is answerable (#961) and what kind of claim this is (#963).
+        // Both absent when the caller supplied nothing: a missing agent is
+        // honest, a guessed one is not.
+        attribution: buildAttribution(context),
+        claim_class: context?.claim_class,
         dual_coding: context?.dual_coding,
         polarity: null,
         content_hash: computeContentHash(statement),
@@ -3135,6 +3161,11 @@ export class Plur {
       pack: null,
       abstract: context?.abstract ?? null,
       derived_from: context?.derived_from ?? null,
+      // Who is answerable (#961) and what kind of claim this is (#963).
+      // Both absent when the caller supplied nothing: a missing agent is
+      // honest, a guessed one is not.
+      attribution: buildAttribution(context),
+      claim_class: context?.claim_class,
       dual_coding: context?.dual_coding,
       polarity: null,
       content_hash: computeContentHash(statement),

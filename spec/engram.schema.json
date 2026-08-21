@@ -363,6 +363,87 @@
       "additionalProperties": false,
       "description": "Origin and signing chain. STABLE for origin/chain/license; signature is RESERVED (see ENGRAM-STANDARD-v1.md §7)."
     },
+    "attribution": {
+      "type": "object",
+      "properties": {
+        "asserted_by": {
+          "type": "string",
+          "description": "Address of who or what asserted this. Any form. Use ATTRIBUTION_UNIDENTIFIED when nobody was identified."
+        },
+        "runtime": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "version": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "name"
+          ],
+          "additionalProperties": false,
+          "description": "The software that wrote this engram. Always knowable, so usually present."
+        },
+        "model": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "prompt_id": {
+              "type": "string"
+            },
+            "prompt_version": {
+              "type": "string"
+            },
+            "prompt_sha256": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "name"
+          ],
+          "additionalProperties": false,
+          "description": "The model behind a decision, and which prompt it ran. Prompt TEXT is never stored, only a hash (#962)."
+        },
+        "tool": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "version": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "name"
+          ],
+          "additionalProperties": false,
+          "description": "An extractor or importer, with its version."
+        },
+        "on_behalf_of": {
+          "type": "string",
+          "description": "The party the runtime acted for. Becomes prov:actedOnBehalfOf."
+        }
+      },
+      "additionalProperties": false,
+      "description": "Who is answerable for this engram (#961). All fields optional; omit rather than guess."
+    },
+    "claim_class": {
+      "type": "string",
+      "enum": [
+        "observed",
+        "documented",
+        "structural",
+        "asserted",
+        "inferred",
+        "revised"
+      ],
+      "description": "What kind of claim this is (#963). Omitted when it genuinely cannot be determined."
+    },
     "feedback_signals": {
       "type": "object",
       "properties": {

@@ -28,7 +28,7 @@ let activeClients: Client[] = []
 
 const b64 = (o: object) => Buffer.from(JSON.stringify(o)).toString('base64url')
 const makeJwt = (expSecondsFromNow: number) =>
-  `${b64({ alg: 'HS256', typ: 'JWT' })}.${b64({ sub: 'crtahlin', org_id: 'plur', exp: Math.floor(Date.now() / 1000) + expSecondsFromNow })}.sig`
+  `${b64({ alg: 'HS256', typ: 'JWT' })}.${b64({ sub: 'maintainer', org_id: 'plur', exp: Math.floor(Date.now() / 1000) + expSecondsFromNow })}.sig`
 
 async function makeClient(plurPath: string): Promise<Client> {
   const plur = new Plur({ path: plurPath })
@@ -68,7 +68,7 @@ afterAll(async () => {
 
 beforeEach(() => {
   stub.reset()
-  stub.setMe({ username: 'crtahlin', org_id: 'plur', role: 'developer', scopes: [SCOPE] })
+  stub.setMe({ username: 'maintainer', org_id: 'plur', role: 'developer', scopes: [SCOPE] })
 })
 
 afterEach(async () => {
@@ -110,7 +110,7 @@ describe('plur_session_start remote auth surfacing (#295)', () => {
     const stubSoon = new StubServer(soonJwt)
     const info = await stubSoon.start()
     try {
-      stubSoon.setMe({ username: 'crtahlin', org_id: 'plur', role: 'developer', scopes: [SCOPE] })
+      stubSoon.setMe({ username: 'maintainer', org_id: 'plur', role: 'developer', scopes: [SCOPE] })
       const client = await makeClient(writeConfig(soonJwt, info.url))
       const res = callResult(await client.callTool({ name: 'plur_session_start', arguments: { task: 'anything' } }))
       expect(res.guide).toMatch(/expires in \dd/)
@@ -134,7 +134,7 @@ describe('plur_session_start scope-offer hint (#647)', () => {
   }
 
   it('emits a quiet plur-scopes hint (not register:true) for an unregistered shared scope', async () => {
-    stub.setMe({ username: 'crtahlin', org_id: 'plur', role: 'developer', scopes: [SCOPE, 'group:plur/plur-ai/comms'] })
+    stub.setMe({ username: 'maintainer', org_id: 'plur', role: 'developer', scopes: [SCOPE, 'group:plur/plur-ai/comms'] })
     const client = await makeClient(writeConfig(TOKEN))
     const res = callResult(await client.callTool({ name: 'plur_session_start', arguments: { task: 'anything' } }))
     expect(res.guide).toContain('plur scopes')
@@ -142,7 +142,7 @@ describe('plur_session_start scope-offer hint (#647)', () => {
   })
 
   it('omits a dismissed scope from the hint', async () => {
-    stub.setMe({ username: 'crtahlin', org_id: 'plur', role: 'developer', scopes: [SCOPE, 'group:plur/plur-ai/comms'] })
+    stub.setMe({ username: 'maintainer', org_id: 'plur', role: 'developer', scopes: [SCOPE, 'group:plur/plur-ai/comms'] })
     const client = await makeClient(writeConfigDismissed(['group:plur/plur-ai/comms']))
     const res = callResult(await client.callTool({ name: 'plur_session_start', arguments: { task: 'anything' } }))
     // the only extra scope is dismissed → nothing offerable → no hint
@@ -150,7 +150,7 @@ describe('plur_session_start scope-offer hint (#647)', () => {
   })
 
   it('never offers a personal-family scope advertised by /me', async () => {
-    stub.setMe({ username: 'crtahlin', org_id: 'plur', role: 'developer', scopes: [SCOPE, 'user:plur:crtahlin'] })
+    stub.setMe({ username: 'maintainer', org_id: 'plur', role: 'developer', scopes: [SCOPE, 'user:plur:maintainer'] })
     const client = await makeClient(writeConfig(TOKEN))
     const res = callResult(await client.callTool({ name: 'plur_session_start', arguments: { task: 'anything' } }))
     expect(res.guide).not.toContain('plur scopes')

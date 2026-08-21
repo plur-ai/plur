@@ -339,6 +339,29 @@ required when `knowledge_type` is present.
 | `provenance.signature` | string \| null | default `null` | **RESERVED.** Detached signature over the engram. Algorithm and canonicalization are NOT specified in v1 (§7). Producers MUST write `null`; consumers MUST round-trip whatever value is present without ascribing trust to it. |
 | `provenance.license` | string | default `cc-by-sa-4.0` | License of this engram's content. |
 
+**Who is answerable, and what kind of claim it is — PROPOSED (#961, #963)**
+
+Both fields are optional. A producer that does not know a value MUST omit it
+rather than guess. A record with no agent is valid; a record with a guessed agent
+is worse than one with none.
+
+| Field | Type | Range / enum | Semantics |
+|---|---|---|---|
+| `attribution` | object | all sub-fields optional | Who is answerable for this engram. `asserted_by` (address of who or what asserted it), `runtime` (`name`, `version?` of the software that wrote it), `model` (`name`, `prompt_id?`, `prompt_version?`, `prompt_sha256?` — prompt text is never stored), `tool` (`name`, `version?`), `on_behalf_of` (the party the runtime acted for). |
+| `claim_class` | string | `observed`, `documented`, `structural`, `asserted`, `inferred`, `revised` | What kind of claim this is. Distinguishes a statement a person made from one a model inferred and one a pattern scraped — today those are stored identically. |
+
+`attribution.asserted_by` holds an address and deliberately does not fix its form.
+A local name, a Decentralized Identifier and an identifier for a running process
+are all acceptable. When no identity is configured, producers SHOULD write the
+well-known value `unidentified` rather than omitting the field: absence cannot be
+told apart from a record written before identity was captured at all, and the
+marker distinguishes the two.
+
+Producers MUST NOT derive an identity from the operating system account. That
+would write a personal name by default, without anyone choosing to share it.
+
+Full treatment in [the provenance profile](./ENGRAM-PROVENANCE-PROFILE.md).
+
 ### 4.9 Feedback & usage state
 
 | Field | Type | Range / enum | Semantics |
