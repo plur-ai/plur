@@ -827,18 +827,41 @@ pack. Demoting something sensitive.
 Strengthening on use is the most frequent change in the whole system, and it is
 invisible.
 
-### 10.6 A history log that cannot be edited — required before anchoring
+### 10.6 A history log that cannot be edited — deferred, and here is why
 
 The history log is added to one line at a time. But it is append-only **by habit,
-not by design**. There is no chain of hashes. So the file can be edited, shortened
+not by design**. There is no chain of hashes, so the file can be edited, shortened
 or reordered, and nothing would show it.
 
-Every other item in section 10 improves what the record *says*. This one decides
-whether it can be *believed*. It has to come first, before anchoring. Anchor a log
-that can be quietly rewritten, and you produce something that looks like proof and
-is not.
+An earlier draft of this document called fixing that "required before anchoring".
+**That was wrong, and this section corrects it.**
 
-The fix is standard and cheap. Each entry includes the hash of the one before it.
+Here is the flaw. A chain that one party writes from end to end is not evidence to
+anybody else. Whoever can edit the log can rebuild the chain over the edit, and
+nothing in the file betrays them. A chain only becomes proof when somebody else
+holds a checkpoint the writer cannot reach.
+
+So chaining inside the memory engine defends against almost nobody. The only
+party it protects you from is yourself.
+
+**The threat model starts at the boundary.** It becomes real the moment an engram
+*leaves* — shared, published in a pack, sold. And at that moment the recipient is
+trusting either the issuer, or an outside anchor. Local chaining buys them
+nothing either way.
+
+That points at a smaller job than the earlier draft implied:
+
+1. record provenance properly at write time — the rest of section 10
+2. at export, compute one fingerprint over the pack and its record
+3. publishing that fingerprint somewhere outside is a separate, optional step
+
+Step 3 is out of scope here, and the Swarm provenance toolkit already covers it.
+
+Chaining is still cheap and still worth doing eventually. It catches accidental
+corruption, and it gives you a single value worth anchoring. **It is simply not
+the thing that has to come first.**
+
+For the record, the mechanism, should anyone pick it up:
 
 ```
 hash of entry 1 = sha256( entry 1 )
@@ -846,17 +869,14 @@ hash of entry 2 = sha256( entry 2 + hash of entry 1 )
 hash of entry 3 = sha256( entry 3 + hash of entry 2 )
 ```
 
-Anyone holding a later hash can then detect a deletion or a reordering.
+We already run this in production. The enterprise server keeps a signed, chained
+audit table, verified end to end, in a table the application itself cannot bypass.
+The core library does not. So it needs porting, not designing.
 
-**We already run this in production.** The enterprise server keeps a signed,
-chained audit table. It is verified end to end. It sits in a table the application
-itself cannot bypass. The core library does not do this. So this needs porting,
-not designing.
-
-One limit to state openly. Our log is written by the same process that changes the
-engram. Published guidance is to sign outside the application that did the work.
-So chaining moves us from *undetectable* to *detectable by someone holding a later
-hash*. On its own, it does not reach proof that cannot be denied.
+One limit worth stating even then. Our log is written by the same process that
+changes the engram, and published guidance is to sign outside the application that
+did the work. So chaining moves us from *undetectable* to *detectable by someone
+holding a later hash*. On its own it does not reach proof that cannot be denied.
 
 ### 10.7 Why this engram, and not another — recommended
 
@@ -1147,4 +1167,4 @@ problem — the standard is happy either way.
 | 8 | licences | proposed |
 | 9 | how to write it out | proposed |
 | 10 | what to capture | required before any of sections 4 to 9 work |
-| 10.6 | a log that cannot be edited | required before anchoring |
+| 10.6 | a log that cannot be edited | deferred — see the section for why |

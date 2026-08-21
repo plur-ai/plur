@@ -770,6 +770,22 @@ anchor in §9).
 
 ## 9. Provenance binding (PROV-O + Swarm anchor) — PROPOSED
 
+> **Superseded by a companion document.**
+>
+> The sketch below has been worked out in full in
+> [Recording where an engram came from](./ENGRAM-PROVENANCE-PROFILE.md), which
+> specifies the mapping, every way an engram can be created, the licence
+> binding, and what has to be captured first.
+>
+> Read that instead. This section is kept because it states the motivation
+> concisely, and because implementations may still reference it.
+>
+> Two things the companion document settles that this sketch left open. A record
+> you SEND must stand on its own, since the recipient has none of our files. And
+> the four provenance fields defined in §4.8, although marked stable, were
+> written by nothing at all until that work began.
+
+
 This section is a **PROPOSED profile**, non-normative for v1. It documents how an
 engram or pack binds to a W3C PROV-O provenance record and to a Swarm content
 anchor, so the design is explicit and fundable.
