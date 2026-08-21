@@ -244,6 +244,25 @@ export const PlurConfigSchema = z.object({
     co_access: z.boolean().default(true),
   }).default({}),
   dedup: DedupConfigSchema.default({}),
+  /**
+   * When to write a provenance record (#966).
+   *
+   * `never` is the default, for two reasons. A record per engram duplicates the
+   * history log, which already holds the same events. And the trust boundary is
+   * the moment an engram LEAVES: inside one person's store, a provenance record
+   * defends against almost nobody.
+   *
+   * `on_export` is the recommended setting for anyone sharing engrams.
+   *
+   * Turning this on changes nothing except that records start appearing.
+   */
+  provenance: z.object({
+    generate: z.enum(['never', 'on_export', 'always']).default('never'),
+    /** Where records are written, relative to the PLUR home directory. */
+    path: z.string().default('provenance'),
+    /** Include the engram's own text in a shared record. Off by default. */
+    include_statement: z.boolean().default(false),
+  }).default({}),
   /** Temporal-aware tension scan tuning (#240). See {@link TensionsConfigSchema}. */
   tensions: TensionsConfigSchema.default({}),
   /**

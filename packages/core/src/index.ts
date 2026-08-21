@@ -734,6 +734,17 @@ function buildAttribution(
   return Object.keys(out).length > 0 ? out : undefined
 }
 
+import { buildProvenanceRecord, type ProvenanceOptions } from './provenance.js'
+import { FileProvenanceStore, provenanceMode, type ProvenanceStore } from './provenance-store.js'
+
+export {
+  FileProvenanceStore,
+  MemoryProvenanceStore,
+  provenanceMode,
+  type ProvenanceStore,
+  type ProvenanceMode,
+} from './provenance-store.js'
+
 export {
   buildProvenanceRecord,
   serializeProvenanceRecord,
@@ -1659,6 +1670,63 @@ export class Plur {
 
   /** Build the {scope, session_id, stored_at} source entry that gets appended
    * to an engram's sources[] on every write (initial or duplicate). */
+  /**
+   * Build a provenance record for an engram (#964), without storing it.
+   *
+   * Defaults to a portable record: one that stands on its own, names no other
+   * engram, and can be handed to someone who has none of our files.
+   */
+  async provenanceFor(engramId: string, options: ProvenanceOptions = {}): Promise<unknown | undefined> {
+    const engram = await this.getById(engramId)
+    if (!engram) return undefined
+    const cfg = (this.config as any)?.provenance
+    return buildProvenanceRecord(engram, this.getEngramHistory(engramId), {
+      includeStatement: cfg?.include_statement ?? false,
+      ...options,
+    })
+  }
+
+  /**
+   * Build a provenance record and store it (#964, #965).
+   *
+   * Returns the reference the store gave back, or undefined when the engram is
+   * unknown. Storage is pluggable: pass a store, or let it default to files
+   * under the PLUR home directory.
+   */
+  async writeProvenance(
+    engramId: string,
+    options: ProvenanceOptions & { store?: ProvenanceStore } = {},
+  ): Promise<string | undefined> {
+    const record = await this.provenanceFor(engramId, options)
+    if (!record) return undefined
+    const store = options.store ?? this._provenanceStore()
+    return store.put(engramId, record)
+  }
+
+  private _provenanceStoreInstance?: ProvenanceStore
+
+  private _provenanceStore(): ProvenanceStore {
+    if (!this._provenanceStoreInstance) {
+      this._provenanceStoreInstance = new FileProvenanceStore(this.paths.root)
+    }
+    return this._provenanceStoreInstance
+  }
+
+  /**
+   * Write a record at creation time, when the setting asks for it (#966).
+   *
+   * Default is `never`: a record per engram duplicates the history log, and the
+   * trust boundary is the moment an engram leaves, not the moment it is written.
+   * Never throws — provenance is a description, and failing to write one must
+   * not fail the learn that prompted it.
+   */
+  private _maybeWriteProvenance(engramId: string): void {
+    if (provenanceMode(this.config) !== 'always') return
+    void this.writeProvenance(engramId).catch(err => {
+      logger.warning(`[plur:provenance] could not write a record for ${engramId}: ${(err as Error).message}`)
+    })
+  }
+
   private _buildSourceEntry(scope: string, context?: LearnContext): {
     scope: string; session_id: string | null; stored_at: string
   } {
@@ -2807,6 +2875,7 @@ export class Plur {
           timestamp: now,
           data: { type: engram.type, scope: engram.scope, source: engram.source, routed_to: 'remote', outbox: true },
         })
+        this._maybeWriteProvenance(engram.id)
         return engram
       }
 
@@ -2824,6 +2893,7 @@ export class Plur {
         timestamp: now,
         data: { type: engram.type, scope: engram.scope, source: engram.source },
       })
+      this._maybeWriteProvenance(engram.id)
       return engram
     })
   }
@@ -3058,6 +3128,7 @@ export class Plur {
           timestamp: now,
           data: { type: localPlaceholder.type, scope, source: localPlaceholder.source, routed_to: 'outbox', error: (err as Error).message },
         })
+        this._maybeWriteProvenance(localPlaceholder.id)
         logger.warning(`[plur:outbox] remote write failed for ${localPlaceholder.id}, queued for retry: ${(err as Error).message}`)
         return localPlaceholder
       })
@@ -3077,6 +3148,7 @@ export class Plur {
         timestamp: now,
         data: { type: serverEngram.type, scope: serverEngram.scope, source: serverEngram.source, routed_to: 'remote' },
       })
+      this._maybeWriteProvenance(serverEngram.id)
     } catch (err) {
       logger.warning(
         `[plur] engram ${serverEngram.id} was stored remotely but its history record could not be ` +
@@ -7312,6 +7384,7 @@ export class Plur {
           timestamp: now.toISOString(),
           data: { routed_to: 'remote', outbox_flush: true, scope: engram.scope },
         })
+        this._maybeWriteProvenance(engram.id)
       } catch (err) {
         outbox.last_attempt = now.toISOString()
         outbox.attempt_count += 1
