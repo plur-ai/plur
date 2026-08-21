@@ -8,6 +8,7 @@ import { loadPack, loadEngrams, saveEngrams } from './engrams.js'
 import { atomicWrite, fsyncDir, withLock } from './sync.js'
 import { detectSensitive, detectPromptInjection, truncateToScanLimit } from './secrets.js'
 import type { Engram } from './schemas/engram.js'
+import { buildProvenanceRecord, buildPackProvenanceRecord, serializeProvenanceRecord } from './provenance.js'
 import type { PackManifest } from './schemas/pack.js'
 import { logger } from './logger.js'
 
@@ -798,6 +799,14 @@ export function listPacks(packsDir: string): PackInfo[] {
 // --- Export ---
 
 export interface ExportOptions {
+  /**
+   * Write provenance records alongside the pack (#972).
+   *
+   * A pack is how engrams leave one machine and reach another, so this is where
+   * provenance starts to matter. Off by default, in step with the config
+   * setting, which is `never` until someone turns it on.
+   */
+  provenance?: boolean
   name: string
   version: string
   description?: string
@@ -1025,6 +1034,8 @@ function deriveMatchTerms(engrams: Engram[]): string[] {
 }
 
 export interface ExportResult {
+  /** Provenance files written, relative to the pack directory. Empty when off. */
+  provenance_files?: string[]
   path: string
   engram_count: number
   privacy: PrivacyScanResult
@@ -1129,12 +1140,50 @@ export function exportPack(
   const integrity = computePackHash(outputDir)
   fs.writeFileSync(path.join(outputDir, 'INTEGRITY'), `sha256:${integrity}\n`)
 
+  // Provenance (#972), written after the integrity hash so the pack record can
+  // carry it.
+  //
+  // The hash covers SKILL.md and engrams.yaml only, per the standard, so these
+  // files are NOT covered by it. The dependency therefore runs the other way:
+  // the record commits to the pack. Change the pack and the hash inside the
+  // record stops matching.
+  //
+  // Only engrams that survived the privacy scan appear. Provenance must never
+  // become a way to ship something the content path already refused.
+  const provenanceFiles: string[] = []
+  if (manifest.provenance) {
+    const provDir = path.join(outputDir, 'provenance')
+    fs.mkdirSync(provDir, { recursive: true })
+
+    const packRecord = buildPackProvenanceRecord(
+      {
+        name: manifest.name,
+        version: manifest.version,
+        creator: manifest.creator,
+        integrity: `sha256:${integrity}`,
+      },
+      safeEngrams,
+    )
+    fs.writeFileSync(path.join(provDir, 'pack.jsonld'), serializeProvenanceRecord(packRecord))
+    provenanceFiles.push(path.join('provenance', 'pack.jsonld'))
+
+    for (const engram of safeEngrams) {
+      // Portable by default: a record that stands on its own, names no other
+      // engram, and carries no session identifier.
+      const record = buildProvenanceRecord(engram, [], { mode: 'portable' })
+      const file = path.join('provenance', `${engram.id}.jsonld`)
+      fs.writeFileSync(path.join(outputDir, file), serializeProvenanceRecord(record))
+      provenanceFiles.push(file)
+    }
+  }
+
   return {
     path: outputDir,
     engram_count: safeEngrams.length,
     privacy: allPrivacy,
     match_terms: matchTerms,
     integrity: `sha256:${integrity}`,
+    ...(manifest.provenance ? { provenance_files: provenanceFiles } : {}),
   }
 }
 

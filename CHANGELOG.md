@@ -51,6 +51,19 @@ its dry-run (`plur reindex-hashes`, no flag) reports the count without writing.
 - Engrams written at session end now link back to the session that produced them
   (#960). The session identifier was already an argument of that tool call and
   was simply not passed on, so most engrams had no session to point at.
+- **Packs carry provenance (#972).** Exporting with `provenance: true` writes one
+  record per engram plus one for the pack, which answers a question no single
+  engram can: is this pack worth anything? It says who assembled it, when, how
+  many engrams a person stated versus a model inferred, what dates they span, and
+  whether every engram carries a licence. Records are written only for engrams
+  that pass the privacy scan.
+- **Records can carry fields for a particular field of work (#973)** — medical,
+  geographic, supply chain — under their own prefix. Claiming a core prefix, or
+  redefining a core term, throws rather than silently corrupting a reader.
+- **Licences become machine-readable (#967).** Seven licence names map to a
+  policy an agent can act on, each carrying the canonical licence address,
+  because the licence text stays authoritative. An unrecognised licence produces
+  no policy at all rather than a permissive default.
 - `plur_forget` accepts a reason, and records it (#959). Every retirement made
   through the tool previously recorded an empty one.
 

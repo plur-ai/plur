@@ -102,7 +102,71 @@ const LICENCE_POLICY: Record<string, { uid: string; permit: string[]; require: s
   },
 }
 
+/**
+ * Extra fields for a particular field of work (#973).
+ *
+ * Later we will record provenance for medical data, land registries, supply
+ * chains. Each has facts worth recording that mean nothing to the others. The
+ * standard already allows this, and so does our own: unknown fields survive a
+ * round trip untouched.
+ *
+ * Four rules keep it safe, and `assertDomainFields` enforces the first two:
+ *
+ *   1. A domain adds fields under ITS OWN prefix, never `prov:` or `engram:`.
+ *   2. A domain never redefines an existing term to mean something else.
+ *   3. A reader keeps fields it does not recognise, and does not fail on them.
+ *   4. A reader does not treat an unrecognised field as trustworthy.
+ */
+export interface DomainExtension {
+  /** Prefixes this domain declares, e.g. `{ geo: 'https://example.org/geo#' }`. */
+  namespaces: Record<string, string>
+  /** Attributes to add to the engram, e.g. `{ 'geo:parcelId': '1234' }`. */
+  attributes: Record<string, unknown>
+}
+
+const RESERVED_PREFIXES = new Set(['prov', 'engram', 'pa', 'odrl', 'xsd'])
+
+/**
+ * Refuse a domain extension that would collide with the core vocabulary.
+ *
+ * Throwing is deliberate. A silently dropped field looks like it was recorded,
+ * and a silently overwritten core term corrupts every reader downstream.
+ */
+export function assertDomainFields(extension: DomainExtension): void {
+  for (const prefix of Object.keys(extension.namespaces)) {
+    if (RESERVED_PREFIXES.has(prefix)) {
+      throw new Error(
+        `provenance: the prefix "${prefix}" belongs to the core vocabulary and cannot be redefined. ` +
+        `Use your own prefix for domain-specific fields.`,
+      )
+    }
+  }
+  for (const key of Object.keys(extension.attributes)) {
+    const prefix = key.includes(':') ? key.slice(0, key.indexOf(':')) : ''
+    if (!prefix) {
+      throw new Error(
+        `provenance: the attribute "${key}" has no prefix. Every domain field needs one, ` +
+        `so a reader can tell which vocabulary it belongs to.`,
+      )
+    }
+    if (RESERVED_PREFIXES.has(prefix)) {
+      throw new Error(
+        `provenance: the attribute "${key}" uses the core prefix "${prefix}". ` +
+        `A domain must not redefine a core term. Use your own prefix.`,
+      )
+    }
+    if (!(prefix in extension.namespaces)) {
+      throw new Error(
+        `provenance: the attribute "${key}" uses the prefix "${prefix}", which is not declared. ` +
+        `Add it to namespaces so a reader knows what it means.`,
+      )
+    }
+  }
+}
+
 export interface ProvenanceOptions {
+  /** Extra fields for a particular field of work (#973). */
+  domain?: DomainExtension
   /**
    * `portable` produces a record that stands on its own, for sharing. It names
    * no other engram, carries no session identifier, and refers to nothing the
@@ -196,8 +260,9 @@ export function buildProvenanceRecord(
   events: HistoryEvent[] = [],
   options: ProvenanceOptions = {},
 ): Node {
-  const { mode = 'portable', includeStatement = false, now = new Date().toISOString() } = options
+  const { mode = 'portable', includeStatement = false, now = new Date().toISOString(), domain } = options
   const portable = mode === 'portable'
+  if (domain) assertDomainFields(domain)
   const id = engram.id
   const graph: Node[] = []
 
@@ -301,11 +366,139 @@ export function buildProvenanceRecord(
     graph.push(act)
   }
 
+  // Domain fields go on the engram, under their own prefix (#973).
+  if (domain) Object.assign(thing, domain.attributes)
+
   graph.push(...agents.nodes)
-  return { '@context': CONTEXT, '@graph': graph }
+  const context = domain ? { ...CONTEXT, ...domain.namespaces } : CONTEXT
+  return { '@context': context, '@graph': graph }
 }
 
 /** Serialize a record as JSON-LD text. */
 export function serializeProvenanceRecord(record: Node, pretty = true): string {
   return JSON.stringify(record, null, pretty ? 2 : 0) + (pretty ? '\n' : '')
+}
+
+
+// --- Packs -----------------------------------------------------------------
+
+export interface PackProvenanceInput {
+  name: string
+  version: string
+  creator?: string
+  /** The pack's integrity hash, as written to its INTEGRITY file. */
+  integrity?: string
+  /** When the pack was assembled. Defaults to now. */
+  assembledAt?: string
+}
+
+/**
+ * Build a provenance record for a whole pack (#972).
+ *
+ * A pack is how engrams leave one machine and reach another, so this is where
+ * provenance stops being a nicety. The recipient has our engrams and none of our
+ * history, so this record stands entirely on its own.
+ *
+ * It answers a question no single engram can: **is this pack worth anything?**
+ *
+ * Who assembled it, when, out of what — and, from the engrams inside it, how
+ * many were stated by a person versus inferred by a model, what dates they span,
+ * and whether every engram carries a licence. Two packs of the same size are not
+ * equal if one is direct statements from a named expert and the other is machine
+ * guesses from an unknown source.
+ *
+ * On integrity: the pack's own hash covers `SKILL.md` and `engrams.yaml` only,
+ * per the standard. A provenance file added to the pack is therefore NOT covered
+ * by it. So the dependency runs the other way — this record carries the pack's
+ * hash, and commits to the pack rather than the pack committing to it. Change
+ * the pack and the hash in this record no longer matches.
+ */
+export function buildPackProvenanceRecord(
+  pack: PackProvenanceInput,
+  engrams: Engram[],
+  options: ProvenanceOptions = {},
+): Node {
+  const { now = new Date().toISOString(), domain } = options
+  if (domain) assertDomainFields(domain)
+
+  const assembledAt = pack.assembledAt ?? now
+  const packId = `engram:pack/${pack.name}@${pack.version}`
+  const assemblyId = `engram:act/assemble-${pack.name}-${pack.version}`
+  const graph: Node[] = []
+
+  graph.push({
+    '@id': `engram:record/pack/${pack.name}@${pack.version}`,
+    '@type': ['prov:Bundle', 'prov:Entity'],
+    'prov:generatedAtTime': instant(now),
+    'engram:describes': { '@id': packId },
+    'engram:recordIsSelfContained': true,
+  })
+
+  // What a reader can judge before opening a single engram.
+  const byClaim: Record<string, number> = {}
+  const licences = new Set<string>()
+  let licensed = 0
+  const dates: string[] = []
+  for (const e of engrams) {
+    const claim = (e as any).claim_class ?? 'unstated'
+    byClaim[claim] = (byClaim[claim] ?? 0) + 1
+    const lic = (e as any).provenance?.license
+    if (lic) { licences.add(lic); licensed++ }
+    const born = bornAt(e)
+    if (born) dates.push(born)
+  }
+  dates.sort()
+
+  const packNode: Node = {
+    '@id': packId,
+    '@type': ['prov:Entity', 'prov:Collection', 'engram:Pack'],
+    'engram:packName': pack.name,
+    'engram:packVersion': pack.version,
+    'prov:generatedAtTime': instant(assembledAt),
+    'prov:wasGeneratedBy': { '@id': assemblyId },
+    'prov:hadMember': engrams.map(e => ({ '@id': `engram:${e.id}` })),
+    'engram:engramCount': engrams.length,
+    // A quality signal, not a score. The reader weighs it themselves.
+    'engram:claimClassCounts': byClaim,
+    'engram:licensedCount': licensed,
+    'engram:licenses': [...licences].sort(),
+  }
+  if (dates.length) {
+    packNode['engram:earliestEngram'] = dates[0]
+    packNode['engram:latestEngram'] = dates[dates.length - 1]
+  }
+  if (pack.integrity) packNode['engram:packIntegrity'] = pack.integrity
+  if (domain) Object.assign(packNode, domain.attributes)
+  graph.push(packNode)
+
+  const assembly: Node = {
+    '@id': assemblyId,
+    '@type': ['prov:Activity', 'engram:AssemblePack'],
+    'prov:startedAtTime': instant(assembledAt),
+    'prov:endedAtTime': instant(assembledAt),
+    'prov:generated': { '@id': packId },
+  }
+  if (pack.creator) {
+    const creatorId = `engram:agent/${pack.creator}`
+    assembly['prov:wasAssociatedWith'] = { '@id': creatorId }
+    packNode['prov:wasAttributedTo'] = { '@id': creatorId }
+    graph.push({ '@id': creatorId, '@type': 'prov:Agent' })
+  }
+  graph.push(assembly)
+
+  // Every member is described here, so the record has no dangling reference.
+  // Deliberately shallow: the per-engram records carry the detail.
+  for (const e of engrams) {
+    const member: Node = {
+      '@id': `engram:${e.id}`,
+      '@type': ['prov:Entity', 'engram:Engram'],
+      'engram:engramType': e.type,
+    }
+    if ((e as any).claim_class) member['engram:claimClass'] = (e as any).claim_class
+    if ((e as any).content_hash) member['engram:contentHash'] = `sha256:${(e as any).content_hash}`
+    graph.push(member)
+  }
+
+  const context = domain ? { ...CONTEXT, ...domain.namespaces } : CONTEXT
+  return { '@context': context, '@graph': graph }
 }

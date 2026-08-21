@@ -171,6 +171,64 @@ look.
 
 ---
 
+## Packs
+
+A pack is how engrams leave your machine, so this is where provenance starts to
+matter. Export one with records included:
+
+```ts
+exportPack(engrams, outputDir, { name: 'my-pack', version: '1.0.0', provenance: true })
+```
+
+You get a `provenance/` directory inside the pack: one file per engram, plus one
+for the pack itself.
+
+The pack record answers a question no single engram can: **is this pack worth
+anything?** It says who assembled it and when, and from the engrams inside it,
+how many were stated by a person versus inferred by a model, what dates they
+span, and whether every engram carries a licence.
+
+Two packs of the same size are not equal. One may be direct statements from a
+named expert. The other may be machine guesses from an unknown source.
+
+Records are only written for engrams that pass the privacy scan. If the pack
+refused an engram, no record for it is written either. Provenance never becomes
+a way around a refusal.
+
+One detail worth knowing. A pack's integrity hash covers `SKILL.md` and
+`engrams.yaml` only, so the provenance files are not covered by it. The
+dependency runs the other way instead: the pack record carries the pack's hash.
+Change the pack and the hash inside the record stops matching.
+
+---
+
+## Fields for your own field of work
+
+Medical data, land registries and supply chains each have facts worth recording
+that mean nothing to the others. You can add your own, under your own prefix:
+
+```ts
+await plur.provenanceFor('ENG-2026-08-21-001', {
+  domain: {
+    namespaces: { geo: 'https://example.org/geo#' },
+    attributes: { 'geo:parcelId': '1234-5678' },
+  },
+})
+```
+
+Four rules apply, and the first two are enforced:
+
+1. Use **your own prefix**, never `prov:` or `engram:`.
+2. Never redefine an existing term to mean something else.
+3. A reader keeps fields it does not recognise, and does not fail on them.
+4. A reader does not treat an unrecognised field as trustworthy.
+
+Breaking the first two throws rather than warns. A silently dropped field looks
+like it was recorded, and a silently overwritten core term corrupts every reader
+downstream.
+
+---
+
 ## Checking a record
 
 Records are ordinary JSON-LD. Any tool that reads that format will read ours.

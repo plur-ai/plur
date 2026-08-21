@@ -1,0 +1,125 @@
+{
+  "@context": {
+    "prov": "http://www.w3.org/ns/prov#",
+    "engram": "https://plur.ai/ns/engram#",
+    "pa": "https://w3id.org/prov-agent#",
+    "odrl": "http://www.w3.org/ns/odrl/2/",
+    "xsd": "http://www.w3.org/2001/XMLSchema#"
+  },
+  "@graph": [
+    {
+      "@id": "engram:record/pack/swarm-grants@1.0.0",
+      "@type": [
+        "prov:Bundle",
+        "prov:Entity"
+      ],
+      "prov:generatedAtTime": {
+        "@value": "2026-08-21T09:00:00Z",
+        "@type": "xsd:dateTime"
+      },
+      "engram:describes": {
+        "@id": "engram:pack/swarm-grants@1.0.0"
+      },
+      "engram:recordIsSelfContained": true
+    },
+    {
+      "@id": "engram:pack/swarm-grants@1.0.0",
+      "@type": [
+        "prov:Entity",
+        "prov:Collection",
+        "engram:Pack"
+      ],
+      "engram:packName": "swarm-grants",
+      "engram:packVersion": "1.0.0",
+      "prov:generatedAtTime": {
+        "@value": "2026-08-21T09:00:00Z",
+        "@type": "xsd:dateTime"
+      },
+      "prov:wasGeneratedBy": {
+        "@id": "engram:act/assemble-swarm-grants-1.0.0"
+      },
+      "prov:hadMember": [
+        {
+          "@id": "engram:ENG-2026-08-01-001"
+        },
+        {
+          "@id": "engram:ENG-2026-08-10-002"
+        },
+        {
+          "@id": "engram:ENG-2026-08-15-003"
+        }
+      ],
+      "engram:engramCount": 3,
+      "engram:claimClassCounts": {
+        "asserted": 1,
+        "inferred": 1,
+        "documented": 1
+      },
+      "engram:licensedCount": 3,
+      "engram:licenses": [
+        "cc-by-sa-4.0"
+      ],
+      "engram:earliestEngram": "2026-08-01T00:00:00Z",
+      "engram:latestEngram": "2026-08-15T00:00:00Z",
+      "engram:packIntegrity": "sha256:abc123",
+      "prov:wasAttributedTo": {
+        "@id": "engram:agent/local:maintainer"
+      }
+    },
+    {
+      "@id": "engram:agent/local:maintainer",
+      "@type": "prov:Agent"
+    },
+    {
+      "@id": "engram:act/assemble-swarm-grants-1.0.0",
+      "@type": [
+        "prov:Activity",
+        "engram:AssemblePack"
+      ],
+      "prov:startedAtTime": {
+        "@value": "2026-08-21T09:00:00Z",
+        "@type": "xsd:dateTime"
+      },
+      "prov:endedAtTime": {
+        "@value": "2026-08-21T09:00:00Z",
+        "@type": "xsd:dateTime"
+      },
+      "prov:generated": {
+        "@id": "engram:pack/swarm-grants@1.0.0"
+      },
+      "prov:wasAssociatedWith": {
+        "@id": "engram:agent/local:maintainer"
+      }
+    },
+    {
+      "@id": "engram:ENG-2026-08-01-001",
+      "@type": [
+        "prov:Entity",
+        "engram:Engram"
+      ],
+      "engram:engramType": "behavioral",
+      "engram:claimClass": "asserted",
+      "engram:contentHash": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+    },
+    {
+      "@id": "engram:ENG-2026-08-10-002",
+      "@type": [
+        "prov:Entity",
+        "engram:Engram"
+      ],
+      "engram:engramType": "behavioral",
+      "engram:claimClass": "inferred",
+      "engram:contentHash": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+    },
+    {
+      "@id": "engram:ENG-2026-08-15-003",
+      "@type": [
+        "prov:Entity",
+        "engram:Engram"
+      ],
+      "engram:engramType": "behavioral",
+      "engram:claimClass": "documented",
+      "engram:contentHash": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+    }
+  ]
+}
