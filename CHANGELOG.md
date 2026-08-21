@@ -39,6 +39,27 @@ its dry-run (`plur reindex-hashes`, no flag) reports the count without writing.
 
 ### Added
 
+- **Provenance: record where an engram came from (#958).** An engram can now
+  carry who asserted it, what software and model were involved, and what kind of
+  claim it is — a statement someone made, a conclusion a model reached, or a line
+  a pattern scraped. Those three were previously stored identically.
+  ([docs/provenance.md](docs/provenance.md))
+- `plur.provenanceFor()` and `plur.writeProvenance()` build a W3C PROV record for
+  an engram, as JSON-LD, from the engram plus the history log (#964). Storage is
+  pluggable and separate from generation (#965), and a `provenance.generate`
+  setting chooses when records are written — `never` by default (#966).
+- Engrams written at session end now link back to the session that produced them
+  (#960). The session identifier was already an argument of that tool call and
+  was simply not passed on, so most engrams had no session to point at.
+- `plur_forget` accepts a reason, and records it (#959). Every retirement made
+  through the tool previously recorded an empty one.
+
+### Fixed
+
+- Which model made each near-duplicate verdict is now recorded (#962). A model
+  rewrote the statement and that rewrite became the memory, with nothing saying
+  which model did it.
+
 - **`plur dashboard` opens a local memory viewer** (#934, #936) (alias: `plur ui`;
   `plur status` points at it) — every engram, what gets recalled and how
   often, a written-per-day chart, and the most-recalled list. Selecting a row expands the
