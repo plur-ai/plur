@@ -734,6 +734,12 @@ function buildAttribution(
   return Object.keys(out).length > 0 ? out : undefined
 }
 
+export {
+  buildProvenanceRecord,
+  serializeProvenanceRecord,
+  type ProvenanceOptions,
+} from './provenance.js'
+
 export class Plur {
   private paths: PlurPaths
   private config: PlurConfig

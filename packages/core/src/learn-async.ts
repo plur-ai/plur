@@ -206,6 +206,13 @@ async function executeDedupDecision(
   decision: DedupDecision,
   targetId: string | null,
 ): Promise<LearnAsyncResult> {
+  // Name the model behind a dedup verdict (#962). A model rewrote the
+  // statement, and that rewrite became the memory. Without naming it the
+  // decision cannot be reviewed later. Omitted when the caller did not say
+  // which model it passed — we never invent one.
+  const dedupActor = context?.attribution?.model
+    ? { model: context.attribution.model }
+    : undefined
   switch (decision) {
     case 'NOOP': {
       if (targetId) {
@@ -241,6 +248,10 @@ async function executeDedupDecision(
               engram_id: targetId,
               timestamp: new Date().toISOString(),
               data: { old_statement: existing.statement, new_statement: statement, reason: 'LLM dedup UPDATE' },
+              // Which model decided this (#962). A model rewrote the statement,
+              // and that rewrite became the memory. Without naming the model the
+              // decision cannot be reviewed later.
+              ...(dedupActor ? { actor: dedupActor } : {}),
             })
             return { engram: updated as Engram, decision: 'UPDATE' as DedupDecision, existing_id: targetId }
           })
@@ -278,6 +289,7 @@ async function executeDedupDecision(
               engram_id: targetId,
               timestamp: new Date().toISOString(),
               data: { merged_statement: statement, reason: 'LLM dedup MERGE' },
+              ...(dedupActor ? { actor: dedupActor } : {}),
             })
             return { engram: merged as Engram, decision: 'MERGE' as DedupDecision, existing_id: targetId }
           })
