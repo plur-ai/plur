@@ -776,6 +776,9 @@ export class Plur {
    * event; findLatestInjectionFor covers the cross-process case.
    */
   private _lastInjectionByEngram: Map<string, string> = new Map()
+
+  /** #975: dedup co_injection events by query hash within a 5s window. */
+  private _recentCoInjections: Map<string, number> = new Map()
   /**
    * Timestamps (ms) of recent LLM failures, newest last (convergence Phase 2).
    *
@@ -4942,14 +4945,32 @@ export class Plur {
     // write failure must never break injection.
     if (injected_ids.length > 0) {
       const injection_id = generateInjectionId()
+      const queryHash = computeQueryHash(task)
+      // #975: skip co_injection log if the same query hash was logged within
+      // 5 seconds. UserPromptSubmit and PreToolUse hooks fire on the same
+      // prompt milliseconds apart — both call inject(), producing identical
+      // co_injection events. Dedup in-process by query hash + timestamp.
+      const now = Date.now()
+      const lastSeen = this._recentCoInjections.get(queryHash)
+      const isDuplicate = lastSeen !== undefined && (now - lastSeen) < 5000
+      if (!isDuplicate) {
+        this._recentCoInjections.set(queryHash, now)
+        // Evict stale entries to prevent unbounded growth
+        if (this._recentCoInjections.size > 100) {
+          for (const [k, v] of this._recentCoInjections) {
+            if (now - v > 10000) this._recentCoInjections.delete(k)
+          }
+        }
+      }
       try {
+        if (!isDuplicate) {
         appendHistory(this.paths.root, {
           event: 'co_injection',
           engram_id: injection_id,
           timestamp: new Date().toISOString(),
           data: {
             ids: injected_ids,
-            query_hash: computeQueryHash(task),
+            query_hash: queryHash,
             // Event provenance for offline token-economics analysis of real
             // sessions (the plur-bench #42 measurement). Deliberately NOT read
             // by the receipt, which shows no token/cost figure by design.
@@ -4960,6 +4981,7 @@ export class Plur {
           },
         })
         for (const id of injected_ids) this._lastInjectionByEngram.set(id, injection_id)
+        }
       } catch { /* best-effort */ }
 
       // #866: increment injection_count on primary-store engrams selected for context.
