@@ -68,6 +68,20 @@ export const DEFAULT_EMBEDDER: EmbedderName = 'bge-small'
 /** Singleton cache so two callers asking for the same name share metadata + the inner pipeline. */
 const adapterCache = new Map<EmbedderName, EmbedderAdapter>()
 
+/**
+ * Dispose all cached adapters, releasing ONNX sessions so the process can
+ * exit without aborting on thread-pool mutex destruction (#904).
+ */
+export async function disposeAllEmbedders(): Promise<void> {
+  const adapters = [...adapterCache.values()]
+  adapterCache.clear()
+  for (const adapter of adapters) {
+    if (typeof adapter.dispose === 'function') {
+      try { await adapter.dispose() } catch { /* best-effort */ }
+    }
+  }
+}
+
 /** Reset cached adapters. Test-only — production code never calls this. */
 export function _resetEmbedderCache(): void {
   adapterCache.clear()

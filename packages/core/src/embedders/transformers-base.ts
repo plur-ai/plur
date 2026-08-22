@@ -75,6 +75,20 @@ async function loadPipeline(modelId: string, dtype: TransformersAdapterConfig['d
   return await pending
 }
 
+/** Dispose all cached pipelines, releasing ONNX sessions so the process exits cleanly (#904). */
+export async function disposePipelines(): Promise<void> {
+  const entries = [...pipelineCache.entries()]
+  pipelineCache.clear()
+  for (const [, pending] of entries) {
+    try {
+      const pipe = await pending
+      if (pipe && typeof (pipe as { dispose?: () => Promise<void> }).dispose === 'function') {
+        await (pipe as { dispose: () => Promise<void> }).dispose()
+      }
+    } catch { /* best-effort — the process is shutting down */ }
+  }
+}
+
 /** Reset the shared pipeline cache. Test-only. */
 export function _resetTransformersPipelineCache(): void {
   pipelineCache.clear()
@@ -112,6 +126,18 @@ export function makeTransformersAdapter(config: TransformersAdapterConfig): Embe
       const out: Float32Array[] = []
       for (const t of texts) out.push(await embedOne(t))
       return out
+    },
+    async dispose(): Promise<void> {
+      const key = `${config.modelId}::${config.dtype ?? 'fp32'}`
+      const pending = pipelineCache.get(key)
+      if (!pending) return
+      pipelineCache.delete(key)
+      try {
+        const pipe = await pending
+        if (pipe && typeof (pipe as { dispose?: () => Promise<void> }).dispose === 'function') {
+          await (pipe as { dispose: () => Promise<void> }).dispose()
+        }
+      } catch { /* best-effort */ }
     },
   }
 }

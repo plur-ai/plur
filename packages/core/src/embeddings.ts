@@ -124,6 +124,22 @@ export function resetEmbedder(): void {
 }
 
 /**
+ * Dispose the active embedder, releasing the ONNX inference session so the
+ * host process can exit without a C++ abort on thread-pool mutex teardown.
+ *
+ * Call from the Plur class close() path or a process `beforeExit` handler.
+ * After disposal, the next embed() call will lazy-load a fresh session.
+ * Closes #904.
+ */
+export async function disposeEmbedder(): Promise<void> {
+  const adapter = embedPipeline
+  embedPipeline = null
+  if (adapter && typeof adapter.dispose === 'function') {
+    try { await adapter.dispose() } catch { /* best-effort — shutting down */ }
+  }
+}
+
+/**
  * Test-only: install a stub adapter as the active embedder so tests can
  * exercise the embed()/activeEmbedderDim() contracts (#335) without a
  * model load. Mirrors rerankers' `_setCachedReranker`. Production code
