@@ -24,7 +24,7 @@ import { _resetMsMarcoMiniLmCache } from './rerankers/ms-marco-minilm-l6.js'
 import { classifyQuery, routeForIntent, applyIntentRouting, isIntentRoutingDisabled, isEntityDomain, rewriteLexicalQuery, isQueryRewriteDisabled, type QueryIntent, type IntentRoutingProfile } from './intent/index.js'
 import { getEmbedder, resolveEmbedderName } from './embedders/index.js'
 import { emitMissSignal } from './telemetry-miss-signal.js'
-import { embedderStatus, resetEmbedder, setEmbeddingsEnabled, type EmbedderStatus } from './embeddings.js'
+import { embedderStatus, resetEmbedder, setEmbeddingsEnabled, disposeEmbedder, type EmbedderStatus } from './embeddings.js'
 import { expandedSearch } from './query-expansion.js'
 import { recallAuto, type AutoSearchResult } from './search-orchestrator.js'
 import { autoSummary } from './summary.js'
@@ -194,8 +194,8 @@ export { withAsyncLock, asyncAtomicWrite } from './store/index.js'
 // vectors identically to core's hybrid search (same model + EMBED_DIM). The
 // model identity and EMBED_DIM are a stable contract; changing them is breaking
 // for any consumer that persists vectors. See embeddings.ts.
-export { embed, EMBED_DIM, activeEmbedderDim, embedderStatus, cosineSimilarity, type EmbedderStatus } from './embeddings.js'
-export { EMBEDDER_NAMES, DEFAULT_EMBEDDER, resolveEmbedderName, type EmbedderName, type EmbedderAdapter } from './embedders/index.js'
+export { embed, EMBED_DIM, activeEmbedderDim, embedderStatus, disposeEmbedder, cosineSimilarity, type EmbedderStatus } from './embeddings.js'
+export { EMBEDDER_NAMES, DEFAULT_EMBEDDER, resolveEmbedderName, disposeAllEmbedders, type EmbedderName, type EmbedderAdapter } from './embedders/index.js'
 // Reranker surface (#220/#341) — factory + runtime status so MCP/CLI can
 // probe reranker health (plur_doctor) and surface non-engagement on recall.
 // _setCachedReranker/_resetRerankerCache are test seams for exercising

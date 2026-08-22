@@ -32,4 +32,6 @@ export interface EmbedderAdapter {
   embed(text: string, role?: EmbedRole): Promise<Float32Array>
   /** Embed N texts. Output order matches input order. */
   embedBatch(texts: string[]): Promise<Float32Array[]>
+  /** Release the underlying model session so the process can exit cleanly. */
+  dispose?(): Promise<void>
 }
