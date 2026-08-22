@@ -1,4 +1,4 @@
-import type { Engram } from './schemas/engram.js'
+import type { Engram, MeasuredUnder } from './schemas/engram.js'
 import type { LlmFunction } from './types.js'
 import { ftsTokenize } from './fts.js'
 
@@ -332,6 +332,38 @@ function validityExpired(e: Engram, now: string): boolean {
 }
 
 /**
+ * True when BOTH engrams have `measured_under` AND at least one of
+ * [source_type, model, hardware, dataset] differs (#869 / #203).
+ *
+ * When this returns true the pair is a context-scoped refinement, not a
+ * contradiction: the same claim measured under different configurations can
+ * produce different values without either being wrong. Examples:
+ *   - max_tokens 16384 (bench) vs max_tokens 65536 (production operation)
+ *   - 87% wall-clock (local-git) vs 43% wall-clock (GitLab CI)
+ *
+ * `date` is deliberately NOT in the dimension list. A regression benchmark —
+ * same config, different dates, different values — is a genuine contradiction
+ * (or regression) and must surface as a tension, not be silently classified
+ * as a refinement. An engram without `measured_under` is an unconditional
+ * assertion and stays a tension candidate regardless of the other side.
+ */
+export function measuredUnderDiffers(a: Engram, b: Engram): boolean {
+  const muA: MeasuredUnder | undefined = a.measured_under
+  const muB: MeasuredUnder | undefined = b.measured_under
+  // Require both to have the field — an engram without measured_under is an
+  // unconditional assertion, so it stays in the tension-candidate pool.
+  if (!muA || !muB) return false
+  const DIMENSIONS: ReadonlyArray<string> = ['source_type', 'model', 'hardware', 'dataset']
+  return DIMENSIONS.some(dim => {
+    const valA = muA[dim]
+    const valB = muB[dim]
+    // Only consider dimensions where BOTH sides have a value — a missing
+    // dimension is "unknown", not "same", so we cannot conclude they differ.
+    return valA != null && valB != null && valA !== valB
+  })
+}
+
+/**
  * True when BOTH engrams are point-in-time snapshots (their domains fall in
  * a configured temporal domain) recorded on different days — an event log,
  * not a contradiction (#240 Layer 2). Same-day snapshot pairs stay in: two
@@ -370,6 +402,11 @@ function isSnapshotPair(a: Engram, b: Engram, temporalDomains: readonly string[]
  *     recorded on different days are skipped by default — they are an
  *     event log, not a contradiction. `snapshot_pairs: 'floor'` keeps them
  *     for the judge (scanForTensions caps their confidence instead).
+ *   - Pairs where both engrams have `measured_under` AND differ on at least
+ *     one configuration dimension (source_type, model, hardware, dataset)
+ *     are skipped (#869 / #203) — they are context-scoped refinements, not
+ *     contradictions. `date` is excluded from the dimension check: a
+ *     regression on the same config on different dates IS a real tension.
  *
  * Surviving pairs are ranked by descending shared-token overlap (#180) so
  * that the pairs most likely to be genuine contradictions are judged first
@@ -431,6 +468,12 @@ export function getCandidatePairs(
       // #240 Layer 2: snapshot-vs-snapshot at different timestamps is an
       // event log, not a contradiction.
       if (snapshotMode === 'skip' && isSnapshotPair(a, b, temporalDomains)) continue
+
+      // #869 / #203: differing measured_under dimensions → context-scoped
+      // refinement, not a contradiction. Both must have measured_under AND
+      // differ on at least one of [source_type, model, hardware, dataset].
+      // date is excluded: a regression on the same config is a real tension.
+      if (measuredUnderDiffers(a, b)) continue
 
       // Stage 3: subject-predicate pre-filter
       if (!setsIntersect(subjectTokens[i], subjectTokens[j])) continue
