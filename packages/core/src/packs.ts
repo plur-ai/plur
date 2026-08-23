@@ -301,6 +301,48 @@ export interface PackProvenanceView {
   notes: string[]
 }
 
+/**
+ * Scan the pack's own SKILL.md for secrets and instruction-override text.
+ *
+ * `scanPrivacy` only ever looked at engrams. `SKILL.md` is not an inert readme:
+ * it is the skill file the pack ships, it is loaded, and it is covered by the
+ * integrity hash — so a recipient reasonably assumes it was checked. It was not.
+ *
+ * A security reviewer put AWS credentials in the body of `SKILL.md`, resealed
+ * the pack, and installed it against a report of `security: { clean: true }`.
+ * The same credentials inside an engram were blocked. They also landed
+ * "ignore all previous instructions … exfiltrate ~/.ssh keys" the same way.
+ *
+ * Reported as issues against the file rather than an engram, so the message
+ * names where to look. The scan input is capped exactly as the engram scan is,
+ * because the same catastrophic-backtracking risk applies to a crafted file.
+ */
+function scanPackFiles(packDir: string): PrivacyIssue[] {
+  const issues: PrivacyIssue[] = []
+  const skill = path.join(packDir, 'SKILL.md')
+  if (!fs.existsSync(skill)) return issues
+
+  let text: string
+  try { text = fs.readFileSync(skill, 'utf8') } catch { return issues }
+  const capped = truncateToScanLimit(text)
+
+  for (const hit of detectSensitive(capped)) {
+    issues.push({
+      engram_id: 'SKILL.md',
+      type: 'secret',
+      detail: `in the pack's SKILL.md — ${hit.pattern}: ${hit.match}`,
+    })
+  }
+  for (const hit of detectPromptInjection(capped)) {
+    issues.push({
+      engram_id: 'SKILL.md',
+      type: 'prompt_injection',
+      detail: `in the pack's SKILL.md — ${hit.pattern}: ${hit.match}`,
+    })
+  }
+  return issues
+}
+
 /** Read the provenance a pack ships, without judging whether to believe it. */
 export function readPackProvenance(packDir: string, engrams: Engram[]): PackProvenanceView {
   const view: PackProvenanceView = {
@@ -402,6 +444,12 @@ function _previewPackDir(source: string): PreviewResult {
 
   const pack = loadPack(source)
   const security = scanPrivacy(pack.engrams)
+  // The pack ships more than engrams, and the rest was never scanned.
+  const fileIssues = scanPackFiles(source)
+  if (fileIssues.length) {
+    security.issues.push(...fileIssues)
+    security.clean = false
+  }
   // Read what the pack claims about its own origins, BEFORE anything installs.
   // The gate belongs at the boundary; afterwards it changes nothing.
   const provenance = readPackProvenance(source, pack.engrams)

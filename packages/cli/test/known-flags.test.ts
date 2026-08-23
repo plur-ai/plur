@@ -11,7 +11,7 @@ import { mkdtempSync, rmSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { execFileSync } from 'child_process'
-import { expandEqualsFlags } from '../src/plur.js'
+import { expandEqualsFlags, parseGlobalFlags } from '../src/plur.js'
 import { unknownFlagMessage } from '../src/known-flags.js'
 
 const CLI = join(__dirname, '..', 'dist', 'index.js')
@@ -36,6 +36,22 @@ describe('the --flag=value form', () => {
 
   it('leaves a flag with no equals untouched', () => {
     expect(expandEqualsFlags(['--json', 'x'])).toEqual(['--json', 'x'])
+  })
+})
+
+describe('the splitting is actually wired into the parser', () => {
+  // Testing expandEqualsFlags on its own proves the helper works, not that
+  // anything calls it. Deleting the call left every test above passing —
+  // caught by deliberately breaking the code and checking these tests failed.
+  it('parseGlobalFlags splits a global flag written with equals', () => {
+    expect(parseGlobalFlags(['--path=/tmp/x']).flags.path).toBe('/tmp/x')
+  })
+
+  it('and splits a command flag on its way through to the command', () => {
+    // Command flags are not interpreted here; they must arrive already split,
+    // because each command's own parser only understands the two-token form.
+    expect(parseGlobalFlags(['learn', 'x', '--license=cc-by-4.0']).args)
+      .toEqual(['learn', 'x', '--license', 'cc-by-4.0'])
   })
 })
 

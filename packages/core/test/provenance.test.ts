@@ -140,13 +140,23 @@ describe('licences — a summary, never a guess', () => {
     expect(policy['odrl:prohibition']).toEqual([{ 'odrl:action': 'odrl:commercialize' }])
   })
 
-  it('emits no policy for a licence it does not recognise', () => {
-    // Not a permissive default, not a guess. The reader is told the name and
-    // left to go and look.
+  it('grants nothing for a licence it does not recognise, rather than staying silent', () => {
+    // Emitting NO policy was the original design: a guess is worse than
+    // silence. It is — but silence is not what the reader receives. A
+    // compliance tester found software seeing a prohibition on an MIT memory
+    // and none at all on one marked `proprietary`, so the proprietary one
+    // looked the LESS restricted. Absence was read as permission.
+    //
+    // So the policy exists and grants nothing. Still no guess; the difference
+    // is the reader is told there is nothing here, instead of inferring it.
     const record = buildProvenanceRecord(engramOf({
+      visibility: 'public',
       provenance: { origin: 'x', license: 'some-bespoke-licence-2.1' },
     }))
-    expect(subject(record)['odrl:hasPolicy']).toBeUndefined()
+    const policy = subject(record)['odrl:hasPolicy']
+    expect(policy['odrl:permission']).toEqual([])
+    expect(policy['engram:licenseRecognised']).toBe(false)
+    expect(String(policy['engram:note'])).toContain('NOT that everything is allowed')
     expect(subject(record)['engram:license']).toBe('some-bespoke-licence-2.1')
   })
 })
@@ -314,7 +324,7 @@ describe('what the testers found', () => {
     const summary = summariseProvenance(record as any)
 
     expect(summary.private).toBe(true)
-    expect(summary.fields.shareable).toBe(false)
+    expect(summary.fields.may_leave_this_machine).toBe(false)
     expect(summary.lines.join('\n')).toContain('Not permission to share')
   })
 
@@ -366,7 +376,7 @@ describe('what the testers found', () => {
     const summary = summariseProvenance(buildProvenanceRecord(engramOf2()) as any)
     expect(summary.fields.licence?.name).toBe('cc-by-sa-4.0')
     expect(summary.fields.scope).toBe('global')
-    expect(typeof summary.fields.shareable).toBe('boolean')
+    expect(typeof summary.fields.may_leave_this_machine).toBe('boolean')
   })
 
   it('names the recorded steps rather than counting them', async () => {

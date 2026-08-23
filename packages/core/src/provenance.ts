@@ -100,6 +100,14 @@ const LICENCE_POLICY: Record<string, { uid: string; permit: string[]; require: s
     uid: 'https://opensource.org/license/mit',
     permit: ['use', 'reproduce', 'distribute', 'derive'], require: ['attribute'], forbid: [],
   },
+  'gpl-3.0': {
+    uid: 'https://www.gnu.org/licenses/gpl-3.0.html',
+    permit: ['use', 'reproduce', 'distribute', 'derive'], require: ['attribute', 'shareAlike'], forbid: [],
+  },
+  'bsd-3-clause': {
+    uid: 'https://opensource.org/license/bsd-3-clause',
+    permit: ['use', 'reproduce', 'distribute', 'derive'], require: ['attribute'], forbid: [],
+  },
 }
 
 /**
@@ -215,7 +223,30 @@ function bornAt(engram: Engram): string | undefined {
 function licencePolicy(name: string | undefined, withheld = false): Node | undefined {
   if (!name) return undefined
   const spec = LICENCE_POLICY[name.toLowerCase()]
-  if (!spec) return undefined
+  if (!spec) {
+    // A licence we do not recognise gets a policy that GRANTS NOTHING, rather
+    // than no policy at all.
+    //
+    // Emitting nothing was the original design, on the reasoning that a guess
+    // is worse than silence. It is — but silence is not what a reader receives.
+    // A tester pointed out the consequence: software checking policies saw a
+    // prohibition on an MIT memory and none whatsoever on one marked
+    // `proprietary`, so the proprietary one looked the LESS restricted of the
+    // two. Absence was being read as permission, exactly backwards.
+    //
+    // So: no permissions, an explicit note, and the licence name to go and read.
+    // Still no guess — the difference is that the reader is now told there is
+    // nothing here to rely on, instead of inferring it from a missing key.
+    return {
+      '@type': 'odrl:Set',
+      'odrl:permission': [],
+      'engram:licenseRecognised': false,
+      'engram:note':
+        `"${name}" is not a licence this software knows. No permission is expressed here. `
+        + 'Read the licence itself before reusing anything under it. An empty permission '
+        + 'list means nothing was determined, NOT that everything is allowed.',
+    }
+  }
   const permission: Node = { 'odrl:action': spec.permit.map(a => `odrl:${a}`) }
   if (spec.require.length) permission['odrl:duty'] = spec.require.map(a => ({ 'odrl:action': `odrl:${a}` }))
   const policy: Node = { '@type': 'odrl:Set', 'odrl:uid': spec.uid, 'odrl:permission': [permission] }
@@ -273,12 +304,15 @@ function escapeIri(value: string): string {
 }
 
 /** Build the agent nodes, and the relationships that point at them. */
-function agentNodes(engram: Engram): { nodes: Node[]; attributedTo?: string; associatedWith?: string } {
+function agentNodes(engram: Engram): {
+  nodes: Node[]; attributedTo?: string; associatedWith?: string; usedModel?: string
+} {
   const a = (engram as any).attribution as Engram['attribution']
   if (!a) return { nodes: [] }
   const nodes: Node[] = []
   let attributedTo: string | undefined
   let associatedWith: string | undefined
+  let usedModel: string | undefined
 
   if (a.asserted_by) {
     attributedTo = agentId(a.asserted_by)
@@ -291,27 +325,51 @@ function agentNodes(engram: Engram): { nodes: Node[]; attributedTo?: string; ass
     nodes.push(node)
   }
 
-  const software = a.runtime ?? a.tool
-  if (software) {
-    associatedWith = `engram:agent/software/${escapeIri(software.name)}${software.version ? `@${escapeIri(software.version)}` : ''}`
-    const node: Node = { '@id': associatedWith, '@type': ['prov:SoftwareAgent', 'pa:AIAgent'], 'engram:runtimeName': software.name }
-    if (software.version) node['engram:runtimeVersion'] = software.version
-    const behalf = a.on_behalf_of ?? a.asserted_by
-    if (behalf) node['prov:actedOnBehalfOf'] = { '@id': agentId(behalf) }
+  // The runtime and the tool are DIFFERENT things and both are recorded when
+  // both are given. `runtime ?? tool` dropped the tool whenever a runtime was
+  // present, and when only a tool was given it was written into the runtime
+  // slot and typed as an AI agent — so an import script was recorded as one.
+  const softwareId = (name: string, version?: string) =>
+    `engram:agent/software/${escapeIri(name)}${version ? `@${escapeIri(version)}` : ''}`
+
+  if (a.runtime) {
+    associatedWith = softwareId(a.runtime.name, a.runtime.version)
+    const node: Node = {
+      '@id': associatedWith,
+      '@type': ['prov:SoftwareAgent', 'pa:AIAgent'],
+      'engram:runtimeName': a.runtime.name,
+    }
+    if (a.runtime.version) node['engram:runtimeVersion'] = a.runtime.version
+    // ONLY when somebody said so. This used to fall back to `asserted_by`,
+    // which invented a delegation nobody recorded and put it in a document
+    // whose footer promises that nothing is guessed.
+    if (a.on_behalf_of) node['prov:actedOnBehalfOf'] = { '@id': agentId(a.on_behalf_of) }
     nodes.push(node)
   }
 
+  if (a.tool) {
+    const id = softwareId(a.tool.name, a.tool.version)
+    // A tool is not an AI agent. PROV-AGENT has a term for exactly this.
+    const node: Node = { '@id': id, '@type': ['prov:SoftwareAgent', 'pa:AgentTool'], 'engram:toolName': a.tool.name }
+    if (a.tool.version) node['engram:toolVersion'] = a.tool.version
+    if (a.on_behalf_of) node['prov:actedOnBehalfOf'] = { '@id': agentId(a.on_behalf_of) }
+    nodes.push(node)
+    // If there is no runtime, the tool is what the engram was produced with.
+    if (!associatedWith) associatedWith = id
+  }
+
   if (a.model) {
-    const id = `engram:model/${a.model.name}`
+    const id = `engram:model/${escapeIri(a.model.name)}`
     const node: Node = { '@id': id, '@type': ['prov:SoftwareAgent', 'pa:AIModel'], 'engram:modelName': a.model.name }
     // The prompt is identified by hash. Its text is never stored.
     if (a.model.prompt_sha256) node['engram:promptHash'] = `sha256:${a.model.prompt_sha256}`
     if (a.model.prompt_id) node['engram:promptId'] = a.model.prompt_id
     if (a.model.prompt_version) node['engram:promptVersion'] = a.model.prompt_version
     nodes.push(node)
+    usedModel = id
   }
 
-  return { nodes, attributedTo, associatedWith }
+  return { nodes, attributedTo, associatedWith, usedModel }
 }
 
 /**
@@ -387,6 +445,11 @@ export function buildProvenanceRecord(
   if (policy) thing['odrl:hasPolicy'] = policy
 
   if (agents.attributedTo) thing['prov:wasAttributedTo'] = { '@id': agents.attributedTo }
+  // Point at the model, so the node is reachable. It was being written into the
+  // graph with nothing linking to it, so no reader could connect a memory to
+  // the model that produced it — in a record whose whole purpose includes
+  // saying whether a model worked something out.
+  if (agents.usedModel) thing['engram:usedModel'] = { '@id': agents.usedModel }
 
   const derivedFrom = (engram as any).derived_from as string | null | undefined
   if (derivedFrom) thing['prov:wasDerivedFrom'] = { '@id': `engram:${derivedFrom}` }
@@ -606,7 +669,25 @@ export interface ProvenanceSummary {
     says?: string
     scope?: string
     visibility?: string
-    shareable: boolean
+    /**
+     * May this memory LEAVE this machine at all? Derived from scope and
+     * visibility, and nothing to do with the licence.
+     *
+     * It was called `shareable`, and a compliance tester read that as the
+     * licence answer, which it is not: a private MIT memory reported
+     * `shareable: false` although MIT permits commercial reuse, and a public
+     * non-commercial one reported `true` although it forbids it. The name was
+     * doing the misleading, so the name changed.
+     */
+    may_leave_this_machine: boolean
+    /**
+     * What the licence permits, as three values a machine can act on rather
+     * than a sentence it has to parse. `null` means undetermined — an
+     * unrecognised licence — and must never be treated as permission.
+     */
+    may_reuse_commercially: boolean | null
+    may_redistribute: boolean | null
+    licence_recognised: boolean
     asserted_by?: string
     identity_known?: boolean
     written_by?: string
@@ -614,6 +695,8 @@ export interface ProvenanceSummary {
     claim_meaning?: string
     first_written?: string
     came_from?: { value: string; is_link: boolean }
+    /** Engrams this one was derived from, when it was built out of others. */
+    derived_from?: string[]
     licence?: { name: string; chosen: boolean; meaning?: string }
     recorded_steps?: number
     retired?: boolean
@@ -666,7 +749,12 @@ export function summariseProvenance(record: Node): ProvenanceSummary {
 
   const lines: string[] = []
   const missing: string[] = []
-  const fields: ProvenanceSummary['fields'] = { shareable: true }
+  const fields: ProvenanceSummary['fields'] = {
+    may_leave_this_machine: true,
+    may_reuse_commercially: null,
+    may_redistribute: null,
+    licence_recognised: false,
+  }
 
   // What the memory SAYS, when the record carries it. Without this a reader
   // cannot tell whether a fuzzy search picked the right memory at all.
@@ -682,7 +770,7 @@ export function summariseProvenance(record: Node): ProvenanceSummary {
   const isPrivate = visibility === 'private' || scope === 'local'
   fields.scope = scope
   fields.visibility = visibility
-  fields.shareable = !isPrivate
+  fields.may_leave_this_machine = !isPrivate
   if (scope) lines.push(`Scope         ${scope}${visibility ? `, ${visibility}` : ''}`)
   const at = (n: unknown) => String((n as { '@value'?: string })?.['@value'] ?? n ?? '')
   const idOf = (n: unknown) => String((n as { '@id'?: string })?.['@id'] ?? '').replace(/^engram:/, '')
@@ -728,9 +816,15 @@ export function summariseProvenance(record: Node): ProvenanceSummary {
   }
   else missing.push('when it was written')
 
-  // What from
+  // What from. Three ways an origin can be recorded, and all three have to be
+  // read: an external address, a free-text note, and a link to the engram this
+  // one was derived from. Missing the third meant `--derived-from` recorded
+  // `prov:wasDerivedFrom` in the record while the summary reported "what it
+  // came from" as not recorded — directly contradicting the footer beneath it,
+  // which promises nothing was left blank that somebody had recorded.
   const source = subject?.['prov:hadPrimarySource']
   const note = subject?.['engram:sourceNote']
+  const derived = subject?.['prov:wasDerivedFrom']
   if (source) {
     fields.came_from = { value: idOf(source) || String(source), is_link: true }
     lines.push(`Came from     ${fields.came_from.value}`)
@@ -738,7 +832,14 @@ export function summariseProvenance(record: Node): ProvenanceSummary {
     fields.came_from = { value: String(note), is_link: false }
     lines.push(`Came from     ${note}  (a note, not a link)`)
   }
-  else missing.push('what it came from')
+  if (derived) {
+    const parents = (Array.isArray(derived) ? derived : [derived]).map(idOf).filter(Boolean)
+    if (parents.length) {
+      fields.derived_from = parents
+      lines.push(`Derived from  ${parents.join(', ')}`)
+    }
+  }
+  if (!source && !note && !fields.derived_from) missing.push('what it came from')
 
   // May I use it
   const licence = subject?.['engram:license'] as string | undefined
@@ -746,6 +847,25 @@ export function summariseProvenance(record: Node): ProvenanceSummary {
   if (licence) {
     const meaning = LICENCE_MEANING[licence.toLowerCase()]
     fields.licence = { name: licence, chosen: !defaulted, meaning }
+
+    // Answer the two questions a machine actually asks, from the policy rather
+    // than from the prose. A consumer was left matching on a free-text meaning
+    // string — and for a licence we do not recognise that string is absent, so
+    // `meaning.includes('NOT for commercial')` waved through everything
+    // proprietary. Undetermined is `null`, never `false`, and never `true`.
+    const policy = subject?.['odrl:hasPolicy'] as Node | undefined
+    const recognised = policy?.['engram:licenseRecognised'] !== false && policy !== undefined
+    fields.licence_recognised = recognised
+    if (recognised && policy) {
+      const forbidden = ((policy['odrl:prohibition'] ?? []) as Node[]).map(x => x['odrl:action'])
+      const permitted = ((policy['odrl:permission'] ?? []) as Node[])
+        .flatMap(x => (Array.isArray(x['odrl:action']) ? x['odrl:action'] : [x['odrl:action']]))
+      fields.may_reuse_commercially = !forbidden.includes('odrl:commercialize')
+      // Redistribution needs BOTH: the licence must permit it and the memory
+      // must be cleared to leave. Either one saying no means no.
+      fields.may_redistribute = permitted.includes('odrl:distribute')
+        && !forbidden.includes('odrl:distribute')
+    }
     const reads = meaning ? ` \u2014 ${meaning}` : ' \u2014 not one we recognise, read it yourself'
     lines.push(`Licence       ${licence}${reads}`)
     // A licence nobody chose is a schema default, not a decision. It still
