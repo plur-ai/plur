@@ -107,14 +107,20 @@ describe('plur_provenance (#979)', () => {
     expect(result.complete).toBe(false)
     expect(result.not_recorded).toContain('who asserted it')
     expect(result.summary).toContain('Not recorded')
-    expect(result.summary).toMatch(/Nothing is guessed/)
+    // The absence is stated as an absence, not left as a blank a reader
+    // would fill in with a guess of their own.
+    expect(result.summary).toMatch(/not guesses left blank/)
   })
 
   it('reports a complete record as complete', async () => {
+    // A licence has to be CHOSEN for the record to be complete. The schema
+    // default is not a decision anyone made, so an engram that never picked
+    // one is incomplete however well attributed it is (#970, tester finding).
     const engram = await plur.learn('Fully attributed statement', {
       type: 'behavioral',
       source: 'https://example.org/runbook',
       claim_class: 'asserted',
+      license: 'cc-by-4.0',
       attribution: { asserted_by: 'local:maintainer', runtime: { name: 'plur-mcp', version: '0.18.0' } },
     })
     const result = await call({ id: engram.id })
@@ -128,6 +134,21 @@ describe('plur_provenance (#979)', () => {
     const engram = await plur.learn('Licensed statement', { type: 'behavioral' })
     const result = await call({ id: engram.id })
     expect(result.summary).toMatch(/credit required/)
+  })
+
+  it('marks a licence nobody chose, and does not call the record complete', async () => {
+    // The licence was the one legally-consequential field, and it was the one
+    // invented field — a schema default printed among recorded facts.
+    const engram = await plur.learn('Never picked a licence', { type: 'behavioral' })
+    const result = await call({ id: engram.id })
+    expect(result.summary).toContain('Nobody chose this licence')
+    expect(result.complete).toBe(false)
+  })
+
+  it('says the licence is not permission to share a private memory', async () => {
+    const engram = await plur.learn('A private local secret', { type: 'behavioral' })
+    const result = await call({ id: engram.id })
+    expect(result.summary).toContain('Not permission to share')
   })
 
   it('says plainly when nobody was identified', async () => {
@@ -173,5 +194,73 @@ describe('plur_provenance (#979)', () => {
     const result = await call({})
     expect(result.found).toBe(false)
     expect(result.message).toMatch(/id or a search term/)
+  })
+})
+
+/**
+ * Two more things the testers hit (#970).
+ */
+describe('plur_provenance — corrections from testing', () => {
+  let plur: Plur
+  let dir: string
+  let tools: ReturnType<typeof getToolDefinitions>
+
+  const call = async (args: Record<string, unknown> = {}) =>
+    tools.find(t => t.name === 'plur_provenance')!.handler(args, plur) as Promise<any>
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'plur-prov-fixes-'))
+    plur = new Plur({ path: dir })
+    tools = getToolDefinitions('full')
+    _resetSessionTelemetry()
+  })
+  afterEach(() => rmSync(dir, { recursive: true, force: true }))
+
+  it('refuses a format it does not know, instead of quietly returning prose', async () => {
+    // A tester asked for "jsonld" and got a summary, with nothing to indicate
+    // the request had not been honoured.
+    const engram = await plur.learn('Something', { type: 'behavioral' })
+    const result = await call({ id: engram.id, format: 'jsonld' })
+    expect(result.found).toBe(false)
+    expect(result.message).toContain('Unknown format')
+    expect(result.summary).toBeUndefined()
+  })
+
+  it('still accepts the format it does know', async () => {
+    const engram = await plur.learn('Something', { type: 'behavioral' })
+    expect((await call({ id: engram.id, format: 'summary' })).found).toBe(true)
+    expect((await call({ id: engram.id, format: 'record' })).record).toBeDefined()
+  })
+
+  it('tells an agent apart from plur_receipt, which sounds like the same thing', async () => {
+    // Both are read-only and both sound like "proof of where things came
+    // from". A tester picked the wrong one. Each description now names the other.
+    const prov = tools.find(t => t.name === 'plur_provenance')!
+    const receipt = tools.find(t => t.name === 'plur_receipt')!
+    expect(prov.description).toContain('plur_receipt')
+    expect(receipt.description).toContain('plur_provenance')
+  })
+
+  it('saving twice does not pile up identical records', async () => {
+    const engram = await plur.learn('Saved twice', { type: 'behavioral' })
+    const first = await call({ id: engram.id, save: true })
+    const second = await call({ id: engram.id, save: true })
+    expect(second.saved_to).toBe(first.saved_to)
+  })
+
+  it('lets a caller choose a licence, so a complete record is reachable', async () => {
+    // Before this, no public path set a licence — so "complete" could never be
+    // true, however carefully a caller filled in everything else.
+    const engram = await plur.learn('Deliberately licensed', {
+      type: 'behavioral',
+      source: 'https://example.org/doc',
+      claim_class: 'documented',
+      license: 'cc-by-4.0',
+      attribution: { asserted_by: 'local:maintainer' },
+    })
+    const result = await call({ id: engram.id })
+    expect(result.complete).toBe(true)
+    expect(result.summary).toContain('cc-by-4.0')
+    expect(result.summary).not.toContain('Nobody chose this licence')
   })
 })

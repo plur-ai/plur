@@ -290,6 +290,7 @@ export function buildProvenanceRecord(
     'engram:status': engram.status,
   }
   if ((engram as any).commitment) thing['engram:commitment'] = (engram as any).commitment
+  if ((engram as any).visibility) thing['engram:visibility'] = (engram as any).visibility
   if ((engram as any).content_hash) thing['engram:contentHash'] = `sha256:${(engram as any).content_hash}`
   if ((engram as any).claim_class) thing['engram:claimClass'] = (engram as any).claim_class
   const born = bornAt(engram)
@@ -305,9 +306,14 @@ export function buildProvenanceRecord(
   if (source?.startsWith('http')) thing['prov:hadPrimarySource'] = { '@id': source }
   else if (source) thing['engram:sourceNote'] = source
 
-  const licence = (engram as any).provenance?.license ?? 'cc-by-sa-4.0'
+  // A licence nobody chose is not the same as a licence someone chose. The
+  // schema default applies either way, but the record must not present an
+  // unchosen default as a recorded decision.
+  const chosenLicence = (engram as any).provenance?.license as string | undefined
+  const licence = chosenLicence ?? 'cc-by-sa-4.0'
   const policy = licencePolicy(licence)
   thing['engram:license'] = licence
+  if (!chosenLicence) thing['engram:licenseIsDefault'] = true
   if (policy) thing['odrl:hasPolicy'] = policy
 
   if (agents.attributedTo) thing['prov:wasAttributedTo'] = { '@id': agents.attributedTo }
@@ -508,6 +514,31 @@ export function buildPackProvenanceRecord(
 
 export interface ProvenanceSummary {
   engram_id: string
+  /** True when this must not leave the machine. */
+  private: boolean
+  /**
+   * The same answers as `lines`, but as data.
+   *
+   * `lines` are padded for a terminal. A consumer must never have to split
+   * those on whitespace to recover a value — that is a text view wearing a
+   * JSON wrapper, not machine-readable output.
+   */
+  fields: {
+    says?: string
+    scope?: string
+    visibility?: string
+    shareable: boolean
+    asserted_by?: string
+    identity_known?: boolean
+    written_by?: string
+    claim_class?: string
+    claim_meaning?: string
+    first_written?: string
+    came_from?: { value: string; is_link: boolean }
+    licence?: { name: string; chosen: boolean; meaning?: string }
+    recorded_steps?: number
+    retired?: boolean
+  }
   /** Plain-language lines, ready to print. */
   lines: string[]
   /** What could not be determined, named rather than left blank. */
@@ -520,7 +551,7 @@ const CLAIM_MEANING: Record<string, string> = {
   observed: 'a record of something that happened',
   documented: 'taken from prose a human wrote',
   structural: 'read off the shape of a thing',
-  asserted: 'stated outright by a person or agent',
+  asserted: 'someone stated it outright, rather than a model working it out',
   inferred: 'worked out by a model',
   revised: 'a rewrite of an earlier version',
 }
@@ -556,6 +587,24 @@ export function summariseProvenance(record: Node): ProvenanceSummary {
 
   const lines: string[] = []
   const missing: string[] = []
+  const fields: ProvenanceSummary['fields'] = { shareable: true }
+
+  // What the memory SAYS, when the record carries it. Without this a reader
+  // cannot tell whether a fuzzy search picked the right memory at all.
+  const statement = subject?.['prov:value']
+  if (statement) {
+    fields.says = String(statement)
+    lines.push(`Says          ${String(statement).slice(0, 90)}`)
+  }
+
+  // Sharing first, because it is the question with a wrong answer.
+  const scope = subject?.['engram:scope'] as string | undefined
+  const visibility = subject?.['engram:visibility'] as string | undefined
+  const isPrivate = visibility === 'private' || scope === 'local'
+  fields.scope = scope
+  fields.visibility = visibility
+  fields.shareable = !isPrivate
+  if (scope) lines.push(`Scope         ${scope}${visibility ? `, ${visibility}` : ''}`)
   const at = (n: unknown) => String((n as { '@value'?: string })?.['@value'] ?? n ?? '')
   const idOf = (n: unknown) => String((n as { '@id'?: string })?.['@id'] ?? '').replace(/^engram:/, '')
 
@@ -563,9 +612,12 @@ export function summariseProvenance(record: Node): ProvenanceSummary {
   const who = subject?.['prov:wasAttributedTo']
   if (who) {
     const name = idOf(who)
-    lines.push(name === 'agent/unidentified'
+    const plain = name.replace(/^agent\//, '')
+    fields.asserted_by = plain
+    fields.identity_known = plain !== 'unidentified'
+    lines.push(plain === 'unidentified'
       ? 'Asserted by   nobody identified — no identity was configured at the time'
-      : `Asserted by   ${name.replace(/^agent\//, '')}`)
+      : `Asserted by   ${plain}`)
   } else {
     missing.push('who asserted it')
   }
@@ -576,31 +628,59 @@ export function summariseProvenance(record: Node): ProvenanceSummary {
   })
   if (software?.['engram:runtimeName']) {
     const version = software['engram:runtimeVersion']
-    lines.push(`Written by    ${software['engram:runtimeName']}${version ? ` ${version}` : ''}`)
+    fields.written_by = `${software['engram:runtimeName']}${version ? ` ${version}` : ''}`
+    lines.push(`Written by    ${fields.written_by}`)
   }
 
   // What kind of claim
   const claim = subject?.['engram:claimClass'] as string | undefined
-  if (claim) lines.push(`Kind of claim ${claim} — ${CLAIM_MEANING[claim] ?? 'unknown kind'}`)
+  if (claim) {
+    fields.claim_class = claim
+    fields.claim_meaning = CLAIM_MEANING[claim]
+    lines.push(`Kind of claim ${claim} — ${CLAIM_MEANING[claim] ?? 'unknown kind'}`)
+  }
   else missing.push('what kind of claim it is — whether a person stated it or a model worked it out')
 
   // When
   const when = subject?.['prov:generatedAtTime']
-  if (when) lines.push(`First written ${at(when).slice(0, 10)}`)
+  if (when) {
+    fields.first_written = at(when)
+    lines.push(`First written ${at(when).slice(0, 10)}`)
+  }
   else missing.push('when it was written')
 
   // What from
   const source = subject?.['prov:hadPrimarySource']
   const note = subject?.['engram:sourceNote']
-  if (source) lines.push(`Came from     ${idOf(source) || String(source)}`)
-  else if (note) lines.push(`Came from     ${note}  (a note, not a link)`)
+  if (source) {
+    fields.came_from = { value: idOf(source) || String(source), is_link: true }
+    lines.push(`Came from     ${fields.came_from.value}`)
+  } else if (note) {
+    fields.came_from = { value: String(note), is_link: false }
+    lines.push(`Came from     ${note}  (a note, not a link)`)
+  }
   else missing.push('what it came from')
 
   // May I use it
   const licence = subject?.['engram:license'] as string | undefined
+  const defaulted = subject?.['engram:licenseIsDefault'] === true
   if (licence) {
     const meaning = LICENCE_MEANING[licence.toLowerCase()]
-    lines.push(`Licence       ${licence}${meaning ? ` — ${meaning}` : ' — not one we recognise, read it yourself'}`)
+    fields.licence = { name: licence, chosen: !defaulted, meaning }
+    const reads = meaning ? ` \u2014 ${meaning}` : ' \u2014 not one we recognise, read it yourself'
+    lines.push(`Licence       ${licence}${reads}`)
+    // A licence nobody chose is a schema default, not a decision. It still
+    // applies, so print it \u2014 but never beside recorded facts unmarked.
+    if (defaulted) {
+      lines.push('              Nobody chose this licence; it is the default.')
+      missing.push('a licence was never chosen; the default above applies')
+    }
+    // The licence answers "may I reuse the content", never "may I share this
+    // memory". A tester read "reuse allowed" as permission to pass on a private
+    // local secret. Say which question was answered, next to the answer.
+    if (isPrivate) {
+      lines.push('              Not permission to share: this memory is marked private.')
+    }
   } else {
     missing.push('whether you may reuse it')
   }
@@ -610,12 +690,23 @@ export function summariseProvenance(record: Node): ProvenanceSummary {
     const t = n['@type']
     return Array.isArray(t) && t.includes('prov:Activity')
   })
-  if (activities.length) lines.push(`History       ${activities.length} recorded step(s)`)
+  if (activities.length) {
+    fields.recorded_steps = activities.length
+    // Name the steps. A bare count told a tester nothing.
+    const names = activities.map(a => {
+      const t = (a['@type'] as string[]).find(x => x.startsWith('engram:')) ?? ''
+      return t.replace('engram:', '').toLowerCase()
+    })
+    lines.push(`History       ${names.join(', ')}`)
+  }
 
   const invalidated = subject?.['prov:wasInvalidatedBy']
-  if (invalidated) lines.push('Status        RETIRED — this memory is no longer believed')
+  if (invalidated) {
+    fields.retired = true
+    lines.push('Status        RETIRED — this memory is no longer believed')
+  }
 
-  return { engram_id: engramId, lines, missing, complete: missing.length === 0 }
+  return { engram_id: engramId, private: isPrivate, fields, lines, missing, complete: missing.length === 0 }
 }
 
 /** Render a summary as text, ready to print. */
@@ -631,9 +722,7 @@ export function renderProvenanceSummary(summary: ProvenanceSummary): string {
     out.push('  Not recorded:')
     for (const gap of summary.missing) out.push(`    - ${gap}`)
     out.push('')
-    out.push('  Nothing is guessed. A memory written before provenance was')
-    out.push('  captured cannot say who asserted it, and this says so rather')
-    out.push('  than inventing an answer.')
+    out.push('  These are not guesses left blank — nothing recorded them.')
   }
   return out.join('\n')
 }

@@ -714,6 +714,25 @@ function isStoreTeardownError(err: unknown): boolean {
 }
 
 /**
+ * The origin block, written only when the caller chose a licence (#970).
+ *
+ * The block is left off otherwise. A default licence written into every engram
+ * would be indistinguishable from one somebody picked, and the whole point of
+ * marking defaults is that the difference is visible.
+ */
+function buildProvenanceBlock(
+  context?: LearnContext,
+): NonNullable<Engram['provenance']> | undefined {
+  if (!context?.license) return undefined
+  return {
+    origin: context.source ?? (context.session_episode_id ? `session:${context.session_episode_id}` : 'direct'),
+    chain: [],
+    signature: null,
+    license: context.license,
+  }
+}
+
+/**
  * Assemble the attribution block for a new engram (#961).
  *
  * Returns undefined when the caller supplied nothing, so the field is absent
@@ -2686,6 +2705,7 @@ export class Plur {
         // honest, a guessed one is not.
         attribution: buildAttribution(context),
         claim_class: context?.claim_class,
+        provenance: buildProvenanceBlock(context),
         dual_coding: context?.dual_coding,
         polarity: null,
         content_hash: computeContentHash(statement),
@@ -3251,6 +3271,7 @@ export class Plur {
       // honest, a guessed one is not.
       attribution: buildAttribution(context),
       claim_class: context?.claim_class,
+      provenance: buildProvenanceBlock(context),
       dual_coding: context?.dual_coding,
       polarity: null,
       content_hash: computeContentHash(statement),

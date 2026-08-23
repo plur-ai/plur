@@ -1,7 +1,7 @@
 import { existsSync, unlinkSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
-import { Plur, extractMetaEngrams, validateMetaEngram, confidenceBand, generateProfile, getProfileForInjection, markProfileDirty, selectModelForOperation, readHistoryForEngram, getCachedUpdateCheck, minorVersionsBehind, scanForTensions, CapabilityCanary, readProjectConfig, isSharedScope, resolveRerankerName, getReranker, classifyRerankerFailure, hfCacheDirName, SUGGEST_DISPLAY_MIN_CONFIDENCE, mcpRemoteWarningLine, doctorRemoteRemediation, normalizeEndpointUrl, REMOTE_STATUS_TTL_MS, PROBE_CLEARABLE_STATES, summariseProvenance, renderProvenanceSummary } from '@plur-ai/core'
+import { Plur, extractMetaEngrams, validateMetaEngram, confidenceBand, generateProfile, getProfileForInjection, markProfileDirty, selectModelForOperation, readHistoryForEngram, getCachedUpdateCheck, minorVersionsBehind, scanForTensions, CapabilityCanary, readProjectConfig, isSharedScope, resolveRerankerName, getReranker, classifyRerankerFailure, hfCacheDirName, SUGGEST_DISPLAY_MIN_CONFIDENCE, mcpRemoteWarningLine, doctorRemoteRemediation, normalizeEndpointUrl, REMOTE_STATUS_TTL_MS, PROBE_CLEARABLE_STATES, summariseProvenance, renderProvenanceSummary, type LearnContext } from '@plur-ai/core'
 import type { LlmFunction, MetaField, TensionStatus, RerankerEvalResult, HistoryEvent, Receipt, RemoteStoreStatusEntry } from '@plur-ai/core'
 import { recordTelemetry } from './telemetry.js'
 import { VERSION } from './version.js'
@@ -1015,6 +1015,41 @@ function getAllToolDefinitions(): ToolDefinition[] {
               date: { type: 'string', description: 'ISO date (YYYY-MM-DD) the measurement was taken' },
             },
           },
+          attribution: {
+            type: 'object',
+            description:
+              'Who is answerable for this memory (#961). Every sub-field optional; OMIT rather than guess — a memory with no agent is honest, one with an invented agent is worse than none. Set asserted_by to "unidentified" when nobody is identified, rather than leaving it out: absence cannot be told apart from a memory written before this existed.',
+            properties: {
+              asserted_by: { type: 'string', description: 'Who or what asserted it. Any address: a local name, a Decentralized Identifier, or "unidentified".' },
+              runtime: {
+                type: 'object',
+                description: 'The software writing this. Usually known, so usually worth setting.',
+                properties: { name: { type: 'string' }, version: { type: 'string' } },
+              },
+              model: {
+                type: 'object',
+                description: 'The model behind the statement, if one was involved. Prompt TEXT is never stored, only a hash.',
+                properties: {
+                  name: { type: 'string' },
+                  prompt_id: { type: 'string' },
+                  prompt_version: { type: 'string' },
+                  prompt_sha256: { type: 'string' },
+                },
+              },
+              tool: {
+                type: 'object',
+                description: 'An extractor or importer, with its version.',
+                properties: { name: { type: 'string' }, version: { type: 'string' } },
+              },
+              on_behalf_of: { type: 'string', description: 'The party the runtime acted for.' },
+            },
+          },
+          claim_class: {
+            type: 'string',
+            enum: ['observed', 'documented', 'structural', 'asserted', 'inferred', 'revised'],
+            description:
+              'What KIND of claim this is (#963), and the most useful single field for anyone later deciding how much to trust it. Use "asserted" when a PERSON stated it outright, "inferred" when YOU worked it out, "documented" when you took it from prose someone wrote, "observed" for a record of something that happened, "structural" when read off the shape of an artifact, "revised" for a rewrite. Omit only when it genuinely cannot be determined.',
+          },
         },
         required: ['statement'],
       },
@@ -1040,6 +1075,11 @@ function getAllToolDefinitions(): ToolDefinition[] {
           valid_until: args.valid_until as string | undefined,
           supersedes: args.supersedes as string[] | undefined,
           measured_under: args.measured_under as Record<string, string> | undefined,
+          // Who is answerable, and what kind of claim this is (#961, #963).
+          // Passed through untouched: we never invent an agent, and we never
+          // guess a claim class the caller did not state.
+          attribution: args.attribution as LearnContext['attribution'],
+          claim_class: args.claim_class as LearnContext['claim_class'],
           // #243: resolve which session's default scope governs this write —
           // explicit session_id first, else the lone open session. Never
           // persisted on the engram (LearnContext.session selects a scope, it
@@ -2202,7 +2242,8 @@ function getAllToolDefinitions(): ToolDefinition[] {
         'Read-only. Accepts an engram id or a search term — nobody remembers ids. ' +
         'IMPORTANT when relaying to the user: report the `not_recorded` list as prominently as the rest. ' +
         'A memory written before provenance was captured genuinely cannot say who asserted it, and presenting the record as complete would make it look more authoritative than it is. ' +
-        'Nothing here is guessed. Prefer relaying `summary`; ask for format "record" only when a machine-readable document is actually needed.',
+        'Nothing here is guessed. Prefer relaying `summary`; ask for format "record" only when a machine-readable document is actually needed. ' +
+        'NOT plur_receipt: this describes the origin of ONE memory; plur_receipt counts how the whole store is being used.',
       annotations: { title: 'Where a memory came from', readOnlyHint: true, idempotentHint: true },
       inputSchema: {
         type: 'object',
@@ -2244,6 +2285,15 @@ function getAllToolDefinitions(): ToolDefinition[] {
           return { found: false, message: `No engram with id ${id}.` }
         }
 
+        // An unrecognised format used to fall through to the summary, so a
+        // caller asking for "jsonld" got prose and had no way to tell. Say no.
+        if (args.format !== undefined && args.format !== 'summary' && args.format !== 'record') {
+          return {
+            found: false,
+            message: `Unknown format "${String(args.format)}". Use "summary" for prose or "record" for the JSON-LD document.`,
+          }
+        }
+
         const summary = summariseProvenance(record as any)
         const saved = args.save === true ? await plur.writeProvenance(id) : undefined
 
@@ -2275,7 +2325,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
     {
       name: 'plur_receipt',
       description:
-        'Counted report of what your memory retrieved for you: engrams stored, how many were retrieved and how often, which are most relied on, and how much of the store is dormant. Local and read-only; every figure is directly counted, never estimated. IMPORTANT when relaying to the user: `activation_rate` is COVERAGE over the logging window (≈ how much of the store was surfaced), NOT a quality or effectiveness score — it is naturally low and FALLS as more engrams are added, so never present it as "memory is N% effective". A `summary` line is included; prefer relaying that.',
+        'Counted report of what your memory retrieved for you: engrams stored, how many were retrieved and how often, which are most relied on, and how much of the store is dormant. Local and read-only; every figure is directly counted, never estimated. IMPORTANT when relaying to the user: `activation_rate` is COVERAGE over the logging window (≈ how much of the store was surfaced), NOT a quality or effectiveness score — it is naturally low and FALLS as more engrams are added, so never present it as "memory is N% effective". A `summary` line is included; prefer relaying that. NOT plur_provenance: this counts usage across the whole store; plur_provenance says where a single memory came from.',
       annotations: { title: 'Memory receipt', readOnlyHint: true, idempotentHint: true },
       inputSchema: {
         type: 'object',

@@ -726,6 +726,39 @@ quietly widen the terms of a licence you do not recognise.
 
 ---
 
+### 8.4 A licence nobody chose
+
+Every engram has a licence, because the schema gives it one when nobody says
+otherwise. That default is not a decision anybody made, and a record must not
+let the two look alike.
+
+So a record marks it. When the licence came from the default rather than from a
+choice, the thing carries:
+
+```json
+"engram:license": "cc-by-sa-4.0",
+"engram:licenseIsDefault": true
+```
+
+The policy is still written out, because the default genuinely does apply. What
+changes is that a reader can tell the difference, and a summary can list the
+missing choice alongside everything else nobody recorded.
+
+**Why this field exists at all.** The licence is the only field in a record with
+legal weight. It was also the only invented one — a schema default printed among
+recorded facts, under a footer promising that nothing was guessed. A reader who
+trusts the footer draws exactly the wrong conclusion. Marking the default is
+cheaper than the alternative, which is not printing it.
+
+**A licence is not permission to share.** It governs what a recipient may do
+with content they already hold. Whether the memory may be passed on at all is a
+different question, decided by scope and visibility, and engrams are private
+unless someone says otherwise. Any presentation of a licence has to keep those
+two questions apart. Readers merge them otherwise, and the merge always fails in
+the same direction: towards sharing something private.
+
+---
+
 ### 8.1 What a recipient can decide from the record
 
 Two questions matter to whoever receives an engram. The record should answer both

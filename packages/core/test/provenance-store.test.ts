@@ -10,12 +10,14 @@
  * that records start appearing.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, existsSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, rmSync, existsSync, writeFileSync, readdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { FileProvenanceStore, MemoryProvenanceStore, provenanceMode, type ProvenanceStore } from '../src/provenance-store.js'
 import { PlurConfigSchema } from '../src/schemas/config.js'
 import { Plur } from '../src/index.js'
+import { EngramSchema } from '../src/schemas/engram.js'
+import { buildProvenanceRecord } from '../src/provenance.js'
 
 describe.each([
   ['FileProvenanceStore', (dir: string): ProvenanceStore => new FileProvenanceStore(dir)],
@@ -188,5 +190,49 @@ describe('the always setting', () => {
     const refs = await store.list(engram.id)
     expect(refs.length).toBeGreaterThan(0)
     expect(await store.get(refs[0])).toBeDefined()
+  })
+})
+
+/**
+ * Asking twice is not two versions (#970, tester finding).
+ *
+ * A tester ran the save five times and got five identical files. The series is
+ * meant to record how a record CHANGED, and a directory full of duplicates
+ * destroys that — you can no longer tell a real revision from a repeat.
+ */
+describe('repeated saves', () => {
+  let dir: string
+  beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'plur-prov-dedup-')) })
+  afterEach(() => rmSync(dir, { recursive: true, force: true }))
+
+  const engram = EngramSchema.parse({
+    id: 'ENG-2026-08-23-777',
+    statement: 'Saved more than once',
+    type: 'behavioral',
+    scope: 'global',
+    status: 'active',
+    content_hash: 'c'.repeat(64),
+  })
+
+  it('returns the same file when nothing about the record changed', async () => {
+    const store = new FileProvenanceStore(dir)
+    const first = await store.put(engram.id, buildProvenanceRecord(engram, [], { now: '2026-08-23T10:00:00Z' }))
+    // A LATER generation time, same substance. This is the case raw byte
+    // comparison would miss, because the timestamp differs every time.
+    const second = await store.put(engram.id, buildProvenanceRecord(engram, [], { now: '2026-08-23T11:00:00Z' }))
+    expect(second).toBe(first)
+    expect(readdirSync(join(dir, 'provenance', engram.id))).toHaveLength(1)
+  })
+
+  it('still writes a new file when the record genuinely changed', async () => {
+    // The series has to keep working. A record made after a revision says
+    // something different, and losing that would be worse than the duplicates.
+    const store = new FileProvenanceStore(dir)
+    const first = await store.put(engram.id, buildProvenanceRecord(engram))
+    const second = await store.put(engram.id, buildProvenanceRecord(engram, [
+      { event: 'engram_created', engram_id: engram.id, timestamp: '2026-08-23T00:00:00Z', data: {} },
+    ] as any))
+    expect(second).not.toBe(first)
+    expect(readdirSync(join(dir, 'provenance', engram.id))).toHaveLength(2)
   })
 })

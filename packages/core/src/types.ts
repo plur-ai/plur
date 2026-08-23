@@ -42,6 +42,16 @@ export interface LearnContext {
    * asserted, inferred or revised. Omitted when it cannot be determined.
    */
   claim_class?: 'observed' | 'documented' | 'structural' | 'asserted' | 'inferred' | 'revised'
+  /**
+   * Which licence governs reuse of this engram's content (#970).
+   *
+   * Omit it and the schema default applies. That default is not a decision
+   * anybody made, and a provenance record says so rather than presenting it
+   * beside recorded facts — so a caller who cares about reuse terms has to
+   * say which ones. Before this existed there was no way to say, which made
+   * a complete provenance record unreachable through the public API.
+   */
+  license?: string
   /** Always-load flag — bypass keyword-relevance gate during injection. */
   pinned?: boolean
   /**

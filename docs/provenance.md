@@ -192,7 +192,7 @@ trust a memory.
 | `observed` | a plain record of something that happened |
 | `documented` | taken from prose a human wrote |
 | `structural` | read off the shape of a thing, such as a repository |
-| `asserted` | stated outright by a person or agent |
+| `asserted` | someone stated it outright, rather than a model working it out |
 | `inferred` | worked out by a model |
 | `revised` | a rewrite of an earlier version |
 
@@ -211,6 +211,27 @@ Every engram carries a licence, defaulting to Creative Commons
 Attribution-ShareAlike 4.0. In a record that licence becomes a machine-readable
 policy, so an agent can check whether a use is allowed without a person reading
 the licence first.
+
+To choose one, pass it when you learn:
+
+```ts
+await plur.learn('Postgres caps connections at 100 on the shared tier', {
+  type: 'architectural',
+  license: 'cc-by-4.0',
+})
+```
+
+**A licence nobody chose is marked as such.** The default applies either way,
+but a record distinguishes a licence somebody picked from one that arrived by
+default, and lists the unpicked one among the things nobody recorded. The
+licence is the one field here with legal weight, so it is the last one that
+should quietly look like a decision.
+
+**A licence is not permission to share.** It governs reuse of the content by
+somebody who already has it. Whether you may pass the memory on at all is a
+separate question, answered by its scope and visibility — and engrams are
+private unless you say otherwise. A record about a private memory says this on
+the licence line, because that is the line that reads like permission.
 
 **The licence text is authoritative.** The policy is a summary of it, and every
 policy carries the canonical licence address so a reader wanting certainty can

@@ -1,5 +1,5 @@
 import { createPlur, type GlobalFlags } from '../plur.js'
-import { shouldOutputJson, outputJson, outputText } from '../output.js'
+import { shouldOutputJson, outputJson, outputText, exit } from '../output.js'
 import { summariseProvenance, renderProvenanceSummary } from '@plur-ai/core'
 
 /**
@@ -16,9 +16,16 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   const wantsRecord = args.includes('--record')
   const write = args.includes('--write')
 
+  /** Report a failure the way the caller asked, and exit non-zero. */
+  const fail = (message: string, extra: Record<string, unknown> = {}): never => {
+    if (shouldOutputJson(flags)) outputJson({ found: false, error: message, ...extra })
+    else outputText(message)
+    process.exit(1)
+  }
+
   if (!query) {
     outputText(
-      'Usage: plur provenance <id-or-search> [--json] [--write]\n\n' +
+      'Usage: plur provenance <id-or-search> [--json] [--record] [--write]\n\n' +
       '  Shows where a memory came from: who asserted it, whether a person\n' +
       '  stated it or a model worked it out, when, what it came from, and\n' +
       '  whether you may reuse it.\n\n' +
@@ -26,7 +33,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
       '  --record  the provenance record itself, as JSON-LD\n' +
       '  --write   also save the record, and print where it went',
     )
-    return
+    process.exit(2)
   }
 
   const plur = createPlur(flags)
@@ -37,8 +44,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   if (!id) {
     const matches = await plur.recall(query, { limit: 3 })
     if (!matches.length) {
-      outputText(`Nothing matched "${query}". Try different words, or pass an exact id.`)
-      return
+      fail(`Nothing matched "${query}". Try different words, or pass an exact id.`, { query })
     }
     id = matches[0].id
     alternatives = matches.slice(1).map((m: { id: string; statement: string }) =>
@@ -47,19 +53,22 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
 
   const record = await plur.provenanceFor(id, { mode: 'portable' })
   if (!record) {
-    outputText(`No engram with id ${id}.`)
-    return
+    fail(`No engram with id ${id}.`, { engram_id: id })
   }
 
   const summary = summariseProvenance(record as any)
   const saved = write ? await plur.writeProvenance(id) : undefined
 
   if (shouldOutputJson(flags) || wantsRecord) {
+    // Structured values, never the padded display lines. A consumer must not
+    // have to split on whitespace to recover a licence.
     outputJson({
+      found: true,
       engram_id: id,
-      ...(wantsRecord ? { record } : { facts: summary.lines }),
+      ...summary.fields,
       not_recorded: summary.missing,
       complete: summary.complete,
+      ...(wantsRecord ? { record } : {}),
       ...(saved ? { saved_to: saved } : {}),
     })
     return

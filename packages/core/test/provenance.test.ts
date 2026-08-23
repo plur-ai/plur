@@ -281,3 +281,117 @@ describe('through a real store', () => {
     expect(subject(record, `engram:${engram.id}`)['prov:generatedAtTime']).toBeDefined()
   })
 })
+
+/**
+ * Findings from two testers who used this cold (#970).
+ *
+ * Each of these is a defect they hit, kept as a test so it cannot come back.
+ */
+describe('what the testers found', () => {
+  const engramOf2 = (overrides: Record<string, unknown> = {}) =>
+    EngramSchema.parse({
+      id: 'ENG-2026-08-23-001',
+      statement: 'The API key lives in the vault',
+      type: 'behavioral',
+      scope: 'global',
+      status: 'active',
+      content_hash: 'f'.repeat(64),
+      ...overrides,
+    })
+
+  it('does not let the licence read as permission to share a private memory', async () => {
+    // A tester asked "may I share this private local secret" and was told
+    // "reuse allowed, credit required, distribute". The licence governs the
+    // content; it is not permission to share the memory. The caveat sits on
+    // the licence line, because that is the line that misleads.
+    const { summariseProvenance } = await import('../src/provenance.js')
+    const record = buildProvenanceRecord(engramOf2({ scope: 'local', visibility: 'private' }))
+    const summary = summariseProvenance(record as any)
+
+    expect(summary.private).toBe(true)
+    expect(summary.fields.shareable).toBe(false)
+    expect(summary.lines.join('\n')).toContain('Not permission to share')
+  })
+
+  it('does not shout on every engram, because private is the default', async () => {
+    // Every engram is private unless someone says otherwise. A warning that
+    // fires on all of them is noise, and noise is how real warnings get
+    // ignored — so the caveat is one line attached to the licence, not a banner.
+    const { summariseProvenance } = await import('../src/provenance.js')
+    const summary = summariseProvenance(buildProvenanceRecord(engramOf2()) as any)
+    const shouty = summary.lines.filter(l => l.includes('Not permission to share'))
+    expect(shouty.length).toBeLessThanOrEqual(1)
+  })
+
+  it('still says what the licence means when nobody chose it', async () => {
+    // Marking it unchosen is the fix; hiding what it means is a different bug.
+    // The default genuinely applies, so a reader needs to know what it says.
+    const { summariseProvenance } = await import('../src/provenance.js')
+    const summary = summariseProvenance(buildProvenanceRecord(engramOf2()) as any)
+    expect(summary.lines.join('\n')).toContain('credit required')
+    expect(summary.fields.licence?.chosen).toBe(false)
+  })
+
+  it('does not present an unchosen licence as a recorded fact', async () => {
+    // The licence is a schema default. Printing it beside recorded facts, under
+    // a footer saying nothing is guessed, made the one legally-consequential
+    // field the one invented field.
+    const { summariseProvenance } = await import('../src/provenance.js')
+    const summary = summariseProvenance(buildProvenanceRecord(engramOf2()) as any)
+
+    expect(summary.fields.licence?.chosen).toBe(false)
+    expect(summary.lines.join('\n')).toContain('Nobody chose this licence')
+    expect(summary.missing.join(' ')).toContain('licence was never chosen')
+  })
+
+  it('marks a licence somebody actually chose as chosen', async () => {
+    const { summariseProvenance } = await import('../src/provenance.js')
+    const record = buildProvenanceRecord(engramOf2({
+      provenance: { origin: 'x', license: 'cc-by-nc-4.0' },
+    }))
+    const summary = summariseProvenance(record as any)
+    expect(summary.fields.licence?.chosen).toBe(true)
+    expect(summary.lines.join('\n')).not.toContain('Nobody chose this licence')
+  })
+
+  it('returns values as data, not as padded display strings', async () => {
+    // A consumer must never split "Licence       cc-by-sa-4.0 — reuse allowed"
+    // on whitespace to recover a licence name.
+    const { summariseProvenance } = await import('../src/provenance.js')
+    const summary = summariseProvenance(buildProvenanceRecord(engramOf2()) as any)
+    expect(summary.fields.licence?.name).toBe('cc-by-sa-4.0')
+    expect(summary.fields.scope).toBe('global')
+    expect(typeof summary.fields.shareable).toBe('boolean')
+  })
+
+  it('names the recorded steps rather than counting them', async () => {
+    // "History 1 recorded step(s)" told a tester nothing at all.
+    const { summariseProvenance } = await import('../src/provenance.js')
+    const record = buildProvenanceRecord(engramOf2(), [
+      { event: 'engram_created', engram_id: 'ENG-2026-08-23-001', timestamp: '2026-08-23T00:00:00Z', data: {} },
+    ] as any)
+    const summary = summariseProvenance(record as any)
+    expect(summary.lines.join('\n')).toMatch(/History\s+learn/)
+  })
+
+  it('shows what the memory says when the statement travels', async () => {
+    // Searching fuzzily returned an id and metadata with no statement, so a
+    // reader could not tell whether the right memory had been found — while
+    // the REJECTED candidates did show theirs.
+    const { summariseProvenance } = await import('../src/provenance.js')
+    const record = buildProvenanceRecord(engramOf2(), [], { includeStatement: true })
+    const summary = summariseProvenance(record as any)
+    expect(summary.fields.says).toContain('API key lives in the vault')
+    expect(summary.lines.join('\n')).toContain('Says')
+  })
+
+  it('does not claim a person stated something when a model may have', async () => {
+    // "stated outright by a person or agent" refused to answer the very
+    // question being asked.
+    const { summariseProvenance } = await import('../src/provenance.js')
+    const record = buildProvenanceRecord(engramOf2({ claim_class: 'asserted' }))
+    const summary = summariseProvenance(record as any)
+    expect(summary.fields.claim_meaning).not.toContain('or agent')
+    expect(summary.fields.claim_meaning).toContain('rather than a model')
+  })
+})
