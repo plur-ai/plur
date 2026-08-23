@@ -1,6 +1,13 @@
 import { createPlur, type GlobalFlags } from '../plur.js'
 import { shouldOutputJson, outputJson, outputText, outputInfo, exit } from '../output.js'
 
+/**
+ * Flags this command accepts (#986). `forget` RETIRES a memory, and an
+ * unrecognised flag was swallowed while it went ahead — the most damaging
+ * place in the tool for a silent misunderstanding.
+ */
+export const FLAGS = ['--search', '--reason', '--force']
+
 export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   const plur = createPlur(flags)
 

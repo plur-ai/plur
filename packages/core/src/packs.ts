@@ -319,26 +319,50 @@ export interface PackProvenanceView {
  */
 function scanPackFiles(packDir: string): PrivacyIssue[] {
   const issues: PrivacyIssue[] = []
-  const skill = path.join(packDir, 'SKILL.md')
-  if (!fs.existsSync(skill)) return issues
 
-  let text: string
-  try { text = fs.readFileSync(skill, 'utf8') } catch { return issues }
-  const capped = truncateToScanLimit(text)
-
-  for (const hit of detectSensitive(capped)) {
-    issues.push({
-      engram_id: 'SKILL.md',
-      type: 'secret',
-      detail: `in the pack's SKILL.md — ${hit.pattern}: ${hit.match}`,
-    })
+  // EVERY text file the pack ships, not a chosen two. Scanning only SKILL.md
+  // and the engrams left a hole a reviewer walked straight through: a README.md
+  // holding a live AWS key and instruction-override text installed clean and
+  // was copied into the store unread. A pack is an archive from a stranger, and
+  // the recipient's assistant may read any of it.
+  //
+  // engrams.yaml is skipped here because scanPrivacy already reads it as
+  // structured data, which catches more than scanning its raw text would.
+  const files: string[] = []
+  const walk = (dir: string, depth: number) => {
+    if (depth > 4) return
+    let entries: fs.Dirent[]
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }) } catch { return }
+    for (const e of entries) {
+      const full = path.join(dir, e.name)
+      if (e.isDirectory()) { walk(full, depth + 1); continue }
+      if (!e.isFile()) continue
+      if (path.relative(packDir, full) === 'engrams.yaml') continue
+      files.push(full)
+    }
   }
-  for (const hit of detectPromptInjection(capped)) {
-    issues.push({
-      engram_id: 'SKILL.md',
-      type: 'prompt_injection',
-      detail: `in the pack's SKILL.md — ${hit.pattern}: ${hit.match}`,
-    })
+  walk(packDir, 0)
+
+  for (const file of files.sort()) {
+    const label = path.relative(packDir, file)
+    let text: string
+    try {
+      const stat = fs.statSync(file)
+      // A very large file is capped rather than skipped: skipping it would be a
+      // place to hide things, and the cap is the same one the engram scan uses.
+      if (stat.size > 16 * 1024 * 1024) continue
+      text = fs.readFileSync(file, 'utf8')
+    } catch { continue }
+    // Binary-ish content produces noise, not findings.
+    if (text.includes('\u0000')) continue
+
+    const capped = truncateToScanLimit(text)
+    for (const hit of detectSensitive(capped)) {
+      issues.push({ engram_id: label, type: 'secret', detail: `in ${label} — ${hit.pattern}: ${hit.match}` })
+    }
+    for (const hit of detectPromptInjection(capped)) {
+      issues.push({ engram_id: label, type: 'prompt_injection', detail: `in ${label} — ${hit.pattern}: ${hit.match}` })
+    }
   }
   return issues
 }

@@ -64,8 +64,9 @@ export function unknownFlagMessage(args: string[], declared: string[]): string |
   const offenders: string[] = []
   for (const arg of args) {
     if (arg === '--') break
-    // A negative number is a value, not a flag.
-    if (!/^--[A-Za-z]/.test(arg)) continue
+    // Short flags count too: `-x` bypassed this entirely. A negative number
+    // is a value, not a flag, so a digit after the dash is left alone.
+    if (!/^-{1,2}[A-Za-z]/.test(arg)) continue
     if (!known.includes(arg)) offenders.push(arg)
   }
   if (!offenders.length) return undefined
