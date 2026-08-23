@@ -65,16 +65,73 @@ export interface InjectionMatch {
 }
 
 /** Scan text for prompt-injection / instruction-override patterns. Empty array if clean. */
+/**
+ * Characters that look like Latin letters and are not.
+ *
+ * Only the pairs that are visually identical in ordinary type. A wider table
+ * would fold letters a reader can tell apart and produce false positives.
+ */
+const LOOKALIKES: Record<string, string> = {
+  // Cyrillic
+  '\u0430': 'a', '\u0435': 'e', '\u043e': 'o', '\u0440': 'p', '\u0441': 'c',
+  '\u0445': 'x', '\u0443': 'y', '\u0456': 'i', '\u0458': 'j', '\u04bb': 'h',
+  '\u0410': 'A', '\u0412': 'B', '\u0415': 'E', '\u041a': 'K', '\u041c': 'M',
+  '\u041d': 'H', '\u041e': 'O', '\u0420': 'P', '\u0421': 'C', '\u0422': 'T',
+  '\u0425': 'X', '\u0406': 'I',
+  // Greek
+  '\u03bf': 'o', '\u03b1': 'a', '\u03b5': 'e', '\u03c1': 'p', '\u03c5': 'u',
+  '\u0391': 'A', '\u0392': 'B', '\u0395': 'E', '\u0396': 'Z', '\u0397': 'H',
+  '\u0399': 'I', '\u039a': 'K', '\u039c': 'M', '\u039d': 'N', '\u039f': 'O',
+  '\u03a1': 'P', '\u03a4': 'T', '\u03a7': 'X',
+}
+
+/**
+ * Fold text to the form a reader sees, before matching against it.
+ *
+ * A security reviewer got "ignore all previous instructions" past every
+ * pattern three ways: one Cyrillic letter that looks exactly like its Latin
+ * twin, a zero-width space inside a word, and fullwidth characters. Each would
+ * have needed its own pattern; folding once handles the whole class, and the
+ * next variation of it too.
+ *
+ * Compatibility normalisation collapses fullwidth and other presentation forms
+ * to plain letters. Zero-width and formatting characters are removed outright:
+ * they are invisible, so a reader cannot be relying on them. Lookalikes are
+ * mapped last, on the folded text.
+ *
+ * Matching runs on the folded copy; the text REPORTED back is the original, so
+ * the person reading the finding sees what the file actually contains.
+ */
+export function foldForMatching(text: string): string {
+  const folded = text
+    .normalize('NFKC')
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff\u00ad]/g, '')
+  let out = ''
+  for (const ch of folded) out += LOOKALIKES[ch] ?? ch
+  return out
+}
+
 export function detectPromptInjection(text: string): InjectionMatch[] {
   if (typeof text !== 'string') {
     throw new TypeError(`detectPromptInjection: expected string, got ${typeof text}`)
   }
   const matches: InjectionMatch[] = []
+  const folded = foldForMatching(text)
+  const wasDisguised = folded !== text
   for (const { name, regex } of INJECTION_PATTERNS) {
-    const m = text.match(regex)
-    if (m) {
-      matches.push({ pattern: name, match: m[0].slice(0, 40) })
-    }
+    const plain = text.match(regex)
+    const hidden = plain ? null : folded.match(regex)
+    const m = plain ?? hidden
+    if (!m) continue
+    // Report WHAT IT SAYS, from the folded copy, and say that it was hidden.
+    // Quoting the raw bytes alone would show a reader something that looks
+    // ordinary and give no hint why it was flagged; quoting only the folded
+    // text would hide that somebody went to the trouble of disguising it.
+    matches.push({
+      pattern: hidden && wasDisguised ? `${name} (disguised)` : name,
+      match: m[0].slice(0, 40),
+    })
   }
   return matches
 }

@@ -6,6 +6,8 @@ import { shouldOutputJson, outputJson, outputText, outputInfo, exit } from '../o
  * unrecognised flag was swallowed while it went ahead — the most damaging
  * place in the tool for a silent misunderstanding.
  */
+export const FLAGS_WITH_VALUES = ['--reason']
+
 export const FLAGS = ['--search', '--reason', '--force']
 
 export async function run(args: string[], flags: GlobalFlags): Promise<void> {

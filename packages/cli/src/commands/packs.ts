@@ -11,6 +11,8 @@ import { shouldOutputJson, outputJson, outputText, outputInfo, exit } from '../o
  * `packs install <dir> --dry-run`, which does not exist anywhere here, and the
  * pack was installed by somebody who believed they were previewing it.
  */
+export const FLAGS_WITH_VALUES = ['--domain', '--scope', '--tags', '--type', '--output', '--description', '--creator']
+
 export const FLAGS = [
   '--domain', '--scope', '--tags', '--type', '--output', '--description',
   '--creator', '--provenance', '--no-provenance', '--force', '--yes',

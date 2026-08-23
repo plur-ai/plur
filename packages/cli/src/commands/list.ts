@@ -4,6 +4,8 @@ import { shouldOutputJson, outputJson, outputText, outputInfo } from '../output.
 /**
  * Flags this command accepts (#986).
  */
+export const FLAGS_WITH_VALUES = ['--scope', '--domain', '--type', '--tags', '--limit']
+
 export const FLAGS = ['--scope', '--domain', '--type', '--tags', '--limit']
 
 export async function run(args: string[], flags: GlobalFlags): Promise<void> {

@@ -89,7 +89,10 @@ Global flags:
   process.exit(0)
 }
 
-const { flags, args } = parseGlobalFlags(argv)
+const { flags, args, error: flagError } = parseGlobalFlags(argv)
+// Before anything runs. A mistyped global flag must never reach a command that
+// would then act on the wrong store.
+if (flagError) exit(1, flagError)
 // Arm --quiet globally (#730) so no output site can forget it. Commands still
 // pass `flags` to outputInfo where available; this covers the ones that don't.
 // hook-* commands are unaffected: their stdout is protocol JSON written
@@ -169,7 +172,8 @@ try {
   // A command that declares its flags gets them checked (#986). One that does
   // not is unchanged, so this is adopted per command rather than all at once.
   if (Array.isArray(mod.FLAGS)) {
-    const complaint = unknownFlagMessage(commandArgs, mod.FLAGS as string[])
+    const complaint = unknownFlagMessage(
+      commandArgs, mod.FLAGS as string[], (mod.FLAGS_WITH_VALUES as string[]) ?? [])
     if (complaint) exit(1, complaint)
   }
   await mod.run(commandArgs, flags)

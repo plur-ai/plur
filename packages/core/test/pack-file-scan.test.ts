@@ -15,7 +15,8 @@ import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as yaml from 'js-yaml'
-import { previewPack } from '../src/packs.js'
+import { previewPack, exportPack } from '../src/packs.js'
+import { EngramSchema } from '../src/schemas/engram.js'
 
 const ENGRAM = {
   id: 'ENG-2026-08-23-500',
@@ -102,5 +103,59 @@ describe('scanning the files a pack ships, not only its engrams', () => {
       engrams: [{ ...ENGRAM, statement: 'The key is AKIAIOSFODNN7EXAMPLE' }],
     }))
     expect((await previewPack(dir)).security.clean).toBe(false)
+  })
+})
+
+/**
+ * Naming who said something must not make a memory unshareable (#970).
+ *
+ * The secret scan reads the whole serialised engram, so an ordinary work email
+ * in `attribution.asserted_by` matched the pattern for a web address carrying a
+ * password. The engram was dropped from every pack it appeared in, and the
+ * error quoted a garbled fragment of the record, so nothing indicated why.
+ *
+ * A tester attributed three memories properly, exported, and got one back.
+ * They called it the reason not to ship: "the product's headline promise breaks
+ * on its own happy path."
+ */
+describe('attribution is an identity, not a leaked credential', () => {
+  let dir: string
+  beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'plur-attr-scan-')) })
+  afterEach(() => rmSync(dir, { recursive: true, force: true }))
+
+  const engram = (overrides: Record<string, unknown>) => EngramSchema.parse({
+    id: 'ENG-2026-08-23-001',
+    statement: 'Deploy freeze starts on Friday',
+    type: 'behavioral', scope: 'global', status: 'active',
+    visibility: 'public', content_hash: 'a'.repeat(64),
+    ...overrides,
+  })
+
+  it.each([
+    ['an email address', 'alice@acme.example'],
+    ['a Decentralized Identifier', 'did:example:alice'],
+    ['a web address', 'https://example.org/people/alice'],
+    ['a plain name', 'Bob Smith'],
+  ])('exports a memory attributed by %s', (_label, who) => {
+    const result = exportPack([engram({ attribution: { asserted_by: who } })], dir,
+      { name: 'p', version: '1.0.0' })
+    expect(result.engram_count).toBe(1)
+  })
+
+  it('still blocks a credential in the statement itself', () => {
+    // The exemption covers the identity block only. Everything a caller can
+    // type into the content is scanned exactly as before.
+    const result = exportPack([engram({
+      statement: 'The key is AKIAIOSFODNN7EXAMPLE, do not share',
+      attribution: { asserted_by: 'alice@acme.example' },
+    })], dir, { name: 'p', version: '1.0.0' })
+    expect(result.engram_count).toBe(0)
+  })
+
+  it('still blocks a credential in a field beside the statement', () => {
+    const result = exportPack([engram({
+      rationale: 'we found AKIAIOSFODNN7EXAMPLE in the old config',
+    })], dir, { name: 'p', version: '1.0.0' })
+    expect(result.engram_count).toBe(0)
   })
 })

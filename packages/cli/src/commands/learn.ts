@@ -5,6 +5,8 @@ import { shouldOutputJson, outputJson, outputText, outputInfo, exit } from '../o
  * Flags this command accepts (#986). Anything else is refused rather than
  * silently dropped — `--license` used to vanish without a word.
  */
+export const FLAGS_WITH_VALUES = ['--scope', '--type', '--domain', '--source', '--rationale', '--tags', '--visibility', '--abstract', '--derived-from', '--knowledge-anchors', '--dual-coding', '--supersedes', '--license', '--claim-class', '--asserted-by']
+
 export const FLAGS = [
   '--scope', '--type', '--domain', '--source', '--rationale', '--tags',
   '--visibility', '--abstract', '--derived-from', '--knowledge-anchors',

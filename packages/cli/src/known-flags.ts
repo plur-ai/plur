@@ -59,15 +59,32 @@ function nearest(flag: string, known: string[]): string | undefined {
  * Everything after a bare `--` is left alone: that is the conventional marker
  * for "stop interpreting, these are values".
  */
-export function unknownFlagMessage(args: string[], declared: string[]): string | undefined {
+export function unknownFlagMessage(
+  args: string[],
+  declared: string[],
+  takesValue: string[] = [],
+): string | undefined {
   const known = [...declared, ...GLOBAL]
   const offenders: string[] = []
-  for (const arg of args) {
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]
     if (arg === '--') break
     // Short flags count too: `-x` bypassed this entirely. A negative number
     // is a value, not a flag, so a digit after the dash is left alone.
     if (!/^-{1,2}[A-Za-z]/.test(arg)) continue
-    if (!known.includes(arg)) offenders.push(arg)
+    if (!known.includes(arg)) { offenders.push(arg); continue }
+
+    // A flag that needs a value must have one. `learn "x" --scope --type
+    // behavioral` stored the literal string "--type" as the scope, and
+    // `--type` at the end of the line was dropped in silence — both writing
+    // an engram, both exit 0. Whatever the operator meant, it was not that.
+    if (takesValue.includes(arg)) {
+      const next = args[i + 1]
+      if (next === undefined || /^-{1,2}[A-Za-z]/.test(next)) {
+        return `${arg} needs a value, but the next argument was ${next ?? '(nothing)'}.`
+      }
+      i++
+    }
   }
   if (!offenders.length) return undefined
 

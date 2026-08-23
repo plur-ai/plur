@@ -34,20 +34,66 @@ export function expandEqualsFlags(argv: string[]): string[] {
   return out
 }
 
-export function parseGlobalFlags(rawArgv: string[]): { flags: GlobalFlags; args: string[] } {
+/** Long flags every command understands. */
+const GLOBAL_NAMES = ['--json', '--quiet', '--fast', '--path', '--help', '--version']
+
+/** Edit distance, for catching a near miss like `--pathh`. */
+function editDistance(a: string, b: string): number {
+  const rows = Array.from({ length: a.length + 1 }, (_, i) =>
+    Array.from({ length: b.length + 1 }, (_, j) => (i === 0 ? j : j === 0 ? i : 0)))
+  for (let i = 1; i <= a.length; i++) {
+    for (let j = 1; j <= b.length; j++) {
+      rows[i][j] = a[i - 1] === b[j - 1]
+        ? rows[i - 1][j - 1]
+        : 1 + Math.min(rows[i - 1][j], rows[i][j - 1], rows[i - 1][j - 1])
+    }
+  }
+  return rows[a.length][b.length]
+}
+
+export function parseGlobalFlags(rawArgv: string[]): {
+  flags: GlobalFlags; args: string[]; error?: string
+} {
   const argv = expandEqualsFlags(rawArgv)
   const flags: GlobalFlags = {}
   const args: string[] = []
+  let error: string | undefined
   let i = 0
   while (i < argv.length) {
     const arg = argv[i]
     if (arg === '--json') { flags.json = true; i++ }
     else if (arg === '--quiet') { flags.quiet = true; i++ }
     else if (arg === '--fast') { flags.fast = true; i++ }
-    else if (arg === '--path' && i + 1 < argv.length) { flags.path = argv[i + 1]; i += 2 }
-    else { args.push(arg); i++ }
+    else if (arg === '--path') {
+      // A missing value used to leave --path unset, so the command silently ran
+      // against the DEFAULT store instead of the one the operator named. That
+      // is the only defect here that writes outside the directory they asked
+      // for, and it happens on a typo.
+      const value = argv[i + 1]
+      if (value === undefined || /^--[A-Za-z]/.test(value)) {
+        error = error ?? `--path needs a directory, but the next argument was ${value ?? '(nothing)'}.`
+        i += 1
+      } else { flags.path = value; i += 2 }
+    }
+    else {
+      // A near miss on a global flag is caught for EVERY command, whether or
+      // not that command declares its own flags. `--pathh` was passed through
+      // as a positional argument and the command then ran against the user's
+      // real store — silently, with a success exit.
+      // ONLY `--path`, and only a single typo. A wider net produces false
+      // positives on legitimate command flags — `--session` is two edits from
+      // `--version` and was rejected outright — and this check exists for one
+      // specific harm: a mistyped `--path` is passed through as a positional
+      // argument, `--path` is never set, and the command runs against the
+      // user's real store. Every other global flag mistyped is merely ignored.
+      if (/^--[A-Za-z]/.test(arg) && !GLOBAL_NAMES.includes(arg) && editDistance(arg, '--path') <= 2) {
+        error = error ?? `Unrecognised flag ${arg} — did you mean --path? `
+          + 'Left as it is, this command would run against your default store rather than the one you named.'
+      }
+      args.push(arg); i++
+    }
   }
-  return { flags, args }
+  return { flags, args, error }
 }
 
 /**

@@ -131,3 +131,75 @@ describe('end to end, through the real command line', () => {
     expect(run(['learn', 'Fine', '--license', 'cc-by-4.0', '--json']).code).toBe(0)
   })
 })
+
+/**
+ * A flag that needs a value must have one, and a mistyped global flag must
+ * never reach a command (#986, round five).
+ *
+ * A tester found `capture "x" --pathh <dir>` exiting 0 with the episode written
+ * to the user's REAL store, because the mistyped flag was passed through as a
+ * positional argument and `--path` was simply never set. That is the only
+ * defect in this area that writes outside the directory the operator named.
+ *
+ * Separately, `learn "x" --scope --type behavioral` stored the literal string
+ * "--type" as the scope, and a value-taking flag at the end of the line was
+ * dropped in silence. Both wrote an engram; both exited 0.
+ */
+describe('mistyped global flags never reach a command', () => {
+  it('catches a near miss on --path, whatever the command', () => {
+    const { error } = parseGlobalFlags(['status', '--pathh', '/tmp/x'])
+    expect(error).toContain('--pathh')
+    expect(error).toContain('did you mean --path')
+  })
+
+  it('refuses --path with no value, rather than falling back to the default store', () => {
+    expect(parseGlobalFlags(['learn', 'x', '--path']).error).toContain('--path needs a directory')
+  })
+
+  it('refuses --path whose value is the next flag', () => {
+    expect(parseGlobalFlags(['learn', 'x', '--path', '--json']).error).toContain('--path needs a directory')
+  })
+
+  it('leaves a correct invocation alone', () => {
+    const { flags, error } = parseGlobalFlags(['status', '--path', '/tmp/x'])
+    expect(error).toBeUndefined()
+    expect(flags.path).toBe('/tmp/x')
+  })
+
+  it('does not complain about a flag that is nothing like a global one', () => {
+    // Those belong to the command, and the command checks them.
+    expect(parseGlobalFlags(['learn', 'x', '--claim-class', 'asserted']).error).toBeUndefined()
+  })
+
+  it('does not reject a legitimate command flag that merely resembles a global one', () => {
+    // A wider net caught `--session`, which is two edits from `--version` and
+    // a real flag on `capture`. The check exists for one harm — a mistyped
+    // --path silently retargeting the store — so it looks only for that.
+    expect(parseGlobalFlags(['capture', 'x', '--session', 'sess-1']).error).toBeUndefined()
+    expect(parseGlobalFlags(['capture', 'x', '--agent', 'a']).error).toBeUndefined()
+  })
+})
+
+describe('a flag that takes a value must have one', () => {
+  const DECLARED = ['--scope', '--type', '--license']
+  const TAKES = ['--scope', '--type', '--license']
+
+  it('refuses a value that is itself a flag', () => {
+    expect(unknownFlagMessage(['--scope', '--type', 'behavioral'], DECLARED, TAKES))
+      .toContain('--scope needs a value')
+  })
+
+  it('refuses a value-taking flag at the end of the line', () => {
+    expect(unknownFlagMessage(['--type'], DECLARED, TAKES)).toContain('--type needs a value')
+  })
+
+  it('accepts a real value', () => {
+    expect(unknownFlagMessage(['--scope', 'global', '--type', 'behavioral'], DECLARED, TAKES))
+      .toBeUndefined()
+  })
+
+  it('does not mistake a value for a flag it should check', () => {
+    // The value of one flag must not be read as the start of another.
+    expect(unknownFlagMessage(['--license', 'cc-by-4.0'], DECLARED, TAKES)).toBeUndefined()
+  })
+})
