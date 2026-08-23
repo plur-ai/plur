@@ -1,7 +1,7 @@
 import { existsSync, unlinkSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
-import { Plur, extractMetaEngrams, validateMetaEngram, confidenceBand, generateProfile, getProfileForInjection, markProfileDirty, selectModelForOperation, readHistoryForEngram, getCachedUpdateCheck, minorVersionsBehind, scanForTensions, CapabilityCanary, readProjectConfig, isSharedScope, resolveRerankerName, getReranker, classifyRerankerFailure, hfCacheDirName, SUGGEST_DISPLAY_MIN_CONFIDENCE, mcpRemoteWarningLine, doctorRemoteRemediation, normalizeEndpointUrl, REMOTE_STATUS_TTL_MS, PROBE_CLEARABLE_STATES } from '@plur-ai/core'
+import { Plur, extractMetaEngrams, validateMetaEngram, confidenceBand, generateProfile, getProfileForInjection, markProfileDirty, selectModelForOperation, readHistoryForEngram, getCachedUpdateCheck, minorVersionsBehind, scanForTensions, CapabilityCanary, readProjectConfig, isSharedScope, resolveRerankerName, getReranker, classifyRerankerFailure, hfCacheDirName, SUGGEST_DISPLAY_MIN_CONFIDENCE, mcpRemoteWarningLine, doctorRemoteRemediation, normalizeEndpointUrl, REMOTE_STATUS_TTL_MS, PROBE_CLEARABLE_STATES, summariseProvenance, renderProvenanceSummary } from '@plur-ai/core'
 import type { LlmFunction, MetaField, TensionStatus, RerankerEvalResult, HistoryEvent, Receipt, RemoteStoreStatusEntry } from '@plur-ai/core'
 import { recordTelemetry } from './telemetry.js'
 import { VERSION } from './version.js'
@@ -2191,6 +2191,83 @@ function getAllToolDefinitions(): ToolDefinition[] {
             },
           } : {}),
           capabilities: await mcpCanary.status(),
+        }
+      },
+    },
+
+    {
+      name: 'plur_provenance',
+      description:
+        'Where a memory came from: who asserted it, whether a person stated it or a model worked it out, when, what it came from, and whether you may reuse it. ' +
+        'Read-only. Accepts an engram id or a search term — nobody remembers ids. ' +
+        'IMPORTANT when relaying to the user: report the `not_recorded` list as prominently as the rest. ' +
+        'A memory written before provenance was captured genuinely cannot say who asserted it, and presenting the record as complete would make it look more authoritative than it is. ' +
+        'Nothing here is guessed. Prefer relaying `summary`; ask for format "record" only when a machine-readable document is actually needed.',
+      annotations: { title: 'Where a memory came from', readOnlyHint: true, idempotentHint: true },
+      inputSchema: {
+        type: 'object',
+        properties: {
+          id: { type: 'string', description: 'Exact engram id, e.g. ENG-2026-08-21-086' },
+          search: { type: 'string', description: 'Find the engram by what it says, if you do not know its id' },
+          format: {
+            type: 'string',
+            enum: ['summary', 'record'],
+            description: 'summary (default) is prose a person can read. record is the JSON-LD document, for machines.',
+          },
+          save: { type: 'boolean', description: 'Also write the record to the store, and return where it went.' },
+        },
+      },
+      handler: async (args, plur) => {
+        let id = args.id as string | undefined
+        let alternatives: Array<{ id: string; statement: string }> = []
+
+        if (!id && typeof args.search === 'string' && args.search.length) {
+          const matches = await plur.recall(args.search, { limit: 3 })
+          if (!matches.length) {
+            return {
+              found: false,
+              message: `Nothing matched "${args.search}". Try different words, or pass an exact id.`,
+            }
+          }
+          id = matches[0].id
+          // Say what else matched, so a wrong pick is visible rather than silent.
+          alternatives = matches.slice(1).map((m: { id: string; statement: string }) =>
+            ({ id: m.id, statement: m.statement.slice(0, 80) }))
+        }
+
+        if (!id) {
+          return { found: false, message: 'Pass either an engram id or a search term.' }
+        }
+
+        const record = await plur.provenanceFor(id, { mode: 'portable' })
+        if (!record) {
+          return { found: false, message: `No engram with id ${id}.` }
+        }
+
+        const summary = summariseProvenance(record as any)
+        const saved = args.save === true ? await plur.writeProvenance(id) : undefined
+
+        if (args.format === 'record') {
+          return {
+            found: true,
+            engram_id: id,
+            record,
+            not_recorded: summary.missing,
+            ...(saved ? { saved_to: saved } : {}),
+          }
+        }
+
+        return {
+          found: true,
+          engram_id: id,
+          summary: renderProvenanceSummary(summary),
+          facts: summary.lines,
+          not_recorded: summary.missing,
+          complete: summary.complete,
+          ...(alternatives.length
+            ? { note: 'Several engrams matched; this is the closest.', other_matches: alternatives }
+            : {}),
+          ...(saved ? { saved_to: saved } : {}),
         }
       },
     },

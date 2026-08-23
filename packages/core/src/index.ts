@@ -749,10 +749,13 @@ export {
   buildProvenanceRecord,
   buildPackProvenanceRecord,
   serializeProvenanceRecord,
+  summariseProvenance,
+  renderProvenanceSummary,
   assertDomainFields,
   type ProvenanceOptions,
   type DomainExtension,
   type PackProvenanceInput,
+  type ProvenanceSummary,
 } from './provenance.js'
 
 export class Plur {

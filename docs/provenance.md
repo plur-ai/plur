@@ -27,6 +27,38 @@ statement came from. Those are different things.
 
 ---
 
+## Asking for a record
+
+From a session, ask for it by name or by what the memory says:
+
+```
+plur_provenance { "search": "deploys migrations" }
+plur_provenance { "id": "ENG-2026-08-21-086" }
+```
+
+You get a readable answer, not a document. Add `"format": "record"` when you
+actually want the JSON-LD, and `"save": true` to store it.
+
+The tool lives behind `plur_admin`, like most of the surface — the lean profile
+exposes only the eleven tools used every session, to keep the schema small.
+
+From a terminal:
+
+```bash
+plur provenance "deploys migrations"     # a readable summary
+plur provenance ENG-2026-08-21-086       # by identifier
+plur provenance "deploys" --record       # the JSON-LD document
+plur provenance "deploys" --write        # save it, and print where
+```
+
+And when exporting a pack:
+
+```bash
+plur packs export my-pack --provenance
+```
+
+---
+
 ## Try it on your own memories first
 
 Before turning anything on, see what a record looks like for a memory you already

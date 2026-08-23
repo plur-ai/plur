@@ -502,3 +502,138 @@ export function buildPackProvenanceRecord(
   const context = domain ? { ...CONTEXT, ...domain.namespaces } : CONTEXT
   return { '@context': context, '@graph': graph }
 }
+
+
+// --- A summary a person can read -------------------------------------------
+
+export interface ProvenanceSummary {
+  engram_id: string
+  /** Plain-language lines, ready to print. */
+  lines: string[]
+  /** What could not be determined, named rather than left blank. */
+  missing: string[]
+  /** True when every one of the five questions has an answer. */
+  complete: boolean
+}
+
+const CLAIM_MEANING: Record<string, string> = {
+  observed: 'a record of something that happened',
+  documented: 'taken from prose a human wrote',
+  structural: 'read off the shape of a thing',
+  asserted: 'stated outright by a person or agent',
+  inferred: 'worked out by a model',
+  revised: 'a rewrite of an earlier version',
+}
+
+const LICENCE_MEANING: Record<string, string> = {
+  'cc-by-4.0': 'reuse allowed, credit required',
+  'cc-by-sa-4.0': 'reuse allowed, credit required, share alike',
+  'cc-by-nc-4.0': 'reuse allowed, credit required, NOT for commercial use',
+  'cc-by-nd-4.0': 'reuse allowed, credit required, no derivatives',
+  'cc0-1.0': 'no conditions',
+  'apache-2.0': 'reuse allowed, credit required',
+  mit: 'reuse allowed, credit required',
+}
+
+/**
+ * Turn a record into something a person can read.
+ *
+ * A wall of JSON-LD is expensive for an agent to read and unreadable for a
+ * human. The record is for machines; this is for whoever asked.
+ *
+ * It names what is MISSING as prominently as what is known. On an older engram
+ * the honest answer is "nothing recorded who asserted this", and that is the
+ * most useful thing this can say — hiding it would make the record look more
+ * authoritative than it is.
+ */
+export function summariseProvenance(record: Node): ProvenanceSummary {
+  const graph = (record['@graph'] as Node[]) ?? []
+  const subject = graph.find(n => {
+    const types = n['@type']
+    return Array.isArray(types) && types.includes('engram:Engram')
+  })
+  const engramId = String(subject?.['@id'] ?? '').replace(/^engram:/, '')
+
+  const lines: string[] = []
+  const missing: string[] = []
+  const at = (n: unknown) => String((n as { '@value'?: string })?.['@value'] ?? n ?? '')
+  const idOf = (n: unknown) => String((n as { '@id'?: string })?.['@id'] ?? '').replace(/^engram:/, '')
+
+  // Who
+  const who = subject?.['prov:wasAttributedTo']
+  if (who) {
+    const name = idOf(who)
+    lines.push(name === 'agent/unidentified'
+      ? 'Asserted by   nobody identified — no identity was configured at the time'
+      : `Asserted by   ${name.replace(/^agent\//, '')}`)
+  } else {
+    missing.push('who asserted it')
+  }
+
+  const software = graph.find(n => {
+    const t = n['@type']
+    return Array.isArray(t) && t.includes('prov:SoftwareAgent')
+  })
+  if (software?.['engram:runtimeName']) {
+    const version = software['engram:runtimeVersion']
+    lines.push(`Written by    ${software['engram:runtimeName']}${version ? ` ${version}` : ''}`)
+  }
+
+  // What kind of claim
+  const claim = subject?.['engram:claimClass'] as string | undefined
+  if (claim) lines.push(`Kind of claim ${claim} — ${CLAIM_MEANING[claim] ?? 'unknown kind'}`)
+  else missing.push('what kind of claim it is — whether a person stated it or a model worked it out')
+
+  // When
+  const when = subject?.['prov:generatedAtTime']
+  if (when) lines.push(`First written ${at(when).slice(0, 10)}`)
+  else missing.push('when it was written')
+
+  // What from
+  const source = subject?.['prov:hadPrimarySource']
+  const note = subject?.['engram:sourceNote']
+  if (source) lines.push(`Came from     ${idOf(source) || String(source)}`)
+  else if (note) lines.push(`Came from     ${note}  (a note, not a link)`)
+  else missing.push('what it came from')
+
+  // May I use it
+  const licence = subject?.['engram:license'] as string | undefined
+  if (licence) {
+    const meaning = LICENCE_MEANING[licence.toLowerCase()]
+    lines.push(`Licence       ${licence}${meaning ? ` — ${meaning}` : ' — not one we recognise, read it yourself'}`)
+  } else {
+    missing.push('whether you may reuse it')
+  }
+
+  // History, if any
+  const activities = graph.filter(n => {
+    const t = n['@type']
+    return Array.isArray(t) && t.includes('prov:Activity')
+  })
+  if (activities.length) lines.push(`History       ${activities.length} recorded step(s)`)
+
+  const invalidated = subject?.['prov:wasInvalidatedBy']
+  if (invalidated) lines.push('Status        RETIRED — this memory is no longer believed')
+
+  return { engram_id: engramId, lines, missing, complete: missing.length === 0 }
+}
+
+/** Render a summary as text, ready to print. */
+export function renderProvenanceSummary(summary: ProvenanceSummary): string {
+  const out: string[] = []
+  out.push(`Where ${summary.engram_id} came from`)
+  out.push('='.repeat(`Where ${summary.engram_id} came from`.length))
+  out.push('')
+  for (const line of summary.lines) out.push(`  ${line}`)
+
+  if (summary.missing.length) {
+    out.push('')
+    out.push('  Not recorded:')
+    for (const gap of summary.missing) out.push(`    - ${gap}`)
+    out.push('')
+    out.push('  Nothing is guessed. A memory written before provenance was')
+    out.push('  captured cannot say who asserted it, and this says so rather')
+    out.push('  than inventing an answer.')
+  }
+  return out.join('\n')
+}

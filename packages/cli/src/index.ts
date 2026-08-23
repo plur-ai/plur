@@ -36,6 +36,7 @@ Commands:
   timeline [query]        Query episode timeline
   status                  System health check
   dashboard               Open the memory dashboard in a browser (alias: ui)
+  provenance <id|search>  Where a memory came from, and whether you may reuse it
   receipt [--days N]      What your memory retrieved for you
   sync                    Cross-device sync
   packs list              List installed packs
@@ -111,6 +112,7 @@ const COMMANDS: Record<string, string> = {
   // Both names users guess land here — `dashboard` (minikube's convention,
   // and the word the release copy teaches) and `ui` (mlflow's convention).
   dashboard: './commands/ui.js',
+  provenance: './commands/provenance.js',
   receipt: './commands/receipt.js',
   sync: './commands/sync.js',
   restore: './commands/restore.js',

@@ -91,7 +91,9 @@ Options:
   --type <type>        Filter by type (behavioral|procedural|architectural|terminological)
   --description <desc> Pack description
   --creator <name>     Creator name
-  --output <dir>       Output directory (default: ~/plur-packs/<name>)`)
+  --output <dir>       Output directory (default: ~/plur-packs/<name>)
+  --provenance         Include a record of where each engram came from, and one
+                       for the pack as a whole. Useful when sharing.`)
     }
 
     let domain: string | undefined
@@ -101,6 +103,7 @@ Options:
     let outputDir: string | undefined
     let description: string | undefined
     let creator: string | undefined
+    let provenance = false
     let i = 2
     while (i < args.length) {
       if (args[i] === '--domain' && i + 1 < args.length) { domain = args[++i]; i++ }
@@ -110,6 +113,7 @@ Options:
       else if (args[i] === '--output' && i + 1 < args.length) { outputDir = args[++i]; i++ }
       else if (args[i] === '--description' && i + 1 < args.length) { description = args[++i]; i++ }
       else if (args[i] === '--creator' && i + 1 < args.length) { creator = args[++i]; i++ }
+      else if (args[i] === '--provenance') { provenance = true; i++ }
       else { i++ }
     }
 
@@ -140,6 +144,7 @@ Options:
       version: '1.0.0',
       description,
       creator,
+      provenance,
     })
 
     if (shouldOutputJson(flags)) {
@@ -148,6 +153,7 @@ Options:
         engram_count: result.engram_count,
         integrity: result.integrity,
         match_terms: result.match_terms,
+        ...(result.provenance_files ? { provenance_files: result.provenance_files } : {}),
         privacy: result.privacy,
         name,
       })

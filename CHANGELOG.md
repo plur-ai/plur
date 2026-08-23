@@ -51,6 +51,13 @@ its dry-run (`plur reindex-hashes`, no flag) reports the count without writing.
 - Engrams written at session end now link back to the session that produced them
   (#960). The session identifier was already an argument of that tool call and
   was simply not passed on, so most engrams had no session to point at.
+- **The feature can now be reached (#979, #980).** A `plur_provenance` tool and a
+  `plur provenance` command answer where a memory came from, in prose rather than
+  JSON-LD, by search term as well as identifier. Both name what was NOT recorded
+  as prominently as what was — a memory written before this existed genuinely
+  cannot say who asserted it, and presenting the record as complete would make it
+  look more authoritative than it is. `plur packs export --provenance` includes
+  records in a pack.
 - **Packs carry provenance (#972).** Exporting with `provenance: true` writes one
   record per engram plus one for the pack, which answers a question no single
   engram can: is this pack worth anything? It says who assembled it, when, how
