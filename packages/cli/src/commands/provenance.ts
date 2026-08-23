@@ -9,6 +9,9 @@ import { summariseProvenance, renderProvenanceSummary } from '@plur-ai/core'
  * never a blank where something was simply not recorded. A blank reads as zero;
  * an explicit "not recorded" reads as the truth.
  */
+/** Flags this command accepts (#986). */
+export const FLAGS = ['--record', '--write']
+
 export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   const query = args.find(a => !a.startsWith('-'))
   // --json is the repo-wide "machine output" flag. --record asks for the

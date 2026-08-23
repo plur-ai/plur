@@ -3,6 +3,19 @@ import { homedir } from 'os'
 import { createPlur, type GlobalFlags } from '../plur.js'
 import { shouldOutputJson, outputJson, outputText, outputInfo, exit } from '../output.js'
 
+/**
+ * Flags accepted across the packs subcommands (#986).
+ *
+ * One list for all of them, because the dispatcher sees `packs` and not which
+ * subcommand follows. That still catches the case that mattered: a tester ran
+ * `packs install <dir> --dry-run`, which does not exist anywhere here, and the
+ * pack was installed by somebody who believed they were previewing it.
+ */
+export const FLAGS = [
+  '--domain', '--scope', '--tags', '--type', '--output', '--description',
+  '--creator', '--provenance', '--no-provenance', '--force', '--yes',
+]
+
 export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   const plur = createPlur(flags)
 
@@ -87,6 +100,16 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
       // Where the contents came from, shown BEFORE anything is installed.
       // Deliberately no tick, no badge, no "verified" anywhere: nothing in a
       // pack is signed, so all of this is what the pack says about itself.
+      // Whether the pack still matches the value its author shipped (#987).
+      // Stated with a verb, because "Integrity: sha256:…" told a tester nothing
+      // about whether anything had been checked.
+      outputText('')
+      const integ = preview.integrity
+      if (integ.status === 'ok') outputText('Integrity     matches the value the pack shipped')
+      else if (integ.status === 'modified') outputText('Integrity     DOES NOT MATCH the value the pack shipped')
+      else outputText('Integrity     the pack shipped no value to check against')
+      outputText(`              ${integ.note}`)
+
       const prov = preview.provenance
       outputText('')
       if (!prov.present) {

@@ -1,6 +1,16 @@
 import { createPlur, type GlobalFlags } from '../plur.js'
 import { shouldOutputJson, outputJson, outputText, outputInfo, exit } from '../output.js'
 
+/**
+ * Flags this command accepts (#986). Anything else is refused rather than
+ * silently dropped — `--license` used to vanish without a word.
+ */
+export const FLAGS = [
+  '--scope', '--type', '--domain', '--source', '--rationale', '--tags',
+  '--visibility', '--abstract', '--derived-from', '--knowledge-anchors',
+  '--dual-coding', '--supersedes', '--license', '--claim-class', '--asserted-by',
+]
+
 export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   const plur = createPlur(flags)
 

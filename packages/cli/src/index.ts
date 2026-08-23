@@ -1,5 +1,6 @@
 import { shouldOutputJson, outputJson, setQuiet, exit } from './output.js'
 import { parseGlobalFlags, createPlur } from './plur.js'
+import { unknownFlagMessage } from './known-flags.js'
 
 export type { GlobalFlags } from './plur.js'
 export { parseGlobalFlags, createPlur } from './plur.js'
@@ -165,6 +166,12 @@ if (!command || !COMMANDS[command]) {
 
 try {
   const mod = await import(COMMANDS[command])
+  // A command that declares its flags gets them checked (#986). One that does
+  // not is unchanged, so this is adopted per command rather than all at once.
+  if (Array.isArray(mod.FLAGS)) {
+    const complaint = unknownFlagMessage(commandArgs, mod.FLAGS as string[])
+    if (complaint) exit(1, complaint)
+  }
   await mod.run(commandArgs, flags)
 } catch (err: any) {
   if (shouldOutputJson(flags)) {

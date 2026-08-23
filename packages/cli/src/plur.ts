@@ -7,7 +7,35 @@ export interface GlobalFlags extends OutputOptions {
 }
 
 /** Parse global flags from argv, return remaining positional args + flags. */
-export function parseGlobalFlags(argv: string[]): { flags: GlobalFlags; args: string[] } {
+/**
+ * Split `--flag=value` into `--flag` and `value` (#986).
+ *
+ * Every command parses flags as `--name` followed by a separate value, and an
+ * argument written as `--name=value` matched nothing and was silently dropped.
+ * A tester wrote `learn "..." --license=cc-by-4.0 --domain=ops.test` and got a
+ * successful exit with no licence and no domain. The `=` form is what most
+ * command-line tools accept, so people reach for it.
+ *
+ * Splitting here fixes it for every command at once, rather than in each of the
+ * forty-odd parsers.
+ *
+ * Only the first `=` splits, so a value may contain one. Only tokens that look
+ * like a long flag are touched, so a positional argument containing `=` and the
+ * `--` separator both pass through untouched.
+ */
+export function expandEqualsFlags(argv: string[]): string[] {
+  const out: string[] = []
+  let seenSeparator = false
+  for (const arg of argv) {
+    if (arg === '--') { seenSeparator = true; out.push(arg); continue }
+    const m = seenSeparator ? null : /^(--[A-Za-z][A-Za-z0-9-]*)=([\s\S]*)$/.exec(arg)
+    if (m) { out.push(m[1], m[2]) } else { out.push(arg) }
+  }
+  return out
+}
+
+export function parseGlobalFlags(rawArgv: string[]): { flags: GlobalFlags; args: string[] } {
+  const argv = expandEqualsFlags(rawArgv)
   const flags: GlobalFlags = {}
   const args: string[] = []
   let i = 0

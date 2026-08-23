@@ -260,6 +260,8 @@ export interface PreviewResult {
   warnings: string[]
   /** What the pack says about where its engrams came from (#970 case 3). */
   provenance: PackProvenanceView
+  /** Whether the contents match the integrity value the pack shipped (#987). */
+  integrity: IntegrityCheck
 }
 
 /**
@@ -403,6 +405,8 @@ function _previewPackDir(source: string): PreviewResult {
   // Read what the pack claims about its own origins, BEFORE anything installs.
   // The gate belongs at the boundary; afterwards it changes nothing.
   const provenance = readPackProvenance(source, pack.engrams)
+  // Check the SHIPPED value against the contents, before anything installs.
+  const integrity = verifyPackIntegrity(source)
 
   const warnings: string[] = []
   // Flag pinned engrams — they bypass the relevance gate (always injected).
@@ -432,6 +436,7 @@ function _previewPackDir(source: string): PreviewResult {
     security,
     warnings,
     provenance,
+    integrity,
   }
 }
 
@@ -462,6 +467,12 @@ export interface InstallResult {
   conflicts: ConflictItem[]
   security: PrivacyScanResult
   registry: RegistryEntry
+  /**
+   * What checking the shipped integrity value found (#987). Reported even when
+   * it passed, so a caller can tell "matched" from "there was nothing to match
+   * against" — the distinction the old `integrity_ok: true` erased.
+   */
+  integrity_check: IntegrityCheck
 }
 
 export interface ConflictItem {
@@ -526,6 +537,12 @@ function detectConflicts(newEngrams: Engram[], existingEngrams: Engram[]): Confl
 export interface InstallOptions {
   /** Override the prompt-injection block. Secrets are ALWAYS blocked regardless. */
   allowInjection?: boolean
+  /**
+   * Install even though the contents do not match the integrity value the pack
+   * shipped (#987). Off by default: a pack that changed after it was built is
+   * exactly the case somebody should have to look at before proceeding.
+   */
+  allowModified?: boolean
 }
 
 /**
@@ -587,6 +604,23 @@ function _installPackDir(
 
   // Security scan BEFORE copying — always runs, not opt-out
   const preview = _previewPackDir(source)
+
+  // Does the pack still match the integrity value its author shipped? This was
+  // never checked: install recomputed a hash, recorded it, and reported success,
+  // so a pack edited after it was built installed silently and `plur packs list`
+  // then called it `integrity_ok: true`.
+  //
+  // Blocking is the right default. Unlike the injection scan, there is no
+  // legitimate reason for a pack to differ from its own recorded hash — either
+  // it was damaged in transit or somebody changed it, and both deserve a look.
+  if (preview.integrity.status === 'modified' && !opts.allowModified) {
+    throw new Error(
+      `This pack does not match the integrity value it shipped.\n`
+      + `  shipped:  ${preview.integrity.shipped}\n`
+      + `  contents: ${preview.integrity.computed}\n`
+      + `It has been changed since it was built. Install it only if you know why it differs.`,
+    )
+  }
   const secretIssues = preview.security.issues.filter(i => i.type === 'secret')
   if (secretIssues.length > 0) {
     const details = secretIssues.map(i => `  ${i.engram_id}: ${i.detail}`).join('\n')
@@ -716,7 +750,14 @@ function _installPackDir(
   }
   addToRegistry(packsDir, registryEntry)
 
-  return { installed: newEngrams.length, name: sourceName, conflicts, security: preview.security, registry: registryEntry }
+  return {
+    installed: newEngrams.length,
+    name: sourceName,
+    conflicts,
+    security: preview.security,
+    registry: registryEntry,
+    integrity_check: preview.integrity,
+  }
 }
 
 /**
@@ -1369,6 +1410,71 @@ export function exportPack(
 }
 
 // --- Integrity ---
+
+/** What a pack's shipped integrity value says, checked against its contents. */
+export interface IntegrityCheck {
+  /** 'ok' — matched. 'modified' — did not match. 'absent' — the pack shipped none. */
+  status: 'ok' | 'modified' | 'absent'
+  /** The value the pack shipped, if it shipped one. */
+  shipped?: string
+  /** The value its contents actually hash to. */
+  computed: string
+  /** What to tell the person deciding whether to install it. */
+  note: string
+}
+
+/**
+ * Compare the integrity value a pack SHIPPED against what its contents hash to.
+ *
+ * Export writes the hash into an `INTEGRITY` file. Install recomputed its own
+ * hash, recorded that, and never once looked at the shipped value — so a pack
+ * edited after it was built installed cleanly, and `plur packs list` then
+ * reported `integrity_ok: true`. `integrity_ok` meant "we computed a hash", not
+ * "the hash matched", which is the opposite of what anybody reads it as.
+ *
+ * Hash the pack AS RECEIVED. Install later hashes the staged, sanitised copy,
+ * which legitimately differs when the privacy scan drops an engram; comparing
+ * against that would raise a mismatch on packs nobody touched.
+ *
+ * A pack that ships no `INTEGRITY` is 'absent', not 'ok'. Nothing was checked,
+ * and saying otherwise is how the original defect read.
+ *
+ * This detects accidental corruption and casual editing. It is NOT a defence
+ * against a determined sender, who edits the contents and the `INTEGRITY` file
+ * together — nothing here is signed. Say that plainly wherever this is shown.
+ */
+export function verifyPackIntegrity(packDir: string): IntegrityCheck {
+  const computed = `sha256:${computePackHash(packDir)}`
+  const file = path.join(packDir, 'INTEGRITY')
+
+  if (!fs.existsSync(file)) {
+    return {
+      status: 'absent',
+      computed,
+      note: 'This pack shipped no integrity value, so there was nothing to check it against.',
+    }
+  }
+
+  const shipped = fs.readFileSync(file, 'utf8').trim()
+  if (shipped === computed) {
+    return {
+      status: 'ok',
+      shipped,
+      computed,
+      note: 'The contents match the value the pack shipped. That means it arrived intact — '
+        + 'not that its contents are trustworthy, and not that the sender is who they say. '
+        + 'Packs are not signed, so somebody who edited the contents could edit this value too.',
+    }
+  }
+  return {
+    status: 'modified',
+    shipped,
+    computed,
+    note: 'The contents do NOT match the value the pack shipped. It has been changed since it '
+      + 'was built, by damage in transit or by somebody editing it. Do not install it unless '
+      + 'you know why it differs.',
+  }
+}
 
 /**
  * Compute SHA256 hash of pack contents per ENGRAM-STANDARD-v1.md §5.5:
