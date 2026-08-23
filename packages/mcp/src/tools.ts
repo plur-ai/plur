@@ -1055,6 +1055,12 @@ function getAllToolDefinitions(): ToolDefinition[] {
             description:
               'Which licence governs reuse of this memory, as an SPDX-style identifier such as "cc-by-4.0" or "apache-2.0". Set it only when the user has actually said which licence applies — do NOT guess one. Left unset, a default applies that nobody chose, and a provenance record reports it as unchosen rather than presenting it as a decision.',
           },
+          visibility: {
+            type: 'string',
+            enum: ['private', 'public', 'template'],
+            description:
+              'Whether this memory may leave this machine. Defaults to "private", which means it is EXCLUDED from every exported pack. Set "public" only when the user has said this is shareable with others — it is their decision, not yours. Without this an agent cannot mark anything shareable at all, so every memory it writes is private forever and any pack built from them is empty.',
+          },
         },
         required: ['statement'],
       },
@@ -1086,6 +1092,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
           attribution: args.attribution as LearnContext['attribution'],
           claim_class: args.claim_class as LearnContext['claim_class'],
           license: args.license as LearnContext['license'],
+          visibility: args.visibility as LearnContext['visibility'],
           // #243: resolve which session's default scope governs this write —
           // explicit session_id first, else the lone open session. Never
           // persisted on the engram (LearnContext.session selects a scope, it

@@ -1,14 +1,48 @@
-# The provenance walkthrough
+# Two recorded demos
 
-A recorded terminal session showing the whole journey: recording where a memory
-came from, sharing it, and checking it on the far side.
+**Start with the conversation.** It is how people actually meet this feature:
+they talk to their assistant, and the assistant calls the tools.
 
-| File | What it is |
+| Demo | What it shows |
 |---|---|
-| `provenance-walkthrough.sh` | The script. Run it yourself. |
-| `recording/provenance-walkthrough.cast` | The recording, for `asciinema play`. |
-| `recording/provenance-walkthrough.gif` | The same thing as an image. |
-| `recording/provenance-walkthrough.txt` | A plain transcript, for reading. |
+| `agent-conversation.sh` | Someone talking to an assistant that has PLUR connected, with every tool call shown underneath. |
+| `provenance-walkthrough.sh` | The same ground from the command line, for anyone driving PLUR directly. |
+
+Each has a recording, an image and a plain transcript under `recording/`.
+
+`mcp-call.mjs` is the client the conversation uses. It speaks the protocol
+Claude Code and Cursor speak — initialize, then `tools/call` — so the results in
+the demo are whatever the tool really returned, not something written to look
+good.
+
+## The conversation
+
+```
+bash docs/demo/agent-conversation.sh
+```
+
+Six exchanges, in the order they come up in real life:
+
+1. **"Remember that."** One `plur_learn` call, no ceremony.
+2. **"Where did that come from?"** The honest answer, a month later: four things
+   listed as *not recorded*, because nobody recorded them.
+3. **"Record it properly."** Who asserted it, what kind of claim, what it came
+   from, which licence.
+4. **"Can I put this in the customer deck?"** The question the feature exists
+   for — and the assistant answers from five machine-readable values rather than
+   from prose.
+5. **"Can I share the first one?"** No. Private, and the licence line is about
+   reuse, not permission to pass it on. These are different questions and the
+   demo shows the tool keeping them apart.
+6. **"The number changed."** A correction, and what somebody asking about the
+   old memory is told.
+
+The last exchange states the boundary out loud: provenance **records** a
+correction, and what recall does about it is PLUR's decision.
+
+---
+
+## The command-line walkthrough
 
 ## Running it
 

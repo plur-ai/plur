@@ -314,3 +314,57 @@ describe('plur_provenance — how many actually matched', () => {
     if (r.match_count === 1) expect(r.note).toBeUndefined()
   })
 })
+
+/**
+ * An agent must be able to mark a memory shareable (#970).
+ *
+ * `plur_learn` had no `visibility`, so every memory written over MCP was
+ * private — the schema default — and stayed that way forever. Private engrams
+ * are excluded from export, so a pack built from an agent's memories was always
+ * empty, and `may_leave_this_machine` was a constant false carrying no
+ * information. The whole sharing half of the feature was unreachable from the
+ * surface most people use.
+ */
+describe('plur_learn can mark a memory shareable', () => {
+  let plur: Plur
+  let dir: string
+  let tools: ReturnType<typeof getToolDefinitions>
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'plur-vis-'))
+    plur = new Plur({ path: dir })
+    tools = getToolDefinitions('full')
+    _resetSessionTelemetry()
+  })
+  afterEach(() => rmSync(dir, { recursive: true, force: true }))
+
+  const learn = async (args: Record<string, unknown>) =>
+    tools.find(t => t.name === 'plur_learn')!.handler(args, plur) as Promise<any>
+  const provenance = async (args: Record<string, unknown>) =>
+    tools.find(t => t.name === 'plur_provenance')!.handler(args, plur) as Promise<any>
+
+  it('offers visibility in its schema, so an agent knows it exists', () => {
+    const schema = (tools.find(t => t.name === 'plur_learn') as any).inputSchema
+    expect(schema.properties.visibility).toBeDefined()
+    expect(schema.properties.visibility.enum).toContain('public')
+  })
+
+  it('honours a public visibility rather than dropping it', async () => {
+    const e = await learn({ statement: 'Shareable memory', type: 'behavioral', visibility: 'public' })
+    const p = await provenance({ id: e.id })
+    expect(p.visibility).toBe('public')
+    expect(p.may_leave_this_machine).toBe(true)
+  })
+
+  it('still defaults to private when nobody says otherwise', async () => {
+    const e = await learn({ statement: 'Ordinary memory', type: 'behavioral' })
+    expect((await provenance({ id: e.id })).may_leave_this_machine).toBe(false)
+  })
+
+  it('tells an agent that private means excluded from packs', () => {
+    // The description has to say what the default costs, or an agent will
+    // never think to ask the user about it.
+    const schema = (tools.find(t => t.name === 'plur_learn') as any).inputSchema
+    expect(schema.properties.visibility.description).toContain('EXCLUDED')
+  })
+})
