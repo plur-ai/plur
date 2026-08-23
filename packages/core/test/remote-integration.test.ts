@@ -116,6 +116,22 @@ describe('RemoteStore against stub server', () => {
     expect('valid_from' in sent).toBe(false)
     expect('valid_until' in sent).toBe(false)
     expect('supersedes' in sent).toBe(false)
+    expect('provenance' in sent).toBe(false)
+  })
+
+  it('#983 append carries provenance when present', async () => {
+    const store = new RemoteStore(baseUrl, TOKEN, 'group:test', { ttlMs: 0 })
+    const prov = { origin: 'user-correction', chain: ['ENG-001'], licence: 'Apache-2.0' }
+    await store.append({
+      id: 'tmp',
+      scope: 'group:test',
+      status: 'active',
+      statement: 'provenance round-trip test',
+      provenance: prov,
+    } as any)
+
+    const sent = server.lastAppendBody!
+    expect(sent.provenance).toEqual(prov)
   })
 
   it('#768 load maps flat server-row validity (valid_from/valid_until) into nested temporal', async () => {
