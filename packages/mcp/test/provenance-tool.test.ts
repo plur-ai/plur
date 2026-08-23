@@ -264,3 +264,53 @@ describe('plur_provenance — corrections from testing', () => {
     expect(result.summary).not.toContain('Nobody chose this licence')
   })
 })
+
+/**
+ * A fuzzy match must not hide how fuzzy it was (#970, round four).
+ *
+ * An agent tester searched a term matching six memories, got one back with no
+ * count, and called it "a confident wrong answer on the exact question the tool
+ * exists for". Listing three of six and saying nothing about the rest lets an
+ * agent answer about a memory nobody asked about.
+ */
+describe('plur_provenance — how many actually matched', () => {
+  let plur: Plur
+  let dir: string
+  let tools: ReturnType<typeof getToolDefinitions>
+
+  const call = async (args: Record<string, unknown>) =>
+    tools.find(t => t.name === 'plur_provenance')!.handler(args, plur) as Promise<any>
+
+  beforeEach(async () => {
+    dir = mkdtempSync(join(tmpdir(), 'plur-prov-count-'))
+    plur = new Plur({ path: dir })
+    tools = getToolDefinitions('full')
+    _resetSessionTelemetry()
+    for (let i = 1; i <= 6; i++) {
+      await plur.learn(`Aurora database note number ${i} about connections`, { type: 'behavioral' })
+    }
+  })
+  afterEach(() => rmSync(dir, { recursive: true, force: true }))
+
+  it('reports the true number of matches, not the number it lists', async () => {
+    const r = await call({ search: 'Aurora' })
+    expect(r.match_count).toBe(6)
+    expect(r.note).toContain('6 engrams matched')
+  })
+
+  it('says how many it is not showing', async () => {
+    const r = await call({ search: 'Aurora' })
+    expect(r.other_matches.length).toBeLessThan(r.match_count - 1)
+    expect(r.note).toMatch(/Showing \d+ of the other \d+/)
+  })
+
+  it('quotes the memory it actually chose, not only the ones it rejected', async () => {
+    const r = await call({ search: 'Aurora' })
+    expect(r.matched).toContain('Aurora')
+  })
+
+  it('says nothing about alternatives when exactly one matched', async () => {
+    const r = await call({ search: 'number 3' })
+    if (r.match_count === 1) expect(r.note).toBeUndefined()
+  })
+})

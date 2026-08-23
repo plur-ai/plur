@@ -53,7 +53,7 @@
       },
       "engram:licenseChosenCount": 1,
       "engram:licenseDefaultedCount": 1,
-      "engram:licenses": [
+      "engram:licensesChosen": [
         "cc-by-4.0"
       ],
       "engram:earliestEngram": "2026-08-12T08:00:00Z",

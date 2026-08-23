@@ -44,13 +44,18 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   // An identifier, or words from the statement. Nobody remembers identifiers.
   let id = /^(ENG|ABS|META)-/.test(query) ? query : undefined
   let alternatives: Array<{ id: string; statement: string }> = []
+  let matchCount = 0
+  let matched: string | undefined
   if (!id) {
-    const matches = await plur.recall(query, { limit: 3 })
+    // Ask for more than we list, so the count reported is the true one.
+    const matches = await plur.recall(query, { limit: 25 })
     if (!matches.length) {
       fail(`Nothing matched "${query}". Try different words, or pass an exact id.`, { query })
     }
     id = matches[0].id
-    alternatives = matches.slice(1).map((m: { id: string; statement: string }) =>
+    matchCount = matches.length
+    matched = matches[0].statement
+    alternatives = matches.slice(1, 4).map((m: { id: string; statement: string }) =>
       ({ id: m.id, statement: m.statement.slice(0, 70) }))
   }
 
@@ -69,6 +74,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
       found: true,
       engram_id: id,
       ...summary.fields,
+      ...(matchCount > 1 ? { match_count: matchCount, matched, other_matches: alternatives } : {}),
       not_recorded: summary.missing,
       complete: summary.complete,
       ...(wantsRecord ? { record } : {}),
@@ -78,10 +84,16 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   }
 
   const lines = [renderProvenanceSummary(summary)]
-  if (alternatives.length) {
+  if (matchCount > 1) {
     lines.push('')
-    lines.push('  Other engrams also matched:')
+    // Name the one that was picked. Quoting only the rejected candidates lets a
+    // reader assume the right memory was found when it was not.
+    lines.push(`  ${matchCount} engrams matched "${query}". This one:`)
+    lines.push(`    ${id}  ${String(matched ?? '').slice(0, 70)}`)
+    lines.push('  Others:')
     for (const alt of alternatives) lines.push(`    ${alt.id}  ${alt.statement}`)
+    const hidden = matchCount - 1 - alternatives.length
+    if (hidden > 0) lines.push(`    … and ${hidden} more not shown`)
   }
   if (saved) {
     lines.push('')

@@ -2267,10 +2267,16 @@ function getAllToolDefinitions(): ToolDefinition[] {
       handler: async (args, plur) => {
         let id = args.id as string | undefined
         let matchedStatement: string | undefined
+        let matchCount = 0
         let alternatives: Array<{ id: string; statement: string }> = []
 
         if (!id && typeof args.search === 'string' && args.search.length) {
-          const matches = await plur.recall(args.search, { limit: 3 })
+          // Ask for more than we list, so the count is honest. Listing three of
+          // six and saying nothing about the other three lets an agent answer
+          // confidently about a memory nobody asked about — the exact failure
+          // this tool exists to prevent.
+          const LIST = 3
+          const matches = await plur.recall(args.search, { limit: 25 })
           if (!matches.length) {
             return {
               found: false,
@@ -2282,8 +2288,9 @@ function getAllToolDefinitions(): ToolDefinition[] {
           // were quoted and the selected one was not, so an agent could get a
           // confident answer about a memory it never meant to ask about.
           matchedStatement = matches[0].statement
+          matchCount = matches.length
           // Say what else matched, so a wrong pick is visible rather than silent.
-          alternatives = matches.slice(1).map((m: { id: string; statement: string }) =>
+          alternatives = matches.slice(1, LIST).map((m: { id: string; statement: string }) =>
             ({ id: m.id, statement: m.statement.slice(0, 80) }))
         }
 
@@ -2329,8 +2336,15 @@ function getAllToolDefinitions(): ToolDefinition[] {
           ...summary.fields,
           not_recorded: summary.missing,
           complete: summary.complete,
-          ...(alternatives.length
-            ? { note: 'Several engrams matched; this is the closest.', other_matches: alternatives }
+          ...(matchCount > 1
+            ? {
+                note: `${matchCount} engrams matched "${String(args.search)}"; this is the closest.`
+                  + (matchCount - 1 > alternatives.length
+                    ? ` Showing ${alternatives.length} of the other ${matchCount - 1}.`
+                    : ''),
+                match_count: matchCount,
+                other_matches: alternatives,
+              }
             : {}),
           ...(saved ? { saved_to: saved } : {}),
         }

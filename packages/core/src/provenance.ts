@@ -609,7 +609,10 @@ export function buildPackProvenanceRecord(
     // to be able to tell how much of a pack somebody actually decided about.
     'engram:licenseChosenCount': licensed,
     'engram:licenseDefaultedCount': defaulted,
-    'engram:licenses': [...licences].sort(),
+    // Chosen licences only. `engram:licenseDefaultedCount` above says how many
+    // engrams carry the default instead, because listing the default here would
+    // read as "somebody licensed this pack that way" when nobody did.
+    'engram:licensesChosen': [...licences].sort(),
   }
   if (dates.length) {
     packNode['engram:earliestEngram'] = dates[0]
