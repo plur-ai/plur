@@ -31,6 +31,14 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   let dualCoding: { example?: string; analogy?: string } | undefined
   // #240: engram IDs this statement intentionally replaces (comma-separated).
   let supersedes: string[] | undefined
+  // Provenance capture (#961, #963, #970). Without these the CLI can write an
+  // engram but can never say who is answerable for it, whether a person stated
+  // it or a model worked it out, or which licence governs reuse — so a complete
+  // provenance record is unreachable from the command line. Same shape of gap
+  // the #8 note above describes: the field existed and the parser never knew.
+  let license: string | undefined
+  let claimClass: 'observed' | 'documented' | 'structural' | 'asserted' | 'inferred' | 'revised' | undefined
+  let assertedBy: string | undefined
 
   // Parse a value as JSON, exiting 1 with a clear message on malformed input
   // (a bad --dual-coding/--knowledge-anchors should fail loudly, not silently
@@ -67,6 +75,18 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     else if (arg === '--supersedes' && i + 1 < args.length) {
       supersedes = args[++i].split(',').map(t => t.trim()).filter(Boolean); i++
     }
+    else if (arg === '--license' && i + 1 < args.length) { license = args[++i]; i++ }
+    else if (arg === '--asserted-by' && i + 1 < args.length) { assertedBy = args[++i]; i++ }
+    else if (arg === '--claim-class' && i + 1 < args.length) {
+      const v = args[++i]
+      const allowed = ['observed', 'documented', 'structural', 'asserted', 'inferred', 'revised']
+      // Reject rather than drop. A silently ignored claim class is worse than
+      // an error: the engram is written looking complete and is not.
+      if (!allowed.includes(v)) {
+        exit(1, `Unknown --claim-class "${v}". One of: ${allowed.join(', ')}.`)
+      }
+      claimClass = v as typeof claimClass; i++
+    }
     else if (!statement) { statement = arg; i++ }
     else { i++ }
   }
@@ -82,7 +102,14 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     exit(1, 'Usage: plur learn <statement> [--scope <scope>] [--type <type>] [--domain <domain>] ' +
       '[--source <s>] [--rationale <r>] [--tags a,b,c] [--visibility private|public|template] ' +
       '[--abstract <id>] [--derived-from <id>] [--knowledge-anchors <json>] [--dual-coding <json>] ' +
-      '[--supersedes id1,id2]')
+      '[--supersedes id1,id2] [--license <spdx-id>] [--claim-class <kind>] [--asserted-by <who>]\n\n' +
+      '  --license      which licence governs reuse of this memory, e.g. cc-by-4.0.\n' +
+      '                 Leave it out and a default applies that nobody chose, and\n' +
+      '                 a provenance record will say so.\n' +
+      '  --claim-class  observed | documented | structural | asserted | inferred | revised.\n' +
+      '                 Whether somebody stated this or a model worked it out.\n' +
+      '  --asserted-by  who is answerable for it. Any address: a local name, a\n' +
+      '                 Decentralized Identifier, or an identifier for a process.')
   }
 
   // Build the context conditionally: when --scope is absent, OMIT the scope key
@@ -97,6 +124,9 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     type,
     domain,
     source,
+    ...(license !== undefined ? { license } : {}),
+    ...(claimClass !== undefined ? { claim_class: claimClass } : {}),
+    ...(assertedBy !== undefined ? { attribution: { asserted_by: assertedBy } } : {}),
     ...(scopeProvided ? { scope } : {}),
     ...(rationale !== undefined ? { rationale } : {}),
     ...(tags !== undefined ? { tags } : {}),

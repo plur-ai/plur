@@ -196,15 +196,80 @@ function bornAt(engram: Engram): string | undefined {
   return stamps.length ? stamps.sort()[0] : undefined
 }
 
-function licencePolicy(name: string | undefined): Node | undefined {
+/**
+ * The licence as a machine-readable policy.
+ *
+ * `withheld` means the engram is private or local: it has not been cleared to
+ * leave this machine. The licence still describes what a recipient could do
+ * with the CONTENT, but nobody may pass the memory on, so the policy has to say
+ * so outright.
+ *
+ * This existed as a sentence in the readable summary and was missing from the
+ * record. A tester read the record — the format sold as the machine-readable
+ * one — and found `odrl:distribute` permitted with no prohibition anywhere,
+ * beside `engram:visibility: private`. Software reading only the policy would
+ * have concluded that distributing a private memory was allowed. The two
+ * outputs must not disagree, and where they do, the machine-readable one is the
+ * dangerous one to leave wrong.
+ */
+function licencePolicy(name: string | undefined, withheld = false): Node | undefined {
   if (!name) return undefined
   const spec = LICENCE_POLICY[name.toLowerCase()]
   if (!spec) return undefined
   const permission: Node = { 'odrl:action': spec.permit.map(a => `odrl:${a}`) }
   if (spec.require.length) permission['odrl:duty'] = spec.require.map(a => ({ 'odrl:action': `odrl:${a}` }))
   const policy: Node = { '@type': 'odrl:Set', 'odrl:uid': spec.uid, 'odrl:permission': [permission] }
-  if (spec.forbid.length) policy['odrl:prohibition'] = spec.forbid.map(a => ({ 'odrl:action': `odrl:${a}` }))
+
+  const forbid = spec.forbid.map(a => ({ 'odrl:action': `odrl:${a}` } as Node))
+  if (withheld) {
+    // Named so a reader who understands nothing else about our vocabulary can
+    // still see WHY it is forbidden, and that it is not the licence's doing.
+    forbid.push({
+      'odrl:action': 'odrl:distribute',
+      'engram:reason': 'notShared',
+      'engram:note':
+        'This memory is private or local. It has not been cleared to leave this '
+        + 'machine. The permissions above describe the licence on the content, '
+        + 'not permission to pass the memory on.',
+    })
+  }
+  if (forbid.length) policy['odrl:prohibition'] = forbid
   return policy
+}
+
+/**
+ * Turn a name for somebody into a valid identifier in the record.
+ *
+ * Two cases, and getting either wrong is a real defect a tester found.
+ *
+ * A value that is ALREADY a web-style address — a Decentralized Identifier
+ * (`did:`), a web address, or a `urn:` — is one in its own right. Prefixing it
+ * produced `engram:agent/did:example:alice`, which is a different, meaningless
+ * identifier and loses the property that made a Decentralized Identifier worth
+ * accepting.
+ *
+ * Anything else becomes a local name under our own prefix, with characters an
+ * identifier may not contain escaped. `engram:agent/Platform Lead` carries a raw
+ * space, which is not a legal identifier at all; a strict reader is entitled to
+ * reject the whole document over it.
+ */
+function agentId(name: string): string {
+  return /^(did:|https?:|urn:|ipns:|ipfs:)/i.test(name) ? name : `engram:agent/${escapeIri(name)}`
+}
+
+/**
+ * Escape only what an identifier genuinely may not contain.
+ *
+ * Percent-encoding everything is wrong here. A colon is perfectly legal after
+ * the first segment, and `local:maintainer` is the ordinary way people name themselves
+ * in this system — turning it into `local%3Acrt` changes the identifier and
+ * makes it unreadable for no gain. What actually breaks a parser is a space,
+ * a control character, and the delimiters below.
+ */
+function escapeIri(value: string): string {
+  // eslint-disable-next-line no-control-regex
+  return value.replace(/[\u0000-\u0020<>"{}|\\^`\u007f]/g, c =>
+    '%' + c.charCodeAt(0).toString(16).toUpperCase().padStart(2, '0'))
 }
 
 /** Build the agent nodes, and the relationships that point at them. */
@@ -216,7 +281,7 @@ function agentNodes(engram: Engram): { nodes: Node[]; attributedTo?: string; ass
   let associatedWith: string | undefined
 
   if (a.asserted_by) {
-    attributedTo = `engram:agent/${a.asserted_by}`
+    attributedTo = agentId(a.asserted_by)
     const node: Node = { '@id': attributedTo, '@type': 'prov:Agent' }
     // Say plainly that nobody was identified, rather than leaving it ambiguous.
     if (a.asserted_by === 'unidentified') {
@@ -228,11 +293,11 @@ function agentNodes(engram: Engram): { nodes: Node[]; attributedTo?: string; ass
 
   const software = a.runtime ?? a.tool
   if (software) {
-    associatedWith = `engram:agent/software/${software.name}${software.version ? `@${software.version}` : ''}`
+    associatedWith = `engram:agent/software/${escapeIri(software.name)}${software.version ? `@${escapeIri(software.version)}` : ''}`
     const node: Node = { '@id': associatedWith, '@type': ['prov:SoftwareAgent', 'pa:AIAgent'], 'engram:runtimeName': software.name }
     if (software.version) node['engram:runtimeVersion'] = software.version
     const behalf = a.on_behalf_of ?? a.asserted_by
-    if (behalf) node['prov:actedOnBehalfOf'] = { '@id': `engram:agent/${behalf}` }
+    if (behalf) node['prov:actedOnBehalfOf'] = { '@id': agentId(behalf) }
     nodes.push(node)
   }
 
@@ -311,9 +376,14 @@ export function buildProvenanceRecord(
   // unchosen default as a recorded decision.
   const chosenLicence = (engram as any).provenance?.license as string | undefined
   const licence = chosenLicence ?? 'cc-by-sa-4.0'
-  const policy = licencePolicy(licence)
+  // Private or local means it has not been cleared to leave this machine, and
+  // the policy must forbid passing it on regardless of what the licence allows.
+  const withheld = (engram as any).visibility === 'private' || (engram as any).scope === 'local'
+  const policy = licencePolicy(licence, withheld)
   thing['engram:license'] = licence
   if (!chosenLicence) thing['engram:licenseIsDefault'] = true
+  // One field a machine can read without understanding the policy at all.
+  thing['engram:maySharePlainly'] = !withheld
   if (policy) thing['odrl:hasPolicy'] = policy
 
   if (agents.attributedTo) thing['prov:wasAttributedTo'] = { '@id': agents.attributedTo }
@@ -485,7 +555,7 @@ export function buildPackProvenanceRecord(
     'prov:generated': { '@id': packId },
   }
   if (pack.creator) {
-    const creatorId = `engram:agent/${pack.creator}`
+    const creatorId = agentId(pack.creator)
     assembly['prov:wasAssociatedWith'] = { '@id': creatorId }
     packNode['prov:wasAttributedTo'] = { '@id': creatorId }
     graph.push({ '@id': creatorId, '@type': 'prov:Agent' })

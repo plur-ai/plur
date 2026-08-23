@@ -139,3 +139,46 @@ describe('previewing what a pack says about its origins', () => {
     expect(preview.provenance.notes.join(' ')).toContain('no record of their own')
   })
 })
+
+/**
+ * A pack arrives from a stranger. Everything in it is hostile until shown
+ * otherwise, including the file names.
+ */
+describe('a pack built to mislead', () => {
+  let home: string
+  let out: string
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), 'plur-packprov-evil-home-'))
+    out = mkdtempSync(join(tmpdir(), 'plur-packprov-evil-out-'))
+  })
+  afterEach(() => {
+    for (const d of [home, out]) rmSync(d, { recursive: true, force: true })
+  })
+
+  it('cannot be made to read a file outside the pack', async () => {
+    // The identifier comes from a file the sender wrote. Joining it onto a path
+    // unchecked would turn a preview into an arbitrary file read.
+    const { readPackProvenance } = await import('../src/packs.js')
+    const outside = join(tmpdir(), `plur-outside-${process.pid}.jsonld`)
+    writeFileSync(outside, JSON.stringify({ '@graph': [{ '@id': 'engram:SECRET' }] }))
+    mkdirSync(join(out, 'provenance'), { recursive: true })
+
+    const hostile = [{ id: `../../${outside.replace(/^\//, '')}`, statement: 'x' }] as any
+    const view = readPackProvenance(out, hostile)
+
+    expect(view.record_count).toBe(0)
+    expect(JSON.stringify(view)).not.toContain('SECRET')
+    rmSync(outside, { force: true })
+  })
+
+  it('does not describe records it does not have', async () => {
+    // A directory with nothing readable in it must not be reported as
+    // "records for individual engrams but none for the pack".
+    const { readPackProvenance } = await import('../src/packs.js')
+    mkdirSync(join(out, 'provenance'), { recursive: true })
+    const view = readPackProvenance(out, [] as any)
+    expect(view.notes.join(' ')).toContain('no readable records')
+    expect(view.notes.join(' ')).not.toContain('records for individual engrams')
+  })
+})

@@ -130,7 +130,12 @@ describe('licences — a summary, never a guess', () => {
   })
 
   it('expresses a prohibition when the licence has one', () => {
-    const record = buildProvenanceRecord(engramOf({ provenance: { origin: 'x', license: 'cc-by-nc-4.0' } }))
+    // Public, so the only prohibition is the licence's own. A private engram
+    // also picks up a sharing prohibition — covered in the round-two suite.
+    const record = buildProvenanceRecord(engramOf({
+      visibility: 'public',
+      provenance: { origin: 'x', license: 'cc-by-nc-4.0' },
+    }))
     const policy = subject(record)['odrl:hasPolicy']
     expect(policy['odrl:prohibition']).toEqual([{ 'odrl:action': 'odrl:commercialize' }])
   })

@@ -1050,6 +1050,11 @@ function getAllToolDefinitions(): ToolDefinition[] {
             description:
               'What KIND of claim this is (#963), and the most useful single field for anyone later deciding how much to trust it. Use "asserted" when a PERSON stated it outright, "inferred" when YOU worked it out, "documented" when you took it from prose someone wrote, "observed" for a record of something that happened, "structural" when read off the shape of an artifact, "revised" for a rewrite. Omit only when it genuinely cannot be determined.',
           },
+          license: {
+            type: 'string',
+            description:
+              'Which licence governs reuse of this memory, as an SPDX-style identifier such as "cc-by-4.0" or "apache-2.0". Set it only when the user has actually said which licence applies — do NOT guess one. Left unset, a default applies that nobody chose, and a provenance record reports it as unchosen rather than presenting it as a decision.',
+          },
         },
         required: ['statement'],
       },
@@ -1080,6 +1085,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
           // guess a claim class the caller did not state.
           attribution: args.attribution as LearnContext['attribution'],
           claim_class: args.claim_class as LearnContext['claim_class'],
+          license: args.license as LearnContext['license'],
           // #243: resolve which session's default scope governs this write —
           // explicit session_id first, else the lone open session. Never
           // persisted on the engram (LearnContext.session selects a scope, it
@@ -2260,6 +2266,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
       },
       handler: async (args, plur) => {
         let id = args.id as string | undefined
+        let matchedStatement: string | undefined
         let alternatives: Array<{ id: string; statement: string }> = []
 
         if (!id && typeof args.search === 'string' && args.search.length) {
@@ -2271,6 +2278,10 @@ function getAllToolDefinitions(): ToolDefinition[] {
             }
           }
           id = matches[0].id
+          // What the CHOSEN engram says. Without this the rejected candidates
+          // were quoted and the selected one was not, so an agent could get a
+          // confident answer about a memory it never meant to ask about.
+          matchedStatement = matches[0].statement
           // Say what else matched, so a wrong pick is visible rather than silent.
           alternatives = matches.slice(1).map((m: { id: string; statement: string }) =>
             ({ id: m.id, statement: m.statement.slice(0, 80) }))
@@ -2310,8 +2321,12 @@ function getAllToolDefinitions(): ToolDefinition[] {
         return {
           found: true,
           engram_id: id,
+          ...(matchedStatement ? { matched: matchedStatement.slice(0, 200) } : {}),
           summary: renderProvenanceSummary(summary),
-          facts: summary.lines,
+          // Structured values, NOT a line-split of the prose above. `facts`
+          // used to be exactly that: the same text a second time, which an
+          // agent pays for twice and cannot parse either copy of.
+          ...summary.fields,
           not_recorded: summary.missing,
           complete: summary.complete,
           ...(alternatives.length

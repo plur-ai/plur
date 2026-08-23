@@ -324,13 +324,19 @@ export function readPackProvenance(packDir: string, engrams: Engram[]): PackProv
   }
   view.present = true
 
-  const readJson = (file: string): any | undefined => {
-    try { return JSON.parse(fs.readFileSync(path.join(dir, file), 'utf8')) } catch { return undefined }
+  // The identifier comes from a file a stranger wrote. The schema constrains it
+  // to ^(ENG|ABS|META)-[A-Za-z0-9-]+$ and quarantines anything else before it
+  // gets here, so an id cannot climb out of this directory today. Sanitise
+  // anyway: this builds a filesystem path from untrusted input, and if that
+  // validation is ever loosened or another caller skips it, the cost of being
+  // wrong is an arbitrary file read.
+  const readJson = (name: string): any | undefined => {
+    const safe = name.replace(/[^A-Za-z0-9._-]/g, '_')
+    try { return JSON.parse(fs.readFileSync(path.join(dir, safe), 'utf8')) } catch { return undefined }
   }
 
   const packRecord = readJson('pack.jsonld')
   if (packRecord) view.pack_record = packRecord
-  else view.notes.push('There are records for individual engrams but none for the pack as a whole.')
 
   const licences = new Map<string, { count: number; chosen: boolean }>()
   const parties = new Set<string>()
@@ -360,6 +366,14 @@ export function readPackProvenance(packDir: string, engrams: Engram[]): PackProv
   }
 
   view.engrams_without_record = engrams.length - view.record_count
+  // Said here, not above, because it depends on how many per-engram records
+  // turned up. Claiming "records for individual engrams but none for the pack"
+  // when there are no records of any kind is simply false.
+  if (!packRecord) {
+    view.notes.push(view.record_count > 0
+      ? 'There are records for individual engrams but none for the pack as a whole.'
+      : 'The pack has a provenance directory but no readable records in it.')
+  }
   view.asserted_by = [...parties].sort()
   view.licences = [...licences.entries()]
     .map(([name, v]) => ({ name, count: v.count, chosen: v.chosen }))
@@ -1174,11 +1188,47 @@ export interface ExportResult {
   integrity: string
 }
 
+/**
+ * Reject a pack name that would escape the directory it is meant to go in.
+ *
+ * The name becomes a directory under the output path, so `../escape` walks out
+ * of it. A tester ran `plur packs export "../plur-escape-test"` and wrote a
+ * full pack straight into their home directory.
+ *
+ * The name also becomes part of the identifiers inside the provenance record
+ * (`engram:pack/<name>@<version>`), where a slash or a space is not legal.
+ *
+ * Rejecting is right rather than quietly rewriting: a pack that lands somewhere
+ * other than where its name said is worse than one that refuses to be built.
+ */
+function assertSafePackName(name: string): void {
+  if (!name || !name.trim()) {
+    throw new Error('A pack needs a name.')
+  }
+  if (name !== name.trim()) {
+    throw new Error(`Pack name "${name}" starts or ends with a space.`)
+  }
+  if (/[/\\]/.test(name) || name === '.' || name === '..' || name.startsWith('.')) {
+    throw new Error(
+      `Pack name "${name}" is not usable as a directory name. `
+      + 'It must not contain "/" or "\\", and must not start with ".". '
+      + 'The name becomes a folder under the output directory, so a name like '
+      + '"../thing" would write outside it.',
+    )
+  }
+  // eslint-disable-next-line no-control-regex
+  if (/[\x00-\x1f]/.test(name)) {
+    throw new Error(`Pack name "${name}" contains control characters.`)
+  }
+}
+
 export function exportPack(
   engrams: Engram[],
   outputDir: string,
   manifest: ExportOptions,
 ): ExportResult {
+  assertSafePackName(manifest.name)
+
   // Privacy scan — filter out problematic engrams
   const allPrivacy = scanPrivacy(engrams)
 
