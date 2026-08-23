@@ -44,11 +44,19 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   if (subcommand === 'preview' || subcommand === 'inspect') {
     const source = args[1]
     if (!source) {
-      exit(1, 'Usage: plur packs preview <source>')
+      exit(1, 'Usage: plur packs preview <source> [--provenance]\n\n  --provenance  print the pack\'s full origin record, rather than a summary')
     }
     const preview = await plur.previewPack(source)
+    // The full document is the deepest level and the largest by far. Give the
+    // summary by default and the document only when somebody asks, so a routine
+    // preview stays readable.
+    const wantsRecord = args.includes('--provenance')
     if (shouldOutputJson(flags)) {
-      outputJson(preview)
+      outputJson(wantsRecord
+        ? preview
+        : { ...preview, provenance: { ...preview.provenance, pack_record: undefined } })
+    } else if (wantsRecord) {
+      outputText(JSON.stringify(preview.provenance.pack_record ?? { error: 'This pack carries no pack-level record.' }, null, 2))
     } else {
       outputText(`Pack: ${preview.manifest.name} v${preview.manifest.version}`)
       if (preview.manifest.creator) outputText(`Creator: ${preview.manifest.creator}`)
@@ -75,6 +83,30 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
           outputText(`  ⚠ ${w}`)
         }
       }
+
+      // Where the contents came from, shown BEFORE anything is installed.
+      // Deliberately no tick, no badge, no "verified" anywhere: nothing in a
+      // pack is signed, so all of this is what the pack says about itself.
+      const prov = preview.provenance
+      outputText('')
+      if (!prov.present) {
+        outputText('Origin: this pack does not say where its contents came from.')
+      } else {
+        outputText('Origin (claimed by the pack, not verified):')
+        outputText(`  Records        ${prov.record_count} of ${preview.engram_count} engram(s)`)
+        if (prov.asserted_by.length) {
+          outputText(`  Asserted by    ${prov.asserted_by.join(', ')}`)
+        } else {
+          outputText('  Asserted by    nobody named')
+        }
+        for (const l of prov.licences) {
+          const chose = l.chosen ? '' : ' (nobody chose this; it is the default)'
+          outputText(`  Licence        ${l.name} — ${l.count} engram(s)${chose}`)
+        }
+        for (const n of prov.notes) outputText(`  • ${n}`)
+        outputText('')
+        outputText(`  ${prov.verification_note}`)
+      }
     }
     return
   }
@@ -92,8 +124,10 @@ Options:
   --description <desc> Pack description
   --creator <name>     Creator name
   --output <dir>       Output directory (default: ~/plur-packs/<name>)
-  --provenance         Include a record of where each engram came from, and one
-                       for the pack as a whole. Useful when sharing.`)
+  --no-provenance      Leave out the record of where each engram came from.
+                       Provenance is included by default: a pack is how engrams
+                       leave your machine, which is where their origin starts
+                       to matter to somebody else.`)
     }
 
     let domain: string | undefined
@@ -103,7 +137,7 @@ Options:
     let outputDir: string | undefined
     let description: string | undefined
     let creator: string | undefined
-    let provenance = false
+    let provenance = true
     let i = 2
     while (i < args.length) {
       if (args[i] === '--domain' && i + 1 < args.length) { domain = args[++i]; i++ }
@@ -113,6 +147,8 @@ Options:
       else if (args[i] === '--output' && i + 1 < args.length) { outputDir = args[++i]; i++ }
       else if (args[i] === '--description' && i + 1 < args.length) { description = args[++i]; i++ }
       else if (args[i] === '--creator' && i + 1 < args.length) { creator = args[++i]; i++ }
+      else if (args[i] === '--no-provenance') { provenance = false; i++ }
+      // Accepted so an existing script that asks for it explicitly still works.
       else if (args[i] === '--provenance') { provenance = true; i++ }
       else { i++ }
     }

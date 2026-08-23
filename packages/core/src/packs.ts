@@ -258,6 +258,127 @@ export interface PreviewResult {
   engrams: Array<{ id: string; type: string; statement: string; domain?: string; tags: string[] }>
   security: PrivacyScanResult
   warnings: string[]
+  /** What the pack says about where its engrams came from (#970 case 3). */
+  provenance: PackProvenanceView
+}
+
+/**
+ * What a pack claims about the origin of its contents, read BEFORE installing.
+ *
+ * Modelled on the way media provenance is shown to a reader: an indicator that
+ * something is there, then a readable summary, then the full document for
+ * anyone who wants it. Each level is optional and each is a step deeper.
+ *
+ * One rule governs the whole thing. **These are claims, not proof.** Nothing in
+ * a pack is signed today — signing is reserved in the standard and unbuilt — so
+ * anybody can write anything here. A reader is shown what the pack asserts and
+ * is told, in those words, that nobody has checked it. A reassuring tick on an
+ * unverified record is worse than showing nothing at all, because it converts a
+ * claim into a belief without anybody deciding to.
+ */
+export interface PackProvenanceView {
+  /** Does the pack carry provenance at all? */
+  present: boolean
+  /** Records found, and how many engrams they cover. */
+  record_count: number
+  /** Engrams in the pack with no record of their own. */
+  engrams_without_record: number
+  /** Has any of this been cryptographically verified? Always false today. */
+  verified: boolean
+  /** Why `verified` is false, in words a reader can act on. */
+  verification_note: string
+  /** Distinct licences the pack's engrams carry, most common first. */
+  licences: Array<{ name: string; count: number; chosen: boolean }>
+  /** Engrams naming somebody answerable, out of those with a record. */
+  attributed_count: number
+  /** Distinct parties named as having asserted something. */
+  asserted_by: string[]
+  /** The pack-level record, if one is present. */
+  pack_record?: unknown
+  /** Anything a reader should weigh before installing. */
+  notes: string[]
+}
+
+/** Read the provenance a pack ships, without judging whether to believe it. */
+export function readPackProvenance(packDir: string, engrams: Engram[]): PackProvenanceView {
+  const view: PackProvenanceView = {
+    present: false,
+    record_count: 0,
+    engrams_without_record: engrams.length,
+    verified: false,
+    verification_note:
+      'Nothing here has been verified. Packs are not signed yet, so every '
+      + 'statement below is what the pack says about itself. Treat it as a '
+      + 'claim by whoever built the pack, and weigh it the way you weigh who '
+      + 'gave you the pack.',
+    licences: [],
+    attributed_count: 0,
+    asserted_by: [],
+    notes: [],
+  }
+
+  const dir = path.join(packDir, 'provenance')
+  if (!fs.existsSync(dir)) {
+    view.notes.push('This pack carries no provenance. That is not a fault — most packs do not — but nothing here says where its contents came from.')
+    return view
+  }
+  view.present = true
+
+  const readJson = (file: string): any | undefined => {
+    try { return JSON.parse(fs.readFileSync(path.join(dir, file), 'utf8')) } catch { return undefined }
+  }
+
+  const packRecord = readJson('pack.jsonld')
+  if (packRecord) view.pack_record = packRecord
+  else view.notes.push('There are records for individual engrams but none for the pack as a whole.')
+
+  const licences = new Map<string, { count: number; chosen: boolean }>()
+  const parties = new Set<string>()
+
+  for (const engram of engrams) {
+    const record = readJson(`${engram.id}.jsonld`)
+    if (!record) continue
+    view.record_count++
+
+    const subject = (record['@graph'] ?? []).find((n: any) => n['@id'] === `engram:${engram.id}`)
+    if (!subject) continue
+
+    const licence = subject['engram:license']
+    if (typeof licence === 'string') {
+      const chosen = subject['engram:licenseIsDefault'] !== true
+      const seen = licences.get(licence)
+      // One engram that CHOSE a licence is enough to stop calling it defaulted.
+      if (seen) { seen.count++; seen.chosen = seen.chosen || chosen }
+      else licences.set(licence, { count: 1, chosen })
+    }
+
+    const who = subject['prov:wasAttributedTo']?.['@id']
+    if (typeof who === 'string') {
+      const name = who.replace(/^engram:agent\//, '')
+      if (name !== 'unidentified') { view.attributed_count++; parties.add(name) }
+    }
+  }
+
+  view.engrams_without_record = engrams.length - view.record_count
+  view.asserted_by = [...parties].sort()
+  view.licences = [...licences.entries()]
+    .map(([name, v]) => ({ name, count: v.count, chosen: v.chosen }))
+    .sort((a, b) => b.count - a.count)
+
+  if (view.engrams_without_record > 0) {
+    view.notes.push(`${view.engrams_without_record} of ${engrams.length} engram(s) have no record of their own.`)
+  }
+  if (view.record_count > 0 && view.attributed_count === 0) {
+    view.notes.push('No engram names anybody answerable for it. The records say where things came from but not who put them there.')
+  }
+  const defaulted = view.licences.filter(l => !l.chosen)
+  if (defaulted.length) {
+    view.notes.push(
+      `Licence "${defaulted[0].name}" was never chosen by the pack's author — it is the value engrams get when nobody sets one. `
+      + 'Do not read it as the author granting you those terms.',
+    )
+  }
+  return view
 }
 
 function _previewPackDir(source: string): PreviewResult {
@@ -265,6 +386,9 @@ function _previewPackDir(source: string): PreviewResult {
 
   const pack = loadPack(source)
   const security = scanPrivacy(pack.engrams)
+  // Read what the pack claims about its own origins, BEFORE anything installs.
+  // The gate belongs at the boundary; afterwards it changes nothing.
+  const provenance = readPackProvenance(source, pack.engrams)
 
   const warnings: string[] = []
   // Flag pinned engrams — they bypass the relevance gate (always injected).
@@ -293,6 +417,7 @@ function _previewPackDir(source: string): PreviewResult {
     })),
     security,
     warnings,
+    provenance,
   }
 }
 
@@ -800,11 +925,17 @@ export function listPacks(packsDir: string): PackInfo[] {
 
 export interface ExportOptions {
   /**
-   * Write provenance records alongside the pack (#972).
+   * Write provenance records alongside the pack (#972). **On by default.**
    *
-   * A pack is how engrams leave one machine and reach another, so this is where
-   * provenance starts to matter. Off by default, in step with the config
-   * setting, which is `never` until someone turns it on.
+   * A pack is how engrams leave one machine and reach another, so this is the
+   * trust boundary — the one place a provenance record defends against anyone.
+   * It follows the practice every software supply chain settled on: a bill of
+   * materials is produced as part of the build and travels inside the artifact,
+   * rather than being something a publisher remembers to ask for.
+   *
+   * This deliberately does NOT follow the `provenance.generate` config setting,
+   * which governs per-engram records inside your own store and defaults to
+   * `never`. Those are two different questions. Pass `false` to opt out.
    */
   provenance?: boolean
   name: string
@@ -1151,7 +1282,7 @@ export function exportPack(
   // Only engrams that survived the privacy scan appear. Provenance must never
   // become a way to ship something the content path already refused.
   const provenanceFiles: string[] = []
-  if (manifest.provenance) {
+  if (manifest.provenance !== false) {
     const provDir = path.join(outputDir, 'provenance')
     fs.mkdirSync(provDir, { recursive: true })
 
@@ -1183,7 +1314,7 @@ export function exportPack(
     privacy: allPrivacy,
     match_terms: matchTerms,
     integrity: `sha256:${integrity}`,
-    ...(manifest.provenance ? { provenance_files: provenanceFiles } : {}),
+    ...(manifest.provenance !== false ? { provenance_files: provenanceFiles } : {}),
   }
 }
 

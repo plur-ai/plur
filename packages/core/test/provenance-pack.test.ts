@@ -161,8 +161,18 @@ describe('exporting a pack with provenance (#972)', () => {
 
   const manifest = { name: 'test-pack', version: '1.0.0', creator: 'local:maintainer', description: 'A pack' }
 
-  it('writes nothing extra unless asked', () => {
+  it('writes provenance without being asked', () => {
+    // Flipped deliberately (#970 use case 2). A pack is how engrams leave one
+    // machine for another, which is the one place a record defends against
+    // anybody. Every software supply chain settled on the same answer: the bill
+    // of materials is part of the build, not something a publisher remembers.
     const result = exportPack([engramOf('ENG-2026-08-21-001')], dir, manifest)
+    expect(result.provenance_files).toHaveLength(2)
+    expect(existsSync(join(dir, 'provenance'))).toBe(true)
+  })
+
+  it('can still be turned off deliberately', () => {
+    const result = exportPack([engramOf('ENG-2026-08-21-001')], dir, { ...manifest, provenance: false })
     expect(result.provenance_files).toBeUndefined()
     expect(existsSync(join(dir, 'provenance'))).toBe(false)
   })
