@@ -42,6 +42,18 @@ actually want the JSON-LD, and `"save": true` to store it.
 The tool lives behind `plur_admin`, like most of the surface — the lean profile
 exposes only the eleven tools used every session, to keep the schema small.
 
+To record provenance in the first place, pass it when you learn:
+
+```
+plur learn "Migrations run before deploys" \
+  --asserted-by local:maintainer \
+  --claim-class asserted \
+  --source https://example.org/runbook \
+  --license cc-by-4.0
+```
+
+Leave any of them out and the record says so, rather than guessing.
+
 From a terminal:
 
 ```bash
@@ -237,23 +249,96 @@ the licence line, because that is the line that reads like permission.
 policy carries the canonical licence address so a reader wanting certainty can
 follow it.
 
-A licence we do not recognise produces **no policy at all** — not a permissive
-default. The record carries the licence name, and the reader knows to go and
-look.
+A licence we do not recognise produces a policy that **grants nothing**, and
+says so:
+
+```json
+"odrl:permission": [],
+"engram:licenseRecognised": false,
+"engram:note": "… No permission is expressed here. … An empty permission list
+                means nothing was determined, NOT that everything is allowed."
+```
+
+Earlier this produced no policy at all, on the reasoning that a guess is worse
+than silence. It is — but silence is not what a reader receives. Software
+checking policies saw a restriction on a memory licensed under one of the seven
+names we know, and none whatsoever on one marked `proprietary`. The proprietary
+one looked the *less* restricted of the two, because an absent policy was read
+as permission.
+
+Nothing is guessed either way. The difference is that the reader is now told
+there is nothing here to rely on, instead of having to infer it from a missing
+value.
+
+### Answering "may I?" without reading prose
+
+A summary carries three values a machine can act on:
+
+| Field | Meaning |
+|---|---|
+| `may_reuse_commercially` | may the content be used in something sold |
+| `may_redistribute` | may the content be passed on |
+| `licence_recognised` | whether either answer above is worth anything |
+
+Each is `null` when undetermined — an unrecognised licence — and `null` must
+never be treated as yes.
+
+A fourth value answers a **different** question, and the difference matters:
+
+| Field | Meaning |
+|---|---|
+| `may_leave_this_machine` | may this memory be shared at all |
+
+That one comes from the memory's scope and visibility, not from its licence. A
+private memory under a permissive licence may not be shared, and a public
+memory under a non-commercial licence may be shared but not sold. Keep the two
+apart: the licence governs what someone may do with content they already hold.
 
 ---
 
 ## Packs
 
 A pack is how engrams leave your machine, so this is where provenance starts to
-matter. Export one with records included:
+matter. **Every exported pack carries it, without being asked.**
 
-```ts
-exportPack(engrams, outputDir, { name: 'my-pack', version: '1.0.0', provenance: true })
+```
+plur packs export my-pack
 ```
 
 You get a `provenance/` directory inside the pack: one file per engram, plus one
-for the pack itself.
+for the pack itself. Pass `--no-provenance` to leave it out.
+
+This is on by default while per-engram records inside your own store are off.
+The two settings answer different questions. Inside your own store a record
+mostly repeats the history log. The moment a pack leaves, it is the only thing
+that travels with the memories.
+
+### Reading a pack before you install it
+
+```
+plur packs preview <pack>
+```
+
+That tells you how many records the pack carries, who it names as answerable,
+which licences appear, and whether each licence was chosen or defaulted. Add
+`--provenance` for the full document.
+
+It also reports whether the pack still matches the integrity value it shipped:
+
+- **matches** — the pack arrived intact.
+- **does not match** — it changed after it was built. Installing is refused.
+- **no value shipped** — nothing was checked. This is not the same as a pass,
+  and it does not say so.
+
+**Nothing in a pack is signed.** So everything a pack says about its own origins
+is a claim by whoever built it. The preview carries no tick and no badge, and
+says this in as many words. A matching hash means the pack arrived intact — not
+that its contents are trustworthy, and not that the sender is who they say.
+Someone who edited the contents could edit the value beside them.
+
+Exporting also scans the pack for credentials and instruction-override text.
+That covers the engrams **and** the pack's own `SKILL.md`, which is a file the
+recipient's assistant loads.
 
 The pack record answers a question no single engram can: **is this pack worth
 anything?** It says who assembled it and when, and from the engrams inside it,
