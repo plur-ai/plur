@@ -88,7 +88,7 @@ describe('identifiers in the record have to be legal', () => {
     const record = buildProvenanceRecord(engramOf({ attribution: { asserted_by: 'Platform Lead' } }))
     const id = subjectOf(record)['prov:wasAttributedTo']['@id']
     expect(id).not.toContain(' ')
-    expect(id).toBe('engram:agent/Crt%20Ahlin')
+    expect(id).toBe('engram:agent/Platform%20Lead')
     // A colon is legal and stays readable: local:maintainer must NOT become local%3Acrt.
     const plain = buildProvenanceRecord(engramOf({ attribution: { asserted_by: 'local:maintainer' } }))
     expect(subjectOf(plain)['prov:wasAttributedTo']['@id']).toBe('engram:agent/local:maintainer')
