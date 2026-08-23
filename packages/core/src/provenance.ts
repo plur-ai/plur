@@ -786,7 +786,8 @@ export interface ProvenanceSummary {
     /** Did somebody pick this licence, or is it the schema default? */
     licence_chosen: boolean
     asserted_by?: string
-    identity_known?: boolean
+    /** An identity was supplied. NOT that anybody verified it. */
+    identity_stated?: boolean
     written_by?: string
     revision_of?: string[]
     superseded_by?: string[]
@@ -897,7 +898,10 @@ export function summariseProvenance(record: Node): ProvenanceSummary {
     // identifier; what a human reads gets the name back.
     const plain = bidiIsolate(readableAgent(name.replace(/^agent\//, '')))
     fields.asserted_by = plain
-    fields.identity_known = plain !== 'unidentified'
+    // Somebody WROTE a name here. Nothing checked it, and nothing can:
+    // packs are not signed. It was called `identity_known`, which a tester read
+    // as a verification claim — it reported true for a name they had invented.
+    fields.identity_stated = plain !== 'unidentified'
     lines.push(plain === 'unidentified'
       ? 'Asserted by   nobody identified — no identity was configured at the time'
       : `Asserted by   ${plain}`)
@@ -1075,7 +1079,10 @@ export function summariseProvenance(record: Node): ProvenanceSummary {
       // First line after the heading. A reader deciding whether to rely on
       // this needs it before anything else, not below the licence.
       lines.splice(0, 0, `SUPERSEDED    replaced by ${ids.join(', ')} — prefer that one`)
-      missing.push(`this memory was replaced by ${ids.join(', ')}`)
+      // NOT added to `missing`. It is recorded — that is the whole point — and
+      // listing it under "not recorded" put a flat contradiction in one object.
+      // `complete` is driven false below instead: complete means "nothing more
+      // to know", and a memory that has been replaced always has more.
     }
   }
 
@@ -1096,7 +1103,7 @@ export function summariseProvenance(record: Node): ProvenanceSummary {
     missing,
     // Never "nothing is missing" about a memory that has been withdrawn.
     // Whatever else is recorded, that is the thing a reader has to know.
-    complete: missing.length === 0 && !fields.retired,
+    complete: missing.length === 0 && !fields.retired && !fields.superseded_by,
   }
 }
 
