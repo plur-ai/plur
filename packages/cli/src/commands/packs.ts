@@ -260,8 +260,22 @@ Options:
       // Install confirmation → suppressed by --quiet; security warnings and
       // conflicts below stay loud (#730).
       outputInfo(`Installed pack "${result.name}": ${result.installed} engrams`, flags)
-      if (result.registry) {
-        outputInfo(`  Integrity: ${result.registry.integrity}`, flags)
+      // Say what was CHECKED, with a verb. A bare "Integrity: sha256:…" was
+      // read by a tester as certification of the pack, and the caveat
+      // explaining it is nothing of the sort existed only in the piped JSON —
+      // so the people most likely to be misled were the only ones not shown it.
+      const check = result.integrity_check
+      if (check) {
+        const verdict = check.status === 'ok'
+          ? 'matches the value the pack shipped'
+          : check.status === 'modified'
+            ? 'DOES NOT MATCH the value the pack shipped'
+            : 'not checked — the pack shipped no value'
+        outputInfo(`  Integrity: ${verdict}`, flags)
+        outputInfo(`             ${check.computed}`, flags)
+        outputInfo(`  ${check.note}`, flags)
+      } else if (result.registry) {
+        outputInfo(`  Integrity (computed): ${result.registry.integrity}`, flags)
       }
 
       if (!result.security.clean) {

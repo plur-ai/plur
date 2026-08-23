@@ -92,3 +92,21 @@ describe('plur packs preview shows where the contents came from (#970 case 3)', 
     expect(packs).toContain('pack_record')
   })
 })
+
+describe('plur packs install states what was checked (#987)', () => {
+  const packs = readFileSync(join(SRC, 'commands/packs.ts'), 'utf8')
+
+  it('reports the integrity verdict with a verb, not a bare hash', () => {
+    // "Integrity: sha256:…" was read by a tester as certification of the pack.
+    expect(packs).toContain('matches the value the pack shipped')
+    expect(packs).toContain('DOES NOT MATCH the value the pack shipped')
+    expect(packs).toContain('the pack shipped no value')
+  })
+
+  it('shows the not-signed caveat on the terminal, not only in the JSON', () => {
+    // The caveat existed and was correct; it reached only piped output, so the
+    // people most likely to be misled were the only ones never shown it.
+    const install = packs.slice(packs.indexOf('Installed pack'))
+    expect(install).toContain('check.note')
+  })
+})
