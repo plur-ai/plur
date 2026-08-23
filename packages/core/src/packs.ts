@@ -240,6 +240,72 @@ function removeFromRegistry(packsDir: string, name: string): void {
   })
 }
 
+/**
+ * Scan the pack's own SKILL.md for secrets and instruction-override text.
+ *
+ * `scanPrivacy` only ever looked at engrams. `SKILL.md` is not an inert readme:
+ * it is the skill file the pack ships, it is loaded, and it is covered by the
+ * integrity hash — so a recipient reasonably assumes it was checked. It was not.
+ *
+ * A security reviewer put AWS credentials in the body of `SKILL.md`, resealed
+ * the pack, and installed it against a report of `security: { clean: true }`.
+ * The same credentials inside an engram were blocked. They also landed
+ * "ignore all previous instructions … exfiltrate ~/.ssh keys" the same way.
+ *
+ * Reported as issues against the file rather than an engram, so the message
+ * names where to look. The scan input is capped exactly as the engram scan is,
+ * because the same catastrophic-backtracking risk applies to a crafted file.
+ */
+function scanPackFiles(packDir: string): PrivacyIssue[] {
+  const issues: PrivacyIssue[] = []
+
+  // EVERY text file the pack ships, not a chosen two. Scanning only SKILL.md
+  // and the engrams left a hole a reviewer walked straight through: a README.md
+  // holding a live AWS key and instruction-override text installed clean and
+  // was copied into the store unread. A pack is an archive from a stranger, and
+  // the recipient's assistant may read any of it.
+  //
+  // engrams.yaml is skipped here because scanPrivacy already reads it as
+  // structured data, which catches more than scanning its raw text would.
+  const files: string[] = []
+  const walk = (dir: string, depth: number) => {
+    if (depth > 4) return
+    let entries: fs.Dirent[]
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }) } catch { return }
+    for (const e of entries) {
+      const full = path.join(dir, e.name)
+      if (e.isDirectory()) { walk(full, depth + 1); continue }
+      if (!e.isFile()) continue
+      if (path.relative(packDir, full) === 'engrams.yaml') continue
+      files.push(full)
+    }
+  }
+  walk(packDir, 0)
+
+  for (const file of files.sort()) {
+    const label = path.relative(packDir, file)
+    let text: string
+    try {
+      const stat = fs.statSync(file)
+      // A very large file is capped rather than skipped: skipping it would be a
+      // place to hide things, and the cap is the same one the engram scan uses.
+      if (stat.size > 16 * 1024 * 1024) continue
+      text = fs.readFileSync(file, 'utf8')
+    } catch { continue }
+    // Binary-ish content produces noise, not findings.
+    if (text.includes('\u0000')) continue
+
+    const capped = truncateToScanLimit(text)
+    for (const hit of detectSensitive(capped)) {
+      issues.push({ engram_id: label, type: 'secret', detail: `in ${label} — ${hit.pattern}: ${hit.match}` })
+    }
+    for (const hit of detectPromptInjection(capped)) {
+      issues.push({ engram_id: label, type: 'prompt_injection', detail: `in ${label} — ${hit.pattern}: ${hit.match}` })
+    }
+  }
+  return issues
+}
+
 /** Rewrite one entry's `source` under the same lock — the URL-install path. */
 function setRegistrySource(packsDir: string, name: string, source: string): void {
   withRegistryLock(packsDir, () => {
@@ -264,6 +330,12 @@ function _previewPackDir(source: string): PreviewResult {
 
   const pack = loadPack(source)
   const security = scanPrivacy(pack.engrams)
+  // The pack ships more than engrams, and the rest was never scanned.
+  const fileIssues = scanPackFiles(source)
+  if (fileIssues.length) {
+    security.issues.push(...fileIssues)
+    security.clean = false
+  }
 
   const warnings: string[] = []
   // Flag pinned engrams — they bypass the relevance gate (always injected).
