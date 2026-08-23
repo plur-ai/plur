@@ -19,14 +19,20 @@ trap 'rm -rf "$DEMO"' EXIT
 
 # Colours, and a slow-typing effect so the recording is readable.
 B=$'\033[1m'; DIM=$'\033[2m'; C=$'\033[36m'; G=$'\033[32m'; Y=$'\033[33m'; R=$'\033[0m'
-say()  { printf '\n%s# %s%s\n' "$DIM" "$1" "$R"; sleep 1.2; }
-head2(){ printf '\n%s%s%s\n%s\n' "$B$C" "$1" "$R" "$(printf '─%.0s' $(seq 1 62))"; sleep 0.8; }
-run()  { printf '%s$ %s%s\n' "$G" "$1" "$R"; sleep 0.6; eval "$1"; sleep 1.4; }
+
+# The pauses exist so a RECORDING is readable. Under test they are pure cost:
+# the script would hold a worker slot for minutes doing nothing while spawning
+# processes, and starve the rest of the suite. A scatter of unrelated timeouts
+# across sixteen unrelated files is what that looks like from the outside.
+pause() { [ -n "${DEMO_FAST:-}" ] || sleep "$1"; }
+say()  { printf '\n%s# %s%s\n' "$DIM" "$1" "$R"; pause 1.2; }
+head2(){ printf '\n%s%s%s\n%s\n' "$B$C" "$1" "$R" "$(printf '─%.0s' $(seq 1 62))"; pause 0.8; }
+run()  { printf '%s$ %s%s\n' "$G" "$1" "$R"; pause 0.6; eval "$1"; pause 1.4; }
 
 clear
 printf '%sRecording where a memory came from%s\n' "$B$C" "$R"
 printf '%sA throwaway store in %s — your own memories are untouched.%s\n' "$DIM" "$DEMO" "$R"
-sleep 2
+pause 2
 
 # ---------------------------------------------------------------------------
 head2 "1. An ordinary memory, recorded the way most people start"
@@ -148,4 +154,4 @@ say "Valid W3C PROV in JSON-LD, with licences expressed as ODRL policy."
 say "Checked against two outside implementations, not only our own."
 
 printf '\n%sDone. The throwaway store is deleted on exit.%s\n\n' "$B$G" "$R"
-sleep 2
+pause 2

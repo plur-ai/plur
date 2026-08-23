@@ -20,12 +20,12 @@ const CLI = join(__dirname, '..', 'dist', 'index.js')
 const ESCAPES = new RegExp(String.fromCharCode(27) + '\\[[0-9;]*[a-zA-Z]', 'g')
 
 describe('the provenance walkthrough', () => {
-  // The script sleeps between steps so a recording is readable. That costs a
-  // little over a minute, which is worth it for the thing people are shown.
   const output = execFileSync('bash', [SCRIPT], {
     encoding: 'utf8',
-    timeout: 180_000,
-    env: { ...process.env, PLUR_CLI: CLI },
+    timeout: 60_000,
+    // DEMO_FAST drops the pauses that exist for the recording. Without it
+    // this holds a worker for minutes doing nothing and starves the suite.
+    env: { ...process.env, PLUR_CLI: CLI, DEMO_FAST: '1' },
   }).replace(ESCAPES, '')
 
   it('runs to the end', () => {
@@ -74,4 +74,4 @@ describe('the provenance walkthrough', () => {
     // Every command in the script is pointed at a temporary directory.
     expect(output).not.toMatch(/\/Users\/[^/]+\/\.plur/)
   })
-}, 200_000)
+}, 90_000)

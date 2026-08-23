@@ -102,3 +102,16 @@ The script is run in continuous integration the same way anyone runs it, so a
 change that breaks the journey breaks the build rather than being discovered in
 a recording nobody re-made. If you change the output, re-record: a walkthrough
 that no longer matches the tool is worse than none.
+
+## A note on the pauses
+
+Both scripts pause between steps so a recording is readable. Set `DEMO_FAST=1`
+to drop them — the tests do, because a script that mostly sleeps holds a test
+worker for minutes while spawning processes, and starves everything else. That
+showed up as sixteen unrelated test files timing out, which is a confusing way
+to learn it.
+
+```
+DEMO_FAST=1 bash docs/demo/agent-conversation.sh    # about a second
+bash docs/demo/agent-conversation.sh                # paced for recording
+```

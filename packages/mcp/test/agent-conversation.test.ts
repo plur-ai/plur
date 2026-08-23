@@ -21,8 +21,10 @@ const ESCAPES = new RegExp(String.fromCharCode(27) + '\\[[0-9;]*m', 'g')
 describe('the recorded agent conversation', () => {
   const output = execFileSync('bash', [SCRIPT], {
     encoding: 'utf8',
-    timeout: 240_000,
-    env: { ...process.env, PLUR_MCP_SERVER: SERVER },
+    timeout: 60_000,
+    // DEMO_FAST drops the pauses that exist for the recording. Without it
+    // this holds a worker for minutes doing nothing and starves the suite.
+    env: { ...process.env, PLUR_MCP_SERVER: SERVER, DEMO_FAST: '1' },
   }).replace(ESCAPES, '')
 
   it('runs every exchange to the end', () => {
@@ -76,4 +78,4 @@ describe('the recorded agent conversation', () => {
   it('never touches the real store', () => {
     expect(output).not.toMatch(/\/Users\/[^/]+\/\.plur/)
   })
-}, 260_000)
+}, 90_000)

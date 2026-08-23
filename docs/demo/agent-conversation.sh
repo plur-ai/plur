@@ -22,27 +22,33 @@ trap 'rm -rf "$DEMO"' EXIT
 B=$'\033[1m'; DIM=$'\033[2m'; BLUE=$'\033[38;5;75m'; GREY=$'\033[38;5;245m'
 GREEN=$'\033[38;5;114m'; AMBER=$'\033[38;5;179m'; R=$'\033[0m'
 
+# The pauses exist so a RECORDING is readable. Under test they are pure cost:
+# the script would hold a worker slot for minutes doing nothing while spawning
+# processes, and starve the rest of the suite. A scatter of unrelated timeouts
+# across sixteen unrelated files is what that looks like from the outside.
+pause() { [ -n "${DEMO_FAST:-}" ] || sleep "$1"; }
+
 # A person typing.
-you() { printf '\n%s┃ You%s\n' "$B$BLUE" "$R"; while IFS= read -r l; do printf '%s┃%s %s\n' "$BLUE" "$R" "$l"; done <<< "$1"; sleep 1.6; }
+you() { printf '\n%s┃ You%s\n' "$B$BLUE" "$R"; while IFS= read -r l; do printf '%s┃%s %s\n' "$BLUE" "$R" "$l"; done <<< "$1"; pause 1.6; }
 # The assistant replying.
-bot() { printf '\n%s┃ Assistant%s\n' "$B$GREEN" "$R"; while IFS= read -r l; do printf '%s┃%s %s\n' "$GREEN" "$R" "$l"; done <<< "$1"; sleep 2.2; }
+bot() { printf '\n%s┃ Assistant%s\n' "$B$GREEN" "$R"; while IFS= read -r l; do printf '%s┃%s %s\n' "$GREEN" "$R" "$l"; done <<< "$1"; pause 2.2; }
 # A tool call the assistant makes, and what came back.
 call() {
   printf '\n%s   ╭─ tool call ─────────────────────────────────────────────%s\n' "$GREY" "$R"
   printf '%s   │%s %s%s%s %s\n' "$GREY" "$R" "$AMBER" "$1" "$R" "$2"
-  sleep 1.0
+  pause 1.0
   local out
   out="$($CALL "$STORE" "$1" "$2" 2>/dev/null | eval "${3:-cat}")"
   while IFS= read -r l; do printf '%s   │%s %s%s%s\n' "$GREY" "$R" "$DIM" "$l" "$R"; done <<< "$out"
   printf '%s   ╰──────────────────────────────────────────────────────────%s\n' "$GREY" "$R"
-  sleep 1.8
+  pause 1.8
 }
-note() { printf '\n%s%s%s\n' "$DIM" "$1" "$R"; sleep 1.6; }
+note() { printf '\n%s%s%s\n' "$DIM" "$1" "$R"; pause 1.6; }
 
 clear
 printf '%sTalking to an assistant that remembers%s\n' "$B$BLUE" "$R"
 printf '%sPLUR connected over MCP. Every tool call below is real.%s\n' "$DIM" "$R"
-sleep 2.5
+pause 2.5
 
 # ---------------------------------------------------------------------------
 you "We always run migrations before deploys, never after. Remember that."
@@ -178,4 +184,4 @@ One thing to tell them plainly: none of this is signed. It records what
 happened; it does not prove who wrote it."
 
 printf '\n%sThe throwaway store is deleted on exit.%s\n\n' "$B$GREEN" "$R"
-sleep 2
+pause 2
