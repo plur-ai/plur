@@ -12,6 +12,12 @@ import { summariseProvenance, renderProvenanceSummary } from '@plur-ai/core'
 /** Flags this command accepts (#986). */
 export const FLAGS = ['--record', '--write']
 
+/** Trim to a length in CHARACTERS, so an emoji is never cut in half. */
+function clip(text: string, max: number): string {
+  const chars = Array.from(text)
+  return chars.length > max ? `${chars.slice(0, max).join('')}…` : text
+}
+
 export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   const query = args.find(a => !a.startsWith('-'))
   // --json is the repo-wide "machine output" flag. --record asks for the
@@ -56,7 +62,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     matchCount = matches.length
     matched = matches[0].statement
     alternatives = matches.slice(1, 4).map((m: { id: string; statement: string }) =>
-      ({ id: m.id, statement: m.statement.slice(0, 70) }))
+      ({ id: m.id, statement: clip(m.statement, 70) }))
   }
 
   const record = await plur.provenanceFor(id, { mode: 'portable' })
@@ -89,7 +95,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     // Name the one that was picked. Quoting only the rejected candidates lets a
     // reader assume the right memory was found when it was not.
     lines.push(`  ${matchCount} engrams matched "${query}". This one:`)
-    lines.push(`    ${id}  ${String(matched ?? '').slice(0, 70)}`)
+    lines.push(`    ${id}  ${clip(String(matched ?? ''), 70)}`)
     lines.push('  Others:')
     for (const alt of alternatives) lines.push(`    ${alt.id}  ${alt.statement}`)
     const hidden = matchCount - 1 - alternatives.length

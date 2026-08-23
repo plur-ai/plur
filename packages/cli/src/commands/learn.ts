@@ -53,6 +53,14 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   // Parse a value as JSON, exiting 1 with a clear message on malformed input
   // (a bad --dual-coding/--knowledge-anchors should fail loudly, not silently
   // drop the field as before).
+  /** Reject `--license --claim-class observed`, where the value is the next flag. */
+  const value = (flag: string, raw: string | undefined): string => {
+    if (raw === undefined || /^--[A-Za-z]/.test(raw)) {
+      exit(1, `${flag} needs a value, but the next argument was ${raw ?? '(nothing)'}.`)
+    }
+    return raw
+  }
+
   const parseJsonFlag = <T>(flag: string, raw: string): T => {
     try {
       return JSON.parse(raw) as T
@@ -66,14 +74,34 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   while (i < args.length) {
     const arg = args[i]
     if (arg === '--scope' && i + 1 < args.length) { scope = args[++i]; scopeProvided = true; i++ }
-    else if (arg === '--type' && i + 1 < args.length) { type = args[++i] as typeof type; i++ }
+    else if (arg === '--type' && i + 1 < args.length) {
+      const v = args[++i]
+      const allowed = ['behavioral', 'terminological', 'procedural', 'architectural']
+      if (!allowed.includes(v)) {
+        exit(1, `Unknown --type "${v}". One of: ${allowed.join(', ')}.`)
+      }
+      type = v as typeof type; i++
+    }
     else if (arg === '--domain' && i + 1 < args.length) { domain = args[++i]; i++ }
     else if (arg === '--source' && i + 1 < args.length) { source = args[++i]; i++ }
     else if (arg === '--rationale' && i + 1 < args.length) { rationale = args[++i]; i++ }
     else if (arg === '--tags' && i + 1 < args.length) {
       tags = args[++i].split(',').map(t => t.trim()).filter(Boolean); i++
     }
-    else if (arg === '--visibility' && i + 1 < args.length) { visibility = args[++i] as typeof visibility; i++ }
+    else if (arg === '--visibility' && i + 1 < args.length) {
+      const v = args[++i]
+      // Validate, as --claim-class and --type already do. An unknown value was
+      // written straight through, and the engram then failed schema validation
+      // on every subsequent read: quarantined, invisible to list and recall,
+      // unrecoverable — after a success message with an id. Four testers hit
+      // this with "shared", "team" and "internal", all reasonable guesses, and
+      // one lost 199 engrams to it in a single run.
+      const allowed = ['private', 'public', 'template']
+      if (!allowed.includes(v)) {
+        exit(1, `Unknown --visibility "${v}". One of: ${allowed.join(', ')}.`)
+      }
+      visibility = v as typeof visibility; i++
+    }
     else if (arg === '--abstract' && i + 1 < args.length) { abstract = args[++i]; i++ }
     else if (arg === '--derived-from' && i + 1 < args.length) { derivedFrom = args[++i]; i++ }
     else if (arg === '--knowledge-anchors' && i + 1 < args.length) {
@@ -85,8 +113,19 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     else if (arg === '--supersedes' && i + 1 < args.length) {
       supersedes = args[++i].split(',').map(t => t.trim()).filter(Boolean); i++
     }
-    else if (arg === '--license' && i + 1 < args.length) { license = args[++i]; i++ }
-    else if (arg === '--asserted-by' && i + 1 < args.length) { assertedBy = args[++i]; i++ }
+    else if (arg === '--license' && i + 1 < args.length) {
+      const v = value('--license', args[++i]).trim()
+      // An empty or blank licence is a typo, not a choice. Accepting it wrote
+      // the schema default and then reported `chosen: false` — telling an
+      // operator who DID supply a value that nobody chose one.
+      if (!v) exit(1, '--license needs a licence identifier, for example cc-by-4.0.')
+      license = v; i++
+    }
+    else if (arg === '--asserted-by' && i + 1 < args.length) {
+      const v = value('--asserted-by', args[++i]).trim()
+      if (!v) exit(1, '--asserted-by needs a name, for example local:maintainer.')
+      assertedBy = v; i++
+    }
     else if (arg === '--claim-class' && i + 1 < args.length) {
       const v = args[++i]
       const allowed = ['observed', 'documented', 'structural', 'asserted', 'inferred', 'revised']

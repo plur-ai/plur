@@ -108,6 +108,35 @@ const LICENCE_POLICY: Record<string, { uid: string; permit: string[]; require: s
     uid: 'https://opensource.org/license/bsd-3-clause',
     permit: ['use', 'reproduce', 'distribute', 'derive'], require: ['attribute'], forbid: [],
   },
+  'bsd-2-clause': {
+    uid: 'https://opensource.org/license/bsd-2-clause',
+    permit: ['use', 'reproduce', 'distribute', 'derive'], require: ['attribute'], forbid: [],
+  },
+  isc: {
+    uid: 'https://opensource.org/license/isc-license-txt',
+    permit: ['use', 'reproduce', 'distribute', 'derive'], require: ['attribute'], forbid: [],
+  },
+  'mpl-2.0': {
+    uid: 'https://www.mozilla.org/en-US/MPL/2.0/',
+    permit: ['use', 'reproduce', 'distribute', 'derive'], require: ['attribute', 'shareAlike'], forbid: [],
+  },
+  'agpl-3.0': {
+    uid: 'https://www.gnu.org/licenses/agpl-3.0.html',
+    permit: ['use', 'reproduce', 'distribute', 'derive'], require: ['attribute', 'shareAlike'], forbid: [],
+  },
+  'lgpl-3.0': {
+    uid: 'https://www.gnu.org/licenses/lgpl-3.0.html',
+    permit: ['use', 'reproduce', 'distribute', 'derive'], require: ['attribute', 'shareAlike'], forbid: [],
+  },
+  unlicense: {
+    uid: 'https://unlicense.org/',
+    permit: ['use', 'reproduce', 'distribute', 'derive'], require: [], forbid: [],
+  },
+  'cc-by-nc-sa-4.0': {
+    uid: 'https://creativecommons.org/licenses/by-nc-sa/4.0/',
+    permit: ['use', 'reproduce', 'distribute', 'derive'],
+    require: ['attribute', 'shareAlike'], forbid: ['commercialize'],
+  },
 }
 
 /**
@@ -222,7 +251,7 @@ function bornAt(engram: Engram): string | undefined {
  */
 function licencePolicy(name: string | undefined, withheld = false): Node | undefined {
   if (!name) return undefined
-  const spec = LICENCE_POLICY[name.toLowerCase()]
+  const spec = LICENCE_POLICY[name.trim().toLowerCase()]
   if (!spec) {
     // A licence we do not recognise gets a policy that GRANTS NOTHING, rather
     // than no policy at all.
@@ -242,7 +271,7 @@ function licencePolicy(name: string | undefined, withheld = false): Node | undef
       'odrl:permission': [],
       'engram:licenseRecognised': false,
       'engram:note':
-        `"${name}" is not a licence this software knows. No permission is expressed here. `
+        `"${bidiIsolate(name)}" is not a licence this software knows. No permission is expressed here. `
         + 'Read the licence itself before reusing anything under it. An empty permission '
         + 'list means nothing was determined, NOT that everything is allowed.',
     }
@@ -285,7 +314,12 @@ function licencePolicy(name: string | undefined, withheld = false): Node | undef
  * reject the whole document over it.
  */
 function agentId(name: string): string {
-  return /^(did:|https?:|urn:|ipns:|ipfs:)/i.test(name) ? name : `engram:agent/${escapeIri(name)}`
+  // Normalise first. The same name typed on two machines can arrive in two
+  // different encodings of identical text — accented characters have a composed
+  // and a decomposed form — and without this one colleague becomes two separate
+  // agents in the graph, indistinguishable in every readable view.
+  const normal = name.normalize('NFC')
+  return /^(did:|https?:|urn:|ipns:|ipfs:)/i.test(normal) ? normal : `engram:agent/${escapeIri(normal)}`
 }
 
 /**
@@ -298,14 +332,43 @@ function agentId(name: string): string {
  * a control character, and the delimiters below.
  */
 function escapeIri(value: string): string {
+  // Also the invisible ones. A zero-width joiner or a direction override sitting
+  // raw inside an identifier is worse than a space: it cannot be seen, it makes
+  // two identifiers that look identical compare unequal, and a direction mark
+  // can reorder how the surrounding text is displayed.
   // eslint-disable-next-line no-control-regex
-  return value.replace(/[\u0000-\u0020<>"{}|\\^`\u007f]/g, c =>
-    '%' + c.charCodeAt(0).toString(16).toUpperCase().padStart(2, '0'))
+  return value.replace(
+    /[\u0000-\u0020<>"{}|\\^`\u007f\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/g,
+    c => '%' + c.charCodeAt(0).toString(16).toUpperCase().padStart(2, '0'))
+}
+
+/**
+ * Wrap a value so it cannot reorder the sentence around it.
+ *
+ * A line that begins with an interpolated value takes its direction from that
+ * value. An Arabic licence name at the start of an English sentence flipped the
+ * whole line: the full stop moved to the front and the indentation jumped to
+ * the right edge. The reader sees a sentence that was never written.
+ *
+ * The isolate characters say "treat this run as its own direction" and are
+ * invisible. They are added only when the value actually contains
+ * right-to-left text, so ordinary output is unchanged byte for byte.
+ */
+function bidiIsolate(value: string): string {
+  // Hebrew, Arabic, Syriac, Thaana, and the Arabic presentation blocks.
+  if (!/[\u0590-\u08ff\ufb1d-\ufdff\ufe70-\ufefc]/.test(value)) return value
+  return `\u2068${value}\u2069`
+}
+
+/** Turn an escaped identifier segment back into the text a person typed. */
+function readableAgent(value: string): string {
+  try { return decodeURIComponent(value) } catch { return value }
 }
 
 /** Build the agent nodes, and the relationships that point at them. */
 function agentNodes(engram: Engram): {
-  nodes: Node[]; attributedTo?: string; associatedWith?: string; usedModel?: string
+  nodes: Node[]; attributedTo?: string; associatedWith?: string
+  usedModel?: string; onBehalfOf?: string
 } {
   const a = (engram as any).attribution as Engram['attribution']
   if (!a) return { nodes: [] }
@@ -313,6 +376,7 @@ function agentNodes(engram: Engram): {
   let attributedTo: string | undefined
   let associatedWith: string | undefined
   let usedModel: string | undefined
+  let onBehalfOf: string | undefined
 
   if (a.asserted_by) {
     attributedTo = agentId(a.asserted_by)
@@ -358,6 +422,17 @@ function agentNodes(engram: Engram): {
     if (!associatedWith) associatedWith = id
   }
 
+  // Somebody can act on another's behalf without any software being named.
+  // This lived inside the runtime branch, so an attribution carrying only
+  // `on_behalf_of` recorded it nowhere — the value was in storage and appeared
+  // on no surface at all, the record included.
+  if (a.on_behalf_of && !a.runtime && !a.tool) {
+    nodes.push({ '@id': agentId(a.on_behalf_of), '@type': 'prov:Agent' })
+    onBehalfOf = agentId(a.on_behalf_of)
+  } else if (a.on_behalf_of) {
+    onBehalfOf = agentId(a.on_behalf_of)
+  }
+
   if (a.model) {
     const id = `engram:model/${escapeIri(a.model.name)}`
     const node: Node = { '@id': id, '@type': ['prov:SoftwareAgent', 'pa:AIModel'], 'engram:modelName': a.model.name }
@@ -369,7 +444,7 @@ function agentNodes(engram: Engram): {
     usedModel = id
   }
 
-  return { nodes, attributedTo, associatedWith, usedModel }
+  return { nodes, attributedTo, associatedWith, usedModel, onBehalfOf }
 }
 
 /**
@@ -684,16 +759,26 @@ export interface ProvenanceSummary {
      */
     may_leave_this_machine: boolean
     /**
-     * What the licence permits, as three values a machine can act on rather
-     * than a sentence it has to parse. `null` means undetermined — an
-     * unrecognised licence — and must never be treated as permission.
+     * What the licence permits, as values a machine can act on rather than a
+     * sentence it has to parse.
+     *
+     * These FAIL CLOSED. An unrecognised licence yields `false`, not `null`:
+     * a tester observed that a consumer written as `if (x !== false)` reads
+     * `null` as permission, and for a field that gates reuse, not knowing has
+     * to mean no. `licence_recognised` carries the difference between "the
+     * licence says no" and "we could not tell", so nothing is lost.
      */
-    may_reuse_commercially: boolean | null
-    may_redistribute: boolean | null
+    may_reuse_commercially: boolean
+    may_redistribute: boolean
     licence_recognised: boolean
+    /** Did somebody pick this licence, or is it the schema default? */
+    licence_chosen: boolean
     asserted_by?: string
     identity_known?: boolean
     written_by?: string
+    revision_of?: string[]
+    model?: string
+    on_behalf_of?: string
     claim_class?: string
     claim_meaning?: string
     first_written?: string
@@ -729,6 +814,15 @@ const LICENCE_MEANING: Record<string, string> = {
   'cc0-1.0': 'no conditions',
   'apache-2.0': 'reuse allowed, credit required',
   mit: 'reuse allowed, credit required',
+  'gpl-3.0': 'reuse allowed, credit required, share alike',
+  'bsd-3-clause': 'reuse allowed, credit required',
+  'bsd-2-clause': 'reuse allowed, credit required',
+  isc: 'reuse allowed, credit required',
+  'mpl-2.0': 'reuse allowed, credit required, share alike',
+  'agpl-3.0': 'reuse allowed, credit required, share alike, including over a network',
+  'lgpl-3.0': 'reuse allowed, credit required, share alike',
+  unlicense: 'no conditions',
+  'cc-by-nc-sa-4.0': 'reuse allowed, credit required, share alike, NOT for commercial use',
 }
 
 /**
@@ -754,9 +848,11 @@ export function summariseProvenance(record: Node): ProvenanceSummary {
   const missing: string[] = []
   const fields: ProvenanceSummary['fields'] = {
     may_leave_this_machine: true,
-    may_reuse_commercially: null,
-    may_redistribute: null,
+    // Default to NO. An unanswered permission question must never read as yes.
+    may_reuse_commercially: false,
+    may_redistribute: false,
     licence_recognised: false,
+    licence_chosen: false,
   }
 
   // What the memory SAYS, when the record carries it. Without this a reader
@@ -782,7 +878,11 @@ export function summariseProvenance(record: Node): ProvenanceSummary {
   const who = subject?.['prov:wasAttributedTo']
   if (who) {
     const name = idOf(who)
-    const plain = name.replace(/^agent\//, '')
+    // Undo the identifier escaping for display. An identifier may not contain a
+    // space; a person's name may, and two testers were shown "Marta%20Kovac"
+    // where their colleague's name should have been. The record keeps the legal
+    // identifier; what a human reads gets the name back.
+    const plain = bidiIsolate(readableAgent(name.replace(/^agent\//, '')))
     fields.asserted_by = plain
     fields.identity_known = plain !== 'unidentified'
     lines.push(plain === 'unidentified'
@@ -792,14 +892,41 @@ export function summariseProvenance(record: Node): ProvenanceSummary {
     missing.push('who asserted it')
   }
 
-  const software = graph.find(n => {
+  // Written by: a runtime, or a tool, or both. This read `engram:runtimeName`
+  // only, so an engram attributed to a tool alone showed no "Written by" line
+  // at all while the record named the tool perfectly well.
+  const softwareAgents = graph.filter(n => {
     const t = n['@type']
-    return Array.isArray(t) && t.includes('prov:SoftwareAgent')
+    return Array.isArray(t) && t.includes('prov:SoftwareAgent') && !t.includes('pa:AIModel')
   })
-  if (software?.['engram:runtimeName']) {
-    const version = software['engram:runtimeVersion']
-    fields.written_by = `${software['engram:runtimeName']}${version ? ` ${version}` : ''}`
+  const written = softwareAgents.map(n => {
+    const name = n['engram:runtimeName'] ?? n['engram:toolName']
+    const version = n['engram:runtimeVersion'] ?? n['engram:toolVersion']
+    return name ? `${name}${version ? ` ${version}` : ''}` : undefined
+  }).filter(Boolean) as string[]
+  if (written.length) {
+    fields.written_by = written.join(', ')
     lines.push(`Written by    ${fields.written_by}`)
+  }
+
+  // Which model. The record has named it since models were supported; the
+  // summary said only "worked out by a model" and never which one — in a
+  // feature whose point includes answering exactly that.
+  const modelNode = graph.find(n => {
+    const t = n['@type']
+    return Array.isArray(t) && t.includes('pa:AIModel')
+  })
+  if (modelNode?.['engram:modelName']) {
+    fields.model = String(modelNode['engram:modelName'])
+    const promptVersion = modelNode['engram:promptVersion']
+    lines.push(`Model         ${fields.model}${promptVersion ? ` (prompt version ${promptVersion})` : ''}`)
+  }
+
+  // Who it was done for. Recorded, and previously shown nowhere.
+  const behalf = graph.find(n => n['prov:actedOnBehalfOf'])?.['prov:actedOnBehalfOf']
+  if (behalf) {
+    fields.on_behalf_of = readableAgent(idOf(behalf).replace(/^agent\//, ''))
+    lines.push(`On behalf of  ${fields.on_behalf_of}`)
   }
 
   // What kind of claim
@@ -848,7 +975,7 @@ export function summariseProvenance(record: Node): ProvenanceSummary {
   const licence = subject?.['engram:license'] as string | undefined
   const defaulted = subject?.['engram:licenseIsDefault'] === true
   if (licence) {
-    const meaning = LICENCE_MEANING[licence.toLowerCase()]
+    const meaning = LICENCE_MEANING[licence.trim().toLowerCase()]
     fields.licence = { name: licence, chosen: !defaulted, meaning }
 
     // Answer the two questions a machine actually asks, from the policy rather
@@ -859,6 +986,21 @@ export function summariseProvenance(record: Node): ProvenanceSummary {
     const policy = subject?.['odrl:hasPolicy'] as Node | undefined
     const recognised = policy?.['engram:licenseRecognised'] !== false && policy !== undefined
     fields.licence_recognised = recognised
+    // Machine-readable too. The prose warned that nobody chose the licence
+    // while the JSON granted commercial reuse with no hedge at all, so a
+    // consumer reading only the booleans could not see the difference.
+    fields.licence_chosen = !defaulted
+    if (!recognised) {
+      // FAIL CLOSED. These were `null` for "undetermined", which is the honest
+      // word but the dangerous value: a tester pointed out that any consumer
+      // written as `if (x !== false)` reads null as permission. For a field
+      // that gates reuse, not knowing has to mean no. `licence_recognised`
+      // carries the distinction between "no" and "we could not tell".
+      fields.may_reuse_commercially = false
+      fields.may_redistribute = false
+      const note = policy?.['engram:note']
+      if (note) lines.push(`              ${String(note).split('. ')[0]}.`)
+    }
     if (recognised && policy) {
       const forbidden = ((policy['odrl:prohibition'] ?? []) as Node[]).map(x => x['odrl:action'])
       const permitted = ((policy['odrl:permission'] ?? []) as Node[])
@@ -908,7 +1050,29 @@ export function summariseProvenance(record: Node): ProvenanceSummary {
     lines.push('Status        RETIRED — this memory is no longer believed')
   }
 
-  return { engram_id: engramId, private: isPrivate, fields, lines, missing, complete: missing.length === 0 }
+  // A memory that has been REPLACED is the single most decision-relevant fact
+  // there is, and the summary was reporting `complete: true` over it. An agent
+  // tester put it plainly: "I would have told my human that memory was
+  // reliable and current. It had been corrected five minutes earlier."
+  const revisionOf = subject?.['prov:wasRevisionOf']
+  if (revisionOf) {
+    const parents = (Array.isArray(revisionOf) ? revisionOf : [revisionOf]).map(idOf).filter(Boolean)
+    if (parents.length) {
+      fields.revision_of = parents
+      lines.splice(1, 0, `Replaces      ${parents.join(', ')}`)
+    }
+  }
+
+  return {
+    engram_id: engramId,
+    private: isPrivate,
+    fields,
+    lines,
+    missing,
+    // Never "nothing is missing" about a memory that has been withdrawn.
+    // Whatever else is recorded, that is the thing a reader has to know.
+    complete: missing.length === 0 && !fields.retired,
+  }
 }
 
 /** Render a summary as text, ready to print. */

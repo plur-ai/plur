@@ -2268,6 +2268,14 @@ function getAllToolDefinitions(): ToolDefinition[] {
         let id = args.id as string | undefined
         let matchedStatement: string | undefined
         let matchCount = 0
+        // Truncating without a marker turns a clipped sentence into what reads
+        // like a complete, different one.
+        // Count CHARACTERS, not code units. Slicing by code unit splits an
+        // emoji in half and prints a replacement character in its place.
+        const ellipsise = (t: string, n: number) => {
+          const chars = Array.from(t)
+          return chars.length > n ? `${chars.slice(0, n).join('')}…` : t
+        }
         let alternatives: Array<{ id: string; statement: string }> = []
 
         if (!id && typeof args.search === 'string' && args.search.length) {
@@ -2291,7 +2299,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
           matchCount = matches.length
           // Say what else matched, so a wrong pick is visible rather than silent.
           alternatives = matches.slice(1, LIST).map((m: { id: string; statement: string }) =>
-            ({ id: m.id, statement: m.statement.slice(0, 80) }))
+            ({ id: m.id, statement: ellipsise(m.statement, 80) }))
         }
 
         if (!id) {
@@ -2320,7 +2328,12 @@ function getAllToolDefinitions(): ToolDefinition[] {
             found: true,
             engram_id: id,
             record,
+            // The same answers the summary gives. Asking for the document used
+            // to mean losing every reuse verdict, so the same question got an
+            // answer through one surface and silence through the other.
+            ...summary.fields,
             not_recorded: summary.missing,
+            complete: summary.complete,
             ...(saved ? { saved_to: saved } : {}),
           }
         }
