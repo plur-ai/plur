@@ -103,7 +103,7 @@ Run init from your project root — it sets up Cursor's `.cursor/mcp.json` (plus
 npx @plur-ai/mcp init
 ```
 
-PLUR runs under a **lean tool profile** in Cursor (`PLUR_TOOL_PROFILE=cursor`) — Cursor caps the tools a workspace can expose, so PLUR surfaces a curated core set (learn / recall / inject / status) instead of all 44, with the rest reachable through `plur_admin`. Cursor support shipped in v0.13.
+PLUR runs under a **lean tool profile** in Cursor (`PLUR_TOOL_PROFILE=cursor`) — Cursor caps the tools a workspace can expose, so PLUR surfaces a curated core set (learn / recall / inject / status) instead of all 43, with the rest reachable through `plur_admin`. Cursor support shipped in v0.13.
 
 ### OpenClaw
 
