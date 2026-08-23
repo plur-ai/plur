@@ -514,12 +514,14 @@ export function buildPackProvenanceRecord(
   const byClaim: Record<string, number> = {}
   const licences = new Set<string>()
   let licensed = 0
+  let defaulted = 0
   const dates: string[] = []
   for (const e of engrams) {
     const claim = (e as any).claim_class ?? 'unstated'
     byClaim[claim] = (byClaim[claim] ?? 0) + 1
     const lic = (e as any).provenance?.license
     if (lic) { licences.add(lic); licensed++ }
+    else defaulted++
     const born = bornAt(e)
     if (born) dates.push(born)
   }
@@ -536,7 +538,14 @@ export function buildPackProvenanceRecord(
     'engram:engramCount': engrams.length,
     // A quality signal, not a score. The reader weighs it themselves.
     'engram:claimClassCounts': byClaim,
-    'engram:licensedCount': licensed,
+    // Two counts, not one, and named for what they mean. "licensedCount" was
+    // ambiguous and the ambiguity showed: it counted only engrams whose author
+    // PICKED a licence, while every per-engram record in the same pack carries
+    // a licence and a full grant — the default one. So a pack could report
+    // "4 of 5 licensed" beside five files that each grant reuse. A reader has
+    // to be able to tell how much of a pack somebody actually decided about.
+    'engram:licenseChosenCount': licensed,
+    'engram:licenseDefaultedCount': defaulted,
     'engram:licenses': [...licences].sort(),
   }
   if (dates.length) {

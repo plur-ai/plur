@@ -20,9 +20,7 @@
       "engram:describes": {
         "@id": "engram:ENG-2026-08-12-002"
       },
-      "engram:recordIsSelfContained": true,
-      "engram:incompleteByDesign": true,
-      "engram:note": "Shows what we can produce today. It deliberately cannot say who made the engram or what kind of claim it is \u2014 that gap is the point of the file."
+      "engram:recordIsSelfContained": true
     },
     {
       "@id": "engram:ENG-2026-08-12-002",

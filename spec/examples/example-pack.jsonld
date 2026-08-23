@@ -14,7 +14,7 @@
         "prov:Entity"
       ],
       "prov:generatedAtTime": {
-        "@value": "2026-08-21T09:00:00Z",
+        "@value": "2026-08-12T09:00:00Z",
         "@type": "xsd:dateTime"
       },
       "engram:describes": {
@@ -32,7 +32,7 @@
       "engram:packName": "swarm-grants",
       "engram:packVersion": "1.0.0",
       "prov:generatedAtTime": {
-        "@value": "2026-08-21T09:00:00Z",
+        "@value": "2026-08-12T09:00:00Z",
         "@type": "xsd:dateTime"
       },
       "prov:wasGeneratedBy": {
@@ -40,28 +40,25 @@
       },
       "prov:hadMember": [
         {
-          "@id": "engram:ENG-2026-08-01-001"
+          "@id": "engram:ENG-2026-08-12-002"
         },
         {
-          "@id": "engram:ENG-2026-08-10-002"
-        },
-        {
-          "@id": "engram:ENG-2026-08-15-003"
+          "@id": "engram:ENG-2026-08-12-003"
         }
       ],
-      "engram:engramCount": 3,
+      "engram:engramCount": 2,
       "engram:claimClassCounts": {
-        "asserted": 1,
-        "inferred": 1,
-        "documented": 1
+        "documented": 1,
+        "inferred": 1
       },
-      "engram:licensedCount": 3,
+      "engram:licenseChosenCount": 1,
+      "engram:licenseDefaultedCount": 1,
       "engram:licenses": [
-        "cc-by-sa-4.0"
+        "cc-by-4.0"
       ],
-      "engram:earliestEngram": "2026-08-01T00:00:00Z",
-      "engram:latestEngram": "2026-08-15T00:00:00Z",
-      "engram:packIntegrity": "sha256:abc123",
+      "engram:earliestEngram": "2026-08-12T08:00:00Z",
+      "engram:latestEngram": "2026-08-12T08:00:00Z",
+      "engram:packIntegrity": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
       "prov:wasAttributedTo": {
         "@id": "engram:agent/local:maintainer"
       }
@@ -77,11 +74,11 @@
         "engram:AssemblePack"
       ],
       "prov:startedAtTime": {
-        "@value": "2026-08-21T09:00:00Z",
+        "@value": "2026-08-12T09:00:00Z",
         "@type": "xsd:dateTime"
       },
       "prov:endedAtTime": {
-        "@value": "2026-08-21T09:00:00Z",
+        "@value": "2026-08-12T09:00:00Z",
         "@type": "xsd:dateTime"
       },
       "prov:generated": {
@@ -92,34 +89,24 @@
       }
     },
     {
-      "@id": "engram:ENG-2026-08-01-001",
-      "@type": [
-        "prov:Entity",
-        "engram:Engram"
-      ],
-      "engram:engramType": "behavioral",
-      "engram:claimClass": "asserted",
-      "engram:contentHash": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
-    },
-    {
-      "@id": "engram:ENG-2026-08-10-002",
-      "@type": [
-        "prov:Entity",
-        "engram:Engram"
-      ],
-      "engram:engramType": "behavioral",
-      "engram:claimClass": "inferred",
-      "engram:contentHash": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
-    },
-    {
-      "@id": "engram:ENG-2026-08-15-003",
+      "@id": "engram:ENG-2026-08-12-002",
       "@type": [
         "prov:Entity",
         "engram:Engram"
       ],
       "engram:engramType": "behavioral",
       "engram:claimClass": "documented",
-      "engram:contentHash": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+      "engram:contentHash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    },
+    {
+      "@id": "engram:ENG-2026-08-12-003",
+      "@type": [
+        "prov:Entity",
+        "engram:Engram"
+      ],
+      "engram:engramType": "behavioral",
+      "engram:claimClass": "inferred",
+      "engram:contentHash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
     }
   ]
 }

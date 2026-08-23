@@ -68,7 +68,7 @@ describe('a pack has provenance too (#972)', () => {
     // from a named expert; the other machine guesses from an unknown source.
     const node = nodeById(buildPackProvenanceRecord(pack, engrams), 'engram:pack/swarm-grants@1.0.0')
     expect(node['engram:claimClassCounts']).toEqual({ asserted: 1, inferred: 2 })
-    expect(node['engram:licensedCount']).toBe(0)
+    expect(node['engram:licenseChosenCount']).toBe(0)
     expect(node['engram:earliestEngram']).toBe('2026-08-01T00:00:00Z')
     expect(node['engram:latestEngram']).toBe('2026-08-15T00:00:00Z')
   })

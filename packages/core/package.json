@@ -11,7 +11,8 @@
     "build": "tsup",
     "test": "vitest run",
     "gen:schemas": "tsx scripts/gen-spec-schemas.ts",
-    "try:provenance": "tsx scripts/try-provenance.ts"
+    "try:provenance": "tsx scripts/try-provenance.ts",
+    "build:spec-examples": "tsx scripts/build-spec-examples.ts"
   },
   "dependencies": {
     "@electric-sql/pglite": "^0.4.6",

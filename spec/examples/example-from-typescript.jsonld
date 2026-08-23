@@ -14,7 +14,7 @@
         "prov:Entity"
       ],
       "prov:generatedAtTime": {
-        "@value": "2026-08-21T09:00:00Z",
+        "@value": "2026-08-12T09:00:00Z",
         "@type": "xsd:dateTime"
       },
       "engram:describes": {
@@ -28,29 +28,24 @@
         "prov:Entity",
         "engram:Engram"
       ],
-      "engram:engramType": "procedural",
+      "engram:engramType": "behavioral",
       "engram:scope": "group:swarm",
       "engram:status": "active",
-      "engram:commitment": "decided",
-      "engram:contentHash": "sha256:14f51882a7cca2b83a12de817db874e8d564b72d3512bd2a5b7f552f090a5aa8",
+      "engram:visibility": "public",
+      "engram:contentHash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
       "engram:claimClass": "documented",
       "prov:generatedAtTime": {
-        "@value": "2026-08-12T06:45:51.426Z",
+        "@value": "2026-08-12T08:00:00Z",
         "@type": "xsd:dateTime"
       },
-      "engram:tags": [
-        "swarm",
-        "grants",
-        "octant"
-      ],
-      "engram:validUntil": "2026-10-21",
       "prov:hadPrimarySource": {
-        "@id": "https://octant.substack.com/p/epoch-13-the-privacy-round"
+        "@id": "https://example.org/grants/handbook"
       },
-      "engram:license": "cc-by-sa-4.0",
+      "engram:license": "cc-by-4.0",
+      "engram:maySharePlainly": true,
       "odrl:hasPolicy": {
         "@type": "odrl:Set",
-        "odrl:uid": "https://creativecommons.org/licenses/by-sa/4.0/",
+        "odrl:uid": "https://creativecommons.org/licenses/by/4.0/",
         "odrl:permission": [
           {
             "odrl:action": [
@@ -62,16 +57,13 @@
             "odrl:duty": [
               {
                 "odrl:action": "odrl:attribute"
-              },
-              {
-                "odrl:action": "odrl:shareAlike"
               }
             ]
           }
         ]
       },
       "prov:wasAttributedTo": {
-        "@id": "engram:agent/unidentified"
+        "@id": "engram:agent/local:maintainer"
       }
     },
     {
@@ -81,11 +73,11 @@
         "engram:Learn"
       ],
       "prov:startedAtTime": {
-        "@value": "2026-08-12T06:45:51.426Z",
+        "@value": "2026-08-12T08:00:00Z",
         "@type": "xsd:dateTime"
       },
       "prov:endedAtTime": {
-        "@value": "2026-08-12T06:45:51.426Z",
+        "@value": "2026-08-12T08:00:00Z",
         "@type": "xsd:dateTime"
       },
       "prov:generated": {
@@ -96,33 +88,27 @@
       }
     },
     {
-      "@id": "engram:act/INJ-1786719359846-2j0000",
+      "@id": "engram:act/ENG-2026-08-12-002-engram_updated",
       "@type": [
         "prov:Activity",
-        "engram:Inject"
+        "engram:Revise"
       ],
       "prov:startedAtTime": {
-        "@value": "2026-08-14T14:55:59.846Z",
+        "@value": "2026-08-12T08:30:00Z",
         "@type": "xsd:dateTime"
       },
       "prov:endedAtTime": {
-        "@value": "2026-08-14T14:55:59.846Z",
+        "@value": "2026-08-12T08:30:00Z",
         "@type": "xsd:dateTime"
       },
-      "prov:used": {
-        "@id": "engram:ENG-2026-08-12-002"
-      },
-      "engram:usedAlongsideCount": 2,
-      "engram:queryHash": "aeb910b048784127",
+      "engram:reason": "corrected the weekday",
       "prov:wasAssociatedWith": {
         "@id": "engram:agent/software/plur-mcp@0.18.0"
       }
     },
     {
-      "@id": "engram:agent/unidentified",
-      "@type": "prov:Agent",
-      "engram:identityKnown": false,
-      "engram:note": "No identity was configured when this was written."
+      "@id": "engram:agent/local:maintainer",
+      "@type": "prov:Agent"
     },
     {
       "@id": "engram:agent/software/plur-mcp@0.18.0",
@@ -133,7 +119,7 @@
       "engram:runtimeName": "plur-mcp",
       "engram:runtimeVersion": "0.18.0",
       "prov:actedOnBehalfOf": {
-        "@id": "engram:agent/unidentified"
+        "@id": "engram:agent/local:maintainer"
       }
     }
   ]
