@@ -529,7 +529,19 @@ export function buildProvenanceRecord(
   const derivedFrom = (engram as any).derived_from as string | null | undefined
   if (derivedFrom) thing['prov:wasDerivedFrom'] = { '@id': `engram:${derivedFrom}` }
 
+  // The engram this one REPLACED. Standard PROV has a term for it.
   const supersedes = (engram as any).relations?.supersedes as string[] | undefined
+
+  // And the engram that replaced THIS one. PROV has no reverse of a revision,
+  // so this is our own term — but it has to be recorded, because it is the
+  // question a reader of the old memory is actually asking. Without it, asking
+  // about a memory that was corrected five minutes ago returns a confident
+  // answer with no hint that anybody has since disagreed.
+  const supersededBy = (engram as any).relations?.superseded_by as string[] | undefined
+  if (supersededBy?.length) {
+    thing['engram:supersededBy'] = supersededBy.map(s => ({ '@id': `engram:${s}` }))
+  }
+
   if (supersedes?.length) {
     thing['prov:wasRevisionOf'] = supersedes.map(s => ({ '@id': `engram:${s}` }))
   }
@@ -777,6 +789,7 @@ export interface ProvenanceSummary {
     identity_known?: boolean
     written_by?: string
     revision_of?: string[]
+    superseded_by?: string[]
     model?: string
     on_behalf_of?: string
     claim_class?: string
@@ -1054,6 +1067,18 @@ export function summariseProvenance(record: Node): ProvenanceSummary {
   // there is, and the summary was reporting `complete: true` over it. An agent
   // tester put it plainly: "I would have told my human that memory was
   // reliable and current. It had been corrected five minutes earlier."
+  const replacedBy = subject?.['engram:supersededBy']
+  if (replacedBy) {
+    const ids = (Array.isArray(replacedBy) ? replacedBy : [replacedBy]).map(idOf).filter(Boolean)
+    if (ids.length) {
+      fields.superseded_by = ids
+      // First line after the heading. A reader deciding whether to rely on
+      // this needs it before anything else, not below the licence.
+      lines.splice(0, 0, `SUPERSEDED    replaced by ${ids.join(', ')} — prefer that one`)
+      missing.push(`this memory was replaced by ${ids.join(', ')}`)
+    }
+  }
+
   const revisionOf = subject?.['prov:wasRevisionOf']
   if (revisionOf) {
     const parents = (Array.isArray(revisionOf) ? revisionOf : [revisionOf]).map(idOf).filter(Boolean)
