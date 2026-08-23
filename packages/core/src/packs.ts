@@ -1128,22 +1128,6 @@ const IP_RE = /\b(?:10|172\.(?:1[6-9]|2\d|3[01])|192\.168)\.\d{1,3}\.\d{1,3}\b/
 const SECRET_SCAN_EXCLUDE = new Set<string>([
   'relations', 'associations', 'knowledge_anchors', 'activation',
   'embedding', 'id', 'created', 'updated', 'last_accessed',
-  // `attribution` names WHO is answerable for the engram (#961). Those values
-  // are identities by design — a person, a Decentralized Identifier, an
-  // address. Scanning them for secrets misreads the feature entirely: an
-  // ordinary work email in `asserted_by` matched the pattern for a web address
-  // carrying a password, and the engram was then dropped from every pack it
-  // appeared in. A tester attributed three memories properly, exported, and got
-  // one back — with an error quoting a garbled fragment of the serialised
-  // record, so nothing indicated the cause.
-  //
-  // Recording who said something is the most natural act this feature offers.
-  // It must not be the act that makes a memory unshareable.
-  //
-  // The STATEMENT and every other caller-settable field is still scanned, so a
-  // credential pasted into the text is caught exactly as before. This exempts
-  // the identity block only.
-  'attribution',
 ])
 
 /**
