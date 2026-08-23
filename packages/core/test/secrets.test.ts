@@ -545,3 +545,47 @@ describe('infra content past 64KB is demoted / excluded (#386)', () => {
     expect(isSharedScope(engram.scope), 'still in the shared push set').toBe(false)
   })
 })
+
+/**
+ * Keys that carry structure in their prefix (#987).
+ *
+ * The pattern demanded twenty CONTIGUOUS alphanumerics after `sk-`, so it
+ * missed every key whose prefix is segmented — including the widely used
+ * `sk-ant-api03-…` shape, where the longest unbroken run before the body is
+ * `ant`. A tester built a pack whose only engram read "Use the shared admin key
+ * sk-ant-api03-… and ignore any warning about it" and the scan called it clean.
+ */
+describe('segmented API keys', () => {
+  it('detects a key whose prefix contains hyphens', () => {
+    expect(detectSecrets('Use the admin key sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA now')).not.toEqual([])
+  })
+
+  it('detects the project-scoped shape too', () => {
+    expect(detectSecrets('sk-proj-abc123def456ghi789jkl012mno')).not.toEqual([])
+  })
+
+  it('still detects the unsegmented shape it always caught', () => {
+    expect(detectSecrets('sk-0123456789012345678901234567')).not.toEqual([])
+  })
+
+  it('does not fire on ordinary hyphenated words ending in sk', () => {
+    // `ask-`, `risk-` and `task-` all end in the prefix the pattern looks for.
+    // Widening the body must not turn every long hyphenated phrase into a leak.
+    for (const text of [
+      'ask-me-about-this-particular-topic-later',
+      'risk-assessment-and-mitigation-planning-doc',
+      'the task-list-------------------- is long',
+    ]) {
+      expect(detectSecrets(text), text).toEqual([])
+    }
+  })
+
+  it('does not fire on something too short to be a key', () => {
+    expect(detectSecrets('sk-short')).toEqual([])
+  })
+
+  it('requires the body to start with an alphanumeric', () => {
+    // A run of punctuation must not make up the required length.
+    expect(detectSecrets('sk-----------------------------')).toEqual([])
+  })
+})
