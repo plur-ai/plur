@@ -228,6 +228,86 @@ export function computeQueryHash(task: string): string {
 }
 
 /**
+ * Cross-process dedup for co_injection events (#975).
+ *
+ * The duplicate injections come from separate hook processes spawning within
+ * milliseconds — each with a fresh address space, so in-memory maps cannot
+ * see the other process. This function checks the HISTORY FILE (durable,
+ * shared across processes) for a recent co_injection with the same query_hash
+ * AND the same engram set.
+ *
+ * Keyed on query_hash + sorted engram IDs (not hash alone) because the same
+ * query text can legitimately select different engrams after a write (#975
+ * review finding: hash-only suppresses genuinely different injections).
+ *
+ * Window: 5 seconds (matches the near-duplicate definition in #975).
+ * Reads only the tail of the current month's file — bounded I/O.
+ */
+export function isRecentDuplicateInjection(
+  root: string,
+  queryHash: string,
+  engramIds: string[],
+  windowMs = 5_000,
+  source?: string,
+): boolean {
+  const now = Date.now()
+  const yearMonth = new Date().toISOString().slice(0, 7)
+  const filePath = join(root, 'history', `${yearMonth}.jsonl`)
+  if (!fs.existsSync(filePath)) return false
+
+  // Read only the last ~8KB of the file — co_injection events are ~325-625B,
+  // so 8KB covers ~12-24 events, far more than could arrive in 5 seconds.
+  const TAIL_BYTES = 8192
+  let tail: string
+  try {
+    const stat = fs.statSync(filePath)
+    if (stat.size <= TAIL_BYTES) {
+      tail = fs.readFileSync(filePath, 'utf8')
+    } else {
+      const buf = Buffer.alloc(TAIL_BYTES)
+      const fd = fs.openSync(filePath, 'r')
+      try {
+        fs.readSync(fd, buf, 0, TAIL_BYTES, stat.size - TAIL_BYTES)
+      } finally {
+        fs.closeSync(fd)
+      }
+      // Drop the first partial line
+      tail = buf.toString('utf8')
+      const firstNewline = tail.indexOf('\n')
+      if (firstNewline >= 0) tail = tail.slice(firstNewline + 1)
+    }
+  } catch {
+    return false // unreadable → not a duplicate (fail-open)
+  }
+
+  const sortedIds = [...engramIds].sort().join(',')
+  const lines = tail.split('\n').filter(l => l.trim().length > 0)
+
+  for (const line of lines) {
+    let ev: HistoryEvent
+    try { ev = JSON.parse(line) as HistoryEvent } catch { continue }
+    if (ev.event !== 'co_injection') continue
+
+    const evTime = new Date(ev.timestamp).getTime()
+    if (now - evTime > windowMs) continue
+
+    const evHash = ev.data.query_hash as string | undefined
+    if (evHash !== queryHash) continue
+
+    const evIds = ev.data.ids as string[] | undefined
+    if (!Array.isArray(evIds)) continue
+    if ([...evIds].sort().join(',') !== sortedIds) continue
+    if (source !== undefined) {
+      const evSource = ev.data.source as string | undefined
+      if (evSource !== source) continue
+    }
+    return true
+  }
+
+  return false
+}
+
+/**
  * Find the most recent co_injection event that included the given engram.
  * Scans the newest `maxMonths` history files only (bounded read) — feedback
  * on injections older than that is not attributable to a specific injection.

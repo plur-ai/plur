@@ -37,7 +37,7 @@ import { detectSecrets, detectSensitive, sensitivityCategory, SCAN_TRUNCATED } f
 import type { SecretMatch } from './secrets.js'
 import { SENSITIVITY_CATEGORIES, type ScopeMetadata, type SensitivityCategory } from './schemas/scope-metadata.js'
 import { rankScopes, SCOPE_MATCH_THRESHOLD, type ScopeSignals, type ScopeCandidate } from './scope-routing.js'
-import { mintedIdsWithPrefix, appendHistory, readHistoryForEngram, generateEventId, generateInjectionId, computeQueryHash, findLatestInjectionFor, countInjectionEvents, type InjectionEventCounts } from './history.js'
+import { mintedIdsWithPrefix, appendHistory, readHistoryForEngram, generateEventId, generateInjectionId, computeQueryHash, findLatestInjectionFor, countInjectionEvents, isRecentDuplicateInjection, type InjectionEventCounts } from './history.js'
 import { computeContentHash, isHashable } from './content-hash.js'
 import { isLocalOnlyScope, assertScopeNamesATarget } from './scope-target.js'
 import { orderBySupersedes } from './outbox-order.js'
@@ -4940,27 +4940,43 @@ export class Plur {
     // edges (#200/#201) and temporal-replay self-labeling (#202). Compact by
     // design (IDs + query hash, never statements); best-effort — a history
     // write failure must never break injection.
+    //
+    // #975: cross-process dedup. Hooks spawn fresh processes (empty address
+    // space each time), so an in-memory map cannot see the other process's
+    // injection. The check reads the HISTORY FILE — durable, shared across
+    // processes. Keyed on query_hash + sorted engram IDs (not hash alone)
+    // because the same query can legitimately select different engrams after
+    // a write.
     if (injected_ids.length > 0) {
-      const injection_id = generateInjectionId()
-      try {
-        appendHistory(this.paths.root, {
-          event: 'co_injection',
-          engram_id: injection_id,
-          timestamp: new Date().toISOString(),
-          data: {
-            ids: injected_ids,
-            query_hash: computeQueryHash(task),
-            // Event provenance for offline token-economics analysis of real
-            // sessions (the plur-bench #42 measurement). Deliberately NOT read
-            // by the receipt, which shows no token/cost figure by design.
-            tokens_used: tokensUsed,
-            source: options?.source ?? 'inject',
-            ...(options?.scope ? { scope: options.scope } : {}),
-            ...(options?.session_id ? { session_id: options.session_id } : {}),
-          },
-        })
-        for (const id of injected_ids) this._lastInjectionByEngram.set(id, injection_id)
-      } catch { /* best-effort */ }
+      // #975: cross-process dedup for the co_injection HISTORY EVENT only.
+      // The injection_count increment (#866) is NOT gated — the engram was
+      // genuinely injected into context even if the history event is a
+      // duplicate. Only the provenance log is deduped.
+      const queryHash = computeQueryHash(task)
+      const isDuplicate = isRecentDuplicateInjection(this.paths.root, queryHash, injected_ids, 5_000, options?.source)
+
+      if (!isDuplicate) {
+        const injection_id = generateInjectionId()
+        try {
+          appendHistory(this.paths.root, {
+            event: 'co_injection',
+            engram_id: injection_id,
+            timestamp: new Date().toISOString(),
+            data: {
+              ids: injected_ids,
+              query_hash: queryHash,
+              // Event provenance for offline token-economics analysis of real
+              // sessions (the plur-bench #42 measurement). Deliberately NOT read
+              // by the receipt, which shows no token/cost figure by design.
+              tokens_used: tokensUsed,
+              source: options?.source ?? 'inject',
+              ...(options?.scope ? { scope: options.scope } : {}),
+              ...(options?.session_id ? { session_id: options.session_id } : {}),
+            },
+          })
+          for (const id of injected_ids) this._lastInjectionByEngram.set(id, injection_id)
+        } catch { /* best-effort */ }
+      }
 
       // #866: increment injection_count on primary-store engrams selected for context.
       // Distinct from activation.frequency (recall events) — this tracks actual
