@@ -367,8 +367,22 @@ function scanPackFiles(packDir: string): PrivacyIssue[] {
   return issues
 }
 
-/** Read the provenance a pack ships, without judging whether to believe it. */
-export function readPackProvenance(packDir: string, engrams: Engram[]): PackProvenanceView {
+/**
+ * Read the provenance a pack ships, without judging whether to believe it.
+ *
+ * `declared` is what the manifest claims in `metadata.provenance`. It is checked
+ * against what is actually on disk rather than trusted: the flag is covered by
+ * the pack's integrity hash, but the records it points at are not, so a pack can
+ * declare provenance and ship none — through corruption, a broken build, or
+ * somebody stripping the directory after the fact. Saying so is the whole value
+ * of having the flag; silently reporting "no provenance" for a pack that
+ * promised some would hide exactly the case worth seeing.
+ */
+export function readPackProvenance(
+  packDir: string,
+  engrams: Engram[],
+  declared?: boolean,
+): PackProvenanceView {
   const view: PackProvenanceView = {
     present: false,
     record_count: 0,
@@ -387,10 +401,19 @@ export function readPackProvenance(packDir: string, engrams: Engram[]): PackProv
 
   const dir = path.join(packDir, 'provenance')
   if (!fs.existsSync(dir)) {
-    view.notes.push('This pack carries no provenance. That is not a fault — most packs do not — but nothing here says where its contents came from.')
+    view.notes.push(declared === true
+      ? 'This pack DECLARES provenance in its manifest, and ships none. The records are missing, '
+        + 'not merely absent — the pack was built to carry them. Treat the pack as damaged or altered '
+        + 'and check where you got it from.'
+      : 'This pack carries no provenance. That is not a fault — most packs do not — but nothing here says where its contents came from.')
     return view
   }
   view.present = true
+  if (declared === false) {
+    view.notes.push('This pack ships provenance records that its manifest does not declare. Nothing is wrong '
+      + 'with the records, but the manifest and the contents disagree, and the manifest is the part covered '
+      + 'by the integrity hash.')
+  }
 
   // The identifier comes from a file a stranger wrote. The schema constrains it
   // to ^(ENG|ABS|META)-[A-Za-z0-9-]+$ and quarantines anything else before it
@@ -476,7 +499,11 @@ function _previewPackDir(source: string): PreviewResult {
   }
   // Read what the pack claims about its own origins, BEFORE anything installs.
   // The gate belongs at the boundary; afterwards it changes nothing.
-  const provenance = readPackProvenance(source, pack.engrams)
+  const provenance = readPackProvenance(
+    source,
+    pack.engrams,
+    (pack.manifest.metadata as { provenance?: boolean } | undefined)?.provenance,
+  )
   // Check the SHIPPED value against the contents, before anything installs.
   const integrity = verifyPackIntegrity(source)
 
@@ -1360,7 +1387,16 @@ export function exportPack(
   // Create output directory
   if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true })
 
-  // Write manifest as SKILL.md frontmatter
+  // Write manifest as SKILL.md frontmatter.
+  //
+  // `metadata.provenance` is written BEFORE the integrity hash is computed, so
+  // the declaration is inside the hash even though the records it points at are
+  // not (the §5.5 hash covers SKILL.md and engrams.yaml only). That is the most
+  // a manifest can offer here: a reader learns the directory should be there
+  // without probing, and learns it from bytes that cannot be altered without
+  // breaking the pack's integrity value. It is still a producer's claim, so
+  // `readPackProvenance` verifies the directory rather than trusting the flag.
+  const shipsProvenance = manifest.provenance !== false
   const frontmatter = yaml.dump({
     name: manifest.name,
     version: manifest.version,
@@ -1370,6 +1406,7 @@ export function exportPack(
       injection_policy: 'on_match',
       match_terms: matchTerms,
       engram_count: safeEngrams.length,
+      ...(shipsProvenance ? { provenance: true } : {}),
     },
   })
   fs.writeFileSync(
@@ -1445,7 +1482,7 @@ export function exportPack(
   // Only engrams that survived the privacy scan appear. Provenance must never
   // become a way to ship something the content path already refused.
   const provenanceFiles: string[] = []
-  if (manifest.provenance !== false) {
+  if (shipsProvenance) {
     const provDir = path.join(outputDir, 'provenance')
     fs.mkdirSync(provDir, { recursive: true })
 
@@ -1477,7 +1514,7 @@ export function exportPack(
     privacy: allPrivacy,
     match_terms: matchTerms,
     integrity: `sha256:${integrity}`,
-    ...(manifest.provenance !== false ? { provenance_files: provenanceFiles } : {}),
+    ...(shipsProvenance ? { provenance_files: provenanceFiles } : {}),
   }
 }
 

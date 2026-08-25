@@ -1,10 +1,15 @@
 # The Open Engram Standard
 
-**Version:** 1.0 (draft)
+**Version:** 1.1 (draft)
 **Status:** Working Draft
-**Date:** 2026-06-14
+**Date:** 2026-08-25
 **Editors:** PLUR.ai (plur-ai)
 **License:** This specification is licensed under CC-BY-4.0. Reference code is Apache-2.0.
+**Companion profiles:** [Recording where an engram came from](./ENGRAM-PROVENANCE-PROFILE.md)
+— profiles §9. A profile refines one part of this document; it never replaces it,
+and this document remains authoritative wherever the two overlap.
+
+Revision history is §10.5.
 
 > An **engram** is a small, self-describing, portable assertion of learned
 > knowledge for AI agents. The Open Engram Standard defines the engram object,
@@ -489,7 +494,8 @@ an integrity file.
 <pack-name>/
 ├── SKILL.md          (REQUIRED — manifest as YAML frontmatter)
 ├── engrams.yaml      (the engrams, top-level `engrams:` sequence)
-└── INTEGRITY         (pack content hash; see §5.5)
+├── INTEGRITY         (pack content hash; see §5.5)
+└── provenance/       (OPTIONAL — PROV records; see the provenance profile §5.3)
 ```
 
 - A pack **MUST** ship a `SKILL.md`, carrying the manifest as its **YAML
@@ -504,6 +510,12 @@ an integrity file.
 - `engrams.yaml` is a §2.1 store document.
 - `INTEGRITY` is OPTIONAL on disk but RECOMMENDED for distribution; the
   authoritative integrity record at install time is the registry entry (§5.5).
+- `provenance/` is OPTIONAL. When present it holds W3C PROV records describing
+  where the pack and its engrams came from; its layout and contents are
+  specified in §5.3 of the [provenance profile](./ENGRAM-PROVENANCE-PROFILE.md).
+  These files are **not** covered by the §5.5 integrity hash, which is defined
+  over `SKILL.md` ‖ `engrams.yaml` only. A pack SHOULD declare their presence
+  via `metadata.provenance` (§5.2) so a reader need not probe for the directory.
 
 ### 5.2 Manifest fields
 
@@ -529,6 +541,7 @@ The manifest object (see `pack-manifest.schema.json`):
 | `match_terms` | string[] | default `[]` | Keywords gating `on_match`. |
 | `domain` | string | | Domain. |
 | `engram_count` | number | | Advisory count (loaders count the real file). |
+| `provenance` | boolean | default absent | The pack ships PROV records under `provenance/` (§5.1). A **declaration, not evidence**: it is written by the producer and covered by the §5.5 hash, but a reader MUST still verify the directory exists and the records parse before relying on them. Absent means "not declared", which is not the same as "none present". |
 
 `x-datacore` is the same shape **except** `injection_policy` ∈ {`on_match`,
 `on_request`} only (no `always`), `id` and `injection_policy` are required, and
@@ -770,20 +783,25 @@ anchor in §9).
 
 ## 9. Provenance binding (PROV-O + Swarm anchor) — PROPOSED
 
-> **Superseded by a companion document.**
+> **Elaborated in a companion profile.**
 >
-> The sketch below has been worked out in full in
-> [Recording where an engram came from](./ENGRAM-PROVENANCE-PROFILE.md), which
-> specifies the mapping, every way an engram can be created, the licence
-> binding, and what has to be captured first.
+> This section remains part of the standard. The sketch below is worked out in
+> full in [Recording where an engram came from](./ENGRAM-PROVENANCE-PROFILE.md),
+> a *profile* of this section: it specifies the mapping, every way an engram can
+> be created, the pack-level record, the licence binding, and what has to be
+> captured first.
 >
-> Read that instead. This section is kept because it states the motivation
-> concisely, and because implementations may still reference it.
+> A profile refines; it does not replace. This section keeps its normative
+> standing, states the motivation concisely, and defines the Swarm anchor — which
+> the profile deliberately leaves out of its own scope (profile §1.2, §2.3).
+> Where the two overlap, this document governs; where the profile is more
+> specific, follow the profile. An implementer building provenance should read
+> the profile, and read this section for the anchoring layer above it.
 >
-> Two things the companion document settles that this sketch left open. A record
-> you SEND must stand on its own, since the recipient has none of our files. And
-> the four provenance fields defined in §4.8, although marked stable, were
-> written by nothing at all until that work began.
+> Two things the profile settles that this sketch left open. A record you SEND
+> must stand on its own, since the recipient has none of our files. And the four
+> provenance fields defined in §4.8, although marked stable, were written by
+> nothing at all until that work began.
 
 
 This section is a **PROPOSED profile**, non-normative for v1. It documents how an
@@ -889,6 +907,24 @@ parseable (consumers still accept it), and providing the replacement. Removal
 happens only at a major version. The `x-datacore` manifest block (§5.2) is the
 canonical example: retained, parseable, superseded by `metadata`.
 
+### 10.5 Revision history
+
+Every revision of this document is recorded here, so a reader can tell which one
+they are holding and what changed. Version numbers follow §10.2.
+
+| Version | Date | Change class | What changed |
+|---|---|---|---|
+| 1.1 | 2026-08-25 | Minor (additive) | §4.8: added the OPTIONAL `attribution` and `claim_class` engram fields, marked PROPOSED. §4.12: added `injection_count` and `measured_under`; renamed `reference_count` → `write_count` (consumers MUST backfill on first parse). §3.3: canonical id form gains full ISO-8601 date separators, with the compact form retained as permanently valid legacy (§3.3.1) and the dateless pack form documented (§3.3.2). §5.1/§5.2: an OPTIONAL `provenance/` directory and a `metadata.provenance` declaration. §9: recorded that a companion profile now elaborates it. §4.12 `commitment` gains the `draft` member. No field removed, no constraint tightened, no default changed. |
+| 1.0 | 2026-06-14 | — | Initial working draft. |
+
+**Companion profiles** version independently of this document, and their version
+is stated in their own header. A profile moving to a new version does not change
+this document's version, and vice versa.
+
+| Profile | Profiles | Version |
+|---|---|---|
+| [Recording where an engram came from](./ENGRAM-PROVENANCE-PROFILE.md) | §9 | 0.2 (draft) |
+
 ---
 
 ## 11. Meta-engram extension (informative)
@@ -925,10 +961,16 @@ normative specification of meta-engrams is deferred (a fundable remainder item).
 | §2 | Serialization | STABLE |
 | §3 | ID grammar | STABLE |
 | §4 | Engram object | STABLE (exchange block PROPOSED; provenance.signature RESERVED) |
-| §5 | Pack format & integrity | STABLE |
+| §5 | Pack format & integrity | STABLE (`provenance/` directory and `metadata.provenance` OPTIONAL) |
 | §6 | `.plur` capsule | STABLE (FormatVersion 0x0001; flag bits 2–15 RESERVED) |
 | §7 | Signing (Ed25519) | RESERVED |
 | §8 | Integrity (SHA-256) | STABLE |
-| §9 | PROV-O + Swarm binding | PROPOSED |
+| §9 | PROV-O + Swarm binding | PROPOSED — the PROV-O half is elaborated in the [provenance profile](./ENGRAM-PROVENANCE-PROFILE.md) and implemented in the reference; the Swarm anchor half remains a sketch |
 | §10 | Versioning policy | STABLE |
 | §11 | Meta-engram extension | Informative |
+
+**Companion profiles**
+
+| Profile | Profiles | Maturity |
+|---|---|---|
+| [Recording where an engram came from](./ENGRAM-PROVENANCE-PROFILE.md) | §9 | PROPOSED — implemented in the reference; see its Appendix C for per-section status |

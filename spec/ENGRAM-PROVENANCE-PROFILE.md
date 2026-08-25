@@ -8,12 +8,19 @@ that part should work.
 
 | | |
 |---|---|
-| **Version** | 0.1 (draft) |
-| **Status** | Proposed. You may ignore it. Nothing here is required to follow the Engram Standard. |
-| **Companion to** | [The Engram Standard, version 1](./ENGRAM-STANDARD-v1.md) |
-| **Replaces** | Section 9 of that standard, "Provenance binding" |
-| **Date** | 2026-08-20 Thu |
+| **Version** | 0.2 (draft) |
+| **Status** | Proposed, and implemented in the reference. OPTIONAL to follow: an implementation that ignores this document is still fully conformant to the Engram Standard. An implementation that writes provenance MUST follow this document, so that two such implementations agree. |
+| **Companion to** | [The Engram Standard, version 1.1](./ENGRAM-STANDARD-v1.md) |
+| **Profiles** | Section 9 of that standard, "Provenance binding". It refines that section; it does not replace it, and the standard governs wherever the two overlap. |
+| **Date** | 2026-08-25 |
 | **Licence** | Creative Commons BY 4.0 for the text, Apache 2.0 for any code |
+
+**Revision history**
+
+| Version | Date | What changed |
+|---|---|---|
+| 0.2 | 2026-08-25 | Section 5.3 rewritten from prose into a specification: the pack-level field table, the file layout inside a pack, which engrams a pack record may describe, which way the integrity dependency runs, and how a pack declares that it carries provenance. Section 9 corrected — it named a single file, which cannot hold a pack's worth of records. Wording corrected throughout: this document *profiles* section 9, it does not replace it. |
+| 0.1 | 2026-08-20 | First draft. |
 
 ---
 
@@ -492,7 +499,7 @@ at all. Each has the session identifier in hand, and does not pass it on.
 
 ---
 
-## 5.3 A pack has provenance too
+### 5.3 A pack has provenance too
 
 A pack is how engrams leave one machine and reach another. So a pack needs a record
 of its own, not only one record per engram inside it.
@@ -512,8 +519,162 @@ reader can also see:
 - whether every engram carries a licence, or only some
 
 Two packs of the same size are not equal. One may be direct statements from a named
-expert. The other may be machine guesses from an unnamed source. Today they look
-identical from the outside.
+expert. The other may be machine guesses from an unnamed source. Without a record
+they look identical from the outside.
+
+Everything from here to the end of this section is what an implementer needs. It
+is written out because a pack is the one artifact that crosses between parties,
+so two implementations disagreeing about it is not a cosmetic problem.
+
+#### 5.3.1 Where the files go
+
+A pack that carries provenance ships a `provenance/` directory beside the files
+the Engram Standard already defines (its §5.1):
+
+```
+<pack-name>/
+├── SKILL.md
+├── engrams.yaml
+├── INTEGRITY
+└── provenance/
+    ├── pack.jsonld            one record for the pack as a whole
+    └── <engram-id>.jsonld     one record per engram, named by its identifier
+```
+
+Section 9 of this document describes a single file, because it was written with
+one engram in mind. A pack needs one record per engram plus one for the pack, so
+the layout above is what applies to packs. Both forms are the same JSON-LD.
+
+A pack SHOULD declare the directory in its manifest, as `metadata.provenance:
+true` (Engram Standard §5.2), so a reader can tell without probing the
+filesystem. The declaration is written by the producer and is inside the §5.5
+integrity hash, unlike the records themselves — but it is still a claim, not
+evidence. A reader MUST verify that the directory exists and that the records
+parse before relying on any of it, and MUST NOT treat an absent declaration as
+proof that no records are present.
+
+#### 5.3.2 Which engrams a pack record may describe
+
+**Only the engrams the pack actually ships.** A producer excludes engrams under
+the export privacy rule (Engram Standard §5.4) — private ones, and any whose
+content trips a secret scan. Those exclusions MUST apply to the provenance
+records as well.
+
+This is not a detail. A provenance record names an engram, its claim class, its
+content hash and often who asserted it. Writing a record for an engram the
+content path refused would leak, through the provenance directory, exactly what
+the privacy scan was there to hold back. **Provenance must never become a second
+way to ship something the content path already refused.**
+
+Nor may the pack record's counts include them. A count over the excluded set
+would tell a recipient how many memories were withheld, which is itself a
+disclosure.
+
+#### 5.3.3 Which way the integrity dependency runs
+
+The pack integrity hash covers `SKILL.md` and `engrams.yaml` only (Engram
+Standard §5.5). Files under `provenance/` are therefore **not** covered by it,
+and adding them to the hash would be a breaking change to a stable section.
+
+So the dependency runs the other way round. **The record commits to the pack;
+the pack does not commit to the record.** The pack record carries the pack's
+integrity value in `engram:packIntegrity`, so:
+
+- change the pack, and the value recorded in the provenance record stops
+  matching what the pack now hashes to — the mismatch is detectable
+- change the provenance record alone, and nothing detects it
+
+An implementation MUST NOT present a provenance record as evidence of the pack's
+integrity. It is a description that happens to name the hash. The `INTEGRITY`
+file and the install registry remain the authority, and the section 10.6
+argument applies here in full: this becomes proof only when an outside party
+holds a checkpoint the producer cannot reach.
+
+Ordering follows from this: compute the pack hash first, then build the record.
+
+#### 5.3.4 The pack record
+
+One bundle, one pack entity, one assembly activity, and a shallow stub for every
+member so the record has no dangling reference.
+
+**The bundle**
+
+| Field | Value |
+|---|---|
+| `@id` | `engram:record/pack/<name>@<version>` |
+| `@type` | `["prov:Bundle", "prov:Entity"]` |
+| `prov:generatedAtTime` | when the record was made, not when the pack was assembled |
+| `engram:describes` | the pack identifier |
+| `engram:recordIsSelfContained` | always `true` for a pack — the recipient has none of the producer's files |
+
+**The pack**
+
+| Field | Holds |
+|---|---|
+| `@id` | `engram:pack/<name>@<version>` (section 3) |
+| `@type` | `["prov:Entity", "prov:Collection", "engram:Pack"]` — a collection, because that is what PROV calls a thing with members |
+| `engram:packName`, `engram:packVersion` | the manifest name and version |
+| `prov:generatedAtTime` | when the pack was assembled |
+| `prov:wasGeneratedBy` | the assembly activity below |
+| `prov:hadMember` | one entry per engram shipped |
+| `engram:engramCount` | how many members |
+| `engram:packIntegrity` | the pack's `sha256:` value, per section 5.3.3 |
+| `prov:wasAttributedTo` | who assembled it, when a creator is recorded. Omitted otherwise — never guessed |
+
+**What a reader can judge before opening a single engram.** These are summaries
+over the members, and they are the reason a pack record exists at all.
+
+| Field | Holds |
+|---|---|
+| `engram:claimClassCounts` | a count per claim class (section 4.5). Engrams with none are counted under `unstated`, so the total always equals `engram:engramCount` and a reader can see how much of the pack is unclassified |
+| `engram:licenseChosenCount` | how many engrams carry a licence somebody actually picked |
+| `engram:licenseDefaultedCount` | how many carry the schema default instead (section 8.4) |
+| `engram:licensesChosen` | the distinct chosen licences, sorted. The default is deliberately NOT listed here: listing it would read as "somebody licensed this pack that way" when nobody did |
+| `engram:earliestEngram`, `engram:latestEngram` | the span of member dates. Omitted when no member has a date |
+
+Two counts rather than one is deliberate. A single "licensed" count is ambiguous
+between "has a licence" and "somebody chose one", and every per-engram record in
+a pack carries a licence either way. A reader has to be able to tell how much of
+a pack anybody actually decided about.
+
+**The assembly**
+
+| Field | Value |
+|---|---|
+| `@id` | `engram:act/assemble-<name>-<version>` |
+| `@type` | `["prov:Activity", "engram:AssemblePack"]` |
+| `prov:startedAtTime`, `prov:endedAtTime` | both the assembly time; a pack build is recorded as a moment, not a duration (section 11.2) |
+| `prov:generated` | the pack |
+| `prov:wasAssociatedWith` | the creator, when one is recorded |
+
+**The members**, deliberately shallow — the per-engram files carry the detail,
+and repeating it here would double the pack's provenance for nothing:
+
+| Field | Holds |
+|---|---|
+| `@id` | `engram:<id>` |
+| `@type` | `["prov:Entity", "engram:Engram"]` |
+| `engram:engramType` | the engram's type |
+| `engram:claimClass` | when recorded |
+| `engram:contentHash` | when recorded — this is what ties the stub to the engram in `engrams.yaml` |
+
+#### 5.3.5 The per-engram records inside a pack
+
+Built exactly as sections 4 and 6 specify, with two constraints that follow from
+a pack crossing to a stranger:
+
+1. **Portable mode, always.** A pack record names no other engram, carries no
+   session identifier, and refers to nothing the recipient cannot resolve
+   (section 2.2). A local-mode record inside a pack is a defect.
+2. **No history activities.** The history log does not travel with the pack, and
+   a record that referenced it would fail the standing-on-its-own test. What the
+   engram itself carries — its licence, claim class, attribution, revision links
+   — travels; the log-derived activity list does not.
+
+A worked pack record built by the reference implementation is in
+`spec/examples/example-pack.jsonld`. Where this section and that file disagree,
+the file is the one that has been checked against outside tools — say so in an
+issue rather than guessing.
 
 ---
 
@@ -784,11 +945,26 @@ person stated outright. Today those two look identical.
 
 ## 9. How to write it out
 
-Write records as JSON-LD, the JSON form of the provenance vocabulary. Save them in
-a file named `provenance.jsonld`.
+Write records as JSON-LD, the JSON form of the provenance vocabulary, in files
+with a `.jsonld` extension.
 
 Do not use PROV-JSON, an older and simpler format. JSON-LD is what the surrounding
 ecosystem reads.
+
+**One record per file, and one file per thing described.** An earlier draft said
+to save a record in "a file named `provenance.jsonld`", which works for a single
+engram and cannot hold a pack's worth of records. Where the files go:
+
+| What | Where |
+|---|---|
+| a record for one engram, inside a pack | `provenance/<engram-id>.jsonld` (section 5.3.1) |
+| a record for the pack itself | `provenance/pack.jsonld` (section 5.3.1) |
+| a record kept in your own store | implementation's choice, but records for one engram MUST accumulate rather than overwrite — a record is a snapshot of state that keeps changing, so a later one does not make an earlier one wrong (section 2.1). The reference keeps a timestamped series per engram |
+| a record sent on its own | any filename; it stands alone by construction (section 2.2) |
+
+Do not overwrite a record with an identical one. Two records that differ only in
+their own generation time say the same thing twice, and a directory of those
+teaches a reader to distrust the series.
 
 A saved record must say when it was made, and how much history it covers:
 
@@ -1195,9 +1371,11 @@ problem — the standard is happy either way.
 | 4.3 | activities | proposed |
 | 4.4 | agents | proposed, waiting on 10.1 |
 | 4.5 | kinds of claim | proposed |
+| 5.3 | a pack's own record | proposed, implemented in the reference |
 | 6.2 | invalidation | proposed |
 | 6.4 | ways to suppress a record | background |
 | 8 | licences | proposed |
+| 9 | how to write it out | proposed |
 | 9 | how to write it out | proposed |
 | 10 | what to capture | required before any of sections 4 to 9 work |
 | 10.6 | a log that cannot be edited | deferred — see the section for why |

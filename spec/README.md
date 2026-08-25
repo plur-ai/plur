@@ -15,10 +15,23 @@ producer/consumer in any language without reading the TypeScript.
 
 | File | What it is |
 |---|---|
-| `ENGRAM-STANDARD-v1.md` | The **normative spec** — prose, byte layouts, grammars, invariants, maturity labels. |
+| `ENGRAM-STANDARD-v1.md` | The **normative spec** — prose, byte layouts, grammars, invariants, maturity labels. Revision history is §10.5. |
+| `ENGRAM-PROVENANCE-PROFILE.md` | A **companion profile** of §9 — how to record where an engram came from, as W3C PROV in JSON-LD, at engram and at pack level. Optional to follow; binding on anyone who does. |
 | `engram.schema.json` | Canonical **JSON Schema (Draft 2020-12)** for the engram object. |
 | `pack-manifest.schema.json` | Canonical **JSON Schema (Draft 2020-12)** for the pack manifest. |
+| `scope-metadata.schema.json` | Canonical **JSON Schema (Draft 2020-12)** for scope metadata. |
+| `examples/` | Worked provenance records built from a real store, plus the scripts that check them against outside implementations (`rdflib`, `prov`). |
 | `README.md` | This file. |
+
+### Profiles
+
+A **profile** refines one section of the standard and says exactly how that part
+should work. It never replaces the section it profiles, and the standard governs
+wherever the two overlap. Profiles version independently of the standard.
+
+| Profile | Profiles | Version | Status |
+|---|---|---|---|
+| `ENGRAM-PROVENANCE-PROFILE.md` | §9 (the PROV-O half) | 0.2 (draft) | Proposed; implemented in the reference |
 
 ## What is normative vs proposed
 
@@ -36,7 +49,9 @@ Every section of the spec carries a maturity label. In short:
   derive trust from them. Capsule flag bits 2–15 are also RESERVED.
 - **PROPOSED** — planned profiles, non-normative for v1, documented so the design
   space (and the fundable remainder) is explicit. Covers: the engram `exchange`
-  metadata block (§4.11) and the **PROV-O + Swarm provenance binding** (§9).
+  metadata block (§4.11) and the **PROV-O + Swarm provenance binding** (§9). The
+  PROV-O half of §9 is now worked out in `ENGRAM-PROVENANCE-PROFILE.md` and
+  implemented; the Swarm anchor half remains a sketch.
 - **Informative** — the meta-engram (`META-`) extension (§11).
 
 The maturity index is Appendix B of the spec.
@@ -108,10 +123,16 @@ standard is the NGI/NLnet-fundable scope:
    RFC 8785 JCS over a defined, state-excluding field subset), (c) key
    distribution / `key_id` resolution / revocation. Ship a verifying reader.
 
-4. **PROV-O + Swarm provenance binding (§9 → STABLE).** Fix the `anchor` field
-   shape, the PROV-O/JSON-LD sidecar, the canonical bytes the Swarm reference
-   commits to, and a verifier that resolves anchor → bytes → §8 hash → recorded
-   integrity. Delivers tamper-evident, producer-independent provenance.
+4. **PROV-O + Swarm provenance binding (§9 → STABLE).** The **PROV-O half is
+   done**: `ENGRAM-PROVENANCE-PROFILE.md` specifies the mapping, the pack-level
+   record and the ODRL licence binding, the reference implements it, and
+   `spec/examples/` holds worked records checked against two outside
+   implementations (plur-ai/plur#958). What remains is the **anchoring half** —
+   fix the `anchor` field shape, the canonical bytes the Swarm reference commits
+   to, and a verifier that resolves anchor → bytes → §8 hash → recorded
+   integrity. That is what turns a description into tamper-evident,
+   producer-independent provenance, and profile §10.6 explains why it, rather
+   than local hash chaining, is the thing worth funding.
 
 5. **Interop SDK + second implementation.** A reference reader/writer in at least
    one non-TypeScript language (e.g. Python or Rust) that passes the conformance

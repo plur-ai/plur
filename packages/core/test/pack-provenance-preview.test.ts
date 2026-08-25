@@ -14,7 +14,7 @@
  * because it turns a claim into a belief without anyone deciding to.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Plur } from '../src/index.js'
@@ -110,6 +110,70 @@ describe('previewing what a pack says about its origins', () => {
     const preview = await plur.previewPack(out)
     expect(preview.provenance.present).toBe(false)
     expect(preview.provenance.notes.join(' ')).toContain('no provenance')
+  })
+
+  it('declares the provenance directory in the manifest, inside the integrity hash', async () => {
+    // The records themselves are NOT covered by the §5.5 hash (SKILL.md ‖
+    // engrams.yaml only), so the declaration is the one part of this a reader
+    // gets for free with the integrity check they already do. It is written
+    // before the hash is computed, which is what puts it inside.
+    const plur = await seed()
+    await exportAll(plur)
+    const skill = readFileSync(join(out, 'SKILL.md'), 'utf8')
+    expect(skill).toContain('provenance: true')
+    const hash = readFileSync(join(out, 'INTEGRITY'), 'utf8').trim()
+    const { verifyPackIntegrity } = await import('../src/packs.js')
+    expect(verifyPackIntegrity(out).status).toBe('ok')
+    expect(hash).toMatch(/^sha256:[0-9a-f]{64}$/)
+  })
+
+  it('does not declare provenance on a pack built without it', async () => {
+    const plur = await seed()
+    await exportAll(plur, { provenance: false })
+    expect(readFileSync(join(out, 'SKILL.md'), 'utf8')).not.toContain('provenance:')
+  })
+
+  it('says a pack is damaged when it declares provenance and ships none', async () => {
+    // Corruption, a broken build, or somebody stripping the directory after the
+    // fact. Reporting this as an ordinary "carries no provenance" would hide the
+    // one case where the absence is evidence of something.
+    const plur = await seed()
+    await exportAll(plur)
+    rmSync(join(out, 'provenance'), { recursive: true, force: true })
+    const preview = await plur.previewPack(out)
+    expect(preview.provenance.present).toBe(false)
+    const notes = preview.provenance.notes.join(' ')
+    expect(notes).toContain('DECLARES')
+    expect(notes).toContain('damaged or altered')
+    // And NOT the reassuring wording used for a pack that never had any.
+    expect(notes).not.toContain('That is not a fault')
+  })
+
+  it('flags a manifest that denies the records the pack actually ships', async () => {
+    // Only an EXPLICIT `provenance: false` is a contradiction. It cannot come
+    // out of exportPack, which omits the key instead — so this is a manifest
+    // somebody wrote or edited by hand.
+    const plur = await seed()
+    await exportAll(plur)
+    const skill = readFileSync(join(out, 'SKILL.md'), 'utf8')
+    writeFileSync(join(out, 'SKILL.md'), skill.replace('provenance: true', 'provenance: false'))
+    const preview = await plur.previewPack(out)
+    expect(preview.provenance.present).toBe(true)
+    expect(preview.provenance.notes.join(' ')).toContain('does not declare')
+  })
+
+  it('says nothing about a pack that simply predates the declaration', async () => {
+    // An ABSENT field means "not declared", which is every pack built before
+    // the field existed. Complaining about those would turn a new signal into
+    // noise on the whole existing corpus, and a warning nobody can act on is
+    // one they learn to skip past.
+    const plur = await seed()
+    await exportAll(plur)
+    const skill = readFileSync(join(out, 'SKILL.md'), 'utf8')
+    writeFileSync(join(out, 'SKILL.md'), skill.replace(/\s*provenance: true/, ''))
+    const preview = await plur.previewPack(out)
+    expect(preview.provenance.present).toBe(true)
+    expect(preview.provenance.notes.join(' ')).not.toContain('does not declare')
   })
 
   it('survives a pack whose provenance files are corrupt or forged', async () => {
