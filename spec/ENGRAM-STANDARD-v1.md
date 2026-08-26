@@ -1,8 +1,8 @@
 # The Open Engram Standard
 
-**Version:** 1.1 (draft)
+**Version:** 1.2 (draft)
 **Status:** Working Draft
-**Date:** 2026-08-25
+**Date:** 2026-08-26
 **Editors:** PLUR.ai (plur-ai)
 **License:** This specification is licensed under CC-BY-4.0. Reference code is Apache-2.0.
 **Companion profiles:** [Recording where an engram came from](./ENGRAM-PROVENANCE-PROFILE.md)
@@ -578,10 +578,32 @@ When producing a pack from a live store, a producer MUST exclude:
 
 A producer SHOULD also strip store-local state that is meaningless to a
 recipient: cross-reference `relations.related`/`relations.conflicts`,
-`associations`, local `knowledge_anchors`, and SHOULD reset `activation`
-(fresh `retrieval_strength`, `frequency: 0`) and `feedback_signals` to zero so
-the recipient builds their own usage history. (This mirrors the reference
-`exportPack`.)
+**`relations.supersedes`/`relations.superseded_by`**, `associations`, local
+`knowledge_anchors`, and SHOULD reset `activation` (fresh `retrieval_strength`,
+`frequency: 0`) and `feedback_signals` to zero so the recipient builds their own
+usage history. (This mirrors the reference `exportPack`.)
+
+Supersession edges are store-local in the same way the other cross-references
+are: they name engram ids that mean nothing in the recipient's store, and a stale
+edge landing on an id collision would suppress tension detection between
+unrelated engrams.
+
+A producer MUST also neutralize fields by which a pack could override the
+recipient's own behaviour:
+
+- **`pinned` MUST be removed.** A pinned engram bypasses the relevance gate and
+  is injected unconditionally. A pack is an archive from a stranger, and letting
+  its author decide what is always in front of the recipient's model is a
+  privilege no producer may take.
+- **`commitment: locked` MUST be downgraded to `decided`,** and `locked_at` and
+  `locked_reason` removed with it. A locked engram resists dedup and correction,
+  so shipping one hands the producer a claim the recipient cannot revise.
+
+These two are stated as MUST rather than SHOULD because, unlike the strip list
+above, leaving them in place is not merely untidy — it changes whose judgement
+governs the recipient's store. A consumer SHOULD enforce both on import as well
+rather than trusting the producer, since a hostile pack will not comply
+(see §5.6).
 
 ### 5.5 Pack integrity — STABLE
 
@@ -609,6 +631,37 @@ H = SHA256( bytes(SKILL.md)  ||  bytes(engrams.yaml) )
 > identical hash — `computePackChecksum` delegates to `computePackHash` — so they
 > cannot diverge. Hashing is over **raw file bytes**, so producers and consumers
 > MUST NOT re-serialize before hashing.
+
+#### 5.5.1 Two hashes, two questions
+
+The rule above is about the **pack integrity value**: the hash of the bytes a
+producer shipped, recorded in `INTEGRITY`, and the only value a recipient can
+compare against what they received. It answers *"did this arrive as it was sent?"*
+and it MUST be computed over the received bytes, unmodified.
+
+A consumer that alters content on import — as §5.4's MUST-neutralize rules
+require it to, and as §5.6 permits for sanitisation — then holds something that is
+no longer those bytes. The hash of *that* is a second and different value,
+answering *"has the installed copy been altered since it was installed?"*
+
+**These MUST NOT be conflated.** An implementation that stores the post-import
+hash under the name of the pack integrity value has lost the ability to answer
+the first question at all, and a recipient comparing it against the producer's
+`INTEGRITY` will see a mismatch that means nothing.
+
+An implementation that neutralizes on import therefore records both, named
+distinctly: the shipped value as received, and the installed-content value it
+computes itself. §5.1's statement that "the authoritative integrity record at
+install time is the registry entry" refers to the second — the record of what is
+installed — and does not license overwriting the first.
+
+> **Known divergence in the reference, as of this revision.** `_installPackDir`
+> re-serializes `engrams.yaml` after neutralizing `pinned` and `locked`, then
+> records the hash of the rewritten file as the registry's `integrity`. So for any
+> pack containing a pinned or locked engram, the recorded value is the
+> installed-content hash carrying the pack-integrity name, and the shipped value is
+> compared at the gate and then discarded. Tracked in #1019; the fix is to record
+> both.
 
 ---
 
@@ -828,8 +881,20 @@ Map engram/pack concepts onto [W3C PROV-O]:
 | `sources[].stored_at`, `temporal.learned_at` | `prov:generatedAtTime` |
 | `producer` (capsule) | `prov:wasAttributedTo` / `prov:wasGeneratedBy` |
 
-A pack MAY carry a sidecar `provenance.jsonld` (PROV-O in JSON-LD) inside the
-capsule payload, or reference an external PROV document by URI.
+A pack MAY carry PROV-O records in JSON-LD, or reference an external PROV
+document by URI.
+
+> **Corrected in 1.2.** This paragraph previously read *"A pack MAY carry a
+> sidecar `provenance.jsonld` (PROV-O in JSON-LD) inside the capsule payload"* —
+> a single file, because it was drafted with one engram in mind. A pack needs one
+> record per engram plus one for the pack itself, which a single file cannot hold.
+>
+> The layout is **a `provenance/` directory** containing `pack.jsonld` and one
+> `<engram-id>.jsonld` per engram, specified in §5.3.1 of
+> [the provenance profile](./ENGRAM-PROVENANCE-PROFILE.md) and reflected in §5.1
+> above. The correction is recorded here rather than made silently because §9 of
+> this document governs where it and the profile overlap, so an implementer
+> reading §9 alone was being told to build the wrong thing.
 
 ### 9.3 Swarm anchor (proposed)
 
@@ -914,6 +979,7 @@ they are holding and what changed. Version numbers follow §10.2.
 
 | Version | Date | Change class | What changed |
 |---|---|---|---|
+| 1.2 | 2026-08-26 | Minor (additive) | §5.4: the strip list gains `relations.supersedes`/`superseded_by`, and gains two MUST-neutralize rules for `pinned` and `commitment: locked` — both were performed by the reference and stated nowhere, and both change whose judgement governs the recipient's store rather than merely tidying. §5.5.1 added: the pack integrity value and the installed-content hash answer different questions and MUST NOT be conflated; the reference's current conflation is recorded as a known divergence. §9: the single `provenance.jsonld` sidecar corrected to the `provenance/` directory the profile specifies — §9 governs where the two overlap, so an implementer reading it alone was being told to build the wrong thing. No field removed, no constraint tightened on existing data, no default changed. |
 | 1.1 | 2026-08-25 | Minor (additive) | §4.8: added the OPTIONAL `attribution` and `claim_class` engram fields, marked PROPOSED. §4.12: added `injection_count` and `measured_under`; renamed `reference_count` → `write_count` (consumers MUST backfill on first parse). §3.3: canonical id form gains full ISO-8601 date separators, with the compact form retained as permanently valid legacy (§3.3.1) and the dateless pack form documented (§3.3.2). §5.1/§5.2: an OPTIONAL `provenance/` directory and a `metadata.provenance` declaration. §9: recorded that a companion profile now elaborates it. §4.12 `commitment` gains the `draft` member. No field removed, no constraint tightened, no default changed. |
 | 1.0 | 2026-06-14 | — | Initial working draft. |
 

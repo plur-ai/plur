@@ -10,7 +10,7 @@ that part should work.
 |---|---|
 | **Version** | 0.5 (draft) |
 | **Status** | Proposed, and implemented in the reference. OPTIONAL to follow: an implementation that ignores this document is still fully conformant to the Engram Standard. An implementation that writes provenance MUST follow this document, so that two such implementations agree. |
-| **Companion to** | [The Engram Standard, version 1.1](./ENGRAM-STANDARD-v1.md) |
+| **Companion to** | [The Engram Standard, version 1.2](./ENGRAM-STANDARD-v1.md) |
 | **Profiles** | Section 9 of that standard, "Provenance binding". It refines that section; it does not replace it, and the standard governs wherever the two overlap. |
 | **Date** | 2026-08-26 |
 | **Licence** | Creative Commons BY 4.0 for the text, Apache 2.0 for any code |

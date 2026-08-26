@@ -255,3 +255,71 @@ describe('a pack built to mislead', () => {
     expect(view.notes.join(' ')).not.toContain('records for individual engrams')
   })
 })
+
+describe('the preview can tell the four licence states apart (#1019)', () => {
+  // The profile replaced `engram:licenseIsDefault` with the four-state
+  // `engram:licenseSource` precisely because "the author configured this once"
+  // and "nobody ever chose it" are different facts. The preview read only the
+  // boolean, so it collapsed them again at the one surface a recipient sees.
+  let home: string
+  let out: string
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), 'plur-licsrc-home-'))
+    out = mkdtempSync(join(tmpdir(), 'plur-licsrc-out-'))
+  })
+  afterEach(() => {
+    for (const d of [home, out]) rmSync(d, { recursive: true, force: true })
+  })
+
+  /** Export a one-engram pack, then overwrite its record with the state under test. */
+  const previewWith = async (record: Record<string, unknown>) => {
+    const plur = new Plur({ path: home })
+    await plur.learn('Pools cap at 100 on the shared tier', {
+      type: 'architectural', visibility: 'public', domain: 'ops',
+    })
+    const engrams = await plur.list()
+    plur.exportPack(engrams, out, { name: 'licsrc', version: '1.0.0', license: 'apache-2.0' } as any)
+    const id = engrams[0].id
+    writeFileSync(join(out, 'provenance', `${id}.jsonld`), JSON.stringify({
+      '@graph': [{
+        '@id': `engram:${id}`,
+        '@type': ['prov:Entity', 'engram:Engram'],
+        'engram:license': 'cc-by-4.0',
+        ...record,
+      }],
+    }))
+    const { licences } = (await plur.previewPack(out)).provenance
+    return licences.find(l => l.name === 'cc-by-4.0')
+  }
+
+  const withSource = (source: string) => ({
+    'engram:licenseSource': source,
+    ...(source === 'chosen' || source === 'configuredDefault'
+      ? {} : { 'engram:licenseIsDefault': true }),
+  })
+
+  it('reports a configured default as decided, and names how', async () => {
+    const entry = await previewWith(withSource('configuredDefault'))
+    expect(entry?.chosen).toBe(true)
+    expect(entry?.sources).toContain('configuredDefault')
+  })
+
+  it('reports the schema default as nobody having decided', async () => {
+    const entry = await previewWith(withSource('schemaDefault'))
+    expect(entry?.chosen).toBe(false)
+    expect(entry?.sources).toContain('schemaDefault')
+  })
+
+  it('separates a pack-inherited licence from one chosen for the engram', async () => {
+    expect((await previewWith(withSource('inheritedFromPack')))?.chosen).toBe(false)
+    expect((await previewWith(withSource('chosen')))?.chosen).toBe(true)
+  })
+
+  it('still reads a record written before the four-state field existed', async () => {
+    // Records already in the wild carry only the boolean.
+    const entry = await previewWith({ 'engram:licenseIsDefault': true })
+    expect(entry?.chosen).toBe(false)
+    expect(entry?.sources).toEqual([])
+  })
+})

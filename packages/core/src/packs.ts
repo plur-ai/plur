@@ -289,8 +289,16 @@ export interface PackProvenanceView {
   verified: boolean
   /** Why `verified` is false, in words a reader can act on. */
   verification_note: string
-  /** Distinct licences the pack's engrams carry, most common first. */
-  licences: Array<{ name: string; count: number; chosen: boolean }>
+  /**
+   * Distinct licences the pack's engrams carry, most common first.
+   *
+   * `chosen` answers the coarse question — did anybody decide this. `sources`
+   * carries the four-state `engram:licenseSource` values seen for this licence,
+   * so a reader can tell a licence picked for the engram from one inherited
+   * from the pack or taken from a configured default. Empty for records written
+   * before that field existed.
+   */
+  licences: Array<{ name: string; count: number; chosen: boolean; sources: string[] }>
   /** Engrams naming somebody answerable, out of those with a record. */
   attributed_count: number
   /** Distinct parties named as having asserted something. */
@@ -429,7 +437,7 @@ export function readPackProvenance(
   const packRecord = readJson('pack.jsonld')
   if (packRecord) view.pack_record = packRecord
 
-  const licences = new Map<string, { count: number; chosen: boolean }>()
+  const licences = new Map<string, { count: number; chosen: boolean; sources: string[] }>()
   const parties = new Set<string>()
 
   for (const engram of engrams) {
@@ -442,11 +450,35 @@ export function readPackProvenance(
 
     const licence = subject['engram:license']
     if (typeof licence === 'string') {
-      const chosen = subject['engram:licenseIsDefault'] !== true
+      // Read the four-state field, not the boolean beside it.
+      //
+      // `engram:licenseSource` says WHICH of four ways a licence was arrived at:
+      // chosen on the engram, inherited from the pack, the author's configured
+      // default, or the schema default nobody ever looked at. The profile
+      // replaced the boolean with it precisely because the last two are
+      // different facts — one is a decision made once in advance, the other is
+      // nobody's decision at all.
+      //
+      // Reading only `engram:licenseIsDefault` collapsed them again at the one
+      // surface a recipient sees. A preview reporting "chosen" could mean the
+      // author picked this licence for this memory, or that they set a config
+      // default years ago and have not thought about it since.
+      //
+      // Falls back to the boolean for records written before the four-state
+      // field existed.
+      const source = subject['engram:licenseSource'] as string | undefined
+      const chosen = source
+        ? (source === 'chosen' || source === 'configuredDefault')
+        : subject['engram:licenseIsDefault'] !== true
       const seen = licences.get(licence)
       // One engram that CHOSE a licence is enough to stop calling it defaulted.
-      if (seen) { seen.count++; seen.chosen = seen.chosen || chosen }
-      else licences.set(licence, { count: 1, chosen })
+      if (seen) {
+        seen.count++
+        seen.chosen = seen.chosen || chosen
+        if (source && !seen.sources.includes(source)) seen.sources.push(source)
+      } else {
+        licences.set(licence, { count: 1, chosen, sources: source ? [source] : [] })
+      }
     }
 
     const who = subject['prov:wasAttributedTo']?.['@id']
@@ -467,7 +499,7 @@ export function readPackProvenance(
   }
   view.asserted_by = [...parties].sort()
   view.licences = [...licences.entries()]
-    .map(([name, v]) => ({ name, count: v.count, chosen: v.chosen }))
+    .map(([name, v]) => ({ name, count: v.count, chosen: v.chosen, sources: v.sources.sort() }))
     .sort((a, b) => b.count - a.count)
 
   if (view.engrams_without_record > 0) {
