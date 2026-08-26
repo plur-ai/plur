@@ -285,3 +285,124 @@ describe('an identity comes from config, never from the machine (#961)', () => {
     expect(mcp.attribution.runtime).toEqual({ name: 'plur-mcp', version: '0.18.0' })
   })
 })
+
+describe('who caused an event, as distinct from who asserted the engram (#959)', () => {
+  let dir: string
+  beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'plur-event-actor-')) })
+  afterEach(() => rmSync(dir, { recursive: true, force: true }))
+
+  const activities = (record: any) =>
+    (record['@graph'] as any[]).filter(n =>
+      Array.isArray(n['@type']) && n['@type'].includes('prov:Activity'))
+  const actorOf = (record: any, kind: string) =>
+    activities(record).find(a => (a['@type'] as string[]).includes(kind))?.['engram:causedBy']?.['@id']
+
+  it('does not attribute a correction to the person it corrected', () => {
+    // The collapse an outside reviewer warned about on the epic: a correction
+    // needs both what it replaces and who made it, and merging the two loses
+    // the ability to answer either. Every activity used to take the ENGRAM's
+    // attribution, so a memory Alice asserted and Bob retired showed the
+    // retirement associated with Alice.
+    const plur = new Plur({ path: dir })
+    plur.setIdentity('local:alice')
+    return (async () => {
+      const engram = await plur.learn('Pools cap at 100', { type: 'architectural' })
+      plur.setIdentity('local:bob')
+      await plur.forget(engram.id, 'superseded by measurement')
+
+      const record = await plur.provenanceFor(engram.id, { mode: 'local' }) as any
+      const subject = (record['@graph'] as any[]).find(n =>
+        Array.isArray(n['@type']) && n['@type'].includes('engram:Engram'))
+
+      expect(subject['prov:wasAttributedTo']['@id']).toContain('alice')
+      expect(actorOf(record, 'engram:Learn')).toContain('alice')
+      expect(actorOf(record, 'engram:Retire')).toContain('bob')
+    })()
+  })
+
+  it('records why, alongside who', async () => {
+    const plur = new Plur({ path: dir })
+    const engram = await plur.learn('Pools cap at 100', { type: 'architectural' })
+    await plur.forget(engram.id, 'superseded by measurement')
+    const record = await plur.provenanceFor(engram.id, { mode: 'local' }) as any
+    const retire = activities(record).find(a => (a['@type'] as string[]).includes('engram:Retire'))
+    expect(retire['engram:reason']).toBe('superseded by measurement')
+  })
+
+  it('stamps an actor on events written through any path', async () => {
+    // 28 call sites append history. Stamping centrally is what makes this true
+    // of all of them, including ones added later.
+    const plur = new Plur({ path: dir })
+    plur.setIdentity('local:alex')
+    const engram = await plur.learn('Pools cap at 100', { type: 'architectural' })
+    const { readHistoryForEngram } = await import('../src/history.js')
+    const events = readHistoryForEngram(plur.paths.root, engram.id)
+    expect(events.length).toBeGreaterThan(0)
+    for (const e of events) {
+      expect(e.actor?.asserted_by, `${e.event} has no actor`).toBe('local:alex')
+      expect(e.actor?.runtime?.name, `${e.event} has no runtime`).toBe('plur-core')
+    }
+  })
+})
+
+describe('the derivation chain, the last of the four dormant fields', () => {
+  let dir: string
+  beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'plur-chain-')) })
+  afterEach(() => rmSync(dir, { recursive: true, force: true }))
+
+  it('records ancestors nearest first, transitively', async () => {
+    const plur = new Plur({ path: dir })
+    const a = await plur.learn('Pools cap at 100', { type: 'architectural' })
+    const b = await plur.learn('Pools cap at 150', { type: 'architectural', supersedes: [a.id] })
+    const c = await plur.learn('Pools cap at 200', { type: 'architectural', supersedes: [b.id] })
+
+    const fresh = await plur.getById(c.id) as any
+    expect(fresh.provenance.chain).toEqual([b.id, a.id])
+  })
+
+  it('leaves the block off entirely when there is nothing to put in it', async () => {
+    // An origin of "direct" and an empty chain say nothing, and a block
+    // containing only those is noise on every engram in the store.
+    const plur = new Plur({ path: dir })
+    const engram = await plur.learn('Pools cap at 100', { type: 'architectural' })
+    expect((await plur.getById(engram.id) as any).provenance).toBeUndefined()
+  })
+
+  it('does not hang on a chain that loops back on itself', async () => {
+    // Supersession is acyclic by construction, so this cycle is forged by
+    // editing the store file — which is exactly the scenario worth guarding.
+    // The file is plain YAML precisely so a person can edit it, and a chain
+    // assembled from hand-edited data has no business hanging on a loop
+    // somebody typed.
+    let plur = new Plur({ path: dir })
+    const a = await plur.learn('First', { type: 'architectural' })
+    const b = await plur.learn('Second', { type: 'architectural', supersedes: [a.id] })
+
+    const yaml = await import('js-yaml')
+    const { readFileSync, writeFileSync } = await import('node:fs')
+    const doc = yaml.load(readFileSync(plur.paths.engrams, 'utf8')) as any
+    const first = doc.engrams.find((e: any) => e.id === a.id)
+    first.provenance = { origin: 'direct', chain: [b.id], signature: null }
+    writeFileSync(plur.paths.engrams, yaml.dump(doc))
+
+    plur = new Plur({ path: dir })
+    const c = await plur.learn('Third', { type: 'architectural', supersedes: [b.id] })
+    const chain = (await plur.getById(c.id) as any).provenance.chain
+    // Terminates, visits nothing twice, and stays inside the depth bound.
+    expect(new Set(chain).size).toBe(chain.length)
+    expect(chain.length).toBeLessThanOrEqual(32)
+    expect(chain).toContain(b.id)
+  })
+
+  it('does not list a shared ancestor twice', async () => {
+    const plur = new Plur({ path: dir })
+    const root = await plur.learn('Root fact', { type: 'architectural' })
+    const left = await plur.learn('Left branch', { type: 'architectural', supersedes: [root.id] })
+    const merged = await plur.learn('Merged view', {
+      type: 'architectural', supersedes: [left.id, root.id],
+    })
+    const chain = (await plur.getById(merged.id) as any).provenance.chain
+    expect(new Set(chain).size).toBe(chain.length)
+    expect(chain).toEqual([left.id, root.id])
+  })
+})

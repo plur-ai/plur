@@ -8,7 +8,7 @@ that part should work.
 
 | | |
 |---|---|
-| **Version** | 0.4 (draft) |
+| **Version** | 0.5 (draft) |
 | **Status** | Proposed, and implemented in the reference. OPTIONAL to follow: an implementation that ignores this document is still fully conformant to the Engram Standard. An implementation that writes provenance MUST follow this document, so that two such implementations agree. |
 | **Companion to** | [The Engram Standard, version 1.1](./ENGRAM-STANDARD-v1.md) |
 | **Profiles** | Section 9 of that standard, "Provenance binding". It refines that section; it does not replace it, and the standard governs wherever the two overlap. |
@@ -19,6 +19,7 @@ that part should work.
 
 | Version | Date | What changed |
 |---|---|---|
+| 0.5 | 2026-08-26 | Section 10.1 completed. History events now carry an actor, and a record prefers it over the engram's attribution when saying who caused an activity — otherwise a correction is attributed to the person it corrected, the collapse an outside reviewer warned about on the epic. Section 10.1.2 added for `provenance.chain`, the last of the four origin fields nothing read or wrote: ancestors nearest first, bounded, cycle-guarded, and explicitly a shortcut the history log outranks. |
 | 0.4 | 2026-08-26 | Section 10.1 is largely done: an identity now comes from `provenance.identity` in configuration, never from the operating system account, with a per-write override and the `unidentified` marker when nobody is set; the software that wrote an engram is recorded on every write. The marker counts as unanswered even though it is recorded, so a memory nobody is accountable for cannot report itself complete. Section 8 fails closed on the schema default too — it was closed on a licence we could not recognise and open on one nobody selected. That, rather than deleting `provenance.license`, is how engram-level copyright becomes opt-in without a major version. |
 | 0.3 | 2026-08-26 | Licence work. Section 8 now separates a copyright licence from usage terms and says which one it maps. Section 8.4's boolean became `engram:licenseSource` with four values, because a licence the author configured once was being reported like the schema value nobody chose. Pack export now REQUIRES a chosen licence — the one field where silence does not produce silence, since the schema fills in a share-alike grant nobody agreed to. Members with no licence inherit the pack's, marked as inheritance rather than choice. Section 4.5 gained the requirement that a claim class be visible at injection, not only in a record nobody asks for mid-session — reported from outside against a working implementation. |
 | 0.2 | 2026-08-25 | Section 5.3 rewritten from prose into a specification: the pack-level field table, the file layout inside a pack, which engrams a pack record may describe, which way the integrity dependency runs, and how a pack declares that it carries provenance. Section 9 corrected — it named a single file, which cannot hold a pack's worth of records. Wording corrected throughout: this document *profiles* section 9, it does not replace it. |
@@ -1253,10 +1254,22 @@ surface may present it as though something did. The reference reports
 `identity_stated`, deliberately not `identity_known`, because a tester read the
 latter as verification and it returned true for a name they had invented.
 
-**Still missing: an actor on log EVENTS.** The engram now says who asserted it.
-A history event still does not say who caused it, so §6.1's gap stands —
-a replacement carries no actor, and `chain` stays empty. That is the next piece,
-and it is now unblocked.
+**Log events carry an actor too.** A history event records who caused it, in the
+same shape as the engram's `attribution`, and a record MUST prefer it over the
+engram's when building the activity's `prov:wasAssociatedWith`.
+
+They answer different questions, and merging them answers neither. An engram
+asserted by one person and retired by another has two answers; a record that
+uses the engram's attribution for both shows the retirement associated with the
+asserter — the correction attributed to the person it corrected.
+
+An implementation SHOULD stamp the actor in one place rather than at each event
+site. The reference has 28 of them, and a policy applied at 28 call sites is one
+that will be missed at the 29th.
+
+Events written before the field was populated carry no actor. A reader MUST fall
+back to the engram's attribution for those, and MUST NOT treat the absence as
+meaning the asserter caused the event.
 
 ### 10.1.1 The original analysis
 
@@ -1278,6 +1291,28 @@ Two of their rules are worth copying word for word. **Store hashes, not
 payloads**, and keep anything sensitive under a stated retention policy.
 **Identify the running process, not a shared account.** If every action
 authenticates as the same long-lived account, attribution collapses.
+
+### 10.1.2 The derivation chain
+
+`provenance.chain` holds the ancestors of an engram, nearest first. It was the
+last of the four origin fields that nothing read and nothing wrote.
+
+It is a **shortcut, not the truth**. Section 2.1 governs: where the chain and the
+history log disagree, the log wins. It exists so a reader can see lineage without
+walking a log they may not have — which is the normal case for a portable record.
+
+Three rules.
+
+**Nearest first, replacements before derivations.** An engram that replaces B,
+which was derived from A, has B as its immediate ancestor.
+
+**Bounded and cycle-guarded.** Supersession is acyclic by construction, but a
+chain assembled from a store somebody can hand-edit must terminate regardless.
+The reference visits nothing twice and stops at 32.
+
+**Incomplete is allowed.** A chain built where ancestors are not to hand is
+shorter, not wrong. That is what makes the log authoritative rather than the
+chain.
 
 ### 10.2 Version history — required for section 4.2
 

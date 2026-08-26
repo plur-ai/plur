@@ -38,7 +38,7 @@ import { detectSecrets, detectSensitive, sensitivityCategory, SCAN_TRUNCATED } f
 import type { SecretMatch } from './secrets.js'
 import { SENSITIVITY_CATEGORIES, type ScopeMetadata, type SensitivityCategory } from './schemas/scope-metadata.js'
 import { rankScopes, SCOPE_MATCH_THRESHOLD, type ScopeSignals, type ScopeCandidate } from './scope-routing.js'
-import { mintedIdsWithPrefix, appendHistory, readHistoryForEngram, generateEventId, generateInjectionId, computeQueryHash, findLatestInjectionFor, countInjectionEvents, type InjectionEventCounts } from './history.js'
+import { mintedIdsWithPrefix, appendHistory, readHistoryForEngram, type HistoryEvent as HistoryEventType, generateEventId, generateInjectionId, computeQueryHash, findLatestInjectionFor, countInjectionEvents, type InjectionEventCounts } from './history.js'
 import { computeContentHash, isHashable } from './content-hash.js'
 import { isLocalOnlyScope, assertScopeNamesATarget } from './scope-target.js'
 import { orderBySupersedes } from './outbox-order.js'
@@ -722,16 +722,76 @@ function isStoreTeardownError(err: unknown): boolean {
  * would be indistinguishable from one somebody picked, and the whole point of
  * marking defaults is that the difference is visible.
  */
-function buildProvenanceBlock(
-  context?: LearnContext,
-): NonNullable<Engram['provenance']> | undefined {
-  if (!context?.license) return undefined
-  return {
-    origin: context.source ?? (context.session_episode_id ? `session:${context.session_episode_id}` : 'direct'),
-    chain: [],
-    signature: null,
-    license: context.license,
+/** How far back a derivation chain is followed before it is truncated. */
+const MAX_CHAIN_DEPTH = 32
+
+/**
+ * The ancestors of a new engram, nearest first (#958, spec §4.1).
+ *
+ * `chain` was the last of the four origin fields that nothing ever wrote — not
+ * read anywhere, not written anywhere, for the whole life of the schema.
+ *
+ * It is a SHORTCUT, not the truth. Section 2.1 of the profile is explicit that
+ * where the shortcut and the history log disagree, the log wins. It exists so a
+ * reader can see the lineage without walking a log they may not have — which is
+ * exactly the case for a portable record.
+ *
+ * `supersedes` comes before `derived_from` because a replacement is the nearer
+ * relationship: engram C that replaces B, which was derived from A, has B as its
+ * immediate ancestor.
+ *
+ * The walk is bounded and cycle-guarded. Neither should happen — supersession is
+ * acyclic by construction — but a chain built from store data that a user can
+ * edit by hand has no business hanging on a loop somebody typed.
+ */
+function buildChain(
+  context: LearnContext | undefined,
+  ancestorsOf: (id: string) => string[],
+): string[] {
+  const immediate = [...(context?.supersedes ?? []), ...(context?.derived_from ? [context.derived_from] : [])]
+  const chain: string[] = []
+  const seen = new Set<string>()
+  const queue = [...immediate]
+  while (queue.length && chain.length < MAX_CHAIN_DEPTH) {
+    const id = queue.shift() as string
+    if (!id || seen.has(id)) continue
+    seen.add(id)
+    chain.push(id)
+    for (const parent of ancestorsOf(id)) {
+      if (!seen.has(parent)) queue.push(parent)
+    }
   }
+  return chain
+}
+
+/**
+ * The origin block, written when there is something to record in it.
+ *
+ * Was gated on a licence alone, which meant the other three fields could only
+ * be written by somebody who happened to be licensing their memory — so `chain`
+ * stayed empty even where the lineage was known. It is now written whenever any
+ * of origin, chain or licence has content.
+ *
+ * A licence is still only recorded when somebody chose one. A default written
+ * here would be indistinguishable from a decision, which is the whole point of
+ * marking defaults.
+ */
+function buildProvenanceBlock(
+  context: LearnContext | undefined,
+  ancestorsOf: (id: string) => string[] = () => [],
+): NonNullable<Engram['provenance']> | undefined {
+  const chain = buildChain(context, ancestorsOf)
+  const origin = context?.source
+    ?? (context?.session_episode_id ? `session:${context.session_episode_id}` : undefined)
+  if (!context?.license && !origin && chain.length === 0) return undefined
+  return {
+    // `direct` only when there is other content worth a block. As the sole
+    // occupant it said nothing at all.
+    origin: origin ?? 'direct',
+    chain,
+    signature: null,
+    ...(context?.license ? { license: context.license } : {}),
+  } as NonNullable<Engram['provenance']>
 }
 
 /**
@@ -1757,6 +1817,53 @@ export class Plur {
   }
 
   /**
+   * Append a history event, stamped with who caused it (#959).
+   *
+   * Every event site in this class goes through here rather than calling
+   * `appendHistory` directly, for the same reason `buildAttribution` exists:
+   * there are 28 of them, and a policy applied at 28 call sites is a policy
+   * that will be missed at the 29th. Stamping centrally also means a new event
+   * type gets an actor without its author having to know that it should.
+   *
+   * A caller that knows better — a dedup pass acting on behalf of somebody
+   * else, say — passes its own `actor` and this leaves it alone.
+   *
+   * The actor answers a DIFFERENT question from the engram's `attribution`.
+   * Attribution says who asserted the statement; this says who caused this
+   * event. An engram asserted by one person and retired by another has two
+   * answers, and collapsing them loses both — which is precisely what a reader
+   * auditing a correction needs to know.
+   */
+  private _appendHistory(event: HistoryEventType): void {
+    if (!event.actor) {
+      event.actor = {
+        asserted_by: this._configuredIdentity() ?? ATTRIBUTION_UNIDENTIFIED,
+        runtime: { name: 'plur-core' },
+      }
+    }
+    appendHistory(this.paths.root, event)
+  }
+
+  /**
+   * The recorded ancestors of one engram, for extending a derivation chain.
+   *
+   * Reads the chain the ancestor already carries rather than walking the graph
+   * again — each engram's chain was resolved when it was written, so this is
+   * one lookup deep instead of a traversal per write.
+   *
+   * Takes the already-loaded engram list rather than reading the store: both
+   * call sites have it in hand, and a store read inside the write path would
+   * add latency to every learn for a field that is a convenience. An ancestor
+   * that is not in the list contributes nothing, which shortens the chain and
+   * never fails the write.
+   */
+  private _ancestorsOf(loaded: Engram[], id: string): string[] {
+    const engram = loaded.find(e => e.id === id)
+    const chain = (engram as { provenance?: { chain?: string[] } } | undefined)?.provenance?.chain
+    return Array.isArray(chain) ? chain : []
+  }
+
+  /**
    * The identity this user configured, if any (`provenance.identity`).
    *
    * Returns undefined when unset, and `buildAttribution` then writes the
@@ -1884,7 +1991,7 @@ export class Plur {
     // difference between "a duplicate was counted" and "my memory vanished".
     // The caller is handed an engram it did not write; the log should say so.
     try {
-      appendHistory(this.paths.root, {
+      this._appendHistory({
         event: 'engram_duplicate_absorbed',
         engram_id: target.id,
         timestamp: new Date().toISOString(),
@@ -2123,7 +2230,7 @@ export class Plur {
     const scopeChanged = hit.scope !== previousScope
     const commitmentChanged = hit.commitment !== previousCommitment
     if (scopeChanged || commitmentChanged || persistedTo === 'in-memory') {
-      appendHistory(this.paths.root, {
+      this._appendHistory({
         event: 'recurrence_detected',
         engram_id: hit.id,
         timestamp: lockTimestamp,
@@ -2788,7 +2895,7 @@ export class Plur {
         // honest, a guessed one is not.
         attribution: buildAttribution(context, this._configuredIdentity()),
         claim_class: context?.claim_class,
-        provenance: buildProvenanceBlock(context),
+        provenance: buildProvenanceBlock(context, id => this._ancestorsOf(engrams, id)),
         dual_coding: context?.dual_coding,
         polarity: null,
         content_hash: computeContentHash(statement),
@@ -2979,7 +3086,7 @@ export class Plur {
           logger.warning(`[plur:outbox] background push for ${engram.id} failed unexpectedly: ${(err as Error).message}`)
         })
 
-        appendHistory(this.paths.root, {
+        this._appendHistory({
           event: 'engram_created',
           engram_id: engram.id,
           timestamp: now,
@@ -2997,7 +3104,7 @@ export class Plur {
         await this._updateEngrams(engrams, supersededTargets)
       }
       await this._syncIndex()
-      appendHistory(this.paths.root, {
+      this._appendHistory({
         event: 'engram_created',
         engram_id: engram.id,
         timestamp: now,
@@ -3089,7 +3196,7 @@ export class Plur {
       const top = ranked[0]
       if (top.score >= NEAR_DUPLICATE_OBSERVATION_FLOOR) {
         try {
-          appendHistory(this.paths.root, {
+          this._appendHistory({
             event: 'dedup_near_duplicate',
             engram_id: top.id,
             timestamp: new Date().toISOString(),
@@ -3232,7 +3339,7 @@ export class Plur {
         // (its id was just minted above).
         await this._appendEngram(engrams, localPlaceholder)
         await this._syncIndex()
-        appendHistory(this.paths.root, {
+        this._appendHistory({
           event: 'engram_created',
           engram_id: localPlaceholder.id,
           timestamp: now,
@@ -3252,7 +3359,7 @@ export class Plur {
     // A bookkeeping write must never be able to undo, or appear to undo, a
     // commit that succeeded.
     try {
-      appendHistory(this.paths.root, {
+      this._appendHistory({
         event: 'engram_created',
         engram_id: serverEngram.id,
         timestamp: now,
@@ -3354,7 +3461,13 @@ export class Plur {
       // honest, a guessed one is not.
       attribution: buildAttribution(context, this._configuredIdentity()),
       claim_class: context?.claim_class,
-      provenance: buildProvenanceBlock(context),
+      // No ancestor lookup on this path: `_buildEngramShape` is synchronous and
+      // holds no engram list, and reading the store here would put disk I/O in
+      // the middle of a remote write. The chain gets the immediate ancestors
+      // only — shorter than the local path produces, and correct as far as it
+      // goes. Section 2.1 of the profile makes the history log authoritative
+      // over the chain precisely so a shortcut may be incomplete.
+      provenance: buildProvenanceBlock(context, () => []),
       dual_coding: context?.dual_coding,
       polarity: null,
       content_hash: computeContentHash(statement),
@@ -5163,7 +5276,7 @@ export class Plur {
     if (injected_ids.length > 0) {
       const injection_id = generateInjectionId()
       try {
-        appendHistory(this.paths.root, {
+        this._appendHistory({
           event: 'co_injection',
           engram_id: injection_id,
           timestamp: new Date().toISOString(),
@@ -5279,7 +5392,7 @@ export class Plur {
         if (!remoteEngram) throw new Error(`Engram "${id}" not found in store "${scope}"`)
         await driver.feedback(serverId, signal)
         try {
-          appendHistory(this.paths.root, {
+          this._appendHistory({
             event: 'feedback_received',
             engram_id: id,
             timestamp: new Date().toISOString(),
@@ -5380,7 +5493,7 @@ export class Plur {
       // reject the call, and a retry then applied the signal a SECOND time
       // (#813, audit finding 13). Log and continue: the mutation committed.
       try {
-        appendHistory(this.paths.root, {
+        this._appendHistory({
           event: 'feedback_received',
           engram_id: id,
           timestamp: new Date().toISOString(),
@@ -5494,7 +5607,7 @@ export class Plur {
         await driver.feedback(serverId, signal)
         // Same reasoning as the local path: the remote already counted it.
         try {
-          appendHistory(this.paths.root, {
+          this._appendHistory({
             event: 'feedback_received',
             engram_id: id,
             timestamp: new Date().toISOString(),
@@ -5530,7 +5643,7 @@ export class Plur {
       const injectionId = this._lastInjectionByEngram.get(engramId)
         ?? findLatestInjectionFor(this.paths.root, engramId)?.injection_id
       if (!injectionId) return
-      appendHistory(this.paths.root, {
+      this._appendHistory({
         event: 'injection_outcome',
         engram_id: engramId,
         timestamp: new Date().toISOString(),
@@ -5961,7 +6074,7 @@ export class Plur {
             + `Check that the token has delete rights for that scope.`,
           )
         }
-        appendHistory(this.paths.root, {
+        this._appendHistory({
           event: 'engram_retired',
           engram_id: id,
           timestamp: new Date().toISOString(),
@@ -6121,7 +6234,7 @@ export class Plur {
       // update, not a removal.
       await this._updateEngrams(engrams, [engram])
       await this._syncIndex()
-      appendHistory(this.paths.root, {
+      this._appendHistory({
         event: newCount === 0 ? 'engram_retired' : 'engram_decremented',
         engram_id: id,
         timestamp: new Date().toISOString(),
@@ -6182,7 +6295,7 @@ export class Plur {
 
         await this._writeEngrams(storeInfo.path, storeEngrams)
         await this._syncIndex()
-        appendHistory(this.paths.root, {
+        this._appendHistory({
           event: newCount === 0 ? 'engram_retired' : 'engram_decremented',
           engram_id: id,
           timestamp: new Date().toISOString(),
@@ -6272,7 +6385,7 @@ export class Plur {
       if (found) {
         const removed = await driver.remove(serverId)
         if (removed) {
-          appendHistory(this.paths.root, {
+          this._appendHistory({
             event: 'engram_retired',
             engram_id: id,
             timestamp: new Date().toISOString(),
@@ -6531,7 +6644,7 @@ export class Plur {
       if (!opts.keepLocal) {
         await this._retireRescopedSource(id, target, serverId)
       }
-      appendHistory(this.paths.root, {
+      this._appendHistory({
         event: 'engram_rescoped',
         engram_id: id,
         timestamp: now,
@@ -6591,7 +6704,7 @@ export class Plur {
         error: `Engram ${id} changed underneath the rescope (retired or removed concurrently) — nothing written`,
       }
     }
-    appendHistory(this.paths.root, {
+    this._appendHistory({
       event: 'engram_rescoped',
       engram_id: id,
       timestamp: now,
@@ -6645,7 +6758,7 @@ export class Plur {
       await this._updateEngrams(fresh, [t])
       await this._syncIndex()
     })
-    appendHistory(this.paths.root, {
+    this._appendHistory({
       event: 'engram_retired',
       engram_id: id,
       timestamp: now,
@@ -7495,7 +7608,7 @@ export class Plur {
         const idx = engrams.findIndex(e => e.id === engram.id)
         if (idx !== -1) engrams.splice(idx, 1)
         flushed++
-        appendHistory(this.paths.root, {
+        this._appendHistory({
           event: 'engram_created',
           engram_id: engram.id,
           timestamp: now.toISOString(),
@@ -7599,7 +7712,7 @@ export class Plur {
       session_episode_id: episodeId,
     })
 
-    appendHistory(this.paths.root, {
+    this._appendHistory({
       event: 'engram_promoted',
       engram_id: engram.id,
       timestamp: new Date().toISOString(),
@@ -7655,7 +7768,7 @@ export class Plur {
 
     // Log the failure event
     const failureEventId = generateEventId()
-    appendHistory(this.paths.root, {
+    this._appendHistory({
       event: 'failure_reported',
       engram_id: engramId,
       timestamp: new Date().toISOString(),
@@ -7725,7 +7838,7 @@ Generate an improved version of the procedure that prevents this failure. Return
             await this._writeEngrams(this.paths.engrams, engrams)
             await this._syncIndex()
 
-            appendHistory(this.paths.root, {
+            this._appendHistory({
               event: 'procedure_evolved',
               engram_id: engramId,
               timestamp: now,
@@ -7769,7 +7882,7 @@ Generate an improved version of the procedure that prevents this failure. Return
             const driver = this._getRemoteDriver({ url: entry.url, token: entry.token, scope: entry.scope })
             const patched = await driver.patch(serverId, { statement: improved.trim() })
             if (patched) {
-              appendHistory(this.paths.root, {
+              this._appendHistory({
                 event: 'procedure_evolved',
                 engram_id: engramId,
                 timestamp: now,
@@ -8055,7 +8168,7 @@ Generate an improved version of the procedure that prevents this failure. Return
         out.push(record)
         newCount++
         try {
-          appendHistory(this.paths.root, {
+          this._appendHistory({
             event: 'contradiction_detected',
             engram_id: pair.id_a,
             timestamp: nowIso,
@@ -8195,7 +8308,7 @@ Generate an improved version of the procedure that prevents this failure. Return
       stamp(engram)
       await this._writeEngrams(this.paths.engrams, engrams)
       await this._syncIndex()
-      appendHistory(this.paths.root, {
+      this._appendHistory({
         event: 'engram_retired',
         engram_id: id,
         timestamp: new Date().toISOString(),
@@ -8221,7 +8334,7 @@ Generate an improved version of the procedure that prevents this failure. Return
         stamp(engram)
         await this._writeEngrams(storeInfo.path, storeEngrams)
         await this._syncIndex()
-        appendHistory(this.paths.root, {
+        this._appendHistory({
           event: 'engram_retired',
           engram_id: id,
           timestamp: new Date().toISOString(),
@@ -9500,7 +9613,7 @@ Generate an improved version of the procedure that prevents this failure. Return
   ): { previous: string | null; next: string | null } {
     const previous = this._sessionScopes.get(opts?.session)
     this._sessionScopes.set(scope, opts?.session)
-    appendHistory(this.paths.root, {
+    this._appendHistory({
       event: 'session_scope_changed',
       engram_id: '', // session-level event — no engram (see HistoryEvent doc)
       timestamp: new Date().toISOString(),

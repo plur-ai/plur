@@ -68,6 +68,25 @@ const DECISION_SURFACES = [
   ['quality.ts'],
 ] as const
 
+/**
+ * Fields whose reader is a record builder rather than an injection surface.
+ *
+ * `actor` is the case that made this list necessary. It answers "who caused
+ * this event", which nothing decides at injection time — it is genuinely an
+ * audit-time question. But it spent its whole life written by two call sites
+ * and read by nobody at all, which is the failure this file exists to catch.
+ *
+ * So the bar for these is lower but not absent: SOMETHING must read them.
+ */
+const RECORDED_FIELDS: Array<{ field: string; readers: string[][]; why: string }> = [
+  {
+    field: 'actor',
+    readers: [['provenance.ts']],
+    why: 'who caused a history event, as distinct from who asserted the engram — '
+      + 'without it a correction is attributed to the person it corrected',
+  },
+]
+
 /** Fields that exist to change how much a reader trusts a memory. */
 const TRUST_FIELDS: Array<{ field: string; why: string }> = [
   {
@@ -95,6 +114,17 @@ describe('a trust-bearing field is read where the decision is made', () => {
         + `That is not the same thing: those are produced when somebody asks, and nobody `
         + `asks mid-session. Wire it into where the memory is actually used, or delete the field.\n\n`
         + `Searched: ${DECISION_SURFACES.map(p => p.join('/')).join(', ')}`,
+      ).toBe(true)
+    })
+  }
+
+  for (const { field, readers, why } of RECORDED_FIELDS) {
+    it(`\`${field}\` is read by something — ${why}`, () => {
+      const text = readers.map(p => { try { return readCode(...p) } catch { return '' } }).join('\n')
+      expect(
+        text.includes(field),
+        `\`${field}\` is written and nothing reads it. It was in exactly that state `
+        + `for the whole life of the field: two call sites wrote it, no reader existed.`,
       ).toBe(true)
     })
   }

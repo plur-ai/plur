@@ -730,7 +730,32 @@ export function buildProvenanceRecord(
       }
     }
 
-    if (agents.associatedWith) act['prov:wasAssociatedWith'] = { '@id': agents.associatedWith }
+    // Who caused THIS event, in preference to who asserted the engram.
+    //
+    // These are different questions and the record was answering the wrong one.
+    // Every activity took the engram's attribution, so a memory asserted by one
+    // person and retired by another showed the retirement associated with the
+    // asserter — the correction attributed to the person it corrected. An
+    // outside reviewer warned about exactly this collapse on the epic: a
+    // correction needs both what it replaces and who made it, and merging them
+    // loses the ability to answer either.
+    //
+    // Falls back to the engram's attribution only when the event carries no
+    // actor, which is every event written before this field was populated.
+    const eventAgents = ev.actor ? agentNodes({ attribution: ev.actor } as unknown as Engram) : undefined
+    const associated = eventAgents?.associatedWith ?? agents.associatedWith
+    if (associated) act['prov:wasAssociatedWith'] = { '@id': associated }
+    if (eventAgents?.attributedTo) {
+      // Say who was answerable for the event itself, distinct from
+      // `prov:wasAttributedTo` on the engram.
+      act['engram:causedBy'] = { '@id': eventAgents.attributedTo }
+    }
+    // Nodes for agents that appear only in the log, so nothing dangles.
+    if (eventAgents?.nodes.length) {
+      for (const node of eventAgents.nodes) {
+        if (!graph.some(n => n['@id'] === node['@id'])) graph.push(node)
+      }
+    }
     graph.push(act)
   }
 
