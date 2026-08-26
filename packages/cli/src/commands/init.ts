@@ -1,4 +1,5 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync, chmodSync } from 'fs'
+import { execFileSync } from 'child_process'
 import { join, dirname } from 'path'
 import { fileURLToPath } from 'url'
 import { homedir, platform } from 'os'
@@ -15,6 +16,8 @@ import {
   cursorProjectMcpConfigPath,
   cursorProjectHooksConfigPath,
   cursorRulesPath,
+  codexHome,
+  codexHooksConfigPath,
 } from '../mcp-config.js'
 import {
   buildCursorHooks,
@@ -23,6 +26,13 @@ import {
   mergeCursorHooks,
   hasPlurCursorHooks,
 } from '../cursor-hooks.js'
+import {
+  buildCodexHooks,
+  readCodexHooksConfig,
+  writeCodexHooksConfig,
+  mergeCodexHooks,
+  hasPlurCodexHooks,
+} from '../codex-hooks.js'
 
 /**
  * plur init — install Claude Code hooks AND register the plur MCP server.
@@ -651,6 +661,136 @@ function installCursor(cmd: string): string {
     `gitignored .cursor/rules/plur-context.mdc, .cursor/rules/plur-reminder.mdc`
 }
 
+// ── Codex ───────────────────────────────────────────────────────────────────
+
+function shouldSetupCodex(args: string[], env: NodeJS.ProcessEnv = process.env): boolean {
+  if (args.includes('--no-codex')) return false
+  if (args.includes('--codex')) return true
+  return existsSync(codexHome(env))
+}
+
+/**
+ * Register the plur MCP server with Codex by shelling out to `codex mcp add`
+ * rather than editing `config.toml` ourselves.
+ *
+ * Codex's config is TOML, and hand-writing TOML would mean either taking a
+ * dependency or doing string surgery on a file that also holds the user's
+ * model, profiles, projects and other MCP servers — the exact shape of edit
+ * that eats a hand-authored config when it goes wrong. `codex mcp add` is a
+ * supported, versioned interface that does it correctly.
+ *
+ * Returns a status string; never throws. If the `codex` binary is not on
+ * PATH (perfectly possible — `~/.codex/` can exist from a since-removed
+ * install), we say so and print the manual snippet instead of failing init.
+ */
+function installCodexMcp(): string {
+  const entry = buildMcpServerEntry()
+
+  let listed = ''
+  try {
+    listed = execFileSync('codex', ['mcp', 'list'], {
+      encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 15_000,
+    })
+  } catch (err: unknown) {
+    const code = (err as { code?: string }).code
+    if (code === 'ENOENT') {
+      return 'skipped — the `codex` binary is not on PATH. Install Codex, then re-run `plur init --codex`'
+    }
+    // `mcp list` can fail for reasons that don't block `mcp add` (an
+    // unrelated broken server entry, for one). Fall through and try to add.
+  }
+
+  // Codex has no "update this server" verb, and `add` on an existing name
+  // errors rather than replacing. Detecting the existing entry lets us
+  // report honestly instead of swallowing that error as a failure.
+  if (/(^|\s)plur(\s|$)/m.test(listed)) {
+    return 'already registered (run `codex mcp remove plur` first if you need to re-point it)'
+  }
+
+  try {
+    const args = ['mcp', 'add', 'plur']
+    if (entry.env) for (const [k, v] of Object.entries(entry.env)) args.push('--env', `${k}=${v}`)
+    args.push('--', entry.command, ...entry.args)
+    execFileSync('codex', args, { stdio: ['ignore', 'ignore', 'pipe'], timeout: 15_000 })
+    return 'registered via `codex mcp add`'
+  } catch (err: unknown) {
+    const stderr = String((err as { stderr?: Buffer }).stderr ?? '').trim()
+    return `FAILED (${stderr || (err as Error).message}) — add it by hand: ` +
+      `[mcp_servers.plur] command = "${entry.command}"`
+  }
+}
+
+function installCodex(cmd: string, env: NodeJS.ProcessEnv = process.env): string {
+  const hooksPath = codexHooksConfigPath(env)
+
+  // Same refusal as the Cursor path: readCodexHooksConfig() treats
+  // unparseable JSON as empty (a safe default for READING), but writing that
+  // back would destroy a hand-edited-but-malformed hooks.json along with any
+  // non-plur entries in it.
+  let hooksStatus: string
+  let hooksWritten = false
+  const exists = existsSync(hooksPath)
+  let parses = true
+  if (exists) {
+    try { JSON.parse(readFileSync(hooksPath, 'utf8')) } catch { parses = false }
+  }
+  if (exists && !parses) {
+    hooksStatus = `skipped — ${hooksPath} exists but is not valid JSON; fix it by hand, then re-run \`plur init --codex\``
+  } else {
+    const existing = readCodexHooksConfig(hooksPath)
+    const had = hasPlurCodexHooks(existing)
+    writeCodexHooksConfig(hooksPath, mergeCodexHooks(existing, buildCodexHooks(cmd)))
+    hooksStatus = had ? 'upgraded' : 'installed'
+    hooksWritten = true
+  }
+
+  const mcpStatus = installCodexMcp()
+  const agentsStatus = installAgentsMd()
+
+  return [
+    `Codex: hooks ${hooksStatus} (${hooksPath})`,
+    `  MCP server: ${mcpStatus}`,
+    `  AGENTS.md:  ${agentsStatus}`,
+    ...(hooksWritten ? [CODEX_TRUST_NOTICE] : []),
+  ].join('\n')
+}
+
+/**
+ * Codex fingerprints every non-managed hook and refuses to run it until it
+ * has been reviewed — and in `codex exec` there is no review UI, so an
+ * untrusted hook produces no output, no warning and exit 0. That is
+ * indistinguishable from a config Codex never read (verified on 0.149.1:
+ * the same hooks that worked under `--dangerously-bypass-hook-trust` were
+ * silently inert without it). Project `trust_level = "trusted"` does not
+ * cover hooks, and a hand-written `trusted_hash` that doesn't match is also
+ * skipped silently with no hint of the expected value — so there is nothing
+ * `plur init` can write to pre-trust these. The user has to do it once.
+ *
+ * This is why the Codex install report does not end on "restart Codex".
+ */
+const CODEX_TRUST_NOTICE =
+  '  ⚠ ONE MANUAL STEP: Codex will not run these hooks until you trust them.\n' +
+  '    Open Codex, run /hooks, and trust the PLUR entries. Until you do, they are\n' +
+  '    skipped SILENTLY — no warning, no error, memory simply never loads.'
+
+function installAgentsMd(cwd: string = process.cwd()): string {
+  const marker = '## PLUR Memory'
+  const projectAgents = join(cwd, 'AGENTS.md')
+  const globalAgents = join(codexHome(), 'AGENTS.md')
+  const target = existsSync(projectAgents) ? projectAgents
+    : existsSync(globalAgents) ? globalAgents
+    : projectAgents
+
+  if (existsSync(target)) {
+    const content = readFileSync(target, 'utf8')
+    if (content.includes(marker)) return `already in ${target}`
+    writeFileSync(target, content.trimEnd() + '\n\n' + CLAUDE_MD_SECTION)
+    return `added to ${target}`
+  }
+  writeFileSync(target, `# AGENTS.md\n\n${CLAUDE_MD_SECTION}`)
+  return `created ${target}`
+}
+
 function writeSettings(path: string, settings: Settings): void {
   mkdirSync(join(path, '..'), { recursive: true })
   writeFileSync(path, JSON.stringify(settings, null, 2) + '\n')
@@ -818,6 +958,10 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   // Register in Claude Desktop too
   const desktopStatus = installDesktopMcp(args)
 
+  const codexStatus = shouldSetupCodex(args)
+    ? installCodex(cmd)
+    : 'skipped (no ~/.codex found — pass --codex to force, --no-codex to silence this)'
+
   const cursorStatus = shouldSetupCursor(args)
     ? installCursor(cmd)
     : 'skipped (no .cursor/ dir found — pass --cursor to force, --no-cursor to silence this)'
@@ -856,6 +1000,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   outputInfo(`Enforcement file: ${enforcementPath}`, flags)
   if (!samePath) outputInfo(`Injection file:   ${injectionPath}`, flags)
   outputInfo(`Claude Desktop:   ${desktopStatus}`, flags)
+  outputInfo(codexStatus, flags)
   outputInfo(cursorStatus, flags)
   if (shouldSetupCursor(args)) {
     // Audit fix (user evaluator): the 11-tools-instead-of-39 tradeoff and

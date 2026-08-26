@@ -16,6 +16,8 @@ import {
   readConfig,
 } from '../mcp-config.js'
 import { hasPlurCursorHooks, readCursorHooksConfig } from '../cursor-hooks.js'
+import { hasPlurCodexHooks, readCodexHooksConfig } from '../codex-hooks.js'
+import { codexHome } from '../mcp-config.js'
 import { computeContentHash, detectPlurStorage, loadEngrams } from '@plur-ai/core'
 
 /**
@@ -86,6 +88,25 @@ interface DoctorReport {
    */
   cursorProjectDetected: boolean
   cursorWired: boolean
+  /**
+   * Whether Codex is installed on this machine (`~/.codex/` exists, honouring
+   * `CODEX_HOME`) and, if so, whether Codex's OWN two config files have PLUR
+   * wired in — `hooks.json` carrying our hooks, `config.toml` carrying the
+   * `[mcp_servers.plur]` table. Same rationale as `cursorWired`: a healthy
+   * Claude Code setup elsewhere says nothing about this harness.
+   *
+   * Reported as its own line and deliberately NOT folded into `overall` —
+   * see the comment at the `overall` computation for why a machine-level
+   * detection must not fail a project-level health check.
+   *
+   * NOTE: `codexWired: true` does NOT mean the hooks will actually run. Codex
+   * fingerprints every non-managed hook and skips it until reviewed via
+   * `/hooks`, with no warning and exit 0 when it doesn't — a state nothing on
+   * disk distinguishes from a trusted one. `printText` says so explicitly
+   * rather than letting a green tick imply more than it knows.
+   */
+  codexDetected: boolean
+  codexWired: boolean
   /**
    * PGLite backend running the opt-in embedding-gemma embedder (#581). #483
    * corrected embedding-gemma's role prefixes and bumped the JSON embedding
@@ -259,6 +280,39 @@ function inspectConfigs(): ConfigFileReport[] {
         hasPlurMcp: false,
         hasDatacoreMcp: false,
         hasPlurHooks: hasPlurCursorHooks(hooksConfig),
+      }
+    }
+    if (cf.kind === 'codex-hooks') {
+      const hooksConfig = readCodexHooksConfig(cf.path)
+      return {
+        label: cf.label,
+        path: cf.path,
+        exists: true,
+        hasPlurMcp: false,
+        hasDatacoreMcp: false,
+        hasPlurHooks: hasPlurCodexHooks(hooksConfig),
+      }
+    }
+    if (cf.kind === 'codex-toml') {
+      // config.toml is TOML, not JSON — readConfig() would return {} and the
+      // report would claim Codex has no MCP server registered even when it
+      // does. We only need one fact from this file (is there an
+      // `[mcp_servers.plur]` table?), which a targeted regex answers without
+      // pulling in a TOML parser. Deliberately narrow: a commented-out line
+      // must not count, and neither must `[mcp_servers.plurality]`.
+      let hasPlur = false
+      try {
+        const raw = readFileSync(cf.path, 'utf8')
+        hasPlur = /^\s*\[mcp_servers\.plur\]\s*$/m.test(raw)
+          || /^\s*\[mcp_servers\]/m.test(raw) && /^\s*plur\s*=/m.test(raw)
+      } catch { /* unreadable — report as absent */ }
+      return {
+        label: cf.label,
+        path: cf.path,
+        exists: true,
+        hasPlurMcp: hasPlur,
+        hasDatacoreMcp: false,
+        hasPlurHooks: false,
       }
     }
     const config = readConfig(cf.path)
@@ -626,6 +680,15 @@ function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<Doctor
     cursorHooksConfigReport?.exists && cursorHooksConfigReport.hasPlurHooks,
   )
 
+  // Codex health, from Codex's OWN two files only.
+  const codexDetected = existsSync(codexHome())
+  const codexHooksReport = configs.find((c) => c.label === 'Codex (~/.codex/hooks.json)')
+  const codexTomlReport = configs.find((c) => c.label === 'Codex (~/.codex/config.toml)')
+  const codexWired = Boolean(
+    codexHooksReport?.exists && codexHooksReport.hasPlurHooks &&
+    codexTomlReport?.exists && codexTomlReport.hasPlurMcp,
+  )
+
   const handshakePromise = skipHandshake
     ? Promise.resolve({ ok: false, error: 'skipped (--no-handshake)' })
     : mcpHandshake()
@@ -650,8 +713,18 @@ function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<Doctor
     // the overall doctor check (BM25 still works); it just signals semantic
     // recall is disabled until the model loads.
     const overall: 'ok' | 'fail' =
-      hooksInstalled && mcpRegistered && (skipHandshake || handshake.ok) && (!cursorProjectDetected || cursorWired)
+      hooksInstalled && mcpRegistered && (skipHandshake || handshake.ok) &&
+      (!cursorProjectDetected || cursorWired)
         ? 'ok' : 'fail'
+    // NOTE: codexWired is deliberately NOT in `overall`, unlike cursorWired.
+    // The two detections are not the same kind of signal. A `.cursor/`
+    // directory sits IN THIS PROJECT and says "the user works on this
+    // project in Cursor", so an unwired Cursor there is a genuine failure.
+    // `~/.codex/` is machine-level: it says the user has Codex installed
+    // somewhere, not that they use it here. Folding it into `overall` would
+    // turn doctor red for every Claude-Code-only user who once tried Codex —
+    // a false alarm on a check whose whole value is that a red result means
+    // something. It is reported as its own line instead.
     // #581: PGLite + embedding-gemma both opt-in via env (PLUR_BACKEND=pglite,
     // PLUR_EMBEDDER=embedding-gemma) — the documented activation for each. When
     // both are set, #483's prefix fix did not auto-rebuild the PGLite vectors
@@ -669,7 +742,8 @@ function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<Doctor
     return {
       configs, hooksInstalled, mcpRegistered, datacoreCollision, staleNpxHooks, staleNpxMcp,
       hookShim, mcpShim, handshake, cursorHandshake, embedder,
-      cursorProjectDetected, cursorWired, pgliteGemmaReembedNeeded, staleContentHashes, overall,
+      cursorProjectDetected, cursorWired, codexDetected, codexWired,
+      pgliteGemmaReembedNeeded, staleContentHashes, overall,
     }
   })
 }
@@ -686,7 +760,7 @@ function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<Doctor
 export function printText(report: DoctorReport, flags?: GlobalFlags): void {
   const tick = (b: boolean) => (b ? '✓' : '✗')
 
-  outputInfo('plur doctor — Claude Code / Claude Desktop / Cursor diagnostic', flags)
+  outputInfo('plur doctor — Claude Code / Claude Desktop / Cursor / Codex diagnostic', flags)
   outputInfo('', flags)
   outputText('Config files:')
   for (const c of report.configs) {
@@ -712,6 +786,27 @@ export function printText(report: DoctorReport, flags?: GlobalFlags): void {
       outputText('  A Claude Code config being healthy elsewhere does NOT cover Cursor —')
       outputText('  this project has a .cursor/ directory but its own config is incomplete.')
       outputText('  Fix: run `plur init --cursor` from this project.')
+    }
+  }
+
+  if (report.codexDetected) {
+    outputText(`${tick(report.codexWired)} Codex: ~/.codex/hooks.json + config.toml wired to plur`)
+    if (!report.codexWired) {
+      outputText('  Codex is installed on this machine but PLUR is not wired into it — it')
+      outputText('  would get MCP tools with no injection, enforcement, or learn nudges.')
+      outputText('  If you use Codex, run `plur init --codex`. (Advisory: this does not')
+      outputText('  fail the check above — having Codex installed is not the same as')
+      outputText('  using it on this project.)')
+    } else {
+      // A green tick here is genuinely weaker than it looks, so say so every
+      // time rather than only on failure. Codex skips untrusted hooks with
+      // NO warning and exit 0, and nothing on disk distinguishes trusted
+      // from untrusted — so a config that reads as perfect can still be
+      // completely inert. This is the single most likely reason a user
+      // reports "I ran plur init --codex and nothing happens".
+      outputText('  Note: wired ≠ running. Codex skips hooks it has not been told to trust,')
+      outputText('  silently. If memory never loads, open Codex, run /hooks, and trust the')
+      outputText('  PLUR entries.')
     }
   }
 
