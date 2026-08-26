@@ -38,6 +38,7 @@ Commands:
   status                  System health check
   dashboard               Open the memory dashboard in a browser (alias: ui)
   provenance <id|search>  Where a memory came from, and whether you may reuse it
+  identity [value]        Who your memories are attributed to (--clear to unset)
   receipt [--days N]      What your memory retrieved for you
   sync                    Cross-device sync
   packs list              List installed packs
@@ -117,6 +118,7 @@ const COMMANDS: Record<string, string> = {
   // and the word the release copy teaches) and `ui` (mlflow's convention).
   dashboard: './commands/ui.js',
   provenance: './commands/provenance.js',
+  identity: './commands/identity.js',
   receipt: './commands/receipt.js',
   sync: './commands/sync.js',
   restore: './commands/restore.js',

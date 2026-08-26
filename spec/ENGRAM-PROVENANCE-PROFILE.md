@@ -8,7 +8,7 @@ that part should work.
 
 | | |
 |---|---|
-| **Version** | 0.3 (draft) |
+| **Version** | 0.4 (draft) |
 | **Status** | Proposed, and implemented in the reference. OPTIONAL to follow: an implementation that ignores this document is still fully conformant to the Engram Standard. An implementation that writes provenance MUST follow this document, so that two such implementations agree. |
 | **Companion to** | [The Engram Standard, version 1.1](./ENGRAM-STANDARD-v1.md) |
 | **Profiles** | Section 9 of that standard, "Provenance binding". It refines that section; it does not replace it, and the standard governs wherever the two overlap. |
@@ -19,6 +19,7 @@ that part should work.
 
 | Version | Date | What changed |
 |---|---|---|
+| 0.4 | 2026-08-26 | Section 10.1 is largely done: an identity now comes from `provenance.identity` in configuration, never from the operating system account, with a per-write override and the `unidentified` marker when nobody is set; the software that wrote an engram is recorded on every write. The marker counts as unanswered even though it is recorded, so a memory nobody is accountable for cannot report itself complete. Section 8 fails closed on the schema default too — it was closed on a licence we could not recognise and open on one nobody selected. That, rather than deleting `provenance.license`, is how engram-level copyright becomes opt-in without a major version. |
 | 0.3 | 2026-08-26 | Licence work. Section 8 now separates a copyright licence from usage terms and says which one it maps. Section 8.4's boolean became `engram:licenseSource` with four values, because a licence the author configured once was being reported like the schema value nobody chose. Pack export now REQUIRES a chosen licence — the one field where silence does not produce silence, since the schema fills in a share-alike grant nobody agreed to. Members with no licence inherit the pack's, marked as inheritance rather than choice. Section 4.5 gained the requirement that a claim class be visible at injection, not only in a record nobody asks for mid-session — reported from outside against a working implementation. |
 | 0.2 | 2026-08-25 | Section 5.3 rewritten from prose into a specification: the pack-level field table, the file layout inside a pack, which engrams a pack record may describe, which way the integrity dependency runs, and how a pack declares that it carries provenance. Section 9 corrected — it named a single file, which cannot hold a pack's worth of records. Wording corrected throughout: this document *profiles* section 9, it does not replace it. |
 | 0.1 | 2026-08-20 | First draft. |
@@ -1035,6 +1036,30 @@ unrecognised name both produce no permissions, and they mean opposite things —
 "the answer is no" against "we could not tell". Every policy therefore states
 `engram:licenseRecognised` explicitly, `true` or `false`.
 
+**A grant nobody made does not answer a permission question either.** When the
+licence came from the schema default — nobody chose it, at any point — the
+permission answers are `false`, exactly as for a licence we cannot recognise.
+
+Not doing this left the two failing in opposite directions: closed on a licence
+we could not *recognise*, open on one nobody had *selected*. That is backwards,
+since at least the unrecognised one was chosen by somebody. A record was
+reporting `may_reuse_commercially: true` over a memory whose author had never
+considered the question.
+
+The JSON-LD still reports `cc-by-sa-4.0` and its policy, because §2.3 of the
+Engram Standard makes a schema default part of the data model and a record has
+no business contradicting it. What fails closed is the *answer to "may I?"*, not
+the description. `configuredDefault` and `inheritedFromPack` answer normally — a
+person decided in both cases, once in advance or once for the pack.
+
+**This, rather than deleting the field, is how an engram stops asserting
+copyright it may not hold.** Removing `provenance.license` outright would need a
+major version (§10.2 of the standard forbids removing a STABLE field otherwise),
+would discard licences authors deliberately chose, and would leave an engram
+shared outside any pack with nothing to say at all. Making the *unchosen* case
+grant nothing gets the same result — engram-level copyright becomes opt-in —
+without breaking anything.
+
 **Permission questions fail closed.** A consumer asking "may I reuse this
 commercially?" gets `false` when the licence is unrecognised, never `null` and
 never absent. A consumer written as `if (x !== false)` reads `null` as
@@ -1189,7 +1214,51 @@ anchor the provenance record later.
 This view is only as good as what goes into it. Below is what is missing. Each
 item can be done on its own.
 
-### 10.1 Who did it — required
+### 10.1 Who did it — DONE for the author; the log still has no actor
+
+**What now happens.** An identity is a single address held in configuration
+(`provenance.identity`). Any form: a local name, an email, a Decentralized
+Identifier, an identifier for a running process. Every write records one of
+three things in `attribution.asserted_by`:
+
+| Situation | Recorded |
+|---|---|
+| the caller passed one for this write | that value — a per-engram override, for recording something on somebody else's behalf |
+| an identity is configured | that identity |
+| neither | the `unidentified` marker, written out rather than omitted |
+
+`attribution.runtime` is recorded on **every** write without exception, because
+software always knows its own name. A caller that also knows its version
+supplies both.
+
+Three rules an implementation MUST follow.
+
+**Never derive an identity from the operating system account.** It is the
+obvious value and the wrong one: it writes a real person's name into shared
+records because they installed software, not because they chose to be named.
+
+**The marker is recorded information, and it is not an answer.** `unidentified`
+says we looked and found nobody — genuinely different from an absent field,
+which cannot be told apart from a record predating identity capture. But it does
+not say who is answerable, so a summary MUST still count it among what was not
+recorded. Otherwise, once every engram carries the marker, a memory nobody is
+accountable for reports itself complete.
+
+**Changing an identity MUST NOT rewrite existing records.** Memories keep
+whoever was recorded when they were written. Rewriting them to match a later
+decision is editing history, and recording who said what is the entire point.
+
+**It is self-asserted.** Nothing verifies it, packs are not signed, and no
+surface may present it as though something did. The reference reports
+`identity_stated`, deliberately not `identity_known`, because a tester read the
+latter as verification and it returned true for a name they had invented.
+
+**Still missing: an actor on log EVENTS.** The engram now says who asserted it.
+A history event still does not say who caused it, so §6.1's gap stands —
+a replacement carries no actor, and `chain` stays empty. That is the next piece,
+and it is now unblocked.
+
+### 10.1.1 The original analysis
 
 Nothing records an actor. Not the log, not the engram. This is the biggest gap.
 Without it, every statement about responsibility is a guess.

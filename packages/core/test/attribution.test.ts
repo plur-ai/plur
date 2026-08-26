@@ -141,23 +141,41 @@ describe('attribution through a real store (#961, #963)', () => {
     expect((found as any).attribution).toEqual(attribution)
   })
 
-  it('writes nothing when the caller supplies nothing', async () => {
+  it('records the two things it knows, and invents nothing else', async () => {
+    // This used to assert that an unsupplied attribution stayed absent
+    // entirely. That was the bug, not the contract: the profile says the
+    // software is ALWAYS knowable and an unidentified writer should be marked
+    // as such, because an absent field cannot be told apart from a record
+    // written before identity was captured at all.
+    //
+    // What must still never appear is a GUESS. No model, no tool, no delegation
+    // and no claim class — those are unknown, and unknown stays unknown.
     const engram = await plur.learn('No attribution supplied here', { type: 'behavioral' })
-    expect(engram.attribution).toBeUndefined()
+    expect(engram.attribution).toEqual({
+      asserted_by: 'unidentified',
+      runtime: { name: 'plur-core' },
+    })
+    expect(engram.attribution?.model).toBeUndefined()
+    expect(engram.attribution?.tool).toBeUndefined()
+    expect(engram.attribution?.on_behalf_of).toBeUndefined()
     expect(engram.claim_class).toBeUndefined()
 
     const reloaded = await plur.getById(engram.id)
-    expect(reloaded?.attribution).toBeUndefined()
+    expect(reloaded?.attribution?.asserted_by).toBe('unidentified')
     expect(reloaded?.claim_class).toBeUndefined()
   })
 
   it('keeps a partial attribution partial, rather than padding it out', async () => {
+    // A caller-supplied runtime is kept exactly as given, and the unknown
+    // author becomes the marker rather than a guess. Nothing else is added.
     const engram = await plur.learn('Only the runtime is known here', {
       type: 'behavioral',
       attribution: { runtime: { name: 'plur-cli' } },
     })
-    expect(engram.attribution).toEqual({ runtime: { name: 'plur-cli' } })
-    expect(engram.attribution?.asserted_by).toBeUndefined()
+    expect(engram.attribution).toEqual({
+      asserted_by: 'unidentified',
+      runtime: { name: 'plur-cli' },
+    })
   })
 
   it('records that nobody was identified, when that is the truth', async () => {
@@ -177,5 +195,93 @@ describe('attribution through a real store (#961, #963)', () => {
     const reloaded = await plur.getById(engram.id)
     expect(reloaded).toBeDefined()
     expect(reloaded?.statement).toBe('Written the old way')
+  })
+})
+
+describe('an identity comes from config, never from the machine (#961)', () => {
+  let dir: string
+  beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'plur-identity-')) })
+  afterEach(() => rmSync(dir, { recursive: true, force: true }))
+
+  const firstEngram = async (plur: Plur) => (await plur.list())[0] as any
+
+  it('records the unidentified marker when nobody is configured', async () => {
+    // Writing the marker rather than omitting the field is the point: an absent
+    // field cannot be told apart from a record written before identity existed.
+    const plur = new Plur({ path: dir })
+    await plur.learn('Pools cap at 100', { type: 'architectural' })
+    expect((await firstEngram(plur)).attribution.asserted_by).toBe('unidentified')
+  })
+
+  it('never takes the identity from the operating system account', async () => {
+    // The obvious value, and the wrong one. It would put a real name into
+    // shared records because somebody installed software.
+    const plur = new Plur({ path: dir })
+    await plur.learn('Pools cap at 100', { type: 'architectural' })
+    const who = (await firstEngram(plur)).attribution.asserted_by
+    for (const leak of [process.env.USER, process.env.USERNAME, process.env.LOGNAME]) {
+      if (leak) expect(who).not.toBe(leak)
+    }
+  })
+
+  it('uses the configured identity once one is set', async () => {
+    const plur = new Plur({ path: dir })
+    plur.setIdentity('local:maintainer')
+    await plur.learn('Pools cap at 100', { type: 'architectural' })
+    expect((await firstEngram(plur)).attribution.asserted_by).toBe('local:maintainer')
+  })
+
+  it('accepts a Decentralized Identifier, because the form is not fixed', async () => {
+    const plur = new Plur({ path: dir })
+    plur.setIdentity('did:web:example.org:alex')
+    await plur.learn('Pools cap at 100', { type: 'architectural' })
+    expect((await firstEngram(plur)).attribution.asserted_by).toBe('did:web:example.org:alex')
+  })
+
+  it('lets a single write override the configured identity', async () => {
+    // The use case is real: recording something on somebody else's behalf.
+    const plur = new Plur({ path: dir })
+    plur.setIdentity('local:maintainer')
+    await plur.learn('Pools cap at 100', {
+      type: 'architectural', attribution: { asserted_by: 'local:priya' },
+    })
+    expect((await firstEngram(plur)).attribution.asserted_by).toBe('local:priya')
+  })
+
+  it('does not rewrite memories already written when the identity changes', async () => {
+    // Changing them to match a later decision would be editing history, and
+    // recording who said what is the entire point.
+    const plur = new Plur({ path: dir })
+    plur.setIdentity('local:first')
+    await plur.learn('Pools cap at 100', { type: 'architectural' })
+    plur.setIdentity('local:second')
+    await plur.learn('Deploys wait for migrations', { type: 'behavioral' })
+
+    const all = await plur.list()
+    const byStatement = Object.fromEntries(
+      all.map((e: any) => [e.statement.slice(0, 5), e.attribution.asserted_by]))
+    expect(byStatement['Pools']).toBe('local:first')
+    expect(byStatement['Deplo']).toBe('local:second')
+  })
+
+  it('clearing the identity returns to the marker, and says so', async () => {
+    const plur = new Plur({ path: dir })
+    plur.setIdentity('local:maintainer')
+    expect(plur.identity()).toEqual({ identity: 'local:maintainer', stated: true })
+    expect(plur.setIdentity(null)).toEqual({ identity: 'unidentified', stated: false })
+  })
+
+  it('always records what software wrote the memory', async () => {
+    // The one fact we always have. A caller that knows its own version wins;
+    // core is the honest floor beneath it.
+    const plur = new Plur({ path: dir })
+    await plur.learn('Pools cap at 100', { type: 'architectural' })
+    expect((await firstEngram(plur)).attribution.runtime.name).toBe('plur-core')
+
+    await plur.learn('Deploys wait for migrations', {
+      type: 'behavioral', attribution: { runtime: { name: 'plur-mcp', version: '0.18.0' } },
+    })
+    const mcp = (await plur.list()).find((e: any) => e.statement.startsWith('Deploys')) as any
+    expect(mcp.attribution.runtime).toEqual({ name: 'plur-mcp', version: '0.18.0' })
   })
 })

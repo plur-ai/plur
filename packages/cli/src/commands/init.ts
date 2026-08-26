@@ -3,7 +3,7 @@ import { join, dirname } from 'path'
 import { fileURLToPath } from 'url'
 import { homedir, platform } from 'os'
 import { createInterface } from 'readline'
-import { type GlobalFlags } from '../plur.js'
+import { createPlur, type GlobalFlags } from '../plur.js'
 import { outputInfo } from '../output.js'
 import {
   buildMcpServerEntry,
@@ -737,6 +737,78 @@ export async function promptTelemetryOptIn(opts: {
   })
 }
 
+// ── Identity prompt ─────────────────────────────────────────────────────────
+// Asks once during `plur init` who memories should be attributed to (#961).
+//
+// Same resolution rules as the telemetry prompt above, and for the same reason:
+// ask an interactive user once, never nag a returning one, and never block a
+// script. The difference is what happens when nobody answers — telemetry
+// defaults to off, and this defaults to the `unidentified` marker, which is a
+// recorded fact rather than a silence.
+//
+// It must never fall back to the operating system account. That is the obvious
+// value and the wrong one: it would put a real name into shared records because
+// somebody installed software, not because they chose to be named.
+
+/**
+ * Prompt for an identity during `plur init`.
+ *
+ * Returns what happened, so `init` can print a matching line. Exported for
+ * testing with injected streams.
+ */
+export async function promptIdentity(opts: {
+  current?: { identity: string; stated: boolean }
+  setIdentity?: (value: string) => void
+  noPrompt?: boolean
+  env?: NodeJS.ProcessEnv
+  input?: NodeJS.ReadableStream & { isTTY?: boolean }
+  output?: NodeJS.WritableStream & { isTTY?: boolean }
+} = {}): Promise<'set' | 'skipped' | 'already-set' | 'non-interactive'> {
+  const env = opts.env ?? process.env
+  const input = opts.input ?? process.stdin
+  const output = opts.output ?? process.stdout
+
+  // Never nag somebody who has already decided.
+  if (opts.current?.stated) return 'already-set'
+
+  const isInteractive = Boolean(input.isTTY && output.isTTY)
+  if (!isInteractive || opts.noPrompt || env.CI) return 'non-interactive'
+
+  return new Promise((resolve) => {
+    const rl = createInterface({ input, output })
+    let settled = false
+    const settle = (result: 'set' | 'skipped' | 'non-interactive') => {
+      if (settled) return
+      settled = true
+      resolve(result)
+    }
+
+    rl.question(
+      '\nWho should your memories be attributed to?'
+      + '\n  Any address: a name like local:alex, an email, or a Decentralized Identifier.'
+      + '\n  Leave blank to stay unidentified — you can set it later with `plur identity`.'
+      + '\n> ',
+      (answer) => {
+        const value = answer.trim()
+        if (value) {
+          try {
+            opts.setIdentity?.(value)
+            settle('set')
+          } catch {
+            // A failed write must not fail `init`. The user can retry with
+            // `plur identity`, and staying unidentified is a working state.
+            settle('skipped')
+          }
+        } else {
+          settle('skipped')
+        }
+        rl.close()
+      },
+    )
+    rl.on('close', () => settle('non-interactive'))
+  })
+}
+
 function hooksStatusFor(before: string, after: string, hadHooks: boolean): string {
   if (!hadHooks) return 'installed'
   return before === after ? 'already up to date' : 'upgraded'
@@ -917,4 +989,27 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     outputInfo('           See docs/telemetry-design.md for what is collected.', flags)
   }
   // 'already-configured' → silent, user already made a choice
+
+  // Who memories are attributed to (#961). Asked after telemetry so the two
+  // questions do not compete, and skipped entirely for a returning user.
+  try {
+    const plur = createPlur(flags)
+    const identityResult = await promptIdentity({
+      noPrompt,
+      current: plur.identity(),
+      setIdentity: (value: string) => { plur.setIdentity(value) },
+    })
+    if (identityResult === 'set') {
+      outputInfo('', flags)
+      outputInfo(`Identity:  ${plur.identity().identity} — memories you write will say so.`, flags)
+      outputInfo('           Change it: plur identity <value>. Override once: plur learn --asserted-by <who>.', flags)
+    } else if (identityResult === 'skipped' || identityResult === 'non-interactive') {
+      outputInfo('', flags)
+      outputInfo('Identity:  not set — memories are recorded as "unidentified".', flags)
+      outputInfo('           That is fine until a memory leaves this machine. Set one: plur identity <value>', flags)
+    }
+    // 'already-set' → silent, nothing to tell them
+  } catch {
+    // Never fail `init` over this. Staying unidentified is a working state.
+  }
 }

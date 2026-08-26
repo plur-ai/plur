@@ -554,3 +554,42 @@ describe('where the licence came from, in four states not two', () => {
       .toBeUndefined()
   })
 })
+
+describe('a grant nobody made does not answer a permission question', () => {
+  it('fails closed on the schema default, as it already did on an unknown licence', () => {
+    // The inconsistency this fixes: we failed CLOSED on a licence we could not
+    // recognise and OPEN on one nobody had selected. That is backwards — at
+    // least the unrecognised one was chosen by somebody.
+    const s = summariseProvenance(buildProvenanceRecord(engramOf()) as any)
+    expect(s.fields.licence?.source).toBe('schemaDefault')
+    expect(s.fields.may_reuse_commercially).toBe(false)
+    expect(s.fields.may_redistribute).toBe(false)
+  })
+
+  it('still reports the licence the data model says applies', () => {
+    // §2.3 of the standard makes a schema default part of the contract: an
+    // absent field reads as holding its default. The JSON-LD has no business
+    // contradicting that — it is the "may I?" answer that fails closed, not
+    // the description.
+    const record = buildProvenanceRecord(engramOf())
+    expect(subject(record)['engram:license']).toBe('cc-by-sa-4.0')
+    expect(subject(record)['odrl:hasPolicy']).toBeDefined()
+  })
+
+  it('answers normally when a person actually decided', () => {
+    // Configured once in advance, or decided for the pack. Both are decisions.
+    for (const opts of [{ configuredLicense: 'cc-by-4.0' }, { packLicense: 'cc-by-4.0' }]) {
+      const s = summariseProvenance(buildProvenanceRecord(
+        engramOf({ visibility: 'public' }), [], opts) as any)
+      expect(s.fields.may_reuse_commercially, JSON.stringify(opts)).toBe(true)
+      expect(s.fields.may_redistribute, JSON.stringify(opts)).toBe(true)
+    }
+  })
+
+  it('answers normally for a licence chosen on the engram itself', () => {
+    const s = summariseProvenance(buildProvenanceRecord(
+      engramOf({ visibility: 'public', provenance: { origin: 'x', license: 'cc-by-4.0' } })) as any)
+    expect(s.fields.may_reuse_commercially).toBe(true)
+    expect(s.fields.may_redistribute).toBe(true)
+  })
+})

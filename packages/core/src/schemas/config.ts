@@ -275,6 +275,28 @@ export const PlurConfigSchema = z.object({
      * the problem it exists to solve.
      */
     default_license: z.string().optional(),
+    /**
+     * Who this machine's memories are attributed to.
+     *
+     * Any address is acceptable and the form is deliberately not fixed: a local
+     * name (`local:maintainer`), a Decentralized Identifier
+     * (`did:web:example.org:alice`), an email, or an identifier for a running
+     * process. A future "identities" feature can add structure without changing
+     * what is stored here, because a single address is the common denominator
+     * of all of them.
+     *
+     * Unset means every write records the `unidentified` marker — which says
+     * "we looked and nobody was configured", a different and more useful fact
+     * than the field simply being absent.
+     *
+     * NEVER defaulted from the operating system account. That would put a real
+     * person's name into shared records because they installed some software,
+     * not because they chose to be named.
+     *
+     * Self-asserted. Nothing verifies it, packs are not signed, and no surface
+     * may present it as though something did.
+     */
+    identity: z.string().optional(),
   }).default({}),
   /** Temporal-aware tension scan tuning (#240). See {@link TensionsConfigSchema}. */
   tensions: TensionsConfigSchema.default({}),

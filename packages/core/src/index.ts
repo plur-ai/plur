@@ -63,6 +63,7 @@ import type { StorageAdapter } from './storage-adapter.js'
 import { resolveBackendTier, type BackendSelection } from './backend-selection.js'
 import { isSharedScope, isScopeWithin, scopeAllowFilter, makeVisibilityPredicate } from './scope-util.js'
 import type { Engram } from './schemas/engram.js'
+import { ATTRIBUTION_UNIDENTIFIED } from './schemas/engram.js'
 import type { Episode } from './schemas/episode.js'
 import type { PackManifest } from './schemas/pack.js'
 import type { PlurConfig, StoreEntry, ScopeRoutingConfig } from './schemas/config.js'
@@ -742,16 +743,41 @@ function buildProvenanceBlock(
  */
 function buildAttribution(
   context?: LearnContext,
+  /** `provenance.identity` from config, when the user has set one. */
+  configuredIdentity?: string,
 ): NonNullable<Engram['attribution']> | undefined {
   const a = context?.attribution
-  if (!a) return undefined
   const out: NonNullable<Engram['attribution']> = {}
-  if (a.asserted_by) out.asserted_by = a.asserted_by
-  if (a.runtime) out.runtime = a.runtime
-  if (a.model) out.model = a.model
-  if (a.tool) out.tool = a.tool
-  if (a.on_behalf_of) out.on_behalf_of = a.on_behalf_of
-  return Object.keys(out).length > 0 ? out : undefined
+
+  // WHO. Three states, and the third is the point.
+  //
+  //   the caller said so         -> use it (a per-engram override)
+  //   the user configured one    -> use that
+  //   neither                    -> the `unidentified` marker, written OUT
+  //
+  // Writing the marker rather than omitting the field is what makes the record
+  // honest. An absent field cannot be told apart from a record written before
+  // identity was captured at all; the marker says we looked and found nobody.
+  //
+  // Never the operating system account. That writes a real person's name into
+  // shared records because they installed software, not because they chose to
+  // be named.
+  out.asserted_by = a?.asserted_by ?? configuredIdentity ?? ATTRIBUTION_UNIDENTIFIED
+
+  // WHAT WROTE IT. Always recorded, because it is the one fact we always have:
+  // software knows its own name.
+  //
+  // No version here, deliberately. Core has no version constant, and adding one
+  // would create a seventeenth place `release.sh` has to bump — a standing cost
+  // for a value that is almost never the one a reader wants. Every real write
+  // arrives through a wrapper that DOES track its version (plur-mcp, plur-cli),
+  // and those pass name and version both; this is the honest floor beneath them.
+  out.runtime = a?.runtime ?? { name: 'plur-core' }
+
+  if (a?.model) out.model = a.model
+  if (a?.tool) out.tool = a.tool
+  if (a?.on_behalf_of) out.on_behalf_of = a.on_behalf_of
+  return out
 }
 
 import { buildProvenanceRecord, type ProvenanceOptions } from './provenance.js'
@@ -1730,6 +1756,62 @@ export class Plur {
     return store.put(engramId, record)
   }
 
+  /**
+   * The identity this user configured, if any (`provenance.identity`).
+   *
+   * Returns undefined when unset, and `buildAttribution` then writes the
+   * `unidentified` marker. Never falls back to the operating system account.
+   */
+  private _configuredIdentity(): string | undefined {
+    const id = (this.config as any)?.provenance?.identity
+    return typeof id === 'string' && id.trim() ? id.trim() : undefined
+  }
+
+  /**
+   * Who new memories will be attributed to, and whether anybody chose that.
+   *
+   * Exposed so a surface can ask before writing — the CLI prompts on `init`,
+   * and `plur identity` reports it. `stated: false` means every engram written
+   * from here is recorded as `unidentified`, which is honest but answers
+   * nobody's question about who is responsible.
+   */
+  identity(): { identity: string; stated: boolean } {
+    const configured = this._configuredIdentity()
+    return { identity: configured ?? ATTRIBUTION_UNIDENTIFIED, stated: Boolean(configured) }
+  }
+
+  /**
+   * Set, change, or clear who memories are attributed to.
+   *
+   * Applies to memories written from now on. Existing engrams keep whatever was
+   * recorded at the time, which is the point of recording it — rewriting them
+   * would be editing history to match a later decision.
+   */
+  setIdentity(identity: string | null): { identity: string; stated: boolean } {
+    const value = typeof identity === 'string' ? identity.trim() : ''
+    // Same read-modify-write discipline as every other config mutation here:
+    // under the config lock, and written atomically. A plain write truncates in
+    // place, and a parse failure makes loadConfig fall back to DEFAULT config —
+    // so a crash mid-write would silently erase store registrations too.
+    withLock(this.paths.config, () => {
+      let configData: Record<string, unknown> = {}
+      try {
+        const raw = fs.readFileSync(this.paths.config, 'utf8')
+        if (raw) configData = (yaml.load(raw) as Record<string, unknown>) ?? {}
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') throw err
+      }
+      const provenance = (configData.provenance as Record<string, unknown> | undefined) ?? {}
+      if (value) provenance.identity = value
+      else delete provenance.identity
+      configData.provenance = provenance
+      atomicWrite(this.paths.config, yaml.dump(configData, { lineWidth: 120, noRefs: true }), { mode: CONFIG_FILE_MODE })
+    })
+    this.config = loadConfig(this.paths.config)
+    this.configMtimeMs = this.statConfigMtime()
+    return this.identity()
+  }
+
   private _provenanceStoreInstance?: ProvenanceStore
 
   private _provenanceStore(): ProvenanceStore {
@@ -2704,7 +2786,7 @@ export class Plur {
         // Who is answerable (#961) and what kind of claim this is (#963).
         // Both absent when the caller supplied nothing: a missing agent is
         // honest, a guessed one is not.
-        attribution: buildAttribution(context),
+        attribution: buildAttribution(context, this._configuredIdentity()),
         claim_class: context?.claim_class,
         provenance: buildProvenanceBlock(context),
         dual_coding: context?.dual_coding,
@@ -3270,7 +3352,7 @@ export class Plur {
       // Who is answerable (#961) and what kind of claim this is (#963).
       // Both absent when the caller supplied nothing: a missing agent is
       // honest, a guessed one is not.
-      attribution: buildAttribution(context),
+      attribution: buildAttribution(context, this._configuredIdentity()),
       claim_class: context?.claim_class,
       provenance: buildProvenanceBlock(context),
       dual_coding: context?.dual_coding,

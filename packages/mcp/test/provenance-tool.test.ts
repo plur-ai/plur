@@ -105,7 +105,10 @@ describe('plur_provenance (#979)', () => {
     const result = await call({ id: engram.id })
 
     expect(result.complete).toBe(false)
-    expect(result.not_recorded).toContain('who asserted it')
+    // Matched by prefix, not exact string: the entry now also says HOW it is
+    // unrecorded — the writer marked that nobody was identified, which is a
+    // recorded fact and still not an answer to who is answerable.
+    expect(result.not_recorded.some((m: string) => m.startsWith('who asserted it'))).toBe(true)
     expect(result.summary).toContain('Not recorded')
     // The absence is stated as an absence, not left as a blank a reader
     // would fill in with a guess of their own.

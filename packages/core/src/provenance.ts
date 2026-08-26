@@ -1087,6 +1087,17 @@ export function summariseProvenance(record: Node): ProvenanceSummary {
     lines.push(plain === 'unidentified'
       ? 'Asserted by   nobody identified — no identity was configured at the time'
       : `Asserted by   ${plain}`)
+    // The marker is RECORDED information — it says we looked and found nobody,
+    // which is different from the field being absent. It is still not an ANSWER
+    // to "who is answerable for this", so it belongs in both places: shown as
+    // recorded, and counted as unanswered.
+    //
+    // Getting this wrong would be the more dangerous direction. Once every
+    // engram carries the marker, treating it as an answer would let a memory
+    // nobody is accountable for report `complete: true`.
+    if (plain === 'unidentified') {
+      missing.push('who asserted it — the writer recorded that nobody was identified')
+    }
   } else {
     missing.push('who asserted it')
   }
@@ -1214,6 +1225,27 @@ export function summariseProvenance(record: Node): ProvenanceSummary {
       // must be cleared to leave. Either one saying no means no.
       fields.may_redistribute = permitted.includes('odrl:distribute')
         && !forbidden.includes('odrl:distribute')
+    }
+
+    // A grant NOBODY MADE does not answer a permission question.
+    //
+    // The record still reports `cc-by-sa-4.0`, because §2.3 of the standard
+    // makes a schema default part of the data model: a consumer must read an
+    // absent field as holding its default, and the JSON-LD has no business
+    // contradicting that.
+    //
+    // But these two booleans are not a description, they are an answer to "may
+    // I?" — and answering yes on the strength of a default nobody chose is the
+    // same failure we already fixed one branch up, where a missing policy was
+    // being read as permission. We were failing closed on a licence we could
+    // not RECOGNISE and failing open on one nobody had SELECTED, which is
+    // backwards: at least the unrecognised one was chosen by somebody.
+    //
+    // `configuredDefault` and `inheritedFromPack` still answer, because a
+    // person decided in both cases — once in advance, or once for the pack.
+    if (licenceSource === 'schemaDefault') {
+      fields.may_reuse_commercially = false
+      fields.may_redistribute = false
     }
     const reads = meaning ? ` \u2014 ${meaning}` : ' \u2014 not one we recognise, read it yourself'
     lines.push(`Licence       ${licence}${reads}`)
