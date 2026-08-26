@@ -495,3 +495,62 @@ describe('how much history a record covers', () => {
     expect(bundleOf(record)['engram:historyEvents']).toBe(0)
   })
 })
+
+describe('where the licence came from, in four states not two', () => {
+  const licOf = (record: any) => ({
+    name: subject(record)['engram:license'],
+    source: subject(record)['engram:licenseSource'],
+    note: subject(record)['engram:licenseSourceNote'],
+  })
+
+  it('reports a licence the author picked as chosen', () => {
+    const r = buildProvenanceRecord(engramOf({ provenance: { origin: 'x', license: 'cc-by-4.0' } }))
+    expect(licOf(r)).toMatchObject({ name: 'cc-by-4.0', source: 'chosen' })
+    expect(licOf(r).note).toBeUndefined()
+    expect(summariseProvenance(r as any).fields.licence_chosen).toBe(true)
+  })
+
+  it('says a pack licence was inherited, not chosen for this memory', () => {
+    // The assembler granted it, and may not hold rights over this engram's
+    // content. Presenting it as the engram's own licence would attribute a
+    // grant to somebody who never made one.
+    const r = buildProvenanceRecord(engramOf(), [], { packLicense: 'mit' })
+    expect(licOf(r)).toMatchObject({ name: 'mit', source: 'inheritedFromPack' })
+    expect(String(licOf(r).note)).toContain('not this memory')
+    const s = summariseProvenance(r as any)
+    expect(s.fields.licence_chosen).toBe(false)
+    expect(s.lines.join('\n')).toContain('Inherited from the pack')
+    expect(s.missing.join(' ')).toContain('a licence for this memory itself')
+  })
+
+  it('treats a configured default as a decision, because somebody made it', () => {
+    // Chosen once, in advance, rather than not at all. That is the whole reason
+    // this is not a boolean.
+    const r = buildProvenanceRecord(engramOf(), [], { configuredLicense: 'cc0-1.0' })
+    expect(licOf(r)).toMatchObject({ name: 'cc0-1.0', source: 'configuredDefault' })
+    expect(summariseProvenance(r as any).fields.licence_chosen).toBe(true)
+  })
+
+  it('marks the schema default as the one value nobody recorded', () => {
+    const r = buildProvenanceRecord(engramOf())
+    expect(licOf(r)).toMatchObject({ name: 'cc-by-sa-4.0', source: 'schemaDefault' })
+    expect(String(licOf(r).note)).toContain('not recorded by somebody')
+    expect(summariseProvenance(r as any).fields.licence_chosen).toBe(false)
+  })
+
+  it('prefers the engram over the pack over the configured default', () => {
+    const all = { packLicense: 'mit', configuredLicense: 'cc0-1.0' }
+    expect(licOf(buildProvenanceRecord(
+      engramOf({ provenance: { origin: 'x', license: 'apache-2.0' } }), [], all)).name).toBe('apache-2.0')
+    expect(licOf(buildProvenanceRecord(engramOf(), [], all)).name).toBe('mit')
+    expect(licOf(buildProvenanceRecord(engramOf(), [], { configuredLicense: 'cc0-1.0' })).name).toBe('cc0-1.0')
+  })
+
+  it('still answers the coarse question for a reader who knows only the boolean', () => {
+    // engram:licenseIsDefault is kept beside the four-state field, so a reader
+    // that never learns the vocabulary is not given a wrong answer.
+    expect(subject(buildProvenanceRecord(engramOf()))['engram:licenseIsDefault']).toBe(true)
+    expect(subject(buildProvenanceRecord(engramOf(), [], { configuredLicense: 'mit' }))['engram:licenseIsDefault'])
+      .toBeUndefined()
+  })
+})

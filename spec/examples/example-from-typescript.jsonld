@@ -44,6 +44,7 @@
         "@id": "https://example.org/grants/handbook"
       },
       "engram:license": "cc-by-4.0",
+      "engram:licenseSource": "chosen",
       "engram:maySharePlainly": true,
       "odrl:hasPolicy": {
         "@type": "odrl:Set",

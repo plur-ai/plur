@@ -3861,6 +3861,15 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
           filter_type: { type: 'string', enum: ['behavioral', 'procedural', 'architectural', 'terminological'], description: 'Filter by engram type' },
           output_dir: { type: 'string', description: 'Output directory (default: ~/plur-packs/<name>)' },
           creator: { type: 'string', description: 'Creator name' },
+          license: {
+            type: 'string',
+            description:
+              'Licence for the pack as a collection, e.g. "cc-by-4.0", "apache-2.0", "cc0-1.0", or '
+              + '"unlicensed" to grant nothing. REQUIRED unless the user has set '
+              + 'provenance.default_license in their config — export fails without one. Ask the user '
+              + 'which licence applies; do NOT guess. A pack goes to strangers, and leaving this blank '
+              + 'does not leave it blank: a share-alike default fills in that nobody agreed to.',
+          },
         },
         required: ['name'],
       },
@@ -3891,6 +3900,7 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
           version: '1.0.0',
           description: args.description as string | undefined,
           creator: (args.creator as string) || undefined,
+          license: (args.license as string) || undefined,
         })
         return {
           path: result.path,

@@ -630,13 +630,31 @@ export function selectAndSpread(
 
 // --- Progressive Disclosure (Idea 10) ---
 
+/**
+ * A compact mark for a memory no person or artifact asserted (#963, #958).
+ *
+ * Layers 1 and 2 carry no metadata line at all, so a model's conclusion and a
+ * user's flat statement render identically — the exact failure reported from
+ * outside on the epic, where an agent treated both as equally authoritative
+ * because nothing said otherwise.
+ *
+ * Only `inferred` is marked, and only in the layers with no room for the full
+ * field. `documented` and `structural` were extracted, but from something real
+ * that can be checked; `inferred` means a model worked it out and nothing else
+ * stands behind it. Marking all six would be noise on the statements that need
+ * no caveat, and noise is how a marker stops being read.
+ */
+function inferredMark(engram: WireEngram): string {
+  return (engram as any).claim_class === 'inferred' ? '(inferred) ' : ''
+}
+
 export function formatLayer1(engram: WireEngram): string {
   const display = (engram as any).summary ?? engram.statement.slice(0, 60)
-  return `[${engram.id}] ${expiredMarker(engram)}${display}`
+  return `[${engram.id}] ${expiredMarker(engram)}${inferredMark(engram)}${display}`
 }
 
 export function formatLayer2(engram: WireEngram): string {
-  return `[${engram.id}] ${expiredMarker(engram)}${engram.statement}`
+  return `[${engram.id}] ${expiredMarker(engram)}${inferredMark(engram)}${engram.statement}`
 }
 
 export function formatLayer3(engram: WireEngram): string {
@@ -652,6 +670,24 @@ export function formatLayer3(engram: WireEngram): string {
   // distinct fields; never overwrite one with the other.
   const commitment = (engram as any).commitment as string | undefined
   if (commitment) meta.push(`Commitment: ${commitment}`)
+  // What KIND of claim this is (#963), at the moment it is put in front of a
+  // model — which is the moment it matters and the one place it was missing.
+  //
+  // Reported from outside on the epic (#958): "a memory surfaced in context
+  // with nothing distinguishing something the user explicitly stated from
+  // something an earlier consolidation pass inferred, and the agent treated
+  // both as equally authoritative because nothing in the record said
+  // otherwise." That was true here. `claim_class` was captured at learn time
+  // and read only by the provenance record — an artifact nobody consults
+  // mid-session — so an inferred guess and a stated fact rendered identically
+  // in the DIRECTIVES block, the highest-authority layer there is.
+  //
+  // This is the same shape as the #348 bug two lines up, one level out: a field
+  // that distinguishes two things was absent, so the more authoritative reading
+  // won by default. Cheap to state, and it is the whole point of having the
+  // field.
+  const claimClass = (engram as any).claim_class as string | undefined
+  if (claimClass) meta.push(`Kind: ${claimClass}`)
   if (engram.confidence_score != null) meta.push(`Confidence: ${engram.confidence_score.toFixed(2)}`)
   if (engram.activation?.last_accessed) meta.push(`Last verified: ${engram.activation.last_accessed}`)
   if (meta.length > 0) lines.push(`  ${meta.join(' | ')}`)

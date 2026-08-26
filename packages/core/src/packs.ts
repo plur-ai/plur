@@ -1097,12 +1097,21 @@ export interface ExportOptions {
   description?: string
   creator?: string
   /**
-   * The licence on the pack as a collection.
+   * The licence on the pack as a collection. **Required.**
    *
-   * Left unset, the manifest schema's `cc-by-sa-4.0` default applies on parse —
-   * and, exactly as with an engram, a default nobody chose must not be presented
-   * as a decision. So this is written to the manifest only when a caller passes
-   * it, and the provenance record marks the difference.
+   * Export is where a licence stops being decoration. Inside one store nobody
+   * needs it; the moment a pack reaches a stranger it is the first thing they
+   * have to know, and it is the level where a right plausibly exists at all —
+   * a single engram is one short assertion, a pack is a curated collection.
+   *
+   * So this is the one decision export will not make on the author's behalf.
+   * Falling back to the schema's `cc-by-sa-4.0` would ship a copyleft grant
+   * nobody chose, over other people's memories, to a stranger. Callers with no
+   * opinion should set `provenance.default_license` in config, which is a
+   * choice made once rather than no choice at all.
+   *
+   * `unlicensed` is accepted, and is itself a choice: it says plainly that no
+   * grant is being made. That is a different act from omitting the field.
    */
   license?: string
   domain?: string
@@ -1375,8 +1384,36 @@ export function exportPack(
   engrams: Engram[],
   outputDir: string,
   manifest: ExportOptions,
+  /**
+   * The licence configured as this user's default (`provenance.default_license`).
+   *
+   * Satisfies the requirement below, because it IS a choice — made once, in
+   * advance, rather than not at all. The `Plur` wrapper supplies it; a direct
+   * caller passes it or names a licence explicitly.
+   */
+  configuredLicense?: string,
 ): ExportResult {
   assertSafePackName(manifest.name)
+
+  // Refuse to guess the one field with legal weight.
+  //
+  // Every other unset field degrades to "not recorded", which a record can say
+  // honestly. A licence cannot: the schema supplies `cc-by-sa-4.0` on parse, so
+  // silence does not produce silence — it produces a copyleft grant, over other
+  // people's memories, to whoever receives the pack, attributed to an author who
+  // never agreed to it. Failing here is the only way not to do that quietly.
+  const packLicense = manifest.license ?? configuredLicense
+  if (!packLicense) {
+    throw new Error(
+      'A pack needs a licence before it can be exported.\n\n'
+      + 'This is the one thing export will not decide for you: a pack is going to a stranger, '
+      + 'and leaving it blank does not leave it blank — the schema fills in cc-by-sa-4.0, a '
+      + 'share-alike grant nobody chose.\n\n'
+      + 'Pass one (for example cc-by-4.0, apache-2.0, cc0-1.0), or set '
+      + 'provenance.default_license in your config to choose once and stop being asked. '
+      + 'Use "unlicensed" to state plainly that you are granting nothing.',
+    )
+  }
 
   // Privacy scan — filter out problematic engrams
   const allPrivacy = scanPrivacy(engrams)
@@ -1411,10 +1448,9 @@ export function exportPack(
     version: manifest.version,
     description: manifest.description,
     creator: manifest.creator,
-    // Only when somebody chose one. The schema default materialises on parse
-    // either way, and writing it here would turn a default into what looks like
-    // a decision — the same trap `engram:licenseIsDefault` exists to avoid.
-    ...(manifest.license ? { license: manifest.license } : {}),
+    // Always present now: export refuses to run without a chosen licence, so
+    // this can never be the schema default masquerading as a decision.
+    license: packLicense,
     metadata: {
       injection_policy: 'on_match',
       match_terms: matchTerms,
@@ -1504,7 +1540,7 @@ export function exportPack(
         name: manifest.name,
         version: manifest.version,
         creator: manifest.creator,
-        license: manifest.license,
+        license: packLicense,
         integrity: `sha256:${integrity}`,
       },
       safeEngrams,
@@ -1515,7 +1551,10 @@ export function exportPack(
     for (const engram of safeEngrams) {
       // Portable by default: a record that stands on its own, names no other
       // engram, and carries no session identifier.
-      const record = buildProvenanceRecord(engram, [], { mode: 'portable' })
+      // A member with no licence of its own inherits the pack's, recorded as
+      // inheritance rather than as the engram's own choice — the assembler
+      // granted it, and may not hold rights over every engram in the pack.
+      const record = buildProvenanceRecord(engram, [], { mode: 'portable', packLicense })
       const file = path.join('provenance', `${engram.id}.jsonld`)
       fs.writeFileSync(path.join(outputDir, file), serializeProvenanceRecord(record))
       provenanceFiles.push(file)

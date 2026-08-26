@@ -36,7 +36,7 @@ describe('checking the integrity value a pack shipped', () => {
   beforeEach(() => {
     out = mkdtempSync(join(tmpdir(), 'plur-integ-out-'))
     packs = mkdtempSync(join(tmpdir(), 'plur-integ-packs-'))
-    exportPack([engram()], out, { name: 'honest', version: '1.0.0' })
+    exportPack([engram()], out, { name: 'honest', version: '1.0.0', license: 'cc-by-4.0' })
   })
   afterEach(() => {
     for (const d of [out, packs]) rmSync(d, { recursive: true, force: true })

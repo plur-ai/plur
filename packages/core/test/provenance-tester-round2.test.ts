@@ -126,7 +126,7 @@ describe('a pack name must not escape its directory', () => {
   it('refuses a name that walks up out of the output directory', () => {
     // This wrote a full pack into the tester's home directory.
     dir = mkdtempSync(join(tmpdir(), 'plur-packname-'))
-    expect(() => exportPack(engrams, dir, { name: '../escape', version: '1.0.0' }))
+    expect(() => exportPack(engrams, dir, { name: '../escape', version: '1.0.0', license: 'cc-by-4.0' }))
       .toThrow(/not usable as a directory name/)
     rmSync(dir, { recursive: true, force: true })
   })
@@ -139,7 +139,7 @@ describe('a pack name must not escape its directory', () => {
 
   it('still accepts an ordinary name', () => {
     dir = mkdtempSync(join(tmpdir(), 'plur-packname-'))
-    expect(() => exportPack(engrams, dir, { name: 'ops-conventions', version: '1.0.0' })).not.toThrow()
+    expect(() => exportPack(engrams, dir, { name: 'ops-conventions', version: '1.0.0', license: 'cc-by-4.0' })).not.toThrow()
     rmSync(dir, { recursive: true, force: true })
   })
 })

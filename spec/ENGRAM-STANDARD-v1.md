@@ -923,7 +923,7 @@ this document's version, and vice versa.
 
 | Profile | Profiles | Version |
 |---|---|---|
-| [Recording where an engram came from](./ENGRAM-PROVENANCE-PROFILE.md) | §9 | 0.2 (draft) |
+| [Recording where an engram came from](./ENGRAM-PROVENANCE-PROFILE.md) | §9 | 0.3 (draft) |
 
 ---
 

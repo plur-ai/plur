@@ -159,7 +159,13 @@ describe('exporting a pack with provenance (#972)', () => {
   beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'plur-pack-prov-')) })
   afterEach(() => rmSync(dir, { recursive: true, force: true }))
 
-  const manifest = { name: 'test-pack', version: '1.0.0', creator: 'local:maintainer', description: 'A pack' }
+  // A licence is required to export at all now — see "export will not choose a
+  // licence for you" below for why. These tests are about provenance files, so
+  // they name one and move on.
+  const manifest = {
+    name: 'test-pack', version: '1.0.0', creator: 'local:maintainer',
+    description: 'A pack', license: 'cc-by-4.0',
+  }
 
   it('writes provenance without being asked', () => {
     // Flipped deliberately (#970 use case 2). A pack is how engrams leave one
@@ -281,15 +287,85 @@ describe("a pack's own licence is a different question from its engrams'", () =>
     }
   })
 
-  it('does not write a licence nobody chose into an exported manifest', async () => {
-    // The schema default applies on parse either way. Writing it here would
-    // turn a default into what reads as a decision.
+  it('never writes a licence nobody chose, because it never gets that far', async () => {
+    // This used to assert that an unchosen licence was omitted from the
+    // manifest. Omitting it was only half an answer: the schema fills in
+    // cc-by-sa-4.0 on the recipient's parse, so the grant arrived anyway with
+    // nobody's name on it. Export now refuses instead of shipping quietly.
     const dir = mkdtempSync(join(tmpdir(), 'plur-packlic-none-'))
     try {
-      exportPack(members, dir, { name: 'ops', version: '1.0.0' } as any)
-      expect(readFileSync(join(dir, 'SKILL.md'), 'utf8')).not.toContain('license:')
+      expect(() => exportPack(members, dir, { name: 'ops', version: '1.0.0' } as any))
+        .toThrow(/needs a licence/)
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
+  })
+})
+
+describe('export will not choose a licence for you', () => {
+  const members = [engramOf('ENG-2026-08-26-201'), engramOf('ENG-2026-08-26-202')]
+  let dir: string
+  beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'plur-lic-required-')) })
+  afterEach(() => rmSync(dir, { recursive: true, force: true }))
+
+  it('refuses to export a pack with no licence chosen', () => {
+    // Silence does not produce silence: the schema fills in cc-by-sa-4.0, so
+    // leaving it blank ships a share-alike grant nobody agreed to, over other
+    // people's memories, to a stranger.
+    expect(() => exportPack(members, dir, { name: 'ops', version: '1.0.0' } as any))
+      .toThrow(/needs a licence/)
+  })
+
+  it('explains how to stop being asked, rather than only refusing', () => {
+    try {
+      exportPack(members, dir, { name: 'ops', version: '1.0.0' } as any)
+      throw new Error('should have refused')
+    } catch (e: any) {
+      expect(e.message).toContain('provenance.default_license')
+      expect(e.message).toContain('unlicensed')
+      expect(e.message).toContain('cc-by-4.0')
+    }
+  })
+
+  it('accepts a licence configured once, because that is still a choice', () => {
+    const result = exportPack(members, dir, { name: 'ops', version: '1.0.0' } as any, 'cc0-1.0')
+    expect(result.engram_count).toBe(2)
+    expect(readFileSync(join(dir, 'SKILL.md'), 'utf8')).toContain('license: cc0-1.0')
+  })
+
+  it('lets an explicit licence beat the configured one', () => {
+    exportPack(members, dir, { name: 'ops', version: '1.0.0', license: 'mit' } as any, 'cc0-1.0')
+    expect(readFileSync(join(dir, 'SKILL.md'), 'utf8')).toContain('license: mit')
+  })
+
+  it('treats "unlicensed" as a decision, and grants nothing for it', () => {
+    exportPack(members, dir, { name: 'ops', version: '1.0.0', license: 'unlicensed' } as any)
+    const record = JSON.parse(readFileSync(join(dir, 'provenance', 'pack.jsonld'), 'utf8'))
+    const pack = nodesOf(record).find((n: any) =>
+      Array.isArray(n['@type']) && n['@type'].includes('engram:Pack'))
+    expect(pack['engram:license']).toBe('unlicensed')
+    // Not a name we map, so nothing is granted and the reader is told why.
+    expect(pack['odrl:hasPolicy']['engram:licenseRecognised']).toBe(false)
+    expect(pack['odrl:hasPolicy']['odrl:permission']).toEqual([])
+  })
+
+  it('gives a member with no licence the pack\'s, marked as inherited', () => {
+    exportPack(members, dir, { name: 'ops', version: '1.0.0', license: 'apache-2.0' } as any)
+    const rec = JSON.parse(readFileSync(join(dir, 'provenance', 'ENG-2026-08-26-201.jsonld'), 'utf8'))
+    const eng = nodesOf(rec).find((n: any) =>
+      Array.isArray(n['@type']) && n['@type'].includes('engram:Engram'))
+    expect(eng['engram:license']).toBe('apache-2.0')
+    expect(eng['engram:licenseSource']).toBe('inheritedFromPack')
+    expect(String(eng['engram:licenseSourceNote'])).toContain('not this memory')
+  })
+
+  it("does not overwrite a member's own licence with the pack's", () => {
+    const own = [engramOf('ENG-2026-08-26-203', { provenance: { origin: 'x', license: 'cc-by-4.0' } })]
+    exportPack(own, dir, { name: 'ops', version: '1.0.0', license: 'apache-2.0' } as any)
+    const rec = JSON.parse(readFileSync(join(dir, 'provenance', 'ENG-2026-08-26-203.jsonld'), 'utf8'))
+    const eng = nodesOf(rec).find((n: any) =>
+      Array.isArray(n['@type']) && n['@type'].includes('engram:Engram'))
+    expect(eng['engram:license']).toBe('cc-by-4.0')
+    expect(eng['engram:licenseSource']).toBe('chosen')
   })
 })

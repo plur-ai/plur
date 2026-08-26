@@ -67,9 +67,9 @@ const ACTIVITY_OF: Record<string, string> = {
  * If the two ever disagree, the licence wins — which is why every policy also
  * carries the canonical licence address.
  *
- * An unrecognised licence produces NO policy. Not a permissive default, not a
- * guess. The record then carries the licence name alone, and a reader knows to
- * go and look.
+ * An unrecognised licence produces a policy granting NOTHING, with
+ * `engram:licenseRecognised: false` — never a permissive default, and never no
+ * policy at all. See `licencePolicy` for why the no-policy version was wrong.
  */
 const LICENCE_POLICY: Record<string, { uid?: string; permit: string[]; require: string[]; forbid: string[]; note?: string }> = {
   'cc-by-4.0': {
@@ -237,6 +237,51 @@ export interface ProvenanceOptions {
   includeStatement?: boolean
   /** Fixed time, for tests. Defaults to now. */
   now?: string
+  /**
+   * The licence on the pack this engram is being exported inside, if any.
+   *
+   * A member with no licence of its own INHERITS the pack's, and the record
+   * says so rather than presenting it as the engram's own choice. Two reasons
+   * this is inheritance and not application. A pack licence is granted by
+   * whoever assembled the pack, who may not hold rights over every engram in
+   * it — one may quote somebody else's documentation. And a reader deciding
+   * whether to trust a grant needs to know who made it.
+   */
+  packLicense?: string
+  /**
+   * A licence the user configured as their default (`provenance.default_license`).
+   *
+   * Used when neither the engram nor the pack names one. Distinct from the
+   * schema default, because somebody actually chose this.
+   */
+  configuredLicense?: string
+}
+
+/**
+ * Where an engram's effective licence came from.
+ *
+ * This replaced a boolean, which could only say "default or not" and so
+ * collapsed three genuinely different situations. The one that mattered: a
+ * licence the user configured once, deliberately, was being reported the same
+ * way as the schema's `cc-by-sa-4.0` that nobody has ever looked at.
+ */
+export type LicenseSource = 'chosen' | 'inheritedFromPack' | 'configuredDefault' | 'schemaDefault'
+
+/** Was this licence the result of somebody deciding? */
+const wasDecided = (source: LicenseSource) => source === 'chosen' || source === 'configuredDefault'
+
+const LICENSE_SOURCE_NOTE: Record<LicenseSource, string | undefined> = {
+  chosen: undefined,
+  inheritedFromPack:
+    'This licence is the pack\'s, not this memory\'s. Whoever assembled the pack granted '
+    + 'it; nobody recorded a licence for this memory itself, and the assembler may not hold '
+    + 'rights over its content.',
+  configuredDefault:
+    'Nobody picked this licence for this memory. It is the default its author configured, '
+    + 'so it was chosen once rather than chosen here.',
+  schemaDefault:
+    'Nobody chose this licence at any point. It is the schema default, and it is the only '
+    + 'value in this record that was not recorded by somebody.',
 }
 
 type Node = Record<string, unknown>
@@ -553,16 +598,28 @@ export function buildProvenanceRecord(
   else if (source) thing['engram:sourceNote'] = source
 
   // A licence nobody chose is not the same as a licence someone chose. The
-  // schema default applies either way, but the record must not present an
-  // unchosen default as a recorded decision.
+  // effective licence applies either way, but the record must not present an
+  // unchosen value as a recorded decision — and there are four ways to arrive
+  // at one, not two.
   const chosenLicence = (engram as any).provenance?.license as string | undefined
-  const licence = chosenLicence ?? 'cc-by-sa-4.0'
+  const licenceSource: LicenseSource =
+    chosenLicence ? 'chosen'
+    : options.packLicense ? 'inheritedFromPack'
+    : options.configuredLicense ? 'configuredDefault'
+    : 'schemaDefault'
+  const licence = chosenLicence ?? options.packLicense ?? options.configuredLicense ?? 'cc-by-sa-4.0'
   // Private or local means it has not been cleared to leave this machine, and
   // the policy must forbid passing it on regardless of what the licence allows.
   const withheld = (engram as any).visibility === 'private' || (engram as any).scope === 'local'
   const policy = licencePolicy(licence, withheld)
   thing['engram:license'] = licence
-  if (!chosenLicence) thing['engram:licenseIsDefault'] = true
+  thing['engram:licenseSource'] = licenceSource
+  // Kept alongside the four-state field: a reader that only understands
+  // "was this decided or not" still gets a correct answer without having to
+  // learn the vocabulary. It is the same question, asked more coarsely.
+  if (!wasDecided(licenceSource)) thing['engram:licenseIsDefault'] = true
+  const sourceNote = LICENSE_SOURCE_NOTE[licenceSource]
+  if (sourceNote) thing['engram:licenseSourceNote'] = sourceNote
   // One field a machine can read without understanding the policy at all.
   thing['engram:maySharePlainly'] = !withheld
   if (policy) thing['odrl:hasPolicy'] = policy
@@ -886,7 +943,7 @@ export interface ProvenanceSummary {
     came_from?: { value: string; is_link: boolean }
     /** Engrams this one was derived from, when it was built out of others. */
     derived_from?: string[]
-    licence?: { name: string; chosen: boolean; meaning?: string }
+    licence?: { name: string; chosen: boolean; meaning?: string; source?: LicenseSource }
     recorded_steps?: number
     retired?: boolean
   }
@@ -1078,10 +1135,11 @@ export function summariseProvenance(record: Node): ProvenanceSummary {
 
   // May I use it
   const licence = subject?.['engram:license'] as string | undefined
-  const defaulted = subject?.['engram:licenseIsDefault'] === true
+  const licenceSource = (subject?.['engram:licenseSource'] as LicenseSource | undefined) ?? 'chosen'
+  const defaulted = !wasDecided(licenceSource)
   if (licence) {
     const meaning = LICENCE_MEANING[licence.trim().toLowerCase()]
-    fields.licence = { name: licence, chosen: !defaulted, meaning }
+    fields.licence = { name: licence, chosen: !defaulted, meaning, source: licenceSource }
 
     // Answer the two questions a machine actually asks, from the policy rather
     // than from the prose. A consumer was left matching on a free-text meaning
@@ -1125,8 +1183,15 @@ export function summariseProvenance(record: Node): ProvenanceSummary {
     // A licence nobody chose is a schema default, not a decision. It still
     // applies, so print it \u2014 but never beside recorded facts unmarked.
     if (defaulted) {
-      lines.push('              Nobody chose this licence; it is the default.')
-      missing.push('a licence was never chosen; the default above applies')
+      // Say WHICH kind of unchosen. "Inherited from the pack" and "the schema
+      // default nobody has ever looked at" were reported with one sentence, and
+      // they are different facts about who, if anybody, granted anything.
+      lines.push(licenceSource === 'inheritedFromPack'
+        ? '              Inherited from the pack; nobody licensed this memory itself.'
+        : '              Nobody chose this licence; it is the default.')
+      missing.push(licenceSource === 'inheritedFromPack'
+        ? 'a licence for this memory itself; the pack\'s licence above is what applies'
+        : 'a licence was never chosen; the default above applies')
     }
     // The licence answers "may I reuse the content", never "may I share this
     // memory". A tester read "reuse allowed" as permission to pass on a private

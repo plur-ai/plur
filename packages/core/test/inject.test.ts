@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { scoreEngram, selectAndSpread, estimateTokens, fillTokenBudget, formatWithLayer } from '../src/inject.js'
+import { scoreEngram, selectAndSpread, estimateTokens, fillTokenBudget, formatWithLayer, formatLayer1, formatLayer2, formatLayer3 } from '../src/inject.js'
 import { EngramSchema } from '../src/schemas/engram.js'
 import { daysSince } from '../src/decay.js'
 
@@ -390,5 +390,45 @@ describe('injection engine', () => {
     } finally {
       rmSync(dir, { recursive: true })
     }
+  })
+})
+
+describe('an inferred memory does not look like a stated one (#963, #958)', () => {
+  // Reported from outside on the epic: "a memory surfaced in context with
+  // nothing distinguishing something the user explicitly stated from something
+  // an earlier consolidation pass inferred, and the agent treated both as
+  // equally authoritative because nothing in the record said otherwise."
+  //
+  // That was true here. claim_class was captured at learn time and read only by
+  // the provenance record — an artifact nobody consults mid-session.
+  const wire = (over: Record<string, unknown> = {}) => ({
+    id: 'ENG-2026-08-26-001',
+    statement: 'The team probably prefers squash merges',
+    type: 'behavioral',
+    ...over,
+  }) as any
+
+  it('marks a model-inferred memory in the compact layers, which carry no metadata', () => {
+    expect(formatLayer2(wire({ claim_class: 'inferred' }))).toContain('(inferred)')
+    expect(formatLayer1(wire({ claim_class: 'inferred' }))).toContain('(inferred)')
+  })
+
+  it('leaves a stated memory unmarked, so the marker keeps meaning something', () => {
+    expect(formatLayer2(wire({ claim_class: 'asserted' }))).not.toContain('(inferred)')
+    expect(formatLayer2(wire())).not.toContain('(inferred)')
+  })
+
+  it('does not mark what was extracted from something real and checkable', () => {
+    // documented and structural came from a document or an artifact. Marking
+    // all six would be noise on statements needing no caveat, and noise is how
+    // a marker stops being read.
+    for (const kind of ['documented', 'structural', 'observed', 'revised']) {
+      expect(formatLayer2(wire({ claim_class: kind }))).not.toContain('(inferred)')
+    }
+  })
+
+  it('names the kind in full where there is a metadata line for it', () => {
+    const out = formatLayer3(wire({ claim_class: 'inferred', domain: 'ops' }))
+    expect(out).toContain('Kind: inferred')
   })
 })

@@ -136,7 +136,7 @@ describe('attribution is an identity, not a leaked credential', () => {
     ['a plain name', 'Bob Smith'],
   ])('exports a memory attributed by %s', (_label, who) => {
     const result = exportPack([engram({ attribution: { asserted_by: who } })], dir,
-      { name: 'p', version: '1.0.0' })
+      { name: 'p', version: '1.0.0', license: 'cc-by-4.0' })
     expect(result.engram_count).toBe(1)
   })
 
@@ -154,7 +154,7 @@ describe('attribution is an identity, not a leaked credential', () => {
     // That was worse: a usability bug is loud, a silent credential channel is
     // not. Reverted, and the narrow fix is designed in #999.
     const result = exportPack([engram({ attribution: { asserted_by: 'alice@acme.example' } })], dir,
-      { name: 'p', version: '1.0.0' })
+      { name: 'p', version: '1.0.0', license: 'cc-by-4.0' })
     expect(result.engram_count).toBe(1)
   })
 
@@ -164,14 +164,14 @@ describe('attribution is an identity, not a leaked credential', () => {
     const result = exportPack([engram({
       statement: 'The key is AKIAIOSFODNN7EXAMPLE, do not share',
       attribution: { asserted_by: 'alice@acme.example' },
-    })], dir, { name: 'p', version: '1.0.0' })
+    })], dir, { name: 'p', version: '1.0.0', license: 'cc-by-4.0' })
     expect(result.engram_count).toBe(0)
   })
 
   it('still blocks a credential in a field beside the statement', () => {
     const result = exportPack([engram({
       rationale: 'we found AKIAIOSFODNN7EXAMPLE in the old config',
-    })], dir, { name: 'p', version: '1.0.0' })
+    })], dir, { name: 'p', version: '1.0.0', license: 'cc-by-4.0' })
     expect(result.engram_count).toBe(0)
   })
 })

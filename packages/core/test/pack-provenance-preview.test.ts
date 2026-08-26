@@ -36,8 +36,16 @@ describe('previewing what a pack says about its origins', () => {
   }
 
   /** Export everything in the store, the way `plur packs export` does. */
+  /**
+   * Export everything in the store, the way `plur packs export` does.
+   *
+   * The pack licence is deliberately NOT the same as the licence the first
+   * seeded engram chose (cc-by-4.0). One engram picked its own; the other has
+   * none and inherits the pack's — and telling those apart is what most of
+   * these tests are about.
+   */
   const exportAll = async (plur: Plur, opts: Record<string, unknown> = {}) =>
-    plur.exportPack(await plur.list(), out, { name: 'testpack', version: '1.0.0', ...opts } as any)
+    plur.exportPack(await plur.list(), out, { name: 'testpack', version: '1.0.0', license: 'apache-2.0', ...opts } as any)
 
   beforeEach(() => {
     home = mkdtempSync(join(tmpdir(), 'plur-packprov-home-'))
@@ -91,16 +99,17 @@ describe('previewing what a pack says about its origins', () => {
     expect(preview.provenance.attributed_count).toBe(1)
   })
 
-  it('separates a licence the author chose from one that was never chosen', async () => {
+  it('separates a licence the author chose from one the pack supplied', async () => {
     // This is the whole point of the licence view. One engram was licensed
-    // deliberately; the other took the schema default. Presenting them alike
-    // would tell a reader the author granted terms they never considered.
+    // deliberately (cc-by-4.0); the other had none and takes the pack's
+    // (apache-2.0) by inheritance. Presenting them alike would tell a reader
+    // the author granted terms they never considered.
     const plur = await seed()
     await exportAll(plur)
     const { licences, notes } = (await plur.previewPack(out)).provenance
 
     expect(licences.find(l => l.name === 'cc-by-4.0')?.chosen).toBe(true)
-    expect(licences.find(l => l.name === 'cc-by-sa-4.0')?.chosen).toBe(false)
+    expect(licences.find(l => l.name === 'apache-2.0')?.chosen).toBe(false)
     expect(notes.join(' ')).toContain('never chosen')
   })
 

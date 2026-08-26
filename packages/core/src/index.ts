@@ -7010,13 +7010,19 @@ export class Plur {
     return uninstallPack(this.paths.packs, name)
   }
 
-  /** Export engrams as a shareable pack with privacy scanning and integrity hash. */
+  /**
+   * Export engrams as a shareable pack with privacy scanning and integrity hash.
+   *
+   * Throws when no licence has been chosen — by the caller here, or once in
+   * `provenance.default_license`. That is deliberate: see `exportPack`.
+   */
   exportPack(
     engrams: Engram[],
     outputDir: string,
     manifest: ExportOptions,
   ): ReturnType<typeof exportPack> {
-    return exportPack(engrams, outputDir, manifest)
+    const configured = (this.config as any)?.provenance?.default_license as string | undefined
+    return exportPack(engrams, outputDir, manifest, configured)
   }
 
   /** List all installed packs (with integrity hashes). */

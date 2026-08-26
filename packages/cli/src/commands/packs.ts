@@ -11,11 +11,11 @@ import { shouldOutputJson, outputJson, outputText, outputInfo, exit } from '../o
  * `packs install <dir> --dry-run`, which does not exist anywhere here, and the
  * pack was installed by somebody who believed they were previewing it.
  */
-export const FLAGS_WITH_VALUES = ['--domain', '--scope', '--tags', '--type', '--output', '--description', '--creator']
+export const FLAGS_WITH_VALUES = ['--domain', '--scope', '--tags', '--type', '--output', '--description', '--creator', '--license']
 
 export const FLAGS = [
   '--domain', '--scope', '--tags', '--type', '--output', '--description',
-  '--creator', '--provenance', '--no-provenance', '--force', '--yes',
+  '--creator', '--license', '--provenance', '--no-provenance', '--force', '--yes',
 ]
 
 export async function run(args: string[], flags: GlobalFlags): Promise<void> {
@@ -148,6 +148,9 @@ Options:
   --type <type>        Filter by type (behavioral|procedural|architectural|terminological)
   --description <desc> Pack description
   --creator <name>     Creator name
+  --license <spdx>     Licence for the pack as a collection. REQUIRED unless
+                       provenance.default_license is set in config. Use
+                       "unlicensed" to grant nothing explicitly.
   --output <dir>       Output directory (default: ~/plur-packs/<name>)
   --no-provenance      Leave out the record of where each engram came from.
                        Provenance is included by default: a pack is how engrams
@@ -162,6 +165,7 @@ Options:
     let outputDir: string | undefined
     let description: string | undefined
     let creator: string | undefined
+    let license: string | undefined
     let provenance = true
     let i = 2
     while (i < args.length) {
@@ -172,6 +176,7 @@ Options:
       else if (args[i] === '--output' && i + 1 < args.length) { outputDir = args[++i]; i++ }
       else if (args[i] === '--description' && i + 1 < args.length) { description = args[++i]; i++ }
       else if (args[i] === '--creator' && i + 1 < args.length) { creator = args[++i]; i++ }
+      else if (args[i] === '--license' && i + 1 < args.length) { license = args[++i]; i++ }
       else if (args[i] === '--no-provenance') { provenance = false; i++ }
       // Accepted so an existing script that asks for it explicitly still works.
       else if (args[i] === '--provenance') { provenance = true; i++ }
@@ -205,6 +210,7 @@ Options:
       version: '1.0.0',
       description,
       creator,
+      license,
       provenance,
     })
 

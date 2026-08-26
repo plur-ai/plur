@@ -8,17 +8,18 @@ that part should work.
 
 | | |
 |---|---|
-| **Version** | 0.2 (draft) |
+| **Version** | 0.3 (draft) |
 | **Status** | Proposed, and implemented in the reference. OPTIONAL to follow: an implementation that ignores this document is still fully conformant to the Engram Standard. An implementation that writes provenance MUST follow this document, so that two such implementations agree. |
 | **Companion to** | [The Engram Standard, version 1.1](./ENGRAM-STANDARD-v1.md) |
 | **Profiles** | Section 9 of that standard, "Provenance binding". It refines that section; it does not replace it, and the standard governs wherever the two overlap. |
-| **Date** | 2026-08-25 |
+| **Date** | 2026-08-26 |
 | **Licence** | Creative Commons BY 4.0 for the text, Apache 2.0 for any code |
 
 **Revision history**
 
 | Version | Date | What changed |
 |---|---|---|
+| 0.3 | 2026-08-26 | Licence work. Section 8 now separates a copyright licence from usage terms and says which one it maps. Section 8.4's boolean became `engram:licenseSource` with four values, because a licence the author configured once was being reported like the schema value nobody chose. Pack export now REQUIRES a chosen licence — the one field where silence does not produce silence, since the schema fills in a share-alike grant nobody agreed to. Members with no licence inherit the pack's, marked as inheritance rather than choice. Section 4.5 gained the requirement that a claim class be visible at injection, not only in a record nobody asks for mid-session — reported from outside against a working implementation. |
 | 0.2 | 2026-08-25 | Section 5.3 rewritten from prose into a specification: the pack-level field table, the file layout inside a pack, which engrams a pack record may describe, which way the integrity dependency runs, and how a pack declares that it carries provenance. Section 9 corrected — it named a single file, which cannot hold a pack's worth of records. Wording corrected throughout: this document *profiles* section 9, it does not replace it. |
 | 0.1 | 2026-08-20 | First draft. |
 
@@ -441,6 +442,29 @@ ones.
 This is the most useful single field for anyone deciding how much to trust a
 memory. Today it cannot be recovered for most engrams.
 
+**It has to be visible where the memory is used, not only in the record.**
+
+A provenance record is an artifact somebody asks for. Nobody asks for one
+mid-session. So a claim class that lives only in the record does not reach the
+moment it exists for — the moment an engram is put in front of a model as
+context.
+
+This was reported from outside, against a working implementation: *"a memory
+surfaced in context with nothing distinguishing something the user explicitly
+stated from something an earlier consolidation pass inferred, and the agent
+treated both as equally authoritative because nothing in the record said
+otherwise."*
+
+An implementation that captures `claim_class` and does not surface it at
+injection has not delivered this section. At minimum, a memory whose class is
+`inferred` — worked out by a model, with nothing else standing behind it — MUST
+be distinguishable from one a person stated, in whatever form the context is
+rendered.
+
+Marking every class is not required and is probably wrong: `documented` and
+`structural` were extracted from something real that can be checked, and a marker
+on statements that need no caveat is noise, which is how markers stop being read.
+
 ---
 
 ## 5. Every way an engram is born
@@ -654,9 +678,25 @@ engram's licence covers its own content, and a reuser has to satisfy both. When
 they differ, the record marks it with `engram:memberLicensesDiffer` so a reader
 does not have to compare the lists to notice.
 
-A pack licence that nobody chose is subject to section 8.4 exactly as an engram's
-is: the manifest schema supplies `cc-by-sa-4.0` on parse, and a producer MUST NOT
-write that default into a manifest as though somebody selected it.
+**A producer MUST NOT export a pack without a chosen licence.**
+
+This is the one field where "not recorded" is not an available answer. Every
+other unset field degrades honestly to silence; a licence does not, because the
+manifest schema supplies `cc-by-sa-4.0` on parse. Silence therefore does not
+produce silence — it produces a share-alike grant, over other people's memories,
+to whoever receives the pack, attributed to an author who never agreed to it.
+Refusing to export is the only way not to do that quietly.
+
+A licence set once in configuration satisfies this. It is a decision made in
+advance, not an absence of one, and the record says which it was (section 8.4).
+
+`unlicensed` is an acceptable value and is itself a choice: it states plainly
+that no grant is being made. That is a different act from leaving the field out,
+and the record must not conflate them.
+
+Members with no licence of their own inherit the pack's, marked
+`inheritedFromPack` — see section 8.4 for why that is inheritance rather than
+application.
 
 **What a reader can judge before opening a single engram.** These are summaries
 over the members, and they are the reason a pack record exists at all.
@@ -936,6 +976,34 @@ wants a quick automated check uses the permissions and duties.
 We are not translating law. We are giving software enough to make an obvious call
 quickly, and a pointer to follow when the call is not obvious.
 
+**Two different questions wear the word "licence", and this section answers only
+one of them.**
+
+A *copyright licence* answers "what rights do you grant me in this content?" It
+is what CC-BY-SA, MIT and the rest express, and it bites only where a right
+exists. That is the question section 8 maps.
+
+*Usage terms* answer "what may I do with this memory, whatever the copyright
+position?" — may it be redistributed, may a model be trained on it, may it leave
+the machine at all. These bind by agreement rather than by copyright, so they
+apply even to content nobody can own.
+
+The distinction matters more here than in most places, because a single engram is
+usually a short factual assertion, and facts attract little or no copyright in
+most jurisdictions. So the copyright licence on a bare engram may be asserting a
+right that does not exist, while the thing a user actually wants to control —
+"do not pass this on", "do not train on it" — is a usage term.
+
+ODRL expresses both; it is a policy language, not a copyright language. This
+profile already relies on that: the `notShared` prohibition (section 8.4's
+withheld case) is a usage term derived from scope and visibility, sitting in the
+same policy as the copyright grant, and deliberately labelled with its own
+reason so a reader can see it did not come from the licence.
+
+A first-class usage-terms axis, distinct from `engram:license`, is **left open**.
+It needs a vocabulary decision (ODRL has no standard action for model training)
+and is not required for anything the profile currently specifies.
+
 **An unknown licence grants nothing, and says so.** Not a permissive default,
 not a guess.
 
@@ -986,13 +1054,37 @@ Every engram has a licence, because the schema gives it one when nobody says
 otherwise. That default is not a decision anybody made, and a record must not
 let the two look alike.
 
-So a record marks it. When the licence came from the default rather than from a
-choice, the thing carries:
+**There are four ways to arrive at a licence, not two.** A boolean collapsed
+three of them, and the one that mattered most was a licence the user configured
+once, deliberately, being reported exactly like the schema value nobody has ever
+looked at.
+
+| `engram:licenseSource` | Where it came from | Did somebody decide? |
+|---|---|---|
+| `chosen` | recorded on the engram itself | yes |
+| `inheritedFromPack` | the pack this engram was exported inside | yes, but not about *this* engram |
+| `configuredDefault` | the author's configured default (`provenance.default_license`) | yes — once, in advance |
+| `schemaDefault` | `cc-by-sa-4.0`, from the schema | **no** |
+
+Precedence runs down that table: the engram's own licence beats the pack's, which
+beats the configured default, which beats the schema.
 
 ```json
 "engram:license": "cc-by-sa-4.0",
-"engram:licenseIsDefault": true
+"engram:licenseSource": "schemaDefault",
+"engram:licenseIsDefault": true,
+"engram:licenseSourceNote": "Nobody chose this licence at any point. …"
 ```
+
+`engram:licenseIsDefault` is retained beside the four-state field, set whenever
+the source is not a decision. A reader that only understands the boolean still
+gets a correct, coarser answer instead of a wrong one.
+
+**Inheritance is not application.** A pack licence is granted by whoever
+assembled the pack, who may not hold rights over every engram in it — one may
+quote somebody else's documentation. So a member with no licence of its own is
+recorded as *inheriting*, never as having chosen. A record that flattened the two
+would attribute a grant to an author who never made one.
 
 The policy is still written out, because the default genuinely does apply. What
 changes is that a reader can tell the difference, and a summary can list the

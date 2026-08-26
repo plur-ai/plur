@@ -82,7 +82,13 @@ head2 "3. Sharing it: a pack carries provenance without being asked"
 
 say "A pack is how memories leave your machine, so this is where origin"
 say "starts to matter to somebody else. It ships by default."
-run "node $CLI packs export team-conventions --output $PACK --path $STORE --json | python3 -m json.tool"
+
+say "Export asks for one thing it will not decide for you: the licence."
+run "node $CLI packs export team-conventions --output $PACK --path $STORE --json 2>&1 | tail -6"
+
+say "Leaving it blank does not leave it blank — a share-alike default fills"
+say "in that nobody agreed to. So choose, once here or once in your config."
+run "node $CLI packs export team-conventions --output $PACK --license cc-by-4.0 --path $STORE --json | python3 -m json.tool"
 
 say "One record per engram, plus one for the pack as a whole."
 run "ls -1 $PACK $PACK/provenance"

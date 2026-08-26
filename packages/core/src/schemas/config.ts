@@ -262,6 +262,19 @@ export const PlurConfigSchema = z.object({
     path: z.string().default('provenance'),
     /** Include the engram's own text in a shared record. Off by default. */
     include_statement: z.boolean().default(false),
+    /**
+     * The licence this user wants offered first, and used when they do not pick.
+     *
+     * The distinction that makes this worth a config field: a licence set HERE
+     * was chosen. Somebody sat down once and decided. The schema's
+     * `cc-by-sa-4.0` was chosen by nobody, and a record has to be able to tell
+     * those apart — which is why `engram:licenseSource` has four values and not
+     * a boolean.
+     *
+     * Unset by default, deliberately. Shipping a default here would recreate
+     * the problem it exists to solve.
+     */
+    default_license: z.string().optional(),
   }).default({}),
   /** Temporal-aware tension scan tuning (#240). See {@link TensionsConfigSchema}. */
   tensions: TensionsConfigSchema.default({}),
