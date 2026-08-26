@@ -148,6 +148,25 @@ plur-ai/plur#544) — don't work around it; declare the PRs.
 
 ## Conventions
 
+- **A field is not delivered until something reads it at the point of decision.**
+  Capturing a value and storing it correctly is half a feature. Name the surface
+  that consumes it, and write the test that proves it appears there, in the same
+  change that adds the field. If you cannot name a reader, you have added a
+  column, not a capability.
+
+  This is the most expensive recurring mistake in this repository, and it does
+  not look like a bug — everything works, the field is populated, tests pass.
+  Four fields on the engram (`origin`, `chain`, `signature`, `license`) sat
+  written-by-nothing for a year (plur-ai/plur#958). `claim_class` was then
+  captured correctly and read only by a provenance record, which nobody asks for
+  mid-session — so an inferred guess and a stated fact still rendered
+  identically in the injected context, which an outside contributor had to point
+  out to us.
+
+  The question to ask on any new field: **who reads this, and are they reading it
+  at the moment the decision gets made?** A field read only by an artifact
+  produced on request is not read at the moment of decision. `field-readers.test.ts`
+  enforces this for trust-bearing fields; add yours to that list.
 - TypeScript, Vitest, tsup, Zod for validation.
 - YAML for persistent storage (not JSON, not SQLite for primary data; SQLite is used only as an optional read index — YAML is always the source of truth).
 - Engram id grammar is specified in

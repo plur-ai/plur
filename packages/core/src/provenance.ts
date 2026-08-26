@@ -249,6 +249,16 @@ export interface ProvenanceOptions {
    */
   packLicense?: string
   /**
+   * Identity of that pack, as `<name>@<version>`.
+   *
+   * Required for inheritance to mean anything. "This licence came from a pack"
+   * without naming the pack is a dangling claim — and in a PORTABLE record it
+   * is the worst kind, because the recipient has none of our files and cannot
+   * go and look. Naming it lets them see who granted the licence they are
+   * being asked to rely on.
+   */
+  packId?: string
+  /**
    * A licence the user configured as their default (`provenance.default_license`).
    *
    * Used when neither the engram nor the pack names one. Distinct from the
@@ -620,6 +630,33 @@ export function buildProvenanceRecord(
   if (!wasDecided(licenceSource)) thing['engram:licenseIsDefault'] = true
   const sourceNote = LICENSE_SOURCE_NOTE[licenceSource]
   if (sourceNote) thing['engram:licenseSourceNote'] = sourceNote
+
+  // Name the pack this engram travelled inside, and — when the licence came
+  // from it — say so as a link rather than only as a word.
+  //
+  // A stranger holding one of these files has none of our other files. So the
+  // pack gets a stub node here too, carrying its licence and its own policy:
+  // the record then answers "who granted this, and on what terms" without
+  // needing the pack record beside it. That is the standing-on-its-own rule
+  // (section 2.2) applied to the licence chain specifically.
+  if (options.packId) {
+    const packNodeId = `engram:pack/${options.packId}`
+    thing['engram:memberOf'] = { '@id': packNodeId }
+    if (licenceSource === 'inheritedFromPack') {
+      thing['engram:licenseInheritedFrom'] = { '@id': packNodeId }
+    }
+    const packStub: Node = {
+      '@id': packNodeId,
+      '@type': ['prov:Entity', 'prov:Collection', 'engram:Pack'],
+      'prov:hadMember': { '@id': `engram:${id}` },
+    }
+    if (options.packLicense) {
+      packStub['engram:license'] = options.packLicense
+      const packPolicy = licencePolicy(options.packLicense)
+      if (packPolicy) packStub['odrl:hasPolicy'] = packPolicy
+    }
+    graph.push(packStub)
+  }
   // One field a machine can read without understanding the policy at all.
   thing['engram:maySharePlainly'] = !withheld
   if (policy) thing['odrl:hasPolicy'] = policy

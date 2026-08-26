@@ -1554,7 +1554,11 @@ export function exportPack(
       // A member with no licence of its own inherits the pack's, recorded as
       // inheritance rather than as the engram's own choice — the assembler
       // granted it, and may not hold rights over every engram in the pack.
-      const record = buildProvenanceRecord(engram, [], { mode: 'portable', packLicense })
+      const record = buildProvenanceRecord(engram, [], {
+        mode: 'portable',
+        packLicense,
+        packId: `${manifest.name}@${manifest.version}`,
+      })
       const file = path.join('provenance', `${engram.id}.jsonld`)
       fs.writeFileSync(path.join(outputDir, file), serializeProvenanceRecord(record))
       provenanceFiles.push(file)
