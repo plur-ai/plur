@@ -1,6 +1,6 @@
 # The Open Engram Standard
 
-**Version:** 1.2 (draft)
+**Version:** 1.3 (draft)
 **Status:** Working Draft
 **Date:** 2026-08-26
 **Editors:** PLUR.ai (plur-ai)
@@ -34,6 +34,7 @@ Every normative section carries a maturity label:
 | **STABLE** | Implemented in the reference and frozen for v1. Implementers MUST follow it to be conformant. Breaking changes require a major version. |
 | **RESERVED** | Wire space, flags, or fields are allocated and validated, but the *behavior* is not yet specified. Implementers MUST preserve the reserved space (e.g. round-trip the bytes/fields) but MUST NOT assign their own meaning to it. |
 | **PROPOSED** | A planned extension or profile. Non-normative for v1. Provided so the design space is documented and the fundable remainder is explicit. Implementers MAY ignore it. |
+| **SPECIFIED** | Normative and frozen for v1, but **not yet fully implemented in the reference**. Implementers MUST follow it to be conformant, exactly as for STABLE. The distinction exists because "implemented in the reference" and "binding on implementers" are different claims, and a document that conflates them cannot describe a rule written before its own implementation catches up. Where the reference falls short, this document says so and names the tracking issue. |
 
 The maturity label of a whole section applies to everything in it unless an
 inner item is labelled otherwise.
@@ -48,8 +49,9 @@ inner item is labelled otherwise.
    invariants of a single unit of knowledge.
 2. **The ID grammar** (§3) — how engram identifiers are formed and what their
    prefixes mean.
-3. **The Pack format** (§5) — the on-disk directory layout (`SKILL.md` +
-   `engrams.yaml` + `INTEGRITY`) and the manifest fields.
+3. **The Pack format and lifecycle** (§5) — the on-disk directory layout
+   (`SKILL.md` + `engrams.yaml` + `INTEGRITY`), the manifest fields, and what a
+   consumer does when it installs, updates or removes one (§5.6–§5.8).
 4. **The `.plur` capsule** (§6) — the binary single-file envelope: header,
    format version, flags, payload, checksum.
 5. **The integrity model** (§6, §8) — how a receiver verifies that a pack or
@@ -296,7 +298,7 @@ destroying any.
 | `source` | string | | | Free-text origin (session, document). |
 | `source_patterns` | string[] | | | Pattern IDs that contributed. |
 | `derivation_count` | integer | | ≥0, default `1` | Number of derivation steps. |
-| `pack` | string \| null | | default `null` | Owning pack name, or null. |
+| `pack` | string \| null | | default `null` | Owning pack name, or null. A consumer satisfying §5.6.2 by writing this SHOULD do so; absence does NOT mean an engram is not from a pack. |
 | `abstract` | string \| null | | default `null` | ID of an `ABS-` abstraction this instantiates. |
 | `derived_from` | string \| null | | default `null` | ID of the parent engram. |
 
@@ -665,6 +667,256 @@ installed — and does not license overwriting the first.
 
 ---
 
+### 5.6 Install — SPECIFIED
+
+§5.1 to §5.5 describe a pack as an artifact. This section describes receiving
+one.
+
+A **consumer** is any implementation that takes a pack and makes its engrams
+available to a reader. The rules below are about a pack that arrived from
+somewhere else. That is the only case worth specifying, because a pack a
+consumer built itself needs no defending against.
+
+#### 5.6.1 Order of operations — MUST
+
+A consumer MUST perform these in order, and MUST NOT make any engram available
+to a reader until all of them have completed:
+
+1. **Verify integrity** (§5.5). Recompute over the received bytes and compare to
+   the shipped `INTEGRITY`. A mismatch MUST abort the install unless the
+   installer has explicitly overridden it for this pack.
+2. **Scan for secrets.** A pack whose content trips a secret scan MUST be
+   refused, and the refusal MUST NOT be overridable. §5.4 makes excluding
+   secrets a producer obligation; a consumer cannot assume the producer complied.
+3. **Neutralize host-overriding fields** (§5.4): remove `pinned`, downgrade
+   `commitment: locked` to `decided`. A consumer MUST do this even though §5.4
+   also requires the producer to, and MUST report how many engrams were changed.
+4. **Resolve scope** (§5.6.3).
+5. **Record the install** (§5.6.4).
+
+Ordering matters and is not merely tidy. Verification before scanning means a
+tampered pack is refused before its content is parsed. Scanning before
+neutralizing means the scan sees what was shipped rather than what was cleaned.
+Recording last means a failed install leaves no record claiming otherwise.
+
+A consumer MAY additionally refuse a pack on grounds this standard does not
+define — prompt-injection heuristics, size limits, an unrecognised producer. Such
+refusals are implementation policy and MUST be reported as such rather than as
+conformance failures.
+
+#### 5.6.2 Where engrams go — implementation choice, with one requirement
+
+This standard does not say where a consumer stores installed engrams. Keeping
+them in the pack directory, merging them into a primary store, or projecting them
+into a database are all conformant.
+
+**The requirement is that the consumer MUST be able to determine, for any engram
+it has made available, which pack it came from, and MUST be able to enumerate the
+engrams of an installed pack.** Membership MUST be durable — it MUST survive a
+restart and MUST NOT depend on the pack directory remaining on disk in a
+particular shape.
+
+Without that, §5.8 is not implementable: an installed pack cannot be removed if
+nothing records what it installed. The requirement is stated as a capability
+rather than a mechanism because the honest options differ by store —
+the `pack` field (§4.4), a registry keyed by engram id, or an append-only
+record naming the set are all sufficient.
+
+> **Note on `pack` (§4.4).** The field is defined as *"Owning pack name, or
+> null"*. A consumer that satisfies this section by writing it SHOULD do so.
+> A consumer that satisfies it another way MAY leave `pack` null, but MUST NOT
+> rely on the field's absence meaning an engram is not from a pack.
+
+#### 5.6.3 Scope on import — MUST NOT decide silently
+
+A pack's engrams arrive carrying the scopes its **producer** wrote. Those names
+belong to the producer's installation. `group:acme/engineering` in a received
+pack does not name the recipient's engineering group; if a group of that name
+exists locally it is a different group that happens to collide.
+
+Therefore:
+
+- A consumer **MUST NOT** place engrams from a received pack into a shared scope
+  (§4.2) on the producer's say-so alone. The installer decides.
+- A consumer **MUST NOT** place them into a scope that would widen their audience
+  beyond the installer's own read access.
+- A consumer **SHOULD** let the installer name one target scope for the pack, and
+  **SHOULD** report the scope every engram landed in.
+- Where a pack declares `global` or an equivalent everyone-sees-it scope, a
+  consumer **MUST** obtain explicit consent rather than adopting it.
+
+The rule is about consent, not taxonomy. A recipient installing a pack is
+agreeing to hold its contents; they are not thereby agreeing to show them to
+their whole organisation.
+
+#### 5.6.4 The install registry — normative
+
+§5.1 and §5.5 both call the registry authoritative and neither says what it is.
+
+An **install registry** is a durable record, held by the consumer, of the packs
+it has installed. It is not part of a pack and never travels with one.
+
+A registry entry MUST carry:
+
+| Field | Semantics |
+|---|---|
+| `name` | The installed pack's manifest `name`. Unique within a registry. |
+| `version` | The manifest `version` as shipped. REQUIRED — §5.7 cannot order without it. |
+| `installed_at` | RFC 3339 instant. |
+| `integrity_shipped` | The `sha256:` value the pack shipped, verbatim, or explicitly absent if it shipped none. This is what a later re-verification compares against (§5.5.1). |
+| `source` | Where the pack came from, in a form the consumer can act on — a path, a URL, or an explicit "no longer resolvable". REQUIRED, because §5.8 makes removal reversible only if it survives. |
+
+A registry entry SHOULD carry `integrity_installed` (§5.5.1), `creator`, the
+resolved target scope (§5.6.3), and a pointer to the engram membership required
+by §5.6.2.
+
+A consumer MUST NOT treat an unreadable registry as an empty one. An empty
+registry means nothing is installed; an unreadable one means the consumer does
+not know, and proceeding as though nothing is installed silently duplicates
+every pack the user has.
+
+#### 5.6.5 What a consumer MUST report
+
+An install is a change to knowledge the reader will act on. A consumer MUST
+report, in a form the installer sees:
+
+- engrams installed
+- engrams neutralized under §5.6.1 step 3, and which field was changed
+- the integrity verdict, including "the pack shipped none" as distinct from "it
+  matched"
+- the scope every engram landed in
+- conflicts detected with content the consumer already held, where it detects any
+
+A consumer that found provenance records in the pack MUST report what it found,
+per §5.4 of [the provenance profile](./ENGRAM-PROVENANCE-PROFILE.md).
+
+Silence is the failure mode this guards against. A pack that installs with no
+output is indistinguishable from one that installed nothing.
+
+---
+
+### 5.7 Update — SPECIFIED
+
+Replacing an installed pack with a later version of the same pack.
+
+#### 5.7.1 Ordering versions
+
+§5.2 validates `version` as an opaque string, which cannot be ordered. For update
+to mean anything, ordering has to exist somewhere.
+
+- A producer **SHOULD** use SemVer for `version`, and **MUST** use a scheme in
+  which later releases order after earlier ones under the comparison the producer
+  documents.
+- SemVer **build metadata MUST NOT** be the only thing distinguishing two
+  versions: SemVer ignores it for precedence, so `1.0.0+a` and `1.0.0+b` compare
+  equal and a consumer cannot tell which is later.
+- A consumer **MUST NOT** infer an ordering it cannot compute. Where two versions
+  are not comparable, it MUST treat the operation as a replacement requiring
+  explicit confirmation rather than guessing a direction.
+
+A consumer MUST distinguish three cases and MUST NOT silently perform any of
+them as though it were another: **upgrade** (candidate orders after installed),
+**reinstall** (equal), **downgrade** (orders before). A downgrade MAY be
+permitted; if it is, it MUST be explicit.
+
+#### 5.7.2 Which engrams correspond
+
+Correspondence is by engram `id`. §3.3.2 gives packs a dateless id form for
+exactly this reason — so ids are stable across releases and two versions can be
+diffed.
+
+For each id: present in both is a **carry-over**, new in the candidate is an
+**addition**, present only in the installed version is a **departure**.
+
+#### 5.7.3 Recipient-accumulated state — MUST NOT be silently discarded
+
+A recipient accumulates state against installed engrams: feedback, usage counts,
+activation, and any review or approval decisions their implementation records.
+That state is the recipient's, not the producer's, and an update MUST NOT
+silently destroy it.
+
+- For a **carry-over**, a consumer MUST preserve recipient-accumulated state,
+  even where the engram's `statement` changed. The recipient's judgement was
+  about that engram, and the id is what identifies it.
+- For a **departure**, a consumer MUST NOT simply drop the engram. It MUST be
+  retired under §5.8's rules, so that a reader asking about it learns it was
+  withdrawn by an update rather than finding nothing.
+- Producer-side state in the candidate — `activation`, `feedback_signals`, which
+  §5.4 requires a producer to reset — MUST NOT overwrite the recipient's.
+
+#### 5.7.4 What a consumer MUST report
+
+Additions, departures and carry-overs whose content changed, with counts, and the
+version transition. An update that reports only "updated" tells the reader
+nothing about what they are now relying on.
+
+---
+
+### 5.8 Uninstall — SPECIFIED
+
+Removing an installed pack.
+
+#### 5.8.1 Retire, do not erase — MUST
+
+A consumer MUST NOT make an installed pack's engrams silently disappear.
+
+Where the consumer's model has a retired or withdrawn state, engrams from an
+uninstalled pack MUST be moved into it rather than deleted, and the reason MUST
+name the pack and version. A reader who later asks about one MUST be able to
+learn that it existed and was withdrawn.
+
+The distinction matters because the alternative is indistinguishable from having
+never known. A memory system whose removals leave no trace cannot answer why it
+no longer believes something — and that question is the reason provenance exists.
+
+A consumer MAY additionally offer a permanent erase, and where it does, that MUST
+be a separate and explicit operation, never the default path of uninstall.
+
+#### 5.8.2 Reversibility — SHOULD
+
+A consumer SHOULD retain enough to reinstall: the registry entry's `source`, and
+where practical the artifact itself.
+
+A consumer MUST NOT discard the `source` before completing the removal. Removing
+the record of where a pack came from as a step of removing the pack leaves the
+operation irreversible by construction, which is a defect rather than a policy.
+
+#### 5.8.3 What survives
+
+Recipient-accumulated state MAY be discarded on uninstall, but a consumer SHOULD
+retain it against the retired engrams so a reinstall does not lose the
+recipient's judgement.
+
+Content the recipient independently learned that happens to match a pack engram
+is **not** part of the pack and MUST NOT be removed with it. Membership is what
+§5.6.2 recorded, not similarity.
+
+#### 5.8.4 What a consumer MUST report
+
+Engrams retired, whether the source was retained, and what the consumer kept.
+
+---
+
+### 5.9 Where the reference does not yet comply
+
+§5.6 to §5.8 were written from the behaviour a consumer needs, not from the
+behaviour the reference has. It has less. Listed here rather than left for an
+implementer to discover by disagreeing with us:
+
+| Rule | Reference today | Tracked |
+|---|---|---|
+| §5.6.2 membership | The registry records pack names, not engram ids, and `pack` (§4.4) is never written. There is no way to enumerate an installed pack's engrams, so §5.8 is not implementable. | plur-ai/plur#1025, #1023 |
+| §5.6.3 scope | No scope resolution on import at all. Engrams keep the producer's scopes, including `global`; the installer is warned and not asked. | plur-ai/plur#1024 |
+| §5.6.4 registry | `integrity_shipped` is not retained — the post-neutralization hash is recorded under that name (§5.5.1). `source` is present but removed *before* the pack directory during uninstall. | plur-ai/plur#1027 |
+| §5.7 update | No update path exists for a user-installed pack. Versions are never compared at install, so upgrade, reinstall and downgrade are indistinguishable. | plur-ai/plur#1026 |
+| §5.8.1 retire | Uninstall deletes the pack directory. Nothing is retired, no reason is recorded, and no history event is written. | plur-ai/plur#1027 |
+
+This table is a conformance statement, not an apology. A standard whose reference
+silently diverges teaches implementers the divergence; one that names its gaps
+lets them decide what to build against.
+
+---
+
 ## 6. The `.plur` capsule — STABLE
 
 A **capsule** seals a pack into one integrity-checked binary file. It is the
@@ -979,6 +1231,7 @@ they are holding and what changed. Version numbers follow §10.2.
 
 | Version | Date | Change class | What changed |
 |---|---|---|---|
+| 1.3 | 2026-08-26 | Minor (additive) | **New maturity label SPECIFIED** — normative and frozen, but not yet implemented in the reference; the vocabulary previously conflated "binding on implementers" with "implemented here" and so could not describe a rule written ahead of its own implementation. **§5.6 Install, §5.7 Update and §5.8 Uninstall added** — the standard described a pack as an artifact and said nothing about receiving one. §5.6 fixes the order of operations, requires a consumer to be able to answer which pack an engram came from, forbids adopting a producer's shared scopes without the installer's consent, and **defines the install registry** that §5.1 and §5.5 already called authoritative. §5.7 requires an orderable version and forbids silently discarding recipient-accumulated state across an update. §5.8 requires retire-rather-erase and forbids discarding a pack's source as a step of removing it. §4.4's `pack` gains a consumer-side note. §5.9 lists where the reference does not yet comply. Nothing here constrains previously-valid pack *data*; the new obligations fall on consumers, which the document did not previously address at all. |
 | 1.2 | 2026-08-26 | Minor (additive) | §5.4: the strip list gains `relations.supersedes`/`superseded_by`, and gains two MUST-neutralize rules for `pinned` and `commitment: locked` — both were performed by the reference and stated nowhere, and both change whose judgement governs the recipient's store rather than merely tidying. §5.5.1 added: the pack integrity value and the installed-content hash answer different questions and MUST NOT be conflated; the reference's current conflation is recorded as a known divergence. §9: the single `provenance.jsonld` sidecar corrected to the `provenance/` directory the profile specifies — §9 governs where the two overlap, so an implementer reading it alone was being told to build the wrong thing. No field removed, no constraint tightened on existing data, no default changed. |
 | 1.1 | 2026-08-25 | Minor (additive) | §4.8: added the OPTIONAL `attribution` and `claim_class` engram fields, marked PROPOSED. §4.12: added `injection_count` and `measured_under`; renamed `reference_count` → `write_count` (consumers MUST backfill on first parse). §3.3: canonical id form gains full ISO-8601 date separators, with the compact form retained as permanently valid legacy (§3.3.1) and the dateless pack form documented (§3.3.2). §5.1/§5.2: an OPTIONAL `provenance/` directory and a `metadata.provenance` declaration. §9: recorded that a companion profile now elaborates it. §4.12 `commitment` gains the `draft` member. No field removed, no constraint tightened, no default changed. |
 | 1.0 | 2026-06-14 | — | Initial working draft. |
@@ -1027,7 +1280,7 @@ normative specification of meta-engrams is deferred (a fundable remainder item).
 | §2 | Serialization | STABLE |
 | §3 | ID grammar | STABLE |
 | §4 | Engram object | STABLE (exchange block PROPOSED; provenance.signature RESERVED) |
-| §5 | Pack format & integrity | STABLE (`provenance/` directory and `metadata.provenance` OPTIONAL) |
+| §5 | Pack format, integrity & lifecycle | STABLE for §5.1–§5.5 (`provenance/` and `metadata.provenance` OPTIONAL); **SPECIFIED** for §5.6–§5.8, with the reference's gaps listed in §5.9 |
 | §6 | `.plur` capsule | STABLE (FormatVersion 0x0001; flag bits 2–15 RESERVED) |
 | §7 | Signing (Ed25519) | RESERVED |
 | §8 | Integrity (SHA-256) | STABLE |
