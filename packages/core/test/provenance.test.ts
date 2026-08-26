@@ -20,7 +20,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { EngramSchema } from '../src/schemas/engram.js'
 import type { HistoryEvent } from '../src/history.js'
-import { buildProvenanceRecord, serializeProvenanceRecord } from '../src/provenance.js'
+import { buildProvenanceRecord, serializeProvenanceRecord, summariseProvenance } from '../src/provenance.js'
 import { Plur } from '../src/index.js'
 
 const engramOf = (overrides: Record<string, unknown> = {}) =>
@@ -408,5 +408,90 @@ describe('what the testers found', () => {
     const summary = summariseProvenance(record as any)
     expect(summary.fields.claim_meaning).not.toContain('or agent')
     expect(summary.fields.claim_meaning).toContain('rather than a model')
+  })
+})
+
+describe('a licence that grants nothing, and a licence nobody knows', () => {
+  it('tells a withheld grant apart from a failed lookup', () => {
+    // Both produce no permissions, and they mean opposite things. A tester
+    // reading only the policy saw a prohibition on an MIT memory and nothing on
+    // a proprietary one, and concluded the proprietary one was the freer of the
+    // two. `engram:licenseRecognised` is what carries the difference.
+    const owned = buildProvenanceRecord(engramOf({ provenance: { origin: 'x', license: 'proprietary' } }))
+    const unknown = buildProvenanceRecord(engramOf({ provenance: { origin: 'x', license: 'weird-licence-9' } }))
+
+    const ownedPolicy = subject(owned)['odrl:hasPolicy']
+    const unknownPolicy = subject(unknown)['odrl:hasPolicy']
+
+    expect(ownedPolicy['engram:licenseRecognised']).toBe(true)
+    expect(unknownPolicy['engram:licenseRecognised']).toBe(false)
+    // Neither grants anything.
+    expect(ownedPolicy['odrl:permission']).toEqual([])
+    expect(unknownPolicy['odrl:permission']).toEqual([])
+    // But only the recognised one states what is forbidden, because only it knows.
+    expect(ownedPolicy['odrl:prohibition']).toBeDefined()
+    expect(unknownPolicy['odrl:prohibition']).toBeUndefined()
+    // And proprietary has no address to follow — that is its distinguishing mark.
+    expect(ownedPolicy['odrl:uid']).toBeUndefined()
+  })
+
+  it('never reports a proprietary memory as reusable', () => {
+    const record = buildProvenanceRecord(engramOf({ provenance: { origin: 'x', license: 'proprietary' } }))
+    const s = summariseProvenance(record as any)
+    expect(s.fields.may_reuse_commercially).toBe(false)
+    expect(s.fields.may_redistribute).toBe(false)
+    expect(s.fields.licence_recognised).toBe(true)
+    expect(s.fields.licence_chosen).toBe(true)
+  })
+
+  it('shows the reader why a proprietary memory is closed, not just that it is', () => {
+    // The note lived in the record and printed nowhere, for the one licence
+    // whose entire content is "you may not".
+    const record = buildProvenanceRecord(engramOf({ provenance: { origin: 'x', license: 'proprietary' } }))
+    const s = summariseProvenance(record as any)
+    const text = s.lines.join('\n')
+    expect(text).toContain('NO reuse granted')
+    expect(text).toContain('grants nothing')
+  })
+
+  it('still recognises a licence written in a different case, with spaces around it', () => {
+    const record = buildProvenanceRecord(engramOf({ provenance: { origin: 'x', license: '  MIT  ' } }))
+    expect(subject(record)['odrl:hasPolicy']['engram:licenseRecognised']).toBe(true)
+  })
+})
+
+describe('how much history a record covers', () => {
+  const eventAt = (timestamp: string, event = 'engram_updated'): HistoryEvent =>
+    ({ event, engram_id: 'ENG-2026-08-21-001', timestamp } as HistoryEvent)
+
+  const bundleOf = (record: any) =>
+    nodesOf(record).find(n => Array.isArray(n['@type']) && n['@type'].includes('prov:Bundle'))
+
+  it('says which month of history it was built from', () => {
+    // Without this, a record built from a truncated log is indistinguishable
+    // from one built from a complete one, and "no retirement recorded" reads as
+    // "not retired" when it may mean "we did not look".
+    const record = buildProvenanceRecord(engramOf(), [
+      eventAt('2026-06-02T10:00:00Z', 'engram_created'),
+      eventAt('2026-08-21T10:00:00Z'),
+    ])
+    expect(bundleOf(record)['engram:historyThrough']).toBe('2026-08')
+    expect(bundleOf(record)['engram:historyEvents']).toBe(2)
+  })
+
+  it('takes the newest event, not the last one it happened to be handed', () => {
+    const record = buildProvenanceRecord(engramOf(), [
+      eventAt('2026-08-21T10:00:00Z'),
+      eventAt('2026-06-02T10:00:00Z', 'engram_created'),
+    ])
+    expect(bundleOf(record)['engram:historyThrough']).toBe('2026-08')
+  })
+
+  it('omits the coverage rather than inventing one when no log was consulted', () => {
+    // Describing the engram alone is a different claim from covering a period
+    // and finding nothing in it.
+    const record = buildProvenanceRecord(engramOf(), [])
+    expect(bundleOf(record)['engram:historyThrough']).toBeUndefined()
+    expect(bundleOf(record)['engram:historyEvents']).toBe(0)
   })
 })

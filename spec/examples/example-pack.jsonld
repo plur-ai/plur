@@ -20,7 +20,8 @@
       "engram:describes": {
         "@id": "engram:pack/swarm-grants@1.0.0"
       },
-      "engram:recordIsSelfContained": true
+      "engram:recordIsSelfContained": true,
+      "engram:historyEvents": 0
     },
     {
       "@id": "engram:pack/swarm-grants@1.0.0",
@@ -56,6 +57,29 @@
       "engram:licensesChosen": [
         "cc-by-4.0"
       ],
+      "engram:license": "mit",
+      "odrl:hasPolicy": {
+        "@type": "odrl:Set",
+        "odrl:uid": "https://opensource.org/license/mit",
+        "odrl:permission": [
+          {
+            "odrl:action": [
+              "odrl:use",
+              "odrl:reproduce",
+              "odrl:distribute",
+              "odrl:derive"
+            ],
+            "odrl:duty": [
+              {
+                "odrl:action": "odrl:attribute"
+              }
+            ]
+          }
+        ],
+        "engram:licenseRecognised": true
+      },
+      "engram:memberLicensesDiffer": true,
+      "engram:note": "This licence covers the pack as a collection. The engrams inside carry their own licences, which are not all the same as this one, and a reuser has to satisfy both. Neither overrides the other.",
       "engram:earliestEngram": "2026-08-12T08:00:00Z",
       "engram:latestEngram": "2026-08-12T08:00:00Z",
       "engram:packIntegrity": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",

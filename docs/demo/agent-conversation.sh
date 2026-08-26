@@ -82,6 +82,14 @@ and it's CC BY 4.0 so the team can reuse it."
 call plur_learn '{"statement":"Connection pools cap at 100 on the shared tier","type":"architectural","visibility":"public","source":"https://example.org/runbook","claim_class":"documented","license":"cc-by-4.0","attribution":{"asserted_by":"local:priya","runtime":{"name":"plur-mcp","version":"0.18.0"}}}' \
   "python3 -c \"import json,sys; d=json.load(sys.stdin); print('id:', d['id'])\""
 
+# Capture the ids the store minted, rather than predicting them.
+#
+# Ids are date-sequenced, so the literals that used to sit in the calls below
+# named real engrams only on the day this was recorded, and the conversation
+# broke the next morning.
+POOLS=$($CALL "$STORE" plur_provenance '{"search":"connection pools"}' 2>/dev/null \
+  | python3 -c "import json,sys; print(json.load(sys.stdin)['engram_id'])")
+
 bot "Recorded."
 
 you "And now?"
@@ -141,12 +149,17 @@ nobody chose that licence anyway."
 # ---------------------------------------------------------------------------
 you "The cap changed to 200 last week. Correct it."
 
-call plur_learn '{"statement":"Connection pools cap at 200 on the shared tier since August","type":"architectural","claim_class":"documented","attribution":{"asserted_by":"local:priya"},"supersedes":["ENG-2026-08-23-002"]}' \
+call plur_learn '{"statement":"Connection pools cap at 200 on the shared tier since August","type":"architectural","claim_class":"documented","attribution":{"asserted_by":"local:priya"},"supersedes":["'"$POOLS"'"]}' \
   "python3 -c \"import json,sys; d=json.load(sys.stdin); print('id:', d['id'])\""
+
+# The correction's own id, for the record shown at the end. Read back from the
+# superseded engram, so it is whatever the store actually assigned.
+FIXED=$($CALL "$STORE" plur_provenance '{"id":"'"$POOLS"'"}' 2>/dev/null \
+  | python3 -c "import json,sys; print((json.load(sys.stdin).get('superseded_by') or ['$POOLS'])[0])")
 
 you "If someone asks about the old one, will they know?"
 
-call plur_provenance '{"id":"ENG-2026-08-23-002"}' \
+call plur_provenance '{"id":"'"$POOLS"'"}' \
   "python3 -c \"
 import json,sys
 d = json.load(sys.stdin)
@@ -166,7 +179,7 @@ decision, not the record's."
 # ---------------------------------------------------------------------------
 you "Show me the actual document. I want to give it to our compliance team."
 
-call plur_provenance '{"id":"ENG-2026-08-23-003","format":"record"}' \
+call plur_provenance '{"id":"'"$FIXED"'","format":"record"}' \
   "python3 -c \"
 import json,sys
 r = json.load(sys.stdin)['record']

@@ -354,11 +354,26 @@ invented. It was already there, in the list of event types the code writes.
 | `recurrence_detected` | recurring | scope widened, belief strengthened |
 | `contradiction_detected` | detecting a conflict | see section 6.3 |
 | `feedback_received` | receiving feedback | see section 7.2 |
+| `engram_decremented` | dereferencing | **not** invalidation — see section 6.2 |
 | `co_injection` | injecting | used these engrams |
 | `injection_outcome` | recording an outcome | links a verdict to an injection |
 
-Four event types are declared in the code but never written. Do not invent
-activities for them.
+`engram_decremented` matters more than its size suggests. Forgetting an engram
+reduces a reference count and only retires it at zero, so a reduction that is
+mapped to retirement reports a memory as withdrawn when it is still believed.
+It gets its own activity for that reason, and it is never `prov:wasInvalidatedBy`.
+
+**Events with no activity.** Some events the code writes are deliberately not
+mapped: re-scoping, near-duplicate detection, duplicate absorption, a session
+scope change, a reported failure. They are bookkeeping about where an engram
+sits, not steps in how it came to be. An implementation MAY map them under its
+own prefix; it MUST NOT invent `engram:` names for them, and a reader MUST NOT
+treat their absence as evidence nothing happened.
+
+Some event types are declared in the code and never written at all. Do not invent
+activities for those either. An activity in a record should mean the event
+occurred, and a vocabulary entry for something nothing emits is a promise the log
+cannot keep.
 
 ### 4.4 Who is responsible
 
@@ -619,7 +634,29 @@ member so the record has no dangling reference.
 | `prov:hadMember` | one entry per engram shipped |
 | `engram:engramCount` | how many members |
 | `engram:packIntegrity` | the pack's `sha256:` value, per section 5.3.3 |
+| `engram:license` + `odrl:hasPolicy` | the licence in the pack's own manifest, mapped by section 8. See below — this is not the same question as the licences inside |
 | `prov:wasAttributedTo` | who assembled it, when a creator is recorded. Omitted otherwise — never guessed |
+
+**A pack's licence and its engrams' licences are two different questions, and
+neither overrides the other.**
+
+The distinction is not academic. A single engram is one short assertion. A pack
+is a curated collection, and a collection attracts rights in its own right — the
+selection and the arrangement, and in the European Union the sui generis database
+right. So the pack's licence is the one a recipient asks about first, and it is
+the one an engram-by-engram record cannot answer.
+
+The two can disagree without anybody doing anything wrong: an MIT-licensed pack
+of share-alike engrams is an ordinary thing to assemble by accident. A record
+MUST NOT resolve the disagreement, because it has no standing to. It states both
+and says which governs what: the pack licence covers the collection, each
+engram's licence covers its own content, and a reuser has to satisfy both. When
+they differ, the record marks it with `engram:memberLicensesDiffer` so a reader
+does not have to compare the lists to notice.
+
+A pack licence that nobody chose is subject to section 8.4 exactly as an engram's
+is: the manifest schema supplies `cc-by-sa-4.0` on parse, and a producer MUST NOT
+write that default into a manifest as though somebody selected it.
 
 **What a reader can judge before opening a single engram.** These are summaries
 over the members, and they are the reason a pack record exists at all.
@@ -828,14 +865,36 @@ checked against the published vocabulary file, not guessed.
 | Licence name | Permits | Requires | Forbids |
 |---|---|---|---|
 | `cc-by-4.0` | use, reproduce, distribute, derive | attribute | — |
-| `cc-by-sa-4.0` *(our default)* | use, reproduce, distribute, derive | attribute, shareAlike | — |
+| `cc-by-sa-4.0` *(the schema default)* | use, reproduce, distribute, derive | attribute, shareAlike | — |
 | `cc-by-nc-4.0` | use, reproduce, distribute, derive | attribute | commercialize |
 | `cc-by-nd-4.0` | use, reproduce, distribute | attribute | derive |
+| `cc-by-nc-sa-4.0` | use, reproduce, distribute, derive | attribute, shareAlike | commercialize |
 | `cc0-1.0` | use, reproduce, distribute, derive | — | — |
 | `apache-2.0` | use, reproduce, distribute, derive | attribute | — |
 | `mit` | use, reproduce, distribute, derive | attribute | — |
-| `proprietary` | — | — | everything; the holder grants nothing |
-| anything else | — | — | emit no policy at all |
+| `isc` | use, reproduce, distribute, derive | attribute | — |
+| `bsd-2-clause` | use, reproduce, distribute, derive | attribute | — |
+| `bsd-3-clause` | use, reproduce, distribute, derive | attribute | — |
+| `mpl-2.0` | use, reproduce, distribute, derive | attribute, shareAlike | — |
+| `lgpl-3.0` | use, reproduce, distribute, derive | attribute, shareAlike | — |
+| `gpl-3.0` | use, reproduce, distribute, derive | attribute, shareAlike | — |
+| `agpl-3.0` | use, reproduce, distribute, derive | attribute, shareAlike | — |
+| `unlicense` | use, reproduce, distribute, derive | — | — |
+| `proprietary` | — | — | use, reproduce, distribute, derive, commercialize |
+| anything else | — | — | see section 8.3 |
+
+Names are matched case-insensitively after trimming. The share-alike mapping for
+the copyleft software licences is a *summary of the reciprocity obligation*, not
+a claim that they are interchangeable with a Creative Commons ShareAlike term —
+section 8.3's rule that the licence text is authoritative is what carries the
+difference.
+
+**`proprietary` is not a licence**, and the record must not treat it as one it
+failed to recognise. It is a recorded decision to withhold permission: understood
+perfectly, and the answer is no. It is the one entry with **no `odrl:uid`**,
+because there is no licence text to follow — a reuser has to ask a person. An
+implementation that routes it through the unrecognised branch produces the same
+permissions and the opposite impression, and a reader acts on the impression.
 
 Written out, our default looks like this:
 
@@ -877,13 +936,47 @@ wants a quick automated check uses the permissions and duties.
 We are not translating law. We are giving software enough to make an obvious call
 quickly, and a pointer to follow when the call is not obvious.
 
-**An unknown licence produces nothing.** Not a permissive default, not a guess,
-and not a warning that someone will ignore. If we do not recognise the name, the
-record carries the licence name and no policy at all. A reader then knows to go
-and look.
+**An unknown licence grants nothing, and says so.** Not a permissive default,
+not a guess.
 
-Two rules for implementers. Map common licence names to policy addresses. Never
-quietly widen the terms of a licence you do not recognise.
+An earlier draft said to emit *no policy at all*, reasoning that a guess is worse
+than silence. It is — but silence is not what a reader receives. Someone testing
+this pointed out the consequence: software checking policies saw a prohibition on
+an MIT memory and nothing whatsoever on one marked `proprietary`, so the
+proprietary one looked the **less** restricted of the two. Absence was being read
+as permission, exactly backwards.
+
+So an unrecognised licence produces a policy that expresses no permission and
+says why:
+
+```json
+"odrl:hasPolicy": {
+  "@type": "odrl:Set",
+  "odrl:permission": [],
+  "engram:licenseRecognised": false,
+  "engram:note": "\"<name>\" is not a licence this software knows. No permission is expressed here. Read the licence itself before reusing anything under it. An empty permission list means nothing was determined, NOT that everything is allowed."
+}
+```
+
+Still no guess. The difference is that the reader is told there is nothing here
+to rely on, instead of having to infer it from a missing key.
+
+**`engram:licenseRecognised` carries the distinction an empty permission list
+cannot.** A recognised licence that grants nothing (`proprietary`) and an
+unrecognised name both produce no permissions, and they mean opposite things —
+"the answer is no" against "we could not tell". Every policy therefore states
+`engram:licenseRecognised` explicitly, `true` or `false`.
+
+**Permission questions fail closed.** A consumer asking "may I reuse this
+commercially?" gets `false` when the licence is unrecognised, never `null` and
+never absent. A consumer written as `if (x !== false)` reads `null` as
+permission, and for a field that gates reuse, not knowing has to mean no.
+`engram:licenseRecognised` is where the difference between "no" and "we could not
+tell" lives, so nothing is lost by failing closed.
+
+Three rules for implementers. Map common licence names to policy addresses. Never
+quietly widen the terms of a licence you do not recognise. Never let an absent
+field be the only thing standing between a reader and a wrong conclusion.
 
 ---
 
@@ -969,11 +1062,30 @@ teaches a reader to distrust the series.
 A saved record must say when it was made, and how much history it covers:
 
 ```json
-{ "@id": "engram:projection/0f3a9c21-5d7e-4b18-9a2c-1e6f8d40b7aa",
-  "@type": "prov:Bundle",
-  "prov:generatedAtTime": "2026-08-20T09:00:00Z",
+{ "@id": "engram:record/ENG-2026-0819-021",
+  "@type": ["prov:Bundle", "prov:Entity"],
+  "prov:generatedAtTime": { "@value": "2026-08-20T09:00:00Z", "@type": "xsd:dateTime" },
+  "engram:describes": { "@id": "engram:ENG-2026-0819-021" },
+  "engram:recordIsSelfContained": true,
+  "engram:historyEvents": 4,
   "engram:historyThrough": "2026-08" }
 ```
+
+**Why the history coverage has to be there.** Without it, a record built from a
+complete log and a record built from a log that was rotated, truncated, or never
+consulted are the same document. "No retirement recorded" then reads as "not
+retired", when it may only mean "we did not look that far back" — and that is
+precisely the reading a provenance record exists to prevent.
+
+`engram:historyThrough` is the month of the newest event the record was built
+from, matching the `history/YYYY-MM.jsonl` files it is read out of.
+`engram:historyEvents` is how many were used.
+
+When no events were consulted, `engram:historyEvents` is `0` and
+`engram:historyThrough` is **omitted rather than filled in**. Describing the
+engram alone is a different claim from covering a period and finding nothing in
+it, and a record must not blur the two. A pack record always reports `0`: the
+history log does not travel with a pack (section 5.3.5).
 
 A bundle is itself a thing in PROV terms. That is what lets you describe, sign or
 anchor the provenance record later.

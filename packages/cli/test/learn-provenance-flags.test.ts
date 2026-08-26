@@ -25,13 +25,22 @@ describe('plur learn records who, what kind, and under which licence', () => {
   const run = (args: string[]) =>
     execFileSync('node', [CLI, ...args, '--path', dir, '--json'], { encoding: 'utf8', timeout: 30_000 }).trim()
 
+  /**
+   * Learn something and return the id the store minted for it.
+   *
+   * Ids are date-sequenced, so a hardcoded `ENG-2026-08-23-001` names a real
+   * engram only on the day it was typed. These tests were written on such a day
+   * and failed every day after it. Ask for the id instead of predicting it.
+   */
+  const learn = (...args: string[]): string => JSON.parse(run(['learn', ...args])).id
+
   it('produces a record with nothing missing', () => {
     // Every field a record asks for, supplied from the command line alone.
-    run(['learn', 'Deploys wait for migrations',
+    const id = learn('Deploys wait for migrations',
       '--license', 'cc-by-4.0', '--claim-class', 'asserted',
-      '--asserted-by', 'local:maintainer', '--source', 'https://example.org/runbook'])
+      '--asserted-by', 'local:maintainer', '--source', 'https://example.org/runbook')
 
-    const prov = JSON.parse(run(['provenance', 'ENG-2026-08-23-001']))
+    const prov = JSON.parse(run(['provenance', id]))
     expect(prov.complete).toBe(true)
     expect(prov.not_recorded).toEqual([])
     expect(prov.licence).toMatchObject({ name: 'cc-by-4.0', chosen: true })
@@ -40,8 +49,8 @@ describe('plur learn records who, what kind, and under which licence', () => {
   })
 
   it('marks the licence as unchosen when none is given', () => {
-    run(['learn', 'Nobody picked a licence'])
-    const prov = JSON.parse(run(['provenance', 'ENG-2026-08-23-001']))
+    const id = learn('Nobody picked a licence')
+    const prov = JSON.parse(run(['provenance', id]))
     expect(prov.licence.chosen).toBe(false)
     expect(prov.complete).toBe(false)
   })
@@ -71,8 +80,8 @@ describe('plur learn records who, what kind, and under which licence', () => {
 
   it('carries an unrecognised licence through without inventing terms for it', () => {
     // A company-internal name is a real case. Record the name; claim nothing.
-    run(['learn', 'Internal only', '--license', 'acme-internal-v3'])
-    const prov = JSON.parse(run(['provenance', 'ENG-2026-08-23-001']))
+    const id = learn('Internal only', '--license', 'acme-internal-v3')
+    const prov = JSON.parse(run(['provenance', id]))
     expect(prov.licence.name).toBe('acme-internal-v3')
     expect(prov.licence.chosen).toBe(true)
     expect(prov.licence.meaning).toBeUndefined()

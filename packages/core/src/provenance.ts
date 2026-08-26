@@ -71,7 +71,7 @@ const ACTIVITY_OF: Record<string, string> = {
  * guess. The record then carries the licence name alone, and a reader knows to
  * go and look.
  */
-const LICENCE_POLICY: Record<string, { uid: string; permit: string[]; require: string[]; forbid: string[] }> = {
+const LICENCE_POLICY: Record<string, { uid?: string; permit: string[]; require: string[]; forbid: string[]; note?: string }> = {
   'cc-by-4.0': {
     uid: 'https://creativecommons.org/licenses/by/4.0/',
     permit: ['use', 'reproduce', 'distribute', 'derive'], require: ['attribute'], forbid: [],
@@ -136,6 +136,25 @@ const LICENCE_POLICY: Record<string, { uid: string; permit: string[]; require: s
     uid: 'https://creativecommons.org/licenses/by-nc-sa/4.0/',
     permit: ['use', 'reproduce', 'distribute', 'derive'],
     require: ['attribute', 'shareAlike'], forbid: ['commercialize'],
+  },
+  // Not a licence, and that is the point: it is the recorded ABSENCE of a grant.
+  //
+  // It has to be here rather than in the unrecognised branch. "proprietary" is a
+  // deliberate statement by whoever wrote the engram, and reporting it as "not a
+  // licence this software knows" tells the reader we failed to look it up, when
+  // in fact we understood it perfectly and the answer is no. The two produce the
+  // same permissions and opposite impressions, and the reader acts on the
+  // impression.
+  //
+  // No `uid`: there is no canonical address to follow, which is itself the
+  // distinguishing feature — with any other licence a reader can go and read the
+  // terms, and here there are none to read. They have to ask a person.
+  proprietary: {
+    permit: [], require: [],
+    forbid: ['use', 'reproduce', 'distribute', 'derive', 'commercialize'],
+    note: 'The holder grants nothing here. This is not an unknown licence — it is a '
+      + 'recorded decision to withhold permission. Any reuse needs the holder\'s '
+      + 'agreement, obtained directly. There is no licence text to consult.',
   },
 }
 
@@ -276,9 +295,22 @@ function licencePolicy(name: string | undefined, withheld = false): Node | undef
         + 'list means nothing was determined, NOT that everything is allowed.',
     }
   }
+  // A licence that grants nothing carries an EMPTY permission list, not a
+  // permission naming no actions. `{ "odrl:action": [] }` is a permission that
+  // permits nothing, which a reader has to inspect to understand; no permission
+  // at all is the plain statement.
   const permission: Node = { 'odrl:action': spec.permit.map(a => `odrl:${a}`) }
   if (spec.require.length) permission['odrl:duty'] = spec.require.map(a => ({ 'odrl:action': `odrl:${a}` }))
-  const policy: Node = { '@type': 'odrl:Set', 'odrl:uid': spec.uid, 'odrl:permission': [permission] }
+  const policy: Node = {
+    '@type': 'odrl:Set',
+    ...(spec.uid ? { 'odrl:uid': spec.uid } : {}),
+    'odrl:permission': spec.permit.length ? [permission] : [],
+  }
+  // We DID recognise it. Said explicitly, because an empty permission list is
+  // also what an unrecognised licence produces, and the two mean opposite
+  // things: "the answer is no" against "we could not tell".
+  policy['engram:licenseRecognised'] = true
+  if (spec.note) policy['engram:note'] = spec.note
 
   const forbid = spec.forbid.map(a => ({ 'odrl:action': `odrl:${a}` } as Node))
   if (withheld) {
@@ -470,13 +502,29 @@ export function buildProvenanceRecord(
   // "@graph" turns the contents into a NAMED graph, and an ordinary parse then
   // sees only the wrapper. We hit exactly that while writing the worked
   // examples: a document that looked correct produced 3 statements instead of 64.
-  graph.push({
+  const bundle: Node = {
     '@id': `engram:record/${id}`,
     '@type': ['prov:Bundle', 'prov:Entity'],
     'prov:generatedAtTime': instant(now),
     'engram:describes': { '@id': `engram:${id}` },
     'engram:recordIsSelfContained': portable,
-  })
+  }
+  // How much history this record covers, required by the profile's section 9.
+  //
+  // Without it a reader cannot tell a record built from a full log from one
+  // built from a log that had been rotated, truncated, or was simply not
+  // consulted — and those produce the same document. "No retirement recorded"
+  // then reads as "not retired", when it may only mean "we did not look that
+  // far back". The value is the month of the newest event the record was built
+  // from, matching the `history/YYYY-MM.jsonl` files it comes out of.
+  //
+  // Omitted, not faked, when no events were supplied: `engram:historyEvents: 0`
+  // says the record describes the engram alone, which is a different claim from
+  // covering a period and finding nothing in it.
+  const stamps = events.map(e => e.timestamp).filter(t => typeof t === 'string').sort()
+  bundle['engram:historyEvents'] = events.length
+  if (stamps.length) bundle['engram:historyThrough'] = stamps[stamps.length - 1].slice(0, 7)
+  graph.push(bundle)
 
   // --- the engram -------------------------------------------------------
   const agents = agentNodes(engram)
@@ -612,6 +660,17 @@ export interface PackProvenanceInput {
   name: string
   version: string
   creator?: string
+  /**
+   * The licence in the pack's own manifest, governing the pack as a collection.
+   *
+   * Distinct from the licences on the engrams inside it, and the distinction is
+   * not academic. A single engram is one short assertion; a pack is a curated
+   * collection, and a collection is the thing that attracts rights in its own
+   * right — the selection and arrangement, and in the European Union the sui
+   * generis database right. So this is the licence a recipient of a pack most
+   * needs, and it was the one field the record did not carry.
+   */
+  license?: string
   /** The pack's integrity hash, as written to its INTEGRITY file. */
   integrity?: string
   /** When the pack was assembled. Defaults to now. */
@@ -658,6 +717,10 @@ export function buildPackProvenanceRecord(
     'prov:generatedAtTime': instant(now),
     'engram:describes': { '@id': packId },
     'engram:recordIsSelfContained': true,
+    // A pack record is built from the manifest and the members, never from the
+    // history log — the log does not travel with a pack. Stated rather than left
+    // out, so "no history here" is a fact about pack records and not a gap.
+    'engram:historyEvents': 0,
   })
 
   // What a reader can judge before opening a single engram.
@@ -700,6 +763,30 @@ export function buildPackProvenanceRecord(
     // engrams carry the default instead, because listing the default here would
     // read as "somebody licensed this pack that way" when nobody did.
     'engram:licensesChosen': [...licences].sort(),
+  }
+
+  // The pack's OWN licence, which is a different question from the licences on
+  // its members and the one a recipient of a pack asks first. It was recorded
+  // nowhere: the record summarised what was inside and dropped the terms on the
+  // collection itself.
+  //
+  // The two can disagree — an MIT-licensed pack of share-alike engrams is a
+  // perfectly ordinary thing to build by accident. Neither overrides the other,
+  // and the record must not pretend one does: the pack licence governs the
+  // collection, each engram's licence governs its own content, and a reuser has
+  // to satisfy both. Saying which is which is all a record can honestly do.
+  if (pack.license) {
+    packNode['engram:license'] = pack.license
+    const packPolicy = licencePolicy(pack.license)
+    if (packPolicy) packNode['odrl:hasPolicy'] = packPolicy
+    const strictest = [...licences].filter(l => l !== pack.license)
+    if (strictest.length || defaulted > 0) {
+      packNode['engram:memberLicensesDiffer'] = true
+      packNode['engram:note'] =
+        'This licence covers the pack as a collection. The engrams inside carry '
+        + 'their own licences, which are not all the same as this one, and a reuser '
+        + 'has to satisfy both. Neither overrides the other.'
+    }
   }
   if (dates.length) {
     packNode['engram:earliestEngram'] = dates[0]
@@ -837,6 +924,7 @@ const LICENCE_MEANING: Record<string, string> = {
   'lgpl-3.0': 'reuse allowed, credit required, share alike',
   unlicense: 'no conditions',
   'cc-by-nc-sa-4.0': 'reuse allowed, credit required, share alike, NOT for commercial use',
+  proprietary: 'NO reuse granted — ask the holder',
 }
 
 /**
@@ -1015,9 +1103,13 @@ export function summariseProvenance(record: Node): ProvenanceSummary {
       // carries the distinction between "no" and "we could not tell".
       fields.may_reuse_commercially = false
       fields.may_redistribute = false
-      const note = policy?.['engram:note']
-      if (note) lines.push(`              ${String(note).split('. ')[0]}.`)
     }
+    // A policy-level note, whichever branch produced it. This used to print
+    // only for an unrecognised licence, so `proprietary` — the one licence
+    // whose whole content is "you may not" — carried its explanation in the
+    // record and showed nothing to the person reading the summary.
+    const policyNote = policy?.['engram:note']
+    if (policyNote) lines.push(`              ${String(policyNote).split('. ')[0]}.`)
     if (recognised && policy) {
       const forbidden = ((policy['odrl:prohibition'] ?? []) as Node[]).map(x => x['odrl:action'])
       const permitted = ((policy['odrl:permission'] ?? []) as Node[])

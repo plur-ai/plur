@@ -21,8 +21,22 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 import { sync as syncEngrams } from '../src/sync.js'
 
+/**
+ * Run git against the fixture repo, insulated from the developer's own config.
+ *
+ * `core.excludesFile=/dev/null` is not decoration. A global gitignore that lists
+ * `engrams.yaml` — a sensible thing for anyone working on a memory engine to
+ * have, so their own store can never be committed by accident — silently made
+ * `git add -A` stage nothing here, and the seed commit then failed with
+ * "nothing to commit". The whole suite failed on that machine and passed in
+ * continuous integration, which is the worst shape a test failure can take.
+ *
+ * The fixture is a throwaway repo testing sync behaviour. Whose machine it runs
+ * on must not change the answer.
+ */
 const git = (args: string[], cwd: string) =>
-  execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+  execFileSync('git', ['-c', 'core.excludesFile=/dev/null', ...args],
+    { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
 
 describe('syncEngrams reports a failed push', () => {
   let root: string

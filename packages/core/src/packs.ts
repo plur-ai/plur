@@ -1096,6 +1096,15 @@ export interface ExportOptions {
   version: string
   description?: string
   creator?: string
+  /**
+   * The licence on the pack as a collection.
+   *
+   * Left unset, the manifest schema's `cc-by-sa-4.0` default applies on parse —
+   * and, exactly as with an engram, a default nobody chose must not be presented
+   * as a decision. So this is written to the manifest only when a caller passes
+   * it, and the provenance record marks the difference.
+   */
+  license?: string
   domain?: string
   scope?: string
   tags?: string[]
@@ -1402,6 +1411,10 @@ export function exportPack(
     version: manifest.version,
     description: manifest.description,
     creator: manifest.creator,
+    // Only when somebody chose one. The schema default materialises on parse
+    // either way, and writing it here would turn a default into what looks like
+    // a decision — the same trap `engram:licenseIsDefault` exists to avoid.
+    ...(manifest.license ? { license: manifest.license } : {}),
     metadata: {
       injection_policy: 'on_match',
       match_terms: matchTerms,
@@ -1491,6 +1504,7 @@ export function exportPack(
         name: manifest.name,
         version: manifest.version,
         creator: manifest.creator,
+        license: manifest.license,
         integrity: `sha256:${integrity}`,
       },
       safeEngrams,

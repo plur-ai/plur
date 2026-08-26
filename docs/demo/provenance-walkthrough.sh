@@ -63,6 +63,15 @@ run "node $CLI learn 'Connection pools cap at 100 on the shared tier' \\
 say "Ask again. Nothing is missing this time."
 run "node $CLI provenance 'connection pools' --path $STORE --json | python3 -m json.tool"
 
+# Capture the id the store minted, rather than predicting it.
+#
+# Ids are date-sequenced, so the literal ENG-2026-08-23-002 that used to sit in
+# the three commands below named a real engram only on the day this was
+# recorded. Captured here, BEFORE the correction is written — afterwards this
+# search matches both the original and its replacement.
+POOLS=$(node "$CLI" provenance 'connection pools' --path "$STORE" --json \
+  | python3 -c "import json,sys; print(json.load(sys.stdin)['engram_id'])")
+
 say "Note the three machine-readable answers: may_reuse_commercially,"
 say "may_redistribute, licence_recognised. They fail CLOSED — an unknown"
 say "licence yields false, never null, because a consumer written"
@@ -117,13 +126,13 @@ head2 "5. Correcting a memory"
 
 say "Record a correction that replaces the earlier one."
 run "node $CLI learn 'Connection pools cap at 200 on the shared tier since August' \\
-    --supersedes ENG-2026-08-23-002 \\
+    --supersedes $POOLS \\
     --asserted-by local:maintainer --claim-class documented \\
     --path $STORE --json 2>/dev/null | head -1"
 
 say "Now ask about the OLD memory. It says what replaced it, in the first"
 say "line, and is never reported complete."
-run "node $CLI provenance ENG-2026-08-23-002 --path $STORE --json | python3 -c \"
+run "node $CLI provenance $POOLS --path $STORE --json | python3 -c \"
 import json,sys
 d = json.load(sys.stdin)
 print('superseded_by :', d.get('superseded_by'))
@@ -137,7 +146,7 @@ say "that is PLUR's decision, not provenance's — and it is unchanged."
 head2 "6. The document itself, for machines"
 
 say "Everything above is a readable summary of this."
-run "node $CLI provenance ENG-2026-08-23-002 --record --path $STORE --json | python3 -c \"
+run "node $CLI provenance $POOLS --record --path $STORE --json | python3 -c \"
 import json,sys
 r = json.load(sys.stdin)['record']
 print(json.dumps(r['@context'], indent=2))

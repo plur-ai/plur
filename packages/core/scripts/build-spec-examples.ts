@@ -71,7 +71,13 @@ writeFileSync(
 writeFileSync(
   join(OUT, 'example-pack.jsonld'),
   serializeProvenanceRecord(buildPackProvenanceRecord(
-    { name: 'swarm-grants', version: '1.0.0', creator: 'local:maintainer', integrity: `sha256:${'d'.repeat(64)}` },
+    // An MIT pack of CC-BY engrams: the licence on the collection differs from
+    // the licences on its members, which is the ordinary case and the one the
+    // example needs to show. `engram:memberLicensesDiffer` marks it.
+    {
+      name: 'swarm-grants', version: '1.0.0', creator: 'local:maintainer',
+      license: 'mit', integrity: `sha256:${'d'.repeat(64)}`,
+    },
     [
       engram('ENG-2026-08-12-002'),
       engram('ENG-2026-08-12-003', { claim_class: 'inferred', provenance: undefined }),

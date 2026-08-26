@@ -216,3 +216,80 @@ describe('exporting a pack with provenance (#972)', () => {
     expect(text).not.toContain('A statement that should not travel')
   })
 })
+
+describe("a pack's own licence is a different question from its engrams'", () => {
+  // A single engram is one assertion; a pack is a curated collection, and a
+  // collection attracts rights in its own right — the selection, the
+  // arrangement, and in the EU the sui generis database right. So the pack
+  // licence is the one a recipient asks about first, and it was the one field
+  // the record did not carry at all.
+  const members = [
+    engramOf('ENG-2026-08-21-101', { provenance: { origin: 'x', license: 'cc-by-sa-4.0' } }),
+    engramOf('ENG-2026-08-21-102', { provenance: { origin: 'x', license: 'cc-by-sa-4.0' } }),
+  ]
+  const packNodeOf = (record: any) =>
+    nodesOf(record).find(n => Array.isArray(n['@type']) && n['@type'].includes('engram:Pack'))
+
+  it('records the licence on the collection, with a policy a machine can act on', () => {
+    const record = buildPackProvenanceRecord(
+      { name: 'ops', version: '1.0.0', license: 'mit' }, members, { now: '2026-08-26T00:00:00Z' })
+    const pack = packNodeOf(record)
+    expect(pack['engram:license']).toBe('mit')
+    expect(pack['odrl:hasPolicy']['odrl:uid']).toContain('mit')
+    expect(pack['odrl:hasPolicy']['engram:licenseRecognised']).toBe(true)
+  })
+
+  it('says when the pack licence and the engram licences are not the same', () => {
+    // An MIT pack of share-alike engrams is an ordinary thing to assemble by
+    // accident, and a reuser has to satisfy both. The record must not resolve
+    // it — it has no standing to — but it must not hide it either.
+    const record = buildPackProvenanceRecord(
+      { name: 'ops', version: '1.0.0', license: 'mit' }, members, { now: '2026-08-26T00:00:00Z' })
+    const pack = packNodeOf(record)
+    expect(pack['engram:memberLicensesDiffer']).toBe(true)
+    expect(String(pack['engram:note'])).toContain('satisfy both')
+    expect(String(pack['engram:note'])).toContain('Neither overrides the other')
+    // Both are still stated, so the reader can see what they have to satisfy.
+    expect(pack['engram:licensesChosen']).toEqual(['cc-by-sa-4.0'])
+  })
+
+  it('says nothing about a difference when there is none', () => {
+    const record = buildPackProvenanceRecord(
+      { name: 'ops', version: '1.0.0', license: 'cc-by-sa-4.0' }, members, { now: '2026-08-26T00:00:00Z' })
+    expect(packNodeOf(record)['engram:memberLicensesDiffer']).toBeUndefined()
+  })
+
+  it('omits the licence rather than inventing one when the pack has none', () => {
+    const record = buildPackProvenanceRecord(
+      { name: 'ops', version: '1.0.0' }, members, { now: '2026-08-26T00:00:00Z' })
+    const pack = packNodeOf(record)
+    expect(pack['engram:license']).toBeUndefined()
+    expect(pack['odrl:hasPolicy']).toBeUndefined()
+  })
+
+  it('carries the licence from an export all the way into the record', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'plur-packlic-'))
+    try {
+      exportPack(members, dir, { name: 'ops', version: '1.0.0', license: 'apache-2.0' } as any)
+      // Into the manifest, where it is covered by the integrity hash...
+      expect(readFileSync(join(dir, 'SKILL.md'), 'utf8')).toContain('license: apache-2.0')
+      // ...and into the record, where a machine can act on it.
+      const record = JSON.parse(readFileSync(join(dir, 'provenance', 'pack.jsonld'), 'utf8'))
+      expect(packNodeOf(record)['engram:license']).toBe('apache-2.0')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('does not write a licence nobody chose into an exported manifest', async () => {
+    // The schema default applies on parse either way. Writing it here would
+    // turn a default into what reads as a decision.
+    const dir = mkdtempSync(join(tmpdir(), 'plur-packlic-none-'))
+    try {
+      exportPack(members, dir, { name: 'ops', version: '1.0.0' } as any)
+      expect(readFileSync(join(dir, 'SKILL.md'), 'utf8')).not.toContain('license:')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
