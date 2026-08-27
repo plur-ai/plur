@@ -54,10 +54,10 @@ Commands:
                           [--flush] to retry them now (#667)
   reindex-tokens          Re-derive BM25 tokens after a tokenizer change (Postgres only)
   reindex-hashes          Repair engrams whose content_hash is stale or missing (#852)
-  init                    Install Claude Code hooks + register plur MCP server
+  init                    Wire PLUR into detected harnesses (Claude Code, Cursor, Codex, Antigravity)
   init-remote             Opt this project into recall from a PLUR Enterprise server
   login --status          Enterprise token validity per host (probe + expiry) (#587)
-  doctor                  Diagnose Claude Code / Claude Desktop integration
+  doctor                  Diagnose Claude Code / Claude Desktop / Cursor / Codex / Antigravity integration
   rerank-eval             Per-store reranker self-eval gate (advisory, #451)
                           [--reranker <name>] [--sample N] [--seed N] [--force]
   tensions [--scan]       List or scan for engram contradictions
@@ -194,17 +194,14 @@ if (!command || !COMMANDS[command]) {
 try {
   const mod = await import(COMMANDS[command])
   await mod.run(commandArgs, flags)
-  // #1046: the derived index syncs in the BACKGROUND from the Plur
-  // constructor, and every command except `sync` used to exit without waiting
-  // for it. On a store large enough to auto-select PGLite that meant each run
-  // started a full-corpus pass and abandoned it partway, so the index never
-  // converged — it was found 64MB on disk with no `engrams` table at all,
-  // having been rebuilt-and-abandoned on every invocation for months.
-  //
-  // Waiting costs nothing in the steady state: the fingerprint guard in
-  // syncFromYaml makes an unchanged YAML a no-op, so this only blocks on the
-  // first run after an actual write, and only for as long as that write's
-  // sync takes.
+  // #1046: background index work (the PGLite initial sync when that backend
+  // is opted into, and the Postgres auto-embed pass — both tracked on
+  // waitForIndex()) used to be abandoned by every command except `sync`,
+  // which on PGLite meant a full-corpus pass restarted and killed on every
+  // invocation: the index never converged, found 64MB on disk with no
+  // `engrams` table at all. The default SQLite tier does no constructor-time
+  // background sync, so for most installs this drain is a no-op; where it
+  // isn't, the fingerprint guard makes an unchanged YAML nearly free.
   await drainPendingIndexWork()
 } catch (err: any) {
   if (shouldOutputJson(flags)) {

@@ -42,11 +42,10 @@ export interface CodexHooksConfig {
  * 0.149.1 (they were silently skipped in 0.146.0), but an async hook's
  * `additionalContext` is delivered at the "next safe point" — i.e. NOT to
  * the turn that triggered it. For a `codex exec` one-shot that means never.
- * Claude Code's `hook-inject` is async with a 90s timeout precisely because
- * hybrid search cold-starts the BGE embedder; that trade does not transfer.
- * These hooks are synchronous and BM25-only instead, the same call
- * `hook-cursor-session-start` makes for the same reason. `codex-hooks.test.ts`
- * asserts this invariant.
+ * Claude Code's `hook-inject` is async with a 90s timeout to absorb a slow
+ * hybrid pass; that trade does not transfer. These hooks are synchronous —
+ * hybrid-first with a BM25 fallback on a soft deadline (`injectWithFallback`)
+ * — and `codex-hooks.test.ts` asserts the no-async invariant.
  *
  * Timeouts are SECONDS here (Codex's unit), not the milliseconds Gemini CLI
  * uses. Codex's own default is 600s; ours are deliberately tight so a wedged
@@ -98,9 +97,12 @@ export function buildCodexHooks(cmd: string): Record<string, CodexHookEntry[]> {
       },
     ],
 
-    // Close the memory lifecycle. Codex clamps SessionEnd timeouts to 3s and
-    // forces them synchronous, so this must stay cheap — it captures the
-    // closing episode and cleans up the sentinel, nothing more.
+    // Session cleanup. Codex clamps SessionEnd timeouts to 3s and forces
+    // them synchronous, so this must stay cheap: it removes the sentinel and
+    // counters, NOTHING more — it deliberately does not capture a closing
+    // episode (being killed mid-write at the 3s clamp is worse than not
+    // writing; see hook-codex-session-end's docstring). Closing the memory
+    // lifecycle properly is the agent's job via plur_session_end.
     SessionEnd: [
       {
         hooks: [{ type: 'command', command: `${cmd} hook-codex-session-end`, timeout: 3 }],

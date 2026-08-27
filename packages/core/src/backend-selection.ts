@@ -61,7 +61,6 @@ export type BackendTier = 'yaml' | 'sqlite' | 'pglite' | 'postgres'
 /** Every tier name, for validating env/config input. */
 export const BACKEND_TIERS: readonly BackendTier[] = ['yaml', 'sqlite', 'pglite', 'postgres'] as const
 
-/** Estimated engram count at or above which the PGLite index earns its cost. */
 /**
  * Engram count at or above which the SQLite index earns its cost.
  *
@@ -115,7 +114,7 @@ export interface BackendSelection {
   /**
    * Set when the size estimate asked for a tier that could not be given, and
    * names the tier it wanted. Today the only case is `'postgres'` with no
-   * connection string configured, which falls back to `'pglite'`. A caller
+   * connection string configured, which falls back to `'sqlite'`. A caller
    * SHOULD surface this — it is the difference between "this deployment is
    * sized for a server" and "this deployment is fine".
    */
@@ -126,7 +125,13 @@ export interface BackendSelection {
 
 function asTier(value: string | undefined): BackendTier | null {
   if (!value) return null
-  return (BACKEND_TIERS as readonly string[]).includes(value) ? (value as BackendTier) : null
+  // Normalise case and whitespace (adversarial audit): `PLUR_BACKEND=SQLITE`
+  // or a trailing newline from `export PLUR_BACKEND=$(...)` used to fall
+  // silently through to size selection — an override the operator set being
+  // disregarded contradicts this module's own "overrides always win". Still
+  // total: anything unrecognised after normalisation is ignored, not fatal.
+  const v = value.trim().toLowerCase()
+  return (BACKEND_TIERS as readonly string[]).includes(v) ? (v as BackendTier) : null
 }
 
 /**

@@ -1,4 +1,3 @@
-import { readFileSync, writeFileSync } from 'fs'
 import { createPlur, type GlobalFlags } from '../plur.js'
 import { isPlurConfigured } from '../lib/plur-configured.js'
 import {
@@ -9,6 +8,9 @@ import {
   agyMarkSessionStarted,
   agyCounterPath,
   agyIncrementCounter,
+  agyTextHash,
+  readAgyTurnCache,
+  writeAgyTurnCache,
   lastUserInput,
   emitInjectSteps,
 } from '../lib/agy-hook-io.js'
@@ -41,6 +43,17 @@ import { readProjectConfig } from '@plur-ai/core'
  *    turn — recall runs once per user message, visibility lasts the whole
  *    turn, and nothing accumulates in history because ephemerals never do.
  *
+ *    Turn identity is (step_index, text hash), not step_index alone: the
+ *    transcript is Antigravity's internal format, and if step_index ever
+ *    disappears or restarts, a step-only comparison freezes on turn one and
+ *    replays it forever (data-loss audit M6/F10). The text hash breaks that
+ *    tie — a different user message is a new turn regardless of what the
+ *    step counter says. When the transcript itself is unreadable, the cached
+ *    turn is replayed (there is no way to detect a turn boundary without
+ *    it), with a stderr line saying so — replaying stale-but-real memory
+ *    beats injecting nothing, and the log distinguishes it from healthy
+ *    mid-turn replay.
+ *
  * GATING: unlike the Claude Code/Cursor/Codex hooks, this does not silently
  * no-op when the cwd has no PLUR project config — agy runs hooks with cwd =
  * the directory containing hooks.json (~/.gemini/config), where
@@ -61,7 +74,8 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
     const input = readStdinJson()
 
     const workspaces = Array.isArray(input.workspacePaths) ? input.workspacePaths as string[] : []
-    if (workspaces.length > 0 && typeof workspaces[0] === 'string' && !isPlurConfigured(workspaces[0])) return
+    const workspace = (workspaces.length > 0 && typeof workspaces[0] === 'string') ? workspaces[0] : null
+    if (workspace && !isPlurConfigured(workspace)) return
 
     const conversationId = agyConversationId(input)
     if (!conversationId) return
@@ -69,34 +83,46 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
     // Which user message is the model about to act on?
     const transcriptPath = String(input.transcriptPath ?? '')
     const user = transcriptPath ? lastUserInput(transcriptPath) : null
+    const userHash = user ? agyTextHash(user.text) : ''
 
-    // One RECALL per user turn; one EMIT per invocation. The marker file
-    // holds {step, message} so mid-turn invocations replay the cached text
+    // One RECALL per user turn; one EMIT per invocation. The cache record
+    // holds this turn's rendered message so mid-turn invocations replay it
     // instead of re-running recall (which costs seconds) or staying silent
     // (which loses the memory the moment a tool result arrives — see the
-    // file comment).
-    const stepMarkerPath = agyCounterPath(conversationId, 'turncache')
-    let lastInjectedStep = -1
-    let cachedMessage = ''
-    try {
-      const cached = JSON.parse(readFileSync(stepMarkerPath, 'utf8')) as { step?: number; message?: string }
-      lastInjectedStep = typeof cached.step === 'number' ? cached.step : -1
-      cachedMessage = typeof cached.message === 'string' ? cached.message : ''
-    } catch { /* first turn */ }
+    // file comment). readAgyTurnCache validates the conversationId stored
+    // INSIDE the record, so a sanitized-path collision between two
+    // conversations reads as "no cache", never as another conversation's
+    // memory (F9).
+    const cached = readAgyTurnCache(conversationId)
 
-    const isFirst = Number(input.invocationNum ?? 0) === 0 && lastInjectedStep === -1
-    const isNewTurn = user !== null && user.stepIndex > lastInjectedStep
+    const isFirst = cached === null && Number(input.invocationNum ?? 0) === 0
+    // `cached === null` counts as a new turn when a user message exists: it
+    // covers both the genuine first turn and the fail-open path where the
+    // cache dir is unusable (writeAgyTurnCache no-ops). In the latter case
+    // every invocation re-recalls — slow, but memory keeps flowing, which is
+    // the right direction to degrade.
+    const isNewTurn = user !== null &&
+      (cached === null || user.stepIndex > cached.step || userHash !== cached.textHash)
     if (!isFirst && !isNewTurn) {
-      // Mid-turn invocation: replay this turn's memory so it survives tool
-      // calls. No recall, no counters — just the cached text.
-      if (cachedMessage) emitInjectSteps(cachedMessage)
+      // Mid-turn invocation — or an unreadable transcript, which is
+      // indistinguishable from one. Replay this turn's memory so it survives
+      // tool calls. No recall, no counters — just the cached text.
+      if (cached !== null && user === null && transcriptPath) {
+        process.stderr.write('[plur] agy: transcript unreadable — replaying the last turn\'s memory rather than re-recalling.\n')
+      }
+      if (cached?.message) emitInjectSteps(cached.message)
       return
     }
 
     agyMarkSessionStarted(conversationId)
 
     const plur = createPlur(flags)
-    const projectConfig = readProjectConfig()
+    // The workspace path, not process.cwd(): agy runs hooks with cwd = the
+    // hooks.json directory (~/.gemini/config), where the .plur.yaml walk can
+    // never succeed — cwd here would silently strip project scoping from
+    // every agy recall AND from the scope line the model is told to learn
+    // under (evaluator audit B1).
+    const projectConfig = readProjectConfig(workspace ?? process.cwd())
     const injectOpts = {
       budget: isFirst ? 3000 : 2000,
       ...(projectConfig.scope ? { scope: projectConfig.scope } : {}),
@@ -133,14 +159,19 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
         'Call plur_session_end before you finish.'
     }
 
-    if (!message) return
+    // Record BEFORE emitting, and record even when the message is empty:
+    // an empty result is still THIS turn's result, and skipping the write
+    // made every mid-turn invocation re-run a full recall (evaluator audit
+    // M5). A failed write degrades to exactly that — re-recall next
+    // invocation — which is the acceptable direction.
+    writeAgyTurnCache({
+      conversationId,
+      step: user?.stepIndex ?? 0,
+      textHash: userHash,
+      message,
+    })
 
-    // Record BEFORE emitting: a crash between write and emit costs one
-    // injection; the reverse order would re-run recall for the same turn
-    // forever if the marker write ever failed.
-    try {
-      writeFileSync(stepMarkerPath, JSON.stringify({ step: user?.stepIndex ?? 0, message }))
-    } catch { /* degrade to re-recall next invocation */ }
+    if (!message) return
 
     emitInjectSteps(message)
   })

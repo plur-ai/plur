@@ -44,7 +44,7 @@ function emitted(): unknown | null {
 }
 
 function clean() {
-  for (const p of [agySentinelPath(SID), agyCounterPath(SID, 'guard-count'), agyCounterPath(SID, 'laststep'), agyCounterPath(SID, 'turncount')]) {
+  for (const p of [agySentinelPath(SID), agyCounterPath(SID, 'guard-count'), agyCounterPath(SID, 'turncache'), agyCounterPath(SID, 'turncount')]) {
     rmSync(p, { force: true })
   }
 }

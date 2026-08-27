@@ -71,7 +71,8 @@ export type AgyHooksConfig = Record<string, AgyHookSet>
  * nudge).
  *
  * Timeouts are SECONDS (agy default 30). PreInvocation gets 20 to cover
- * injectWithFallback's bounded worst case (~10s hybrid deadline + BM25);
+ * injectWithFallback's bounded worst case (8s hybrid deadline, then a BM25
+ * pass — ~10s total measured);
  * hooks are synchronous-only in agy ("no async execution" — bundled docs),
  * so the same no-async rule as Codex applies without needing a regression
  * test: there is no flag to accidentally set.

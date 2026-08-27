@@ -60,12 +60,17 @@ import {
  *      created to avoid npx overhead and race conditions (#178).
  *
  * Usage:
- *   plur init              # default: creates .claude/settings.json in current directory
- *   plur init --global     # force global ~/.claude/settings.json
- *   plur init --project    # force project .claude/settings.json (same as default)
- *   plur init --no-desktop # skip Claude Desktop config registration
- *   plur init --domain X   # set default domain for this project (.plur.yaml)
- *   plur init --scope Y    # set default scope for this project (.plur.yaml)
+ *   plur init                 # default: creates .claude/settings.json in current directory
+ *   plur init --global        # force global ~/.claude/settings.json
+ *   plur init --project       # force project .claude/settings.json (same as default)
+ *   plur init --desktop / --no-desktop        # force / skip Claude Desktop registration
+ *   plur init --cursor / --no-cursor          # force / skip Cursor (auto: .cursor/ exists)
+ *   plur init --codex / --no-codex            # force / skip Codex (auto: ~/.codex exists)
+ *   plur init --antigravity | --agy / --no-antigravity
+ *                             # force / skip Antigravity (auto: ~/.gemini/antigravity-cli exists)
+ *   plur init --no-prompt     # never ask interactive questions (telemetry opt-in)
+ *   plur init --domain X      # set default domain for this project (.plur.yaml)
+ *   plur init --scope Y       # set default scope for this project (.plur.yaml)
  *
  * For multi-project setups (Issue #19):
  *   cd ~/projects/my-app
@@ -418,6 +423,52 @@ When the user corrects you ("no, use X not Y", "that's wrong"):
 3. Then continue with the corrected approach
 `
 
+/**
+ * The instruction block written to AGENTS.md for Codex and Antigravity.
+ *
+ * A separate constant, not CLAUDE_MD_SECTION, because two of that block's
+ * claims are Claude-Code-only and were being shipped verbatim into harnesses
+ * where they are false (evaluator audit M11): the "SessionEnd hook
+ * auto-closes the lifecycle if you forget" promise (Codex's SessionEnd hook
+ * only removes sentinels — the 3s clamp forbids an episode capture — and agy
+ * has no session-end hook at all), and the ToolSearch bootstrap flow, which
+ * is a Claude Code mechanism neither harness has. Telling the model a safety
+ * net exists precisely where it does not undoes the nudges that compensate.
+ */
+const AGENTS_MD_SECTION = `## PLUR Memory
+
+You have persistent memory via PLUR. Corrections, preferences, and conventions persist across sessions as engrams.
+
+PLUR is installed **globally** — one MCP server, one engram store (\`~/.plur/\`), available in every project. The \`plur\` MCP server provides tools named \`plur_session_start\`, \`plur_learn\`, \`plur_recall\`, \`plur_feedback\`, \`plur_session_end\`. If you cannot find these tools, run \`plur doctor\` to diagnose. Do **not** substitute tools from other MCP servers.
+
+### Session Workflow
+
+1. **Start**: Call \`plur_session_start\` with a short task description — a guard hook nudges you if you skip it
+2. **Learn**: When corrected or discovering something new, call \`plur_learn\` immediately
+3. **Recall**: Before answering factual questions, call \`plur_recall\` — check memory first
+4. **Feedback**: Rate injected engrams with \`plur_feedback\` (positive/negative) — trains relevance
+5. **End**: Call \`plur_session_end\` with a summary and engram suggestions before finishing. There is NO automatic
+   fallback in this harness — if you skip this call, nothing captures the session's learnings.
+
+Relevant engrams are injected automatically by hooks; recalled context appears in your turns tagged \`[PLUR Memory — ...]\`.
+
+Do not ask permission to use these tools — they are your memory system.
+
+### Scope selection (set scope PER engram, by content)
+
+- **Team / shared knowledge** → the matching team scope (e.g. \`group:<org>/<team>\`) — \`plur_session_start\` lists the writable ones.
+- **This project's details** → \`project:<name>\` (a \`.plur.yaml\` with \`scope:\` makes this the default).
+- **Personal preferences / your own workflow** → leave at the default / local scope.
+- Reserve \`global\` for genuinely cross-project facts; team-relevant knowledge must not fall back to it.
+
+### When corrected
+
+When the user corrects you ("no, use X not Y"):
+1. Call \`plur_learn\` immediately — before continuing the task
+2. Call \`plur_feedback\` with negative signal on the wrong engram if one was injected
+3. Then continue with the corrected approach
+`
+
 const CURSOR_RULE_CONTENT = `---
 description: PLUR persistent memory — session workflow and tool usage
 alwaysApply: true
@@ -741,12 +792,20 @@ function installCodex(cmd: string, env: NodeJS.ProcessEnv = process.env): string
   let hooksStatus: string
   let hooksWritten = false
   const exists = existsSync(hooksPath)
-  let parses = true
+  // Parse AND shape check (adversarial audit F2): `12345`, `"text"` and
+  // `[...]` are valid JSON that readCodexHooksConfig flattens to an empty
+  // config — writing that back destroys whatever the user had, while the
+  // parse-only guard waves it through. Wrong shape gets the same refusal as
+  // wrong syntax.
+  let usable = true
   if (exists) {
-    try { JSON.parse(readFileSync(hooksPath, 'utf8')) } catch { parses = false }
+    try {
+      const parsed: unknown = JSON.parse(readFileSync(hooksPath, 'utf8'))
+      usable = typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
+    } catch { usable = false }
   }
-  if (exists && !parses) {
-    hooksStatus = `skipped — ${hooksPath} exists but is not valid JSON; fix it by hand, then re-run \`plur init --codex\``
+  if (exists && !usable) {
+    hooksStatus = `skipped — ${hooksPath} exists but is not a JSON object; fix it by hand, then re-run \`plur init --codex\``
   } else {
     const existing = readCodexHooksConfig(hooksPath)
     const had = hasPlurCodexHooks(existing)
@@ -756,7 +815,7 @@ function installCodex(cmd: string, env: NodeJS.ProcessEnv = process.env): string
   }
 
   const mcpStatus = installCodexMcp()
-  const agentsStatus = installAgentsMd()
+  const agentsStatus = installAgentsMd(process.cwd(), join(codexHome(env), 'AGENTS.md'))
 
   return [
     `Codex: hooks ${hooksStatus} (${hooksPath})`,
@@ -784,21 +843,26 @@ const CODEX_TRUST_NOTICE =
   '    Open Codex, run /hooks, and trust the PLUR entries. Until you do, they are\n' +
   '    skipped SILENTLY — no warning, no error, memory simply never loads.'
 
-function installAgentsMd(cwd: string = process.cwd()): string {
+function installAgentsMd(cwd: string = process.cwd(), globalFallback: string | null = null): string {
   const marker = '## PLUR Memory'
   const projectAgents = join(cwd, 'AGENTS.md')
-  const globalAgents = join(codexHome(), 'AGENTS.md')
+  // The global fallback is HARNESS-SPECIFIC (evaluator audit M7): Codex
+  // reads ~/.codex/AGENTS.md, but agy walks up from the workspace and never
+  // looks there — so the agy path passes null and only ever touches the
+  // project file. Without this split, `plur init --antigravity` on a machine
+  // that also had Codex could write the block into ~/.codex/AGENTS.md,
+  // report success, and agy would never read a word of it.
   const target = existsSync(projectAgents) ? projectAgents
-    : existsSync(globalAgents) ? globalAgents
+    : (globalFallback && existsSync(globalFallback)) ? globalFallback
     : projectAgents
 
   if (existsSync(target)) {
     const content = readFileSync(target, 'utf8')
     if (content.includes(marker)) return `already in ${target}`
-    writeFileSync(target, content.trimEnd() + '\n\n' + CLAUDE_MD_SECTION)
+    writeFileSync(target, content.trimEnd() + '\n\n' + AGENTS_MD_SECTION)
     return `added to ${target}`
   }
-  writeFileSync(target, `# AGENTS.md\n\n${CLAUDE_MD_SECTION}`)
+  writeFileSync(target, `# AGENTS.md\n\n${AGENTS_MD_SECTION}`)
   return `created ${target}`
 }
 
@@ -832,12 +896,16 @@ function installAntigravity(cmd: string): string {
   // hand-edited-but-broken hooks.json along with every non-plur hook set in it.
   let hooksStatus: string
   const exists = existsSync(hooksPath)
-  let parses = true
+  // Same parse-AND-shape refusal as the Codex leg (adversarial audit F2).
+  let usable = true
   if (exists) {
-    try { JSON.parse(readFileSync(hooksPath, 'utf8')) } catch { parses = false }
+    try {
+      const parsed: unknown = JSON.parse(readFileSync(hooksPath, 'utf8'))
+      usable = typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
+    } catch { usable = false }
   }
-  if (exists && !parses) {
-    hooksStatus = `skipped — ${hooksPath} exists but is not valid JSON; fix it by hand, then re-run \`plur init --antigravity\``
+  if (exists && !usable) {
+    hooksStatus = `skipped — ${hooksPath} exists but is not a JSON object; fix it by hand, then re-run \`plur init --antigravity\``
   } else {
     const existing = readAgyHooksConfig(hooksPath)
     const had = hasPlurAgyHooks(existing)
@@ -862,7 +930,8 @@ function installAntigravity(cmd: string): string {
 
   // Rules: agy loads AGENTS.md via directory walk-up, same file the Codex
   // path maintains — reuse it so both harnesses share one instruction block.
-  const agentsStatus = installAgentsMd()
+  // No global fallback: agy has no global AGENTS.md location (M7).
+  const agentsStatus = installAgentsMd(process.cwd(), null)
 
   return [
     `Antigravity: hooks ${hooksStatus} (${hooksPath})`,
@@ -1039,16 +1108,29 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   // Register in Claude Desktop too
   const desktopStatus = installDesktopMcp(args)
 
+  // Each harness leg is contained (adversarial audit F3): a read-only file
+  // or an AGENTS.md-that-is-a-directory in ONE harness's config must not
+  // abort the others or suppress the whole report — before this, an EACCES
+  // in the agy leg (which runs first) hid the Codex trust notice and every
+  // path that had already been written.
+  const containLeg = (label: string, fn: () => string): string => {
+    try {
+      return fn()
+    } catch (err: unknown) {
+      return `${label}: FAILED (${(err as Error)?.message ?? 'unknown error'}) — other integrations were still attempted; fix and re-run plur init`
+    }
+  }
+
   const agyStatus = shouldSetupAntigravity(args)
-    ? installAntigravity(cmd)
+    ? containLeg('Antigravity', () => installAntigravity(cmd))
     : 'skipped (no ~/.gemini/antigravity-cli found — pass --antigravity to force, --no-antigravity to silence this)'
 
   const codexStatus = shouldSetupCodex(args)
-    ? installCodex(cmd)
+    ? containLeg('Codex', () => installCodex(cmd))
     : 'skipped (no ~/.codex found — pass --codex to force, --no-codex to silence this)'
 
   const cursorStatus = shouldSetupCursor(args)
-    ? installCursor(cmd)
+    ? containLeg('Cursor', () => installCursor(cmd))
     : 'skipped (no .cursor/ dir found — pass --cursor to force, --no-cursor to silence this)'
 
   // Write project config if --domain or --scope provided

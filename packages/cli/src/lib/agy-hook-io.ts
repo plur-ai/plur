@@ -1,6 +1,7 @@
-import { readFileSync, mkdirSync, writeFileSync, existsSync, statSync, readdirSync, unlinkSync } from 'fs'
+import { readFileSync, mkdirSync, writeFileSync, existsSync, statSync, lstatSync, chmodSync, readdirSync, unlinkSync, openSync, readSync, closeSync, fstatSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
+import { createHash } from 'crypto'
 import { safeSessionKey } from './session-key.js'
 
 /**
@@ -43,8 +44,47 @@ export { readStdinJson, runCodexHook as runAgyHook, injectWithFallback, isPlurSe
 const SESSION_DIR = join(tmpdir(), 'plur-agy-sessions')
 const STALE_SESSION_FILE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000 // 7 days
 
-function ensureDir(): void {
-  mkdirSync(SESSION_DIR, { recursive: true })
+/**
+ * Create — and vet — the session directory. Returns false when the directory
+ * cannot be trusted, and every writer treats that as "no persistence" (fail
+ * open: hooks keep working, they just re-derive instead of caching).
+ *
+ * The vetting exists because this directory holds RECALLED ENGRAM TEXT (the
+ * turn cache), not just timestamps, and it lives under os.tmpdir(), which on
+ * Linux is the world-writable /tmp (data-loss audit F8/F11). Two attacks the
+ * checks close:
+ *
+ *   - A pre-planted symlink at plur-agy-sessions/ pointing somewhere the
+ *     attacker can read or wants us to scribble on. mkdirSync({recursive})
+ *     happily accepts an existing symlink-to-dir, so lstat and refuse.
+ *   - A directory pre-created by another user (0777 or simply theirs), which
+ *     would let them read every conversation's recalled memory and rewrite
+ *     turn caches that we later feed to the model as context.
+ *
+ * The dir is created 0700 and files 0600 for the same reason. macOS tmpdirs
+ * are already per-user, so the checks only ever bite on shared-/tmp systems —
+ * which is exactly where they must.
+ */
+function ensureDir(): boolean {
+  try {
+    mkdirSync(SESSION_DIR, { recursive: true, mode: 0o700 })
+    if (process.platform !== 'win32') {
+      const st = lstatSync(SESSION_DIR)
+      if (st.isSymbolicLink() || !st.isDirectory()) return false
+      if (typeof process.getuid === 'function' && st.uid !== process.getuid()) return false
+      if ((st.mode & 0o077) !== 0) {
+        // Our own dir with loose modes is the UPGRADE case, not the attack
+        // case — every install prior to this hardening created it 0755
+        // (mkdirSync's default), and refusing it would permanently disable
+        // persistence for exactly the users who already had it working.
+        // Tighten in place; refuse only if that fails.
+        try { chmodSync(SESSION_DIR, 0o700) } catch { return false }
+      }
+    }
+    return true
+  } catch {
+    return false
+  }
 }
 
 /** Test seam — the directory agy sentinels live in. */
@@ -76,8 +116,10 @@ export function agyCounterPath(conversationId: string, name: string): string {
 }
 
 export function agyMarkSessionStarted(conversationId: string): void {
-  ensureDir()
-  writeFileSync(agySentinelPath(conversationId), new Date().toISOString())
+  if (!ensureDir()) return // fail open — an unmarkable session costs one extra nudge
+  try {
+    writeFileSync(agySentinelPath(conversationId), new Date().toISOString(), { mode: 0o600 })
+  } catch { /* same trade */ }
   cleanupStaleAgySessionFiles()
 }
 
@@ -87,18 +129,69 @@ export function agyIsSessionStarted(conversationId: string): boolean {
 
 /** Same fail-open contract as codex-hook-io's incrementCounter: an unpersistable counter reports itself as exceeded. */
 export function agyIncrementCounter(path: string): number {
-  ensureDir()
+  if (!ensureDir()) return Number.MAX_SAFE_INTEGER
   let n = 0
   try {
     n = parseInt(readFileSync(path, 'utf8').trim(), 10) || 0
   } catch { /* first increment */ }
   n += 1
   try {
-    writeFileSync(path, String(n))
+    writeFileSync(path, String(n), { mode: 0o600 })
   } catch {
     return Number.MAX_SAFE_INTEGER
   }
   return n
+}
+
+// ── Per-turn injection cache ────────────────────────────────────────────────
+
+/** Stable identity for a user message's text. 16 hex chars of sha256 is ample for same-vs-different. */
+export function agyTextHash(text: string): string {
+  return createHash('sha256').update(text).digest('hex').slice(0, 16)
+}
+
+export interface AgyTurnCache {
+  /** The conversation this cache belongs to — REQUIRED on read (F9). */
+  conversationId: string
+  step: number
+  textHash: string
+  message: string
+}
+
+/**
+ * Read this conversation's turn cache, or null.
+ *
+ * The conversationId check is load-bearing (data-loss audit F9):
+ * safeSessionKey maps every non-[A-Za-z0-9_-] byte to '_', so distinct ids
+ * ("conv/42", "conv.42") can collide on the same PATH. The id stored INSIDE
+ * the record is exact, so a collision reads as "no cache" instead of
+ * injecting another conversation's recalled memory into this one.
+ */
+export function readAgyTurnCache(conversationId: string): AgyTurnCache | null {
+  try {
+    const raw = JSON.parse(readFileSync(agyCounterPath(conversationId, 'turncache'), 'utf8')) as Partial<AgyTurnCache>
+    if (raw.conversationId !== conversationId) return null
+    // Number.isSafeInteger, not typeof: a poisoned step like 1e308 would pin
+    // every future step comparison false and freeze the cache on turn one
+    // (adversarial audit F4). The textHash tie-break already limits the
+    // damage, but a step no real transcript can produce is simply invalid.
+    if (typeof raw.step !== 'number' || !Number.isSafeInteger(raw.step) || typeof raw.message !== 'string') return null
+    return {
+      conversationId,
+      step: raw.step,
+      textHash: typeof raw.textHash === 'string' ? raw.textHash : '',
+      message: raw.message,
+    }
+  } catch {
+    return null // missing, torn, or corrupt — degrade to a fresh recall
+  }
+}
+
+export function writeAgyTurnCache(cache: AgyTurnCache): void {
+  if (!ensureDir()) return // fail open — the turn re-recalls instead of replaying
+  try {
+    writeFileSync(agyCounterPath(cache.conversationId, 'turncache'), JSON.stringify(cache), { mode: 0o600 })
+  } catch { /* same trade */ }
 }
 
 export function cleanupStaleAgySessionFiles(now: number = Date.now(), dir: string = SESSION_DIR): void {
@@ -136,10 +229,32 @@ export interface AgyUserInput {
  * as an error: the transcript format is Antigravity's internal file and can
  * change under us, and a hook must degrade, not break.
  */
+/**
+ * Never read more than this much transcript. A long agentic session's JSONL
+ * grows without bound, and the entry we want is by definition near the END —
+ * so past the cap, read only the trailing window. A user message larger than
+ * 4MB is not a realistic prompt; a 100MB transcript is a realistic session.
+ */
+const TRANSCRIPT_READ_CAP = 4 * 1024 * 1024
+
 export function lastUserInput(transcriptPath: string): AgyUserInput | null {
   let raw: string
   try {
-    raw = readFileSync(transcriptPath, 'utf8')
+    const fd = openSync(transcriptPath, 'r')
+    try {
+      const size = fstatSync(fd).size
+      if (size <= TRANSCRIPT_READ_CAP) {
+        raw = readFileSync(transcriptPath, 'utf8')
+      } else {
+        const buf = Buffer.alloc(TRANSCRIPT_READ_CAP)
+        const n = readSync(fd, buf, 0, TRANSCRIPT_READ_CAP, size - TRANSCRIPT_READ_CAP)
+        // The first line of the window is almost certainly torn; its
+        // JSON.parse fails and it is skipped, same as any mid-write line.
+        raw = buf.subarray(0, n).toString('utf8')
+      }
+    } finally {
+      closeSync(fd)
+    }
   } catch {
     return null
   }

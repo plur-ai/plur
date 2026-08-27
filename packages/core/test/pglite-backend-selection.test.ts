@@ -3,7 +3,8 @@
  *
  * `backend-selection.test.ts` pins the resolver as a pure function. This file
  * pins the consequence: a store large enough to make brute-force scanning the
- * dominant cost really does get a PGLite index built for it, and the one tier
+ * dominant cost really does get an INDEX built for it — SQLite since #1046
+ * (PGLite is opt-in only; see the ADR-0005 amendment) — and the one tier
  * that cannot yet be wired — Postgres, because `Plur`'s write path is still
  * synchronous (ADR-0003) — degrades LOUDLY to the best tier that can.
  *

@@ -513,7 +513,14 @@ export class PGLiteAdapter implements DerivedIndexAdapter {
         // inherit a fingerprint that would let the next syncFromYaml skip.
         // Clearing (rather than setting) keeps the rebuild honest: the next
         // sync re-derives it from the file it actually reads.
-        await db.exec("DELETE FROM sync_state WHERE k = 'yaml_fingerprint'").catch(() => {})
+        //
+        // NOT catch-swallowed (data-loss audit F4): this statement runs
+        // inside BEGIN/COMMIT, and a swallowed error here would leave the
+        // transaction aborted so the following COMMIT silently acts as
+        // ROLLBACK — reindex() reporting success having rebuilt nothing.
+        // ensureSchema guarantees the table exists; if this ever throws, the
+        // catch below rolls back loudly, which is the honest outcome.
+        await db.exec("DELETE FROM sync_state WHERE k = 'yaml_fingerprint'")
         await db.exec('COMMIT')
       } catch (err) {
         await db.exec('ROLLBACK').catch(() => {})
@@ -644,10 +651,21 @@ export class PGLiteAdapter implements DerivedIndexAdapter {
    * headroom and keeps the parameter array small enough not to matter.
    */
   private async upsertEngramsTx(db: any, engrams: Engram[], source: string): Promise<void> {
+    // De-dupe by id, last-wins, BEFORE batching (data-loss audit F7).
+    // parseEngramFile does not reject duplicate ids, and a multi-row
+    // `INSERT ... ON CONFLICT DO UPDATE` containing the same id twice is a
+    // Postgres ERROR ("cannot affect row a second time") — which turned a
+    // condition the old per-row loop silently tolerated into a permanently
+    // failing sync whose documented recovery (`plur sync --full`) hit the
+    // same error. Last-wins matches the per-row loop's observable behaviour.
+    const byId = new Map<string, Engram>()
+    for (const e of engrams) byId.set(e.id, e)
+    const unique = byId.size === engrams.length ? engrams : [...byId.values()]
+
     const COLS = 7
     const CHUNK = 500
-    for (let i = 0; i < engrams.length; i += CHUNK) {
-      const batch = engrams.slice(i, i + CHUNK)
+    for (let i = 0; i < unique.length; i += CHUNK) {
+      const batch = unique.slice(i, i + CHUNK)
       const values: unknown[] = []
       const tuples = batch.map((e, n) => {
         const b = n * COLS

@@ -15,13 +15,12 @@ import { readProjectConfig } from '@plur-ai/core'
  * workaround is needed here; that exists only because Cursor drops
  * `additional_context` at conversation-creation time.
  *
- * BM25-only, deliberately. Codex DOES support `async: true` as of 0.149.1,
- * but an async hook's context is delivered at the next safe point rather
- * than to the triggering turn, so going async would silently put memory one
- * turn behind (and, in `codex exec`, drop it entirely). This hook has to
- * just BE fast: hybrid search cold-starts the BGE embedder (~20s once the
- * store passes a few thousand engrams — the failure PR #502 fixed for
- * Claude Code); BM25 alone measured 0.74s against 4,290 engrams.
+ * Synchronous, hybrid-first with a BM25 fallback on a soft deadline — see
+ * `injectWithFallback`, which holds the measurements (4.7s hybrid / 1.6s
+ * BM25 on a 5,775-engram store, 2026-08-27) and the reason the old "~20s
+ * embedder cold start" figure was retired. Async would be worse, not
+ * faster: Codex delivers an async hook's context at the next safe point,
+ * NOT to the triggering turn — in `codex exec` that means never.
  *
  * Input:  JSON on stdin — { session_id, cwd, hook_event_name, model, permission_mode, source }
  * Output: JSON on stdout — { hookSpecificOutput: { hookEventName, additionalContext } }

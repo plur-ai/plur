@@ -180,6 +180,7 @@ export {
 export {
   resolveBackendTier,
   BACKEND_TIERS,
+  SQLITE_MIN_ENGRAMS,
   PGLITE_MIN_ENGRAMS,
   POSTGRES_MIN_ENGRAMS,
   type BackendTier,
@@ -8227,7 +8228,14 @@ Generate an improved version of the procedure that prevents this failure. Return
     if (mtime === 0 || mtime === this.configMtimeMs) return false
     this.config = loadConfig(this.paths.config)
     this.configMtimeMs = mtime
-    if (this.config.index) {
+    // Same `.partial()`-neutralised-default rule as the constructor
+    // (evaluator audit M4): `config.index` is `undefined` on a default
+    // install, and with SQLite now the size-selected tier, a bare truthy
+    // check here means the refresh this method exists for (#307 — a store
+    // added by editing config.yaml out of process) never reaches
+    // indexedStorage on exactly the default installs that have one. Refresh
+    // whenever an index is actually active, or config asks for one.
+    if (this.indexedStorage !== null || this.config.index) {
       this.indexedStorage = new IndexedStorage(this.paths.engrams, this.paths.db, this.config.stores)
     }
     logger.info('[plur] Reloaded config.yaml (changed on disk since last load)')

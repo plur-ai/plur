@@ -533,9 +533,14 @@ function resolveCliJsEntry(): string | null {
  *
  * Timeout: 60s default (#273). Cold model downloads (130MB for bge-small,
  * 325MB for embedding-gemma) need 60-300s on slow connections. Override via
- * PLUR_DOCTOR_TIMEOUT env var (in seconds) if 60s is still too short.
+ * PLUR_DOCTOR_TIMEOUT env var (in seconds) if 300s is still too short.
  */
-const DEFAULT_PROBE_TIMEOUT_MS = 60_000
+// 300s, not 60s (data-loss audit F6): on a FRESH install this probe is the
+// only sanctioned path that downloads the ~133MB embedding model — the hooks
+// race an 8s deadline and force-exit, so they can never complete it, and
+// there is no resume. 60s required >2.2MB/s; a slower connection made hybrid
+// permanently unavailable with nothing ever able to finish the fetch.
+const DEFAULT_PROBE_TIMEOUT_MS = 300_000
 
 /**
  * Resolve the probe timeout from PLUR_DOCTOR_TIMEOUT (seconds). Invalid values
@@ -816,6 +821,22 @@ export function printText(report: DoctorReport, flags?: GlobalFlags): void {
       outputText('  A Claude Code config being healthy elsewhere does NOT cover Cursor —')
       outputText('  this project has a .cursor/ directory but its own config is incomplete.')
       outputText('  Fix: run `plur init --cursor` from this project.')
+    }
+  }
+
+  {
+    // #1046 migration signal: PGLite is no longer size-selected, so a store
+    // that auto-built one now runs SQLite and the old directory is orphaned
+    // disk (60–500MB observed). This advisory is the only signal the
+    // affected cohort gets — the runtime opt-in log line deliberately fires
+    // only for explicit selections.
+    const pglitePath = join(process.env.PLUR_PATH || join(homedir(), '.plur'), 'store.pglite')
+    const pgliteExplicit = process.env.PLUR_BACKEND?.trim().toLowerCase() === 'pglite'
+    if (existsSync(pglitePath) && !pgliteExplicit) {
+      outputText('')
+      outputText(`ℹ  ${pglitePath} exists but PGLite is no longer selected by store size (v0.19).`)
+      outputText('   If you have not set backend: pglite deliberately, this directory is an')
+      outputText('   orphaned index and can be deleted — YAML remains the source of truth.')
     }
   }
 

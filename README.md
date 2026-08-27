@@ -113,7 +113,7 @@ npx @plur-ai/cli init --codex
 
 Registers the MCP server via `codex mcp add`, writes lifecycle hooks to `~/.codex/hooks.json`, and adds a PLUR section to `AGENTS.md`. Auto-detected when `~/.codex/` exists.
 
-Injection uses hybrid search (BM25 + embeddings) with an automatic BM25 fallback if the embedder is slow or unavailable. Set `PLUR_CODEX_HYBRID=0` to force BM25.
+Injection uses hybrid search (BM25 + embeddings) with an automatic BM25 fallback if the embedder is slow or unavailable. Set `PLUR_HOOK_HYBRID=0` to force BM25 (applies to the Antigravity hooks too; `PLUR_CODEX_HYBRID` is honoured as an alias). `PLUR_HOOK_HYBRID_DEADLINE_MS` tunes the fallback deadline — keep it below your harness's hook timeout (Codex 25s, Antigravity 20s).
 
 **One manual step after install:** open Codex, run `/hooks`, and trust the PLUR entries. Codex fingerprints every hook and refuses to run untrusted ones — *silently*, with no warning and a zero exit code. Until you trust them, memory simply never loads. `plur doctor` says so too.
 

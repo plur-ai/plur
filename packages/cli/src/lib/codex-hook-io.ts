@@ -247,17 +247,25 @@ const DEADLINE_MISSED = Symbol('plur.hybrid.deadline')
  * 3.8.1 / onnxruntime-node 1.21; 4.2.0 / 1.24.3 exits 0 with bit-identical
  * embedding vectors. See #1040.
  *
- * `PLUR_CODEX_HYBRID=0` forces BM25 — the escape hatch if a future runtime
+ * `PLUR_HOOK_HYBRID=0` forces BM25 — the escape hatch if a future runtime
  * regresses the same way, or on a machine where the embedder is unavailable
- * and the fallback's wasted attempt is not worth paying for.
+ * and the fallback's wasted attempt is not worth paying for. The Codex-named
+ * `PLUR_CODEX_HYBRID` is honoured as an alias because this helper also
+ * drives the ANTIGRAVITY hooks (via agy-hook-io's re-export) and the
+ * original name would be undiscoverable from there (evaluator audit M12).
+ * "Off" accepts the obvious spellings — an escape hatch someone reaches for
+ * mid-incident must not fail on `false` vs `0` (adversarial audit F5).
  */
 export function hybridEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  return env.PLUR_CODEX_HYBRID !== '0'
+  const raw = env.PLUR_HOOK_HYBRID ?? env.PLUR_CODEX_HYBRID
+  if (raw === undefined) return true
+  const v = raw.trim().toLowerCase()
+  return !(v === '0' || v === 'false' || v === 'off' || v === 'no')
 }
 
 /** Soft deadline for the hybrid leg before falling back to BM25. Override for tests/slow machines. */
 export const HYBRID_DEADLINE_MS =
-  parseInt(process.env.PLUR_CODEX_HYBRID_DEADLINE_MS ?? '', 10) || 8_000
+  parseInt(process.env.PLUR_HOOK_HYBRID_DEADLINE_MS ?? process.env.PLUR_CODEX_HYBRID_DEADLINE_MS ?? '', 10) || 8_000
 
 export interface InjectOutcome<R> {
   result: R
@@ -306,8 +314,14 @@ export async function injectWithFallback<O, R>(
   let timer: NodeJS.Timeout | undefined
   try {
     const deadline = new Promise<typeof DEADLINE_MISSED>((resolve) => {
+      // Deliberately NOT unref()'d (adversarial audit F1). If injectHybrid
+      // ever leaves the event loop with no other referenced handle, an
+      // unref'd timer cannot fire, the race never settles, and Node exits 13
+      // ("unsettled top-level await") BEFORE runCodexHook reaches its
+      // process.exit(0) — reintroducing exactly the discarded-output failure
+      // that wrapper exists to prevent. A referenced timer cannot linger
+      // either: every caller force-exits right after this returns.
       timer = setTimeout(() => resolve(DEADLINE_MISSED), deadlineMs)
-      timer.unref?.()
     })
     // A sentinel, not null: R is unconstrained, so a legitimate hybrid result
     // could itself be falsy and would otherwise read as a deadline miss.
@@ -315,7 +329,8 @@ export async function injectWithFallback<O, R>(
     if (raced !== DEADLINE_MISSED) return { result: raced, mode: 'hybrid' }
     process.stderr.write(
       `[plur] hybrid injection exceeded ${deadlineMs}ms — falling back to BM25 for this turn. ` +
-      'Raise PLUR_CODEX_HYBRID_DEADLINE_MS if this is routine on your machine.\n',
+      'If this is routine, raise PLUR_HOOK_HYBRID_DEADLINE_MS — and keep it below your ' +
+      'harness hook timeout (Codex 25s, Antigravity 20s), or the hook gets killed and injects nothing.\n',
     )
   } catch (err: unknown) {
     // A hybrid-specific failure (embedder unavailable, index mid-rebuild) must
