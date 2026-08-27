@@ -216,7 +216,6 @@ describe('injectWithFallback', () => {
   const R = (count: number, tag: string) =>
     ({ directives: tag, constraints: '', consider: '', count })
 
-  beforeEach(() => { process.env.PLUR_CODEX_HYBRID = '1' })
   afterEach(() => { delete process.env.PLUR_CODEX_HYBRID })
 
   it('uses hybrid when it beats the deadline', async () => {
@@ -264,24 +263,25 @@ describe('injectWithFallback', () => {
   })
 })
 
-describe('hybridEnabled (#1040 kill switch)', () => {
-  it('is off unless explicitly opted in', () => {
-    expect(hybridEnabled({})).toBe(false)
-    expect(hybridEnabled({ PLUR_CODEX_HYBRID: '0' })).toBe(false)
-    expect(hybridEnabled({ PLUR_CODEX_HYBRID: 'true' })).toBe(false)
+describe('hybridEnabled (#1040 escape hatch)', () => {
+  it('is on by default and only "0" disables it', () => {
+    expect(hybridEnabled({})).toBe(true)
     expect(hybridEnabled({ PLUR_CODEX_HYBRID: '1' })).toBe(true)
+    expect(hybridEnabled({ PLUR_CODEX_HYBRID: '0' })).toBe(false)
   })
 
-  it('injectWithFallback never touches injectHybrid while the switch is off', async () => {
-    // The crash is caused by LOADING the embedder, not by using its result —
-    // so "call it and fall back" is not a safe posture. It must not be called.
-    delete process.env.PLUR_CODEX_HYBRID
+  it('injectWithFallback never touches injectHybrid when disabled', async () => {
+    // #1040's crash came from LOADING the embedder, not from using its result,
+    // so the switch has to guard the call site — "call it and fall back" would
+    // not have helped. Kept that way in case a future runtime regresses.
+    process.env.PLUR_CODEX_HYBRID = '0'
     let hybridCalled = false
     const plur = {
       injectHybrid: async () => { hybridCalled = true; return { count: 9 } },
       inject: async () => ({ count: 3 }),
     }
     const out = await injectWithFallback(plur, 'q', {}, 5000)
+    delete process.env.PLUR_CODEX_HYBRID
     expect(hybridCalled).toBe(false)
     expect(out.mode).toBe('bm25')
     expect(out.result.count).toBe(3)

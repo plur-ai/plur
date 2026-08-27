@@ -219,26 +219,28 @@ export async function runCodexHook(
 const DEADLINE_MISSED = Symbol('plur.hybrid.deadline')
 
 /**
- * Is hybrid injection allowed on this machine? Default NO — see #1040.
+ * Is hybrid injection allowed? Default YES since #1040 was fixed.
  *
- * Loading the ONNX embedder makes the process die with SIGABRT (exit 134) in
- * native teardown, AFTER the JS work has finished and `process.exit(0)` has
- * been called. Nothing in JS can trap it. Codex reads the exit code as the
- * hook's verdict and DISCARDS the output of a non-zero hook, so hybrid on
- * Codex produces a correct payload that is then thrown away — strictly worse
- * than BM25, which exits 0 and gets delivered.
+ * Hybrid is worth its cost — measured 2026-08-27 on a 5,775-engram store,
+ * fresh process per run: ~4.7s vs ~1.6s for BM25, and the injected set
+ * diverges from BM25 on ~10% of entries for keyword-rich prompts and ~22% for
+ * vague ones ("this keeps breaking in the same way"), which is precisely when
+ * the user is leaning on memory rather than supplying the keywords.
  *
- * The quality case for hybrid is real and measured (2026-08-27, 5,775-engram
- * store): ~4.7s vs ~1.6s, and it diverges from BM25 on ~10% of the injected
- * set for keyword-rich prompts, ~22% for vague ones — precisely the prompts
- * where the user is leaning on memory rather than supplying keywords. So the
- * implementation stays, switched off, rather than being deleted and rebuilt.
+ * It shipped switched OFF for one release because loading the ONNX embedder
+ * killed the process with SIGABRT (exit 134) during native teardown, after
+ * the JS work had finished and `process.exit(0)` had been called — and Codex
+ * DISCARDS the output of any hook that exits non-zero, so hybrid produced a
+ * correct payload that was then thrown away. That was `@huggingface/transformers`
+ * 3.8.1 / onnxruntime-node 1.21; 4.2.0 / 1.24.3 exits 0 with bit-identical
+ * embedding vectors. See #1040.
  *
- * Flip the default here once #1040 is fixed; the opt-in also lets anyone whose
- * environment does not reproduce the crash turn it on today.
+ * `PLUR_CODEX_HYBRID=0` forces BM25 — the escape hatch if a future runtime
+ * regresses the same way, or on a machine where the embedder is unavailable
+ * and the fallback's wasted attempt is not worth paying for.
  */
 export function hybridEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  return env.PLUR_CODEX_HYBRID === '1'
+  return env.PLUR_CODEX_HYBRID !== '0'
 }
 
 /** Soft deadline for the hybrid leg before falling back to BM25. Override for tests/slow machines. */

@@ -113,7 +113,7 @@ npx @plur-ai/cli init --codex
 
 Registers the MCP server via `codex mcp add`, writes lifecycle hooks to `~/.codex/hooks.json`, and adds a PLUR section to `AGENTS.md`. Auto-detected when `~/.codex/` exists.
 
-Injection is BM25 by default. Hybrid (BM25 + embeddings) is implemented and opt-in via `PLUR_CODEX_HYBRID=1`, but off until [#1040](https://github.com/plur-ai/plur/issues/1040) is fixed — loading the embedder aborts the process on teardown, and Codex discards the output of any hook that exits non-zero.
+Injection uses hybrid search (BM25 + embeddings) with an automatic BM25 fallback if the embedder is slow or unavailable. Set `PLUR_CODEX_HYBRID=0` to force BM25.
 
 **One manual step after install:** open Codex, run `/hooks`, and trust the PLUR entries. Codex fingerprints every hook and refuses to run untrusted ones — *silently*, with no warning and a zero exit code. Until you trust them, memory simply never loads. `plur doctor` says so too.
 
