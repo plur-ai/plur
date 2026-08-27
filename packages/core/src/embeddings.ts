@@ -321,6 +321,38 @@ function hashStatement(statement: string): string {
 }
 
 /**
+ * Merge externally-obtained vectors into the on-disk embeddings cache.
+ *
+ * The #1046 PGLite→SQLite migration's write half: vectors verified fresh
+ * against the CURRENT engram text are folded into the cache under this
+ * module's own key discipline (`hashStatement` of the search text), so the
+ * yaml/sqlite tiers serve them exactly as if they had been computed here.
+ * Lives in this file because the cache format — meta header, entry shape,
+ * hash function — is deliberately private to it.
+ *
+ * Existing entries win: an entry already in the cache was written by the
+ * live embed path against the same text and is at least as fresh as the
+ * import. Returns how many entries were written.
+ */
+export function mergeEmbeddingsIntoCache(
+  storagePath: string,
+  active: { name: string; dim: number },
+  imports: Array<{ engramId: string; searchText: string; embedding: number[] }>,
+): number {
+  const cachePath = join(storagePath, '.embeddings-cache.json')
+  const cache = loadCache(cachePath, active)
+  let written = 0
+  for (const imp of imports) {
+    if (imp.embedding.length !== active.dim) continue
+    if (cache.entries[imp.engramId]) continue
+    cache.entries[imp.engramId] = { hash: hashStatement(imp.searchText), embedding: imp.embedding }
+    written++
+  }
+  if (written > 0) saveCache(cachePath, cache)
+  return written
+}
+
+/**
  * Semantic search using embeddings.
  * Computes embedding for query, compares against cached engram embeddings.
  * Returns engrams sorted by cosine similarity (descending).

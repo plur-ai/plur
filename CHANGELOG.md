@@ -50,10 +50,19 @@ fresh-process-per-hook model.
 
 **Who is affected:** any default install with more than 5,000 engrams. On first run
 after upgrading, selection moves to `sqlite` and builds `engrams.db`. Nothing is
-lost — YAML remains the source of truth — but the old `~/.plur/store.pglite/`
-directory (typically 60–500MB) is orphaned and can be deleted. `plur doctor` flags
-it. To keep the old behaviour set `backend: pglite` in `~/.plur/config.yaml` or
-`PLUR_BACKEND=pglite`; PLUR remains the right choice only where its pgvector/AGE
+lost — YAML remains the source of truth.
+
+**Migration path:** run `plur migrate` once. It carries your embedding vectors out
+of the old PGLite store into the new tier's cache (verifying each against the
+engram's current text and the active embedder's dimension), so hybrid recall works
+immediately instead of re-embedding the corpus in the background. It then tells you
+the old `~/.plur/store.pglite/` directory (typically 60–500MB) is safe to delete;
+`plur doctor` flags it too. Skipping the migration loses nothing — stale or skipped
+vectors re-embed automatically — it just costs background CPU and a window of
+BM25-only recall.
+
+To keep the old behaviour set `backend: pglite` in `~/.plur/config.yaml` or
+`PLUR_BACKEND=pglite`; PGLite remains the right choice only where its pgvector/AGE
 capabilities are the point, and it now logs its per-process boot cost once at
 startup when explicitly selected.
 
