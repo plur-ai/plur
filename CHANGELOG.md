@@ -8,13 +8,13 @@ The memory layer forgot Codex. Awkward. Fixed — agy too.
 - Hybrid recall in hooks
 - Size ladder: yaml → sqlite → postgres
 
-**Codex CLI adapter.** `plur init --codex` wires `~/.codex/hooks.json` (five lifecycle
+**Codex CLI adapter (#1031).** `plur init --codex` wires `~/.codex/hooks.json` (five lifecycle
 hooks), registers the MCP server via `codex mcp add`, and adds a PLUR section to
 `AGENTS.md`. One manual step: Codex refuses untrusted hooks *silently* — run `/hooks`
 in Codex once and trust the PLUR entries. `plur doctor` reports Codex wiring and
 repeats that caveat.
 
-**Antigravity CLI (agy) adapter.** `plur init --antigravity` wires agy's global config
+**Antigravity CLI (agy) adapter (#1033).** `plur init --antigravity` wires agy's global config
 (`~/.gemini/config/`): a `plur-memory` hook set (PreInvocation injection + PreToolUse
 guard), the MCP server, and `AGENTS.md`. No trust step — restart agy and memory flows.
 Per-prompt recall reads the conversation transcript (agy's hook payload carries no
@@ -38,6 +38,10 @@ upserts (a 5,000-engram corpus builds in ~2s instead of 10+ minutes), records a
 fingerprint so an unchanged store skips the sync entirely, tolerates duplicate ids
 last-wins, and the CLI drains background index work before exiting so the index
 actually converges.
+
+**Release tooling.** The release script now probes the X credentials it will
+actually post with before any irreversible step (#948, #951), so a dead token
+aborts the release instead of stranding it half-published.
 
 ### BREAKING — PGLite is opt-in, never selected by corpus size (#1046)
 
