@@ -2,12 +2,11 @@
 
 ## 0.19.0 (unreleased)
 
-Memory in every harness — Codex and Antigravity join Claude Code, Cursor, OpenClaw and Hermes.
+Codex and Antigravity join the family.
 
-- `plur init --codex` — hooks, MCP, AGENTS.md
-- `plur init --antigravity` — agy hooks, MCP, AGENTS.md
-- Hybrid injection (BM25 + embeddings) in hooks, with automatic BM25 fallback
-- PGLite is opt-in; the size ladder is now yaml → sqlite → postgres
+- `plur init --codex` / `--antigravity`
+- Hybrid recall in hooks
+- Size ladder: yaml → sqlite → postgres
 
 **Codex CLI adapter.** `plur init --codex` wires `~/.codex/hooks.json` (five lifecycle
 hooks), registers the MCP server via `codex mcp add`, and adds a PLUR section to
@@ -68,7 +67,7 @@ To keep the old behaviour set `backend: pglite` in `~/.plur/config.yaml` or
 capabilities are the point, and it now logs its per-process boot cost once at
 startup when explicitly selected.
 
-## 0.18.0 (unreleased)
+## 0.18.0
 
 Your agents' memory, on a dashboard.
 
