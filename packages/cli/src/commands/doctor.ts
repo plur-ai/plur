@@ -835,9 +835,9 @@ export function printText(report: DoctorReport, flags?: GlobalFlags): void {
     if (existsSync(pglitePath) && !pgliteExplicit) {
       outputText('')
       outputText(`ℹ  ${pglitePath} exists but PGLite is no longer selected by store size (v0.19).`)
-      outputText('   If you have not set backend: pglite deliberately, run `plur migrate` once —')
-      outputText('   it carries your embedding vectors into the new tier\'s cache (skipping the')
-      outputText('   background re-embed) — then delete the directory. YAML remains the source of truth.')
+      outputText('   Nothing to do — embeddings rebuild automatically — and this directory is an')
+      outputText('   orphaned index you can delete whenever convenient. YAML remains the source of')
+      outputText('   truth. (Optional: `plur migrate` ports the old vectors over, skipping the rebuild.)')
     }
   }
 

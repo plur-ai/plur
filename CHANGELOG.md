@@ -52,14 +52,16 @@ fresh-process-per-hook model.
 after upgrading, selection moves to `sqlite` and builds `engrams.db`. Nothing is
 lost — YAML remains the source of truth.
 
-**Migration path:** run `plur migrate` once. It carries your embedding vectors out
-of the old PGLite store into the new tier's cache (verifying each against the
-engram's current text and the active embedder's dimension), so hybrid recall works
-immediately instead of re-embedding the corpus in the background. It then tells you
-the old `~/.plur/store.pglite/` directory (typically 60–500MB) is safe to delete;
-`plur doctor` flags it too. Skipping the migration loses nothing — stale or skipped
-vectors re-embed automatically — it just costs background CPU and a window of
-BM25-only recall.
+**Migration: nothing to do.** Recall keeps working immediately (BM25), and
+embeddings rebuild automatically — the first hybrid recalls re-embed the corpus,
+which takes a few minutes of background CPU on a large store and then it is done.
+The old `~/.plur/store.pglite/` directory (typically 60–500MB) is orphaned and safe
+to delete whenever convenient; `plur doctor` points it out.
+
+Optional shortcut for large stores: `plur migrate` carries the old store's
+embedding vectors straight into the new tier's cache (each verified against the
+engram's current text and the active embedder's dimension), skipping the rebuild
+window entirely.
 
 To keep the old behaviour set `backend: pglite` in `~/.plur/config.yaml` or
 `PLUR_BACKEND=pglite`; PGLite remains the right choice only where its pgvector/AGE
