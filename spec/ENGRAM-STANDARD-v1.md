@@ -362,31 +362,42 @@ are answerable at all:
 
 ##### The rule
 
-**The test is what the change does to a reader who relied on the previous
-version.** If they would still be right, the change is in place. If they would
-now be wrong, they are owed a record saying so, and that record is a
-supersession.
+**A change to `content_hash` MUST be a supersession. Anything else is in place.**
 
-Concretely:
+`content_hash` is `sha256` over the normalized `statement` (§4.3). Normalization
+lowercases, strips non-word characters and collapses whitespace, so the hash is
+already invariant under capitalisation, punctuation and spacing — the changes
+that genuinely alter nothing.
 
-| Change | How |
-|---|---|
-| Fixing a typo, or rewording without changing the claim | **In place.** `engram_version` increments. |
-| Adding or editing `rationale`, `tags`, `domain`, `summary`, `dual_coding`, `knowledge_anchors` | **In place.** |
-| Changing `scope`, `visibility`, `pinned`, `commitment` | **In place.** These change how an engram is treated, not what it asserts. |
-| Any change to derived state — `activation`, `feedback_signals`, `usage` | **In place**, and does not increment `engram_version`: that counter is for content evolution, not for use. |
-| **The statement now asserts something different from what it asserted before** | **A new engram superseding the old — MUST.** |
+| Change | How | Why |
+|---|---|---|
+| Capitalisation, punctuation, whitespace in `statement` | **In place.** | The hash does not move. Nothing a reader could have relied on has changed. |
+| `rationale`, `tags`, `domain`, `summary`, `dual_coding`, `knowledge_anchors` | **In place.** `engram_version` increments. | Context around the claim, not the claim. |
+| `scope`, `visibility`, `pinned`, `commitment` | **In place.** | How the engram is treated, not what it asserts. |
+| `activation`, `feedback_signals`, `usage` | **In place**, and does **not** increment `engram_version`. | Derived state, rewritten on every read. |
+| **Any change that moves `content_hash`** | **A new engram superseding the old — MUST.** | The previous statement would otherwise be destroyed. |
 
-A producer MUST NOT rewrite a `statement` in place in a way that changes what it
-asserts. That is the one case where the previous value has to survive, and
-in-place editing is precisely the operation that does not let it.
+An earlier draft of this section made the test *whether the meaning changed*. That
+was wrong, and this is the correction. Meaning-change is a judgement, it is
+frequently subjective, and three implementations applying it independently will
+disagree — which defeats the purpose of specifying it at all. `content_hash` is
+mechanical, already computed on every write, and needs no interpretation.
+
+The cost is accepted deliberately: **fixing a genuine typo mints a new engram**,
+because "teh" and "the" hash differently. That is a small amount of churn in
+exchange for a rule with no judgement in it, and the retired engram is filtered
+from recall by its status. An implementation MAY retain the previous statement in
+its own history as well; doing so does **not** exempt it from this rule, because
+history is the implementation's to prune and the engram is not.
+
+A producer MUST NOT rewrite a `statement` in place in a way that moves its
+`content_hash`. That is precisely the operation which leaves nothing holding
+what the engram used to say.
 
 ##### What each path MUST record
 
-**In place:** `engram_version` incremented, and a history event recording that
-the engram changed. A producer SHOULD record the previous `statement` where its
-history mechanism can hold one; this standard does not require it, because the
-edits permitted in place do not change what was asserted.
+**In place:** `engram_version` incremented (except for derived state), and a
+history event recording that the engram changed.
 
 **By supersession:** `relations.supersedes` on the new engram naming the old, the
 old engram retired rather than deleted, and — where the producer records reasons
@@ -404,15 +415,16 @@ in place is gone, and no amount of later specification brings it back.
 
 ##### What this does not do
 
-It does not detect an edit that changed the meaning when the producer believed it
-had not. A reworded statement a reader later understands differently is
-indistinguishable, at edit time, from a genuine rewording — and a rule that tried
-to spot the difference would be wrong often and confidently.
+It does not judge significance, and deliberately so. A one-character correction
+and a reversal of the claim are treated identically, because both move the hash
+and the rule has no opinion beyond that.
 
-What survives such a case is the `engram_version` counter and the history event,
-which record that an edit happened and when. Somebody auditing can find it. That
-is the limit of what this rule delivers, and it is stated rather than left to be
-discovered.
+The consequence is worth stating outright: `relations.supersedes` means *"this
+replaced that"*, not *"this contradicts that"*. A reader MUST NOT infer from a
+supersession chain that a claim changed substantively — only that the statement
+did. Where an implementation wants to distinguish the two, that is a reason
+recorded on the supersession by whoever made the change, and never something a
+consumer may compute for itself.
 
 ##### Where the reference does not comply
 
@@ -538,7 +550,7 @@ ignore the values.
 | `injection_count` | integer | ≥0, default 0 | Number of times this engram was selected into a session's injection context. Distinct from `activation.frequency` (recall events). High injection_count + low positive feedback_signals is an efficacy-failure signal (#865, #866). |
 | `sources` | object[] | each: `scope` (R), `session_id?` (string\|null), `stored_at` (R, instant) | One entry per write attempt. |
 | `recurrence_count` | integer | ≥0, default 0 | Different-scope re-learn count (universality evidence). |
-| `engram_version` | integer | ≥1, default 1 | Content-evolution version. Incremented on an **in-place** edit (§4.7.1); NOT incremented by changes to derived state (`activation`, `feedback_signals`, `usage`), and NOT used for a change that alters what the engram asserts — that is a supersession, which mints a new engram whose counter starts at 1. |
+| `engram_version` | integer | ≥1, default 1 | Content-evolution version. Incremented on an **in-place** edit (§4.7.1); NOT incremented by changes to derived state (`activation`, `feedback_signals`, `usage`); and never used for a change that moves `content_hash` — that is a supersession, which mints a new engram whose counter starts at 1. |
 | `previous_version_ref` | object | `{event_id, changed_at}` | Pointer to prior content version. |
 | `episode_ids` | string[] | default `[]` | Source episode IDs. |
 | `summary` | string | ≤80 chars | Injection-friendly short form. |
@@ -1328,7 +1340,7 @@ they are holding and what changed. Version numbers follow §10.2.
 
 | Version | Date | Change class | What changed |
 |---|---|---|---|
-| 1.4 | 2026-08-27 | Minor (additive) | **§4.7.1 added, "Changing an engram"**. The document defined two ways an engram can change — in place with `engram_version`, or by supersession with a new id — and never said which applies when, so the choice was made per code path by whoever wrote it. The rule is now the effect on a reader who relied on the previous version: if they would still be right the edit is in place, and if they would now be wrong they are owed a supersession. A producer MUST NOT rewrite a `statement` in place in a way that changes what it asserts, because that is the one case where the previous value has to survive and in-place editing is exactly the operation that does not let it. `engram_version`'s semantics expanded from six words to say what does and does not increment it. Nothing constrains previously-valid data; the obligation is on producers at edit time. |
+| 1.4 | 2026-08-27 | Minor (additive) | **§4.7.1 added, "Changing an engram"**. The document defined two ways an engram can change — in place with `engram_version`, or by supersession with a new id — and never said which applies when, so the choice was made per code path by whoever wrote it. The test is mechanical: **a change that moves `content_hash` MUST be a supersession; anything else is in place.** A draft tested whether *the meaning* changed and was withdrawn before publication — meaning-change is a judgement, frequently subjective, and three implementations applying it independently would disagree, which defeats the purpose of specifying it. `content_hash` is already computed on every write and is invariant under capitalisation, punctuation and spacing. A producer MUST NOT rewrite a `statement` in place in a way that moves its hash, because that is the one operation leaving nothing that holds what the engram used to say. `engram_version`'s semantics expanded from six words. Nothing constrains previously-valid data; the obligation is on producers at edit time. |
 | 1.3 | 2026-08-26 | Minor (additive) | **New maturity label SPECIFIED** — normative and frozen, but not yet implemented in the reference; the vocabulary previously conflated "binding on implementers" with "implemented here" and so could not describe a rule written ahead of its own implementation. **§5.6 Install, §5.7 Update and §5.8 Uninstall added** — the standard described a pack as an artifact and said nothing about receiving one. §5.6 fixes the order of operations, requires a consumer to be able to answer which pack an engram came from, forbids adopting a producer's shared scopes without the installer's consent, and **defines the install registry** that §5.1 and §5.5 already called authoritative. §5.7 requires an orderable version and forbids silently discarding recipient-accumulated state across an update. §5.8 requires retire-rather-erase and forbids discarding a pack's source as a step of removing it. §4.4's `pack` gains a consumer-side note. §5.9 lists where the reference does not yet comply. Nothing here constrains previously-valid pack *data*; the new obligations fall on consumers, which the document did not previously address at all. |
 | 1.2 | 2026-08-26 | Minor (additive) | §5.4: the strip list gains `relations.supersedes`/`superseded_by`, and gains two MUST-neutralize rules for `pinned` and `commitment: locked` — both were performed by the reference and stated nowhere, and both change whose judgement governs the recipient's store rather than merely tidying. §5.5.1 added: the pack integrity value and the installed-content hash answer different questions and MUST NOT be conflated; the reference's current conflation is recorded as a known divergence. §9: the single `provenance.jsonld` sidecar corrected to the `provenance/` directory the profile specifies — §9 governs where the two overlap, so an implementer reading it alone was being told to build the wrong thing. No field removed, no constraint tightened on existing data, no default changed. |
 | 1.1 | 2026-08-25 | Minor (additive) | §4.8: added the OPTIONAL `attribution` and `claim_class` engram fields, marked PROPOSED. §4.12: added `injection_count` and `measured_under`; renamed `reference_count` → `write_count` (consumers MUST backfill on first parse). §3.3: canonical id form gains full ISO-8601 date separators, with the compact form retained as permanently valid legacy (§3.3.1) and the dateless pack form documented (§3.3.2). §5.1/§5.2: an OPTIONAL `provenance/` directory and a `metadata.provenance` declaration. §9: recorded that a companion profile now elaborates it. §4.12 `commitment` gains the `draft` member. No field removed, no constraint tightened, no default changed. |
