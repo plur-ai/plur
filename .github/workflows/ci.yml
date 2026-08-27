@@ -136,6 +136,19 @@ jobs:
         run: python3 -m pip install --quiet -r spec/examples/requirements.txt
       - name: Assert the outside implementations are importable — the conformance suite must run, not skip
         run: python3 -c "import rdflib, prov.model; print('rdflib and prov present — the conformance suite will run')"
+      # The conformance vectors, checked from OUTSIDE the reference (#1022).
+      #
+      # Same reasoning as the block above, one layer out: the vectors are
+      # authored in Python and verified in TypeScript, so neither implementation
+      # grades its own work. `verify.py` needs no dependencies at all, which is
+      # deliberate — a third-party producer must be able to run it anywhere.
+      #
+      # The drift check runs first. A vector edited by hand to make a test pass
+      # is the one failure mode that would quietly disable the whole suite.
+      - name: Conformance vectors — no vector was edited by hand
+        run: python3 spec/vectors/build.py --check
+      - name: Conformance vectors — verify from outside the reference
+        run: python3 spec/vectors/verify.py --index spec/vectors/index.json
       - run: pnpm test
         env:
           # Throwaway credentials for the ephemeral service container above —

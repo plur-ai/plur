@@ -21,6 +21,7 @@ producer/consumer in any language without reading the TypeScript.
 | `pack-manifest.schema.json` | Canonical **JSON Schema (Draft 2020-12)** for the pack manifest. |
 | `scope-metadata.schema.json` | Canonical **JSON Schema (Draft 2020-12)** for scope metadata. |
 | `examples/` | Worked provenance records built from a real store, plus the scripts that check them against outside implementations (`rdflib`, `prov`). |
+| `vectors/` | **Conformance vectors** — golden packs and `.plur` capsules with known expected outcomes. Authored in Python, verified in TypeScript, so neither implementation grades its own work. See `vectors/README.md`. |
 | `README.md` | This file. |
 
 ### Profiles
@@ -110,12 +111,12 @@ standard is the NGI/NLnet-fundable scope:
    `pnpm --filter @plur-ai/core gen:schemas`; CI gates the build on equality
    (`git diff --exit-code spec/`). The divergence risk is eliminated.
 
-2. **Conformance test vectors.** A language-neutral corpus of canonical inputs +
-   expected outcomes: valid/invalid engrams (one per invariant in §4.14), golden
-   packs with known `INTEGRITY` hashes, and **golden `.plur` capsules** (hex
-   fixtures) covering magic/version/flags/header/payload/sha-256 — including
-   negative cases (bad magic, reserved-flag-set, size-mismatch, sha-mismatch,
-   truncated). This is what lets an independent implementation prove conformance.
+2. ~~**Conformance test vectors.**~~ **Partly done (#1022).** `spec/vectors/`
+   now holds 11 golden packs with known `INTEGRITY` values and 10 `.plur`
+   capsules covering magic, version, flags, header, payload and SHA-256,
+   including every §6.7 negative. They are authored in Python and verified in
+   TypeScript, and CI runs both sides. **Still missing:** per-invariant engram
+   vectors (one per §4.14 invariant), which is the third leg.
 
 3. **Ed25519 signing — finalize and implement (§7 → STABLE).** Decide and fix:
    (a) the exact capsule signed message (candidate: `preamble || header ||
