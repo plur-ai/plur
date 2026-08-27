@@ -2,7 +2,7 @@
 
 ## 0.19.0 (unreleased)
 
-Codex and Antigravity join the family.
+The memory layer forgot Codex. Awkward. Fixed — agy too.
 
 - `plur init --codex` / `--antigravity`
 - Hybrid recall in hooks
