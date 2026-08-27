@@ -788,7 +788,8 @@ report, in a form the installer sees:
 - conflicts detected with content the consumer already held, where it detects any
 
 A consumer that found provenance records in the pack MUST report what it found,
-per §5.4 of [the provenance profile](./ENGRAM-PROVENANCE-PROFILE.md).
+and MUST NOT discard the `provenance/` directory, per §5.4 *receiving a pack's
+provenance* of [the provenance profile](./ENGRAM-PROVENANCE-PROFILE.md).
 
 Silence is the failure mode this guards against. A pack that installs with no
 output is indistinguishable from one that installed nothing.
@@ -1242,7 +1243,7 @@ this document's version, and vice versa.
 
 | Profile | Profiles | Version |
 |---|---|---|
-| [Recording where an engram came from](./ENGRAM-PROVENANCE-PROFILE.md) | §9 | 0.5 (draft) |
+| [Recording where an engram came from](./ENGRAM-PROVENANCE-PROFILE.md) | §9 | 0.6 (draft) |
 
 ---
 

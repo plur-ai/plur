@@ -8,7 +8,7 @@ that part should work.
 
 | | |
 |---|---|
-| **Version** | 0.5 (draft) |
+| **Version** | 0.6 (draft) |
 | **Status** | Proposed, and implemented in the reference. OPTIONAL to follow: an implementation that ignores this document is still fully conformant to the Engram Standard. An implementation that writes provenance MUST follow this document, so that two such implementations agree. |
 | **Companion to** | [The Engram Standard, version 1.3](./ENGRAM-STANDARD-v1.md) |
 | **Profiles** | Section 9 of that standard, "Provenance binding". It refines that section; it does not replace it, and the standard governs wherever the two overlap. |
@@ -19,6 +19,7 @@ that part should work.
 
 | Version | Date | What changed |
 |---|---|---|
+| 0.6 | 2026-08-27 | Section 5.4 added, "Receiving a pack's provenance". Everything before it was written from the producer's side, which is why the reference builds a record for every exported pack and its installer deletes the directory without a word — nothing told it not to. The section requires a consumer to keep the received directory as evidence rather than content, to report what it found (a tester's corrupt, missing and orphaned records all installed silently with exit code 0), and to record `pack:<name>@<version>` as the origin of anything installed. It forbids merging a received `attribution` or `claim_class` into the store unqualified — the tempting option, and the one that launders a stranger's claims — while permitting the values to be kept where the intermediary is named, exactly as section 8.4 does for an inherited licence. Also covers re-export, where forwarding and laundering are actually distinguished, and states plainly that none of this verifies anything. |
 | 0.5 | 2026-08-26 | Section 10.1 completed. History events now carry an actor, and a record prefers it over the engram's attribution when saying who caused an activity — otherwise a correction is attributed to the person it corrected, the collapse an outside reviewer warned about on the epic. Section 10.1.2 added for `provenance.chain`, the last of the four origin fields nothing read or wrote: ancestors nearest first, bounded, cycle-guarded, and explicitly a shortcut the history log outranks. |
 | 0.4 | 2026-08-26 | Section 10.1 is largely done: an identity now comes from `provenance.identity` in configuration, never from the operating system account, with a per-write override and the `unidentified` marker when nobody is set; the software that wrote an engram is recorded on every write. The marker counts as unanswered even though it is recorded, so a memory nobody is accountable for cannot report itself complete. Section 8 fails closed on the schema default too — it was closed on a licence we could not recognise and open on one nobody selected. That, rather than deleting `provenance.license`, is how engram-level copyright becomes opt-in without a major version. |
 | 0.3 | 2026-08-26 | Licence work. Section 8 now separates a copyright licence from usage terms and says which one it maps. Section 8.4's boolean became `engram:licenseSource` with four values, because a licence the author configured once was being reported like the schema value nobody chose. Pack export now REQUIRES a chosen licence — the one field where silence does not produce silence, since the schema fills in a share-alike grant nobody agreed to. Members with no licence inherit the pack's, marked as inheritance rather than choice. Section 4.5 gained the requirement that a claim class be visible at injection, not only in a record nobody asks for mid-session — reported from outside against a working implementation. |
@@ -754,6 +755,149 @@ A worked pack record built by the reference implementation is in
 `spec/examples/example-pack.jsonld`. Where this section and that file disagree,
 the file is the one that has been checked against outside tools — say so in an
 issue rather than guessing.
+
+---
+
+### 5.4 Receiving a pack's provenance
+
+Everything above section 5.3 is written from the producer's side. It says what a
+pack carries and how to build it. It says nothing about what happens when one
+arrives — and a record nobody reads is a record that might as well not have been
+written.
+
+The reference proves the point. It builds provenance for every exported pack, and
+its installer deletes the directory without a word, because nothing told it not
+to.
+
+#### 5.4.1 The directory is evidence, not content
+
+A consumer MUST NOT discard a pack's `provenance/` directory as part of
+installing it.
+
+Keep it with the artifact, as received, unmodified. It is the only copy of what
+the producer said about their own engrams, and it is the thing a later
+re-verification reads.
+
+Do **not** merge received records into the store where the consumer keeps records
+of its own. Those two collections answer different questions — *what we recorded*
+and *what somebody sent us* — and a store that cannot tell them apart cannot
+answer either honestly.
+
+#### 5.4.2 A consumer MUST report what it found
+
+Install is the only moment a recipient looks at a pack with any attention. A
+consumer MUST report:
+
+- how many records were present, against how many engrams the pack ships
+- how many were unreadable
+- how many describe an engram the pack does not contain
+- how many engrams have no record at all
+
+None of these MUST fail the install. All of them MUST be said out loud.
+
+The failure this guards against was observed rather than imagined: a tester
+replaced one record with invalid JSON, deleted two others, and added a record for
+an engram that was not in the pack. All three installed with exit code 0 and no
+output at all.
+
+A record describing an engram not in the pack deserves particular care. It is the
+signature of a pack assembled from a larger set, and it means the record was
+written about something the recipient is not receiving.
+
+#### 5.4.3 What an installed engram carries
+
+Three things a consumer could do with the `attribution` and `claim_class` in a
+received record. Only two are permitted.
+
+**Record where it came from — MUST.** An engram installed from a pack MUST carry
+an origin identifying the pack and its version:
+
+```
+provenance.origin = pack:<name>@<version>
+```
+
+Without it, a memory that arrived in an archive from a stranger is
+indistinguishable from one the recipient recorded themselves, which is the
+distinction the whole document exists to preserve.
+
+**Keep the received record — SHOULD.** Retain it, and make it available when
+somebody asks where an engram came from. It is somebody else's document, and a
+consumer MUST NOT present it as its own.
+
+**Do not merge the claims — MUST NOT.** A consumer MUST NOT copy `attribution` or
+`claim_class` out of a received record onto the installed engram in a way that
+makes them indistinguishable from locally-recorded values.
+
+That is the one that needs stating, because it is the tempting option. The fields
+are exactly the right shape; the store has somewhere to put them; copying them
+across looks like preserving information. What it actually does is launder a
+stranger's claims into the recipient's own store, where the next reader has no
+way to tell that the assertion arrived in a pack rather than being something the
+recipient established.
+
+**Where an implementation does place the shipped values on the engram** — because
+they are genuinely useful and discarding them loses real information — it MUST
+also record that they were received rather than asserted. The mechanism already
+exists: `engram:memberOf` names the pack an engram travelled inside (section
+5.3.4), and the same idea applies here. Name the intermediary; do not erase the
+claim, and do not present it unqualified.
+
+This is the same rule as section 8.4's `engram:licenseSource: inheritedFromPack`,
+one field over. A licence granted by whoever assembled a pack is not a licence
+the engram's author chose, and an attribution shipped inside a pack is not an
+attribution the recipient recorded. Both stay usable by being labelled.
+
+#### 5.4.4 Installing is itself something that happened
+
+An install MAY be recorded as an activity:
+
+```json
+{ "@id": "engram:act/install-<pack>@<version>",
+  "@type": ["prov:Activity", "engram:InstallPack"],
+  "prov:used": { "@id": "engram:pack/<name>@<version>" },
+  "prov:startedAtTime": { "@value": "…", "@type": "xsd:dateTime" } }
+```
+
+MAY rather than MUST. The install is already recorded in the install registry
+(§5.6.4 of the standard), and a second record of the same fact earns its place
+only where a consumer's own provenance is being consumed by somebody else in
+turn — an enterprise store receiving a pack and then exporting a pack of its own,
+for instance.
+
+Where it is recorded, it MUST be attributed to the party that performed the
+install, not to the pack's producer. They are different actors and section 10.1
+is explicit that collapsing them answers neither question.
+
+#### 5.4.5 Re-export
+
+An engram that arrived in a pack, and later leaves in another pack, MUST NOT be
+presented as originating with the second pack's assembler.
+
+A consumer re-exporting such an engram:
+
+- **MUST** preserve the chain far enough that the original pack is still
+  identifiable
+- **MUST NOT** copy the received record forward unchanged, since the record
+  describes a different pack and carries that pack's integrity value
+- **SHOULD** build a fresh record naming the original pack as an ancestor
+
+This is where the difference between forwarding and laundering is decided, and it
+is the case where getting it wrong is least visible: the second pack looks
+perfectly well-formed, and every trace of the first has quietly gone.
+
+#### 5.4.6 What this does not establish
+
+Nothing in this section verifies anything.
+
+A received record is a claim by whoever assembled the pack. Packs are not signed
+(section 7 of the standard is RESERVED), so a forged attribution is
+indistinguishable from a true one, and a consumer MUST NOT present a received
+record as verified or as evidence of anything beyond what the pack asserts about
+itself.
+
+Reading these records is therefore an improvement over ignoring them by one
+degree and no more: the recipient learns what the pack **says**. That is worth
+having, and it is not the same as knowing it is true.
 
 ---
 
@@ -1680,6 +1824,7 @@ problem — the standard is happy either way.
 | 4.4 | agents | proposed, waiting on 10.1 |
 | 4.5 | kinds of claim | proposed |
 | 5.3 | a pack's own record | proposed, implemented in the reference |
+| 5.4 | receiving a pack's provenance | proposed; the reference discards the directory on install (plur-ai/plur#989 *installing a pack ignores the provenance it ships*) |
 | 6.2 | invalidation | proposed |
 | 6.4 | ways to suppress a record | background |
 | 8 | licences | proposed |
