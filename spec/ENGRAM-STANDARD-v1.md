@@ -662,8 +662,8 @@ installed — and does not license overwriting the first.
 > records the hash of the rewritten file as the registry's `integrity`. So for any
 > pack containing a pinned or locked engram, the recorded value is the
 > installed-content hash carrying the pack-integrity name, and the shipped value is
-> compared at the gate and then discarded. Tracked in #1019; the fix is to record
-> both.
+> compared at the gate and then discarded. Tracked in plur-ai/plur#1019 *resolve the seven pack contradictions*; the fix
+> is to record both.
 
 ---
 
@@ -905,11 +905,11 @@ implementer to discover by disagreeing with us:
 
 | Rule | Reference today | Tracked |
 |---|---|---|
-| §5.6.2 membership | The registry records pack names, not engram ids, and `pack` (§4.4) is never written. There is no way to enumerate an installed pack's engrams, so §5.8 is not implementable. | plur-ai/plur#1025, #1023 |
-| §5.6.3 scope | No scope resolution on import at all. Engrams keep the producer's scopes, including `global`; the installer is warned and not asked. | plur-ai/plur#1024 |
-| §5.6.4 registry | `integrity_shipped` is not retained — the post-neutralization hash is recorded under that name (§5.5.1). `source` is present but removed *before* the pack directory during uninstall. | plur-ai/plur#1027 |
-| §5.7 update | No update path exists for a user-installed pack. Versions are never compared at install, so upgrade, reinstall and downgrade are indistinguishable. | plur-ai/plur#1026 |
-| §5.8.1 retire | Uninstall deletes the pack directory. Nothing is retired, no reason is recorded, and no history event is written. | plur-ai/plur#1027 |
+| §5.6.2 (pack membership) | The registry records pack names, not engram ids, and `pack` (§4.4) is never written. There is no way to enumerate an installed pack's engrams, so §5.8 (uninstall) is not implementable. | plur-ai/plur#1025 *write `engram.pack` on import*; plur-ai/plur#1023 *project pack engrams into the primary store* |
+| §5.6.3 (scope on import) | No scope resolution on import at all. Engrams keep the producer's scopes, including `global`; the installer is warned and not asked. | plur-ai/plur#1024 *name a target scope at import* |
+| §5.6.4 (the install registry) | `integrity_shipped` is not retained — the post-neutralization hash is recorded under that name (§5.5.1, two hashes). `source` is present but removed *before* the pack directory during uninstall. | plur-ai/plur#1027 *uninstall: retire with tombstones, keep the source* |
+| §5.7 (update) | No update path exists for a user-installed pack. Versions are never compared at install, so upgrade, reinstall and downgrade are indistinguishable. | plur-ai/plur#1026 *pack update: compare versions, migrate state* |
+| §5.8.1 (retire, do not erase) | Uninstall deletes the pack directory. Nothing is retired, no reason is recorded, and no history event is written. | plur-ai/plur#1027 *uninstall: retire with tombstones, keep the source* |
 
 This table is a conformance statement, not an apology. A standard whose reference
 silently diverges teaches implementers the divergence; one that names its gaps
