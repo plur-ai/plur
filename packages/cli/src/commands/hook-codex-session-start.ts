@@ -1,6 +1,6 @@
 import { createPlur, type GlobalFlags } from '../plur.js'
 import { isPlurConfigured } from '../lib/plur-configured.js'
-import { readStdinJson, runCodexHook, codexSessionId, markSessionStarted, emitContext } from '../lib/codex-hook-io.js'
+import { readStdinJson, runCodexHook, codexSessionId, markSessionStarted, emitContext, injectWithFallback } from '../lib/codex-hook-io.js'
 import { readProjectConfig } from '@plur-ai/core'
 
 /**
@@ -46,12 +46,12 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
       const projectConfig = readProjectConfig()
       const injectOpts = { budget: 3000, ...(projectConfig.scope ? { scope: projectConfig.scope } : {}) }
 
-      const result = await plur.inject('general session start', injectOpts)
+      const { result, mode } = await injectWithFallback(plur, 'general session start', injectOpts)
       const body = result.count > 0
         ? [result.directives, result.constraints, result.consider].filter(Boolean).join('\n')
         : ''
 
-      const header = `[PLUR Memory — session started, ${result.count} engrams injected]` +
+      const header = `[PLUR Memory — session started, ${result.count} engrams injected via ${mode}]` +
         (projectConfig.scope ? `\nProject scope: ${projectConfig.scope} — use this scope for plur_learn calls` : '')
 
       context = body ? `${header}\n\n${body}` : header

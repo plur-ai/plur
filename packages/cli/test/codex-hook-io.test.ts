@@ -14,6 +14,8 @@ import {
   sessionDir,
   emitContext,
   runCodexHook,
+  injectWithFallback,
+  hybridEnabled,
 } from '../src/lib/codex-hook-io.js'
 
 const SID = 'codex-io-test-session'
@@ -202,5 +204,86 @@ describe('runCodexHook', () => {
       hookSpecificOutput: { additionalContext: 'partial but useful' },
     })
     out.mockRestore()
+  })
+})
+
+/**
+ * Hybrid-first injection with a bounded BM25 fallback. The point is that a
+ * turn NEVER loses its memory: a slow or broken hybrid leg degrades to BM25
+ * rather than to a hook Codex kills at its timeout (which injects nothing).
+ */
+describe('injectWithFallback', () => {
+  const R = (count: number, tag: string) =>
+    ({ directives: tag, constraints: '', consider: '', count })
+
+  beforeEach(() => { process.env.PLUR_CODEX_HYBRID = '1' })
+  afterEach(() => { delete process.env.PLUR_CODEX_HYBRID })
+
+  it('uses hybrid when it beats the deadline', async () => {
+    const plur = {
+      injectHybrid: async () => R(5, 'hybrid'),
+      inject: async () => R(3, 'bm25'),
+    }
+    const out = await injectWithFallback(plur, 'q', {}, 1000)
+    expect(out.mode).toBe('hybrid')
+    expect(out.result.count).toBe(5)
+  })
+
+  it('falls back to BM25 when hybrid misses the deadline', async () => {
+    const err = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    const plur = {
+      injectHybrid: () => new Promise<never>(() => { /* never settles */ }),
+      inject: async () => R(3, 'bm25'),
+    }
+    const out = await injectWithFallback(plur, 'q', {}, 20)
+    expect(out.mode).toBe('bm25')
+    expect(out.result.count).toBe(3)
+    expect(String(err.mock.calls.at(-1)?.[0])).toContain('falling back to BM25')
+    err.mockRestore()
+  })
+
+  it('falls back to BM25 when hybrid throws — a dead embedder must not cost the turn', async () => {
+    const err = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    const plur = {
+      injectHybrid: async () => { throw new Error('embedder unavailable') },
+      inject: async () => R(3, 'bm25'),
+    }
+    const out = await injectWithFallback(plur, 'q', {}, 1000)
+    expect(out.mode).toBe('bm25')
+    expect(String(err.mock.calls.at(-1)?.[0])).toContain('embedder unavailable')
+    err.mockRestore()
+  })
+
+  it('does not leave the deadline timer holding the event loop open', async () => {
+    // The timer is unref()ed and cleared; a leaked one would delay every hook
+    // exit by the full deadline.
+    const plur = { injectHybrid: async () => R(1, 'h'), inject: async () => R(1, 'b') }
+    const t0 = Date.now()
+    await injectWithFallback(plur, 'q', {}, 30_000)
+    expect(Date.now() - t0).toBeLessThan(1_000)
+  })
+})
+
+describe('hybridEnabled (#1040 kill switch)', () => {
+  it('is off unless explicitly opted in', () => {
+    expect(hybridEnabled({})).toBe(false)
+    expect(hybridEnabled({ PLUR_CODEX_HYBRID: '0' })).toBe(false)
+    expect(hybridEnabled({ PLUR_CODEX_HYBRID: 'true' })).toBe(false)
+    expect(hybridEnabled({ PLUR_CODEX_HYBRID: '1' })).toBe(true)
+  })
+
+  it('injectWithFallback never touches injectHybrid while the switch is off', async () => {
+    // The crash is caused by LOADING the embedder, not by using its result —
+    // so "call it and fall back" is not a safe posture. It must not be called.
+    delete process.env.PLUR_CODEX_HYBRID
+    let hybridCalled = false
+    const plur = {
+      injectHybrid: async () => { hybridCalled = true; return { count: 9 } },
+      inject: async () => ({ count: 3 }),
+    }
+    const out = await injectWithFallback(plur, 'q', {}, 5000)
+    expect(hybridCalled).toBe(false)
+    expect(out.mode).toBe('bm25')
+    expect(out.result.count).toBe(3)
   })
 })

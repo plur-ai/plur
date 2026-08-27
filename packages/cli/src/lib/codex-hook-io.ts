@@ -215,3 +215,102 @@ export async function runCodexHook(
   }
   process.exit(0)
 }
+
+const DEADLINE_MISSED = Symbol('plur.hybrid.deadline')
+
+/**
+ * Is hybrid injection allowed on this machine? Default NO — see #1040.
+ *
+ * Loading the ONNX embedder makes the process die with SIGABRT (exit 134) in
+ * native teardown, AFTER the JS work has finished and `process.exit(0)` has
+ * been called. Nothing in JS can trap it. Codex reads the exit code as the
+ * hook's verdict and DISCARDS the output of a non-zero hook, so hybrid on
+ * Codex produces a correct payload that is then thrown away — strictly worse
+ * than BM25, which exits 0 and gets delivered.
+ *
+ * The quality case for hybrid is real and measured (2026-08-27, 5,775-engram
+ * store): ~4.7s vs ~1.6s, and it diverges from BM25 on ~10% of the injected
+ * set for keyword-rich prompts, ~22% for vague ones — precisely the prompts
+ * where the user is leaning on memory rather than supplying keywords. So the
+ * implementation stays, switched off, rather than being deleted and rebuilt.
+ *
+ * Flip the default here once #1040 is fixed; the opt-in also lets anyone whose
+ * environment does not reproduce the crash turn it on today.
+ */
+export function hybridEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.PLUR_CODEX_HYBRID === '1'
+}
+
+/** Soft deadline for the hybrid leg before falling back to BM25. Override for tests/slow machines. */
+export const HYBRID_DEADLINE_MS =
+  parseInt(process.env.PLUR_CODEX_HYBRID_DEADLINE_MS ?? '', 10) || 8_000
+
+export interface InjectOutcome<R> {
+  result: R
+  mode: 'hybrid' | 'bm25'
+}
+
+/** The two inject entry points this helper races, structurally typed so `Plur` satisfies it. */
+export interface Injectable<O, R> {
+  inject: (task: string, opts: O) => Promise<R>
+  injectHybrid: (task: string, opts: O) => Promise<R>
+}
+
+/**
+ * Inject with hybrid search, falling back to BM25 if hybrid misses a soft deadline.
+ *
+ * Why hybrid at all, when the Cursor and Claude Code event hooks are
+ * deliberately BM25-only: their comments justify that with "the BGE embedder
+ * costs ~20s to load in a cold CLI process". Measured on 2026-08-27 against a
+ * 5,775-engram store, fresh node process per run, that is now ~4.7s for the
+ * whole hybrid inject versus ~1.6s for BM25 — a ~3s marginal cost, not 20s.
+ * The 20s figure predates several rounds of work on the load path and should
+ * not be inherited without re-measuring.
+ *
+ * Why it is worth 3s: on keyword-ish prompts hybrid and BM25 agree on ~90% of
+ * the injected set, but on vague, low-keyword prompts ("this keeps breaking in
+ * the same way", "what did we agree on") agreement drops to ~78% — exactly the
+ * prompts where a user is relying on memory rather than telling you the
+ * keywords. The divergence roughly doubles where recall matters most.
+ *
+ * Why a deadline rather than just calling injectHybrid: 4.7s is this machine
+ * and this store. A slower machine, a larger corpus, or a cold model download
+ * turns that into a hook Codex kills at its timeout — and a killed hook
+ * injects NOTHING, which is strictly worse than BM25 results. The race bounds
+ * the worst case at deadline + BM25 (~10s here) while keeping the typical case
+ * at hybrid speed. The abandoned hybrid promise is harmless: `runCodexHook`
+ * force-exits the process immediately afterwards.
+ */
+export async function injectWithFallback<O, R>(
+  plur: Injectable<O, R>,
+  task: string,
+  opts: O,
+  deadlineMs: number = HYBRID_DEADLINE_MS,
+): Promise<InjectOutcome<R>> {
+  if (!hybridEnabled()) return { result: await plur.inject(task, opts), mode: 'bm25' }
+
+  let timer: NodeJS.Timeout | undefined
+  try {
+    const deadline = new Promise<typeof DEADLINE_MISSED>((resolve) => {
+      timer = setTimeout(() => resolve(DEADLINE_MISSED), deadlineMs)
+      timer.unref?.()
+    })
+    // A sentinel, not null: R is unconstrained, so a legitimate hybrid result
+    // could itself be falsy and would otherwise read as a deadline miss.
+    const raced = await Promise.race([plur.injectHybrid(task, opts), deadline])
+    if (raced !== DEADLINE_MISSED) return { result: raced, mode: 'hybrid' }
+    process.stderr.write(
+      `[plur] hybrid injection exceeded ${deadlineMs}ms — falling back to BM25 for this turn. ` +
+      'Raise PLUR_CODEX_HYBRID_DEADLINE_MS if this is routine on your machine.\n',
+    )
+  } catch (err: unknown) {
+    // A hybrid-specific failure (embedder unavailable, index mid-rebuild) must
+    // not cost the turn its memory — BM25 needs neither.
+    process.stderr.write(
+      `[plur] hybrid injection failed (${(err as Error)?.message ?? 'unknown'}) — using BM25.\n`,
+    )
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
+  return { result: await plur.inject(task, opts), mode: 'bm25' }
+}

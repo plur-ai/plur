@@ -1,6 +1,6 @@
 import { createPlur, type GlobalFlags } from '../plur.js'
 import { isPlurConfigured } from '../lib/plur-configured.js'
-import { readStdinJson, runCodexHook, codexSessionId, markSessionStarted, emitContext } from '../lib/codex-hook-io.js'
+import { readStdinJson, runCodexHook, codexSessionId, markSessionStarted, emitContext, injectWithFallback } from '../lib/codex-hook-io.js'
 import { readProjectConfig } from '@plur-ai/core'
 
 /**
@@ -10,8 +10,9 @@ import { readProjectConfig } from '@plur-ai/core'
  * them as `additionalContext`, which Codex appends to the turn. Verified
  * reaching the model on codex-cli 0.149.1.
  *
- * Synchronous and BM25-only — see `codex-hooks.ts` for why async is the
- * wrong trade here even though Codex now supports it.
+ * Synchronous, hybrid-first with a BM25 fallback on a soft deadline — see
+ * `injectWithFallback`. Async is the wrong trade here even though Codex
+ * supports it: its context lands on the NEXT turn, not this one.
  *
  * Also marks the session sentinel. In `codex exec` (a one-shot, no TUI)
  * SessionStart and UserPromptSubmit both fire, but a resumed or forked
@@ -41,7 +42,7 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
       const projectConfig = readProjectConfig()
       const injectOpts = { budget: 2000, ...(projectConfig.scope ? { scope: projectConfig.scope } : {}) }
 
-      const result = await plur.inject(prompt, injectOpts)
+      const { result, mode } = await injectWithFallback(plur, prompt, injectOpts)
       if (result.count === 0) return
 
       const body = [result.directives, result.constraints, result.consider].filter(Boolean).join('\n')
@@ -49,7 +50,7 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
 
       emitContext(
         'UserPromptSubmit',
-        `[PLUR Memory — ${result.count} engrams recalled for this prompt]\n\n${body}`,
+        `[PLUR Memory — ${result.count} engrams recalled for this prompt via ${mode}]\n\n${body}`,
       )
     } catch (err: unknown) {
       // Diagnostics go to stderr: Codex parses stdout as the hook result, and

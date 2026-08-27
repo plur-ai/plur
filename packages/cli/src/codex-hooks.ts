@@ -60,7 +60,7 @@ export function buildCodexHooks(cmd: string): Record<string, CodexHookEntry[]> {
         hooks: [{
           type: 'command',
           command: `${cmd} hook-codex-session-start`,
-          timeout: 15,
+          timeout: 25,
           statusMessage: 'PLUR: loading memory',
         }],
       },
@@ -73,7 +73,7 @@ export function buildCodexHooks(cmd: string): Record<string, CodexHookEntry[]> {
         hooks: [{
           type: 'command',
           command: `${cmd} hook-codex-inject`,
-          timeout: 15,
+          timeout: 25,
           statusMessage: 'PLUR: recalling',
         }],
       },
