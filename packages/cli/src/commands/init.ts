@@ -18,6 +18,9 @@ import {
   cursorRulesPath,
   codexHome,
   codexHooksConfigPath,
+  agyConfigDir,
+  agyHooksConfigPath,
+  agyMcpConfigPath,
 } from '../mcp-config.js'
 import {
   buildCursorHooks,
@@ -33,6 +36,14 @@ import {
   mergeCodexHooks,
   hasPlurCodexHooks,
 } from '../codex-hooks.js'
+import {
+  buildAgyHookSet,
+  readAgyHooksConfig,
+  writeAgyHooksConfig,
+  mergeAgyHooks,
+  hasPlurAgyHooks,
+  AGY_HOOK_SET_NAME,
+} from '../antigravity-hooks.js'
 
 /**
  * plur init — install Claude Code hooks AND register the plur MCP server.
@@ -791,6 +802,76 @@ function installAgentsMd(cwd: string = process.cwd()): string {
   return `created ${target}`
 }
 
+// ── Antigravity CLI (agy) ───────────────────────────────────────────────────
+
+function shouldSetupAntigravity(args: string[]): boolean {
+  if (args.includes('--no-antigravity')) return false
+  if (args.includes('--antigravity') || args.includes('--agy')) return true
+  // Detect the CLI's own state dir, not just ~/.gemini — the old Gemini CLI
+  // also created ~/.gemini, and installing agy hooks for a user who only ever
+  // ran the sunsetted gemini binary would configure a harness they don't have.
+  return existsSync(join(homedir(), '.gemini', 'antigravity-cli'))
+}
+
+/**
+ * Wire PLUR into Antigravity CLI: hooks + MCP server + rules, all in the
+ * GLOBAL config dir (~/.gemini/config/). Global deliberately — workspace
+ * `.agents/hooks.json` discovery did not load in `--print` mode during live
+ * probing, while the global file loaded immediately, and global matches how
+ * PLUR installs everywhere else (one store, every project).
+ *
+ * No trust step, unlike Codex: agy runs configured hooks on first invocation
+ * (verified live on 1.1.21), so the install report can honestly end at
+ * "restart agy".
+ */
+function installAntigravity(cmd: string): string {
+  const hooksPath = agyHooksConfigPath()
+
+  // Same malformed-file refusal as the Cursor and Codex paths: reading treats
+  // unparseable JSON as empty, but WRITING that back would destroy a user's
+  // hand-edited-but-broken hooks.json along with every non-plur hook set in it.
+  let hooksStatus: string
+  const exists = existsSync(hooksPath)
+  let parses = true
+  if (exists) {
+    try { JSON.parse(readFileSync(hooksPath, 'utf8')) } catch { parses = false }
+  }
+  if (exists && !parses) {
+    hooksStatus = `skipped — ${hooksPath} exists but is not valid JSON; fix it by hand, then re-run \`plur init --antigravity\``
+  } else {
+    const existing = readAgyHooksConfig(hooksPath)
+    const had = hasPlurAgyHooks(existing)
+    writeAgyHooksConfig(hooksPath, mergeAgyHooks(existing, buildAgyHookSet(cmd)))
+    hooksStatus = had ? 'upgraded' : `installed (hook set "${AGY_HOOK_SET_NAME}")`
+  }
+
+  // MCP: agy's mcp_config.json uses the same { mcpServers: {...} } shape as
+  // Claude Desktop, so the shared helpers apply unchanged. agy's docs say env
+  // vars must be declared explicitly in the entry — buildMcpServerEntry's
+  // shim needs none, so the default entry is sufficient.
+  const mcpPath = agyMcpConfigPath()
+  const mcpConfig = readConfig(mcpPath)
+  let mcpStatus: string
+  if (hasPlurMcp(mcpConfig)) {
+    mcpStatus = 'already registered'
+  } else {
+    mergePlurMcp(mcpConfig)
+    writeConfig(mcpPath, mcpConfig)
+    mcpStatus = 'registered'
+  }
+
+  // Rules: agy loads AGENTS.md via directory walk-up, same file the Codex
+  // path maintains — reuse it so both harnesses share one instruction block.
+  const agentsStatus = installAgentsMd()
+
+  return [
+    `Antigravity: hooks ${hooksStatus} (${hooksPath})`,
+    `  MCP server: ${mcpStatus} (${mcpPath})`,
+    `  AGENTS.md:  ${agentsStatus}`,
+    '  No trust step needed — agy runs configured hooks on first invocation. Restart agy to pick this up.',
+  ].join('\n')
+}
+
 function writeSettings(path: string, settings: Settings): void {
   mkdirSync(join(path, '..'), { recursive: true })
   writeFileSync(path, JSON.stringify(settings, null, 2) + '\n')
@@ -958,6 +1039,10 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   // Register in Claude Desktop too
   const desktopStatus = installDesktopMcp(args)
 
+  const agyStatus = shouldSetupAntigravity(args)
+    ? installAntigravity(cmd)
+    : 'skipped (no ~/.gemini/antigravity-cli found — pass --antigravity to force, --no-antigravity to silence this)'
+
   const codexStatus = shouldSetupCodex(args)
     ? installCodex(cmd)
     : 'skipped (no ~/.codex found — pass --codex to force, --no-codex to silence this)'
@@ -1001,6 +1086,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   if (!samePath) outputInfo(`Injection file:   ${injectionPath}`, flags)
   outputInfo(`Claude Desktop:   ${desktopStatus}`, flags)
   outputInfo(codexStatus, flags)
+  outputInfo(agyStatus, flags)
   outputInfo(cursorStatus, flags)
   if (shouldSetupCursor(args)) {
     // Audit fix (user evaluator): the 11-tools-instead-of-39 tradeoff and

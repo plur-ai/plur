@@ -123,7 +123,19 @@ export function incrementCounter(path: string): number {
     n = parseInt(readFileSync(path, 'utf8').trim(), 10) || 0
   } catch { /* first increment */ }
   n += 1
-  try { writeFileSync(path, String(n)) } catch { /* best effort */ }
+  try {
+    writeFileSync(path, String(n))
+  } catch {
+    // Adversarial-audit finding (2026-08-27): this used to swallow the write
+    // failure and return 1 anyway. With an unwritable session dir that made
+    // every guard call read 0 and return 1 — never exceeding
+    // MAX_BLOCKS_BEFORE_FALLBACK — so the deadlock protection NEVER fired and
+    // the guard denied every tool call for the rest of the session. A counter
+    // that cannot be persisted cannot bound anything; report it as already
+    // exceeded so callers fail OPEN (the documented posture for these hooks)
+    // instead of failing closed forever.
+    return Number.MAX_SAFE_INTEGER
+  }
   return n
 }
 

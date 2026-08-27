@@ -131,11 +131,24 @@ model choosing to call the tools, which degrades badly under context pressure.
 | Cursor | ✅ | ✅ hooks + rules |
 | OpenClaw | ✅ | ✅ ContextEngine plugin |
 | Hermes | ✅ | ✅ plugin |
-| Windsurf, Gemini CLI, Antigravity, other MCP clients | ✅ | ❌ tools only — [#1033](https://github.com/plur-ai/plur/issues/1033) |
+| Antigravity CLI (`agy`) | ✅ | ✅ hooks + `AGENTS.md` |
+| Windsurf, Gemini CLI, other MCP clients | ✅ | ❌ tools only |
 
 If your harness is in the last row, paste the PLUR section from `CLAUDE.md` into
 its own context file (`AGENTS.md`, `GEMINI.md`, …) as an interim measure — that
 restores the instruction layer, though not automatic injection.
+
+### Antigravity CLI (agy)
+
+```bash
+npx @plur-ai/cli init --antigravity
+```
+
+Writes hooks and the MCP server into agy's global config (`~/.gemini/config/`) and adds a PLUR section to `AGENTS.md`. Auto-detected when `~/.gemini/antigravity-cli/` exists. No trust step — agy runs configured hooks on first invocation; just restart agy.
+
+Antigravity has no session-start event and no per-prompt hook, so PLUR drives everything from `PreInvocation`: per-prompt recall is read from the conversation transcript, and the turn's memory is re-injected as an ephemeral message on every model invocation so it survives tool calls without accumulating in history.
+
+Gemini CLI users: Google is transitioning Gemini CLI to Antigravity — install `agy` and run the command above. Gemini CLI itself remains tools-only.
 
 ### OpenClaw
 

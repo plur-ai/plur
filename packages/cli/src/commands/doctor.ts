@@ -17,6 +17,7 @@ import {
 } from '../mcp-config.js'
 import { hasPlurCursorHooks, readCursorHooksConfig } from '../cursor-hooks.js'
 import { hasPlurCodexHooks, readCodexHooksConfig } from '../codex-hooks.js'
+import { hasPlurAgyHooks, readAgyHooksConfig } from '../antigravity-hooks.js'
 import { codexHome } from '../mcp-config.js'
 import { computeContentHash, detectPlurStorage, loadEngrams } from '@plur-ai/core'
 
@@ -107,6 +108,13 @@ interface DoctorReport {
    */
   codexDetected: boolean
   codexWired: boolean
+  /**
+   * Antigravity CLI (agy). Same machine-level detection rationale as Codex —
+   * reported as its own line, deliberately NOT folded into `overall`. Unlike
+   * Codex there is no trust caveat: agy runs configured hooks immediately.
+   */
+  agyDetected: boolean
+  agyWired: boolean
   /**
    * PGLite backend running the opt-in embedding-gemma embedder (#581). #483
    * corrected embedding-gemma's role prefixes and bumped the JSON embedding
@@ -280,6 +288,19 @@ function inspectConfigs(): ConfigFileReport[] {
         hasPlurMcp: false,
         hasDatacoreMcp: false,
         hasPlurHooks: hasPlurCursorHooks(hooksConfig),
+      }
+    }
+    if (cf.kind === 'agy-hooks') {
+      // agy's hooks.json is a map of NAMED hook sets — neither Claude Code's
+      // nested shape nor Cursor's flat one. PLUR-present = our named key exists.
+      const hooksConfig = readAgyHooksConfig(cf.path)
+      return {
+        label: cf.label,
+        path: cf.path,
+        exists: true,
+        hasPlurMcp: false,
+        hasDatacoreMcp: false,
+        hasPlurHooks: hasPlurAgyHooks(hooksConfig),
       }
     }
     if (cf.kind === 'codex-hooks') {
@@ -689,6 +710,15 @@ function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<Doctor
     codexTomlReport?.exists && codexTomlReport.hasPlurMcp,
   )
 
+  // Antigravity health, from agy's OWN two files only.
+  const agyDetected = existsSync(join(homedir(), '.gemini', 'antigravity-cli'))
+  const agyHooksReport = configs.find((c) => c.label === 'Antigravity (~/.gemini/config/hooks.json)')
+  const agyMcpReport = configs.find((c) => c.label === 'Antigravity (~/.gemini/config/mcp_config.json)')
+  const agyWired = Boolean(
+    agyHooksReport?.exists && agyHooksReport.hasPlurHooks &&
+    agyMcpReport?.exists && agyMcpReport.hasPlurMcp,
+  )
+
   const handshakePromise = skipHandshake
     ? Promise.resolve({ ok: false, error: 'skipped (--no-handshake)' })
     : mcpHandshake()
@@ -742,7 +772,7 @@ function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<Doctor
     return {
       configs, hooksInstalled, mcpRegistered, datacoreCollision, staleNpxHooks, staleNpxMcp,
       hookShim, mcpShim, handshake, cursorHandshake, embedder,
-      cursorProjectDetected, cursorWired, codexDetected, codexWired,
+      cursorProjectDetected, cursorWired, codexDetected, codexWired, agyDetected, agyWired,
       pgliteGemmaReembedNeeded, staleContentHashes, overall,
     }
   })
@@ -760,7 +790,7 @@ function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<Doctor
 export function printText(report: DoctorReport, flags?: GlobalFlags): void {
   const tick = (b: boolean) => (b ? '✓' : '✗')
 
-  outputInfo('plur doctor — Claude Code / Claude Desktop / Cursor / Codex diagnostic', flags)
+  outputInfo('plur doctor — Claude Code / Claude Desktop / Cursor / Codex / Antigravity diagnostic', flags)
   outputInfo('', flags)
   outputText('Config files:')
   for (const c of report.configs) {
@@ -786,6 +816,15 @@ export function printText(report: DoctorReport, flags?: GlobalFlags): void {
       outputText('  A Claude Code config being healthy elsewhere does NOT cover Cursor —')
       outputText('  this project has a .cursor/ directory but its own config is incomplete.')
       outputText('  Fix: run `plur init --cursor` from this project.')
+    }
+  }
+
+  if (report.agyDetected) {
+    outputText(`${tick(report.agyWired)} Antigravity: ~/.gemini/config hooks.json + mcp_config.json wired to plur`)
+    if (!report.agyWired) {
+      outputText('  Antigravity CLI (agy) is installed but PLUR is not wired into it — it')
+      outputText('  would get no injection, enforcement, or learn nudges. If you use agy,')
+      outputText('  run `plur init --antigravity`. (Advisory: does not fail the check above.)')
     }
   }
 

@@ -80,6 +80,8 @@ Commands:
   hook-codex-guard       (internal) Codex PreToolUse hook handler
   hook-codex-post-tool   (internal) Codex PostToolUse hook handler
   hook-codex-session-end (internal) Codex SessionEnd hook handler
+  hook-agy-pre-invocation (internal) Antigravity PreInvocation hook handler
+  hook-agy-guard         (internal) Antigravity PreToolUse hook handler
 
 Global flags:
   --json       Force JSON output (auto-detected when piped)
@@ -161,6 +163,8 @@ const COMMANDS: Record<string, string> = {
   'hook-codex-guard': './commands/hook-codex-guard.js',
   'hook-codex-post-tool': './commands/hook-codex-post-tool.js',
   'hook-codex-session-end': './commands/hook-codex-session-end.js',
+  'hook-agy-pre-invocation': './commands/hook-agy-pre-invocation.js',
+  'hook-agy-guard': './commands/hook-agy-guard.js',
   // Hidden internal subcommand — spawned by `plur doctor` to isolate the
   // ONNX embedder probe (issue #197). If the probe crashes with SIGABRT
   // on libc++ thread pool cleanup, only the subprocess dies; doctor stays alive.

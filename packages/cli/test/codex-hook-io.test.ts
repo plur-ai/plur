@@ -287,3 +287,13 @@ describe('hybridEnabled (#1040 escape hatch)', () => {
     expect(out.result.count).toBe(3)
   })
 })
+
+describe('incrementCounter with an unwritable path', () => {
+  // Adversarial-audit repro: an unwritable counter used to return 1 forever,
+  // so the guard's give-up threshold was never crossed and every tool call
+  // was denied for the rest of the session. Unpersistable = already exceeded.
+  it('reports the counter as exceeded so the guard fails open, not closed', () => {
+    const unwritable = join(sessionDir(), 'no-such-dir', 'nested', 'counter')
+    expect(incrementCounter(unwritable)).toBe(Number.MAX_SAFE_INTEGER)
+  })
+})

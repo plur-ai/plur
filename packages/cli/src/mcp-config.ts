@@ -31,8 +31,10 @@ export interface ConfigFile {
    *   by its own parser so a future divergence doesn't silently misreport.
    * 'codex-toml': Codex's config.toml — NOT JSON. Read-only here; doctor
    *   only greps it for an `[mcp_servers.plur]` table.
+   * 'agy-hooks': Antigravity's hooks.json — a map of NAMED hook sets; PLUR
+   *   owns the 'plur-memory' key and nothing else.
    */
-  kind: 'claude-code' | 'claude-desktop' | 'cursor-hooks' | 'codex-hooks' | 'codex-toml'
+  kind: 'claude-code' | 'claude-desktop' | 'cursor-hooks' | 'codex-hooks' | 'codex-toml' | 'agy-hooks'
 }
 
 /**
@@ -140,6 +142,29 @@ export function codexConfigTomlPath(env: NodeJS.ProcessEnv = process.env): strin
   return join(codexHome(env), 'config.toml')
 }
 
+/**
+ * Antigravity CLI's global config directory. Everything agy loads globally
+ * lives here: hooks.json, mcp_config.json, skills. (The CLI itself keeps
+ * runtime state in ~/.gemini/antigravity-cli/, which we never write.)
+ */
+export function agyConfigDir(): string {
+  return join(homedir(), '.gemini', 'config')
+}
+
+/** Antigravity's global hooks config — a map of named hook sets. */
+export function agyHooksConfigPath(): string {
+  return join(agyConfigDir(), 'hooks.json')
+}
+
+/**
+ * Antigravity's global MCP config. Same `{ mcpServers: { name: {...} } }`
+ * shape as Claude Desktop / Cursor, so the existing hasPlurMcp/mergePlurMcp
+ * helpers apply unchanged.
+ */
+export function agyMcpConfigPath(): string {
+  return join(agyConfigDir(), 'mcp_config.json')
+}
+
 /** Locate the static PLUR rules file `plur init --cursor` writes once, at install time. */
 export function cursorRulesPath(cwd: string = process.cwd()): string {
   return join(cwd, '.cursor', 'rules', 'plur-memory.mdc')
@@ -188,6 +213,8 @@ export function knownConfigFiles(cwd: string = process.cwd()): ConfigFile[] {
   const cursorHooks = cursorProjectHooksConfigPath(cwd)
   const codexHooks = codexHooksConfigPath()
   const codexToml = codexConfigTomlPath()
+  const agyHooks = agyHooksConfigPath()
+  const agyMcp = agyMcpConfigPath()
 
   return [
     { label: 'Claude Code (project)', path: projectSettings, exists: existsSync(projectSettings), kind: 'claude-code' },
@@ -198,6 +225,8 @@ export function knownConfigFiles(cwd: string = process.cwd()): ConfigFile[] {
     { label: 'Cursor (.cursor/hooks.json)', path: cursorHooks, exists: existsSync(cursorHooks), kind: 'cursor-hooks' },
     { label: 'Codex (~/.codex/hooks.json)', path: codexHooks, exists: existsSync(codexHooks), kind: 'codex-hooks' },
     { label: 'Codex (~/.codex/config.toml)', path: codexToml, exists: existsSync(codexToml), kind: 'codex-toml' },
+    { label: 'Antigravity (~/.gemini/config/hooks.json)', path: agyHooks, exists: existsSync(agyHooks), kind: 'agy-hooks' },
+    { label: 'Antigravity (~/.gemini/config/mcp_config.json)', path: agyMcp, exists: existsSync(agyMcp), kind: 'claude-desktop' },
   ]
 }
 
