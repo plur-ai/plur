@@ -1,6 +1,6 @@
 # The Open Engram Standard
 
-**Version:** 1.3 (draft)
+**Version:** 1.4 (draft)
 **Status:** Working Draft
 **Date:** 2026-08-26
 **Editors:** PLUR.ai (plur-ai)
@@ -46,7 +46,8 @@ inner item is labelled otherwise.
 ### 1.1 What this standard covers
 
 1. **The Engram object** (§4) — the field set, types, value ranges, and
-   invariants of a single unit of knowledge.
+   invariants of a single unit of knowledge, and how one may change over time
+   (§4.7.1).
 2. **The ID grammar** (§3) — how engram identifiers are formed and what their
    prefixes mean.
 3. **The Pack format and lifecycle** (§5) — the on-disk directory layout
@@ -337,6 +338,101 @@ required when `knowledge_type` is present.
 | `knowledge_anchors` | object[] | each: `path` (R), `relevance` (`primary`\|`supporting`\|`example`, default `supporting`), `snippet?` (≤200 chars), `snippet_extracted_at?` | Links to grounding documents. |
 | `dual_coding` | object | `{ example?, analogy? }` — **at least one required** | Verbal + analogical encoding. Invariant: `example OR analogy` MUST be present if the object is present. |
 
+`relations.supersedes` and `relations.superseded_by` are specified in §4.7.1,
+which governs when they are used at all.
+
+#### 4.7.1 Changing an engram — SPECIFIED
+
+An engram can change in two ways, and this standard previously defined both
+without ever saying which applies when:
+
+- **In place.** The engram keeps its `id`, its content changes, and
+  `engram_version` (§4.12) increments.
+- **By supersession.** A new engram is created with a new `id`, carrying
+  `relations.supersedes` naming the old one, and the old one is retired.
+
+The choice is not stylistic. **An in-place edit destroys the previous
+statement** — afterwards nothing anywhere holds what the engram used to say.
+A supersession keeps both and links them. So the choice decides whether these
+are answerable at all:
+
+- what did this engram say when somebody acted on it last week
+- was it corrected, or has it always said this
+- somebody relied on the earlier claim — do they need telling
+
+##### The rule
+
+**The test is what the change does to a reader who relied on the previous
+version.** If they would still be right, the change is in place. If they would
+now be wrong, they are owed a record saying so, and that record is a
+supersession.
+
+Concretely:
+
+| Change | How |
+|---|---|
+| Fixing a typo, or rewording without changing the claim | **In place.** `engram_version` increments. |
+| Adding or editing `rationale`, `tags`, `domain`, `summary`, `dual_coding`, `knowledge_anchors` | **In place.** |
+| Changing `scope`, `visibility`, `pinned`, `commitment` | **In place.** These change how an engram is treated, not what it asserts. |
+| Any change to derived state — `activation`, `feedback_signals`, `usage` | **In place**, and does not increment `engram_version`: that counter is for content evolution, not for use. |
+| **The statement now asserts something different from what it asserted before** | **A new engram superseding the old — MUST.** |
+
+A producer MUST NOT rewrite a `statement` in place in a way that changes what it
+asserts. That is the one case where the previous value has to survive, and
+in-place editing is precisely the operation that does not let it.
+
+##### What each path MUST record
+
+**In place:** `engram_version` incremented, and a history event recording that
+the engram changed. A producer SHOULD record the previous `statement` where its
+history mechanism can hold one; this standard does not require it, because the
+edits permitted in place do not change what was asserted.
+
+**By supersession:** `relations.supersedes` on the new engram naming the old, the
+old engram retired rather than deleted, and — where the producer records reasons
+at all — why. A producer SHOULD write `relations.superseded_by` on the old engram
+as the reverse edge; a consumer MUST NOT rely on it being present, since it can
+only be written where the old engram is reachable (see the provenance profile
+§6.1).
+
+##### Why this is a MUST rather than a recommendation
+
+Because the alternative is unrecoverable. Every other under-specified choice in
+this document produces something a later implementation can repair — a missing
+field can be backfilled, a wrong mapping can be remapped. A statement overwritten
+in place is gone, and no amount of later specification brings it back.
+
+##### What this does not do
+
+It does not detect an edit that changed the meaning when the producer believed it
+had not. A reworded statement a reader later understands differently is
+indistinguishable, at edit time, from a genuine rewording — and a rule that tried
+to spot the difference would be wrong often and confidently.
+
+What survives such a case is the `engram_version` counter and the history event,
+which record that an edit happened and when. Somebody auditing can find it. That
+is the limit of what this rule delivers, and it is stated rather than left to be
+discovered.
+
+##### Where the reference does not comply
+
+The reference's deduplication path rewrites statements in place, and it is the
+commonest way an engram changes:
+
+| Path | What it does | Reference |
+|---|---|---|
+| dedup `UPDATE` | Replaces the target's `statement` outright with the incoming one, increments `engram_version`. The previous statement is not retained anywhere. | `packages/core/src/learn-async.ts:235-237` |
+| dedup `MERGE` | Concatenates the incoming statement onto the target's. The original is recoverable only by reading the merged text and guessing where the seam is. | `packages/core/src/learn-async.ts:274-276` |
+
+Both change what the engram asserts, and both are exactly the case §4.7.1 makes
+a supersession. Neither writes `relations.supersedes`, so a reader who acted on
+the earlier claim has no record that it changed.
+
+This is the most consequential gap in the section, because deduplication is not
+an edge case — it is what happens every time a user re-states something the store
+already holds in different words. Tracked in plur-ai/plur#1041 *editing an
+engram: the spec has two mechanisms and no rule for choosing between them*.
+
 ### 4.8 Provenance — STABLE (origin/chain/license); `signature` RESERVED
 
 | Field | Type | Range / enum | Semantics |
@@ -442,7 +538,7 @@ ignore the values.
 | `injection_count` | integer | ≥0, default 0 | Number of times this engram was selected into a session's injection context. Distinct from `activation.frequency` (recall events). High injection_count + low positive feedback_signals is an efficacy-failure signal (#865, #866). |
 | `sources` | object[] | each: `scope` (R), `session_id?` (string\|null), `stored_at` (R, instant) | One entry per write attempt. |
 | `recurrence_count` | integer | ≥0, default 0 | Different-scope re-learn count (universality evidence). |
-| `engram_version` | integer | ≥1, default 1 | Content-evolution version. |
+| `engram_version` | integer | ≥1, default 1 | Content-evolution version. Incremented on an **in-place** edit (§4.7.1); NOT incremented by changes to derived state (`activation`, `feedback_signals`, `usage`), and NOT used for a change that alters what the engram asserts — that is a supersession, which mints a new engram whose counter starts at 1. |
 | `previous_version_ref` | object | `{event_id, changed_at}` | Pointer to prior content version. |
 | `episode_ids` | string[] | default `[]` | Source episode IDs. |
 | `summary` | string | ≤80 chars | Injection-friendly short form. |
@@ -1232,6 +1328,7 @@ they are holding and what changed. Version numbers follow §10.2.
 
 | Version | Date | Change class | What changed |
 |---|---|---|---|
+| 1.4 | 2026-08-27 | Minor (additive) | **§4.7.1 added, "Changing an engram"**. The document defined two ways an engram can change — in place with `engram_version`, or by supersession with a new id — and never said which applies when, so the choice was made per code path by whoever wrote it. The rule is now the effect on a reader who relied on the previous version: if they would still be right the edit is in place, and if they would now be wrong they are owed a supersession. A producer MUST NOT rewrite a `statement` in place in a way that changes what it asserts, because that is the one case where the previous value has to survive and in-place editing is exactly the operation that does not let it. `engram_version`'s semantics expanded from six words to say what does and does not increment it. Nothing constrains previously-valid data; the obligation is on producers at edit time. |
 | 1.3 | 2026-08-26 | Minor (additive) | **New maturity label SPECIFIED** — normative and frozen, but not yet implemented in the reference; the vocabulary previously conflated "binding on implementers" with "implemented here" and so could not describe a rule written ahead of its own implementation. **§5.6 Install, §5.7 Update and §5.8 Uninstall added** — the standard described a pack as an artifact and said nothing about receiving one. §5.6 fixes the order of operations, requires a consumer to be able to answer which pack an engram came from, forbids adopting a producer's shared scopes without the installer's consent, and **defines the install registry** that §5.1 and §5.5 already called authoritative. §5.7 requires an orderable version and forbids silently discarding recipient-accumulated state across an update. §5.8 requires retire-rather-erase and forbids discarding a pack's source as a step of removing it. §4.4's `pack` gains a consumer-side note. §5.9 lists where the reference does not yet comply. Nothing here constrains previously-valid pack *data*; the new obligations fall on consumers, which the document did not previously address at all. |
 | 1.2 | 2026-08-26 | Minor (additive) | §5.4: the strip list gains `relations.supersedes`/`superseded_by`, and gains two MUST-neutralize rules for `pinned` and `commitment: locked` — both were performed by the reference and stated nowhere, and both change whose judgement governs the recipient's store rather than merely tidying. §5.5.1 added: the pack integrity value and the installed-content hash answer different questions and MUST NOT be conflated; the reference's current conflation is recorded as a known divergence. §9: the single `provenance.jsonld` sidecar corrected to the `provenance/` directory the profile specifies — §9 governs where the two overlap, so an implementer reading it alone was being told to build the wrong thing. No field removed, no constraint tightened on existing data, no default changed. |
 | 1.1 | 2026-08-25 | Minor (additive) | §4.8: added the OPTIONAL `attribution` and `claim_class` engram fields, marked PROPOSED. §4.12: added `injection_count` and `measured_under`; renamed `reference_count` → `write_count` (consumers MUST backfill on first parse). §3.3: canonical id form gains full ISO-8601 date separators, with the compact form retained as permanently valid legacy (§3.3.1) and the dateless pack form documented (§3.3.2). §5.1/§5.2: an OPTIONAL `provenance/` directory and a `metadata.provenance` declaration. §9: recorded that a companion profile now elaborates it. §4.12 `commitment` gains the `draft` member. No field removed, no constraint tightened, no default changed. |
@@ -1243,7 +1340,7 @@ this document's version, and vice versa.
 
 | Profile | Profiles | Version |
 |---|---|---|
-| [Recording where an engram came from](./ENGRAM-PROVENANCE-PROFILE.md) | §9 | 0.6 (draft) |
+| [Recording where an engram came from](./ENGRAM-PROVENANCE-PROFILE.md) | §9 | 0.7 (draft) |
 
 ---
 

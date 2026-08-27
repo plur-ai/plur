@@ -8,9 +8,9 @@ that part should work.
 
 | | |
 |---|---|
-| **Version** | 0.6 (draft) |
+| **Version** | 0.7 (draft) |
 | **Status** | Proposed, and implemented in the reference. OPTIONAL to follow: an implementation that ignores this document is still fully conformant to the Engram Standard. An implementation that writes provenance MUST follow this document, so that two such implementations agree. |
-| **Companion to** | [The Engram Standard, version 1.3](./ENGRAM-STANDARD-v1.md) |
+| **Companion to** | [The Engram Standard, version 1.4](./ENGRAM-STANDARD-v1.md) |
 | **Profiles** | Section 9 of that standard, "Provenance binding". It refines that section; it does not replace it, and the standard governs wherever the two overlap. |
 | **Date** | 2026-08-26 |
 | **Licence** | Creative Commons BY 4.0 for the text, Apache 2.0 for any code |
@@ -19,6 +19,7 @@ that part should work.
 
 | Version | Date | What changed |
 |---|---|---|
+| 0.7 | 2026-08-27 | Section 4.2 rewritten and sections 10.2 and 14.1 downgraded, following Engram Standard §4.7.1 *changing an engram*. Version-scoped identifiers were introduced because a rewritten statement is not the same thing as the one it replaced; under §4.7.1 a rewritten statement is a separate engram, so the identifier already carries the distinction. Section 10.2 *version history* is no longer required for 4.2, and 14.1's stated blocker — that the shape of a record would depend on which code path ran — is what §4.7.1 exists to prevent. |
 | 0.6 | 2026-08-27 | Section 5.4 added, "Receiving a pack's provenance". Everything before it was written from the producer's side, which is why the reference builds a record for every exported pack and its installer deletes the directory without a word — nothing told it not to. The section requires a consumer to keep the received directory as evidence rather than content, to report what it found (a tester's corrupt, missing and orphaned records all installed silently with exit code 0), and to record `pack:<name>@<version>` as the origin of anything installed. It forbids merging a received `attribution` or `claim_class` into the store unqualified — the tempting option, and the one that launders a stranger's claims — while permitting the values to be kept where the intermediary is named, exactly as section 8.4 does for an inherited licence. Also covers re-export, where forwarding and laundering are actually distinguished, and states plainly that none of this verifies anything. |
 | 0.5 | 2026-08-26 | Section 10.1 completed. History events now carry an actor, and a record prefers it over the engram's attribution when saying who caused an activity — otherwise a correction is attributed to the person it corrected, the collapse an outside reviewer warned about on the epic. Section 10.1.2 added for `provenance.chain`, the last of the four origin fields nothing read or wrote: ancestors nearest first, bounded, cycle-guarded, and explicitly a shortcut the history log outranks. |
 | 0.4 | 2026-08-26 | Section 10.1 is largely done: an identity now comes from `provenance.identity` in configuration, never from the operating system account, with a per-write override and the `unidentified` marker when nobody is set; the software that wrote an engram is recorded on every write. The marker counts as unanswered even though it is recorded, so a memory nobody is accountable for cannot report itself complete. Section 8 fails closed on the schema default too — it was closed on a licence we could not recognise and open on one nobody selected. That, rather than deleting `provenance.license`, is how engram-level copyright becomes opt-in without a major version. |
@@ -329,18 +330,37 @@ applies. The history log wins.
 
 ### 4.2 Versions
 
-An engram changes in place. A counter goes up. On one code path, a pointer to the
-previous version is written.
+Section 4.7.1 of the Engram Standard now settles which changes happen in place
+and which mint a new engram. That changes what this section has to model, and
+mostly by removing work.
 
-This document treats each version as a separate thing:
+**A change to what an engram asserts is a supersession**, so the old engram
+survives with its own identifier and the new one carries `relations.supersedes`.
+Section 6.1 covers it: `prov:wasRevisionOf`, a specialisation of
+`prov:wasDerivedFrom`, so a reader that understands only derivation still sees
+the link.
+
+**An in-place edit does not change what is asserted** — a typo, a rationale, a
+re-scoping. Those need no separate entity, because there is no earlier claim a
+reader could have relied on and been wrong about. The `engram_version` counter
+and the history event record that an edit happened; that is the whole of what
+provenance has to say about it.
+
+So the version-scoped identifiers this section used to propose —
 
 ```
 engram:ENG-…/v3   was a revision of   engram:ENG-…/v2
 ```
 
-The reason is simple. A statement that has been rewritten is not the same thing
-as the one it replaced. Without separate versions, a revision looks identical to
-an unrelated derivation.
+— are **no longer required for the case they were introduced for.** They existed
+because a rewritten statement is not the same thing as the one it replaced, and
+without separate versions a revision looked identical to an unrelated
+derivation. Under 4.7.1 a rewritten statement *is* a separate engram, so the
+distinction is carried by the identifier already.
+
+An implementation MAY still mint version-scoped identifiers for in-place edits
+where its history mechanism holds the earlier content. Nothing here requires it,
+and section 10.2 is no longer a blocker on section 14.1 — see both.
 
 ### 4.3 Log events become activities
 
@@ -1458,7 +1478,17 @@ The reference visits nothing twice and stops at 32.
 shorter, not wrong. That is what makes the log authoritative rather than the
 chain.
 
-### 10.2 Version history — required for section 4.2
+### 10.2 Version history — no longer required for section 4.2
+
+> **Downgraded by Engram Standard §4.7.1.** This was required because the
+> in-place revision chain was broken: two of the three code paths increment the
+> counter without recording what came before, so per-version records could not be
+> built consistently. Section 4.7.1 removes the need by making a changed claim a
+> new engram — the earlier statement survives as a retired engram with its own
+> identifier, and there is no chain to reconstruct.
+>
+> What remains below is still worth having for in-place edits, and is no longer
+> blocking section 14.1.
 
 Only one code path records a pointer to the previous version. The two most common
 paths increase the version counter without it. So the chain of revisions is
@@ -1716,10 +1746,16 @@ indistinguishable from an unrelated derivation.
 rewritten is not the same statement. This lets the record say plainly that version
 three replaced version two.
 
-**What it needs first.** Only one code path currently records a pointer to the
-previous version. The two most common paths increase the version counter without
-one, so the chain is already broken. That is covered by the issue on version
-history in the epic.
+**What it needs first — resolved.** This previously read that only one code path
+records a pointer to the previous version, so the chain was already broken and the
+version-history fix had to land first.
+
+Engram Standard §4.7.1 removes the dependency rather than satisfying it. A change
+to what an engram asserts is now a supersession, so each such version *is* its own
+engram with its own identifier, and "does each version get its own record" is
+satisfied by construction. The risk stated below — that the shape of a record
+would depend on which code path happened to run — is what §4.7.1 exists to
+prevent.
 
 **The risk, stated plainly.** If we do this only where the data allows it, the
 shape of the record depends on which code path happened to run. That is worse than
