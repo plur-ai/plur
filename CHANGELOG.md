@@ -39,6 +39,11 @@ fingerprint so an unchanged store skips the sync entirely, tolerates duplicate i
 last-wins, and the CLI drains background index work before exiting so the index
 actually converges.
 
+**Security.** Transitive `adm-zip` is forced to `>=0.6.0` via pnpm override
+(GHSA: crafted ZIP triggers a 4GB allocation; pulled in by `onnxruntime-node`,
+where it only ever extracts onnxruntime's own install artifact — exposure was
+minimal, now zero).
+
 **Release tooling.** The release script now probes the X credentials it will
 actually post with before any irreversible step (#948, #951), so a dead token
 aborts the release instead of stranding it half-published.
