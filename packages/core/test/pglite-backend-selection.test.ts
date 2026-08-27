@@ -197,3 +197,37 @@ describe('the Postgres tier degrades loudly, never silently', () => {
     expect(plur.primaryStore.kind).toBe('yaml')
   }, PGLITE_TIMEOUT)
 })
+
+/**
+ * Selection and construction must agree — the regression class that shipped
+ * TWICE on this branch's history. `resolveBackendTier` said 'sqlite' while
+ * the constructor's `else if (this.config.index)` arm never fired, because
+ * PlurConfigSchema is `.partial()` and that neutralises Zod defaults, so
+ * `config.index` is undefined on a default install. Every recall then
+ * brute-forced cosine over the whole corpus (ADR-0005 §1). The suite stayed
+ * green throughout, because selection tests and construction tests each
+ * passed separately. This is the test that fails when they disagree.
+ */
+describe('a size-selected tier materialises its index (#1046 follow-up)', () => {
+  let dir: string
+  beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'plur-tier-idx-')) })
+  afterEach(() => { rmSync(dir, { recursive: true, force: true }) })
+
+  it('default install past the threshold builds the SQLite index, no config needed', async () => {
+    const plur = new Plur({ path: dir, store: storeClaiming(SQLITE_MIN_ENGRAMS) })
+    await (plur as unknown as { waitForIndex: () => Promise<void> }).waitForIndex()
+    expect(plur.backendSelection().tier).toBe('sqlite')
+    // The assertion that was missing: the index OBJECT exists, not just the label.
+    expect((plur as unknown as { indexedStorage: unknown }).indexedStorage).toBeTruthy()
+  })
+
+  it('explicit index:false still opts out', async () => {
+    // Config comes from config.yaml on disk — the constructor takes no inline
+    // config, which is itself why the .partial() default-neutralisation bug
+    // was reachable at all.
+    writeFileSync(join(dir, 'config.yaml'), 'index: false\n')
+    const plur = new Plur({ path: dir, store: storeClaiming(SQLITE_MIN_ENGRAMS) })
+    await (plur as unknown as { waitForIndex: () => Promise<void> }).waitForIndex()
+    expect((plur as unknown as { indexedStorage: unknown }).indexedStorage).toBeNull()
+  })
+})
