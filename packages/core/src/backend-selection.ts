@@ -26,23 +26,27 @@
  *
  * ## The thresholds, and why these numbers
  *
- * {@link PGLITE_MIN_ENGRAMS} = 5,000. The brute-force tier's cost is linear in
+ * {@link SQLITE_MIN_ENGRAMS} = 5,000. The brute-force tier's cost is linear in
  * corpus size and paid per process, and the measured pain point is ~4,700
  * engrams / ~350 MB. 5,000 sits just past it: below, an index costs more (WASM
  * boot, a second copy of the data on disk) than the scan it replaces; above, the
  * scan is the dominant cost.
  *
- * {@link POSTGRES_MIN_ENGRAMS} = 50,000. Not a performance cliff — PGLite is
- * still competent there — but the point past which a *single-process WASM*
- * engine is the wrong shape: PGLite is one writer, in one process, with no
- * shared buffer cache, so N agent processes pay the index cost N times. A
- * server hands all of them one engine. 10x the PGLite threshold, chosen as an
- * order of magnitude rather than a measurement, and deliberately conservative:
- * escalating to a network store is a much bigger operational change than
- * building a local index, so the automatic path should be reluctant.
+ * {@link POSTGRES_MIN_ENGRAMS} = 50,000, and only when a connection string is
+ * actually configured — otherwise the store stays on SQLite. This is not a
+ * SQLite limit: it answers indexed reads in ~1ms at 500,000 engrams. It is the
+ * point past which a SHARED engine starts to matter more than a local file —
+ * many agent processes, concurrent writers, one cache.
  *
- * Both are round numbers standing in for a range. They are not tuned constants
- * and should not be treated as if a 10% move either way mattered.
+ * PGLite is deliberately absent from both rules (#1046). It is a capability
+ * choice — pgvector's ANN index, Apache AGE's graph queries — reachable only
+ * by setting `PLUR_BACKEND=pglite` or `backend: pglite`. Selecting it by
+ * corpus size moved users onto a backend that boots a Postgres in WASM on
+ * every process, which is the wrong shape for a per-invocation CLI no matter
+ * how large the corpus gets.
+ *
+ * These are round numbers standing in for a range. They are not tuned
+ * constants and should not be treated as if a 10% move either way mattered.
  *
  * ## Overrides always win
  *
@@ -58,6 +62,21 @@ export type BackendTier = 'yaml' | 'sqlite' | 'pglite' | 'postgres'
 export const BACKEND_TIERS: readonly BackendTier[] = ['yaml', 'sqlite', 'pglite', 'postgres'] as const
 
 /** Estimated engram count at or above which the PGLite index earns its cost. */
+/**
+ * Engram count at or above which the SQLite index earns its cost.
+ *
+ * This is the tier that used to be PGLite's. SQLite pays ~1ms to open and
+ * answers indexed reads in under a millisecond well past 500,000 engrams, so
+ * it is the right default everywhere the corpus is large enough for a
+ * brute-force YAML scan to hurt.
+ */
+export const SQLITE_MIN_ENGRAMS = 5_000
+
+/**
+ * @deprecated Since #1046 PGLite is opt-in only and this constant selects
+ * nothing. Kept exported so an external caller referencing it still compiles;
+ * `resolveBackendTier` no longer reads it.
+ */
 export const PGLITE_MIN_ENGRAMS = 5_000
 
 /** Estimated engram count at or above which a server Postgres is the right shape. */
@@ -129,17 +148,41 @@ export function resolveBackendTier(input: BackendSelectionInput): BackendSelecti
   const fromConfig = asTier(input.config)
   if (fromConfig) return { tier: fromConfig, reason: 'config-override', engramCount: count }
 
+  // PGLite is NEVER selected by size (#1046). It is reachable only through the
+  // env/config overrides handled above — a capability choice the operator makes
+  // deliberately, not something a growing corpus does to them silently.
+  //
+  // The old rule promoted any store past 5,000 engrams onto PGLite. Measured
+  // 2026-08-27 on a 5,775-engram store, `plur status` took 0.61s on sqlite and
+  // over 300s on pglite. The cost is structural, not a bug we can tune away:
+  // PGLite boots a real Postgres in WASM per process (~1.3s fresh, ~244ms
+  // reopening), and PLUR's CLI and hooks are a fresh process every invocation,
+  // so that toll is paid on every single command. Its per-query cost is
+  // genuinely good — 0.135ms, faster than better-sqlite3's single-row inserts —
+  // which is exactly why it suits a long-lived process and not this one.
+  //
+  // Nor was 5,000 near any SQLite limit. Same machine, synthetic corpora:
+  //
+  //     engrams   open+count   indexed filter   full scan
+  //       5,000          1ms              0ms         3ms
+  //      50,000          1ms              0ms        29ms
+  //     200,000          1ms              1ms       217ms
+  //     500,000          3ms              1ms       342ms
+  //
+  // SQLite is still opening in single-digit milliseconds two orders of
+  // magnitude past the threshold that was promoting people off it.
   if (count >= POSTGRES_MIN_ENGRAMS) {
     if (input.postgresConfigured) {
       return { tier: 'postgres', reason: 'size', engramCount: count }
     }
-    // Sized for a server, told about no server. PGLite is the best available
-    // answer and the caller is told what it missed.
-    return { tier: 'pglite', reason: 'size', wanted: 'postgres', engramCount: count }
+    // Sized for a server, told about no server. SQLite is the best available
+    // answer; `wanted` keeps the fallback loud, because falling back is fine
+    // and falling back silently is the failure mode.
+    return { tier: 'sqlite', reason: 'size', wanted: 'postgres', engramCount: count }
   }
 
-  if (count >= PGLITE_MIN_ENGRAMS) {
-    return { tier: 'pglite', reason: 'size', engramCount: count }
+  if (count >= SQLITE_MIN_ENGRAMS) {
+    return { tier: 'sqlite', reason: 'size', engramCount: count }
   }
 
   return { tier: 'yaml', reason: 'size', engramCount: count }

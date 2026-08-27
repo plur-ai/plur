@@ -972,7 +972,7 @@ export class Plur {
     } else if (selection.wanted === 'postgres') {
       logger.warning(
         `[plur] ~${selection.engramCount} engrams is past the Postgres threshold, but no connection string is `
-        + `configured (postgres.url / PLUR_POSTGRES_URL) — running the PGLite index instead.`,
+        + `configured (postgres.url / PLUR_POSTGRES_URL) — running the SQLite index instead.`,
       )
     }
     // A Postgres PRIMARY store answers its own queries — do not build a PGLite
@@ -993,6 +993,15 @@ export class Plur {
     const indexTier = hasPrimaryQueryStore
       ? 'none'
       : selection.tier === 'postgres' ? 'pglite' : selection.tier
+    if (indexTier === 'pglite' && selection.reason !== 'size') {
+      // #1046: PGLite is opt-in now. Say so on the way in, so an operator who
+      // set it months ago and forgot can see which engine they are on when a
+      // command feels slow — it boots Postgres in WASM on every process.
+      logger.warning(
+        `[plur] backend=pglite (${selection.reason}). PGLite boots Postgres in WASM per process; ` +
+        'it is for pgvector/AGE capabilities, not speed. Unset PLUR_BACKEND / backend: to use SQLite.',
+      )
+    }
     if (indexTier === 'pglite') {
       // PGLite path. Keep SQLite indexedStorage null so we don't double-index.
       // vector.precision (#223): unset = keep the store's existing column
