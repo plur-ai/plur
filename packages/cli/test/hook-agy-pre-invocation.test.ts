@@ -237,7 +237,7 @@ describe('hook-agy-pre-invocation', () => {
 
     expect(injectCalls).toHaveLength(1)
     expect(emittedMessage()).toContain('DIRECTIVE-LINE')
-    expect(stderr.mock.calls.some(c => String(c[0]).includes('transcript unreadable'))).toBe(true)
+    expect(stderr.mock.calls.some((c: unknown[]) => String(c[0]).includes('transcript unreadable'))).toBe(true)
   })
 
   it('emits nothing and recalls nothing without a conversationId', async () => {

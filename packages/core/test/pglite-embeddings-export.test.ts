@@ -32,7 +32,7 @@ function mkEngram(id: string, statement: string): Engram {
     tags: [],
     activation: { retrieval_strength: 1.0, storage_strength: 1.0, frequency: 0, last_accessed: '2026-08-27' },
     feedback_signals: { positive: 0, negative: 0, neutral: 0 },
-  } as Engram
+  } as unknown as Engram
 }
 
 function vec(seed: number): Float32Array {
