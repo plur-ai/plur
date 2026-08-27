@@ -1023,7 +1023,20 @@ export class Plur {
         this._recordIndexError('initial-sync', err)
         logger.warning(`[plur] PGLite initial sync failed: ${(err as Error).message}. Run 'plur sync --full' to rebuild.`)
       })
-    } else if (this.config.index) {
+    } else if (indexTier === 'sqlite' ? this.config.index !== false : this.config.index) {
+      // The `indexTier === 'sqlite'` arm exists because of the bug ADR-0005 §1
+      // documents and #1046 nearly reintroduced. `PlurConfigSchema` is
+      // `.partial()`, which NEUTRALISES Zod defaults — so `config.index` is
+      // `undefined` on a default install, and a plain `if (this.config.index)`
+      // silently builds nothing. That is how "the default backend does
+      // nothing" happened the first time: selection reported a tier, no index
+      // was built, and every recall brute-forced cosine over the whole corpus
+      // (~350 MB resident at ~4,700 engrams, per process).
+      //
+      // When selection ASKED for sqlite, an absent config value means "not
+      // configured", not "disabled" — only an explicit `index: false` opts
+      // out. The other arm keeps the historical behaviour for tiers that were
+      // never size-selected.
       this.indexedStorage = new IndexedStorage(this.paths.engrams, this.paths.db, this.config.stores)
     }
     // Wire config-level embeddings opt-out into the embedder module. The env
