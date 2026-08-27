@@ -3,7 +3,8 @@
  *
  * `backend-selection.test.ts` pins the resolver as a pure function. This file
  * pins the consequence: a store large enough to make brute-force scanning the
- * dominant cost really does get a PGLite index built for it, and the one tier
+ * dominant cost really does get an INDEX built for it — SQLite since #1046
+ * (PGLite is opt-in only; see the ADR-0005 amendment) — and the one tier
  * that cannot yet be wired — Postgres, because `Plur`'s write path is still
  * synchronous (ADR-0003) — degrades LOUDLY to the best tier that can.
  *
@@ -18,7 +19,7 @@ import yaml from 'js-yaml'
 import { Plur } from '../src/index.js'
 import { logger } from '../src/logger.js'
 import { MemoryPrimaryStore } from '../src/store/memory-primary-store.js'
-import { PGLITE_MIN_ENGRAMS, POSTGRES_MIN_ENGRAMS } from '../src/backend-selection.js'
+import { SQLITE_MIN_ENGRAMS, POSTGRES_MIN_ENGRAMS } from '../src/backend-selection.js'
 import { AVG_YAML_BYTES_PER_ENGRAM } from '../src/store/yaml-primary-store.js'
 import type { PrimaryStore } from '../src/store/primary-store.js'
 
@@ -49,23 +50,24 @@ describe('size-based selection builds the index it selected', () => {
   })
 
   it('builds no index for a personal-sized store', async () => {
-    const plur = new Plur({ path: dir, store: storeClaiming(PGLITE_MIN_ENGRAMS - 1) })
+    const plur = new Plur({ path: dir, store: storeClaiming(SQLITE_MIN_ENGRAMS - 1) })
     await plur.learn('small stores pay for no index')
     await (plur as unknown as { waitForIndex: () => Promise<void> }).waitForIndex()
     expect(plur.backendSelection().tier).toBe('yaml')
     expect(existsSync(join(dir, 'store.pglite'))).toBe(false)
   }, PGLITE_TIMEOUT)
 
-  it('builds a PGLite index once the store crosses the threshold', async () => {
-    // This is the behaviour the old resolver could not produce at all: it
-    // returned 'sqlite' regardless of size, and with `config.index` undefined
-    // that meant no index — so a 5k+ engram store brute-forced cosine over the
-    // entire corpus on every recall, in every process.
-    const plur = new Plur({ path: dir, store: storeClaiming(PGLITE_MIN_ENGRAMS) })
+  it('builds a SQLite index once the store crosses the threshold', async () => {
+    // The property that matters is that a store past the threshold gets an
+    // INDEX rather than brute-forcing cosine over the whole corpus on every
+    // recall. #1046 changed which index: PGLite boots Postgres in WASM per
+    // process, which is the wrong shape for a per-invocation CLI at any size.
+    const plur = new Plur({ path: dir, store: storeClaiming(SQLITE_MIN_ENGRAMS) })
     await (plur as unknown as { waitForIndex: () => Promise<void> }).waitForIndex()
-    expect(plur.backendSelection().tier).toBe('pglite')
+    expect(plur.backendSelection().tier).toBe('sqlite')
     expect(plur.backendSelection().reason).toBe('size')
-    expect(existsSync(join(dir, 'store.pglite'))).toBe(true)
+    // Growth must never conjure a PGLite store on disk.
+    expect(existsSync(join(dir, 'store.pglite'))).toBe(false)
   }, PGLITE_TIMEOUT)
 
   it('estimates from the YAML file itself, with no store injected', async () => {
@@ -75,7 +77,7 @@ describe('size-based selection builds the index it selected', () => {
     // materialising a full 12 MB corpus would be testing the wrong thing.
     const engrams = [{
       id: 'ENG-2026-0726-001',
-      statement: 'x'.repeat(AVG_YAML_BYTES_PER_ENGRAM * PGLITE_MIN_ENGRAMS),
+      statement: 'x'.repeat(AVG_YAML_BYTES_PER_ENGRAM * SQLITE_MIN_ENGRAMS),
       type: 'behavioral',
       scope: 'global',
       domain: 'plur.test',
@@ -88,8 +90,8 @@ describe('size-based selection builds the index it selected', () => {
 
     const plur = new Plur({ path: dir })
     await (plur as unknown as { waitForIndex: () => Promise<void> }).waitForIndex()
-    expect(plur.backendSelection().tier).toBe('pglite')
-    expect(existsSync(join(dir, 'store.pglite'))).toBe(true)
+    expect(plur.backendSelection().tier).toBe('sqlite')
+    expect(existsSync(join(dir, 'store.pglite'))).toBe(false)
   }, PGLITE_TIMEOUT)
 })
 
@@ -141,11 +143,11 @@ describe('the Postgres tier degrades loudly, never silently', () => {
     const plur = new Plur({ path: dir, store: storeClaiming(POSTGRES_MIN_ENGRAMS) })
     await (plur as unknown as { waitForIndex: () => Promise<void> }).waitForIndex()
     const selection = plur.backendSelection()
-    expect(selection.tier).toBe('pglite')
+    expect(selection.tier).toBe('sqlite')
     expect(selection.wanted).toBe('postgres')
     expect(logs.join('\n')).toMatch(/past the Postgres threshold/)
     // Degraded, but still indexed — the fallback is a working backend, not none.
-    expect(existsSync(join(dir, 'store.pglite'))).toBe(true)
+    expect(existsSync(join(dir, 'store.pglite'))).toBe(false)
   }, PGLITE_TIMEOUT)
 
   it('selects postgres when a DSN is configured, but never connects on its own', async () => {
@@ -195,4 +197,38 @@ describe('the Postgres tier degrades loudly, never silently', () => {
     // and keeps the store it was given.
     expect(plur.primaryStore.kind).toBe('yaml')
   }, PGLITE_TIMEOUT)
+})
+
+/**
+ * Selection and construction must agree — the regression class that shipped
+ * TWICE on this branch's history. `resolveBackendTier` said 'sqlite' while
+ * the constructor's `else if (this.config.index)` arm never fired, because
+ * PlurConfigSchema is `.partial()` and that neutralises Zod defaults, so
+ * `config.index` is undefined on a default install. Every recall then
+ * brute-forced cosine over the whole corpus (ADR-0005 §1). The suite stayed
+ * green throughout, because selection tests and construction tests each
+ * passed separately. This is the test that fails when they disagree.
+ */
+describe('a size-selected tier materialises its index (#1046 follow-up)', () => {
+  let dir: string
+  beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'plur-tier-idx-')) })
+  afterEach(() => { rmSync(dir, { recursive: true, force: true }) })
+
+  it('default install past the threshold builds the SQLite index, no config needed', async () => {
+    const plur = new Plur({ path: dir, store: storeClaiming(SQLITE_MIN_ENGRAMS) })
+    await (plur as unknown as { waitForIndex: () => Promise<void> }).waitForIndex()
+    expect(plur.backendSelection().tier).toBe('sqlite')
+    // The assertion that was missing: the index OBJECT exists, not just the label.
+    expect((plur as unknown as { indexedStorage: unknown }).indexedStorage).toBeTruthy()
+  })
+
+  it('explicit index:false still opts out', async () => {
+    // Config comes from config.yaml on disk — the constructor takes no inline
+    // config, which is itself why the .partial() default-neutralisation bug
+    // was reachable at all.
+    writeFileSync(join(dir, 'config.yaml'), 'index: false\n')
+    const plur = new Plur({ path: dir, store: storeClaiming(SQLITE_MIN_ENGRAMS) })
+    await (plur as unknown as { waitForIndex: () => Promise<void> }).waitForIndex()
+    expect((plur as unknown as { indexedStorage: unknown }).indexedStorage).toBeNull()
+  })
 })

@@ -1,6 +1,73 @@
 # Changelog
 
-## 0.18.0 (unreleased)
+## 0.19.0 (unreleased)
+
+The memory layer forgot Codex. Awkward. Fixed — agy too.
+
+- `plur init --codex` / `--antigravity`
+- Hybrid recall in hooks
+- Size ladder: yaml → sqlite → postgres
+
+**Codex CLI adapter.** `plur init --codex` wires `~/.codex/hooks.json` (five lifecycle
+hooks), registers the MCP server via `codex mcp add`, and adds a PLUR section to
+`AGENTS.md`. One manual step: Codex refuses untrusted hooks *silently* — run `/hooks`
+in Codex once and trust the PLUR entries. `plur doctor` reports Codex wiring and
+repeats that caveat.
+
+**Antigravity CLI (agy) adapter.** `plur init --antigravity` wires agy's global config
+(`~/.gemini/config/`): a `plur-memory` hook set (PreInvocation injection + PreToolUse
+guard), the MCP server, and `AGENTS.md`. No trust step — restart agy and memory flows.
+Per-prompt recall reads the conversation transcript (agy's hook payload carries no
+prompt text), and each turn's memory is re-injected as an ephemeral message on every
+model invocation so it survives tool calls without accumulating in history. Google is
+transitioning Gemini CLI to Antigravity; Gemini CLI itself remains tools-only.
+
+**Hybrid injection in hooks.** Hook injection is now hybrid (BM25 + embeddings) with an
+automatic BM25 fallback on an 8s soft deadline — measured ~4.7s hybrid vs ~1.6s BM25 on
+a 5,775-engram store, with hybrid diverging most exactly on the vague prompts where
+memory matters. `PLUR_HOOK_HYBRID=0` forces BM25; `PLUR_HOOK_HYBRID_DEADLINE_MS` tunes
+the deadline (keep it under your harness's hook timeout: Codex 25s, agy 20s). Enabled
+by the `@huggingface/transformers` 3.8.1 → 4.2.0 upgrade, which fixes a SIGABRT during
+ONNX teardown (#1040) that made every embedder-touching process exit 134 — and, in
+3.8.1, could leave a truncated model file that permanently and silently degraded search
+to BM25 (#340's failure mode; 4.2.0 downloads atomically). Embedding vectors are
+bit-identical across the upgrade — no re-embed, caches stay valid.
+
+**PGLite sync is no longer quadratic with your session count.** `syncFromYaml` batches
+upserts (a 5,000-engram corpus builds in ~2s instead of 10+ minutes), records a
+fingerprint so an unchanged store skips the sync entirely, tolerates duplicate ids
+last-wins, and the CLI drains background index work before exiting so the index
+actually converges.
+
+### BREAKING — PGLite is opt-in, never selected by corpus size (#1046)
+
+The automatic ladder is now **yaml → sqlite → postgres**. Stores past 5,000 engrams
+select a SQLite metadata index (sub-millisecond opens measured to 500k engrams)
+instead of PGLite, which boots a full Postgres-in-WASM per process — measured at
+0.61s vs 300s+ per command on a 5,775-engram store under PLUR's
+fresh-process-per-hook model.
+
+**Who is affected:** any default install with more than 5,000 engrams. On first run
+after upgrading, selection moves to `sqlite` and builds `engrams.db`. Nothing is
+lost — YAML remains the source of truth.
+
+**Migration: nothing to do.** Recall keeps working immediately (BM25), and
+embeddings rebuild automatically — the first hybrid recalls re-embed the corpus,
+which takes a few minutes of background CPU on a large store and then it is done.
+The old `~/.plur/store.pglite/` directory (typically 60–500MB) is orphaned and safe
+to delete whenever convenient; `plur doctor` points it out.
+
+Optional shortcut for large stores: `plur migrate` carries the old store's
+embedding vectors straight into the new tier's cache (each verified against the
+engram's current text and the active embedder's dimension), skipping the rebuild
+window entirely.
+
+To keep the old behaviour set `backend: pglite` in `~/.plur/config.yaml` or
+`PLUR_BACKEND=pglite`; PGLite remains the right choice only where its pgvector/AGE
+capabilities are the point, and it now logs its per-process boot cost once at
+startup when explicitly selected.
+
+## 0.18.0
 
 Your agents' memory, on a dashboard.
 

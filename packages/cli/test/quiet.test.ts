@@ -177,6 +177,10 @@ describe('doctor --quiet (#730)', () => {
       embedder: { available: true, loaded: true, lastError: null, modelLoaded: true, disabled: false, disabledReason: null },
       cursorProjectDetected: false,
       cursorWired: false,
+      codexDetected: false,
+      codexWired: false,
+      agyDetected: false,
+      agyWired: false,
       pgliteGemmaReembedNeeded: false,
       staleContentHashes: 0,
       overall: 'fail',
@@ -187,7 +191,7 @@ describe('doctor --quiet (#730)', () => {
     const { printText } = await import('../src/commands/doctor.js')
     printText(await report(), { quiet: true })
     const text = out.join('')
-    expect(text).not.toContain('plur doctor — Claude Code / Claude Desktop / Cursor diagnostic')
+    expect(text).not.toContain('plur doctor — Claude Code / Claude Desktop / Cursor / Codex / Antigravity diagnostic')
     expect(text).toContain('✗ Hooks installed')
     expect(text).toContain('✓ plur MCP server registered')
     expect(text).toContain('✗ Hook shim: shim not found')
@@ -197,6 +201,6 @@ describe('doctor --quiet (#730)', () => {
   it('prints the banner without --quiet', async () => {
     const { printText } = await import('../src/commands/doctor.js')
     printText(await report(), { quiet: false })
-    expect(out.join('')).toContain('plur doctor — Claude Code / Claude Desktop / Cursor diagnostic')
+    expect(out.join('')).toContain('plur doctor — Claude Code / Claude Desktop / Cursor / Codex / Antigravity diagnostic')
   })
 })

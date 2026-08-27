@@ -180,6 +180,7 @@ export {
 export {
   resolveBackendTier,
   BACKEND_TIERS,
+  SQLITE_MIN_ENGRAMS,
   PGLITE_MIN_ENGRAMS,
   POSTGRES_MIN_ENGRAMS,
   type BackendTier,
@@ -188,6 +189,7 @@ export {
   type BackendSelectionReason,
 } from './backend-selection.js'
 export { YamlStore, SqliteStore, createStore, migrateStore, type EngramStore, type StorageBackend, type StorageConfig } from './store/index.js'
+export { exportPgliteEmbeddingsToCache, type PgliteEmbeddingsExportReport } from './pglite-embeddings-export.js'
 export { YamlPrimaryStore, MemoryPrimaryStore, ReadonlyStoreGuard, ReadonlyStoreError, type PrimaryStore, type AsyncPrimaryStore, type PrimaryStoreKind } from './store/index.js'
 export { withAsyncLock, asyncAtomicWrite } from './store/index.js'
 // Embedding primitive — public so alternative store backends can compute
@@ -972,7 +974,7 @@ export class Plur {
     } else if (selection.wanted === 'postgres') {
       logger.warning(
         `[plur] ~${selection.engramCount} engrams is past the Postgres threshold, but no connection string is `
-        + `configured (postgres.url / PLUR_POSTGRES_URL) — running the PGLite index instead.`,
+        + `configured (postgres.url / PLUR_POSTGRES_URL) — running the SQLite index instead.`,
       )
     }
     // A Postgres PRIMARY store answers its own queries — do not build a PGLite
@@ -993,6 +995,15 @@ export class Plur {
     const indexTier = hasPrimaryQueryStore
       ? 'none'
       : selection.tier === 'postgres' ? 'pglite' : selection.tier
+    if (indexTier === 'pglite' && selection.reason !== 'size') {
+      // #1046: PGLite is opt-in now. Say so on the way in, so an operator who
+      // set it months ago and forgot can see which engine they are on when a
+      // command feels slow — it boots Postgres in WASM on every process.
+      logger.warning(
+        `[plur] backend=pglite (${selection.reason}). PGLite boots Postgres in WASM per process; ` +
+        'it is for pgvector/AGE capabilities, not speed. Unset PLUR_BACKEND / backend: to use SQLite.',
+      )
+    }
     if (indexTier === 'pglite') {
       // PGLite path. Keep SQLite indexedStorage null so we don't double-index.
       // vector.precision (#223): unset = keep the store's existing column
@@ -1014,7 +1025,20 @@ export class Plur {
         this._recordIndexError('initial-sync', err)
         logger.warning(`[plur] PGLite initial sync failed: ${(err as Error).message}. Run 'plur sync --full' to rebuild.`)
       })
-    } else if (this.config.index) {
+    } else if (indexTier === 'sqlite' ? this.config.index !== false : this.config.index) {
+      // The `indexTier === 'sqlite'` arm exists because of the bug ADR-0005 §1
+      // documents and #1046 nearly reintroduced. `PlurConfigSchema` is
+      // `.partial()`, which NEUTRALISES Zod defaults — so `config.index` is
+      // `undefined` on a default install, and a plain `if (this.config.index)`
+      // silently builds nothing. That is how "the default backend does
+      // nothing" happened the first time: selection reported a tier, no index
+      // was built, and every recall brute-forced cosine over the whole corpus
+      // (~350 MB resident at ~4,700 engrams, per process).
+      //
+      // When selection ASKED for sqlite, an absent config value means "not
+      // configured", not "disabled" — only an explicit `index: false` opts
+      // out. The other arm keeps the historical behaviour for tiers that were
+      // never size-selected.
       this.indexedStorage = new IndexedStorage(this.paths.engrams, this.paths.db, this.config.stores)
     }
     // Wire config-level embeddings opt-out into the embedder module. The env
@@ -8205,7 +8229,14 @@ Generate an improved version of the procedure that prevents this failure. Return
     if (mtime === 0 || mtime === this.configMtimeMs) return false
     this.config = loadConfig(this.paths.config)
     this.configMtimeMs = mtime
-    if (this.config.index) {
+    // Same `.partial()`-neutralised-default rule as the constructor
+    // (evaluator audit M4): `config.index` is `undefined` on a default
+    // install, and with SQLite now the size-selected tier, a bare truthy
+    // check here means the refresh this method exists for (#307 — a store
+    // added by editing config.yaml out of process) never reaches
+    // indexedStorage on exactly the default installs that have one. Refresh
+    // whenever an index is actually active, or config asks for one.
+    if (this.indexedStorage !== null || this.config.index) {
       this.indexedStorage = new IndexedStorage(this.paths.engrams, this.paths.db, this.config.stores)
     }
     logger.info('[plur] Reloaded config.yaml (changed on disk since last load)')

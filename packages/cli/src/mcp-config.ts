@@ -26,8 +26,15 @@ export interface ConfigFile {
    * 'claude-code': mcpServers + hooks, Claude's nested {matcher, hooks:[]} shape.
    * 'claude-desktop' / Cursor mcp.json: mcpServers only, no hooks section.
    * 'cursor-hooks': Cursor's separate hooks.json, flat {event: [{command,...}]} shape.
+   * 'codex-hooks': Codex's ~/.codex/hooks.json — Claude Code's nested shape,
+   *   but under a top-level `hooks` key alongside a `description`, and read
+   *   by its own parser so a future divergence doesn't silently misreport.
+   * 'codex-toml': Codex's config.toml — NOT JSON. Read-only here; doctor
+   *   only greps it for an `[mcp_servers.plur]` table.
+   * 'agy-hooks': Antigravity's hooks.json — a map of NAMED hook sets; PLUR
+   *   owns the 'plur-memory' key and nothing else.
    */
-  kind: 'claude-code' | 'claude-desktop' | 'cursor-hooks'
+  kind: 'claude-code' | 'claude-desktop' | 'cursor-hooks' | 'codex-hooks' | 'codex-toml' | 'agy-hooks'
 }
 
 /**
@@ -108,6 +115,56 @@ export function cursorProjectHooksConfigPath(cwd: string = process.cwd()): strin
   return join(cwd, '.cursor', 'hooks.json')
 }
 
+/**
+ * Locate Codex's home directory. Honours `CODEX_HOME`, which Codex itself
+ * reads — without this, `plur init --codex` would write into `~/.codex`
+ * while a `CODEX_HOME`-using install looked somewhere else entirely.
+ */
+export function codexHome(env: NodeJS.ProcessEnv = process.env): string {
+  return env.CODEX_HOME || join(homedir(), '.codex')
+}
+
+/**
+ * Locate Codex's hooks config.
+ *
+ * Codex accepts hooks from EITHER this file or a `[hooks]` table in
+ * `config.toml`, and warns when both exist for the same layer. We own the
+ * JSON file: no TOML dependency, the same nested shape the Claude Code hook
+ * builders already emit, and PLUR's hooks stay out of the file the user
+ * hand-edits for models and MCP servers.
+ */
+export function codexHooksConfigPath(env: NodeJS.ProcessEnv = process.env): string {
+  return join(codexHome(env), 'hooks.json')
+}
+
+/** Codex's main config file — read (not written) by `plur doctor` to check MCP registration. */
+export function codexConfigTomlPath(env: NodeJS.ProcessEnv = process.env): string {
+  return join(codexHome(env), 'config.toml')
+}
+
+/**
+ * Antigravity CLI's global config directory. Everything agy loads globally
+ * lives here: hooks.json, mcp_config.json, skills. (The CLI itself keeps
+ * runtime state in ~/.gemini/antigravity-cli/, which we never write.)
+ */
+export function agyConfigDir(): string {
+  return join(homedir(), '.gemini', 'config')
+}
+
+/** Antigravity's global hooks config — a map of named hook sets. */
+export function agyHooksConfigPath(): string {
+  return join(agyConfigDir(), 'hooks.json')
+}
+
+/**
+ * Antigravity's global MCP config. Same `{ mcpServers: { name: {...} } }`
+ * shape as Claude Desktop / Cursor, so the existing hasPlurMcp/mergePlurMcp
+ * helpers apply unchanged.
+ */
+export function agyMcpConfigPath(): string {
+  return join(agyConfigDir(), 'mcp_config.json')
+}
+
 /** Locate the static PLUR rules file `plur init --cursor` writes once, at install time. */
 export function cursorRulesPath(cwd: string = process.cwd()): string {
   return join(cwd, '.cursor', 'rules', 'plur-memory.mdc')
@@ -154,6 +211,10 @@ export function knownConfigFiles(cwd: string = process.cwd()): ConfigFile[] {
   const desktop = claudeDesktopConfigPath()
   const cursorMcp = cursorProjectMcpConfigPath(cwd)
   const cursorHooks = cursorProjectHooksConfigPath(cwd)
+  const codexHooks = codexHooksConfigPath()
+  const codexToml = codexConfigTomlPath()
+  const agyHooks = agyHooksConfigPath()
+  const agyMcp = agyMcpConfigPath()
 
   return [
     { label: 'Claude Code (project)', path: projectSettings, exists: existsSync(projectSettings), kind: 'claude-code' },
@@ -162,6 +223,10 @@ export function knownConfigFiles(cwd: string = process.cwd()): ConfigFile[] {
     { label: 'Claude Desktop', path: desktop, exists: existsSync(desktop), kind: 'claude-desktop' },
     { label: 'Cursor (.cursor/mcp.json)', path: cursorMcp, exists: existsSync(cursorMcp), kind: 'claude-desktop' },
     { label: 'Cursor (.cursor/hooks.json)', path: cursorHooks, exists: existsSync(cursorHooks), kind: 'cursor-hooks' },
+    { label: 'Codex (~/.codex/hooks.json)', path: codexHooks, exists: existsSync(codexHooks), kind: 'codex-hooks' },
+    { label: 'Codex (~/.codex/config.toml)', path: codexToml, exists: existsSync(codexToml), kind: 'codex-toml' },
+    { label: 'Antigravity (~/.gemini/config/hooks.json)', path: agyHooks, exists: existsSync(agyHooks), kind: 'agy-hooks' },
+    { label: 'Antigravity (~/.gemini/config/mcp_config.json)', path: agyMcp, exists: existsSync(agyMcp), kind: 'claude-desktop' },
   ]
 }
 
