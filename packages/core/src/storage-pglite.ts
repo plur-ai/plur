@@ -24,7 +24,7 @@
  * in a future PR. We initialize the extension so it's ready for #200, but
  * the public adapter surface in this PR is relational + vector.
  */
-import { existsSync } from 'fs'
+import { existsSync, statSync } from 'fs'
 import type { Engram } from './schemas/engram.js'
 import { EngramSchemaPassthrough } from './schemas/engram.js'
 import { normalizeEngramInput } from './normalize-engram.js'
@@ -273,6 +273,14 @@ export class PGLiteAdapter implements DerivedIndexAdapter {
     // cache the comment there says is preserved on purpose. Orphans left by
     // real removals are swept set-wise in `syncFromYaml` instead.
     await db.exec('ALTER TABLE engram_embeddings ADD COLUMN IF NOT EXISTS content_hash TEXT;')
+    // #1046: one row recording the YAML state this index was last synced from,
+    // so an unchanged file can skip the whole re-upsert. See syncFromYaml.
+    await db.exec(`
+      CREATE TABLE IF NOT EXISTS sync_state (
+        k TEXT PRIMARY KEY,
+        v TEXT NOT NULL
+      );
+    `)
     // AGE engram graph (#200 lands the actual edges; we just create the
     // graph here so the schema is ready).
     if (this.hasAge) {
@@ -501,6 +509,11 @@ export class PGLiteAdapter implements DerivedIndexAdapter {
       try {
         await db.exec('DELETE FROM engrams')
         await this.insertEngramsTx(db)
+        // reindex() is the recovery path for a suspect index, so it must not
+        // inherit a fingerprint that would let the next syncFromYaml skip.
+        // Clearing (rather than setting) keeps the rebuild honest: the next
+        // sync re-derives it from the file it actually reads.
+        await db.exec("DELETE FROM sync_state WHERE k = 'yaml_fingerprint'").catch(() => {})
         await db.exec('COMMIT')
       } catch (err) {
         await db.exec('ROLLBACK').catch(() => {})
@@ -510,24 +523,65 @@ export class PGLiteAdapter implements DerivedIndexAdapter {
   }
 
   /**
+   * Cheap identity for the YAML file: size + mtime, no read.
+   *
+   * Deliberately not a content hash. The point of the guard below is to avoid
+   * touching the corpus at all when nothing changed, and PLUR rewrites this
+   * file wholesale on every mutation, so stat is sufficient to notice. If it
+   * is ever wrong the index is stale, not corrupt — YAML stays the source of
+   * truth and `plur sync --full` (reindex) is the documented recovery, which
+   * clears this row.
+   */
+  private yamlFingerprint(): string | null {
+    try {
+      const st = statSync(this.yamlPath)
+      return `${st.size}:${st.mtimeMs}`
+    } catch {
+      return null // missing file — let the sync run and clear the table
+    }
+  }
+
+  private async readSyncedFingerprint(db: any): Promise<string | null> {
+    try {
+      const r = await db.query("SELECT v FROM sync_state WHERE k = 'yaml_fingerprint'")
+      return r.rows.length > 0 ? String(r.rows[0].v) : null
+    } catch {
+      return null // pre-#1046 store, table not created yet
+    }
+  }
+
+  /**
    * syncFromYaml: incremental — upsert what YAML says exists, delete
    * primary-source rows that YAML no longer contains.
    *
    * This is the steady-state write path called after every YAML mutation
-   * (see Plur._syncIndex).
+   * (see Plur._syncIndex), AND it runs unconditionally from the Plur
+   * constructor — which is what made #1046 expensive. "Incremental" here only
+   * ever meant "does not DROP the table first": the loop below re-upserts
+   * EVERY engram, one awaited round-trip each, so a 5,031-engram store paid
+   * 5,031 sequential WASM-Postgres statements on every single process start.
+   * For the hook family — a fresh process per hook — that is the whole budget,
+   * and it degraded from slow to a hang as the corpus grew.
+   *
+   * The fingerprint guard makes the unchanged case free. It cannot mask a real
+   * change: any write goes through the YAML file, which changes size or mtime.
    */
   async syncFromYaml(): Promise<void> {
     return this.mutex.run(async () => {
       const db = await this.getDb()
+
+      const fingerprint = this.yamlFingerprint()
+      if (fingerprint !== null && (await this.readSyncedFingerprint(db)) === fingerprint) {
+        return // index already reflects this exact YAML file
+      }
+
       await db.exec('BEGIN')
       try {
         const ids = new Set<string>()
         if (existsSync(this.yamlPath)) {
           const engrams = loadEngrams(this.yamlPath)
-          for (const e of engrams) {
-            await this.upsertEngramTx(db, e, 'primary')
-            ids.add(e.id)
-          }
+          await this.upsertEngramsTx(db, engrams, 'primary')
+          for (const e of engrams) ids.add(e.id)
         }
         // Drop primary-source rows that no longer exist in YAML.
         if (ids.size > 0) {
@@ -552,6 +606,17 @@ export class PGLiteAdapter implements DerivedIndexAdapter {
         // whatever the removed engram used to say. Set-based and inside the same
         // transaction as the deletes above, so it costs one statement per sync.
         await db.exec('DELETE FROM engram_embeddings WHERE engram_id NOT IN (SELECT id FROM engrams)')
+        // Inside the transaction: a rollback must not leave the index claiming
+        // to be in sync with a file it never finished reading.
+        if (fingerprint !== null) {
+          await db.query(
+            `INSERT INTO sync_state (k, v) VALUES ('yaml_fingerprint', $1)
+             ON CONFLICT (k) DO UPDATE SET v = EXCLUDED.v`,
+            [fingerprint],
+          )
+        } else {
+          await db.exec("DELETE FROM sync_state WHERE k = 'yaml_fingerprint'")
+        }
         await db.exec('COMMIT')
       } catch (err) {
         await db.exec('ROLLBACK').catch(() => {})
@@ -562,9 +627,53 @@ export class PGLiteAdapter implements DerivedIndexAdapter {
 
   private async insertEngramsTx(db: any): Promise<void> {
     if (!existsSync(this.yamlPath)) return
-    const engrams = loadEngrams(this.yamlPath)
-    for (const e of engrams) {
-      await this.upsertEngramTx(db, e, 'primary')
+    await this.upsertEngramsTx(db, loadEngrams(this.yamlPath), 'primary')
+  }
+
+  /**
+   * Upsert many engrams in chunked multi-row statements.
+   *
+   * The per-engram version below issues one awaited round-trip each, which is
+   * fine for a `learn()` of one engram and catastrophic for a full corpus
+   * pass: 5,031 engrams took over ten minutes, because the cost here is
+   * round-trips into WASM Postgres, not the inserts themselves. Batching turns
+   * that into ~11 statements.
+   *
+   * CHUNK is bounded by Postgres's 65,535-parameter ceiling: 7 params per row
+   * caps a single statement at 9,362 rows. 500 leaves an order of magnitude of
+   * headroom and keeps the parameter array small enough not to matter.
+   */
+  private async upsertEngramsTx(db: any, engrams: Engram[], source: string): Promise<void> {
+    const COLS = 7
+    const CHUNK = 500
+    for (let i = 0; i < engrams.length; i += CHUNK) {
+      const batch = engrams.slice(i, i + CHUNK)
+      const values: unknown[] = []
+      const tuples = batch.map((e, n) => {
+        const b = n * COLS
+        values.push(
+          e.id,
+          e.status,
+          e.scope,
+          e.domain ?? null,
+          e.activation?.last_accessed ?? null,
+          JSON.stringify(e),
+          source,
+        )
+        return `($${b + 1}, $${b + 2}, $${b + 3}, $${b + 4}, $${b + 5}, $${b + 6}::jsonb, $${b + 7})`
+      })
+      await db.query(
+        `INSERT INTO engrams (id, status, scope, domain, last_accessed, data, source)
+         VALUES ${tuples.join(', ')}
+         ON CONFLICT (id) DO UPDATE SET
+           status = EXCLUDED.status,
+           scope = EXCLUDED.scope,
+           domain = EXCLUDED.domain,
+           last_accessed = EXCLUDED.last_accessed,
+           data = EXCLUDED.data,
+           source = EXCLUDED.source`,
+        values,
+      )
     }
   }
 

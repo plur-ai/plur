@@ -167,6 +167,22 @@ const COMMANDS: Record<string, string> = {
   '_embedder-probe': './commands/embedder-probe.js',
 }
 
+/**
+ * Await any background derived-index work started during this process.
+ *
+ * Deliberately swallows failures: the index is derived, YAML is the source of
+ * truth, and a command that already produced correct output must not exit
+ * non-zero because a cache could not be warmed. Core records the failure for
+ * `plur doctor` either way.
+ */
+async function drainPendingIndexWork(): Promise<void> {
+  try {
+    const { getLastPlurInstance } = await import('./plur.js')
+    const plur = getLastPlurInstance?.()
+    if (plur && typeof plur.waitForIndex === 'function') await plur.waitForIndex()
+  } catch { /* derived index — never fail a command over it */ }
+}
+
 if (!command || !COMMANDS[command]) {
   exit(1, `Unknown command: ${command}. Run 'plur --help' for usage.`)
 }
@@ -174,6 +190,18 @@ if (!command || !COMMANDS[command]) {
 try {
   const mod = await import(COMMANDS[command])
   await mod.run(commandArgs, flags)
+  // #1046: the derived index syncs in the BACKGROUND from the Plur
+  // constructor, and every command except `sync` used to exit without waiting
+  // for it. On a store large enough to auto-select PGLite that meant each run
+  // started a full-corpus pass and abandoned it partway, so the index never
+  // converged — it was found 64MB on disk with no `engrams` table at all,
+  // having been rebuilt-and-abandoned on every invocation for months.
+  //
+  // Waiting costs nothing in the steady state: the fingerprint guard in
+  // syncFromYaml makes an unchanged YAML a no-op, so this only blocks on the
+  // first run after an actual write, and only for as long as that write's
+  // sync takes.
+  await drainPendingIndexWork()
 } catch (err: any) {
   if (shouldOutputJson(flags)) {
     outputJson({ error: err.message })
