@@ -88,6 +88,9 @@ export default defineConfig({
           // The whole point: one file at a time, so no two WASM Postgres
           // instances are booting concurrently.
           fileParallelism: false,
+          // Same breaker reset as packages/core/vitest.config.ts — this inline
+          // project bypasses that file, so it must carry its own copy.
+          setupFiles: ['test/helpers/reset-remote-breaker-setup.ts'],
           // Generous, because serial execution means a slow run costs wall-clock
           // rather than correctness. A timeout here should mean a real hang.
           testTimeout: 120000,

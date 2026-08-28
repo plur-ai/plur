@@ -110,12 +110,16 @@ export function normalizeEndpointUrl(url: string): string {
 // entry pays the full connect timeout on every load, in every fresh process —
 // the measured cold `plur_session_start` stall, multiplied again by the
 // concurrent hook processes that each cold-load the same config. One network
-// failure marks the ORIGIN down for a cooldown; every RemoteStore on that
-// origin fast-fails (serving its prior cache) until it expires.
+// failure marks the ORIGIN down for a cooldown, and the PASSIVE read path
+// (load() paging) fast-fails to its prior cache while it lasts.
 //
-// HTTP responses never trip this — a 401/500 is a live host talking. And it
-// is deliberately per-process, not persisted: a fresh process re-probes once,
-// which is exactly the recovery behaviour a temporarily-down host wants.
+// Deliberately asymmetric: fetchBounded (writes, /me, explicit retries) marks
+// on failure and clears on success but NEVER fast-fails — an outbox flush the
+// user just invoked against a recovered host must probe, not be told "still
+// down" for the rest of the cooldown. Those probes are also the breaker's
+// recovery signal. HTTP responses never trip it — a 401/500 is a live host
+// talking. Per-process, not persisted: a fresh process re-probes once, which
+// is exactly the recovery behaviour a temporarily-down host wants.
 const HOST_DOWN_COOLDOWN_MS = 60_000
 const downHosts = new Map<string, number>()
 
@@ -143,6 +147,11 @@ export function remoteHostDownRemainingMs(url: string, now: number = Date.now())
     return 0
   }
   return remaining
+}
+
+/** A network-level SUCCESS against the host clears its down mark — the recovery half of the breaker. */
+export function clearRemoteHostDown(url: string): void {
+  downHosts.delete(hostKey(url))
 }
 
 /** Test seam. */
@@ -221,16 +230,19 @@ export class RemoteStore implements EngramStore {
    * holds at N-1 of them. A seventh endpoint added later inherits the bound.
    */
   private async fetchBounded(url: string, init: RequestInit = {}): Promise<Response> {
-    // #1069: a host that just failed at the network level fails fast for the
-    // whole cooldown instead of costing every caller its own full timeout.
-    const remaining = remoteHostDownRemainingMs(url)
-    if (remaining > 0) {
-      throw new Error(`host marked unreachable ${Math.round((HOST_DOWN_COOLDOWN_MS - remaining) / 1000)}s ago — fast-failing (#1069)`)
-    }
+    // #1069: a network-level failure here MARKS the host down (so the passive
+    // read path fast-fails), but this method never fast-fails itself. It
+    // carries writes, /me and explicit retries — an outbox flush the user just
+    // invoked against a host that recovered must be allowed to probe, not be
+    // told "still down" for the rest of the cooldown. The probe doubles as the
+    // breaker's recovery check: on success the next failure window starts
+    // clean; on failure the mark is refreshed.
     const ctrl = new AbortController()
     const timer = setTimeout(() => ctrl.abort(), LOAD_FETCH_TIMEOUT_MS)
     try {
-      return await fetch(url, { ...init, signal: ctrl.signal })
+      const res = await fetch(url, { ...init, signal: ctrl.signal })
+      clearRemoteHostDown(url) // the host answered — any HTTP status is a live host
+      return res
     } catch (err) {
       // fetch only throws on network-level failures (and our abort) — an HTTP
       // error status resolves normally — so any throw here marks the host.
@@ -428,6 +440,7 @@ export class RemoteStore implements EngramStore {
           const t = setTimeout(() => ctrl.abort(), LOAD_FETCH_TIMEOUT_MS)
           try {
             const r = await fetch(u, { headers: this.headers(), signal: ctrl.signal })
+            clearRemoteHostDown(this.url) // answered — alive, whatever the status
             if (!r.ok) {
               // 403 (no read access) and 404 (scope doesn't exist) are stable
               // states: the scope genuinely has nothing for us. Cache [] so we

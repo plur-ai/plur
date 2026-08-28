@@ -3,6 +3,7 @@ import {
   RemoteStore,
   markRemoteHostDown,
   remoteHostDownRemainingMs,
+  clearRemoteHostDown,
   _resetRemoteHostBreaker,
   salvageRemoteRow,
 } from '../src/store/remote-store.js'
@@ -35,6 +36,12 @@ describe('remote host breaker (#1069)', () => {
 
   it('expires after the cooldown so a recovered host gets re-probed', () => {
     markRemoteHostDown('https://dead.example.com/sse', Date.now() - 120_000)
+    expect(remoteHostDownRemainingMs('https://dead.example.com/sse')).toBe(0)
+  })
+
+  it('a network-level success clears the mark early — writes/retries are the recovery probe', () => {
+    markRemoteHostDown('https://dead.example.com/sse')
+    clearRemoteHostDown('https://dead.example.com/sse')
     expect(remoteHostDownRemainingMs('https://dead.example.com/sse')).toBe(0)
   })
 
