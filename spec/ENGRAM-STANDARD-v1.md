@@ -1,6 +1,6 @@
 # The Open Engram Standard
 
-**Version:** 1.5 (draft)
+**Version:** 1.6 (draft)
 **Status:** Working Draft
 **Date:** 2026-08-26
 **Editors:** PLUR.ai (plur-ai)
@@ -379,6 +379,11 @@ lowercases, strips non-word characters and collapses whitespace, so the hash is
 already invariant under capitalisation, punctuation and spacing — the changes
 that genuinely alter nothing.
 
+`content_hash` is the right authority for the question this section asks, because
+the producer computing `content_hash` is the party being asked. `content_hash` is
+**not** an integrity check against a party who does not want a change seen — see
+§4.12.1 before relying on `content_hash` for anything other than the test above.
+
 | Change | How | Why |
 |---|---|---|
 | Capitalisation, punctuation, whitespace in `statement` | **In place.** | The hash does not move. Nothing a reader could have relied on has changed. |
@@ -575,7 +580,7 @@ ignore the values.
 
 | Field | Type | Range / enum | Semantics |
 |---|---|---|---|
-| `content_hash` | string | | Hash of normalized statement, for dedup. |
+| `content_hash` | string | | SHA-256 of the normalized `statement` (§4.7.1). Used for deduplication, and as the test for whether an edit changed the claim. **Not an integrity check** — see §4.12.1. |
 | `commitment` | string | `exploring` \| `leaning` \| `decided` \| `locked` \| `draft` | Epistemic commitment level. `draft` marks the engram as pending human approval — core stores and recalls it normally; enforcement is left to deployments with a review queue. |
 | `locked_at` | string | | When commitment became `locked`. |
 | `locked_reason` | string | | Why locked. |
@@ -589,6 +594,31 @@ ignore the values.
 | `summary` | string | ≤80 chars | Injection-friendly short form. |
 | `pinned` | boolean | | Always-load flag; bypasses keyword gating. Use sparingly. |
 | `measured_under` | object | `model?`, `source_type?`, `hardware?`, `dataset?`, `date?` (ISO date) | Measurement conditions for numeric/benchmark engrams — which model, environment type, hardware tier, dataset, and date the value was recorded under. Allows tension-aware retrieval to treat differently-measured values as refinements rather than contradictions (#869). |
+
+#### 4.12.1 `content_hash` detects corruption, not tampering
+
+`content_hash` is stored in the same file as the `statement` `content_hash`
+covers. Anybody able to edit the statement is able to recompute `content_hash`
+in the same write, and the recomputed value verifies.
+
+So `content_hash` answers *"has the statement changed since the hash was last
+computed"*, which detects a truncated write, a partial sync or a corrupted file.
+`content_hash` does **not** answer *"has anybody altered this engram"*, and an
+implementation MUST NOT present a `content_hash` match as evidence that an
+engram is unmodified.
+
+The distinction is easy to lose because §4.7.1 makes `content_hash` the
+authority on whether an edit changed a claim. `content_hash` is a reliable
+authority there — the producer computing `content_hash` is the party being asked
+— and unreliable as a defence against a party who does not want the change seen.
+
+Detecting tampering requires a value the editing party cannot rewrite in the
+same operation. §5.5's pack integrity value is one, because a recipient compares
+the recipient's own recomputation against a value fixed before the pack was sent.
+An external anchor is another. Neither is `content_hash`, and §7 (signing) —
+which would give an engram one — is RESERVED.
+
+---
 
 ### 4.13 Required-field summary
 
@@ -1436,6 +1466,7 @@ they are holding and what changed. Version numbers follow §10.2.
 
 | Version | Date | Change class | What changed |
 |---|---|---|---|
+| 1.6 | 2026-08-28 | Minor (additive) | **§4.12.1 added**: `content_hash` detects corruption, not tampering. `content_hash` is stored in the same file as the statement `content_hash` covers, so anybody who edits the statement recomputes `content_hash` in the same write. The distinction was easy to lose because §4.7.1 makes `content_hash` the authority on whether an edit changed a claim — a reliable authority when the producer is the party being asked, and no defence at all against a party who does not want the change seen. §4.3's and §4.12's descriptions of `content_hash` now point at §4.12.1. Raised in the provenance-ladder design note. |
 | 1.5 | 2026-08-28 | Minor (additive) | Review corrections to 1.4, before it was ever merged. **§4.7.1 is scoped to a live store**, resolving a contradiction with §5.7: as written, a compliant producer could never emit the changed-statement carry-over that §5.7.3 was built around, and when it complied by minting a new id, §5.4 stripped the supersedes edge so the correction reached the recipient as an unlinked stranger. **§5.7.2 now keys correspondence on the `(id, content_hash)` pair** — in a pack an id is a stable *name*, so identity binds to the id and judgement binds to the hash. The rule reads "an **edit to `statement`** that moves the hash", and renormalization is explicitly not an edit: the normalizer is versioned and already on its second version, so the earlier phrasing would have turned a maintenance migration into thousands of spurious supersessions. The empty-normalization and punctuation blind spots are stated. §5.6.1 step 1 covers a **missing** `INTEGRITY` as a third outcome; step 2's secret refusal becomes **overridable**, since an unconditional refusal on a test this document does not define would permanently lock out a pack that legitimately teaches credential handling. §5.6.3 uses **write** authorization, not read — placing engrams is a write. §5.7.1 requires a consumer to assume SemVer, since it cannot discover a scheme documented where it cannot read. §5.8.1 states the floor for a consumer with no retired state. Corrected a factual error in §4.7.1's non-compliance table: the dedup paths **do** retain the previous statement, in the history log's `old_statement`. |
 | 1.4 | 2026-08-27 | Minor (additive) | **§4.7.1 added, "Changing an engram"**. The document defined two ways an engram can change — in place with `engram_version`, or by supersession with a new id — and never said which applies when, so the choice was made per code path by whoever wrote it. The test is mechanical: **a change that moves `content_hash` MUST be a supersession; anything else is in place.** A draft tested whether *the meaning* changed and was withdrawn before publication — meaning-change is a judgement, frequently subjective, and three implementations applying it independently would disagree, which defeats the purpose of specifying it. `content_hash` is already computed on every write and is invariant under capitalisation, punctuation and spacing. A producer MUST NOT rewrite a `statement` in place in a way that moves its hash, because that is the one operation leaving nothing that holds what the engram used to say. `engram_version`'s semantics expanded from six words. Nothing constrains previously-valid data; the obligation is on producers at edit time. |
 | 1.3 | 2026-08-26 | Minor (additive) | **New maturity label SPECIFIED** — normative and frozen, but not yet implemented in the reference; the vocabulary previously conflated "binding on implementers" with "implemented here" and so could not describe a rule written ahead of its own implementation. **§5.6 Install, §5.7 Update and §5.8 Uninstall added** — the standard described a pack as an artifact and said nothing about receiving one. §5.6 fixes the order of operations, requires a consumer to be able to answer which pack an engram came from, forbids adopting a producer's shared scopes without the installer's consent, and **defines the install registry** that §5.1 and §5.5 already called authoritative. §5.7 requires an orderable version and forbids silently discarding recipient-accumulated state across an update. §5.8 requires retire-rather-erase and forbids discarding a pack's source as a step of removing it. §4.4's `pack` gains a consumer-side note. §5.9 lists where the reference does not yet comply. Nothing here constrains previously-valid pack *data*; the new obligations fall on consumers, which the document did not previously address at all. |
