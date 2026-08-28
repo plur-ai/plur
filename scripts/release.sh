@@ -279,6 +279,10 @@ echo "  ✓ packages/mcp/src/index.ts"
 
 sed -i '' "s/const VERSION = '.*'/const VERSION = '$VERSION'/" packages/cli/src/index.ts
 echo "  ✓ packages/cli/src/index.ts"
+# CLI_VERSION pins the npx-fallback MCP entries (#1069); version-parity.test.ts
+# fails the suite if this and package.json ever disagree.
+sed -i '' "s/export const CLI_VERSION = '.*'/export const CLI_VERSION = '$VERSION'/" packages/cli/src/version.ts
+echo "  ✓ packages/cli/src/version.ts"
 
 # mcp test version assertion.
 # TARGETED: replace only the literal CURRENT version ($OLD_CORE), never a generic

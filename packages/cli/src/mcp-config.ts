@@ -1,4 +1,5 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs'
+import { CLI_VERSION } from './version.js'
 import { join, dirname } from 'path'
 import { homedir, platform } from 'os'
 
@@ -69,16 +70,29 @@ export function buildMcpServerEntry(opts?: { env?: Record<string, string> }): Mc
   if (shim) {
     return { command: shim, args: [], ...(opts?.env ? { env: opts.env } : {}) }
   }
+  // npx fallback pins THIS CLI's version, never @latest (#1069 root cause).
+  // An @latest entry makes npx re-resolve on every publish and REWRITE the
+  // cached native binaries (better_sqlite3.node) in place — and macOS kills
+  // any process that pages in a rewritten signed binary with SIGKILL
+  // "CODESIGNING Invalid Page" (captured in Diagnostic Reports on
+  // 2026-08-28: dyld faulting exactly better-sqlite3's 1888K mapping, ~0.5s
+  // after launch, cold runs only). That was the "first cold
+  // plur_session_start of the day dies" production signature: the first run
+  // after a publish is the one that races the cache rewrite. A pinned
+  // version's cache is immutable — upgrades happen when `plur init` rewrites
+  // the config to a new pin, a moment when servers restart anyway. Same
+  // convention as the hermes/python bridges' _NPX_CLI_VERSION pin.
+  const spec = `@plur-ai/mcp@${CLI_VERSION}`
   if (platform() === 'win32') {
     return {
       command: 'cmd.exe',
-      args: ['/c', 'npx', '-y', '@plur-ai/mcp@latest'],
+      args: ['/c', 'npx', '-y', spec],
       ...(opts?.env ? { env: opts.env } : {}),
     }
   }
   return {
     command: '/bin/sh',
-    args: ['-lc', 'exec npx -y @plur-ai/mcp@latest'],
+    args: ['-lc', `exec npx -y ${spec}`],
     ...(opts?.env ? { env: opts.env } : {}),
   }
 }

@@ -1208,7 +1208,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     if (cmd.startsWith('/') || /^[A-Za-z]:\\/.test(cmd)) {
       outputInfo('  Committing .cursor/mcp.json / .cursor/hooks.json? Their command is this machine\'s local', flags)
       outputInfo(`  path (${cmd}) — it won't exist on a teammate's machine or a fresh Background Agent VM.`, flags)
-      outputInfo('  Run `plur init --cursor` there too, or edit the command to `npx -y @plur-ai/mcp@latest`.', flags)
+      outputInfo('  Run `plur init --cursor` there too (it pins the right version — avoid @latest, #1069).', flags)
     }
   }
   outputInfo(`CLAUDE.md:        ${claudeMdStatus}`, flags)

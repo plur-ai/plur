@@ -49,6 +49,14 @@ survives unhandled rejections and uncaught exceptions, with a spawned-process
 regression test proving plur_doctor over MCP returns AND the server answers
 the next call.
 
+**MCP config entries pin their version — never `@latest` (#1069 root cause).**
+The cold-start SIGKILL was macOS's code-signing monitor: an `@latest` npx
+entry makes npx rewrite its cached native binaries (`better_sqlite3.node`) on
+every publish, and any process paging in a mid-rewrite binary dies with
+"CODESIGNING Invalid Page" (captured in Diagnostic Reports). `plur init` and
+`plur-mcp init` now write the shim where resolvable and otherwise pin the
+installing CLI's own version; upgrades re-pin via `plur init`.
+
 **Dead remote hosts cost one timeout per process, not one per store entry
 (#1069).** A production config was observed with nine store entries pointing
 at one unreachable host — every load paid nine connect timeouts, in every

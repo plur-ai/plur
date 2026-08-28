@@ -57,3 +57,18 @@ describe('mergePlurMcp with env', () => {
     expect(servers.plur.env).toEqual({ PLUR_TOOL_PROFILE: 'cursor' })
   })
 })
+
+describe('buildMcpServerEntry npx fallback (#1069)', () => {
+  it('never writes an @latest entry — a pinned spec is what keeps the npx cache immutable', () => {
+    // Without the shim installed in this test env, the fallback must pin THIS
+    // build's version: @latest makes npx rewrite cached native binaries on
+    // every publish, and macOS SIGKILLs (CODESIGNING Invalid Page) whatever
+    // pages one in mid-rewrite — the #1069 cold-start death.
+    const entry = buildMcpServerEntry()
+    const blob = `${entry.command} ${(entry.args ?? []).join(' ')}`
+    expect(blob).not.toContain('@latest')
+    if (blob.includes('npx')) {
+      expect(blob).toMatch(/@plur-ai\/mcp@\d+\.\d+\.\d+/)
+    }
+  })
+})

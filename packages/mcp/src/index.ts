@@ -30,9 +30,13 @@ Docs: https://plur.ai · https://github.com/plur-ai/plur
 
 // --- Constants (must be before any await that uses them) ---
 
+// Pinned to THIS build's version, never @latest (#1069): an @latest entry
+// makes npx rewrite its cached native binaries on every publish, and macOS
+// SIGKILLs (CODESIGNING Invalid Page) any process that pages one in
+// mid-rewrite. Upgrades re-run init, which re-pins.
 const MCP_SERVER_CONFIG = {
   command: 'npx',
-  args: ['-y', '@plur-ai/mcp@latest'],
+  args: ['-y', `@plur-ai/mcp@${VERSION}`],
 }
 
 // --- Pack-upgrade helpers ---
