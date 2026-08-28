@@ -8,9 +8,9 @@ that part should work.
 
 | | |
 |---|---|
-| **Version** | 0.7 (draft) |
+| **Version** | 0.8 (draft) |
 | **Status** | Proposed, and implemented in the reference. OPTIONAL to follow: an implementation that ignores this document is still fully conformant to the Engram Standard. An implementation that writes provenance MUST follow this document, so that two such implementations agree. |
-| **Companion to** | [The Engram Standard, version 1.4](./ENGRAM-STANDARD-v1.md) |
+| **Companion to** | [The Engram Standard, version 1.5](./ENGRAM-STANDARD-v1.md) |
 | **Profiles** | Section 9 of that standard, "Provenance binding". It refines that section; it does not replace it, and the standard governs wherever the two overlap. |
 | **Date** | 2026-08-26 |
 | **Licence** | Creative Commons BY 4.0 for the text, Apache 2.0 for any code |
@@ -19,6 +19,7 @@ that part should work.
 
 | Version | Date | What changed |
 |---|---|---|
+| 0.8 | 2026-08-28 | Review corrections. §5.4.2's "none of these MUST fail the install" was ambiguous in RFC 2119 terms and said close to the opposite of what was meant; it now reads "a consumer MAY proceed despite any of these; it MUST report every one." §5.4.3 now says what becomes of the producer's own `provenance.origin` when the consumer writes `pack:<name>@<version>` — overwritten on the engram because it names the producer's store, preserved in the retained record, and optionally appended to the chain, but never silently discarded. |
 | 0.7 | 2026-08-27 | Section 4.2 rewritten, keyed on the `content_hash` test rather than on whether meaning changed — and sections 10.2 and 14.1 downgraded, following Engram Standard §4.7.1 *changing an engram*. Version-scoped identifiers were introduced because a rewritten statement is not the same thing as the one it replaced; under §4.7.1 a rewritten statement is a separate engram, so the identifier already carries the distinction. Section 10.2 *version history* is no longer required for 4.2, and 14.1's stated blocker — that the shape of a record would depend on which code path ran — is what §4.7.1 exists to prevent. |
 | 0.6 | 2026-08-27 | Section 5.4 added, "Receiving a pack's provenance". Everything before it was written from the producer's side, which is why the reference builds a record for every exported pack and its installer deletes the directory without a word — nothing told it not to. The section requires a consumer to keep the received directory as evidence rather than content, to report what it found (a tester's corrupt, missing and orphaned records all installed silently with exit code 0), and to record `pack:<name>@<version>` as the origin of anything installed. It forbids merging a received `attribution` or `claim_class` into the store unqualified — the tempting option, and the one that launders a stranger's claims — while permitting the values to be kept where the intermediary is named, exactly as section 8.4 does for an inherited licence. Also covers re-export, where forwarding and laundering are actually distinguished, and states plainly that none of this verifies anything. |
 | 0.5 | 2026-08-26 | Section 10.1 completed. History events now carry an actor, and a record prefers it over the engram's attribution when saying who caused an activity — otherwise a correction is attributed to the person it corrected, the collapse an outside reviewer warned about on the epic. Section 10.1.2 added for `provenance.chain`, the last of the four origin fields nothing read or wrote: ancestors nearest first, bounded, cycle-guarded, and explicitly a shortcut the history log outranks. |
@@ -813,7 +814,9 @@ consumer MUST report:
 - how many describe an engram the pack does not contain
 - how many engrams have no record at all
 
-None of these MUST fail the install. All of them MUST be said out loud.
+A consumer MAY proceed despite any of these; it MUST report every one. The
+earlier phrasing here read "none of these MUST fail the install", which in
+RFC 2119 terms says something close to the opposite of what was meant.
 
 The failure this guards against was observed rather than imagined: a tester
 replaced one record with invalid JSON, deleted two others, and added a record for
@@ -839,6 +842,14 @@ provenance.origin = pack:<name>@<version>
 Without it, a memory that arrived in an archive from a stranger is
 indistinguishable from one the recipient recorded themselves, which is the
 distinction the whole document exists to preserve.
+
+**The producer's own `origin` is overwritten, not lost.** A shipped record
+frequently carries an origin of its own — `git:…`, `doc:…`, the session it was
+learned in. That value describes the *producer's* store and cannot be resolved by
+the recipient, so it MUST NOT remain as the installed engram's origin. It MUST be
+preserved in the retained record (§5.4.1), which is where a reader goes for the
+producer's account. A consumer MAY additionally append it to
+`provenance.chain` as an ancestor; it MUST NOT silently discard it.
 
 **Keep the received record — SHOULD.** Retain it, and make it available when
 somebody asks where an engram came from. It is somebody else's document, and a

@@ -466,7 +466,13 @@ export function readPackProvenance(
       //
       // Falls back to the boolean for records written before the four-state
       // field existed.
-      const source = subject['engram:licenseSource'] as string | undefined
+      // Guarded like `license` above. A record is a file a stranger wrote, and
+      // this module's stated job is packs built to mislead — an unguarded read
+      // puts whatever the file contained into `sources: string[]`, so one
+      // malformed record turns a typed array into a mixed one for every
+      // consumer downstream.
+      const rawSource = subject['engram:licenseSource']
+      const source = typeof rawSource === 'string' ? rawSource : undefined
       const chosen = source
         ? (source === 'chosen' || source === 'configuredDefault')
         : subject['engram:licenseIsDefault'] !== true
