@@ -14,7 +14,7 @@ import { join } from 'path'
 import { tmpdir } from 'os'
 import yaml from 'js-yaml'
 import { PGLiteAdapter } from '../src/storage-pglite.js'
-import { exportPgliteEmbeddingsToCache } from '../src/pglite-embeddings-export.js'
+import { exportPgliteEmbeddingsToCache, toNumberArray } from '../src/pglite-embeddings-export.js'
 import { embeddingContentHash } from '../src/fts.js'
 import type { Engram } from '../src/schemas/engram.js'
 
@@ -77,6 +77,7 @@ describe('exportPgliteEmbeddingsToCache (#1046)', () => {
     expect(report.ported).toBe(1)
     expect(report.stale).toBe(1)
     expect(report.orphaned).toBe(1)
+    expect(report.malformed).toBe(0) // per-row containment counter (#1063) — present and quiet on a clean store
 
     const cache = JSON.parse(readFileSync(join(dir, '.embeddings-cache.json'), 'utf8')) as {
       meta: { embedder_dim: number }
@@ -111,4 +112,22 @@ describe('exportPgliteEmbeddingsToCache (#1046)', () => {
     expect(readFileSync(join(dir, '.embeddings-cache.json'), 'utf8')).toBe(before)
     expect(existsSync(join(dir, 'store.pglite'))).toBe(true) // export never deletes
   }, PGLITE_TIMEOUT)
+})
+
+describe('toNumberArray (#1063)', () => {
+  it('decodes an UNALIGNED BYTEA view instead of throwing — the trigger that used to abort the whole export', () => {
+    // A Float32Array view over a buffer at a non-4-aligned byteOffset throws
+    // RangeError. Before the copying fix, that single throw reached the outer
+    // catch and turned every valid vector into `status: failed, ported: 0`.
+    const backing = Buffer.alloc(4 * 3 + 1)
+    const floats = new Float32Array([1.5, -2.25, 3.125])
+    Buffer.from(floats.buffer).copy(backing, 1)
+    const unaligned = backing.subarray(1) // byteOffset 1 — the poison view
+    expect(unaligned.byteOffset % 4).not.toBe(0)
+    expect(toNumberArray(unaligned)).toEqual([1.5, -2.25, 3.125])
+  })
+
+  it('still rejects a byte length that is not a multiple of four', () => {
+    expect(toNumberArray(new Uint8Array(7))).toBeNull()
+  })
 })

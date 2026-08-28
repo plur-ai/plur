@@ -23,6 +23,9 @@ import * as yaml from 'js-yaml'
 import { sync, SyncStoreUnreadableError } from '../src/sync.js'
 import { Plur } from '../src/index.js'
 import { withAsyncLock } from '../src/store/async-lock.js'
+import { isolateGitConfig } from './helpers/git-isolation.js'
+
+isolateGitConfig() // a global gitignore of engrams.yaml empties every commit here (#1062)
 
 let root: string
 let remote: string
