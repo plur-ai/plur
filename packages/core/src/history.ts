@@ -4,7 +4,7 @@ import { join } from 'path'
 import { createHash } from 'crypto'
 
 export interface HistoryEvent {
-  event: 'engram_created' | 'engram_updated' | 'engram_merged' | 'feedback_received' | 'engram_retired' | 'engram_decremented' | 'engram_promoted' | 'engram_rescoped' | 'failure_reported' | 'procedure_evolved' | 'recurrence_detected' | 'contradiction_detected' | 'scope_promoted' | 'buffer_pruned' | 'weekly_review' | 'engram_route_failed' | 'co_injection' | 'injection_outcome' | 'session_scope_changed' | 'dedup_near_duplicate' | 'engram_duplicate_absorbed'
+  event: 'engram_created' | 'engram_updated' | 'engram_merged' | 'feedback_received' | 'engram_retired' | 'engram_decremented' | 'engram_promoted' | 'engram_rescoped' | 'failure_reported' | 'procedure_evolved' | 'recurrence_detected' | 'contradiction_detected' | 'scope_promoted' | 'buffer_pruned' | 'weekly_review' | 'engram_route_failed' | 'co_injection' | 'injection_outcome' | 'session_scope_changed' | 'dedup_near_duplicate' | 'engram_duplicate_absorbed' | 'checkpoint'
   /**
    * Engram this event belongs to. Session-level events
    * (`session_scope_changed`) carry no engram — they use `''`, which by
@@ -13,12 +13,213 @@ export interface HistoryEvent {
   engram_id: string
   timestamp: string // ISO
   data: Record<string, unknown> // event-specific payload
+  /**
+   * SHA-256 over the canonical bytes of this event (sorted keys, no whitespace,
+   * ISO-8601 timestamps). Set by appendHistory() for events written after #1051.
+   * Legacy events have no hash field — readers must tolerate its absence.
+   */
+  hash?: string
+  /**
+   * Hash of the predecessor event in the chain, or null when this event is the
+   * genesis of the chain (first chained event in the store) or when the
+   * predecessor could not be read (gap — the write still proceeds, never fabricates).
+   * Legacy events have no prev field — readers must tolerate its absence.
+   */
+  prev?: string | null
+}
+
+/**
+ * Recursively sort object keys by UTF-16 code unit order (lexicographic), the
+ * same sort order used by JSON.stringify's default key visitor in V8.
+ * Arrays are preserved as arrays (elements sorted recursively if objects).
+ *
+ * This is the canonical-bytes normaliser for #1051: every event hash is
+ * computed over JSON.stringify(sortKeysDeep(event_without_hash)), so two
+ * independent implementations that agree on this function agree on all hashes.
+ */
+export function sortKeysDeep(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(sortKeysDeep)
+  }
+  if (value !== null && typeof value === 'object') {
+    const obj = value as Record<string, unknown>
+    const sorted: Record<string, unknown> = {}
+    for (const key of Object.keys(obj).sort()) {
+      sorted[key] = sortKeysDeep(obj[key])
+    }
+    return sorted
+  }
+  return value
+}
+
+/**
+ * Canonical bytes for a history event: UTF-8 JSON, keys sorted
+ * lexicographically by UTF-16 code unit, no insignificant whitespace.
+ *
+ * The `hash` field is EXCLUDED from its own canonical representation (circular
+ * by construction). The `prev` field is INCLUDED — it is a known value at hash
+ * time and forms part of the chain linkage.
+ *
+ * Spec (#1051):
+ * - UTF-8 JSON
+ * - Keys sorted recursively by UTF-16 code unit (JS default sort)
+ * - No insignificant whitespace (JSON.stringify with no space arg)
+ * - Timestamps must be ISO-8601 strings, never floats
+ * - Hashes: lowercase hex SHA-256
+ */
+export function canonicalEventBytes(event: HistoryEvent): Buffer {
+  const { hash: _hash, ...rest } = event
+  void _hash // excluded from the canonical form
+  const sorted = sortKeysDeep(rest)
+  return Buffer.from(JSON.stringify(sorted), 'utf8')
+}
+
+/**
+ * Compute the SHA-256 hash of a history event's canonical bytes.
+ * Returns lowercase hex string (64 chars).
+ *
+ * Callers must pass the event WITHOUT the hash field set, or use this before
+ * setting event.hash (canonical bytes always exclude `hash` — see above).
+ */
+export function computeEventHash(event: HistoryEvent): string {
+  return createHash('sha256').update(canonicalEventBytes(event)).digest('hex')
+}
+
+/**
+ * Tail-seek the last non-empty line of a JSONL file and extract the `hash`
+ * field from the parsed JSON. Returns null if the file does not exist, cannot
+ * be read, has no non-empty lines, or the last line lacks a `hash` field.
+ *
+ * This is the predecessor-hash read for chain linkage. It is intentionally
+ * robust: an unreadable or missing predecessor results in null (a documented
+ * gap), not an error. The caller (appendHistory) writes the gap marker rather
+ * than failing the mutation.
+ *
+ * Implementation: reads the last TAIL_WINDOW bytes of the file and scans
+ * backwards for a newline, avoiding a full-file parse on the hot write path.
+ */
+const TAIL_WINDOW = 8192 // bytes — sufficient for any realistic event line
+
+export function tailSeekLastHash(filePath: string): string | null {
+  try {
+    let stat: fs.Stats
+    try {
+      stat = fs.statSync(filePath)
+    } catch {
+      return null // file does not exist
+    }
+    if (stat.size === 0) return null
+
+    const readSize = Math.min(stat.size, TAIL_WINDOW)
+    const offset = stat.size - readSize
+    const buf = Buffer.allocUnsafe(readSize)
+    const fd = fs.openSync(filePath, 'r')
+    try {
+      fs.readSync(fd, buf, 0, readSize, offset)
+    } finally {
+      fs.closeSync(fd)
+    }
+
+    const text = buf.toString('utf8')
+    // Scan backwards for the last non-empty line
+    const lines = text.split('\n')
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const line = lines[i].trim()
+      if (line.length === 0) continue
+      try {
+        const parsed = JSON.parse(line) as Record<string, unknown>
+        if (typeof parsed.hash === 'string' && parsed.hash.length === 64) {
+          return parsed.hash
+        }
+        // Last event exists but has no hash (legacy event) — this is a gap in
+        // the chain. Return null to signal "predecessor found but unchained".
+        return null
+      } catch {
+        return null // malformed JSON — treat as unreadable
+      }
+    }
+    return null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Find the hash of the most recent chained event across all month files in the
+ * history directory, looking at the current month file first and then scanning
+ * backwards through prior months.
+ *
+ * Used by appendHistory for cross-month chain continuity: when the first event
+ * of a new month is written, the predecessor is in the prior month's file.
+ *
+ * Returns null when no chained predecessor is found (genesis event, gap after
+ * a legacy event, or unreadable files).
+ */
+export function findPredecessorHash(historyDir: string, currentMonthFile: string): string | null {
+  // If the current month file exists and has content, the predecessor (if any)
+  // is within it. A null return means either: last event is a legacy event
+  // (no hash — gap) or the file is empty/unreadable. We don't cross back to
+  // prior months when the current month file already has events written into it.
+  try {
+    const stat = fs.statSync(currentMonthFile)
+    if (stat.size > 0) {
+      // File exists with content — predecessor lives here (or it's a gap)
+      return tailSeekLastHash(currentMonthFile)
+    }
+    // File exists but empty — treat as absent
+  } catch {
+    // File does not exist — this is the first event of a new month.
+    // Look at the most recent prior month for cross-month continuity.
+  }
+
+  // Current month file absent or empty: walk backwards through prior months
+  // for cross-month chain continuity.
+  try {
+    if (!fs.existsSync(historyDir)) return null
+    const months = fs.readdirSync(historyDir)
+      .filter(f => f.endsWith('.jsonl'))
+      .map(f => f.replace('.jsonl', ''))
+      .sort()
+      .reverse() // newest first
+
+    for (const month of months) {
+      const filePath = join(historyDir, `${month}.jsonl`)
+      // Skip the current month file — already checked above
+      if (filePath === currentMonthFile) continue
+      const hash = tailSeekLastHash(filePath)
+      if (hash !== null) return hash
+      // If the last event in the most recent prior month has no hash (legacy),
+      // stop — no chained predecessor exists before this gap.
+      break
+    }
+  } catch {
+    // best-effort
+  }
+  return null
 }
 
 /**
  * Append a history event to the JSONL file for the current month.
  * Files are stored in {root}/history/YYYY-MM.jsonl.
  * Auto-creates the history directory and file on first write.
+ *
+ * Hash-chain (#1051): before writing, this function:
+ *   1. Tail-seeks for the predecessor's hash — current month file first, then
+ *      the most recent prior month file (cross-month continuity)
+ *   2. Sets event.prev = predecessor hash | null (gap when predecessor unreadable)
+ *   3. Computes SHA-256 over canonical bytes (sorted keys, no whitespace) and
+ *      sets event.hash
+ *
+ * Concurrency: appendHistory must be called from within the store write lock
+ * (_withStoreLock in index.ts). The read-then-write is not independently atomic
+ * at the filesystem level; the store lock provides the exclusion.
+ *
+ * Gap handling: if the predecessor cannot be read (file missing, malformed line,
+ * legacy event without hash), prev is set to null. This is a documented gap in
+ * the chain — never an error, never a fabricated hash.
+ *
+ * Legacy events: events written before #1051 carry no hash or prev fields. They
+ * are loaded and reported as-is, never silently upgraded, never errored.
  */
 export function appendHistory(root: string, event: HistoryEvent): void {
   const historyDir = join(root, 'history')
@@ -28,6 +229,14 @@ export function appendHistory(root: string, event: HistoryEvent): void {
 
   const date = event.timestamp.slice(0, 7) // YYYY-MM
   const filePath = join(historyDir, `${date}.jsonl`)
+
+  // Hash-chain linkage (#1051): find predecessor hash (current month first,
+  // then prior months for cross-month continuity). Best-effort — a read failure
+  // produces a gap (prev=null), not an error.
+  const predecessorHash = findPredecessorHash(historyDir, filePath)
+  event.prev = predecessorHash // null when gap or genesis
+  event.hash = computeEventHash(event) // canonical bytes exclude the hash field itself
+
   const line = JSON.stringify(event) + '\n'
   // fsync the append (#813, audit finding 20). O_APPEND makes the write atomic
   // against concurrent writers, but not durable: a committed engram mutation
@@ -77,6 +286,102 @@ export function appendHistory(root: string, event: HistoryEvent): void {
 /** Warn once per path — this is on the hot write path; a broken log must not
  *  also become a log flood. */
 const warnedHistoryPaths = new Set<string>()
+
+/**
+ * Payload of a `checkpoint` history event (#1052).
+ *
+ * A checkpoint commits to every event that precedes it in the chain — the
+ * chain linkage (prev/hash) makes the whole prior history tamper-evident
+ * once this checkpoint is externally anchored.
+ *
+ * Fields:
+ *   chain_head  — hash of the predecessor event (the last event before this
+ *                 checkpoint), or null when this is the genesis checkpoint.
+ *                 Redundant with the HistoryEvent.prev field, but kept in
+ *                 data so the payload is self-contained without parsing chain
+ *                 linkage separately.
+ *   store_hash  — SHA-256 of the engrams.yaml bytes at checkpoint time,
+ *                 hex-encoded. Never computed on append (hot path) — only
+ *                 computed when a checkpoint is explicitly requested.
+ *   engram_count — count of active (non-retired) engrams at checkpoint time.
+ *   actor        — who/what triggered the checkpoint ('session_end' | 'cli' | string).
+ */
+export interface CheckpointData {
+  chain_head: string | null
+  store_hash: string
+  engram_count: number
+  actor: string
+}
+
+/**
+ * Compute the SHA-256 hash of the engrams.yaml file at `engramsPath`.
+ * Returns lowercase hex string. Throws if the file cannot be read.
+ *
+ * This is ONLY called when a checkpoint is explicitly requested — never on
+ * the hot write path (learn/feedback/forget).
+ */
+export function hashEngramsFile(engramsPath: string): string {
+  const bytes = fs.readFileSync(engramsPath)
+  return createHash('sha256').update(bytes).digest('hex')
+}
+
+/**
+ * Emit a `checkpoint` history event for the store at `root`.
+ *
+ * Computes:
+ *   - chain_head: the predecessor hash (last chained event in the store)
+ *   - store_hash: SHA-256 of engrams.yaml bytes (only done at checkpoint time)
+ *   - engram_count: number of active engrams provided by the caller
+ *
+ * The checkpoint is itself a chained event — it gets its own hash and prev
+ * via appendHistory, so two checkpoints across a month boundary chain correctly
+ * via the existing cross-month mechanism.
+ *
+ * The `engram_id` field is set to '' (empty string — same convention as
+ * session_scope_changed): checkpoints are store-level events, not engram-level.
+ *
+ * @param root        — plur store root (e.g. ~/.plur)
+ * @param engramsPath — absolute path to engrams.yaml
+ * @param engramCount — count of active engrams at this moment
+ * @param actor       — who triggered the checkpoint ('session_end' | 'cli' | custom)
+ * @param timestamp   — ISO-8601 timestamp; defaults to now
+ * @returns the written CheckpointData
+ */
+export function emitCheckpoint(
+  root: string,
+  engramsPath: string,
+  engramCount: number,
+  actor: string,
+  timestamp?: string,
+): CheckpointData {
+  const ts = timestamp ?? new Date().toISOString()
+
+  // Compute chain head BEFORE writing (the predecessor of this checkpoint)
+  const historyDir = join(root, 'history')
+  const date = ts.slice(0, 7) // YYYY-MM
+  const currentMonthFile = join(historyDir, `${date}.jsonl`)
+  const chain_head = findPredecessorHash(historyDir, currentMonthFile)
+
+  // Hash the store (only at checkpoint time — never on hot write path)
+  const store_hash = hashEngramsFile(engramsPath)
+
+  const data: CheckpointData = {
+    chain_head,
+    store_hash,
+    engram_count: engramCount,
+    actor,
+  }
+
+  const event: HistoryEvent = {
+    event: 'checkpoint',
+    engram_id: '', // store-level event; no single engram
+    timestamp: ts,
+    data: data as unknown as Record<string, unknown>,
+  }
+
+  appendHistory(root, event)
+  return data
+}
 
 /**
  * Read history events from a specific month's JSONL file.

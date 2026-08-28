@@ -1,7 +1,7 @@
 import { existsSync, unlinkSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
-import { Plur, extractMetaEngrams, validateMetaEngram, confidenceBand, generateProfile, getProfileForInjection, markProfileDirty, selectModelForOperation, readHistoryForEngram, getCachedUpdateCheck, minorVersionsBehind, scanForTensions, CapabilityCanary, readProjectConfig, isSharedScope, resolveRerankerName, getReranker, classifyRerankerFailure, hfCacheDirName, SUGGEST_DISPLAY_MIN_CONFIDENCE, mcpRemoteWarningLine, doctorRemoteRemediation, normalizeEndpointUrl, REMOTE_STATUS_TTL_MS, PROBE_CLEARABLE_STATES } from '@plur-ai/core'
+import { Plur, extractMetaEngrams, validateMetaEngram, confidenceBand, generateProfile, getProfileForInjection, markProfileDirty, selectModelForOperation, readHistoryForEngram, getCachedUpdateCheck, minorVersionsBehind, scanForTensions, CapabilityCanary, readProjectConfig, isSharedScope, resolveRerankerName, getReranker, classifyRerankerFailure, hfCacheDirName, SUGGEST_DISPLAY_MIN_CONFIDENCE, mcpRemoteWarningLine, doctorRemoteRemediation, normalizeEndpointUrl, REMOTE_STATUS_TTL_MS, PROBE_CLEARABLE_STATES, emitCheckpoint } from '@plur-ai/core'
 import type { LlmFunction, MetaField, TensionStatus, RerankerEvalResult, HistoryEvent, Receipt, RemoteStoreStatusEntry } from '@plur-ai/core'
 import { recordTelemetry } from './telemetry.js'
 import { VERSION } from './version.js'
@@ -3124,10 +3124,22 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
 
         const status = await plur.status()
 
+        // Emit a checkpoint event (#1052) — best-effort, never fails the session.
+        // Hashes the store at session-end time; the checkpoint chains onto the
+        // last history event written during this session (engrams learned above).
+        let checkpoint_hash: string | undefined
+        try {
+          const plurRoot = plur.storageRoot
+          const engramsPath = join(plurRoot, 'engrams.yaml')
+          const cp = emitCheckpoint(plurRoot, engramsPath, status.engram_count, 'session_end')
+          checkpoint_hash = cp.store_hash
+        } catch { /* checkpoint is best-effort */ }
+
         return {
           engrams_created,
           episode_id: episode.id,
           total_engrams: status.engram_count,
+          ...(checkpoint_hash !== undefined ? { checkpoint_hash } : {}),
           ...(injection_summary ? { injection_summary } : {}),
           hint: engrams_created === 0
             ? 'No engrams captured this session. If any corrections, preferences, or patterns came up, consider calling plur_learn before ending.'
