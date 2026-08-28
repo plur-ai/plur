@@ -232,6 +232,12 @@ export function knownConfigFiles(cwd: string = process.cwd()): ConfigFile[] {
 
 /**
  * Read a JSON config file. Returns {} if missing or unparseable.
+ *
+ * For READ-ONLY consumers (doctor's checks) this coercion is the right
+ * degradation. Any caller that intends to WRITE the config back must use
+ * readConfigForWrite instead: writing through this function's {} turns "one
+ * trailing comma" into "every other MCP server the user had registered is
+ * silently destroyed" (#1059).
  */
 export function readConfig(path: string): Record<string, unknown> {
   if (!existsSync(path)) return {}
@@ -240,6 +246,32 @@ export function readConfig(path: string): Record<string, unknown> {
   } catch {
     return {}
   }
+}
+
+export interface ConfigReadResult {
+  config: Record<string, unknown>
+  /** false when the file EXISTS but is not a JSON object — merging into the coerced {} and writing back would destroy the user's other entries (#1059). */
+  ok: boolean
+}
+
+/**
+ * Read a JSON config file that the caller intends to modify and write back.
+ * A missing file is a fresh install (`ok: true`, empty config); a file that
+ * exists but fails to parse — or parses to something other than an object —
+ * is the user's damaged-but-recoverable data, and the only safe move is to
+ * refuse the leg and tell them (`ok: false`). This is the same refusal the
+ * hooks.json legs have carried since the 0.19.0 adversarial audit (ADV-F2);
+ * #1059 is that finding un-propagated to the MCP legs of the same functions.
+ */
+export function readConfigForWrite(path: string): ConfigReadResult {
+  if (!existsSync(path)) return { config: {}, ok: true }
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(path, 'utf8'))
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return { config: parsed as Record<string, unknown>, ok: true }
+    }
+  } catch { /* fall through to the refusal */ }
+  return { config: {}, ok: false }
 }
 
 /**

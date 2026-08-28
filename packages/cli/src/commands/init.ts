@@ -11,7 +11,7 @@ import {
   claudeDesktopConfigPath,
   hasPlurMcp,
   mergePlurMcp,
-  readConfig,
+  readConfigForWrite,
   writeConfig,
   cursorProjectMcpConfigPath,
   cursorProjectHooksConfigPath,
@@ -622,7 +622,10 @@ function installDesktopMcp(args: string[]): string {
     return 'not installed (Claude Desktop not detected — pass --desktop to force)'
   }
 
-  const config = readConfig(desktopPath)
+  const { config, ok } = readConfigForWrite(desktopPath)
+  if (!ok) {
+    return `skipped — ${desktopPath} exists but is not valid JSON; writing would discard your other MCP servers. Fix it by hand, then re-run \`plur init\``
+  }
   if (hasPlurMcp(config)) {
     return `already registered in ${desktopPath}`
   }
@@ -643,10 +646,14 @@ function installCursor(cmd: string): string {
   const hooksPath = cursorProjectHooksConfigPath()
   const rulesPath = cursorRulesPath()
 
-  const mcpConfig = readConfig(mcpPath)
+  // Same refusal the hooks leg below has carried since its dijkstra-evaluator
+  // audit: an unparseable file must not be "read as {}" and written back (#1059).
+  const { config: mcpConfig, ok: mcpParses } = readConfigForWrite(mcpPath)
   const mcpAlready = hasPlurMcp(mcpConfig)
   let mcpStatus: string
-  if (!mcpAlready) {
+  if (!mcpParses) {
+    mcpStatus = `skipped — ${mcpPath} exists but is not valid JSON; writing would discard your other MCP servers. Fix it by hand, then re-run \`plur init --cursor\``
+  } else if (!mcpAlready) {
     mergePlurMcp(mcpConfig, { env: { PLUR_TOOL_PROFILE: 'cursor' } })
     writeConfig(mcpPath, mcpConfig)
     mcpStatus = 'registered'
@@ -918,9 +925,13 @@ function installAntigravity(cmd: string): string {
   // vars must be declared explicitly in the entry — buildMcpServerEntry's
   // shim needs none, so the default entry is sufficient.
   const mcpPath = agyMcpConfigPath()
-  const mcpConfig = readConfig(mcpPath)
+  // Same refusal as the hooks leg above (#1059): a file that exists but does
+  // not parse is the user's damaged-but-recoverable data, not an empty config.
+  const { config: mcpConfig, ok: mcpParses } = readConfigForWrite(mcpPath)
   let mcpStatus: string
-  if (hasPlurMcp(mcpConfig)) {
+  if (!mcpParses) {
+    mcpStatus = `skipped — ${mcpPath} exists but is not valid JSON; writing would discard your other MCP servers. Fix it by hand, then re-run \`plur init --antigravity\``
+  } else if (hasPlurMcp(mcpConfig)) {
     mcpStatus = 'already registered'
   } else {
     mergePlurMcp(mcpConfig)

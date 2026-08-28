@@ -1,4 +1,4 @@
-import { readFileSync, mkdirSync, writeFileSync, existsSync, statSync, lstatSync, chmodSync, readdirSync, unlinkSync, openSync, readSync, closeSync, fstatSync } from 'fs'
+import { readFileSync, writeFileSync, existsSync, statSync, readdirSync, unlinkSync, openSync, readSync, closeSync, fstatSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { createHash } from 'crypto'
@@ -40,51 +40,19 @@ import { safeSessionKey } from './session-key.js'
  */
 
 export { readStdinJson, runCodexHook as runAgyHook, injectWithFallback, isPlurSessionStartTool } from './codex-hook-io.js'
+import { ensureSessionDir, sessionDirSafeToSweep } from './codex-hook-io.js'
 
 const SESSION_DIR = join(tmpdir(), 'plur-agy-sessions')
 const STALE_SESSION_FILE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000 // 7 days
 
 /**
- * Create — and vet — the session directory. Returns false when the directory
- * cannot be trusted, and every writer treats that as "no persistence" (fail
- * open: hooks keep working, they just re-derive instead of caching).
- *
- * The vetting exists because this directory holds RECALLED ENGRAM TEXT (the
- * turn cache), not just timestamps, and it lives under os.tmpdir(), which on
- * Linux is the world-writable /tmp (data-loss audit F8/F11). Two attacks the
- * checks close:
- *
- *   - A pre-planted symlink at plur-agy-sessions/ pointing somewhere the
- *     attacker can read or wants us to scribble on. mkdirSync({recursive})
- *     happily accepts an existing symlink-to-dir, so lstat and refuse.
- *   - A directory pre-created by another user (0777 or simply theirs), which
- *     would let them read every conversation's recalled memory and rewrite
- *     turn caches that we later feed to the model as context.
- *
- * The dir is created 0700 and files 0600 for the same reason. macOS tmpdirs
- * are already per-user, so the checks only ever bite on shared-/tmp systems —
- * which is exactly where they must.
+ * Create — and vet — the session directory (see ensureSessionDir, where the
+ * vetting this adapter pioneered now lives so the Codex and Cursor families
+ * get it too — #1060). The stakes are highest HERE because this directory
+ * holds RECALLED ENGRAM TEXT (the turn cache), not just timestamps.
  */
 function ensureDir(): boolean {
-  try {
-    mkdirSync(SESSION_DIR, { recursive: true, mode: 0o700 })
-    if (process.platform !== 'win32') {
-      const st = lstatSync(SESSION_DIR)
-      if (st.isSymbolicLink() || !st.isDirectory()) return false
-      if (typeof process.getuid === 'function' && st.uid !== process.getuid()) return false
-      if ((st.mode & 0o077) !== 0) {
-        // Our own dir with loose modes is the UPGRADE case, not the attack
-        // case — every install prior to this hardening created it 0755
-        // (mkdirSync's default), and refusing it would permanently disable
-        // persistence for exactly the users who already had it working.
-        // Tighten in place; refuse only if that fails.
-        try { chmodSync(SESSION_DIR, 0o700) } catch { return false }
-      }
-    }
-    return true
-  } catch {
-    return false
-  }
+  return ensureSessionDir(SESSION_DIR)
 }
 
 /** Test seam — the directory agy sentinels live in. */
@@ -195,6 +163,7 @@ export function writeAgyTurnCache(cache: AgyTurnCache): void {
 }
 
 export function cleanupStaleAgySessionFiles(now: number = Date.now(), dir: string = SESSION_DIR): void {
+  if (!sessionDirSafeToSweep(dir)) return
   try {
     for (const name of readdirSync(dir)) {
       const p = join(dir, name)

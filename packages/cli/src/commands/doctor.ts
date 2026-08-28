@@ -19,7 +19,7 @@ import { hasPlurCursorHooks, readCursorHooksConfig } from '../cursor-hooks.js'
 import { hasPlurCodexHooks, readCodexHooksConfig } from '../codex-hooks.js'
 import { hasPlurAgyHooks, readAgyHooksConfig } from '../antigravity-hooks.js'
 import { codexHome } from '../mcp-config.js'
-import { computeContentHash, detectPlurStorage, loadEngrams } from '@plur-ai/core'
+import { computeContentHash, detectPlurStorage, loadEngrams, resolveBackendTier, loadConfig } from '@plur-ai/core'
 
 /**
  * plur doctor — diagnose a Claude Code / Claude Desktop / Cursor installation.
@@ -139,6 +139,16 @@ interface DoctorReport {
    * `plur reindex-hashes --apply`.
    */
   staleContentHashes: number
+  /**
+   * A `store.pglite` directory the resolved backend tier no longer uses
+   * (#1046) — orphaned disk the user may delete, ideally after `plur migrate`
+   * ports its vectors. `null` when there is no such directory or when PGLite
+   * IS the selected tier (by env or config.yaml — resolved through
+   * resolveBackendTier, #1061). In the report struct, not just the text
+   * renderer, so `--json` consumers see the advisory too (#1065). Advisory
+   * only: does not fail the overall check.
+   */
+  pgliteOrphan: { path: string } | null
   overall: 'ok' | 'fail'
 }
 
@@ -774,11 +784,27 @@ function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<Doctor
     // those engrams as dedup attractors. Advisory: does not fail overall.
     const staleContentHashes = countStaleContentHashes(flags)
 
+    // #1046 orphan advisory — computed HERE, not in the text renderer, so
+    // `--json` consumers see it too (#1065). "Selected" goes through the real
+    // resolver: `backend: pglite` in config.yaml counts exactly as
+    // PLUR_BACKEND=pglite does (#1061).
+    const orphanRoot = process.env.PLUR_PATH || join(homedir(), '.plur')
+    const orphanPglitePath = join(orphanRoot, 'store.pglite')
+    const pgliteSelected = resolveBackendTier({
+      env: process.env.PLUR_BACKEND,
+      config: loadConfig(join(orphanRoot, 'config.yaml')).backend,
+      engramCount: 0, // irrelevant: pglite is never size-selected
+      postgresConfigured: false, // ditto — pglite selection needs no connection string
+    }).tier === 'pglite'
+    const pgliteOrphan = existsSync(orphanPglitePath) && !pgliteSelected
+      ? { path: orphanPglitePath }
+      : null
+
     return {
       configs, hooksInstalled, mcpRegistered, datacoreCollision, staleNpxHooks, staleNpxMcp,
       hookShim, mcpShim, handshake, cursorHandshake, embedder,
       cursorProjectDetected, cursorWired, codexDetected, codexWired, agyDetected, agyWired,
-      pgliteGemmaReembedNeeded, staleContentHashes, overall,
+      pgliteGemmaReembedNeeded, staleContentHashes, pgliteOrphan, overall,
     }
   })
 }
@@ -824,21 +850,17 @@ export function printText(report: DoctorReport, flags?: GlobalFlags): void {
     }
   }
 
-  {
-    // #1046 migration signal: PGLite is no longer size-selected, so a store
-    // that auto-built one now runs SQLite and the old directory is orphaned
-    // disk (60–500MB observed). This advisory is the only signal the
-    // affected cohort gets — the runtime opt-in log line deliberately fires
-    // only for explicit selections.
-    const pglitePath = join(process.env.PLUR_PATH || join(homedir(), '.plur'), 'store.pglite')
-    const pgliteExplicit = process.env.PLUR_BACKEND?.trim().toLowerCase() === 'pglite'
-    if (existsSync(pglitePath) && !pgliteExplicit) {
-      outputText('')
-      outputText(`ℹ  ${pglitePath} exists but PGLite is no longer selected by store size (v0.19).`)
-      outputText('   Nothing to do — embeddings rebuild automatically — and this directory is an')
-      outputText('   orphaned index you can delete whenever convenient. YAML remains the source of')
-      outputText('   truth. (Optional: `plur migrate` ports the old vectors over, skipping the rebuild.)')
-    }
+  // #1046 migration signal: PGLite is no longer size-selected, so a store
+  // that auto-built one now runs SQLite and the old directory is orphaned
+  // disk (60–500MB observed). This advisory is the only signal the affected
+  // cohort gets — the runtime opt-in log line deliberately fires only for
+  // explicit selections. Computed in buildReport (#1065) so --json sees it.
+  if (report.pgliteOrphan) {
+    outputText('')
+    outputText(`ℹ  ${report.pgliteOrphan.path} exists but PGLite is no longer selected by store size (v0.19).`)
+    outputText('   Nothing to do — embeddings rebuild automatically — and this directory is an')
+    outputText('   orphaned index you can delete whenever convenient. YAML remains the source of')
+    outputText('   truth. (Optional: `plur migrate` ports the old vectors over, skipping the rebuild.)')
   }
 
   if (report.agyDetected) {
