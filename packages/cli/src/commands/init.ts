@@ -11,6 +11,7 @@ import {
   claudeDesktopConfigPath,
   hasPlurMcp,
   mergePlurMcp,
+  upgradePlurMcpEntry,
   readConfigForWrite,
   writeConfig,
   cursorProjectMcpConfigPath,
@@ -164,6 +165,16 @@ function installHookBinary(): { shimPath: string; status: string } {
  * Walks up from CLI's dist looking for a node_modules dir that contains
  * @plur-ai/mcp. Returns null if not found (caller falls back to npx).
  */
+/** A directory named `mcp` only counts as the workspace sibling if it really IS @plur-ai/mcp. */
+function isPlurMcpPackage(dir: string): boolean {
+  try {
+    const pkg = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8')) as { name?: string }
+    return pkg.name === '@plur-ai/mcp'
+  } catch {
+    return false
+  }
+}
+
 function resolveMcpEntrypoint(): string | null {
   // Start from CLI's dist directory.
   const cliEntry = resolveCliEntrypoint()
@@ -176,6 +187,13 @@ function resolveMcpEntrypoint(): string | null {
     // Also check if we're already inside node_modules — common after `npm i -g`
     const adjacent = join(dir, '..', '@plur-ai', 'mcp', 'dist', 'index.js')
     if (existsSync(adjacent)) return adjacent
+    // Monorepo workspace layout: packages/cli/dist → packages/mcp/dist. The
+    // walk above never found it (cli doesn't depend on mcp, so pnpm creates
+    // no symlink), which meant the shim silently never installed on the one
+    // machine developing it — and the fallback npx entry shipped to the dev's
+    // own configs (#1069 dogfooding find).
+    const workspaceSibling = join(dir, '..', 'mcp', 'dist', 'index.js')
+    if (existsSync(workspaceSibling) && isPlurMcpPackage(join(dir, '..', 'mcp'))) return workspaceSibling
     const parent = dirname(dir)
     if (parent === dir) break
     dir = parent
@@ -627,6 +645,13 @@ function installDesktopMcp(args: string[]): string {
     return `skipped — ${desktopPath} exists but is not valid JSON; writing would discard your other MCP servers. Fix it by hand, then re-run \`plur init\``
   }
   if (hasPlurMcp(config)) {
+    // "Exists" is not "correct": heal an @latest/stale-pin npx entry init
+    // itself wrote — leaving it is what kept the #1069 race armed through
+    // every re-run of plur init on an affected machine.
+    if (upgradePlurMcpEntry(config)) {
+      writeConfig(desktopPath, config)
+      return `upgraded stale npx entry in ${desktopPath}`
+    }
     return `already registered in ${desktopPath}`
   }
 
@@ -932,7 +957,12 @@ function installAntigravity(cmd: string): string {
   if (!mcpParses) {
     mcpStatus = `skipped — ${mcpPath} exists but is not valid JSON; writing would discard your other MCP servers. Fix it by hand, then re-run \`plur init --antigravity\``
   } else if (hasPlurMcp(mcpConfig)) {
-    mcpStatus = 'already registered'
+    if (upgradePlurMcpEntry(mcpConfig)) {
+      writeConfig(mcpPath, mcpConfig)
+      mcpStatus = 'upgraded stale npx entry'
+    } else {
+      mcpStatus = 'already registered'
+    }
   } else {
     mergePlurMcp(mcpConfig)
     writeConfig(mcpPath, mcpConfig)
@@ -1078,7 +1108,9 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
       mergePlurMcp(settings as Record<string, unknown>)
       mcpStatus = 'registered'
     } else {
-      mcpStatus = 'already registered'
+      mcpStatus = upgradePlurMcpEntry(settings as Record<string, unknown>)
+        ? 'upgraded stale npx entry'
+        : 'already registered'
     }
 
     writeSettings(enforcementPath, settings)
@@ -1105,6 +1137,8 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     if (!projectMcpAlready) {
       mergePlurMcp(projectSettings as Record<string, unknown>)
       mcpStatus = 'registered'
+    } else if (upgradePlurMcpEntry(projectSettings as Record<string, unknown>)) {
+      mcpStatus = 'upgraded stale npx entry'
     } else {
       mcpStatus = 'already registered'
     }

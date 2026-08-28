@@ -106,11 +106,8 @@
   },
   "mcpServers": {
     "plur": {
-      "command": "/bin/sh",
-      "args": [
-        "-lc",
-        "exec npx -y @plur-ai/mcp@latest"
-      ]
+      "command": "/Users/gregor/.plur/bin/plur-mcp",
+      "args": []
     }
   }
 }

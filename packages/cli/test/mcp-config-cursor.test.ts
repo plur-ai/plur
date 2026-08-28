@@ -7,6 +7,7 @@ import {
   cursorReminderRulePath,
   buildMcpServerEntry,
   mergePlurMcp,
+  upgradePlurMcpEntry,
 } from '../src/mcp-config.js'
 import { join } from 'path'
 
@@ -70,5 +71,47 @@ describe('buildMcpServerEntry npx fallback (#1069)', () => {
     if (blob.includes('npx')) {
       expect(blob).toMatch(/@plur-ai\/mcp@\d+\.\d+\.\d+/)
     }
+  })
+})
+
+describe('upgradePlurMcpEntry (#1069 healer)', () => {
+  const stale = () => ({
+    mcpServers: {
+      plur: { command: '/bin/sh', args: ['-lc', 'exec npx -y @plur-ai/mcp@latest'] },
+      github: { command: 'npx', args: ['-y', '@modelcontextprotocol/server-github'] },
+    },
+  }) as Record<string, unknown>
+
+  it('heals an @latest entry init itself wrote — "exists" is not "correct"', () => {
+    const config = stale()
+    expect(upgradePlurMcpEntry(config)).toBe(true)
+    const entry = (config.mcpServers as Record<string, { command: string; args?: string[] }>).plur
+    expect(`${entry.command} ${(entry.args ?? []).join(' ')}`).not.toContain('@latest')
+    // Neighbours untouched.
+    expect((config.mcpServers as Record<string, unknown>).github).toEqual((stale().mcpServers as Record<string, unknown>).github)
+  })
+
+  it('never touches a hand-rolled custom entry', () => {
+    const config = {
+      mcpServers: { plur: { command: '/opt/my/own/plur-server', args: ['--flag'] } },
+    } as Record<string, unknown>
+    expect(upgradePlurMcpEntry(config)).toBe(false)
+    expect((config.mcpServers as Record<string, { command: string }>).plur.command).toBe('/opt/my/own/plur-server')
+  })
+
+  it('preserves an existing env block through the upgrade', () => {
+    const config = {
+      mcpServers: {
+        plur: { command: '/bin/sh', args: ['-lc', 'exec npx -y @plur-ai/mcp@latest'], env: { PLUR_TOOL_PROFILE: 'cursor' } },
+      },
+    } as Record<string, unknown>
+    expect(upgradePlurMcpEntry(config)).toBe(true)
+    expect((config.mcpServers as Record<string, { env?: Record<string, string> }>).plur.env).toEqual({ PLUR_TOOL_PROFILE: 'cursor' })
+  })
+
+  it('is a no-op when the entry already matches what init would write today', () => {
+    const config = {} as Record<string, unknown>
+    mergePlurMcp(config)
+    expect(upgradePlurMcpEntry(config)).toBe(false)
   })
 })

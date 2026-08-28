@@ -351,3 +351,33 @@ export function mergePlurMcp(config: Record<string, unknown>, opts?: { env?: Rec
   config.mcpServers = servers
   return true
 }
+
+/**
+ * Heal an EXISTING plur entry that init itself wrote via the npx fallback.
+ *
+ * "Entry exists" is not "entry is correct" — the same trap the Cursor leg's
+ * PLUR_TOOL_PROFILE patch already documents. Every MCP leg used to skip on
+ * `hasPlurMcp`, which left the `@latest` entries older inits wrote in place
+ * FOREVER: re-running `plur init` on an affected machine reported "already
+ * registered" while the #1069 rewrite race stayed armed. Upgrade the entry
+ * when (a) it is recognizably OURS (an npx invocation of @plur-ai/mcp — a
+ * hand-rolled custom command is never touched), and (b) it differs from what
+ * we would write today (shim, or the current version pin). The existing
+ * entry's env is preserved when the caller doesn't supply one.
+ *
+ * Returns true when the entry was rewritten (caller persists the config).
+ */
+export function upgradePlurMcpEntry(config: Record<string, unknown>, opts?: { env?: Record<string, string> }): boolean {
+  const servers = (config.mcpServers ?? {}) as Record<string, McpServerEntry | undefined>
+  const existing = servers.plur
+  if (!existing) return false
+  const blob = `${existing.command ?? ''} ${(existing.args ?? []).join(' ')}`
+  if (!/\bnpx\b/.test(blob) || !blob.includes('@plur-ai/mcp')) return false
+  const effectiveOpts = opts ?? (existing.env ? { env: existing.env } : undefined)
+  const recommended = buildMcpServerEntry(effectiveOpts)
+  const recommendedBlob = `${recommended.command} ${(recommended.args ?? []).join(' ')}`
+  if (recommendedBlob === blob) return false
+  servers.plur = recommended
+  config.mcpServers = servers as Record<string, unknown>
+  return true
+}
