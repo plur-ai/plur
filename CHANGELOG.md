@@ -1,6 +1,82 @@
 # Changelog
 
-## 0.19.0 (unreleased)
+## 0.19.1
+
+Patch release: every finding from the independent 0.19.0 audit (#1058), plus the
+bonus instances the fixes' bug classes turned up on their way through.
+
+- `plur init` never destroys a config it cannot parse
+- tmp-dir hardening now covers the Codex and Cursor hook families, not just agy
+- doctor/migrate stop calling a config-selected PGLite index an orphan
+
+**`plur init` refuses to write through a config it could not parse (#1059).** A
+harness MCP config with a JSON error (one trailing comma) was read as empty and
+written back, silently discarding every other MCP server the user had
+registered — in the same functions whose hooks.json legs have refused exactly
+this since the 0.19.0 adversarial audit. All three MCP write-back legs (Claude
+Desktop, Cursor, Antigravity) now refuse with a fix-by-hand message, same as
+the hooks legs.
+
+**Session tmp-dir hardening for every hook family (#1060).** 0.19.0 shipped
+symlink/ownership/mode vetting (0700 dirs, 0600 files) for the Antigravity
+session directory only. The shared `ensureSessionDir` now covers Codex and
+Cursor too, and every stale-file sweep first refuses to delete through a
+symlink or another user's directory — closing an arbitrary-file-deletion
+primitive on shared-/tmp systems. Bonus instance: Cursor's counter could throw
+out of a hook (fail-closed); it now fails open like the Codex and agy counters.
+
+**doctor/migrate honour `backend: pglite` in config.yaml (#1061).** Both used
+to test only `PLUR_BACKEND`, so a user who selected PGLite via config.yaml was
+told their live index was an orphan they could delete. Both now resolve the
+tier through the same `resolveBackendTier` the engine uses. The orphan
+advisory also appears in `plur doctor --json` output, not just text (#1065).
+
+**PGLite embeddings export: one bad row costs one vector (#1063).** Any throw
+while decoding a row used to abort the whole export (`ported: 0`) — the silent
+full re-embed the export exists to avoid. Rows are now contained individually
+(reported as `malformed`), the BYTEA decode copies before viewing so alignment
+can never throw, and schema discovery reads every schema holding
+`engram_embeddings` deterministically instead of `LIMIT 1`-ing an arbitrary
+one on stores that ran both with and without AGE.
+
+**The MCP server survives background faults (#1070).** Node's default turns any
+unhandled rejection — an un-awaited retry, a background probe — into process
+death, and Claude Code never restarts an MCP server mid-session, so one
+transient hiccup silently ended memory for the whole session (the observed
+"plur_doctor failed after 0s: Connection closed" was the server already dead —
+doctor found the corpse, it didn't create it). The stdio server now logs and
+survives unhandled rejections and uncaught exceptions, with a spawned-process
+regression test proving plur_doctor over MCP returns AND the server answers
+the next call.
+
+**Dead remote hosts cost one timeout per process, not one per store entry
+(#1069).** A production config was observed with nine store entries pointing
+at one unreachable host — every load paid nine connect timeouts, in every
+fresh process, multiplied by concurrent hook processes, all inside
+`plur_session_start`. A network-level failure now marks the HOST down for 60s
+process-wide: every store on that origin fast-fails to its prior cache. HTTP
+errors never trip it — a 401 is a live host talking.
+
+**Remote schema drift no longer silently hides engrams.** An enterprise server
+on a different release can serve field values a stricter client rejects —
+observed live: ~100 engrams dropped wholesale over `commitment:
+invalid_enum_value`, invisible to recall with no signal. Both remote read
+paths now salvage such rows by dropping exactly the drifted optional field
+(one warning per drift shape), keeping the engram; a genuinely malformed row
+still drops.
+
+**Test suite is hermetic against the host's git config (#1062).** Three sync
+tests failed on any machine whose global gitignore lists `engrams.yaml` —
+exactly how a PLUR user keeps their memory store out of every repo. Git-config
+isolation (first added for #329) is now a shared helper used by every
+git-spawning test file.
+
+Also: the dev scratch script `packages/core/mig-seed.mjs` is gone from the repo
+(#1066), the 0.19.0 changelog entry below no longer claims to be unreleased
+(#1065), and the release script now refuses to ship a version whose changelog
+section still carries an `(unreleased)` marker.
+
+## 0.19.0
 
 The memory layer forgot Codex. Awkward. Fixed — agy too.
 

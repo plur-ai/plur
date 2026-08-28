@@ -588,6 +588,18 @@ if [ "$SKIP_TWEET" != true ]; then
   echo ""
 fi
 
+# --- Step 3.55: Changelog marker gate (#1065) ---
+# The 0.19.0 tag shipped with its own section still headed "## 0.19.0
+# (unreleased)" -- the marker was removed from the PREVIOUS release's section
+# but never from the one being shipped, and nothing checked. A changelog that
+# says a published version is unreleased is wrong at the exact moment it
+# becomes permanent, so refuse before anything irreversible.
+if grep -qiE "^## ${VERSION}[[:space:]]*\(unreleased\)" CHANGELOG.md; then
+  echo "FAIL: CHANGELOG.md still marks '## $VERSION' as (unreleased)."
+  echo "  Remove the marker from that heading -- this release is about to make it permanent."
+  exit 1
+fi
+
 # --- Step 3.6: Manifest gate (Part A -- issue #544) ---
 # Abort if a PR shipped since the last tag is undeclared in this version's
 # CHANGELOG section. Catches unintended shipping -- this gate would have stopped
