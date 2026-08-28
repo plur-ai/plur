@@ -86,3 +86,38 @@ describe('plur init --antigravity against a damaged mcp_config.json (the #1059 r
     expect(existsSync(join(cfgDir, 'hooks.json'))).toBe(true)
   })
 })
+
+describe('plur init against a damaged ~/.claude/settings.json (evaluator audit, finding 1)', () => {
+  let home: string
+  beforeEach(() => { home = mkdtempSync(join(tmpdir(), 'plur-1059-settings-')) })
+  afterEach(() => { rmSync(home, { recursive: true, force: true }) })
+
+  // The most hand-edited config of them all: permissions, a user hook, a
+  // second MCP server — and one trailing comma.
+  const DAMAGED =
+    '{\n' +
+    '  "permissions": { "allow": ["Bash(npm run *)"] },\n' +
+    '  "hooks": { "Stop": [ { "hooks": [{ "type": "command", "command": "./my-precious-hook.sh" }] } ] },\n' +
+    '  "mcpServers": { "github": { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-github"] }, },\n' +
+    '}\n'
+
+  it('leaves the file byte-identical and reports the refusal', () => {
+    const dir = join(home, '.claude')
+    mkdirSync(dir, { recursive: true })
+    const settingsPath = join(dir, 'settings.json')
+    writeFileSync(settingsPath, DAMAGED)
+
+    let out = ''
+    try {
+      out = execSync(`node ${CLI} init --global --no-prompt --no-cursor --no-desktop --no-codex --no-antigravity`, {
+        encoding: 'utf-8', timeout: 30000, cwd: home,
+        env: { ...process.env, HOME: home, USERPROFILE: home, PLUR_PATH: join(home, '.plur') },
+      })
+    } catch (err) {
+      out = String((err as { stdout?: unknown }).stdout ?? '')
+    }
+
+    expect(readFileSync(settingsPath, 'utf8')).toBe(DAMAGED)
+    expect(out).toMatch(/not a JSON object/)
+  })
+})

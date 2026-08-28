@@ -576,14 +576,11 @@ function processHostRows(
     // Schema-drift salvage — same rule as RemoteStore.reshape (shared helper):
     // an engram whose only problem is a drifted optional field stays in
     // recall, minus that field, instead of silently vanishing.
-    const salvaged = salvageRemoteRow(candidate as Record<string, unknown>)
+    const salvaged = salvageRemoteRow(candidate as Record<string, unknown>, { url: host.url, rowId: (candidate as Record<string, unknown>).id })
     if (!salvaged) {
       const safeId = String((candidate as Record<string, unknown>).id ?? '').replace(/[^\w:./-]/g, '?').slice(0, 64)
       logger.debug(`[plur:remote-recall] ${host.url} returned a malformed row (id="${safeId}") — dropped`)
       continue
-    }
-    if (salvaged.salvagedFields.length > 0) {
-      logger.debug(`[plur:remote-recall] ${host.url} row salvaged without drifted field(s) [${salvaged.salvagedFields.join(',')}]`)
     }
     const e = salvaged.data as unknown as Engram
     // Scope guard with explicit global admission.

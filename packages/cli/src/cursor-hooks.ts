@@ -20,6 +20,8 @@ export interface CursorHookEntry {
 export interface CursorHooksConfig {
   version: number
   hooks: Record<string, CursorHookEntry[]>
+  /** Unknown top-level keys a user's hooks.json carries — preserved verbatim through read→merge→write (0.19.1 data-loss audit, finding 6). */
+  [key: string]: unknown
 }
 
 /**
@@ -102,7 +104,10 @@ export function readCursorHooksConfig(path: string): CursorHooksConfig {
   if (!existsSync(path)) return { version: 1, hooks: {} }
   try {
     const parsed = JSON.parse(readFileSync(path, 'utf8'))
-    return { version: parsed.version ?? 1, hooks: parsed.hooks ?? {} }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return { version: 1, hooks: {} }
+    // Spread first: unknown top-level keys survive the round trip (the codex
+    // writer already did this; cursor was the odd one out — audit finding 6).
+    return { ...parsed, version: parsed.version ?? 1, hooks: parsed.hooks ?? {} }
   } catch {
     return { version: 1, hooks: {} }
   }

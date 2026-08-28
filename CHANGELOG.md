@@ -9,13 +9,16 @@ bonus instances the fixes' bug classes turned up on their way through.
 - tmp-dir hardening now covers the Codex and Cursor hook families, not just agy
 - doctor/migrate stop calling a config-selected PGLite index an orphan
 
-**`plur init` refuses to write through a config it could not parse (#1059).** A
-harness MCP config with a JSON error (one trailing comma) was read as empty and
-written back, silently discarding every other MCP server the user had
-registered — in the same functions whose hooks.json legs have refused exactly
-this since the 0.19.0 adversarial audit. All three MCP write-back legs (Claude
-Desktop, Cursor, Antigravity) now refuse with a fix-by-hand message, same as
-the hooks legs.
+**`plur init` and `plur-mcp init` refuse to write through a config they could
+not parse (#1059).** A config with a JSON error (one trailing comma) was read
+as empty and written back, silently discarding everything else the user had in
+it. Every write-back leg now refuses with a fix-by-hand message: the three
+harness MCP legs (Claude Desktop, Cursor, Antigravity), BOTH Claude Code
+`settings.json` legs — the most hand-edited file of them all, carrying the
+user's permissions, env and other hooks, which the first cut of this fix
+missed — and `plur-mcp init`'s `.mcp.json`/`settings.json` writers. The Cursor
+hooks leg additionally gained the valid-JSON-wrong-shape refusal and now
+preserves unknown top-level keys through the round trip.
 
 **Session tmp-dir hardening for every hook family (#1060).** 0.19.0 shipped
 symlink/ownership/mode vetting (0700 dirs, 0600 files) for the Antigravity
@@ -39,7 +42,12 @@ can never throw, and schema discovery reads every schema holding
 `engram_embeddings` deterministically instead of `LIMIT 1`-ing an arbitrary
 one on stores that ran both with and without AGE.
 
-**The MCP server survives background faults (#1070).** Node's default turns any
+**The MCP server survives background faults (#1070).** Unhandled rejections
+are survived with rate-limited logging; an uncaught EXCEPTION now logs and
+exits instead — resuming after one is unsafe, and a wedged-but-alive server
+holding the store lock would block every other writer indefinitely (the
+cross-process stale-lock recovery rightly never steals from a live pid).
+Original entry: Node's default turns any
 unhandled rejection — an un-awaited retry, a background probe — into process
 death, and Claude Code never restarts an MCP server mid-session, so one
 transient hiccup silently ended memory for the whole session (the observed
@@ -53,9 +61,17 @@ the next call.
 The cold-start SIGKILL was macOS's code-signing monitor: an `@latest` npx
 entry makes npx rewrite its cached native binaries (`better_sqlite3.node`) on
 every publish, and any process paging in a mid-rewrite binary dies with
-"CODESIGNING Invalid Page" (captured in Diagnostic Reports). `plur init` and
-`plur-mcp init` now write the shim where resolvable and otherwise pin the
-installing CLI's own version; upgrades re-pin via `plur init`.
+"CODESIGNING Invalid Page" (captured in Diagnostic Reports). `plur init`
+writes the shim where resolvable (including, at last, from the monorepo
+workspace layout) and otherwise pins the installing CLI's own version;
+`plur-mcp init` pins its own version. Re-running either HEALS a stale
+`@latest` entry instead of reporting "already registered" past it — healing
+only the exact racey shapes init itself wrote: a deliberate old-version pin,
+a fork package, or a custom command that merely mentions the package name is
+never touched, and unknown fields on the entry survive the upgrade. The Codex
+leg (TOML, managed by `codex mcp`) detects a stale entry and prints the exact
+fix. Version constants are parity-and-shape-tested against package.json in
+both packages, and the release script refuses non-release-shaped versions.
 
 **Dead remote hosts cost one timeout per process, not one per store entry
 (#1069).** A production config was observed with nine store entries pointing
@@ -65,19 +81,31 @@ fresh process, multiplied by concurrent hook processes, all inside
 process-wide: every store on that origin fast-fails to its prior cache. HTTP
 errors never trip it — a 401 is a live host talking.
 
-**Remote schema drift no longer silently hides engrams.** An enterprise server
-on a different release can serve field values a stricter client rejects —
-observed live: ~100 engrams dropped wholesale over `commitment:
-invalid_enum_value`, invisible to recall with no signal. Both remote read
-paths now salvage such rows by dropping exactly the drifted optional field
-(one warning per drift shape), keeping the engram; a genuinely malformed row
-still drops.
+**Remote schema drift no longer silently hides engrams (#1071).** An
+enterprise server on a different release can serve field values a stricter
+client rejects — observed live: ~100 engrams dropped wholesale over
+`commitment: invalid_enum_value`, invisible to recall with no signal. Both
+remote read paths now salvage such rows by dropping exactly the drifted
+optional field (one warning per drift shape, on both paths), keeping the
+engram. Privacy and privilege fields fail CLOSED: a drifted `visibility` or
+`pinned` still drops the whole row, because their absence is more permissive
+than any value — stripping `visibility` would have fail-opened the
+pack-export privacy gate. A genuinely malformed row still drops.
 
 **Test suite is hermetic against the host's git config (#1062).** Three sync
 tests failed on any machine whose global gitignore lists `engrams.yaml` —
 exactly how a PLUR user keeps their memory store out of every repo. Git-config
 isolation (first added for #329) is now a shared helper used by every
 git-spawning test file.
+
+Also fixed from this release's own audit round: three scratch probe files
+(one carrying a machine-local path) removed and gated at release time
+(`*.tmp.*` refused when tracked); the accidentally-committed machine-local
+`.claude/settings.json` and installer-generated `AGENTS.md` untracked and
+gitignored; doctor's PGLite+embedding-gemma advisory resolves the backend
+through `resolveBackendTier` like everything else (#1061 class); the in-app
+update advice no longer recommends the `@latest` invocation that pinned
+configs made a no-op.
 
 Also: the dev scratch script `packages/core/mig-seed.mjs` is gone from the repo
 (#1066), the 0.19.0 changelog entry below no longer claims to be unreleased

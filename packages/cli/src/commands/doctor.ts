@@ -774,8 +774,19 @@ function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<Doctor
     // PLUR_EMBEDDER=embedding-gemma) — the documented activation for each. When
     // both are set, #483's prefix fix did not auto-rebuild the PGLite vectors
     // (dimension-keyed cache), so flag a one-time re-embed.
+    // Backend half through the real resolver (#1061 class — the orphan
+    // advisory 20 lines down was fixed for exactly this and this raw env
+    // test survived beside it): `backend: pglite` in config.yaml and
+    // case/whitespace variants of PLUR_BACKEND all select the tier. The
+    // embedder half stays env-only — resolveEmbedderName has no config route.
+    const gemmaRoot = process.env.PLUR_PATH || join(homedir(), '.plur')
     const pgliteGemmaReembedNeeded =
-      process.env.PLUR_BACKEND === 'pglite' && process.env.PLUR_EMBEDDER === 'embedding-gemma'
+      resolveBackendTier({
+        env: process.env.PLUR_BACKEND,
+        config: loadConfig(join(gemmaRoot, 'config.yaml')).backend,
+        engramCount: 0,
+        postgresConfigured: false,
+      }).tier === 'pglite' && process.env.PLUR_EMBEDDER === 'embedding-gemma'
 
     // #911: count engrams whose content_hash is out of step with their
     // statement under the current normalizer. Non-zero after upgrading from a

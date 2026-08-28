@@ -126,6 +126,15 @@ if [ -z "$VERSION" ] || [[ "$VERSION" == --* ]]; then
   exit 1
 fi
 
+# Version SHAPE gate (0.19.1 adversarial audit, finding 3): this string is
+# sed-written into version constants and interpolated into a `/bin/sh -lc`
+# config command. The parity tests check equality, not shape — a malformed
+# value would pass them and land verbatim in user configs.
+if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.]+)?$ ]]; then
+  echo "FAIL: '$VERSION' is not a release-shaped version (expected e.g. 0.19.1)"
+  exit 1
+fi
+
 # Load env
 ENV_FILE="$HOME/Data/.datacore/env/.env"
 if [ -f "$ENV_FILE" ]; then

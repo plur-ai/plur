@@ -173,25 +173,58 @@ export function _resetRemoteHostBreaker(): void {
  * stripping. Shared by RemoteStore.reshape and remote-recall's processHostRows
  * — the same drop existed independently at both sites.
  */
+/**
+ * Fields whose ABSENCE is more permissive than any present value — stripping
+ * them converts a fail-closed check somewhere else into fail-open (0.19.1
+ * data-loss audit, finding 4):
+ *
+ *   - `visibility`: `=== 'private'` is the pack-export privacy gate. A row
+ *     whose visibility this client cannot validate must DROP, not export.
+ *   - `pinned`: a drifted truthy pin stripped away silently un-pins a team
+ *     engram; injection's pinned bypass would stop honoring it.
+ *
+ * Everything else (commitment — the live #1071 case — plus the cosmetic and
+ * rendered fields) only ever REMOVES content or privilege when absent, so it
+ * stays strippable. Required fields need no listing: stripping one just
+ * fails the re-parse.
+ */
+const NEVER_STRIP = new Set(['visibility', 'pinned'])
+
+/** Per-process dedupe for salvage warnings: one line per (store, field-set), on BOTH read paths (audit finding 5). */
+const warnedSalvages = new Set<string>()
+
 export function salvageRemoteRow(
   candidate: Record<string, unknown>,
+  logContext?: { url: string; rowId?: unknown },
 ): { data: Record<string, unknown>; salvagedFields: string[] } | null {
   const first = RemoteRowSchema.safeParse(candidate)
   if (first.success) return { data: first.data as Record<string, unknown>, salvagedFields: [] }
   const failing = [...new Set(first.error.issues.map(i => String(i.path[0] ?? '')).filter(Boolean))]
   if (failing.length === 0) return null
+  if (failing.some(key => NEVER_STRIP.has(key))) return null // fail closed — see NEVER_STRIP
   const slim: Record<string, unknown> = { ...candidate }
   for (const key of failing) delete slim[key]
   const second = RemoteRowSchema.safeParse(slim)
   if (!second.success) return null
-  return { data: second.data as Record<string, unknown>, salvagedFields: failing.sort() }
+  const salvagedFields = failing.sort()
+  if (logContext) {
+    const dedupeKey = `${logContext.url}|${salvagedFields.join(',')}`
+    if (!warnedSalvages.has(dedupeKey)) {
+      warnedSalvages.add(dedupeKey)
+      const safeId = String(logContext.rowId ?? '').replace(/[^\w:./-]/g, '?').slice(0, 64)
+      logger.warning(
+        `[plur:remote-store] ${logContext.url} serves engrams with drifted field(s) [${salvagedFields.join(',')}] this client ` +
+        `cannot validate (first seen id="${safeId}") — keeping the engrams WITHOUT those fields. ` +
+        `The server and client schemas need reconciling (#1071); recall is degraded, not blind.`,
+      )
+    }
+  }
+  return { data: second.data as Record<string, unknown>, salvagedFields }
 }
 
 export class RemoteStore implements EngramStore {
   private cache: { ts: number; engrams: Engram[] } | null = null
   private inFlight: Promise<Engram[]> | null = null
-  /** Field-sets already warned about by the schema-drift salvage in reshape() — one line per drift shape, not per row. */
-  private readonly salvagedFieldSets = new Set<string>()
 
   constructor(
     private readonly url: string,    // e.g. https://plur.datafund.io/sse — but we hit /api/v1
@@ -270,7 +303,7 @@ export class RemoteStore implements EngramStore {
     const candidate = normalizeEngramInput({ ...d, id: raw.id, scope: raw.scope, status: raw.status })
     // Schema-drift salvage (see salvageRemoteRow): keep an engram whose only
     // problem is a drifted optional field, dropping just that field.
-    const salvaged = salvageRemoteRow(candidate as Record<string, unknown>)
+    const salvaged = salvageRemoteRow(candidate as Record<string, unknown>, { url: this.url, rowId: raw.id })
     if (!salvaged) {
       // #408: do NOT echo server-controlled VALUES into the log. Zod messages can
       // embed the received value, and a crafted id could carry newlines/control
@@ -282,18 +315,6 @@ export class RemoteStore implements EngramStore {
       const safeId = String(raw.id ?? '').replace(/[^\w:./-]/g, '?').slice(0, 64)
       logger.warning(`[plur:remote-store] ${this.url} returned a malformed engram (id="${safeId}") — dropped: ${why}`)
       return null
-    }
-    if (salvaged.salvagedFields.length > 0) {
-      const fieldSet = salvaged.salvagedFields.join(',')
-      if (!this.salvagedFieldSets.has(fieldSet)) {
-        this.salvagedFieldSets.add(fieldSet)
-        const safeId = String(raw.id ?? '').replace(/[^\w:./-]/g, '?').slice(0, 64)
-        logger.warning(
-          `[plur:remote-store] ${this.url} serves engrams with drifted field(s) [${fieldSet}] this client ` +
-          `cannot validate (first seen id="${safeId}") — keeping the engrams WITHOUT those fields. ` +
-          `The server and client schemas need reconciling; recall is degraded, not blind.`,
-        )
-      }
     }
     const parsed = { data: salvaged.data }
     // #768 round-trip: the server stores the validity window FLAT in row data

@@ -86,9 +86,22 @@ describe('salvageRemoteRow — schema-drift tolerance', () => {
   })
 
   it('salvages multiple drifted fields in one pass', () => {
-    const out = salvageRemoteRow({ ...valid, commitment: 'nope', visibility: 'org-only' })
+    const out = salvageRemoteRow({ ...valid, commitment: 'nope', type: 'bogus-type' })
     expect(out).not.toBeNull()
-    expect(out!.salvagedFields).toEqual(['commitment', 'visibility'])
+    expect(out!.salvagedFields).toEqual(['commitment', 'type'])
+  })
+
+  it('fails CLOSED on privacy/privilege fields — a drifted visibility or pinned drops the row (audit F4)', () => {
+    // Stripping `visibility` would fail-open the pack-export privacy gate
+    // (=== 'private'); stripping `pinned` silently un-pins a team engram.
+    expect(salvageRemoteRow({ ...valid, visibility: 'org-only' })).toBeNull()
+    expect(salvageRemoteRow({ ...valid, pinned: 'yes-please' })).toBeNull()
+    // ...and a VALID value on those fields still passes through untouched.
+    const ok = salvageRemoteRow({ ...valid, visibility: 'private', pinned: true, commitment: 'drifted-value' })
+    expect(ok).not.toBeNull()
+    expect(ok!.data.visibility).toBe('private')
+    expect(ok!.data.pinned).toBe(true)
+    expect(ok!.salvagedFields).toEqual(['commitment'])
   })
 
   it('cannot resurrect a genuinely malformed row — a required field stays required', () => {

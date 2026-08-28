@@ -14,4 +14,8 @@ describe('CLI version parity', () => {
     const pkg = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf8')) as { version: string }
     expect(CLI_VERSION).toBe(pkg.version)
   })
+
+  it('is release-shaped — this string is interpolated into a /bin/sh config command', () => {
+    expect(CLI_VERSION).toMatch(/^\d+\.\d+\.\d+([.-][0-9A-Za-z.]+)?$/)
+  })
 })

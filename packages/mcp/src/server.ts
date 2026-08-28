@@ -191,7 +191,7 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
   // version-check.ts covers processes whose timers are throttled.
   const announceUpdate = (r: { updateAvailable: boolean; current: string; latest: string | null }) => {
     if (r.updateAvailable) {
-      console.error(`[plur] Update available: ${r.current} → ${r.latest}. Run: npx @plur-ai/mcp@latest`)
+      console.error(`[plur] Update available: ${r.current} → ${r.latest}. Run: npm i -g @plur-ai/cli@latest && plur init (configs pin versions)`)
     }
   }
   checkForUpdate('@plur-ai/mcp', VERSION, announceUpdate)
@@ -486,16 +486,56 @@ export async function runStdio(): Promise<void> {
   // default converts one transient background hiccup into the entire session
   // running memoryless, discovered only when the NEXT tool call reports
   // "Connection closed" after 0s (the observed 2026-08-28 signature: the
-  // server was already dead; plur_doctor merely found the corpse). Log
-  // loudly and stay up: for this process, degraded strictly beats dead.
+  // server was already dead; plur_doctor merely found the corpse).
+  //
+  // The two fault kinds get DIFFERENT treatment (0.19.1 audits, all three):
+  //
+  //   - unhandledRejection: survive and log. This was the production killer,
+  //     it comes from detached async work, and continuing is safe.
+  //   - uncaughtException: log loudly, then EXIT. Resuming after one is
+  //     formally unsafe (Node's own docs), a mid-write throw can leave a
+  //     half-serialized transport frame that desyncs every later response,
+  //     and — the data-loss audit's sharpest point — a process that survives
+  //     while holding the store lock is a LIVE lock holder: the cross-process
+  //     stale-lock recovery deliberately never steals from a live pid, so a
+  //     wedged-but-alive server blocks every other writer indefinitely.
+  //     Crash-fast keeps that recovery path working; for a memory server,
+  //     answering WRONGLY is worse than being visibly dead.
+  //
+  // The rejection log is rate-limited: a pathological store can reject in a
+  // tight loop, and the harness captures our stderr to disk.
   // Registered here, not in createServer, so the test suite's in-process
   // servers don't swallow the test runner's own failures.
-  const survive = (kind: string) => (err: unknown): void => {
+  const LOG_WINDOW_MS = 60_000
+  const LOG_MAX_PER_WINDOW = 20
+  let logWindowStart = 0
+  let logCount = 0
+  let suppressed = 0
+  const logFault = (kind: string, err: unknown): void => {
+    const now = Date.now()
+    if (now - logWindowStart > LOG_WINDOW_MS) {
+      if (suppressed > 0) {
+        process.stderr.write(`[plur:mcp] (${suppressed} further fault log lines suppressed in the last minute)\n`)
+      }
+      logWindowStart = now
+      logCount = 0
+      suppressed = 0
+    }
+    if (logCount >= LOG_MAX_PER_WINDOW) {
+      suppressed++
+      return
+    }
+    logCount++
     const detail = err instanceof Error ? (err.stack ?? err.message) : String(err)
-    process.stderr.write(`[plur:mcp] ${kind} — server stays up (#1070): ${detail}\n`)
+    process.stderr.write(`[plur:mcp] ${kind} (#1070): ${detail}\n`)
   }
-  process.on('unhandledRejection', survive('unhandled rejection'))
-  process.on('uncaughtException', survive('uncaught exception'))
+  process.on('unhandledRejection', (err) => logFault('unhandled rejection — server stays up', err))
+  process.on('uncaughtException', (err) => {
+    logFault('UNCAUGHT EXCEPTION — exiting so lock recovery and the harness can see the failure', err)
+    // Give stderr a tick to flush, then die visibly. Claude Code reports the
+    // disconnect; a reconnect gets a clean process.
+    setTimeout(() => process.exit(1), 100)
+  })
 
   // Test seam for the nets above: induce a background unhandled rejection N ms
   // after startup, so a spawned-process test can prove the server survives one

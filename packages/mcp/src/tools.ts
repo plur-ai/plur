@@ -2710,10 +2710,10 @@ function getAllToolDefinitions(): ToolDefinition[] {
         if (versionCheck?.updateAvailable && versionCheck.latest) {
           const behind = minorVersionsBehind(versionCheck.current, versionCheck.latest)
           if (behind > 2) {
-            version_warning = `CRITICAL: Running PLUR v${versionCheck.current} — latest is v${versionCheck.latest} (${behind} minor versions behind). Known bugs may be present. Update immediately: npx @plur-ai/mcp@latest`
+            version_warning = `CRITICAL: Running PLUR v${versionCheck.current} — latest is v${versionCheck.latest} (${behind} minor versions behind). Known bugs may be present. Update immediately: upgrade @plur-ai/cli and re-run plur init (configs pin versions; running @latest no longer updates them)`
             guide = `⚠️ ${version_warning}\n\n${guide}`
           } else {
-            version_warning = `Update available: PLUR v${versionCheck.current} → v${versionCheck.latest}. Run: npx @plur-ai/mcp@latest`
+            version_warning = `Update available: PLUR v${versionCheck.current} → v${versionCheck.latest}. Run: npm i -g @plur-ai/cli@latest && plur init (configs pin versions)`
           }
         }
 

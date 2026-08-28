@@ -82,7 +82,11 @@ export function buildMcpServerEntry(opts?: { env?: Record<string, string> }): Mc
   // version's cache is immutable — upgrades happen when `plur init` rewrites
   // the config to a new pin, a moment when servers restart anyway. Same
   // convention as the hermes/python bridges' _NPX_CLI_VERSION pin.
-  const spec = `@plur-ai/mcp@${CLI_VERSION}`
+  // Belt-and-braces (adversarial audit): the constant is compile-time, but it
+  // reaches a /bin/sh -lc string — refuse to interpolate anything that is not
+  // release-shaped, falling back to a harmless pinned form.
+  const version = /^\d+\.\d+\.\d+([.-][0-9A-Za-z.]+)?$/.test(CLI_VERSION) ? CLI_VERSION : 'latest'
+  const spec = `@plur-ai/mcp@${version}`
   if (platform() === 'win32') {
     return {
       command: 'cmd.exe',
@@ -371,13 +375,56 @@ export function upgradePlurMcpEntry(config: Record<string, unknown>, opts?: { en
   const servers = (config.mcpServers ?? {}) as Record<string, McpServerEntry | undefined>
   const existing = servers.plur
   if (!existing) return false
-  const blob = `${existing.command ?? ''} ${(existing.args ?? []).join(' ')}`
-  if (!/\bnpx\b/.test(blob) || !blob.includes('@plur-ai/mcp')) return false
+  if (!isRaceyPlurNpxEntry(existing)) return false
   const effectiveOpts = opts ?? (existing.env ? { env: existing.env } : undefined)
   const recommended = buildMcpServerEntry(effectiveOpts)
-  const recommendedBlob = `${recommended.command} ${(recommended.args ?? []).join(' ')}`
-  if (recommendedBlob === blob) return false
-  servers.plur = recommended
+  // Field-level MERGE, not object replacement (0.19.1 data-loss audit,
+  // finding 2): a user entry can carry keys we never modeled — type, cwd,
+  // timeout, disabled, envFile — and `servers.plur = recommended` silently
+  // destroyed them. Only the launch triple changes hands.
+  servers.plur = {
+    ...existing,
+    command: recommended.command,
+    args: recommended.args,
+    ...(recommended.env ? { env: recommended.env } : {}),
+  }
   config.mcpServers = servers as Record<string, unknown>
   return true
+}
+
+/**
+ * Is this entry one of the RACEY shapes init itself has written — an npx
+ * invocation of exactly `@plur-ai/mcp` at `@latest` (or with no tag, which
+ * npm treats as latest)?
+ *
+ * Both 0.19.1 audits broke the first version of this predicate, which
+ * flattened command+args and substring-matched: it clobbered deliberate
+ * old-version pins (a user staying on 0.18 on purpose), fork packages
+ * (`@plur-ai/mcp-experimental`), and even unrelated custom commands whose
+ * arguments merely MENTIONED the words. The rules now:
+ *
+ *   - Only the exact command forms init writes (or a user's bare `npx`)
+ *     qualify: `npx`, `cmd.exe /c npx`, `/bin/sh -lc 'exec npx …'`.
+ *   - The package spec must be EXACTLY `@plur-ai/mcp`, `@plur-ai/mcp@latest`
+ *     — anchored, so forks and mentions never match.
+ *   - An explicit version pin (`@plur-ai/mcp@0.18.2`) is the user's decision
+ *     and is NEVER healed; only the @latest/bare forms carry the #1069
+ *     rewrite race this healer exists to disarm. (doctor's staleNpx
+ *     advisory still nudges pinned-npx users toward the shim.)
+ */
+function isRaceyPlurNpxEntry(entry: McpServerEntry): boolean {
+  const RACEY_SPEC = /^@plur-ai\/mcp(@latest)?$/
+  const args = entry.args ?? []
+  // Shell-string forms: /bin/sh -lc '<script>' (init's own POSIX shape).
+  if (entry.command === '/bin/sh') {
+    const script = args[args.length - 1] ?? ''
+    const m = /^\s*(?:exec\s+)?npx\s+(?:-y\s+)?(\S+)\s*$/.exec(script)
+    return m !== null && RACEY_SPEC.test(m[1])
+  }
+  // Argv forms: `npx …` directly, or `cmd.exe /c npx …` (init's win32 shape).
+  const argv = entry.command === 'cmd.exe' ? args.filter(a => a !== '/c') :
+    entry.command === 'npx' ? ['npx', ...args] : null
+  if (!argv || argv[0] !== 'npx') return false
+  const spec = argv.filter(a => a !== 'npx' && !a.startsWith('-'))[0] ?? ''
+  return RACEY_SPEC.test(spec)
 }

@@ -115,3 +115,48 @@ describe('upgradePlurMcpEntry (#1069 healer)', () => {
     expect(upgradePlurMcpEntry(config)).toBe(false)
   })
 })
+
+describe('upgradePlurMcpEntry ownership narrowing (0.19.1 audits)', () => {
+  const heal = (entry: Record<string, unknown>): { healed: boolean; entry: Record<string, unknown> } => {
+    const config = { mcpServers: { plur: entry } } as Record<string, unknown>
+    const healed = upgradePlurMcpEntry(config)
+    return { healed, entry: (config.mcpServers as Record<string, Record<string, unknown>>).plur }
+  }
+
+  it('preserves a deliberate old-version pin — only @latest/bare carries the #1069 race', () => {
+    const pinned = { command: '/bin/sh', args: ['-lc', 'exec npx -y @plur-ai/mcp@0.18.2'] }
+    expect(heal(pinned).healed).toBe(false)
+  })
+
+  it('never claims a fork or sibling package', () => {
+    expect(heal({ command: 'npx', args: ['-y', '@plur-ai/mcp-experimental'] }).healed).toBe(false)
+  })
+
+  it('never claims a custom command that merely MENTIONS npx and the package', () => {
+    const custom = {
+      command: '/opt/wrap',
+      args: ['--note=replaces npx @plur-ai/mcp with audited build', '--', '/opt/real-server'],
+    }
+    const { healed, entry } = heal(custom)
+    expect(healed).toBe(false)
+    expect(entry.command).toBe('/opt/wrap')
+  })
+
+  it('heals the racey shapes and preserves unmodeled fields through the merge', () => {
+    const stale = {
+      command: '/bin/sh', args: ['-lc', 'exec npx -y @plur-ai/mcp@latest'],
+      type: 'stdio', timeout: 30, disabled: false,
+    }
+    const { healed, entry } = heal(stale)
+    expect(healed).toBe(true)
+    expect(`${entry.command} ${(entry.args as string[]).join(' ')}`).not.toContain('@latest')
+    expect(entry.type).toBe('stdio')
+    expect(entry.timeout).toBe(30)
+    expect(entry.disabled).toBe(false)
+  })
+
+  it('heals the bare-npx form too — no tag means latest to npm', () => {
+    expect(heal({ command: 'npx', args: ['-y', '@plur-ai/mcp'] }).healed).toBe(true)
+    expect(heal({ command: 'cmd.exe', args: ['/c', 'npx', '-y', '@plur-ai/mcp@latest'] }).healed).toBe(true)
+  })
+})

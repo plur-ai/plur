@@ -6,6 +6,7 @@ import { homedir, platform } from 'os'
 import { createInterface } from 'readline'
 import { type GlobalFlags } from '../plur.js'
 import { outputInfo } from '../output.js'
+import { CLI_VERSION } from '../version.js'
 import {
   buildMcpServerEntry,
   claudeDesktopConfigPath,
@@ -19,6 +20,7 @@ import {
   cursorRulesPath,
   codexHome,
   codexHooksConfigPath,
+  codexConfigTomlPath,
   agyConfigDir,
   agyHooksConfigPath,
   agyMcpConfigPath,
@@ -586,6 +588,31 @@ function loadSettings(path: string): Settings {
   }
 }
 
+/**
+ * The write-intent twin of loadSettings — the #1059 rule ("a caller that
+ * intends to WRITE must not read an unparseable file as {}"), which the MCP
+ * and harness-hooks legs all received while THIS reader — feeding the most
+ * hand-edited config file of them all, settings.json with the user's
+ * permissions, env, other hooks and servers — kept the lenient contract and
+ * clobbered on write-back (0.19.1 data-loss audit, finding 1). A missing
+ * file is a fresh install; a file that exists but does not parse to an
+ * object is the user's damaged-but-recoverable data.
+ */
+function loadSettingsForWrite(path: string): { settings: Settings; ok: boolean } {
+  if (!existsSync(path)) return { settings: {}, ok: true }
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(path, 'utf8'))
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return { settings: parsed as Settings, ok: true }
+    }
+  } catch { /* fall through to the refusal */ }
+  return { settings: {}, ok: false }
+}
+
+function settingsRefusal(path: string): string {
+  return `skipped — ${path} exists but is not a JSON object; writing would discard your other settings (permissions, hooks, servers). Fix it by hand, then re-run \`plur init\``
+}
+
 function isPlurHook(entry: HookEntry): boolean {
   return (entry.hooks ?? []).some((h) =>
     h.command.includes('@plur-ai/cli') || h.command.includes('.plur/bin/plur-hook'),
@@ -692,13 +719,21 @@ function installCursor(cmd: string): string {
     // "already registered" as if everything were correctly configured.
     // Patch the env in when it's missing or wrong, rather than trusting
     // "entry exists" as "entry is correctly configured for Cursor."
+    // #1069 heal, which this branch was the LAST leg to receive — its own
+    // env-patch comment above is the canonical statement of the class.
+    const healed = upgradePlurMcpEntry(mcpConfig, { env: { PLUR_TOOL_PROFILE: 'cursor' } })
     const servers = (mcpConfig.mcpServers ?? {}) as Record<string, { env?: Record<string, string> }>
     const existing = servers.plur
     if (existing?.env?.PLUR_TOOL_PROFILE !== 'cursor') {
       servers.plur = { ...existing, env: { ...(existing?.env ?? {}), PLUR_TOOL_PROFILE: 'cursor' } }
       mcpConfig.mcpServers = servers
       writeConfig(mcpPath, mcpConfig)
-      mcpStatus = 'patched (added missing PLUR_TOOL_PROFILE=cursor to an existing entry)'
+      mcpStatus = healed
+        ? 'upgraded stale npx entry (and set PLUR_TOOL_PROFILE=cursor)'
+        : 'patched (added missing PLUR_TOOL_PROFILE=cursor to an existing entry)'
+    } else if (healed) {
+      writeConfig(mcpPath, mcpConfig)
+      mcpStatus = 'upgraded stale npx entry'
     } else {
       mcpStatus = 'already registered'
     }
@@ -712,12 +747,19 @@ function installCursor(cmd: string): string {
   // the file instead of clobbering it.
   let hooksStatus: string
   const hooksFileExists = existsSync(hooksPath)
-  let hooksFileParses = true
+  let hooksFileUsable = true
   if (hooksFileExists) {
-    try { JSON.parse(readFileSync(hooksPath, 'utf8')) } catch { hooksFileParses = false }
+    // Parse AND shape (ADV-F2, propagated from the codex leg — audit finding
+    // 6): valid-JSON-wrong-shape ([...], "text", 42) flattens to an empty
+    // config and the write-back destroys the user's file just as surely as
+    // a parse error does.
+    try {
+      const parsed: unknown = JSON.parse(readFileSync(hooksPath, 'utf8'))
+      hooksFileUsable = !!parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+    } catch { hooksFileUsable = false }
   }
-  if (hooksFileExists && !hooksFileParses) {
-    hooksStatus = `skipped — ${hooksPath} exists but is not valid JSON; fix it by hand, then re-run \`plur init --cursor\``
+  if (hooksFileExists && !hooksFileUsable) {
+    hooksStatus = `skipped — ${hooksPath} exists but is not a JSON object; fix it by hand, then re-run \`plur init --cursor\``
   } else {
     const hooksConfig = readCursorHooksConfig(hooksPath)
     const hadHooks = hasPlurCursorHooks(hooksConfig)
@@ -798,6 +840,15 @@ function installCodexMcp(): string {
   // errors rather than replacing. Detecting the existing entry lets us
   // report honestly instead of swallowing that error as a failure.
   if (/(^|\s)plur(\s|$)/m.test(listed)) {
+    // init cannot edit TOML safely (see docstring), but it CAN detect the
+    // #1069 race and say so instead of a bare "already registered" — the
+    // one leg where 'run plur init again' does not heal.
+    try {
+      const toml = readFileSync(codexConfigTomlPath(), 'utf8')
+      if (toml.includes('@plur-ai/mcp@latest')) {
+        return 'already registered, but the entry uses @plur-ai/mcp@latest — the npx cache-rewrite race (#1069). Fix: `codex mcp remove plur`, then re-run `plur init --codex`'
+      }
+    } catch { /* config.toml unreadable — the bare message is still true */ }
     return 'already registered (run `codex mcp remove plur` first if you need to re-point it)'
   }
 
@@ -1078,7 +1129,10 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
 
   // Install local hook shim FIRST — hook commands depend on it (#178)
   const shim = installHookBinary()
-  const cmd = shim.shimPath || 'npx @plur-ai/cli' // fallback if shim failed
+  // Fallback PINNED, never floating (#1069 class, data-loss audit finding 7):
+  // an unpinned spec re-resolves on every publish and races the npx cache
+  // rewrite that SIGKILLs whatever pages in a native binary mid-rewrite.
+  const cmd = shim.shimPath || `npx -y @plur-ai/cli@${CLI_VERSION}` // fallback if shim failed
 
   // Install local MCP shim — same fix pattern for MCP server launch (#234)
   const mcpShim = installMcpBinary()
@@ -1096,55 +1150,76 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
 
   if (samePath) {
     // Single file — combined enforcement + injection hooks
-    let settings = loadSettings(enforcementPath)
-    const hadHooks = hasPlurHooks(settings)
-    const mcpAlready = hasPlurMcp(settings)
-    const before = JSON.stringify(settings.hooks ?? {})
-
-    settings = mergeHooks(settings, mergeHookMaps(PLUR_HOOKS_ENFORCEMENT, PLUR_HOOKS_INJECTION))
-    const after = JSON.stringify(settings.hooks ?? {})
-
-    if (!mcpAlready) {
-      mergePlurMcp(settings as Record<string, unknown>)
-      mcpStatus = 'registered'
+    const { settings: loaded, ok } = loadSettingsForWrite(enforcementPath)
+    if (!ok) {
+      // #1059 class: never merge into the {} a broken file coerced to and
+      // write it back — that destroys every non-plur setting the user owns.
+      const refusal = settingsRefusal(enforcementPath)
+      injectionHooksStatus = refusal
+      enforcementHooksStatus = refusal
+      mcpStatus = refusal
     } else {
-      mcpStatus = upgradePlurMcpEntry(settings as Record<string, unknown>)
-        ? 'upgraded stale npx entry'
-        : 'already registered'
-    }
+      let settings = loaded
+      const hadHooks = hasPlurHooks(settings)
+      const mcpAlready = hasPlurMcp(settings)
+      const before = JSON.stringify(settings.hooks ?? {})
 
-    writeSettings(enforcementPath, settings)
-    const status = hooksStatusFor(before, after, hadHooks)
-    injectionHooksStatus = status
-    enforcementHooksStatus = status
+      settings = mergeHooks(settings, mergeHookMaps(PLUR_HOOKS_ENFORCEMENT, PLUR_HOOKS_INJECTION))
+      const after = JSON.stringify(settings.hooks ?? {})
+
+      if (!mcpAlready) {
+        mergePlurMcp(settings as Record<string, unknown>)
+        mcpStatus = 'registered'
+      } else {
+        mcpStatus = upgradePlurMcpEntry(settings as Record<string, unknown>)
+          ? 'upgraded stale npx entry'
+          : 'already registered'
+      }
+
+      writeSettings(enforcementPath, settings)
+      const status = hooksStatusFor(before, after, hadHooks)
+      injectionHooksStatus = status
+      enforcementHooksStatus = status
+    }
   } else {
     // Enforcement at global, injection at project (or wherever findSettingsPath chose)
-    let globalSettings = loadSettings(enforcementPath)
-    const globalHadHooks = hasPlurHooks(globalSettings)
-    const globalBefore = JSON.stringify(globalSettings.hooks ?? {})
-    globalSettings = mergeHooks(globalSettings, PLUR_HOOKS_ENFORCEMENT)
-    const globalAfter = JSON.stringify(globalSettings.hooks ?? {})
-    writeSettings(enforcementPath, globalSettings)
-    enforcementHooksStatus = hooksStatusFor(globalBefore, globalAfter, globalHadHooks)
-
-    let projectSettings = loadSettings(injectionPath)
-    const projectHadHooks = hasPlurHooks(projectSettings)
-    const projectMcpAlready = hasPlurMcp(projectSettings)
-    const projectBefore = JSON.stringify(projectSettings.hooks ?? {})
-    projectSettings = mergeHooks(projectSettings, PLUR_HOOKS_INJECTION)
-    const projectAfter = JSON.stringify(projectSettings.hooks ?? {})
-
-    if (!projectMcpAlready) {
-      mergePlurMcp(projectSettings as Record<string, unknown>)
-      mcpStatus = 'registered'
-    } else if (upgradePlurMcpEntry(projectSettings as Record<string, unknown>)) {
-      mcpStatus = 'upgraded stale npx entry'
+    const globalRead = loadSettingsForWrite(enforcementPath)
+    if (!globalRead.ok) {
+      enforcementHooksStatus = settingsRefusal(enforcementPath)
     } else {
-      mcpStatus = 'already registered'
+      let globalSettings = globalRead.settings
+      const globalHadHooks = hasPlurHooks(globalSettings)
+      const globalBefore = JSON.stringify(globalSettings.hooks ?? {})
+      globalSettings = mergeHooks(globalSettings, PLUR_HOOKS_ENFORCEMENT)
+      const globalAfter = JSON.stringify(globalSettings.hooks ?? {})
+      writeSettings(enforcementPath, globalSettings)
+      enforcementHooksStatus = hooksStatusFor(globalBefore, globalAfter, globalHadHooks)
     }
 
-    writeSettings(injectionPath, projectSettings)
-    injectionHooksStatus = hooksStatusFor(projectBefore, projectAfter, projectHadHooks)
+    const projectRead = loadSettingsForWrite(injectionPath)
+    if (!projectRead.ok) {
+      injectionHooksStatus = settingsRefusal(injectionPath)
+      mcpStatus = settingsRefusal(injectionPath)
+    } else {
+      let projectSettings = projectRead.settings
+      const projectHadHooks = hasPlurHooks(projectSettings)
+      const projectMcpAlready = hasPlurMcp(projectSettings)
+      const projectBefore = JSON.stringify(projectSettings.hooks ?? {})
+      projectSettings = mergeHooks(projectSettings, PLUR_HOOKS_INJECTION)
+      const projectAfter = JSON.stringify(projectSettings.hooks ?? {})
+
+      if (!projectMcpAlready) {
+        mergePlurMcp(projectSettings as Record<string, unknown>)
+        mcpStatus = 'registered'
+      } else if (upgradePlurMcpEntry(projectSettings as Record<string, unknown>)) {
+        mcpStatus = 'upgraded stale npx entry'
+      } else {
+        mcpStatus = 'already registered'
+      }
+
+      writeSettings(injectionPath, projectSettings)
+      injectionHooksStatus = hooksStatusFor(projectBefore, projectAfter, projectHadHooks)
+    }
   }
 
   // Install CLAUDE.md section
