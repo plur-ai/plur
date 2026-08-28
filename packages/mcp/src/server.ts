@@ -537,12 +537,17 @@ export async function runStdio(): Promise<void> {
     setTimeout(() => process.exit(1), 100)
   })
 
-  // Test seam for the nets above: induce a background unhandled rejection N ms
-  // after startup, so a spawned-process test can prove the server survives one
-  // and still answers the next request. Inert unless the env var is set.
+  // Test seams for the nets above: induce a background fault N ms after
+  // startup, so a spawned-process test can prove each half of the policy —
+  // a rejection is SURVIVED (server still answers), an exception EXITS
+  // (code 1, visible to the harness). Inert unless the env vars are set.
   const induceMs = Number(process.env.PLUR_TEST_INDUCE_UNHANDLED_REJECTION_MS ?? '')
   if (Number.isFinite(induceMs) && induceMs > 0) {
     setTimeout(() => { void Promise.reject(new Error('induced test rejection (#1070)')) }, induceMs)
+  }
+  const induceThrowMs = Number(process.env.PLUR_TEST_INDUCE_UNCAUGHT_EXCEPTION_MS ?? '')
+  if (Number.isFinite(induceThrowMs) && induceThrowMs > 0) {
+    setTimeout(() => { throw new Error('induced test exception (#1070)') }, induceThrowMs)
   }
 
   // Shared with describeToolSurface (#761) so the surface plur_doctor reports

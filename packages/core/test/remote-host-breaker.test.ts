@@ -45,6 +45,39 @@ describe('remote host breaker (#1069)', () => {
     expect(remoteHostDownRemainingMs('https://dead.example.com/sse')).toBe(0)
   })
 
+  it('fetchBounded PROBES during an open cooldown instead of fast-failing — the asymmetry a future "optimization" must not break', async () => {
+    // Mark the host down, then make an explicit fetchBounded-backed call
+    // (me()). A fast-fail would reject with the breaker's own message before
+    // touching the network; a probe reaches the socket and fails with a
+    // NETWORK error. User-invoked retries are the breaker's recovery signal —
+    // this is the property the first breaker cut broke (it blocked outbox
+    // retries for the whole cooldown; five test files caught it on CI).
+    markRemoteHostDown('http://127.0.0.1:9/sse')
+    const store = new RemoteStore('http://127.0.0.1:9/sse', 'tok', 'group:x/a')
+    await expect(store.me()).rejects.toThrow(/ECONNREFUSED|fetch failed/i)
+  })
+
+  it('a successful probe against a recovered host clears the mark end-to-end', async () => {
+    const { createServer } = await import('http')
+    const server = createServer((req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ username: 'u', org_id: 'o', role: 'dev', scopes: [], scope_metadata: [] }))
+    })
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+    const port = (server.address() as { port: number }).port
+    const url = `http://127.0.0.1:${port}/sse`
+    try {
+      markRemoteHostDown(url)
+      expect(remoteHostDownRemainingMs(url)).toBeGreaterThan(0)
+      const store = new RemoteStore(url, 'tok', 'group:x/a')
+      const me = await store.me() // probe allowed despite the open cooldown...
+      expect(me.username).toBe('u')
+      expect(remoteHostDownRemainingMs(url)).toBe(0) // ...and success clears the mark
+    } finally {
+      await new Promise<void>(resolve => server.close(() => resolve()))
+    }
+  })
+
   it('one network failure makes sibling stores on the same host fast-fail', async () => {
     // Port 9 (discard) on localhost: connection refused, immediately — a real
     // network-level failure without a real timeout in the suite.
