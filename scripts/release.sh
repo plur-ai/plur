@@ -126,6 +126,15 @@ if [ -z "$VERSION" ] || [[ "$VERSION" == --* ]]; then
   exit 1
 fi
 
+# Version SHAPE gate (0.19.1 adversarial audit, finding 3): this string is
+# sed-written into version constants and interpolated into a `/bin/sh -lc`
+# config command. The parity tests check equality, not shape — a malformed
+# value would pass them and land verbatim in user configs.
+if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.]+)?$ ]]; then
+  echo "FAIL: '$VERSION' is not a release-shaped version (expected e.g. 0.19.1)"
+  exit 1
+fi
+
 # Load env
 ENV_FILE="$HOME/Data/.datacore/env/.env"
 if [ -f "$ENV_FILE" ]; then
@@ -279,6 +288,10 @@ echo "  ✓ packages/mcp/src/index.ts"
 
 sed -i '' "s/const VERSION = '.*'/const VERSION = '$VERSION'/" packages/cli/src/index.ts
 echo "  ✓ packages/cli/src/index.ts"
+# CLI_VERSION pins the npx-fallback MCP entries (#1069); version-parity.test.ts
+# fails the suite if this and package.json ever disagree.
+sed -i '' "s/export const CLI_VERSION = '.*'/export const CLI_VERSION = '$VERSION'/" packages/cli/src/version.ts
+echo "  ✓ packages/cli/src/version.ts"
 
 # mcp test version assertion.
 # TARGETED: replace only the literal CURRENT version ($OLD_CORE), never a generic
@@ -586,6 +599,32 @@ if [ "$SKIP_TWEET" != true ]; then
   echo ""
   echo "$TWEET"
   echo ""
+fi
+
+# --- Step 3.54: Tracked-scratch gate ---
+# Scratch probes committed via a careless `git add -A` are how a session-
+# specific absolute path ended up in git history on the 0.19.1 branch
+# (adversarial audit, finding 1) -- the same class the repo had JUST cleaned
+# up (mig-seed.mjs, #1066). Refuse to ship any tracked file matching the
+# scratch naming convention.
+TRACKED_SCRATCH=$(git ls-files '*.tmp.*' | head -20)
+if [ -n "$TRACKED_SCRATCH" ]; then
+  echo "FAIL: tracked scratch files in the repo:"
+  echo "$TRACKED_SCRATCH" | sed 's/^/    /'
+  echo "  git rm them -- *.tmp.* is the scratch convention and is gitignored."
+  exit 1
+fi
+
+# --- Step 3.55: Changelog marker gate (#1065) ---
+# The 0.19.0 tag shipped with its own section still headed "## 0.19.0
+# (unreleased)" -- the marker was removed from the PREVIOUS release's section
+# but never from the one being shipped, and nothing checked. A changelog that
+# says a published version is unreleased is wrong at the exact moment it
+# becomes permanent, so refuse before anything irreversible.
+if grep -qiE "^## ${VERSION}[[:space:]]*\(unreleased\)" CHANGELOG.md; then
+  echo "FAIL: CHANGELOG.md still marks '## $VERSION' as (unreleased)."
+  echo "  Remove the marker from that heading -- this release is about to make it permanent."
+  exit 1
 fi
 
 # --- Step 3.6: Manifest gate (Part A -- issue #544) ---

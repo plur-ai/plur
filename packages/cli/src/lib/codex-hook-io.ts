@@ -1,4 +1,4 @@
-import { readSync, readFileSync, mkdirSync, writeFileSync, existsSync, statSync, readdirSync, unlinkSync } from 'fs'
+import { readSync, readFileSync, mkdirSync, writeFileSync, existsSync, statSync, lstatSync, chmodSync, readdirSync, unlinkSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { safeSessionKey } from './session-key.js'
@@ -83,8 +83,73 @@ export function isPlurSessionStartTool(toolName: string): boolean {
 const SESSION_DIR = join(tmpdir(), 'plur-codex-sessions')
 const STALE_SESSION_FILE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000 // 7 days
 
-function ensureDir(): void {
-  mkdirSync(SESSION_DIR, { recursive: true })
+/**
+ * Create — and vet — a hook-family session directory under os.tmpdir().
+ * Returns false when the directory cannot be trusted; every writer treats
+ * that as "no persistence" (fail open: hooks keep working, they just
+ * re-derive instead of caching).
+ *
+ * The vetting exists because on Linux os.tmpdir() is the world-writable
+ * /tmp. Two attacks the checks close (data-loss audit F8/F11, extended to
+ * every hook family by #1060 — the 0.19.0 release shipped this for the
+ * Antigravity adapter only, leaving the Codex and Cursor families, with the
+ * identical threat model, on a bare mkdirSync):
+ *
+ *   - A pre-planted symlink at plur-*-sessions/ pointing somewhere the
+ *     attacker can read or wants us to scribble on — or wants our stale-file
+ *     sweep to DELETE from. mkdirSync({recursive}) happily accepts an
+ *     existing symlink-to-dir, so lstat and refuse.
+ *   - A directory pre-created by another user (0777 or simply theirs), which
+ *     lets them read cached session state, pre-plant sentinels that bypass
+ *     the session guard, and pre-write counters that fail it open.
+ *
+ * The dir is created 0700 and files 0600 for the same reason. macOS tmpdirs
+ * are already per-user, so the checks only ever bite on shared-/tmp systems —
+ * which is exactly where they must.
+ */
+export function ensureSessionDir(dir: string): boolean {
+  try {
+    mkdirSync(dir, { recursive: true, mode: 0o700 })
+    if (process.platform !== 'win32') {
+      const st = lstatSync(dir)
+      if (st.isSymbolicLink() || !st.isDirectory()) return false
+      if (typeof process.getuid === 'function' && st.uid !== process.getuid()) return false
+      if ((st.mode & 0o077) !== 0) {
+        // Our own dir with loose modes is the UPGRADE case, not the attack
+        // case — every install prior to this hardening created it 0755
+        // (mkdirSync's default), and refusing it would permanently disable
+        // persistence for exactly the users who already had it working.
+        // Tighten in place; refuse only if that fails.
+        try { chmodSync(dir, 0o700) } catch { return false }
+      }
+    }
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * May a stale-file sweep run over this directory? Weaker than
+ * ensureSessionDir — it never creates and never chmods, it only refuses to
+ * DELETE through a path that is a symlink or belongs to someone else. This
+ * is the check that turns cleanupStaleSessionFiles from an
+ * arbitrary-file-deletion primitive (pre-plant a symlink, wait seven days)
+ * back into a tmp janitor (#1060).
+ */
+export function sessionDirSafeToSweep(dir: string): boolean {
+  try {
+    const st = lstatSync(dir)
+    if (st.isSymbolicLink() || !st.isDirectory()) return false
+    if (process.platform !== 'win32' && typeof process.getuid === 'function' && st.uid !== process.getuid()) return false
+    return true
+  } catch {
+    return false // missing — nothing to sweep
+  }
+}
+
+function ensureDir(): boolean {
+  return ensureSessionDir(SESSION_DIR)
 }
 
 export function sentinelPath(sessionId: string): string {
@@ -101,8 +166,10 @@ export function counterPath(sessionId: string, name: string): string {
 }
 
 export function markSessionStarted(sessionId: string): void {
-  ensureDir()
-  writeFileSync(sentinelPath(sessionId), new Date().toISOString())
+  if (!ensureDir()) return // fail open — an unmarkable session costs one extra nudge
+  try {
+    writeFileSync(sentinelPath(sessionId), new Date().toISOString(), { mode: 0o600 })
+  } catch { /* same trade */ }
   cleanupStaleSessionFiles()
 }
 
@@ -117,14 +184,14 @@ export function isSessionStarted(sessionId: string): boolean {
  * nudge and is not worth a lock file.
  */
 export function incrementCounter(path: string): number {
-  ensureDir()
+  if (!ensureDir()) return Number.MAX_SAFE_INTEGER // untrustable dir — same fail-open as an unwritable one
   let n = 0
   try {
     n = parseInt(readFileSync(path, 'utf8').trim(), 10) || 0
   } catch { /* first increment */ }
   n += 1
   try {
-    writeFileSync(path, String(n))
+    writeFileSync(path, String(n), { mode: 0o600 })
   } catch {
     // Adversarial-audit finding (2026-08-27): this used to swallow the write
     // failure and return 1 anyway. With an unwritable session dir that made
@@ -149,6 +216,7 @@ export function cleanupStaleSessionFiles(
   now: number = Date.now(),
   dir: string = SESSION_DIR,
 ): void {
+  if (!sessionDirSafeToSweep(dir)) return
   try {
     for (const name of readdirSync(dir)) {
       const p = join(dir, name)

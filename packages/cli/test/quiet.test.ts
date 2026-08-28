@@ -182,6 +182,7 @@ describe('doctor --quiet (#730)', () => {
       agyDetected: false,
       agyWired: false,
       pgliteGemmaReembedNeeded: false,
+      pgliteOrphan: null,
       staleContentHashes: 0,
       overall: 'fail',
     }

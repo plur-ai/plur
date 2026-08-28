@@ -3,6 +3,7 @@ import { join, dirname } from 'path'
 import { tmpdir } from 'os'
 import { cursorContextRulePath } from '../mcp-config.js'
 import { safeSessionKey } from './session-key.js'
+import { ensureSessionDir, sessionDirSafeToSweep } from './codex-hook-io.js'
 
 /**
  * Shared stdin-reading and sentinel-path helpers for the four hook-cursor-*
@@ -124,6 +125,7 @@ const STALE_SESSION_FILE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000 // 7 days
  * or throw out of a hook that's expected to run in milliseconds.
  */
 function pruneStaleSessions(dir: string): void {
+  if (!sessionDirSafeToSweep(dir)) return // never delete through a symlink or someone else's dir (#1060)
   let entries: string[]
   try {
     entries = readdirSync(dir)
@@ -141,8 +143,12 @@ function pruneStaleSessions(dir: string): void {
 
 export function sessionsDir(): string {
   const dir = join(tmpdir(), 'plur-cursor-sessions')
-  mkdirSync(dir, { recursive: true })
-  pruneStaleSessions(dir)
+  // ensureSessionDir (shared with the Codex/agy families, #1060) creates
+  // 0700 and vets symlink/ownership/mode; on refusal we still return the
+  // path — writers fail open individually — but never prune, because
+  // sweeping an untrusted directory is the deletion primitive the vetting
+  // exists to close.
+  if (ensureSessionDir(dir)) pruneStaleSessions(dir)
   return dir
 }
 
@@ -171,11 +177,18 @@ export function stopCountPath(conversationId: string): string {
  * read-then-write can.
  */
 export function incrementCounter(path: string): number {
-  appendFileSync(path, '.')
   try {
+    appendFileSync(path, '.', { mode: 0o600 })
     return statSync(path).size
   } catch {
-    return 1
+    // Same fail-open contract as the Codex/agy counters (#1060, and the
+    // 2026-08-27 adversarial-audit finding this family never received): a
+    // counter that cannot be persisted or read cannot bound anything, so
+    // report it as already exceeded. Guards fall back to allowing tools;
+    // nudge cadences go quiet (no small modulus divides 2^53-1) instead of
+    // firing every turn. The previous code let the append throw out of the
+    // hook and returned 1 on a stat failure — fail-closed both ways.
+    return Number.MAX_SAFE_INTEGER
   }
 }
 
@@ -189,8 +202,10 @@ export function incrementCounter(path: string): number {
  */
 export function markSessionStarted(conversationId: string): void {
   const now = String(Date.now())
-  writeFileSync(sentinelPath(conversationId), now)
-  writeFileSync(lastReminderPath(conversationId), now)
+  try {
+    writeFileSync(sentinelPath(conversationId), now, { mode: 0o600 })
+    writeFileSync(lastReminderPath(conversationId), now, { mode: 0o600 })
+  } catch { /* fail open — an unmarkable session costs one extra nudge (#1060) */ }
 }
 
 /**

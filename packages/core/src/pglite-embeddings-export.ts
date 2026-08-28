@@ -53,11 +53,13 @@ export interface PgliteEmbeddingsExportReport {
   wrongDim: number
   /** Rows whose engram no longer exists in YAML. */
   orphaned: number
+  /** Rows whose processing threw (undecodable vector, malformed row) — skipped, never fatal (#1063). */
+  malformed: number
   error?: string
 }
 
-/** Coerce the three shapes a PGLite embedding column read can produce. */
-function toNumberArray(value: unknown): number[] | null {
+/** Coerce the three shapes a PGLite embedding column read can produce. Exported for tests (#1063). */
+export function toNumberArray(value: unknown): number[] | null {
   if (Array.isArray(value)) {
     return value.every(n => typeof n === 'number' && Number.isFinite(n)) ? value as number[] : null
   }
@@ -73,10 +75,19 @@ function toNumberArray(value: unknown): number[] | null {
     }
   }
   if (value instanceof Uint8Array) {
-    // BYTEA fallback: little-endian float32s.
+    // BYTEA fallback: little-endian float32s. Copy before viewing: a
+    // Float32Array over the ORIGINAL buffer throws RangeError when the
+    // view's byteOffset is not 4-aligned (#1063 — unproven that a driver
+    // ever hands one back, but a copy makes the question moot), and the
+    // fresh allocation is always offset-0.
     if (value.byteLength % 4 !== 0) return null
-    const f = new Float32Array(value.buffer, value.byteOffset, value.byteLength / 4)
-    return Array.from(f)
+    // The copy constructor, NOT .slice(): Buffer overrides slice with no-copy
+    // semantics, and even Uint8Array.prototype.slice species-creates a Buffer
+    // here — which can come from Node's pool with a nonzero byteOffset, so a
+    // Float32Array over `.buffer` at offset 0 would read pool garbage.
+    // `new Uint8Array(view)` always allocates a fresh offset-0 ArrayBuffer.
+    const copy = new Uint8Array(value)
+    return Array.from(new Float32Array(copy.buffer))
   }
   return null
 }
@@ -86,7 +97,7 @@ export async function exportPgliteEmbeddingsToCache(
   engramsPath: string = join(storageRoot, 'engrams.yaml'),
   pglitePath: string = join(storageRoot, 'store.pglite'),
 ): Promise<PgliteEmbeddingsExportReport> {
-  const report: PgliteEmbeddingsExportReport = { status: 'done', ported: 0, stale: 0, wrongDim: 0, orphaned: 0 }
+  const report: PgliteEmbeddingsExportReport = { status: 'done', ported: 0, stale: 0, wrongDim: 0, orphaned: 0, malformed: 0 }
 
   if (!existsSync(pglitePath)) return { ...report, status: 'no-store' }
 
@@ -128,38 +139,63 @@ export async function exportPgliteEmbeddingsToCache(
     // migration). Stores built without AGE have it in public. Quoting via
     // format() is unnecessary: pg_tables.schemaname is trusted catalog
     // output, but quote_ident anyway since it is one function call.
+    // ALL schemas holding the table, in a deterministic order (#1063): a
+    // store that ran both with and without AGE over its lifetime has the
+    // table in BOTH ag_catalog and public, and the previous unordered
+    // `LIMIT 1` picked one arbitrarily — read the wrong (empty or stale)
+    // copy and the export reports no-embeddings on a store that plainly
+    // holds vectors. Reading every copy needs no tie-break at all: the
+    // per-row freshness check below already decides which rows are valid,
+    // whichever schema they came from.
     const loc = await db.query(
-      "SELECT quote_ident(schemaname) AS s FROM pg_tables WHERE tablename = 'engram_embeddings' LIMIT 1",
+      "SELECT quote_ident(schemaname) AS s FROM pg_tables WHERE tablename = 'engram_embeddings' ORDER BY schemaname",
     )
     if (loc.rows.length === 0) return { ...report, status: 'no-embeddings' }
-    const schema = String(loc.rows[0].s)
 
-    const res = await db.query(`SELECT engram_id, embedding, content_hash FROM ${schema}.engram_embeddings`)
-    if (res.rows.length === 0) return { ...report, status: 'no-embeddings' }
-
-    const byId = new Map<string, { embedding: unknown; content_hash: unknown }>()
-    for (const r of res.rows) {
-      byId.set(String(r.engram_id), { embedding: r.embedding, content_hash: r.content_hash })
+    const byId = new Map<string, Array<{ embedding: unknown; content_hash: unknown }>>()
+    let totalRows = 0
+    for (const schemaRow of loc.rows) {
+      const schema = String(schemaRow.s)
+      const res = await db.query(`SELECT engram_id, embedding, content_hash FROM ${schema}.engram_embeddings`)
+      totalRows += res.rows.length
+      for (const r of res.rows) {
+        const id = String(r.engram_id)
+        const rows = byId.get(id) ?? []
+        rows.push({ embedding: r.embedding, content_hash: r.content_hash })
+        byId.set(id, rows)
+      }
     }
+    if (totalRows === 0) return { ...report, status: 'no-embeddings' }
 
     const engrams = loadEngrams(engramsPath)
     const present = new Set<string>()
     const imports: Array<{ engramId: string; searchText: string; embedding: number[] }> = []
 
     for (const engram of engrams) {
-      const row = byId.get(engram.id)
-      if (!row) continue
+      const rows = byId.get(engram.id)
+      if (!rows) continue
       present.add(engram.id)
-      if (typeof row.content_hash !== 'string' || row.content_hash !== embeddingContentHash(engram)) {
-        report.stale++
-        continue
+      // Per-engram containment (#1063): one undecodable row must cost ONE
+      // vector, not the whole export — the previous version let any throw in
+      // here reach the outer catch, discarding every valid vector alongside
+      // the bad one and silently costing the user the full re-embed this
+      // module exists to avoid.
+      try {
+        const currentHash = embeddingContentHash(engram)
+        const fresh = rows.find(r => typeof r.content_hash === 'string' && r.content_hash === currentHash)
+        if (!fresh) {
+          report.stale++
+          continue
+        }
+        const vec = toNumberArray(fresh.embedding)
+        if (!vec || vec.length !== active.dim) {
+          report.wrongDim++
+          continue
+        }
+        imports.push({ engramId: engram.id, searchText: engramSearchText(engram), embedding: vec })
+      } catch {
+        report.malformed++
       }
-      const vec = toNumberArray(row.embedding)
-      if (!vec || vec.length !== active.dim) {
-        report.wrongDim++
-        continue
-      }
-      imports.push({ engramId: engram.id, searchText: engramSearchText(engram), embedding: vec })
     }
     report.orphaned = byId.size - present.size
 

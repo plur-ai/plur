@@ -1,4 +1,4 @@
-import { runMigrations, rollbackMigrations, getSchemaVersion, CURRENT_SCHEMA_VERSION, exportPgliteEmbeddingsToCache } from '@plur-ai/core'
+import { runMigrations, rollbackMigrations, getSchemaVersion, CURRENT_SCHEMA_VERSION, exportPgliteEmbeddingsToCache, resolveBackendTier, loadConfig } from '@plur-ai/core'
 import { existsSync } from 'fs'
 import { join, dirname } from 'path'
 import { createPlur, type GlobalFlags } from '../plur.js'
@@ -42,7 +42,16 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
       // and harmless to re-run (existing cache entries win).
       const storageRoot = dirname(paths.engrams)
       const pgliteDir = join(storageRoot, 'store.pglite')
-      const pgliteExplicit = process.env.PLUR_BACKEND?.trim().toLowerCase() === 'pglite'
+      // Same resolver the engine uses (#1061): `backend: pglite` in
+      // config.yaml selects the tier exactly as PLUR_BACKEND does, and a
+      // bare env test ran the orphan-export path — and printed "can now be
+      // deleted" — against an index the user's config was actively using.
+      const pgliteExplicit = resolveBackendTier({
+        env: process.env.PLUR_BACKEND,
+        config: loadConfig(paths.config).backend,
+        engramCount: 0, // irrelevant: pglite is never size-selected
+        postgresConfigured: false, // ditto — pglite selection needs no connection string
+      }).tier === 'pglite'
       let embeddingsReport: Awaited<ReturnType<typeof exportPgliteEmbeddingsToCache>> | null = null
       if (existsSync(pgliteDir) && !pgliteExplicit) {
         embeddingsReport = await exportPgliteEmbeddingsToCache(storageRoot, paths.engrams, pgliteDir)

@@ -1,4 +1,5 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs'
+import { CLI_VERSION } from './version.js'
 import { join, dirname } from 'path'
 import { homedir, platform } from 'os'
 
@@ -69,16 +70,33 @@ export function buildMcpServerEntry(opts?: { env?: Record<string, string> }): Mc
   if (shim) {
     return { command: shim, args: [], ...(opts?.env ? { env: opts.env } : {}) }
   }
+  // npx fallback pins THIS CLI's version, never @latest (#1069 root cause).
+  // An @latest entry makes npx re-resolve on every publish and REWRITE the
+  // cached native binaries (better_sqlite3.node) in place — and macOS kills
+  // any process that pages in a rewritten signed binary with SIGKILL
+  // "CODESIGNING Invalid Page" (captured in Diagnostic Reports on
+  // 2026-08-28: dyld faulting exactly better-sqlite3's 1888K mapping, ~0.5s
+  // after launch, cold runs only). That was the "first cold
+  // plur_session_start of the day dies" production signature: the first run
+  // after a publish is the one that races the cache rewrite. A pinned
+  // version's cache is immutable — upgrades happen when `plur init` rewrites
+  // the config to a new pin, a moment when servers restart anyway. Same
+  // convention as the hermes/python bridges' _NPX_CLI_VERSION pin.
+  // Belt-and-braces (adversarial audit): the constant is compile-time, but it
+  // reaches a /bin/sh -lc string — refuse to interpolate anything that is not
+  // release-shaped, falling back to a harmless pinned form.
+  const version = /^\d+\.\d+\.\d+([.-][0-9A-Za-z.]+)?$/.test(CLI_VERSION) ? CLI_VERSION : 'latest'
+  const spec = `@plur-ai/mcp@${version}`
   if (platform() === 'win32') {
     return {
       command: 'cmd.exe',
-      args: ['/c', 'npx', '-y', '@plur-ai/mcp@latest'],
+      args: ['/c', 'npx', '-y', spec],
       ...(opts?.env ? { env: opts.env } : {}),
     }
   }
   return {
     command: '/bin/sh',
-    args: ['-lc', 'exec npx -y @plur-ai/mcp@latest'],
+    args: ['-lc', `exec npx -y ${spec}`],
     ...(opts?.env ? { env: opts.env } : {}),
   }
 }
@@ -232,6 +250,12 @@ export function knownConfigFiles(cwd: string = process.cwd()): ConfigFile[] {
 
 /**
  * Read a JSON config file. Returns {} if missing or unparseable.
+ *
+ * For READ-ONLY consumers (doctor's checks) this coercion is the right
+ * degradation. Any caller that intends to WRITE the config back must use
+ * readConfigForWrite instead: writing through this function's {} turns "one
+ * trailing comma" into "every other MCP server the user had registered is
+ * silently destroyed" (#1059).
  */
 export function readConfig(path: string): Record<string, unknown> {
   if (!existsSync(path)) return {}
@@ -240,6 +264,32 @@ export function readConfig(path: string): Record<string, unknown> {
   } catch {
     return {}
   }
+}
+
+export interface ConfigReadResult {
+  config: Record<string, unknown>
+  /** false when the file EXISTS but is not a JSON object — merging into the coerced {} and writing back would destroy the user's other entries (#1059). */
+  ok: boolean
+}
+
+/**
+ * Read a JSON config file that the caller intends to modify and write back.
+ * A missing file is a fresh install (`ok: true`, empty config); a file that
+ * exists but fails to parse — or parses to something other than an object —
+ * is the user's damaged-but-recoverable data, and the only safe move is to
+ * refuse the leg and tell them (`ok: false`). This is the same refusal the
+ * hooks.json legs have carried since the 0.19.0 adversarial audit (ADV-F2);
+ * #1059 is that finding un-propagated to the MCP legs of the same functions.
+ */
+export function readConfigForWrite(path: string): ConfigReadResult {
+  if (!existsSync(path)) return { config: {}, ok: true }
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(path, 'utf8'))
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return { config: parsed as Record<string, unknown>, ok: true }
+    }
+  } catch { /* fall through to the refusal */ }
+  return { config: {}, ok: false }
 }
 
 /**
@@ -304,4 +354,77 @@ export function mergePlurMcp(config: Record<string, unknown>, opts?: { env?: Rec
   servers.plur = buildMcpServerEntry(opts)
   config.mcpServers = servers
   return true
+}
+
+/**
+ * Heal an EXISTING plur entry that init itself wrote via the npx fallback.
+ *
+ * "Entry exists" is not "entry is correct" — the same trap the Cursor leg's
+ * PLUR_TOOL_PROFILE patch already documents. Every MCP leg used to skip on
+ * `hasPlurMcp`, which left the `@latest` entries older inits wrote in place
+ * FOREVER: re-running `plur init` on an affected machine reported "already
+ * registered" while the #1069 rewrite race stayed armed. Upgrade the entry
+ * when (a) it is recognizably OURS (an npx invocation of @plur-ai/mcp — a
+ * hand-rolled custom command is never touched), and (b) it differs from what
+ * we would write today (shim, or the current version pin). The existing
+ * entry's env is preserved when the caller doesn't supply one.
+ *
+ * Returns true when the entry was rewritten (caller persists the config).
+ */
+export function upgradePlurMcpEntry(config: Record<string, unknown>, opts?: { env?: Record<string, string> }): boolean {
+  const servers = (config.mcpServers ?? {}) as Record<string, McpServerEntry | undefined>
+  const existing = servers.plur
+  if (!existing) return false
+  if (!isRaceyPlurNpxEntry(existing)) return false
+  const effectiveOpts = opts ?? (existing.env ? { env: existing.env } : undefined)
+  const recommended = buildMcpServerEntry(effectiveOpts)
+  // Field-level MERGE, not object replacement (0.19.1 data-loss audit,
+  // finding 2): a user entry can carry keys we never modeled — type, cwd,
+  // timeout, disabled, envFile — and `servers.plur = recommended` silently
+  // destroyed them. Only the launch triple changes hands.
+  servers.plur = {
+    ...existing,
+    command: recommended.command,
+    args: recommended.args,
+    ...(recommended.env ? { env: recommended.env } : {}),
+  }
+  config.mcpServers = servers as Record<string, unknown>
+  return true
+}
+
+/**
+ * Is this entry one of the RACEY shapes init itself has written — an npx
+ * invocation of exactly `@plur-ai/mcp` at `@latest` (or with no tag, which
+ * npm treats as latest)?
+ *
+ * Both 0.19.1 audits broke the first version of this predicate, which
+ * flattened command+args and substring-matched: it clobbered deliberate
+ * old-version pins (a user staying on 0.18 on purpose), fork packages
+ * (`@plur-ai/mcp-experimental`), and even unrelated custom commands whose
+ * arguments merely MENTIONED the words. The rules now:
+ *
+ *   - Only the exact command forms init writes (or a user's bare `npx`)
+ *     qualify: `npx`, `cmd.exe /c npx`, `/bin/sh -lc 'exec npx …'`.
+ *   - The package spec must be EXACTLY `@plur-ai/mcp`, `@plur-ai/mcp@latest`
+ *     — anchored, so forks and mentions never match.
+ *   - An explicit version pin (`@plur-ai/mcp@0.18.2`) is the user's decision
+ *     and is NEVER healed; only the @latest/bare forms carry the #1069
+ *     rewrite race this healer exists to disarm. (doctor's staleNpx
+ *     advisory still nudges pinned-npx users toward the shim.)
+ */
+function isRaceyPlurNpxEntry(entry: McpServerEntry): boolean {
+  const RACEY_SPEC = /^@plur-ai\/mcp(@latest)?$/
+  const args = entry.args ?? []
+  // Shell-string forms: /bin/sh -lc '<script>' (init's own POSIX shape).
+  if (entry.command === '/bin/sh') {
+    const script = args[args.length - 1] ?? ''
+    const m = /^\s*(?:exec\s+)?npx\s+(?:-y\s+)?(\S+)\s*$/.exec(script)
+    return m !== null && RACEY_SPEC.test(m[1])
+  }
+  // Argv forms: `npx …` directly, or `cmd.exe /c npx …` (init's win32 shape).
+  const argv = entry.command === 'cmd.exe' ? args.filter(a => a !== '/c') :
+    entry.command === 'npx' ? ['npx', ...args] : null
+  if (!argv || argv[0] !== 'npx') return false
+  const spec = argv.filter(a => a !== 'npx' && !a.startsWith('-'))[0] ?? ''
+  return RACEY_SPEC.test(spec)
 }

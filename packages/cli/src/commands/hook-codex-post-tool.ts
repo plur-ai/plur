@@ -26,10 +26,20 @@ import {
  *    `additionalContext` (Codex explicitly warns "ignoring
  *    additionalContextLimit … this event cannot emit additionalContext"),
  *    and `decision: "block"` means "keep going", which would turn a gentle
- *    reminder into a forced extra turn. PostToolUse CAN emit
+ *    reminder into a forced extra turn. PostToolUse ACCEPTS
  *    additionalContext, so the nudge rides here on an every-Nth-tool
  *    cadence instead — the same fatigue-avoidance shape as
  *    `hook-learn-check`.
+ *
+ *    VERIFICATION STATUS (#1064): "accepts" is the verified part — Codex
+ *    parses the output without complaint. Whether PostToolUse
+ *    additionalContext actually REACHES the model was NOT covered by the
+ *    2026-08-27 live verification, which exercised SessionStart and
+ *    UserPromptSubmit delivery only. If Codex drops it, the cost is a
+ *    silent no-op nudge (the sentinel job above is unaffected — it writes
+ *    a file, needing no output channel). Verify with a trusted-hooks
+ *    session per the probe procedure on #1064 before citing this nudge as
+ *    working.
  *
  * Input:  JSON on stdin — { session_id, tool_name, tool_input, tool_response, ... }
  * Output: JSON on stdout — an additionalContext nudge, or nothing.

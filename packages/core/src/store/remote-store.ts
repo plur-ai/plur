@@ -102,6 +102,126 @@ export function normalizeEndpointUrl(url: string): string {
   return url.replace(/\/sse\/?$/, '').replace(/\/$/, '')
 }
 
+// ── Host-level failure breaker (#1069) ──────────────────────────────────────
+//
+// Process-wide memory of hosts that failed at the NETWORK level (connect
+// refused, blackholed route, fetch timeout). A real config was observed with
+// NINE store entries pointing at one unreachable host: without this, every
+// entry pays the full connect timeout on every load, in every fresh process —
+// the measured cold `plur_session_start` stall, multiplied again by the
+// concurrent hook processes that each cold-load the same config. One network
+// failure marks the ORIGIN down for a cooldown, and the PASSIVE read path
+// (load() paging) fast-fails to its prior cache while it lasts.
+//
+// Deliberately asymmetric: fetchBounded (writes, /me, explicit retries) marks
+// on failure and clears on success but NEVER fast-fails — an outbox flush the
+// user just invoked against a recovered host must probe, not be told "still
+// down" for the rest of the cooldown. Those probes are also the breaker's
+// recovery signal. HTTP responses never trip it — a 401/500 is a live host
+// talking. Per-process, not persisted: a fresh process re-probes once, which
+// is exactly the recovery behaviour a temporarily-down host wants.
+const HOST_DOWN_COOLDOWN_MS = 60_000
+const downHosts = new Map<string, number>()
+
+function hostKey(url: string): string {
+  try { return new URL(url).origin } catch { return url }
+}
+
+export function markRemoteHostDown(url: string, at: number = Date.now()): void {
+  const key = hostKey(url)
+  if (!downHosts.has(key)) {
+    logger.warning(
+      `[plur:remote-store] ${key} failed at the network level — fast-failing every store on this host for ${HOST_DOWN_COOLDOWN_MS / 1000}s (#1069)`,
+    )
+  }
+  downHosts.set(key, at)
+}
+
+/** Milliseconds of cooldown remaining for this URL's host; 0 = host is not marked down. */
+export function remoteHostDownRemainingMs(url: string, now: number = Date.now()): number {
+  const at = downHosts.get(hostKey(url))
+  if (at === undefined) return 0
+  const remaining = HOST_DOWN_COOLDOWN_MS - (now - at)
+  if (remaining <= 0) {
+    downHosts.delete(hostKey(url))
+    return 0
+  }
+  return remaining
+}
+
+/** A network-level SUCCESS against the host clears its down mark — the recovery half of the breaker. */
+export function clearRemoteHostDown(url: string): void {
+  downHosts.delete(hostKey(url))
+}
+
+/** Test seam. */
+export function _resetRemoteHostBreaker(): void {
+  downHosts.clear()
+}
+
+/**
+ * Validate a remote row against RemoteRowSchema, salvaging schema drift.
+ *
+ * An enterprise server on an older (or newer) release can serve field VALUES
+ * this client's stricter schema rejects — observed live 2026-08-28: ~100
+ * engrams on a production store dropped wholesale over `commitment:
+ * invalid_enum_value`, silently invisible to recall. A whole engram is worth
+ * more than one drifted optional field, so on failure this strips exactly the
+ * top-level fields the issues name and re-parses ONCE. A required field named
+ * in the issues is still missing on the re-parse, so a genuinely malformed
+ * row cannot be resurrected. Returns null when the row is unusable even after
+ * stripping. Shared by RemoteStore.reshape and remote-recall's processHostRows
+ * — the same drop existed independently at both sites.
+ */
+/**
+ * Fields whose ABSENCE is more permissive than any present value — stripping
+ * them converts a fail-closed check somewhere else into fail-open (0.19.1
+ * data-loss audit, finding 4):
+ *
+ *   - `visibility`: `=== 'private'` is the pack-export privacy gate. A row
+ *     whose visibility this client cannot validate must DROP, not export.
+ *   - `pinned`: a drifted truthy pin stripped away silently un-pins a team
+ *     engram; injection's pinned bypass would stop honoring it.
+ *
+ * Everything else (commitment — the live #1071 case — plus the cosmetic and
+ * rendered fields) only ever REMOVES content or privilege when absent, so it
+ * stays strippable. Required fields need no listing: stripping one just
+ * fails the re-parse.
+ */
+const NEVER_STRIP = new Set(['visibility', 'pinned'])
+
+/** Per-process dedupe for salvage warnings: one line per (store, field-set), on BOTH read paths (audit finding 5). */
+const warnedSalvages = new Set<string>()
+
+export function salvageRemoteRow(
+  candidate: Record<string, unknown>,
+  logContext?: { url: string; rowId?: unknown },
+): { data: Record<string, unknown>; salvagedFields: string[] } | null {
+  const first = RemoteRowSchema.safeParse(candidate)
+  if (first.success) return { data: first.data as Record<string, unknown>, salvagedFields: [] }
+  const failing = [...new Set(first.error.issues.map(i => String(i.path[0] ?? '')).filter(Boolean))]
+  if (failing.length === 0) return null
+  if (failing.some(key => NEVER_STRIP.has(key))) return null // fail closed — see NEVER_STRIP
+  const slim: Record<string, unknown> = { ...candidate }
+  for (const key of failing) delete slim[key]
+  const second = RemoteRowSchema.safeParse(slim)
+  if (!second.success) return null
+  const salvagedFields = failing.sort()
+  if (logContext) {
+    const dedupeKey = `${logContext.url}|${salvagedFields.join(',')}`
+    if (!warnedSalvages.has(dedupeKey)) {
+      warnedSalvages.add(dedupeKey)
+      const safeId = String(logContext.rowId ?? '').replace(/[^\w:./-]/g, '?').slice(0, 64)
+      logger.warning(
+        `[plur:remote-store] ${logContext.url} serves engrams with drifted field(s) [${salvagedFields.join(',')}] this client ` +
+        `cannot validate (first seen id="${safeId}") — keeping the engrams WITHOUT those fields. ` +
+        `The server and client schemas need reconciling (#1071); recall is degraded, not blind.`,
+      )
+    }
+  }
+  return { data: second.data as Record<string, unknown>, salvagedFields }
+}
+
 export class RemoteStore implements EngramStore {
   private cache: { ts: number; engrams: Engram[] } | null = null
   private inFlight: Promise<Engram[]> | null = null
@@ -143,11 +263,23 @@ export class RemoteStore implements EngramStore {
    * holds at N-1 of them. A seventh endpoint added later inherits the bound.
    */
   private async fetchBounded(url: string, init: RequestInit = {}): Promise<Response> {
+    // #1069: a network-level failure here MARKS the host down (so the passive
+    // read path fast-fails), but this method never fast-fails itself. It
+    // carries writes, /me and explicit retries — an outbox flush the user just
+    // invoked against a host that recovered must be allowed to probe, not be
+    // told "still down" for the rest of the cooldown. The probe doubles as the
+    // breaker's recovery check: on success the next failure window starts
+    // clean; on failure the mark is refreshed.
     const ctrl = new AbortController()
     const timer = setTimeout(() => ctrl.abort(), LOAD_FETCH_TIMEOUT_MS)
     try {
-      return await fetch(url, { ...init, signal: ctrl.signal })
+      const res = await fetch(url, { ...init, signal: ctrl.signal })
+      clearRemoteHostDown(url) // the host answered — any HTTP status is a live host
+      return res
     } catch (err) {
+      // fetch only throws on network-level failures (and our abort) — an HTTP
+      // error status resolves normally — so any throw here marks the host.
+      markRemoteHostDown(url)
       throw ctrl.signal.aborted
         ? new Error(`request to ${url} timed out after ${LOAD_FETCH_TIMEOUT_MS}ms`)
         : (err as Error)
@@ -169,17 +301,22 @@ export class RemoteStore implements EngramStore {
     // with the old key and no `write_count`, and every read site had to know to
     // fall back — which two of the three did not.
     const candidate = normalizeEngramInput({ ...d, id: raw.id, scope: raw.scope, status: raw.status })
-    const parsed = RemoteRowSchema.safeParse(candidate)
-    if (!parsed.success) {
+    // Schema-drift salvage (see salvageRemoteRow): keep an engram whose only
+    // problem is a drifted optional field, dropping just that field.
+    const salvaged = salvageRemoteRow(candidate as Record<string, unknown>, { url: this.url, rowId: raw.id })
+    if (!salvaged) {
       // #408: do NOT echo server-controlled VALUES into the log. Zod messages can
       // embed the received value, and a crafted id could carry newlines/control
       // chars to forge log lines (log injection) or leak data. Log only the field
       // PATHS + failure CODES, plus a sanitized, bounded id.
-      const why = parsed.error.issues.map(i => `${i.path.join('.') || '(root)'}: ${i.code}`).join('; ')
+      const reparse = RemoteRowSchema.safeParse(candidate)
+      const why = reparse.success ? 'unknown' : reparse.error.issues
+        .map(i => `${i.path.join('.') || '(root)'}: ${i.code}`).join('; ')
       const safeId = String(raw.id ?? '').replace(/[^\w:./-]/g, '?').slice(0, 64)
       logger.warning(`[plur:remote-store] ${this.url} returned a malformed engram (id="${safeId}") — dropped: ${why}`)
       return null
     }
+    const parsed = { data: salvaged.data }
     // #768 round-trip: the server stores the validity window FLAT in row data
     // (valid_from / valid_until — enterprise#627), while every local consumer
     // reads the nested `temporal` block (inject's expiry gate, decay). Map
@@ -316,11 +453,15 @@ export class RemoteStore implements EngramStore {
         // cold-cache appends, and reintroduced by #531 for page-fetch errors.
         let paginationComplete = false
         for (let i = 0; i < maxPages; i++) {
+          // #1069: nine entries on one dead host must cost ONE timeout per
+          // process, not nine — fast-fail to the prior cache during cooldown.
+          if (remoteHostDownRemainingMs(this.url) > 0) break
           const u = `${this.apiBase}/engrams?scope=${encodeURIComponent(this.scope)}&limit=${limit}&offset=${offset}`
           const ctrl = new AbortController()
           const t = setTimeout(() => ctrl.abort(), LOAD_FETCH_TIMEOUT_MS)
           try {
             const r = await fetch(u, { headers: this.headers(), signal: ctrl.signal })
+            clearRemoteHostDown(this.url) // answered — alive, whatever the status
             if (!r.ok) {
               // 403 (no read access) and 404 (scope doesn't exist) are stable
               // states: the scope genuinely has nothing for us. Cache [] so we
@@ -347,6 +488,9 @@ export class RemoteStore implements EngramStore {
             }
             offset += limit
           } catch (err) {
+            // Network-level failure (fetch only throws on those + our abort):
+            // mark the host so sibling stores skip their own timeouts (#1069).
+            markRemoteHostDown(this.url)
             const msg = (err as Error).name === 'AbortError'
               ? `page fetch timed out after ${LOAD_FETCH_TIMEOUT_MS}ms`
               : (err as Error).message
