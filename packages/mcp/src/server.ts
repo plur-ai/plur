@@ -479,6 +479,32 @@ Please:
 }
 
 export async function runStdio(): Promise<void> {
+  // #1070: a long-lived memory server must not die from a background fault.
+  // Node's default turns ANY unhandled rejection — an un-awaited retry, a
+  // fire-and-forget probe, a timer callback's fetch — into process death.
+  // Claude Code never restarts an MCP server that dies mid-session, so that
+  // default converts one transient background hiccup into the entire session
+  // running memoryless, discovered only when the NEXT tool call reports
+  // "Connection closed" after 0s (the observed 2026-08-28 signature: the
+  // server was already dead; plur_doctor merely found the corpse). Log
+  // loudly and stay up: for this process, degraded strictly beats dead.
+  // Registered here, not in createServer, so the test suite's in-process
+  // servers don't swallow the test runner's own failures.
+  const survive = (kind: string) => (err: unknown): void => {
+    const detail = err instanceof Error ? (err.stack ?? err.message) : String(err)
+    process.stderr.write(`[plur:mcp] ${kind} — server stays up (#1070): ${detail}\n`)
+  }
+  process.on('unhandledRejection', survive('unhandled rejection'))
+  process.on('uncaughtException', survive('uncaught exception'))
+
+  // Test seam for the nets above: induce a background unhandled rejection N ms
+  // after startup, so a spawned-process test can prove the server survives one
+  // and still answers the next request. Inert unless the env var is set.
+  const induceMs = Number(process.env.PLUR_TEST_INDUCE_UNHANDLED_REJECTION_MS ?? '')
+  if (Number.isFinite(induceMs) && induceMs > 0) {
+    setTimeout(() => { void Promise.reject(new Error('induced test rejection (#1070)')) }, induceMs)
+  }
+
   // Shared with describeToolSurface (#761) so the surface plur_doctor reports
   // is resolved from the same rule the server exposes tools with — two copies
   // of this ternary is how doctor comes to describe a profile nobody is running.
