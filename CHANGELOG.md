@@ -2,8 +2,10 @@
 
 ## 0.19.1
 
-Patch release: every finding from the independent 0.19.0 audit (#1058), plus the
-bonus instances the fixes' bug classes turned up on their way through.
+Patch release (#1072): every finding from the independent 0.19.0 audit (#1058),
+the two same-day production crash bugs, and every finding from this patch's own
+three-audit round — with the bonus instances the fixes' bug classes turned up
+on the way through.
 
 - `plur init` never destroys a config it cannot parse
 - tmp-dir hardening now covers the Codex and Cursor hook families, not just agy
