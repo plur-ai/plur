@@ -592,6 +592,20 @@ if [ "$SKIP_TWEET" != true ]; then
   echo ""
 fi
 
+# --- Step 3.54: Tracked-scratch gate ---
+# Scratch probes committed via a careless `git add -A` are how a session-
+# specific absolute path ended up in git history on the 0.19.1 branch
+# (adversarial audit, finding 1) -- the same class the repo had JUST cleaned
+# up (mig-seed.mjs, #1066). Refuse to ship any tracked file matching the
+# scratch naming convention.
+TRACKED_SCRATCH=$(git ls-files '*.tmp.*' | head -20)
+if [ -n "$TRACKED_SCRATCH" ]; then
+  echo "FAIL: tracked scratch files in the repo:"
+  echo "$TRACKED_SCRATCH" | sed 's/^/    /'
+  echo "  git rm them -- *.tmp.* is the scratch convention and is gitignored."
+  exit 1
+fi
+
 # --- Step 3.55: Changelog marker gate (#1065) ---
 # The 0.19.0 tag shipped with its own section still headed "## 0.19.0
 # (unreleased)" -- the marker was removed from the PREVIOUS release's section

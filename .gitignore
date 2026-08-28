@@ -39,3 +39,7 @@ packages/core/test/.scratch-auto-discover/
 # Runtime embedding cache — regenerated on demand, and keyed by local engram IDs.
 # Committing it churns a 40K blob and puts one machine's IDs in the repo (#706).
 .embeddings-cache.json
+
+# Scratch/probe files — never committed (adversarial audit 0.19.1, finding 1)
+*.tmp.mjs
+*.tmp.ts
