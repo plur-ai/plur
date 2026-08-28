@@ -1,6 +1,6 @@
 import { spawn } from 'child_process'
 import { existsSync, readFileSync, realpathSync, statSync, accessSync, constants } from 'fs'
-import { join, extname } from 'path'
+import { join, extname, dirname } from 'path'
 import { homedir, platform } from 'os'
 import { createPlur, type GlobalFlags } from '../plur.js'
 import { outputText, outputInfo, outputJson, shouldOutputJson } from '../output.js'
@@ -19,7 +19,7 @@ import { hasPlurCursorHooks, readCursorHooksConfig } from '../cursor-hooks.js'
 import { hasPlurCodexHooks, readCodexHooksConfig } from '../codex-hooks.js'
 import { hasPlurAgyHooks, readAgyHooksConfig } from '../antigravity-hooks.js'
 import { codexHome } from '../mcp-config.js'
-import { computeContentHash, detectPlurStorage, loadEngrams } from '@plur-ai/core'
+import { computeContentHash, detectPlurStorage, loadConfig, loadEngrams } from '@plur-ai/core'
 
 /**
  * plur doctor — diagnose a Claude Code / Claude Desktop / Cursor installation.
@@ -139,6 +139,15 @@ interface DoctorReport {
    * `plur reindex-hashes --apply`.
    */
   staleContentHashes: number
+  /**
+   * Whether a `store.pglite` directory exists but pglite is not the selected
+   * backend (neither `PLUR_BACKEND=pglite` nor `config.backend: pglite`). When
+   * true, the directory is an orphaned index from the pre-#1046 size-selection
+   * era and can be deleted safely (#1061).
+   *
+   * Advisory only: does not affect `overall`.
+   */
+  pgliteOrphanDetected: boolean
   overall: 'ok' | 'fail'
 }
 
@@ -774,11 +783,21 @@ function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<Doctor
     // those engrams as dedup attractors. Advisory: does not fail overall.
     const staleContentHashes = countStaleContentHashes(flags)
 
+    // #1046/#1061: a store.pglite directory that exists while pglite is NOT the
+    // selected backend is an orphaned index. Check both selection routes (#1061
+    // fix: the pre-fix code checked PLUR_BACKEND only, missing config.backend).
+    const _reportPaths = detectPlurStorage(flags.path || process.env.PLUR_PATH || undefined)
+    const _reportConfig = loadConfig(_reportPaths.config)
+    const _pgliteSelected =
+      process.env.PLUR_BACKEND?.trim().toLowerCase() === 'pglite' || _reportConfig.backend === 'pglite'
+    const pgliteOrphanDetected =
+      existsSync(join(dirname(_reportPaths.engrams), 'store.pglite')) && !_pgliteSelected
+
     return {
       configs, hooksInstalled, mcpRegistered, datacoreCollision, staleNpxHooks, staleNpxMcp,
       hookShim, mcpShim, handshake, cursorHandshake, embedder,
       cursorProjectDetected, cursorWired, codexDetected, codexWired, agyDetected, agyWired,
-      pgliteGemmaReembedNeeded, staleContentHashes, overall,
+      pgliteGemmaReembedNeeded, staleContentHashes, pgliteOrphanDetected, overall,
     }
   })
 }
@@ -825,14 +844,13 @@ export function printText(report: DoctorReport, flags?: GlobalFlags): void {
   }
 
   {
-    // #1046 migration signal: PGLite is no longer size-selected, so a store
-    // that auto-built one now runs SQLite and the old directory is orphaned
-    // disk (60–500MB observed). This advisory is the only signal the
-    // affected cohort gets — the runtime opt-in log line deliberately fires
-    // only for explicit selections.
-    const pglitePath = join(process.env.PLUR_PATH || join(homedir(), '.plur'), 'store.pglite')
-    const pgliteExplicit = process.env.PLUR_BACKEND?.trim().toLowerCase() === 'pglite'
-    if (existsSync(pglitePath) && !pgliteExplicit) {
+    // #1046/#1061: advisory for an orphaned store.pglite directory. The check
+    // lives in buildReport (report.pgliteOrphanDetected) so it is testable
+    // through the JSON report and the two backend-selection routes (#1061: env
+    // var AND config.backend) are both covered there.
+    if (report.pgliteOrphanDetected) {
+      const _paths = detectPlurStorage(flags?.path || process.env.PLUR_PATH || undefined)
+      const pglitePath = join(dirname(_paths.engrams), 'store.pglite')
       outputText('')
       outputText(`ℹ  ${pglitePath} exists but PGLite is no longer selected by store size (v0.19).`)
       outputText('   Nothing to do — embeddings rebuild automatically — and this directory is an')

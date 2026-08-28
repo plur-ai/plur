@@ -647,4 +647,62 @@ describe('plur doctor', () => {
     // Advisory only — must not drive overall to fail on its own.
     expect(report.overall).toBe('ok')
   })
+
+  // ── PGLite orphan detection — config.yaml route (#1061) ─────────────────
+
+  it('pgliteOrphanDetected=false when config.yaml selects pglite (#1061)', () => {
+    // Red case (before the fix): doctor only checked PLUR_BACKEND, so a
+    // config.yaml-selected pglite store was wrongly reported as orphaned.
+    mkdirSync(join(home, '.plur', 'store.pglite'), { recursive: true })
+    writeFileSync(join(home, '.plur', 'config.yaml'), 'backend: pglite\n')
+
+    let stdout = ''
+    try {
+      stdout = execSync(`node ${CLI} doctor --no-handshake --json`, {
+        encoding: 'utf-8',
+        timeout: 15000,
+        env: {
+          ...process.env,
+          HOME: home,
+          USERPROFILE: home,
+          PLUR_PATH: join(home, '.plur'),
+          PLUR_DISABLE_EMBEDDINGS: '1',
+          // Explicitly unset PLUR_BACKEND — the fix must work via config alone.
+          PLUR_BACKEND: '',
+        },
+        cwd: home,
+      })
+    } catch (err: any) { stdout = err.stdout?.toString() ?? '' }
+
+    const report = JSON.parse(stdout)
+    expect(report.pgliteOrphanDetected).toBe(false)
+    // Advisory must never drive overall to fail.
+    expect(report.overall).toBe('fail') // empty env → hooks/MCP missing
+  })
+
+  it('pgliteOrphanDetected=true when store.pglite exists and pglite not selected (#1061)', () => {
+    // Contrasting case: store.pglite exists but no backend selection → orphan.
+    mkdirSync(join(home, '.plur', 'store.pglite'), { recursive: true })
+
+    let stdout = ''
+    try {
+      stdout = execSync(`node ${CLI} doctor --no-handshake --json`, {
+        encoding: 'utf-8',
+        timeout: 15000,
+        env: {
+          ...process.env,
+          HOME: home,
+          USERPROFILE: home,
+          PLUR_PATH: join(home, '.plur'),
+          PLUR_DISABLE_EMBEDDINGS: '1',
+          PLUR_BACKEND: '',
+        },
+        cwd: home,
+      })
+    } catch (err: any) { stdout = err.stdout?.toString() ?? '' }
+
+    const report = JSON.parse(stdout)
+    expect(report.pgliteOrphanDetected).toBe(true)
+    expect(report.overall).toBe('fail') // advisory must not drive overall
+  })
 })

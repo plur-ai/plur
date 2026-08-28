@@ -1,4 +1,4 @@
-import { runMigrations, rollbackMigrations, getSchemaVersion, CURRENT_SCHEMA_VERSION, exportPgliteEmbeddingsToCache } from '@plur-ai/core'
+import { runMigrations, rollbackMigrations, getSchemaVersion, CURRENT_SCHEMA_VERSION, exportPgliteEmbeddingsToCache, loadConfig } from '@plur-ai/core'
 import { existsSync } from 'fs'
 import { join, dirname } from 'path'
 import { createPlur, type GlobalFlags } from '../plur.js'
@@ -42,7 +42,9 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
       // and harmless to re-run (existing cache entries win).
       const storageRoot = dirname(paths.engrams)
       const pgliteDir = join(storageRoot, 'store.pglite')
-      const pgliteExplicit = process.env.PLUR_BACKEND?.trim().toLowerCase() === 'pglite'
+      const _config = loadConfig(paths.config)
+      const pgliteExplicit =
+        process.env.PLUR_BACKEND?.trim().toLowerCase() === 'pglite' || _config.backend === 'pglite'
       let embeddingsReport: Awaited<ReturnType<typeof exportPgliteEmbeddingsToCache>> | null = null
       if (existsSync(pgliteDir) && !pgliteExplicit) {
         embeddingsReport = await exportPgliteEmbeddingsToCache(storageRoot, paths.engrams, pgliteDir)
