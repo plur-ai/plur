@@ -110,6 +110,50 @@ export function computeEventHash(event: HistoryEvent): string {
 }
 
 /**
+ * Sidecar file name inside the history directory. Written after every
+ * successful JSONL append; contains only the 64-char hex hash of the last
+ * chained event (plus a trailing newline). Reading 65 bytes is cheaper than
+ * reading TAIL_WINDOW bytes and parsing JSON, and the sidecar works across
+ * process boundaries (an in-memory cache does not).
+ *
+ * The JSONL files remain the authoritative source of truth. The sidecar is
+ * advisory: if absent, invalid, or suspect, readers fall back to tail-seeking
+ * the JSONL. A stale sidecar (written but not flushed before a crash) can
+ * create a chain gap on the next write — the same outcome as any other
+ * predecessor-read failure, which is already handled as a documented gap.
+ */
+const CHAIN_HEAD_FILE = '.chain-head'
+
+/** Hex-only, exactly 64 characters. */
+const HEX64 = /^[0-9a-f]{64}$/
+
+/**
+ * Read the sidecar chain-head file. Returns the 64-char hex hash or null when
+ * the file is absent, empty, or contains an invalid value.
+ */
+export function readChainHead(historyDir: string): string | null {
+  try {
+    const content = fs.readFileSync(join(historyDir, CHAIN_HEAD_FILE), 'utf8').trim()
+    return HEX64.test(content) ? content : null
+  } catch {
+    return null // ENOENT or any I/O error — fall back to tail-seek
+  }
+}
+
+/**
+ * Write the sidecar chain-head file. Best-effort: a write failure must not
+ * propagate to the caller or fail the history append. The sidecar is advisory;
+ * the JSONL is authoritative.
+ */
+function writeChainHead(historyDir: string, hash: string): void {
+  try {
+    fs.writeFileSync(join(historyDir, CHAIN_HEAD_FILE), `${hash}\n`, 'utf8')
+  } catch {
+    // best-effort — sidecar is advisory; JSONL is authoritative
+  }
+}
+
+/**
  * Tail-seek the last non-empty line of a JSONL file and extract the `hash`
  * field from the parsed JSON. Returns null if the file does not exist, cannot
  * be read, has no non-empty lines, or the last line lacks a `hash` field.
@@ -173,13 +217,25 @@ export function tailSeekLastHash(filePath: string): string | null {
  * history directory, looking at the current month file first and then scanning
  * backwards through prior months.
  *
- * Used by appendHistory for cross-month chain continuity: when the first event
- * of a new month is written, the predecessor is in the prior month's file.
+ * Fast path: reads the sidecar `.chain-head` file (64 bytes) if present and
+ * valid. This covers both same-month and cross-month predecessors with a single
+ * cheap readFileSync, and works across process boundaries (an in-memory cache
+ * would not). Falls back to tail-seeking the JSONL when the sidecar is absent
+ * or invalid.
  *
  * Returns null when no chained predecessor is found (genesis event, gap after
  * a legacy event, or unreadable files).
  */
 export function findPredecessorHash(historyDir: string, currentMonthFile: string): string | null {
+  // Fast path: sidecar file is cheaper than 8 KiB tail-seek + JSON.parse and
+  // is shared across processes. If it yields a valid hash, skip the JSONL read.
+  const sidecarHash = readChainHead(historyDir)
+  if (sidecarHash !== null) return sidecarHash
+
+  // Slow path (sidecar absent or invalid): fall back to JSONL tail-seek.
+  // This covers the cold-start case (no sidecar written yet) and any scenario
+  // where the sidecar cannot be trusted (e.g. stale after a crash).
+
   // If the current month file exists and has content, the predecessor (if any)
   // is within it. A null return means either: last event is a legacy event
   // (no hash — gap) or the file is empty/unreadable. We don't cross back to
@@ -353,6 +409,10 @@ export function appendHistoryStamped(
     } finally {
       fs.closeSync(fd)
     }
+    // Update the sidecar after the JSONL write lands. Best-effort: a failure
+    // here leaves the sidecar stale; the next findPredecessorHash call falls
+    // back to tail-seeking the JSONL. writeChainHead never throws.
+    writeChainHead(historyDir, event.hash!)
   } catch (err) {
     if (!warnedHistoryPaths.has(filePath)) {
       warnedHistoryPaths.add(filePath)

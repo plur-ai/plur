@@ -24,6 +24,7 @@ import {
   canonicalEventBytes,
   sortKeysDeep,
   tailSeekLastHash,
+  readChainHead,
   type HistoryEvent,
 } from '../src/history.js'
 
@@ -412,6 +413,175 @@ describe('hash-chain history (#1051)', () => {
       const events = readHistory(dir, '2026-01')
       expect(events[0].hash).toBe(cjkVector.sha256)
       expect(events[0].prev).toBe(null)
+    })
+  })
+
+  // ---------------------------------------------------------------------------
+  // .chain-head sidecar (#1051 follow-up)
+  // ---------------------------------------------------------------------------
+
+  describe('.chain-head sidecar', () => {
+    it('readChainHead returns null for a non-existent history dir', () => {
+      expect(readChainHead(path.join(dir, 'history'))).toBe(null)
+    })
+
+    it('readChainHead returns null when the sidecar file is absent', () => {
+      const historyDir = path.join(dir, 'history')
+      fs.mkdirSync(historyDir, { recursive: true })
+      expect(readChainHead(historyDir)).toBe(null)
+    })
+
+    it('readChainHead returns null for an empty sidecar', () => {
+      const historyDir = path.join(dir, 'history')
+      fs.mkdirSync(historyDir, { recursive: true })
+      fs.writeFileSync(path.join(historyDir, '.chain-head'), '', 'utf8')
+      expect(readChainHead(historyDir)).toBe(null)
+    })
+
+    it('readChainHead returns null for a 63-char (invalid) sidecar', () => {
+      const historyDir = path.join(dir, 'history')
+      fs.mkdirSync(historyDir, { recursive: true })
+      fs.writeFileSync(path.join(historyDir, '.chain-head'), 'a'.repeat(63), 'utf8')
+      expect(readChainHead(historyDir)).toBe(null)
+    })
+
+    it('readChainHead returns null for non-hex content', () => {
+      const historyDir = path.join(dir, 'history')
+      fs.mkdirSync(historyDir, { recursive: true })
+      fs.writeFileSync(path.join(historyDir, '.chain-head'), 'z'.repeat(64), 'utf8')
+      expect(readChainHead(historyDir)).toBe(null)
+    })
+
+    it('readChainHead returns the hash when the sidecar is valid (with trailing newline)', () => {
+      const historyDir = path.join(dir, 'history')
+      fs.mkdirSync(historyDir, { recursive: true })
+      const hash = 'a'.repeat(64)
+      fs.writeFileSync(path.join(historyDir, '.chain-head'), `${hash}\n`, 'utf8')
+      expect(readChainHead(historyDir)).toBe(hash)
+    })
+
+    it('readChainHead returns the hash when the sidecar has no trailing newline', () => {
+      const historyDir = path.join(dir, 'history')
+      fs.mkdirSync(historyDir, { recursive: true })
+      const hash = 'b'.repeat(64)
+      fs.writeFileSync(path.join(historyDir, '.chain-head'), hash, 'utf8')
+      expect(readChainHead(historyDir)).toBe(hash)
+    })
+
+    it('appendHistory writes .chain-head after the first event', () => {
+      const event: HistoryEvent = {
+        event: 'engram_created',
+        engram_id: 'ENG-001',
+        timestamp: '2026-04-01T12:00:00.000Z',
+        data: {},
+      }
+      appendHistory(dir, event)
+      const historyDir = path.join(dir, 'history')
+      const head = readChainHead(historyDir)
+      const [written] = readHistory(dir, '2026-04')
+      expect(head).toBe(written.hash)
+    })
+
+    it('appendHistory keeps .chain-head updated to the latest event hash', () => {
+      const e1: HistoryEvent = {
+        event: 'engram_created',
+        engram_id: 'ENG-001',
+        timestamp: '2026-04-01T12:00:00.000Z',
+        data: {},
+      }
+      const e2: HistoryEvent = {
+        event: 'engram_updated',
+        engram_id: 'ENG-001',
+        timestamp: '2026-04-01T13:00:00.000Z',
+        data: {},
+      }
+      appendHistory(dir, e1)
+      appendHistory(dir, e2)
+      const historyDir = path.join(dir, 'history')
+      const events = readHistory(dir, '2026-04')
+      // Sidecar must reflect the SECOND event, not the first
+      expect(readChainHead(historyDir)).toBe(events[1].hash)
+    })
+
+    it('appendHistory updates .chain-head across month boundaries', () => {
+      const eApril: HistoryEvent = {
+        event: 'engram_created',
+        engram_id: 'ENG-001',
+        timestamp: '2026-04-30T23:59:59.000Z',
+        data: {},
+      }
+      const eMay: HistoryEvent = {
+        event: 'engram_updated',
+        engram_id: 'ENG-001',
+        timestamp: '2026-05-01T00:00:01.000Z',
+        data: {},
+      }
+      appendHistory(dir, eApril)
+      appendHistory(dir, eMay)
+      const historyDir = path.join(dir, 'history')
+      const mayEvents = readHistory(dir, '2026-05')
+      // Sidecar must reflect May's event (the final write)
+      expect(readChainHead(historyDir)).toBe(mayEvents[0].hash)
+    })
+
+    it('findPredecessorHash uses .chain-head instead of tail-seeking JSONL when sidecar is present', () => {
+      // Write two events to establish a chain
+      const e1: HistoryEvent = {
+        event: 'engram_created',
+        engram_id: 'ENG-001',
+        timestamp: '2026-04-01T12:00:00.000Z',
+        data: {},
+      }
+      const e2: HistoryEvent = {
+        event: 'engram_updated',
+        engram_id: 'ENG-001',
+        timestamp: '2026-04-01T13:00:00.000Z',
+        data: {},
+      }
+      appendHistory(dir, e1)
+      appendHistory(dir, e2)
+
+      // Corrupt the JSONL so tail-seek would return null; sidecar must still work
+      const historyDir = path.join(dir, 'history')
+      const jsonlPath = path.join(historyDir, '2026-04.jsonl')
+      fs.appendFileSync(jsonlPath, 'this-is-not-json\n')
+
+      // Third event: predecessor should come from sidecar, not the corrupt JSONL tail
+      const e3: HistoryEvent = {
+        event: 'engram_updated',
+        engram_id: 'ENG-001',
+        timestamp: '2026-04-01T14:00:00.000Z',
+        data: {},
+      }
+      appendHistory(dir, e3)
+      const events = readHistory(dir, '2026-04')
+      // e3 is at index 2 (0=e1, 1=e2, 2=e3 — corrupt line is skipped)
+      const e3written = events.find(e => e.timestamp === '2026-04-01T14:00:00.000Z')!
+      const e2written = events.find(e => e.timestamp === '2026-04-01T13:00:00.000Z')!
+      // e3 must link back to e2 (via sidecar), not null
+      expect(e3written.prev).toBe(e2written.hash)
+    })
+
+    it('.chain-head does not break the concurrent-writer chain (sidecar survives two sequential writes)', () => {
+      // Simulates two sequential writes from the same process — the sidecar must
+      // track the latest after each write, keeping the chain linear.
+      const writes = 5
+      const events: HistoryEvent[] = Array.from({ length: writes }, (_, i) => ({
+        event: 'engram_created' as const,
+        engram_id: `ENG-${String(i).padStart(3, '0')}`,
+        timestamp: `2026-04-01T${String(i).padStart(2, '0')}:00:00.000Z`,
+        data: {},
+      }))
+      for (const ev of events) appendHistory(dir, ev)
+
+      const historyDir = path.join(dir, 'history')
+      const stored = readHistory(dir, '2026-04')
+      // Sidecar must match the final event
+      expect(readChainHead(historyDir)).toBe(stored[writes - 1].hash)
+      // Chain must be linear: each event's prev = previous event's hash
+      for (let i = 1; i < stored.length; i++) {
+        expect(stored[i].prev).toBe(stored[i - 1].hash)
+      }
     })
   })
 })
