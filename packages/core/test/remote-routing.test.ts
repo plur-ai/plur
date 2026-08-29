@@ -336,7 +336,7 @@ describe('forget() — remote routing (issue #84)', () => {
 
     // Check history file
     const historyDir = join(primaryDir, 'history')
-    const files = existsSync(historyDir) ? readdirSync(historyDir) : []
+    const files = existsSync(historyDir) ? readdirSync(historyDir).filter(f => f.endsWith('.jsonl')) : []
     expect(files.length).toBeGreaterThan(0)
 
     const historyContent = readFileSync(join(historyDir, files[0]), 'utf-8')
@@ -710,7 +710,7 @@ describe('feedback() — remote routing (issue #85)', () => {
     await plur.feedback('ENG-REMOTE-FB-002', 'negative')
 
     const historyDir = join(primaryDir, 'history')
-    const files = existsSync(historyDir) ? readdirSync(historyDir) : []
+    const files = existsSync(historyDir) ? readdirSync(historyDir).filter(f => f.endsWith('.jsonl')) : []
     expect(files.length).toBeGreaterThan(0)
 
     const historyContent = readFileSync(join(historyDir, files[0]), 'utf-8')
