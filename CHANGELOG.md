@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- **`plur-hermes` MemoryProvider ABC adapter** (#1081): `PlurMemoryProvider` implements the
+  Hermes `MemoryProvider` ABC (`prefetch`, `sync_turn`, `on_session_end`,
+  `system_prompt_block`). Register via `memory.provider: plur` in Hermes config (Herald
+  Release ≥ 0.20.0). When both the standalone plugin path and the MemoryProvider path are
+  active they share one `PlurBridge` instance — no duplicate CLI subprocess spawns. Older
+  Hermes versions without `register_memory_provider()` are unaffected. First published in
+  `plur-hermes==0.18.1` (out-of-band); this commit lands the feature on main so it ships in
+  all subsequent releases.
+
 ## 0.19.1
 
 Patch release (#1072): every finding from the independent 0.19.0 audit (#1058),

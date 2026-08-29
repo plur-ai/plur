@@ -66,16 +66,45 @@ PLUR sits alongside Hermes memory, not replacing it. Your MEMORY.md and USER.md 
 
 ## Configuration
 
-The plugin works with zero configuration. Optional env vars:
+The plugin works with zero configuration and is auto-discovered on startup. You can also register it explicitly as a first-class memory provider in your Hermes config.
+
+### Integration paths
+
+PLUR integrates via two paths — both coexist and can be used together:
+
+**Path 1: Auto-discovery (default)**
+
+Once installed, the plugin is auto-discovered by Hermes via `hermes_agent.plugins` discovery. No additional configuration needed.
+
+**Path 2: Explicit memory provider (v0.19.0+)**
+
+For Hermes v0.19.0+ (Herald Release), register PLUR as an explicit memory provider in your `hermes-config.json` or equivalent:
+
+```json
+{
+  "memory": {
+    "provider": "plur",
+    "config": {
+      "inject_mode": "fast"
+    }
+  }
+}
+```
+
+This gives PLUR first-class status in your agent's memory system. Both paths can coexist — if both are active, both injection and learning pipelines run.
+
+### Environment variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `PLUR_PATH` | `~/.plur` | Storage directory |
-| `PLUR_INJECT_MODE` | `fast` | Set to `hybrid` for embedding-based injection (slower, more accurate) |
+| `PLUR_INJECT_MODE` | `fast` | Injection strategy: `fast` (BM25 only, <100ms) or `hybrid` (BM25 + embeddings, ~500ms, more accurate). Embeddings are computed locally; no external APIs. |
+
+The `memory.provider: plur` config's `inject_mode` field overrides `PLUR_INJECT_MODE` if both are set.
 
 ## Requirements
 
-- Hermes Agent v0.5.0+
+- Hermes Agent v0.5.0+ (MemoryProvider path requires v0.19.0+ Herald Release)
 - Python 3.10+
 - Node.js 18+ (for CLI, auto-resolved via npx if not installed globally)
 
