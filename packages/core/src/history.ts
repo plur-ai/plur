@@ -128,6 +128,37 @@ const CHAIN_HEAD_FILE = '.chain-head'
 const HEX64 = /^[0-9a-f]{64}$/
 
 /**
+ * In-process cache of the last written chain-head hash, keyed by historyDir.
+ *
+ * Three-tier lookup in findPredecessorHash:
+ *   1. This map (zero disk I/O — eliminates the sidecar readFileSync on hot path)
+ *   2. Sidecar file (65-byte disk read — cross-process fast path)
+ *   3. JSONL tail-seek (8 KiB disk read + JSON.parse — slow fallback)
+ *
+ * Populated by appendHistory after every successful JSONL write. Only covers
+ * writes made by THIS process; another process writing to the same store is
+ * not visible here (the sidecar handles that case). Call
+ * clearChainHeadMemCache(historyDir) when the store is reloaded from disk so
+ * the next lookup falls through to the sidecar and picks up any external writes.
+ */
+const _chainHeadMem = new Map<string, string>()
+
+/**
+ * Clear the in-process chain-head cache for a specific history directory, or
+ * all directories when called with no argument. Call this whenever the store
+ * is reloaded from disk (e.g. after a sync or an explicit reload) so the next
+ * findPredecessorHash falls through to the sidecar file rather than returning
+ * a potentially stale in-memory value.
+ */
+export function clearChainHeadMemCache(historyDir?: string): void {
+  if (historyDir === undefined) {
+    _chainHeadMem.clear()
+  } else {
+    _chainHeadMem.delete(historyDir)
+  }
+}
+
+/**
  * Read the sidecar chain-head file. Returns the 64-char hex hash or null when
  * the file is absent, empty, or contains an invalid value.
  */
@@ -217,18 +248,23 @@ export function tailSeekLastHash(filePath: string): string | null {
  * history directory, looking at the current month file first and then scanning
  * backwards through prior months.
  *
- * Fast path: reads the sidecar `.chain-head` file (64 bytes) if present and
- * valid. This covers both same-month and cross-month predecessors with a single
- * cheap readFileSync, and works across process boundaries (an in-memory cache
- * would not). Falls back to tail-seeking the JSONL when the sidecar is absent
- * or invalid.
+ * Three-tier lookup (cheapest first):
+ *   1. In-process memory cache (_chainHeadMem) — zero disk I/O; covers the
+ *      common single-process write burst.
+ *   2. Sidecar `.chain-head` file (65-byte readFileSync) — cross-process fast
+ *      path; valid even when the in-memory cache is cold or has been cleared.
+ *   3. JSONL tail-seek (up to 8 KiB + JSON.parse) — slow fallback for cold
+ *      start or absent/corrupt sidecar.
  *
  * Returns null when no chained predecessor is found (genesis event, gap after
  * a legacy event, or unreadable files).
  */
 export function findPredecessorHash(historyDir: string, currentMonthFile: string): string | null {
-  // Fast path: sidecar file is cheaper than 8 KiB tail-seek + JSON.parse and
-  // is shared across processes. If it yields a valid hash, skip the JSONL read.
+  // Tier 1: in-process memory — zero disk I/O on the hot write path.
+  const memHash = _chainHeadMem.get(historyDir)
+  if (memHash !== undefined) return memHash
+
+  // Tier 2: sidecar file — cross-process fast path (65 bytes vs 8 KiB).
   const sidecarHash = readChainHead(historyDir)
   if (sidecarHash !== null) return sidecarHash
 
@@ -409,9 +445,13 @@ export function appendHistoryStamped(
     } finally {
       fs.closeSync(fd)
     }
-    // Update the sidecar after the JSONL write lands. Best-effort: a failure
-    // here leaves the sidecar stale; the next findPredecessorHash call falls
-    // back to tail-seeking the JSONL. writeChainHead never throws.
+    // Update both the in-process cache and the on-disk sidecar after the JSONL
+    // write lands. The memory cache eliminates disk I/O on the next same-process
+    // write; the sidecar keeps cross-process readers in sync. Both are
+    // best-effort: a sidecar write failure leaves the cache warm (fast path
+    // still works in-process) and the sidecar stale (cross-process fallback
+    // degrades to tail-seek on the next write from another process).
+    _chainHeadMem.set(historyDir, event.hash!)
     writeChainHead(historyDir, event.hash!)
   } catch (err) {
     if (!warnedHistoryPaths.has(filePath)) {

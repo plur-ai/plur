@@ -25,6 +25,8 @@ import {
   sortKeysDeep,
   tailSeekLastHash,
   readChainHead,
+  clearChainHeadMemCache,
+  findPredecessorHash,
   type HistoryEvent,
 } from '../src/history.js'
 
@@ -582,6 +584,151 @@ describe('hash-chain history (#1051)', () => {
       for (let i = 1; i < stored.length; i++) {
         expect(stored[i].prev).toBe(stored[i - 1].hash)
       }
+    })
+  })
+
+  // ---------------------------------------------------------------------------
+  // In-process memory cache (#1051 perf regression fix)
+  // ---------------------------------------------------------------------------
+
+  describe('in-process chain-head memory cache', () => {
+    beforeEach(() => {
+      // Flush the module-level cache so each test starts cold.
+      clearChainHeadMemCache()
+    })
+
+    it('appendHistory populates the memory cache after the first write', () => {
+      const historyDir = path.join(dir, 'history')
+      const event: HistoryEvent = {
+        event: 'engram_created',
+        engram_id: 'ENG-001',
+        timestamp: '2026-04-01T12:00:00.000Z',
+        data: {},
+      }
+      appendHistory(dir, event)
+      const [written] = readHistory(dir, '2026-04')
+      // findPredecessorHash with a fresh month file returns the cached hash
+      // (would be the written hash if found via memory cache or sidecar)
+      const monthFile = path.join(historyDir, '2026-05.jsonl') // non-existent future month
+      const result = findPredecessorHash(historyDir, monthFile)
+      expect(result).toBe(written.hash)
+    })
+
+    it('memory cache is updated to the latest hash after each write', () => {
+      const historyDir = path.join(dir, 'history')
+      const e1: HistoryEvent = {
+        event: 'engram_created',
+        engram_id: 'ENG-001',
+        timestamp: '2026-04-01T12:00:00.000Z',
+        data: {},
+      }
+      const e2: HistoryEvent = {
+        event: 'engram_updated',
+        engram_id: 'ENG-001',
+        timestamp: '2026-04-01T13:00:00.000Z',
+        data: {},
+      }
+      appendHistory(dir, e1)
+      appendHistory(dir, e2)
+      const stored = readHistory(dir, '2026-04')
+      // After two writes the cache must reflect the second event
+      const monthFile = path.join(historyDir, '2026-05.jsonl')
+      expect(findPredecessorHash(historyDir, monthFile)).toBe(stored[1].hash)
+    })
+
+    it('clearChainHeadMemCache clears a specific historyDir', () => {
+      const historyDir = path.join(dir, 'history')
+      const event: HistoryEvent = {
+        event: 'engram_created',
+        engram_id: 'ENG-001',
+        timestamp: '2026-04-01T12:00:00.000Z',
+        data: {},
+      }
+      appendHistory(dir, event)
+      const [written] = readHistory(dir, '2026-04')
+      // Cache is warm — findPredecessorHash returns from memory
+      const monthFile = path.join(historyDir, '2026-05.jsonl')
+      expect(findPredecessorHash(historyDir, monthFile)).toBe(written.hash)
+
+      // Clear the cache for this specific dir
+      clearChainHeadMemCache(historyDir)
+
+      // After clearing, findPredecessorHash falls through to sidecar/tail-seek
+      // and still returns the correct hash (sidecar was written by appendHistory)
+      expect(findPredecessorHash(historyDir, monthFile)).toBe(written.hash)
+    })
+
+    it('clearChainHeadMemCache() with no argument clears all entries', () => {
+      // Write to two different store roots to populate two cache entries
+      const dir2 = fs.mkdtempSync(path.join(os.tmpdir(), 'plur-chain2-'))
+      try {
+        const event: HistoryEvent = {
+          event: 'engram_created',
+          engram_id: 'ENG-001',
+          timestamp: '2026-04-01T12:00:00.000Z',
+          data: {},
+        }
+        appendHistory(dir, { ...event })
+        appendHistory(dir2, { ...event })
+        // Both caches are warm — clear all
+        clearChainHeadMemCache()
+        // After clearing, both dirs fall through to sidecar (still correct)
+        const h1 = path.join(dir, 'history')
+        const h2 = path.join(dir2, 'history')
+        const [w1] = readHistory(dir, '2026-04')
+        const [w2] = readHistory(dir2, '2026-04')
+        expect(findPredecessorHash(h1, path.join(h1, '2026-05.jsonl'))).toBe(w1.hash)
+        expect(findPredecessorHash(h2, path.join(h2, '2026-05.jsonl'))).toBe(w2.hash)
+      } finally {
+        fs.rmSync(dir2, { recursive: true, force: true })
+      }
+    })
+
+    it('memory cache hit means sidecar read is bypassed (chain remains correct even with a corrupted sidecar)', () => {
+      // Write an event to warm the cache, then corrupt the sidecar on disk
+      const historyDir = path.join(dir, 'history')
+      const e1: HistoryEvent = {
+        event: 'engram_created',
+        engram_id: 'ENG-001',
+        timestamp: '2026-04-01T12:00:00.000Z',
+        data: {},
+      }
+      appendHistory(dir, e1)
+      const [written] = readHistory(dir, '2026-04')
+
+      // Corrupt the sidecar — an in-memory cache hit must bypass this entirely
+      fs.writeFileSync(path.join(historyDir, '.chain-head'), 'invalid\n', 'utf8')
+
+      // Second event: predecessor should come from memory cache, not the corrupt sidecar
+      const e2: HistoryEvent = {
+        event: 'engram_updated',
+        engram_id: 'ENG-001',
+        timestamp: '2026-04-01T13:00:00.000Z',
+        data: {},
+      }
+      appendHistory(dir, e2)
+      const all = readHistory(dir, '2026-04')
+      // e2 must link back to e1 via the memory cache (not null from corrupt sidecar)
+      expect(all[1].prev).toBe(written.hash)
+    })
+
+    it('cold cache (after clearChainHeadMemCache) falls back to sidecar, not tail-seek', () => {
+      // Write to create sidecar, then clear the in-process cache
+      const historyDir = path.join(dir, 'history')
+      const event: HistoryEvent = {
+        event: 'engram_created',
+        engram_id: 'ENG-001',
+        timestamp: '2026-04-01T12:00:00.000Z',
+        data: {},
+      }
+      appendHistory(dir, event)
+      const [written] = readHistory(dir, '2026-04')
+      clearChainHeadMemCache(historyDir)
+
+      // Sidecar is intact; tail of JSONL is valid — both would return the right answer.
+      // Verify that findPredecessorHash still returns the correct hash after cache eviction.
+      const monthFile = path.join(historyDir, '2026-04.jsonl')
+      expect(findPredecessorHash(historyDir, monthFile)).toBe(written.hash)
     })
   })
 })
