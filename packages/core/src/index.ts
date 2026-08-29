@@ -855,6 +855,13 @@ export class Plur {
      * stranding anyone who genuinely knows what their store does.
      */
     allowUnprotectedStore?: boolean
+    /**
+     * Provenance configuration for this instance (#1048 / #1049).
+     * Merged into the loaded config so tests and programmatic callers can
+     * supply identity without writing a config.yaml. Config-file values take
+     * lower priority than these options-level overrides.
+     */
+    provenance?: { identity?: string }
   }) {
     this.paths = detectPlurStorage(options?.path)
     this._readonly = options?.readonly === true
@@ -935,6 +942,11 @@ export class Plur {
       }
     }
     this.config = loadConfig(this.paths.config)
+    // Merge constructor-level provenance options (highest priority) so callers
+    // can set identity without touching a config file (#1048 / #1049).
+    if (options?.provenance !== undefined) {
+      this.config = { ...this.config, provenance: { ...this.config.provenance, ...options.provenance } }
+    }
     this._autoDiscover = Plur.resolveAutoDiscover(options?.autoDiscover)
     // Auto-discover project stores from CWD (skips temp dirs for test safety).
     //
@@ -1662,8 +1674,27 @@ export class Plur {
   } {
     return {
       scope,
-      session_id: context?.session_episode_id ?? null,
+      // session_id takes precedence over session_episode_id (#1048).
+      session_id: context?.session_id ?? context?.session_episode_id ?? null,
       stored_at: new Date().toISOString(),
+    }
+  }
+
+  /** Build the provenance block for a new engram (#1048).
+   *
+   * `origin` is taken from `config.provenance.identity` when set, otherwise
+   * `"agent:unidentified"` — recorded honestly so multi-writer attribution is
+   * still visible even without explicit configuration. chain and signature are
+   * placeholders reserved for the hash-chain and signing waves (plur#1047
+   * Wave 2 / Wave 3). license defaults to cc-by-sa-4.0 per the engram standard.
+   */
+  private _buildProvenance(): { origin: string; chain: string[]; signature: null; license: string } {
+    const identity = this.config.provenance?.identity
+    return {
+      origin: (typeof identity === 'string' && identity.length > 0) ? identity : 'agent:unidentified',
+      chain: [],
+      signature: null,
+      license: 'cc-by-sa-4.0',
     }
   }
 
@@ -2613,6 +2644,7 @@ export class Plur {
         write_count: 1,
         injection_count: 0,
         sources: [this._buildSourceEntry(scope, context)],
+        provenance: this._buildProvenance(),
         recurrence_count: 0,
         summary: autoSummary(statement, undefined),
         engram_version: 1,
@@ -3169,6 +3201,7 @@ export class Plur {
       write_count: 1,
       injection_count: 0,
       sources: [this._buildSourceEntry(scope, context)],
+      provenance: this._buildProvenance(),
       recurrence_count: 0,
       summary: autoSummary(statement, undefined),
       engram_version: 1,

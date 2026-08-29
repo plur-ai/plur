@@ -25,6 +25,12 @@ export interface LearnContext {
   memory_class?: 'semantic' | 'episodic' | 'procedural' | 'metacognitive'
   /** Current session episode ID for episodic anchoring (SP2 Idea 24). */
   session_episode_id?: string
+  /**
+   * Session ID for provenance attribution (#1048). Written to
+   * `sources[].session_id` on every engram write. Takes precedence over
+   * `session_episode_id` in the source entry when both are supplied.
+   */
+  session_id?: string
   /** Always-load flag — bypass keyword-relevance gate during injection. */
   pinned?: boolean
   /**

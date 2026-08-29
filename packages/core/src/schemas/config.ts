@@ -339,6 +339,21 @@ export const PlurConfigSchema = z.object({
   sync: z.object({
     remote_type: z.enum(['personal', 'shared']).optional(),
   }).partial().default({}),
+  /**
+   * Provenance configuration (#1048 / #1049 — part of the provenance ladder,
+   * plur#1047). Controls how engrams record their writing actor and origin.
+   *
+   *   identity — the `provenance.origin` value for engrams written by this
+   *              instance. Grammar: `agent:<name>` (e.g. `agent:claude-code`,
+   *              `agent:nightshift`). When absent, origin defaults to
+   *              `agent:unidentified` — recorded honestly so multi-writer
+   *              attribution is still visible even without explicit config.
+   *              One identity per writing actor; for multi-agent stores each
+   *              writer should configure its own.
+   */
+  provenance: z.object({
+    identity: z.string().optional(),
+  }).optional(),
 }).partial()
 
 export type PlurConfig = z.infer<typeof PlurConfigSchema>
