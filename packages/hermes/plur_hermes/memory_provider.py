@@ -13,8 +13,16 @@ Both paths are mutually compatible and may run in the same process:
   the official MemoryProvider ABC so it appears in ``hermes plugins --memory``
   and can be selected via ``memory.provider: plur`` in config.yaml.
 
-The two paths share a single ``PlurBridge`` instance when both are active,
-so CLI subprocess spawns are deduplicated across both lifecycle paths.
+When both paths are active in the same process (the default when plur-hermes
+is installed and Hermes supports the memory_providers entry-point group),
+``register()`` passes its bridge and sets ``standalone_hooks_active=True``
+so the lifecycle methods (``prefetch``, ``sync_turn``, ``on_session_end``)
+yield to the standalone hooks instead of duplicating inject/learn/feedback
+calls.  The provider still exposes tools and ``system_prompt_block()``
+regardless of this flag.
+
+When only the MemoryProvider path is active (entry point, no standalone
+plugin), the lifecycle methods operate independently.
 """
 
 from __future__ import annotations
@@ -31,11 +39,8 @@ from .learner import extract_learning_patterns
 
 logger = logging.getLogger("plur_hermes.memory_provider")
 
-# Tool schemas re-exported for the MemoryProvider path.  The standalone path
-# registers these via ctx.register_tool(); the MemoryProvider path exposes
-# them via get_tool_schemas() so MemoryManager can inject them into the
-# agent's tool surface.  The schema list is factored out here so both paths
-# share a single source of truth without cross-importing __init__.py.
+# Tool schemas for the MemoryProvider path.  Covers the same 18 core tools as
+# the standalone path plus the 4 meta-engram tools — total 22.
 _PLUR_TOOL_SCHEMAS: List[Dict[str, Any]] = [
     {
         "name": "plur_learn",
@@ -299,6 +304,49 @@ _PLUR_TOOL_SCHEMAS: List[Dict[str, Any]] = [
             "required": ["query"],
         },
     },
+    # Meta-engram tools (4) — mirrors the standalone path's META_TOOL_SCHEMAS.
+    {
+        "name": "plur_extract_meta",
+        "description": "Start meta-engram extraction — distills cross-domain principles",
+        "parameters": {
+            "type": "object",
+            "properties": {"dry_run": {"type": "boolean", "default": False}},
+        },
+    },
+    {
+        "name": "plur_meta_submit_analysis",
+        "description": "Submit analysis responses for active meta-extraction pipeline",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "responses": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["responses"],
+        },
+    },
+    {
+        "name": "plur_meta_engrams",
+        "description": "List meta-engrams — cross-domain principles",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "domain": {"type": "string"},
+                "min_confidence": {"type": "number"},
+            },
+        },
+    },
+    {
+        "name": "plur_validate_meta",
+        "description": "Test a meta-engram against a new domain",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "id": {"type": "string"},
+                "domain": {"type": "string"},
+            },
+            "required": ["id", "domain"],
+        },
+    },
 ]
 
 # Correction markers for heuristic feedback signal detection (mirrors __init__.py).
@@ -310,7 +358,7 @@ _FEEDBACK_MIN_CONFIDENCE = 0.6
 
 
 def _detect_injection_signal(engram_text: str, response: str) -> tuple[str | None, float]:
-    """Re-exported from __init__.py for symmetric signal detection on the MemoryProvider path."""
+    """Heuristic signal detection for a single injected engram vs. assistant response."""
     response_lower = response.lower()
     engram_lower = engram_text.lower().strip()
     if not engram_lower:
@@ -351,7 +399,7 @@ class PlurMemoryProvider:
 
     Implements the MemoryProvider ABC so PLUR can be selected as a first-class
     Hermes memory provider via ``memory.provider: plur`` in config.yaml. The
-    provider exposes the same PLUR tools as the standalone hook path and adds
+    provider exposes the same 22 PLUR tools as the standalone hook path and adds
     MemoryProvider-specific lifecycle integrations:
 
     - ``prefetch()``      — inject engrams relevant to the upcoming user turn
@@ -359,25 +407,41 @@ class PlurMemoryProvider:
     - ``on_session_end()``— capture session episode at the real session boundary
     - ``system_prompt_block()`` — static PLUR status text in the system prompt
 
-    When both this provider and the standalone plugin path are active in the same
-    process (which is the default when plur-hermes is installed), they share a
-    single ``PlurBridge`` instance via the ``bridge`` parameter so CLI subprocess
-    spawns are deduplicated.
+    ``standalone_hooks_active`` controls whether the lifecycle methods (prefetch,
+    sync_turn, on_session_end) are active.  When both the standalone plugin path
+    (hermes_agent.plugins) and this provider are active in the same process,
+    ``register()`` sets this flag to ``True`` so the hooks handle inject/learn/
+    feedback and the provider's lifecycle methods are no-ops.  This prevents
+    double injection, double learning, and inflated feedback signals.  When only
+    this provider is active (entry-point path, no standalone plugin),
+    ``standalone_hooks_active=False`` (the default) gives the provider full
+    lifecycle responsibility.
+
+    Pending-engram state is keyed by ``session_id`` so interleaved sessions do
+    not cross-contaminate each other's injection lists.
     """
 
-    def __init__(self, bridge: Optional[PlurBridge] = None) -> None:
+    def __init__(
+        self,
+        bridge: Optional[PlurBridge] = None,
+        *,
+        standalone_hooks_active: bool = False,
+    ) -> None:
         # Accept an injected bridge so the standalone plugin path can share
         # its bridge instance.  Fall back to creating a fresh one if called
         # directly (e.g. when loaded via hermes_agent.memory_providers entry
         # point without the standalone plugin also being active).
         self._bridge: Optional[PlurBridge] = bridge
+        self._standalone_hooks_active = standalone_hooks_active
         self._available: Optional[bool] = None  # cached; None = not yet checked
         self._session_id: str = ""
         self._platform: str = "unknown"
         self._agent_context: str = "primary"
-        self._injected_engrams: list[dict] = []   # cleared after feedback flush
+        # Keyed by session_id to prevent interleaved-session cross-contamination.
+        self._pending_by_session: dict[str, list[dict]] = {}
+        self._learn_by_session: dict[str, int] = {}
         self._injected_lock = threading.Lock()
-        self._learn_count: int = 0
+        self._meta_pipeline: Any = None  # lazily created
 
     # -- Lazy bridge construction --------------------------------------------
 
@@ -385,6 +449,15 @@ class PlurMemoryProvider:
         if self._bridge is None:
             self._bridge = PlurBridge()
         return self._bridge
+
+    # -- Lazy meta-pipeline --------------------------------------------------
+
+    def _get_meta_pipeline(self) -> Any:
+        if self._meta_pipeline is None:
+            from .meta_pipeline import MetaPipeline
+            bridge = self._get_bridge()
+            self._meta_pipeline = MetaPipeline(bridge, plur_path=bridge._plur_path)
+        return self._meta_pipeline
 
     # -- MemoryProvider ABC --------------------------------------------------
 
@@ -413,12 +486,14 @@ class PlurMemoryProvider:
 
         Verifies CLI availability and logs engram count.  Extracts
         ``hermes_home``, ``platform``, and ``agent_context`` from kwargs.
+        Per-session state is initialised without clearing other active sessions.
         """
         self._session_id = session_id
         self._platform = kwargs.get("platform", "unknown")
         self._agent_context = kwargs.get("agent_context", "primary")
-        self._learn_count = 0
-        self._injected_engrams = []
+        with self._injected_lock:
+            self._pending_by_session[session_id] = []
+        self._learn_by_session[session_id] = 0
         try:
             bridge = self._get_bridge()
             status = bridge.status()
@@ -455,16 +530,23 @@ class PlurMemoryProvider:
     def prefetch(self, query: str, *, session_id: str = "") -> str:
         """Inject engrams relevant to ``query`` before the LLM call.
 
+        No-op when ``standalone_hooks_active=True`` — the pre_llm_call hook
+        handles injection and duplicating it would double-inject engrams.
+
         Uses the fast inject path (BM25 only) to stay under the tight
         per-turn deadline.  Switch to hybrid via ``PLUR_INJECT_MODE=hybrid``.
         Stores injected engram metadata so ``sync_turn`` can send feedback
-        after the turn.
+        after the turn.  Keyed by ``session_id`` to keep concurrent sessions
+        isolated.
 
         Returns formatted text for Hermes to include as context, or empty
         string if nothing relevant or on any bridge failure.
         """
+        if self._standalone_hooks_active:
+            return ""
         if not query:
             return ""
+        session_key = session_id or self._session_id
         try:
             bridge = self._get_bridge()
             mode = os.environ.get("PLUR_INJECT_MODE", "fast")
@@ -480,7 +562,8 @@ class PlurMemoryProvider:
                 if e.get("id") and e.get("statement")
             ]
             with self._injected_lock:
-                self._injected_engrams.extend(new_engrams)
+                bucket = self._pending_by_session.setdefault(session_key, [])
+                bucket.extend(new_engrams)
 
             # Build the context block.
             lines = []
@@ -505,20 +588,44 @@ class PlurMemoryProvider:
     ) -> None:
         """Auto-learn from the completed turn and send injection feedback.
 
+        No-op when ``standalone_hooks_active=True`` — the post_llm_call hook
+        handles learning and feedback and duplicating it would send double
+        signals for the same engrams.
+
         Mirrors the ``post_llm_call`` hook behaviour:
         1. Extract self-reported learnings from the assistant response.
         2. Send positive/negative feedback signals for injected engrams that
            appeared or were contradicted in the response.
 
+        The session's pending-engram list is always drained at the start of
+        this call, even when learning is skipped or feedback is disabled, so
+        the list cannot grow without bound across turns.
+
         Only writes in the ``primary`` agent context — skipping cron and
-        subagent contexts matches the standalone hook path's behaviour (no
-        writes for contexts where the user representation would be corrupted).
+        subagent contexts matches the standalone hook path's behaviour.
         """
+        if self._standalone_hooks_active:
+            return
         if self._agent_context != "primary":
             return
 
+        session_key = session_id or self._session_id
+
+        # Always drain the pending list for this session regardless of what
+        # follows.  This prevents unbounded growth when feedback is disabled
+        # or when the bridge is unavailable.
+        with self._injected_lock:
+            snapshot = self._pending_by_session.pop(session_key, [])
+
         response = assistant_content or ""
-        bridge = self._get_bridge()
+
+        # Bridge construction is inside a try so a malformed env var (e.g.
+        # PLUR_BRIDGE_TIMEOUT=bad) cannot propagate into the host's turn loop.
+        try:
+            bridge = self._get_bridge()
+        except Exception as e:
+            logger.debug("PLUR sync_turn: bridge unavailable (non-fatal): %s", e)
+            return
 
         # 1. Auto-learn from self-reported patterns.
         try:
@@ -529,7 +636,9 @@ class PlurMemoryProvider:
                     source="hermes:auto",
                     rationale="Auto-extracted from assistant self-report",
                 )
-                self._learn_count += 1
+                self._learn_by_session[session_key] = (
+                    self._learn_by_session.get(session_key, 0) + 1
+                )
         except Exception as e:
             logger.debug("PLUR sync_turn: learning extraction failed: %s", e)
 
@@ -537,10 +646,6 @@ class PlurMemoryProvider:
         if os.environ.get("PLUR_INJECTION_FEEDBACK", "true").lower() == "false":
             return
         try:
-            with self._injected_lock:
-                snapshot = list(self._injected_engrams)
-                self._injected_engrams = []
-
             if not snapshot or not response:
                 return
 
@@ -561,23 +666,32 @@ class PlurMemoryProvider:
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
         """Capture a session episode when the session actually ends.
 
+        No-op when ``standalone_hooks_active=True`` — the on_session_end hook
+        handles episode capture.
+
         This fires at real session boundaries (``/reset``, ``/new``, CLI exit,
         gateway session expiry) — NOT after every turn.  Mirrors the
         ``on_session_end`` hook's capture call so both paths record the same
         episode regardless of which is active.
         """
+        if self._standalone_hooks_active:
+            return
+        sid = self._session_id
+        learn_count = self._learn_by_session.get(sid, 0)
         try:
             bridge = self._get_bridge()
-            parts = [f"Hermes session {self._session_id}"]
-            if self._learn_count:
-                parts.append(f"— {self._learn_count} learnings captured")
+            parts = [f"Hermes session {sid}"]
+            if learn_count:
+                parts.append(f"— {learn_count} learnings captured")
             parts.append(f"[{self._platform}]")
-            bridge.capture(" ".join(parts), agent="hermes", session=self._session_id)
+            bridge.capture(" ".join(parts), agent="hermes", session=sid)
         except Exception as e:
             logger.debug("PLUR on_session_end: capture failed: %s", e)
         finally:
             self._session_id = ""
-            self._learn_count = 0
+            with self._injected_lock:
+                self._pending_by_session.pop(sid, None)
+            self._learn_by_session.pop(sid, None)
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
         """Return the PLUR tool schemas for MemoryManager injection."""
@@ -587,12 +701,14 @@ class PlurMemoryProvider:
         """Dispatch a PLUR tool call from the MemoryManager routing layer."""
         try:
             bridge = self._get_bridge()
-            result = self._dispatch(bridge, tool_name, args)
+            result = self._dispatch(bridge, tool_name, args, **kwargs)
             return json.dumps(result)
         except Exception as e:
             return json.dumps({"error": str(e)})
 
-    def _dispatch(self, bridge: PlurBridge, tool_name: str, args: Dict[str, Any]) -> Any:
+    def _dispatch(
+        self, bridge: PlurBridge, tool_name: str, args: Dict[str, Any], **kwargs
+    ) -> Any:
         """Route ``tool_name`` to the correct PlurBridge method."""
         if tool_name == "plur_learn":
             return bridge.learn(
@@ -689,17 +805,31 @@ class PlurMemoryProvider:
                 limit=args.get("limit", 10),
                 scope=args.get("scope"),
             )
+        # Meta-engram tools
+        if tool_name == "plur_extract_meta":
+            session_id = kwargs.get("session_id", self._session_id) or "default"
+            pipeline = self._get_meta_pipeline()
+            return pipeline.start_extraction(session_id, dry_run=args.get("dry_run", False))
+        if tool_name == "plur_meta_submit_analysis":
+            session_id = kwargs.get("session_id", self._session_id) or "default"
+            pipeline = self._get_meta_pipeline()
+            return pipeline.submit_analysis(session_id, args["responses"])
+        if tool_name == "plur_meta_engrams":
+            return bridge.list_engrams(meta=True, domain=args.get("domain"))
+        if tool_name == "plur_validate_meta":
+            return {
+                "status": "prompts_ready",
+                "prompts": [
+                    f"Test this meta-engram in the domain '{args['domain']}':\n"
+                    f"ID: {args['id']}\n\n"
+                    f"Does the principle hold? Return JSON: "
+                    f"{{\"holds\": true/false, \"evidence\": \"...\", \"confidence\": <0-1>}}"
+                ],
+            }
         return {"error": f"Unknown tool: {tool_name}"}
 
     def get_config_schema(self) -> List[Dict[str, Any]]:
-        """Return config fields for ``hermes memory setup``.
-
-        PLUR stores its config in ``~/.plur/`` (or ``$PLUR_PATH``).  The
-        only configurable surface exposed to Hermes is the path override, which
-        is already handled via the ``PLUR_PATH`` env var.  All other options
-        (inject mode, feedback, dedup TTL) are env-var-only to avoid
-        polluting config.yaml with PLUR internals.
-        """
+        """Return config fields for ``hermes memory setup``."""
         return [
             {
                 "key": "plur_path",
@@ -734,8 +864,13 @@ class PlurMemoryProvider:
 def create_memory_provider(bridge: Optional[PlurBridge] = None) -> PlurMemoryProvider:
     """Factory used by the ``hermes_agent.memory_providers`` entry point.
 
-    Hermes calls the entry point to obtain a provider instance.  Accepting
-    an optional ``bridge`` lets the standalone plugin path share its bridge
-    when both paths are active in the same process.
+    Hermes calls the entry point to obtain a provider instance.  When only
+    this entry point is active (no standalone plugin), ``standalone_hooks_active``
+    defaults to ``False`` so the lifecycle methods handle inject/learn/feedback.
+
+    When both entry points are active, ``register()`` calls
+    ``ctx.register_memory_provider(PlurMemoryProvider(bridge=bridge,
+    standalone_hooks_active=True))``, which replaces any entry-point instance
+    with a shared-bridge, hooks-deferring one.
     """
     return PlurMemoryProvider(bridge=bridge)

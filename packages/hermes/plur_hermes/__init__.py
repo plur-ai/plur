@@ -504,5 +504,7 @@ def register(ctx):
     # those hosts keep working unchanged.
     if hasattr(ctx, "register_memory_provider"):
         from .memory_provider import PlurMemoryProvider
-        ctx.register_memory_provider(PlurMemoryProvider(bridge=bridge))
+        ctx.register_memory_provider(
+            PlurMemoryProvider(bridge=bridge, standalone_hooks_active=True)
+        )
         logger.info("PLUR MemoryProvider registered (hermes_agent.memory_providers path)")
