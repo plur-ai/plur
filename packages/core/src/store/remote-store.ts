@@ -578,6 +578,9 @@ export class RemoteStore implements EngramStore {
       // that don't model `source` ignore the field, and it is omitted entirely
       // when unset so the historical body is byte-identical without it.
       ...(e.source != null                  ? { source: e.source }             : {}),
+      // #983: carry provenance records so the receiving store can answer
+      // origin/chain/licence questions. Omitted when unset.
+      ...(e.provenance != null              ? { provenance: e.provenance }     : {}),
     })
     const r = await this.fetchBounded(`${this.apiBase}/engrams`, {
       method: 'POST',
