@@ -1,4 +1,4 @@
-import type { Engram } from './schemas/engram.js'
+import type { Engram, MeasuredUnder } from './schemas/engram.js'
 import type { LlmFunction } from './types.js'
 import { ftsTokenize } from './fts.js'
 
@@ -329,6 +329,48 @@ function supersedesLinked(a: Engram, b: Engram): boolean {
 function validityExpired(e: Engram, now: string): boolean {
   const until = e.temporal?.valid_until
   return Boolean(until && until < now)
+}
+
+/**
+ * Configuration dimensions used by `measuredUnderDiffers` to identify
+ * context-scoped refinements (#869 / #203).
+ *
+ * `date` is deliberately excluded: a regression measured on the same config
+ * on a later date is a genuine contradiction, not a refinement.
+ */
+const MEASURED_UNDER_DIMENSIONS: ReadonlyArray<keyof MeasuredUnder> = [
+  'source_type', 'model', 'hardware', 'dataset',
+]
+
+/**
+ * True when BOTH engrams have `measured_under` AND at least one of
+ * [source_type, model, hardware, dataset] differs (#869 / #203).
+ *
+ * When this returns true the pair is a context-scoped refinement, not a
+ * contradiction: the same claim measured under different configurations can
+ * produce different values without either being wrong. Examples:
+ *   - max_tokens 16384 (bench) vs max_tokens 65536 (production operation)
+ *   - 87% wall-clock (local-git) vs 43% wall-clock (GitLab CI)
+ *
+ * `date` is deliberately NOT in the dimension list. A regression benchmark —
+ * same config, different dates, different values — is a genuine contradiction
+ * (or regression) and must surface as a tension, not be silently classified
+ * as a refinement. An engram without `measured_under` is an unconditional
+ * assertion and stays a tension candidate regardless of the other side.
+ */
+export function measuredUnderDiffers(a: Engram, b: Engram): boolean {
+  const muA: MeasuredUnder | undefined = a.measured_under
+  const muB: MeasuredUnder | undefined = b.measured_under
+  // Require both to have the field — an engram without measured_under is an
+  // unconditional assertion, so it stays in the tension-candidate pool.
+  if (!muA || !muB) return false
+  return MEASURED_UNDER_DIMENSIONS.some(dim => {
+    const valA = muA[dim]
+    const valB = muB[dim]
+    // Only consider dimensions where BOTH sides have a value — a missing
+    // dimension is "unknown", not "same", so we cannot conclude they differ.
+    return valA != null && valB != null && valA !== valB
+  })
 }
 
 /**

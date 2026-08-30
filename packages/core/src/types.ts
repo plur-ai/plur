@@ -25,8 +25,26 @@ export interface LearnContext {
   memory_class?: 'semantic' | 'episodic' | 'procedural' | 'metacognitive'
   /** Current session episode ID for episodic anchoring (SP2 Idea 24). */
   session_episode_id?: string
+  /**
+   * Session identifier to thread into sources[].session_id on every write
+   * (#1048). Takes priority over session_episode_id when both are provided.
+   * Never persisted beyond the source entry — it identifies the write context,
+   * not the engram's knowledge content.
+   */
+  session_id?: string
   /** Always-load flag — bypass keyword-relevance gate during injection. */
   pinned?: boolean
+  /**
+   * Tier within the always-on budget. "hard": write-rejected if adding this
+   * engram would exceed the 2,000-token hard cap. Guaranteed to inject every
+   * session if within cap. "soft": priority-ordered eviction. Default: "soft".
+   */
+  pin_tier?: 'hard' | 'soft'
+  /**
+   * Soft-tier eviction priority 1-100 (default 50). Higher survives longer.
+   * Ignored for pin_tier="hard".
+   */
+  pinned_priority?: number
   /**
    * Start of the knowledge's validity window (ISO YYYY-MM-DD, #347). Stored in
    * `temporal.valid_from`; inject/recall skip the engram before this date.

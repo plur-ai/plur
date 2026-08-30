@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { scoreEngram, selectAndSpread, estimateTokens, fillTokenBudget, formatWithLayer } from '../src/inject.js'
+import { scoreEngram, selectAndSpread, estimateTokens, estimateEngramTokens, fillTokenBudget, formatWithLayer, PINNED_HARD_TOKEN_CAP } from '../src/inject.js'
 import { EngramSchema } from '../src/schemas/engram.js'
 import { daysSince } from '../src/decay.js'
 
@@ -320,18 +320,13 @@ describe('injection engine', () => {
     expect(scorePinned).toBeCloseTo(scoreUnpinned * 2.0, 5)
   })
 
-  // === Pinned engram budget cap (0.9.4) ===
+  // === Pinned engram budget cap (two-tier) ===
 
-  it('pinned engrams cannot consume more than 50% of the token budget', () => {
-    // Carefully sized so that the OUTER maxTokens guard cannot be the binding
-    // constraint — the pinned sub-cap (50% of maxTokens) must do the work.
-    // Each engram is short (~50-token JSON serialization). With maxTokens=10000,
-    // the outer guard would let all 30 pinned engrams through (30*50=1500 < 10000).
-    // The pinnedBudget=5000 lets in ~100 engrams worth — but we have 30, so all 30
-    // would fit IF the cap were broken. Instead, we expect the cap to bind under
-    // a tighter budget. So: maxTokens=600 → pinnedBudget=300. 30 short engrams
-    // with cost ~50 each → only 6 fit under the 300-token sub-cap, with the
-    // outer maxTokens (600) leaving headroom that proves the sub-cap is binding.
+  it('soft-tier pinned engrams cannot consume more than 30% of the token budget', () => {
+    // Engrams without pinned_tier default to 'soft'. With maxTokens=600,
+    // the soft budget = floor(600 * 0.3) = 180. 30 engrams at ~50 tokens each
+    // → only 3-4 fit under 180, leaving plenty of headroom under maxTokens (600)
+    // proving the soft sub-cap is the binding constraint.
     const shortStatement = 'X'.repeat(80)
     const pinned = Array.from({ length: 30 }, (_, i) => ({
       ...EngramSchema.parse({
@@ -343,25 +338,159 @@ describe('injection engine', () => {
         pinned: true,
       }),
       pinned: true,
-      // fillTokenBudget takes ScoredEngram[] = Engram + keyword_match/raw_score/
-      // score. selectAndSpread stamps all three from the same raw score; mirror
-      // that. estimateTokens strips them before serializing, so they do not
-      // affect the token math the comment above works through.
       keyword_match: 1.0,
       raw_score: 1.0,
       score: 1.0,
     }))
     const maxTokens = 600
-    const { selected, tokens_used } = fillTokenBudget(pinned, maxTokens)
-    // Sub-cap binds: tokens_used must respect the 50%-of-budget sub-cap.
-    expect(tokens_used).toBeLessThanOrEqual(maxTokens * 0.5)
-    // And there must be headroom under maxTokens — i.e. the outer guard isn't
-    // the reason we stopped. Without this we'd be testing the same thing twice.
+    const { selected, tokens_used, evicted_soft_pinned } = fillTokenBudget(pinned, maxTokens)
+    // Soft sub-cap binds: tokens_used must not exceed 30% of maxTokens.
+    expect(tokens_used).toBeLessThanOrEqual(Math.floor(maxTokens * 0.3))
+    // Headroom under maxTokens — outer guard is not the binding constraint.
     expect(tokens_used).toBeLessThan(maxTokens)
-    // Some engrams must have been selected (proving the cap is "binding by
-    // sub-budget", not "nothing fit at all").
     expect(selected.length).toBeGreaterThan(0)
     expect(selected.length).toBeLessThan(30)
+    // Evicted soft-pinned list must be non-empty.
+    expect(evicted_soft_pinned.length).toBeGreaterThan(0)
+  })
+
+  // === Two-tier pinned model tests ===
+
+  describe('two-tier pinned model', () => {
+    const makePinnedScoredEngram = (overrides: Record<string, any> = {}) => ({
+      ...EngramSchema.parse({
+        id: overrides.id ?? 'ENG-PIN-001',
+        statement: overrides.statement ?? 'Always test before deploy',
+        type: 'behavioral',
+        scope: 'global',
+        status: 'active',
+        pinned: true,
+        pinned_tier: overrides.pinned_tier,
+        pinned_priority: overrides.pinned_priority,
+        temporal: overrides.temporal,
+      }),
+      pinned: true,
+      pinned_tier: overrides.pinned_tier,
+      pinned_priority: overrides.pinned_priority,
+      temporal: overrides.temporal,
+      keyword_match: 1.0,
+      raw_score: 1.0,
+      score: 1.0,
+    })
+
+    it('hard-tier engrams inject before soft-tier engrams', () => {
+      const hardEngram = makePinnedScoredEngram({ id: 'ENG-HARD-001', pinned_tier: 'hard', statement: 'Always test before deploy' })
+      const softEngram = makePinnedScoredEngram({ id: 'ENG-SOFT-001', pinned_tier: 'soft', statement: 'Always use blue-green deploy' })
+      const { selected } = fillTokenBudget([softEngram, hardEngram], 8000)
+      const ids = selected.map(e => e.id)
+      // Hard engram must be present; both should fit in 8000 tokens
+      expect(ids).toContain('ENG-HARD-001')
+      expect(ids).toContain('ENG-SOFT-001')
+      // Hard engram must appear first (lower index) — it is always injected first
+      expect(ids.indexOf('ENG-HARD-001')).toBeLessThan(ids.indexOf('ENG-SOFT-001'))
+    })
+
+    it('hard-tier engrams are capped at PINNED_HARD_TOKEN_CAP', () => {
+      const shortStatement = 'X'.repeat(80)
+      // Manufacture many hard-tier engrams that together exceed the 2000-token cap
+      const hardEngrams = Array.from({ length: 40 }, (_, i) => makePinnedScoredEngram({
+        id: `ENG-HARD-${String(i).padStart(3, '0')}`,
+        pinned_tier: 'hard',
+        statement: shortStatement,
+      }))
+      const { selected, tokens_used } = fillTokenBudget(hardEngrams, 8000)
+      // Hard-tier tokens must not exceed the absolute cap
+      expect(tokens_used).toBeLessThanOrEqual(PINNED_HARD_TOKEN_CAP)
+      expect(selected.length).toBeGreaterThan(0)
+      expect(selected.length).toBeLessThan(40)
+    })
+
+    it('soft-tier engrams are sorted by pinned_priority DESC', () => {
+      const low = makePinnedScoredEngram({ id: 'ENG-LOW-001', pinned_tier: 'soft', pinned_priority: 10 })
+      const high = makePinnedScoredEngram({ id: 'ENG-HIGH-001', pinned_tier: 'soft', pinned_priority: 90 })
+      const mid = makePinnedScoredEngram({ id: 'ENG-MID-001', pinned_tier: 'soft', pinned_priority: 50 })
+      const { selected } = fillTokenBudget([low, mid, high], 8000)
+      const ids = selected.map(e => e.id)
+      // Higher priority must appear before lower priority
+      expect(ids.indexOf('ENG-HIGH-001')).toBeLessThan(ids.indexOf('ENG-MID-001'))
+      expect(ids.indexOf('ENG-MID-001')).toBeLessThan(ids.indexOf('ENG-LOW-001'))
+    })
+
+    it('soft-tier tie-break by learned_at ASC (FIFO — oldest survives first)', () => {
+      // Use a medium-length statement so token cost can be estimated reliably.
+      // Each engram costs roughly (statement_len + fixed_overhead) / 4 tokens.
+      // With statement='Y'.repeat(200), rough cost ≈ ceil(800/4) = 200 tokens.
+      // softBudget = floor(maxTokens * 0.3). For maxTokens = 1200: softBudget = 360.
+      // One engram (~200 tokens) fits; two (~400 tokens) do not.
+      const medStatement = 'Y'.repeat(200)
+      const oldTight = makePinnedScoredEngram({ id: 'ENG-OLD-001', pinned_tier: 'soft', pinned_priority: 50, statement: medStatement, temporal: { learned_at: '2026-01-01' } })
+      const newTight = makePinnedScoredEngram({ id: 'ENG-NEW-001', pinned_tier: 'soft', pinned_priority: 50, statement: medStatement, temporal: { learned_at: '2026-08-01' } })
+      // Compute actual cost so we pick a reliable budget
+      const oneCost = estimateTokens(oldTight as any)
+      // Set maxTokens so softBudget fits one engram but not two
+      const maxTokens = Math.ceil(oneCost / 0.3) + 1  // softBudget just above oneCost
+      const { selected, evicted_soft_pinned } = fillTokenBudget([newTight, oldTight], maxTokens)
+      // Older engram (learned_at='2026-01-01') must survive; newer is evicted
+      expect(selected.map((e: any) => e.id)).toContain('ENG-OLD-001')
+      expect(evicted_soft_pinned.map(e => e.id)).toContain('ENG-NEW-001')
+    })
+
+    it('eviction warning is included when soft-tier engrams are evicted', () => {
+      // Use fillTokenBudget directly (not selectAndSpread) so we can control costs precisely.
+      // Two soft-pinned engrams with same short statement. Compute cost of one,
+      // then set maxTokens so softBudget fits only one.
+      const e1 = makePinnedScoredEngram({ id: 'ENG-EVICT-001', pinned_tier: 'soft', pinned_priority: 80 })
+      const e2 = makePinnedScoredEngram({ id: 'ENG-EVICT-002', pinned_tier: 'soft', pinned_priority: 20 })
+      const oneCost = estimateTokens(e1 as any)
+      // softBudget = floor(maxTokens * 0.3) must fit e1 but not both e1+e2.
+      // Set maxTokens = ceil(oneCost / 0.3) + 1 → softBudget = oneCost+1 (fits one, not two).
+      // Also need maxTokens > oneCost so the outer guard doesn't evict e1 too.
+      const maxTokens = Math.max(Math.ceil(oneCost / 0.3) + 10, oneCost + 100)
+      const { selected, evicted_soft_pinned } = fillTokenBudget([e1, e2] as any, maxTokens)
+      // e1 (higher priority) must be selected; e2 must be evicted
+      expect(selected.map((e: any) => e.id)).toContain('ENG-EVICT-001')
+      expect(evicted_soft_pinned.map(e => e.id)).toContain('ENG-EVICT-002')
+      // Build eviction warnings manually to verify the format
+      const result = selectAndSpread(
+        { prompt: 'deploy the app', maxTokens },
+        [e1, e2] as any, [],
+      )
+      expect(result.eviction_warnings).toBeDefined()
+      expect(result.eviction_warnings![0]).toContain('SOFT-TIER EVICTION')
+    })
+
+    it('no eviction warning when all soft-tier engrams fit', () => {
+      const e1 = makePinnedScoredEngram({ id: 'ENG-FIT-001', pinned_tier: 'soft', pinned_priority: 80 })
+      const result = selectAndSpread(
+        { prompt: 'deploy the app', maxTokens: 8000 },
+        [e1] as any, [],
+      )
+      expect(result.eviction_warnings).toBeUndefined()
+    })
+
+    it('engram without pinned_tier defaults to soft tier', () => {
+      const engram = makePinnedScoredEngram({ id: 'ENG-DEFAULT-001' /* no pinned_tier */ })
+      const { selected } = fillTokenBudget([engram], 8000)
+      // Should be selected (fits in soft budget)
+      expect(selected.map(e => e.id)).toContain('ENG-DEFAULT-001')
+    })
+
+    it('PINNED_HARD_TOKEN_CAP is exported and equals 2000', () => {
+      expect(PINNED_HARD_TOKEN_CAP).toBe(2000)
+    })
+
+    it('estimateEngramTokens returns a positive integer for a minimal engram', () => {
+      const engram = EngramSchema.parse({
+        id: 'ENG-EST-001',
+        statement: 'Always verify before deploying',
+        type: 'behavioral',
+        scope: 'global',
+        status: 'active',
+      })
+      const cost = estimateEngramTokens(engram)
+      expect(cost).toBeGreaterThan(0)
+      expect(Number.isInteger(cost)).toBe(true)
+    })
   })
 
   // === Pinned engram bypasses minRelevance (0.9.4) ===
