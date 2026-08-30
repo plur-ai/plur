@@ -416,7 +416,9 @@ ignore the values.
 | `previous_version_ref` | object | `{event_id, changed_at}` | Pointer to prior content version. |
 | `episode_ids` | string[] | default `[]` | Source episode IDs. |
 | `summary` | string | ≤80 chars | Injection-friendly short form. |
-| `pinned` | boolean | | Always-load flag; bypasses keyword gating. Use sparingly. |
+| `pinned` | boolean | | Always-load flag; bypasses keyword gating. Tier is controlled by `pinned_tier`. Use sparingly. |
+| `pinned_tier` | `"hard"` \| `"soft"` | default `"soft"` | Tier within the always-on budget. `"hard"`: write-rejected if adding this engram would exceed the 2,000-token hard cap — guaranteed injection. `"soft"`: priority-ordered eviction when soft budget (30% of maxTokens) is exceeded. |
+| `pinned_priority` | integer | 1–100, default 50 | Soft-tier eviction priority. Higher survives longer. Tie-break: `temporal.learned_at` ascending (FIFO). Ignored for `pinned_tier="hard"`. |
 | `measured_under` | object | `model?`, `source_type?`, `hardware?`, `dataset?`, `date?` (ISO date) | Measurement conditions for numeric/benchmark engrams — which model, environment type, hardware tier, dataset, and date the value was recorded under. Allows tension-aware retrieval to treat differently-measured values as refinements rather than contradictions (#869). |
 
 ### 4.13 Required-field summary

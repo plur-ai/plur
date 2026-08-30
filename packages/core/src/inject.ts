@@ -1,4 +1,4 @@
-import type { Engram, Association } from './schemas/engram.js'
+import type { Engram, Association, Temporal } from './schemas/engram.js'
 import type { PackManifest } from './schemas/pack.js'
 import type { LoadedPack } from './engrams.js'
 import { decayedStrength, decayedCoAccessStrength, daysSince, confidenceDecay } from './decay.js'
@@ -58,17 +58,22 @@ export interface InternalInjectionResult {
   constraints: WireEngram[]
   consider: WireEngram[]
   tokens_used: { directives: number; consider: number }
+  /** Eviction warnings for soft-tier pinned engrams that did not fit the budget. */
+  eviction_warnings?: string[]
 }
 
 const DEFAULT_MAX_TOKENS = 8000
 const DEFAULT_MIN_RELEVANCE = 0.3
 const MAX_PER_PACK = 5
 const MAX_PER_DOMAIN = 10
-// Pinned engrams bypass per-pack/per-domain caps but must not eat the entire
-// budget — left unbounded, a single user with many pinned packs could starve
-// every relevance-scored engram. Cap at 50% of maxTokens so contextual recall
-// still gets at least half the budget. Tuned for default 8000 → 4000 pinned.
-const PINNED_TOKEN_BUDGET_RATIO = 0.5
+// Two-tier pinned budget (pinned-tier spec):
+//   Hard tier: absolute cap, write-rejected on overflow — guaranteed injection.
+//   Soft tier: 30% of maxTokens, priority-ordered eviction.
+// At 8K default: hard=2,000 + soft=2,400 = 4,400 pinned, retrieved ~3,600.
+/** Absolute token cap for hard-tier pinned engrams. Write rejected if exceeded. */
+export const PINNED_HARD_TOKEN_CAP = 2000
+/** Fraction of maxTokens allocated to soft-tier pinned engrams. */
+const PINNED_SOFT_TOKEN_BUDGET_RATIO = 0.3
 
 // DIP-0019 consider pool (bottom 1/3 of first-pass)
 const DIP19_CONSIDER_MAX = 5
@@ -137,6 +142,13 @@ function getPackMetadata(manifest: PackManifest) {
 export function estimateTokens(engram: ScoredEngram): number {
   // Serialize wire-visible fields only (exclude scoring + associations)
   const { keyword_match: _km, raw_score: _rs, score: _s, associations: _a, ...wire } = engram
+  const serialized = JSON.stringify(wire)
+  return Math.ceil(serialized.length / 4)
+}
+
+/** Estimate token cost for a plain Engram (no scoring fields to strip). */
+export function estimateEngramTokens(engram: Engram): number {
+  const { associations: _, ...wire } = engram
   const serialized = JSON.stringify(wire)
   return Math.ceil(serialized.length / 4)
 }
@@ -335,25 +347,29 @@ export function scoreEngram(
 export function fillTokenBudget(
   scored: ScoredEngram[],
   maxTokens: number,
-): { selected: ScoredEngram[]; tokens_used: number } {
+): { selected: ScoredEngram[]; tokens_used: number; evicted_soft_pinned: ScoredEngram[] } {
   const result: ScoredEngram[] = []
   const packCounts = new Map<string, number>()
   const domainCounts = new Map<string, number>()
   let tokensUsed = 0
+  const evicted_soft_pinned: ScoredEngram[] = []
 
-  // Two-pass selection: pinned engrams first, then the rest. Pinned items
-  // ignore per-pack and per-domain fairness caps because they're meant to be
-  // always-load — but they respect both maxTokens AND a sub-budget so they
-  // can't starve the relevance-scored engrams. With many pinned packs, the
-  // pinned set can grow unboundedly; the sub-budget caps at 50% of maxTokens.
-  const pinned = scored.filter(e => (e as any).pinned === true)
+  // Three-pass selection: hard-pinned first, then soft-pinned, then the rest.
+  // Hard-tier: absolute 2,000-token cap; items guaranteed to inject (write-rejected on overflow).
+  // Soft-tier: priority-ordered (pinned_priority DESC, learned_at ASC); evicted lowest-first.
+  // All pinned items bypass per-pack/per-domain fairness caps.
+  const allPinned = scored.filter(e => (e as any).pinned === true)
   const unpinned = scored.filter(e => (e as any).pinned !== true)
-  const pinnedBudget = Math.floor(maxTokens * PINNED_TOKEN_BUDGET_RATIO)
 
-  for (const engram of pinned) {
+  const hardPinned = allPinned.filter(e => ((e as any).pinned_tier ?? 'soft') === 'hard')
+  const softPinned = allPinned.filter(e => ((e as any).pinned_tier ?? 'soft') === 'soft')
+
+  // Pass 1: hard-tier — capped at PINNED_HARD_TOKEN_CAP, injected in score order
+  const hardBudget = PINNED_HARD_TOKEN_CAP
+  for (const engram of hardPinned) {
     const cost = estimateTokens(engram)
+    if (tokensUsed + cost > hardBudget) continue
     if (tokensUsed + cost > maxTokens) continue
-    if (tokensUsed + cost > pinnedBudget) continue
     result.push(engram)
     tokensUsed += cost
     const pack = engram.pack ?? '__personal__'
@@ -362,6 +378,33 @@ export function fillTokenBudget(
     domainCounts.set(topDomain, (domainCounts.get(topDomain) ?? 0) + 1)
   }
 
+  // Pass 2: soft-tier — sorted by pinned_priority DESC, then learned_at ASC (FIFO tie-break)
+  const softBudget = Math.floor(maxTokens * PINNED_SOFT_TOKEN_BUDGET_RATIO)
+  let softTokensUsed = 0
+  const sortedSoft = softPinned.slice().sort((a, b) => {
+    const pa = (a as any).pinned_priority ?? 50
+    const pb = (b as any).pinned_priority ?? 50
+    if (pb !== pa) return pb - pa
+    const la: string = (a as any).temporal?.learned_at ?? ''
+    const lb: string = (b as any).temporal?.learned_at ?? ''
+    return la < lb ? -1 : la > lb ? 1 : 0
+  })
+  for (const engram of sortedSoft) {
+    const cost = estimateTokens(engram)
+    if (softTokensUsed + cost > softBudget || tokensUsed + cost > maxTokens) {
+      evicted_soft_pinned.push(engram)
+      continue
+    }
+    result.push(engram)
+    tokensUsed += cost
+    softTokensUsed += cost
+    const pack = engram.pack ?? '__personal__'
+    packCounts.set(pack, (packCounts.get(pack) ?? 0) + 1)
+    const topDomain = (engram.domain ?? '__none__').split('.')[0]
+    domainCounts.set(topDomain, (domainCounts.get(topDomain) ?? 0) + 1)
+  }
+
+  // Pass 3: relevance-scored engrams, subject to fairness caps
   for (const engram of unpinned) {
     const cost = estimateTokens(engram)
     if (tokensUsed + cost > maxTokens) continue
@@ -380,7 +423,23 @@ export function fillTokenBudget(
     packCounts.set(pack, packCount + 1)
     domainCounts.set(topDomain, domainCount + 1)
   }
-  return { selected: result, tokens_used: tokensUsed }
+  return { selected: result, tokens_used: tokensUsed, evicted_soft_pinned }
+}
+
+// --- Eviction warning builder ---
+
+function buildEvictionWarnings(evicted: ScoredEngram[], maxTokens: number): string[] | undefined {
+  if (evicted.length === 0) return undefined
+  const softBudget = Math.floor(maxTokens * PINNED_SOFT_TOKEN_BUDGET_RATIO)
+  const evictedList = evicted
+    .map(e => `${e.id} (priority ${(e as any).pinned_priority ?? 50}, ${estimateTokens(e)} tokens)`)
+    .join(', ')
+  return [
+    `[SOFT-TIER EVICTION] ${evicted.length} soft-pinned engram(s) evicted ` +
+    `(budget: ${softBudget} tokens). ` +
+    `Evicted: ${evictedList}. ` +
+    `To protect: raise pinned_priority above 50, or promote to hard tier if truly critical.`,
+  ]
 }
 
 // --- Main injection function ---
@@ -500,7 +559,7 @@ export function selectAndSpread(
   }
 
   // Step 6: Fill directive token budget
-  const { selected: directives, tokens_used: directiveTokens } = fillTokenBudget(filtered, maxTokens)
+  const { selected: directives, tokens_used: directiveTokens, evicted_soft_pinned } = fillTokenBudget(filtered, maxTokens)
   const directiveIds = new Set(directives.map(e => e.id))
 
   // DIP-0019 consider pool: next candidates that didn't fit as directives
@@ -523,6 +582,10 @@ export function selectAndSpread(
   const dip19Pool = dip19Consider.slice(0, DIP19_CONSIDER_MAX)
   const dip19PoolTokens = dip19Pool.reduce((acc, e) => acc + estimateTokens(e), 0)
 
+  // Build soft-tier eviction warning (computed before the early-exit guard so
+  // callers see it even when all engrams were evicted and the result is empty).
+  const builtEvictionWarnings = buildEvictionWarnings(evicted_soft_pinned, maxTokens)
+
   // Step 7-8: Guard empty
   if (directives.length === 0 && dip19Pool.length === 0) {
     return {
@@ -530,6 +593,7 @@ export function selectAndSpread(
       constraints: [],
       consider: [],
       tokens_used: { directives: 0, consider: 0 },
+      ...(builtEvictionWarnings ? { eviction_warnings: builtEvictionWarnings } : {}),
     }
   }
 
@@ -625,6 +689,7 @@ export function selectAndSpread(
     constraints: wireConstraints,
     consider: allWireConsider,
     tokens_used: { directives: directiveTokens, consider: considerTokens },
+    ...(builtEvictionWarnings ? { eviction_warnings: builtEvictionWarnings } : {}),
   }
 }
 
