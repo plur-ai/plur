@@ -1,15 +1,25 @@
 # Changelog
 
-## Unreleased
+## 0.19.2
 
-- **`plur-hermes` MemoryProvider ABC adapter** (#1081): `PlurMemoryProvider` implements the
-  Hermes `MemoryProvider` ABC (`prefetch`, `sync_turn`, `on_session_end`,
-  `system_prompt_block`). Register via `memory.provider: plur` in Hermes config (Herald
-  Release ≥ 0.20.0). When both the standalone plugin path and the MemoryProvider path are
-  active they share one `PlurBridge` instance — no duplicate CLI subprocess spawns. Older
-  Hermes versions without `register_memory_provider()` are unaffected. First published in
-  `plur-hermes==0.18.1` (out-of-band); this commit lands the feature on main so it ships in
-  all subsequent releases.
+PLUR MemoryProvider for Hermes Herald; provenance on push.
+
+- `memory.provider: plur` in Hermes ≥ 0.20.0 (#1081)
+- Remote store carries provenance on push (#983)
+
+**`plur-hermes` MemoryProvider ABC adapter** (#1081): `PlurMemoryProvider` implements the
+Hermes `MemoryProvider` ABC (`prefetch`, `sync_turn`, `on_session_end`,
+`system_prompt_block`). Register via `memory.provider: plur` in Hermes config (Herald
+Release ≥ 0.20.0). When both the standalone plugin path and the MemoryProvider path are
+active they share one `PlurBridge` instance — no duplicate CLI subprocess spawns. Older
+Hermes versions without `register_memory_provider()` are unaffected. First published in
+`plur-hermes==0.18.1` (out-of-band); this commit lands the feature on main so it ships in
+all subsequent releases.
+
+**Remote store provenance** (#983): `RemoteStore.append()` now includes the `provenance`
+field on outbound bodies. Engrams pushed to a team store no longer arrive stripped of
+`origin`, `chain`, and licence information. Omitted when unset for wire-body
+compatibility. Partial fix — `attribution` and `claim_class` follow in #963.
 
 ## 0.19.1
 
