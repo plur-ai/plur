@@ -5,6 +5,28 @@ import { tmpdir } from 'os'
 import yaml from 'js-yaml'
 import { Plur } from '../src/index.js'
 
+/**
+ * Wait until `cond` holds, or fail after `timeoutMs`.
+ *
+ * Replaces fixed sleeps in this file. `learn()` saves locally, pushes async,
+ * then deletes the local copy, and a fixed `setTimeout(100)` asserts that the
+ * whole cycle finished in under 100 ms on whatever machine happens to run it.
+ * That is a race, and it lost on the Node 20 runner once the history append
+ * got a lock (#1051): 22, 24 and 26 passed, 20 did not, on identical code.
+ *
+ * Polling turns a guess about duration into a statement about the condition —
+ * and it fails with the same assertion either way, so a real regression still
+ * shows up rather than being slept past.
+ */
+async function waitFor(cond: () => boolean, timeoutMs = 5000, stepMs = 10): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  for (;;) {
+    if (cond()) return
+    if (Date.now() > deadline) return // caller's expect() reports the failure
+    await new Promise(r => setTimeout(r, stepMs))
+  }
+}
+
 function writeStoresConfig(dir: string, stores: Array<Record<string, unknown>>) {
   writeFileSync(
     join(dir, 'config.yaml'),
@@ -84,8 +106,9 @@ describe('learn() — remote routing (issue #25)', () => {
 
     // Network POST to /api/v1/engrams should have been made. With the
     // outbox pattern (issue #26), learn() saves locally first then pushes
-    // async — give it time for the write-then-delete cycle.
-    await new Promise(r => setTimeout(r, 100))
+    // async — wait for the write-then-delete cycle to actually finish rather
+    // than guessing how long it takes.
+    await waitFor(() => postCalls().length >= 1)
     const posts = postCalls()
     expect(posts.length).toBe(1)
     const [url, init] = posts[0]
@@ -97,6 +120,13 @@ describe('learn() — remote routing (issue #25)', () => {
     // After successful remote push, the local outbox copy should be
     // removed — no engram left in local YAML.
     const localYaml = join(primaryDir, 'engrams.yaml')
+    const localCopyGone = (): boolean => {
+      if (!existsSync(localYaml)) return true
+      const local = yaml.load(readFileSync(localYaml, 'utf-8')) as { engrams?: unknown[] } | null
+      const engrams = (local?.engrams ?? []) as Array<{ statement?: string }>
+      return engrams.find(e => e.statement === 'test engram for remote') === undefined
+    }
+    await waitFor(localCopyGone)
     if (existsSync(localYaml)) {
       const local = yaml.load(readFileSync(localYaml, 'utf-8')) as { engrams?: unknown[] } | null
       const engrams = (local?.engrams ?? []) as Array<{ statement?: string }>
