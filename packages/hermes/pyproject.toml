@@ -1,6 +1,6 @@
 [project]
 name = "plur-hermes"
-version = "0.19.2"
+version = "0.19.3"
 description = "PLUR persistent memory plugin for Hermes Agent"
 readme = "README.md"
 license = "Apache-2.0"
@@ -47,6 +47,9 @@ test = ["pytest>=7.0"]
 
 [project.entry-points."hermes_agent.plugins"]
 plur = "plur_hermes"
+
+[project.entry-points."hermes_agent.memory_providers"]
+plur = "plur_hermes.memory_provider:PlurMemoryProvider"
 
 [build-system]
 requires = ["hatchling"]
