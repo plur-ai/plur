@@ -5,4 +5,4 @@
  * test/version-parity.test.ts fails the suite if this and package.json ever
  * disagree — same guard pattern as dsh's manifest test.
  */
-export const CLI_VERSION = '0.19.1'
+export const CLI_VERSION = '0.19.3'
