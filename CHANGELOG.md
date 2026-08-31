@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.19.3
+
+Patch release: ships the Hermes memory-provider entry point that 0.19.0-0.19.2
+were missing, and carries engram provenance through team pushes.
+
+- `plur-hermes` is discoverable as a Hermes memory provider again
+- remote-store team pushes no longer drop `origin`/`chain`/licence fields
+
+**PlurMemoryProvider is registered as a Hermes memory provider (#957).** The
+`[project.entry-points."hermes_agent.memory_providers"]` group was never declared
+in `packages/hermes/pyproject.toml`, so `create_memory_provider()` was unreachable
+and auto-discovery silently did nothing. 0.18.1 shipped the group; 0.19.0, 0.19.1
+and 0.19.2 did not — 0.19.2 contained `memory_provider.py` but no entry point, so
+the capability it advertised could not load. This release restores the group and
+adds the provider suite (204 tests). Requires hermes-agent Herald (0.20.x) for the
+`memory_providers` group; on earlier gateways the plugin path is unaffected.
+
+**Remote-store pushes carry provenance (#983).** `RemoteStore.append()` dropped
+`origin`, `chain` and licence fields on team push, so engrams arriving at a shared
+store lost the record of where they came from. They are now carried through.
+
+
 ## 0.19.1
 
 Patch release (#1072): every finding from the independent 0.19.0 audit (#1058),
