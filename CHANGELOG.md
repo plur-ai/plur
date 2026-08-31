@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.19.4
+
+Patch release: makes the Hermes memory provider actually load. 0.19.3 shipped the entry
+point and still discovered nothing.
+
+- `plur-hermes` now resolves through Hermes' memory-provider loader
+
+**The memory-provider entry point now resolves (#957 follow-up).** 0.19.3 declared
+`[project.entry-points."hermes_agent.memory_providers"]` but pointed it at the factory
+function, and Hermes' `_load_provider_from_entry_point` returned `None` anyway. It tries
+`isinstance`/`issubclass` against its `MemoryProvider` ABC, then `hasattr(loaded, "register")`,
+then `callable(loaded)` — and `PlurMemoryProvider` deliberately does not subclass the ABC,
+because subclassing would make `hermes_agent` a hard runtime dependency and cost the
+zero-dependency guarantee. A plain function has no `.register`, so every branch missed and the
+loader fell through to `loaded(collector)`, returning `collector.provider` = `None`.
+
+The entry point now targets the package: `plur_hermes.register()` already calls
+`ctx.register_memory_provider()`, which is the one loader branch with no type check.
+
+Verified on two hosts against a clean clone of `NousResearch/hermes-agent` main, driving the
+real loader — the old value yields `None`, the new one yields `PlurMemoryProvider` with 22
+tools. Injection verified end-to-end: the registered `pre_llm_call` hook returns engram
+content, and `prefetch()` correctly no-ops while hooks are active so nothing double-injects.
+Three regression tests pin the two properties the loader depends on; they fail against the
+old value.
+
+**Note:** `plur-hermes` requires the `@plur-ai/cli` binary on PATH. Without it,
+`plur_hermes.register()` returns early and registers nothing — pip install alone is not enough.
+
+
 ## 0.19.3
 
 Patch release: ships the Hermes memory-provider entry point that 0.19.0-0.19.2
