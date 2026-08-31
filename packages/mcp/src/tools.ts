@@ -1040,11 +1040,15 @@ function getAllToolDefinitions(): ToolDefinition[] {
           valid_until: args.valid_until as string | undefined,
           supersedes: args.supersedes as string[] | undefined,
           measured_under: args.measured_under as Record<string, string> | undefined,
-          // #243: resolve which session's default scope governs this write —
-          // explicit session_id first, else the lone open session. Never
-          // persisted on the engram (LearnContext.session selects a scope, it
-          // is not part of one).
-          session: _resolveInjectionSession(args),
+          // #243/#1048: one field, both jobs. It resolves which session's
+          // default scope governs this write (explicit session_id first, else
+          // the lone open session) AND is recorded in sources[].session_id so
+          // the engram carries which session produced it.
+          //
+          // This used to map into `context.session`, a second field with the
+          // same value and a different consumer, which left the provenance
+          // field null on every shipping path.
+          session_id: _resolveInjectionSession(args),
           llm,
         }
         // Route through learnRouted FIRST so remote-scope writes get
@@ -1259,6 +1263,9 @@ function getAllToolDefinitions(): ToolDefinition[] {
             valid_from: e.valid_from as string | undefined,
             valid_until: e.valid_until as string | undefined,
             measured_under: e.measured_under as Record<string, string> | undefined,
+            // Batch writes are session writes too — without this every engram
+            // from plur_learn_batch lands with sources[].session_id null.
+            session_id: _resolveInjectionSession(args),
           },
         }))
         const maxLlmCalls = typeof args.max_llm_calls === 'number' ? args.max_llm_calls : undefined

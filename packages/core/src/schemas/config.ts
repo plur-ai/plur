@@ -352,7 +352,14 @@ export const PlurConfigSchema = z.object({
    *              writer should configure its own.
    */
   provenance: z.object({
-    identity: z.string().optional(),
+    // catch() rather than a bare string: a non-string identity used to make
+    // loadConfig reject the WHOLE config and fall back to defaults, silently
+    // discarding `stores`, `backend` and `allow_secrets`. That behaviour
+    // predates this key, but this key is hand-edited by design — it has no
+    // other surface — so it widens the blast radius of a typo from "identity is
+    // wrong" to "every configured store disappears". A bad identity now degrades
+    // to absent, which is exactly the honest `agent:unidentified` outcome.
+    identity: z.string().optional().catch(undefined),
   }).optional(),
 }).partial()
 

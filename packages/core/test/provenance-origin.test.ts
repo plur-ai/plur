@@ -10,7 +10,7 @@
  *   - Provenance block: origin, chain=[], signature=null, license='cc-by-sa-4.0'.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync } from 'fs'
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { Plur } from '../src/index.js'
@@ -157,5 +157,110 @@ describe('Wave 1: session_id threading + provenance.origin (#1048)', () => {
       const source = (reloaded as any).sources?.[0]
       expect(source.session_id).toBe('round-trip-sess')
     })
+  })
+})
+
+// ── The defects the review found: attribution that never reached production ──
+
+describe('#1048 review findings', () => {
+  it('the constructor identity survives a config reload', async () => {
+    // THE DEFECT: the override was merged INTO this.config, and the next
+    // `this.config = loadConfig(...)` threw it away. _resolveUnscopedScope calls
+    // reloadConfigIfChanged() on every unscoped learn(), so one config.yaml
+    // mtime change reverted an explicitly configured identity to
+    // "agent:unidentified" — silently, and it defeats the whole epic.
+    const dir = mkdtempSync(join(tmpdir(), 'prov-reload-'))
+    const p = new Plur({ storageRoot: dir, provenance: { identity: 'agent:ctor' } } as never)
+
+    const first = await p.learn('a statement written before any reload', { type: 'behavioral' })
+    expect((first as never as { provenance?: { origin?: string } }).provenance?.origin).toBe('agent:ctor')
+
+    // Touch config.yaml so the next unscoped learn reloads it.
+    const cfg = join(dir, 'config.yaml')
+    writeFileSync(cfg, (existsSync(cfg) ? readFileSync(cfg, 'utf8') : '') + '\n# touched\n')
+
+    const second = await p.learn('a statement written after the reload', { type: 'behavioral' })
+    expect(
+      (second as never as { provenance?: { origin?: string } }).provenance?.origin,
+      'the constructor identity must survive loadConfig',
+    ).toBe('agent:ctor')
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('an empty session_id does not beat a real session_episode_id', async () => {
+    // `??` let session_id: '' win and persist as the empty string, while
+    // provenance fourteen lines away treated an empty identity as absent.
+    const dir = mkdtempSync(join(tmpdir(), 'prov-empty-'))
+    const p = new Plur({ storageRoot: dir } as never)
+    const e = await p.learn('a statement with an empty session id', {
+      type: 'behavioral', session_id: '', session_episode_id: 'EP-42',
+    } as never)
+    const sources = (e as never as { sources?: Array<{ session_id: string | null }> }).sources
+    expect(sources?.[0].session_id).toBe('EP-42')
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('the deprecated `session` alias still resolves scope AND now attributes', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'prov-alias-'))
+    const p = new Plur({ storageRoot: dir } as never)
+    const e = await p.learn('a statement using the deprecated alias', {
+      type: 'behavioral', session: 'sess-legacy',
+    } as never)
+    const sources = (e as never as { sources?: Array<{ session_id: string | null }> }).sources
+    expect(sources?.[0].session_id).toBe('sess-legacy')
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('saveMetaEngrams does not persist an engram with no provenance', async () => {
+    // formulateMetaEngram builds a complete engram with no provenance block,
+    // and this public write path pushed it in verbatim.
+    const dir = mkdtempSync(join(tmpdir(), 'prov-meta-'))
+    const p = new Plur({ storageRoot: dir, provenance: { identity: 'agent:meta' } } as never)
+    const meta = {
+      id: 'ENG-META-001', statement: 'a meta engram', type: 'behavioral',
+      scope: 'global', status: 'active',
+      sources: [{ scope: 'global', session_id: null, stored_at: new Date().toISOString() }],
+    } as never
+    await p.saveMetaEngrams([meta])
+    expect((meta as { provenance?: { origin?: string } }).provenance?.origin).toBe('agent:meta')
+    rmSync(dir, { recursive: true, force: true })
+  })
+})
+
+// ── The call sites, asserted as call sites ──────────────────────────────────
+
+describe('#1048 is wired into the paths that actually write', () => {
+  it('MCP, CLI and claw all pass session_id into LearnContext', async () => {
+    // THE DEFECT THIS GUARDS: every unit test passed while
+    // `sources[].session_id` was null on every shipping path, because the MCP
+    // handler mapped args.session_id into `context.session` — a different field
+    // — and the CLI and claw passed nothing at all. The field this change adds
+    // had zero non-test callers. That is not a logic bug any unit test can see;
+    // only an assertion about the call sites can.
+    const { readFileSync } = await import('node:fs')
+    const { fileURLToPath } = await import('node:url')
+    const { dirname, join: j } = await import('node:path')
+    const root = j(dirname(fileURLToPath(import.meta.url)), '..', '..', '..')
+
+    const cases: Array<[string, RegExp]> = [
+      ['packages/mcp/src/tools.ts', /session_id: _resolveInjectionSession\(args\)/],
+      ['packages/cli/src/commands/learn.ts', /session_id: process\.env\.PLUR_SESSION_ID/],
+      ['packages/claw/src/context-engine.ts', /session_id: sessionKey/],
+    ]
+    for (const [file, pattern] of cases) {
+      const src = readFileSync(j(root, file), 'utf8')
+      expect(src, `${file} must thread session_id into the learn context`).toMatch(pattern)
+    }
+  })
+
+  it('plur_learn_batch attributes its writes too', async () => {
+    const { readFileSync } = await import('node:fs')
+    const { fileURLToPath } = await import('node:url')
+    const { dirname, join: j } = await import('node:path')
+    const root = j(dirname(fileURLToPath(import.meta.url)), '..', '..', '..')
+    const src = readFileSync(j(root, 'packages/mcp/src/tools.ts'), 'utf8')
+    // Two occurrences: the single-write handler and the batch handler.
+    expect(src.match(/session_id: _resolveInjectionSession\(args\)/g)?.length ?? 0)
+      .toBeGreaterThanOrEqual(2)
   })
 })

@@ -365,6 +365,16 @@ export interface StatusResult {
   pack_count: number
   storage_root: string
   config: PlurConfig
+  /**
+   * The `provenance.origin` this instance stamps on every engram it writes
+   * (#1049). Surfaced because `provenance.identity` otherwise has no
+   * user-facing surface at all — it is absent from the README, the docs, the
+   * `plur init` template, the CLI and the MCP schemas, so in practice every
+   * engram would ship as `agent:unidentified` and nobody would know why.
+   * Shows the effective value, including a constructor override.
+   */
+  provenance_identity: string
+
   locked_count?: number
   tension_count?: number
   versioned_engram_count?: number
@@ -716,7 +726,26 @@ function isStoreTeardownError(err: unknown): boolean {
   return msg.includes('adapter is closed') || msg.includes('after calling end')
 }
 
+/**
+ * The session key for a call — `session_id`, falling back to the deprecated
+ * `session` alias (#1048/#243).
+ *
+ * One accessor so the scope registry and provenance can never read different
+ * fields for the same value, which is the bug this merge closes.
+ */
+function sessionKeyOf(o: { session_id?: string; session?: string } | undefined): string | undefined {
+  return o?.session_id ?? o?.session
+}
+
 export class Plur {
+  /**
+   * Constructor-supplied provenance identity, applied on top of whatever the
+   * current config says. Deliberately NOT stored in `config`: every
+   * `this.config = loadConfig(...)` would discard it, and one config.yaml
+   * mtime change is enough to trigger that via `reloadConfigIfChanged()`.
+   */
+  private _provenanceIdentityOverride?: string
+
   private paths: PlurPaths
   private config: PlurConfig
   private indexedStorage: IndexedStorage | null = null
@@ -942,10 +971,13 @@ export class Plur {
       }
     }
     this.config = loadConfig(this.paths.config)
-    // Merge constructor-level provenance options (highest priority) so callers
-    // can set identity without touching a config file (#1048 / #1049).
-    if (options?.provenance !== undefined) {
-      this.config = { ...this.config, provenance: { ...this.config.provenance, ...options.provenance } }
+    // Constructor-level provenance identity is held OUTSIDE this.config so it
+    // survives every reload (#1048 / #1049). Merging it into this.config was
+    // the defect: the very next `this.config = loadConfig(...)` discarded it,
+    // and there are four such assignments — including one a few lines below in
+    // this same constructor, once autoDiscoverStores changes the store count.
+    if (typeof options?.provenance?.identity === 'string' && options.provenance.identity.length > 0) {
+      this._provenanceIdentityOverride = options.provenance.identity
     }
     this._autoDiscover = Plur.resolveAutoDiscover(options?.autoDiscover)
     // Auto-discover project stores from CWD (skips temp dirs for test safety).
@@ -1672,10 +1704,20 @@ export class Plur {
   private _buildSourceEntry(scope: string, context?: LearnContext): {
     scope: string; session_id: string | null; stored_at: string
   } {
+    // One emptiness rule, shared with _buildProvenance below. `??` alone let
+    // `session_id: ''` win over a genuine `session_episode_id` and persist as
+    // the empty string, while provenance fourteen lines down treated an empty
+    // identity as absent. Two different notions of "empty" in one change is how
+    // a field ends up meaning different things at two call sites.
+    const present = (v: unknown): v is string => typeof v === 'string' && v.length > 0
+    const sessionId = context?.session_id ?? context?.session
     return {
       scope,
-      // session_id takes precedence over session_episode_id (#1048).
-      session_id: context?.session_id ?? context?.session_episode_id ?? null,
+      // session_id (incl. its deprecated `session` alias) takes precedence over
+      // session_episode_id (#1048).
+      session_id: present(sessionId) ? sessionId
+        : present(context?.session_episode_id) ? context!.session_episode_id!
+        : null,
       stored_at: new Date().toISOString(),
     }
   }
@@ -1689,7 +1731,18 @@ export class Plur {
    * Wave 2 / Wave 3). license defaults to cc-by-sa-4.0 per the engram standard.
    */
   private _buildProvenance(): { origin: string; chain: string[]; signature: null; license: string } {
-    const identity = this.config.provenance?.identity
+    // Constructor override first, config file second.
+    //
+    // The override used to be merged INTO this.config, and any later
+    // `this.config = loadConfig(...)` threw it away — including the one in the
+    // constructor itself after autoDiscoverStores changes the store count, plus
+    // reloadConfigIfChanged, addStore, and one more. `_resolveUnscopedScope`
+    // calls reloadConfigIfChanged() on every unscoped learn(), so a single
+    // config.yaml mtime change was enough to silently revert an explicitly
+    // configured identity to "agent:unidentified" — defeating the attribution
+    // this epic exists to provide. Held separately now, applied on top of
+    // whatever the current config says.
+    const identity = this._provenanceIdentityOverride ?? this.config.provenance?.identity
     return {
       origin: (typeof identity === 'string' && identity.length > 0) ? identity : 'agent:unidentified',
       chain: [],
@@ -1730,6 +1783,15 @@ export class Plur {
     const currentSources = (target as any).sources ?? []
     target.write_count = currentCount + 1
     ;(target as any).sources = [...currentSources, this._buildSourceEntry(scope, context)]
+    // #1048: an engram actively being written to must not stay unattributed.
+    // This path appends a source entry and re-persists, but never added a
+    // provenance block, so a store stayed permanently split between attributed
+    // and unattributed engrams — even for rows receiving new writes. There is
+    // no backfill and none is implied: this stamps only rows this call touches,
+    // and never overwrites a block that already exists.
+    if ((target as any).provenance === undefined || (target as any).provenance === null) {
+      ;(target as any).provenance = this._buildProvenance()
+    }
     // #852: an absorbed write left NO trace — no engram_created, no
     // recurrence_detected, nothing. That silence is why a misdirected
     // absorption could run for months without anyone seeing it, and it is the
@@ -2415,7 +2477,7 @@ export class Plur {
     // not read off a shared field — under concurrent sessions the shared field
     // let one session's `setSessionScope` decide another session's write. See
     // `session-scopes.ts`.
-    const sessionScope = this._sessionScopes.get(context?.session)
+    const sessionScope = this._sessionScopes.get(sessionKeyOf(context))
     let routed: { scope: string; confidence: number; reason: string } | null = null
     let scope: string
     if (context?.scope == null && sessionScope == null) {
@@ -4160,7 +4222,7 @@ export class Plur {
     // path uses (`options.session` — ADR-0004), so a mid-session scope
     // switch redirects subsequent recall dialing too. No session scope set
     // (the pre-#243 state) leaves dialing exactly as before.
-    const dialScope = options?.scope ?? this._sessionScopes.get(options?.session) ?? undefined
+    const dialScope = options?.scope ?? this._sessionScopes.get(sessionKeyOf(options)) ?? undefined
     const sessionOrg = scopeOrg(dialScope)
 
     const groups = new Map<string, { url: string; token?: string; entries: StoreEntry[] }>()
@@ -5400,6 +5462,17 @@ export class Plur {
    */
   async saveMetaEngrams(metas: Engram[]): Promise<{ saved: number; skipped: number }> {
     this._assertWritable()
+    // #1048: "every engram write" has to mean every one. formulateMetaEngram
+    // builds a complete engram with no provenance block at all, and this method
+    // used to push it into the store verbatim — a public, exported write path
+    // producing engrams with no origin. Stamp any meta that arrives without one;
+    // never overwrite a block a caller set deliberately.
+    for (const m of metas) {
+      const rec = m as unknown as Record<string, unknown>
+      if (rec.provenance === undefined || rec.provenance === null) {
+        rec.provenance = this._buildProvenance()
+      }
+    }
     return await this._withStoreLock(this.paths.engrams, async () => {
       const engrams = await this._primaryStore.load()
       const existingIds = new Set(engrams.map(e => e.id))
@@ -7750,6 +7823,7 @@ Generate an improved version of the procedure that prevents this failure. Return
       episode_count: episodes.length,
       pack_count: packs.length,
       storage_root: this.paths.root,
+      provenance_identity: this._buildProvenance().origin,
       config: this.config,
       locked_count: lockedCount,
       tension_count: unresolvedTensions,
@@ -9314,8 +9388,8 @@ Generate an improved version of the procedure that prevents this failure. Return
    * session pins it to "no session scope" (unscoped writes auto-route), which
    * is distinct from never having registered it (inherits the process slot).
    */
-  setSessionScope(scope: string | null, opts?: { session?: string }): void {
-    this._sessionScopes.set(scope, opts?.session)
+  setSessionScope(scope: string | null, opts?: { session_id?: string; session?: string }): void {
+    this._sessionScopes.set(scope, sessionKeyOf(opts))
   }
 
   /**
@@ -9336,8 +9410,8 @@ Generate an improved version of the procedure that prevents this failure. Return
     scope: string | null,
     opts?: { session?: string; reason?: string; trigger?: 'set' | 'clear' },
   ): { previous: string | null; next: string | null } {
-    const previous = this._sessionScopes.get(opts?.session)
-    this._sessionScopes.set(scope, opts?.session)
+    const previous = this._sessionScopes.get(sessionKeyOf(opts))
+    this._sessionScopes.set(scope, sessionKeyOf(opts))
     appendHistory(this.paths.root, {
       event: 'session_scope_changed',
       engram_id: '', // session-level event — no engram (see HistoryEvent doc)
@@ -9357,8 +9431,8 @@ Generate an improved version of the procedure that prevents this failure. Return
    * Get the session-level default scope for `opts.session`, or the process-wide
    * one when no session is named. Returns null if not set.
    */
-  getSessionScope(opts?: { session?: string }): string | null {
-    return this._sessionScopes.get(opts?.session)
+  getSessionScope(opts?: { session_id?: string; session?: string }): string | null {
+    return this._sessionScopes.get(sessionKeyOf(opts))
   }
 
   /**
@@ -9366,8 +9440,8 @@ Generate an improved version of the procedure that prevents this failure. Return
    * deployment would otherwise retain one entry per session it has ever served.
    * Omitting `session` clears the process-wide slot.
    */
-  clearSessionScope(opts?: { session?: string }): void {
-    this._sessionScopes.clear(opts?.session)
+  clearSessionScope(opts?: { session_id?: string; session?: string }): void {
+    this._sessionScopes.clear(sessionKeyOf(opts))
   }
 
   /** Session keys with their own scope registration. Diagnostic / test seam. */

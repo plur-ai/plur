@@ -379,7 +379,11 @@ export class PlurContextEngine implements ContextEngine {
     const key = statement.toLowerCase()
     if (seen.has(key)) return
     seen.add(key)
-    await this.plur.learnRouted(statement, context)
+    // #1048: claw already knows which session this is — it keys dedup and the
+    // session scope on it — so the engram should record it. Without this every
+    // claw write lands with sources[].session_id null despite the id being in
+    // scope two lines up.
+    await this.plur.learnRouted(statement, { session_id: sessionKey, ...context })
     maybeFlushAfter(recordEvent('learn'))
   }
 
