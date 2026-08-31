@@ -526,45 +526,61 @@ describe('hash-chain history (#1051)', () => {
       expect(readChainHead(historyDir)).toBe(mayEvents[0].hash)
     })
 
-    it('findPredecessorHash uses .chain-head instead of tail-seeking JSONL when sidecar is present', () => {
-      // Write two events to establish a chain
+    it('findPredecessorHash serves the sidecar while the log is unchanged, and falls through once it is not', () => {
+      // The sidecar is a CACHE of an observation about the JSONL, so it may be
+      // trusted only while that observation still holds. The earlier version of
+      // this test proved the opposite: it appended garbage to the JSONL and then
+      // asserted the sidecar was still used, which is the #1080 defect written
+      // down as desired behaviour — a stale sidecar chained from is exactly the
+      // crash-window fork.
       const e1: HistoryEvent = {
-        event: 'engram_created',
-        engram_id: 'ENG-001',
-        timestamp: '2026-04-01T12:00:00.000Z',
-        data: {},
+        event: 'engram_created', engram_id: 'ENG-001',
+        timestamp: '2026-04-01T12:00:00.000Z', data: {},
       }
       const e2: HistoryEvent = {
-        event: 'engram_updated',
-        engram_id: 'ENG-001',
-        timestamp: '2026-04-01T13:00:00.000Z',
-        data: {},
+        event: 'engram_updated', engram_id: 'ENG-001',
+        timestamp: '2026-04-01T13:00:00.000Z', data: {},
       }
       appendHistory(dir, e1)
       appendHistory(dir, e2)
 
-      // Corrupt the JSONL so tail-seek would return null; sidecar must still work
       const historyDir = path.join(dir, 'history')
       const jsonlPath = path.join(historyDir, '2026-04.jsonl')
-      fs.appendFileSync(jsonlPath, 'this-is-not-json\n')
 
-      // Third event: predecessor should come from sidecar, not the corrupt JSONL tail
+      // Unchanged log: the sidecar's observation still holds, so it answers.
+      expect(readChainHead(historyDir, jsonlPath)).toBe(e2.hash)
+
+      // Now the log changes underneath it. The sidecar describes a file that no
+      // longer exists in that state, so it must refuse rather than answer.
+      fs.appendFileSync(jsonlPath, 'this-is-not-json\n')
+      expect(readChainHead(historyDir, jsonlPath)).toBeNull()
+
+      // And the next append declares a GAP rather than inventing a link: the
+      // tail is unreadable, so there is no predecessor to be had. That is the
+      // documented contract — never a fabricated prev — and it is visible to
+      // `plur verify`, unlike the stale-sidecar answer it replaces.
       const e3: HistoryEvent = {
-        event: 'engram_updated',
-        engram_id: 'ENG-001',
-        timestamp: '2026-04-01T14:00:00.000Z',
-        data: {},
+        event: 'engram_updated', engram_id: 'ENG-001',
+        timestamp: '2026-04-01T14:00:00.000Z', data: {},
       }
       appendHistory(dir, e3)
-      const events = readHistory(dir, '2026-04')
-      // e3 is at index 2 (0=e1, 1=e2, 2=e3 — corrupt line is skipped)
-      const e3written = events.find(e => e.timestamp === '2026-04-01T14:00:00.000Z')!
-      const e2written = events.find(e => e.timestamp === '2026-04-01T13:00:00.000Z')!
-      // e3 must link back to e2 (via sidecar), not null
-      expect(e3written.prev).toBe(e2written.hash)
+      expect(e3.prev).toBeNull()
+
+      // One-time only: the torn line is no longer last, so the chain resumes.
+      const e4: HistoryEvent = {
+        event: 'engram_updated', engram_id: 'ENG-001',
+        timestamp: '2026-04-01T15:00:00.000Z', data: {},
+      }
+      appendHistory(dir, e4)
+      expect(e4.prev).toBe(e3.hash)
     })
 
-    it('.chain-head does not break the concurrent-writer chain (sidecar survives two sequential writes)', () => {
+    // NOTE: this exercises SEQUENTIAL writes in ONE process. It was previously
+    // named for the concurrent-writer case, which it does not test — a name that
+    // gave false assurance about precisely the risk the sidecar introduces. Real
+    // concurrency coverage lives in test/store-concurrent-chain.test.ts, which
+    // spawns separate processes.
+    it('.chain-head survives repeated sequential writes in one process', () => {
       // Simulates two sequential writes from the same process — the sidecar must
       // track the latest after each write, keeping the chain linear.
       const writes = 5
@@ -684,8 +700,16 @@ describe('hash-chain history (#1051)', () => {
       }
     })
 
-    it('memory cache hit means sidecar read is bypassed (chain remains correct even with a corrupted sidecar)', () => {
-      // Write an event to warm the cache, then corrupt the sidecar on disk
+    it('a still-valid cache is served, and a corrupted sidecar is then irrelevant', () => {
+      // Reframed. This used to be called "memory cache hit means sidecar read is
+      // bypassed", asserting cache-beats-sidecar as a desirable precedence rule.
+      // That framing IS the #1080 defect: an unconditional cache hit is what made
+      // a second process's appends invisible and forked the log.
+      //
+      // The property worth having is narrower: the cache is served only while the
+      // observation it recorded still holds of the file on disk. Here nothing has
+      // touched the JSONL, so it holds, and the state of the sidecar cannot matter.
+      // The companion test below covers the case where it does not hold.
       const historyDir = path.join(dir, 'history')
       const e1: HistoryEvent = {
         event: 'engram_created',
@@ -710,6 +734,38 @@ describe('hash-chain history (#1051)', () => {
       const all = readHistory(dir, '2026-04')
       // e2 must link back to e1 via the memory cache (not null from corrupt sidecar)
       expect(all[1].prev).toBe(written.hash)
+    })
+
+    it('a cache whose observation no longer holds is NOT served', () => {
+      // The other half, and the one that matters: once the log has changed
+      // underneath the cached observation — which is exactly what a second
+      // process appending looks like — the cache must refuse and the lookup must
+      // fall through. Without this the two writers each keep chaining from their
+      // own last write and the log becomes two parallel chains sharing a genesis.
+      const historyDir = path.join(dir, 'history')
+      const e1: HistoryEvent = {
+        event: 'engram_created', engram_id: 'ENG-001',
+        timestamp: '2026-04-01T12:00:00.000Z', data: {},
+      }
+      appendHistory(dir, e1)
+
+      // Simulate another writer appending a real, well-formed event.
+      const foreign: HistoryEvent = {
+        event: 'engram_created', engram_id: 'ENG-OTHER',
+        timestamp: '2026-04-01T12:30:00.000Z', data: {}, prev: e1.hash!,
+      }
+      foreign.hash = computeEventHash(foreign)
+      fs.appendFileSync(path.join(historyDir, '2026-04.jsonl'), JSON.stringify(foreign) + '\n')
+
+      const e2: HistoryEvent = {
+        event: 'engram_updated', engram_id: 'ENG-001',
+        timestamp: '2026-04-01T13:00:00.000Z', data: {},
+      }
+      appendHistory(dir, e2)
+
+      // Must chain from the FOREIGN event, not from this process's own last write.
+      expect(e2.prev).toBe(foreign.hash)
+      expect(e2.prev).not.toBe(e1.hash)
     })
 
     it('cold cache (after clearChainHeadMemCache) falls back to sidecar, not tail-seek', () => {

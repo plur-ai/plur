@@ -141,7 +141,46 @@ const HEX64 = /^[0-9a-f]{64}$/
  * clearChainHeadMemCache(historyDir) when the store is reloaded from disk so
  * the next lookup falls through to the sidecar and picks up any external writes.
  */
-const _chainHeadMem = new Map<string, string>()
+interface ChainHeadRecord {
+  /** Chain head hash as of the observation below. */
+  hash: string
+  /** Month file the hash was read from / written to. */
+  file: string
+  /** Byte size of that file at the moment the hash was recorded. */
+  size: number
+  /** Inode of that file, so a wiped-and-recreated store is not mistaken for it. */
+  ino: number
+}
+
+const _chainHeadMem = new Map<string, ChainHeadRecord>()
+
+/**
+ * Is a recorded observation still true of the file on disk?
+ *
+ * This one `statSync` is what makes both the memory cache and the sidecar safe
+ * to trust. Either can only be believed while the file it describes is byte-for-byte
+ * the length it was when the observation was made:
+ *
+ *  - another process appending changes the size, so a cross-process writer can
+ *    never be served a stale predecessor (the #1080 fork);
+ *  - a crash between the JSONL fsync and the sidecar write leaves the sidecar
+ *    describing a shorter file, so it is rejected rather than chained from
+ *    (the crash-window fork, which had no gap to give it away);
+ *  - a store wiped and recreated at the same path gets a new inode, so the
+ *    first event of a brand-new store cannot inherit a hash from the dead one.
+ *
+ * One stat instead of an 8 KiB read plus JSON.parse, and it fails CLOSED — any
+ * doubt falls through to the authoritative tail-seek.
+ */
+function observationHolds(rec: ChainHeadRecord, file: string): boolean {
+  if (rec.file !== file) return false
+  try {
+    const st = fs.statSync(file)
+    return st.size === rec.size && st.ino === rec.ino
+  } catch {
+    return false
+  }
+}
 
 /**
  * Clear the in-process chain-head cache for a specific history directory, or
@@ -162,12 +201,22 @@ export function clearChainHeadMemCache(historyDir?: string): void {
  * Read the sidecar chain-head file. Returns the 64-char hex hash or null when
  * the file is absent, empty, or contains an invalid value.
  */
-export function readChainHead(historyDir: string): string | null {
+export function readChainHead(historyDir: string, currentMonthFile?: string): string | null {
   try {
     const content = fs.readFileSync(join(historyDir, CHAIN_HEAD_FILE), 'utf8').trim()
-    return HEX64.test(content) ? content : null
+
+    // Legacy plain-hash sidecar (pre-record format). Trusted only when the
+    // caller does not care which file it describes — it carries no way to
+    // check itself, so a validating caller must reject it.
+    if (HEX64.test(content)) return currentMonthFile === undefined ? content : null
+
+    const rec = JSON.parse(content) as Partial<ChainHeadRecord>
+    if (typeof rec.hash !== 'string' || !HEX64.test(rec.hash)) return null
+    if (typeof rec.file !== 'string' || typeof rec.size !== 'number' || typeof rec.ino !== 'number') return null
+    if (currentMonthFile === undefined) return rec.hash
+    return observationHolds(rec as ChainHeadRecord, currentMonthFile) ? rec.hash : null
   } catch {
-    return null // ENOENT or any I/O error — fall back to tail-seek
+    return null // ENOENT, malformed, or any I/O error — fall back to tail-seek
   }
 }
 
@@ -176,11 +225,25 @@ export function readChainHead(historyDir: string): string | null {
  * propagate to the caller or fail the history append. The sidecar is advisory;
  * the JSONL is authoritative.
  */
-function writeChainHead(historyDir: string, hash: string): void {
+function writeChainHead(historyDir: string, rec: ChainHeadRecord): void {
+  const target = join(historyDir, CHAIN_HEAD_FILE)
+  const tmp = `${target}.${process.pid}.tmp`
   try {
-    fs.writeFileSync(join(historyDir, CHAIN_HEAD_FILE), `${hash}\n`, 'utf8')
+    // Temp-file-and-rename with an fsync, matching the care the JSONL append
+    // above already takes. A bare writeFileSync could be observed half-written
+    // by a concurrent reader, and the asymmetry — a carefully fsynced log next
+    // to a casually written pointer into it — was what widened the crash window.
+    const fd = fs.openSync(tmp, 'w')
+    try {
+      fs.writeSync(fd, JSON.stringify(rec) + '\n')
+      try { fs.fsyncSync(fd) } catch { /* durability is best-effort */ }
+    } finally {
+      fs.closeSync(fd)
+    }
+    fs.renameSync(tmp, target)
   } catch {
     // best-effort — sidecar is advisory; JSONL is authoritative
+    try { fs.unlinkSync(tmp) } catch { /* nothing to clean up */ }
   }
 }
 
@@ -260,12 +323,22 @@ export function tailSeekLastHash(filePath: string): string | null {
  * a legacy event, or unreadable files).
  */
 export function findPredecessorHash(historyDir: string, currentMonthFile: string): string | null {
-  // Tier 1: in-process memory — zero disk I/O on the hot write path.
-  const memHash = _chainHeadMem.get(historyDir)
-  if (memHash !== undefined) return memHash
+  // Tier 1: in-process memory, VALIDATED. The cached hash is accepted only
+  // while the month file is still exactly the length and inode it was when the
+  // hash was recorded — one statSync, no read, no parse.
+  //
+  // It used to be returned unconditionally, which is the #1080 blocking defect:
+  // a second process's appends were invisible, so two long-lived writers (an
+  // MCP server and a CLI against ~/.plur — the everyday configuration) each
+  // kept chaining from their own last write and the log forked into two
+  // parallel chains sharing one genesis.
+  const rec = _chainHeadMem.get(historyDir)
+  if (rec !== undefined && observationHolds(rec, currentMonthFile)) return rec.hash
 
-  // Tier 2: sidecar file — cross-process fast path (65 bytes vs 8 KiB).
-  const sidecarHash = readChainHead(historyDir)
+  // Tier 2: sidecar file — cross-process fast path, validated the same way.
+  // Passing currentMonthFile is what makes it reject a sidecar left stale by a
+  // crash between the JSONL fsync and the sidecar write.
+  const sidecarHash = readChainHead(historyDir, currentMonthFile)
   if (sidecarHash !== null) return sidecarHash
 
   // Slow path (sidecar absent or invalid): fall back to JSONL tail-seek.
@@ -397,6 +470,7 @@ export function appendHistoryStamped(
   // predecessor and the log forks. `withLock` is the synchronous twin of the
   // store's async lock — token-based release, stale detection, liveness check —
   // and `appendHistory` is synchronous, so it is the one that fits.
+  //
   // The critical section is read-tail -> compute -> WRITE, all three. Stamping
   // under the lock and appending after it is not enough: two writers can both
   // read the same tail, both release, and both then append from it — measured
@@ -451,8 +525,20 @@ export function appendHistoryStamped(
     // best-effort: a sidecar write failure leaves the cache warm (fast path
     // still works in-process) and the sidecar stale (cross-process fallback
     // degrades to tail-seek on the next write from another process).
-    _chainHeadMem.set(historyDir, event.hash!)
-    writeChainHead(historyDir, event.hash!)
+    // Record what we just observed: the hash, and the exact file state it
+    // describes. Both tiers are validated against this on the next lookup, so
+    // neither can outlive the state it was true of.
+    try {
+      const st = fs.statSync(filePath)
+      const rec: ChainHeadRecord = { hash: event.hash!, file: filePath, size: st.size, ino: st.ino }
+      _chainHeadMem.set(historyDir, rec)
+      writeChainHead(historyDir, rec)
+    } catch {
+      // Could not stat what we just wrote — drop the cache rather than record
+      // an observation we cannot bound. The next lookup tail-seeks, which is
+      // slower and always right.
+      _chainHeadMem.delete(historyDir)
+    }
   } catch (err) {
     if (!warnedHistoryPaths.has(filePath)) {
       warnedHistoryPaths.add(filePath)
@@ -466,11 +552,12 @@ export function appendHistoryStamped(
   }
 
   try {
-    // Tuned to the section, not to the default: this critical section is a
+    // Tuned to the section, not to the default. This critical section is a
     // tail-read, a hash and an append — microseconds — so the stock 100 ms
-    // first backoff has waiters sleeping orders of magnitude longer than the
-    // holder needs, and under real concurrency they starve and fall through to
-    // the gap path below.
+    // first backoff has a waiter sleeping orders of magnitude longer than the
+    // holder needs, and under real concurrency waiters starve and fall through
+    // to the gap path. Start at 2 ms and still back off exponentially if the
+    // contention turns out to be genuine.
     withLock(join(historyDir, 'chain'), stampAndWrite, { maxRetries: 12, baseDelay: 2 })
   } catch {
     // Could not take the lock. Do NOT chain from a tail we could not read
