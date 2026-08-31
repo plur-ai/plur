@@ -228,6 +228,7 @@ export type { SyncResult, SyncStatus, SyncRemoteType } from './sync.js'
  * neither a lock nor an atomic replace; re-implementing them per package is how
  * the two drift, and the drift is always in the unsafe direction.
  */
+export { verifyChain, hashStoreFile, type ChainVerifyOutcome, type ChainVerifyResult, type ChainBreak, type ChainFork, type BreakReason } from './verify-chain.js'
 export { atomicWrite, withLock } from './sync.js'
 export { markRemoteHostDown, remoteHostDownRemainingMs, clearRemoteHostDown, _resetRemoteHostBreaker, salvageRemoteRow } from './store/remote-store.js'
 export { checkForUpdate, settleVersionChecks, getCachedUpdateCheck, clearVersionCache, minorVersionsBehind, VERSION_CHECK_SUCCESS_TTL_MS, VERSION_CHECK_FAILURE_TTL_MS, type VersionCheckResult } from './version-check.js'
