@@ -233,13 +233,13 @@ function writeChainHead(historyDir: string, rec: ChainHeadRecord): void {
     // above already takes. A bare writeFileSync could be observed half-written
     // by a concurrent reader, and the asymmetry — a carefully fsynced log next
     // to a casually written pointer into it — was what widened the crash window.
-    const fd = fs.openSync(tmp, 'w')
-    try {
-      fs.writeSync(fd, JSON.stringify(rec) + '\n')
-      try { fs.fsyncSync(fd) } catch { /* durability is best-effort */ }
-    } finally {
-      fs.closeSync(fd)
-    }
+    // Temp-file-and-rename so a reader can never observe a half-written
+    // sidecar. Deliberately NOT fsynced: the sidecar is advisory and now
+    // self-validating — a sidecar lost or left behind by a crash fails its own
+    // size/inode check and the lookup falls through to the authoritative
+    // tail-seek. Paying an fsync per append to durably persist a hint that is
+    // already safe to lose is the wrong trade on the hot write path.
+    fs.writeFileSync(tmp, JSON.stringify(rec) + '\n', 'utf8')
     fs.renameSync(tmp, target)
   } catch {
     // best-effort — sidecar is advisory; JSONL is authoritative
