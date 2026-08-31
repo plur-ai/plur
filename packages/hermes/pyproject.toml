@@ -48,6 +48,9 @@ test = ["pytest>=7.0"]
 [project.entry-points."hermes_agent.plugins"]
 plur = "plur_hermes"
 
+[project.entry-points."hermes_agent.memory_providers"]
+plur = "plur_hermes.memory_provider:create_memory_provider"
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
