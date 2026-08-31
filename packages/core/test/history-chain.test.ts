@@ -415,3 +415,37 @@ describe('hash-chain history (#1051)', () => {
     })
   })
 })
+
+// ── sortKeysDeep must agree with JSON.stringify on custom serialisation ──────
+
+describe('sortKeysDeep honours toJSON (#1052 canonical store_hash prerequisite)', () => {
+  it('canonicalises a Date the way JSON.stringify writes it', () => {
+    // THE DEFECT THIS GUARDS: sortKeysDeep walked objects structurally and
+    // ignored toJSON, so a Date canonicalised to {} while JSON.stringify wrote
+    // it to disk as an ISO string. The recorded hash then covered bytes that
+    // were not the bytes on disk, and the event could never verify again.
+    const d = new Date('2026-08-31T12:00:00.000Z')
+    expect(sortKeysDeep({ when: d })).toEqual({ when: '2026-08-31T12:00:00.000Z' })
+    // The property that actually matters: our canonical form and the JSON we
+    // persist must agree.
+    expect(JSON.stringify(sortKeysDeep({ when: d }))).toBe(JSON.stringify({ when: d }))
+  })
+
+  it('an event carrying a Date still hashes to something reproducible', () => {
+    const ev: HistoryEvent = {
+      event: 'engram_created', engram_id: 'ENG-1',
+      timestamp: '2026-08-31T12:00:00.000Z',
+      data: { at: new Date('2026-08-31T12:00:00.000Z') } as unknown as Record<string, unknown>,
+    }
+    const a = computeEventHash(ev)
+    // Same event, the Date already reduced to the string it serialises as.
+    const b = computeEventHash({ ...ev, data: { at: '2026-08-31T12:00:00.000Z' } })
+    expect(a).toBe(b)
+  })
+
+  it('nested and array cases follow the same rule', () => {
+    const d = new Date('2026-01-01T00:00:00.000Z')
+    expect(sortKeysDeep({ a: [d, { b: d }] }))
+      .toEqual({ a: ['2026-01-01T00:00:00.000Z', { b: '2026-01-01T00:00:00.000Z' }] })
+  })
+})

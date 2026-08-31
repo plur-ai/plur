@@ -14,6 +14,7 @@
  *   plur checkpoint --json   Emit and print full payload as JSON
  */
 import { join } from 'path'
+import { existsSync } from 'fs'
 import { createPlur, type GlobalFlags } from '../plur.js'
 import { shouldOutputJson, outputJson, outputText } from '../output.js'
 import { emitCheckpoint } from '@plur-ai/core'
@@ -26,6 +27,21 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
   const plurRoot = plur.storageRoot
   const engramsPath = join(plurRoot, 'engrams.yaml')
 
+  // A fresh install that has never learned anything has no engrams.yaml, and
+  // emitCheckpoint used to die with a raw unhandled ENOENT out of the built
+  // CLI. Refuse with an explanation instead: there is genuinely nothing to
+  // checkpoint, and that is not an error condition to stack-trace over.
+  if (!existsSync(engramsPath)) {
+    outputText('Nothing to checkpoint: this store has no engrams.yaml yet.')
+    outputText(`  looked in: ${engramsPath}`)
+    outputText('  Learn something first, then checkpoint.')
+    process.exitCode = 1
+    return
+  }
+
+  // engram_count is derived from the bytes that were hashed, inside
+  // emitCheckpoint — not passed in. An attested count that is not bound to the
+  // hash beside it is not attested at all.
   const data = emitCheckpoint(plurRoot, engramsPath, status.engram_count, 'cli')
 
   if (shouldOutputJson(flags)) {

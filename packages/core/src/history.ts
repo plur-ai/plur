@@ -1,5 +1,6 @@
 import * as fs from 'fs'
 import { withLock } from './sync.js'
+import * as yaml from 'js-yaml'
 import { logger } from './logger.js'
 import { join } from 'path'
 import { createHash } from 'crypto'
@@ -43,6 +44,28 @@ export function sortKeysDeep(value: unknown): unknown {
     return value.map(sortKeysDeep)
   }
   if (value !== null && typeof value === 'object') {
+    // Honour toJSON BEFORE walking the object, exactly as JSON.stringify does.
+    //
+    // Without this the canonical form and the stored form disagree for any
+    // value with custom serialisation: a Date in `event.data` walks as an
+    // object with no own enumerable keys and canonicalises to `{}`, while
+    // JSON.stringify writes it to disk as an ISO string. The event's recorded
+    // hash then covers bytes that are not the bytes on disk, and it can never
+    // verify again.
+    //
+    // Latent today — all 31 call sites pass `.toISOString()` — but `data` is
+    // typed Record<string, unknown>, and this module's own docs promise that
+    // "two independent implementations that agree on this function agree on all
+    // hashes". A third-party verifier using JSON.stringify semantics would
+    // disagree with us on the first Date anyone passes.
+    //
+    // It stops being latent with #1052's canonical store_hash: js-yaml parses
+    // ISO timestamps into Date objects, so hashing parsed YAML walks straight
+    // into it.
+    const maybe = value as { toJSON?: (key?: string) => unknown }
+    if (typeof maybe.toJSON === 'function') {
+      return sortKeysDeep(maybe.toJSON())
+    }
     const obj = value as Record<string, unknown>
     const sorted: Record<string, unknown> = {}
     for (const key of Object.keys(obj).sort()) {
@@ -248,6 +271,27 @@ export function findPredecessorHash(historyDir: string, currentMonthFile: string
  * are loaded and reported as-is, never silently upgraded, never errored.
  */
 export function appendHistory(root: string, event: HistoryEvent): void {
+  appendHistoryStamped(root, event)
+}
+
+/**
+ * `appendHistory`, with a hook that runs INSIDE the critical section once the
+ * predecessor is known and before the event is serialised.
+ *
+ * This exists for checkpoints (#1052). A checkpoint's payload carries
+ * `chain_head`, which must be the very predecessor the event chains onto — and
+ * the only way to guarantee that is to build the payload from the `prev` this
+ * append is about to use, under the same lock. Computing it separately and
+ * hoping nothing lands in between is what made 76/300 checkpoints disagree with
+ * their own `prev` at 200 KB, and 174/300 at 2 MB.
+ *
+ * `onPrev` must be cheap and must not do I/O: it runs with the chain lock held.
+ */
+export function appendHistoryStamped(
+  root: string,
+  event: HistoryEvent,
+  onPrev?: (prev: string | null) => void,
+): void {
   const historyDir = join(root, 'history')
   if (!fs.existsSync(historyDir)) {
     fs.mkdirSync(historyDir, { recursive: true })
@@ -261,23 +305,19 @@ export function appendHistory(root: string, event: HistoryEvent): void {
   // predecessor and the log forks. `withLock` is the synchronous twin of the
   // store's async lock — token-based release, stale detection, liveness check —
   // and `appendHistory` is synchronous, so it is the one that fits.
-  let line: string
-  const stamp = (): string => {
+  // The critical section is read-tail -> compute -> WRITE, all three. Stamping
+  // under the lock and appending after it is not enough: two writers can both
+  // read the same tail, both release, and both then append from it — measured
+  // at 52 forks in 300 events. This is the boundary
+  // .datacore/lib/ledger/log.py draws around "read-tail + compute-next + write".
+  const stampAndWrite = (): void => {
     const predecessorHash = findPredecessorHash(historyDir, filePath)
     event.prev = predecessorHash // null when gap or genesis
+    // Payload built from the predecessor this append will actually use, before
+    // the hash covers it (#1052 checkpoints).
+    onPrev?.(predecessorHash)
     event.hash = computeEventHash(event) // canonical bytes exclude the hash field
-    return JSON.stringify(event) + '\n'
-  }
-
-  try {
-    line = withLock(join(historyDir, 'chain'), stamp)
-  } catch {
-    // Could not take the lock. Do NOT chain from a tail we could not read
-    // under exclusion — that is exactly how a fork is written. Declare a gap
-    // instead: visible to `plur verify`, and never mistaken for tampering.
-    event.prev = null
-    event.hash = computeEventHash(event)
-    line = JSON.stringify(event) + '\n'
+    writeEventLine(JSON.stringify(event) + '\n')
   }
   // fsync the append (#813, audit finding 20). O_APPEND makes the write atomic
   // against concurrent writers, but not durable: a committed engram mutation
@@ -304,6 +344,7 @@ export function appendHistory(root: string, event: HistoryEvent): void {
   // restore` (it NAMES the engrams a restore cannot recover) and, since #816,
   // for id allocation. A store writing no history is degraded and the operator
   // needs to know — but the write itself must still land.
+  function writeEventLine(line: string): void {
   try {
     const fd = fs.openSync(filePath, 'a')
     try {
@@ -321,6 +362,26 @@ export function appendHistory(root: string, event: HistoryEvent): void {
         `unrecoverable engrams and engram-id allocation loses its cross-compaction guarantee (#816).`,
       )
     }
+  }
+  }
+
+  try {
+    // Tuned to the section, not to the default: this critical section is a
+    // tail-read, a hash and an append — microseconds — so the stock 100 ms
+    // first backoff has waiters sleeping orders of magnitude longer than the
+    // holder needs, and under real concurrency they starve and fall through to
+    // the gap path below.
+    withLock(join(historyDir, 'chain'), stampAndWrite, { maxRetries: 12, baseDelay: 2 })
+  } catch {
+    // Could not take the lock. Do NOT chain from a tail we could not read
+    // under exclusion — that is exactly how a fork is written. Declare a gap
+    // instead: visible to `plur verify`, never mistaken for tampering. The
+    // write itself must still land: history NAMES the engrams a restore cannot
+    // recover, so dropping the record would make restore under-report.
+    event.prev = null
+    onPrev?.(null)
+    event.hash = computeEventHash(event)
+    writeEventLine(JSON.stringify(event) + '\n')
   }
 }
 
@@ -362,8 +423,58 @@ export interface CheckpointData {
  * the hot write path (learn/feedback/forget).
  */
 export function hashEngramsFile(engramsPath: string): string {
-  const bytes = fs.readFileSync(engramsPath)
-  return createHash('sha256').update(bytes).digest('hex')
+  const raw = fs.readFileSync(engramsPath, 'utf8')
+
+  // Hash the CONTENT, not the bytes.
+  //
+  // Raw-byte hashing made store_hash differ for identical stores across LF vs
+  // CRLF and trailing-newline vs none, so an anchored store_hash only ever
+  // proved that someone holds a byte-identical copy of the file — it would not
+  // survive git autocrlf, a different YAML emitter, or a different OS. For the
+  // one value a checkpoint exists to have anchored, that is close to useless.
+  //
+  // Canonicalising the parsed document gives a digest that is stable across
+  // re-serialisation, emitter and platform, which is what a third party needs
+  // in order to check our claim. Same choice, and the same reasoning, as
+  // `.datacore/lib/ledger/fold.py:state_root()`.
+  //
+  // The trade, stated: this attests the engrams, not the file. A comment-only
+  // or formatting-only edit does not change it. That is the correct scope for
+  // provenance — the record is the data, not its whitespace.
+  //
+  // Depends on sortKeysDeep honouring toJSON: js-yaml parses ISO timestamps
+  // into Date objects, which without that fix canonicalise to `{}`.
+  const parsed = yaml.load(raw)
+  return createHash('sha256').update(canonicalBytesOf(parsed)).digest('hex')
+}
+
+/** Canonical UTF-8 JSON bytes of any parsed value — the §3 form. */
+function canonicalBytesOf(value: unknown): Buffer {
+  return Buffer.from(JSON.stringify(sortKeysDeep(value)), 'utf8')
+}
+
+/**
+ * Count the active engrams in a parsed store document.
+ *
+ * Derived from the same bytes `hashEngramsFile` hashes, rather than accepted
+ * from the caller: an attested count that is not bound to the hash it sits
+ * beside is not attested at all. `emitCheckpoint(root, path, 99999, 'cli')`
+ * against a one-engram store used to be written verbatim.
+ */
+export function countEngramsInStore(engramsPath: string): number {
+  try {
+    const doc = yaml.load(fs.readFileSync(engramsPath, 'utf8')) as unknown
+    const list = Array.isArray(doc)
+      ? doc
+      : (doc as { engrams?: unknown } | null)?.engrams
+    if (!Array.isArray(list)) return 0
+    return list.filter(e => {
+      const status = (e as { status?: unknown } | null)?.status
+      return status === undefined || status === 'active'
+    }).length
+  } catch {
+    return 0
+  }
 }
 
 /**
@@ -383,7 +494,11 @@ export function hashEngramsFile(engramsPath: string): string {
  *
  * @param root        — plur store root (e.g. ~/.plur)
  * @param engramsPath — absolute path to engrams.yaml
- * @param engramCount — count of active engrams at this moment
+ * @param engramCount — IGNORED. Retained for signature compatibility; the
+ *   count is derived from the same bytes `store_hash` covers, because a count
+ *   the caller supplies is not bound to the hash it sits beside.
+ *   `emitCheckpoint(root, path, 99999, 'cli')` against a one-engram store used
+ *   to be written verbatim.
  * @param actor       — who triggered the checkpoint ('session_end' | 'cli' | custom)
  * @param timestamp   — ISO-8601 timestamp; defaults to now
  * @returns the written CheckpointData
@@ -391,37 +506,43 @@ export function hashEngramsFile(engramsPath: string): string {
 export function emitCheckpoint(
   root: string,
   engramsPath: string,
-  engramCount: number,
+  engramCount: number, // eslint-disable-line @typescript-eslint/no-unused-vars -- see doc
   actor: string,
   timestamp?: string,
 ): CheckpointData {
   const ts = timestamp ?? new Date().toISOString()
 
-  // Compute chain head BEFORE writing (the predecessor of this checkpoint)
-  const historyDir = join(root, 'history')
-  const date = ts.slice(0, 7) // YYYY-MM
-  const currentMonthFile = join(historyDir, `${date}.jsonl`)
-  const chain_head = findPredecessorHash(historyDir, currentMonthFile)
-
-  // Hash the store (only at checkpoint time — never on hot write path)
+  // Hash the store and count it BEFORE taking the lock: both read engrams.yaml,
+  // not the history log, and doing file I/O inside the chain lock would hold it
+  // for the duration of a whole-store parse.
   const store_hash = hashEngramsFile(engramsPath)
-
-  const data: CheckpointData = {
-    chain_head,
-    store_hash,
-    engram_count: engramCount,
-    actor,
-  }
+  const engram_count = countEngramsInStore(engramsPath)
 
   const event: HistoryEvent = {
     event: 'checkpoint',
     engram_id: '', // store-level event; no single engram
     timestamp: ts,
-    data: data as unknown as Record<string, unknown>,
+    data: {} as Record<string, unknown>, // filled under the lock, below
   }
 
-  appendHistory(root, event)
-  return data
+  // chain_head must be the SAME predecessor the event chains onto.
+  //
+  // It used to be computed here, followed by file I/O, and only then handed to
+  // appendHistory — which independently recomputed `prev`. Any write landing in
+  // that window made `data.chain_head` disagree with the event's own `prev`:
+  // 76/300 mismatching checkpoints at 200 KB, 174/300 at 2 MB, 101/200 at
+  // 15 MB in review testing. The field meant for external anchoring was the
+  // field that went wrong.
+  //
+  // So the predecessor is read once, inside the same lock that appends, and the
+  // payload is built from it. `appendHistoryWithPrev` is appendHistory's own
+  // critical section, entered once.
+  appendHistoryStamped(root, event, prev => {
+    const data: CheckpointData = { chain_head: prev, store_hash, engram_count, actor }
+    event.data = data as unknown as Record<string, unknown>
+  })
+
+  return event.data as unknown as CheckpointData
 }
 
 /**
