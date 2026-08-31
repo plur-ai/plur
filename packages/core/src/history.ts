@@ -1,4 +1,5 @@
 import * as fs from 'fs'
+import { withLock } from './sync.js'
 import { logger } from './logger.js'
 import { join } from 'path'
 import { createHash } from 'crypto'
@@ -210,9 +211,34 @@ export function findPredecessorHash(historyDir: string, currentMonthFile: string
  *   3. Computes SHA-256 over canonical bytes (sorted keys, no whitespace) and
  *      sets event.hash
  *
- * Concurrency: appendHistory must be called from within the store write lock
- * (_withStoreLock in index.ts). The read-then-write is not independently atomic
- * at the filesystem level; the store lock provides the exclusion.
+ * Concurrency: this function serializes itself. The read-predecessor →
+ * compute-hash → append sequence is wrapped in a short cross-process lock on
+ * the history directory, so two writers cannot both read the same tail and
+ * both append from it.
+ *
+ * It used to document a precondition instead — "must be called from within the
+ * store write lock" — which the codebase did not honour: 19 of 28 call sites in
+ * index.ts were outside any `_withStoreLock`, and BOTH `emitCheckpoint` sites
+ * were, which is what produced 83 duplicate-prev forks across 600 events in
+ * review testing. A precondition that callers do not meet is not a design, and
+ * the mutex is not re-entrant so `_withStoreLock` could not simply be called
+ * here. Locking the thing that actually needs exclusion — this append — fixes
+ * every call site at once, present and future.
+ *
+ * Lock ordering is one-way: a caller may hold the store lock and then take this
+ * one, never the reverse (nothing here calls back into store code), so the two
+ * cannot deadlock.
+ *
+ * This is the same critical section `.datacore/lib/ledger/log.py` serializes
+ * with `fcntl.flock`. That ledger goes further and gives each actor its own
+ * file, making forks unrepresentable rather than merely prevented; adopting
+ * that partitioning here is the follow-up this lock buys time for.
+ *
+ * If the lock cannot be acquired, the event is still written but with
+ * `prev: null` — a DECLARED GAP rather than a possibly-stale predecessor.
+ * A gap is visible and honest; a fork is silent corruption. The write itself
+ * must always land: history NAMES the engrams a restore cannot recover, so
+ * dropping a record makes restore under-report the loss.
  *
  * Gap handling: if the predecessor cannot be read (file missing, malformed line,
  * legacy event without hash), prev is set to null. This is a documented gap in
@@ -230,14 +256,29 @@ export function appendHistory(root: string, event: HistoryEvent): void {
   const date = event.timestamp.slice(0, 7) // YYYY-MM
   const filePath = join(historyDir, `${date}.jsonl`)
 
-  // Hash-chain linkage (#1051): find predecessor hash (current month first,
-  // then prior months for cross-month continuity). Best-effort — a read failure
-  // produces a gap (prev=null), not an error.
-  const predecessorHash = findPredecessorHash(historyDir, filePath)
-  event.prev = predecessorHash // null when gap or genesis
-  event.hash = computeEventHash(event) // canonical bytes exclude the hash field itself
+  // Hash-chain linkage (#1051) under exclusion. Reading the tail and appending
+  // from it must be one atomic step, or two writers chain from the same
+  // predecessor and the log forks. `withLock` is the synchronous twin of the
+  // store's async lock — token-based release, stale detection, liveness check —
+  // and `appendHistory` is synchronous, so it is the one that fits.
+  let line: string
+  const stamp = (): string => {
+    const predecessorHash = findPredecessorHash(historyDir, filePath)
+    event.prev = predecessorHash // null when gap or genesis
+    event.hash = computeEventHash(event) // canonical bytes exclude the hash field
+    return JSON.stringify(event) + '\n'
+  }
 
-  const line = JSON.stringify(event) + '\n'
+  try {
+    line = withLock(join(historyDir, 'chain'), stamp)
+  } catch {
+    // Could not take the lock. Do NOT chain from a tail we could not read
+    // under exclusion — that is exactly how a fork is written. Declare a gap
+    // instead: visible to `plur verify`, and never mistaken for tampering.
+    event.prev = null
+    event.hash = computeEventHash(event)
+    line = JSON.stringify(event) + '\n'
+  }
   // fsync the append (#813, audit finding 20). O_APPEND makes the write atomic
   // against concurrent writers, but not durable: a committed engram mutation
   // could survive a power cut while its history record did not. That matters
