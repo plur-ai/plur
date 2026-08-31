@@ -1,0 +1,265 @@
+/**
+ * plur verify — structured chain verification (#1053).
+ *
+ * WHY THIS EXISTS. Črt's review of #1073 established the hole this closes:
+ * "Nothing anywhere in packages/core, packages/cli or packages/mcp ever
+ * verifies prev/hash linkage." He deleted a middle event, recomputed prev and
+ * hash over the remainder, and got a file with zero broken links and an
+ * unchanged store_hash. Until something checks the chain, the chain proves
+ * nothing — and #1051's forks and #1052's mismatched checkpoints are all
+ * silent in production.
+ *
+ * WHAT A HASH CHAIN CAN AND CANNOT DETECT. It detects edits that do NOT
+ * recompute the chain: content tampering, a broken link, a deletion, a fork.
+ * A full recomputation over the whole file is internally consistent and is
+ * NOT detectable from the file alone — that is the L2 ceiling, and the reason
+ * checkpoints exist. A checkpoint that recorded a chain head which the
+ * recomputed chain no longer contains is what catches it. These tests assert
+ * both halves, including the limitation, so no one reads more assurance into
+ * this than it provides.
+ */
+import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { verifyChain } from '../src/verify-chain.js'
+import { computeEventHash, type HistoryEvent } from '../src/history.js'
+
+let root: string
+const historyDir = () => join(root, 'history')
+const monthFile = (m: string) => join(historyDir(), `${m}.jsonl`)
+
+beforeEach(() => {
+  root = mkdtempSync(join(tmpdir(), 'plur-verify-'))
+  mkdirSync(historyDir(), { recursive: true })
+})
+afterEach(() => rmSync(root, { recursive: true, force: true }))
+
+/** Build a chained run of events and write them to `month`. */
+function writeChain(month: string, count: number, startPrev: string | null = null): HistoryEvent[] {
+  const events: HistoryEvent[] = []
+  let prev = startPrev
+  for (let i = 0; i < count; i++) {
+    const e: HistoryEvent = {
+      event: 'engram_created',
+      engram_id: `ENG-${month}-${String(i).padStart(3, '0')}`,
+      timestamp: `2026-01-0${(i % 9) + 1}T00:00:00.000Z`,
+      data: { n: i },
+      prev,
+    }
+    e.hash = computeEventHash(e)
+    events.push(e)
+    prev = e.hash
+  }
+  writeFileSync(monthFile(month), events.map(e => JSON.stringify(e)).join('\n') + '\n')
+  return events
+}
+
+function readLines(month: string): string[] {
+  return readFileSync(monthFile(month), 'utf8').split('\n').filter(l => l.trim())
+}
+function writeLines(month: string, lines: string[]): void {
+  writeFileSync(monthFile(month), lines.join('\n') + '\n')
+}
+
+describe('verifyChain — a clean chain', () => {
+  it('verifies and reports a structured result, never a bare bool', () => {
+    writeChain('2026-01', 5)
+    const out = verifyChain(root)
+    expect(out.status).toBe('verified')
+    if (out.status !== 'verified') return
+    expect(out.result.ok).toBe(true)
+    expect(out.result.verified_events).toBe(5)
+    expect(out.result.breaks).toEqual([])
+    expect(out.result.forks).toEqual([])
+    expect(out.result.chain_head).toMatch(/^[0-9a-f]{64}$/)
+  })
+
+  it('chains across a month boundary', () => {
+    const jan = writeChain('2026-01', 3)
+    writeChain('2026-02', 2, jan[jan.length - 1].hash!)
+    const out = verifyChain(root)
+    expect(out.status).toBe('verified')
+    if (out.status !== 'verified') return
+    expect(out.result.verified_events).toBe(5)
+  })
+})
+
+describe('verifyChain — tampering that does not recompute the chain', () => {
+  it('names a mid-chain content edit as a hash mismatch', () => {
+    writeChain('2026-01', 5)
+    const lines = readLines('2026-01')
+    const ev = JSON.parse(lines[2]) as HistoryEvent
+    ev.data = { n: 999 }                 // edited, hash left alone
+    lines[2] = JSON.stringify(ev)
+    writeLines('2026-01', lines)
+
+    const out = verifyChain(root)
+    expect(out.status).toBe('broken')
+    if (out.status !== 'broken') return
+    expect(out.result.ok).toBe(false)
+    const b = out.result.breaks.find(x => x.reason === 'hash_mismatch')
+    expect(b, 'a content edit must be named a hash mismatch').toBeDefined()
+    expect(b!.event_id).toBe('ENG-2026-01-002')
+  })
+
+  it('names a deleted middle event as a broken link', () => {
+    writeChain('2026-01', 5)
+    const lines = readLines('2026-01')
+    lines.splice(2, 1)                   // remove one, recompute nothing
+    writeLines('2026-01', lines)
+
+    const out = verifyChain(root)
+    expect(out.status).toBe('broken')
+    if (out.status !== 'broken') return
+    expect(out.result.breaks.some(b => b.reason === 'prev_mismatch')).toBe(true)
+  })
+
+  it('names a fork — two events claiming one predecessor', () => {
+    const evs = writeChain('2026-01', 3)
+    const forked: HistoryEvent = {
+      event: 'engram_created',
+      engram_id: 'ENG-FORK',
+      timestamp: '2026-01-09T00:00:00.000Z',
+      data: { n: 99 },
+      prev: evs[0].hash!,                // same prev as evs[1]
+    }
+    forked.hash = computeEventHash(forked)
+    writeLines('2026-01', [...readLines('2026-01'), JSON.stringify(forked)])
+
+    const out = verifyChain(root)
+    expect(out.status).toBe('broken')
+    if (out.status !== 'broken') return
+    expect(out.result.forks.length).toBe(1)
+    expect(out.result.forks[0].prev).toBe(evs[0].hash)
+    expect(out.result.forks[0].claimed_by.length).toBe(2)
+  })
+
+  it('names a prev that references no known event', () => {
+    const evs = writeChain('2026-01', 2)
+    const dangling: HistoryEvent = {
+      event: 'engram_created',
+      engram_id: 'ENG-DANGLE',
+      timestamp: '2026-01-09T00:00:00.000Z',
+      data: {},
+      prev: 'f'.repeat(64),
+    }
+    dangling.hash = computeEventHash(dangling)
+    void evs
+    writeLines('2026-01', [...readLines('2026-01'), JSON.stringify(dangling)])
+
+    const out = verifyChain(root)
+    expect(out.status).toBe('broken')
+    if (out.status !== 'broken') return
+    expect(out.result.breaks.some(b => b.reason === 'dangling_prev')).toBe(true)
+  })
+})
+
+describe('verifyChain — refusal is distinguishable from a finding', () => {
+  it('refuses on a corrupted JSONL line instead of skipping it', () => {
+    // readHistory() silently skips malformed lines. A verifier that did the
+    // same would report a clean chain over a file it could not fully read —
+    // the benign-zero this whole surface exists to refuse.
+    writeChain('2026-01', 3)
+    writeLines('2026-01', [...readLines('2026-01'), '{not json'])
+
+    const out = verifyChain(root)
+    expect(out.status).toBe('cannot_verify')
+    if (out.status !== 'cannot_verify') return
+    expect(out.reason).toMatch(/parse/i)
+    expect(out.month).toBe('2026-01')
+  })
+
+  it('an empty store verifies rather than refusing — nothing there is a real answer', () => {
+    const out = verifyChain(root)
+    expect(out.status).toBe('verified')
+    if (out.status !== 'verified') return
+    expect(out.result.verified_events).toBe(0)
+    expect(out.result.chain_head).toBeNull()
+  })
+})
+
+describe('verifyChain — legacy events are a first-class outcome, not an error', () => {
+  it('reports an unchained region without failing', () => {
+    const legacy = [0, 1, 2].map(i => JSON.stringify({
+      event: 'engram_created', engram_id: `OLD-${i}`,
+      timestamp: '2025-12-01T00:00:00.000Z', data: {},
+    }))
+    writeLines('2026-01', legacy)
+
+    const out = verifyChain(root)
+    expect(out.status).toBe('verified')
+    if (out.status !== 'verified') return
+    expect(out.result.ok).toBe(true)
+    expect(out.result.unprotected_legacy).toEqual({ from: 0, to: 2, count: 3 })
+    expect(out.result.verified_events).toBe(0)
+  })
+
+  it('a legacy prefix followed by a chained region verifies the chained part only', () => {
+    const legacy = JSON.stringify({
+      event: 'engram_created', engram_id: 'OLD-0',
+      timestamp: '2025-12-01T00:00:00.000Z', data: {},
+    })
+    writeChain('2026-01', 3)
+    writeLines('2026-01', [legacy, ...readLines('2026-01')])
+
+    const out = verifyChain(root)
+    expect(out.status).toBe('verified')
+    if (out.status !== 'verified') return
+    expect(out.result.unprotected_legacy).toEqual({ from: 0, to: 0, count: 1 })
+    expect(out.result.verified_events).toBe(3)
+  })
+})
+
+describe('verifyChain — the L2 ceiling, stated honestly', () => {
+  it('CANNOT detect a full recomputation from the file alone', () => {
+    // Črt's probe. This asserts the LIMITATION on purpose: if this ever starts
+    // failing, someone has claimed a property a hash chain does not have.
+    writeChain('2026-01', 5)
+    const kept = readLines('2026-01').map(l => JSON.parse(l) as HistoryEvent)
+    kept.splice(2, 1)
+    let prev: string | null = null
+    for (const e of kept) {
+      e.prev = prev
+      delete e.hash
+      e.hash = computeEventHash(e)
+      prev = e.hash
+    }
+    writeLines('2026-01', kept.map(e => JSON.stringify(e)))
+
+    const out = verifyChain(root)
+    expect(out.status, 'a fully recomputed chain is internally consistent').toBe('verified')
+  })
+
+  it('DOES detect it once a checkpoint recorded the old head', () => {
+    // This is what makes checkpoints the anchorable object: they pin a head
+    // that a later rewrite cannot reproduce.
+    const evs = writeChain('2026-01', 5)
+    const cp: HistoryEvent = {
+      event: 'checkpoint',
+      engram_id: '',
+      timestamp: '2026-01-09T00:00:00.000Z',
+      data: { chain_head: evs[4].hash!, engram_count: 5, actor: 'cli' },
+      prev: evs[4].hash!,
+    }
+    cp.hash = computeEventHash(cp)
+    writeLines('2026-01', [...readLines('2026-01'), JSON.stringify(cp)])
+
+    // Now rewrite history below the checkpoint, recomputing everything.
+    const all = readLines('2026-01').map(l => JSON.parse(l) as HistoryEvent)
+    const rewritten = all.filter(e => e.event !== 'checkpoint')
+    rewritten.splice(2, 1)
+    let prev: string | null = null
+    for (const e of rewritten) {
+      e.prev = prev; delete e.hash; e.hash = computeEventHash(e); prev = e.hash
+    }
+    const keptCp = all.find(e => e.event === 'checkpoint')!
+    keptCp.prev = prev; delete keptCp.hash; keptCp.hash = computeEventHash(keptCp)
+    writeLines('2026-01', [...rewritten, keptCp].map(e => JSON.stringify(e)))
+
+    const out = verifyChain(root)
+    expect(out.status).toBe('broken')
+    if (out.status !== 'broken') return
+    expect(out.result.breaks.some(b => b.reason === 'checkpoint_head_missing')).toBe(true)
+  })
+})
