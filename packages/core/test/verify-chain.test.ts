@@ -160,8 +160,13 @@ describe('verifyChain — refusal is distinguishable from a finding', () => {
     // readHistory() silently skips malformed lines. A verifier that did the
     // same would report a clean chain over a file it could not fully read —
     // the benign-zero this whole surface exists to refuse.
+    //
+    // The corruption sits mid-file deliberately: a malformed line in the LAST
+    // position is an in-flight write and is tolerated (see the torn-tail block
+    // below). Only a bad line that a write-in-progress cannot explain refuses.
     writeChain('2026-01', 3)
-    writeLines('2026-01', [...readLines('2026-01'), '{not json'])
+    const lines = readLines('2026-01')
+    writeLines('2026-01', [lines[0], '{not json', lines[1], lines[2]])
 
     const out = verifyChain(root)
     expect(out.status).toBe('cannot_verify')
@@ -261,5 +266,47 @@ describe('verifyChain — the L2 ceiling, stated honestly', () => {
     expect(out.status).toBe('broken')
     if (out.status !== 'broken') return
     expect(out.result.breaks.some(b => b.reason === 'checkpoint_head_missing')).toBe(true)
+  })
+})
+
+describe('verifyChain — a torn final line is an in-flight write, not corruption', () => {
+  it('tolerates an incomplete last line and reports it', () => {
+    // THE DEFECT THIS GUARDS: refusing on ANY malformed line meant every
+    // concurrent append raced the verifier into a spurious "cannot_verify".
+    // An alarm that fires when nothing is wrong is an alarm that gets ignored.
+    // .datacore/lib/ledger/log.py already draws this line: a torn FINAL line
+    // is a write still in flight; a bad line anywhere else is corruption.
+    writeChain('2026-01', 3)
+    const raw = readFileSync(monthFile('2026-01'), 'utf8')
+    writeFileSync(monthFile('2026-01'), raw + '{"event":"engram_created","eng')
+
+    const out = verifyChain(root)
+    expect(out.status, 'the chain before the torn line is intact').toBe('verified')
+    if (out.status !== 'verified') return
+    expect(out.result.verified_events).toBe(3)
+    expect(out.result.torn_tail).toEqual({ month: '2026-01', line: 4 })
+  })
+
+  it('still refuses a malformed line that is NOT last', () => {
+    writeChain('2026-01', 3)
+    const lines = readLines('2026-01')
+    writeLines('2026-01', [lines[0], '{torn in the middle', lines[1], lines[2]])
+
+    const out = verifyChain(root)
+    expect(out.status).toBe('cannot_verify')
+    if (out.status !== 'cannot_verify') return
+    expect(out.line).toBe(2)
+  })
+
+  it('refuses a torn line in an OLDER month — only the newest can be in flight', () => {
+    writeChain('2026-01', 2)
+    writeChain('2026-02', 2)
+    const raw = readFileSync(monthFile('2026-01'), 'utf8')
+    writeFileSync(monthFile('2026-01'), raw + '{"event":"trunc')
+
+    const out = verifyChain(root)
+    expect(out.status).toBe('cannot_verify')
+    if (out.status !== 'cannot_verify') return
+    expect(out.month).toBe('2026-01')
   })
 })

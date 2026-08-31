@@ -62,6 +62,15 @@ export interface ChainVerifyResult {
   breaks:             ChainBreak[]
   forks:              ChainFork[]
   checkpoints_checked: number
+  /**
+   * An incomplete final line in the newest month file, if present.
+   *
+   * Reported rather than refused: it is a write that was still in flight (or a
+   * writer that crashed mid-flush), so the chain up to it is intact and the
+   * honest answer is "verified, and one append was in progress" — not "cannot
+   * verify". Never null-and-silent: a caller that wants to know is told.
+   */
+  torn_tail: { month: string; line: number } | null
 }
 
 export type ChainVerifyOutcome =
@@ -82,6 +91,8 @@ interface Scanned { month: string; index: number; event: HistoryEvent }
 export function verifyChain(root: string): ChainVerifyOutcome {
   const months = listHistoryMonths(root)
   const scanned: Scanned[] = []
+  /** A torn final line in the newest month — an in-flight write, reported not refused. */
+  let torn_tail: { month: string; line: number } | null = null
 
   let globalIndex = 0
   for (const month of months) {
@@ -93,6 +104,13 @@ export function verifyChain(root: string): ChainVerifyOutcome {
       return { status: 'cannot_verify', reason: `could not read history file: ${(err as Error).message}`, month }
     }
     const lines = content.split('\n')
+    // Index of the last non-empty line: a torn FINAL line is an in-flight
+    // write, not corruption.
+    let lastContentLine = -1
+    for (let i = lines.length - 1; i >= 0; i--) {
+      if (lines[i].trim().length > 0) { lastContentLine = i; break }
+    }
+
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i]
       if (line.trim().length === 0) continue
@@ -100,6 +118,21 @@ export function verifyChain(root: string): ChainVerifyOutcome {
       try {
         event = JSON.parse(line) as HistoryEvent
       } catch (err) {
+        // A writer that crashed, or one still flushing, leaves the file's LAST
+        // line incomplete. That is an in-flight write, and refusing on it would
+        // make every concurrent append a spurious "cannot verify" — an alarm
+        // that fires when nothing is wrong is an alarm that gets ignored.
+        // A malformed line ANYWHERE ELSE cannot be explained that way and is
+        // real corruption.
+        //
+        // This is the distinction .datacore/lib/ledger/log.py already draws:
+        // append() truncates a torn final line under the lock and read_events()
+        // skips it, while a bad line elsewhere raises CorruptLogError naming
+        // the file and its 1-based line number.
+        if (i === lastContentLine && month === months[months.length - 1]) {
+          torn_tail = { month, line: i + 1 }
+          continue
+        }
         return {
           status: 'cannot_verify',
           reason: `could not parse history line as JSON: ${(err as Error).message}`,
@@ -120,6 +153,7 @@ export function verifyChain(root: string): ChainVerifyOutcome {
     breaks: [],
     forks: [],
     checkpoints_checked: 0,
+    torn_tail: null,
   }
 
   // Leading run of legacy events. Pre-#1051 events carry neither hash nor
@@ -225,6 +259,8 @@ export function verifyChain(root: string): ChainVerifyOutcome {
     })
   }
 
+  result.torn_tail = torn_tail
+  // A torn tail does not make the chain broken — everything before it verified.
   result.ok = result.breaks.length === 0 && result.forks.length === 0
   return { status: result.ok ? 'verified' : 'broken', result }
 }

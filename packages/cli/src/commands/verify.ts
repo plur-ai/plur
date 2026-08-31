@@ -57,6 +57,13 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
   outputText(`  chain head        : ${r.chain_head ?? '(none — no chained events)'}`)
   outputText(`  checkpoints       : ${r.checkpoints_checked}`)
 
+  if (r.torn_tail) {
+    outputText('')
+    outputText(`  in-flight write: ${r.torn_tail.month} line ${r.torn_tail.line} is incomplete.`)
+    outputText('  A writer was mid-append (or crashed mid-flush). Everything before')
+    outputText('  it verified — this is not corruption and not a break.')
+  }
+
   if (r.unprotected_legacy) {
     const { from, to, count } = r.unprotected_legacy
     outputText('')
