@@ -3131,7 +3131,7 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
         try {
           const plurRoot = plur.storageRoot
           const engramsPath = join(plurRoot, 'engrams.yaml')
-          const cp = emitCheckpoint(plurRoot, engramsPath, status.engram_count, 'session_end')
+          const cp = emitCheckpoint(plurRoot, engramsPath, 'session_end')
           checkpoint_hash = cp.store_hash
         } catch { /* checkpoint is best-effort */ }
 
