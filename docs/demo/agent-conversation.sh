@@ -16,6 +16,9 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 CALL="node $HERE/mcp-call.mjs"
 DEMO="$(mktemp -d)"
 STORE="$DEMO/store"
+# Same backstop as provenance-walkthrough.sh: a forgotten --path must land here,
+# not in the reader's real store.
+export PLUR_PATH="$STORE"
 mkdir -p "$STORE"
 trap 'rm -rf "$DEMO"' EXIT
 
