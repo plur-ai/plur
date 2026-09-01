@@ -6,6 +6,7 @@ import { classifyPolarity } from './polarity.js'
 import { computeConfidence } from './confidence.js'
 import { freshTailBoost } from './fresh-tail.js'
 import { makeVisibilityPredicate } from './scope-util.js'
+import { sanitizeInline, sanitizeInlineOptional } from './sanitize-inline.js'
 
 /**
  * D1-RECALL/INJECT-ASYMMETRY (#353). When an inject is given an EXPLICIT
@@ -117,7 +118,12 @@ function skipForValidity(
 function expiredMarker(engram: WireEngram): string {
   const until = engram.temporal?.valid_until
   if (until && until < new Date().toISOString().slice(0, 10)) {
-    return `⚠ EXPIRED ${until} — verify before use: `
+    // `valid_until` is typed `z.string().optional()` with no date format, so a
+    // pack or remote row can put anything here — and a value starting with an
+    // early date still sorts before today, so the marker renders and carries
+    // whatever follows. That made this a second, independent entry-forgery
+    // vector alongside the statement (found while fixing #940/#1003).
+    return `⚠ EXPIRED ${sanitizeInline(String(until))} — verify before use: `
   }
   return ''
 }
@@ -630,20 +636,35 @@ export function selectAndSpread(
 
 // --- Progressive Disclosure (Idea 10) ---
 
+// Every interpolation below goes through sanitizeInline. The rendered engrams
+// are joined with a newline and handed to consumers that cannot defend
+// themselves — `plur_session_start` pastes the block under a `## DIRECTIVES`
+// heading with no processing at all, and dsh's flatten() splits on the ENTRY
+// boundary before it collapses anything, so it cannot tell a boundary we wrote
+// from one that arrived inside an engram's text. A line terminator in any of
+// these fields therefore mints a second engram at system-prompt authority
+// (#940) or forges a heading. Sanitizing HERE rather than only at the write
+// boundary is what also covers pack content, remote-store rows, importer
+// output, and engrams already in a user's store (#1003, #1004).
+//
+// `id` is separately constrained by EngramSchema's regex, and is sanitized too
+// rather than trusted: the guarantee should not depend on a validator in
+// another file staying strict.
+
 export function formatLayer1(engram: WireEngram): string {
   const display = (engram as any).summary ?? engram.statement.slice(0, 60)
-  return `[${engram.id}] ${expiredMarker(engram)}${display}`
+  return `[${sanitizeInline(String(engram.id))}] ${expiredMarker(engram)}${sanitizeInlineOptional(display) ?? ''}`
 }
 
 export function formatLayer2(engram: WireEngram): string {
-  return `[${engram.id}] ${expiredMarker(engram)}${engram.statement}`
+  return `[${sanitizeInline(String(engram.id))}] ${expiredMarker(engram)}${sanitizeInline(engram.statement)}`
 }
 
 export function formatLayer3(engram: WireEngram): string {
-  const lines = [`[${engram.id}] ${expiredMarker(engram)}${engram.statement}`]
-  if (engram.rationale) lines.push(`  Rationale: ${engram.rationale}`)
+  const lines = [`[${sanitizeInline(String(engram.id))}] ${expiredMarker(engram)}${sanitizeInline(engram.statement)}`]
+  if (engram.rationale) lines.push(`  Rationale: ${sanitizeInline(engram.rationale)}`)
   const meta: string[] = []
-  if (engram.domain) meta.push(`Domain: ${engram.domain}`)
+  if (engram.domain) meta.push(`Domain: ${sanitizeInline(engram.domain)}`)
   // #348: commitment (a decision-state ladder: exploring→leaning→decided→locked)
   // and confidence (epistemic certainty, a float) are ORTHOGONAL. Previously
   // commitment was rendered under the `Confidence:` label and the numeric score
@@ -651,9 +672,14 @@ export function formatLayer3(engram: WireEngram): string {
   // maximally certain in the highest-authority directives block. Show both as
   // distinct fields; never overwrite one with the other.
   const commitment = (engram as any).commitment as string | undefined
-  if (commitment) meta.push(`Commitment: ${commitment}`)
+  if (commitment) meta.push(`Commitment: ${sanitizeInline(String(commitment))}`)
+  // Numeric by schema on every untrusted path (EngramSchema and RemoteRowSchema
+  // both type it), and `toFixed` is what would throw on type confusion — so the
+  // guard belongs at those schemas, not here. Left as-is deliberately.
   if (engram.confidence_score != null) meta.push(`Confidence: ${engram.confidence_score.toFixed(2)}`)
-  if (engram.activation?.last_accessed) meta.push(`Last verified: ${engram.activation.last_accessed}`)
+  if (engram.activation?.last_accessed) {
+    meta.push(`Last verified: ${sanitizeInlineOptional(engram.activation.last_accessed) ?? ''}`)
+  }
   if (meta.length > 0) lines.push(`  ${meta.join(' | ')}`)
   return lines.join('\n')
 }

@@ -11,6 +11,7 @@ import { maybeDailyBackup } from './backup.js'
 import { logger } from './logger.js'
 import { searchEngrams, ftsTokenize, extendCorpusStats, searchTextFrom } from './fts.js'
 import { selectAndSpread, scoreEngramsPublic, formatWithLayer, assignLayer } from './inject.js'
+import { sanitizeInline } from './sanitize-inline.js'
 import { reactivate } from './decay.js'
 import { captureEpisode, queryTimeline } from './episodes.js'
 import { agenticSearch } from './agentic-search.js'
@@ -119,6 +120,10 @@ export { selectModel, selectModelForOperation, resolveOperationTier, type ModelT
 export { recallAuto, type AutoSearchResult, type SearchStrategy } from './search-orchestrator.js'
 export { generateProfile, getProfileForInjection, loadProfileCache, saveProfileCache, markProfileDirty, profileNeedsRegeneration, type ProfileCache } from './profile.js'
 export { formatLayer1, formatLayer2, formatLayer3, formatWithLayer, assignLayer, type InjectionLayer } from './inject.js'
+// Exported so every package that renders or stores engram text uses the SAME
+// line-break set. Two packages each rolling their own sanitizer is how one ends
+// up narrower than the other, and the narrow one becomes the way in.
+export { sanitizeInline, sanitizeInlineOptional, LINE_BREAK_CODE_POINTS } from './sanitize-inline.js'
 export { appendHistory, readHistory, listHistoryMonths, readHistoryForEngram, generateEventId, generateInjectionId, computeQueryHash, findLatestInjectionFor, countInjectionEvents, readCoInjections, type HistoryEvent, type InjectionEventCounts, type InjectionSource, type CoInjectionData, type CoInjectionEvent, type CoInjectionReadResult } from './history.js'
 export { computeReceipt } from './receipt.js'
 export type { Receipt, ReceiptInput, ReceiptTopEntry } from './receipt.js'
@@ -2431,8 +2436,26 @@ export class Plur {
 
   async learn(statement: string, context?: LearnContext): Promise<Engram> {
     this._assertWritable()
-    if (typeof statement !== 'string' || statement.length === 0) {
+    if (typeof statement !== 'string') {
       throw new TypeError(`plur.learn: statement must be a non-empty string, got ${typeof statement}`)
+    }
+    // Fold to one line BEFORE the emptiness check, not after.
+    //
+    // A statement is a single assertion, so a stored line terminator is never
+    // meaningful content — and the render boundary collapses it anyway
+    // (sanitize-inline.ts). Collapsing here too keeps the STORE clean, which
+    // matters because `statement` is the dedup and content_hash key: the same
+    // assertion written with and without a line break must be one engram, not
+    // two.
+    //
+    // Order is load-bearing. Validating first and transforming after means the
+    // value that was checked is not the value that is stored: a statement of
+    // only line terminators passes a `length === 0` guard and then collapses to
+    // the empty string, which is written, and which every other such statement
+    // then content-hashes to. Sanitize, then validate what will actually land.
+    statement = sanitizeInline(statement)
+    if (statement.length === 0) {
+      throw new TypeError('plur.learn: statement must be a non-empty string, got only whitespace or line terminators')
     }
     if (context?.type !== undefined && !VALID_ENGRAM_TYPES.has(context.type)) {
       throw new TypeError(

@@ -58,3 +58,32 @@ describe('the MCP README documents the real lean profile', () => {
     expect(Number(m![1])).toBe(getToolDefinitions('full').length)
   })
 })
+
+describe('the root README states the real FULL tool count', () => {
+  // Separate from the lean-table checks above, which read packages/mcp/README.md:
+  // this covers the ROOT README's Cursor paragraph and the budget comment in
+  // tools.ts, neither of which anything checked.
+  //
+  // The count is 43, not 44. There are 44 `name: 'plur_*'` declarations in
+  // tools.ts, but plur_admin is not served in the full profile -- in full every
+  // tool is exposed directly, so the dispatcher is not needed. Counting the
+  // declarations gives 44 and is wrong; getToolDefinitions('full') is the only
+  // honest source, which is why this asserts against it rather than a literal.
+  const ROOT_README = join(__dirname, '..', '..', '..', 'README.md')
+
+  it('matches getToolDefinitions("full")', () => {
+    const full = getToolDefinitions('full').length
+    const md = readFileSync(ROOT_README, 'utf8')
+    const m = md.match(/instead of all (\d+), with the rest reachable/)
+    expect(m, 'the Cursor lean-profile sentence is gone -- this test needs updating').not.toBeNull()
+    expect(Number(m![1])).toBe(full)
+  })
+
+  it('the tools.ts budget comment quotes the same count', () => {
+    const full = getToolDefinitions('full').length
+    const src = readFileSync(join(__dirname, '..', 'src', 'tools.ts'), 'utf8')
+    const m = src.match(/PLUR's full (\d+)-tool/)
+    expect(m, 'the budget comment is gone -- this test needs updating').not.toBeNull()
+    expect(Number(m![1])).toBe(full)
+  })
+})

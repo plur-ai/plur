@@ -7,6 +7,7 @@ import yaml from 'js-yaml'
 import { loadPack, loadEngrams, saveEngrams } from './engrams.js'
 import { atomicWrite, fsyncDir, withLock } from './sync.js'
 import { detectSensitive, detectPromptInjection, truncateToScanLimit } from './secrets.js'
+import { sanitizeInline } from './sanitize-inline.js'
 import type { Engram } from './schemas/engram.js'
 import type { PackManifest } from './schemas/pack.js'
 import { logger } from './logger.js'
@@ -820,10 +821,43 @@ export interface PrivacyIssue {
 }
 
 /**
- * Strip fields that let a third-party pack engram override the host's behavior:
- * `pinned` (bypasses the relevance gate — always injected) and a `locked`
- * commitment (resists dedup/correction). Returns sanitized engrams plus a count
- * of how many were pinned. (Security audit 2026-06-10, finding #2.)
+ * Fields a pack engram may carry that are rendered verbatim into agent context.
+ *
+ * Enumerated from the renderer (formatLayer1/2/3 in inject.ts), not guessed. A
+ * field added to the renderer without being added here is the same
+ * enumerate-vs-serialize drift that produced #381 and #389, one layer out.
+ *
+ * This list is defence in depth, so drift here is not a hole: the RENDER
+ * boundary folds every field unconditionally and is what actually holds the
+ * invariant. The drift guard that would catch a new rendered field is
+ * `injection-render-boundary.test.ts` describe R5, which poisons every string
+ * leaf generically rather than enumerating — so it fails on a field nobody
+ * remembered to add, here or there.
+ */
+const PACK_RENDERED_TEXT_FIELDS = ['statement', 'rationale', 'summary', 'domain'] as const
+
+/**
+ * Strip or neutralise everything a third-party pack engram can use to override
+ * the host's behavior.
+ *
+ * Two distinct classes:
+ *
+ *  - HOST OVERRIDE: `pinned` (bypasses the relevance gate — always injected)
+ *    and a `locked` commitment (resists dedup/correction).
+ *    (Security audit 2026-06-10, finding #2.)
+ *
+ *  - STRUCTURAL FORGERY: a line terminator in any rendered field. The renderer
+ *    joins engrams with a newline and the consumers paste the block into a
+ *    prompt, so a newline inside pack text mints a second engram at
+ *    system-prompt authority (#940, #1004). The render boundary collapses these
+ *    too — that is the guarantee, and it covers packs installed before this
+ *    existed — but a pack is the one input we KNOW is third-party, and letting
+ *    it write forged structure into the store means every non-rendering reader
+ *    (export, `plur list`, the viewer, a downstream re-pack) sees it. Neutralise
+ *    at the boundary as well as at the render.
+ *
+ * @param engrams - engrams as loaded from the pack.
+ * @returns sanitized engrams, how many were pinned, and whether anything changed.
  */
 export function sanitizePackEngrams(engrams: Engram[]): { engrams: Engram[]; pinnedStripped: number; changed: boolean } {
   let pinnedStripped = 0
@@ -837,6 +871,28 @@ export function sanitizePackEngrams(engrams: Engram[]): { engrams: Engram[]; pin
       delete c.locked_at
       delete c.locked_reason
       changed = true
+    }
+    for (const field of PACK_RENDERED_TEXT_FIELDS) {
+      const value = c[field]
+      if (typeof value !== 'string') continue
+      const folded = sanitizeInline(value)
+      if (folded !== value) { c[field] = folded; changed = true }
+    }
+    // `temporal.valid_until` reaches the EXPIRED marker, which interpolates it
+    // into the same line as the statement — a second forgery vector, and one
+    // the schema does not constrain (it is a bare optional string, no date
+    // format). Fold it for the same reason as the fields above.
+    const temporal = c.temporal
+    if (temporal !== null && typeof temporal === 'object') {
+      const t = { ...(temporal as Record<string, unknown>) }
+      let touched = false
+      for (const key of ['valid_from', 'valid_until']) {
+        const value = t[key]
+        if (typeof value !== 'string') continue
+        const folded = sanitizeInline(value)
+        if (folded !== value) { t[key] = folded; touched = true }
+      }
+      if (touched) { c.temporal = t; changed = true }
     }
     return c as unknown as Engram
   })
