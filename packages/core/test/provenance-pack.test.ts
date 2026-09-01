@@ -344,9 +344,15 @@ describe('export will not choose a licence for you', () => {
     const pack = nodesOf(record).find((n: any) =>
       Array.isArray(n['@type']) && n['@type'].includes('engram:Pack'))
     expect(pack['engram:license']).toBe('unlicensed')
-    // Not a name we map, so nothing is granted and the reader is told why.
-    expect(pack['odrl:hasPolicy']['engram:licenseRecognised']).toBe(false)
+    // A recorded decision, so it is RECOGNISED and grants nothing. Reporting it
+    // as unrecognised would say we failed to look it up, which profile §5.4
+    // forbids conflating with a stated decision — and would read identically to
+    // a typo. This assertion used to require `false`, which certified the
+    // behaviour the profile forbids and is why the gap survived review.
+    expect(pack['odrl:hasPolicy']['engram:licenseRecognised']).toBe(true)
     expect(pack['odrl:hasPolicy']['odrl:permission']).toEqual([])
+    expect(String(pack['odrl:hasPolicy']['engram:note']))
+      .toContain('No licence was granted')
   })
 
   it('gives a member with no licence the pack\'s, marked as inherited', () => {
