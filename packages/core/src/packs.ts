@@ -832,6 +832,16 @@ export function sanitizePackEngrams(engrams: Engram[]): { engrams: Engram[]; pin
     const c = { ...e } as Record<string, unknown>
     if (c.pinned === true) { pinnedStripped++; changed = true }
     if ('pinned' in c) delete c.pinned
+    // The tier and priority travel WITH `pinned` and must go with it. They are
+    // inert while selection filters on `pinned === true`, but leaving a pack's
+    // `pinned_tier: 'hard'` and `pinned_priority: 9999` in the store means the
+    // next change that pins an engram for any other reason silently adopts a
+    // third party's claim on the hard tier — which is guaranteed injection and
+    // bypasses the per-pack and per-domain fairness caps. This function exists
+    // to clamp host-overriding fields; a field added beside `pinned` without
+    // being added here is the same enumerate-vs-serialize drift as #381/#389.
+    if ('pinned_tier' in c) { delete c.pinned_tier; changed = true }
+    if ('pinned_priority' in c) { delete c.pinned_priority; changed = true }
     if (c.commitment === 'locked') {
       c.commitment = 'decided'
       delete c.locked_at

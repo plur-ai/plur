@@ -2470,26 +2470,36 @@ export class Plur {
     // into an existing engram below.
     const validity = resolveValidity(statement, context)
 
-    // Hard-tier cap enforcement: reject writes that would exceed the 2,000-token
-    // hard-tier budget before acquiring the store lock (listPinned is a read; the
-    // lock is NOT reentrant — see async-lock.ts header).
-    if (context?.pinned === true && (context?.pin_tier ?? 'soft') === 'hard') {
-      const hardPinned = (await this.listPinned()).filter(e => ((e as any).pinned_tier ?? 'soft') === 'hard')
-      const currentHardTokens = hardPinned.reduce((sum, e) => sum + estimateEngramTokens(e), 0)
-      const estimatedNewCost = Math.ceil((statement.length + (context?.rationale?.length ?? 0)) / 4) + 80
-      if (currentHardTokens + estimatedNewCost > PINNED_HARD_TOKEN_CAP) {
-        const engramList = hardPinned.map(e => `${e.id} (${estimateEngramTokens(e)} tokens)`).join(', ')
-        throw new Error(
-          `Hard-tier pinned cap exceeded: current hard-tier total is ${currentHardTokens} tokens, ` +
-          `estimated cost of new engram is ${estimatedNewCost} tokens, ` +
-          `cap is ${PINNED_HARD_TOKEN_CAP} tokens. ` +
-          `Existing hard-tier engrams: [${engramList}]. ` +
-          `Demote an existing engram to soft tier (pinned_tier="soft") or unpin it before adding a new hard-tier engram.`
-        )
-      }
-    }
-
     return await this._withStoreLock(this.paths.engrams, async () => {
+      // Hard-tier cap enforcement, INSIDE the lock.
+      //
+      // It used to run before acquiring it, on the reasoning that listPinned is
+      // only a read and the lock is not reentrant. But a cap is a
+      // read-modify-write on a shared total: N concurrent hard-tier writes each
+      // read the same current total, each conclude they fit, and all commit —
+      // and the resulting overrun is not cosmetic, because hard-tier engrams are
+      // guaranteed injection AND bypass the per-pack and per-domain fairness
+      // caps, so exceeding the budget crowds contextual recall out of the
+      // prompt. The check has to observe the same state the write commits into.
+      //
+      // Reentrancy is not a problem here: listPinned takes no lock of its own,
+      // it only reads through _loadAllEngrams.
+      if (context?.pinned === true && (context?.pin_tier ?? 'soft') === 'hard') {
+        const hardPinned = (await this.listPinned()).filter(e => ((e as any).pinned_tier ?? 'soft') === 'hard')
+        const currentHardTokens = hardPinned.reduce((sum, e) => sum + estimateEngramTokens(e), 0)
+        const estimatedNewCost = Math.ceil((statement.length + (context?.rationale?.length ?? 0)) / 4) + 80
+        if (currentHardTokens + estimatedNewCost > PINNED_HARD_TOKEN_CAP) {
+          const engramList = hardPinned.map(e => `${e.id} (${estimateEngramTokens(e)} tokens)`).join(', ')
+          throw new Error(
+            `Hard-tier pinned cap exceeded: current hard-tier total is ${currentHardTokens} tokens, ` +
+            `estimated cost of new engram is ${estimatedNewCost} tokens, ` +
+            `cap is ${PINNED_HARD_TOKEN_CAP} tokens. ` +
+            `Existing hard-tier engrams: [${engramList}]. ` +
+            `Demote an existing engram to soft tier (pinned_tier="soft") or unpin it before adding a new hard-tier engram.`
+          )
+        }
+      }
+
       const scope = guarded.scope
       const ps = this._primaryStore
       // Can the store answer BOTH derived facts `learn()` needs — "is this
