@@ -423,3 +423,113 @@ describe('verifyChain — a declared gap is not tampering', () => {
     } finally { rmSync(dir, { recursive: true, force: true }) }
   })
 })
+
+// ── An unchained event is uncovered, not tampered with ──────────────────────
+
+describe('verifyChain — legacy events anywhere are a legacy range, not a break', () => {
+  /**
+   * Treating a LEADING run as legacy and everything after it as tampering
+   * assumed a store crosses the chain boundary exactly once. That is not the
+   * ordinary rollout shape: a chained build runs, then any non-chaining path
+   * writes, and the store interleaves from then on.
+   *
+   * Reported as `hash_mismatch` — documented as "content was edited" — those
+   * events made a real pre-chain store return exit 1 with roughly 920 breaks
+   * citing tampering, while `unprotected_legacy` stayed null and actively
+   * denied the legacy region existed. Nothing was edited.
+   *
+   * `verified` means "the chain holds over everything it COVERS". Uncovered is
+   * reported, not alarmed on.
+   */
+  function legacyEvent(id: string, ts: string): HistoryEvent {
+    return { event: 'engram_created', engram_id: id, timestamp: ts, data: {} }
+  }
+
+  it('does not report tampering for legacy events after the chain started', () => {
+    const chained = writeChain('2026-01', 3)
+    const lines = chained.map(e => JSON.stringify(e))
+    for (let i = 0; i < 5; i++) lines.push(JSON.stringify(legacyEvent(`ENG-L-${i}`, '2026-01-02T00:00:00.000Z')))
+    writeFileSync(monthFile('2026-01'), lines.join('\n') + '\n', 'utf8')
+
+    const out = verifyChain(root)
+    const reasons = out.status === 'broken' ? out.result.breaks.map(b => b.reason) : []
+    expect(reasons, 'unchained events reported as tampering').not.toContain('hash_mismatch')
+    expect(out.status).toBe('verified')
+  })
+
+  it('reports the legacy events rather than denying they exist', () => {
+    const chained = writeChain('2026-01', 3)
+    const lines = chained.map(e => JSON.stringify(e))
+    for (let i = 0; i < 5; i++) lines.push(JSON.stringify(legacyEvent(`ENG-L-${i}`, '2026-01-02T00:00:00.000Z')))
+    writeFileSync(monthFile('2026-01'), lines.join('\n') + '\n', 'utf8')
+
+    const out = verifyChain(root)
+    const r = out.status === 'verified' ? out.result : out.status === 'broken' ? out.result : null
+    expect(r).not.toBeNull()
+    expect(r!.unprotected_legacy, 'legacy region reported as absent').not.toBeNull()
+    expect(r!.unprotected_legacy!.count).toBe(5)
+    // The chained prefix is still verified — coverage is reported, not lost.
+    expect(r!.verified_events).toBe(3)
+  })
+
+  it('still counts a leading legacy run', () => {
+    // The original case must keep working.
+    const lines: string[] = []
+    for (let i = 0; i < 4; i++) lines.push(JSON.stringify(legacyEvent(`ENG-P-${i}`, '2026-01-01T00:00:00.000Z')))
+    writeFileSync(monthFile('2026-01'), lines.join('\n') + '\n', 'utf8')
+    const out = verifyChain(root)
+    const r = out.status === 'verified' ? out.result : (out as { result: typeof out extends never ? never : any }).result
+    expect(r.unprotected_legacy?.count).toBe(4)
+    expect(out.status).toBe('verified')
+  })
+
+  it('still catches real tampering in the chained region', () => {
+    // The relaxation must not swallow an actual content edit.
+    const chained = writeChain('2026-01', 4)
+    const lines = chained.map(e => JSON.stringify(e))
+    const tampered = { ...chained[2], engram_id: 'ENG-EDITED' }
+    lines[2] = JSON.stringify(tampered)
+    writeFileSync(monthFile('2026-01'), lines.join('\n') + '\n', 'utf8')
+
+    const out = verifyChain(root)
+    expect(out.status).toBe('broken')
+    const reasons = out.status === 'broken' ? out.result.breaks.map(b => b.reason) : []
+    expect(reasons).toContain('hash_mismatch')
+  })
+})
+
+// ── Genesis is a claim, so two of them are a fork ───────────────────────────
+
+describe('verifyChain — a genesis fork is a fork', () => {
+  it('names two events that both claim genesis', () => {
+    // The one fork shape the lock-failure path can actually produce: two
+    // concurrent writers on an empty store both take the gap path and both
+    // write prev:null. Excluding null from the claims map reported forks: []
+    // and a single prev_mismatch — the real fork, unlabelled.
+    const a: HistoryEvent = { event: 'engram_created', engram_id: 'ENG-A', timestamp: '2026-01-01T00:00:00.000Z', data: {}, prev: null }
+    a.hash = computeEventHash(a)
+    const b: HistoryEvent = { event: 'engram_created', engram_id: 'ENG-B', timestamp: '2026-01-01T00:00:01.000Z', data: {}, prev: null }
+    b.hash = computeEventHash(b)
+    writeFileSync(monthFile('2026-01'), [a, b].map(e => JSON.stringify(e)).join('\n') + '\n', 'utf8')
+
+    const out = verifyChain(root)
+    expect(out.status).toBe('broken')
+    const r = out.status === 'broken' ? out.result : null
+    expect(r!.forks, 'a genesis fork was not reported as a fork').toHaveLength(1)
+    expect(r!.forks[0].prev, 'genesis should report a null predecessor').toBeNull()
+    expect(r!.forks[0].claimed_by).toHaveLength(2)
+  })
+
+  it('a single genesis event is not a fork and not dangling', () => {
+    // The sentinel must not leak into dangling_prev either.
+    const a: HistoryEvent = { event: 'engram_created', engram_id: 'ENG-A', timestamp: '2026-01-01T00:00:00.000Z', data: {}, prev: null }
+    a.hash = computeEventHash(a)
+    writeFileSync(monthFile('2026-01'), JSON.stringify(a) + '\n', 'utf8')
+
+    const out = verifyChain(root)
+    expect(out.status).toBe('verified')
+    const r = out.status === 'verified' ? out.result : null
+    expect(r!.forks).toHaveLength(0)
+    expect(r!.breaks).toHaveLength(0)
+  })
+})

@@ -74,8 +74,10 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
     const { from, to, count } = r.unprotected_legacy
     outputText('')
     outputText(`  unprotected legacy range: events ${from}–${to} (${count})`)
-    outputText('  Written before the chain existed. They carry no hash and no prev,')
-    outputText('  so nothing here certifies them — that is expected, not a fault.')
+    outputText('  Written by a build that did not chain. They carry no hash and no prev,')
+    outputText('  so nothing here certifies them — that is expected, not a fault. They')
+    outputText('  need not be contiguous: a chained build followed by any non-chaining')
+    outputText('  path interleaves them, which is the ordinary rollout shape.')
   }
 
   for (const b of r.breaks) {
@@ -102,7 +104,7 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
 
   for (const f of r.forks) {
     outputText('')
-    outputText(`  FORK: ${f.claimed_by.length} events claim predecessor ${f.prev}`)
+    outputText(`  FORK: ${f.claimed_by.length} events claim predecessor ${f.prev ?? '(genesis — no predecessor)'}`)
     for (const c of f.claimed_by) outputText(`    ${c.month} #${c.index} ${c.event_id} -> ${c.hash}`)
     outputText('    Two writers appended from the same predecessor. This is a')
     outputText('    concurrency fault, not evidence of tampering.')

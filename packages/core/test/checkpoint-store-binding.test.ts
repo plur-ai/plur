@@ -72,9 +72,16 @@ describe('store_hash is bound to the chain_head beside it', () => {
     }
   })
 
-  it('the persisted chain_head equals the event own prev, always', () => {
-    // The binding this replaced (#1052 finding 2). Kept so a regression on
-    // either binding is caught.
+  it('the persisted chain_head is consistent with the event own prev', () => {
+    // HONEST SCOPE: this is a consistency check, NOT a drift detector, and the
+    // distinction matters because an existing test with a stronger-sounding
+    // name ("they cannot drift apart") was proven vacuous by mutation for
+    // exactly this reason. Single-threaded, both values come from the same
+    // read, so it passes with or without the fix.
+    //
+    // What actually guards the binding is the structural test below, which
+    // asserts the chain lock is held while onPrev runs. Kept anyway: it would
+    // still catch a payload that stopped being built from `prev` at all.
     writeStore(2)
     for (let i = 0; i < 10; i++) emitCheckpoint(dir, join(dir, 'engrams.yaml'), 'cli')
     for (const cp of checkpoints()) {

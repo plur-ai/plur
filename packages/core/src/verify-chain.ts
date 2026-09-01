@@ -49,7 +49,8 @@ export interface ChainBreak {
 }
 
 export interface ChainFork {
-  prev: string
+  /** The predecessor these events claim, or null when they claim genesis. */
+  prev: string | null
   claimed_by: Array<{ month: string; index: number; event_id: string; hash: string }>
 }
 
@@ -58,7 +59,7 @@ export interface ChainVerifyResult {
   chain_head:         string | null
   total_events:       number
   verified_events:    number
-  /** Contiguous leading run of pre-#1051 events carrying no hash/prev. */
+  /** Pre-#1051 events carrying no hash/prev, wherever they appear in the log. */
   unprotected_legacy: { from: number; to: number; count: number } | null
   breaks:             ChainBreak[]
   forks:              ChainFork[]
@@ -80,6 +81,15 @@ export type ChainVerifyOutcome =
   | { status: 'cannot_verify'; reason: string; month?: string; line?: number }
 
 interface Scanned { month: string; index: number; event: HistoryEvent }
+
+/**
+ * Claims key for an event with no predecessor.
+ *
+ * Not a hash, and cannot be mistaken for one: every real key is 64 hex
+ * characters. Genesis events must share a key so that two of them are visible
+ * as a fork.
+ */
+const GENESIS_CLAIM = '(genesis)'
 
 /**
  * Verify the whole history chain for a store.
@@ -157,13 +167,25 @@ export function verifyChain(root: string): ChainVerifyOutcome {
     torn_tail: null,
   }
 
-  // Leading run of legacy events. Pre-#1051 events carry neither hash nor
-  // prev; per runbook law 8 that is an "unprotected legacy range", a
-  // first-class outcome, never an error and never silently upgraded.
-  let firstChained = 0
-  while (firstChained < scanned.length && scanned[firstChained].event.hash === undefined) firstChained++
-  if (firstChained > 0) {
-    result.unprotected_legacy = { from: 0, to: firstChained - 1, count: firstChained }
+  // Unchained (pre-#1051) events. They carry neither hash nor prev; per runbook
+  // law 8 that is an "unprotected legacy range" — a first-class outcome, never
+  // an error and never silently upgraded.
+  //
+  // Counted WHEREVER they appear, not only as a leading run. Treating a leading
+  // run as legacy and everything after it as tampering assumed a store crosses
+  // the chain boundary exactly once, which is not the ordinary rollout shape: a
+  // chained build runs, then any non-chaining path writes, and the store now
+  // interleaves. Reported as `hash_mismatch` ("content was edited") those
+  // events made a real pre-chain store return exit 1 with roughly 920 breaks
+  // citing tampering, with `unprotected_legacy: null` actively denying the
+  // legacy region existed. Nothing was edited.
+  const legacyIdx = scanned.map((s, i) => (s.event.hash === undefined ? i : -1)).filter(i => i >= 0)
+  if (legacyIdx.length > 0) {
+    result.unprotected_legacy = {
+      from: legacyIdx[0],
+      to: legacyIdx[legacyIdx.length - 1],
+      count: legacyIdx.length,
+    }
   }
 
   const byHash = new Map<string, Scanned>()
@@ -171,19 +193,21 @@ export function verifyChain(root: string): ChainVerifyOutcome {
   let expectedPrev: string | null = null
   let sawFirstChained = false
 
-  for (let k = firstChained; k < scanned.length; k++) {
+  // Every event, in order. Unchained ones are skipped inside the loop rather
+  // than by starting past a leading run — they can appear anywhere.
+  for (let k = 0; k < scanned.length; k++) {
     const { month, index, event } = scanned[k]
     const id = event.engram_id || `(${event.event})`
 
-    // A legacy event appearing AFTER the chain started is not a legacy range —
-    // it is a hole in a region that is supposed to be chained.
-    if (event.hash === undefined) {
-      result.breaks.push({
-        month, index, event_id: id, reason: 'hash_mismatch',
-        expected: 'a chained event', actual: 'an event with no hash',
-      })
-      continue
-    }
+    // An unchained event is not a break. It is uncovered, which is what
+    // `unprotected_legacy` reports, and `verified` already means "the chain
+    // holds over everything it covers" — not "everything is covered".
+    //
+    // It does NOT advance `expectedPrev`: the next chained event's predecessor
+    // is the last CHAINED event, because that is what appendHistory's tail-seek
+    // would have found. When the tail-seek instead returned null the next event
+    // carries prev:null, which is reported as a declared_gap.
+    if (event.hash === undefined) continue
 
     const recorded = event.hash
     const recomputed = computeEventHash(event)
@@ -215,11 +239,16 @@ export function verifyChain(root: string): ChainVerifyOutcome {
       })
     }
 
-    if (prev !== null) {
-      const claims = prevClaims.get(prev) ?? []
-      claims.push(scanned[k])
-      prevClaims.set(prev, claims)
-    }
+    // Genesis is a claim too. Excluding `prev: null` meant the ONE fork shape
+    // the lock-failure path can actually produce was the one not labelled a
+    // fork: two concurrent writers on an empty store both take the gap path,
+    // both write `prev: null`, and the result was `forks: []` plus a single
+    // prev_mismatch. Keyed under a sentinel that cannot collide with a hash —
+    // hashes are 64 hex characters, this is not.
+    const claimKey = prev ?? GENESIS_CLAIM
+    const claims = prevClaims.get(claimKey) ?? []
+    claims.push(scanned[k])
+    prevClaims.set(claimKey, claims)
 
     byHash.set(recorded, scanned[k])
     expectedPrev = recorded
@@ -232,6 +261,7 @@ export function verifyChain(root: string): ChainVerifyOutcome {
   // A prev that names a hash no event in the log carries. Distinct from
   // prev_mismatch: the link is not merely to the wrong place, it is to nothing.
   for (const [prev, claims] of prevClaims) {
+    if (prev === GENESIS_CLAIM) continue // genesis names no predecessor by design
     if (byHash.has(prev)) continue
     for (const c of claims) {
       result.breaks.push({
@@ -247,7 +277,9 @@ export function verifyChain(root: string): ChainVerifyOutcome {
   for (const [prev, claims] of prevClaims) {
     if (claims.length < 2) continue
     result.forks.push({
-      prev,
+      // Reported as null rather than the sentinel: the consumer's contract is
+      // "the predecessor these events claim", and for genesis that is nothing.
+      prev: prev === GENESIS_CLAIM ? null : prev,
       claimed_by: claims.map(c => ({
         month: c.month, index: c.index,
         event_id: c.event.engram_id || `(${c.event.event})`,
