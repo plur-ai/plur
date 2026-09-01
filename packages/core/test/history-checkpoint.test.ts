@@ -15,6 +15,9 @@ import * as path from 'path'
 import * as os from 'os'
 import {
   emitCheckpoint,
+  attestStore,
+  tailSeekLastHash,
+  countEngramsInStore,
   hashEngramsFile,
   appendHistory,
   readHistory,
@@ -86,7 +89,7 @@ describe('checkpoint events (#1052)', () => {
       // 42 is deliberately a lie. The count must come from the store the hash
       // covers, not from the caller — an attested count that is not bound to
       // the hash beside it is not attested at all.
-      const data = emitCheckpoint(dir, engramsPath, 42, 'cli')
+      const data = emitCheckpoint(dir, engramsPath, 'cli')
       expect(typeof data.store_hash).toBe('string')
       expect(data.store_hash).toMatch(/^[0-9a-f]{64}$/)
       expect(typeof data.engram_count).toBe('number')
@@ -98,13 +101,13 @@ describe('checkpoint events (#1052)', () => {
 
     it('store_hash matches hashEngramsFile for the same path', () => {
       const engramsPath = path.join(dir, 'engrams.yaml')
-      const data = emitCheckpoint(dir, engramsPath, 0, 'cli')
+      const data = emitCheckpoint(dir, engramsPath, 'cli')
       expect(data.store_hash).toBe(hashEngramsFile(engramsPath))
     })
 
     it('actor field is preserved verbatim', () => {
       const engramsPath = path.join(dir, 'engrams.yaml')
-      const data = emitCheckpoint(dir, engramsPath, 0, 'session_end')
+      const data = emitCheckpoint(dir, engramsPath, 'session_end')
       expect(data.actor).toBe('session_end')
     })
   })
@@ -117,7 +120,7 @@ describe('checkpoint events (#1052)', () => {
     it('writes a checkpoint event to the correct month file', () => {
       const ts = '2026-04-15T10:00:00.000Z'
       const engramsPath = path.join(dir, 'engrams.yaml')
-      emitCheckpoint(dir, engramsPath, 5, 'cli', ts)
+      emitCheckpoint(dir, engramsPath, 'cli', ts)
       const events = readHistory(dir, '2026-04')
       expect(events).toHaveLength(1)
       expect(events[0].event).toBe('checkpoint')
@@ -126,7 +129,7 @@ describe('checkpoint events (#1052)', () => {
     it('checkpoint event has empty engram_id (store-level event)', () => {
       const ts = '2026-04-15T10:00:00.000Z'
       const engramsPath = path.join(dir, 'engrams.yaml')
-      emitCheckpoint(dir, engramsPath, 5, 'cli', ts)
+      emitCheckpoint(dir, engramsPath, 'cli', ts)
       const [ev] = readHistory(dir, '2026-04')
       expect(ev.engram_id).toBe('')
     })
@@ -134,7 +137,7 @@ describe('checkpoint events (#1052)', () => {
     it('checkpoint event is itself hash-chained (has hash and prev)', () => {
       const ts = '2026-04-15T10:00:00.000Z'
       const engramsPath = path.join(dir, 'engrams.yaml')
-      emitCheckpoint(dir, engramsPath, 5, 'cli', ts)
+      emitCheckpoint(dir, engramsPath, 'cli', ts)
       const [ev] = readHistory(dir, '2026-04')
       expect(ev.hash).toMatch(/^[0-9a-f]{64}$/)
       expect(ev.prev).toBeNull() // genesis
@@ -143,7 +146,7 @@ describe('checkpoint events (#1052)', () => {
     it('checkpoint event hash round-trips correctly', () => {
       const ts = '2026-04-15T10:00:00.000Z'
       const engramsPath = path.join(dir, 'engrams.yaml')
-      emitCheckpoint(dir, engramsPath, 5, 'cli', ts)
+      emitCheckpoint(dir, engramsPath, 'cli', ts)
       const [stored] = readHistory(dir, '2026-04')
       // Recomputing from stored event (excluding stored.hash) must match
       const recomputed = computeEventHash(stored)
@@ -153,7 +156,7 @@ describe('checkpoint events (#1052)', () => {
     it('checkpoint data payload is stored in event.data', () => {
       const ts = '2026-04-15T10:00:00.000Z'
       const engramsPath = path.join(dir, 'engrams.yaml')
-      const cp = emitCheckpoint(dir, engramsPath, 7, 'session_end', ts)
+      const cp = emitCheckpoint(dir, engramsPath, 'session_end', ts)
       const [ev] = readHistory(dir, '2026-04')
       const d = ev.data as Record<string, unknown>
       expect(d.store_hash).toBe(cp.store_hash)
@@ -184,7 +187,7 @@ describe('checkpoint events (#1052)', () => {
       const [written] = readHistory(dir, '2026-04')
 
       // Now emit a checkpoint
-      emitCheckpoint(dir, engramsPath, 1, 'cli', ts2)
+      emitCheckpoint(dir, engramsPath, 'cli', ts2)
       const events = readHistory(dir, '2026-04')
       expect(events).toHaveLength(2)
       const cpEvent = events[1]
@@ -204,7 +207,7 @@ describe('checkpoint events (#1052)', () => {
         data: {},
       }
       appendHistory(dir, regularEvent)
-      emitCheckpoint(dir, engramsPath, 1, 'cli', ts2)
+      emitCheckpoint(dir, engramsPath, 'cli', ts2)
 
       const events = readHistory(dir, '2026-04')
       const cpEvent = events[1]
@@ -217,8 +220,8 @@ describe('checkpoint events (#1052)', () => {
       const ts1 = '2026-04-15T10:00:00.000Z'
       const ts2 = '2026-04-15T11:00:00.000Z'
 
-      emitCheckpoint(dir, engramsPath, 0, 'cli', ts1)
-      emitCheckpoint(dir, engramsPath, 0, 'cli', ts2)
+      emitCheckpoint(dir, engramsPath, 'cli', ts1)
+      emitCheckpoint(dir, engramsPath, 'cli', ts2)
 
       const events = readHistory(dir, '2026-04')
       expect(events).toHaveLength(2)
@@ -236,8 +239,8 @@ describe('checkpoint events (#1052)', () => {
       const tsApril = '2026-04-30T23:59:00.000Z'
       const tsMay   = '2026-05-01T00:01:00.000Z'
 
-      emitCheckpoint(dir, engramsPath, 10, 'cli', tsApril)
-      emitCheckpoint(dir, engramsPath, 10, 'cli', tsMay)
+      emitCheckpoint(dir, engramsPath, 'cli', tsApril)
+      emitCheckpoint(dir, engramsPath, 'cli', tsMay)
 
       const aprilEvents = readHistory(dir, '2026-04')
       const mayEvents   = readHistory(dir, '2026-05')
@@ -275,16 +278,18 @@ describe('checkpoint events (#1052)', () => {
 // ── The attested count and hash describe the same bytes ─────────────────────
 
 describe('checkpoint attestation is bound to the store it hashes', () => {
-  it('counts the engrams actually present, ignoring a caller who lies', () => {
+  it('counts the engrams actually present', () => {
     // THE DEFECT THIS GUARDS: engram_count was whatever the caller passed, so
-    // emitCheckpoint(root, path, 99999, 'cli') against a one-engram store was
-    // written verbatim into an object meant for external anchoring.
+    // `emitCheckpoint(root, path, 99999, 'cli')` against a one-engram store
+    // wrote 99999 verbatim into an object meant for external anchoring. The
+    // count parameter no longer exists -- a stale call is now a type error
+    // rather than a number that quietly stops mattering.
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cp-count-'))
     const engramsPath = path.join(dir, 'engrams.yaml')
     fs.writeFileSync(engramsPath,
       'engrams:\n  - id: ENG-001\n    status: active\n  - id: ENG-002\n    status: active\n', 'utf8')
 
-    const d = emitCheckpoint(dir, engramsPath, 99999, 'cli')
+    const d = emitCheckpoint(dir, engramsPath, 'cli')
     expect(d.engram_count).toBe(2)
     fs.rmSync(dir, { recursive: true, force: true })
   })
@@ -300,8 +305,8 @@ describe('checkpoint attestation is bound to the store it hashes', () => {
     fs.writeFileSync(path.join(a, 'engrams.yaml'), yamlLf, 'utf8')
     fs.writeFileSync(path.join(b, 'engrams.yaml'), yamlLf.replace(/\n/g, '\r\n'), 'utf8')
 
-    const da = emitCheckpoint(a, path.join(a, 'engrams.yaml'), 0, 'cli')
-    const db = emitCheckpoint(b, path.join(b, 'engrams.yaml'), 0, 'cli')
+    const da = emitCheckpoint(a, path.join(a, 'engrams.yaml'), 'cli')
+    const db = emitCheckpoint(b, path.join(b, 'engrams.yaml'), 'cli')
     expect(da.store_hash).toBe(db.store_hash)
 
     fs.rmSync(a, { recursive: true, force: true })
@@ -320,7 +325,7 @@ describe('checkpoint attestation is bound to the store it hashes', () => {
       event: 'engram_created', engram_id: 'ENG-1',
       timestamp: new Date().toISOString(), data: {},
     })
-    const d = emitCheckpoint(dir, engramsPath, 0, 'cli')
+    const d = emitCheckpoint(dir, engramsPath, 'cli')
 
     const months = fs.readdirSync(path.join(dir, 'history')).filter(f => f.endsWith('.jsonl'))
     const evs = months.flatMap(m =>
@@ -329,5 +334,127 @@ describe('checkpoint attestation is bound to the store it hashes', () => {
     const cp = evs.find(e => e.event === 'checkpoint')!
     expect(d.chain_head).toBe(cp.prev)
     fs.rmSync(dir, { recursive: true, force: true })
+  })
+})
+
+// ── One read, or the two values can describe different stores ───────────────
+
+describe('attestStore reads once and fails closed', () => {
+  let dir: string
+  beforeEach(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cp-attest-')) })
+  afterEach(() => { fs.rmSync(dir, { recursive: true, force: true }) })
+
+  it('derives hash and count from the SAME bytes', () => {
+    // Two separate readFileSync calls left a window for a concurrent learn() to
+    // land between them, after which the checkpoint asserted a count for a
+    // store state its own hash did not describe -- undetectable downstream,
+    // because both values were individually well-formed.
+    const p = path.join(dir, 'engrams.yaml')
+    fs.writeFileSync(p, 'engrams:\n  - id: ENG-001\n    status: active\n', 'utf8')
+
+    const first = attestStore(p)
+    expect(first.engram_count).toBe(1)
+
+    // Simulate the concurrent write, then re-attest: BOTH values must move
+    // together. If they were read separately, one could describe each state.
+    fs.writeFileSync(p, 'engrams:\n  - id: ENG-001\n    status: active\n  - id: ENG-002\n    status: active\n', 'utf8')
+    const second = attestStore(p)
+    expect(second.engram_count).toBe(2)
+    expect(second.store_hash).not.toBe(first.store_hash)
+  })
+
+  it('agrees with hashEngramsFile and countEngramsInStore', () => {
+    const p = path.join(dir, 'engrams.yaml')
+    fs.writeFileSync(p, 'engrams:\n  - id: ENG-001\n    status: active\n', 'utf8')
+    const a = attestStore(p)
+    expect(a.store_hash).toBe(hashEngramsFile(p))
+    expect(a.engram_count).toBe(countEngramsInStore(p))
+  })
+
+  it('THROWS on a malformed store rather than attesting a count of 0', () => {
+    // The previous `catch { return 0 }` produced a checkpoint claiming "0
+    // engrams" beside a hash of the real file: a FALSE attestation, which is
+    // worse than none. A checkpoint that cannot be computed honestly must not
+    // be written at all.
+    const p = path.join(dir, 'engrams.yaml')
+    fs.writeFileSync(p, 'this: is not a store\n', 'utf8')
+    expect(() => attestStore(p)).toThrow(/cannot checkpoint/)
+    expect(() => emitCheckpoint(dir, p, 'cli')).toThrow(/cannot checkpoint/)
+  })
+
+  it('THROWS on unparseable YAML rather than degrading', () => {
+    const p = path.join(dir, 'engrams.yaml')
+    fs.writeFileSync(p, 'engrams:\n  - [unclosed\n', 'utf8')
+    expect(() => attestStore(p)).toThrow()
+  })
+
+  it('writes NO checkpoint event when attestation fails', () => {
+    // Fail-closed must mean nothing lands, not a half-written event.
+    const p = path.join(dir, 'engrams.yaml')
+    fs.writeFileSync(p, 'this: is not a store\n', 'utf8')
+    expect(() => emitCheckpoint(dir, p, 'cli')).toThrow()
+    const historyDir = path.join(dir, 'history')
+    const files = fs.existsSync(historyDir) ? fs.readdirSync(historyDir).filter(f => f.endsWith('.jsonl')) : []
+    const events = files.flatMap(f =>
+      fs.readFileSync(path.join(historyDir, f), 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l)))
+    expect(events.filter(e => e.event === 'checkpoint')).toHaveLength(0)
+  })
+})
+
+// ── A long event must not silently become a chain gap ───────────────────────
+
+describe('tailSeekLastHash handles events larger than the tail window', () => {
+  let dir: string
+  beforeEach(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cp-tail-')) })
+  afterEach(() => { fs.rmSync(dir, { recursive: true, force: true }) })
+
+  it('reads the hash of an event line far longer than 8 KiB', () => {
+    // A fixed 8 KiB window lands entirely inside a longer final line: the
+    // buffer starts mid-record, JSON.parse fails, null comes back, and the next
+    // append chains from nothing -- a gap over a log that is perfectly intact.
+    // `data` is Record<string, unknown>; a co_injection with a large id array
+    // gets here without anything unusual happening.
+    const bigIds = Array.from({ length: 4000 }, (_, i) => 'ENG-2026-0101-' + String(i).padStart(6, '0'))
+    appendHistory(dir, {
+      event: 'co_injection',
+      engram_id: 'inj-1',
+      timestamp: '2026-01-01T00:00:00.000Z',
+      data: { ids: bigIds, query_hash: 'abc123' },
+    })
+
+    const file = path.join(dir, 'history', '2026-01.jsonl')
+    expect(fs.statSync(file).size).toBeGreaterThan(8192)
+
+    const written = JSON.parse(fs.readFileSync(file, 'utf8').trim()) as HistoryEvent
+    expect(tailSeekLastHash(file)).toBe(written.hash)
+  })
+
+  it('a large event does not break the chain for the NEXT event', () => {
+    // The consequence that matters: the following event must chain onto it,
+    // not declare a gap.
+    const bigIds = Array.from({ length: 4000 }, (_, i) => 'ENG-2026-0101-' + String(i).padStart(6, '0'))
+    appendHistory(dir, {
+      event: 'co_injection', engram_id: 'inj-1',
+      timestamp: '2026-01-01T00:00:00.000Z', data: { ids: bigIds },
+    })
+    appendHistory(dir, {
+      event: 'engram_created', engram_id: 'ENG-2026-0101-001',
+      timestamp: '2026-01-01T00:01:00.000Z', data: {},
+    })
+
+    const events = readHistory(dir, '2026-01')
+    expect(events).toHaveLength(2)
+    expect(events[1].prev, 'second event declared a gap over an intact log').toBe(events[0].hash)
+    expect(events[1].prev).not.toBeNull()
+  })
+
+  it('still returns a gap for a file with no line boundary at all', () => {
+    // The ceiling must hold: a corrupt file with no newline is a documented
+    // gap, never an unbounded read on the write path.
+    const historyDir = path.join(dir, 'history')
+    fs.mkdirSync(historyDir, { recursive: true })
+    const file = path.join(historyDir, '2026-01.jsonl')
+    fs.writeFileSync(file, 'x'.repeat(2 * 1024 * 1024), 'utf8')
+    expect(tailSeekLastHash(file)).toBeNull()
   })
 })
