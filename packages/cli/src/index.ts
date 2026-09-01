@@ -53,6 +53,7 @@ Commands:
   outbox                  Show team-scoped writes queued for an unreachable store
                           [--flush] to retry them now (#667)
   checkpoint              Emit a checkpoint event — SHA-256 of the store + chain linkage (#1052)
+  verify                  Verify the history chain — exit 0 ok / 1 broken / 2 cannot verify (#1053)
   reindex-tokens          Re-derive BM25 tokens after a tokenizer change (Postgres only)
   reindex-hashes          Repair engrams whose content_hash is stale or missing (#852)
   init                    Wire PLUR into detected harnesses (Claude Code, Cursor, Codex, Antigravity)
@@ -132,6 +133,7 @@ const COMMANDS: Record<string, string> = {
   scopes: './commands/scopes.js',
   outbox: './commands/outbox.js',
   checkpoint: './commands/checkpoint.js',
+  verify: './commands/verify.js',
   'reindex-tokens': './commands/reindex-tokens.js',
   'reindex-hashes': './commands/reindex-hashes.js',
   migrate: './commands/migrate.js',
