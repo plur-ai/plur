@@ -57,7 +57,7 @@ function generateAll(dir: string): number {
     { event: 'engram_retired', engram_id: 'ENG-2026-08-21-001', timestamp: '2026-08-21T02:00:00Z', data: { reason: 'superseded' } },
   ]
 
-  const records: Array<[string, unknown]> = [
+  const records: Array<[string, Record<string, unknown>]> = [
     ['plain', buildProvenanceRecord(engramOf('ENG-2026-08-21-001'))],
     ['with-history', buildProvenanceRecord(engramOf('ENG-2026-08-21-001'), events)],
     ['with-statement', buildProvenanceRecord(engramOf('ENG-2026-08-21-001'), [], { includeStatement: true })],
