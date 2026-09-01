@@ -22,8 +22,8 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { verifyChain } from '../src/verify-chain.js'
-import { computeEventHash, type HistoryEvent } from '../src/history.js'
+import { verifyChain, hashStoreFile } from '../src/verify-chain.js'
+import { appendHistory, computeEventHash, emitCheckpoint, type HistoryEvent } from '../src/history.js'
 
 let root: string
 const historyDir = () => join(root, 'history')
@@ -308,5 +308,118 @@ describe('verifyChain — a torn final line is an in-flight write, not corruptio
     expect(out.status).toBe('cannot_verify')
     if (out.status !== 'cannot_verify') return
     expect(out.month).toBe('2026-01')
+  })
+})
+
+// ── The attestation a checkpoint exists to make must actually be checked ─────
+
+describe('verifyChain — the checkpoint attests the STORE, so verify it', () => {
+  /**
+   * The gap: verifyChain read `chain_head` from checkpoint payloads and ignored
+   * `store_hash` entirely. A store whose engrams.yaml was replaced wholesale,
+   * with the history chain left untouched, verified as OK — the one thing the
+   * checkpoint exists to make detectable.
+   *
+   * Compounding it, `hashStoreFile` hashed RAW FILE BYTES while emitCheckpoint
+   * recorded the CANONICAL JSON of the parsed document. Different preimages, so
+   * the two could never be equal even if something had compared them.
+   */
+  function storeWith(dir: string, ids: string[]): void {
+    writeFileSync(
+      join(dir, 'engrams.yaml'),
+      'engrams:\n' + ids.map(id => `  - id: ${id}\n    status: active\n`).join(''),
+      'utf8',
+    )
+  }
+
+  it('hashStoreFile agrees with what a checkpoint records', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'vc-attest-'))
+    try {
+      storeWith(dir, ['ENG-001'])
+      const cp = emitCheckpoint(dir, join(dir, 'engrams.yaml'), 'cli')
+      // The whole point: these are the same preimage.
+      expect(hashStoreFile(join(dir, 'engrams.yaml'))).toBe(cp.store_hash)
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  })
+
+  it('BREAKS when the store no longer matches the newest checkpoint', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'vc-attest-'))
+    try {
+      storeWith(dir, ['ENG-001'])
+      emitCheckpoint(dir, join(dir, 'engrams.yaml'), 'cli')
+      expect(verifyChain(dir).status).toBe('verified')
+
+      // Replace the store wholesale, leaving the chain untouched.
+      storeWith(dir, ['ENG-666'])
+      const out = verifyChain(dir)
+      expect(out.status).toBe('broken')
+      const reasons = out.status === 'broken' ? out.result.breaks.map(b => b.reason) : []
+      expect(reasons).toContain('store_hash_mismatch')
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  })
+
+  it('does NOT break on formatting-only changes — it attests content', () => {
+    // A checkpoint attests the engrams, not the whitespace. Raw-byte hashing
+    // would fail here, which is why #1052 rejected it.
+    const dir = mkdtempSync(join(tmpdir(), 'vc-attest-'))
+    try {
+      writeFileSync(join(dir, 'engrams.yaml'), 'engrams:\n  - id: ENG-001\n    status: active\n', 'utf8')
+      emitCheckpoint(dir, join(dir, 'engrams.yaml'), 'cli')
+      // Same document, CRLF and an extra trailing newline.
+      writeFileSync(join(dir, 'engrams.yaml'), 'engrams:\r\n  - id: ENG-001\r\n    status: active\r\n\r\n', 'utf8')
+      expect(verifyChain(dir).status).toBe('verified')
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  })
+
+  it('compares only the NEWEST checkpoint — older ones attest older states', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'vc-attest-'))
+    try {
+      storeWith(dir, ['ENG-001'])
+      emitCheckpoint(dir, join(dir, 'engrams.yaml'), 'cli')
+      storeWith(dir, ['ENG-001', 'ENG-002'])
+      emitCheckpoint(dir, join(dir, 'engrams.yaml'), 'cli')
+      // The first checkpoint legitimately describes a store that no longer
+      // exists. Only the newest is a claim about now.
+      expect(verifyChain(dir).status).toBe('verified')
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  })
+
+  it('an absent store is not a mismatch', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'vc-attest-'))
+    try {
+      storeWith(dir, ['ENG-001'])
+      emitCheckpoint(dir, join(dir, 'engrams.yaml'), 'cli')
+      rmSync(join(dir, 'engrams.yaml'))
+      expect(verifyChain(dir).status).toBe('verified')
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  })
+})
+
+describe('verifyChain — a declared gap is not tampering', () => {
+  it('reports prev:null mid-chain as declared_gap, not prev_mismatch', () => {
+    // appendHistory writes prev:null when it cannot take the chain lock, and
+    // #1052 promises that is "never mistaken for tampering". Reporting it as
+    // prev_mismatch — the reason a rewritten link produces — was exactly that
+    // mistake, and under real contention it would fire routinely.
+    const dir = mkdtempSync(join(tmpdir(), 'vc-gap-'))
+    try {
+      appendHistory(dir, { event: 'engram_created', engram_id: 'ENG-001', timestamp: '2026-01-01T00:00:00.000Z', data: {} })
+      appendHistory(dir, { event: 'engram_created', engram_id: 'ENG-002', timestamp: '2026-01-01T00:01:00.000Z', data: {} })
+
+      // Rewrite the second event with prev:null and a hash that matches it —
+      // exactly what the lock-failure path produces.
+      const file = join(dir, 'history', '2026-01.jsonl')
+      const lines = readFileSync(file, 'utf8').trim().split('\n').map(l => JSON.parse(l) as HistoryEvent)
+      const gapped: HistoryEvent = { ...lines[1], prev: null }
+      delete (gapped as { hash?: string }).hash
+      gapped.hash = computeEventHash(gapped)
+      writeFileSync(file, [lines[0], gapped].map(e => JSON.stringify(e)).join('\n') + '\n', 'utf8')
+
+      const out = verifyChain(dir)
+      expect(out.status).toBe('broken')
+      const reasons = out.status === 'broken' ? out.result.breaks.map(b => b.reason) : []
+      expect(reasons).toContain('declared_gap')
+      expect(reasons).not.toContain('prev_mismatch')
+    } finally { rmSync(dir, { recursive: true, force: true }) }
   })
 })

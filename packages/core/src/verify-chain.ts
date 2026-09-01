@@ -29,14 +29,15 @@
  */
 import * as fs from 'node:fs'
 import { join } from 'node:path'
-import { createHash } from 'node:crypto'
-import { computeEventHash, listHistoryMonths, type HistoryEvent } from './history.js'
+import { computeEventHash, hashEngramsFile, listHistoryMonths, type HistoryEvent } from './history.js'
 
 export type BreakReason =
   | 'hash_mismatch'            // the event does not hash to its recorded hash
   | 'prev_mismatch'            // prev does not equal the predecessor's hash
   | 'dangling_prev'            // prev names a hash no event in the log carries
   | 'checkpoint_head_missing'  // a checkpoint pins a head the chain no longer contains
+  | 'store_hash_mismatch'      // the newest checkpoint attests a store that is not the one on disk
+  | 'declared_gap'             // prev is null mid-chain: a writer could not take the lock
 
 export interface ChainBreak {
   month:    string
@@ -198,8 +199,18 @@ export function verifyChain(root: string): ChainVerifyOutcome {
 
     const prev = event.prev ?? null
     if (sawFirstChained && prev !== expectedPrev) {
+      // A null prev mid-chain is what appendHistory writes when it cannot take
+      // the chain lock. #1052 calls that "a DECLARED GAP ... never mistaken for
+      // tampering", and it is the honest choice -- but reporting it as
+      // `prev_mismatch` IS mistaking it for tampering, because that is the
+      // reason a rewritten link produces. Under the contention #1052 itself
+      // measured, a busy machine would show BROKEN with a tampering reason for
+      // a log nobody touched, which is the alarm-that-cries-wolf this surface
+      // exists to avoid. Its own reason code, so an operator can tell a
+      // concurrency artifact from an edit.
       result.breaks.push({
-        month, index, event_id: id, reason: 'prev_mismatch',
+        month, index, event_id: id,
+        reason: prev === null ? 'declared_gap' : 'prev_mismatch',
         expected: expectedPrev, actual: prev,
       })
     }
@@ -259,6 +270,32 @@ export function verifyChain(root: string): ChainVerifyOutcome {
     })
   }
 
+  // The checkpoint's whole purpose is to attest the STORE, and nothing checked
+  // it: verifyChain read `chain_head` and ignored `store_hash`, so a store whose
+  // engrams.yaml had been replaced wholesale -- the chain left untouched --
+  // verified as OK. Compare the NEWEST checkpoint only: older ones attest older
+  // states and are expected to differ.
+  const newestCheckpoint = [...scanned].reverse().find(s => s.event.event === 'checkpoint')
+  if (newestCheckpoint) {
+    const attested = (newestCheckpoint.event.data as { store_hash?: unknown }).store_hash
+    if (typeof attested === 'string') {
+      const actual = hashStoreFile(join(root, 'engrams.yaml'))
+      // A store that cannot be read is not a mismatch: an absent store is a
+      // real state (nothing learned yet), and an unreadable one is a refusal
+      // the caller already sees through `cannot_verify` on the log itself.
+      if (actual !== null && actual !== attested) {
+        result.breaks.push({
+          month: newestCheckpoint.month,
+          index: newestCheckpoint.index,
+          event_id: '(checkpoint)',
+          reason: 'store_hash_mismatch',
+          expected: attested,
+          actual,
+        })
+      }
+    }
+  }
+
   result.torn_tail = torn_tail
   // A torn tail does not make the chain broken — everything before it verified.
   result.ok = result.breaks.length === 0 && result.forks.length === 0
@@ -266,12 +303,26 @@ export function verifyChain(root: string): ChainVerifyOutcome {
 }
 
 /**
- * SHA-256 of a store's engrams.yaml bytes, or null when absent.
- * Used to compare a checkpoint's recorded store_hash against the file today.
+ * The store's CANONICAL hash, or null when it cannot be computed.
+ *
+ * Must be the digest a checkpoint records, or the comparison is meaningless.
+ * This function used to hash the raw file bytes while `emitCheckpoint` recorded
+ * the canonical JSON of the parsed document -- two different preimages, so the
+ * value printed by `plur verify` could never equal the value in any checkpoint,
+ * and the doc comment claiming it was "used to compare a checkpoint's recorded
+ * store_hash against the file today" described something that could not happen.
+ * Raw-byte hashing was rejected on purpose in #1052 (LF vs CRLF, emitter, OS);
+ * reintroducing it in the verifier was the harder half of that bug to see.
+ *
+ * Null rather than throwing: a store may legitimately be absent (nothing has
+ * been learned yet), and that is not a verification failure.
+ *
+ * @param engramsPath - absolute path to engrams.yaml.
+ * @returns the canonical store hash, or null when absent or unparseable.
  */
 export function hashStoreFile(engramsPath: string): string | null {
   try {
-    return createHash('sha256').update(fs.readFileSync(engramsPath)).digest('hex')
+    return hashEngramsFile(engramsPath)
   } catch {
     return null
   }

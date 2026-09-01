@@ -81,6 +81,17 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
       outputText('    A checkpoint pinned a chain head this log no longer contains,')
       outputText('    which means events below it were rewritten wholesale.')
     }
+    if (b.reason === 'store_hash_mismatch') {
+      outputText('    The newest checkpoint attests a store that is not the one on disk.')
+      outputText('    The chain itself is intact — engrams.yaml changed under it. That is')
+      outputText('    expected if you have learned anything since; run `plur checkpoint`')
+      outputText('    to attest the current state. If you have NOT, the store was replaced.')
+    }
+    if (b.reason === 'declared_gap') {
+      outputText('    A writer could not take the chain lock and declared a gap rather')
+      outputText('    than chaining from a tail it had not read under exclusion. This is a')
+      outputText('    concurrency artifact, NOT evidence of tampering.')
+    }
   }
 
   for (const f of r.forks) {
