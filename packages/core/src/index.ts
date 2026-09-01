@@ -1923,7 +1923,10 @@ export class Plur {
 
   private _provenanceStore(): ProvenanceStore {
     if (!this._provenanceStoreInstance) {
-      this._provenanceStoreInstance = new FileProvenanceStore(this.paths.root)
+      this._provenanceStoreInstance = new FileProvenanceStore(
+        this.paths.root,
+        this.config.provenance?.path,
+      )
     }
     return this._provenanceStoreInstance
   }

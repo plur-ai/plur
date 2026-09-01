@@ -156,6 +156,30 @@ const LICENCE_POLICY: Record<string, { uid?: string; permit: string[]; require: 
       + 'recorded decision to withhold permission. Any reuse needs the holder\'s '
       + 'agreement, obtained directly. There is no licence text to consult.',
   },
+  // Same reasoning as `proprietary`, and it must be here for a sharper reason:
+  // `unlicense` sits eleven lines above and means the OPPOSITE.
+  //
+  // The Unlicense is a public-domain dedication that grants everything.
+  // "unlicensed" is the recorded absence of a grant, and it is the spelling four
+  // user-facing surfaces tell an operator to type when they want to grant
+  // nothing — packs.ts, the CLI, the MCP tool and the profile §5.4. With no
+  // entry here it fell through to the unrecognised branch, which reports
+  // `licenceRecognised: false` and advises the reader to go and read a licence
+  // text that does not exist. The permissions came out right by luck; the
+  // impression came out exactly backwards, and the reader acts on the
+  // impression.
+  //
+  // A dropped 'd' between these two keys is the difference between "I grant
+  // nothing" and "I dedicate this to the public domain". Keeping both spellings
+  // present and opposite is what makes that a typo the record can survive.
+  unlicensed: {
+    permit: [], require: [],
+    forbid: ['use', 'reproduce', 'distribute', 'derive', 'commercialize'],
+    note: 'No licence was granted. This is a recorded decision, not a lookup that '
+      + 'failed — do not confuse it with `unlicense`, the public-domain '
+      + 'dedication, which grants everything. Any reuse needs the holder\'s '
+      + 'agreement, obtained directly. There is no licence text to consult.',
+  },
 }
 
 /**
@@ -1044,6 +1068,7 @@ const LICENCE_MEANING: Record<string, string> = {
   unlicense: 'no conditions',
   'cc-by-nc-sa-4.0': 'reuse allowed, credit required, share alike, NOT for commercial use',
   proprietary: 'NO reuse granted — ask the holder',
+  unlicensed: 'NO reuse granted — ask the holder (not the Unlicense)',
 }
 
 /**

@@ -323,3 +323,57 @@ describe('the preview can tell the four licence states apart (#1019)', () => {
     expect(entry?.sources).toEqual([])
   })
 })
+
+describe('a malformed licence source does not corrupt the typed output', () => {
+  // Raised in review of #1044. `license` was guarded with `typeof === 'string'`
+  // and `licenseSource` was not, in a module whose stated job is packs built to
+  // mislead. One record with a non-string there put whatever it contained into
+  // `sources: string[]`, for every consumer downstream.
+  let home: string
+  let out: string
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), 'plur-badsrc-home-'))
+    out = mkdtempSync(join(tmpdir(), 'plur-badsrc-out-'))
+  })
+  afterEach(() => { for (const d of [home, out]) rmSync(d, { recursive: true, force: true }) })
+
+  const previewWithSource = async (badSource: unknown) => {
+    const plur = new Plur({ path: home })
+    await plur.learn('Pools cap at 100 on the shared tier', {
+      type: 'architectural', visibility: 'public', domain: 'ops',
+    })
+    const engrams = await plur.list()
+    plur.exportPack(engrams, out, { name: 'badsrc', version: '1.0.0', license: 'apache-2.0' } as any)
+    const id = engrams[0].id
+    writeFileSync(join(out, 'provenance', `${id}.jsonld`), JSON.stringify({
+      '@graph': [{
+        '@id': `engram:${id}`,
+        '@type': ['prov:Entity', 'engram:Engram'],
+        'engram:license': 'cc-by-4.0',
+        'engram:licenseSource': badSource,
+      }],
+    }))
+    return (await plur.previewPack(out)).provenance
+  }
+
+  it('keeps sources a string array when a record carries an object', async () => {
+    const { licences } = await previewWithSource({ malicious: true })
+    const entry = licences.find(l => l.name === 'cc-by-4.0')
+    expect(entry?.sources.every(x => typeof x === 'string')).toBe(true)
+    expect(entry?.sources).toEqual([])
+  })
+
+  it('falls back to the boolean when the source is not a string', async () => {
+    // With no usable source, the older `engram:licenseIsDefault` path decides —
+    // and absent that too, the licence reads as chosen.
+    const { licences } = await previewWithSource(42)
+    expect(licences.find(l => l.name === 'cc-by-4.0')?.chosen).toBe(true)
+  })
+
+  it('still reads a well-formed source', async () => {
+    const { licences } = await previewWithSource('inheritedFromPack')
+    const entry = licences.find(l => l.name === 'cc-by-4.0')
+    expect(entry?.sources).toContain('inheritedFromPack')
+    expect(entry?.chosen).toBe(false)
+  })
+})

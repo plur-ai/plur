@@ -24,8 +24,10 @@ const engramOf = (overrides: Record<string, unknown> = {}) =>
     ...overrides,
   })
 
+const graphOf = (record: any): any[] => record['@graph']
+
 const subjectOf = (record: any) =>
-  record['@graph'].find((n: any) => String(n['@id']).startsWith('engram:ENG'))
+  graphOf(record).find((n: any) => String(n['@id']).startsWith('engram:ENG'))
 
 describe('the policy must not contradict the prose', () => {
   it('forbids passing on a private memory, in the record itself', () => {
@@ -114,7 +116,7 @@ describe('identifiers in the record have to be legal', () => {
     const record = buildProvenanceRecord(engramOf({
       attribution: { runtime: { name: 'my runtime', version: '1.0 beta' } },
     }))
-    const software = record['@graph'].find((n: any) => String(n['@id']).includes('agent/software'))
+    const software = graphOf(record).find((n: any) => String(n['@id']).includes('agent/software'))
     expect(software['@id']).not.toContain(' ')
   })
 })

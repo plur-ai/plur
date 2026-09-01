@@ -52,14 +52,25 @@ function substance(body: string): string {
 }
 
 export class FileProvenanceStore implements ProvenanceStore {
-  constructor(private readonly root: string) {}
+  /**
+   * `subdir` is `config.provenance.path`. It was declared with a default of
+   * 'provenance' and read nowhere, so the setting was documented but inert —
+   * the directory name was hardcoded below. Threading it through here is what
+   * makes the config key mean something; the default keeps every existing
+   * store on the same path it already uses.
+   */
+  constructor(private readonly root: string, private readonly subdir: string = 'provenance') {}
 
   private dirFor(engramId: string): string {
     // Engram identifiers are constrained to ^(ENG|ABS|META)-[A-Za-z0-9-]+$ by
     // the schema, so they cannot climb out of the directory. Belt and braces
     // anyway, because this builds a filesystem path.
     const safe = engramId.replace(/[^A-Za-z0-9-]/g, '_')
-    return join(this.root, 'provenance', safe)
+    // The configured subdirectory gets the same treatment, and for a stronger
+    // reason: unlike an engram id it is arbitrary operator-supplied text, so a
+    // '../' in config.yaml would otherwise write records outside the store.
+    const safeSubdir = this.subdir.replace(/[^A-Za-z0-9._-]/g, '_') || 'provenance'
+    return join(this.root, safeSubdir, safe)
   }
 
   async put(engramId: string, record: unknown): Promise<string> {

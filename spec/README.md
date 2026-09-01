@@ -32,7 +32,7 @@ wherever the two overlap. Profiles version independently of the standard.
 
 | Profile | Profiles | Version | Status |
 |---|---|---|---|
-| `ENGRAM-PROVENANCE-PROFILE.md` | §9 (the PROV-O half) | 0.7 (draft) | Proposed; implemented in the reference |
+| `ENGRAM-PROVENANCE-PROFILE.md` | §9 (the PROV-O half) | 0.8 (draft) | Proposed; implemented in the reference |
 
 ## What is normative vs proposed
 
