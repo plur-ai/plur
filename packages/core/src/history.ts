@@ -221,6 +221,21 @@ export function readChainHead(historyDir: string, currentMonthFile?: string): st
 }
 
 /**
+ * Drop every cached chain-head observation for `historyDir`.
+ *
+ * Used when we cannot bound what we just observed — an unlocked write, or a
+ * stat that failed. Both tiers go, including the on-disk sidecar: leaving a
+ * stale sidecar behind would let ANOTHER process trust an observation this one
+ * already knows is unreliable.
+ *
+ * @param historyDir - the history directory whose caches to drop.
+ */
+function invalidateChainHead(historyDir: string): void {
+  _chainHeadMem.delete(historyDir)
+  try { fs.unlinkSync(join(historyDir, CHAIN_HEAD_FILE)) } catch { /* already gone */ }
+}
+
+/**
  * Write the sidecar chain-head file. Best-effort: a write failure must not
  * propagate to the caller or fail the history append. The sidecar is advisory;
  * the JSONL is authoritative.
@@ -523,7 +538,7 @@ export function appendHistoryStamped(
     // the hash covers it (#1052 checkpoints).
     onPrev?.(predecessorHash)
     event.hash = computeEventHash(event) // canonical bytes exclude the hash field
-    writeEventLine(JSON.stringify(event) + '\n')
+    writeEventLine(JSON.stringify(event) + '\n', true)
   }
   // fsync the append (#813, audit finding 20). O_APPEND makes the write atomic
   // against concurrent writers, but not durable: a committed engram mutation
@@ -550,7 +565,25 @@ export function appendHistoryStamped(
   // restore` (it NAMES the engrams a restore cannot recover) and, since #816,
   // for id allocation. A store writing no history is degraded and the operator
   // needs to know — but the write itself must still land.
-  function writeEventLine(line: string): void {
+  /**
+   * Append one JSONL line, and record the chain head it establishes.
+   *
+   * `chained` is false on the lock-failure path. That distinction is
+   * load-bearing: the caches may only be updated by a writer holding the chain
+   * lock. An unlocked writer's `statSync` can observe a size that already
+   * includes a CONCURRENT writer's append, so it records
+   * `{hash: mine, size: combined}` — an observation that then PASSES the
+   * size+inode validation while naming the wrong tail, and the next writer
+   * chains from a head that is not the head. That is precisely the silent
+   * cross-process fork this sidecar was added to eliminate, reintroduced on the
+   * one path where exclusion is known to be absent.
+   *
+   * So the unlocked path INVALIDATES instead: drop the memory entry and remove
+   * the sidecar, forcing the next lookup down to the authoritative tail-seek.
+   * Slower and always right, which is the correct trade when we know we cannot
+   * bound what we just observed.
+   */
+  function writeEventLine(line: string, chained: boolean): void {
   try {
     const fd = fs.openSync(filePath, 'a')
     try {
@@ -568,16 +601,22 @@ export function appendHistoryStamped(
     // Record what we just observed: the hash, and the exact file state it
     // describes. Both tiers are validated against this on the next lookup, so
     // neither can outlive the state it was true of.
-    try {
-      const st = fs.statSync(filePath)
-      const rec: ChainHeadRecord = { hash: event.hash!, file: filePath, size: st.size, ino: st.ino }
-      _chainHeadMem.set(historyDir, rec)
-      writeChainHead(historyDir, rec)
-    } catch {
-      // Could not stat what we just wrote — drop the cache rather than record
-      // an observation we cannot bound. The next lookup tail-seeks, which is
-      // slower and always right.
-      _chainHeadMem.delete(historyDir)
+    if (!chained) {
+      // Wrote without the lock. Anything we observe now may already include
+      // another writer's append, so there is no observation worth keeping.
+      invalidateChainHead(historyDir)
+    } else {
+      try {
+        const st = fs.statSync(filePath)
+        const rec: ChainHeadRecord = { hash: event.hash!, file: filePath, size: st.size, ino: st.ino }
+        _chainHeadMem.set(historyDir, rec)
+        writeChainHead(historyDir, rec)
+      } catch {
+        // Could not stat what we just wrote — drop the cache rather than record
+        // an observation we cannot bound. The next lookup tail-seeks, which is
+        // slower and always right.
+        invalidateChainHead(historyDir)
+      }
     }
   } catch (err) {
     if (!warnedHistoryPaths.has(filePath)) {
@@ -608,7 +647,7 @@ export function appendHistoryStamped(
     event.prev = null
     onPrev?.(null)
     event.hash = computeEventHash(event)
-    writeEventLine(JSON.stringify(event) + '\n')
+    writeEventLine(JSON.stringify(event) + '\n', false)
   }
 }
 
