@@ -42,7 +42,7 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
   // engram_count is derived from the bytes that were hashed, inside
   // emitCheckpoint — not passed in. An attested count that is not bound to the
   // hash beside it is not attested at all.
-  const data = emitCheckpoint(plurRoot, engramsPath, status.engram_count, 'cli')
+  const data = emitCheckpoint(plurRoot, engramsPath, 'cli')
 
   if (shouldOutputJson(flags)) {
     outputJson({

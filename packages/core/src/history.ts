@@ -119,10 +119,30 @@ export function computeEventHash(event: HistoryEvent): string {
  * gap), not an error. The caller (appendHistory) writes the gap marker rather
  * than failing the mutation.
  *
- * Implementation: reads the last TAIL_WINDOW bytes of the file and scans
- * backwards for a newline, avoiding a full-file parse on the hot write path.
+ * Implementation: reads the last TAIL_WINDOW bytes and scans backwards for a
+ * newline, avoiding a full-file parse on the hot write path. If the window
+ * lands entirely INSIDE the final line -- no newline in it -- the window is
+ * doubled and the read retried, up to TAIL_MAX_WINDOW.
+ *
+ * That retry is not a nicety. A fixed window silently breaks the chain on any
+ * event longer than it: the buffer starts mid-line, JSON.parse fails, the
+ * function returns null, and the NEXT event chains from nothing -- a gap that
+ * `plur verify` then reports, over a log that is perfectly intact. `data` is
+ * typed `Record<string, unknown>`, and a co_injection carrying a large id array
+ * or a weekly_review payload reaches 8 KiB without anything unusual happening,
+ * so "sufficient for any realistic event line" was an assumption, not a bound.
  */
-const TAIL_WINDOW = 8192 // bytes — sufficient for any realistic event line
+/** Initial tail read. Covers the overwhelming majority of event lines. */
+const TAIL_WINDOW = 8192
+/**
+ * Ceiling on the doubling retry.
+ *
+ * A bound is still required -- without one, a corrupt file with no newline at
+ * all would be read entirely into memory on the hot write path. At the ceiling
+ * the function gives up and returns null, which is the documented gap: honest,
+ * visible, and preferable to an OOM during a write.
+ */
+const TAIL_MAX_WINDOW = 1024 * 1024
 
 export function tailSeekLastHash(filePath: string): string | null {
   try {
@@ -134,17 +154,37 @@ export function tailSeekLastHash(filePath: string): string | null {
     }
     if (stat.size === 0) return null
 
-    const readSize = Math.min(stat.size, TAIL_WINDOW)
-    const offset = stat.size - readSize
-    const buf = Buffer.allocUnsafe(readSize)
-    const fd = fs.openSync(filePath, 'r')
-    try {
-      fs.readSync(fd, buf, 0, readSize, offset)
-    } finally {
-      fs.closeSync(fd)
+    // Grow the window until it contains a line boundary, or until it covers the
+    // whole file, or until the ceiling. Without this, an event longer than the
+    // window is unreadable and silently becomes a chain gap.
+    let text = ''
+    for (let window = TAIL_WINDOW; ; window *= 2) {
+      const readSize = Math.min(stat.size, window)
+      const offset = stat.size - readSize
+      const buf = Buffer.allocUnsafe(readSize)
+      const fd = fs.openSync(filePath, 'r')
+      try {
+        fs.readSync(fd, buf, 0, readSize, offset)
+      } finally {
+        fs.closeSync(fd)
+      }
+      text = buf.toString('utf8')
+      // Whole file read: the scan below already tolerates a leading partial
+      // line being absent and a trailing terminator being present.
+      if (readSize >= stat.size) break
+      // Otherwise the window starts mid-file, so its first line is a fragment.
+      // Look for the START of the FINAL record, which means ignoring the file's
+      // trailing terminator first: a JSONL file ends in a newline, so the naive
+      // "does the window contain a newline" test is satisfied by that byte
+      // alone and slicing from it yields an empty string.
+      const body = text.replace(/\n+$/, '')
+      const lastBoundary = body.lastIndexOf('\n')
+      if (lastBoundary !== -1) {
+        text = body.slice(lastBoundary + 1)
+        break
+      }
+      if (window >= TAIL_MAX_WINDOW) return null // documented gap, never an OOM
     }
-
-    const text = buf.toString('utf8')
     // Scan backwards for the last non-empty line
     const lines = text.split('\n')
     for (let i = lines.length - 1; i >= 0; i--) {
@@ -423,6 +463,30 @@ export interface CheckpointData {
  * the hot write path (learn/feedback/forget).
  */
 export function hashEngramsFile(engramsPath: string): string {
+  return attestStore(engramsPath).store_hash
+}
+
+/**
+ * Hash a store AND count it from ONE read of ONE buffer.
+ *
+ * The two values are emitted side by side in a checkpoint, and a count that is
+ * not derived from the bytes the hash covers is not attested by it. Two
+ * separate `readFileSync` calls -- which is what this replaced -- leave a window
+ * for a concurrent `learn()` to land between them, after which the checkpoint
+ * asserts a count for a store state its own hash does not describe. Nothing
+ * downstream can detect that, because both values look individually well-formed.
+ *
+ * Parse errors THROW rather than degrading. The previous `catch { return 0 }` on
+ * the count meant an unreadable or malformed store produced a checkpoint
+ * attesting "0 engrams" beside a hash of a full store -- a false attestation,
+ * which is worse than no attestation. A checkpoint that cannot be computed
+ * honestly must not be written.
+ *
+ * @param engramsPath - absolute path to engrams.yaml.
+ * @returns the canonical store hash and the active engram count, from one read.
+ * @throws if the store cannot be read or parsed.
+ */
+export function attestStore(engramsPath: string): { store_hash: string; engram_count: number } {
   const raw = fs.readFileSync(engramsPath, 'utf8')
 
   // Hash the CONTENT, not the bytes.
@@ -445,7 +509,34 @@ export function hashEngramsFile(engramsPath: string): string {
   // Depends on sortKeysDeep honouring toJSON: js-yaml parses ISO timestamps
   // into Date objects, which without that fix canonicalise to `{}`.
   const parsed = yaml.load(raw)
-  return createHash('sha256').update(canonicalBytesOf(parsed)).digest('hex')
+  const store_hash = createHash('sha256').update(canonicalBytesOf(parsed)).digest('hex')
+  return { store_hash, engram_count: countActive(parsed, engramsPath) }
+}
+
+/**
+ * Active engrams in an ALREADY-PARSED store document.
+ *
+ * Takes the parsed document, not a path, so it cannot re-read the file and
+ * cannot disagree with the hash computed beside it.
+ *
+ * @param doc - the parsed engrams.yaml document.
+ * @param engramsPath - only for the error message.
+ * @returns the number of active (non-retired) engrams.
+ * @throws if the document is not a store shape.
+ */
+function countActive(doc: unknown, engramsPath: string): number {
+  const list = Array.isArray(doc) ? doc : (doc as { engrams?: unknown } | null)?.engrams
+  if (!Array.isArray(list)) {
+    throw new Error(
+      `[plur] cannot checkpoint ${engramsPath}: expected a store document with an 'engrams' list, ` +
+      `got ${doc === null || doc === undefined ? 'nothing' : typeof doc}. ` +
+      `Refusing rather than attesting a count of 0 beside a hash of the real file.`,
+    )
+  }
+  return list.filter(e => {
+    const status = (e as { status?: unknown } | null)?.status
+    return status === undefined || status === 'active'
+  }).length
 }
 
 /** Canonical UTF-8 JSON bytes of any parsed value — the §3 form. */
@@ -454,27 +545,18 @@ function canonicalBytesOf(value: unknown): Buffer {
 }
 
 /**
- * Count the active engrams in a parsed store document.
+ * Count the active engrams in a store.
  *
- * Derived from the same bytes `hashEngramsFile` hashes, rather than accepted
- * from the caller: an attested count that is not bound to the hash it sits
- * beside is not attested at all. `emitCheckpoint(root, path, 99999, 'cli')`
- * against a one-engram store used to be written verbatim.
+ * Thin wrapper over {@link attestStore}. Prefer `attestStore` when you also
+ * need the hash: calling this AND `hashEngramsFile` reads the file twice and
+ * reopens the window where the two disagree.
+ *
+ * @param engramsPath - absolute path to engrams.yaml.
+ * @returns the number of active engrams.
+ * @throws if the store cannot be read or parsed.
  */
 export function countEngramsInStore(engramsPath: string): number {
-  try {
-    const doc = yaml.load(fs.readFileSync(engramsPath, 'utf8')) as unknown
-    const list = Array.isArray(doc)
-      ? doc
-      : (doc as { engrams?: unknown } | null)?.engrams
-    if (!Array.isArray(list)) return 0
-    return list.filter(e => {
-      const status = (e as { status?: unknown } | null)?.status
-      return status === undefined || status === 'active'
-    }).length
-  } catch {
-    return 0
-  }
+  return attestStore(engramsPath).engram_count
 }
 
 /**
@@ -494,11 +576,12 @@ export function countEngramsInStore(engramsPath: string): number {
  *
  * @param root        — plur store root (e.g. ~/.plur)
  * @param engramsPath — absolute path to engrams.yaml
- * @param engramCount — IGNORED. Retained for signature compatibility; the
- *   count is derived from the same bytes `store_hash` covers, because a count
- *   the caller supplies is not bound to the hash it sits beside.
- *   `emitCheckpoint(root, path, 99999, 'cli')` against a one-engram store used
- *   to be written verbatim.
+ * The caller does NOT supply the engram count. It used to, and
+ * `emitCheckpoint(root, path, 99999, 'cli')` against a one-engram store wrote
+ * 99999 verbatim. The first fix kept the parameter and ignored it, which is
+ * worse in a published API: every existing call still compiles and its argument
+ * is silently discarded. The parameter is gone, so a stale call is a type error
+ * the compiler reports rather than a number that quietly stops mattering.
  * @param actor       — who triggered the checkpoint ('session_end' | 'cli' | custom)
  * @param timestamp   — ISO-8601 timestamp; defaults to now
  * @returns the written CheckpointData
@@ -506,17 +589,21 @@ export function countEngramsInStore(engramsPath: string): number {
 export function emitCheckpoint(
   root: string,
   engramsPath: string,
-  engramCount: number, // eslint-disable-line @typescript-eslint/no-unused-vars -- see doc
   actor: string,
   timestamp?: string,
 ): CheckpointData {
   const ts = timestamp ?? new Date().toISOString()
 
-  // Hash the store and count it BEFORE taking the lock: both read engrams.yaml,
-  // not the history log, and doing file I/O inside the chain lock would hold it
-  // for the duration of a whole-store parse.
-  const store_hash = hashEngramsFile(engramsPath)
-  const engram_count = countEngramsInStore(engramsPath)
+  // ONE read, both values. Hashing and counting from two separate reads left a
+  // window for a concurrent write to land between them, after which the
+  // checkpoint asserted a count for a store state its own hash did not
+  // describe -- and nothing downstream could tell, because both values were
+  // individually well-formed.
+  //
+  // Still done BEFORE taking the chain lock: this reads engrams.yaml, not the
+  // history log, and holding the chain lock across a whole-store parse would
+  // serialise every other writer behind it.
+  const { store_hash, engram_count } = attestStore(engramsPath)
 
   const event: HistoryEvent = {
     event: 'checkpoint',
