@@ -336,7 +336,7 @@ describe('who caused an event, as distinct from who asserted the engram (#959)',
     plur.setIdentity('local:alex')
     const engram = await plur.learn('Pools cap at 100', { type: 'architectural' })
     const { readHistoryForEngram } = await import('../src/history.js')
-    const events = readHistoryForEngram(plur.paths.root, engram.id)
+    const events = readHistoryForEngram(plur.storageRoot, engram.id)
     expect(events.length).toBeGreaterThan(0)
     for (const e of events) {
       expect(e.actor?.asserted_by, `${e.event} has no actor`).toBe('local:alex')
@@ -380,10 +380,10 @@ describe('the derivation chain, the last of the four dormant fields', () => {
 
     const yaml = await import('js-yaml')
     const { readFileSync, writeFileSync } = await import('node:fs')
-    const doc = yaml.load(readFileSync(plur.paths.engrams, 'utf8')) as any
+    const doc = yaml.load(readFileSync(join(plur.storageRoot, 'engrams.yaml'), 'utf8')) as any
     const first = doc.engrams.find((e: any) => e.id === a.id)
     first.provenance = { origin: 'direct', chain: [b.id], signature: null }
-    writeFileSync(plur.paths.engrams, yaml.dump(doc))
+    writeFileSync(join(plur.storageRoot, 'engrams.yaml'), yaml.dump(doc))
 
     plur = new Plur({ path: dir })
     const c = await plur.learn('Third', { type: 'architectural', supersedes: [b.id] })
