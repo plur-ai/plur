@@ -17,6 +17,12 @@ RECIPIENT="$DEMO/recipient"
 mkdir -p "$STORE" "$RECIPIENT"
 trap 'rm -rf "$DEMO"' EXIT
 
+# Every command below also passes --path explicitly. This is the backstop for
+# the one that eventually does not: PLUR_PATH is the real override, so a
+# forgotten flag lands in the throwaway store instead of the reader's own
+# memories. (PLUR_HOME is NOT an override and setting it does nothing.)
+export PLUR_PATH="$STORE"
+
 # Colours, and a slow-typing effect so the recording is readable.
 B=$'\033[1m'; DIM=$'\033[2m'; C=$'\033[36m'; G=$'\033[32m'; Y=$'\033[33m'; R=$'\033[0m'
 
@@ -115,11 +121,11 @@ say "pack says about itself is a claim by whoever built it. There is no"
 say "tick and no badge anywhere in this output, deliberately."
 
 say "Tamper with the pack and the integrity check notices."
-run "sed -i '' 's/Connection pools/Connection pool/' $PACK/engrams.yaml"
+run "perl -pi -e 's/Connection pools/Connection pool/' $PACK/engrams.yaml"
 run "node $CLI packs install $PACK --path $RECIPIENT --json | python3 -m json.tool"
 
 say "Put it back, and it installs."
-run "sed -i '' 's/Connection pool /Connection pools /' $PACK/engrams.yaml"
+run "perl -pi -e 's/Connection pool /Connection pools /' $PACK/engrams.yaml"
 run "node $CLI packs install $PACK --path $RECIPIENT --json | python3 -c \"
 import json,sys
 d = json.load(sys.stdin)

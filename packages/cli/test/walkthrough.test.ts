@@ -12,6 +12,8 @@
 import { describe, it, expect } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import { join } from 'node:path'
+import { homedir } from 'node:os'
+import { statSync, existsSync } from 'node:fs'
 
 const SCRIPT = join(__dirname, '..', '..', '..', 'docs', 'demo', 'provenance-walkthrough.sh')
 const CLI = join(__dirname, '..', 'dist', 'index.js')
@@ -20,6 +22,12 @@ const CLI = join(__dirname, '..', 'dist', 'index.js')
 const ESCAPES = new RegExp(String.fromCharCode(27) + '\\[[0-9;]*[a-zA-Z]', 'g')
 
 describe('the provenance walkthrough', () => {
+  // Snapshot the real store before the script runs, so the guard below can
+  // assert the filesystem rather than trusting that a write would show up in
+  // stdout. Absent store is fine — nothing to protect.
+  const REAL = join(homedir(), '.plur')
+  const realStoreMtimeBefore = existsSync(REAL) ? statSync(REAL).mtimeMs : null
+
   const output = execFileSync('bash', [SCRIPT], {
     encoding: 'utf8',
     timeout: 60_000,
@@ -72,6 +80,17 @@ describe('the provenance walkthrough', () => {
 
   it('never touches the real store', () => {
     // Every command in the script is pointed at a temporary directory.
-    expect(output).not.toMatch(/\/Users\/[^/]+\/\.plur/)
+    //
+    // This used to assert against a hardcoded /Users/<name>/.plur, which is the
+    // macOS shape — on Linux CI, where HOME is /home/runner, the pattern could
+    // never match and the guard was inert in the environment it actually runs
+    // in. Resolve the path instead, and check the filesystem rather than only
+    // the output: a silent write would leave stdout clean.
+    expect(output).not.toContain(REAL)
+    // Only meaningful when there was a store to protect; a machine without one
+    // has nothing to assert and must not fail for that reason.
+    if (realStoreMtimeBefore !== null) {
+      expect(statSync(REAL).mtimeMs).toBe(realStoreMtimeBefore)
+    }
   })
 }, 90_000)
