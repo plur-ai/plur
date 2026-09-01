@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
+import { spawn } from 'child_process'
 import { appendHistory, computeQueryHash, isRecentDuplicateInjection, generateInjectionId } from '../src/history.js'
 
 describe('cross-process injection dedup (#975)', () => {
@@ -92,5 +93,98 @@ describe('cross-process injection dedup (#975)', () => {
 
   it('returns false on empty/missing history', () => {
     expect(isRecentDuplicateInjection(root, 'abc123', ['eng-1'])).toBe(false)
+  })
+})
+
+// ── The race the fix exists to close ────────────────────────────────────────
+
+describe('cross-process dedup is atomic, not check-then-act (#975)', () => {
+  /**
+   * The duplicates come from hook processes spawning "within milliseconds",
+   * which is exactly the window in which both read the tail before either has
+   * appended. Reading, deciding, then appending is a read-modify-write across
+   * processes: O_APPEND makes the WRITE atomic without making the SEQUENCE
+   * atomic, so both see no duplicate and both write one.
+   *
+   * Awaiting two injections in sequence passes either way. Only genuinely
+   * concurrent PROCESSES exercise it.
+   *
+   * INVARIANT: N concurrent injections of the same query and the same engram
+   * set produce exactly ONE co_injection event.
+   */
+  let root: string
+  beforeEach(() => { root = fs.mkdtempSync(path.join(os.tmpdir(), 'plur-dedup-race-')) })
+  afterEach(() => { fs.rmSync(root, { recursive: true, force: true }) })
+
+  function countCoInjections(dir: string): number {
+    const historyDir = path.join(dir, 'history')
+    if (!fs.existsSync(historyDir)) return 0
+    return fs.readdirSync(historyDir)
+      .filter(f => f.endsWith('.jsonl'))
+      .flatMap(f => fs.readFileSync(path.join(historyDir, f), 'utf8').split('\n').filter(Boolean))
+      .map(l => { try { return JSON.parse(l) as { event?: string } } catch { return {} } })
+      .filter(e => e.event === 'co_injection').length
+  }
+
+  it('four concurrent processes write ONE event, not four', async () => {
+    const store = 'engrams:\n' +
+      '  - id: ENG-2026-0101-001\n    statement: prefer pnpm over npm\n    type: behavioral\n' +
+      '    scope: global\n    status: active\n    version: 2\n    domain: build.tools\n' +
+      '    activation:\n      retrieval_strength: 0.9\n      storage_strength: 1.0\n' +
+      '      frequency: 5\n      last_accessed: "2026-01-01"\n'
+    fs.writeFileSync(path.join(root, 'engrams.yaml'), store, 'utf8')
+
+    const script = `
+      const { Plur } = require(${JSON.stringify(path.join(process.cwd(), 'packages/core/dist/index.js'))});
+      (async () => {
+        const p = new Plur({ path: ${JSON.stringify(root)} });
+        await p.inject('prefer pnpm over npm', { source: 'session_start' });
+      })().catch(e => { console.error(e); process.exit(1) });
+    `
+    const procs = Array.from({ length: 4 }, () =>
+      new Promise<number>(resolve => {
+        const c = spawn(process.execPath, ['--input-type=commonjs', '-e', script], { stdio: 'ignore' })
+        c.on('exit', code => resolve(code ?? 1))
+      }))
+    const codes = await Promise.all(procs)
+    expect(codes, 'a child failed to run').toEqual([0, 0, 0, 0])
+
+    expect(countCoInjections(root)).toBe(1)
+  }, 120_000)
+})
+
+describe('a malformed timestamp cannot suppress a real record', () => {
+  let root: string
+  beforeEach(() => { root = fs.mkdtempSync(path.join(os.tmpdir(), 'plur-dedup-ts-')) })
+  afterEach(() => { fs.rmSync(root, { recursive: true, force: true }) })
+
+  it('treats an unparseable timestamp as OUT of the window', () => {
+    // `now - NaN > windowMs` is false, so the old guard did not `continue` and
+    // the event counted as in-window whatever its age. One corrupt tail line
+    // could then suppress a legitimate co_injection indefinitely.
+    const queryHash = computeQueryHash('q')
+    const ids = ['eng-1']
+    const historyDir = path.join(root, 'history')
+    fs.mkdirSync(historyDir, { recursive: true })
+    const month = new Date().toISOString().slice(0, 7)
+    fs.writeFileSync(path.join(historyDir, `${month}.jsonl`),
+      JSON.stringify({ event: 'co_injection', engram_id: 'x', timestamp: 'not-a-date',
+        data: { ids, query_hash: queryHash } }) + '\n', 'utf8')
+
+    expect(isRecentDuplicateInjection(root, queryHash, ids)).toBe(false)
+  })
+
+  it('treats a future timestamp as OUT of the window', () => {
+    const queryHash = computeQueryHash('q')
+    const ids = ['eng-1']
+    const historyDir = path.join(root, 'history')
+    fs.mkdirSync(historyDir, { recursive: true })
+    const month = new Date().toISOString().slice(0, 7)
+    const future = new Date(Date.now() + 86_400_000).toISOString()
+    fs.writeFileSync(path.join(historyDir, `${month}.jsonl`),
+      JSON.stringify({ event: 'co_injection', engram_id: 'x', timestamp: future,
+        data: { ids, query_hash: queryHash } }) + '\n', 'utf8')
+
+    expect(isRecentDuplicateInjection(root, queryHash, ids)).toBe(false)
   })
 })

@@ -4953,9 +4953,35 @@ export class Plur {
       // genuinely injected into context even if the history event is a
       // duplicate. Only the provenance log is deduped.
       const queryHash = computeQueryHash(task)
-      const isDuplicate = isRecentDuplicateInjection(this.paths.root, queryHash, injected_ids, 5_000, options?.source)
 
-      if (!isDuplicate) {
+      // The check and the append are ONE critical section, or this does not
+      // dedup anything.
+      //
+      // The duplicates being suppressed come from hook processes that spawn
+      // "within milliseconds" of each other — which is precisely the window in
+      // which both read the tail before either has appended to it. Read, decide,
+      // then append is a read-modify-write across processes, and O_APPEND makes
+      // the WRITE atomic without making the SEQUENCE atomic. Both would see no
+      // duplicate and both would write one, so the fix would help only when the
+      // processes happen to be staggered by more than a read plus an append —
+      // the case that was never the problem.
+      //
+      // Its OWN lock file, deliberately not the one #1051 uses for chain
+      // stamping. #1051 moves that lock INSIDE appendHistory; taking the same
+      // file here would mean this frame holds it while appendHistory tries to
+      // take it again, and withLock is file-based and not reentrant — so once
+      // both changes are on main every co_injection would fail to acquire,
+      // fall through to the unlocked path, and the dedup would be silently
+      // inert again. Two locks, two concerns: this one serialises the
+      // dedup DECISION, #1051's serialises the chain STAMP. They nest in one
+      // direction only (this one outside), and never contend for the same file.
+      //
+      // Tuned like #1051's: the section is a tail read and an append, so the
+      // stock 100 ms first backoff has waiters sleeping orders of magnitude
+      // longer than the holder needs.
+      const historyDir = join(this.paths.root, 'history')
+      const writeCoInjection = (): void => {
+        if (isRecentDuplicateInjection(this.paths.root, queryHash, injected_ids, 5_000, options?.source)) return
         const injection_id = generateInjectionId()
         try {
           appendHistory(this.paths.root, {
@@ -4976,6 +5002,20 @@ export class Plur {
           })
           for (const id of injected_ids) this._lastInjectionByEngram.set(id, injection_id)
         } catch { /* best-effort */ }
+      }
+
+      try {
+        // The lock file lives beside the month files, so the directory has to
+        // exist before we can take it. appendHistory creates it too, but that
+        // is inside the section we are trying to guard.
+        if (!fs.existsSync(historyDir)) fs.mkdirSync(historyDir, { recursive: true })
+        withLock(join(historyDir, 'co-injection-dedup'), writeCoInjection, { maxRetries: 12, baseDelay: 2 })
+      } catch {
+        // Could not take the lock. Write UNDEDUPED rather than dropping the
+        // event: a duplicate provenance record is noise, a missing one is a
+        // hole in the log `plur restore` reads to NAME what it cannot recover.
+        // Losing a record to avoid a duplicate is the wrong way round.
+        writeCoInjection()
       }
 
       // #866: increment injection_count on primary-store engrams selected for context.

@@ -288,8 +288,17 @@ export function isRecentDuplicateInjection(
     try { ev = JSON.parse(line) as HistoryEvent } catch { continue }
     if (ev.event !== 'co_injection') continue
 
+    // A malformed timestamp yields NaN, and `now - NaN > windowMs` is FALSE —
+    // so the `continue` below would not fire and the event would be treated as
+    // INSIDE the window regardless of its age. One corrupt line in the tail
+    // could then suppress a legitimate co_injection record indefinitely, which
+    // is the opposite of the failure this function is allowed to have: it may
+    // let a duplicate through, it may not eat a real record. Same reasoning for
+    // a timestamp in the future (clock skew): unusable, so out of scope.
     const evTime = new Date(ev.timestamp).getTime()
-    if (now - evTime > windowMs) continue
+    if (!Number.isFinite(evTime)) continue
+    const age = now - evTime
+    if (age < 0 || age > windowMs) continue
 
     const evHash = ev.data.query_hash as string | undefined
     if (evHash !== queryHash) continue
