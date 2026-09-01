@@ -188,3 +188,60 @@ describe('a malformed timestamp cannot suppress a real record', () => {
     expect(isRecentDuplicateInjection(root, queryHash, ids)).toBe(false)
   })
 })
+
+// ── Session is part of the key ──────────────────────────────────────────────
+
+describe('two sessions are two injections, not one duplicate', () => {
+  /**
+   * The duplicate #975 describes is ONE session's hooks firing twice from
+   * separate processes. Two different sessions selecting the same engrams for
+   * the same query are two real injections, and collapsing them loses a
+   * retrieval that `plur receipt` counts as engram-session evidence.
+   *
+   * This was invisible while the check was non-atomic: the race meant it almost
+   * never fired, so a key this coarse cost nothing. Making it atomic exposed it
+   * immediately — receipt-io's "two sessions, two pairs" case regressed.
+   */
+  let root: string
+  beforeEach(() => { root = fs.mkdtempSync(path.join(os.tmpdir(), 'plur-dedup-session-')) })
+  afterEach(() => { fs.rmSync(root, { recursive: true, force: true }) })
+
+  function writeEvent(session_id: string | undefined, queryHash: string, ids: string[]): void {
+    appendHistory(root, {
+      event: 'co_injection',
+      engram_id: generateInjectionId(),
+      timestamp: new Date().toISOString(),
+      data: { ids, query_hash: queryHash, source: 'inject', ...(session_id ? { session_id } : {}) },
+    })
+  }
+
+  it('does NOT dedup across different sessions', () => {
+    const qh = computeQueryHash('pnpm install')
+    const ids = ['eng-1']
+    writeEvent('s1', qh, ids)
+    expect(isRecentDuplicateInjection(root, qh, ids, 5_000, 'inject', 's2')).toBe(false)
+  })
+
+  it('DOES dedup within the same session', () => {
+    const qh = computeQueryHash('pnpm install')
+    const ids = ['eng-1']
+    writeEvent('s1', qh, ids)
+    expect(isRecentDuplicateInjection(root, qh, ids, 5_000, 'inject', 's1')).toBe(true)
+  })
+
+  it('treats absent-session events and absent-session queries as the same key', () => {
+    // Not every caller threads a session id; those must still dedup with each
+    // other, or the original #975 duplicates come straight back.
+    const qh = computeQueryHash('pnpm install')
+    const ids = ['eng-1']
+    writeEvent(undefined, qh, ids)
+    expect(isRecentDuplicateInjection(root, qh, ids, 5_000, 'inject', undefined)).toBe(true)
+  })
+
+  it('does not treat a sessionless event as a duplicate of a sessioned one', () => {
+    const qh = computeQueryHash('pnpm install')
+    const ids = ['eng-1']
+    writeEvent(undefined, qh, ids)
+    expect(isRecentDuplicateInjection(root, qh, ids, 5_000, 'inject', 's1')).toBe(false)
+  })
+})

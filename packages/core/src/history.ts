@@ -236,9 +236,11 @@ export function computeQueryHash(task: string): string {
  * shared across processes) for a recent co_injection with the same query_hash
  * AND the same engram set.
  *
- * Keyed on query_hash + sorted engram IDs (not hash alone) because the same
- * query text can legitimately select different engrams after a write (#975
- * review finding: hash-only suppresses genuinely different injections).
+ * Keyed on query_hash + sorted engram IDs + source + SESSION (not hash alone)
+ * because the same query text can legitimately select different engrams after a
+ * write (#975 review finding: hash-only suppresses genuinely different
+ * injections), and because two different sessions selecting the same engrams
+ * are two real injections rather than one duplicated.
  *
  * Window: 5 seconds (matches the near-duplicate definition in #975).
  * Reads only the tail of the current month's file — bounded I/O.
@@ -249,6 +251,7 @@ export function isRecentDuplicateInjection(
   engramIds: string[],
   windowMs = 5_000,
   source?: string,
+  sessionId?: string,
 ): boolean {
   const now = Date.now()
   const yearMonth = new Date().toISOString().slice(0, 7)
@@ -310,6 +313,18 @@ export function isRecentDuplicateInjection(
       const evSource = ev.data.source as string | undefined
       if (evSource !== source) continue
     }
+    // Session is part of the key, not an afterthought. The duplicate #975
+    // describes is ONE session's hooks firing twice from separate processes;
+    // two different sessions injecting the same engrams for the same query are
+    // two real injections, and collapsing them loses a retrieval that
+    // `plur receipt` counts as engram-session evidence.
+    //
+    // This only became visible once the check was made atomic: while the race
+    // meant the check almost never fired, a key this coarse cost nothing. It
+    // is why receipt-io's "two sessions, two pairs" case regressed the moment
+    // the dedup started working.
+    const evSession = ev.data.session_id as string | undefined
+    if (evSession !== sessionId) continue
     return true
   }
 

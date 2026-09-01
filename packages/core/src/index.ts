@@ -4981,7 +4981,7 @@ export class Plur {
       // longer than the holder needs.
       const historyDir = join(this.paths.root, 'history')
       const writeCoInjection = (): void => {
-        if (isRecentDuplicateInjection(this.paths.root, queryHash, injected_ids, 5_000, options?.source)) return
+        if (isRecentDuplicateInjection(this.paths.root, queryHash, injected_ids, 5_000, options?.source, options?.session_id)) return
         const injection_id = generateInjectionId()
         try {
           appendHistory(this.paths.root, {
