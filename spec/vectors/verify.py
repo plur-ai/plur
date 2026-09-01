@@ -144,9 +144,21 @@ def check_pack(pack: Path, r: Result) -> None:
 
         # The property that matters: records are outside the §5.5 hash, so
         # removing them must not change it.
-        without = "sha256:" + hashlib.sha256(
-            (pack / "SKILL.md").read_bytes() + (pack / "engrams.yaml").read_bytes()
-        ).hexdigest()
+        #
+        # Read the two files the same way pack_hash does — tolerating absence
+        # rather than assuming it. A pack that ships provenance/ and no
+        # engrams.yaml is malformed, but it must produce a diagnostic here, not
+        # a traceback: this is the path a third party runs against a pack we did
+        # not build, and an unhandled FileNotFoundError tells them nothing about
+        # which pack failed or why.
+        payload = b""
+        for part in ("SKILL.md", "engrams.yaml"):
+            f = pack / part
+            if f.exists():
+                payload += f.read_bytes()
+            else:
+                r.fail(name, f"§5.5: {part} is missing, so the integrity hash cannot be checked")
+        without = "sha256:" + hashlib.sha256(payload).hexdigest()
         if without != computed:
             r.fail(name, "§5.1: the provenance/ directory affected the integrity hash; it MUST NOT")
 
