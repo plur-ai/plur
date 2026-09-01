@@ -23,7 +23,13 @@ import { shouldOutputJson, outputJson, outputText } from '../output.js'
 import { verifyChain, hashStoreFile } from '@plur-ai/core'
 
 export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
-  const plur = createPlur(flags)
+  // Read-only, like `plur ui`. Verification must not be able to write to the
+  // artefact it is examining — and a write-capable handle can, through a lazy
+  // path such as a daily backup or a migration that runs on construction.
+  // `readonly: true` wraps the store in ReadonlyStoreGuard and makes
+  // _assertWritable throw, so "verify never mutates" is enforced rather than
+  // assumed from the fact that this function does not call a write method.
+  const plur = createPlur(flags, { readonly: true })
   const root = plur.storageRoot
   const outcome = verifyChain(root)
 
