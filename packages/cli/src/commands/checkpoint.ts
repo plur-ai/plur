@@ -42,10 +42,27 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
   // engram_count is derived from the bytes that were hashed, inside
   // emitCheckpoint — not passed in. An attested count that is not bound to the
   // hash beside it is not attested at all.
-  const data = emitCheckpoint(plurRoot, engramsPath, 'cli')
+  // attestStore refuses rather than attesting a count of 0 beside a hash of the
+  // real file, so an unparseable or non-store engrams.yaml now reaches here as
+  // a throw. The command already explains the missing-file case; an unreadable
+  // one deserves the same treatment rather than a raw js-yaml stack trace out
+  // of the built CLI.
+  let data
+  try {
+    data = emitCheckpoint(plurRoot, engramsPath, 'cli')
+  } catch (err) {
+    outputText('Cannot checkpoint: the store could not be read as a store.')
+    outputText(`  ${engramsPath}`)
+    outputText(`  ${err instanceof Error ? err.message : String(err)}`)
+    outputText('  A checkpoint that cannot attest the store is not written at all.')
+    process.exitCode = 1
+    return
+  }
 
   if (shouldOutputJson(flags)) {
     outputJson({
+      // First, because it is the value you anchor.
+      event_hash: data.event_hash ?? null,
       chain_head: data.chain_head,
       store_hash: data.store_hash,
       engram_count: data.engram_count,
@@ -53,6 +70,7 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
     })
   } else {
     outputText(`Checkpoint emitted`)
+    outputText(`  event_hash:   ${data.event_hash ?? '(unstamped)'}   <- anchor this`)
     outputText(`  store_hash:   ${data.store_hash}`)
     outputText(`  chain_head:   ${data.chain_head ?? '(genesis — no prior chained event)'}`)
     outputText(`  engram_count: ${data.engram_count}`)

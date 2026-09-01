@@ -3132,7 +3132,9 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
           const plurRoot = plur.storageRoot
           const engramsPath = join(plurRoot, 'engrams.yaml')
           const cp = emitCheckpoint(plurRoot, engramsPath, 'session_end')
-          checkpoint_hash = cp.store_hash
+          // The checkpoint's own hash, not the store's. Returning store_hash
+          // under this name told callers to anchor the wrong digest.
+          checkpoint_hash = cp.event_hash ?? undefined
         } catch { /* checkpoint is best-effort */ }
 
         return {
