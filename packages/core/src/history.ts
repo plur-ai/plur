@@ -505,7 +505,11 @@ export function appendHistory(root: string, event: HistoryEvent): void {
  * hoping nothing lands in between is what made 76/300 checkpoints disagree with
  * their own `prev` at 200 KB, and 174/300 at 2 MB.
  *
- * `onPrev` must be cheap and must not do I/O: it runs with the chain lock held.
+ * `onPrev` runs with the chain lock held, and MAY read the store — that is the
+ * point. #1052's checkpoint has to bind its `store_hash` to the `chain_head` it
+ * records, and the only way to do that is to read the store inside the same
+ * critical section that fixes the predecessor. It should still do no more than
+ * it must: every history append waits behind it.
  */
 export function appendHistoryStamped(
   root: string,
@@ -531,12 +535,24 @@ export function appendHistoryStamped(
   // read the same tail, both release, and both then append from it — measured
   // at 52 forks in 300 events. This is the boundary
   // .datacore/lib/ledger/log.py draws around "read-tail + compute-next + write".
+  // An `onPrev` failure is NOT a lock failure, and must not be treated as one.
+  // The catch below falls back to an unlocked append when the lock cannot be
+  // taken; without this flag a throw from `onPrev` — a checkpoint that could
+  // not attest its store — would take that same path and write the event
+  // anyway, with whatever `data` happened to be set. Recorded here so the
+  // catch can rethrow instead.
+  let onPrevFailure: unknown
   const stampAndWrite = (): void => {
     const predecessorHash = findPredecessorHash(historyDir, filePath)
     event.prev = predecessorHash // null when gap or genesis
     // Payload built from the predecessor this append will actually use, before
     // the hash covers it (#1052 checkpoints).
-    onPrev?.(predecessorHash)
+    try {
+      onPrev?.(predecessorHash)
+    } catch (err) {
+      onPrevFailure = err
+      throw err
+    }
     event.hash = computeEventHash(event) // canonical bytes exclude the hash field
     writeEventLine(JSON.stringify(event) + '\n', true)
   }
@@ -638,14 +654,25 @@ export function appendHistoryStamped(
     // to the gap path. Start at 2 ms and still back off exponentially if the
     // contention turns out to be genuine.
     withLock(join(historyDir, 'chain'), stampAndWrite, { maxRetries: 12, baseDelay: 2 })
-  } catch {
+  } catch (err) {
+    // Distinguish the two ways the block above can fail. If `onPrev` threw, the
+    // caller could not build its payload — a checkpoint that cannot attest its
+    // store — and writing the event anyway is worse than not writing it.
+    if (onPrevFailure !== undefined) throw onPrevFailure
+    void err
     // Could not take the lock. Do NOT chain from a tail we could not read
     // under exclusion — that is exactly how a fork is written. Declare a gap
     // instead: visible to `plur verify`, never mistaken for tampering. The
     // write itself must still land: history NAMES the engrams a restore cannot
     // recover, so dropping the record would make restore under-report.
     event.prev = null
-    onPrev?.(null)
+    try {
+      onPrev?.(null)
+    } catch (onPrevErr) {
+      // Same rule on the gap path: a payload that cannot be built means no
+      // event, not an event with an empty one.
+      throw onPrevErr
+    }
     event.hash = computeEventHash(event)
     writeEventLine(JSON.stringify(event) + '\n', false)
   }
@@ -675,6 +702,14 @@ const warnedHistoryPaths = new Set<string>()
  *   actor        — who/what triggered the checkpoint ('session_end' | 'cli' | string).
  */
 export interface CheckpointData {
+  /**
+   * SHA-256 of this checkpoint event itself — the value to anchor externally.
+   *
+   * Present on the value `emitCheckpoint` RETURNS; absent from the persisted
+   * payload, because an event's canonical bytes exclude its own hash. Null only
+   * when the append could not stamp one.
+   */
+  event_hash?: string | null
   chain_head: string | null
   store_hash: string
   engram_count: number
@@ -820,17 +855,6 @@ export function emitCheckpoint(
 ): CheckpointData {
   const ts = timestamp ?? new Date().toISOString()
 
-  // ONE read, both values. Hashing and counting from two separate reads left a
-  // window for a concurrent write to land between them, after which the
-  // checkpoint asserted a count for a store state its own hash did not
-  // describe -- and nothing downstream could tell, because both values were
-  // individually well-formed.
-  //
-  // Still done BEFORE taking the chain lock: this reads engrams.yaml, not the
-  // history log, and holding the chain lock across a whole-store parse would
-  // serialise every other writer behind it.
-  const { store_hash, engram_count } = attestStore(engramsPath)
-
   const event: HistoryEvent = {
     event: 'checkpoint',
     engram_id: '', // store-level event; no single engram
@@ -851,11 +875,47 @@ export function emitCheckpoint(
   // payload is built from it. `appendHistoryWithPrev` is appendHistory's own
   // critical section, entered once.
   appendHistoryStamped(root, event, prev => {
+    // Attest INSIDE the chain lock, from ONE read.
+    //
+    // Two bindings are being made here and both are load-bearing:
+    //
+    //  1. store_hash to engram_count. Computed from two separate reads, a
+    //     concurrent write landing between them produced a count for a store
+    //     state the hash beside it did not describe.
+    //
+    //  2. store_hash to chain_head. This is the one that matters for the
+    //     purpose #1052 exists for. Attesting before entering the lock meant
+    //     the store could move between the digest and the predecessor the event
+    //     records: measured at 294 of 297 checkpoints attesting a state that
+    //     was not the state at their own chain_head (median lag one mutation,
+    //     max four; 112 of 129 at 2 MB). Every digest was a real earlier state,
+    //     so it read as stale rather than corrupt — but a third party who
+    //     replays the log to chain_head and hashes the store gets a different
+    //     digest, which is exactly the check the checkpoint exists to make
+    //     possible.
+    //
+    // The cost is holding the chain lock across a whole-store parse. That is
+    // the right trade: checkpoints are explicit and rare (CLI, session end),
+    // history appends are frequent and short, and an attestation that is not
+    // bound to what it attests is not worth the lock it saved. The `onPrev`
+    // contract is widened from "cheap, no I/O" to "may read the store", which
+    // is documented on appendHistoryStamped.
+    //
+    // A throw here aborts the checkpoint rather than writing an unattested one
+    // — see the onPrevFailure handling in appendHistoryStamped.
+    const { store_hash, engram_count } = attestStore(engramsPath)
     const data: CheckpointData = { chain_head: prev, store_hash, engram_count, actor }
     event.data = data as unknown as Record<string, unknown>
   })
 
-  return event.data as unknown as CheckpointData
+  // The checkpoint's OWN hash, returned but not persisted — an event cannot
+  // contain its own hash (canonical bytes exclude the field). Without it the
+  // identity of the thing you would anchor is unobtainable from any caller:
+  // the CLI printed only chain_head/store_hash/engram_count/actor, and the MCP
+  // tool returned the STORE hash under the name `checkpoint_hash`. #1052 exists
+  // so that a checkpoint is anchorable, and a payload omitting the hash you
+  // would anchor is not anchorable either.
+  return { ...(event.data as unknown as CheckpointData), event_hash: event.hash ?? null }
 }
 
 /**
