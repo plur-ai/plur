@@ -106,6 +106,12 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     ...(knowledgeAnchors !== undefined ? { knowledge_anchors: knowledgeAnchors } : {}),
     ...(dualCoding !== undefined ? { dual_coding: dualCoding } : {}),
     ...(supersedes !== undefined ? { supersedes } : {}),
+    // #1048: a CLI invocation is a session too. Without this every engram
+    // written by `plur learn` lands with sources[].session_id null, and the
+    // attribution the epic exists to provide is absent from the most common
+    // write path there is. PLUR_SESSION_ID lets a wrapping harness thread its
+    // own id through; otherwise the run identifies itself honestly as a CLI run.
+    session_id: process.env.PLUR_SESSION_ID || `cli:${process.pid}`,
   }
 
   // ALWAYS use learnRouted (not learn): learn() stamps _demoted but does NOT do

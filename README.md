@@ -516,6 +516,25 @@ Everything is plain YAML. Open it, read it, edit it.
 
 `PLUR_PATH` overrides the default location.
 
+### Who wrote this engram
+
+Every engram records the actor that wrote it, in `provenance.origin`. Set the
+identity for this machine in `config.yaml`:
+
+```yaml
+provenance:
+  identity: agent:claude-code    # agent:<name> — one per writing actor
+```
+
+With no identity configured, engrams are stamped `agent:unidentified`. That is
+recorded honestly rather than guessed, so a store written by several actors
+still shows that it was — but the attribution is only useful once each writer
+names itself. `plur status` reports the value in effect.
+
+For a store several agents write to (a shared team store, or one machine
+running an MCP server alongside a CLI), give each writer its own identity.
+
+
 Indexing is on by default (`index: true`) and the backend is chosen from the
 size of your store, so there is normally nothing to configure:
 

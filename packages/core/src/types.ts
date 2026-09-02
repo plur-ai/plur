@@ -25,6 +25,21 @@ export interface LearnContext {
   memory_class?: 'semantic' | 'episodic' | 'procedural' | 'metacognitive'
   /** Current session episode ID for episodic anchoring (SP2 Idea 24). */
   session_episode_id?: string
+  /**
+   * The session this call belongs to — one field, two consumers (#1048, #243).
+   *
+   * 1. Resolves the session default write scope from the per-session registry
+   *    rather than the process-wide slot. Supply it whenever one `Plur`
+   *    instance serves more than one session concurrently; without it,
+   *    `setSessionScope()` is a single shared field and one session's scope
+   *    silently becomes another's (see `session-scopes.ts`).
+   * 2. Written to `sources[].session_id` on every engram write, so an engram
+   *    records which session produced it. Takes precedence over
+   *    `session_episode_id` in the source entry when both are supplied.
+   *
+   * Matches the name the public MCP tool schema has always used for this input.
+   */
+  session_id?: string
   /** Always-load flag — bypass keyword-relevance gate during injection. */
   pinned?: boolean
   /**
@@ -57,14 +72,24 @@ export interface LearnContext {
    */
   measured_under?: MeasuredUnder
   /**
-   * Session key this write belongs to (convergence Phase 2).
+   * @deprecated Use `session_id`. Kept as an alias for one release.
    *
-   * Resolves the session default scope from the per-session registry instead of
-   * the process-wide slot. Supply it whenever one `Plur` instance serves more
-   * than one session concurrently — without it, `setSessionScope()` is a single
-   * shared field and one session's scope silently becomes another's (see
-   * `session-scopes.ts`). Never persisted on the engram; it selects a scope, it
-   * is not part of one.
+   * These were two fields for one value. `session` selected the per-session
+   * default scope; `session_id` (#1048) recorded the same session in
+   * provenance — and the public MCP schema has always called the input
+   * `session_id`. So the handler mapping `args.session_id` into `context.session`
+   * was right for its original purpose, and #1048's new field was left unwired
+   * because the obvious mapping was already taken. The result was
+   * `sources[].session_id: null` on every shipping write path.
+   *
+   * Two fields carrying one value, distinguished only by which consumer reads
+   * them, is duplication — and it made "scope resolved but provenance null" the
+   * default outcome rather than an impossible one. `session_id` is now the
+   * single field, read by both consumers.
+   *
+   * The old docstring also claimed this is "never persisted on the engram",
+   * which was already untrue: claw writes the key into scope strings as
+   * `session:${sessionKey}` (context-engine.ts).
    */
   session?: string
 }

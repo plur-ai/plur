@@ -339,6 +339,28 @@ export const PlurConfigSchema = z.object({
   sync: z.object({
     remote_type: z.enum(['personal', 'shared']).optional(),
   }).partial().default({}),
+  /**
+   * Provenance configuration (#1048 / #1049 — part of the provenance ladder,
+   * plur#1047). Controls how engrams record their writing actor and origin.
+   *
+   *   identity — the `provenance.origin` value for engrams written by this
+   *              instance. Grammar: `agent:<name>` (e.g. `agent:claude-code`,
+   *              `agent:nightshift`). When absent, origin defaults to
+   *              `agent:unidentified` — recorded honestly so multi-writer
+   *              attribution is still visible even without explicit config.
+   *              One identity per writing actor; for multi-agent stores each
+   *              writer should configure its own.
+   */
+  provenance: z.object({
+    // catch() rather than a bare string: a non-string identity used to make
+    // loadConfig reject the WHOLE config and fall back to defaults, silently
+    // discarding `stores`, `backend` and `allow_secrets`. That behaviour
+    // predates this key, but this key is hand-edited by design — it has no
+    // other surface — so it widens the blast radius of a typo from "identity is
+    // wrong" to "every configured store disappears". A bad identity now degrades
+    // to absent, which is exactly the honest `agent:unidentified` outcome.
+    identity: z.string().optional().catch(undefined),
+  }).optional(),
 }).partial()
 
 export type PlurConfig = z.infer<typeof PlurConfigSchema>
