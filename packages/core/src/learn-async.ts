@@ -520,6 +520,17 @@ interface BatchAccumulatorEntry {
   domain?: string
   scope?: string
   status: 'active'
+  /**
+   * REQUIRED, not optional, and the reason is a silent failure rather than a
+   * type nicety. These entries are spliced into the dedup candidate list and
+   * reach `engramSearchText`, which reads `engram.tags.length` unguarded. On an
+   * entry without `tags` that throws, the throw is swallowed by the surrounding
+   * catch, and the run drops to hash-only dedup for every batch item after the
+   * first — silently, whenever embeddings are on and no LLM key is present,
+   * which is the normal configuration. Carrying the real tags also makes the
+   * accumulated candidates score the way indexed ones do.
+   */
+  tags: string[]
 }
 
 /**
@@ -638,6 +649,7 @@ export async function learnBatch(
           domain: result.engram.domain,
           scope: result.engram.scope,
           status: 'active',
+          tags: result.engram.tags ?? [],
         })
       }
     } catch (err) {

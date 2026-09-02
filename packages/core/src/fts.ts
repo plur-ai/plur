@@ -206,11 +206,21 @@ export function searchTextFrom(fields: SearchTextFields): string {
   } as unknown as Engram)
 }
 
-/** Build searchable text from all engram fields */
+/**
+ * Build searchable text from all engram fields.
+ *
+ * `tags` is read defensively. A schema-validated Engram always has it, but this
+ * function is also reached from paths that splice in partially-built objects —
+ * learnBatch's dedup accumulator being the case that actually shipped. There the
+ * unguarded read threw, the throw was swallowed by a surrounding catch, and
+ * dedup silently degraded to hash-only for the rest of the batch. A crash that
+ * is caught and ignored is worse than either a crash or a default, so this takes
+ * the default.
+ */
 export function engramSearchText(engram: Engram): string {
   const parts = [engram.statement]
   if (engram.domain) parts.push(engram.domain.replace(/\./g, ' '))
-  if (engram.tags.length > 0) parts.push(engram.tags.join(' '))
+  if (engram.tags?.length) parts.push(engram.tags.join(' '))
   if (engram.entities) {
     for (const e of engram.entities) {
       parts.push(e.name)
