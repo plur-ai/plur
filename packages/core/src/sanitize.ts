@@ -38,14 +38,19 @@
  */
 
 /**
- * Characters the renderer treats as ending a line.
+ * A line-terminator run, plus any spaces or tabs hugging it on either side.
  *
- * CR, LF, LINE SEPARATOR, PARAGRAPH SEPARATOR, NEXT LINE, vertical tab, form
- * feed, and the four information separators — the same set the MCP-side
- * sanitiser uses, so the two cannot drift into disagreeing about what a line
- * break is.
+ * The class is CR, LF, LINE SEPARATOR, PARAGRAPH SEPARATOR, NEXT LINE, vertical
+ * tab, form feed and the four information separators — the same set the
+ * MCP-side sanitiser uses, so the two cannot drift into disagreeing about what
+ * a line break is.
+ *
+ * Absorbing the adjacent spaces here, rather than collapsing every multi-space
+ * run afterwards, keeps the rewrite confined to the neighbourhood of the thing
+ * being defused.
  */
-const LINE_TERMINATORS = /[\r\n\u2028\u2029\u0085\u000b\u000c\u001c-\u001f]+/g
+const SPACES_AROUND_TERMINATORS =
+  /[ \t]*[\r\n\u2028\u2029\u0085\u000b\u000c\u001c-\u001f]+[ \t]*/g
 
 /**
  * Collapse every line terminator in a statement to a single space.
@@ -57,8 +62,12 @@ const LINE_TERMINATORS = /[\r\n\u2028\u2029\u0085\u000b\u000c\u001c-\u001f]+/g
  * local route) is not a bug.
  */
 export function collapseLineTerminators(statement: string): string {
+  // Consume spaces and tabs ADJACENT to a terminator run, not every run of
+  // spaces in the statement. The earlier form appended a blanket / {2,}/
+  // collapse, which also rewrote legitimate multi-space content that had
+  // nothing to do with the forgery — a behaviour change beyond the fix's remit,
+  // and one a caller storing aligned or code-like text would notice.
   return statement
-    .replace(LINE_TERMINATORS, ' ')
-    .replace(/ {2,}/g, ' ')
+    .replace(SPACES_AROUND_TERMINATORS, ' ')
     .trimEnd()
 }

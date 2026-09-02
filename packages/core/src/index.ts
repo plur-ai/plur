@@ -1199,6 +1199,22 @@ export class Plur {
         if (e.status !== 'active') continue
         const cloned = { ...e } as any
         cloned._pack = pack.manifest.name
+        // Sanitise HERE, at the point pack content enters the injection corpus
+        // (#940, #952). Pack install does not call learn() or learnRouted() —
+        // it copies the pack's file into the packs directory and this loop
+        // feeds those rows straight into the corpus — so a pack statement with
+        // a forged boundary would mint a fabricated entry with neither write
+        // path in front of it. Pack content is the explicit threat model in the
+        // splitter's own docstring: it is the one corpus whose author is by
+        // definition someone else.
+        //
+        // Load time rather than install time, deliberately. Install time would
+        // leave every already-installed pack, and any pack placed in the
+        // directory by hand or by a sync, unsanitised. This is the last gate
+        // before injection, so it is the one that has to hold.
+        for (const f of ['statement', 'rationale', 'source', 'summary', 'domain'] as const) {
+          if (typeof cloned[f] === 'string') cloned[f] = collapseLineTerminators(cloned[f])
+        }
         all.push(cloned)
       }
     }
