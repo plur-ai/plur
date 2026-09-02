@@ -525,6 +525,35 @@ function sanitizeStatement(raw: string): string {
   return raw.slice(0, cut).replace(/[\r\n\u2028\u2029\u0085\u000b\u000c\u001c-\u001f]+/g, ' ').replace(/ {2,}/g, ' ').trimEnd()
 }
 
+/**
+ * The fields that reach a rendered agent-context block, and therefore the
+ * splitter (#940).
+ *
+ * NOT invented here. `packs.ts` already enumerates exactly this set for its
+ * prompt-injection scan, with the same reasoning: only fields rendered into
+ * agent context can carry an effective injection — statement + rationale +
+ * source (formatLayer3), summary (formatLayer1), domain (formatLayer3).
+ * Sanitising `statement` alone left the other four as open doors to the same
+ * trust promotion through the same tool.
+ *
+ * Kept in step with that list deliberately: if a field becomes render-reachable
+ * there, it belongs here on the same commit.
+ */
+const RENDER_REACHABLE_FIELDS = ['rationale', 'source', 'summary', 'domain'] as const
+
+/**
+ * Apply `sanitizeStatement` to every render-reachable field of a context
+ * object, leaving everything else untouched. Undefined fields stay undefined —
+ * this must not materialise keys the caller did not send.
+ */
+function sanitizeRenderReachable<T extends Record<string, unknown>>(context: T): T {
+  const out: Record<string, unknown> = { ...context }
+  for (const f of RENDER_REACHABLE_FIELDS) {
+    if (typeof out[f] === 'string') out[f] = sanitizeStatement(out[f] as string)
+  }
+  return out as T
+}
+
 // Exported so the server dispatch loop can tick it once per tool call (#192).
 export const mcpCanary = new CapabilityCanary({ threshold: 10 })
 mcpCanary.expect({
@@ -1131,8 +1160,12 @@ function getAllToolDefinitions(): ToolDefinition[] {
         }
 
         const statement = sanitizeStatement(args.statement as string)
+        // #940: the renderer splits the whole rendered BLOCK, not each field,
+        // so sanitising the statement alone leaves rationale/source/summary/
+        // domain as the same attack through the same tool.
+        const safeContext = sanitizeRenderReachable(context)
         try {
-          const engram = await plur.learnRouted(statement, context)
+          const engram = await plur.learnRouted(statement, safeContext)
           const isOutbox = !!(engram as any).structured_data?._outbox
           const demoted = (engram as any).structured_data?._demoted as { from: string; to: string; patterns: string } | undefined
           const routed = (engram as any).structured_data?._routed as { scope: string; confidence: number; reason: string } | undefined
@@ -1256,7 +1289,8 @@ function getAllToolDefinitions(): ToolDefinition[] {
         }
         const items = raw.map((e) => ({
           statement: sanitizeStatement(e.statement as string),
-          context: {
+          // #940: same field-set gap as the single path above.
+          context: sanitizeRenderReachable({
             type: e.type,
             scope: e.scope as string | undefined,
             domain: e.domain as string | undefined,
@@ -1268,7 +1302,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
             valid_from: e.valid_from as string | undefined,
             valid_until: e.valid_until as string | undefined,
             measured_under: e.measured_under as Record<string, string> | undefined,
-          },
+          }),
         }))
         const maxLlmCalls = typeof args.max_llm_calls === 'number' ? args.max_llm_calls : undefined
         const { results, stats, failures } = await plur.learnBatch(
