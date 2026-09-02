@@ -138,7 +138,7 @@ describe('cross-process dedup is atomic, not check-then-act (#975)', () => {
       const { Plur } = require(${JSON.stringify(path.join(process.cwd(), 'packages/core/dist/index.js'))});
       (async () => {
         const p = new Plur({ path: ${JSON.stringify(root)} });
-        await p.inject('prefer pnpm over npm', { source: 'session_start' });
+        await p.inject('prefer pnpm over npm', { source: 'hook' });
       })().catch(e => { console.error(e); process.exit(1) });
     `
     const procs = Array.from({ length: 4 }, () =>
@@ -319,8 +319,8 @@ describe('injection_count follows the same verdict as the history event', () => 
     await plur.learn('Prefer pnpm over npm for installs', { scope: 'global', domain: 'build.tools' })
 
     // Same session, same query, same engrams, inside the window: one injection.
-    await plur.inject('prefer pnpm over npm', { session_id: 's1', source: 'inject' })
-    await plur.inject('prefer pnpm over npm', { session_id: 's1', source: 'inject' })
+    await plur.inject('prefer pnpm over npm', { session_id: 's1', source: 'hook' })
+    await plur.inject('prefer pnpm over npm', { session_id: 's1', source: 'hook' })
 
     const events = countCoInjectionEvents(dir)
     expect(events, 'the second injection should have been deduped').toBe(1)
@@ -339,8 +339,8 @@ describe('injection_count follows the same verdict as the history event', () => 
     const plur = new Plur({ path: dir })
     await plur.learn('Prefer pnpm over npm for installs', { scope: 'global', domain: 'build.tools' })
 
-    await plur.inject('prefer pnpm over npm', { session_id: 's1', source: 'inject' })
-    await plur.inject('prefer pnpm over npm', { session_id: 's2', source: 'inject' })
+    await plur.inject('prefer pnpm over npm', { session_id: 's1', source: 'hook' })
+    await plur.inject('prefer pnpm over npm', { session_id: 's2', source: 'hook' })
 
     expect(countCoInjectionEvents(dir)).toBe(2)
   })

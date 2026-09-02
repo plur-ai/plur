@@ -4984,8 +4984,28 @@ export class Plur {
       // the lock, read afterwards by the injection_count block so both counters
       // follow the same verdict.
       let recordedInjection = false
+      // Dedup applies to HOOK-sourced injections only.
+      //
+      // The key is content-based — query hash, engram set, source, session — so
+      // it cannot tell "the hook fired twice for one event" from "the caller
+      // injected the same thing three times". #975's duplicates come from
+      // hook processes: a fresh process per event, racing a sibling
+      // milliseconds away. Every other source ('inject', 'session_start')
+      // originates in a single long-lived MCP process making deliberate calls,
+      // and three deliberate calls are three injections, not one duplicated.
+      //
+      // Applied to all sources, the filter swallowed those: it turned three
+      // explicit `inject()` calls into one recorded injection, which
+      // inject-counter-and-flush-merge.test.ts has asserted against since
+      // #900. That test predates this dedup and is right — the counter is
+      // supposed to accumulate.
+      //
+      // Narrowing here is what lets BOTH counters follow one reading without
+      // redefining what an injection is for every other caller.
+      const dedupApplies = options?.source === 'hook'
       const writeCoInjection = (): void => {
-        if (isRecentDuplicateInjection(this.paths.root, queryHash, injected_ids, 5_000, options?.source, options?.session_id)) return
+        if (dedupApplies
+          && isRecentDuplicateInjection(this.paths.root, queryHash, injected_ids, 5_000, options?.source, options?.session_id)) return
         recordedInjection = true
         const injection_id = generateInjectionId()
         try {
