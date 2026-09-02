@@ -1170,7 +1170,11 @@ function getAllToolDefinitions(): ToolDefinition[] {
           // Opt-in, content-free engagement counter (default-off; no statement text).
           recordTelemetry('learn')
           return {
-            id: engram.id, statement: engram.statement,
+            // Mirror the happy-path fix (#914): report the namespaced form so a
+            // caller holding this id can pass it to plur_forget / plur_feedback
+            // without hitting the collision the id form mismatch causes.
+            // Outbox engrams stay local-form (same rule as line 1149).
+            id: isOutbox ? engram.id : plur.readIdFor(engram), statement: engram.statement,
             scope: engram.scope, type: engram.type, decision: 'ADD',
             ...temporalEcho(engram),
             ...scopeHint(engram.scope, !!routedFallback),
