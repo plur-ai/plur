@@ -395,6 +395,14 @@ export interface StatusResult {
   store_errors?: Record<string, string>
   /** @deprecated Use `store_errors.packs`. Kept so existing readers still work. */
   pack_registry_error?: string
+  /**
+   * Spreading-activation association edges dropped since process start, by reason.
+   * Accumulates across all `inject()` calls in this process — resets on restart.
+   * `dropped_unresolvable`: target id absent from local engramMap (remote-only or
+   * deleted engram). `dropped_retired`: target found but not active. Absent when
+   * both counts are zero.
+   */
+  spread_drops?: { dropped_unresolvable: number; dropped_retired: number }
 }
 
 /**
@@ -779,6 +787,8 @@ export class Plur {
    * event; findLatestInjectionFor covers the cross-process case.
    */
   private _lastInjectionByEngram: Map<string, string> = new Map()
+  /** Spreading-activation drop counters — accumulated in-memory, reset on process restart. */
+  private _spreadDrops = { dropped_unresolvable: 0, dropped_retired: 0 }
   /**
    * Timestamps (ms) of recent LLM failures, newest last (convergence Phase 2).
    *
@@ -4911,6 +4921,11 @@ export class Plur {
       embeddingBoosts,
     )
 
+    if (result.spread_drops) {
+      this._spreadDrops.dropped_unresolvable += result.spread_drops.dropped_unresolvable
+      this._spreadDrops.dropped_retired += result.spread_drops.dropped_retired
+    }
+
     const directivesStr = formatWithLayer(result.directives, assignLayer('directives'))
     const constraintsStr = formatWithLayer(result.constraints, assignLayer('constraints'))
     const considerStr = formatWithLayer(result.consider, assignLayer('consider'))
@@ -7727,6 +7742,9 @@ Generate an improved version of the procedure that prevents this failure. Return
       ...(Object.keys(storeErrors).length > 0 ? { store_errors: storeErrors } : {}),
       // Back-compat alias for the field this replaced.
       ...(storeErrors.packs ? { pack_registry_error: storeErrors.packs } : {}),
+      ...(this._spreadDrops.dropped_unresolvable > 0 || this._spreadDrops.dropped_retired > 0
+        ? { spread_drops: { ...this._spreadDrops } }
+        : {}),
     }
   }
 
