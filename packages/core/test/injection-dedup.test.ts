@@ -245,3 +245,45 @@ describe('two sessions are two injections, not one duplicate', () => {
     expect(isRecentDuplicateInjection(root, qh, ids, 5_000, 'inject', 's1')).toBe(false)
   })
 })
+
+// ── Source is compared symmetrically ────────────────────────────────────────
+
+describe('source is normalised on both sides', () => {
+  let root: string
+  beforeEach(() => { root = fs.mkdtempSync(path.join(os.tmpdir(), 'plur-dedup-src-')) })
+  afterEach(() => { fs.rmSync(root, { recursive: true, force: true }) })
+
+  function writeEvent(source: string | undefined, queryHash: string, ids: string[]): void {
+    appendHistory(root, {
+      event: 'co_injection', engram_id: generateInjectionId(),
+      timestamp: new Date().toISOString(),
+      data: { ids, query_hash: queryHash, ...(source ? { source } : {}) },
+    })
+  }
+
+  it('a sourceless query does NOT dedup against a hook-sourced event', () => {
+    // `if (source !== undefined)` skipped the comparison when the caller passed
+    // nothing, while the write path defaults source to 'inject' — so the two
+    // sides disagreed about what "absent" means and a programmatic inject()
+    // could be swallowed by an unrelated hook event.
+    const qh = computeQueryHash('pnpm install')
+    const ids = ['eng-1']
+    writeEvent('hook', qh, ids)
+    expect(isRecentDuplicateInjection(root, qh, ids, 5_000, undefined, undefined)).toBe(false)
+  })
+
+  it('a sourceless query DOES dedup against a sourceless event', () => {
+    // Both default to 'inject', so they are the same key.
+    const qh = computeQueryHash('pnpm install')
+    const ids = ['eng-1']
+    writeEvent(undefined, qh, ids)
+    expect(isRecentDuplicateInjection(root, qh, ids, 5_000, undefined, undefined)).toBe(true)
+  })
+
+  it('an explicit inject source dedups against a sourceless event', () => {
+    const qh = computeQueryHash('pnpm install')
+    const ids = ['eng-1']
+    writeEvent(undefined, qh, ids)
+    expect(isRecentDuplicateInjection(root, qh, ids, 5_000, 'inject', undefined)).toBe(true)
+  })
+})

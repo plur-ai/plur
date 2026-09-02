@@ -309,10 +309,14 @@ export function isRecentDuplicateInjection(
     const evIds = ev.data.ids as string[] | undefined
     if (!Array.isArray(evIds)) continue
     if ([...evIds].sort().join(',') !== sortedIds) continue
-    if (source !== undefined) {
-      const evSource = ev.data.source as string | undefined
-      if (evSource !== source) continue
-    }
+    // Normalise BOTH sides rather than skipping the check when the caller's
+    // value is absent. `if (source !== undefined)` meant a programmatic
+    // inject() with no explicit source skipped the comparison entirely and
+    // could dedup against a 'hook'-sourced event — while the WRITE path
+    // defaults source to 'inject', so the two sides disagreed about what
+    // "absent" means. Same asymmetry class as the session_id defect below.
+    const evSource = (ev.data.source as string | undefined) ?? 'inject'
+    if (evSource !== (source ?? 'inject')) continue
     // Session is part of the key, not an afterthought. The duplicate #975
     // describes is ONE session's hooks firing twice from separate processes;
     // two different sessions injecting the same engrams for the same query are
