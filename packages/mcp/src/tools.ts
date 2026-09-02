@@ -3121,7 +3121,14 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
                 `engram_suggestions[${i}] must be a string or {statement: string, type?: string}, got ${typeof s}`,
               )
             }
-            await plur.learn(statement, { type: type as any })
+            // Sanitise here too (#940). core's learn() collapses line
+            // terminators, so this is not the only thing standing between a
+            // forged boundary and the corpus — but sanitizeStatement ALSO cuts
+            // at the tool-call markers (`</statement>`, `<parameter name=`),
+            // and this is the write path where an agent transcribing its own
+            // session is most likely to carry them in. The review enumerated
+            // the tool-call write surface and named this one as the gap.
+            await plur.learn(sanitizeStatement(statement), { type: type as any })
             engrams_created++
           }
         }
