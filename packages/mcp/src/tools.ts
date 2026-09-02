@@ -681,8 +681,8 @@ export type ToolProfile = 'full' | 'lean' | 'cursor'
 // `destructiveHint: true` — everything else (packs install/list, sync,
 // timeline, meta-engrams, ingest, capture, ...) is reachable through
 // plur_admin instead of its own top-level tool slot. Cursor caps a workspace
-// at ~40 MCP tools total across every server, and PLUR's full 39-tool
-// surface alone would consume ~97.5% of that budget.
+// at ~40 MCP tools total across every server, and PLUR's full 43-tool
+// surface alone would consume ~110% of that budget.
 //
 // Destructive tools are kept OUT of plur_admin's dispatch specifically
 // (audit fix — evaluator review, 2026-07-08; ENFORCED in the handler since
