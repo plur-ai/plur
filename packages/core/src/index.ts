@@ -4980,8 +4980,13 @@ export class Plur {
       // stock 100 ms first backoff has waiters sleeping orders of magnitude
       // longer than the holder needs.
       const historyDir = join(this.paths.root, 'history')
+      // Whether THIS call is the one that recorded the injection. Decided inside
+      // the lock, read afterwards by the injection_count block so both counters
+      // follow the same verdict.
+      let recordedInjection = false
       const writeCoInjection = (): void => {
         if (isRecentDuplicateInjection(this.paths.root, queryHash, injected_ids, 5_000, options?.source, options?.session_id)) return
+        recordedInjection = true
         const injection_id = generateInjectionId()
         try {
           appendHistory(this.paths.root, {
@@ -5021,6 +5026,23 @@ export class Plur {
       // #866: increment injection_count on primary-store engrams selected for context.
       // Distinct from activation.frequency (recall events) — this tracks actual
       // injection into the model's context window. Best-effort: never breaks injection.
+      //
+      // GATED on the same verdict as the history event. It used to be exempt, on
+      // the reasoning that the engram was genuinely injected even when the log
+      // entry is a duplicate — but that contradicts the premise the dedup rests
+      // on. Either the two events describe ONE injection, in which case counting
+      // it twice is the inflation #975 opens with ("usage data is inflated, and
+      // not by a constant factor"), or they describe two, in which case the
+      // history event should not have been suppressed either. It cannot be one
+      // reading for the log and the other for the counter: that left
+      // engrams.yaml showing injection_count: 2 against a single co_injection
+      // event, which is a store that disagrees with its own history.
+      //
+      // One reading, taken: they are one injection. Both counters follow.
+      if (!recordedInjection) {
+        // A duplicate. The engram's count was already incremented by the call
+        // that recorded the event, microseconds ago and in another process.
+      } else {
       //
       // TARGETED, via the `_loadTargeted`/`_updateEngrams` pair (2026-08-13
       // panel). This first loaded the whole corpus and wrote the whole corpus
@@ -5064,6 +5086,7 @@ export class Plur {
             + `The injection itself succeeded — this is a store-integrity signal, not an injection failure.`,
           )
         }
+      }
       }
     }
 

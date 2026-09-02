@@ -287,3 +287,89 @@ describe('source is normalised on both sides', () => {
     expect(isRecentDuplicateInjection(root, qh, ids, 5_000, 'inject', undefined)).toBe(true)
   })
 })
+
+// ── Both counters follow one reading ────────────────────────────────────────
+
+describe('injection_count follows the same verdict as the history event', () => {
+  /**
+   * The store used to disagree with its own history: a deduped pair left
+   * engrams.yaml showing injection_count: 2 against a single co_injection
+   * event. The justification — that the engram was genuinely injected even when
+   * the log entry is a duplicate — contradicts the premise the dedup rests on.
+   * Either the two events describe ONE injection, and counting it twice is the
+   * inflation #975 opens with, or they describe two and the event should not
+   * have been suppressed. One reading, both counters.
+   */
+  let dir: string
+  beforeEach(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), 'plur-dedup-count-')) })
+  afterEach(() => { fs.rmSync(dir, { recursive: true, force: true }) })
+
+  function countCoInjectionEvents(root: string): number {
+    const hd = path.join(root, 'history')
+    if (!fs.existsSync(hd)) return 0
+    return fs.readdirSync(hd).filter(f => f.endsWith('.jsonl'))
+      .flatMap(f => fs.readFileSync(path.join(hd, f), 'utf8').split('\n').filter(Boolean))
+      .map(l => { try { return JSON.parse(l) as { event?: string } } catch { return {} } })
+      .filter(e => e.event === 'co_injection').length
+  }
+
+  it('a deduped injection does not increment the counter either', async () => {
+    const { Plur } = await import('../src/index.js')
+    const plur = new Plur({ path: dir })
+    await plur.learn('Prefer pnpm over npm for installs', { scope: 'global', domain: 'build.tools' })
+
+    // Same session, same query, same engrams, inside the window: one injection.
+    await plur.inject('prefer pnpm over npm', { session_id: 's1', source: 'inject' })
+    await plur.inject('prefer pnpm over npm', { session_id: 's1', source: 'inject' })
+
+    const events = countCoInjectionEvents(dir)
+    expect(events, 'the second injection should have been deduped').toBe(1)
+
+    const all = await plur.list()
+    const counted = all.filter(e => ((e as never as Record<string, unknown>).injection_count ?? 0) !== 0)
+    for (const e of counted) {
+      const n = (e as never as Record<string, unknown>).injection_count as number
+      expect(n, `${e.id}: store says ${n} injections, history says ${events}`).toBe(events)
+    }
+  })
+
+  it('two genuinely different sessions increment twice and log twice', async () => {
+    // The other side of the same rule: not deduped, so both counters move.
+    const { Plur } = await import('../src/index.js')
+    const plur = new Plur({ path: dir })
+    await plur.learn('Prefer pnpm over npm for installs', { scope: 'global', domain: 'build.tools' })
+
+    await plur.inject('prefer pnpm over npm', { session_id: 's1', source: 'inject' })
+    await plur.inject('prefer pnpm over npm', { session_id: 's2', source: 'inject' })
+
+    expect(countCoInjectionEvents(dir)).toBe(2)
+  })
+})
+
+describe('the dedup window straddles a month rollover', () => {
+  let dir: string
+  beforeEach(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), 'plur-dedup-month-')) })
+  afterEach(() => { fs.rmSync(dir, { recursive: true, force: true }) })
+
+  it('finds a duplicate written in the previous month file', () => {
+    // A pair one to four milliseconds apart across midnight on the 1st lands in
+    // two different files. Reading only the current month missed it.
+    const now = Date.now()
+    const prevMonth = new Date(now - 5_000).toISOString().slice(0, 7)
+    const thisMonth = new Date(now).toISOString().slice(0, 7)
+
+    const hd = path.join(dir, 'history')
+    fs.mkdirSync(hd, { recursive: true })
+    const qh = computeQueryHash('pnpm install')
+    const ids = ['eng-1']
+    fs.writeFileSync(path.join(hd, `${prevMonth}.jsonl`),
+      JSON.stringify({ event: 'co_injection', engram_id: 'x',
+        timestamp: new Date(now - 1000).toISOString(),
+        data: { ids, query_hash: qh, source: 'inject' } }) + '\n', 'utf8')
+
+    // Only meaningful when the two differ; otherwise this is the ordinary case
+    // and still must pass.
+    expect(isRecentDuplicateInjection(dir, qh, ids, 5_000, 'inject', undefined)).toBe(true)
+    expect(prevMonth === thisMonth || fs.existsSync(path.join(hd, `${prevMonth}.jsonl`))).toBe(true)
+  })
+})

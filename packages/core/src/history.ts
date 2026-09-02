@@ -254,19 +254,25 @@ export function isRecentDuplicateInjection(
   sessionId?: string,
 ): boolean {
   const now = Date.now()
-  const yearMonth = new Date().toISOString().slice(0, 7)
-  const filePath = join(root, 'history', `${yearMonth}.jsonl`)
-  if (!fs.existsSync(filePath)) return false
 
-  // Read only the last ~8KB of the file — co_injection events are ~325-625B,
-  // so 8KB covers ~12-24 events, far more than could arrive in 5 seconds.
-  const TAIL_BYTES = 8192
-  let tail: string
-  try {
-    const stat = fs.statSync(filePath)
-    if (stat.size <= TAIL_BYTES) {
-      tail = fs.readFileSync(filePath, 'utf8')
-    } else {
+  /**
+   * Read the tail of one month file.
+   *
+   * The window is sized for the WHOLE log, not for co_injection events alone.
+   * The original 8 KB was justified as "~12-24 events", which assumed
+   * co_injection dominates the tail — the file interleaves every event type,
+   * and an injection carrying many long team-scoped ids runs well above the
+   * quoted 325-625 B, so a busy tail could push a sibling event out of range
+   * and the duplicate would be missed. 64 KB, and the number is a heuristic
+   * rather than a guarantee; say so rather than overstate it.
+   */
+  const TAIL_BYTES = 65_536
+  const readTail = (filePath: string): string | null => {
+    try {
+      if (!fs.existsSync(filePath)) return null
+      const stat = fs.statSync(filePath)
+      if (stat.size === 0) return null
+      if (stat.size <= TAIL_BYTES) return fs.readFileSync(filePath, 'utf8')
       const buf = Buffer.alloc(TAIL_BYTES)
       const fd = fs.openSync(filePath, 'r')
       try {
@@ -274,14 +280,26 @@ export function isRecentDuplicateInjection(
       } finally {
         fs.closeSync(fd)
       }
-      // Drop the first partial line
-      tail = buf.toString('utf8')
-      const firstNewline = tail.indexOf('\n')
-      if (firstNewline >= 0) tail = tail.slice(firstNewline + 1)
+      const text = buf.toString('utf8')
+      // Drop the first partial line — the window began mid-record.
+      const firstNewline = text.indexOf('\n')
+      return firstNewline >= 0 ? text.slice(firstNewline + 1) : text
+    } catch {
+      return null // unreadable → not a duplicate (fail-open)
     }
-  } catch {
-    return false // unreadable → not a duplicate (fail-open)
   }
+
+  // Both the current month and the previous one, when the window straddles the
+  // rollover. A duplicate pair one to four milliseconds apart across midnight
+  // on the 1st lands in two different files, and reading only the current one
+  // missed it — fail-open and rare, but an unstated gap in the window.
+  const monthOf = (t: number): string => new Date(t).toISOString().slice(0, 7)
+  const months = [...new Set([monthOf(now - windowMs), monthOf(now)])]
+  const tails = months
+    .map(m => readTail(join(root, 'history', `${m}.jsonl`)))
+    .filter((t): t is string => t !== null)
+  if (tails.length === 0) return false
+  const tail = tails.join('\n')
 
   const sortedIds = [...engramIds].sort().join(',')
   const lines = tail.split('\n').filter(l => l.trim().length > 0)
