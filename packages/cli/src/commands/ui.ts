@@ -4,9 +4,11 @@
  * @module
  */
 import { spawn } from 'node:child_process'
+import { networkInterfaces } from 'node:os'
 import { createPlur, type GlobalFlags } from '../plur.js'
 import { outputInfo, outputText } from '../output.js'
 import { createUiServer, parseUiArgs } from './ui-server.js'
+import { isLoopbackName, normaliseHostName } from '@plur-ai/ui/server'
 import type { EngramRow } from '@plur-ai/ui'
 
 /** Open a URL in the platform's default browser. Best-effort. */
@@ -30,6 +32,38 @@ function openBrowser(url: string): void {
  * @param args - argv after the command name.
  * @param flags - global CLI flags.
  */
+/**
+ * Every name this server is legitimately reachable at, for the rebinding
+ * allowlist when the bind is widened past loopback.
+ *
+ * Loopback is always accepted by the server itself, so this only needs to add
+ * the addresses a client on the network would actually use. `--host 0.0.0.0`
+ * (or `::`) means "all interfaces", so every non-internal interface address
+ * counts; any other value is a specific address the operator chose, and is
+ * included as given.
+ *
+ * What is deliberately NOT here: arbitrary hostnames. A DNS name that resolves
+ * to this machine cannot be enumerated from inside it, and accepting one on
+ * trust is precisely the hole the rebinding check exists to close. An operator
+ * fronting the viewer with a real hostname needs a reverse proxy that sets a
+ * Host this list contains, which is the same posture every other local service
+ * takes.
+ */
+export function ownHostNames(host: string): string[] {
+  const names = new Set<string>()
+  const bind = normaliseHostName(host)
+  const allInterfaces = bind === '0.0.0.0' || bind === '::' || bind === ''
+  if (!allInterfaces) names.add(bind)
+  if (allInterfaces) {
+    for (const addrs of Object.values(networkInterfaces())) {
+      for (const a of addrs ?? []) {
+        if (!a.internal) names.add(normaliseHostName(a.address))
+      }
+    }
+  }
+  return [...names]
+}
+
 export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   const opts = parseUiArgs(args)
 
@@ -38,7 +72,11 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   const plur = createPlur(flags, { readonly: true })
   const status = await plur.status()
 
-  const isLoopback = opts.host === '127.0.0.1' || opts.host === 'localhost'
+  // Proper classification, not a two-string comparison: ::1, 127.0.0.2,
+  // ::ffff:127.0.0.1, LOCALHOST and localhost. are all loopback, and treating
+  // any of them as widened would drop the rebinding defence while granting no
+  // network reach at all.
+  const isLoopback = isLoopbackName(opts.host)
   const server = createUiServer({
     // Reloaded per request, so learning something in another window and
     // refreshing shows it.
@@ -47,10 +85,11 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     // Reveal folder only on loopback: opening a window on someone's desktop
     // is a poor thing to expose to a network.
     ...(isLoopback ? { openPath: String(status.storage_root ?? '') } : {}),
-    // When the bind is widened, skip the Host-header rebinding check — it
-    // would refuse every legitimate LAN client while providing no protection
-    // against the actual exposure (anyone on the network can connect).
-    ...(isLoopback ? {} : { widened: true }),
+    // A widened bind WIDENS the rebinding allowlist rather than disabling it.
+    // Legitimate clients on the network address this server by one of its own
+    // addresses; a rebound browser carries the attacker's domain and is still
+    // refused. See ownHostNames().
+    ...(isLoopback ? {} : { allowedHosts: ownHostNames(opts.host) }),
   })
 
   await new Promise<void>((resolve, reject) => {

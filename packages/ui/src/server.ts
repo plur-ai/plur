@@ -42,17 +42,27 @@ export interface UiServerOptions {
    */
   openPath?: string
   /**
-   * Set to `true` when the server has been intentionally bound to a
-   * non-loopback address via `--host`.
+   * Extra `Host` values to accept, beyond loopback.
    *
-   * The `hostIsLoopback()` check is a DNS-rebinding defence: it catches a
-   * rebound request that arrives with the attacker's hostname in `Host` while
-   * the socket is bound to 127.0.0.1. Once the bind is widened that defence
-   * is meaningless — any host on the network can connect regardless — and
-   * keeping the check just refuses legitimate LAN clients. Skip it when the
-   * caller has made an explicit, informed decision to widen the bind.
+   * Supplied when the socket is deliberately bound wider than loopback. It
+   * WIDENS the rebinding allowlist; it does not disable the check.
+   *
+   * The earlier shape of this option was a `widened` boolean that skipped the
+   * host check entirely, on the reasoning that once the bind is open "any host
+   * on the network can connect regardless". That conflates two different
+   * threats. Network reachability is about who can open a socket; DNS
+   * rebinding is about an OFF-network attacker using a victim's browser as a
+   * proxy, and the bind address does not affect it at all. With the check
+   * skipped, any site the operator visits could rebind its own domain to this
+   * machine and read the whole store cross-origin — the frame-blocking headers
+   * do not help, because a rebound fetch is same-origin and needs no frame.
+   *
+   * Accepting the server's OWN addresses instead keeps both properties: a
+   * legitimate client on the local network sends the server's address in
+   * `Host` and is allowed; a rebound request carries the attacker's domain and
+   * is still refused.
    */
-  widened?: boolean
+  allowedHosts?: string[]
 }
 
 /** Reveal a directory in the platform's file manager. Best-effort. */
@@ -109,13 +119,72 @@ function isSameOrigin(req: { headers: Record<string, string | string[] | undefin
   }
 }
 
-/** Is the Host header one of ours? Rebinding arrives with the attacker's. */
-function hostIsLoopback(req: { headers: Record<string, string | string[] | undefined> }): boolean {
-  // Case-insensitive: hostnames are, per RFC 7230. Browsers lowercase it, but
-  // a proxy or a hand-typed http://LOCALHOST:7777/ should not be refused.
-  const host = String(req.headers.host ?? '').toLowerCase()
-  const name = host.replace(/:\d+$/, '').replace(/^\[|\]$/g, '')
-  return name === '127.0.0.1' || name === 'localhost' || name === '::1' || name === ''
+/**
+ * Normalise a `Host` header or a `--host` argument to a bare comparable name.
+ *
+ * Strips the port, unwraps IPv6 brackets, lowercases (hostnames are
+ * case-insensitive per RFC 7230, and a hand-typed http://LOCALHOST:7777/ should
+ * not be refused), and drops a single trailing dot — `localhost.` is the fully
+ * qualified spelling of `localhost` and resolves identically.
+ */
+/**
+ * Normalise a host value to a bare comparable name.
+ *
+ * IDEMPOTENT, and that is load-bearing rather than tidy: a naive
+ * `replace(/:\d+$/, '')` eats the last group of a bare IPv6 address, so
+ * normalising `::1` a second time yields `:`. Ports are therefore only stripped
+ * where they are unambiguous — after a bracketed IPv6 literal, or from a name
+ * containing exactly one colon.
+ */
+export function normaliseHostName(value: string): string {
+  let v = String(value ?? '').trim().toLowerCase()
+  const bracketed = v.match(/^\[(.+)\](?::\d+)?$/)
+  if (bracketed) return bracketed[1]!
+  if ((v.match(/:/g) ?? []).length === 1) v = v.replace(/:\d+$/, '')
+  return v
+}
+
+/**
+ * Is this value a loopback address or the loopback hostname?
+ *
+ * FOR CLASSIFYING THE `--host` FLAG, not for validating a `Host` header. The
+ * two want different strictness and conflating them is a bug in both
+ * directions: `localhost.` is a perfectly ordinary way to ASK for loopback on
+ * the command line, and is also a shape the header policy deliberately refuses
+ * as a spoof.
+ *
+ * Deliberately not a two-string comparison. `::1`, `127.0.0.2`,
+ * `::ffff:127.0.0.1`, `LOCALHOST` and `localhost.` are all loopback and all
+ * reachable only from this machine; classifying any of them as "wider than
+ * loopback" would drop the rebinding defence while granting no network reach —
+ * strictly worse than the default. `::1` is the ordinary way to ask for IPv6
+ * loopback.
+ */
+export function isLoopbackName(value: string): boolean {
+  const n = normaliseHostName(value).replace(/\.$/, '')
+  if (n === '' || n === 'localhost') return true
+  if (/^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(n)) return true
+  if (n === '::1' || n === '0:0:0:0:0:0:0:1') return true
+  const mapped = n.match(/^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/)
+  if (mapped) return /^127\./.test(mapped[1]!)
+  return false
+}
+
+/**
+ * Is the Host header one of ours? Rebinding arrives with the attacker's.
+ *
+ * The loopback set here stays exactly as strict as it was — `localhost.`,
+ * `sub.localhost` and `127.0.0.1.nip.io` remain spoof shapes and are refused.
+ * `allowed` adds the addresses this server is legitimately reachable at when
+ * the bind was widened past loopback, matched exactly.
+ */
+function hostIsAllowed(
+  req: { headers: Record<string, string | string[] | undefined> },
+  allowed: string[] = [],
+): boolean {
+  const name = normaliseHostName(String(req.headers.host ?? ''))
+  if (name === '127.0.0.1' || name === 'localhost' || name === '::1' || name === '') return true
+  return allowed.some(a => normaliseHostName(a) === name)
 }
 
 /** Minimal HTML error page. Escaped: a store path is not trusted markup. */
@@ -159,11 +228,11 @@ export function createUiServer(opts: UiServerOptions): Server {
       const url = new URL(req.url ?? '/', 'http://localhost')
 
       // Rebinding check: catches a DNS-rebound request whose `Host` header
-      // still carries the attacker's domain while the socket is on 127.0.0.1.
-      // Not applied when the server was intentionally widened — the bind is
-      // already open to the network, so the check would only block legitimate
-      // LAN clients without stopping anything.
-      if (!opts.widened && !hostIsLoopback(req)) {
+      // carries the attacker's domain. ALWAYS applied — a widened bind adds
+      // this server's own addresses to the allowlist rather than disabling the
+      // check, because rebinding uses the victim's browser and is unaffected by
+      // what the socket is bound to.
+      if (!hostIsAllowed(req, opts.allowedHosts)) {
         res.writeHead(403, headers)
         res.end(errorPage('Refused: this viewer only answers to localhost.'))
         return
