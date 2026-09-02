@@ -2,6 +2,7 @@ import * as fs from 'fs'
 import { tmpdir } from 'os'
 import { join, dirname, basename } from 'path'
 import yaml from 'js-yaml'
+import { collapseLineTerminators } from './sanitize.js'
 import { detectPlurStorage, type PlurPaths } from './storage.js'
 import { IndexedStorage } from './storage-indexed.js'
 import { PGLiteAdapter } from './storage-pglite.js'
@@ -2434,9 +2435,11 @@ export class Plur {
     if (typeof statement !== 'string' || statement.length === 0) {
       throw new TypeError(`plur.learn: statement must be a non-empty string, got ${typeof statement}`)
     }
-    // Strip all line terminators (LF, CR, U+2028 LS, U+2029 PS) so a crafted
-    // \n[ sequence cannot be promoted to system-prompt authority by dsh flatten().
-    statement = statement.replace(/[\r\n\u2028\u2029]+/g, ' ').replace(/ {2,}/g, ' ').trimEnd()
+    // Collapse line terminators so a crafted boundary cannot be promoted to
+    // system-prompt authority by the renderer's splitter (#952, #940).
+    // learnRouted() applies the same helper on its own entry, because it does
+    // NOT enter this method on the remote route — see sanitize.ts.
+    statement = collapseLineTerminators(statement)
     if (context?.type !== undefined && !VALID_ENGRAM_TYPES.has(context.type)) {
       throw new TypeError(
         `plur.learn: invalid type '${context.type}'. Must be one of: behavioral, terminological, procedural, architectural`
@@ -2929,6 +2932,20 @@ export class Plur {
 
   async learnRouted(statement: string, context?: LearnContext): Promise<Engram> {
     this._assertWritable()
+    // Collapse line terminators HERE, not only in learn() (#952, #940).
+    //
+    // This method enters learn() only on its local route. When a remote store
+    // resolves for the scope it builds the engram shape and posts it without
+    // entering learn() at all, and the outbox fallback writes that same raw
+    // shape locally — so a fix living only in learn() misses the CLI and the
+    // Python SDK, both of which route through here, and misses the highest
+    // impact variant: a forged entry on a SHARED store reaches other people's
+    // system prompts.
+    //
+    // Applied before the secret scan and before _guardSensitiveScope so every
+    // downstream gate, and the content hash, sees the text that is actually
+    // stored. Idempotent, so the local route sanitising twice is harmless.
+    statement = collapseLineTerminators(statement)
     // #729: validate type BEFORE the secrets scan — a bad type must fail
     // loudly even when the statement would also trip the secret detector.
     if (context?.type !== undefined && !VALID_ENGRAM_TYPES.has(context.type)) {
