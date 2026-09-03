@@ -18,10 +18,10 @@ import { agenticSearch } from './agentic-search.js'
 import { embeddingSearch, embeddingSearchWithScores, type SimilarityResult } from './embeddings.js'
 import { applyFeedbackSignal } from './feedback.js'
 import { hybridSearch, hybridSearchWithMeta, applyReranker, rrfMergeEngrams as pgliteRrfMerge, type HybridSearchResult, type RerankOptions } from './hybrid-search.js'
-import { getReranker, resolveRerankerName, isRerankerOff, rerankerStatus, resetRerankerStatus, _resetRerankerCache, checkRerankerFit, type RerankerAdapter, type RerankerRuntimeStatus, type RerankerName, type FitCheckResult } from './rerankers/index.js'
+import { getReranker, resolveRerankerName, isRerankerOff, rerankerStatus, resetRerankerStatus, _resetRerankerCache, type RerankerAdapter, type RerankerRuntimeStatus, type RerankerName } from './rerankers/index.js'
+import { checkRerankerFit, type FitCheckResult } from './rerankers/fit-check.js'
 import { runRerankerSelfEval, loadRerankerEvalCache, saveRerankerEvalResult, isRerankerEvalStale, logRerankerEvalAdvisory, type RerankerEvalResult } from './reranker-eval.js'
-import { _resetBgeRerankerCache } from './rerankers/bge-reranker-v2-m3.js'
-import { _resetMsMarcoMiniLmCache } from './rerankers/ms-marco-minilm-l6.js'
+import { _resetCrossEncoderCaches } from './rerankers/transformers-cross-encoder.js'
 import { classifyQuery, routeForIntent, applyIntentRouting, isIntentRoutingDisabled, isEntityDomain, rewriteLexicalQuery, isQueryRewriteDisabled, type QueryIntent, type IntentRoutingProfile } from './intent/index.js'
 import { getEmbedder, resolveEmbedderName } from './embedders/index.js'
 import { emitMissSignal } from './telemetry-miss-signal.js'
@@ -206,9 +206,9 @@ export {
   getReranker, isRerankerOff, resolveRerankerName, RERANKER_NAMES, DEFAULT_RERANKER,
   rerankerStatus, resetRerankerStatus, classifyRerankerFailure, hfCacheDirName,
   _resetRerankerCache, _setCachedReranker,
-  checkRerankerFit,
-  type RerankerName, type RerankerRuntimeStatus, type RerankerFailureKind, type FitCheckResult, type FitCheckEngram,
+  type RerankerName, type RerankerRuntimeStatus, type RerankerFailureKind,
 } from './rerankers/index.js'
+export { checkRerankerFit, type FitCheckResult, type FitCheckEngram } from './rerankers/fit-check.js'
 export type { RerankerAdapter } from './rerankers/types.js'
 // Per-store reranker eval gate (#451) — the self-check that must pass before
 // anyone flips reranking on by default for a store. Advisory only.
@@ -3932,8 +3932,7 @@ export class Plur {
    */
   resetReranker(): void {
     _resetRerankerCache()
-    _resetBgeRerankerCache()
-    _resetMsMarcoMiniLmCache()
+    _resetCrossEncoderCaches()
     resetRerankerStatus()
     this._reranker = null
   }
