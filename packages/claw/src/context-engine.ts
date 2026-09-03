@@ -1,4 +1,5 @@
 import { Plur } from '@plur-ai/core'
+import { CLAW_VERSION } from './version.js'
 import type { LearnContext } from '@plur-ai/core'
 import type {
   ContextEngine, ContextEngineInfo, AssembleResult, IngestResult,
@@ -59,7 +60,7 @@ export class PlurContextEngine implements ContextEngine {
   readonly info: ContextEngineInfo = {
     id: 'plur-claw',
     name: 'PLUR Memory Engine',
-    version: '0.17.1',
+    version: CLAW_VERSION,
     ownsCompaction: false,
   }
 

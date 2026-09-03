@@ -1,6 +1,7 @@
 import { PlurContextEngine, type PlurContextEngineOptions } from './context-engine.js'
 import { ensureSystemPrompt, PLUR_SYSTEM_SECTION } from './system-prompt.js'
 import { checkForUpdate, CapabilityCanary } from '@plur-ai/core'
+import { CLAW_VERSION } from './version.js'
 import { recordEvent } from './telemetry-counters.js'
 import { flushIfNeeded, registerFlushOnExit } from './telemetry-flush.js'
 
@@ -44,7 +45,7 @@ const plugin = {
   id: 'plur-claw',
   name: 'PLUR Memory Engine',
   description: 'Persistent, learnable memory for OpenClaw agents. Local-first, no cloud required.',
-  version: '0.17.1',
+  version: CLAW_VERSION,
   kind: 'memory' as const,
 
   register(api: any) {
