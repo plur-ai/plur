@@ -2,6 +2,7 @@ import * as fs from 'fs'
 import { tmpdir } from 'os'
 import { join, dirname, basename } from 'path'
 import yaml from 'js-yaml'
+import { collapseLineTerminators } from './sanitize.js'
 import { detectPlurStorage, type PlurPaths } from './storage.js'
 import { IndexedStorage } from './storage-indexed.js'
 import { PGLiteAdapter } from './storage-pglite.js'
@@ -1198,6 +1199,22 @@ export class Plur {
         if (e.status !== 'active') continue
         const cloned = { ...e } as any
         cloned._pack = pack.manifest.name
+        // Sanitise HERE, at the point pack content enters the injection corpus
+        // (#940, #952). Pack install does not call learn() or learnRouted() —
+        // it copies the pack's file into the packs directory and this loop
+        // feeds those rows straight into the corpus — so a pack statement with
+        // a forged boundary would mint a fabricated entry with neither write
+        // path in front of it. Pack content is the explicit threat model in the
+        // splitter's own docstring: it is the one corpus whose author is by
+        // definition someone else.
+        //
+        // Load time rather than install time, deliberately. Install time would
+        // leave every already-installed pack, and any pack placed in the
+        // directory by hand or by a sync, unsanitised. This is the last gate
+        // before injection, so it is the one that has to hold.
+        for (const f of ['statement', 'rationale', 'source', 'summary', 'domain'] as const) {
+          if (typeof cloned[f] === 'string') cloned[f] = collapseLineTerminators(cloned[f])
+        }
         all.push(cloned)
       }
     }
@@ -2434,6 +2451,11 @@ export class Plur {
     if (typeof statement !== 'string' || statement.length === 0) {
       throw new TypeError(`plur.learn: statement must be a non-empty string, got ${typeof statement}`)
     }
+    // Collapse line terminators so a crafted boundary cannot be promoted to
+    // system-prompt authority by the renderer's splitter (#952, #940).
+    // learnRouted() applies the same helper on its own entry, because it does
+    // NOT enter this method on the remote route — see sanitize.ts.
+    statement = collapseLineTerminators(statement)
     if (context?.type !== undefined && !VALID_ENGRAM_TYPES.has(context.type)) {
       throw new TypeError(
         `plur.learn: invalid type '${context.type}'. Must be one of: behavioral, terminological, procedural, architectural`
@@ -2926,6 +2948,20 @@ export class Plur {
 
   async learnRouted(statement: string, context?: LearnContext): Promise<Engram> {
     this._assertWritable()
+    // Collapse line terminators HERE, not only in learn() (#952, #940).
+    //
+    // This method enters learn() only on its local route. When a remote store
+    // resolves for the scope it builds the engram shape and posts it without
+    // entering learn() at all, and the outbox fallback writes that same raw
+    // shape locally — so a fix living only in learn() misses the CLI and the
+    // Python SDK, both of which route through here, and misses the highest
+    // impact variant: a forged entry on a SHARED store reaches other people's
+    // system prompts.
+    //
+    // Applied before the secret scan and before _guardSensitiveScope so every
+    // downstream gate, and the content hash, sees the text that is actually
+    // stored. Idempotent, so the local route sanitising twice is harmless.
+    statement = collapseLineTerminators(statement)
     // #729: validate type BEFORE the secrets scan — a bad type must fail
     // loudly even when the statement would also trip the secret detector.
     if (context?.type !== undefined && !VALID_ENGRAM_TYPES.has(context.type)) {
