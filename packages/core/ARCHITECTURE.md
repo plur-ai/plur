@@ -63,12 +63,10 @@ src/
 ├── inject.ts              # Context-aware engram selection inside a token budget
 ├── decay.ts               # ACT-R activation update on each read; pruning
 ├── confidence.ts          # Heuristics for "how sure are we about this engram"
-├── quality.ts             # Quality gates for new engrams (length, novelty, etc.)
 ├── dedup.ts               # Near-dup detection on learn()
 ├── content-hash.ts        # Stable hash for de-dup
 ├── conflict.ts            # Detects contradictions between engrams
 ├── polarity.ts            # do/don't polarity inversion detection
-├── trust.ts               # Source trust scoring
 │
 ├── # — lifecycle —
 ├── engrams.ts             # CRUD helpers (lower-level than Plur class)
@@ -304,8 +302,6 @@ scope, so they don't pollute the user's primary engram set.
 
 ## Quality, dedup, conflict, polarity
 
-- `quality.ts` — gates new engrams on length, novelty, presence of
-  context. Failing engrams go to `candidates.yaml` for later review.
 - `dedup.ts` — content-hash + fuzzy match against existing engrams; on
   match, reinforces the existing engram's `frequency` instead of
   creating a new one

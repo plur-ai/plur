@@ -580,14 +580,6 @@ function stableJson(v: unknown): string {
       : val)
 }
 
-/** Commitment level scoring multipliers for injection priority (Idea 6). */
-export const COMMITMENT_MULTIPLIER: Record<string, number> = {
-  locked: 1.0,
-  decided: 0.9,
-  leaning: 0.7,
-  exploring: 0.5,
-}
-
 /**
  * LLM dedup circuit breaker (convergence Phase 2).
  *

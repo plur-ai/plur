@@ -89,14 +89,12 @@ export const DedupConfigSchema = z.object({
   mode: z.enum(['llm', 'cosine', 'off']).default('llm'),
 }).partial()
 
-export type DedupConfigYaml = z.infer<typeof DedupConfigSchema>
 
 export const StorageConfigSchema = z.object({
   backend: z.enum(['yaml', 'sqlite']).default('yaml'),
   path: z.string().optional(),
 }).partial()
 
-export type StorageConfigYaml = z.infer<typeof StorageConfigSchema>
 
 /**
  * Embedding-layer configuration. When enabled is false, the BGE model is not
@@ -112,7 +110,6 @@ export const EmbeddingsConfigSchema = z.object({
   enabled: z.boolean().default(true),
 }).partial()
 
-export type EmbeddingsConfigYaml = z.infer<typeof EmbeddingsConfigSchema>
 
 /**
  * Vector-column configuration for the PGLite/pgvector index (#223).
@@ -141,7 +138,6 @@ export const VectorConfigSchema = z.object({
   precision: z.enum(['float32', 'halfvec']),
 }).partial()
 
-export type VectorConfigYaml = z.infer<typeof VectorConfigSchema>
 
 /**
  * Server-Postgres backend configuration (ADR-0005).
@@ -170,7 +166,6 @@ export const PostgresConfigSchema = z.object({
   max_connections: z.number().int().positive().optional().catch(undefined),
 }).partial()
 
-export type PostgresConfigYaml = z.infer<typeof PostgresConfigSchema>
 
 /**
  * Scope-routing tuning — optional overrides for the deterministic ranker that
@@ -229,7 +224,6 @@ export const TensionsConfigSchema = z.object({
   temporal_discount: z.boolean().default(false),
 }).partial()
 
-export type TensionsConfigYaml = z.infer<typeof TensionsConfigSchema>
 
 export const PlurConfigSchema = z.object({
   auto_learn: z.boolean().default(true),
