@@ -75,7 +75,7 @@ The plugin works with zero configuration. Optional env vars:
 
 ## Requirements
 
-- Hermes Agent v0.5.0+
+- Hermes Agent v0.19.0+ (Herald Release with `register_memory_provider()` support)
 - Python 3.10+
 - Node.js 18+ (for CLI, auto-resolved via npx if not installed globally)
 

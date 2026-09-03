@@ -81,4 +81,5 @@ describe('plur status', () => {
     const output = JSON.parse(run('status'))
     expect(output.episode_count).toBe(1)
   })
+
 })

@@ -11,7 +11,7 @@ import { generateEngramId, engramIdDatePrefix, loadAllPacks, storePrefix, namesp
 import { maybeDailyBackup } from './backup.js'
 import { logger } from './logger.js'
 import { searchEngrams, ftsTokenize, extendCorpusStats, searchTextFrom } from './fts.js'
-import { selectAndSpread, scoreEngramsPublic, formatWithLayer, assignLayer } from './inject.js'
+import { selectAndSpread, scoreEngramsPublic, formatWithLayer, assignLayer, PINNED_HARD_TOKEN_CAP, estimateEngramTokens } from './inject.js'
 import { reactivate } from './decay.js'
 import { captureEpisode, queryTimeline } from './episodes.js'
 import { agenticSearch } from './agentic-search.js'
@@ -1679,9 +1679,20 @@ export class Plur {
   } {
     return {
       scope,
-      session_id: context?.session_episode_id ?? null,
+      // session_id takes priority over session_episode_id (#1048)
+      session_id: context?.session_id ?? context?.session_episode_id ?? null,
       stored_at: new Date().toISOString(),
     }
+  }
+
+  /** Build the provenance object to stamp on every new engram (#1048/#1049).
+   * Returns undefined when mode='never'; otherwise stamps origin from config
+   * identity or falls back to 'agent:unidentified'. */
+  private _buildProvenanceField(): { origin: string; chain: string[]; signature: null; license: string } | undefined {
+    const cfg = (this.config as any).provenance ?? { mode: 'always' }
+    if (cfg.mode === 'never') return undefined
+    const origin: string = cfg.identity ?? 'agent:unidentified'
+    return { origin, chain: [], signature: null, license: 'cc-by-sa-4.0' }
   }
 
   /** Apply a duplicate-write to an existing engram: increment write_count,
@@ -2480,6 +2491,41 @@ export class Plur {
     // valid_from/valid_until fail fast — even when the write would dedup
     // into an existing engram below.
     const validity = resolveValidity(statement, context)
+
+    // Hard-tier cap enforcement: reject writes that would exceed the 2,000-token
+    // hard-tier budget before acquiring the store lock (listPinned is a read; the
+    // lock is NOT reentrant — see async-lock.ts header).
+    if (context?.pinned === true && (context?.pin_tier ?? 'soft') === 'hard') {
+      const hardPinned = (await this.listPinned()).filter(e => ((e as any).pinned_tier ?? 'soft') === 'hard')
+      const currentHardTokens = hardPinned.reduce((sum, e) => sum + estimateEngramTokens(e), 0)
+      // Build a representative candidate shape so estimateEngramTokens accounts for
+      // all serialised fields (id, temporal, pinned_tier, etc.) — not just statement
+      // and rationale length. The manual estimate was ~150 tokens short in practice.
+      const candidateShape = {
+        id: '00000000-0000-0000-0000-000000000000',
+        statement,
+        ...(context?.rationale ? { rationale: context.rationale } : {}),
+        ...(context?.domain ? { domain: context.domain } : {}),
+        ...(context?.tags?.length ? { tags: context.tags } : {}),
+        confidence: context?.confidence ?? 0.8,
+        temporal: { learned_at: '2026-01-01T00:00:00.000Z' },
+        pinned: true,
+        pinned_tier: 'hard',
+        ...(context?.pinned_priority != null ? { pinned_priority: context.pinned_priority } : {}),
+      }
+      const estimatedNewCost = estimateEngramTokens(candidateShape as any)
+      if (currentHardTokens + estimatedNewCost > PINNED_HARD_TOKEN_CAP) {
+        const engramList = hardPinned.map(e => `${e.id} (${estimateEngramTokens(e)} tokens)`).join(', ')
+        throw new Error(
+          `Hard-tier pinned cap exceeded: current hard-tier total is ${currentHardTokens} tokens, ` +
+          `estimated cost of new engram is ${estimatedNewCost} tokens, ` +
+          `cap is ${PINNED_HARD_TOKEN_CAP} tokens. ` +
+          `Existing hard-tier engrams: [${engramList}]. ` +
+          `Demote an existing engram to soft tier (pinned_tier="soft") or unpin it before adding a new hard-tier engram.`
+        )
+      }
+    }
+
     return await this._withStoreLock(this.paths.engrams, async () => {
       const scope = guarded.scope
       const ps = this._primaryStore
@@ -2635,6 +2681,7 @@ export class Plur {
         write_count: 1,
         injection_count: 0,
         sources: [this._buildSourceEntry(scope, context)],
+        provenance: this._buildProvenanceField(),
         recurrence_count: 0,
         summary: autoSummary(statement, undefined),
         engram_version: 1,
@@ -2648,6 +2695,8 @@ export class Plur {
           superseded_by: [],
         } : undefined,
         pinned: context?.pinned === true ? true : undefined,
+        pinned_tier: context?.pin_tier,
+        pinned_priority: context?.pinned_priority,
         // #869: measurement context — present only when the caller supplies it.
         measured_under: context?.measured_under,
       }
@@ -3205,6 +3254,7 @@ export class Plur {
       write_count: 1,
       injection_count: 0,
       sources: [this._buildSourceEntry(scope, context)],
+      provenance: this._buildProvenanceField(),
       recurrence_count: 0,
       summary: autoSummary(statement, undefined),
       engram_version: 1,
@@ -3217,6 +3267,8 @@ export class Plur {
         supersedes: context!.supersedes!, superseded_by: [],
       } : undefined,
       pinned: context?.pinned === true ? true : undefined,
+      pinned_tier: context?.pin_tier,
+      pinned_priority: context?.pinned_priority,
       // #869: measurement context — present only when the caller supplies it.
       measured_under: context?.measured_under,
     }
@@ -5077,7 +5129,10 @@ export class Plur {
 
     // #181: surface persisted tensions touching this injection — flag,
     // don't adjudicate (audit #213 item 4).
-    const warnings = this._tensionWarningsFor(injected_ids)
+    const tensionWarnings = this._tensionWarningsFor(injected_ids)
+    // Surface soft-tier eviction warnings alongside tension warnings.
+    const evictionWarnings = result.eviction_warnings ?? []
+    const warnings = [...evictionWarnings, ...tensionWarnings]
 
     return {
       directives: directivesStr,
