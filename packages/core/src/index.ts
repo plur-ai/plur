@@ -2498,7 +2498,22 @@ export class Plur {
     if (context?.pinned === true && (context?.pin_tier ?? 'soft') === 'hard') {
       const hardPinned = (await this.listPinned()).filter(e => ((e as any).pinned_tier ?? 'soft') === 'hard')
       const currentHardTokens = hardPinned.reduce((sum, e) => sum + estimateEngramTokens(e), 0)
-      const estimatedNewCost = Math.ceil((statement.length + (context?.rationale?.length ?? 0)) / 4) + 80
+      // Build a representative candidate shape so estimateEngramTokens accounts for
+      // all serialised fields (id, temporal, pinned_tier, etc.) — not just statement
+      // and rationale length. The manual estimate was ~150 tokens short in practice.
+      const candidateShape = {
+        id: '00000000-0000-0000-0000-000000000000',
+        statement,
+        ...(context?.rationale ? { rationale: context.rationale } : {}),
+        ...(context?.domain ? { domain: context.domain } : {}),
+        ...(context?.tags?.length ? { tags: context.tags } : {}),
+        confidence: context?.confidence ?? 0.8,
+        temporal: { learned_at: '2026-01-01T00:00:00.000Z' },
+        pinned: true,
+        pinned_tier: 'hard',
+        ...(context?.pinned_priority != null ? { pinned_priority: context.pinned_priority } : {}),
+      }
+      const estimatedNewCost = estimateEngramTokens(candidateShape as any)
       if (currentHardTokens + estimatedNewCost > PINNED_HARD_TOKEN_CAP) {
         const engramList = hardPinned.map(e => `${e.id} (${estimateEngramTokens(e)} tokens)`).join(', ')
         throw new Error(

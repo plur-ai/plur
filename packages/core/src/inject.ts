@@ -67,11 +67,16 @@ const DEFAULT_MIN_RELEVANCE = 0.3
 const MAX_PER_PACK = 5
 const MAX_PER_DOMAIN = 10
 // Two-tier pinned budget (pinned-tier spec):
-//   Hard tier: absolute cap, write-rejected on overflow — guaranteed injection.
+//   Hard tier: absolute ceiling, write-rejected on overflow — guaranteed injection.
+//             At injection time, further clamped to PINNED_HARD_TOKEN_BUDGET_RATIO
+//             of the session's maxTokens so the tier cannot starve the recall pool.
 //   Soft tier: 30% of maxTokens, priority-ordered eviction.
-// At 8K default: hard=2,000 + soft=2,400 = 4,400 pinned, retrieved ~3,600.
-/** Absolute token cap for hard-tier pinned engrams. Write rejected if exceeded. */
+// At 8K default: hard=min(2000,2000)=2000 + soft=2400 = 4400 pinned, ~3600 recall.
+// At 2K default: hard=min(2000,500)=500 + soft=600 = 1100 pinned, ~900 recall.
+/** Absolute write-time ceiling for hard-tier pinned engrams. */
 export const PINNED_HARD_TOKEN_CAP = 2000
+/** Fraction of maxTokens that the hard tier may consume at injection time. */
+const PINNED_HARD_TOKEN_BUDGET_RATIO = 0.25
 /** Fraction of maxTokens allocated to soft-tier pinned engrams. */
 const PINNED_SOFT_TOKEN_BUDGET_RATIO = 0.3
 
@@ -355,7 +360,9 @@ export function fillTokenBudget(
   const evicted_soft_pinned: ScoredEngram[] = []
 
   // Three-pass selection: hard-pinned first, then soft-pinned, then the rest.
-  // Hard-tier: absolute 2,000-token cap; items guaranteed to inject (write-rejected on overflow).
+  // Hard-tier: write-time ceiling = PINNED_HARD_TOKEN_CAP (2000); further clamped
+  //            at injection time so the tier cannot exceed PINNED_HARD_TOKEN_BUDGET_RATIO
+  //            of the session budget (prevents starvation when maxTokens = 2000).
   // Soft-tier: priority-ordered (pinned_priority DESC, learned_at ASC); evicted lowest-first.
   // All pinned items bypass per-pack/per-domain fairness caps.
   const allPinned = scored.filter(e => (e as any).pinned === true)
@@ -364,8 +371,9 @@ export function fillTokenBudget(
   const hardPinned = allPinned.filter(e => ((e as any).pinned_tier ?? 'soft') === 'hard')
   const softPinned = allPinned.filter(e => ((e as any).pinned_tier ?? 'soft') === 'soft')
 
-  // Pass 1: hard-tier — capped at PINNED_HARD_TOKEN_CAP, injected in score order
-  const hardBudget = PINNED_HARD_TOKEN_CAP
+  // Pass 1: hard-tier — clamped to the smaller of the write-time ceiling and the
+  // session-proportional budget so the hard tier cannot starve the recall pool.
+  const hardBudget = Math.min(PINNED_HARD_TOKEN_CAP, Math.floor(PINNED_HARD_TOKEN_BUDGET_RATIO * maxTokens))
   for (const engram of hardPinned) {
     const cost = estimateTokens(engram)
     if (tokensUsed + cost > hardBudget) continue

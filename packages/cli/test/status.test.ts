@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync } from 'fs'
+import { mkdtempSync, rmSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { execSync } from 'child_process'
@@ -82,66 +82,4 @@ describe('plur status', () => {
     expect(output.episode_count).toBe(1)
   })
 
-  // #1049 — provenance.identity line in `plur status`
-  describe('provenance identity (#1049)', () => {
-    it('omits Identity line when no identity is configured', async () => {
-      const writes: string[] = []
-      const spy = vi.spyOn(process.stdout, 'write').mockImplementation(((chunk: unknown) => {
-        writes.push(String(chunk))
-        return true
-      }) as never)
-      try {
-        const { run: runStatus } = await import('../src/commands/status.js')
-        await runStatus([], { path: dir, json: false })
-      } finally {
-        spy.mockRestore()
-      }
-      expect(writes.join('')).not.toContain('Identity:')
-    })
-
-    it('shows Identity line when provenance.identity is set', async () => {
-      writeFileSync(
-        join(dir, 'config.yaml'),
-        'provenance:\n  identity: "agent:claude-sonnet-4-6"\n',
-        'utf8',
-      )
-      const writes: string[] = []
-      const spy = vi.spyOn(process.stdout, 'write').mockImplementation(((chunk: unknown) => {
-        writes.push(String(chunk))
-        return true
-      }) as never)
-      try {
-        // Re-import with the new config in place — each call uses the path arg.
-        const mod = await import('../src/commands/status.js')
-        await mod.run([], { path: dir, json: false })
-      } finally {
-        spy.mockRestore()
-      }
-      const out = writes.join('')
-      expect(out).toContain('Identity:')
-      expect(out).toContain('agent:claude-sonnet-4-6')
-      expect(out).toContain('mode: always')
-    })
-
-    it('shows mode: never when configured', async () => {
-      writeFileSync(
-        join(dir, 'config.yaml'),
-        'provenance:\n  identity: "agent:observer"\n  mode: "never"\n',
-        'utf8',
-      )
-      const writes: string[] = []
-      const spy = vi.spyOn(process.stdout, 'write').mockImplementation(((chunk: unknown) => {
-        writes.push(String(chunk))
-        return true
-      }) as never)
-      try {
-        const mod = await import('../src/commands/status.js')
-        await mod.run([], { path: dir, json: false })
-      } finally {
-        spy.mockRestore()
-      }
-      const out = writes.join('')
-      expect(out).toContain('mode: never')
-    })
-  })
 })

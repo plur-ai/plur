@@ -22,13 +22,6 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
       outputText(`  Events:       co_injection ${ev.co_injection} · outcomes ${ev.injection_outcome} (+${ev.outcome_positive}/-${ev.outcome_negative})`)
     }
     outputText(`  Storage root: ${result.storage_root}`)
-    // Provenance identity (#1049) — surfaced so operators can confirm which
-    // actor name is being stamped on writes and which stamping mode is active.
-    const prov = result.config?.provenance
-    if (prov?.identity) {
-      const mode = prov.mode ?? 'always'
-      outputText(`  Identity:     ${prov.identity} (mode: ${mode})`)
-    }
     // Discoverability, not decoration: the dashboard is on-demand by design
     // (it serves the whole store with no auth, so nothing auto-starts it),
     // which means the one place a user learns it exists is a hint like this.
