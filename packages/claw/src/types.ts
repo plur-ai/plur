@@ -61,7 +61,3 @@ export interface ContextEngine {
   onSubagentEnded?(params: { childSessionKey: string; reason: SubagentEndReason }): Promise<void>
   dispose?(): Promise<void>
 }
-
-export interface OpenClawPluginApi {
-  registerContextEngine: (id: string, factory: () => ContextEngine | Promise<ContextEngine>) => void
-}

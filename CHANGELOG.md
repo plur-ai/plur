@@ -1,5 +1,38 @@
 # Changelog
 
+## Unreleased
+
+Architecture audit (2026-09-03, `docs/audits/2026-09-03-architecture-audit.md`):
+fewer mechanisms, one drift bug fixed, no feature changes.
+
+- **claw heartbeats reach the live endpoint again.** claw carried copies of core's
+  three telemetry modules; #562 pointed the copy at `heartbeat.plur-ai.org`, which
+  does not resolve, while core (MCP, CLI) kept `plur.ai/v1/heartbeat`, which does.
+  claw now imports core's modules and passes its own `packageVersion`; the copies
+  and their duplicated tests are gone.
+- **`learnRouted()` refuses an empty statement** before dialing a remote store, as
+  `learn()` always did — both now run one input gate.
+- **`updateEngramAsync()` / `setPinnedAsync()`** are the same implementation as
+  `updateEngram()` / `setPinned()` (as their docs claimed since 0.16). A remote that
+  refuses a PATCH is now skipped in favour of the next writable store on the
+  deprecated names too, instead of throwing.
+
+**Removed from `@plur-ai/core`** (breaking for anyone importing them; nothing in
+this repo did): `YamlStore`, `SqliteStore`, `createStore`, `migrateStore`,
+`EngramStore`, `StorageBackend`, `StorageConfig` — the pre-ADR-0003 persistence
+seam. `YamlStore.save()` was a second whole-corpus YAML writer that had shipped
+without the shrink guard (#824), and `SqliteStore` made SQLite a primary store
+against the documented invariant. `saveEngrams` is now the only whole-corpus YAML
+writer. The unread `storage:` config key that only fed the deleted factory is
+gone too (unknown keys are ignored, so existing `config.yaml` files still load).
+Also removed: `rebuildJsonCache`, `COMMITMENT_MULTIPLIER`, `BoundedRecallResult`,
+`computePackChecksum`/`verifyPackChecksum` (never exported), `computeQualityScore`
+(no caller), the embedder dim-check module (the doctor grew its own).
+
+Internal: one cross-encoder module builds both rerankers; the rerankers import
+cycle is gone; `mcp`, `cli` and `claw` each show their version from one constant
+(`release.sh` bumps 15 places, not 17; claw bumps one source file, not two).
+
 ## 0.19.4
 
 Patch release: makes the Hermes memory provider actually load. 0.19.3 shipped the entry
