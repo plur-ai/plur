@@ -38,10 +38,10 @@ src/
 │   └── config.ts          # User config (stores list, search config, sync settings)
 │
 ├── store/                 # Persistence backends
-│   ├── types.ts           # EngramStore interface (what every backend implements)
-│   ├── factory.ts         # createStore() — picks YamlStore or SqliteStore
-│   ├── yaml-store.ts      # Default — plain YAML file, atomic write via tmp+rename
-│   ├── sqlite-store.ts    # Optional — better-sqlite3 backend for scale
+│   ├── primary-store.ts   # PrimaryStore interface — the source-of-truth seam (ADR-0003)
+│   ├── yaml-primary-store.ts # Default — engrams.yaml via loadEngrams/saveEngrams
+│   ├── memory-primary-store.ts # In-memory store for tests and sandboxed sessions
+│   ├── readonly-store-guard.ts # Wraps a store so every mutation throws
 │   ├── remote-store.ts    # Talks to a PLUR Enterprise /api/v1/engrams server
 │   ├── async-fs.ts        # AsyncFs — promisified fs with single-file write lock
 │   └── async-lock.ts      # In-process mutex
@@ -131,20 +131,23 @@ forever-load-bearing once written to user disks.
                     Plur (in-memory)
                          │
                          ▼
-                   EngramStore                 — interface (load/save/append/getById/remove/count/close)
-                   ┌─────┴──────┬───────────────┐
-                   ▼            ▼               ▼
-              YamlStore     SqliteStore    RemoteStore
-              (default)     (optional)     (PLUR Enterprise)
-                   │            │               │
-            ~/.plur/         ~/.plur/      https://plur.datafund.io
-            engrams.yaml     engrams.db    /api/v1/engrams
+                  PrimaryStore                 — interface (load/loadCached/save + optional row seams, ADR-0003)
+          ┌──────────────┼──────────────────┐
+          ▼              ▼                  ▼
+   YamlPrimaryStore  MemoryPrimaryStore  PostgresAdapter
+     (default)         (tests, sandbox)    (server tier; also a query StorageAdapter)
+          │
+   ~/.plur/engrams.yaml
+
+   Secondary stores (config.yaml `stores:`): file paths are YamlPrimaryStore
+   instances; `url` entries are RemoteStore drivers (PLUR Enterprise /api/v1).
 ```
 
 ### YAML is the source of truth
 
-`YamlStore` (in `src/store/yaml-store.ts`) writes the entire engram array
-on every save. Atomic via tmp+rename. **The on-disk YAML is
+`YamlPrimaryStore` (in `src/store/yaml-primary-store.ts`) persists through
+`saveEngrams` — the single whole-corpus YAML writer in core, atomic via
+tmp+rename and guarded against unexpected shrink. **The on-disk YAML is
 human-readable and human-editable** — open it, version it with git, share
 it with a teammate. Every other layer (BM25 index, embeddings cache) is a
 derived cache that can be rebuilt from the YAML.

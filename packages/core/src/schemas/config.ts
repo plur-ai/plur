@@ -90,12 +90,6 @@ export const DedupConfigSchema = z.object({
 }).partial()
 
 
-export const StorageConfigSchema = z.object({
-  backend: z.enum(['yaml', 'sqlite']).default('yaml'),
-  path: z.string().optional(),
-}).partial()
-
-
 /**
  * Embedding-layer configuration. When enabled is false, the BGE model is not
  * loaded and recall_hybrid runs in BM25-only mode. The PLUR_DISABLE_EMBEDDINGS
@@ -273,7 +267,6 @@ export const PlurConfigSchema = z.object({
    * Env override: PLUR_BACKEND=yaml|sqlite|pglite|postgres.
    */
   backend: z.enum(['yaml', 'sqlite', 'pglite', 'postgres']).optional(),
-  storage: StorageConfigSchema.default({}),
   embeddings: EmbeddingsConfigSchema.default({}),
   vector: VectorConfigSchema.default({}),
   /** Server-Postgres backend settings (ADR-0005). See {@link PostgresConfigSchema}. */
