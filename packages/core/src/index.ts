@@ -3241,6 +3241,9 @@ export class Plur {
       recallHybrid: (query: string, options?: { limit?: number }) => this.recallHybrid(query, { ...options, remote: false }),
       recall: (query: string, options?: { limit?: number }) => this.recall(query, { ...options, remote: false }),
       learn: (statement: string, context?: LearnContext) => this.learn(statement, context),
+      // #930: learnBatch uses this instead of `learn` so remote-scope writes
+      // await the server push and return the server-assigned id. See LearnAsyncDeps.learnRouted.
+      learnRouted: (statement: string, context?: LearnContext) => this.learnRouted(statement, context),
       getById: (id: string) => this.getById(id),
       store: this._primaryStore,
       engramsPath: this.paths.engrams,
