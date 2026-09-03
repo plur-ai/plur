@@ -1,0 +1,226 @@
+# Sprint 0 — PLUR core (core track), the ramp
+#
+# Thu 2026-09-03 to Sun 2026-09-06, the tail of W36. Short on purpose: its job
+# is CADENCE, not throughput — open, work and close one sprint so W37 starts at
+# pace instead of cold.
+#
+# REWRITTEN 2026-09-02, second attempt. The first draft scoped this sprint
+# around the five smallest CHANGES_REQUESTED PRs. That was wrong, and the way
+# it was wrong is worth recording: "zero commits since review" is true for all
+# nine stalled PRs, but `reviewRequests` shows a RE-REVIEW REQUESTED FROM plur9
+# on four of the five. Crt reviewed them nine days ago and handed them back;
+# they are sitting on GREGOR'S review queue. A sprint whose entire backlog
+# needs one specific human to review it is not an agent sprint however green
+# the CI is. Those five now appear under hitl_log, with an owner, where they
+# belong.
+#
+# This sprint is therefore about RELEASE READINESS: everything that must be
+# true before core v0.20.0 can be cut in W37, and that an agent can do without
+# waiting on a review. See 1-tracks/product/release-plan-2026-09-02.md.
+#
+# TRACK: core and enterprise run SEPARATE sprint sequences. sprint_id is
+# repo-qualified because it doubles as miles_routing.sprint_tag_filter.
+#
+# Day-of-week verified: 2026-09-03=Thu, 2026-09-06=Sun, 2026-09-07=Mon
+# (via python3 .datacore/lib/date_utils.py dow YYYY-MM-DD)
+
+sprint_id: 2026-W36-core-sprint0
+project: 5-plur/2-projects/plur
+status: closed          # planning | active | review | retro | closed
+
+# SUPERSEDED 2026-09-03 by 2026-W36-core-sprint0.2, before activation.
+# Its premise expired the day it was written: it scoped around five PRs being
+# unmovable, and #953/#950 merged, #955 closed, #942 went to Crt. Kept rather
+# than deleted so the reasoning stays legible — the re-scope is the interesting
+# part, not the draft.
+superseded_by: 2026-W36-core-sprint0.2
+cadence: 4d
+dates:
+  start: 2026-09-03
+  end: 2026-09-06
+  planning: 2026-09-03
+  retro: 2026-09-07      # doubles as W37 planning
+
+goal: |
+  Make core v0.20.0 cuttable. Ship nothing, block nothing, leave a queue that
+  can actually be released on Monday.
+
+  v0.20.0's theme is "Nothing is silently dropped" — the M1 Usable rung, and
+  every place PLUR was losing something without telling you. Its headline is
+  #1082: today 48 pinned engrams cost 27,706 tokens against a 4,000-token
+  budget, so roughly ten fit and thirty-eight are dropped from every injection,
+  safety rules included, in whatever order the array happens to be in.
+
+  Two things stop that release being cuttable right now, and neither needs a
+  review to fix:
+
+    1. The #1082 review fix is on a pushed branch with NO PR. It is invisible
+       to every queue view, including this sprint's.
+    2. Two stale branches survive work that is already closed, so the branch
+       list no longer describes reality.
+
+  Everything else in this sprint is release scaffolding: notes, changelog,
+  and a dry run of the release checklist so Monday finds its problems on
+  Thursday instead.
+
+release:
+  target: v0.20.0
+  theme: Nothing is silently dropped
+  rung: M1
+  cut_in: 2026-W37-core-sprint1
+  note: >
+    This sprint does NOT cut the release. It removes the reasons the release
+    cannot be cut.
+
+roadmap_links: [R-041, R-018, R-070]
+milestone_links: [M1, continuous]
+okr_links: []
+
+facilitator:
+  operational: miles-on-nightshift
+  strategic: plur9
+miles_routing:
+  primary_repo: plur-ai/plur
+  overflow_repo: plur-ai/plur   # same as primary = no cross-track overflow;
+                                # core and enterprise run SEPARATE tracks
+  sprint_tag_filter: 2026-W36-core-sprint0
+
+backlog:
+  - id: S0-1
+    ref: branch:review/1082-pinned
+    title: Open the PR for review/1082-pinned — it is pushed and invisible
+    owner_role: engineering
+    default_claimer: miles-on-nightshift
+    state: todo
+    priority: must
+    effort_estimate: S
+    roadmap: R-041
+    milestone: M1
+    labels: [release-blocker, pinned]
+    acceptance: |
+      A PR exists, targets main, references #1082, and says in its body what it
+      changes about the review feedback. Opening it is the whole task — merging
+      it is W37's problem. A branch with no PR is not "in review", it is lost.
+
+  - id: S0-2
+    ref: branch:feat/1059-anchor-feed-endpoint
+    title: Delete feat/1059-anchor-feed-endpoint — its precondition is met
+    owner_role: engineering
+    default_claimer: miles-on-nightshift
+    state: todo
+    priority: should
+    effort_estimate: S
+    roadmap: R-070
+    milestone: continuous
+    labels: [cleanup]
+    acceptance: |
+      plur#1061 is CLOSED (verified 2026-09-02 by live referent check), which
+      is exactly the condition the original task named. Confirm nothing
+      unmerged lives on the branch, then delete it locally and on origin.
+
+  - id: S0-3
+    ref: branch:fix/better-sqlite3-node26-compat
+    title: Decide the fate of fix/better-sqlite3-node26-compat — #874 is closed
+    owner_role: engineering
+    default_claimer: plur9
+    state: todo
+    priority: should
+    effort_estimate: S
+    roadmap: R-070
+    milestone: continuous
+    labels: [cleanup, decision]
+    acceptance: |
+      plur#874 ("better-sqlite3@11.10.0 cannot build or load on Node 26 — 55
+      tests fail locally") is CLOSED, and the branch has no PR. Either it
+      carries a fix worth a PR, or it is dead and gets deleted. Written
+      decision either way — this is the second branch found this week that was
+      invisible because it had no PR, and that pattern is the actual finding.
+
+  - id: S0-4
+    ref: roadmap:R-041
+    title: Draft the v0.20.0 release notes from the theme, not from the commit log
+    owner_role: engineering
+    default_claimer: miles-on-nightshift
+    state: todo
+    priority: must
+    effort_estimate: M
+    roadmap: R-041
+    milestone: M1
+    labels: [release, comms]
+    acceptance: |
+      A draft in the repo that leads with what changed for the USER — thirty-
+      eight pinned engrams silently dropped, now not — and only then lists PRs.
+      Written against the theme "Nothing is silently dropped".
+      It must pass claims_lint: no unverified figures, no superlatives, no
+      competitor comparison (no-benchmark-war stands). The token numbers are
+      measured and citable; anything else needs a source.
+
+  - id: S0-5
+    ref: github:plur-ai/plur#1069
+    title: CHANGELOG date correction for v0.18.0, and a dry run of the release checklist
+    owner_role: engineering
+    default_claimer: miles-on-nightshift
+    state: todo
+    priority: should
+    effort_estimate: S
+    roadmap: R-070
+    milestone: continuous
+    labels: [release, hygiene]
+    acceptance: |
+      Date corrected. Then walk RELEASING.md's manifest gate against the
+      current tree WITHOUT publishing, and record what would have failed.
+      Seventeen files carry the version on the standard track; finding a
+      half-done bump on Thursday is free, finding it mid-publish is not.
+
+stretch:
+  - id: S0-6
+    ref: github:plur-ai/plur#1113,#1114
+    title: Review the two PRs opened 2026-09-02, if capacity allows
+    why: >
+      Both are inside a normal review window and are NOT part of the stalled
+      pile. Reviewing them promptly is how the queue stops growing while we
+      drain it.
+
+# ─── human-gated: named, owned, and NOT counted as sprint work ─────────────
+hitl_log:
+  - item: Five stalled PRs — #942, #953, #946, #950, #955
+    owner: plur9
+    what: >
+      Crt left CHANGES_REQUESTED on all five on 2026-08-24. A re-review has
+      since been requested from plur9 on #942, #953, #946 and #950. Last commit
+      on each predates the review by 14-15 days. 536 lines between them.
+    why_not_sprint_work: >
+      The whole batch is gated on one person's review. Listing it as backlog
+      would make the sprint look full while nothing could actually move.
+    needed_by: >
+      2026-09-07 planning — v0.20.0 cannot be cut without #950, #942 and #953,
+      so these are the release's real critical path.
+  - item: The X credential decision blocking #955
+    owner: plur9
+    what: dsh README + pre-publish X credential step; cannot merge without it.
+
+claims: []
+
+done_when: |
+  Core v0.20.0 can be cut on Monday without discovering a blocker on Monday.
+
+  Concretely: no core branch is pushed without a PR; the two dead branches are
+  resolved by decision, not left to rot; release notes exist as a draft that
+  leads with the user-visible change and passes claims_lint; and the manifest
+  gate has been walked without publishing, with any half-done version bump
+  found and fixed.
+
+  NOT in scope, deliberately: merging anything. Every merge in this queue needs
+  a review that is not this sprint's to give.
+
+  Retro Mon 2026-09-07 answers two questions and rolls into W37 planning: what
+  did not finish, and did naming the human-gated items separately make the
+  sprint more honest or just smaller?
+
+not_this_sprint:
+  - id: "#1002"
+    why: >
+      The provenance epic, +12,804 across 88 files. It is the trunk of M3 and
+      belongs to v0.21.0, not to a four-day ramp.
+  - id: "#981 / #1017 / #1108"
+    why: 1,624 / 767 / 1,226 lines, all CHANGES_REQUESTED. W37 and v0.20.0+.
