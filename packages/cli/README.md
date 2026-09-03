@@ -79,8 +79,21 @@ path such as decay. Available in English and 中文; it follows your browser's
 `Accept-Language`, or force it with `?lang=zh`.
 
 Binds `127.0.0.1` by default and deliberately: the viewer serves your entire
-memory store with **no authentication**. `--host` widens it and prints a
-warning; only do that on a network you control.
+memory store with **no authentication**.
+
+`--host` widens the bind and carries two risks you should understand before
+using it:
+
+- **Direct access** — anyone on your network can reach the port and read every
+  engram. No credentials. No rate limit.
+- **DNS rebinding** — any website you visit while the viewer runs can rebind its
+  own domain to your machine's address and read the store cross-origin. The
+  rebinding check (Host-header validation) blocks the known attack vector by
+  only accepting the server's own addresses, but it does not make the exposure
+  safe. A compromised network or a browser vulnerability can still bypass it.
+
+Only run widened (`--host 0.0.0.0` or a LAN address) on a network you fully
+control, and stop the viewer when you are done.
 
 ## Importing from other memory systems
 

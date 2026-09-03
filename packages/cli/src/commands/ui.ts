@@ -106,10 +106,12 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   outputText(`  ${url}`)
   outputText(`  store: ${status.storage_root}`)
   outputText(`  ${status.engram_count} engrams · Ctrl-C to stop`)
-  if (opts.host !== '127.0.0.1' && opts.host !== 'localhost') {
+  if (!isLoopback) {
     outputText('')
-    outputText(`  WARNING: bound to ${opts.host}. The viewer has no authentication —`)
-    outputText('  anyone who can reach this port can read your entire memory store.')
+    outputText(`  WARNING: bound to ${opts.host}. The viewer has no authentication.`)
+    outputText('  Anyone on your network can read your entire memory store.')
+    outputText('  DNS rebinding risk: any site you visit could read the store through')
+    outputText('  your browser. Only run widened on a network you fully control.')
   }
 
   if (opts.open) openBrowser(url)
