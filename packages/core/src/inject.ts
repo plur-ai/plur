@@ -346,7 +346,21 @@ export function fillTokenBudget(
   // always-load — but they respect both maxTokens AND a sub-budget so they
   // can't starve the relevance-scored engrams. With many pinned packs, the
   // pinned set can grow unboundedly; the sub-budget caps at 50% of maxTokens.
-  const pinned = scored.filter(e => (e as any).pinned === true)
+  //
+  // Within the pinned tier, selection order is:
+  //   1. pinned_priority desc (100 = injected first, 1 = evicted first; absent = 50)
+  //   2. retrieval_strength desc as tiebreaker
+  // This lets callers designate critical always-load engrams that survive even
+  // a tight budget, without having to track which ones are last in the YAML.
+  const DEFAULT_PINNED_PRIORITY = 50
+  const pinned = scored
+    .filter(e => (e as any).pinned === true)
+    .sort((a, b) => {
+      const pa = (a as any).pinned_priority ?? DEFAULT_PINNED_PRIORITY
+      const pb = (b as any).pinned_priority ?? DEFAULT_PINNED_PRIORITY
+      if (pb !== pa) return pb - pa
+      return b.activation.retrieval_strength - a.activation.retrieval_strength
+    })
   const unpinned = scored.filter(e => (e as any).pinned !== true)
   const pinnedBudget = Math.floor(maxTokens * PINNED_TOKEN_BUDGET_RATIO)
 

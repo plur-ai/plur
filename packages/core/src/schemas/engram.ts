@@ -433,6 +433,16 @@ export const EngramSchema = z.object({
   pinned: z.boolean().optional()
     .describe('Always-load flag. Pinned engrams bypass the keyword-relevance gate and are eligible for injection every session. Use sparingly.'),
 
+  /**
+   * Eviction priority within the pinned tier (integer 1–100, 100 = highest).
+   * When the pinned token sub-budget overflows, fillTokenBudget selects
+   * engrams in descending priority order — lower-priority engrams are evicted
+   * first. Engrams without this field are treated as priority 50 (neutral).
+   * Only meaningful when `pinned: true`; ignored on unpinned engrams.
+   */
+  pinned_priority: z.number().int().min(1).max(100).optional()
+    .describe('Eviction priority within the pinned tier (1–100, 100=highest). Lower-priority engrams evicted first on budget overflow. Default 50.'),
+
   /** Measurement context for numeric or benchmark-derived claims (#869).
    *  Records model, source_type, hardware, dataset, and/or date under which the
    *  asserted value was measured, so differing-condition measurements can be

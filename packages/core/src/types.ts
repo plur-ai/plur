@@ -28,6 +28,13 @@ export interface LearnContext {
   /** Always-load flag — bypass keyword-relevance gate during injection. */
   pinned?: boolean
   /**
+   * Eviction priority within the pinned tier (1–100, 100=highest). When the
+   * pinned sub-budget overflows, lower-priority engrams are evicted first.
+   * Engrams without this field are treated as priority 50. Only meaningful
+   * when `pinned: true`.
+   */
+  pinned_priority?: number
+  /**
    * Start of the knowledge's validity window (ISO YYYY-MM-DD, #347). Stored in
    * `temporal.valid_from`; inject/recall skip the engram before this date.
    */

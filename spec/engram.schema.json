@@ -734,6 +734,12 @@
       "type": "boolean",
       "description": "Always-load flag. Pinned engrams bypass the keyword-relevance gate and are eligible for injection every session. Use sparingly."
     },
+    "pinned_priority": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 100,
+      "description": "Eviction priority within the pinned tier (1–100, 100=highest). Lower-priority engrams evicted first on budget overflow. Default 50."
+    },
     "measured_under": {
       "type": "object",
       "properties": {

@@ -2648,6 +2648,9 @@ export class Plur {
           superseded_by: [],
         } : undefined,
         pinned: context?.pinned === true ? true : undefined,
+        pinned_priority: context?.pinned_priority != null
+          ? Math.max(1, Math.min(100, Math.round(context.pinned_priority)))
+          : undefined,
         // #869: measurement context — present only when the caller supplies it.
         measured_under: context?.measured_under,
       }
@@ -3217,6 +3220,9 @@ export class Plur {
         supersedes: context!.supersedes!, superseded_by: [],
       } : undefined,
       pinned: context?.pinned === true ? true : undefined,
+      pinned_priority: context?.pinned_priority != null
+        ? Math.max(1, Math.min(100, Math.round(context.pinned_priority)))
+        : undefined,
       // #869: measurement context — present only when the caller supplies it.
       measured_under: context?.measured_under,
     }
