@@ -15,11 +15,12 @@
  * the record look more authoritative than it is.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync } from 'fs'
+import { mkdtempSync, rmSync, writeFileSync, existsSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { Plur } from '@plur-ai/core'
 import { getToolDefinitions, _resetSessionTelemetry } from '../src/tools.js'
+import { StubServer } from '../../core/test/helpers/stub-server.js'
 
 describe('plur_provenance (#979)', () => {
   let plur: Plur
@@ -174,11 +175,18 @@ describe('plur_provenance (#979)', () => {
     }
   })
 
-  it('saves the record when asked, and says where', async () => {
+  it('offers no way to write, because it is annotated read-only (#1002 review)', async () => {
+    // A host may run a `readOnlyHint` tool without asking. A `save` flag that
+    // wrote files made the annotation a lie; writing is `plur provenance
+    // --write` or `plur.writeProvenance()`.
+    const tool = tools.find(t => t.name === 'plur_provenance')!
+    expect((tool as any).annotations.readOnlyHint).toBe(true)
+    expect((tool as any).inputSchema.properties.save).toBeUndefined()
     const engram = await plur.learn('Worth saving', { type: 'behavioral' })
     const result = await call({ id: engram.id, save: true })
-    expect(result.saved_to).toBeTruthy()
-    expect(String(result.saved_to)).toContain('provenance')
+    expect(result.found).toBe(true)
+    expect(result.saved_to).toBeUndefined()
+    expect(existsSync(join(dir, 'provenance'))).toBe(false)
   })
 
   it('explains itself when nothing matches, rather than failing', async () => {
@@ -244,11 +252,24 @@ describe('plur_provenance — corrections from testing', () => {
     expect(receipt.description).toContain('plur_provenance')
   })
 
-  it('saving twice does not pile up identical records', async () => {
-    const engram = await plur.learn('Saved twice', { type: 'behavioral' })
-    const first = await call({ id: engram.id, save: true })
-    const second = await call({ id: engram.id, save: true })
-    expect(second.saved_to).toBe(first.saved_to)
+  it('a search does not dial remote stores (#776, #1002 review)', async () => {
+    // The engram whose provenance we can show lives in OUR store; sending
+    // the phrase to every configured host leaks it, and a remote top hit
+    // would only fail `provenanceFor`.
+    const stub = new StubServer('tok')
+    const info = await stub.start()
+    try {
+      writeFileSync(join(dir, 'config.yaml'),
+        `stores:\n  - url: "${info.url}"\n    token: "tok"\n    scope: "team:remote"\n`)
+      const remote = new Plur({ path: dir })
+      await remote.learn('A memory about aurora borealis', { type: 'behavioral' })
+      const tool = tools.find(t => t.name === 'plur_provenance')!
+      const result = await tool.handler({ search: 'aurora borealis' }, remote) as any
+      expect(result.found).toBe(true)
+      expect(stub.recallCalls).toBe(0)
+    } finally {
+      await stub.stop()
+    }
   })
 
   it('lets a caller choose a licence, so a complete record is reachable', async () => {
@@ -369,5 +390,45 @@ describe('plur_learn can mark a memory shareable', () => {
     // never think to ask the user about it.
     const schema = (tools.find(t => t.name === 'plur_learn') as any).inputSchema
     expect(schema.properties.visibility.description).toContain('EXCLUDED')
+  })
+})
+
+/**
+ * Export without a licence is a refusal an agent can act on (#970, #1002
+ * review). Core throws a long explanation; for an agent the answer has to be
+ * a next step — and the next step is to ask the user, never to pick one.
+ */
+describe('plur_packs_export without a licence', () => {
+  let plur: Plur
+  let dir: string
+  let out: string
+  let tools: ReturnType<typeof getToolDefinitions>
+
+  beforeEach(async () => {
+    dir = mkdtempSync(join(tmpdir(), 'plur-export-lic-'))
+    out = join(mkdtempSync(join(tmpdir(), 'plur-export-lic-out-')), 'p')
+    plur = new Plur({ path: dir })
+    await plur.learn('Shareable convention', { type: 'behavioral', visibility: 'public' })
+    tools = getToolDefinitions('full')
+    _resetSessionTelemetry()
+  })
+  afterEach(() => { for (const d of [dir, join(out, '..')]) rmSync(d, { recursive: true, force: true }) })
+
+  const exportPack = async (args: Record<string, unknown>) =>
+    tools.find(t => t.name === 'plur_packs_export')!.handler({ name: 'p', output_dir: out, ...args }, plur) as Promise<any>
+
+  it('returns a structured refusal with the question to put to the user', async () => {
+    const r = await exportPack({})
+    expect(r.exported).toBe(false)
+    expect(r.error).toMatch(/licence/)
+    expect(r.next_step).toMatch(/[Aa]sk the user/)
+    expect(r.next_step).toContain('license')
+    expect(existsSync(join(out, 'engrams.yaml'))).toBe(false)
+  })
+
+  it('exports once a licence is given', async () => {
+    const r = await exportPack({ license: 'cc-by-4.0' })
+    expect(r.engram_count).toBe(1)
+    expect(existsSync(join(out, 'engrams.yaml'))).toBe(true)
   })
 })
