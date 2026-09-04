@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased
+
+- Hook injections are recorded once, and the counter follows the record
+
+**Duplicate `co_injection` events from hook processes are deduplicated (#975, #1017).**
+Claude Code hooks run `plur hook-inject` as a fresh process per event, and two of them
+spawned milliseconds apart each logged the same injection — 956 near-duplicate pairs in
+one store. The check now reads the history tail under a per-store lock so the decision
+and the append are one critical section, keyed on query, engram set, source, session
+and — for PreToolUse and SubagentStart hooks — the harness's per-event id, so two
+`Explore` subagents launched in one message stay two records. Only `source: 'hook'`
+injections dedup; MCP `inject` and `session_start` calls are deliberate and never wait
+on the lock. `injection_count` now advances once per deduplicated hook injection and
+never ahead of the history record: a hook injection whose history write fails leaves the
+counter where it was. Historical values are not migrated, so usage counts read across
+the upgrade show a discontinuity for hook-heavy stores. The per-session `.injecting`
+guard in `hook-inject` is atomic (O_EXCL), closing one way the double fire arose, and no
+content of the local history log — a `null` line, a record without `data`, garbage
+bytes — can make `inject()` fail closed.
+
 ## 0.19.4
 
 Patch release: makes the Hermes memory provider actually load. 0.19.3 shipped the entry
