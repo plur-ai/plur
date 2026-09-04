@@ -24,7 +24,7 @@ Commands:
   recall <query>          Search engrams
   inject <task>           Get relevant engrams for a task
   list                    List all engrams
-  forget <id>             Retire an engram
+  forget <id>             Retire an engram [--scope <scope>] (target one store, #831)
   restore [--list|--yes]  Inspect or restore a daily store snapshot (#799)
   ingest <content>        Extract and save engrams from content
   import                  Import memories from another system (issue #441)
