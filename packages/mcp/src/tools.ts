@@ -1178,7 +1178,11 @@ function getAllToolDefinitions(): ToolDefinition[] {
           // Opt-in, content-free engagement counter (default-off; no statement text).
           recordTelemetry('learn')
           return {
-            id: engram.id, statement: engram.statement,
+            // Mirror the happy-path fix (#914): report the namespaced form so a
+            // caller holding this id can pass it to plur_forget / plur_feedback
+            // without hitting the collision the id form mismatch causes.
+            // Outbox engrams stay local-form (same rule as line 1149).
+            id: isOutbox ? engram.id : plur.readIdFor(engram), statement: engram.statement,
             scope: engram.scope, type: engram.type, decision: 'ADD',
             ...temporalEcho(engram),
             ...scopeHint(engram.scope, !!routedFallback),
@@ -2197,6 +2201,8 @@ function getAllToolDefinitions(): ToolDefinition[] {
           // Core reports these; this hand-built response dropped them, so an
           // agent asking for status saw a healthy-looking `pack_count: 0`.
           ...(status.store_errors ? { store_errors: status.store_errors } : {}),
+          // Spreading-activation drop counters — absent when both are zero.
+          ...(status.spread_drops ? { spread_drops: status.spread_drops } : {}),
           // Version check (issue #151)
           ...(versionCheck?.updateAvailable && versionCheck.latest ? {
             update_available: {
