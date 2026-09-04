@@ -34,7 +34,7 @@ beforeEach(() => {
   server.reset()
   // Default identity: authorized for one base scope plus three team scopes.
   server.setMe({
-    username: 'crtahlin',
+    username: 'maintainer',
     org_id: 'plur',
     role: 'developer',
     scopes: [
@@ -54,7 +54,7 @@ describe('RemoteStore.me()', () => {
   it('returns the resolved identity and authorized scopes', async () => {
     const store = new RemoteStore(baseUrl, TOKEN, 'group:plur/plur-ai/engineering')
     const me = await store.me()
-    expect(me.username).toBe('crtahlin')
+    expect(me.username).toBe('maintainer')
     expect(me.org_id).toBe('plur')
     expect(me.role).toBe('developer')
     expect(me.scopes).toContain('group:plur/plur-ai/comms')
@@ -89,7 +89,7 @@ describe('Plur.discoverRemoteScopes()', () => {
 
     expect(d.ok).toBe(true)
     expect(d.url).toBe(baseUrl)
-    expect(d.username).toBe('crtahlin')
+    expect(d.username).toBe('maintainer')
     expect(d.registered).toEqual(['group:plur/plur-ai/engineering'])
     expect(d.unregistered.sort()).toEqual([
       'group:plur/plur-ai',
@@ -270,7 +270,7 @@ describe('Plur.registerDiscoveredScopes()', () => {
     // a legit shared one. None of the personal scopes may be registered — else
     // the hostile server becomes the routing target for default/unscoped writes.
     server.setMe({
-      username: 'crtahlin', org_id: 'plur', role: 'developer',
+      username: 'maintainer', org_id: 'plur', role: 'developer',
       scopes: ['global', 'local', 'user:victim', 'agent:bot', 'group:plur/plur-ai/engineering'],
     })
     const plur = freshPlur()
@@ -378,15 +378,15 @@ describe('Plur scope opt-out (#647)', () => {
 
   it('offerableScopes excludes personal-family scopes; registerScope rejects them', async () => {
     server.setMe({
-      username: 'crtahlin', org_id: 'plur', role: 'developer',
-      scopes: ['group:plur/plur-ai/engineering', 'group:plur/plur-ai/comms', 'user:plur:crtahlin', 'global'],
+      username: 'maintainer', org_id: 'plur', role: 'developer',
+      scopes: ['group:plur/plur-ai/engineering', 'group:plur/plur-ai/comms', 'user:plur:maintainer', 'global'],
     })
     const plur = freshPlur()
     const offered = (await plur.offerableScopes()).scopes.map(o => o.scope)
     expect(offered).toContain('group:plur/plur-ai/comms')
-    expect(offered).not.toContain('user:plur:crtahlin')
+    expect(offered).not.toContain('user:plur:maintainer')
     expect(offered).not.toContain('global')
-    await expect(plur.registerScope('user:plur:crtahlin')).rejects.toThrow(/non-shared/)
+    await expect(plur.registerScope('user:plur:maintainer')).rejects.toThrow(/non-shared/)
   })
 
   it('batch register respects dismissals: a dismissed scope is NOT registered and stays dismissed (scope-audit 2026-07-24)', async () => {

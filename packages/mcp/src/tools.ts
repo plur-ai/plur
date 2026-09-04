@@ -1,7 +1,7 @@
 import { existsSync, unlinkSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
-import { Plur, extractMetaEngrams, validateMetaEngram, confidenceBand, generateProfile, getProfileForInjection, markProfileDirty, selectModelForOperation, readHistoryForEngram, getCachedUpdateCheck, minorVersionsBehind, scanForTensions, CapabilityCanary, readProjectConfig, isSharedScope, resolveRerankerName, getReranker, classifyRerankerFailure, hfCacheDirName, SUGGEST_DISPLAY_MIN_CONFIDENCE, mcpRemoteWarningLine, doctorRemoteRemediation, normalizeEndpointUrl, REMOTE_STATUS_TTL_MS, PROBE_CLEARABLE_STATES } from '@plur-ai/core'
+import { Plur, extractMetaEngrams, validateMetaEngram, confidenceBand, generateProfile, getProfileForInjection, markProfileDirty, selectModelForOperation, readHistoryForEngram, getCachedUpdateCheck, minorVersionsBehind, scanForTensions, CapabilityCanary, readProjectConfig, isSharedScope, resolveRerankerName, getReranker, classifyRerankerFailure, hfCacheDirName, SUGGEST_DISPLAY_MIN_CONFIDENCE, mcpRemoteWarningLine, doctorRemoteRemediation, normalizeEndpointUrl, REMOTE_STATUS_TTL_MS, PROBE_CLEARABLE_STATES, summariseProvenance, renderProvenanceSummary, type LearnContext } from '@plur-ai/core'
 import type { LlmFunction, MetaField, TensionStatus, RerankerEvalResult, HistoryEvent, Receipt, RemoteStoreStatusEntry } from '@plur-ai/core'
 import { recordTelemetry } from './telemetry.js'
 import { VERSION } from './version.js'
@@ -1015,17 +1015,74 @@ function getAllToolDefinitions(): ToolDefinition[] {
               date: { type: 'string', description: 'ISO date (YYYY-MM-DD) the measurement was taken' },
             },
           },
+          attribution: {
+            type: 'object',
+            description:
+              'Who is answerable for this memory (#961). Every sub-field optional; OMIT rather than guess — a memory with no agent is honest, one with an invented agent is worse than none. Set asserted_by to "unidentified" when nobody is identified, rather than leaving it out: absence cannot be told apart from a memory written before this existed.',
+            properties: {
+              asserted_by: { type: 'string', description: 'Who or what asserted it. Any address: a local name, a Decentralized Identifier, or "unidentified".' },
+              runtime: {
+                type: 'object',
+                description: 'The software writing this. Usually known, so usually worth setting.',
+                properties: { name: { type: 'string' }, version: { type: 'string' } },
+              },
+              model: {
+                type: 'object',
+                description: 'The model behind the statement, if one was involved. Prompt TEXT is never stored, only a hash.',
+                properties: {
+                  name: { type: 'string' },
+                  prompt_id: { type: 'string' },
+                  prompt_version: { type: 'string' },
+                  prompt_sha256: { type: 'string' },
+                },
+              },
+              tool: {
+                type: 'object',
+                description: 'An extractor or importer, with its version.',
+                properties: { name: { type: 'string' }, version: { type: 'string' } },
+              },
+              on_behalf_of: { type: 'string', description: 'The party the runtime acted for.' },
+            },
+          },
+          claim_class: {
+            type: 'string',
+            enum: ['observed', 'documented', 'structural', 'asserted', 'inferred', 'revised'],
+            description:
+              'What KIND of claim this is (#963), and the most useful single field for anyone later deciding how much to trust it. Use "asserted" when a PERSON stated it outright, "inferred" when YOU worked it out, "documented" when you took it from prose someone wrote, "observed" for a record of something that happened, "structural" when read off the shape of an artifact, "revised" for a rewrite. Omit only when it genuinely cannot be determined.',
+          },
+          license: {
+            type: 'string',
+            description:
+              'Which licence governs reuse of this memory, as an SPDX-style identifier such as "cc-by-4.0" or "apache-2.0". Set it only when the user has actually said which licence applies — do NOT guess one. Left unset, a default applies that nobody chose, and a provenance record reports it as unchosen rather than presenting it as a decision.',
+          },
+          // Deliberately exposed to the LLM, reversing #139, which kept
+          // `visibility` off this schema because `public` is what gates pack
+          // export and shared git sync. Without it an agent cannot mark
+          // anything shareable, so every pack built from agent-written
+          // memories was empty (#970) — the walkthrough and the agent
+          // conversation demo both depend on it. The reason #139 was cautious
+          // still holds, and is answered elsewhere: every path `public` opens
+          // (pack export, shared sync, remote push, rescope, explicit update,
+          // outbox flush) scans the FULL engram — statement plus every other
+          // field, `attribution` and `license` included — before content
+          // leaves the machine. See `engramContentFields` in core.
+          visibility: {
+            type: 'string',
+            enum: ['private', 'public', 'template'],
+            description:
+              'Whether this memory may leave this machine. Defaults to "private", which means it is EXCLUDED from every exported pack. Set "public" only when the user has said this is shareable with others — it is their decision, not yours. Without this an agent cannot mark anything shareable at all, so every memory it writes is private forever and any pack built from them is empty.',
+          },
         },
         required: ['statement'],
       },
       handler: async (args, plur) => {
         const llm = getLlmFunction()
-        // LLM-facing context. Fields not in inputSchema (visibility,
-        // knowledge_anchors, dual_coding, abstract, derived_from, memory_class,
+        // LLM-facing context. Fields not in inputSchema (knowledge_anchors,
+        // dual_coding, abstract, derived_from, memory_class,
         // session_episode_id) stay in the engram spec and remain settable via
         // the Plur class / REST — just not asked of the LLM. Their feature
-        // paths (private/public gating, meta-engram routing, etc.) are
-        // unaffected. See plur-ai/plur#139.
+        // paths (meta-engram routing, etc.) are unaffected. See
+        // plur-ai/plur#139; `visibility` is the one exception, see the schema.
         const context = {
           type: args.type as any,
           scope: args.scope as string | undefined,
@@ -1040,6 +1097,13 @@ function getAllToolDefinitions(): ToolDefinition[] {
           valid_until: args.valid_until as string | undefined,
           supersedes: args.supersedes as string[] | undefined,
           measured_under: args.measured_under as Record<string, string> | undefined,
+          // Who is answerable, and what kind of claim this is (#961, #963).
+          // Passed through untouched: we never invent an agent, and we never
+          // guess a claim class the caller did not state.
+          attribution: args.attribution as LearnContext['attribution'],
+          claim_class: args.claim_class as LearnContext['claim_class'],
+          license: args.license as LearnContext['license'],
+          visibility: args.visibility as LearnContext['visibility'],
           // #243: resolve which session's default scope governs this write —
           // explicit session_id first, else the lone open session. Never
           // persisted on the engram (LearnContext.session selects a scope, it
@@ -1596,6 +1660,10 @@ function getAllToolDefinitions(): ToolDefinition[] {
         properties: {
           id: { type: 'string', description: 'Exact engram ID to retire' },
           search: { type: 'string', description: 'Search term to find engram to retire' },
+          reason: {
+            type: 'string',
+            description: 'Why this is being retired. Recorded in the history log and on the engram (#959). Say what changed, not just that something did.',
+          },
           scope: { type: 'string', description: 'Which store holds it (#831). Ids are minted per store, so one id can name several unrelated engrams. Pass "primary" to stay on disk — the local primary store and any local secondary stores, never a remote — or a remote scope (e.g. "group:plur/plur-ai/engineering") to target that server. A scope matching no configured store is rejected, not guessed at. Omit it and an id resolving in two places is refused.' },
         },
       },
@@ -1612,14 +1680,14 @@ function getAllToolDefinitions(): ToolDefinition[] {
             // force:true — explicit user forget always fully retires, ignoring
             // reference_count. The ref-count decrement path is for internal
             // multi-agent dedup; one plur_forget call = full retirement (#766).
-            await plur.forget(args.id as string, undefined, { force: true })
+            await plur.forget(args.id as string, args.reason as string | undefined, { force: true })
             return { success: true, retired: { id: engram.id, statement: engram.statement } }
           }
           // Not in local store, or an explicit scope was given — let
           // plur.forget() resolve. It routes to remote stores (with prefix
           // stripping per #86 / PR #186), refuses an ambiguous unqualified id
           // (#831), and throws "Engram not found" if it is nowhere.
-          await plur.forget(args.id as string, undefined, { force: true, ...(scope ? { scope } : {}) })
+          await plur.forget(args.id as string, args.reason as string | undefined, { force: true, ...(scope ? { scope } : {}) })
           return { success: true, retired: { id: args.id as string, ...(scope ? { scope } : {}) } }
         }
         if (args.search) {
@@ -1628,7 +1696,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
           const matches = await plur.recall(args.search as string, { limit: 100, remote: false })
           if (matches.length === 0) return { success: false, error: `No active engrams matching "${args.search}"` }
           if (matches.length === 1) {
-            await plur.forget(matches[0].id, undefined, { force: true })
+            await plur.forget(matches[0].id, args.reason as string | undefined, { force: true })
             return { success: true, retired: { id: matches[0].id, statement: matches[0].statement } }
           }
           return {
@@ -2209,9 +2277,137 @@ function getAllToolDefinitions(): ToolDefinition[] {
     },
 
     {
+      name: 'plur_provenance',
+      description:
+        'Where a memory came from: who asserted it, whether a person stated it or a model worked it out, when, what it came from, and whether you may reuse it. ' +
+        'Read-only. Accepts an engram id or a search term — nobody remembers ids. ' +
+        'IMPORTANT when relaying to the user: report the `not_recorded` list as prominently as the rest. ' +
+        'A memory written before provenance was captured genuinely cannot say who asserted it, and presenting the record as complete would make it look more authoritative than it is. ' +
+        'Nothing here is guessed. Prefer relaying `summary`; ask for format "record" only when a machine-readable document is actually needed. ' +
+        'NOT plur_receipt: this describes the origin of ONE memory; plur_receipt counts how the whole store is being used.',
+      annotations: { title: 'Where a memory came from', readOnlyHint: true, idempotentHint: true },
+      inputSchema: {
+        type: 'object',
+        properties: {
+          id: { type: 'string', description: 'Exact engram id, e.g. ENG-2026-08-21-086' },
+          search: { type: 'string', description: 'Find the engram by what it says, if you do not know its id' },
+          format: {
+            type: 'string',
+            enum: ['summary', 'record'],
+            description: 'summary (default) is prose a person can read. record is the JSON-LD document, for machines.',
+          },
+          // No `save` here. This tool is annotated read-only and idempotent,
+          // and a host may run it without asking on that basis; a flag that
+          // writes files would make the annotation a lie. Writing a record is
+          // `plur provenance --write` on the command line, or
+          // `plur.writeProvenance()`.
+        },
+      },
+      handler: async (args, plur) => {
+        let id = args.id as string | undefined
+        let matchedStatement: string | undefined
+        let matchCount = 0
+        // Truncating without a marker turns a clipped sentence into what reads
+        // like a complete, different one.
+        // Count CHARACTERS, not code units. Slicing by code unit splits an
+        // emoji in half and prints a replacement character in its place.
+        const ellipsise = (t: string, n: number) => {
+          const chars = Array.from(t)
+          return chars.length > n ? `${chars.slice(0, n).join('')}…` : t
+        }
+        let alternatives: Array<{ id: string; statement: string }> = []
+
+        if (!id && typeof args.search === 'string' && args.search.length) {
+          // Ask for more than we list, so the count is honest. Listing three of
+          // six and saying nothing about the other three lets an agent answer
+          // confidently about a memory nobody asked about — the exact failure
+          // this tool exists to prevent.
+          const LIST = 3
+          // remote:false (#776): this is a lookup in OUR store for an engram
+          // whose provenance WE hold. Dialling every configured host with the
+          // phrase leaks the query, and a remote top hit would then fail
+          // `provenanceFor`, which reads the local store.
+          const matches = await plur.recall(args.search, { limit: 25, remote: false })
+          if (!matches.length) {
+            return {
+              found: false,
+              message: `Nothing matched "${args.search}". Try different words, or pass an exact id.`,
+            }
+          }
+          id = matches[0].id
+          // What the CHOSEN engram says. Without this the rejected candidates
+          // were quoted and the selected one was not, so an agent could get a
+          // confident answer about a memory it never meant to ask about.
+          matchedStatement = matches[0].statement
+          matchCount = matches.length
+          // Say what else matched, so a wrong pick is visible rather than silent.
+          alternatives = matches.slice(1, LIST).map((m: { id: string; statement: string }) =>
+            ({ id: m.id, statement: ellipsise(m.statement, 80) }))
+        }
+
+        if (!id) {
+          return { found: false, message: 'Pass either an engram id or a search term.' }
+        }
+
+        const record = await plur.provenanceFor(id, { mode: 'portable' })
+        if (!record) {
+          return { found: false, message: `No engram with id ${id}.` }
+        }
+
+        // An unrecognised format used to fall through to the summary, so a
+        // caller asking for "jsonld" got prose and had no way to tell. Say no.
+        if (args.format !== undefined && args.format !== 'summary' && args.format !== 'record') {
+          return {
+            found: false,
+            message: `Unknown format "${String(args.format)}". Use "summary" for prose or "record" for the JSON-LD document.`,
+          }
+        }
+
+        const summary = summariseProvenance(record as any)
+
+        if (args.format === 'record') {
+          return {
+            found: true,
+            engram_id: id,
+            record,
+            // The same answers the summary gives. Asking for the document used
+            // to mean losing every reuse verdict, so the same question got an
+            // answer through one surface and silence through the other.
+            ...summary.fields,
+            not_recorded: summary.missing,
+            complete: summary.complete,
+          }
+        }
+
+        return {
+          found: true,
+          engram_id: id,
+          ...(matchedStatement ? { matched: matchedStatement.slice(0, 200) } : {}),
+          summary: renderProvenanceSummary(summary),
+          // Structured values, NOT a line-split of the prose above. `facts`
+          // used to be exactly that: the same text a second time, which an
+          // agent pays for twice and cannot parse either copy of.
+          ...summary.fields,
+          not_recorded: summary.missing,
+          complete: summary.complete,
+          ...(matchCount > 1
+            ? {
+                note: `${matchCount} engrams matched "${String(args.search)}"; this is the closest.`
+                  + (matchCount - 1 > alternatives.length
+                    ? ` Showing ${alternatives.length} of the other ${matchCount - 1}.`
+                    : ''),
+                match_count: matchCount,
+                other_matches: alternatives,
+              }
+            : {}),
+        }
+      },
+    },
+
+    {
       name: 'plur_receipt',
       description:
-        'Counted report of what your memory retrieved for you: engrams stored, how many were retrieved and how often, which are most relied on, and how much of the store is dormant. Local and read-only; every figure is directly counted, never estimated. IMPORTANT when relaying to the user: `activation_rate` is COVERAGE over the logging window (≈ how much of the store was surfaced), NOT a quality or effectiveness score — it is naturally low and FALLS as more engrams are added, so never present it as "memory is N% effective". A `summary` line is included; prefer relaying that.',
+        'Counted report of what your memory retrieved for you: engrams stored, how many were retrieved and how often, which are most relied on, and how much of the store is dormant. Local and read-only; every figure is directly counted, never estimated. IMPORTANT when relaying to the user: `activation_rate` is COVERAGE over the logging window (≈ how much of the store was surfaced), NOT a quality or effectiveness score — it is naturally low and FALLS as more engrams are added, so never present it as "memory is N% effective". A `summary` line is included; prefer relaying that. NOT plur_provenance: this counts usage across the whole store; plur_provenance says where a single memory came from.',
       annotations: { title: 'Memory receipt', readOnlyHint: true, idempotentHint: true },
       inputSchema: {
         type: 'object',
@@ -3076,9 +3272,12 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
         const session_id = args.session_id as string | undefined
         const suggestions = args.engram_suggestions as unknown[] | undefined
 
-        // Create engrams from suggestions. Tolerate bare strings (a common
-        // LLM mistake — see issue #231) by coercing them into {statement} objects.
-        let engrams_created = 0
+        // Validate every suggestion BEFORE anything is written. Tolerate bare
+        // strings (a common LLM mistake — see issue #231) by coercing them into
+        // {statement} objects. The episode is captured below and the learns
+        // point at it, so a malformed item found halfway through would leave an
+        // episode and some engrams behind with the call reported as failed.
+        const items: Array<{ statement: string; type?: string }> = []
         if (Array.isArray(suggestions) && suggestions.length) {
           for (let i = 0; i < suggestions.length; i++) {
             const s = suggestions[i]
@@ -3095,16 +3294,43 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
                 `engram_suggestions[${i}] must be a string or {statement: string, type?: string}, got ${typeof s}`,
               )
             }
-            await plur.learn(statement, { type: type as any })
-            engrams_created++
+            items.push({ statement, type })
           }
         }
 
-        // Capture episode
+        // Capture the episode FIRST (#960).
+        //
+        // Engrams created at session end are derived from this session, and
+        // `sources[].session_id` is filled from `session_episode_id`. Capturing
+        // the episode after the learns left every one of them with no session to
+        // point at — and this path writes a large share of all engrams.
         const episode = plur.capture(summary, {
           session_id,
           channel: 'mcp',
         })
+
+        // One suggestion that cannot be learned — a credential in it, say —
+        // must not abort the rest and leave the call half done. Each write is
+        // complete on its own; the ones that failed are named in the result,
+        // the way learnBatch reports its failures.
+        let engrams_created = 0
+        const engrams_failed: Array<{ index: number; statement: string; error: string }> = []
+        for (let i = 0; i < items.length; i++) {
+          const { statement, type } = items[i]
+          try {
+            await plur.learn(statement, {
+              type: type as any,
+              // Link the engram back to the session that produced it (#960).
+              session_episode_id: episode.id,
+              // An end-of-session summary is the model's reading of what
+              // happened, not something the user stated outright (#963).
+              claim_class: 'inferred',
+            })
+            engrams_created++
+          } catch (err) {
+            engrams_failed.push({ index: i, statement: statement.slice(0, 80), error: (err as Error).message })
+          }
+        }
 
         // Collect injection telemetry before cleanup
         const telemetry = session_id ? _sessionTelemetry.get(session_id) : undefined
@@ -3143,10 +3369,13 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
 
         return {
           engrams_created,
+          ...(engrams_failed.length ? { engrams_failed } : {}),
           episode_id: episode.id,
           total_engrams: status.engram_count,
           ...(injection_summary ? { injection_summary } : {}),
-          hint: engrams_created === 0
+          hint: engrams_failed.length
+            ? `${engrams_failed.length} suggestion(s) could not be stored — see engrams_failed. The rest were.`
+            : engrams_created === 0
             ? 'No engrams captured this session. If any corrections, preferences, or patterns came up, consider calling plur_learn before ending.'
             : undefined,
         }
@@ -3686,6 +3915,15 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
           filter_type: { type: 'string', enum: ['behavioral', 'procedural', 'architectural', 'terminological'], description: 'Filter by engram type' },
           output_dir: { type: 'string', description: 'Output directory (default: ~/plur-packs/<name>)' },
           creator: { type: 'string', description: 'Creator name' },
+          license: {
+            type: 'string',
+            description:
+              'Licence for the pack as a collection, e.g. "cc-by-4.0", "apache-2.0", "cc0-1.0", or '
+              + '"unlicensed" to grant nothing. REQUIRED unless the user has set '
+              + 'provenance.default_license in their config — export fails without one. Ask the user '
+              + 'which licence applies; do NOT guess. A pack goes to strangers, and leaving this blank '
+              + 'does not leave it blank: a share-alike default fills in that nobody agreed to.',
+          },
         },
         required: ['name'],
       },
@@ -3711,12 +3949,32 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
         const { homedir } = await import('os')
         const { join } = await import('path')
         const outputDir = (args.output_dir as string) || join(homedir(), 'plur-packs', name)
-        const result = plur.exportPack(engrams, outputDir, {
-          name,
-          version: '1.0.0',
-          description: args.description as string | undefined,
-          creator: (args.creator as string) || undefined,
-        })
+        let result: ReturnType<typeof plur.exportPack>
+        try {
+          result = plur.exportPack(engrams, outputDir, {
+            name,
+            version: '1.0.0',
+            description: args.description as string | undefined,
+            creator: (args.creator as string) || undefined,
+            license: (args.license as string) || undefined,
+          })
+        } catch (err) {
+          // Export refuses to run without a licence (breaking since #970).
+          // For an agent that refusal has to say what to DO, not only why —
+          // and what to do is ask the user, never pick one.
+          const message = (err as Error).message
+          if (/needs a licence/.test(message)) {
+            return {
+              exported: false,
+              error: 'This pack has no licence, and export will not choose one.',
+              next_step: 'Ask the user which licence applies to this pack (for example cc-by-4.0, apache-2.0, cc0-1.0, '
+                + 'or "unlicensed" to grant nothing) and call plur_packs_export again with `license` set. '
+                + 'The user can also set provenance.default_license in their config to answer once.',
+              name,
+            }
+          }
+          throw err
+        }
         return {
           path: result.path,
           engram_count: result.engram_count,

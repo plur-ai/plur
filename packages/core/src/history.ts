@@ -13,6 +13,31 @@ export interface HistoryEvent {
   engram_id: string
   timestamp: string // ISO
   data: Record<string, unknown> // event-specific payload
+  /**
+   * Who or what caused this event (#959).
+   *
+   * Optional, and omitted rather than guessed. Every reader MUST tolerate its
+   * absence: every event written before this field existed has none, and a
+   * writer that does not know the actor leaves it out.
+   *
+   * The shape matches `attribution` on the engram, so the two agree. See
+   * `AttributionSchema` in `schemas/engram.ts`.
+   */
+  actor?: {
+    asserted_by?: string
+    runtime?: { name: string; version?: string }
+    model?: { name: string; prompt_id?: string; prompt_version?: string; prompt_sha256?: string }
+    tool?: { name: string; version?: string }
+    on_behalf_of?: string
+  }
+  /**
+   * Why this happened (#959), when the caller knows.
+   *
+   * Retiring, pinning, promoting, demoting and replacing all happen silently
+   * today. Only conflict resolution and automatic locking write a reason at
+   * all, so most of the log says what changed and never why.
+   */
+  reason?: string
 }
 
 /**

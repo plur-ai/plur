@@ -64,6 +64,11 @@ const ALWAYS_ASYNC = new Set([
   // could never have been sync; new in this release, so there is no pre-0.16
   // call site to rewrite.
   'repairContentHashes',
+  // Born async (#964, #965) — building a provenance record reads the engram and
+  // its history through the async store seam, and writing one goes through a
+  // pluggable store that may be a database. Both are new, so no pre-0.16 call
+  // site exists for the migrate tool to rewrite.
+  'provenanceFor', 'writeProvenance',
 ])
 
 /** Public methods of `Plur`, mapped to whether they are declared `async`. */

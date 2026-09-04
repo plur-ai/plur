@@ -1,0 +1,136 @@
+{
+  "@context": {
+    "prov": "http://www.w3.org/ns/prov#",
+    "engram": "https://plur.ai/ns/engram#",
+    "pa": "https://w3id.org/prov-agent#",
+    "odrl": "http://www.w3.org/ns/odrl/2/",
+    "xsd": "http://www.w3.org/2001/XMLSchema#"
+  },
+  "@graph": [
+    {
+      "@id": "engram:record/pack/swarm-grants@1.0.0",
+      "@type": [
+        "prov:Bundle",
+        "prov:Entity"
+      ],
+      "prov:generatedAtTime": {
+        "@value": "2026-08-12T09:00:00Z",
+        "@type": "xsd:dateTime"
+      },
+      "engram:describes": {
+        "@id": "engram:pack/swarm-grants@1.0.0"
+      },
+      "engram:recordIsSelfContained": true,
+      "engram:historyEvents": 0
+    },
+    {
+      "@id": "engram:pack/swarm-grants@1.0.0",
+      "@type": [
+        "prov:Entity",
+        "prov:Collection",
+        "engram:Pack"
+      ],
+      "engram:packName": "swarm-grants",
+      "engram:packVersion": "1.0.0",
+      "prov:generatedAtTime": {
+        "@value": "2026-08-12T09:00:00Z",
+        "@type": "xsd:dateTime"
+      },
+      "prov:wasGeneratedBy": {
+        "@id": "engram:act/assemble-swarm-grants-1.0.0"
+      },
+      "prov:hadMember": [
+        {
+          "@id": "engram:ENG-2026-08-12-002"
+        },
+        {
+          "@id": "engram:ENG-2026-08-12-003"
+        }
+      ],
+      "engram:engramCount": 2,
+      "engram:claimClassCounts": {
+        "documented": 1,
+        "inferred": 1
+      },
+      "engram:licenseChosenCount": 1,
+      "engram:licenseDefaultedCount": 1,
+      "engram:licensesChosen": [
+        "cc-by-4.0"
+      ],
+      "engram:license": "mit",
+      "odrl:hasPolicy": {
+        "@type": "odrl:Set",
+        "odrl:uid": "https://opensource.org/license/mit",
+        "odrl:permission": [
+          {
+            "odrl:action": [
+              "odrl:use",
+              "odrl:reproduce",
+              "odrl:distribute",
+              "odrl:derive"
+            ],
+            "odrl:duty": [
+              {
+                "odrl:action": "odrl:attribute"
+              }
+            ]
+          }
+        ],
+        "engram:licenseRecognised": true
+      },
+      "engram:memberLicensesDiffer": true,
+      "engram:note": "This licence covers the pack as a collection. The engrams inside carry their own licences, which are not all the same as this one, and a reuser has to satisfy both. Neither overrides the other.",
+      "engram:earliestEngram": "2026-08-12T08:00:00Z",
+      "engram:latestEngram": "2026-08-12T08:00:00Z",
+      "engram:packIntegrity": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "prov:wasAttributedTo": {
+        "@id": "engram:agent/local:maintainer"
+      }
+    },
+    {
+      "@id": "engram:agent/local:maintainer",
+      "@type": "prov:Agent"
+    },
+    {
+      "@id": "engram:act/assemble-swarm-grants-1.0.0",
+      "@type": [
+        "prov:Activity",
+        "engram:AssemblePack"
+      ],
+      "prov:startedAtTime": {
+        "@value": "2026-08-12T09:00:00Z",
+        "@type": "xsd:dateTime"
+      },
+      "prov:endedAtTime": {
+        "@value": "2026-08-12T09:00:00Z",
+        "@type": "xsd:dateTime"
+      },
+      "prov:generated": {
+        "@id": "engram:pack/swarm-grants@1.0.0"
+      },
+      "prov:wasAssociatedWith": {
+        "@id": "engram:agent/local:maintainer"
+      }
+    },
+    {
+      "@id": "engram:ENG-2026-08-12-002",
+      "@type": [
+        "prov:Entity",
+        "engram:Engram"
+      ],
+      "engram:engramType": "behavioral",
+      "engram:claimClass": "documented",
+      "engram:contentHash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    },
+    {
+      "@id": "engram:ENG-2026-08-12-003",
+      "@type": [
+        "prov:Entity",
+        "engram:Engram"
+      ],
+      "engram:engramType": "behavioral",
+      "engram:claimClass": "inferred",
+      "engram:contentHash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    }
+  ]
+}

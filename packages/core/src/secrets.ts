@@ -6,7 +6,16 @@ export interface SecretMatch {
 const SECRET_PATTERNS: { name: string; regex: RegExp }[] = [
   { name: 'aws_access_key', regex: /AKIA[0-9A-Z]{16}/ },
   { name: 'aws_secret_key', regex: /(?:aws_secret_access_key|secret_access_key)\s*[=:]\s*[A-Za-z0-9/+=]{40}/i },
-  { name: 'generic_api_key', regex: /(?:^|[^a-z])(sk|pk)[-_][a-z0-9]{20,}/i },
+  // Twenty or more characters after the prefix, and the segments MAY be
+  // separated by hyphens or underscores. The previous form demanded twenty
+  // CONTIGUOUS alphanumerics, so it missed every key that carries structure in
+  // its prefix — the widely used `sk-ant-api03-…` shape among them, where the
+  // longest unbroken run before the body is `ant`. A pack containing exactly
+  // that string scanned clean.
+  //
+  // The body must START alphanumeric, so a run of punctuation cannot make up
+  // the length, and the prefix still has to be a real `sk`/`pk` token.
+  { name: 'generic_api_key', regex: /(?:^|[^a-z])(sk|pk)[-_][a-z0-9][a-z0-9_-]{19,}/i },
   { name: 'api_key_assignment', regex: /(?:api[_-]?key|api[_-]?secret|secret[_-]?key)\s*[=:]\s*\S{20,}/i },
   { name: 'password_assignment', regex: /password\s*[=:]\s*\S{8,}/i },
   { name: 'connection_string', regex: /(?:postgres|mysql|mongodb|redis):\/\/\S+/ },
@@ -15,16 +24,35 @@ const SECRET_PATTERNS: { name: string; regex: RegExp }[] = [
   { name: 'bearer_token', regex: /Bearer\s+[A-Za-z0-9._~+/=-]{20,}/ },
 ]
 
+/**
+ * The raw text and, when it differs, the folded copy a reader would see.
+ *
+ * A zero-width joiner inside `AKIA…` splits the key for every regex and for no
+ * human, and the outbound guard let it through — the same evasion the
+ * injection detector already folds away (`foldForMatching`). Both views are
+ * scanned so nothing that matched before stops matching; a pattern is
+ * reported once whichever view found it.
+ */
+function scanViews(text: string): string[] {
+  const folded = foldForMatching(text)
+  return folded === text ? [text] : [text, folded]
+}
+
 /** Scan text for potential secrets. Returns empty array if clean. */
 export function detectSecrets(text: string): SecretMatch[] {
   if (typeof text !== 'string') {
     throw new TypeError(`detectSecrets: expected string, got ${typeof text}`)
   }
   const matches: SecretMatch[] = []
-  for (const { name, regex } of SECRET_PATTERNS) {
-    const m = text.match(regex)
-    if (m) {
-      matches.push({ pattern: name, match: m[0].slice(0, 20) + '...' })
+  const found = new Set<string>()
+  for (const view of scanViews(text)) {
+    for (const { name, regex } of SECRET_PATTERNS) {
+      if (found.has(name)) continue
+      const m = view.match(regex)
+      if (m) {
+        found.add(name)
+        matches.push({ pattern: name, match: m[0].slice(0, 20) + '...' })
+      }
     }
   }
   return matches
@@ -56,16 +84,78 @@ export interface InjectionMatch {
 }
 
 /** Scan text for prompt-injection / instruction-override patterns. Empty array if clean. */
+/**
+ * Characters that look like Latin letters and are not.
+ *
+ * Only the pairs that are visually identical in ordinary type. A wider table
+ * would fold letters a reader can tell apart and produce false positives.
+ */
+const LOOKALIKES: Record<string, string> = {
+  // Cyrillic
+  '\u0430': 'a', '\u0435': 'e', '\u043e': 'o', '\u0440': 'p', '\u0441': 'c',
+  '\u0445': 'x', '\u0443': 'y', '\u0456': 'i', '\u0458': 'j', '\u04bb': 'h',
+  '\u0410': 'A', '\u0412': 'B', '\u0415': 'E', '\u041a': 'K', '\u041c': 'M',
+  '\u041d': 'H', '\u041e': 'O', '\u0420': 'P', '\u0421': 'C', '\u0422': 'T',
+  '\u0425': 'X', '\u0406': 'I',
+  // Greek
+  '\u03bf': 'o', '\u03b1': 'a', '\u03b5': 'e', '\u03c1': 'p', '\u03c5': 'u',
+  '\u0391': 'A', '\u0392': 'B', '\u0395': 'E', '\u0396': 'Z', '\u0397': 'H',
+  '\u0399': 'I', '\u039a': 'K', '\u039c': 'M', '\u039d': 'N', '\u039f': 'O',
+  '\u03a1': 'P', '\u03a4': 'T', '\u03a7': 'X',
+}
+
+/**
+ * Fold text to the form a reader sees, before matching against it.
+ *
+ * A security reviewer got "ignore all previous instructions" past every
+ * pattern three ways: one Cyrillic letter that looks exactly like its Latin
+ * twin, a zero-width space inside a word, and fullwidth characters. Each would
+ * have needed its own pattern; folding once handles the whole class, and the
+ * next variation of it too.
+ *
+ * Compatibility normalisation collapses fullwidth and other presentation forms
+ * to plain letters. Zero-width and formatting characters are removed outright:
+ * they are invisible, so a reader cannot be relying on them. Lookalikes are
+ * mapped last, on the folded text.
+ *
+ * Matching runs on the folded copy; the text REPORTED back is the original, so
+ * the person reading the finding sees what the file actually contains.
+ */
+export function foldForMatching(text: string): string {
+  // Pure ASCII has nothing to fold — no invisible characters, no lookalikes,
+  // no presentation forms — and this runs on every write and every pack file,
+  // up to the 1 MiB scan cap. One regex test spares the normalisation.
+  // eslint-disable-next-line no-control-regex
+  if (!/[^\x00-\x7f]/.test(text)) return text
+  const folded = text
+    .normalize('NFKC')
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff\u00ad]/g, '')
+  let out = ''
+  for (const ch of folded) out += LOOKALIKES[ch] ?? ch
+  return out
+}
+
 export function detectPromptInjection(text: string): InjectionMatch[] {
   if (typeof text !== 'string') {
     throw new TypeError(`detectPromptInjection: expected string, got ${typeof text}`)
   }
   const matches: InjectionMatch[] = []
+  const folded = foldForMatching(text)
+  const wasDisguised = folded !== text
   for (const { name, regex } of INJECTION_PATTERNS) {
-    const m = text.match(regex)
-    if (m) {
-      matches.push({ pattern: name, match: m[0].slice(0, 40) })
-    }
+    const plain = text.match(regex)
+    const hidden = plain ? null : folded.match(regex)
+    const m = plain ?? hidden
+    if (!m) continue
+    // Report WHAT IT SAYS, from the folded copy, and say that it was hidden.
+    // Quoting the raw bytes alone would show a reader something that looks
+    // ordinary and give no hint why it was flagged; quoting only the folded
+    // text would hide that somebody went to the trouble of disguising it.
+    matches.push({
+      pattern: hidden && wasDisguised ? `${name} (disguised)` : name,
+      match: m[0].slice(0, 40),
+    })
   }
   return matches
 }
@@ -421,25 +511,40 @@ export function detectSensitive(text: string): SecretMatch[] {
     text = Buffer.from(text, 'utf8').subarray(0, MAX_SCAN_BYTES).toString('utf8')
   }
   const matches = detectSecrets(text)
-  for (const { name, regex } of SENSITIVE_PATTERNS) {
-    const m = text.match(regex)
-    if (m) matches.push({ pattern: name, match: m[0].slice(0, 30) + '...' })
-  }
-  for (const ip of text.match(IPV4) ?? []) {
-    if (isPublicIpv4(ip)) {
-      matches.push({ pattern: 'public_ipv4', match: ip })
-      break
+  // Same two views as detectSecrets, for the same reason: an invisible
+  // character inside a host name or an address must not hide it.
+  const found = new Set<string>()
+  for (const view of scanViews(text)) {
+    for (const { name, regex } of SENSITIVE_PATTERNS) {
+      if (found.has(name)) continue
+      const m = view.match(regex)
+      if (m) { found.add(name); matches.push({ pattern: name, match: m[0].slice(0, 30) + '...' }) }
     }
-  }
-  for (const candidate of text.match(IPV6_CANDIDATE) ?? []) {
-    if (isPublicIpv6(candidate)) {
-      matches.push({ pattern: 'public_ipv6', match: candidate })
-      break
+    if (!found.has('public_ipv4')) {
+      for (const ip of view.match(IPV4) ?? []) {
+        if (isPublicIpv4(ip)) {
+          found.add('public_ipv4')
+          matches.push({ pattern: 'public_ipv4', match: ip })
+          break
+        }
+      }
     }
-  }
-  const internalHost = matchInternalHost(text)
-  if (internalHost) {
-    matches.push({ pattern: 'internal_host', match: internalHost.slice(0, 30) })
+    if (!found.has('public_ipv6')) {
+      for (const candidate of view.match(IPV6_CANDIDATE) ?? []) {
+        if (isPublicIpv6(candidate)) {
+          found.add('public_ipv6')
+          matches.push({ pattern: 'public_ipv6', match: candidate })
+          break
+        }
+      }
+    }
+    if (!found.has('internal_host')) {
+      const internalHost = matchInternalHost(view)
+      if (internalHost) {
+        found.add('internal_host')
+        matches.push({ pattern: 'internal_host', match: internalHost.slice(0, 30) })
+      }
+    }
   }
   if (truncated) {
     // Fail-closed (#386): the region past MAX_SCAN_BYTES was not scanned, so we

@@ -124,6 +124,18 @@ jobs:
       - name: Assert better-sqlite3 built — the gated suites must run, not skip
         run: node -e "require('better-sqlite3'); console.log('better-sqlite3 present — the sqlite-gated suites will run')"
         working-directory: packages/core
+      # Provenance records must be readable by an implementation that shares
+      # none of our code (#968). Our own validator agreeing with our own
+      # generator is not evidence — our provenance library had 167 passing
+      # tests while emitting a field the reference implementation rejects.
+      #
+      # Installed BEFORE the test step, so the conformance suite runs rather
+      # than skipping. A skip here would be a silent loss of the only
+      # independent check we have.
+      - name: Install the outside provenance implementations
+        run: python3 -m pip install --quiet -r spec/examples/requirements.txt
+      - name: Assert the outside implementations are importable — the conformance suite must run, not skip
+        run: python3 -c "import rdflib, prov.model; print('rdflib and prov present — the conformance suite will run')"
       - run: pnpm test
         env:
           # Throwaway credentials for the ephemeral service container above —

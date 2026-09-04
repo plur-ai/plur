@@ -3,6 +3,21 @@ import { homedir } from 'os'
 import { createPlur, type GlobalFlags } from '../plur.js'
 import { shouldOutputJson, outputJson, outputText, outputInfo, exit } from '../output.js'
 
+/**
+ * Flags accepted across the packs subcommands (#986).
+ *
+ * One list for all of them, because the dispatcher sees `packs` and not which
+ * subcommand follows. That still catches the case that mattered: a tester ran
+ * `packs install <dir> --dry-run`, which does not exist anywhere here, and the
+ * pack was installed by somebody who believed they were previewing it.
+ */
+export const FLAGS_WITH_VALUES = ['--domain', '--scope', '--tags', '--type', '--output', '--description', '--creator', '--license']
+
+export const FLAGS = [
+  '--domain', '--scope', '--tags', '--type', '--output', '--description',
+  '--creator', '--license', '--provenance', '--no-provenance', '--force', '--yes',
+]
+
 export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   const plur = createPlur(flags)
 
@@ -44,11 +59,19 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   if (subcommand === 'preview' || subcommand === 'inspect') {
     const source = args[1]
     if (!source) {
-      exit(1, 'Usage: plur packs preview <source>')
+      exit(1, 'Usage: plur packs preview <source> [--provenance]\n\n  --provenance  print the pack\'s full origin record, rather than a summary')
     }
     const preview = await plur.previewPack(source)
+    // The full document is the deepest level and the largest by far. Give the
+    // summary by default and the document only when somebody asks, so a routine
+    // preview stays readable.
+    const wantsRecord = args.includes('--provenance')
     if (shouldOutputJson(flags)) {
-      outputJson(preview)
+      outputJson(wantsRecord
+        ? preview
+        : { ...preview, provenance: { ...preview.provenance, pack_record: undefined } })
+    } else if (wantsRecord) {
+      outputText(JSON.stringify(preview.provenance.pack_record ?? { error: 'This pack carries no pack-level record.' }, null, 2))
     } else {
       outputText(`Pack: ${preview.manifest.name} v${preview.manifest.version}`)
       if (preview.manifest.creator) outputText(`Creator: ${preview.manifest.creator}`)
@@ -75,6 +98,40 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
           outputText(`  ⚠ ${w}`)
         }
       }
+
+      // Where the contents came from, shown BEFORE anything is installed.
+      // Deliberately no tick, no badge, no "verified" anywhere: nothing in a
+      // pack is signed, so all of this is what the pack says about itself.
+      // Whether the pack still matches the value its author shipped (#987).
+      // Stated with a verb, because "Integrity: sha256:…" told a tester nothing
+      // about whether anything had been checked.
+      outputText('')
+      const integ = preview.integrity
+      if (integ.status === 'ok') outputText('Integrity     matches the value the pack shipped')
+      else if (integ.status === 'modified') outputText('Integrity     DOES NOT MATCH the value the pack shipped')
+      else outputText('Integrity     the pack shipped no value to check against')
+      outputText(`              ${integ.note}`)
+
+      const prov = preview.provenance
+      outputText('')
+      if (!prov.present) {
+        outputText('Origin: this pack does not say where its contents came from.')
+      } else {
+        outputText('Origin (claimed by the pack, not verified):')
+        outputText(`  Records        ${prov.record_count} of ${preview.engram_count} engram(s)`)
+        if (prov.asserted_by.length) {
+          outputText(`  Asserted by    ${prov.asserted_by.join(', ')}`)
+        } else {
+          outputText('  Asserted by    nobody named')
+        }
+        for (const l of prov.licences) {
+          const chose = l.chosen ? '' : ' (nobody chose this; it is the default)'
+          outputText(`  Licence        ${l.name} — ${l.count} engram(s)${chose}`)
+        }
+        for (const n of prov.notes) outputText(`  • ${n}`)
+        outputText('')
+        outputText(`  ${prov.verification_note}`)
+      }
     }
     return
   }
@@ -91,7 +148,14 @@ Options:
   --type <type>        Filter by type (behavioral|procedural|architectural|terminological)
   --description <desc> Pack description
   --creator <name>     Creator name
-  --output <dir>       Output directory (default: ~/plur-packs/<name>)`)
+  --license <spdx>     Licence for the pack as a collection. REQUIRED unless
+                       provenance.default_license is set in config. Use
+                       "unlicensed" to grant nothing explicitly.
+  --output <dir>       Output directory (default: ~/plur-packs/<name>)
+  --no-provenance      Leave out the record of where each engram came from.
+                       Provenance is included by default: a pack is how engrams
+                       leave your machine, which is where their origin starts
+                       to matter to somebody else.`)
     }
 
     let domain: string | undefined
@@ -101,6 +165,8 @@ Options:
     let outputDir: string | undefined
     let description: string | undefined
     let creator: string | undefined
+    let license: string | undefined
+    let provenance = true
     let i = 2
     while (i < args.length) {
       if (args[i] === '--domain' && i + 1 < args.length) { domain = args[++i]; i++ }
@@ -110,6 +176,10 @@ Options:
       else if (args[i] === '--output' && i + 1 < args.length) { outputDir = args[++i]; i++ }
       else if (args[i] === '--description' && i + 1 < args.length) { description = args[++i]; i++ }
       else if (args[i] === '--creator' && i + 1 < args.length) { creator = args[++i]; i++ }
+      else if (args[i] === '--license' && i + 1 < args.length) { license = args[++i]; i++ }
+      else if (args[i] === '--no-provenance') { provenance = false; i++ }
+      // Accepted so an existing script that asks for it explicitly still works.
+      else if (args[i] === '--provenance') { provenance = true; i++ }
       else { i++ }
     }
 
@@ -140,6 +210,8 @@ Options:
       version: '1.0.0',
       description,
       creator,
+      license,
+      provenance,
     })
 
     if (shouldOutputJson(flags)) {
@@ -148,6 +220,7 @@ Options:
         engram_count: result.engram_count,
         integrity: result.integrity,
         match_terms: result.match_terms,
+        ...(result.provenance_files ? { provenance_files: result.provenance_files } : {}),
         privacy: result.privacy,
         name,
       })
@@ -195,8 +268,22 @@ Options:
       // Install confirmation → suppressed by --quiet; security warnings and
       // conflicts below stay loud (#730).
       outputInfo(`Installed pack "${result.name}": ${result.installed} engrams`, flags)
-      if (result.registry) {
-        outputInfo(`  Integrity: ${result.registry.integrity}`, flags)
+      // Say what was CHECKED, with a verb. A bare "Integrity: sha256:…" was
+      // read by a tester as certification of the pack, and the caveat
+      // explaining it is nothing of the sort existed only in the piped JSON —
+      // so the people most likely to be misled were the only ones not shown it.
+      const check = result.integrity_check
+      if (check) {
+        const verdict = check.status === 'ok'
+          ? 'matches the value the pack shipped'
+          : check.status === 'modified'
+            ? 'DOES NOT MATCH the value the pack shipped'
+            : 'not checked — the pack shipped no value'
+        outputInfo(`  Integrity: ${verdict}`, flags)
+        outputInfo(`             ${check.computed}`, flags)
+        outputInfo(`  ${check.note}`, flags)
+      } else if (result.registry) {
+        outputInfo(`  Integrity (computed): ${result.registry.integrity}`, flags)
       }
 
       if (!result.security.clean) {

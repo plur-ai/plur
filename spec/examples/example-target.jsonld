@@ -1,0 +1,162 @@
+{
+  "@context": {
+    "prov": "http://www.w3.org/ns/prov#",
+    "engram": "https://plur.ai/ns/engram#",
+    "pa": "https://w3id.org/prov-agent#",
+    "odrl": "http://www.w3.org/ns/odrl/2/",
+    "xsd": "http://www.w3.org/2001/XMLSchema#"
+  },
+  "@graph": [
+    {
+      "@id": "engram:record/ENG-2026-08-12-002",
+      "@type": [
+        "prov:Bundle",
+        "prov:Entity"
+      ],
+      "prov:generatedAtTime": {
+        "@value": "2026-08-21T09:00:00Z",
+        "@type": "xsd:dateTime"
+      },
+      "engram:describes": {
+        "@id": "engram:ENG-2026-08-12-002"
+      },
+      "engram:recordIsSelfContained": true
+    },
+    {
+      "@id": "engram:ENG-2026-08-12-002",
+      "@type": [
+        "prov:Entity",
+        "engram:Engram"
+      ],
+      "engram:engramType": "procedural",
+      "engram:scope": "group:swarm",
+      "engram:status": "active",
+      "engram:commitment": "decided",
+      "engram:contentHash": "sha256:14f51882a7cca2b83a12de817db874e8d564b72d3512bd2a5b7f552f090a5aa8",
+      "prov:generatedAtTime": {
+        "@value": "2026-08-12T06:45:51.426Z",
+        "@type": "xsd:dateTime"
+      },
+      "odrl:hasPolicy": {
+        "@type": "odrl:Set",
+        "odrl:permission": [
+          {
+            "odrl:action": "odrl:use",
+            "odrl:duty": [
+              {
+                "odrl:action": "odrl:attribute"
+              },
+              {
+                "odrl:action": "odrl:shareAlike"
+              }
+            ]
+          }
+        ]
+      },
+      "engram:tags": [
+        "swarm",
+        "grants",
+        "octant",
+        "golem",
+        "privacy",
+        "quadratic-funding",
+        "pss",
+        "act",
+        "epoch-13"
+      ],
+      "engram:validUntil": "2026-10-21",
+      "prov:hadPrimarySource": {
+        "@id": "https://octant.substack.com/p/epoch-13-the-privacy-round"
+      },
+      "engram:claimClass": "documented",
+      "prov:value": "Octant (Golem Foundation) Epoch 13 \"The Privacy Round\", verified 2026-08-12: 100 ETH quadratic-funding matching pool; applications close 2026-09-10; Epoch Accelerator 2026-10-06\u219210-10; allocation window 2026-10-14\u219210-21; apply at https://octant.fillout.com/epoch-13; KYC/KYB mandatory before funding; no geographic/entity restriction so a Swiss non-profit is not blocked. Two categories: Ethereum (private transfers, shielded pools, wallet/RPC privacy, encrypted mempools, ZK tooling) and Open Internet (secure messaging, metadata-protecting communication, private compute hardware, privacy libraries). CRITICAL for Swarm: criterion 2 requires \"privacy is a core property of the project\" \u2014 this DISQUALIFIES a whole-Swarm application, since Swarm is storage/availability first and privacy is a component property. The only credible route is component-level: PSS (maps to \"metadata-protecting communication tools\") and ACT (maps to \"privacy libraries\") \u2014 but criterion 5 requires \"working software with verifiable users\", so PSS/ACT maintenance status and actual users MUST be verified before applying. Quadratic funding rewards breadth of small-donor support, so the effort is community mobilisation during the allocation window (DevRel/marketing work), NOT proposal writing \u2014 which is why it does not compete with the NLnet 2026-11-03 drafting run. Resolves the previously-flagged \"Octant epoch dates unverified / 90-day cadence inferred\" gap.",
+      "prov:wasAttributedTo": {
+        "@id": "engram:agent/unidentified"
+      }
+    },
+    {
+      "@id": "engram:act/ENG-2026-08-12-002-engram_created",
+      "@type": [
+        "prov:Activity",
+        "engram:Learn"
+      ],
+      "prov:startedAtTime": {
+        "@value": "2026-08-12T06:45:51.426Z",
+        "@type": "xsd:dateTime"
+      },
+      "prov:endedAtTime": {
+        "@value": "2026-08-12T06:45:51.426Z",
+        "@type": "xsd:dateTime"
+      },
+      "prov:generated": {
+        "@id": "engram:ENG-2026-08-12-002"
+      },
+      "prov:wasAssociatedWith": {
+        "@id": "engram:agent/software/plur-mcp"
+      }
+    },
+    {
+      "@id": "engram:act/INJ-1786719359846-2j0000",
+      "@type": [
+        "prov:Activity",
+        "engram:Inject"
+      ],
+      "prov:startedAtTime": {
+        "@value": "2026-08-14T14:55:59.846Z",
+        "@type": "xsd:dateTime"
+      },
+      "prov:endedAtTime": {
+        "@value": "2026-08-14T14:55:59.846Z",
+        "@type": "xsd:dateTime"
+      },
+      "prov:used": {
+        "@id": "engram:ENG-2026-08-12-002"
+      },
+      "engram:usedAlongsideCount": 5,
+      "engram:queryHash": "aeb910b048784127",
+      "prov:wasAssociatedWith": {
+        "@id": "engram:agent/software/plur-mcp"
+      }
+    },
+    {
+      "@id": "engram:act/INJ-1786719359848-2n0000",
+      "@type": [
+        "prov:Activity",
+        "engram:Inject"
+      ],
+      "prov:startedAtTime": {
+        "@value": "2026-08-14T14:55:59.848Z",
+        "@type": "xsd:dateTime"
+      },
+      "prov:endedAtTime": {
+        "@value": "2026-08-14T14:55:59.848Z",
+        "@type": "xsd:dateTime"
+      },
+      "prov:used": {
+        "@id": "engram:ENG-2026-08-12-002"
+      },
+      "engram:usedAlongsideCount": 5,
+      "engram:queryHash": "aeb910b048784127",
+      "prov:wasAssociatedWith": {
+        "@id": "engram:agent/software/plur-mcp"
+      }
+    },
+    {
+      "@id": "engram:agent/unidentified",
+      "@type": "prov:Agent",
+      "engram:identityKnown": false,
+      "engram:note": "No identity was configured when this was written."
+    },
+    {
+      "@id": "engram:agent/software/plur-mcp",
+      "@type": [
+        "prov:SoftwareAgent",
+        "pa:AIAgent"
+      ],
+      "engram:runtimeName": "plur-mcp",
+      "prov:actedOnBehalfOf": {
+        "@id": "engram:agent/unidentified"
+      }
+    }
+  ]
+}

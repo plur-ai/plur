@@ -1,6 +1,13 @@
 import { createPlur, type GlobalFlags } from '../plur.js'
 import { shouldOutputJson, outputJson, outputText, exit } from '../output.js'
 
+/**
+ * Flags this command accepts (#986).
+ */
+export const FLAGS_WITH_VALUES = ['--limit', '--scope', '--domain', '--tags', '--type']
+
+export const FLAGS = ['--limit', '--scope', '--domain', '--tags', '--type']
+
 export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   const plur = createPlur(flags)
 

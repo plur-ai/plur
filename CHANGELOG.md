@@ -325,7 +325,59 @@ its dry-run (`plur reindex-hashes`, no flag) reports the count without writing.
 `plur doctor` also counts stale hashes and prints the remedy if any are detected
 (#911).
 
+### Breaking
+
+- **`exportPack` and `plur packs export` refuse to run without a licence (#970).**
+  A pack with no `license` used to be written with the schema default,
+  `cc-by-sa-4.0` — a share-alike grant over other people's memories that nobody
+  chose. Pass `--license` (for example `cc-by-4.0`, `apache-2.0`, `cc0-1.0`, or
+  `unlicensed` to grant nothing), or set `provenance.default_license` in your
+  config to answer once. Scripts that exported without a licence now exit
+  non-zero; the `plur_packs_export` tool returns `{ exported: false, next_step }`
+  asking the agent to put the question to the user rather than guess.
+
 ### Added
+
+- **Provenance: record where an engram came from (#958).** An engram can now
+  carry who asserted it, what software and model were involved, and what kind of
+  claim it is — a statement someone made, a conclusion a model reached, or a line
+  a pattern scraped. Those three were previously stored identically.
+  ([docs/provenance.md](docs/provenance.md))
+- `plur.provenanceFor()` and `plur.writeProvenance()` build a W3C PROV record for
+  an engram, as JSON-LD, from the engram plus the history log (#964). Storage is
+  pluggable and separate from generation (#965), and a `provenance.generate`
+  setting chooses when records are written — `never` by default (#966).
+- Engrams written at session end now link back to the session that produced them
+  (#960). The session identifier was already an argument of that tool call and
+  was simply not passed on, so most engrams had no session to point at.
+- **The feature can now be reached (#979, #980).** A `plur_provenance` tool and a
+  `plur provenance` command answer where a memory came from, in prose rather than
+  JSON-LD, by search term as well as identifier. Both name what was NOT recorded
+  as prominently as what was — a memory written before this existed genuinely
+  cannot say who asserted it, and presenting the record as complete would make it
+  look more authoritative than it is. `plur packs export --provenance` includes
+  records in a pack.
+- **Packs carry provenance (#972).** Exporting with `provenance: true` writes one
+  record per engram plus one for the pack, which answers a question no single
+  engram can: is this pack worth anything? It says who assembled it, when, how
+  many engrams a person stated versus a model inferred, what dates they span, and
+  whether every engram carries a licence. Records are written only for engrams
+  that pass the privacy scan.
+- **Records can carry fields for a particular field of work (#973)** — medical,
+  geographic, supply chain — under their own prefix. Claiming a core prefix, or
+  redefining a core term, throws rather than silently corrupting a reader.
+- **Licences become machine-readable (#967).** Seven licence names map to a
+  policy an agent can act on, each carrying the canonical licence address,
+  because the licence text stays authoritative. An unrecognised licence produces
+  no policy at all rather than a permissive default.
+- `plur_forget` accepts a reason, and records it (#959). Every retirement made
+  through the tool previously recorded an empty one.
+
+### Fixed
+
+- Which model made each near-duplicate verdict is now recorded (#962). A model
+  rewrote the statement and that rewrite became the memory, with nothing saying
+  which model did it.
 
 - **`plur dashboard` opens a local memory viewer** (#934, #936) (alias: `plur ui`;
   `plur status` points at it) — every engram, what gets recalled and how

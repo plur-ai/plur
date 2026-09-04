@@ -1,5 +1,6 @@
 import { shouldOutputJson, outputJson, setQuiet, exit } from './output.js'
 import { parseGlobalFlags, createPlur } from './plur.js'
+import { unknownFlagMessage } from './known-flags.js'
 
 export type { GlobalFlags } from './plur.js'
 export { parseGlobalFlags, createPlur } from './plur.js'
@@ -36,6 +37,8 @@ Commands:
   timeline [query]        Query episode timeline
   status                  System health check
   dashboard               Open the memory dashboard in a browser (alias: ui)
+  provenance <id|search>  Where a memory came from, and whether you may reuse it
+  identity [value]        Who your memories are attributed to (--clear to unset)
   receipt [--days N]      What your memory retrieved for you
   sync                    Cross-device sync
   packs list              List installed packs
@@ -94,7 +97,10 @@ Global flags:
   process.exit(0)
 }
 
-const { flags, args } = parseGlobalFlags(argv)
+const { flags, args, error: flagError } = parseGlobalFlags(argv)
+// Before anything runs. A mistyped global flag must never reach a command that
+// would then act on the wrong store.
+if (flagError) exit(1, flagError)
 // Arm --quiet globally (#730) so no output site can forget it. Commands still
 // pass `flags` to outputInfo where available; this covers the ones that don't.
 // hook-* commands are unaffected: their stdout is protocol JSON written
@@ -118,6 +124,8 @@ const COMMANDS: Record<string, string> = {
   // Both names users guess land here — `dashboard` (minikube's convention,
   // and the word the release copy teaches) and `ui` (mlflow's convention).
   dashboard: './commands/ui.js',
+  provenance: './commands/provenance.js',
+  identity: './commands/identity.js',
   receipt: './commands/receipt.js',
   sync: './commands/sync.js',
   restore: './commands/restore.js',
@@ -193,6 +201,13 @@ if (!command || !COMMANDS[command]) {
 
 try {
   const mod = await import(COMMANDS[command])
+  // A command that declares its flags gets them checked (#986). One that does
+  // not is unchanged, so this is adopted per command rather than all at once.
+  if (Array.isArray(mod.FLAGS)) {
+    const complaint = unknownFlagMessage(
+      commandArgs, mod.FLAGS as string[], (mod.FLAGS_WITH_VALUES as string[]) ?? [])
+    if (complaint) exit(1, complaint)
+  }
   await mod.run(commandArgs, flags)
   // #1046: background index work (the PGLite initial sync when that backend
   // is opted into, and the Postgres auto-embed pass — both tracked on
