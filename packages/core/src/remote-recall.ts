@@ -52,6 +52,7 @@ import * as fs from 'fs'
 import { homedir } from 'os'
 import { join, dirname } from 'path'
 import { z } from 'zod'
+import { normalizePinnedPriority } from './pinned-priority.js'
 import type { Engram } from './schemas/engram.js'
 import { normalizeEndpointUrl, salvageRemoteRow } from './store/remote-store.js'
 import { isScopeWithin, isSharedScope } from './scope-util.js'
@@ -597,6 +598,13 @@ function processHostRows(
     cloned.id = namespaceEngramId(cloned.id, entry.scope)
     cloned._originalId = originalId
     cloned._storeScope = entry.scope
+    // #1121: a server-supplied priority is honoured only as a sanitised
+    // integer; the injector ranks this row behind every primary pin anyway.
+    if ('pinned_priority' in cloned) {
+      const p = normalizePinnedPriority(cloned.pinned_priority)
+      if (p === undefined) delete cloned.pinned_priority
+      else cloned.pinned_priority = p
+    }
     // The injection scorer iterates `tags` unguarded — a row without them
     // must not throw at scoring time.
     if (!Array.isArray(cloned.tags)) cloned.tags = []

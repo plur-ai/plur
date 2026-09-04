@@ -1,4 +1,5 @@
 import type { Engram, Association } from './schemas/engram.js'
+import { effectivePinnedPriority, pinnedOriginRank } from './pinned-priority.js'
 import type { PackManifest } from './schemas/pack.js'
 import type { LoadedPack } from './engrams.js'
 import { decayedStrength, decayedCoAccessStrength, daysSince, confidenceDecay } from './decay.js'
@@ -353,7 +354,30 @@ export function fillTokenBudget(
   // always-load — but they respect both maxTokens AND a sub-budget so they
   // can't starve the relevance-scored engrams. With many pinned packs, the
   // pinned set can grow unboundedly; the sub-budget caps at 50% of maxTokens.
-  const pinned = scored.filter(e => (e as any).pinned === true)
+  //
+  // Within the pinned tier, selection order is:
+  //   1. origin — primary-store pins before `stores:`/remote pins before
+  //      pack pins. Priority is writer-controlled, and pinning is the one
+  //      path that skips the relevance gate, so a foreign row must never be
+  //      able to out-rank the user's own pin by claiming a number (#1121
+  //      review). The origin markers are stamped by the loader, not read
+  //      from the row.
+  //   2. pinned_priority desc (100 = injected first, 1 = evicted first;
+  //      absent or unusable = 50), normalised so NaN/Infinity/strings cannot
+  //      sort first.
+  //   3. the relevance order the caller already sorted by (`score`), so
+  //      pins with no priority keep exactly the pre-#1121 selection.
+  const pinned = scored
+    .filter(e => (e as any).pinned === true)
+    .sort((a, b) => {
+      const oa = pinnedOriginRank(a as unknown as Record<string, unknown>)
+      const ob = pinnedOriginRank(b as unknown as Record<string, unknown>)
+      if (oa !== ob) return oa - ob
+      const pa = effectivePinnedPriority(a as { pinned_priority?: unknown })
+      const pb = effectivePinnedPriority(b as { pinned_priority?: unknown })
+      if (pb !== pa) return pb - pa
+      return b.score - a.score
+    })
   const unpinned = scored.filter(e => (e as any).pinned !== true)
   const pinnedBudget = Math.floor(maxTokens * PINNED_TOKEN_BUDGET_RATIO)
 

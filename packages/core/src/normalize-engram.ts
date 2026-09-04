@@ -31,6 +31,8 @@
  * set.
  */
 
+import { normalizePinnedPriority } from './pinned-priority.js'
+
 /** One field-compatibility rule. `apply` receives and returns a plain object. */
 export interface NormalizeRule {
   /** Issue that introduced the rule — shows up in test names and failures. */
@@ -51,6 +53,17 @@ export const RULES: readonly NormalizeRule[] = [
     // name keeps its value even if a stale reference_count rides alongside it.
     applies: raw => !('write_count' in raw) && 'reference_count' in raw,
     apply: ({ reference_count, ...rest }) => ({ ...rest, write_count: reference_count }),
+  },
+  {
+    id: '#1121',
+    description: 'pinned_priority: clamp a finite number into [1, 100]; drop anything else (an ordering hint must not quarantine an engram)',
+    // Guarded on the stored value differing from its normalised form, so a
+    // record already in range is untouched by reference.
+    applies: raw => 'pinned_priority' in raw && normalizePinnedPriority(raw.pinned_priority) !== raw.pinned_priority,
+    apply: ({ pinned_priority, ...rest }) => {
+      const norm = normalizePinnedPriority(pinned_priority)
+      return norm === undefined ? rest : { ...rest, pinned_priority: norm }
+    },
   },
 ]
 
