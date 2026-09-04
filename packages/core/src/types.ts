@@ -248,12 +248,6 @@ export interface RecallOptions {
   session?: string
 }
 
-export interface BoundedRecallResult {
-  results: Engram[]
-  truncated: boolean
-  strategy_used?: string
-}
-
 export interface InjectOptions {
   budget?: number
   scope?: string

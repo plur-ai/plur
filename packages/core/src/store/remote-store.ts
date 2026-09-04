@@ -1,6 +1,5 @@
 import { z } from 'zod'
 import type { Engram } from '../schemas/engram.js'
-import type { EngramStore } from './types.js'
 import { logger } from '../logger.js'
 import { normalizeEngramInput } from '../normalize-engram.js'
 import { ScopeMetadataSchema, type ScopeMetadata } from '../schemas/scope-metadata.js'
@@ -71,8 +70,8 @@ function sanitiseResponseBody(raw: string): string {
  * Remote engram store — speaks to a PLUR Enterprise server over its
  * public REST API (/api/v1).
  *
- * Implements the same EngramStore interface as YamlStore + SqliteStore
- * so the multi-store recall path doesn't need to know the difference.
+ * Exposes the same load/append/getById/remove shape as the file-backed
+ * stores so the multi-store recall path doesn't need to know the difference.
  *
  * Caching: load() is called by `Plur._loadCached()` on every recall,
  * so we hold a per-instance TTL cache (default 60s) over the result.
@@ -225,7 +224,7 @@ export function salvageRemoteRow(
   return { data: second.data as Record<string, unknown>, salvagedFields }
 }
 
-export class RemoteStore implements EngramStore {
+export class RemoteStore {
   private cache: { ts: number; engrams: Engram[] } | null = null
   private inFlight: Promise<Engram[]> | null = null
 
@@ -529,9 +528,9 @@ export class RemoteStore implements EngramStore {
    * validity window, supersedes, locked_reason (#768). The server handles
    * ID assignment, content_hash, status.
    *
-   * Returns void to satisfy the EngramStore interface contract. Callers
-   * that need the server-assigned ID (e.g. so the user can later
-   * forget/feedback on it) should use `appendAndGetServerId()` instead.
+   * Returns void. Callers that need the server-assigned ID (e.g. so the
+   * user can later forget/feedback on it) should use `appendAndGetServerId()`
+   * instead.
    */
   async append(engram: Engram): Promise<void> {
     await this.appendAndGetServerId(engram)
@@ -744,7 +743,7 @@ export class RemoteStore implements EngramStore {
    * sends the raw signal; the server owns the mutation logic (strength
    * adjustment, commitment promotion, counter increment).
    *
-   * Not part of the EngramStore interface — RemoteStore-specific.
+   * RemoteStore-specific — no file-backed counterpart.
    * Requires server support: see https://github.com/plur-ai/plur/issues/85
    */
   async feedback(id: string, signal: 'positive' | 'negative' | 'neutral'): Promise<void> {
@@ -774,7 +773,7 @@ export class RemoteStore implements EngramStore {
    * any subset of {pinned, status, statement, ...}. The server applies
    * the diff atomically; unsupplied fields are unchanged.
    *
-   * Not part of the EngramStore interface — RemoteStore-specific.
+   * RemoteStore-specific — no file-backed counterpart.
    * Requires server support: enterprise PR #111 (merged 2026-05-21).
    * Used by setPinned, promote, reportFailure for remote routing
    * (closes the pin/promote/reportFailure remainder of issue #86).
