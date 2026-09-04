@@ -90,7 +90,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     outputText('')
     outputText(`  WARNING: bound to ${plan.bind}. The viewer has no authentication.`)
     outputText('  Anyone on your network can read your entire memory store.')
-    outputText(`  Answers to Host: localhost, ${plan.allowedHosts.join(', ')}`)
+    outputText(`  Answers to Host: ${['localhost', ...plan.allowedHosts].join(', ')}`)
     outputText('  Any other name is refused — that is what stops a DNS-rebound web page.')
     outputText('  Add a name with --allow-host. Only run widened on a network you fully')
     outputText('  control, and stop the viewer when you are done.')

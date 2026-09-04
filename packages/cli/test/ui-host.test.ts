@@ -122,12 +122,13 @@ describe('C2 — a rebound request is still refused under every accepted --host'
 
 describe('C3 — host flags accept only a bare hostname or IP literal', () => {
   const bad: Array<[string | undefined, RegExp]> = [
-    [undefined, /needs a value/], ['', /needs a value/], ['  ', /needs a value/],
+    [undefined, /needs a value/], ['', /needs a value/], ['  ', /needs a value/], ['-', /needs a value/], ['--port', /needs a value/], ['--no-open', /needs a value/],
     ['http://localhost', /bare hostname/], ['localhost/', /bare hostname/], ['localhost/x', /bare hostname/], ['localhost?x', /bare hostname/],
     ['localhost#x', /bare hostname/], ['user@localhost', /bare hostname/], ['a b', /bare hostname/], ['%41', /bare hostname/], ['a\\b', /bare hostname/],
     ['localhost:80', /takes no port/], ['localhost:', /takes no port/], ['127.0.0.1:7777', /takes no port/], ['host:abc', /takes no port/],
     ['[::1]:80', /takes no port/], ['[::1]x', /takes no port/], ['[::1]:', /takes no port/],
     ['[localhost]', /brackets enclose only an IPv6/], ['[127.0.0.1]', /brackets enclose only an IPv6/], ['[]', /brackets enclose only an IPv6/],
+    ['[::1', /brackets enclose only an IPv6/], ['[', /brackets enclose only an IPv6/], ['[::1]]', /takes no port/],
     ['fe80::1%en0', /zone id/], ['::1%lo0', /zone id/], ['[fe80::1%en0]', /zone id/],
     ['127.999.999.999', /not a valid/], ['256.1.1.1', /not a valid/], ['1.2.3.4.5', /not a valid/], ['a[b', /not a valid/],
   ]
@@ -145,6 +146,17 @@ describe('C3 — host flags accept only a bare hostname or IP literal', () => {
   it('the error names the flag', () => {
     expect(() => parseUiArgs(['--allow-host', 'localhost:80'])).toThrow(/--allow-host/)
     expect(() => parseUiArgs(['--host', 'localhost:80'])).toThrow(/--host/)
+  })
+  it('--allow-host refuses the unspecified address, which no client can send', () => {
+    for (const v of ['0.0.0.0', '0', '::', '[::]', '0:0:0:0:0:0:0:0', '::ffff:0.0.0.0']) {
+      expect(() => parseUiArgs(['--host', '0.0.0.0', '--allow-host', v]), v).toThrow(/unspecified/)
+    }
+    // --host still takes it: that is how you bind every interface
+    expect(parseUiArgs(['--host', '::']).host).toBe('::')
+  })
+  it('a forgotten value does not swallow the next flag', () => {
+    expect(() => parseUiArgs(['--host', '--port', '8080'])).toThrow(/--host needs a value/)
+    expect(() => parseUiArgs(['--host', '0.0.0.0', '--allow-host', '--no-open'])).toThrow(/--allow-host needs a value/)
   })
   it('accepted values are stored canonical, without brackets', () => {
     expect(parseUiArgs(['--host', 'LOCALHOST']).host).toBe('localhost')
@@ -177,7 +189,7 @@ describe('C4 — the folder-reveal route', () => {
     // A loopback bind that vouches for a network name is reachable by that
     // name: no folder button, but no network warning either.
     for (const args of [['--host', 'localhost', '--allow-host', 'my-laptop.local'], ['--host', '127.0.0.1', '--allow-host', '192.168.1.50'],
-      ['--allow-host', '127.0.0.2', '--allow-host', '0.0.0.0']]) {
+      ['--allow-host', '127.0.0.2', '--allow-host', '10.0.0.9']]) {
       const p = grant(args)
       expect(p.revealFolder, args.join(' ')).toBe(false)
       expect(p.widened, args.join(' ')).toBe(false)

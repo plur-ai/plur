@@ -43,8 +43,11 @@ const DEFAULT_PORT = 7777
  */
 export function parseHostValue(raw: string | undefined, flag: string): string {
   const v = String(raw ?? '').trim()
-  if (v === '') throw new Error(`${flag} needs a value`)
+  // A hostname cannot start with a dash, so a value that does is the next
+  // flag: `--host --port 8080` forgot the host, and used to bind `--port`.
+  if (v === '' || v.startsWith('-')) throw new Error(`${flag} needs a value`)
   const bracketed = v.match(/^\[([^\]]*)\](.*)$/)
+  if (v.startsWith('[') && !bracketed) throw new Error(`${flag}: brackets enclose only an IPv6 literal, got "${v}"`)
   const inner = bracketed ? bracketed[1]! : v
   if (isIPv6(inner) && inner.includes('%')) {
     throw new Error(`${flag}: "${v}" carries a zone id, which no browser can put in a URL. Bind the address without it.`)
@@ -96,7 +99,11 @@ export function parseUiArgs(args: readonly string[]): UiArgs {
       continue
     }
     if (arg === '--allow-host') {
-      allowHosts.push(parseHostValue(args[++i], '--allow-host'))
+      const name = parseHostValue(args[++i], '--allow-host')
+      // No client can carry the unspecified address in Host: a browser will
+      // not navigate to it, and the server has nothing to match it against.
+      if (isUnspecifiedName(name)) throw new Error(`--allow-host: "${name}" is the unspecified address, not a name a client can use`)
+      allowHosts.push(name)
       continue
     }
   }
