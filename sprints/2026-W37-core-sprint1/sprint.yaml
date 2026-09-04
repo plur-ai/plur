@@ -183,6 +183,128 @@ backlog:
       bump found on Monday is free, found mid-publish it is not. The v0.18.0
       CHANGELOG date is corrected in the same pass.
 
+  # ─── the bugs that live inside this release's own surface ───────────────
+  # Sprint rule: a sprint does not close with an open bug in the surface its
+  # release touched. Not every bug in the repo — that makes the rule
+  # unmeetable and therefore ignored — but every one in what shipped. All six
+  # below are injection/pinned/drop defects, which is precisely what "Nothing
+  # is silently dropped" claims to have fixed. Shipping the theme over them
+  # would make the release notes false.
+
+  - id: A7
+    ref: github:plur-ai/plur#1124
+    title: Pinned budget selection is greedy, not strict priority order
+    owner_role: engineering
+    default_claimer: miles-on-nightshift
+    state: todo
+    priority: must
+    effort_estimate: M
+    roadmap: R-041
+    milestone: M1
+    surface: core
+    labels: [bug, pinned, injection]
+    acceptance: |
+      A failing test first, proving selection takes engrams greedily rather
+      than in strict priority order, then the fix that turns it green. CI
+      green, review requested, #1124 referenced. STOPS THERE.
+      This is the same defect class as the release headline: the budget is
+      respected and the ORDER is not, so what survives is an accident of array
+      position. A release claiming nothing is silently dropped cannot ship
+      with the chooser picking arbitrarily.
+
+  - id: A8
+    ref: github:plur-ai/plur#1129
+    title: spread_drops conflates an expired bucket with a pack-eviction bucket
+    owner_role: engineering
+    default_claimer: miles-on-nightshift
+    state: todo
+    priority: must
+    effort_estimate: S
+    roadmap: R-018
+    milestone: M1
+    surface: core
+    labels: [bug, instrumentation]
+    acceptance: |
+      The two causes are counted separately, with a test asserting each lands
+      in its own bucket. CI green, review requested, #1129 referenced.
+      It belongs to this release by definition: #1113 adds the drop counters
+      the theme is named after, and a counter that merges two causes cannot
+      answer the question the theme raises.
+
+  - id: A9
+    ref: github:plur-ai/plur#1127
+    title: forget(scope:) reports false absence when the store is scope-unaware
+    owner_role: engineering
+    default_claimer: miles-on-nightshift
+    state: todo
+    priority: must
+    effort_estimate: M
+    roadmap: R-070
+    milestone: continuous
+    surface: core
+    labels: [bug, scope, silent_loss]
+    acceptance: |
+      A test reproducing the false "not found" against a scope-unaware store,
+      then the fix. CI green, review requested, #1127 referenced.
+      Reporting absence for something present is the worst failure a memory
+      system has: the user believes a deletion succeeded, or believes a fact
+      is gone when it is still there.
+
+  - id: A10
+    ref: github:plur-ai/plur#1126
+    title: Sequence the namespaced-id forget throw against the scope-unaware path
+    owner_role: engineering
+    default_claimer: miles-on-nightshift
+    state: todo
+    priority: should
+    effort_estimate: S
+    roadmap: R-070
+    milestone: continuous
+    surface: core
+    labels: [bug, scope]
+    acceptance: |
+      Ordering fixed with a test pinning which error wins, CI green, review
+      requested, #1126 referenced. Pairs with A9 — land A9 first, since this
+      one is about which of two errors surfaces and that answer changes once
+      A9 lands.
+
+  - id: A11
+    ref: github:plur-ai/plur#1125
+    title: Strip pinned_priority in the pack sanitiser and exporter
+    owner_role: engineering
+    default_claimer: miles-on-nightshift
+    state: todo
+    priority: should
+    effort_estimate: S
+    roadmap: R-041
+    milestone: M1
+    surface: core
+    labels: [bug, pinned, packs]
+    acceptance: |
+      pinned_priority does not survive export or import, with a test asserting
+      a round-tripped pack carries none. CI green, review requested, #1125
+      referenced.
+      A recipient inheriting the author's pinning priorities silently reorders
+      their own injection — the sender's preferences quietly outranking theirs.
+
+  - id: A12
+    ref: github:plur-ai/plur#1119
+    title: Recall returns a decorated engram ID that cannot be used
+    owner_role: engineering
+    default_claimer: miles-on-nightshift
+    state: todo
+    priority: should
+    effort_estimate: S
+    roadmap: R-070
+    milestone: continuous
+    surface: core
+    labels: [bug, usability]
+    acceptance: |
+      The id recall returns is the id forget and pin accept, with a test doing
+      exactly that round trip. CI green, review requested, #1119 referenced.
+      An id you cannot paste into the next command is not an id.
+
+
 stretch:
   - id: A6
     ref: github:plur-ai/plur#1043,#1044
