@@ -1,0 +1,138 @@
+{
+  "note": "Golden pack vectors. Authored in Python, verified in TypeScript and Python, so neither implementation grades its own work. Every `expect` and every count is asserted on both sides. See build.py for the fields, and README.md for how to run them.",
+  "standard": "ENGRAM-STANDARD-v1.md",
+  "vectors": [
+    {
+      "pack": "minimal",
+      "engram_count": 2,
+      "computed_integrity": "sha256:699b878c73d26a224441dca43e26d83a5e494217e89d81d2aec03403468a4286",
+      "shipped_integrity": null,
+      "expect": "load",
+      "integrity_status": "absent",
+      "note": "SKILL.md + engrams.yaml only. §5.1 makes INTEGRITY optional on disk; §5.6.1 step 1 makes its absence a third verdict, not a pass."
+    },
+    {
+      "pack": "with-integrity",
+      "engram_count": 2,
+      "computed_integrity": "sha256:f6a82e2feb5af25d6f7208db1e93bca22454469498b3ff571d2dcdc5a6269f74",
+      "shipped_integrity": "sha256:f6a82e2feb5af25d6f7208db1e93bca22454469498b3ff571d2dcdc5a6269f74",
+      "expect": "load",
+      "integrity_status": "ok",
+      "note": "The ordinary case. Recomputing over raw bytes must reproduce the shipped value (§5.5)."
+    },
+    {
+      "pack": "with-provenance",
+      "engram_count": 2,
+      "computed_integrity": "sha256:d97e15bbf4972dc02d714d6df61c9aa938347629db74a2be2c358ba0ebf9c163",
+      "shipped_integrity": "sha256:d97e15bbf4972dc02d714d6df61c9aa938347629db74a2be2c358ba0ebf9c163",
+      "expect": "load",
+      "integrity_status": "ok",
+      "provenance_records": 2,
+      "note": "§5.1: provenance/ is OPTIONAL and NOT covered by the hash. The INTEGRITY value must equal the with-integrity pack's construction, i.e. adding records must not move it. Profile §5.4.1: the records survive the install."
+    },
+    {
+      "pack": "non-latin",
+      "engram_count": 2,
+      "computed_integrity": "sha256:a79da6a5c5f3d5f97c106a2f5b3dfef8b9733179ea1672431b5f9614f36ce48b",
+      "shipped_integrity": "sha256:a79da6a5c5f3d5f97c106a2f5b3dfef8b9733179ea1672431b5f9614f36ce48b",
+      "expect": "load",
+      "integrity_status": "ok",
+      "note": "§5.5 hashes raw bytes, so UTF-8 content must hash identically in both implementations. The fixture carries bytes above 0x7f — the test checks that it does — so a latin1 or ASCII assumption on either side fails here."
+    },
+    {
+      "pack": "unknown-root-field",
+      "engram_count": 2,
+      "computed_integrity": "sha256:e01b1f56caab19b3331afe30ba8a258a4f376e84be9437a0c85a27f5c6e4a4dc",
+      "shipped_integrity": "sha256:e01b1f56caab19b3331afe30ba8a258a4f376e84be9437a0c85a27f5c6e4a4dc",
+      "expect": "load",
+      "integrity_status": "ok",
+      "preserves_unknown_field": "x-vendor",
+      "note": "§10.3 rule 2: unknown manifest fields MUST be preserved. Root is additionalProperties:true, so the parsed manifest must still carry it."
+    },
+    {
+      "pack": "unknown-metadata-field",
+      "engram_count": 2,
+      "computed_integrity": "sha256:da64c1b073a9ac118587eea0bda1028e34fea78234605664e81a2169fdf359a1",
+      "shipped_integrity": "sha256:da64c1b073a9ac118587eea0bda1028e34fea78234605664e81a2169fdf359a1",
+      "expect": "disputed",
+      "integrity_status": "ok",
+      "note": "§10.3 rule 2 says unknown manifest fields MUST be preserved; the published schema sets metadata.additionalProperties:false and the reference has no .passthrough() there. The two disagree, so this vector asserts nothing beyond its hash until #1029 decides. It exists so the decision cannot be forgotten."
+    },
+    {
+      "pack": "orphan-provenance-record",
+      "engram_count": 2,
+      "computed_integrity": "sha256:e024618ef95c0c3bddef638e9d6f3a146a136c864022a5bcabf9f6db45cdeb8b",
+      "shipped_integrity": "sha256:e024618ef95c0c3bddef638e9d6f3a146a136c864022a5bcabf9f6db45cdeb8b",
+      "expect": "load-with-report",
+      "integrity_status": "ok",
+      "provenance_records": 1,
+      "orphan_records": 1,
+      "note": "Profile §5.4.2: a record describing an engram the pack does not contain MUST be reported. It does not fail the install."
+    },
+    {
+      "pack": "corrupt-provenance-record",
+      "engram_count": 2,
+      "computed_integrity": "sha256:3979582c5d769d191b5be21bf5b58c0c2bb990840962bc171ff327431936a028",
+      "shipped_integrity": "sha256:3979582c5d769d191b5be21bf5b58c0c2bb990840962bc171ff327431936a028",
+      "expect": "load-with-report",
+      "integrity_status": "ok",
+      "provenance_records": 0,
+      "unreadable_records": 1,
+      "note": "Profile §5.4.2: unreadable records MUST be counted and reported, never silently skipped, and MUST NOT abort the install. A tester's corrupt record installed with exit 0 and no output."
+    },
+    {
+      "pack": "omitted-visibility",
+      "engram_count": 2,
+      "computed_integrity": "sha256:483ed0a670f6d3c2bf4332a0bb1c17557f4c770b0a84445ab61173a593976ea3",
+      "shipped_integrity": "sha256:483ed0a670f6d3c2bf4332a0bb1c17557f4c770b0a84445ab61173a593976ea3",
+      "expect": "load-with-report",
+      "integrity_status": "ok",
+      "held_private": 1,
+      "note": "§5.6.1 step 2: an engram with NO visibility field takes the §4.4 default on the consumer's side. That is the consumer's assignment, not the producer's declaration, so the pack loads; the engram is held as private and reported, and MUST NOT be re-exported (§5.4)."
+    },
+    {
+      "pack": "pinned-engram-shipped",
+      "engram_count": 2,
+      "computed_integrity": "sha256:d3d445df990deafe2663c466c0bd907737f5cddd950ed1355bcd3e8b7b0e0842",
+      "shipped_integrity": "sha256:d3d445df990deafe2663c466c0bd907737f5cddd950ed1355bcd3e8b7b0e0842",
+      "expect": "load-neutralized",
+      "integrity_status": "ok",
+      "neutralized": {
+        "pinned": 1,
+        "locked": 0
+      },
+      "note": "§5.4 makes stripping `pinned` a consumer MUST, and §5.6.1 step 3 requires the count be reported per field (§5.6.5). The pack loads; the flag does not survive."
+    },
+    {
+      "pack": "locked-engram-shipped",
+      "engram_count": 2,
+      "computed_integrity": "sha256:1027754f9df16a8a553a5d3c31e2963a01b4964dda70b06a0da5f3b1771d8f1c",
+      "shipped_integrity": "sha256:1027754f9df16a8a553a5d3c31e2963a01b4964dda70b06a0da5f3b1771d8f1c",
+      "expect": "load-neutralized",
+      "integrity_status": "ok",
+      "neutralized": {
+        "pinned": 0,
+        "locked": 1
+      },
+      "note": "§5.4 makes downgrading `commitment: locked` to `decided` a consumer MUST, with `locked_at` and `locked_reason` removed, and §5.6.5 requires the count per field — a pack whose only host-overriding field is a locked commitment must not be altered in silence. The pack loads; the lock does not survive."
+    },
+    {
+      "pack": "integrity-mismatch",
+      "engram_count": 2,
+      "computed_integrity": "sha256:63d31018ac9b12915c5c2e322f77a6e82b2aabe0e548423f5431a1ae619d7bd6",
+      "shipped_integrity": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "expect": "reject",
+      "integrity_status": "modified",
+      "note": "§5.5: a receiver MUST treat a mismatch as a failed integrity check; §5.6.1 step 1: the install MUST abort unless the installer explicitly overrides it for this pack."
+    },
+    {
+      "pack": "private-engram-shipped",
+      "engram_count": 2,
+      "computed_integrity": "sha256:0b8f68aa13a697e31ab3c55c3903848da4741a13f6f39075c3031b49b97e9464",
+      "shipped_integrity": "sha256:0b8f68aa13a697e31ab3c55c3903848da4741a13f6f39075c3031b49b97e9464",
+      "expect": "reject",
+      "integrity_status": "ok",
+      "note": "§5.4 and §4.14 invariant 7: a private engram MUST NOT be in a pack, so a conformant producer cannot emit this. §5.6.1 step 2: a consumer MUST refuse a pack that DECLARES `visibility: private`, and there is no override."
+    }
+  ]
+}

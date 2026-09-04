@@ -1,0 +1,110 @@
+{
+  "note": "Golden .plur capsule fixtures, written by Python from §6 of the standard. §6 is STABLE and has no producer or consumer in the codebase, so these are the first bytes it has been asked to agree with. The negative cases are the point: §6.7 lists checks a reader MUST perform, and a check nobody has seen fail is not a check. Every rejection carries the `reason` the reader MUST give, as a regular expression, so a fixture refused for some other reason is a failure.",
+  "standard": "ENGRAM-STANDARD-v1.md §6",
+  "capsules": [
+    {
+      "capsule": "valid-minimal.plur",
+      "expect": "accept",
+      "reason": null,
+      "bytes": 500,
+      "sha256": "bc90a4a9e33bfa8caae35c078ea124348e19aeb8c9f0259c806727c6510ae060",
+      "note": "A well-formed v1 capsule with no flags set. Every §6.7 check passes."
+    },
+    {
+      "capsule": "bad-magic.plur",
+      "expect": "reject",
+      "reason": "bad magic",
+      "bytes": 500,
+      "sha256": "2ab6406a0df7a45a90f675a1caf02320a30984cebce75d401fa1645300dc170f",
+      "note": "§6.7 step 3: the first four bytes are not 50 4c 55 52. A reader MUST refuse rather than attempt to parse what follows."
+    },
+    {
+      "capsule": "unknown-format-version.plur",
+      "expect": "reject",
+      "reason": "unsupported FormatVersion",
+      "bytes": 500,
+      "sha256": "29c8f63ad9d3ddef46c49b6e02c647eee517cb5b1e042a47deeb71e9ac3fe58c",
+      "note": "§6.7 step 4 and §10.3 rule 3: a reader MUST reject an unknown FormatVersion rather than guess. This is what keeps the version space usable later."
+    },
+    {
+      "capsule": "reserved-flag-set.plur",
+      "expect": "reject",
+      "reason": "reserved flag bits",
+      "bytes": 500,
+      "sha256": "2a86f1dbd7867cc1bcfccab5a175fda731fb7e47574f42099351429ddcdfc728",
+      "note": "§6.7 step 5 and §10.3 rule 4: reserved flag bits (2-15, mask 0xfffc) MUST be zero on write and MUST cause rejection on read. Accepting one now would make the bit unusable for its eventual meaning."
+    },
+    {
+      "capsule": "truncated-preamble.plur",
+      "expect": "reject",
+      "reason": "truncated preamble",
+      "bytes": 8,
+      "sha256": "d37d248386af341c54940bd1ccab971652d7491307e594a75dac396036a154ee",
+      "note": "§6.7 step 2: fewer than 12 bytes, so there is not even a preamble to read."
+    },
+    {
+      "capsule": "truncated-header.plur",
+      "expect": "reject",
+      "reason": "truncated header",
+      "bytes": 52,
+      "sha256": "55b5924f9ba8b89fedb61225d55f24dad28b39789fc347e00c7de934a1464b87",
+      "note": "§6.7 step 7: HeaderLen promises more header bytes than the file holds. This is the case the first `truncated-payload` fixture actually exercised."
+    },
+    {
+      "capsule": "declared-size-mismatch.plur",
+      "expect": "reject",
+      "reason": "payload size mismatch",
+      "bytes": 504,
+      "sha256": "35d83f26080fb70f2f2b33a56e0f731042806e440af623209956a21d9aaa4fd7",
+      "note": "§6.7 step 9: the header's declared payload size does not match the bytes present."
+    },
+    {
+      "capsule": "truncated-payload.plur",
+      "expect": "reject",
+      "reason": "payload size mismatch",
+      "bytes": 441,
+      "sha256": "81e16e96e6c92f20c653d32c60256f118329f297a374501920fd46a763becc2b",
+      "note": "§6.7 step 9: the header is intact and the payload is cut short, so the bytes present are fewer than size_compressed declares. Without SIGNED the payload region cannot underflow (step 8); the shortfall is a size mismatch."
+    },
+    {
+      "capsule": "signed-payload-underflow.plur",
+      "expect": "reject",
+      "reason": "payload region underflow",
+      "bytes": 541,
+      "sha256": "bc7e4d13bbe5a707dd87da7eccbfe8356990293b580d22562df5b40ca00b2336",
+      "note": "§6.7 step 8: SIGNED is set with a signer present, so the last 64 bytes are the trailer — and the file holds fewer than 64 bytes after the header. The payload region computes to a negative length and MUST be refused as an underflow."
+    },
+    {
+      "capsule": "sha256-mismatch.plur",
+      "expect": "reject",
+      "reason": "integrity mismatch",
+      "bytes": 500,
+      "sha256": "ce55a0167179a12bd65e775d362f85c3e83f68f6078c2c66f2809b11b507e574",
+      "note": "§6.7 step 10 and §8: the recomputed payload hash does not match the header. A receiver MUST refuse to act on it."
+    },
+    {
+      "capsule": "compressed-flag-without-compression.plur",
+      "expect": "reject",
+      "reason": "COMPRESSED flag",
+      "bytes": 500,
+      "sha256": "01cc33fea38be7c9d7d74fe1dcf434733e1109c54beb878dce9b9cb2269bdcdb",
+      "note": "§6.7 step 11: COMPRESSED is set but the header says compression:none. The flag and the descriptor MUST agree; a reader cannot know which to believe."
+    },
+    {
+      "capsule": "signed-flag-without-signature.plur",
+      "expect": "reject",
+      "reason": "SIGNED flag \\(true\\) disagrees with header\\.signer \\(null\\)",
+      "bytes": 500,
+      "sha256": "b303c6882b7f86842180abe664d7e98b2aababff68dd0aae3df91c890e080a00",
+      "note": "§6.7 step 7 and §6.8 step 4: SIGNED is set with signer:null and no 64-byte trailer. v1 producers MUST NOT set SIGNED at all, since the scheme is RESERVED (§7) — a reader seeing it has an ambiguous envelope and refuses for THAT reason, not for the size mismatch the flag causes downstream."
+    },
+    {
+      "capsule": "signer-without-signed-flag.plur",
+      "expect": "reject",
+      "reason": "SIGNED flag \\(false\\) disagrees with header\\.signer \\(present\\)",
+      "bytes": 598,
+      "sha256": "e0a96eb39c17aa8e3b28cd21b8880455860f6528b1b1d185970c623e3783696f",
+      "note": "§6.7 step 7 and §6.8 step 4, the other direction: a signer is named in the header and SIGNED is clear, so nothing says whether a trailer is present. Refused as the same ambiguous envelope."
+    }
+  ]
+}

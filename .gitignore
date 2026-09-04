@@ -48,3 +48,11 @@ packages/core/test/.scratch-auto-discover/
 # installer output with absolute local paths — every contributor generates their own.
 .claude/settings.json
 AGENTS.md
+
+# Conformance-vector fixtures are named engrams.yaml on purpose — they ARE pack
+# payloads, and their bytes are what the vectors hash. A contributor whose global
+# gitignore excludes engrams.yaml (a sensible rule for a real store) would
+# otherwise commit the suite without its fixtures and nothing would say so:
+# `git add` skips ignored paths silently. Repository patterns beat core.excludesFile,
+# so this negation re-includes exactly this path and nothing else.
+!spec/vectors/packs/**/engrams.yaml

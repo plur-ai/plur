@@ -21,6 +21,7 @@ producer/consumer in any language without reading the TypeScript.
 | `pack-manifest.schema.json` | Canonical **JSON Schema (Draft 2020-12)** for the pack manifest. |
 | `scope-metadata.schema.json` | Canonical **JSON Schema (Draft 2020-12)** for scope metadata. |
 | `examples/` | Worked provenance records built from a real store, plus the scripts that check them against outside implementations (`rdflib`, `prov`). |
+| `vectors/` | **Conformance vectors** — golden packs and `.plur` capsules with known expected outcomes. Authored in Python, verified in TypeScript, so neither implementation grades its own work. See `vectors/README.md`. |
 | `README.md` | This file. |
 
 ### Profiles
@@ -115,12 +116,15 @@ standard is the NGI/NLnet-fundable scope:
    `pnpm --filter @plur-ai/core gen:schemas`; CI gates the build on equality
    (`git diff --exit-code spec/`). The divergence risk is eliminated.
 
-2. **Conformance test vectors.** A language-neutral corpus of canonical inputs +
-   expected outcomes: valid/invalid engrams (one per invariant in §4.14), golden
-   packs with known `INTEGRITY` hashes, and **golden `.plur` capsules** (hex
-   fixtures) covering magic/version/flags/header/payload/sha-256 — including
-   negative cases (bad magic, reserved-flag-set, size-mismatch, sha-mismatch,
-   truncated). This is what lets an independent implementation prove conformance.
+2. ~~**Conformance test vectors.**~~ **Partly done (#1022).** `spec/vectors/`
+   now holds 13 golden packs with known `INTEGRITY` values and declared
+   install outcomes (load, refuse, report, neutralize — with every count a
+   consumer must report), and 13 `.plur` capsules covering magic, version,
+   flags, header, payload, SHA-256 and the `SIGNED`/`signer` agreement,
+   including every §6.7 negative with the reason each MUST be refused for.
+   They are authored in Python and verified in TypeScript, and CI runs both
+   sides plus the drift gates. **Still missing:** per-invariant engram vectors
+   (one per §4.14 invariant), and `content_hash` vectors for §4.7.1 (#1091).
 
 3. **Ed25519 signing — finalize and implement (§7 → STABLE).** Decide and fix:
    (a) the exact capsule signed message (candidate: `preamble || header ||

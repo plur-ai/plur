@@ -1,0 +1,34 @@
+{
+  "@context": {
+    "prov": "http://www.w3.org/ns/prov#",
+    "engram": "https://plur.ai/ns/engram#",
+    "odrl": "http://www.w3.org/ns/odrl/2/",
+    "xsd": "http://www.w3.org/2001/XMLSchema#"
+  },
+  "@graph": [
+    {
+      "@id": "engram:record/ENG-PACK-VEC-002",
+      "@type": [
+        "prov:Bundle",
+        "prov:Entity"
+      ],
+      "engram:describes": {
+        "@id": "engram:ENG-PACK-VEC-002"
+      },
+      "engram:recordIsSelfContained": true,
+      "engram:historyEvents": 0
+    },
+    {
+      "@id": "engram:ENG-PACK-VEC-002",
+      "@type": [
+        "prov:Entity",
+        "engram:Engram"
+      ],
+      "engram:license": "cc-by-4.0",
+      "engram:licenseSource": "inheritedFromPack",
+      "engram:memberOf": {
+        "@id": "engram:pack/with-provenance@1.0.0"
+      }
+    }
+  ]
+}
