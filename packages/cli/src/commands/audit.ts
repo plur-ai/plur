@@ -14,7 +14,7 @@ import { homedir } from 'os'
  * Usage:
  *   plur audit                          # claude-code (default)
  *   plur audit --source claude-code     # ~/.claude/projects/<...>/memory/
- *   plur audit --source claw            # stub — see packages/claw/src/audit-adapter.ts
+ *   plur audit --source claw            # stub — OpenClaw working-memory schema not stable yet
  *   plur audit --source hermes          # stub — see packages/hermes/plur_hermes/audit_adapter.py
  *   plur audit --json
  *   plur audit --limit 5                # recall depth per entry
