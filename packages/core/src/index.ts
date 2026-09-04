@@ -38,7 +38,7 @@ import { detectSecrets, detectSensitive, sensitivityCategory, SCAN_TRUNCATED } f
 import type { SecretMatch } from './secrets.js'
 import { SENSITIVITY_CATEGORIES, type ScopeMetadata, type SensitivityCategory } from './schemas/scope-metadata.js'
 import { rankScopes, SCOPE_MATCH_THRESHOLD, type ScopeSignals, type ScopeCandidate } from './scope-routing.js'
-import { mintedIdsWithPrefix, appendHistory, readHistoryForEngram, generateEventId, generateInjectionId, computeQueryHash, findLatestInjectionFor, countInjectionEvents, type InjectionEventCounts } from './history.js'
+import { mintedIdsWithPrefix, appendHistory, readHistoryForEngram, generateEventId, generateInjectionId, computeQueryHash, findLatestInjectionFor, countInjectionEvents, isRecentDuplicateInjection, type InjectionEventCounts } from './history.js'
 import { computeContentHash, isHashable } from './content-hash.js'
 import { isLocalOnlyScope, assertScopeNamesATarget } from './scope-target.js'
 import { orderBySupersedes } from './outbox-order.js'
@@ -5019,31 +5019,129 @@ export class Plur {
     // edges (#200/#201) and temporal-replay self-labeling (#202). Compact by
     // design (IDs + query hash, never statements); best-effort — a history
     // write failure must never break injection.
+    //
+    // #975: cross-process dedup. Hooks spawn fresh processes (empty address
+    // space each time), so an in-memory map cannot see the other process's
+    // injection. The check reads the HISTORY FILE — durable, shared across
+    // processes. Keyed on query_hash + sorted engram IDs (not hash alone)
+    // because the same query can legitimately select different engrams after
+    // a write.
     if (injected_ids.length > 0) {
-      const injection_id = generateInjectionId()
+      // #975: cross-process dedup for the co_injection HISTORY EVENT only.
+      // The injection_count increment (#866) is NOT gated — the engram was
+      // genuinely injected into context even if the history event is a
+      // duplicate. Only the provenance log is deduped.
+      const queryHash = computeQueryHash(task)
+
+      // The check and the append are ONE critical section, or this does not
+      // dedup anything.
+      //
+      // The duplicates being suppressed come from hook processes that spawn
+      // "within milliseconds" of each other — which is precisely the window in
+      // which both read the tail before either has appended to it. Read, decide,
+      // then append is a read-modify-write across processes, and O_APPEND makes
+      // the WRITE atomic without making the SEQUENCE atomic. Both would see no
+      // duplicate and both would write one, so the fix would help only when the
+      // processes happen to be staggered by more than a read plus an append —
+      // the case that was never the problem.
+      //
+      // Its OWN lock file, deliberately not the one #1051 uses for chain
+      // stamping. #1051 moves that lock INSIDE appendHistory; taking the same
+      // file here would mean this frame holds it while appendHistory tries to
+      // take it again, and withLock is file-based and not reentrant — so once
+      // both changes are on main every co_injection would fail to acquire,
+      // fall through to the unlocked path, and the dedup would be silently
+      // inert again. Two locks, two concerns: this one serialises the
+      // dedup DECISION, #1051's serialises the chain STAMP. They nest in one
+      // direction only (this one outside), and never contend for the same file.
+      //
+      // Tuned like #1051's: the section is a tail read and an append, so the
+      // stock 100 ms first backoff has waiters sleeping orders of magnitude
+      // longer than the holder needs.
+      const historyDir = join(this.paths.root, 'history')
+      // Whether THIS call is the one that recorded the injection. Decided inside
+      // the lock, read afterwards by the injection_count block so both counters
+      // follow the same verdict.
+      let recordedInjection = false
+      // Dedup applies to HOOK-sourced injections only.
+      //
+      // The key is content-based — query hash, engram set, source, session — so
+      // it cannot tell "the hook fired twice for one event" from "the caller
+      // injected the same thing three times". #975's duplicates come from
+      // hook processes: a fresh process per event, racing a sibling
+      // milliseconds away. Every other source ('inject', 'session_start')
+      // originates in a single long-lived MCP process making deliberate calls,
+      // and three deliberate calls are three injections, not one duplicated.
+      //
+      // Applied to all sources, the filter swallowed those: it turned three
+      // explicit `inject()` calls into one recorded injection, which
+      // inject-counter-and-flush-merge.test.ts has asserted against since
+      // #900. That test predates this dedup and is right — the counter is
+      // supposed to accumulate.
+      //
+      // Narrowing here is what lets BOTH counters follow one reading without
+      // redefining what an injection is for every other caller.
+      const dedupApplies = options?.source === 'hook'
+      const writeCoInjection = (): void => {
+        if (dedupApplies
+          && isRecentDuplicateInjection(this.paths.root, queryHash, injected_ids, 5_000, options?.source, options?.session_id)) return
+        recordedInjection = true
+        const injection_id = generateInjectionId()
+        try {
+          appendHistory(this.paths.root, {
+            event: 'co_injection',
+            engram_id: injection_id,
+            timestamp: new Date().toISOString(),
+            data: {
+              ids: injected_ids,
+              query_hash: queryHash,
+              // Event provenance for offline token-economics analysis of real
+              // sessions (the plur-bench #42 measurement). Deliberately NOT read
+              // by the receipt, which shows no token/cost figure by design.
+              tokens_used: tokensUsed,
+              source: options?.source ?? 'inject',
+              ...(options?.scope ? { scope: options.scope } : {}),
+              ...(options?.session_id ? { session_id: options.session_id } : {}),
+            },
+          })
+          for (const id of injected_ids) this._lastInjectionByEngram.set(id, injection_id)
+        } catch { /* best-effort */ }
+      }
+
       try {
-        appendHistory(this.paths.root, {
-          event: 'co_injection',
-          engram_id: injection_id,
-          timestamp: new Date().toISOString(),
-          data: {
-            ids: injected_ids,
-            query_hash: computeQueryHash(task),
-            // Event provenance for offline token-economics analysis of real
-            // sessions (the plur-bench #42 measurement). Deliberately NOT read
-            // by the receipt, which shows no token/cost figure by design.
-            tokens_used: tokensUsed,
-            source: options?.source ?? 'inject',
-            ...(options?.scope ? { scope: options.scope } : {}),
-            ...(options?.session_id ? { session_id: options.session_id } : {}),
-          },
-        })
-        for (const id of injected_ids) this._lastInjectionByEngram.set(id, injection_id)
-      } catch { /* best-effort */ }
+        // The lock file lives beside the month files, so the directory has to
+        // exist before we can take it. appendHistory creates it too, but that
+        // is inside the section we are trying to guard.
+        if (!fs.existsSync(historyDir)) fs.mkdirSync(historyDir, { recursive: true })
+        withLock(join(historyDir, 'co-injection-dedup'), writeCoInjection, { maxRetries: 12, baseDelay: 2 })
+      } catch {
+        // Could not take the lock. Write UNDEDUPED rather than dropping the
+        // event: a duplicate provenance record is noise, a missing one is a
+        // hole in the log `plur restore` reads to NAME what it cannot recover.
+        // Losing a record to avoid a duplicate is the wrong way round.
+        writeCoInjection()
+      }
 
       // #866: increment injection_count on primary-store engrams selected for context.
       // Distinct from activation.frequency (recall events) — this tracks actual
       // injection into the model's context window. Best-effort: never breaks injection.
+      //
+      // GATED on the same verdict as the history event. It used to be exempt, on
+      // the reasoning that the engram was genuinely injected even when the log
+      // entry is a duplicate — but that contradicts the premise the dedup rests
+      // on. Either the two events describe ONE injection, in which case counting
+      // it twice is the inflation #975 opens with ("usage data is inflated, and
+      // not by a constant factor"), or they describe two, in which case the
+      // history event should not have been suppressed either. It cannot be one
+      // reading for the log and the other for the counter: that left
+      // engrams.yaml showing injection_count: 2 against a single co_injection
+      // event, which is a store that disagrees with its own history.
+      //
+      // One reading, taken: they are one injection. Both counters follow.
+      if (!recordedInjection) {
+        // A duplicate. The engram's count was already incremented by the call
+        // that recorded the event, microseconds ago and in another process.
+      } else {
       //
       // TARGETED, via the `_loadTargeted`/`_updateEngrams` pair (2026-08-13
       // panel). This first loaded the whole corpus and wrote the whole corpus
@@ -5087,6 +5185,7 @@ export class Plur {
             + `The injection itself succeeded — this is a store-integrity signal, not an injection failure.`,
           )
         }
+      }
       }
     }
 

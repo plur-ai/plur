@@ -228,6 +228,132 @@ export function computeQueryHash(task: string): string {
 }
 
 /**
+ * Cross-process dedup for co_injection events (#975).
+ *
+ * The duplicate injections come from separate hook processes spawning within
+ * milliseconds — each with a fresh address space, so in-memory maps cannot
+ * see the other process. This function checks the HISTORY FILE (durable,
+ * shared across processes) for a recent co_injection with the same query_hash
+ * AND the same engram set.
+ *
+ * Keyed on query_hash + sorted engram IDs + source + SESSION (not hash alone)
+ * because the same query text can legitimately select different engrams after a
+ * write (#975 review finding: hash-only suppresses genuinely different
+ * injections), and because two different sessions selecting the same engrams
+ * are two real injections rather than one duplicated.
+ *
+ * Window: 5 seconds (matches the near-duplicate definition in #975).
+ * Reads only the tail of the current month's file — bounded I/O.
+ */
+export function isRecentDuplicateInjection(
+  root: string,
+  queryHash: string,
+  engramIds: string[],
+  windowMs = 5_000,
+  source?: string,
+  sessionId?: string,
+): boolean {
+  const now = Date.now()
+
+  /**
+   * Read the tail of one month file.
+   *
+   * The window is sized for the WHOLE log, not for co_injection events alone.
+   * The original 8 KB was justified as "~12-24 events", which assumed
+   * co_injection dominates the tail — the file interleaves every event type,
+   * and an injection carrying many long team-scoped ids runs well above the
+   * quoted 325-625 B, so a busy tail could push a sibling event out of range
+   * and the duplicate would be missed. 64 KB, and the number is a heuristic
+   * rather than a guarantee; say so rather than overstate it.
+   */
+  const TAIL_BYTES = 65_536
+  const readTail = (filePath: string): string | null => {
+    try {
+      if (!fs.existsSync(filePath)) return null
+      const stat = fs.statSync(filePath)
+      if (stat.size === 0) return null
+      if (stat.size <= TAIL_BYTES) return fs.readFileSync(filePath, 'utf8')
+      const buf = Buffer.alloc(TAIL_BYTES)
+      const fd = fs.openSync(filePath, 'r')
+      try {
+        fs.readSync(fd, buf, 0, TAIL_BYTES, stat.size - TAIL_BYTES)
+      } finally {
+        fs.closeSync(fd)
+      }
+      const text = buf.toString('utf8')
+      // Drop the first partial line — the window began mid-record.
+      const firstNewline = text.indexOf('\n')
+      return firstNewline >= 0 ? text.slice(firstNewline + 1) : text
+    } catch {
+      return null // unreadable → not a duplicate (fail-open)
+    }
+  }
+
+  // Both the current month and the previous one, when the window straddles the
+  // rollover. A duplicate pair one to four milliseconds apart across midnight
+  // on the 1st lands in two different files, and reading only the current one
+  // missed it — fail-open and rare, but an unstated gap in the window.
+  const monthOf = (t: number): string => new Date(t).toISOString().slice(0, 7)
+  const months = [...new Set([monthOf(now - windowMs), monthOf(now)])]
+  const tails = months
+    .map(m => readTail(join(root, 'history', `${m}.jsonl`)))
+    .filter((t): t is string => t !== null)
+  if (tails.length === 0) return false
+  const tail = tails.join('\n')
+
+  const sortedIds = [...engramIds].sort().join(',')
+  const lines = tail.split('\n').filter(l => l.trim().length > 0)
+
+  for (const line of lines) {
+    let ev: HistoryEvent
+    try { ev = JSON.parse(line) as HistoryEvent } catch { continue }
+    if (ev.event !== 'co_injection') continue
+
+    // A malformed timestamp yields NaN, and `now - NaN > windowMs` is FALSE —
+    // so the `continue` below would not fire and the event would be treated as
+    // INSIDE the window regardless of its age. One corrupt line in the tail
+    // could then suppress a legitimate co_injection record indefinitely, which
+    // is the opposite of the failure this function is allowed to have: it may
+    // let a duplicate through, it may not eat a real record. Same reasoning for
+    // a timestamp in the future (clock skew): unusable, so out of scope.
+    const evTime = new Date(ev.timestamp).getTime()
+    if (!Number.isFinite(evTime)) continue
+    const age = now - evTime
+    if (age < 0 || age > windowMs) continue
+
+    const evHash = ev.data.query_hash as string | undefined
+    if (evHash !== queryHash) continue
+
+    const evIds = ev.data.ids as string[] | undefined
+    if (!Array.isArray(evIds)) continue
+    if ([...evIds].sort().join(',') !== sortedIds) continue
+    // Normalise BOTH sides rather than skipping the check when the caller's
+    // value is absent. `if (source !== undefined)` meant a programmatic
+    // inject() with no explicit source skipped the comparison entirely and
+    // could dedup against a 'hook'-sourced event — while the WRITE path
+    // defaults source to 'inject', so the two sides disagreed about what
+    // "absent" means. Same asymmetry class as the session_id defect below.
+    const evSource = (ev.data.source as string | undefined) ?? 'inject'
+    if (evSource !== (source ?? 'inject')) continue
+    // Session is part of the key, not an afterthought. The duplicate #975
+    // describes is ONE session's hooks firing twice from separate processes;
+    // two different sessions injecting the same engrams for the same query are
+    // two real injections, and collapsing them loses a retrieval that
+    // `plur receipt` counts as engram-session evidence.
+    //
+    // This only became visible once the check was made atomic: while the race
+    // meant the check almost never fired, a key this coarse cost nothing. It
+    // is why receipt-io's "two sessions, two pairs" case regressed the moment
+    // the dedup started working.
+    const evSession = ev.data.session_id as string | undefined
+    if (evSession !== sessionId) continue
+    return true
+  }
+
+  return false
+}
+
+/**
  * Find the most recent co_injection event that included the given engram.
  * Scans the newest `maxMonths` history files only (bounded read) — feedback
  * on injections older than that is not attributable to a specific injection.
