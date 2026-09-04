@@ -270,6 +270,8 @@ function _previewPackDir(source: string): PreviewResult {
   // install strips these, but the preview should be honest about intent (finding #2).
   const pinnedCount = pack.engrams.filter(e => (e as any).pinned === true).length
   if (pinnedCount > 0) warnings.push(`${pinnedCount} engram(s) marked pinned — these bypass relevance filters; install will strip the flag`)
+  const priorityCount = pack.engrams.filter(e => (e as any).pinned_priority !== undefined).length
+  if (priorityCount > 0) warnings.push(`${priorityCount} engram(s) carry pinned_priority — install will strip it (packs cannot rank ahead of your own pins)`)
   // Flag prompt-injection text surfaced by the privacy scan
   const injectionCount = security.issues.filter(i => i.type === 'prompt_injection').length
   if (injectionCount > 0) warnings.push(`${injectionCount} engram(s) contain prompt-injection / instruction-override text — install is blocked unless overridden`)
@@ -825,13 +827,16 @@ export interface PrivacyIssue {
  * commitment (resists dedup/correction). Returns sanitized engrams plus a count
  * of how many were pinned. (Security audit 2026-06-10, finding #2.)
  */
-export function sanitizePackEngrams(engrams: Engram[]): { engrams: Engram[]; pinnedStripped: number; changed: boolean } {
+export function sanitizePackEngrams(engrams: Engram[]): { engrams: Engram[]; pinnedStripped: number; priorityStripped: number; changed: boolean } {
   let pinnedStripped = 0
+  let priorityStripped = 0
   let changed = false
   const out = engrams.map(e => {
     const c = { ...e } as Record<string, unknown>
     if (c.pinned === true) { pinnedStripped++; changed = true }
     if ('pinned' in c) delete c.pinned
+    // #1121: priority is only meaningful with pinned, which packs never keep.
+    if ('pinned_priority' in c) { priorityStripped++; changed = true; delete c.pinned_priority }
     if (c.commitment === 'locked') {
       c.commitment = 'decided'
       delete c.locked_at
@@ -840,7 +845,7 @@ export function sanitizePackEngrams(engrams: Engram[]): { engrams: Engram[]; pin
     }
     return c as unknown as Engram
   })
-  return { engrams: out, pinnedStripped, changed }
+  return { engrams: out, pinnedStripped, priorityStripped, changed }
 }
 
 const PERSONAL_PATH_RE = /(?:\/Users\/\w+|\/home\/\w+|~\/|C:\\Users\\\w+)/
@@ -1113,6 +1118,7 @@ export function exportPack(
     // clamp applied on install.
     const c = cleaned as Record<string, unknown>
     if ('pinned' in c) delete c.pinned
+    if ('pinned_priority' in c) delete c.pinned_priority
     if (c.commitment === 'locked') {
       c.commitment = 'decided'
       delete c.locked_at

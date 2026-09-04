@@ -417,7 +417,7 @@ ignore the values.
 | `episode_ids` | string[] | default `[]` | Source episode IDs. |
 | `summary` | string | ≤80 chars | Injection-friendly short form. |
 | `pinned` | boolean | | Always-load flag; bypasses keyword gating. Use sparingly. |
-| `pinned_priority` | integer | 1–100, default 50 | Eviction priority within the pinned tier (100 = highest). When the pinned token sub-budget overflows, lower-priority engrams are evicted first. Only meaningful when `pinned: true`. |
+| `pinned_priority` | integer | 1–100, default 50 | Eviction priority within the pinned tier (100 = highest). When the pinned token sub-budget overflows, lower-priority engrams are evicted first. Only meaningful when `pinned: true`. Orders pins of the same origin only: a consumer MUST rank primary-store pins ahead of store and pack pins regardless of this value, and MUST treat a non-integer or out-of-range stored value as absent rather than reject the engram. |
 | `measured_under` | object | `model?`, `source_type?`, `hardware?`, `dataset?`, `date?` (ISO date) | Measurement conditions for numeric/benchmark engrams — which model, environment type, hardware tier, dataset, and date the value was recorded under. Allows tension-aware retrieval to treat differently-measured values as refinements rather than contradictions (#869). |
 
 ### 4.13 Required-field summary

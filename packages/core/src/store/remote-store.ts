@@ -25,6 +25,9 @@ export const RemoteRowSchema = z.object({
   statement: z.string().min(1),
   type: z.enum(['behavioral', 'terminological', 'procedural', 'architectural']).optional(),
   pinned: z.boolean().optional(),
+  // #1121: an ordering key the injector trusts — a non-finite or out-of-range
+  // value from a server is salvaged away (dropped), never sorted on.
+  pinned_priority: z.number().finite().min(1).max(100).nullish(),
   commitment: z.enum(['exploring', 'leaning', 'decided', 'locked', 'draft']).optional(),
   visibility: z.enum(['private', 'public', 'template']).optional(),
   // Fields rendered into agent context or used in arithmetic — type confusion

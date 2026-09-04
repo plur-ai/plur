@@ -738,7 +738,7 @@
       "type": "integer",
       "minimum": 1,
       "maximum": 100,
-      "description": "Eviction priority within the pinned tier (1–100, 100=highest). Lower-priority engrams evicted first on budget overflow. Default 50."
+      "description": "Eviction priority within the pinned tier (integer 1–100, 100=highest; default 50). Orders pins from the same origin only: primary-store pins always precede store and pack pins. Out-of-range or non-numeric stored values are normalised on load, never fatal."
     },
     "measured_under": {
       "type": "object",

@@ -5,7 +5,8 @@
  * selects pinned engrams in descending pinned_priority order so high-priority
  * (critical) engrams survive and low-priority ones are evicted first.
  *
- * Tiebreaker: retrieval_strength desc. Engrams without pinned_priority treated as 50.
+ * Tiebreaker: the caller's relevance order (score desc). Engrams without pinned_priority treated as 50.
+ * Origin outranks priority; hostile and malformed values are covered in pinned-priority-boundaries.test.ts.
  */
 import { describe, it, expect } from 'vitest'
 import { fillTokenBudget, estimateTokens } from '../src/inject.js'
@@ -89,9 +90,12 @@ describe('pinned_priority: eviction order within the pinned tier', () => {
     expect(ids).not.toContain('ENG-PP-020')
   })
 
-  it('retrieval_strength is the tiebreaker when priorities are equal', () => {
-    const weakRS  = makePinned('ENG-PP-WEAK',   50, 0.2)
-    const strongRS = makePinned('ENG-PP-STRONG', 50, 0.9)
+  it('relevance score (the pre-existing order) is the tiebreaker when priorities are equal — not retrieval_strength', () => {
+    // The relevant pin has the weaker retrieval_strength; the irrelevant one
+    // the stronger. Before #1121 pins kept the caller's score order, and
+    // that order must survive: a field nobody set must not change who wins.
+    const weakRS  = { ...makePinned('ENG-PP-WEAK',   50, 0.2), score: 9 }
+    const strongRS = { ...makePinned('ENG-PP-STRONG', 50, 0.9), score: 0.5 }
 
     // Budget that fits exactly one pinned engram.
     const singleCost = estimateTokens(weakRS)
@@ -100,8 +104,8 @@ describe('pinned_priority: eviction order within the pinned tier', () => {
     const { selected } = fillTokenBudget([weakRS, strongRS], maxTokens)
 
     const ids = selected.map(e => e.id)
-    expect(ids).toContain('ENG-PP-STRONG')
-    expect(ids).not.toContain('ENG-PP-WEAK')
+    expect(ids).toContain('ENG-PP-WEAK')
+    expect(ids).not.toContain('ENG-PP-STRONG')
   })
 
   it('engram without pinned_priority is treated as priority 50 (neutral)', () => {

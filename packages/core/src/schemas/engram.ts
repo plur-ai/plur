@@ -441,7 +441,7 @@ export const EngramSchema = z.object({
    * Only meaningful when `pinned: true`; ignored on unpinned engrams.
    */
   pinned_priority: z.number().int().min(1).max(100).optional()
-    .describe('Eviction priority within the pinned tier (1–100, 100=highest). Lower-priority engrams evicted first on budget overflow. Default 50.'),
+    .describe('Eviction priority within the pinned tier (integer 1–100, 100=highest; default 50). Orders pins from the same origin only: primary-store pins always precede store and pack pins. Out-of-range or non-numeric stored values are normalised on load, never fatal.'),
 
   /** Measurement context for numeric or benchmark-derived claims (#869).
    *  Records model, source_type, hardware, dataset, and/or date under which the

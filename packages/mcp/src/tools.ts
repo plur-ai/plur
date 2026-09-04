@@ -278,7 +278,13 @@ function jsonSchemaPropToZod(prop: any): z.ZodTypeAny {
     return z.union(zodVariants as [z.ZodTypeAny, z.ZodTypeAny, ...z.ZodTypeAny[]])
   }
   if (prop.type === 'string') return prop.enum ? z.enum(prop.enum) : z.string()
-  if (prop.type === 'number' || prop.type === 'integer') return z.number()
+  if (prop.type === 'number' || prop.type === 'integer') {
+    let n = z.number().finite()
+    if (prop.type === 'integer') n = n.int()
+    if (typeof prop.minimum === 'number') n = n.min(prop.minimum)
+    if (typeof prop.maximum === 'number') n = n.max(prop.maximum)
+    return n
+  }
   if (prop.type === 'boolean') return z.boolean()
   if (prop.type === 'array') {
     const itemSchema = prop.items ? jsonSchemaPropToZod(prop.items) : z.unknown()
@@ -998,6 +1004,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
           rationale: { type: 'string', description: 'Why this knowledge matters — also enters the search corpus, helps recall by intent not just statement' },
           source: { type: 'string', description: 'Origin of this knowledge (URL, conversation ref, etc.)' },
           pinned: { type: 'boolean', description: 'Always-load flag. If true, this engram bypasses the keyword-relevance gate at injection time. Use sparingly: meta-rules, safety conventions, core operating principles only.' },
+          pinned_priority: { type: 'number', minimum: 1, maximum: 100, description: 'Eviction priority within the pinned tier (integer 1–100, 100 = kept longest under budget pressure; default 50). Only with pinned: true. Orders your own pins only — pins from shared stores and packs always rank behind yours.' },
           commitment: { type: 'string', enum: ['exploring', 'leaning', 'decided', 'locked', 'draft'], description: 'How firmly the user has committed to this belief (default: leaning). `draft` marks the engram as pending human approval — core stores and recalls it normally; enforcement is left to deployments with a review queue.' },
           locked_reason: { type: 'string', description: 'Why this engram is locked (only meaningful when commitment=locked)' },
           valid_from: { type: 'string', description: 'ISO date (YYYY-MM-DD) the knowledge becomes valid — inject/recall skip the engram before this date (#347)' },
@@ -1036,6 +1043,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
           commitment: args.commitment as any,
           locked_reason: args.locked_reason as string | undefined,
           pinned: args.pinned as boolean | undefined,
+          pinned_priority: args.pinned_priority as number | undefined,
           valid_from: args.valid_from as string | undefined,
           valid_until: args.valid_until as string | undefined,
           supersedes: args.supersedes as string[] | undefined,

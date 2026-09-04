@@ -63,6 +63,7 @@ import type { StorageAdapter } from './storage-adapter.js'
 import { resolveBackendTier, type BackendSelection } from './backend-selection.js'
 import { isSharedScope, isScopeWithin, scopeAllowFilter, makeVisibilityPredicate } from './scope-util.js'
 import type { Engram } from './schemas/engram.js'
+import { validatePinnedPriority, normalizePinnedPriority } from './pinned-priority.js'
 import type { Episode } from './schemas/episode.js'
 import type { PackManifest } from './schemas/pack.js'
 import type { PlurConfig, StoreEntry, ScopeRoutingConfig } from './schemas/config.js'
@@ -1188,6 +1189,13 @@ export class Plur {
         cloned.id = cloned.id.replace(/^(ENG|ABS|META)-/, `$1-${prefix}-`)
         cloned._originalId = originalId
         cloned._storeScope = store.scope
+        // A foreign priority is honoured only as a sanitised integer; the
+        // injector additionally ranks this row behind every primary pin.
+        if ('pinned_priority' in cloned) {
+          const p = normalizePinnedPriority(cloned.pinned_priority)
+          if (p === undefined) delete cloned.pinned_priority
+          else cloned.pinned_priority = p
+        }
         all.push(cloned)
       }
     }
@@ -1199,6 +1207,9 @@ export class Plur {
         if (e.status !== 'active') continue
         const cloned = { ...e } as any
         cloned._pack = pack.manifest.name
+        // Packs never carry host-overriding fields past install (#1121); a
+        // hand-placed pack directory gets the same treatment here.
+        delete cloned.pinned_priority
         // Sanitise HERE, at the point pack content enters the injection corpus
         // (#940, #952). Pack install does not call learn() or learnRouted() —
         // it copies the pack's file into the packs directory and this loop
@@ -2446,6 +2457,21 @@ export class Plur {
     }
   }
 
+  /**
+   * `pinned_priority` as it may be persisted (#1121 review): absent unless the
+   * write is pinned, clamped when finite, a TypeError otherwise. Writing NaN
+   * used to put `.nan` on disk and lose the engram on the next load; writing
+   * priority on an unpinned engram stored a field the spec says is only
+   * meaningful when pinned.
+   */
+  private _validatedPinnedPriority(context: LearnContext | undefined, fn: string): number | undefined {
+    if (context?.pinned_priority === undefined || context?.pinned_priority === null) return undefined
+    if (context.pinned !== true) {
+      throw new TypeError(`plur.${fn}: pinned_priority is only meaningful with pinned: true`)
+    }
+    return validatePinnedPriority(context.pinned_priority, fn)
+  }
+
   async learn(statement: string, context?: LearnContext): Promise<Engram> {
     this._assertWritable()
     if (typeof statement !== 'string' || statement.length === 0) {
@@ -2648,9 +2674,7 @@ export class Plur {
           superseded_by: [],
         } : undefined,
         pinned: context?.pinned === true ? true : undefined,
-        pinned_priority: context?.pinned_priority != null
-          ? Math.max(1, Math.min(100, Math.round(context.pinned_priority)))
-          : undefined,
+        pinned_priority: this._validatedPinnedPriority(context, 'learn'),
         // #869: measurement context — present only when the caller supplies it.
         measured_under: context?.measured_under,
       }
@@ -3220,9 +3244,7 @@ export class Plur {
         supersedes: context!.supersedes!, superseded_by: [],
       } : undefined,
       pinned: context?.pinned === true ? true : undefined,
-      pinned_priority: context?.pinned_priority != null
-        ? Math.max(1, Math.min(100, Math.round(context.pinned_priority)))
-        : undefined,
+      pinned_priority: this._validatedPinnedPriority(context, 'learnRouted'),
       // #869: measurement context — present only when the caller supplies it.
       measured_under: context?.measured_under,
     }
