@@ -37,7 +37,8 @@ plur_provenance { "id": "ENG-2026-08-21-086" }
 ```
 
 You get a readable answer, not a document. Add `"format": "record"` when you
-actually want the JSON-LD, and `"save": true` to store it.
+actually want the JSON-LD. The tool is read-only; to store a record, use
+`plur provenance <id> --write` on the command line.
 
 The tool lives behind `plur_admin`, like most of the surface — the lean profile
 exposes only the eleven tools used every session, to keep the schema small.
