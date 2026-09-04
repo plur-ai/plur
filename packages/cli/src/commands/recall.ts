@@ -35,7 +35,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   if (shouldOutputJson(flags)) {
     outputJson({
       results: engrams.map(e => ({
-        id: e.id,
+        id: (e as any)._originalId ?? e.id.replace(/^(ENG|ABS|META)-[A-Z]{2,4}-(?=\d{4}-|[A-Za-z0-9])/, '$1-'),
         statement: e.statement,
         scope: e.scope,
         type: e.type,
@@ -46,7 +46,8 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     })
   } else {
     engrams.forEach((e, idx) => {
-      outputText(`${idx + 1}. [${e.id}] ${e.statement}`)
+      const displayId = (e as any)._originalId ?? e.id.replace(/^(ENG|ABS|META)-[A-Z]{2,4}-(?=\d{4}-|[A-Za-z0-9])/, '$1-')
+      outputText(`${idx + 1}. [${displayId}] ${e.statement}`)
       outputText(`   Scope: ${e.scope} | Type: ${e.type}${e.domain ? ` | Domain: ${e.domain}` : ''} | Strength: ${e.activation.retrieval_strength.toFixed(3)}`)
     })
   }
